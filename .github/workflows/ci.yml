@@ -53,6 +53,8 @@ jobs:
         working-directory: examples/using-official-sdk/linear
         env:
           PYTHON: ${{ github.workspace }}/.venv/bin/python
+          # The server the example starts is not anyone's use of Backlot.
+          BACKLOT_TELEMETRY: "0"
         run: npx tsx index.ts
 
   lint:

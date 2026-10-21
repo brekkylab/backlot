@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import re
+import urllib.parse
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -248,28 +249,507 @@ def _missing_argument(request: Request, *names: str) -> JSONResponse | None:
     return None
 
 
+# --- POST bodies -----------------------------------------------------------
+# What real reads from a POST body and what it refuses the body for, measured against slack.com/api
+# on 2026-10-07, 2026-10-10, 2026-10-13 and 2026-10-20: on `api.test` sent no token, which echoes
+# the arguments it read, and on the methods that take a token, with one and without.
+
+_FORM = "application/x-www-form-urlencoded"
+_MULTIPART = "multipart/form-data"
+#: The media types real takes a POST body under, matched as sent (before the first `;`).
+_POST_TYPES = ("application/json", "text/plain", _FORM, _MULTIPART)
+#: The charsets real takes, matched in any case once `"` is stripped from either end.
+_POST_CHARSETS = ("utf-8", "utf8", "iso-8859-1")
+#: An argument name real takes, as :func:`_registered_name` reads it.
+_ARG_NAME = re.compile(r"[-0-9:A-Za-z_]{1,100}")
+#: An integer name, which is no argument within 64 bits (:func:`_register`): `api.test` echoes none
+#: of `1`, `-1`, `0` and `9223372036854775807`, and echoes `01`, `-0` and `9223372036854775808`.
+_INT_NAME = re.compile(r"0|-?[1-9][0-9]*")
+
+
+class Undecodable(str):
+    """A form value whose bytes are not UTF-8. Real reads it as an argument that is there and names
+    nothing: `channel=%FF` is `channel_not_found`, `limit=%FF` the number refusal and `token=%FF`
+    `invalid_auth`, beside a valid bearer header too. So it is a U+FFFD to the methods, and
+    `api_test` echoes it as `null`, as real does. A search's `query` is the exception: real answers
+    `internal_error` for one on each search method, after the credential and the number and
+    `sort_dir` refusals."""
+
+    def __new__(cls):
+        return super().__new__(cls, "\ufffd")
+
+
+def post_content_type(request: Request) -> str:
+    """A request's Content-Type as real reads it: each header's value with the spaces and tabs
+    around it stripped (` application/x-www-form-urlencoded ` is a form and `application/json<TAB>`
+    JSON), a header left empty dropped, and two headers joined with `, `, or empty when there is
+    none. A form type sent ahead of `application/json` is read as a form, and the other way round is
+    `invalid_post_type`, as one header naming both is."""
+    values = (v.strip(" \t") for v in request.headers.getlist("content-type"))
+    return ", ".join(v for v in values if v)
+
+
+def _named_charset(content_type: str) -> str | None:
+    """The charset a Content-Type names, or None: the first parameter spelt `charset`, once the
+    spaces around it are stripped, whose value does not start with a space and holds more than `"`
+    and spaces. `CHARSET=utf-8`, `charset =utf-8`, `charset= utf-8`, `charset=""` and a tab or a
+    U+00A0 byte before `charset` name none, and `charset=; charset=latin1` names `latin1`."""
+    for param in content_type.split(";")[1:]:
+        name, _, value = param.strip(" ").partition("=")
+        if name == "charset" and value[:1] != " " and value.strip('" '):
+            return value
+    return None
+
+
 def post_charset_warning(content_type: str | None, has_body: bool) -> str | None:
     """The warning real Slack adds to a POST's answer for the charset its Content-Type names, or
-    None: `missing_charset` for `application/json` or `text/plain` that names none and carries a
-    body, `superfluous_charset` for `application/x-www-form-urlencoded` or `multipart/form-data`
-    that names one, an empty body included.
+    None: `superfluous_charset` for a form or multipart media type that names one, an empty body
+    included, and `missing_charset` for any other media type that names none and carries a body.
 
-    Matched as sent, measured against slack.com/api on 2026-10-07 and 2026-10-10: an upper-case
-    media type draws neither warning, and `CHARSET=utf-8`, `charset =utf-8`, `charset= utf-8` and
-    an empty value (`charset=`, `charset=""`, `charset=" "`) name no charset.
+    The media type is matched as sent: `Application/x-www-form-urlencoded` with a form body and
+    `application/x-www-form-urlencoded, text/html` both draw `missing_charset`, where the
+    upper-case JSON and `text/html` bodies this would warn are refused (:func:`read_post_body`).
     """
     if not content_type:
         return None
-    media_type, *params = (p.strip() for p in content_type.split(";"))
-    has_charset = any(
-        name == "charset" and value[:1] != " " and value.strip('" ')
-        for name, _, value in (p.partition("=") for p in params)
-    )
-    if media_type in ("application/json", "text/plain"):
-        return "missing_charset" if has_body and not has_charset else None
-    if media_type in ("application/x-www-form-urlencoded", "multipart/form-data"):
-        return "superfluous_charset" if has_charset else None
-    return None
+    named = _named_charset(content_type) is not None
+    if content_type.split(";", 1)[0] in (_FORM, _MULTIPART):
+        return "superfluous_charset" if named else None
+    return "missing_charset" if has_body and not named else None
+
+
+def read_post_body(content_type: str | None, body: bytes) -> tuple[dict[str, str], str | None]:
+    """The arguments a POST body carries, and the error real answers it with instead of running the
+    method, or None. Each error comes ahead of the credential, a `token` query parameter included,
+    and of the arguments, in the order the checks here run.
+
+    A body is read as multipart when :func:`_rfc1867_boundary` reads a boundary off its
+    Content-Type, else as a form when the Content-Type starts with the form type in any case
+    (`APPLICATION/X-WWW-FORM-URLENCODED`, `…-urlencodedx` and `…-urlencoded, text/html` are read
+    too); what it carries passes the media-type check whatever the media type is. A JSON or
+    `text/plain` body is not read here. `Content-Encoding` is not read: a gzipped body is read as
+    the bytes it is, and a plain one under `gzip`, `bogus` or an empty value is read as itself.
+    """
+    if not content_type:
+        return {}, "missing_post_type" if body else None
+    pairs = _multipart_parts(content_type, body)
+    if pairs is None and content_type.lower().startswith(_FORM):
+        pairs = _form_pairs(body)
+    args, error = _register(pairs or [])
+    if error is not None:
+        return {}, error
+    media_type = content_type.split(";", 1)[0]
+    if args is None and body and media_type not in _POST_TYPES:
+        return {}, "invalid_post_type"
+    if media_type not in (_FORM, _MULTIPART):
+        charset = _named_charset(content_type)
+        if charset is not None and charset.strip('"').lower() not in _POST_CHARSETS:
+            return {}, "invalid_charset"
+    if args is None and body and media_type in (_FORM, _MULTIPART):
+        return {}, "invalid_form_data"
+    return args or {}, None
+
+
+def _form_pairs(body: bytes) -> list[tuple[bytes, bytes]]:
+    """The decoded (name, value) of each `&`-separated piece of a form body that holds a `=`: a
+    piece without one is dropped (`a=b&c` reads `a` alone, and `a` alone is `invalid_form_data`).
+    `+` is a space and `%XX` a byte, and any other `%` is kept as sent (`a=%zz` is `%zz`)."""
+    pairs = []
+    for piece in body.split(b"&"):
+        name, eq, value = piece.partition(b"=")
+        if eq:
+            pairs.append((_unquote(name), _unquote(value)))
+    return pairs
+
+
+def _unquote(raw: bytes) -> bytes:
+    return urllib.parse.unquote_to_bytes(raw.replace(b"+", b" "))
+
+
+#: C's `isspace` on a header's bytes, which HHVM's reading of a part applies.
+_C_SPACE = b" \t\n\v\f\r"
+#: HHVM's `FILLUNIT`: how many bytes its multipart buffer holds, and asks for at a time.
+_FILLUNIT = 5120
+#: HHVM's `Server.Upload.MaxFileUploads` as built: file parts past this many are skipped.
+_MAX_FILE_UPLOADS = 20
+
+
+def _rfc1867_boundary(content_type: str) -> bytes | None:
+    """The boundary HHVM's ``IsRfc1867`` reads off a Content-Type, or None where it reads the body
+    as no multipart one. The header's first token, up to a `;`, `,` or space, is compared to
+    `multipart/form-data` in any case over the token's own length, so `multipart/form`, `m` and
+    an empty token pass and `multipart/form-datax` does not; the boundary is what follows the
+    first `=` after the first `boundary` past that token, up to the closing `"` when it starts
+    with one (none is no boundary) and up to a `,` or `;` otherwise, a space after the `=` and an
+    empty value included."""
+    content_type = content_type.split("\0", 1)[0]
+    token = re.split("[;, ]", content_type, maxsplit=1)[0]
+    if token.lower() != _MULTIPART[: len(token)]:
+        return None
+    at = content_type.find("boundary", len(token))
+    eq = content_type.find("=", at) if at != -1 else -1
+    if eq == -1:
+        return None
+    rest = content_type[eq + 1 :]
+    if rest.startswith('"'):
+        close = rest.find('"', 1)
+        if close == -1:
+            return None
+        return rest[1:close].encode("latin-1")
+    return re.split("[,;]", rest, maxsplit=1)[0].encode("latin-1")
+
+
+class _Rfc1867Buffer:
+    """HHVM's `multipart_buffer` over a body held whole: the buffer is the body's bytes from
+    ``begin`` (`buf_begin`) for ``held`` of them (`bytes_in_buffer`), a fill extends ``held`` to
+    ``bufsize`` or to the body's end, and each method is the function it is named after."""
+
+    def __init__(self, body: bytes, boundary: bytes):
+        self.body = body
+        self.bufsize = max(len(boundary) + 6, _FILLUNIT)
+        self.boundary = b"--" + boundary
+        self.boundary_next = b"\n--" + boundary
+        self.begin = 0
+        self.held = 0
+
+    def fill(self) -> int:
+        held = min(self.bufsize, len(self.body) - self.begin)
+        added, self.held = held - self.held, held
+        return added
+
+    def eof(self) -> bool:
+        return self.held == 0 and self.fill() < 1
+
+    def next_line(self) -> bytes | None:
+        """The bytes up to the next LF, less a CR before it, as C reads them (to a NUL); None when
+        the buffer holds no LF and is not full, else the whole buffer as a partial line."""
+        end = self.begin + self.held
+        lf = self.body.find(b"\n", self.begin, end)
+        if lf != -1:
+            line = self.body[self.begin : lf].removesuffix(b"\r")
+            self.held -= lf + 1 - self.begin
+            self.begin = lf + 1
+        elif self.held < self.bufsize:
+            return None
+        else:
+            line = self.body[self.begin : end]
+            self.begin, self.held = end, 0
+        return line.split(b"\0", 1)[0]
+
+    def get_line(self) -> bytes | None:
+        line = self.next_line()
+        if line is None:
+            self.fill()
+            line = self.next_line()
+        return line
+
+    def find_boundary(self) -> bool:
+        while (line := self.get_line()) is not None:
+            if line == self.boundary:
+                return True
+        return False
+
+    def headers(self) -> list[tuple[bytes, bytes]] | None:
+        """A part's headers from the next delimiter to the first empty line, or None when no
+        delimiter is left: a line with a `:` and no space in front starts one, a line without
+        adds to the one above and, with none above, is ignored, and one left empty is dropped."""
+        if not self.find_boundary():
+            return None
+        headers: list[tuple[bytes, bytes]] = []
+        key, pieces = b"", []
+        while line := self.get_line():
+            colon = line.find(b":") if line[0] not in _C_SPACE else -1
+            if colon != -1:
+                if pieces and key:
+                    headers.append((key, b"".join(pieces)))
+                    pieces = []
+                key = line[:colon]
+                if rest := line[colon + 1 :].lstrip(_C_SPACE):
+                    pieces.append(rest)
+            elif pieces:
+                pieces.append(line)
+        if pieces and key:
+            headers.append((key, b"".join(pieces)))
+        return headers
+
+    def read(self) -> bytes:
+        """`multipart_buffer_read` asked for ``_FILLUNIT`` bytes: the buffer's bytes up to a `\\n--`
+        and the boundary, or up to a `\\n` the buffer ends on with a prefix of that after it, at
+        most 5119 of them, less a CR they end on while such a bound is in view, which stays in the
+        buffer. A bound the buffer ends on and a later fill does not disprove ends the value there:
+        with a boundary longer than the buffer's 5120 bytes, which no client sends, that cuts a
+        value at a `\\n--` of its own."""
+        if _FILLUNIT > self.held:
+            self.fill()
+        body, begin, end, bn = self.body, self.begin, self.begin + self.held, self.boundary_next
+        bound = body.find(bn, begin, end)
+        if bound == -1:
+            at = body.find(b"\n--", max(begin, end - len(bn) + 1), end)
+            while at != -1:
+                if body[at:end] == bn[: end - at]:
+                    bound = at
+                    break
+                at = body.find(b"\n--", at + 1, end)
+            if bound == -1 and end - begin >= 2 and body[end - 2 : end] == b"\n-":
+                bound = end - 2
+            elif bound == -1 and end > begin and body[end - 1] == 0x0A:
+                bound = end - 1
+        n = min((end if bound == -1 else bound) - begin, _FILLUNIT - 1)
+        chunk = body[begin : begin + n]
+        if bound != -1 and chunk.endswith(b"\r"):
+            chunk = chunk[:-1]
+            n -= 1
+        self.begin += n
+        self.held -= n
+        return chunk
+
+    def read_body(self) -> bytes:
+        """`multipart_buffer_read_body`: :meth:`read` until it reads nothing."""
+        chunks = []
+        while chunk := self.read():
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+
+def _getword(text: bytes, stop: int, start: int = 0) -> tuple[bytes, int]:
+    """`php_ap_getword`: the text from ``start`` up to the first ``stop`` byte outside quotes, and
+    the offset past the run of ``stop`` bytes there. A `"` or `'` opens a quote its own kind
+    closes, a `\\` before that quote excepted."""
+    pos = start
+    while pos < len(text) and text[pos] != stop:
+        quote = text[pos]
+        if quote in (0x22, 0x27):
+            pos += 1
+            while pos < len(text) and text[pos] != quote:
+                pos += (
+                    2 if text[pos] == 0x5C and pos + 1 < len(text) and text[pos + 1] == quote else 1
+                )
+            if pos < len(text):
+                pos += 1
+        else:
+            pos += 1
+    if pos >= len(text):
+        return text[start:], len(text)
+    word = text[start:pos]
+    while pos < len(text) and text[pos] == stop:
+        pos += 1
+    return word, pos
+
+
+def _getword_conf(text: bytes) -> bytes:
+    """`php_ap_getword_conf`: a parameter's value past the spaces in front of it. Unquoted, it runs
+    to a space or the end; quoted (the quotes :func:`_getword` knows), to the closing quote, but a
+    closing quote that is not the last byte or followed by a CR or LF is read as part of the value
+    and the search goes on (`"a"foo` is `a"foo`)."""
+    i = 0
+    while i < len(text) and text[i] in _C_SPACE:
+        i += 1
+    if i == len(text):
+        return b""
+    quote = text[i]
+    if quote not in (0x22, 0x27):
+        end = i
+        while end < len(text) and text[end] not in _C_SPACE:
+            end += 1
+        return _substring_conf(text[i:end], 0)
+    end = i + 1
+    while True:
+        while end < len(text) and text[end] != quote:
+            end += 2 if text[end] == 0x5C and end + 1 < len(text) and text[end + 1] == quote else 1
+        if end + 1 < len(text) and text[end + 1] not in (0x0D, 0x0A):
+            end += 1
+            continue
+        return _substring_conf(text[i + 1 : end], quote)
+
+
+def _substring_conf(text: bytes, quote: int) -> bytes:
+    """`substring_conf`: ``text`` with `\\\\` read as `\\` and, inside quotes, `\\` and the quote as
+    the quote."""
+    out = bytearray()
+    i = 0
+    while i < len(text):
+        following = text[i + 1] if i + 1 < len(text) else 0
+        if text[i] == 0x5C and (following == 0x5C or (quote and following == quote)):
+            out.append(following)
+            i += 2
+        else:
+            out.append(text[i])
+            i += 1
+    return bytes(out)
+
+
+def _normalize_protected(name: bytes) -> bytes:
+    """`normalize_protected_variable`: a name as the set of protected names holds it, mangled up
+    to its first `[` as :func:`_registered_name` mangles one, each index less the spaces, tabs
+    and line breaks in front of it, and nothing after the last `]` that no `[` follows."""
+    head, bracket, rest = name.lstrip(b" ").partition(b"[")
+    out = bytearray(head.replace(b" ", b"_").replace(b".", b"_"))
+    at = 0
+    while bracket:
+        while at < len(rest) and rest[at] in b" \r\n\t":
+            at += 1
+        close = rest.find(b"]", at)
+        if close == -1:
+            out += b"[" + rest[at:]
+            break
+        out += b"[" + rest[at : close + 1]
+        bracket = rest[close + 1 : close + 2] == b"["
+        at = close + 2
+    return bytes(out)
+
+
+def _skips_upload(name: bytes) -> bool:
+    """Whether the name of a file's part fails HHVM's bracket rule, which skips the upload: a `]`
+    that closes none opened, or one followed by a byte other than `[`."""
+    depth = 0
+    for i, byte in enumerate(name):
+        if byte == 0x5B:
+            depth += 1
+        elif byte == 0x5D:
+            depth -= 1
+            if i + 1 < len(name) and name[i + 1] != 0x5B:
+                return True
+        if depth < 0:
+            return True
+    return False
+
+
+def _multipart_parts(content_type: str, body: bytes) -> list[tuple[bytes, bytes | None]] | None:
+    """The (name, value) of each part of a multipart body as real reads them, the value None for a
+    file's part, or None for a Content-Type :func:`_rfc1867_boundary` reads no boundary off.
+
+    Real's reading is HHVM's `rfc1867PostHandler` (`hphp/runtime/server/upload.cpp`, with
+    `IsRfc1867` in `hphp/runtime/server/http-protocol.cpp`), the same at tags `HHVM-3.30.12` and
+    `HHVM-4.172.3`, read off its answers: Slack does not say. The functions above port that
+    code's and :class:`_Rfc1867Buffer` its buffer, so what they do is theirs; in short, a part's
+    headers run from a line that is `--` and the boundary exactly to the first empty line, the
+    first `Content-Disposition` names the part by its last `name` and makes it a file's by a
+    `filename`, each parameter's name read in any case, a part with no `Content-Disposition` is
+    no part, one with neither parameter ends the reading, one with a `filename` alone is a file's,
+    and a value runs from the line after the headers to the cut :meth:`_Rfc1867Buffer.read_body`
+    makes. A file's part past the twentieth, or one whose name fails :func:`_skips_upload`, is
+    passed over with its body unread, so the next delimiter is found line by line; one with an
+    empty `filename` is taken with its body unread too. A file's name, as
+    :func:`_normalize_protected` spells it, and its `tmp_name` key (:func:`_tmp_name_key`) are
+    protected: a later value under a protected name registers nothing. A value's name is looked
+    up, and registered, as :func:`_normalize_protected` spells it, which HHVM does to the name in
+    place for the lookup: `a[ b` is `a_b` here, and `invalid_arg_name` in a urlencoded form.
+    Measured against slack.com/api on 2026-10-20: each multipart `POST` to `api.test` captured is
+    answered as this reads it."""
+    boundary = _rfc1867_boundary(content_type)
+    if boundary is None:
+        return None
+    buffer = _Rfc1867Buffer(body, boundary)
+    parts: list[tuple[bytes, bytes | None]] = []
+    protected: set[bytes] = set()
+    anonymous = uploads = 0
+    while not buffer.eof():
+        headers = buffer.headers()
+        if headers is None:
+            break
+        disposition = next((v for k, v in headers if k.lower() == b"content-disposition"), None)
+        if disposition is None:
+            continue
+        name = filename = None
+        at = len(disposition) - len(disposition.lstrip(_C_SPACE))
+        while at < len(disposition):
+            pair, at = _getword(disposition, 0x3B, at)
+            while at < len(disposition) and disposition[at] in _C_SPACE:
+                at += 1
+            if b"=" in pair:
+                key, eq = _getword(pair, 0x3D)
+                if key.lower() == b"name":
+                    name = _getword_conf(pair[eq:])
+                elif key.lower() == b"filename":
+                    filename = _getword_conf(pair[eq:])
+        if filename is None and name is not None:
+            value = buffer.read_body()
+            name = _normalize_protected(name)
+            if name not in protected:
+                parts.append((name, value))
+            continue
+        if name is None and filename is None:
+            break
+        if name is None:
+            name = b"%d" % anonymous
+            anonymous += 1
+        if uploads >= _MAX_FILE_UPLOADS or _skips_upload(name):
+            continue
+        uploads += 1
+        if filename:
+            buffer.read_body()
+        protected.add(_normalize_protected(name))
+        protected.add(_normalize_protected(_tmp_name_key(name)))
+        parts.append((name, None))
+    return parts
+
+
+def _tmp_name_key(name: bytes) -> bytes:
+    """The `$_FILES` key HHVM protects beside a file's name: `name[tmp_name]`, or for a name that
+    holds a `[` and ends in `]`, `head[tmp_name][index]` with `index` what lies between its first
+    `[` and its last `]`."""
+    first = name.find(b"[")
+    if first != -1 and name.endswith(b"]"):
+        return name[:first] + b"[tmp_name][" + name[first + 1 : -1] + b"]"
+    return name + b"[tmp_name]"
+
+
+def _registered_name(name: bytes) -> tuple[str, bool] | None:
+    """The argument name real reads for a decoded one, and whether its value is an array, or None
+    for a name that registers nothing: it ends at a NUL, leading spaces are dropped, and a space or
+    `.` is `_`. A `[` closed by a `]` later on starts an array index; a `[` that is not ends in `_`
+    and the rest is kept as sent (`a[b.c` is `a_b.c`). A name that is empty before its `[` (`[a]`,
+    ` `, `=x`) registers nothing."""
+    text = name.split(b"\0", 1)[0].lstrip(b" ").decode("latin-1")
+    bracket = text.find("[")
+    base = (text if bracket == -1 else text[:bracket]).replace(" ", "_").replace(".", "_")
+    if not base:
+        return None
+    if bracket == -1:
+        return base, False
+    if text.find("]", bracket + 1) != -1:
+        return base, True
+    return base + "_" + text[bracket + 1 :], False
+
+
+_ARRAY = object()
+
+
+def _register(pairs: list[tuple[bytes, bytes | None]]) -> tuple[dict | None, str | None]:
+    """The arguments ``pairs`` register, the last value of a name read, or None for none at all, and
+    the error real refuses them with: `invalid_arg_name` for any name :data:`_ARG_NAME` does not
+    take, ahead of `invalid_array_arg` for any whose last value is an array, wherever each comes
+    in the body. A file's part registers without being an argument, and an integer name
+    (:data:`_INT_NAME`, within 64 bits) is no argument either. A file's name is not checked:
+    `name="a{"` and `name="a[b]"` with a `filename` are served."""
+    args: dict = {}
+    registered = False
+    for raw_name, raw_value in pairs:
+        reg = _registered_name(raw_name)
+        if reg is None:
+            continue
+        registered = True
+        name, is_array = reg
+        if raw_value is None:
+            continue
+        if is_array:
+            args[name] = _ARRAY
+            continue
+        try:
+            args[name] = raw_value.decode("utf-8")
+        except UnicodeDecodeError:
+            args[name] = Undecodable()
+    if not registered:
+        return None, None
+    if any(not _ARG_NAME.fullmatch(name) for name in args):
+        return {}, "invalid_arg_name"
+    if any(value is _ARRAY for value in args.values()):
+        return {}, "invalid_array_arg"
+    return {
+        name: value
+        for name, value in args.items()
+        if not (_INT_NAME.fullmatch(name) and -(2**63) <= int(name) < 2**63)
+    }, None
 
 
 def attach_warning(payload: dict, warning: str) -> dict:
@@ -297,6 +777,9 @@ def attach_warning(payload: dict, warning: str) -> dict:
 # has no such check, `sort=bogus` is served.
 _SORT_DIRS = {"asc", "desc"}
 _SORT_DIR_LINE = "[ERROR] must be a valid enum value [json-pointer:/sort_dir]"
+# A search's `query` made of these characters alone is `no_query` on all three search methods,
+# where one of `\x0c` or U+00A0 alone is searched for (slack.com/api, 2026-10-20).
+_QUERY_BLANKS = " \t\n\r\0\x0b"
 
 
 def _channel_core(request: Request, conn, name: str, caller: Caller) -> dict:
@@ -481,18 +964,33 @@ def _user_obj(conn, email: str, caller: Caller) -> dict:
 
 @router.api_route("/api.test", methods=["GET", "POST"], response_model=SlackApiTest)
 async def api_test(request: Request):
-    """Real Slack's connectivity check — no auth required, echoes back any params other than
-    `error` (which flips the response to an error envelope carrying that value). Several real
-    clients call this at construction/connect time (e.g. llama-index's `SlackReader.__init__`),
-    so Backlot must answer it rather than 404 — a 404 there breaks reader construction entirely,
-    before the caller ever gets a chance to point it at Backlot."""
-    error = _param(request, "error")
-    if error:
-        return _err(error)
-    args = dict(request.query_params)
+    """Real Slack's connectivity check: served with no credential at all, and an echo of the
+    arguments it was sent, as `args`. Several real clients call it at construction/connect time
+    (e.g. llama-index's `SlackReader.__init__`), so Backlot must answer it rather than 404.
+
+    A credential sent is read as on every other method (``_caller_or_error``) and refused ahead of
+    an `error` argument when it does not resolve, and so is a `token` query parameter
+    ``auth.slack_query_token_refused`` refuses, one that resolves included; with none, the request
+    is served. The query's arguments come first in `args`, then the body's, and the token read is
+    `token`: in the place of the body's `token` field, an empty one included, and last when it came
+    in the bearer header alone. A non-empty `error` answers `ok: false` with that error, `null` for
+    a body's that is not UTF-8, and `args` beside it. Measured against slack.com/api on 2026-10-13
+    and 2026-10-20."""
+    if auth.slack_query_token_refused(request) or auth.slack_token(request) is not None:
+        _, refusal = _caller_or_error(request)
+        if refusal is not None:
+            return refusal
+    args: dict[str, str | None] = dict(request.query_params)
     form = getattr(request.state, "_form", None)
     if form:
-        args.update(form)
+        args.update({k: None if isinstance(v, Undecodable) else v for k, v in form.items()})
+    token = auth.slack_token(request)
+    if token is not None:
+        args["token"] = token
+    error = _param(request, "error")
+    if error:
+        error = None if isinstance(error, Undecodable) else error
+        return JSONResponse({"ok": False, "error": error, "args": args})
     return {"ok": True, "args": args}
 
 
@@ -971,9 +1469,10 @@ def _messages_block(request: Request, *, empty_sort_dir_ok: bool):
     if err is not None:
         return err, None
     query = _param(request, "query") or ""
-    # A query that arrived with nothing in it has its own error, measured live on all three search
-    # methods: blank or whitespace-only is `no_query`, where absent is `invalid_arguments` above.
-    if not query.strip():
+    if isinstance(query, Undecodable):
+        return _err("internal_error"), None
+    # Absent is `invalid_arguments` above, and blank is `no_query` (`_QUERY_BLANKS`).
+    if not query.strip(_QUERY_BLANKS):
         return _err("no_query"), None
     terms, container, phrase = _parse_slack_query(query)
     ids = auth.visible_ids(request, caller)  # results are scoped to the caller's ACL
@@ -1050,7 +1549,9 @@ async def search_files(request: Request):
     if err is not None:
         return err
     query = _param(request, "query") or ""
-    if not query.strip():
+    if isinstance(query, Undecodable):
+        return _err("internal_error")
+    if not query.strip(_QUERY_BLANKS):
         return _err("no_query")
     count = counts["count"]
     empty = {
@@ -1384,11 +1885,14 @@ def _channel_name(conn, channel_id: str) -> str | None:
 
 
 def _param(request: Request, key: str) -> str | None:
-    v = request.query_params.get(key)
-    if v is not None:
-        return v
+    """An argument's value: the body's (``read_post_body``), else the query string's. Real reads the
+    body's when both send one (slack.com/api, 2026-10-20): on `api.test`, on `limit` on
+    `conversations.list`, `users.list` and `conversations.history`, on `count` on `search.messages`
+    and on `types` on `conversations.list`."""
     form = getattr(request.state, "_form", None)
-    return form.get(key) if form else None
+    if form and key in form:
+        return form[key]
+    return request.query_params.get(key)
 
 
 # How real reads the numbers a paged method takes, measured against slack.com/api from 2026-10-10
@@ -1406,24 +1910,39 @@ _SLACK_NUMBER = re.compile(r"-?(?:[0-9]+(?:[.][0-9]+)?|[.][0-9]+)(?:[eE]-?[0-9]+
 
 def _slack_number(key: str, raw: str) -> int | None:
     """The value of one numeric argument by the rule on `_SLACK_INTEGER`, or None where real
-    refuses it. A `limit` is its integer part (`1.5` is 1, `3.99999` is 3, `-1.5` is -1), and one
-    too large for a float (`1e400`) is zero, which `_limit` serves as no `limit`, as real served
-    every item. An integer part at or past 2**63 wraps around 2**64, so `9223372036854775808` and
-    `1e19` are negative and `1e300` is zero, and one below -2**63 stays negative: the reading that
-    every row of the measurement on `_limit` agrees with."""
+    refuses it. A `limit` is its integer part (`1.5` is 1, `3.99999` is 3, `-1.5` is -1). One too
+    large for a float is zero when it is positive (`1e400`), which `_limit` serves as no `limit`, as
+    real served every item, and -2**63 when it is negative, which each method serves as it serves
+    `-2`. An integer part at or past 2**63 wraps around 2**64, so `9223372036854775808`
+    and `1e19` are negative and `1e300` is zero, and one below -2**63 stays negative: the reading
+    that every row of the measurement on `_limit` agrees with."""
     if key == "limit":
         if not _SLACK_NUMBER.fullmatch(raw):
             return None
-        if _SLACK_INTEGER.fullmatch(raw) and -(2**63) <= int(raw) < 2**63:
-            return int(raw)
+        if _SLACK_INTEGER.fullmatch(raw) and (n := _within_64_bits(raw)) is not None:
+            return n
         x = float(raw)
-        if not math.isfinite(x):
-            return 0
+        if math.isinf(x):
+            return 0 if x > 0 else -(2**63)
         n = int(x)
         return (n + 2**63) % 2**64 - 2**63 if n >= 2**63 else n
     if not _SLACK_INTEGER.fullmatch(raw):
         return None
-    n = int(raw)
+    return _within_64_bits(raw)
+
+
+def _within_64_bits(raw: str) -> int | None:
+    """``raw``, which `_SLACK_INTEGER` matches, as an int within the signed 64-bit range, or None.
+    Its digits, its zeros in front dropped, are counted before `int` sees them, which raises past
+    4300 of them; real refuses a `count` of 4301 nines as one past 2**63 and serves such a `limit`
+    as one too large for a float, on each of the seven methods that read one, by `GET`, and on
+    `conversations.list` and `search.messages` by a form `POST` (slack.com/api, 2026-10-20). Those
+    nines after a `-` are a `limit` served as a negative one too large for a float, on the four
+    methods `_limit` names (2026-10-21)."""
+    digits = raw.lstrip("-").lstrip("0") or "0"
+    if len(digits) > 19:
+        return None
+    n = -int(digits) if raw.startswith("-") else int(digits)
     return n if -(2**63) <= n < 2**63 else None
 
 
@@ -1469,8 +1988,8 @@ def _limit(request: Request) -> tuple[int, JSONResponse | None]:
     answers, every item and an empty `next_cursor`, on collections of 8 to 21.
 
     A negative `limit` is returned as it is, for each method to serve as real does (measured
-    2026-10-12, one workspace of 21 members and 8 public channels, `-1` to `-1e19`):
-    `conversations.list` and `conversations.members` serve every item, as for no `limit`;
+    2026-10-12, one workspace of 21 members and 8 public channels, `-1` to `-1e19`, and 2026-10-21,
+    `-1e400`): `conversations.list` and `conversations.members` serve every item, as for no `limit`;
     `conversations.history` serves one message; `users.list` serves no members and a cursor for
     `-1`, and answers `fatal_error` for anything lower. On `users.list`, measured 2026-10-16 on the
     same workspace, the cursor `-1` serves goes on from the second member, as the one `limit=1`

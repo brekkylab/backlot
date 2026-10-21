@@ -1,6 +1,7 @@
 """The subset of an OData ``$filter`` Microsoft Graph's Teams and directory methods were measured
-to evaluate: comparisons (``eq ne gt ge lt le``), ``startswith``/``endswith``/``contains``,
-``and``/``or``/``not`` and parentheses, over string, boolean, null and number literals.
+to evaluate: comparisons (``eq ne gt ge lt le``), ``in``, ``startswith``/``endswith``/``contains``,
+``and``/``or``/``not`` and parentheses, over string, boolean, null and number literals. Property
+names and enum members are matched without regard to case, as Graph matches them.
 
 The parser knows nothing about any vendor. A refusal is a :class:`FilterError` naming what was
 wrong, and the router that asked turns it into its own vendor's words.
@@ -35,8 +36,8 @@ _LITERALS = {"true": True, "false": False, "null": None}
 class FilterError(ValueError):
     """``kind`` is ``expected`` (an operand is missing at ``position``), ``syntax`` (something else
     is wrong at ``position``), ``property`` (``name`` is not a property of the type), ``function``
-    (``name`` is a function this caller refuses) or ``enum`` (``name`` is not a member of the
-    property's enum)."""
+    or ``operator`` (``name`` is one this caller refuses) or ``enum`` (``name`` is not a member of
+    the property's enum)."""
 
     def __init__(self, kind: str, *, position: int = 0, name: str = ""):
         super().__init__(f"{kind} {name or position}")
@@ -67,6 +68,7 @@ def _tokens(expr: str) -> list[_Token]:
 
 
 Predicate = Callable[[Mapping[str, Any]], bool]
+_Operand = tuple[Callable[[Mapping[str, Any]], Any], str | None]
 
 
 class _Parser:
@@ -82,9 +84,9 @@ class _Parser:
         self.expr = expr
         self.tokens = _tokens(expr)
         self.i = 0
-        self.properties = set(properties)
+        self.properties = {p.casefold(): p for p in properties}
         self.fold = fold_case
-        self.enums = {k: set(v) for k, v in enums.items()}
+        self.enums = {k: {m.casefold(): m for m in v} for k, v in enums.items()}
         self.refuse = set(refuse)
 
     def _peek(self) -> _Token | None:
@@ -127,6 +129,8 @@ class _Parser:
     def _unary(self) -> Predicate:
         token = self._peek()
         if token is not None and token.text == "not":
+            if "not" in self.refuse:
+                raise FilterError("operator", name="not")
             self.i += 1
             inner = self._unary()
             return lambda e: not inner(e)
@@ -141,48 +145,53 @@ class _Parser:
                 raise FilterError("function", name=name)
             self.i += 1
             self._expect("(")
-            left = self._operand()
+            left, prop = self._operand()
             self._expect(",")
-            right = self._operand()
+            right, _ = self._operand(enum_of=prop)
             self._expect(")")
             fn = _FUNCTIONS[name]
             return lambda e: fn(self._fold(left(e)), self._fold(right(e)))
-        left_token = self._peek()
-        left = self._operand()
+        left, prop = self._operand()
         op = self._take()
+        if op.text == "in":
+            self._expect("(")
+            values = [self._operand(enum_of=prop)[0]]
+            while (t := self._peek()) is not None and t.text == ",":
+                self.i += 1
+                values.append(self._operand(enum_of=prop)[0])
+            self._expect(")")
+            return lambda e: self._fold(left(e)) in {self._fold(v(e)) for v in values}
         if op.text not in _COMPARE:
             raise FilterError("syntax", position=op.position)
-        right_token = self._peek()
-        right = self._operand()
-        self._check_enum(left_token, right_token)
-        self._check_enum(right_token, left_token)
+        if op.text in self.refuse:
+            raise FilterError("operator", name=op.text)
+        right, _ = self._operand(enum_of=prop)
         compare = _COMPARE[op.text]
         return lambda e: compare(self._fold(left(e)), self._fold(right(e)))
 
-    def _check_enum(self, prop: _Token | None, value: _Token | None) -> None:
-        if prop is None or value is None or prop.kind != "word" or value.kind != "string":
-            return
-        members = self.enums.get(prop.text)
-        literal = value.text[1:-1].replace("''", "'")
-        if members is not None and literal not in members:
-            raise FilterError("enum", name=literal)
-
-    def _operand(self) -> Callable[[Mapping[str, Any]], Any]:
+    def _operand(self, enum_of: str | None = None) -> _Operand:
+        """One side of a comparison, and the declared property it names (or None). A string literal
+        compared against an enum property is read as that enum's member, in the declared case."""
         token = self._take()
         if token.kind == "string":
             value = token.text[1:-1].replace("''", "'")
-            return lambda e: value
+            if enum_of is not None and enum_of in self.enums:
+                member = self.enums[enum_of].get(value.casefold())
+                if member is None:
+                    raise FilterError("enum", name=value)
+                value = member
+            return (lambda e: value), None
         if token.kind == "number":
             number = float(token.text) if "." in token.text else int(token.text)
-            return lambda e: number
+            return (lambda e: number), None
         if token.kind == "word":
             if token.text in _LITERALS:
                 literal = _LITERALS[token.text]
-                return lambda e: literal
-            if token.text not in self.properties:
+                return (lambda e: literal), None
+            name = self.properties.get(token.text.casefold())
+            if name is None:
                 raise FilterError("property", name=token.text)
-            name = token.text
-            return lambda e: e.get(name)
+            return (lambda e: e.get(name)), name
         raise FilterError("syntax", position=token.position)
 
     def _fold(self, value: Any) -> Any:
@@ -201,6 +210,7 @@ def compile_filter(
 
     ``properties`` are the names the type declares (one the response does not carry compares as
     null); ``fold_case`` compares strings case-insensitively; ``enums`` names the properties whose
-    string literal must be a member; ``refuse`` names functions this caller does not evaluate.
+    string literal must be a member; ``refuse`` names functions (``contains``…) and operators
+    (``ne``, ``not``) this caller does not evaluate.
     """
     return _Parser(expr, properties, fold_case=fold_case, enums=enums or {}, refuse=refuse).parse()

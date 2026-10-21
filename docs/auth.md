@@ -210,9 +210,9 @@ curl -s "localhost:8000/msgraph/v1.0/me/joinedTeams" \
   -H "Authorization: Bearer usr-29b84da5703116c2a832"
 ```
 
-Backlot reads the token after any scheme, or a bare token, as Graph does: Graph checks no scheme
-before it reads the token. Measured against graph.microsoft.com on **October 20, 2026**, every
-refusal is a 401 with `error.code` `InvalidAuthenticationToken`, the same
+Graph reads the token after `Bearer` in any case, or with no scheme at all, with any run of spaces
+or tabs between; Backlot reads it the same way. Measured against graph.microsoft.com in October
+2026, every refusal is a 401 with `error.code` `InvalidAuthenticationToken`, the same
 `WWW-Authenticate: Bearer realm="", authorization_uri="https://login.microsoftonline.com/common/oauth2/authorize", client_id="00000003-0000-0000-c000-000000000000"`
 header, and an `innerError` of `date`, `request-id` and `client-request-id`:
 
@@ -221,12 +221,13 @@ header, and an `innerError` of `date`, `request-id` and `client-request-id`:
 | No `Authorization` header | `Access token is empty.` |
 | `Authorization: Bearer` with nothing after it | `UnableToParseTokens` |
 | A JWT (three base64url segments) that names no application | `NoAppIdInToken` |
-| Anything else that resolves to nobody | `Protocol 'Bearer' failed to validate because The token could not be read.` |
+| A token that resolves to nobody, or any token under another scheme (`token …`, `Basic …`) or with a word after it | `Protocol 'Bearer' failed to validate because The token could not be read.` |
 
-The last row holds for `nope`, `Bearer nope`, `bearer nope`, `BEARER nope`, `token nope` and
-`Basic bm9wZTpub3Bl` alike. The credential is read before the path and the method: an unknown path,
-or `POST`/`DELETE` on `/me`, with no valid token is the same 401. `error.code` is the stable
-contract; human-readable messages can change.
+A valid token under `token` or `Basic` is that last refusal too: only `Bearer` is read. Two
+`Authorization` headers are a `400` HTML page from the front Graph sits behind, before either is
+read. The credential is read before the path and the method: an unknown path, or `POST`/`DELETE`
+on `/me`, with no valid token is the same 401. `error.code` is the stable contract; human-readable
+messages can change.
 
 ### Notion — `Bearer`
 

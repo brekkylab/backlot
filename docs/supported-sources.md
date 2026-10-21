@@ -23,7 +23,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
-| `msteams` | Microsoft Teams | `/msgraph/v1.0` | 11 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
+| `msteams` | Microsoft Teams | `/msgraph/v1.0` | 12 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
 | `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
 | `s3` | Amazon S3 | `/s3` | 5 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
 | `slack` | Slack | `/slack/api` | 12 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
@@ -580,9 +580,10 @@ October 2026, with app-only and delegated tokens, on a tenant with a private cha
 | Endpoint | Notes |
 |---|---|
 | `me` | `$select` |
-| `me/joinedTeams` | The one team this corpus models |
-| `users` | `$top` (1–999, default 100), `$skiptoken`, `$select`, `$filter`; `@odata.count` only with `$count=true` and `ConsistencyLevel: eventual` |
+| `me/joinedTeams` | The one team this corpus models. `$select` |
+| `users` | `$top` (1–999, default 100), `$skiptoken`, `$select`, `$filter`, `$search`, `$orderby`; `@odata.count` only with `$count=true` and `ConsistencyLevel: eventual` |
 | `users/{id}` | Object id *or* userPrincipalName |
+| `users/{id}/joinedTeams` | The same answer as `me/joinedTeams` |
 | `teams/{team-id}/channels` | Every visible channel in one response: no paging. `$select`, `$filter` |
 | `teams/{team-id}/channels/{channel-id}` | `$select`; the method that reports `layoutType` and `summary` |
 | `teams/{team-id}/channels/{channel-id}/messages` | Root messages, newest reply chain first. `$top` (1–50, default 20), `$select`, `$expand=replies` |
@@ -592,13 +593,29 @@ October 2026, with app-only and delegated tokens, on a tenant with a private cha
 | `teams/{team-id}/channels/{channel-id}/members` | `aadUserConversationMember` objects, all of them: `$top` is ignored. `$select`, `$filter` |
 
 `@odata.count` is the number of items on the page. A credential that does not resolve is the 401
-before anything else, on any path and any method, as it is live. Query
-options Graph refuses are refused with its words: `$top` past a method's limit, a `$skiptoken`
-that does not decode (a `502` on replies, as live), `$filter`/`$orderby` on messages, `$orderby`/
-`$expand`/`$top` on channels, and a `$select`/`$expand`/`$filter` property the type does not
-declare. `$filter` supports `eq`, `ne`, `gt`/`ge`/`lt`/`le`, `startswith`, `endswith`,
-`contains` (not on `/users`), `and`, `or` and `not`; the directory compares strings without regard
-to case, channels with it.
+before anything else, on any path and any method, as it is live. Every answer carries `request-id`
+and `client-request-id` headers, the ids its `innerError` names, and a 200 is served as
+`application/json;odata.metadata=minimal;…` under `OData-Version: 4.0`.
+
+Query option names match in any case; the Teams routes read them with or without the `$`, the
+directory's (`/me`, `/users`) refuse one without it, and every route refuses one given twice. A
+`$select` without the `$` projects the same but leaves the list out of `@odata.context`. Property
+names and enum members in `$select` and `$filter` match in any case and are answered in the
+declared spelling. `$top` is ASCII digits with an optional sign and surrounding blanks. Options
+Graph refuses are refused with its words: `$top` past a method's limit, a `$skiptoken` that does
+not decode (a `502` on replies, as live), `$filter`/`$orderby`/`$count` on messages, `$top`/
+`$orderby`/`$expand`/`$count` on channels, `$top`/`$skiptoken`/`$count`/`$orderby`/`$expand` on
+`joinedTeams`, `$filter` on `/me` and `/users/{id}`, and a property the type does not declare.
+`$filter` supports `eq`, `ne`, `gt`/`ge`/`lt`/`le`, `in`, `startswith`, `endswith`, `contains`,
+`and`, `or` and `not`; the directory compares strings without regard to case, channels with it.
+On `/users`, `contains` is refused; `endswith`, `not` and `$search` (`"property:term"` clauses,
+matching words that start with the term, joined by `AND`/`OR`) need `ConsistencyLevel: eventual`,
+and `ne` needs `$count=true` beside it as well. `$orderby` takes `displayName` and
+`userPrincipalName`, and is refused beside a `$filter` outside an advanced query.
+
+A path is read as Graph reads it: resource names in any case, an id as an OData key segment
+(`teams('{id}')`), a GUID in either case, and one trailing slash. An id that is not one is a `400`
+(`teamId needs to be a valid GUID.`, `channelId is not valid.`).
 
 A private channel the caller is not in is left out of the listing, and every method that names it
 by id answers `403 Forbidden` — the status Graph gives, which does tell the caller the id exists.
@@ -613,11 +630,13 @@ moves; a reply does not move its root's, but it does move the root up the listin
 is served as `messageType: unknownFutureValue` unless the request sends
 `Prefer: include-unknown-enum-members`.
 
-**Not modelled:** owners (every member's `roles` is empty, and `summary.ownersCount` 0), deleted
-messages (live keeps them in the listing with `deletedDateTime` set), a system event's typed
-`eventDetail`, the `post` channel layout, chats, writes, and real tenant authorization. Imported
-reply times must advance by a whole second, and at most 1,000 ids fit one channel-second, both
-because an id is a creation millisecond; an edit must not precede its message.
+**Not modelled:** the order of an advanced directory query's results (live, an index order of its
+own; here, userPrincipalName order), owners (every member's `roles` is empty, and
+`summary.ownersCount` 0), deleted messages (live keeps them in the listing with `deletedDateTime`
+set), a system event's typed `eventDetail`, the `post` channel layout, chats, writes, and real
+tenant authorization. Imported reply times must advance by a whole second, and at most 1,000 ids fit
+one channel-second, both because an id is a creation millisecond; an edit must not precede its
+message.
 
 ### Notion — `/notion/v1`
 

@@ -77,6 +77,57 @@ def test_every_way_a_credential_fails_answers_the_message_live_graph_answers(
 
 
 @pytest.mark.parametrize(
+    "header,served",
+    [
+        ("Bearer {T}", True),
+        ("bearer {T}", True),
+        ("BEARER {T}", True),
+        ("{T}", True),
+        ("Bearer  {T}", True),
+        ("Bearer\t{T}", True),
+        # A token that resolves is still read only after `Bearer` or with no scheme at all.
+        ("token {T}", False),
+        ("Basic {T}", False),
+        ("Bearer {T} extra", False),
+    ],
+)
+def test_a_token_that_resolves_is_read_only_where_graph_reads_one(
+    client, tokens_yaml, header, served
+):
+    token = tok(tokens_yaml, "bob@acme.com")
+    r = client.get(f"{V1}/me", headers={"Authorization": header.replace("{T}", token)})
+    if served:
+        assert r.status_code == 200, r.text
+    else:
+        assert _error(r, 401)["message"] == _UNREADABLE
+
+
+def test_two_authorization_headers_are_refused_before_either_is_read(client, tokens_yaml):
+    token = tok(tokens_yaml, "bob@acme.com")
+    for pair in ((f"Bearer {token}", "Bearer nope"), ("Bearer nope", f"Bearer {token}")):
+        r = client.get(f"{V1}/me", headers=[("Authorization", v) for v in pair])
+        assert r.status_code == 400
+        assert r.headers["content-type"] == "text/html; charset=us-ascii"
+        assert "<h2>Bad Request - Invalid Header</h2>" in r.text
+
+
+def test_every_answer_carries_its_request_id_and_a_200_is_odata(client, admin_h):
+    ok = client.get(f"{V1}/me", headers=admin_h)
+    assert ok.headers["content-type"] == (
+        "application/json;odata.metadata=minimal;odata.streaming=true;IEEE754Compatible=false;"
+        "charset=utf-8"
+    )
+    assert ok.headers["odata-version"] == "4.0"
+    refused = client.get(f"{V1}/users", headers=admin_h, params={"$top": "0"})
+    assert refused.headers["content-type"] == "application/json"
+    assert "odata-version" not in refused.headers
+    for r in (ok, refused):
+        assert r.headers["request-id"] == r.headers["client-request-id"]
+        uuid.UUID(r.headers["request-id"])
+    assert refused.json()["error"]["innerError"]["request-id"] == refused.headers["request-id"]
+
+
+@pytest.mark.parametrize(
     "method,path",
     [
         ("GET", "/nonexistentsegment"),
@@ -91,6 +142,12 @@ def test_the_credential_is_read_before_the_path_or_the_method(client, method, pa
         assert _error(r, 401)["code"] == "InvalidAuthenticationToken"
 
 
+_RESOURCE_MISSING = (
+    "Resource 'bogus' does not exist or one of its queried reference-property objects are not "
+    "present."
+)
+
+
 @pytest.mark.parametrize(
     "path,status,code,message",
     [
@@ -101,18 +158,78 @@ def test_the_credential_is_read_before_the_path_or_the_method(client, method, pa
             "Resource not found for the segment 'nonexistentsegment'.",
         ),
         (
-            "/teams/x/nonexistent",
+            "/teams/{team}/nonexistent",
             404,
             "NotFound",
             "Requested API is not supported. Please check the path.",
         ),
+        ("/me/bogus", 404, "Request_ResourceNotFound", _RESOURCE_MISSING),
+        ("/users/{user}/bogus", 404, "Request_ResourceNotFound", _RESOURCE_MISSING),
+        (
+            "/teams/{team}/channels/{channel}/bogus",
+            400,
+            "BadRequest",
+            "Resource not found for the segment 'bogus'.",
+        ),
+        ("/teams/abc/channels", 400, "BadRequest", "teamId needs to be a valid GUID."),
+        ("/teams/abc/channels/{channel}", 400, "BadRequest", "teamId needs to be a valid GUID."),
+        ("/teams/{team}/channels/abc", 400, "BadRequest", "channelId is not valid."),
+        ("/teams/{team}/channels/abc/messages", 400, "BadRequest", "UnknownError"),
+        ("/teams/{team}/channels/{channel}/messages/abc", 400, "BadRequest", "UnknownError"),
     ],
 )
 def test_a_path_nothing_serves_is_refused_once_the_credential_holds(
-    client, admin_h, path, status, code, message
+    client, admin_h, team_id, path, status, code, message
 ):
-    err = _error(client.get(f"{V1}{path}", headers=admin_h), status)
+    url = path.format(
+        team=team_id,
+        channel=_channels(client, admin_h, team_id)["Platform"],
+        user=synth.msteams_user_id("ava@acme.com"),
+    )
+    err = _error(client.get(f"{V1}{url}", headers=admin_h), status)
     assert (err["code"], err["message"]) == (code, message)
+
+
+@pytest.mark.parametrize(
+    "spelled,canonical",
+    [
+        ("/ME", "/me"),
+        ("/me/", "/me"),
+        ("/me/joinedteams", "/me/joinedTeams"),
+        ("/me/joinedTeams/", "/me/joinedTeams"),
+        ("/Teams/{team}/Channels", "/teams/{team}/channels"),
+        ("/teams('{team}')/channels", "/teams/{team}/channels"),
+        ("/teams/{TEAM}/channels", "/teams/{team}/channels"),
+        ("/users('{user}')", "/users/{user}"),
+        ("/users/{USER}", "/users/{user}"),
+        ("/users/{user}/", "/users/{user}"),
+        ("/teams/{team}/channels/{channel}/", "/teams/{team}/channels/{channel}"),
+        (
+            "/teams('{team}')/channels('{channel}')/messages",
+            "/teams/{team}/channels/{channel}/messages",
+        ),
+        ("/teams/{team}/channels/{channel}/MESSAGES/", "/teams/{team}/channels/{channel}/messages"),
+        ("/teams/{team}/channels/{channel}/members/", "/teams/{team}/channels/{channel}/members"),
+    ],
+)
+def test_a_path_is_read_in_every_spelling_graph_reads(client, admin_h, team_id, spelled, canonical):
+    """A resource name in any case, an id as an OData key segment or a GUID upper-cased, and one
+    trailing slash are each the same path live."""
+    user = synth.msteams_user_id("ava@acme.com")
+    ids = dict(
+        team=team_id,
+        TEAM=team_id.upper(),
+        channel=_channels(client, admin_h, team_id)["Platform"],
+        user=user,
+        USER=user.upper(),
+    )
+    got = client.get(f"{V1}{spelled.format(**ids)}", headers=admin_h)
+    want = client.get(f"{V1}{canonical.format(**ids)}", headers=admin_h)
+    assert got.status_code == want.status_code == 200, got.text
+    strip = {"@odata.context", "@odata.nextLink"}
+    assert {k: v for k, v in got.json().items() if k not in strip} == {
+        k: v for k, v in want.json().items() if k not in strip
+    }
 
 
 # --- identity, the directory and the team ----------------------------------------
@@ -178,50 +295,163 @@ def test_the_directory_filters_without_regard_to_case(client, admin_h):
         assert ava["id"] in {u["id"] for u in got["value"]}, expr
 
 
+_INVALID_TOP = (
+    "Invalid value '{}' for $top query option found. The $top query option requires a "
+    "non-negative integer value."
+)
+_PAGE_SIZE = "Invalid page size specified: '{}'. Must be between 1 and 999 inclusive."
+_ADVANCED = (
+    "is not supported because the 'ConsistencyLevel:eventual' header is missing. Refer to "
+    "https://aka.ms/graph-docs/advanced-queries for more information"
+)
+_EVENTUAL = {"ConsistencyLevel": "eventual"}
+
+
 @pytest.mark.parametrize(
-    "params,code,message",
+    "query,headers,code,message",
     [
+        ("$top=1000", {}, "Request_UnsupportedQuery", _PAGE_SIZE.format(1000)),
+        ("$top=0", {}, "Request_UnsupportedQuery", _PAGE_SIZE.format(0)),
+        ("$top=-0", {}, "Request_UnsupportedQuery", _PAGE_SIZE.format(0)),
+        ("$top=abc", {}, "BadRequest", _INVALID_TOP.format("abc")),
+        ("$top=-1", {}, "BadRequest", _INVALID_TOP.format("-1")),
+        ("$top=1.0", {}, "BadRequest", _INVALID_TOP.format("1.0")),
+        ("$top=%C2%B2", {}, "BadRequest", _INVALID_TOP.format("²")),
+        ("$top=%EF%BC%92", {}, "BadRequest", _INVALID_TOP.format("２")),
         (
-            {"$top": "1000"},
-            "Request_UnsupportedQuery",
-            "Invalid page size specified: '1000'. Must be between 1 and 999 inclusive.",
-        ),
-        (
-            {"$top": "0"},
-            "Request_UnsupportedQuery",
-            "Invalid page size specified: '0'. Must be between 1 and 999 inclusive.",
-        ),
-        (
-            {"$top": "abc"},
-            "BadRequest",
-            "Invalid value 'abc' for $top query option found. The "
-            "$top query option requires a non-negative integer value.",
-        ),
-        (
-            {"$skiptoken": "garbage"},
+            "$skiptoken=garbage",
+            {},
             "Request_UnsupportedQuery",
             "Unable to execute query; invalid page token specified.",
         ),
         (
-            {"$filter": "contains(displayName,'K')"},
+            "$filter=contains(displayName,'K')",
+            {},
             "Request_UnsupportedQuery",
             "Filter operator 'Contains' is not supported.",
         ),
         (
-            {"$filter": "foo eq 'x'"},
+            "$filter=foo eq 'x'",
+            {},
             "Request_UnsupportedQuery",
             "Property 'foo' does not exist as a declared property or extension property.",
         ),
         (
-            {"$filter": "displayName eq"},
+            "$filter=displayName eq",
+            {},
             "BadRequest",
             "Invalid filter clause: Expression expected at position 14 in 'displayName eq'.",
         ),
+        # The advanced operators want `ConsistencyLevel: eventual`, and `ne` `$count=true` too.
+        (
+            "$filter=displayName ne 'x'",
+            {},
+            "Request_UnsupportedQuery",
+            "Filter operator 'NotEqualsMatch' is not supported.",
+        ),
+        (
+            "$filter=displayName ne 'x'",
+            _EVENTUAL,
+            "Request_UnsupportedQuery",
+            "Filter operator 'NotEqualsMatch' is not supported.",
+        ),
+        (
+            "$filter=endswith(mail,'@acme.com')",
+            {},
+            "Request_UnsupportedQuery",
+            f"Operator 'endsWith' {_ADVANCED}",
+        ),
+        (
+            "$filter=not startswith(displayName,'A')",
+            {},
+            "Request_UnsupportedQuery",
+            f"Operator 'not' {_ADVANCED}",
+        ),
+        (
+            '$search="displayName:a"',
+            {},
+            "Request_UnsupportedQuery",
+            "Request with $search query parameter only works through MSGraph with a special request "
+            "header: 'ConsistencyLevel: eventual'",
+        ),
+        (
+            "$search=displayName:Ava",
+            _EVENTUAL,
+            "BadRequest",
+            "Syntax error: character ':' is not valid at position 11 in 'displayName:Ava'.",
+        ),
+        (
+            '$search="foo:a"',
+            _EVENTUAL,
+            "Request_UnsupportedQuery",
+            "Property 'foo' does not exist as a declared property or extension property.",
+        ),
+        (
+            "$orderby=mail",
+            {},
+            "Request_UnsupportedQuery",
+            "Unsupported sort property 'mail' for 'User'.",
+        ),
+        (
+            "$orderby=displayName&$filter=startswith(displayName,'A')",
+            {},
+            "Request_UnsupportedQuery",
+            "Sorting not supported for current query.",
+        ),
+        # Option names: the directory wants the `$`, and no option twice.
+        ("top=1", {}, "Request_BadRequest", "Unrecognized query argument specified: 'top'."),
+        (
+            "select=displayName",
+            {},
+            "Request_BadRequest",
+            "Unrecognized query argument specified: 'select'.",
+        ),
+        (
+            "$top=1&$top=2",
+            {},
+            "BadRequest",
+            "Query option '$top' was specified more than once, "
+            "but it must be specified at most once.",
+        ),
     ],
 )
-def test_the_directory_refuses_a_query_it_cannot_run(client, admin_h, params, code, message):
-    err = _error(client.get(f"{V1}/users", headers=admin_h, params=params), 400)
+def test_the_directory_refuses_a_query_it_cannot_run(
+    client, admin_h, query, headers, code, message
+):
+    err = _error(client.get(f"{V1}/users?{query}", headers={**admin_h, **headers}), 400)
     assert (err["code"], err["message"]) == (code, message)
+
+
+@pytest.mark.parametrize("top", ["%2B1", "%201", "1%20", "%091", "01", "$TOP=1"])
+def test_a_top_graph_reads_is_one_however_it_is_spelled(client, admin_h, team_id, top):
+    """ASCII digits with a sign, leading spaces or tabs and trailing spaces, and the option's name
+    in any case, on the directory and the message methods alike."""
+    query = top if top.startswith("$") else f"$top={top}"
+    users = client.get(f"{V1}/users?{query}", headers=admin_h).json()
+    assert len(users["value"]) == 1
+    assert query.split("=")[0] in users["@odata.nextLink"]
+    platform = f"{V1}/teams/{team_id}/channels/{_channels(client, admin_h, team_id)['Platform']}"
+    assert len(client.get(f"{platform}/messages?{query}", headers=admin_h).json()["value"]) == 1
+
+
+def test_the_directory_answers_an_advanced_query(client, admin_h):
+    h = {**admin_h, **_EVENTUAL}
+    everyone = client.get(f"{V1}/users", headers=admin_h).json()["value"]
+    ava = next(u for u in everyone if u["mail"] == "ava@acme.com")
+    others = client.get(
+        f"{V1}/users?$filter=displayName ne '{ava['displayName']}'&$count=true", headers=h
+    ).json()
+    assert others["@odata.count"] == len(everyone) - 1
+    assert ava["id"] not in {u["id"] for u in others["value"]}
+    first_word = ava["displayName"].split()[0][:2].lower()
+    found = client.get(f'{V1}/users?$search="displayName:{first_word}"', headers=h).json()
+    assert ava["id"] in {u["id"] for u in found["value"]}
+    both = client.get(
+        f'{V1}/users?$search="displayName:{first_word}" AND "mail:ava"', headers=h
+    ).json()
+    assert [u["id"] for u in both["value"]] == [ava["id"]]
+    ends = client.get(f"{V1}/users?$filter=endswith(mail,'@acme.com')", headers=h).json()
+    assert len(ends["value"]) == len(everyone)
 
 
 def test_a_user_resolves_by_object_id_and_by_principal_name(client, admin_h):
@@ -242,6 +472,33 @@ def test_joined_teams_is_the_one_team_the_corpus_models(client, admin_h):
     # Only id, displayName, description, isArchived and tenantId are populated; the rest are null.
     populated = {k for k, v in body["value"][0].items() if v is not None}
     assert populated == {"id", "displayName", "description", "isArchived", "tenantId"}
+    # The same answer for a user by id, which is how a client that cannot ask `/me` lists teams.
+    by_user = client.get(
+        f"{V1}/users/{synth.msteams_user_id('ava@acme.com')}/joinedTeams", headers=admin_h
+    ).json()
+    assert by_user == body
+    # `$select` projects it and `$filter` is ignored; the paging and shaping options are refused.
+    selected = client.get(f"{V1}/me/joinedTeams?$select=displayName", headers=admin_h).json()
+    assert selected["@odata.context"].endswith("#teams(displayName)")
+    assert [set(t) for t in selected["value"]] == [{"displayName"}]
+    ignored = client.get(f"{V1}/me/joinedTeams?$filter=displayName eq 'zzz'", headers=admin_h)
+    assert len(ignored.json()["value"]) == 1
+    for option in ("Top", "SkipToken", "Count", "OrderBy", "Expand"):
+        r = client.get(f"{V1}/me/joinedTeams?${option.lower()}=1", headers=admin_h)
+        assert _error(r, 400)["message"].startswith(
+            f"The query specified in the URI is not valid. Query option '{option}' is not allowed."
+        ), option
+
+
+@pytest.mark.parametrize("path", ["/me", "/users/{user}"])
+def test_a_single_person_refuses_a_filter_and_ignores_top(client, admin_h, path):
+    url = f"{V1}{path.format(user=synth.msteams_user_id('ava@acme.com'))}"
+    err = _error(client.get(f"{url}?$filter=displayName eq 'x'", headers=admin_h), 400)
+    assert (err["code"], err["message"]) == (
+        "Request_UnsupportedQuery",
+        "The specified filter against a single entity is invalid.",
+    )
+    assert client.get(f"{url}?$top=1", headers=admin_h).status_code == 200
 
 
 # --- channels --------------------------------------------------------------------
@@ -267,7 +524,10 @@ def test_listing_and_getting_a_channel_differ_where_graph_does(client, admin_h, 
     assert platform["layoutType"] is None
     assert platform["description"] is None and platform["email"] is None
     assert platform["webUrl"].startswith("https://teams.cloud.microsoft/l/channel/")
-    assert platform["webUrl"].endswith("&allowXTenantAccess=False&ngc=True")
+    # `ngc=True` is on a private channel's address only.
+    assert platform["webUrl"].endswith("&allowXTenantAccess=False")
+    private = next(c for c in listed["value"] if c["membershipType"] == "private")
+    assert private["webUrl"].endswith("&allowXTenantAccess=False&ngc=True")
 
     one = client.get(f"{V1}/teams/{team_id}/channels/{platform['id']}", headers=admin_h).json()
     assert one["@odata.context"].endswith(f"teams('{team_id}')/channels/$entity")
@@ -296,6 +556,10 @@ def test_listing_and_getting_a_channel_differ_where_graph_does(client, admin_h, 
         ("startswith(displayName,'Pl')", ["Platform"]),
         ("contains(displayName,'cid')", ["Incidents"]),
         ("displayName ne 'Platform' and membershipType eq 'standard'", ["Incidents"]),
+        # Property names and enum members match without regard to case.
+        ("MembershipType eq 'Private'", ["People Confidential"]),
+        ("startswith(DisplayName,'Pl')", ["Platform"]),
+        ("displayName in ('Platform','Incidents')", ["Incidents", "Platform"]),
     ],
 )
 def test_a_channel_filter_selects_what_graph_selects(client, admin_h, team_id, expr, names):
@@ -355,6 +619,24 @@ def test_a_channel_filter_selects_what_graph_selects(client, admin_h, team_id, e
             "'Expand' is not allowed. To allow it, set the 'AllowedQueryOptions' property on "
             "EnableQueryAttribute or QueryValidationSettings.",
         ),
+        (
+            {"$count": "true"},
+            "",
+            "The query specified in the URI is not valid. Query option 'Count' is not allowed. To "
+            "allow it, set the 'AllowedQueryOptions' property on EnableQueryAttribute or "
+            "QueryValidationSettings.",
+        ),
+        # Option names match in any case, and with or without the `$`, on the Teams routes.
+        (
+            {"$TOP": "1"},
+            "BadRequest",
+            "The query specified in the URI is not valid. Query option 'Top' is not allowed.",
+        ),
+        (
+            {"top": "1"},
+            "BadRequest",
+            "The query specified in the URI is not valid. Query option 'Top' is not allowed.",
+        ),
     ],
 )
 def test_a_channel_listing_refuses_a_query_it_cannot_run(
@@ -368,12 +650,89 @@ def test_a_channel_listing_refuses_a_query_it_cannot_run(
         assert message.endswith(err["innerError"]["message"])
 
 
-def test_select_projects_a_channel_without_keeping_its_id(client, admin_h, team_id):
-    body = client.get(
-        f"{V1}/teams/{team_id}/channels", headers=admin_h, params={"$select": "displayName"}
-    ).json()
-    assert body["@odata.context"].endswith(f"teams('{team_id}')/channels(displayName)")
-    assert all(set(c) == {"displayName"} for c in body["value"])
+@pytest.mark.parametrize(
+    "route,prop",
+    [
+        ("/me/joinedTeams", "displayName"),
+        ("/teams/{team}/channels", "displayName"),
+        ("/teams/{team}/channels/{channel}", "displayName"),
+        ("/teams/{team}/channels/{channel}/messages", "id"),
+        ("/teams/{team}/channels/{channel}/members", "displayName"),
+    ],
+)
+def test_select_is_read_in_every_spelling_and_only_dollar_select_is_echoed(
+    client, admin_h, team_id, route, prop
+):
+    """The option name in any case, the property name in any case (answered in the declared
+    spelling), and `select` without the `$` — which projects the same but leaves `@odata.context`
+    without the list. `id` is not kept unless asked for. Twice is refused."""
+    url = (
+        f"{V1}{route.format(team=team_id, channel=_channels(client, admin_h, team_id)['Platform'])}"
+    )
+    for query, echoed in (
+        (f"$select={prop}", True),
+        (f"$SELECT={prop.upper()}", True),
+        (f"select={prop}", False),
+    ):
+        body = client.get(f"{url}?{query}", headers=admin_h).json()
+        items = body["value"] if "value" in body else [body]
+        assert all(set(i) - {"@odata.context", "@odata.type"} == {prop} for i in items), query
+        context = body["@odata.context"].removesuffix("/$entity")
+        assert context.endswith(f"({prop})") == echoed, query
+    err = _error(client.get(f"{url}?$select={prop}&$select=id", headers=admin_h), 400)
+    assert err["message"] == (
+        "Query option '$select' was specified more than once, but it must be specified at most "
+        "once."
+    )
+
+
+@pytest.mark.parametrize(
+    "suffix,query,code,message",
+    [
+        ("", "$expand=members", "", "Expand"),
+        ("", "$filter=displayName eq 'x'", "", "Filter"),
+        ("", "$top=1", "", "Top"),
+        ("", "$count=true", "", "Count"),
+        ("/members", "$count=true", "", "Count"),
+        ("/members", "$orderby=displayName", "", "OrderBy"),
+        (
+            "/members",
+            "$expand=user",
+            "BadRequest",
+            "Parsing OData Select and Expand failed: Could "
+            "not find a property named 'user' on type 'microsoft.graph.conversationMember'.",
+        ),
+        ("/messages", "$count=true", "", "Count"),
+        ("/messages/{message}/replies", "$count=true", "", "Count"),
+        ("/messages/{message}", "$filter=id eq 'x'", "", "Filter"),
+        ("/messages/{message}", "$top=1", "", "Top"),
+        (
+            "/messages/{message}",
+            "$expand=replies",
+            "BadRequest",
+            "Expand query parameter "
+            "'replies' is not supported for this request. Use the /replies endpoint to get the "
+            "replies for a message.",
+        ),
+    ],
+)
+def test_a_channel_method_refuses_the_options_graph_refuses_on_it(
+    client, admin_h, team_id, suffix, query, code, message
+):
+    """`code` empty is the OData validator's refusal, whose message names the option."""
+    _, root = _incident(client, admin_h, team_id)
+    incidents = _channels(client, admin_h, team_id)["Incidents"]
+    url = f"{V1}/teams/{team_id}/channels/{incidents}{suffix.format(message=root['id'])}"
+    err = _error(client.get(f"{url}?{query}", headers=admin_h), 400)
+    assert err["code"] == code
+    if code == "":
+        assert err["message"] == (
+            f"The query specified in the URI is not valid. Query option '{message}' is not "
+            "allowed. To allow it, set the 'AllowedQueryOptions' property on EnableQueryAttribute "
+            "or QueryValidationSettings."
+        )
+    else:
+        assert err["message"] == message
 
 
 def test_a_channel_granted_to_the_org_is_standard_and_a_narrower_one_is_private(
@@ -715,6 +1074,26 @@ def test_expand_replies_inlines_every_thread_and_counts_only_a_nonempty_one(
             "Parsing OData Select and Expand failed: Could "
             "not find a property named 'bogus' on type 'microsoft.graph.chatMessage'.",
         ),
+        (
+            {"$top": "²"},
+            400,
+            "BadRequest",
+            "Invalid value '²' for $top query option found. The $top query option requires a "
+            "non-negative integer value.",
+        ),
+        (
+            {"$top": "-0"},
+            400,
+            "BadRequest",
+            "PageSize needs to be more than 0. (Parameter 'pageSize')",
+        ),
+        (
+            {"$TOP": "51"},
+            400,
+            "",
+            "The query specified in the URI is not valid. The limit of '50' for Top query has "
+            "been exceeded. The value from the incoming request is '51'.",
+        ),
     ],
 )
 def test_a_message_listing_refuses_a_query_it_cannot_run(
@@ -978,3 +1357,23 @@ def test_an_expanded_thread_past_200_continues_at_the_link_graph_gives(tmp_path)
         assert "@odata.nextLink" not in page
     replies = root["replies"] + page["value"]
     assert [r["body"]["content"] for r in replies] == [f"Reply {i}" for i in reversed(range(205))]
+
+
+def test_the_directory_sorts_by_name_or_address_in_either_direction(tmp_path):
+    """The default order is by userPrincipalName; `$orderby` sorts by `displayName` or
+    `userPrincipalName`, named in any case, ascending or descending."""
+    records = [
+        complete("msteams", channel="Platform", author_email="zed@x.com", author_name="Abe Zed"),
+        complete("msteams", channel="Platform", author_email="amy@x.com", author_name="Zoe Amy"),
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def order(query=""):
+            body = client.get(f"{V1}/users{query}", headers=h).json()
+            return [u["userPrincipalName"] for u in body["value"]]
+
+        assert order() == ["amy@x.com", "zed@x.com"]
+        assert order("?$orderby=displayName") == ["zed@x.com", "amy@x.com"]
+        assert order("?$orderby=DisplayName desc") == ["amy@x.com", "zed@x.com"]
+        assert order("?$orderby=userPrincipalName desc") == ["zed@x.com", "amy@x.com"]

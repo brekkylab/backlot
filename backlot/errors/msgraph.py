@@ -17,6 +17,7 @@ client-request-id.
 from __future__ import annotations
 
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
@@ -27,6 +28,17 @@ def owns(path: str) -> bool:
     envelope."""
     return path.startswith("/msgraph")
 
+
+# The id of the request being answered, which Graph sends both as the `request-id` and
+# `client-request-id` headers and inside every `innerError`. Set per request by the middleware in
+# `backlot.main`; a fresh one is minted where none is set.
+REQUEST_ID: ContextVar[str | None] = ContextVar("msgraph_request_id", default=None)
+
+# What a 200 JSON body is served as, beside `OData-Version: 4.0`.
+JSON_MEDIA_TYPE = (
+    "application/json;odata.metadata=minimal;odata.streaming=true;IEEE754Compatible=false;"
+    "charset=utf-8"
+)
 
 # Sent on every 401, whatever the credential looked like.
 WWW_AUTHENTICATE = (
@@ -113,6 +125,11 @@ def foreign_jwt() -> GraphError:
 
 def bad_request(message: str) -> GraphError:
     return GraphError(400, "BadRequest", message)
+
+
+def request_bad_request(message: str) -> GraphError:
+    """The directory's refusal of a query argument it does not recognise."""
+    return GraphError(400, "Request_BadRequest", message)
 
 
 def unsupported_query(message: str) -> GraphError:
@@ -226,8 +243,8 @@ def _inner(exc) -> dict:
 
     ``date`` has no timezone suffix and no fractional seconds live ("2026-09-02T11:24:27"), so it
     is formatted rather than handed to ``isoformat()``. The two ids are equal here: live they
-    differ only when the CLIENT supplied its own ``client-request-id``, which nothing in Backlot
-    does yet.
+    differ only when the CLIENT supplied its own ``client-request-id``, which Backlot does not echo
+    yet. They are the ids the response's headers carry.
     """
     body: dict = {}
     code = getattr(exc, "inner", None)
@@ -236,7 +253,7 @@ def _inner(exc) -> dict:
         body["code"] = code
     if message:
         body["message"] = message
-    request_id = str(uuid.uuid4())
+    request_id = REQUEST_ID.get() or str(uuid.uuid4())
     body["date"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     body["request-id"] = request_id
     body["client-request-id"] = request_id

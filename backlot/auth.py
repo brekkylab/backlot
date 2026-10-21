@@ -315,41 +315,34 @@ def slack_bearer_token(request: Request) -> str | None:
 
 
 def msgraph_token(request: Request) -> tuple[str, str | None]:
-    """Parse the ``Authorization`` header the way Microsoft Graph does, which is the most permissive
-    of any vendor here: it does not check the scheme at all.
+    """Parse the ``Authorization`` header the way Microsoft Graph does.
 
-    Measured 2026-10-08 against graph.microsoft.com (``GET /v1.0/me``, without a tenant).
-    Every spelling below with a malformed token gets the same "token could not be read" refusal,
-    rather than "no credential presented". This does not measure valid-token scheme handling::
-
-        Bearer <t>    bearer <t>    BEARER <t>    token <t>    Basic <t>    <t>
+    Graph reads the token after ``Bearer`` in any case, or with no scheme at all, with any run of
+    spaces or tabs between. Anything else — another scheme (``token``, ``Basic``), or a word after
+    the token — is a token it cannot read, however valid the token itself is (measured with a
+    delegated token on graph.microsoft.com, see :mod:`backlot.errors.msgraph`).
 
     Returns ``(state, token)`` where state is one of:
 
-        "absent"   no Authorization header      -> "Access token is empty."
-        "empty"    `Bearer` with nothing after  -> "UnableToParseTokens"
-        "present"  anything else                -> resolve it, malformed-token message if unknown
+        "absent"     no Authorization header       -> "Access token is empty."
+        "empty"      `Bearer` with nothing after   -> "UnableToParseTokens"
+        "unreadable" a spelling Graph cannot read  -> the malformed-token message
+        "present"    a token to resolve            -> the malformed-token message if unknown
 
-    The three-way split is what :mod:`backlot.errors.msgraph` needs, because live Graph gives each
-    a different message. Deliberately NOT :func:`bearer_token`: that one returns None for a
-    ``Basic`` header, which would report a missing credential where Graph reports a malformed one.
-
-    Bounded by the measurement: a lone word is read as the token (`<t>` above), except the word
-    ``Bearer``, which is the scheme with an empty value. Whether live Graph would also treat a lone
-    ``Basic`` that way was not measured, so it is left as a token — the reading that changes only
-    the message, never whether the request is refused.
+    Deliberately NOT :func:`bearer_token`: that one returns None for a ``Basic`` header, which
+    would report a missing credential where Graph reports a malformed one.
     """
     hdr = _authorization(request)
     if hdr is None:
         return "absent", None
     parts = hdr.split()
-    if not parts:
+    if not parts or (len(parts) == 1 and parts[0].lower() == "bearer"):
         return "empty", None
     if len(parts) == 1:
-        if parts[0].lower() == "bearer":
-            return "empty", None
         return "present", parts[0]
-    return "present", parts[1]
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return "present", parts[1]
+    return "unreadable", None
 
 
 def slack_token(request: Request) -> str | None:

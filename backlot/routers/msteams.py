@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -174,14 +176,16 @@ def _is_jwt(token: str) -> bool:
 def _caller(request: Request) -> Caller:
     """The caller, or Graph's own 401 — which of FOUR, measured: no header at all, a header whose
     token part is blank, a JWT that names no application, and anything else that resolves to
-    nobody. ``auth.msgraph_token`` draws the first lines (and documents why the scheme is not one
-    of them); ``errors.msgraph`` carries the messages.
+    nobody or is spelled as Graph cannot read. ``auth.msgraph_token`` draws the spelling lines;
+    ``errors.msgraph`` carries the messages.
     """
     state, token = auth.msgraph_token(request)
     if state == "absent":
         raise msgraph.no_credentials()
     if state == "empty":
         raise msgraph.empty_credentials()
+    if state == "unreadable":
+        raise msgraph.bad_token()
     caller = auth.acl(request).resolve(token)
     if caller is None:
         raise msgraph.foreign_jwt() if _is_jwt(token) else msgraph.bad_token()
@@ -190,22 +194,62 @@ def _caller(request: Request) -> Caller:
 
 # --- OData plumbing ------------------------------------------------------
 
-
-def _param(request: Request, *keys: str) -> str | None:
-    for key in keys:
-        if (value := request.query_params.get(key)) is not None:
-            return value
-    return None
+# The system query options Graph reads. Their names match without regard to case, and on the Teams
+# routes without the `$` too; the directory's routes refuse a `$`-less one, and every route refuses
+# one given twice.
+_OPTIONS = frozenset("select filter top skip skiptoken count orderby expand search format".split())
 
 
-def _top(request: Request, default: int, maximum: int) -> int:
+@dataclass(frozen=True)
+class _Option:
+    value: str
+    # Spelled with `$`. Only then does `@odata.context` echo a `select` list back.
+    dollar: bool
+
+
+def _options(request: Request, *, directory: bool = False) -> dict[str, _Option]:
+    """The request's query options, keyed by lowercase name without the `$`."""
+    out: dict[str, _Option] = {}
+    for key, value in request.query_params.multi_items():
+        name = key.lower()
+        dollar = name.startswith("$")
+        base = name[1:] if dollar else name
+        if base not in _OPTIONS:
+            continue
+        if directory and not dollar:
+            raise msgraph.request_bad_request(f"Unrecognized query argument specified: '{key}'.")
+        if base in out:
+            raise msgraph.bad_request(
+                f"Query option '${base}' was specified more than once, but it must be specified "
+                "at most once."
+            )
+        out[base] = _Option(value, dollar)
+    return out
+
+
+def _value(opts: dict[str, _Option], name: str) -> str | None:
+    option = opts.get(name)
+    return None if option is None else option.value
+
+
+# A `$top` Graph reads: ASCII digits, an optional sign, spaces or tabs before and spaces after.
+_INTEGER = re.compile(r"[ \t]*([+-]?[0-9]+) *")
+
+
+def _integer(raw: str) -> int:
+    """``$top`` as Graph reads it: ``-0`` is zero, and any other negative is not an integer."""
+    m = _INTEGER.fullmatch(raw)
+    if m is None or int(m.group(1)) < 0:
+        raise msgraph.top_not_integer(raw)
+    return int(m.group(1))
+
+
+def _top(opts, default: int, maximum: int) -> int:
     """A message or reply page's ``$top``, refused where Graph refuses it."""
-    raw = _param(request, "$top")
+    raw = _value(opts, "top")
     if raw is None:
         return default
-    if not raw.isdigit():
-        raise msgraph.top_not_integer(raw)
-    value = int(raw)
+    value = _integer(raw)
     if value > maximum:
         raise msgraph.top_too_large(maximum, raw)
     if value == 0:
@@ -213,10 +257,9 @@ def _top(request: Request, default: int, maximum: int) -> int:
     return value
 
 
-def _offset(request: Request, refusal) -> int:
-    """The offset a Backlot ``$skiptoken`` names, or ``refusal`` for one that names none. Graph's
-    continuation links spell the option either way, so both are read."""
-    raw = _param(request, "$skiptoken", "$skipToken")
+def _offset(opts, refusal) -> int:
+    """The offset a Backlot ``$skiptoken`` names, or ``refusal`` for one that names none."""
+    raw = _value(opts, "skiptoken")
     if raw is None:
         return 0
     offset = decode_cursor_or_none(raw)
@@ -228,8 +271,9 @@ def _offset(request: Request, refusal) -> int:
 def _next_link(request: Request, offset: int, page_len: int, total: int) -> str | None:
     """The absolute ``@odata.nextLink``, or None on the last page.
 
-    Built from the REQUEST's own URL, so it points back at the host the caller actually reached.
-    Graph omits the key entirely when there is nothing more.
+    Built from the REQUEST's own URL, so it points back at the host the caller actually reached,
+    with every option spelled as the caller spelled it. Graph omits the key entirely when there is
+    nothing more.
     """
     nxt = offset + page_len
     if nxt >= total or not page_len:
@@ -237,7 +281,7 @@ def _next_link(request: Request, offset: int, page_len: int, total: int) -> str 
     params = [
         (k, v)
         for k, v in request.query_params.multi_items()
-        if k not in ("$skiptoken", "$skipToken")
+        if k.lower().lstrip("$") != "skiptoken"
     ]
     params.append(("$skiptoken", encode_cursor(nxt)))
     query = "&".join(f"{quote(k, safe='$')}={quote(v, safe='')}" for k, v in params)
@@ -254,18 +298,27 @@ def _context(fragment: str, select: list[str] | None = None) -> str:
     return f"https://graph.microsoft.com/v1.0/$metadata#{fragment}{fields}"
 
 
-def _select(request: Request, declared: frozenset[str] | None, type_name: str) -> list[str] | None:
-    """The ``$select`` list, each name checked against ``declared``. ``None`` for the directory,
-    which answers an undeclared name with an object that lacks it rather than a refusal."""
-    raw = _param(request, "$select")
-    if not raw:
-        return None
-    names = [f.strip() for f in raw.split(",") if f.strip()]
-    if declared is not None:
-        for name in names:
-            if name not in declared:
-                raise msgraph.unknown_property(name, type_name)
-    return names or None
+def _select(opts, declared: frozenset[str] | None, type_name: str):
+    """``(names, echoed)``: the properties ``select`` names in their declared spelling (a name is
+    matched without regard to case), and the list ``@odata.context`` echoes — the same names when
+    the option was spelled ``$select``, None when it was ``select``. ``declared`` is None for the
+    directory, which answers an undeclared name with an object that lacks it rather than refusing
+    it, and keeps such a name as given."""
+    option = opts.get("select")
+    if option is None or not option.value:
+        return None, None
+    known = {d.casefold(): d for d in (declared if declared is not None else _USER_PROPERTIES)}
+    names = []
+    for raw in (f.strip() for f in option.value.split(",")):
+        if not raw:
+            continue
+        name = known.get(raw.casefold())
+        if name is None:
+            if declared is not None:
+                raise msgraph.unknown_property(raw, type_name)
+            name = raw
+        names.append(name)
+    return (names or None), (names or None) if option.dollar else None
 
 
 def _project(entity: dict, select: list[str] | None) -> dict:
@@ -289,16 +342,16 @@ def _collection(fragment, items, *, select=None, count=True, link=None) -> dict:
     return body
 
 
-def _refuse_options(request: Request, *options: str) -> None:
+def _refuse_options(opts, *options: str) -> None:
     """The validator's refusal of an option this method allows none of, named as Graph names it."""
     for option in options:
-        if _param(request, f"${option.lower()}") is not None:
+        if option.lower() in opts:
             raise msgraph.option_not_allowed(option)
 
 
-def _filter(request: Request, properties, *, refusal, **kwargs):
+def _filter(opts, properties, *, refusal, **kwargs):
     """The ``$filter`` predicate, or the refusal Graph gives this method for one it cannot use."""
-    raw = _param(request, "$filter")
+    raw = _value(opts, "filter")
     if raw is None:
         return None
     try:
@@ -319,15 +372,25 @@ def _channel_filter_refusal(e: FilterError, raw: str):
     return msgraph.bad_request(f"Invalid filter clause: {message}")
 
 
+_ADVANCED = (
+    "is not supported because the 'ConsistencyLevel:eventual' header is missing. Refer to "
+    "https://aka.ms/graph-docs/advanced-queries for more information"
+)
+
+
 def _user_filter_refusal(e: FilterError, raw: str):
     if e.kind == "property":
         return msgraph.unsupported_query(
             f"Property '{e.name}' does not exist as a declared property or extension property."
         )
+    if e.kind == "function" and e.name == "contains":
+        return msgraph.unsupported_query("Filter operator 'Contains' is not supported.")
     if e.kind == "function":
-        return msgraph.unsupported_query(
-            f"Filter operator '{e.name.capitalize()}' is not supported."
-        )
+        return msgraph.unsupported_query(f"Operator 'endsWith' {_ADVANCED}")
+    if e.kind == "operator" and e.name == "ne":
+        return msgraph.unsupported_query("Filter operator 'NotEqualsMatch' is not supported.")
+    if e.kind == "operator":
+        return msgraph.unsupported_query(f"Operator 'not' {_ADVANCED}")
     return _channel_filter_refusal(e, raw)
 
 
@@ -338,6 +401,57 @@ def _member_filter_refusal(e: FilterError, raw: str):
             "'microsoft.graph.conversationMember'."
         )
     return _channel_filter_refusal(e, raw)
+
+
+# `$search` on the directory: one or more `"property:term"` clauses joined by AND or OR, each
+# matching a property any of whose words starts with the term, without regard to case.
+_SEARCH_CLAUSE = re.compile(r'"([^":]+):([^"]*)"')
+_WORD = re.compile(r"[^\W_]+")
+
+
+def _search(raw: str):
+    """A predicate over a served user for ``$search``, or Graph's refusal of it."""
+    clauses, joins, pos = [], [], 0
+    text = raw.strip()
+    while True:
+        m = _SEARCH_CLAUSE.match(text, pos)
+        if m is None:
+            colon = text.find(":")
+            raise msgraph.bad_request(
+                f"Syntax error: character ':' is not valid at position {colon} in '{text}'."
+            )
+        prop = {p.casefold(): p for p in _USER_PROPERTIES}.get(m.group(1).casefold())
+        if prop is None:
+            raise msgraph.unsupported_query(
+                f"Property '{m.group(1)}' does not exist as a declared property or extension "
+                "property."
+            )
+        clauses.append((prop, m.group(2).casefold()))
+        pos = m.end()
+        rest = text[pos:]
+        if not rest.strip():
+            break
+        join = re.match(r"\s+(AND|OR)\s+", rest)
+        if join is None:
+            raise msgraph.bad_request(f"Syntax error at position {pos} in '{text}'.")
+        joins.append(join.group(1))
+        pos += join.end()
+
+    def hit(user, prop, term):
+        value = user.get(prop)
+        return isinstance(value, str) and any(
+            w.casefold().startswith(term) for w in _WORD.findall(value)
+        )
+
+    def keep(user):
+        result = hit(user, *clauses[0])
+        for join, clause in zip(joins, clauses[1:]):
+            result = (
+                (result and hit(user, *clause)) if join == "AND" else (result or hit(user, *clause))
+            )
+        return result
+
+    return keep
 
 
 # --- entity builders -----------------------------------------------------
@@ -453,7 +567,7 @@ def _channel(request: Request, conn, name: str, *, single: bool) -> dict:
         "webUrl": (
             f"https://teams.cloud.microsoft/l/channel/{quote(cid, safe='')}/"
             f"{quote(name, safe='')}?groupId={_team_id()}&tenantId={_tenant_id()}"
-            "&allowXTenantAccess=False&ngc=True"
+            "&allowXTenantAccess=False" + ("&ngc=True" if private else "")
         ),
         # A channel whose messages are granted to the org is one the whole team can read, which is
         # what `standard` means ("Channel inherits the list of members of the parent team"); any
@@ -768,9 +882,27 @@ _FOREIGN_TEAM = {
 }
 
 
+_GUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+_CHANNEL_ID = re.compile(r"19:[^@]+@thread\.\w+")
+# What a channel id that is not one gets, per method.
+_MALFORMED_CHANNEL = {
+    "channel": lambda: msgraph.bad_request("channelId is not valid."),
+    "members": lambda: msgraph.bad_request("channelId is not valid."),
+    "messages": lambda: msgraph.bad_request("UnknownError"),
+}
+
+
+def _check_team_id(team_id: str) -> None:
+    if not _GUID.fullmatch(team_id):
+        raise msgraph.bad_request("teamId needs to be a valid GUID.")
+
+
 def _resolve_channel(request: Request, conn, team_id: str, channel_id: str, ids, kind: str):
     """The channel name behind an id, or the refusal Graph gives ``kind`` of method for it."""
-    if team_id != _team_id():
+    _check_team_id(team_id)
+    if not _CHANNEL_ID.fullmatch(channel_id):
+        raise _MALFORMED_CHANNEL[kind]()
+    if team_id.lower() != _team_id():
         raise _FOREIGN_TEAM[kind](team_id)
     name = _channel_name(conn, channel_id)
     if name is None:
@@ -787,71 +919,99 @@ def _channel_fragment(team_id: str, channel_id: str) -> str:
 # --- endpoints -----------------------------------------------------------
 
 
+def _single_entity(opts) -> None:
+    """``/me`` and ``/users/{id}`` refuse a filter, and ignore ``$top``."""
+    if "filter" in opts:
+        raise msgraph.unsupported_query("The specified filter against a single entity is invalid.")
+
+
 @router.get("/me", response_model=GraphResponse, openapi_extra={"parameters": [_P_SELECT]})
 async def me(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
-    select = _select(request, None, "user")
+    opts = _options(request, directory=True)
+    _single_entity(opts)
+    select, echoed = _select(opts, None, "user")
     return {
-        "@odata.context": _context("users", select) + "/$entity",
+        "@odata.context": _context("users", echoed) + "/$entity",
         **_project(_me(conn, caller), select),
     }
 
 
-@router.get("/me/joinedTeams", response_model=GraphResponse)
-async def me_joined_teams(request: Request):
-    """The teams the caller is in — the one this corpus models, for every caller.
+def _joined_teams(request: Request) -> dict:
+    """The teams the caller is in — the one this corpus models, for every caller. ``$select``
+    projects it, ``$filter`` is ignored, and the paging and shaping options are refused."""
+    opts = _options(request)
+    _refuse_options(opts, "Top", "SkipToken", "Count", "OrderBy", "Expand")
+    select, echoed = _select(opts, frozenset(_team()), "team")
+    return _collection("teams", [_project(_team(), select)], select=echoed)
 
-    Not ACL-filtered: a team is not a document. Every principal in the org is in the team; which of
-    its CHANNELS they may see is what the ACL decides, and that is answered by
-    ``/teams/{id}/channels``.
-    """
+
+@router.get(
+    "/me/joinedTeams", response_model=GraphResponse, openapi_extra={"parameters": [_P_SELECT]}
+)
+async def me_joined_teams(request: Request):
+    """Not ACL-filtered: a team is not a document. Every principal in the org is in the team; which
+    of its CHANNELS they may see is what the ACL decides, and that is answered by
+    ``/teams/{id}/channels``."""
     _caller(request)
-    return _collection("teams", [_team()])
+    return _joined_teams(request)
 
 
 @router.get("/users", response_model=GraphResponse, openapi_extra={"parameters": _P_USERS})
 async def users_list(request: Request):
-    """The directory: every registered user principal.
+    """The directory: every registered user principal, in userPrincipalName order.
 
     Message senders who are not principals are NOT here — a corpus's transcript speakers can
     outnumber its directory (the same limitation Slack's ``users.list`` states). Such a sender
     still resolves through ``/users/{id}``.
+
+    ``ne``, ``not``, ``endswith``, ``$search`` and a count are advanced queries, answered only with
+    ``ConsistencyLevel: eventual`` — ``ne`` with ``$count=true`` beside it as well. Live, an advanced
+    query's results come back in an order of the index's own, which is not modelled: they are in
+    userPrincipalName order here too.
     """
     conn = auth.conn(request)
     _caller(request)
-    raw_top = _param(request, "$top")
+    opts = _options(request, directory=True)
     top = _USERS_DEFAULT
-    if raw_top is not None:
-        if not raw_top.isdigit():
-            raise msgraph.top_not_integer(raw_top)
-        top = int(raw_top)
+    if (raw_top := _value(opts, "top")) is not None:
+        top = _integer(raw_top)
         if not 1 <= top <= _USERS_MAX:
             raise msgraph.unsupported_query(
-                f"Invalid page size specified: '{raw_top}'. Must be between 1 and 999 inclusive."
+                f"Invalid page size specified: '{top}'. Must be between 1 and 999 inclusive."
             )
     offset = _offset(
-        request,
+        opts,
         lambda: msgraph.unsupported_query("Unable to execute query; invalid page token specified."),
     )
-    # The directory compares strings without regard to case, and evaluates no `contains`.
+    eventual = request.headers.get("consistencylevel", "").lower() == "eventual"
+    counted = eventual and (_value(opts, "count") or "").lower() == "true"
+    refuse = {"contains"}
+    if not eventual:
+        refuse |= {"endswith", "not"}
+    if not counted:
+        refuse.add("ne")
     keep = _filter(
-        request,
-        _USER_PROPERTIES,
-        refusal=_user_filter_refusal,
-        fold_case=True,
-        refuse=("contains",),
+        opts, _USER_PROPERTIES, refusal=_user_filter_refusal, fold_case=True, refuse=refuse
     )
     users = [_user(conn, e) for e in store.all_user_emails(conn)]
     if keep is not None:
         users = [u for u in users if keep(u)]
-    select = _select(request, None, "user")
+    if (raw_search := _value(opts, "search")) is not None:
+        if not eventual:
+            raise msgraph.unsupported_query(
+                "Request with $search query parameter only works through MSGraph with a special "
+                "request header: 'ConsistencyLevel: eventual'"
+            )
+        matches = _search(raw_search)
+        users = [u for u in users if matches(u)]
+    if (raw_order := _value(opts, "orderby")) is not None:
+        users = _order_users(users, raw_order, filtered=keep is not None and not eventual)
+    select, echoed = _select(opts, None, "user")
     page = [_project(u, select) for u in users[offset : offset + top]]
-    body: dict = {"@odata.context": _context("users", select)}
-    # Only an advanced query counts: `$count=true` together with `ConsistencyLevel: eventual`.
-    if (_param(request, "$count") or "").lower() == "true" and request.headers.get(
-        "consistencylevel", ""
-    ).lower() == "eventual":
+    body: dict = {"@odata.context": _context("users", echoed)}
+    if counted:
         body["@odata.count"] = len(users)
     if link := _next_link(request, offset, len(page), len(users)):
         body["@odata.nextLink"] = link
@@ -859,21 +1019,64 @@ async def users_list(request: Request):
     return body
 
 
+# The properties the directory sorts by; any other is refused.
+_USER_SORTS = {"displayname": "displayName", "userprincipalname": "userPrincipalName"}
+
+
+def _order_users(users: list[dict], raw: str, *, filtered: bool) -> list[dict]:
+    """``$orderby`` over the directory: one or more ``property [asc|desc]`` terms, each property
+    matched without regard to case. A sort beside a filter is refused, unless the query is an
+    advanced one."""
+    if filtered:
+        raise msgraph.unsupported_query("Sorting not supported for current query.")
+    terms = []
+    for term in (t.strip() for t in raw.split(",")):
+        name, _, direction = term.partition(" ")
+        prop = _USER_SORTS.get(name.casefold())
+        if prop is None:
+            raise msgraph.unsupported_query(f"Unsupported sort property '{name}' for 'User'.")
+        terms.append((prop, direction.strip().lower() == "desc"))
+    for prop, descending in reversed(terms):
+        users = sorted(users, key=lambda u: (u.get(prop) or "").casefold(), reverse=descending)
+    return users
+
+
+def _user_or_404(request: Request, conn, user_id: str) -> str:
+    email = _resolve_user(request, conn, user_id)
+    if email is None:
+        raise msgraph.user_not_found(user_id)
+    return email
+
+
 @router.get(
-    "/users/{user_id:path}", response_model=GraphResponse, openapi_extra={"parameters": [_P_SELECT]}
+    "/users/{user_id}", response_model=GraphResponse, openapi_extra={"parameters": [_P_SELECT]}
 )
 async def users_get(request: Request, user_id: str):
     """One user by object id or userPrincipalName — Graph accepts either at this route."""
     conn = auth.conn(request)
     _caller(request)
-    select = _select(request, None, "user")
-    email = _resolve_user(request, conn, user_id)
-    if email is None:
-        raise msgraph.user_not_found(user_id)
+    opts = _options(request, directory=True)
+    _single_entity(opts)
+    select, echoed = _select(opts, None, "user")
+    email = _user_or_404(request, conn, user_id)
     return {
-        "@odata.context": _context("users", select) + "/$entity",
+        "@odata.context": _context("users", echoed) + "/$entity",
         **_project(_user(conn, email), select),
     }
+
+
+@router.get(
+    "/users/{user_id}/joinedTeams",
+    response_model=GraphResponse,
+    openapi_extra={"parameters": [_P_SELECT]},
+)
+async def users_joined_teams(request: Request, user_id: str):
+    """A user's teams — how a client that cannot ask ``/me`` lists them. Everyone in the directory
+    is in the one team."""
+    conn = auth.conn(request)
+    _caller(request)
+    _user_or_404(request, conn, user_id)
+    return _joined_teams(request)
 
 
 def _resolve_user(request: Request, conn, user_id: str) -> str | None:
@@ -883,13 +1086,14 @@ def _resolve_user(request: Request, conn, user_id: str) -> str | None:
         for e in store.all_user_emails(conn):
             if e.lower() == lowered:
                 return e
+    lowered = user_id.lower()
     for e in store.all_user_emails(conn):
-        if synth.msteams_user_id(e) == user_id:
+        if synth.msteams_user_id(e) == lowered:
             return e
     # Display-only senders — a bot or a speaker the directory does not carry — are not principals,
     # so they are resolved from the message authors instead of coming back not-found at an id the
     # API has just handed the caller on a message's `from`.
-    return _sender_by_id(request, conn, user_id)
+    return _sender_by_id(request, conn, lowered)
 
 
 def _sender_by_id(request: Request, conn, user_id: str) -> str | None:
@@ -915,18 +1119,20 @@ async def channels_list(request: Request, team_id: str):
     options that would page it."""
     conn = auth.conn(request)
     caller = _caller(request)
-    if team_id != _team_id():
+    _check_team_id(team_id)
+    if team_id.lower() != _team_id():
         raise msgraph.team_not_found(team_id)
-    for option, name in (("$top", "Top"), ("$skiptoken", "SkipToken"), ("$skipToken", "SkipToken")):
-        if _param(request, option) is not None:
+    opts = _options(request)
+    for option, name in (("top", "Top"), ("skiptoken", "SkipToken")):
+        if option in opts:
             raise msgraph.bad_request(
                 f"The query specified in the URI is not valid. Query option '{name}' is not "
                 "allowed."
             )
-    _refuse_options(request, "OrderBy", "Expand")
-    select = _select(request, _CHANNEL_PROPERTIES, "channel")
+    _refuse_options(opts, "OrderBy", "Expand", "Count")
+    select, echoed = _select(opts, _CHANNEL_PROPERTIES, "channel")
     keep = _filter(
-        request,
+        opts,
         _CHANNEL_PROPERTIES,
         refusal=_channel_filter_refusal,
         enums={"membershipType": _CHANNEL_MEMBERSHIP},
@@ -939,7 +1145,7 @@ async def channels_list(request: Request, team_id: str):
     if keep is not None:
         channels = [c for c in channels if keep(c)]
     page = [_project(c, select) for c in channels]
-    return _collection(f"teams('{quote(team_id, safe='')}')/channels", page, select=select)
+    return _collection(f"teams('{quote(_team_id(), safe='')}')/channels", page, select=echoed)
 
 
 @router.get(
@@ -952,27 +1158,30 @@ async def channels_get(request: Request, team_id: str, channel_id: str):
     caller = _caller(request)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "channel")
-    select = _select(request, _CHANNEL_PROPERTIES, "channel")
+    opts = _options(request)
+    _refuse_options(opts, "Expand", "Filter", "Top", "Count")
+    select, echoed = _select(opts, _CHANNEL_PROPERTIES, "channel")
     return {
-        "@odata.context": _context(f"teams('{quote(team_id, safe='')}')/channels", select)
+        "@odata.context": _context(f"teams('{quote(_team_id(), safe='')}')/channels", echoed)
         + "/$entity",
         **_project(_channel(request, conn, name, single=True), select),
     }
 
 
-def _message_query(request: Request) -> tuple[list[str] | None, bool]:
-    """What a message listing was asked for: its ``$select``, and whether ``$expand=replies``.
-    Every other option is refused the way Graph refuses it on this method."""
-    if _param(request, "$filter") is not None:
+def _message_query(opts) -> tuple[list[str] | None, list[str] | None, bool]:
+    """What a message listing was asked for: its ``select`` (and the echoed list), and whether
+    ``expand=replies``. Every other option is refused the way Graph refuses it on this method."""
+    if "filter" in opts:
         raise msgraph.bad_request("Parameter 'Filter' not supported for this request.")
-    _refuse_options(request, "OrderBy")
+    _refuse_options(opts, "OrderBy", "Count")
     expand = False
-    if raw := _param(request, "$expand"):
+    if raw := _value(opts, "expand"):
         for name in (n.strip() for n in raw.split(",")):
             if name.lower() != "replies":
                 raise msgraph.unknown_property(name, "chatMessage")
             expand = True
-    return _select(request, _MESSAGE_PROPERTIES, "chatMessage"), expand
+    select, echoed = _select(opts, _MESSAGE_PROPERTIES, "chatMessage")
+    return select, echoed, expand
 
 
 @router.get(
@@ -990,9 +1199,10 @@ async def channel_messages(request: Request, team_id: str, channel_id: str):
     caller = _caller(request)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
-    select, expand = _message_query(request)
-    top = _top(request, _MESSAGES_DEFAULT, _MESSAGES_MAX)
-    offset = _offset(request, lambda: msgraph.bad_request("UnknownError"))
+    opts = _options(request)
+    select, echoed, expand = _message_query(opts)
+    top = _top(opts, _MESSAGES_DEFAULT, _MESSAGES_MAX)
+    offset = _offset(opts, lambda: msgraph.bad_request("UnknownError"))
     total = store.count_msteams_top_level(conn, name, ids)
     rows = store.list_msteams_top_level(conn, name, ids, limit=top, offset=offset)
     value = []
@@ -1013,9 +1223,24 @@ async def channel_messages(request: Request, team_id: str, channel_id: str):
     return _collection(
         f"{_channel_fragment(team_id, channel_id)}/messages",
         value,
-        select=select,
+        select=echoed,
         link=_next_link(request, offset, len(value), total),
     )
+
+
+def _single_message_query(opts) -> tuple[list[str] | None, list[str] | None]:
+    """A single message refuses ``$filter`` and ``$top``, and sends ``expand=replies`` to the
+    replies route."""
+    _refuse_options(opts, "Filter", "Top")
+    if raw := _value(opts, "expand"):
+        name = raw.split(",")[0].strip()
+        if name.lower() == "replies":
+            raise msgraph.bad_request(
+                "Expand query parameter 'replies' is not supported for this request. Use the "
+                "/replies endpoint to get the replies for a message."
+            )
+        raise msgraph.unknown_property(name, "chatMessage")
+    return _select(opts, _MESSAGE_PROPERTIES, "chatMessage")
 
 
 @router.get(
@@ -1026,43 +1251,24 @@ async def channel_messages(request: Request, team_id: str, channel_id: str):
 async def channel_message(request: Request, team_id: str, channel_id: str, message_id: str):
     """One ROOT message. A reply's id is not resolved here — live answers it 404 — but at
     ``…/messages/{rootId}/replies/{replyId}``; an id that names no message is a 403 to a delegated
-    caller, which is what every Backlot token is."""
+    caller, which is what every Backlot token is, and one that is not a message id at all a 400."""
     conn = auth.conn(request)
     caller = _caller(request)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
-    select = _select(request, _MESSAGE_PROPERTIES, "chatMessage")
+    if not message_id.isascii() or not message_id.isdigit():
+        raise msgraph.bad_request("UnknownError")
+    select, echoed = _single_message_query(_options(request))
     row = store.msteams_by_id(conn, name, message_id, ids)
     if row is None:
         raise msgraph.forbidden("UnknownError")
     if row["reply_to_id"] is not None:
         raise msgraph.message_not_found()
     return {
-        "@odata.context": _context(f"{_channel_fragment(team_id, channel_id)}/messages", select)
+        "@odata.context": _context(f"{_channel_fragment(team_id, channel_id)}/messages", echoed)
         + "/$entity",
         **_project(_message(request, conn, row), select),
     }
-
-
-async def _replies(request: Request, team_id: str, channel_id: str, message_id: str):
-    conn = auth.conn(request)
-    caller = _caller(request)
-    ids = auth.visible_ids(request, caller)
-    name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
-    select = _select(request, _MESSAGE_PROPERTIES, "chatMessage")
-    top = _top(request, _MESSAGES_DEFAULT, _MESSAGES_MAX)
-    offset = _offset(request, msgraph.backend_failure)
-    # An id that names no message, or names a reply (Teams threads are one level deep), has no
-    # replies: live answers both with an empty collection.
-    total = store.count_msteams_replies(conn, name, message_id, ids)
-    rows = store.list_msteams_replies(conn, name, message_id, ids, limit=top, offset=offset)
-    value = [_project(_message(request, conn, r), select) for r in rows]
-    return _collection(
-        f"{_channel_fragment(team_id, channel_id)}/messages('{message_id}')/replies",
-        value,
-        select=select,
-        link=_next_link(request, offset, len(value), total),
-    )
 
 
 @router.get(
@@ -1071,19 +1277,26 @@ async def _replies(request: Request, team_id: str, channel_id: str, message_id: 
     openapi_extra={"parameters": _P_PAGED + [_P_SELECT]},
 )
 async def message_replies(request: Request, team_id: str, channel_id: str, message_id: str):
-    """A message's replies, newest first."""
-    return await _replies(request, team_id, channel_id, message_id)
-
-
-@router.get(
-    "/teams('{team_id}')/channels('{channel_id}')/messages('{message_id}')/replies",
-    response_model=GraphResponse,
-    include_in_schema=False,
-)
-async def message_replies_by_key(request: Request, team_id: str, channel_id: str, message_id: str):
-    """The same collection addressed by OData key segments, the form ``replies@odata.nextLink``
-    takes live, so a client following that link reaches the rest of the thread."""
-    return await _replies(request, team_id, channel_id, message_id)
+    """A message's replies, newest first. An id that names no message, or names a reply (Teams
+    threads are one level deep), has none: live answers both with an empty collection."""
+    conn = auth.conn(request)
+    caller = _caller(request)
+    ids = auth.visible_ids(request, caller)
+    name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
+    opts = _options(request)
+    _refuse_options(opts, "Count")
+    select, echoed = _select(opts, _MESSAGE_PROPERTIES, "chatMessage")
+    top = _top(opts, _MESSAGES_DEFAULT, _MESSAGES_MAX)
+    offset = _offset(opts, msgraph.backend_failure)
+    total = store.count_msteams_replies(conn, name, message_id, ids)
+    rows = store.list_msteams_replies(conn, name, message_id, ids, limit=top, offset=offset)
+    value = [_project(_message(request, conn, r), select) for r in rows]
+    return _collection(
+        f"{_channel_fragment(team_id, channel_id)}/messages('{message_id}')/replies",
+        value,
+        select=echoed,
+        link=_next_link(request, offset, len(value), total),
+    )
 
 
 @router.get(
@@ -1099,13 +1312,13 @@ async def message_reply(
     caller = _caller(request)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
-    select = _select(request, _MESSAGE_PROPERTIES, "chatMessage")
+    select, echoed = _single_message_query(_options(request))
     row = store.msteams_by_id(conn, name, reply_id, ids)
     if row is None or row["reply_to_id"] != message_id:
         raise msgraph.message_not_found()
     fragment = f"{_channel_fragment(team_id, channel_id)}/messages('{message_id}')/replies"
     return {
-        "@odata.context": _context(fragment, select) + "/$entity",
+        "@odata.context": _context(fragment, echoed) + "/$entity",
         **_project(_message(request, conn, row), select),
     }
 
@@ -1121,15 +1334,68 @@ async def channel_members(request: Request, team_id: str, channel_id: str):
     caller = _caller(request)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "members")
-    select = _select(request, _MEMBER_PROPERTIES, "conversationMember")
-    keep = _filter(request, _MEMBER_PROPERTIES, refusal=_member_filter_refusal)
+    opts = _options(request)
+    _refuse_options(opts, "Count", "OrderBy")
+    if raw := _value(opts, "expand"):
+        raise msgraph.unknown_property(raw.split(",")[0].strip(), "conversationMember")
+    select, echoed = _select(opts, _MEMBER_PROPERTIES, "conversationMember")
+    keep = _filter(opts, _MEMBER_PROPERTIES, refusal=_member_filter_refusal)
     members = [_member(conn, e, channel_id) for e in _member_emails(request, conn, name)]
     if keep is not None:
         members = [m for m in members if keep(m)]
     return _collection(
         f"{_channel_fragment(team_id, channel_id)}/members",
         [_project(m, select) for m in members],
+        select=echoed,
     )
+
+
+# --- the path as Graph reads it ------------------------------------------
+
+_PREFIX = "/msgraph/v1.0/"
+_SEGMENTS = {
+    s.lower(): s
+    for s in ("me", "users", "teams", "channels", "messages", "replies", "members", "joinedTeams")
+}
+_KEY_SEGMENT = re.compile(r"([A-Za-z]+)\('(.*)'\)")
+
+# Sent by the front Graph sits behind when a request carries `Authorization` twice, before the
+# credential or the path is read.
+DUPLICATE_HEADER_PAGE = (
+    b'<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN""http://www.w3.org/TR/html4/strict.dtd">\r\n'
+    b"<HTML><HEAD><TITLE>Bad Request</TITLE>\r\n"
+    b'<META HTTP-EQUIV="Content-Type" Content="text/html; charset=us-ascii"></HEAD>\r\n'
+    b"<BODY><h2>Bad Request - Invalid Header</h2>\r\n"
+    b"<hr><p>HTTP Error 400. The request has an invalid header name.</p>\r\n</BODY></HTML>\r\n"
+)
+
+
+def normalize_path(scope) -> None:
+    """Rewrite a Graph path to the one spelling the routes above match, as Graph reads it: a
+    resource name in any case, an id as an OData key segment (``teams('{id}')``), a GUID in either
+    case, and one trailing slash are each the same path live."""
+    path = scope["path"]
+    if not path.startswith(_PREFIX):
+        return
+    rest = path[len(_PREFIX) :]
+    if rest.endswith("/"):
+        rest = rest[:-1]
+    out: list[str] = []
+    for segment in rest.split("/"):
+        key = _KEY_SEGMENT.fullmatch(segment)
+        parts = (
+            [key.group(1), key.group(2)] if key and key.group(1).lower() in _SEGMENTS else [segment]
+        )
+        for part in parts:
+            if part.lower() in _SEGMENTS:
+                part = _SEGMENTS[part.lower()]
+            elif _GUID.fullmatch(part):
+                part = part.lower()
+            out.append(part)
+    new = _PREFIX + "/".join(out)
+    if new != path:
+        scope["path"] = new
+        scope["raw_path"] = quote(new, safe="/:@!$&'()*+,;=-._~").encode()
 
 
 # --- everything else -----------------------------------------------------
@@ -1144,10 +1410,16 @@ async def unmatched_path(request: Request, rest: str):
     """A path or method no route above serves. Graph reads the credential before the path: with
     none, or one that resolves to nobody, every such request is the credential's 401 (measured on
     an unknown first segment, an unknown path under a team, and ``POST``/``DELETE`` on ``/me``).
-    Past that, an unknown first segment is a 400 naming it, and an unknown path under a resource
-    Graph has is a 404."""
+    Past that, an unknown first segment is a 400 naming it; under a person (``/me``,
+    ``/users/{id}``) the unknown property is a 404 naming it; under a channel, a 400 naming it; and
+    under a team, a 404."""
     _caller(request)
-    segment = rest.removeprefix("v1.0/").split("/")[0]
-    if segment.split("(")[0] not in _RESOURCES:
-        raise msgraph.unknown_segment(segment)
+    segments = rest.removeprefix("v1.0/").split("/")
+    if segments[0] not in _RESOURCES:
+        raise msgraph.unknown_segment(segments[0])
+    person = {"me": 1, "users": 2}.get(segments[0])
+    if person is not None and len(segments) > person:
+        raise msgraph.user_not_found(segments[person])
+    if segments[0] == "teams" and len(segments) > 4 and segments[2] == "channels":
+        raise msgraph.unknown_segment(segments[-1])
     raise msgraph.unsupported_path()

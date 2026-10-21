@@ -209,9 +209,9 @@ credential applying to a sub-request that carries none — is behaviour, and is 
 ## Teams is asked against its type system
 
 Graph publishes a machine-readable contract, richer than any other source's, and it is not a path
-map. `$metadata` declares entity and complex types plus enums; it is not a served-path inventory. So Backlot's side cannot be `/openapi.json`: the response models under `/msgraph`
-allow extra fields and name none of them, deliberately, because a Graph response carries thirty
-keys and mirroring that in a Pydantic model would be a second declaration to keep in step.
+map. So Backlot's side cannot be `/openapi.json`: the response models under `/msgraph` allow extra
+fields and name none of them, deliberately, because a Graph response carries thirty keys and
+mirroring that in a Pydantic model would be a second declaration to keep in step.
 
 What the vendor's declaration is compared against is a sample of a running server's answers.
 Backlot starts on a free port and samples the Teams read surface as the service account. The walk

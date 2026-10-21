@@ -339,7 +339,7 @@ CREATE INDEX IF NOT EXISTS idx_slack_channel_author ON slack_messages(channel, a
 -- messages it must avoid. Graph's own spelling is epoch MILLIseconds as a decimal string
 -- (`"1616965872395"`), quoted from the vendor's channel-list-messages example, so a second holds a
 -- thousand messages -- assigned once at import and probed within the channel (see
--- backlot.importer.byo's `_msteams_id`).
+-- `_Loader._message_id` in backlot.importer.byo).
 --
 -- `reply_to_id` is Graph's own `replyToId`: NULL on a root, the ROOT's id on a reply. That is the
 -- vendor's model rather than slack's `thread_ts` (which a root carries for itself), so a top-level
@@ -347,8 +347,8 @@ CREATE INDEX IF NOT EXISTS idx_slack_channel_author ON slack_messages(channel, a
 -- returning "the list of messages (without the replies)". `thread_seq` orders the replies below a
 -- root and is 0 on the root, so the two agree by construction.
 --
--- `subject` is the chatMessage field of that name, null on almost every message; `content_type`
--- is the `body.contentType` ("text" or "html") the corpus wrote its content as.
+-- `subject` is the chatMessage field of that name, null where the corpus states none;
+-- `content_type` is the `body.contentType` ("text" or "html") the corpus wrote its content as.
 CREATE TABLE IF NOT EXISTS msteams_messages (
     channel TEXT NOT NULL, id TEXT NOT NULL, author_email TEXT NOT NULL,
     content TEXT NOT NULL,
@@ -367,8 +367,8 @@ CREATE TABLE IF NOT EXISTS msteams_messages (
 -- before it (see byo._thread_seconds), so `created_ts` and `thread_seq` rise together.
 CREATE INDEX IF NOT EXISTS idx_msteams_thread
     ON msteams_messages(channel, reply_to_id, created_ts);
--- The channel's members are its distinct speakers; without this the DISTINCT is a per-channel row
--- scan on every `channels/{id}/members` call.
+-- Lets the import-time membership check seek a private channel's speakers rather than scan the
+-- channel.
 CREATE INDEX IF NOT EXISTS idx_msteams_channel_author
     ON msteams_messages(channel, author_email);
 
@@ -2356,9 +2356,9 @@ def _fts_table(source_type: str) -> str:
 
 # Sources with no `title` column. The FTS index keeps a `title` column for every source so its shape
 # and the queries over it stay uniform; for these it is fed a constant.
-# A Teams message has a `subject`, but it is null on almost every one and a corpus is not asked
-# for a title it has no use for — so the column is a nullable service field, not the shared
-# `title`, and this source indexes `content` alone the way slack does.
+# A Teams message has a `subject`, null where the corpus states none, and a corpus is not asked for
+# a title it has no use for — so the column is a nullable service field, not the shared `title`,
+# and this source indexes `content` alone the way slack does.
 TITLELESS = frozenset({"slack", "msteams"})
 
 
@@ -2847,9 +2847,8 @@ def count_msteams_top_level(conn, channel, visible_ids=None) -> int:
 
 
 def msteams_by_id(conn, channel, message_id, visible_ids=None) -> sqlite3.Row | None:
-    """One message by its (channel, id) — a root or a reply alike, since ``GET
-    .../messages/{id}/replies/{id}`` and ``GET .../messages/{id}`` both resolve against the whole
-    channel."""
+    """One message by its (channel, id), a root or a reply alike; each route decides which of the
+    two it serves."""
     sql = f"SELECT * FROM {table('msteams')} WHERE channel = ? AND id = ?"
     params: list = [channel, message_id]
     clause, cparams = _acl_clause("msteams", visible_ids=visible_ids)
@@ -3430,8 +3429,10 @@ def group_members(conn, group_id) -> list[sqlite3.Row]:
 
 # --- channel membership, for the sources whose documents are conversations -------
 #
-# Slack and Teams ask the same two questions of a channel — who is in it, and how many — and
-# answer them from the same two facts, so the SQL is written once and parameterized by source.
+# A private channel's members are the people granted it, for Slack and Teams alike, and a speaker
+# outside them is refused at import for both; that SQL is written once and parameterized by
+# source. A PUBLIC channel's members differ by vendor: Slack's are its speakers (below), while a
+# standard Teams channel's are the whole team, which `routers.msteams` answers from the directory.
 # Both are keyed `(channel, <message id>)` with the channel FIRST (see ID_COLUMNS), which is what
 # lets a grant row name its container without joining the document table; a source whose grouping
 # column is not part of its key has no membership in this sense and must not be passed here.
@@ -3494,11 +3495,12 @@ def conversation_member_emails(conn, source_type, channel, limit=100, offset=0) 
     """One page of a channel's members, in email order.
 
     A private channel's members are the people who may read it
-    (:func:`conversation_members_by_grant`). A public channel's are the people who have spoken in
-    it — everyone in the org may read a public channel, and both vendors list public channels to
-    people who are not in them, so readership cannot be the membership there. Speaking is the only
-    other per-channel signal a corpus carries, and answering with the whole roster instead would
-    give every public channel the same members, which neither real API can produce.
+    (:func:`conversation_members_by_grant`). A public Slack channel's are the people who have spoken
+    in it — everyone in the org may read a public channel, and Slack lists public channels to people
+    who are not in them, so readership cannot be the membership there. Speaking is the only other
+    per-channel signal a corpus carries, and answering with the whole roster instead would give
+    every public channel the same members, which real Slack cannot produce. (A standard Teams
+    channel's members ARE the whole team; the Teams router does not ask this.)
 
     The public path is index-only on the source's (channel, author_email) index, so a page costs a
     seek rather than a scan of the channel; the private path pages a set small enough to hold (a
@@ -3522,9 +3524,9 @@ def conversation_membership_violations(conn, source_type) -> list[tuple[str, str
     """``(channel, email)`` for every speaker who cannot read the private channel they spoke in.
 
     Speaking in a channel means being in it, and a member of a private channel can read it — so a
-    speaker outside that channel's grantees is two facts that cannot both hold: the same person is
-    served by :func:`conversation_member_emails` and told the channel does not exist by the
-    router. The corpus has no way to say "left the channel", which is the one state the real APIs
+    speaker outside that channel's grantees is two facts that cannot both hold: the same person
+    posted in the channel and is refused it by the router (Slack's `channel_not_found`, Teams'
+    403). The corpus has no way to say "left the channel", which is the one state the real APIs
     reach this from, so within this model it is a corpus that cannot be true.
 
     Only PRIVATE channels can produce it — a public channel's org grant covers every principal —

@@ -195,10 +195,9 @@ def _principal(pid: str) -> tuple[str, str]:
 def _speakers(rec: dict, src: str, author: str) -> list[str]:
     """Everyone who speaks in a document: its author, and for a threaded post its repliers too.
 
-    A reply is a message by someone who is in the channel — the same fact ``conversations.members``
-    and Graph's ``channels/{id}/members`` serve — so the two have to be one list. Ordered and
-    deduplicated, the author first, because it becomes a grant list and the order is what a reader
-    sees."""
+    A reply is a message by someone who is in the channel, so the people who post in a private
+    channel are among those who may read it. Ordered and deduplicated, the author first, because it
+    becomes a grant list and the order is what a reader sees."""
     people = [author]
     if src in THREADED_REPLIES:
         people += [r.get("author_email") for r in rec.get("replies") or []]
@@ -3726,8 +3725,8 @@ def _load_records_into(
             f"these people speak in a private {conv} channel they cannot read: "
             + shown
             + (f" (and {rest} more)" if rest > 0 else "")
-            + ". Posting in a channel is being in it, so each of them is listed among its members "
-            "while the method that describes the channel answers them as if it did not exist. "
+            + ". Posting in a channel is being in it, yet each of them is refused the channel "
+            "they posted in. "
             "Name them in that channel's `readers`, or let `visibility: private` name them by "
             "writing them as the thread's speakers."
         )

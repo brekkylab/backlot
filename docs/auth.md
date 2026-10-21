@@ -223,10 +223,9 @@ header, and an `innerError` of `date`, `request-id` and `client-request-id`:
 | A JWT (three base64url segments) that names no application | `NoAppIdInToken` |
 | A token that resolves to nobody, or any token under another scheme (`token …`, `Basic …`) or with a word after it | `Protocol 'Bearer' failed to validate because The token could not be read.` |
 
-A valid token under `token` or `Basic` is that last refusal too: only `Bearer` is read. Two
-`Authorization` headers are a `400` HTML page from the front Graph sits behind, before either is
-read. The credential is read before the path and the method: an unknown path, or `POST`/`DELETE`
-on `/me`, with no valid token is the same 401. `error.code` is the stable contract; human-readable
+Two `Authorization` headers are a `400` HTML page from the front Graph sits behind, before either is
+read. The credential is read before the path and the method: an unknown path, or `POST`/`DELETE` on
+`/me`, with no valid token is the same 401. `error.code` is the stable contract; human-readable
 messages can change.
 
 ### Notion — `Bearer`

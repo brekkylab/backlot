@@ -5,8 +5,8 @@ Base URL for a client: ``http://<host>/msgraph/v1.0`` — the path real Graph se
 
 Unlike Slack, Graph answers with real HTTP status codes and an ``{"error": {...}}`` body; the
 envelope and the code strings live in :mod:`backlot.errors.msgraph`. Collections are OData:
-``@odata.context``, ``@odata.count``, ``value`` and an absolute ``@odata.nextLink`` carrying a
-``$skiptoken``.
+``@odata.context``, ``value`` and an absolute ``@odata.nextLink``, with a page's ``@odata.count``
+on the Teams collections (see ``docs/supported-sources.md`` for the directory's).
 
 Response shapes, status codes and query-option answers were measured against graph.microsoft.com
 on 2026-10-13 and 2026-10-20, with app-only and delegated tokens on a Teams tenant, a member and a
@@ -66,8 +66,7 @@ _CHANNEL_MEMBERSHIP = ("standard", "private", "unknownFutureValue", "shared")
 _MESSAGE_PROPERTIES = frozenset(
     "attachments body channelIdentity chatId createdDateTime deletedDateTime etag eventDetail from "
     "id importance lastEditedDateTime lastModifiedDateTime locale mentions messageHistory "
-    "messageType policyViolation reactions replyToId subject summary webUrl hostedContents "
-    "replies".split()
+    "messageType policyViolation reactions replyToId subject summary webUrl".split()
 )
 # `conversationMember` is what a refusal names; its `aadUserConversationMember` subtype is what
 # every member here is, so its properties are selectable too.
@@ -137,7 +136,7 @@ _P_MESSAGES = _P_PAGED + [
         "$expand",
         description=(
             "`replies` to include each message's replies inline, up to 200 per message, with "
-            "`replies@odata.count` and `replies@odata.nextLink` beside them."
+            "`replies@odata.context`, a count when there are any, and a nextLink past 200."
         ),
     ),
 ]
@@ -219,6 +218,10 @@ def _options(request: Request, *, directory: bool = False) -> dict[str, _Option]
         if directory and not dollar:
             raise msgraph.request_bad_request(f"Unrecognized query argument specified: '{key}'.")
         if base in out:
+            if out[base].dollar != dollar:
+                raise msgraph.bad_request(
+                    f"An item with the same key has already been added. Key: ${base}"
+                )
             raise msgraph.bad_request(
                 f"Query option '${base}' was specified more than once, but it must be specified "
                 "at most once."
@@ -244,16 +247,20 @@ def _integer(raw: str) -> int:
     return int(m.group(1))
 
 
+_INT32 = 2**31 - 1
+
+
 def _top(opts, default: int, maximum: int) -> int:
-    """A message or reply page's ``$top``, refused where Graph refuses it."""
+    """A message or reply page's ``$top``: past Int32 and then past the method's limit, the
+    validator names the limit it hit."""
     raw = _value(opts, "top")
     if raw is None:
         return default
     value = _integer(raw)
+    if value > _INT32:
+        raise msgraph.top_too_large(_INT32, raw)
     if value > maximum:
         raise msgraph.top_too_large(maximum, raw)
-    if value == 0:
-        raise msgraph.bad_request("PageSize needs to be more than 0. (Parameter 'pageSize')")
     return value
 
 
@@ -360,6 +367,20 @@ def _filter(opts, properties, *, refusal, **kwargs):
         raise refusal(e, raw)
 
 
+def _filter_refusal(type_name: str):
+    """The binder's refusal of a ``$filter`` over ``type_name``."""
+
+    def refuse(e: FilterError, raw: str):
+        if e.kind == "property":
+            return msgraph.bad_request(
+                f"Invalid filter clause: Could not find a property named '{e.name}' on type "
+                f"'microsoft.graph.{type_name}'."
+            )
+        return _channel_filter_refusal(e, raw)
+
+    return refuse
+
+
 def _channel_filter_refusal(e: FilterError, raw: str):
     if e.kind == "property":
         message = f"Could not find a property named '{e.name}' on type 'microsoft.graph.channel'."
@@ -452,6 +473,128 @@ def _search(raw: str):
         return result
 
     return keep
+
+
+# --- one query, read the way a Teams route reads it ------------------------
+#
+# Measured order, per request: the OData binder resolves every property a `$filter`, `$orderby`,
+# `$select` or `$expand` names (an `$expand` must name a navigation property), then the
+# validator refuses the options the method allows none of and a `$top` past its limit, then the
+# method's own checks run, and only then is the team, channel or message looked up.
+
+# The validator's order, where a request carries more than one option it refuses.
+_VALIDATOR_ORDER = ("Top", "Skip", "SkipToken", "OrderBy", "Filter", "Count", "Search", "Expand")
+
+
+@dataclass(frozen=True)
+class _Method:
+    type_name: str
+    properties: frozenset[str]
+    navigations: frozenset[str]
+    refused: frozenset[str] = frozenset()
+    # The method's `$top` limit, None where the validator refuses `$top` outright.
+    top_max: int | None = None
+
+
+@dataclass(frozen=True)
+class _Query:
+    select: list[str] | None
+    echoed: list[str] | None
+    keep: object | None
+    expand: list[str]
+
+
+def _read_query(opts, method: _Method, **filter_kwargs) -> _Query:
+    """Bind, then validate, ``opts`` for ``method``."""
+    keep = _filter(
+        opts, method.properties, refusal=_filter_refusal(method.type_name), **filter_kwargs
+    )
+    if (raw := _value(opts, "orderby")) is not None:
+        known = {p.casefold() for p in method.properties}
+        for term in (t.strip() for t in raw.split(",") if t.strip()):
+            name = term.split()[0]
+            if name.casefold() not in known:
+                raise msgraph.bad_request(
+                    f"Could not find a property named '{name}' on type "
+                    f"'microsoft.graph.{method.type_name}'."
+                )
+    select, echoed = _select(opts, method.properties | method.navigations, method.type_name)
+    expand = []
+    if raw := _value(opts, "expand"):
+        navs = {n.casefold(): n for n in method.navigations}
+        for name in (n.strip() for n in raw.split(",") if n.strip()):
+            if name.casefold() not in navs:
+                raise msgraph.unknown_property(name, method.type_name)
+            expand.append(navs[name.casefold()])
+    for option in _VALIDATOR_ORDER:
+        if option.lower() not in opts:
+            continue
+        if option in method.refused:
+            raise msgraph.option_not_allowed(option)
+        if option == "Top" and method.top_max is not None:
+            _top(opts, method.top_max, method.top_max)
+    return _Query(select, echoed, keep, expand)
+
+
+_TEAM_NAVIGATIONS = frozenset(
+    "allChannels channels group incomingChannels installedApps members operations "
+    "permissionGrants photo primaryChannel schedule tags template".split()
+)
+_ALL = frozenset(_VALIDATOR_ORDER)
+_JOINED_TEAMS = _Method(
+    "team",
+    frozenset(
+        "classification createdDateTime description displayName firstChannelName funSettings "
+        "guestSettings id internalId isArchived isMembershipLimitedToOwners memberSettings "
+        "messagingSettings specialization summary tenantId visibility webUrl discoverySettings "
+        "tagSettings".split()
+    ),
+    _TEAM_NAVIGATIONS,
+    refused=_ALL - {"Filter"},
+)
+_CHANNEL_NAVIGATIONS = frozenset(
+    "allMembers enabledApps filesFolder members messages sharedWithTeams tabs".split()
+)
+# The listing's `$top` and `$skiptoken` are refused after the validator, in words of their own.
+_CHANNEL_LIST = _Method(
+    "channel",
+    _CHANNEL_PROPERTIES,
+    _CHANNEL_NAVIGATIONS,
+    refused=frozenset({"Skip", "Search", "OrderBy", "Expand", "Count"}),
+)
+_CHANNEL_GET = _Method(
+    "channel",
+    _CHANNEL_PROPERTIES,
+    _CHANNEL_NAVIGATIONS,
+    refused=frozenset({"Top", "SkipToken", "OrderBy", "Filter", "Count", "Search", "Expand"}),
+)
+_MESSAGE_NAVIGATIONS = frozenset({"hostedContents", "replies"})
+_MESSAGE_LIST = _Method(
+    "chatMessage",
+    _MESSAGE_PROPERTIES,
+    _MESSAGE_NAVIGATIONS,
+    refused=frozenset({"OrderBy", "Count", "Search"}),
+    top_max=_MESSAGES_MAX,
+)
+_REPLY_LIST = _Method(
+    "chatMessage",
+    _MESSAGE_PROPERTIES,
+    _MESSAGE_NAVIGATIONS,
+    refused=frozenset({"OrderBy", "Filter", "Count", "Search"}),
+    top_max=_MESSAGES_MAX,
+)
+_MESSAGE_GET = _Method(
+    "chatMessage",
+    _MESSAGE_PROPERTIES,
+    _MESSAGE_NAVIGATIONS,
+    refused=frozenset({"Top", "Skip", "SkipToken", "OrderBy", "Filter", "Count"}),
+)
+_MEMBER_LIST = _Method(
+    "conversationMember",
+    _MEMBER_PROPERTIES,
+    frozenset(),
+    refused=frozenset({"Skip", "OrderBy", "Count", "Search"}),
+)
 
 
 # --- entity builders -----------------------------------------------------
@@ -918,11 +1061,37 @@ def _channel_fragment(team_id: str, channel_id: str) -> str:
 
 # --- endpoints -----------------------------------------------------------
 
+_USER_NAVIGATIONS = frozenset(
+    "activities adhocCalls agreementAcceptances appRoleAssignments authentication calendar "
+    "calendarGroups calendarView calendars chats cloudClipboard cloudPCs contactFolders contacts "
+    "createdObjects dataSecurityAndGovernance deviceManagementTroubleshootingEvents directReports "
+    "drive drives employeeExperience events extensions followedSites inferenceClassification "
+    "insights joinedTeams licenseDetails mailFolders managedAppRegistrations managedDevices manager "
+    "memberOf messages notes oauth2PermissionGrants onPremisesSyncBehavior onenote onlineMeetings "
+    "outlook ownedDevices ownedObjects people permissionGrants photo photos planner presence "
+    "registeredDevices scopedRoleMemberOf settings solutions sponsorOf sponsors teamwork todo "
+    "transitiveMemberOf".split()
+)
 
-def _single_entity(opts) -> None:
-    """``/me`` and ``/users/{id}`` refuse a filter, and ignore ``$top``."""
-    if "filter" in opts:
+
+def _user_expand(opts) -> None:
+    """The directory binds ``$expand`` to a user's navigation properties; it expands nothing here,
+    since a corpus states none of them."""
+    if raw := _value(opts, "expand"):
+        navs = {n.casefold() for n in _USER_NAVIGATIONS}
+        for name in (n.strip() for n in raw.split(",") if n.strip()):
+            if name.casefold() not in navs:
+                raise msgraph.unknown_property(name, "user")
+
+
+def _single_person(opts) -> None:
+    """``/me`` and ``/users/{id}`` refuse a filter, a search and a page token, and ignore
+    ``$top``, ``$orderby`` and ``$count``."""
+    if "filter" in opts or "search" in opts:
         raise msgraph.unsupported_query("The specified filter against a single entity is invalid.")
+    if "skiptoken" in opts:
+        raise msgraph.request_bad_request("Specified $skiptoken is invalid.")
+    _user_expand(opts)
 
 
 @router.get("/me", response_model=GraphResponse, openapi_extra={"parameters": [_P_SELECT]})
@@ -930,7 +1099,7 @@ async def me(request: Request):
     conn = auth.conn(request)
     caller = _caller(request)
     opts = _options(request, directory=True)
-    _single_entity(opts)
+    _single_person(opts)
     select, echoed = _select(opts, None, "user")
     return {
         "@odata.context": _context("users", echoed) + "/$entity",
@@ -938,13 +1107,11 @@ async def me(request: Request):
     }
 
 
-def _joined_teams(request: Request) -> dict:
+def _joined_teams(opts) -> dict:
     """The teams the caller is in — the one this corpus models, for every caller. ``$select``
-    projects it, ``$filter`` is ignored, and the paging and shaping options are refused."""
-    opts = _options(request)
-    _refuse_options(opts, "Top", "SkipToken", "Count", "OrderBy", "Expand")
-    select, echoed = _select(opts, frozenset(_team()), "team")
-    return _collection("teams", [_project(_team(), select)], select=echoed)
+    projects it, ``$filter`` is ignored, and every other option is refused."""
+    q = _read_query({k: v for k, v in opts.items() if k != "filter"}, _JOINED_TEAMS)
+    return _collection("teams", [_project(_team(), q.select)], select=q.echoed)
 
 
 @router.get(
@@ -955,7 +1122,7 @@ async def me_joined_teams(request: Request):
     of its CHANNELS they may see is what the ACL decides, and that is answered by
     ``/teams/{id}/channels``."""
     _caller(request)
-    return _joined_teams(request)
+    return _joined_teams(_options(request))
 
 
 @router.get("/users", response_model=GraphResponse, openapi_extra={"parameters": _P_USERS})
@@ -977,10 +1144,15 @@ async def users_list(request: Request):
     top = _USERS_DEFAULT
     if (raw_top := _value(opts, "top")) is not None:
         top = _integer(raw_top)
+        if top > _INT32:
+            raise msgraph.request_bad_request("Invalid value for '$top'.")
         if not 1 <= top <= _USERS_MAX:
             raise msgraph.unsupported_query(
                 f"Invalid page size specified: '{top}'. Must be between 1 and 999 inclusive."
             )
+    if "skip" in opts:
+        raise msgraph.request_bad_request("'$skip' is not supported by the service.")
+    _user_expand(opts)
     offset = _offset(
         opts,
         lambda: msgraph.unsupported_query("Unable to execute query; invalid page token specified."),
@@ -1056,7 +1228,7 @@ async def users_get(request: Request, user_id: str):
     conn = auth.conn(request)
     _caller(request)
     opts = _options(request, directory=True)
-    _single_entity(opts)
+    _single_person(opts)
     select, echoed = _select(opts, None, "user")
     email = _user_or_404(request, conn, user_id)
     return {
@@ -1075,8 +1247,9 @@ async def users_joined_teams(request: Request, user_id: str):
     is in the one team."""
     conn = auth.conn(request)
     _caller(request)
+    body = _joined_teams(_options(request))
     _user_or_404(request, conn, user_id)
-    return _joined_teams(request)
+    return body
 
 
 def _resolve_user(request: Request, conn, user_id: str) -> str | None:
@@ -1120,32 +1293,25 @@ async def channels_list(request: Request, team_id: str):
     conn = auth.conn(request)
     caller = _caller(request)
     _check_team_id(team_id)
-    if team_id.lower() != _team_id():
-        raise msgraph.team_not_found(team_id)
     opts = _options(request)
+    q = _read_query(opts, _CHANNEL_LIST, enums={"membershipType": _CHANNEL_MEMBERSHIP})
     for option, name in (("top", "Top"), ("skiptoken", "SkipToken")):
         if option in opts:
             raise msgraph.bad_request(
                 f"The query specified in the URI is not valid. Query option '{name}' is not "
                 "allowed."
             )
-    _refuse_options(opts, "OrderBy", "Expand", "Count")
-    select, echoed = _select(opts, _CHANNEL_PROPERTIES, "channel")
-    keep = _filter(
-        opts,
-        _CHANNEL_PROPERTIES,
-        refusal=_channel_filter_refusal,
-        enums={"membershipType": _CHANNEL_MEMBERSHIP},
-    )
+    if team_id.lower() != _team_id():
+        raise msgraph.team_not_found(team_id)
     ids = auth.visible_ids(request, caller)
     visible = _channel_visibility(request, conn, ids)
     channels = [
         _channel(request, conn, n, single=False) for n in _channel_names(conn) if visible(n)
     ]
-    if keep is not None:
-        channels = [c for c in channels if keep(c)]
-    page = [_project(c, select) for c in channels]
-    return _collection(f"teams('{quote(_team_id(), safe='')}')/channels", page, select=echoed)
+    if q.keep is not None:
+        channels = [c for c in channels if q.keep(c)]
+    page = [_project(c, q.select) for c in channels]
+    return _collection(f"teams('{quote(_team_id(), safe='')}')/channels", page, select=q.echoed)
 
 
 @router.get(
@@ -1156,32 +1322,16 @@ async def channels_list(request: Request, team_id: str):
 async def channels_get(request: Request, team_id: str, channel_id: str):
     conn = auth.conn(request)
     caller = _caller(request)
-    ids = auth.visible_ids(request, caller)
-    name = _resolve_channel(request, conn, team_id, channel_id, ids, "channel")
-    opts = _options(request)
-    _refuse_options(opts, "Expand", "Filter", "Top", "Count")
-    select, echoed = _select(opts, _CHANNEL_PROPERTIES, "channel")
+    _check_team_id(team_id)
+    q = _read_query(_options(request), _CHANNEL_GET, enums={"membershipType": _CHANNEL_MEMBERSHIP})
+    name = _resolve_channel(
+        request, conn, team_id, channel_id, auth.visible_ids(request, caller), "channel"
+    )
     return {
-        "@odata.context": _context(f"teams('{quote(_team_id(), safe='')}')/channels", echoed)
+        "@odata.context": _context(f"teams('{quote(_team_id(), safe='')}')/channels", q.echoed)
         + "/$entity",
-        **_project(_channel(request, conn, name, single=True), select),
+        **_project(_channel(request, conn, name, single=True), q.select),
     }
-
-
-def _message_query(opts) -> tuple[list[str] | None, list[str] | None, bool]:
-    """What a message listing was asked for: its ``select`` (and the echoed list), and whether
-    ``expand=replies``. Every other option is refused the way Graph refuses it on this method."""
-    if "filter" in opts:
-        raise msgraph.bad_request("Parameter 'Filter' not supported for this request.")
-    _refuse_options(opts, "OrderBy", "Count")
-    expand = False
-    if raw := _value(opts, "expand"):
-        for name in (n.strip() for n in raw.split(",")):
-            if name.lower() != "replies":
-                raise msgraph.unknown_property(name, "chatMessage")
-            expand = True
-    select, echoed = _select(opts, _MESSAGE_PROPERTIES, "chatMessage")
-    return select, echoed, expand
 
 
 @router.get(
@@ -1194,21 +1344,31 @@ async def channel_messages(request: Request, team_id: str, channel_id: str):
 
     Ordered by the reply chain's newest activity, measured: a new reply to the oldest root moves it
     to the top of the listing, though the root's own ``lastModifiedDateTime`` does not change.
+    ``$skip`` skips that many roots; a ``$filter`` over declared properties is refused all the
+    same.
     """
     conn = auth.conn(request)
     caller = _caller(request)
+    _check_team_id(team_id)
+    opts = _options(request)
+    q = _read_query(opts, _MESSAGE_LIST)
+    if "filter" in opts:
+        raise msgraph.bad_request("Parameter 'Filter' not supported for this request.")
+    top = _top(opts, _MESSAGES_DEFAULT, _MESSAGES_MAX)
+    if top == 0:
+        raise msgraph.bad_request("PageSize needs to be more than 0. (Parameter 'pageSize')")
+    offset = _offset(opts, lambda: msgraph.bad_request("UnknownError"))
+    if (raw_skip := _value(opts, "skip")) is not None:
+        offset += _integer(raw_skip)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
-    opts = _options(request)
-    select, echoed, expand = _message_query(opts)
-    top = _top(opts, _MESSAGES_DEFAULT, _MESSAGES_MAX)
-    offset = _offset(opts, lambda: msgraph.bad_request("UnknownError"))
+    expand = "replies" in q.expand
     total = store.count_msteams_top_level(conn, name, ids)
     rows = store.list_msteams_top_level(conn, name, ids, limit=top, offset=offset)
     value = []
     for r in rows:
         if not expand:
-            value.append(_project(_message(request, conn, r), select))
+            value.append(_project(_message(request, conn, r), q.select))
             continue
         reply_total = store.count_msteams_replies(conn, name, r["id"], ids)
         replies = store.list_msteams_replies(conn, name, r["id"], ids, limit=_EXPAND_REPLIES)
@@ -1219,28 +1379,36 @@ async def channel_messages(request: Request, team_id: str, channel_id: str):
             replies=[_message(request, conn, x) for x in replies],
             reply_total=reply_total,
         )
-        value.append(_project(message, select))
+        value.append(_project(message, q.select))
     return _collection(
         f"{_channel_fragment(team_id, channel_id)}/messages",
         value,
-        select=echoed,
+        select=q.echoed,
         link=_next_link(request, offset, len(value), total),
     )
 
 
-def _single_message_query(opts) -> tuple[list[str] | None, list[str] | None]:
-    """A single message refuses ``$filter`` and ``$top``, and sends ``expand=replies`` to the
-    replies route."""
-    _refuse_options(opts, "Filter", "Top")
-    if raw := _value(opts, "expand"):
-        name = raw.split(",")[0].strip()
-        if name.lower() == "replies":
-            raise msgraph.bad_request(
-                "Expand query parameter 'replies' is not supported for this request. Use the "
-                "/replies endpoint to get the replies for a message."
-            )
-        raise msgraph.unknown_property(name, "chatMessage")
-    return _select(opts, _MESSAGE_PROPERTIES, "chatMessage")
+def _single_message_query(opts, *, refer: bool) -> _Query:
+    """A single message's query. ``expand=replies`` is refused, pointing at the replies route
+    (``refer``) on a root and not on a reply, as live words them."""
+    q = _read_query(opts, _MESSAGE_GET)
+    if "replies" in q.expand:
+        raise msgraph.bad_request(
+            "Expand query parameter 'replies' is not supported for this request."
+            + (" Use the /replies endpoint to get the replies for a message." if refer else "")
+        )
+    return q
+
+
+def _message_row(conn, name: str, message_id: str, ids):
+    """The row a message id names, refused as Graph refuses it: an id that is not one is a 400, and
+    one that names nothing a 403 to a delegated caller, which is what every Backlot token is."""
+    if not message_id.isascii() or not message_id.isdigit():
+        raise msgraph.bad_request("UnknownError")
+    row = store.msteams_by_id(conn, name, message_id, ids)
+    if row is None:
+        raise msgraph.forbidden("UnknownError")
+    return row
 
 
 @router.get(
@@ -1249,25 +1417,21 @@ def _single_message_query(opts) -> tuple[list[str] | None, list[str] | None]:
     openapi_extra={"parameters": [_P_SELECT]},
 )
 async def channel_message(request: Request, team_id: str, channel_id: str, message_id: str):
-    """One ROOT message. A reply's id is not resolved here — live answers it 404 — but at
-    ``…/messages/{rootId}/replies/{replyId}``; an id that names no message is a 403 to a delegated
-    caller, which is what every Backlot token is, and one that is not a message id at all a 400."""
+    """One ROOT message. A reply's id is a 404 here; a reply is read at
+    ``…/messages/{rootId}/replies/{replyId}``."""
     conn = auth.conn(request)
     caller = _caller(request)
+    _check_team_id(team_id)
+    q = _single_message_query(_options(request), refer=True)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
-    if not message_id.isascii() or not message_id.isdigit():
-        raise msgraph.bad_request("UnknownError")
-    select, echoed = _single_message_query(_options(request))
-    row = store.msteams_by_id(conn, name, message_id, ids)
-    if row is None:
-        raise msgraph.forbidden("UnknownError")
+    row = _message_row(conn, name, message_id, ids)
     if row["reply_to_id"] is not None:
         raise msgraph.message_not_found()
     return {
-        "@odata.context": _context(f"{_channel_fragment(team_id, channel_id)}/messages", echoed)
+        "@odata.context": _context(f"{_channel_fragment(team_id, channel_id)}/messages", q.echoed)
         + "/$entity",
-        **_project(_message(request, conn, row), select),
+        **_project(_message(request, conn, row), q.select),
     }
 
 
@@ -1278,23 +1442,29 @@ async def channel_message(request: Request, team_id: str, channel_id: str, messa
 )
 async def message_replies(request: Request, team_id: str, channel_id: str, message_id: str):
     """A message's replies, newest first. An id that names no message, or names a reply (Teams
-    threads are one level deep), has none: live answers both with an empty collection."""
+    threads are one level deep), has none: live answers both with an empty collection, and a
+    ``$skip`` with none as well."""
     conn = auth.conn(request)
     caller = _caller(request)
+    _check_team_id(team_id)
+    opts = _options(request)
+    q = _read_query(opts, _REPLY_LIST)
+    top = _top(opts, _MESSAGES_DEFAULT, _MESSAGES_MAX)
+    if top == 0:
+        raise msgraph.bad_request("PageSize needs to be more than 0. (Parameter 'pageSize')")
+    offset = _offset(opts, msgraph.backend_failure)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
-    opts = _options(request)
-    _refuse_options(opts, "Count")
-    select, echoed = _select(opts, _MESSAGE_PROPERTIES, "chatMessage")
-    top = _top(opts, _MESSAGES_DEFAULT, _MESSAGES_MAX)
-    offset = _offset(opts, msgraph.backend_failure)
-    total = store.count_msteams_replies(conn, name, message_id, ids)
-    rows = store.list_msteams_replies(conn, name, message_id, ids, limit=top, offset=offset)
-    value = [_project(_message(request, conn, r), select) for r in rows]
+    if "skip" in opts:
+        rows, total = [], 0
+    else:
+        total = store.count_msteams_replies(conn, name, message_id, ids)
+        rows = store.list_msteams_replies(conn, name, message_id, ids, limit=top, offset=offset)
+    value = [_project(_message(request, conn, r), q.select) for r in rows]
     return _collection(
         f"{_channel_fragment(team_id, channel_id)}/messages('{message_id}')/replies",
         value,
-        select=echoed,
+        select=q.echoed,
         link=_next_link(request, offset, len(value), total),
     )
 
@@ -1307,19 +1477,20 @@ async def message_replies(request: Request, team_id: str, channel_id: str, messa
 async def message_reply(
     request: Request, team_id: str, channel_id: str, message_id: str, reply_id: str
 ):
-    """One reply, addressed under its root."""
+    """One reply, addressed under its root. One that is under another root is a 404."""
     conn = auth.conn(request)
     caller = _caller(request)
+    _check_team_id(team_id)
+    q = _single_message_query(_options(request), refer=False)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages")
-    select, echoed = _single_message_query(_options(request))
-    row = store.msteams_by_id(conn, name, reply_id, ids)
-    if row is None or row["reply_to_id"] != message_id:
+    row = _message_row(conn, name, reply_id, ids)
+    if row["reply_to_id"] != message_id:
         raise msgraph.message_not_found()
     fragment = f"{_channel_fragment(team_id, channel_id)}/messages('{message_id}')/replies"
     return {
-        "@odata.context": _context(fragment, echoed) + "/$entity",
-        **_project(_message(request, conn, row), select),
+        "@odata.context": _context(fragment, q.echoed) + "/$entity",
+        **_project(_message(request, conn, row), q.select),
     }
 
 
@@ -1329,24 +1500,24 @@ async def message_reply(
     openapi_extra={"parameters": [_P_SELECT, _P_FILTER]},
 )
 async def channel_members(request: Request, team_id: str, channel_id: str):
-    """The channel's members, in one response: live answers ``$top`` with the whole list."""
+    """The channel's members, in one response: live answers ``$top`` with the whole list, and a
+    ``$skiptoken`` with a backend failure."""
     conn = auth.conn(request)
     caller = _caller(request)
+    _check_team_id(team_id)
+    opts = _options(request)
+    q = _read_query(opts, _MEMBER_LIST)
+    if "skiptoken" in opts:
+        raise msgraph.backend_failure()
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "members")
-    opts = _options(request)
-    _refuse_options(opts, "Count", "OrderBy")
-    if raw := _value(opts, "expand"):
-        raise msgraph.unknown_property(raw.split(",")[0].strip(), "conversationMember")
-    select, echoed = _select(opts, _MEMBER_PROPERTIES, "conversationMember")
-    keep = _filter(opts, _MEMBER_PROPERTIES, refusal=_member_filter_refusal)
     members = [_member(conn, e, channel_id) for e in _member_emails(request, conn, name)]
-    if keep is not None:
-        members = [m for m in members if keep(m)]
+    if q.keep is not None:
+        members = [m for m in members if q.keep(m)]
     return _collection(
         f"{_channel_fragment(team_id, channel_id)}/members",
-        [_project(m, select) for m in members],
-        select=echoed,
+        [_project(m, q.select) for m in members],
+        select=q.echoed,
     )
 
 

@@ -1,9 +1,8 @@
 """Auth helpers shared by the vendor routers.
 
 Each vendor carries credentials differently (Slack bearer/form token, Google/GitHub
-bearer, Atlassian Basic email:api_token, Linear a scheme-less API key, Microsoft Graph any
-spelling at all). These helpers
-extract the raw token, resolve it to a :class:`~backlot.acl.Caller` via the app's ACL, and
+bearer, Atlassian Basic email:api_token, Linear a scheme-less API key, Microsoft Graph `Bearer`
+in any case or no scheme at all). These helpers extract the raw token, resolve it to a :class:`~backlot.acl.Caller` via the app's ACL, and
 compute the caller's visible principal set. Error *shaping* (Slack's ``ok:false`` vs a
 real 401) stays in the routers.
 """

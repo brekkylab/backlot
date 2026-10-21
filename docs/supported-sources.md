@@ -572,8 +572,9 @@ compiled into SQL, and full introspection.
 ### Microsoft Teams — `/msgraph/v1.0`
 
 Microsoft Graph's own base path, so a Graph client changes its base URL and nothing else.
-Responses are OData: `@odata.context`, `@odata.count`, `value`, and an absolute `@odata.nextLink`
-carrying a `$skiptoken`. Errors are real status codes with an `{"error": {"code", "message"}}` body.
+Responses are OData: `@odata.context`, `value`, and an absolute `@odata.nextLink` carrying a
+`$skiptoken` (`$skipToken` on an expanded thread's continuation). Errors are real status codes with
+an `{"error": {"code", "message"}}` body.
 Shapes, status codes and query-option answers below were measured against graph.microsoft.com in
 October 2026, with app-only and delegated tokens, on a tenant with a private channel.
 
@@ -586,29 +587,44 @@ October 2026, with app-only and delegated tokens, on a tenant with a private cha
 | `users/{id}/joinedTeams` | The same answer as `me/joinedTeams` |
 | `teams/{team-id}/channels` | Every visible channel in one response: no paging. `$select`, `$filter` |
 | `teams/{team-id}/channels/{channel-id}` | `$select`; the method that reports `layoutType` and `summary` |
-| `teams/{team-id}/channels/{channel-id}/messages` | Root messages, newest reply chain first. `$top` (1–50, default 20), `$select`, `$expand=replies` |
+| `teams/{team-id}/channels/{channel-id}/messages` | Root messages, newest reply chain first. `$top` (1–50, default 20), `$skip`, `$select`, `$expand=replies` |
 | `.../messages/{message-id}` | A root; a reply's id is a `404` here, and an id that names nothing a `403` |
 | `.../messages/{message-id}/replies` | Newest first, paged as messages are |
-| `.../messages/{message-id}/replies/{reply-id}` | One reply |
+| `.../messages/{message-id}/replies/{reply-id}` | One reply; one of another root is a `404`, and an id that names nothing a `403` |
 | `teams/{team-id}/channels/{channel-id}/members` | `aadUserConversationMember` objects, all of them: `$top` is ignored. `$select`, `$filter` |
 
-`@odata.count` is the number of items on the page. A credential that does not resolve is the 401
-before anything else, on any path and any method, as it is live. Every answer carries `request-id`
-and `client-request-id` headers, the ids its `innerError` names, and a 200 is served as
-`application/json;odata.metadata=minimal;…` under `OData-Version: 4.0`.
+On the Teams collections `@odata.count` is the number of items on the page; on `/users` it is the
+total, sent only for an advanced query. A credential that does not resolve is the 401 before
+anything else, on any path and any method, as it is live. Every answer carries `request-id` and
+`client-request-id` headers — the ids its `innerError` names, the second echoing a GUID the caller
+sent — and a 200 is served as `application/json;odata.metadata=minimal;…` under `OData-Version:
+4.0`.
 
 Query option names match in any case; the Teams routes read them with or without the `$`, the
 directory's (`/me`, `/users`) refuse one without it, and every route refuses one given twice. A
 `$select` without the `$` projects the same but leaves the list out of `@odata.context`. Property
-names and enum members in `$select` and `$filter` match in any case and are answered in the
-declared spelling. `$top` is ASCII digits with an optional sign and surrounding blanks. Options
-Graph refuses are refused with its words: `$top` past a method's limit, a `$skiptoken` that does
-not decode (a `502` on replies, as live), `$filter`/`$orderby`/`$count` on messages, `$top`/
-`$orderby`/`$expand`/`$count` on channels, `$top`/`$skiptoken`/`$count`/`$orderby`/`$expand` on
-`joinedTeams`, `$filter` on `/me` and `/users/{id}`, and a property the type does not declare.
+names and enum members in `$select`, `$filter` and `$orderby` match in any case and are answered in
+the declared spelling, and an `$expand` must name a navigation property. `$top` is ASCII digits with
+an optional sign and surrounding blanks, within Int32.
+
+A Teams route reads its query in Graph's order: the property names a `$filter`, `$orderby`,
+`$select` or `$expand` uses, then the options the method allows none of, then its own checks, and
+only then the team, channel or message, so a refused query is a `400` whatever it names. The options
+each method refuses: the channel listing `$skip`, `$search`, `$orderby`, `$expand` and `$count`, and
+then `$top` and `$skiptoken` in words of its own; get-channel `$top`, `$skiptoken`, `$orderby`,
+`$filter`, `$count`, `$search` and `$expand`; the message listing `$orderby`, `$count` and
+`$search`, and a `$filter` over declared properties in words of its own; replies `$orderby`,
+`$filter`, `$count` and `$search`; a single message or reply `$top`, `$skip`, `$skiptoken`,
+`$orderby`, `$filter` and `$count`, and `expand=replies`; members `$skip`, `$orderby`, `$count` and
+`$search`, with a `$skiptoken` a `502`; `joinedTeams` every option but `$select` and `$filter`,
+which it ignores. On `/me` and `/users/{id}`, `$filter`, `$search` and `$skiptoken` are refused and
+`$top`, `$orderby` and `$count` ignored; `/users` refuses `$skip`. A `$skiptoken` that does not
+decode is a `400`, and a `502` on replies, as live.
+
 `$filter` supports `eq`, `ne`, `gt`/`ge`/`lt`/`le`, `in`, `startswith`, `endswith`, `contains`,
-`and`, `or` and `not`; the directory compares strings without regard to case, channels with it.
-On `/users`, `contains` is refused; `endswith`, `not` and `$search` (`"property:term"` clauses,
+`and`, `or`, `not` and `any`/`all` over a collection (`roles/any(r:r eq 'owner')`), with operators
+in any case; the directory compares strings without regard to case, channels and members with it. On
+`/users`, `contains` is refused; `endswith`, `not` and `$search` (`"property:term"` clauses,
 matching words that start with the term, joined by `AND`/`OR`) need `ConsistencyLevel: eventual`,
 and `ne` needs `$count=true` beside it as well. `$orderby` takes `displayName` and
 `userPrincipalName`, and is refused beside a `$filter` outside an advanced query.
@@ -633,10 +649,12 @@ is served as `messageType: unknownFutureValue` unless the request sends
 **Not modelled:** the order of an advanced directory query's results (live, an index order of its
 own; here, userPrincipalName order), owners (every member's `roles` is empty, and
 `summary.ownersCount` 0), deleted messages (live keeps them in the listing with `deletedDateTime`
-set), a system event's typed `eventDetail`, the `post` channel layout, chats, writes, and real
-tenant authorization. Imported reply times must advance by a whole second, and at most 1,000 ids fit
-one channel-second, both because an id is a creation millisecond; an edit must not precede its
-message.
+set), a system event's typed `eventDetail`, the `post` channel layout, the
+`19:<base64url>@thread.tacv2` id a private or General channel has live (every channel id here takes
+the 32-hex form), paging of a standard channel's members (all of the directory is one page), chats,
+writes, and real tenant authorization. Imported reply times must advance by a whole second, and at
+most 1,000 ids fit one channel-second, both because an id is a creation millisecond; an edit must
+not precede its message.
 
 ### Notion — `/notion/v1`
 

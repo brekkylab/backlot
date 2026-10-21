@@ -484,6 +484,14 @@ async def read_a_notion_body_as_express_does(request: Request, call_next):
     return refusal if refusal is not None else await call_next(request)
 
 
+def _is_guid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
 @app.middleware("http")
 async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
     """A `/msgraph` request reaches the Teams routes as Graph reads it, and answers with the headers
@@ -492,9 +500,9 @@ async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
     Two `Authorization` headers are refused by the front Graph sits behind before anything is read,
     with an HTML page rather than a Graph error. Every other request has its path rewritten to the
     spelling the routes match (``msteams.normalize_path``), and every answer carries the request's
-    id as `request-id` and `client-request-id` — the same id its `innerError` names — with a 200's
-    JSON served as OData under `OData-Version: 4.0` (measured against graph.microsoft.com,
-    2026-10-21).
+    id as `request-id` and `client-request-id` — the ids its `innerError` names, the second being
+    the caller's own where it sent a GUID one — with a 200's JSON served as OData under
+    `OData-Version: 4.0` (measured against graph.microsoft.com, 2026-10-21).
     """
     if not request.url.path.startswith("/msgraph/"):
         return await call_next(request)
@@ -507,13 +515,17 @@ async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
         )
     msteams.normalize_path(request.scope)
     request_id = str(uuid.uuid4())
+    sent = request.headers.get("client-request-id", "")
+    client_id = sent if _is_guid(sent) else None
     reset = msgraph_errors.REQUEST_ID.set(request_id)
+    reset_client = msgraph_errors.CLIENT_REQUEST_ID.set(client_id)
     try:
         response = await call_next(request)
     finally:
         msgraph_errors.REQUEST_ID.reset(reset)
+        msgraph_errors.CLIENT_REQUEST_ID.reset(reset_client)
     response.headers["request-id"] = request_id
-    response.headers["client-request-id"] = request_id
+    response.headers["client-request-id"] = client_id or request_id
     if response.status_code == 200 and response.headers.get("content-type", "").startswith(
         "application/json"
     ):

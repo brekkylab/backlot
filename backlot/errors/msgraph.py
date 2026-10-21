@@ -10,8 +10,6 @@ shapes. Most carry ``code``, ``message`` and an ``innerError`` of ``date``, ``re
 its own. A request the OData query validator refuses carries an EMPTY ``code``, a ``details``
 list, and the reason again as ``innerError.message``.
 
-Backlot generates its own correlation values, and does not yet echo a caller-supplied
-client-request-id.
 """
 
 from __future__ import annotations
@@ -29,10 +27,12 @@ def owns(path: str) -> bool:
     return path.startswith("/msgraph")
 
 
-# The id of the request being answered, which Graph sends both as the `request-id` and
-# `client-request-id` headers and inside every `innerError`. Set per request by the middleware in
-# `backlot.main`; a fresh one is minted where none is set.
+# The id of the request being answered, which Graph sends as the `request-id` header and inside
+# every `innerError` — and as `client-request-id` too, unless the caller sent one of its own. Set
+# per request by the middleware in `backlot.main`; a fresh one is minted where none is set.
 REQUEST_ID: ContextVar[str | None] = ContextVar("msgraph_request_id", default=None)
+# The `client-request-id` the caller sent, where it is a GUID; Graph echoes it, and mints none.
+CLIENT_REQUEST_ID: ContextVar[str | None] = ContextVar("msgraph_client_request_id", default=None)
 
 # What a 200 JSON body is served as, beside `OData-Version: 4.0`.
 JSON_MEDIA_TYPE = (
@@ -84,8 +84,10 @@ _GENERIC_CODE = {
 
 
 # --- 401 -------------------------------------------------------------------------------------
-# GET /v1.0/me with each credential shape below. The scheme is never checked: `bearer nope`,
-# `BEARER nope`, `token nope`, `Basic bm9wZTpub3Bl` and a bare `nope` all answer as `Bearer nope`.
+# GET /v1.0/me with each credential shape below. A token that resolves to nobody answers the same
+# under every spelling — `bearer nope`, `BEARER nope`, `token nope`, `Basic bm9wZTpub3Bl` and a bare
+# `nope` all answer as `Bearer nope` — and a valid one is read only after `Bearer` or with no
+# scheme (see `auth.msgraph_token`).
 
 JWT_MALFORMED_MESSAGE = "Protocol 'Bearer' failed to validate because The token could not be read."
 
@@ -242,9 +244,8 @@ def _inner(exc) -> dict:
     """The ``innerError`` real Graph sends on every error.
 
     ``date`` has no timezone suffix and no fractional seconds live ("2026-09-02T11:24:27"), so it
-    is formatted rather than handed to ``isoformat()``. The two ids are equal here: live they
-    differ only when the CLIENT supplied its own ``client-request-id``, which Backlot does not echo
-    yet. They are the ids the response's headers carry.
+    is formatted rather than handed to ``isoformat()``. The two ids are the ones the response's
+    headers carry: equal, unless the caller sent a GUID ``client-request-id`` of its own.
     """
     body: dict = {}
     code = getattr(exc, "inner", None)
@@ -256,7 +257,7 @@ def _inner(exc) -> dict:
     request_id = REQUEST_ID.get() or str(uuid.uuid4())
     body["date"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     body["request-id"] = request_id
-    body["client-request-id"] = request_id
+    body["client-request-id"] = CLIENT_REQUEST_ID.get() or request_id
     return body
 
 

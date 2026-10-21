@@ -1,7 +1,8 @@
 """The subset of an OData ``$filter`` Microsoft Graph's Teams and directory methods were measured
 to evaluate: comparisons (``eq ne gt ge lt le``), ``in``, ``startswith``/``endswith``/``contains``,
-``and``/``or``/``not`` and parentheses, over string, boolean, null and number literals. Property
-names and enum members are matched without regard to case, as Graph matches them.
+``and``/``or``/``not``, parentheses and ``any``/``all`` over a collection property
+(``roles/any(r:r eq 'owner')``), over string, boolean, null and number literals. Operators,
+property names and enum members are matched without regard to case, as Graph matches them.
 
 The parser knows nothing about any vendor. A refusal is a :class:`FilterError` naming what was
 wrong, and the router that asked turns it into its own vendor's words.
@@ -14,8 +15,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
 _TOKEN = re.compile(
-    r"\s*(?:(?P<string>'(?:[^']|'')*')|(?P<number>-?\d+(?:\.\d+)?)|(?P<word>[A-Za-z_][\w.]*)"
-    r"|(?P<punct>[(),]))"
+    r"\s*(?:(?P<string>'(?:[^']|'')*')|(?P<number>-?\d+(?:\.\d+)?)"
+    r"|(?P<lambda>[A-Za-z_]\w*/(?:any|all)\b)|(?P<word>[A-Za-z_][\w.]*)|(?P<punct>[(),:]))"
 )
 _COMPARE = {
     "eq": lambda a, b: a == b,
@@ -112,7 +113,7 @@ class _Parser:
 
     def _or(self) -> Predicate:
         left = self._and()
-        while (t := self._peek()) is not None and t.text == "or":
+        while (t := self._peek()) is not None and t.text.lower() == "or":
             self.i += 1
             right = self._and()
             left = (lambda a, b: lambda e: a(e) or b(e))(left, right)
@@ -120,7 +121,7 @@ class _Parser:
 
     def _and(self) -> Predicate:
         left = self._unary()
-        while (t := self._peek()) is not None and t.text == "and":
+        while (t := self._peek()) is not None and t.text.lower() == "and":
             self.i += 1
             right = self._unary()
             left = (lambda a, b: lambda e: a(e) and b(e))(left, right)
@@ -128,7 +129,7 @@ class _Parser:
 
     def _unary(self) -> Predicate:
         token = self._peek()
-        if token is not None and token.text == "not":
+        if token is not None and token.text.lower() == "not":
             if "not" in self.refuse:
                 raise FilterError("operator", name="not")
             self.i += 1
@@ -151,9 +152,11 @@ class _Parser:
             self._expect(")")
             fn = _FUNCTIONS[name]
             return lambda e: fn(self._fold(left(e)), self._fold(right(e)))
+        if token is not None and token.kind == "lambda":
+            return self._lambda()
         left, prop = self._operand()
         op = self._take()
-        if op.text == "in":
+        if op.text.lower() == "in":
             self._expect("(")
             values = [self._operand(enum_of=prop)[0]]
             while (t := self._peek()) is not None and t.text == ",":
@@ -161,13 +164,33 @@ class _Parser:
                 values.append(self._operand(enum_of=prop)[0])
             self._expect(")")
             return lambda e: self._fold(left(e)) in {self._fold(v(e)) for v in values}
-        if op.text not in _COMPARE:
+        name = op.text.lower()
+        if name not in _COMPARE:
             raise FilterError("syntax", position=op.position)
-        if op.text in self.refuse:
-            raise FilterError("operator", name=op.text)
+        if name in self.refuse:
+            raise FilterError("operator", name=name)
         right, _ = self._operand(enum_of=prop)
-        compare = _COMPARE[op.text]
+        compare = _COMPARE[name]
         return lambda e: compare(self._fold(left(e)), self._fold(right(e)))
+
+    def _lambda(self) -> Predicate:
+        """``collection/any(v:expr)`` or ``/all``: ``expr`` over each element, bound to ``v``."""
+        token = self._take()
+        collection, _, quantifier = token.text.partition("/")
+        name = self.properties.get(collection.casefold())
+        if name is None:
+            raise FilterError("property", name=collection)
+        self._expect("(")
+        variable = self._take()
+        if variable.kind != "word":
+            raise FilterError("syntax", position=variable.position)
+        self._expect(":")
+        self.variables = {**getattr(self, "variables", {}), variable.text: name}
+        inner = self._or()
+        self._expect(")")
+        test = any if quantifier.lower() == "any" else all
+        var = variable.text
+        return lambda e: test(inner({**e, var: item}) for item in (e.get(name) or []))
 
     def _operand(self, enum_of: str | None = None) -> _Operand:
         """One side of a comparison, and the declared property it names (or None). A string literal
@@ -185,9 +208,12 @@ class _Parser:
             number = float(token.text) if "." in token.text else int(token.text)
             return (lambda e: number), None
         if token.kind == "word":
-            if token.text in _LITERALS:
-                literal = _LITERALS[token.text]
+            if token.text.lower() in _LITERALS:
+                literal = _LITERALS[token.text.lower()]
                 return (lambda e: literal), None
+            if token.text in getattr(self, "variables", {}):
+                var = token.text
+                return (lambda e: e.get(var)), None
             name = self.properties.get(token.text.casefold())
             if name is None:
                 raise FilterError("property", name=token.text)

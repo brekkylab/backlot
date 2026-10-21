@@ -125,6 +125,14 @@ def test_every_answer_carries_its_request_id_and_a_200_is_odata(client, admin_h)
         assert r.headers["request-id"] == r.headers["client-request-id"]
         uuid.UUID(r.headers["request-id"])
     assert refused.json()["error"]["innerError"]["request-id"] == refused.headers["request-id"]
+    # A GUID the caller sends as `client-request-id` is echoed, beside a `request-id` of Graph's
+    # own; anything else is ignored.
+    mine = "11111111-2222-3333-4444-555555555555"
+    echoed = client.get(f"{V1}/me?$filter=x", headers={**admin_h, "client-request-id": mine})
+    assert echoed.headers["client-request-id"] == mine != echoed.headers["request-id"]
+    assert echoed.json()["error"]["innerError"]["client-request-id"] == mine
+    ignored = client.get(f"{V1}/me", headers={**admin_h, "client-request-id": "not-a-guid"})
+    assert ignored.headers["client-request-id"] == ignored.headers["request-id"]
 
 
 @pytest.mark.parametrize(
@@ -413,6 +421,16 @@ _EVENTUAL = {"ConsistencyLevel": "eventual"}
             "Query option '$top' was specified more than once, "
             "but it must be specified at most once.",
         ),
+        ("$top=2147483648", {}, "Request_BadRequest", "Invalid value for '$top'."),
+        ("$top=99999999999", {}, "Request_BadRequest", "Invalid value for '$top'."),
+        ("$skip=1", {}, "Request_BadRequest", "'$skip' is not supported by the service."),
+        (
+            "$expand=bogus",
+            {},
+            "BadRequest",
+            "Parsing OData Select and Expand failed: Could not find a property named 'bogus' on "
+            "type 'microsoft.graph.user'.",
+        ),
     ],
 )
 def test_the_directory_refuses_a_query_it_cannot_run(
@@ -483,8 +501,16 @@ def test_joined_teams_is_the_one_team_the_corpus_models(client, admin_h):
     assert [set(t) for t in selected["value"]] == [{"displayName"}]
     ignored = client.get(f"{V1}/me/joinedTeams?$filter=displayName eq 'zzz'", headers=admin_h)
     assert len(ignored.json()["value"]) == 1
-    for option in ("Top", "SkipToken", "Count", "OrderBy", "Expand"):
-        r = client.get(f"{V1}/me/joinedTeams?${option.lower()}=1", headers=admin_h)
+    for option, value in (
+        ("Top", "1"),
+        ("SkipToken", "x"),
+        ("Count", "true"),
+        ("OrderBy", "displayName"),
+        ("Expand", "channels"),
+        ("Skip", "1"),
+        ("Search", "x"),
+    ):
+        r = client.get(f"{V1}/me/joinedTeams?${option.lower()}={value}", headers=admin_h)
         assert _error(r, 400)["message"].startswith(
             f"The query specified in the URI is not valid. Query option '{option}' is not allowed."
         ), option
@@ -493,12 +519,27 @@ def test_joined_teams_is_the_one_team_the_corpus_models(client, admin_h):
 @pytest.mark.parametrize("path", ["/me", "/users/{user}"])
 def test_a_single_person_refuses_a_filter_and_ignores_top(client, admin_h, path):
     url = f"{V1}{path.format(user=synth.msteams_user_id('ava@acme.com'))}"
-    err = _error(client.get(f"{url}?$filter=displayName eq 'x'", headers=admin_h), 400)
-    assert (err["code"], err["message"]) == (
+    single = (
         "Request_UnsupportedQuery",
         "The specified filter against a single entity is invalid.",
     )
-    assert client.get(f"{url}?$top=1", headers=admin_h).status_code == 200
+    for query, want in (
+        ("$filter=displayName eq 'x'", single),
+        ("$search=x", single),
+        ("$skiptoken=x", ("Request_BadRequest", "Specified $skiptoken is invalid.")),
+        (
+            "$expand=bogus",
+            (
+                "BadRequest",
+                "Parsing OData Select and Expand failed: Could not find a property named 'bogus' "
+                "on type 'microsoft.graph.user'.",
+            ),
+        ),
+    ):
+        err = _error(client.get(f"{url}?{query}", headers=admin_h), 400)
+        assert (err["code"], err["message"]) == want, query
+    for query in ("$top=1", "$orderby=displayName", "$count=true", "$expand=manager"):
+        assert client.get(f"{url}?{query}", headers=admin_h).status_code == 200, query
 
 
 # --- channels --------------------------------------------------------------------
@@ -558,6 +599,7 @@ def test_listing_and_getting_a_channel_differ_where_graph_does(client, admin_h, 
         ("displayName ne 'Platform' and membershipType eq 'standard'", ["Incidents"]),
         # Property names and enum members match without regard to case.
         ("MembershipType eq 'Private'", ["People Confidential"]),
+        ("displayName EQ 'Platform' OR displayName eq 'Incidents'", ["Incidents", "Platform"]),
         ("startswith(DisplayName,'Pl')", ["Platform"]),
         ("displayName in ('Platform','Incidents')", ["Incidents", "Platform"]),
     ],
@@ -637,6 +679,28 @@ def test_a_channel_filter_selects_what_graph_selects(client, admin_h, team_id, e
             "BadRequest",
             "The query specified in the URI is not valid. Query option 'Top' is not allowed.",
         ),
+        (
+            {"$skip": "1"},
+            "",
+            "The query specified in the URI is not valid. Query option 'Skip' is not allowed. To "
+            "allow it, set the 'AllowedQueryOptions' property on EnableQueryAttribute or "
+            "QueryValidationSettings.",
+        ),
+        (
+            {"$search": "x"},
+            "",
+            "The query specified in the URI is not valid. Query option 'Search' is not allowed. "
+            "To allow it, set the 'AllowedQueryOptions' property on EnableQueryAttribute or "
+            "QueryValidationSettings.",
+        ),
+        # The validator's refusal comes before the listing's own refusal of `$top`.
+        (
+            {"$orderby": "displayName", "$top": "1"},
+            "",
+            "The query specified in the URI is not valid. Query option 'OrderBy' is not allowed. "
+            "To allow it, set the 'AllowedQueryOptions' property on EnableQueryAttribute or "
+            "QueryValidationSettings.",
+        ),
     ],
 )
 def test_a_channel_listing_refuses_a_query_it_cannot_run(
@@ -684,6 +748,8 @@ def test_select_is_read_in_every_spelling_and_only_dollar_select_is_echoed(
         "Query option '$select' was specified more than once, but it must be specified at most "
         "once."
     )
+    err = _error(client.get(f"{url}?$select={prop}&select=id", headers=admin_h), 400)
+    assert err["message"] == "An item with the same key has already been added. Key: $select"
 
 
 @pytest.mark.parametrize(
@@ -714,18 +780,71 @@ def test_select_is_read_in_every_spelling_and_only_dollar_select_is_echoed(
             "'replies' is not supported for this request. Use the /replies endpoint to get the "
             "replies for a message.",
         ),
+        ("", "$orderby=displayName", "", "OrderBy"),
+        ("", "$skiptoken=x", "", "SkipToken"),
+        ("", "$search=x", "", "Search"),
+        ("/messages", "$search=x", "", "Search"),
+        ("/messages/{message}/replies", "$filter=messageType eq 'message'", "", "Filter"),
+        ("/messages/{message}/replies", "$orderby=createdDateTime", "", "OrderBy"),
+        ("/messages/{message}/replies", "$search=x", "", "Search"),
+        (
+            "/messages/{message}/replies",
+            "$expand=bogus",
+            "BadRequest",
+            "Parsing OData Select and "
+            "Expand failed: Could not find a property named 'bogus' on type "
+            "'microsoft.graph.chatMessage'.",
+        ),
+        ("/messages/{message}", "$count=true", "", "Count"),
+        ("/messages/{message}", "$orderby=createdDateTime", "", "OrderBy"),
+        ("/messages/{message}", "$skiptoken=x", "", "SkipToken"),
+        ("/messages/{message}", "$skip=1", "", "Skip"),
+        ("/members", "$skip=1", "", "Skip"),
+        ("/members", "$search=x", "", "Search"),
+        # The binder reads property names before the validator reads which options are allowed,
+        # and the `$filter` before the `$orderby`.
+        (
+            "/messages",
+            "$filter=x eq 1",
+            "BadRequest",
+            "Invalid filter clause: Could not find a "
+            "property named 'x' on type 'microsoft.graph.chatMessage'.",
+        ),
+        (
+            "/messages",
+            "$top=51&$filter=x eq 1",
+            "BadRequest",
+            "Invalid filter clause: Could not "
+            "find a property named 'x' on type 'microsoft.graph.chatMessage'.",
+        ),
+        (
+            "/messages",
+            "$count=true&$orderby=x",
+            "BadRequest",
+            "Could not find a property named 'x' on type 'microsoft.graph.chatMessage'.",
+        ),
+        ("", "$top=1&$expand=members", "", "Top"),
+        (
+            "/messages",
+            "$top=99999999999",
+            "",
+            "The query specified in the URI is not valid. The "
+            "limit of '2147483647' for Top query has been exceeded. The value from the incoming "
+            "request is '99999999999'.",
+        ),
     ],
 )
 def test_a_channel_method_refuses_the_options_graph_refuses_on_it(
     client, admin_h, team_id, suffix, query, code, message
 ):
-    """`code` empty is the OData validator's refusal, whose message names the option."""
+    """`code` empty is the OData validator's refusal; a one-word `message` names the option it
+    refuses."""
     _, root = _incident(client, admin_h, team_id)
     incidents = _channels(client, admin_h, team_id)["Incidents"]
     url = f"{V1}/teams/{team_id}/channels/{incidents}{suffix.format(message=root['id'])}"
     err = _error(client.get(f"{url}?{query}", headers=admin_h), 400)
     assert err["code"] == code
-    if code == "":
+    if code == "" and " " not in message:
         assert err["message"] == (
             f"The query specified in the URI is not valid. Query option '{message}' is not "
             "allowed. To allow it, set the 'AllowedQueryOptions' property on EnableQueryAttribute "
@@ -733,6 +852,60 @@ def test_a_channel_method_refuses_the_options_graph_refuses_on_it(
         )
     else:
         assert err["message"] == message
+
+
+@pytest.mark.parametrize(
+    "path,message",
+    [
+        (
+            "/teams/{other}/channels?$top=1",
+            "The query specified in the URI is not valid. Query option 'Top' is not allowed.",
+        ),
+        (
+            "/teams/{team}/channels/{missing}?$top=1",
+            "The query specified in the URI is not "
+            "valid. Query option 'Top' is not allowed. To allow it, set the 'AllowedQueryOptions' "
+            "property on EnableQueryAttribute or QueryValidationSettings.",
+        ),
+        (
+            "/teams/{team}/channels/{missing}/messages?$top=51",
+            "The query specified in the URI "
+            "is not valid. The limit of '50' for Top query has been exceeded. The value from the "
+            "incoming request is '51'.",
+        ),
+        (
+            "/teams/{team}/channels/{channel}/messages/1111111111111?$top=1",
+            "The query specified "
+            "in the URI is not valid. Query option 'Top' is not allowed. To allow it, set the "
+            "'AllowedQueryOptions' property on EnableQueryAttribute or QueryValidationSettings.",
+        ),
+        (
+            "/teams/{team}/channels/{channel}/messages/abc?$top=1",
+            "The query specified in the URI "
+            "is not valid. Query option 'Top' is not allowed. To allow it, set the "
+            "'AllowedQueryOptions' property on EnableQueryAttribute or QueryValidationSettings.",
+        ),
+        (
+            "/users/nobody@acme.com/joinedTeams?$top=1",
+            "The query specified in the URI is not "
+            "valid. Query option 'Top' is not allowed. To allow it, set the 'AllowedQueryOptions' "
+            "property on EnableQueryAttribute or QueryValidationSettings.",
+        ),
+        ("/teams/abc/channels?$top=1", "teamId needs to be a valid GUID."),
+    ],
+)
+def test_a_query_is_refused_before_what_it_names_is_looked_up(
+    client, admin_h, team_id, path, message
+):
+    """Graph reads the query before the team, channel, message or person — all but a team id
+    that is not a GUID at all."""
+    url = path.format(
+        team=team_id,
+        other="00000000-0000-0000-0000-000000000000",
+        channel=_channels(client, admin_h, team_id)["Platform"],
+        missing="19:00000000000000000000000000000000@thread.tacv2",
+    )
+    assert _error(client.get(f"{V1}{url}", headers=admin_h), 400)["message"] == message
 
 
 def test_a_channel_granted_to_the_org_is_standard_and_a_narrower_one_is_private(
@@ -883,6 +1056,9 @@ def test_a_member_is_shaped_and_identified_as_graph_sends_one(client, admin_h, t
         "Parsing OData Select and Expand failed: Could not find a property named 'bogus' on type "
         "'microsoft.graph.conversationMember'."
     )
+    # A lambda over `roles` is read; nobody is an owner here, so nobody matches.
+    owners = client.get(base, headers=admin_h, params={"$filter": "roles/any(r:r eq 'owner')"})
+    assert owners.status_code == 200 and owners.json()["value"] == []
 
 
 # --- messages --------------------------------------------------------------------
@@ -993,6 +1169,22 @@ def test_a_reply_is_read_under_its_root_and_not_at_the_root_route(client, admin_
     assert {k: v for k, v in one.json().items() if k != "@odata.context"} == reply
     err = _error(client.get(f"{base}/{reply['id']}", headers=admin_h), 404)
     assert (err["code"], err["message"]) == ("NotFound", "UnknownError")
+    # Under its root, a reply id that names nothing is a 403, one that is not an id a 400, and a
+    # reply of another root a 404; `expand=replies` is refused without the root route's pointer.
+    thread = f"{base}/{root['id']}/replies"
+    for path, status, code, message in (
+        (f"{thread}/1111111111111", 403, "Forbidden", "UnknownError"),
+        (f"{thread}/abc", 400, "BadRequest", "UnknownError"),
+        (f"{base}/1111111111111/replies/{reply['id']}", 404, "NotFound", "UnknownError"),
+        (
+            f"{thread}/{reply['id']}?$expand=replies",
+            400,
+            "BadRequest",
+            "Expand query parameter 'replies' is not supported for this request.",
+        ),
+    ):
+        err = _error(client.get(path, headers=admin_h), status)
+        assert (err["code"], err["message"]) == (code, message), path
     # An id that names no message at all is refused rather than not found, to a delegated caller.
     err = _error(client.get(f"{base}/9999999999999", headers=admin_h), 403)
     assert (err["code"], err["message"]) == ("Forbidden", "UnknownError")
@@ -1106,6 +1298,9 @@ def test_a_message_listing_refuses_a_query_it_cannot_run(
 
 def test_a_replies_page_token_that_does_not_decode_is_a_backend_failure(client, admin_h, team_id):
     base, root = _incident(client, admin_h, team_id)
+    members = base.removesuffix("/messages") + "/members"
+    err = _error(client.get(members, headers=admin_h, params={"$skiptoken": "x"}), 502)
+    assert err["code"] == "BadGateway"
     for key in ("$skiptoken", "$skipToken"):
         err = _error(
             client.get(f"{base}/{root['id']}/replies", headers=admin_h, params={key: "garbage"}),
@@ -1124,6 +1319,16 @@ def test_select_projects_a_message_to_what_was_named(client, admin_h, team_id):
 
 
 # --- paging and ordering ---------------------------------------------------------
+
+
+def test_skip_skips_roots_and_leaves_replies_empty(client, admin_h, team_id):
+    base, root = _incident(client, admin_h, team_id)
+    platform = f"{V1}/teams/{team_id}/channels/{_channels(client, admin_h, team_id)['Platform']}"
+    roots = client.get(f"{platform}/messages", headers=admin_h).json()["value"]
+    skipped = client.get(f"{platform}/messages?$skip=1", headers=admin_h).json()["value"]
+    assert [m["id"] for m in skipped] == [m["id"] for m in roots[1:]]
+    replies = client.get(f"{base}/{root['id']}/replies?$skip=1", headers=admin_h).json()
+    assert replies["value"] == [] and replies["@odata.count"] == 0
 
 
 def test_a_page_counts_itself_and_the_next_link_walks_the_channel(

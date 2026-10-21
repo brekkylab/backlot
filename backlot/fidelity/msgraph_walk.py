@@ -59,9 +59,6 @@ def _message_parts(message: Mapping[str, Any], where: str) -> Iterator[tuple[str
         for entry in message.get(kind) or []:
             if isinstance(entry, dict):
                 yield type_name, entry, f"{where} {kind}[]"
-                # A reactor's identity, which is a different declared type from a sender's and is
-                # built from a different corpus field, so it gets its own check rather than
-                # inheriting the sender's.
                 # A mention's `mentioned` is a third identity-set type of its own.
                 if kind == "mentions" and isinstance(entry.get("mentioned"), dict):
                     mentioned = entry["mentioned"]
@@ -76,6 +73,9 @@ def _message_parts(message: Mapping[str, Any], where: str) -> Iterator[tuple[str
                             mentioned["user"],
                             f"{where} mentions[].mentioned.user",
                         )
+                # A reactor's identity, which is a different declared type from a sender's and is
+                # built from a different corpus field, so it gets its own check rather than
+                # inheriting the sender's.
                 if kind == "reactions" and isinstance(entry.get("user"), dict):
                     reactor = entry["user"]
                     yield (

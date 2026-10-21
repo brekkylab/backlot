@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/brekkylab/backlot/schemas/msteams.schema.json",
   "title": "BYO corpus record — msteams",
-  "description": "A Microsoft Teams channel message. Title is optional (a chatMessage has a `subject`, and it is null on almost every one). A record with `replies` becomes a root post; each reply is served at `…/messages/{id}/replies` and only the root shows in the channel's message list, which is what `GET /channels/{id}/messages` returns.",
+  "description": "A Microsoft Teams channel message. There is no title; `subject` is optional. A record with `replies` becomes a root post; each reply is served at `…/messages/{id}/replies` and only the root shows in the channel's message list, which is what `GET /channels/{id}/messages` returns.",
   "type": "object",
   "properties": {
     "source_type": {

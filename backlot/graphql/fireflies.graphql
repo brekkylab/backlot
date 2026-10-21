@@ -4,7 +4,8 @@
 # shares only an execution engine and not response shapes:
 #
 #   * Pagination is `limit`/`skip` — OFFSET-BASED, not a Relay connection. `transcripts` returns
-#     a bare list. `limit` is capped at 50 by the real API and clamped (not rejected) here.
+#     a bare list. A `limit` outside 1-50 or a `skip` outside 0-5000 is refused, as the real
+#     API refuses it.
 #   * Field names are snake_case (`host_email`, `meeting_attendees`, `audio_url`), which is
 #     Fireflies' own convention, not a translation.
 #
@@ -38,9 +39,10 @@ type Query {
   """
   Transcripts the caller may read, newest first.
 
-  Every argument narrows the set; they combine with AND. `limit` is clamped to 50 (the API's
-  documented maximum) and `skip` offsets into the result — an out-of-range `skip` is an empty
-  list, not an error.
+  Every argument narrows the set, and they combine with AND, except that a request may give a
+  value to only one of `mine`, `user_id`, `host_email`, `organizer_email` and `participant_email`,
+  and to none of them beside `organizers` or `participants`. `limit` runs 1-50 and `skip` 0-5000;
+  a `skip` past the last transcript is an empty list.
   """
   transcripts(
     """
@@ -78,7 +80,7 @@ type Query {
     mine: Boolean
     "Restrict to one channel."
     channel_id: String
-    "Page size, 1-50. Values above 50 are clamped, not rejected."
+    "Page size, 1-50; a value outside that range is refused."
     limit: Int
     "How many transcripts to skip before the page starts."
     skip: Int

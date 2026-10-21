@@ -2150,6 +2150,14 @@ def test_github_code_search_text_matches_only_under_the_media_type(gh_client, gh
     c, _ = gh_client
     plain = c.get("/github/search/code", headers=gh_admin_h, params={"q": "helper"}).json()
     assert "text_matches" not in plain["items"][0]
+    # the name read as spelt, and a `q=0` that leaves text matches in (see `_accept_types`)
+    for accept, matched in (
+        ("application/vnd.github.TEXT-MATCH+json", False),
+        ("application/vnd.github.text-match+json;q=0", True),
+    ):
+        h = {**gh_admin_h, "Accept": accept}
+        hit = c.get("/github/search/code", headers=h, params={"q": "helper"}).json()["items"][0]
+        assert ("text_matches" in hit) is matched, accept
 
     h = {**gh_admin_h, "Accept": "application/vnd.github.text-match+json"}
     item = c.get("/github/search/code", headers=h, params={"q": "helper"}).json()["items"][0]
@@ -3748,6 +3756,9 @@ _CODEBASE_README = "# codebase\n\nCore service source, browsable via the tree/co
         # GitHub's own docs spelled it `application/vnd.github.VERSION.raw+json`; missing this one
         # meant a caller using it got the base64 envelope with a 200 and no way to tell
         "application/vnd.github.v3.raw+json",
+        # spellings `backlot.routers.github._accept_types` reads as raw
+        "Application/vnd.GitHub.V3.raw+JSON",
+        "application/vnd.github.raw;q=0",
     ],
 )
 def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org, accept):
@@ -3783,7 +3794,7 @@ def test_github_raw_accept_leaves_the_json_envelope_alone(gh_client, gh_admin_h,
     """Only a `raw` request changes shape: the default and an explicit `+json` still get the
     base64 envelope, and a DIRECTORY listing has no raw form so it stays a JSON array."""
     c, _ = gh_client
-    for accept in (None, "application/vnd.github+json", "*/*"):
+    for accept in (None, "application/vnd.github+json", "*/*", "application/vnd.github.RAW"):
         h = dict(gh_admin_h) if accept is None else {**gh_admin_h, "Accept": accept}
         body = c.get(f"/github/repos/{gh_org}/codebase/contents/src/main.py", headers=h).json()
         assert body["encoding"] == "base64"
@@ -4390,6 +4401,10 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
         ("pulls/1", "application/vnd.github.diff, application/json", False, False),
         ("pulls/1", "application/json, application/vnd.github.diff", False, False),
         ("pulls/1", "application/vnd.github.v3.diff+json", False, False),
+        ("pulls/1", "application/vnd.github.DIFF", True, False),
+        ("pulls/1", "Application/vnd.github.diff", False, False),
+        ("pulls/1", "application/vnd.github.diff;q=0", True, False),
+        ("pulls/1", "application/vnd.github.patch;q=0", False, False),
         ("pulls/1", "application/vnd.github.sha", True, False),
         *[
             (path, accept, True, True)
@@ -4771,6 +4786,37 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
         headers={**gh_admin_h, "Accept": "application/vnd.github.diff"},
     ).json()
     assert issue["number"] == issue_num
+
+
+# What api.github.com served a pull for each `Accept` at 2022-11-28 (see `_accept_types`).
+@pytest.mark.parametrize(
+    "accept, served",
+    [
+        ("application/vnd.github.DIFF", "json"),
+        ("APPLICATION/VND.GITHUB.DIFF", "json"),
+        ("Application/vnd.github.diff", "diff"),
+        ("application/vnd.GitHub.diff", "diff"),
+        ("application/vnd.github.V3.diff", "diff"),
+        ("application/vnd.github.diff+JSON", "diff"),
+        ("application/vnd.github.diff;q=0", "json"),
+        ("application/vnd.github.diff; q=0, application/json", "json"),
+        ("application/vnd.github.diff;Q=0", "diff"),
+        ("application/vnd.github.diff; q = 0", "diff"),
+        ("application/vnd.github.diff;charset=utf-8;q=0", "diff"),
+        ("application/vnd.github.diff;q=0;charset=utf-8", "json"),
+        ("application/vnd.github.diff;q=abc", "diff"),
+        ("application/vnd.github.diff;charset=utf-8", "diff"),
+        ("text/plain, application/vnd.github.diff", "diff"),
+        ("application/vnd.github.diff;q=0.5", "diff"),
+        ("application/vnd.github.patch;q=0", "patch"),
+        ("application/vnd.github.patch;q=0.5, application/json;q=1", "patch"),
+    ],
+)
+def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accept, served):
+    c, h, org, num = diff_pr
+    r = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers={**h, "Accept": accept})
+    assert r.status_code == 200
+    assert r.text.startswith({"json": "{", "diff": "diff --git ", "patch": "From "}[served])
 
 
 def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):

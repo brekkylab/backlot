@@ -109,7 +109,7 @@ def _slice(first, after, last, before) -> tuple[int | None, int, int]:
         limit = pagination.clamp_limit(last, PAGE_DEFAULT, PAGE_MAX)
         if before is None:
             return None, limit, start  # resolved against the total by _from_end
-        end = pagination.decode_cursor(before)
+        end = max(0, pagination.decode_cursor(before) - 1)
         return max(start, end - limit), min(limit, max(0, end - start)), start
     return start, pagination.clamp_limit(first, PAGE_DEFAULT, PAGE_MAX), start
 
@@ -119,9 +119,19 @@ def _from_end(offset: int | None, limit: int, floor: int, total: int) -> int:
     return max(floor, total - limit) if offset is None else offset
 
 
-def _connection(nodes: list, offset: int, has_next: bool) -> dict:
-    """A Relay connection page. ``endCursor`` is the offset the next page starts at, which is
-    exactly what ``after`` consumes, so a client can round-trip it without interpreting it.
+def _connection(nodes: list, offset: int, has_next: bool, *, backward: bool = False) -> dict:
+    """A Relay connection page whose cursors name the first and the last node it serves, as real's
+    do: real's are node ids, these a node's one-based position, which ``after`` reads as the offset
+    the next page starts at and ``before`` as the node the page ends just before. Measured on
+    api.linear.app on 2026-10-05 and 2026-10-21: `after:` a `first: 3` page's `startCursor` serves
+    from its second node on, and `before:` a `last: 3` page's `endCursor` the three nodes before it.
+
+    ``backward`` serves a ``last:`` page last node first, and every resolver passes it for one, as
+    real does on each connection measured: `issues`, `Team.issues`, `users` and `Issue.children` on
+    2026-10-05, and on 2026-10-21 `comments`, `Issue.comments`, `Issue.labels`, `Issue.attachments`,
+    `Issue.relations` and `Issue.inverseRelations`, over issues made to hold three of each.
+    `teams` takes it unmeasured, since the measuring workspace held one team, and `Issue.releases`
+    holds one node at most.
 
     ``has_next`` comes from a limit+1 probe, NOT from a COUNT of the whole result set. The
     connection types this schema serves expose no ``totalCount`` — `@linear/sdk`'s fragments do
@@ -129,13 +139,17 @@ def _connection(nodes: list, offset: int, has_next: bool) -> dict:
     corpus that doubled the cost of every filtered query.
     """
     end = offset + len(nodes)
+    start_cursor, end_cursor = offset + 1, end
+    if backward:
+        nodes = nodes[::-1]
+        start_cursor, end_cursor = end_cursor, start_cursor
     return {
         "nodes": nodes,
         "pageInfo": {
             "hasNextPage": has_next,
             "hasPreviousPage": offset > 0,
-            "startCursor": pagination.encode_cursor(offset) if nodes else None,
-            "endCursor": pagination.encode_cursor(end) if nodes else None,
+            "startCursor": pagination.encode_cursor(start_cursor) if nodes else None,
+            "endCursor": pagination.encode_cursor(end_cursor) if nodes else None,
         },
     }
 
@@ -400,6 +414,10 @@ def _user(email: str | None, display: str | None, info) -> dict | None:
         "app": False,
         "isMentionable": True,
         "isMe": bool(caller and caller == email),
+        # api.linear.app declared `forCurrentUser` `Boolean! = false`, "Whether to require an active
+        # webhook for sessions started by the current user", a condition added to the answer, and
+        # answered `false` for each of a workspace's three users with it absent, `false` and `true`
+        # on 2026-10-21 (UTC).
         "supportsAgentSessions": False,
         "canAccessAnyPublicTeam": True,
         "createdIssueCount": 0,
@@ -1001,7 +1019,7 @@ def _issue_page(
         archived=includeArchived,
     )
     rows, has_next = _page(rows, limit)
-    return _connection([_issue(r, info) for r in rows], offset, has_next)
+    return _connection([_issue(r, info) for r in rows], offset, has_next, backward=last is not None)
 
 
 def resolve_issues(_root, info, **kwargs) -> dict:
@@ -1089,7 +1107,12 @@ def resolve_teams(
     names = [n for n in _visible_teams(info) if _match_team(n, filter, info)]
     offset = _from_end(offset, limit, floor, len(names))
     page = names[offset : offset + limit]
-    return _connection([_team(n, info) for n in page], offset, offset + limit < len(names))
+    return _connection(
+        [_team(n, info) for n in page],
+        offset,
+        offset + limit < len(names),
+        backward=last is not None,
+    )
 
 
 def resolve_comments(
@@ -1110,7 +1133,9 @@ def resolve_comments(
         conn, visible_ids=visible, limit=limit + 1, offset=offset, prefilter=prefilter
     )
     rows, has_next = _page(rows, limit)
-    return _connection([_comment(r, info) for r in rows], offset, has_next)
+    return _connection(
+        [_comment(r, info) for r in rows], offset, has_next, backward=last is not None
+    )
 
 
 def _ordered_users(users: list[dict], order_by) -> list[dict]:
@@ -1160,7 +1185,12 @@ def resolve_users(
     ]
     users = _sorted_users(users, sort) if sort else _ordered_users(users, orderBy)
     offset = _from_end(offset, limit, floor, len(users))
-    return _connection(users[offset : offset + limit], offset, offset + limit < len(users))
+    return _connection(
+        users[offset : offset + limit],
+        offset,
+        offset + limit < len(users),
+        backward=last is not None,
+    )
 
 
 # --- by-id roots for the SDK's lazy relation accessors ------------------------------------
@@ -1357,7 +1387,9 @@ def resolve_issue_comments(
         prefilter=prefilter,
     )
     rows, has_next = _page(rows, limit)
-    return _connection([_comment(r, info) for r in rows], offset, has_next)
+    return _connection(
+        [_comment(r, info) for r in rows], offset, has_next, backward=last is not None
+    )
 
 
 def resolve_issue_parent(issue, info):
@@ -1424,7 +1456,7 @@ def resolve_issue_children(
         order_by=orderBy,
     )
     rows, has_next = _page(rows, limit)
-    return _connection([_issue(r, info) for r in rows], offset, has_next)
+    return _connection([_issue(r, info) for r in rows], offset, has_next, backward=last is not None)
 
 
 def _relations_page(issue, info, *, inverse, first, after, last, before) -> dict:
@@ -1447,7 +1479,9 @@ def _relations_page(issue, info, *, inverse, first, after, last, before) -> dict
         conn, issue_id, inverse=inverse, visible_ids=visible, limit=limit + 1, offset=offset
     )
     rows, has_next = _page(rows, limit)
-    return _connection([_relation(r, info) for r in rows], offset, has_next)
+    return _connection(
+        [_relation(r, info) for r in rows], offset, has_next, backward=last is not None
+    )
 
 
 def resolve_issue_relations(
@@ -1500,7 +1534,12 @@ def resolve_issue_attachments(
     ]
     nodes = [n for n in nodes if _match_attachment(n, filter)]
     offset = _from_end(offset, limit, floor, len(nodes))
-    return _connection(nodes[offset : offset + limit], offset, offset + limit < len(nodes))
+    return _connection(
+        nodes[offset : offset + limit],
+        offset,
+        offset + limit < len(nodes),
+        backward=last is not None,
+    )
 
 
 def resolve_attachment_issue(attachment, info) -> dict:
@@ -1515,7 +1554,12 @@ def resolve_issue_releases(
     rel = _release(issue["_row"]["release"], info)
     nodes = [n for n in ([rel] if rel else []) if _match_release(n, filter)]
     offset = _from_end(offset, limit, floor, len(nodes))
-    return _connection(nodes[offset : offset + limit], offset, offset + limit < len(nodes))
+    return _connection(
+        nodes[offset : offset + limit],
+        offset,
+        offset + limit < len(nodes),
+        backward=last is not None,
+    )
 
 
 def resolve_issue_labels(
@@ -1526,7 +1570,12 @@ def resolve_issue_labels(
     offset, limit, floor = _slice(first, after, last, before)
     nodes = [n for n in _label_nodes(issue["_row"]) if _match_label(n, filter)]
     offset = _from_end(offset, limit, floor, len(nodes))
-    return _connection(nodes[offset : offset + limit], offset, offset + limit < len(nodes))
+    return _connection(
+        nodes[offset : offset + limit],
+        offset,
+        offset + limit < len(nodes),
+        backward=last is not None,
+    )
 
 
 RESOLVERS = {

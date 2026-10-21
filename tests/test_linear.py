@@ -187,6 +187,49 @@ def test_linear_team_resolves_by_key_and_uuid(client, admin_h, ro_conn):
     )
 
 
+def test_linear_team_issue_count_excludes_archived_issues(tmp_path):
+    """Pins the archived issue ``store.linear_team_issue_counts`` leaves out, beside the listing,
+    the `includeArchived: true` listing and the read by id that still serve it."""
+    records = [
+        {
+            **LINEAR_CORPUS[0],
+            "doc_id": doc_id,
+            "identifier": identifier,
+            "team": team,
+            "group": team,
+            **({"archivedAt": "2026-03-01T00:00:00Z"} if archived else {}),
+        }
+        for doc_id, identifier, team, archived in [
+            ("live", "ENG-1", "engineering", False),
+            ("archived", "ENG-2", "engineering", True),
+            ("archived-only", "DES-1", "design", True),
+        ]
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        headers = {"Authorization": settings.admin_token}
+        body = gql(
+            client,
+            '{ team(id: "ENG") { issueCount issues { nodes { identifier } } } '
+            "issues(includeArchived: true) { nodes { identifier } } "
+            'archivedTeam: team(id: "DES") { issueCount } }',
+            headers,
+        ).json()
+        assert "errors" not in body, body.get("errors")
+        assert body["data"]["team"] == {
+            "issueCount": 1,
+            "issues": {"nodes": [{"identifier": "ENG-1"}]},
+        }
+        assert {n["identifier"] for n in body["data"]["issues"]["nodes"]} == {
+            "ENG-1",
+            "ENG-2",
+            "DES-1",
+        }
+        assert body["data"]["archivedTeam"]["issueCount"] == 0
+        archived = gql(client, '{ issue(id: "ENG-2") { identifier archivedAt } }', headers).json()
+        assert archived["data"]["issue"]["identifier"] == "ENG-2"
+        assert archived["data"]["issue"]["archivedAt"] is not None
+
+
 def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_yaml):
     """Asserted for BOTH an admin and a restricted caller: as admin alone the count's ACL branch
     never runs, so the assertion would hold with scoping removed entirely."""
@@ -3720,6 +3763,56 @@ def test_fields_the_sdk_fragments_select_resolve_to_what_backlot_serves(fclient)
     assert served == (False, False, True, 0)
 
 
+_AGENT_SESSIONS = "query($v: Boolean) { viewer { supportsAgentSessions(forCurrentUser: $v) } }"
+
+
+@pytest.mark.parametrize(
+    "query,variables,expected",
+    [
+        (
+            "{ viewer { supportsAgentSessions } }",
+            None,
+            {"viewer": {"supportsAgentSessions": False}},
+        ),
+        (
+            "{ viewer { f: supportsAgentSessions(forCurrentUser: false)"
+            " t: supportsAgentSessions(forCurrentUser: true) } }",
+            None,
+            {"viewer": {"f": False, "t": False}},
+        ),
+        (_AGENT_SESSIONS, {}, {"viewer": {"supportsAgentSessions": False}}),
+        (_AGENT_SESSIONS, {"v": False}, {"viewer": {"supportsAgentSessions": False}}),
+        (_AGENT_SESSIONS, {"v": True}, {"viewer": {"supportsAgentSessions": False}}),
+    ],
+    ids=["absent", "literals", "variable omitted", "variable false", "variable true"],
+)
+def test_supports_agent_sessions_answers_false_under_each_for_current_user(
+    fclient, query, variables, expected
+):
+    """Each row is api.linear.app's answer to the same document and variables, measured when the
+    comment in ``_user`` says."""
+    r = post(fclient, query, variables)
+    assert (r.status_code, r.json()) == (200, {"data": expected})
+
+
+def test_supports_agent_sessions_declares_linears_default(fclient):
+    """Introspection rather than an answer, which is ``false`` under either value; the comment in
+    ``_user`` has the vendor's declaration."""
+    fields = post(
+        fclient,
+        '{ __type(name: "User") { fields { name args { name defaultValue'
+        " type { kind ofType { name } } } } } }",
+    ).json()["data"]["__type"]["fields"]
+    (field,) = (f for f in fields if f["name"] == "supportsAgentSessions")
+    assert field["args"] == [
+        {
+            "name": "forCurrentUser",
+            "defaultValue": "false",
+            "type": {"kind": "NON_NULL", "ofType": {"name": "Boolean"}},
+        }
+    ]
+
+
 _MEMBERSHIP = "id createdAt updatedAt archivedAt owner sortOrder user { id } team { id }"
 
 
@@ -4696,3 +4789,143 @@ def test_a_stated_identifier_outranks_another_teams_derived_one(tmp_path):
         h = {"Authorization": settings.admin_token}
         got = gql(c, f'{{ issue(id: "{stated}") {{ identifier title }} }}', h).json()["data"]
         assert got["issue"]["title"] == "states it"
+
+
+_BACKWARD_ROOTS = {
+    "issues": ("{ issues(%s, orderBy: updatedAt) { %s } }", ["issues"]),
+    "team": (
+        '{ team(id: "engineering") { issues(%s, orderBy: updatedAt) { %s } } }',
+        ["team", "issues"],
+    ),
+    "users": ("{ users(%s) { %s } }", ["users"]),
+    "children": (
+        '{ issue(id: "ENG-1") { children(%s, orderBy: updatedAt) { %s } } }',
+        ["issue", "children"],
+    ),
+    "teams": ("{ teams(%s) { %s } }", ["teams"]),
+    "comments": ("{ comments(%s) { %s } }", ["comments"]),
+    "issue comments": ('{ issue(id: "ENG-1") { comments(%s) { %s } } }', ["issue", "comments"]),
+    "labels": ('{ issue(id: "ENG-1") { labels(%s) { %s } } }', ["issue", "labels"]),
+    "attachments": ('{ issue(id: "ENG-1") { attachments(%s) { %s } } }', ["issue", "attachments"]),
+    "relations": ('{ issue(id: "ENG-1") { relations(%s) { %s } } }', ["issue", "relations"]),
+    "inverse relations": (
+        '{ issue(id: "ENG-2") { inverseRelations(%s) { %s } } }',
+        ["issue", "inverseRelations"],
+    ),
+}
+
+
+@pytest.mark.parametrize("root", list(_BACKWARD_ROOTS))
+@pytest.mark.parametrize("operation", ["order", "end", "start", "walk", "edges", "forward"])
+def test_linear_backward_pages_name_the_served_nodes(tmp_path, root, operation):
+    """The measurement on ``linear_resolvers._connection`` covers these connections.
+
+    Its before endCursor continues backward; before startCursor overlaps the preceding page.
+    Distinct timestamps make position independent of database tie ordering. ENG-1 holds eight
+    comments, labels and attachments and a relation to each other issue, every other issue a
+    relation to ENG-2, and each team past the first one issue.
+    """
+    records = [
+        {
+            "source_type": "linear",
+            "doc_id": f"page-{i}",
+            "team": "engineering",
+            "group": "engineering",
+            "identifier": f"ENG-{i}",
+            "title": f"Issue {i}",
+            "content": "page",
+            "author_email": f"user{i}@acme.com",
+            "visibility": "public",
+            "created": f"2026-01-{i:02}T00:00:00Z",
+            "updated": f"2026-02-{i:02}T00:00:00Z",
+            **({"parent": "ENG-1"} if i > 1 else {}),
+            **(
+                {
+                    "comments": [
+                        {"content": f"note {n}", "created_ts": 1767225600 + n} for n in range(8)
+                    ],
+                    "labels": [f"label-{n}" for n in range(8)],
+                    "attachments": [f"https://acme.test/run/{n}" for n in range(8)],
+                    "relations": [{"to": f"page-{n}", "type": "related"} for n in range(2, 9)],
+                }
+                if i == 1
+                else {"relations": [{"to": "page-2", "type": "related"}]}
+                if i > 2
+                else {}
+            ),
+        }
+        for i in range(1, 9)
+    ] + [
+        {
+            "source_type": "linear",
+            "doc_id": f"squad-{i}",
+            "team": f"squad{i}",
+            "group": f"squad{i}",
+            "title": f"Squad issue {i}",
+            "content": "page",
+            "author_email": "user1@acme.com",
+            "visibility": "public",
+            "created": f"2026-03-{i:02}T00:00:00Z",
+            "updated": f"2026-04-{i:02}T00:00:00Z",
+        }
+        for i in range(1, 8)
+    ]
+    settings = build_corpus(tmp_path, records)
+    with client_for(settings) as client:
+
+        def page(args):
+            selection = "nodes { id } pageInfo { startCursor endCursor hasPreviousPage }"
+            query, path = _BACKWARD_ROOTS[root]
+            response = gql(
+                client, query % (args, selection), {"Authorization": settings.admin_token}
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert "errors" not in body, body
+            result = body["data"]
+            for key in path:
+                result = result[key]
+            return result
+
+        forward = [node["id"] for node in page("first: 50")["nodes"]]
+        backward = page("last: 3")
+
+        def got(result):
+            return [node["id"] for node in result["nodes"]]
+
+        if operation == "order":
+            assert got(backward) == forward[-3:][::-1]
+        elif operation == "end":
+            following = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
+            assert got(following) == forward[-6:-3][::-1]
+        elif operation == "start":
+            overlapping = page("last: 3, before: " + lit(backward["pageInfo"]["startCursor"]))
+            assert got(overlapping) == forward[-4:-1][::-1]
+        elif operation == "edges":
+            first = page("first: 1")
+            assert first["pageInfo"]["startCursor"] == first["pageInfo"]["endCursor"]
+            empty = page("last: 3, before: " + lit(first["pageInfo"]["startCursor"]))
+            assert empty["nodes"] == []
+            assert empty["pageInfo"]["startCursor"] is None
+            assert empty["pageInfo"]["endCursor"] is None
+            assert got(page("last: 50")) == forward[::-1]
+        elif operation == "forward":
+            current = page("first: 3")
+            after_first = page("first: 2, after: " + lit(current["pageInfo"]["startCursor"]))
+            assert got(after_first) == forward[1:3]
+            seen = []
+            for _ in range(len(forward) + 1):
+                seen.extend(got(current))
+                if not current["nodes"]:
+                    break
+                current = page("first: 3, after: " + lit(current["pageInfo"]["endCursor"]))
+            assert seen == forward
+        else:
+            seen = []
+            for _ in range(len(forward) + 1):
+                seen.extend(got(backward))
+                if not backward["nodes"]:
+                    break
+                backward = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
+            assert seen == forward[::-1]
+            assert len(seen) == len(set(seen))

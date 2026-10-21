@@ -28,6 +28,7 @@ from backlot.fidelity.comparisons import (
     GRAPHQL,
     OPENAPI,
     PROBE,
+    SLACK,
     UNCOMPARED,
     baseline_path,
 )
@@ -96,6 +97,8 @@ class Namer:
         self._templates: dict[str, dict[str, list[_Template]]] = {}
         self._s3: list[_S3Row] = []
         self._graphql: dict[str, dict[str, str]] = {}
+        # Slack's methods by name: a method is one operation whatever the verb.
+        self._slack: dict[str, str] = {}
         self._graphql_paths = {f"/{name}/graphql": name for name in GRAPHQL}
         # The API a batch path names (`/batch/drive/v3`), read off each Google document's mount.
         self._batch_api: dict[str, str] = {}
@@ -114,6 +117,10 @@ class Namer:
             for spec in comparison.specs:
                 for prefix in spec.mount:
                     self._batch_api.setdefault(prefix.strip("/").split("/")[0], name)
+        for prefix in SLACK["slack"].mount:
+            self._mounts.append((prefix, prefix, "slack"))
+        for entry in Baseline.load(baseline_path("slack")).operations or ():
+            self._slack[entry.operation] = entry.status
         for prefix in PROBE["s3"].mount:
             self._mounts.append((prefix, prefix, "s3"))
         for entry in Baseline.load(baseline_path("s3")).operations or ():
@@ -193,6 +200,11 @@ class Namer:
             if best is not None and best.literals > _literals(route.path, strip):
                 return Named(source, best.id, best.status)
             return self._served(source, strip, method, route)
+        if source == "slack":
+            name = canonical(rest)
+            if name in self._slack:
+                return Named(source, name, self._slack[name])
+            return Named(source, "unmatched", UNKNOWN)
         best = self._best(source, rest, method)
         return Named(source, best.id, best.status) if best else Named(source, "unmatched", UNKNOWN)
 
@@ -217,12 +229,7 @@ class Namer:
         among equals."""
         segments = tuple(canonical(rest).split("/")) if canonical(rest) else ()
         methods = self._templates.get(source, {})
-        # Slack names a method by its path and answers it under either verb.
-        pool = (
-            [t for ts in methods.values() for t in ts]
-            if source == "slack"
-            else methods.get(method, []) + (methods.get("GET", []) if method == "HEAD" else [])
-        )
+        pool = methods.get(method, []) + (methods.get("GET", []) if method == "HEAD" else [])
         best: _Template | None = None
         for t in pool:
             if len(t.segments) != len(segments):
@@ -331,10 +338,10 @@ def _root_fields(
 def surface() -> dict[tuple[str, str], int]:
     """How many vendor operations each source's baseline records, by support state: the
     denominator of coverage, as this Backlot knows it. An operation named under several rows (Jira's
-    v2 and v3, Slack's two verbs) counts once, in its best state; a served route with no vendor id
+    v2 and v3) counts once, in its best state; a served route with no vendor id
     is not one of the vendor's operations and is left out."""
     best: dict[tuple[str, str], str] = {}
-    for name in (*OPENAPI, *GOOGLE_DISCOVERY, "s3"):
+    for name in (*OPENAPI, *SLACK, *GOOGLE_DISCOVERY, "s3"):
         for entry in Baseline.load(baseline_path(name)).operations or ():
             key = (name, entry.id)
             if entry.id and (key not in best or _PREFERENCE[entry.status] < _PREFERENCE[best[key]]):

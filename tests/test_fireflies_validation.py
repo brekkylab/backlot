@@ -49,10 +49,18 @@ def _field(name, *constraints):
 
 
 def _exclusive(name):
+    return _field(name, _excl(name))
+
+
+def _excl(name):
     message = _SINGULAR_MESSAGE
     if name in ("organizers", "participants"):
         message = message[:-1] + f", {name}."
-    return _field(name, ("exclusiveFields", message))
+    return ("exclusiveFields", message)
+
+
+def _email(name):
+    return ("IsEmailOnly", f"{name} must be a valid email address")
 
 
 def _assert_invalid(response, fields, path="transcripts"):
@@ -61,6 +69,7 @@ def _assert_invalid(response, fields, path="transcripts"):
     assert body["data"][path] is None
     assert len(body["errors"]) == 1
     error = body["errors"][0]
+    assert list(error) == ["friendly", "message", "locations", "path", "code", "extensions"]
     assert error["message"] == "Invalid argument(s) were provided"
     assert error["friendly"] is True
     assert error["code"] == "invalid_arguments"
@@ -99,6 +108,16 @@ def _assert_invalid(response, fields, path="transcripts"):
             ["organizers", "participants"],
         ),
         ("host_email: HOST, organizers: []", ["organizers"]),
+        ('host_email: HOST, mine: false, user_id: "unknown"', ["userId", "mine", "hostEmail"]),
+        ('host_email: "", mine: true, user_id: "unknown"', ["userId", "mine", "hostEmail"]),
+        (
+            'organizer_email: "", host_email: HOST, mine: true',
+            ["mine", "hostEmail", "organizerEmail"],
+        ),
+        (
+            'organizers: [HOST], participants: [HOST], user_id: "unknown"',
+            ["organizers", "participants"],
+        ),
     ],
 )
 def test_fireflies_measured_filter_collision(fireflies_http, arguments, names):
@@ -115,6 +134,9 @@ def test_fireflies_measured_filter_collision(fireflies_http, arguments, names):
         ("host_email: null, mine: true", "mine: true"),
         ('host_email: "", mine: true', "mine: true"),
         ('host_email: HOST, organizer_email: ""', "host_email: HOST"),
+        ("mine: false, organizers: [HOST]", "organizers: [HOST]"),
+        ('host_email: "", organizers: [HOST]', "organizers: [HOST]"),
+        ('user_id: "", mine: true', "mine: true"),
     ],
 )
 def test_fireflies_measured_filter_controls(fireflies_http, arguments, reference):
@@ -124,23 +146,62 @@ def test_fireflies_measured_filter_controls(fireflies_http, arguments, reference
     assert response.json() == _query(fireflies_http, reference + ", limit: 50").json()
 
 
-def test_fireflies_measured_compound_limit_collision(fireflies_http):
-    fields = [
-        _field("limit", ("isPositive", "limit must be a positive number")),
-        _exclusive("mine"),
-        _exclusive("hostEmail"),
-    ]
-    _assert_invalid(_query(fireflies_http, "host_email: HOST, mine: true, limit: 0"), fields)
+_ALL_PERSON = (
+    'organizers: ["nope"], participants: ["nope"], user_id: "u", mine: true, host_email: "nope", '
+    'organizer_email: "nope", participant_email: "nope"'
+)
 
 
-def test_fireflies_measured_compound_email_collision(fireflies_http):
-    host = _exclusive("hostEmail")
-    host["constraints"].append(
-        {"type": "IsEmailOnly", "message": "hostEmail must be a valid email address"}
-    )
-    _assert_invalid(
-        _query(fireflies_http, 'host_email: "nope", mine: true'), [_exclusive("mine"), host]
-    )
+@pytest.mark.parametrize(
+    "arguments,fields",
+    [
+        (
+            "host_email: HOST, mine: true, limit: 0",
+            [
+                _field("limit", ("isPositive", "limit must be a positive number")),
+                _exclusive("mine"),
+                _exclusive("hostEmail"),
+            ],
+        ),
+        (
+            'host_email: "nope", mine: true',
+            [_exclusive("mine"), _field("hostEmail", _excl("hostEmail"), _email("hostEmail"))],
+        ),
+        (
+            'toDate: "x", fromDate: "x", skip: -1, limit: 0',
+            [
+                _field("fromDate", ("isDate", "fromDate must be a Date instance")),
+                _field("toDate", ("isDate", "toDate must be a Date instance")),
+                _field("limit", ("isPositive", "limit must be a positive number")),
+                _field("skip", ("min", "skip must not be less than 0")),
+            ],
+        ),
+        (
+            'host_email: "nope", organizers: [HOST]',
+            [_exclusive("organizers"), _field("hostEmail", _email("hostEmail"))],
+        ),
+        (
+            'organizers: ["nope"], host_email: HOST',
+            [_field("organizers", _excl("organizers"), _email("organizers"))],
+        ),
+        (
+            _ALL_PERSON,
+            [_exclusive("userId"), _exclusive("mine")]
+            + [
+                _field(name, _excl(name), _email(name))
+                for name in (
+                    "organizers",
+                    "participants",
+                    "hostEmail",
+                    "organizerEmail",
+                    "participantEmail",
+                )
+            ],
+        ),
+    ],
+)
+def test_fireflies_measured_compound_refusal(fireflies_http, arguments, fields):
+    _assert_invalid(_query(fireflies_http, arguments), fields)
 
 
 @pytest.mark.parametrize(
@@ -153,6 +214,31 @@ def test_fireflies_measured_compound_email_collision(fireflies_http):
         ("skip: 5001", "skip", "max", "skip must not be greater than 5000"),
         ('fromDate: "not-a-date"', "fromDate", "isDate", "fromDate must be a Date instance"),
         ('fromDate: "1700000000000"', "fromDate", "isDate", "fromDate must be a Date instance"),
+        ('fromDate: "13"', "fromDate", "isDate", "fromDate must be a Date instance"),
+        ('fromDate: "275761"', "fromDate", "isDate", "fromDate must be a Date instance"),
+        ('fromDate: ""', "fromDate", "isDate", "fromDate must be a Date instance"),
+        ('fromDate: "Jan"', "fromDate", "isDate", "fromDate must be a Date instance"),
+        ('fromDate: "\\uff11\\uff12"', "fromDate", "isDate", "fromDate must be a Date instance"),
+        pytest.param(
+            f'fromDate: "{"9" * 4301}"',
+            "fromDate",
+            "isDate",
+            "fromDate must be a Date instance",
+            id="fromDate-4301-digits",
+        ),
+        ('toDate: "not-a-date"', "toDate", "isDate", "toDate must be a Date instance"),
+        (
+            'organizers: ["nope"]',
+            "organizers",
+            "IsEmailOnly",
+            "organizers must be a valid email address",
+        ),
+        (
+            'participants: ["a@b.co", "nope"]',
+            "participants",
+            "IsEmailOnly",
+            "participants must be a valid email address",
+        ),
         (
             'host_email: "nope"',
             "hostEmail",
@@ -175,6 +261,54 @@ def test_fireflies_measured_compound_email_collision(fireflies_http):
 )
 def test_fireflies_supporting_measured_validation(fireflies_http, arguments, name, kind, message):
     _assert_invalid(_query(fireflies_http, arguments), [_field(name, (kind, message))])
+
+
+@pytest.mark.parametrize(
+    "value,refused",
+    [
+        ("a@b.co", False),
+        ('"a b"@b.co', False),
+        ("ü@b.co", False),
+        ("a@ü.co", False),
+        ("a@b.xn--p1ai", False),
+        ("x" * 64 + "@b.co", False),
+        ("x" * 65 + "@b.co", True),
+        ("a@" + "b" * 63 + ".co", False),
+        ("a@" + "b" * 64 + ".co", True),
+        ("a@b.c", True),
+        ("a@b.12", True),
+        ("a@b.co1", True),
+        ("a..b@b.co", True),
+        (".a@b.co", True),
+        ("a@b.co.", True),
+        ("a@-b.co", True),
+        ("a@b_c.co", True),
+        ("a@127.0.0.1", True),
+        ("a@localhost", True),
+        ("a@b!c.co", True),
+        ("a@b-.co", True),
+        ('"a@b.co', True),
+        ('a"@b.co', True),
+        ('"a b"@b.c', True),
+        ("a@b.co\u3000m", True),
+        ("a@b.co\ufeffm", True),
+        ("a@\uff42.co", True),
+        pytest.param(
+            "x" * 64 + "@" + ".".join(["b" * 63, "b" * 63, "b" * 58, "co"]), False, id="254"
+        ),
+        pytest.param(
+            "x" * 64 + "@" + ".".join(["b" * 63, "b" * 63, "b" * 60, "co"]), True, id="256"
+        ),
+        pytest.param("a@" + ".".join(["ü" * 40] * 3) + ".co", False, id="domain-245-bytes"),
+        pytest.param("a@" + ".".join(["ü" * 60] * 3) + ".co", True, id="domain-365-bytes"),
+    ],
+)
+def test_fireflies_measured_email_spelling(fireflies_http, value, refused):
+    response = _query(fireflies_http, f"host_email: {json.dumps(value)}")
+    if refused:
+        _assert_invalid(response, [_field("hostEmail", _email("hostEmail"))])
+    else:
+        assert response.json() == {"data": {"transcripts": []}}
 
 
 def test_fireflies_alias_partial_data(fireflies_http):
@@ -222,6 +356,16 @@ def test_fireflies_measured_email_whitespace(fireflies_http, key, side):
         'fromDate: "2020-01-01T00:00:00Z"',
         "fromDate: 1700000000000",
         'host_email: "someone@example.com"',
+        'fromDate: "2020"',
+        'fromDate: "0"',
+        'fromDate: "00"',
+        'fromDate: "0013"',
+        'fromDate: "32"',
+        'fromDate: "Jan 1 2020"',
+        'fromDate: "Wed, 01 Jan 2020 00:00:00 GMT"',
+        "fromDate: true",
+        'toDate: "2020-01-01"',
+        'organizers: ["\\"a b\\"@b.co"]',
     ],
 )
 def test_fireflies_measured_validation_boundaries(fireflies_http, arguments):
@@ -251,3 +395,13 @@ def test_fireflies_validation_preserves_scoped_acl(live_server, tokens):
         )
         body = _assert_invalid(response, [_exclusive("mine"), _exclusive("hostEmail")], "bad")
         assert body["data"]["good"] == baseline
+
+
+def test_fireflies_errors_in_one_response_share_one_correlation_id(fireflies_http):
+    client, _host = fireflies_http
+    body = client.post(
+        "/fireflies/graphql",
+        json={"query": "{ a: transcripts(limit: 0) { id } b: transcripts(skip: -1) { id } }"},
+    ).json()
+    assert len(body["errors"]) == 2
+    assert len({error["extensions"]["correlationId"] for error in body["errors"]}) == 1

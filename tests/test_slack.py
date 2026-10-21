@@ -6,13 +6,14 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import re
 import urllib.parse
 
 import pytest
 import yaml
 from fastapi.responses import JSONResponse
 
-from backlot import store, synth
+from backlot import published, store, synth
 from backlot.routers import slack
 from tests._helpers import (
     client_for,
@@ -79,6 +80,14 @@ def _send(client, path: str, method: str, query: str, authorization, form, t: di
         body["content"] = form.format(**t)
     url = f"/slack/api/{path}?{query.format(**t)}" if query else f"/slack/api/{path}"
     return getattr(client, method)(url, headers=headers, **body)
+
+
+# A user id Backlot mints, in the shape a client written against Slack will accept:
+# `docs.slack.dev/enterprise#what` gives an enterprise user id as "a user ID beginning with `U` or
+# `W`" and a legacy one as beginning with `U`. The prefix is Slack's; the two or more uppercase
+# alphanumerics after it are what Backlot mints, as the message event reference's own example
+# lists reaction users as short as `U1`.
+USER_ID = re.compile(r"[UW][A-Z0-9]{2,}")
 
 
 def test_admin_slack_crawls_all(client, admin_h, ro_conn):
@@ -386,9 +395,10 @@ def test_slack_reads_the_token_where_real_reads_it(
 def test_slack_auth_test_identifies_the_caller(client, admin_h, tokens):
     """`auth.test` answers "who am I", and both fields it answers with are the caller's own.
 
-    Slack's spec fixes their shape — `slack_web_openapi_v2.json`,
-    `paths./auth.test.get.responses.200` is `"user": "grace"`, `"user_id": "W12345678"` — so `user`
-    is a handle rather than an address, and `user_id` is that person's id.
+    As `auth_test` records, with a user token `auth.test` answers `user` as that person's handle and
+    `user_id` as their own `U…`; the method's own reference fixes the same shape, its user-token
+    success example being `"user": "grace"`, `"user_id": "W12345678"`. So `user` is a handle rather
+    than an address, and `user_id` is that person's id.
 
     The id is asserted against `conversations.history`, not against `users.list`: the scenario the
     issue describes is a client matching `auth.test` to the author of a message to find its own, and
@@ -1458,12 +1468,16 @@ def test_slack_users_list_reads_the_cursor_before_a_negative_limit(
     assert r.json() == {"ok": False, "error": error}
 
 
-def test_slack_search_all(client, admin_h):
+def test_slack_search_all_answers_both_blocks_and_search_files_only_its_own(client, admin_h):
     # slack-go's Search()/SearchContext() hits search.all; it must return both messages + files.
     j = client.post("/slack/api/search.all", headers=admin_h, data={"query": "the"}).json()
     assert j["ok"] is True
     assert "messages" in j and "files" in j
     assert j["files"]["total"] == 0 and j["files"]["matches"] == []
+    # search.files must not carry `messages`: a client reading it off a file search gets a
+    # KeyError from the real API (see SlackFileSearch's docstring in backlot/routers/slack.py).
+    f = client.post("/slack/api/search.files", headers=admin_h, data={"query": "the"}).json()
+    assert set(f) == {"ok", "query", "files"}
 
 
 def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
@@ -1485,6 +1499,8 @@ def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
         data={"channel": hit["channel"]["id"], "ts": hit["ts"]},
     ).json()
     assert rep.get("ok"), rep
+    # No `latest` or `oldest` beside them, which `conversations.history` echoes.
+    assert set(rep) == {"ok", "messages", "has_more"}
     texts = " ".join(m["text"] for m in rep["messages"])
     assert "Anyone else seeing 502s" in texts  # thread root is returned
     assert "Rolled back" in texts  # the reply we searched for is in the same thread
@@ -2165,10 +2181,11 @@ def test_slack_a_private_channels_members_are_its_readers(tmp_path):
 
 def test_slack_one_person_has_one_handle_across_the_surface(tmp_path):
     """`users.list` names a person by `name` and `search.messages` names the same person by
-    `username`, and Slack spells both the handle: this method's own spec example carries
-    `"username": "roach"` (`slack_web_openapi_v2.json`,
-    `paths./search.messages.get.responses.200`). A client that reads the id off `user` and the
-    label off `username` gets one person, so the two must not answer two spellings of them.
+    `username`, and Slack spells both the handle: this method's own reference example carries
+    `"username": "roach"` beside `"user": "U2U85N1RV"`
+    (`docs.slack.dev/reference/methods/search.messages`). A client that reads the
+    id off `user` and the label off `username` gets one person, so the two must not answer two
+    spellings of them.
 
     A dotted address is what separates the two derivations — the handle drops the dot, and the raw
     local part does not — and no address in the module's shared fixture has one, so the case is
@@ -2211,7 +2228,6 @@ def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
     message's own `user` report for that person, so a client that groups a reaction's users against
     message authors gets one answer rather than two.
     """
-    import re
 
     from backlot.routers.slack import _message
 
@@ -2245,20 +2261,18 @@ def test_slack_reaction_ids_and_count_are_derived_from_the_addresses(tmp_path):
         },
         {"name": "+1", "users": [synth.slack_user_id("bo@x.com")], "count": 1},
     ]
-    # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
-    assert all(re.fullmatch(r"[UW][A-Z0-9]{2,}", u) for r in reactions for u in r["users"])
+    assert all(USER_ID.fullmatch(u) for r in reactions for u in r["users"])
 
 
 def test_slack_edited_renders_the_editors_id(tmp_path):
     """`edited.user` is rendered the same way `reactions.users` is: the corpus names the editor by
-    address and `synth.slack_user_id` mints the id Slack's own spec types it as. `ts` is passed
+    address and `synth.slack_user_id` mints the id Slack answers there. `ts` is passed
     through unchanged — it is information only the corpus holds, not a value to derive.
 
     A reply carries the same block, and `_message` is the single renderer for history, replies and
     search hits, so both are read here off the rows each is served from. The editor is the author
     on both, which is the only pairing real Slack produces (see `_check_edited`).
     """
-    import re
 
     from backlot.routers.slack import _message
 
@@ -2298,8 +2312,7 @@ def test_slack_edited_renders_the_editors_id(tmp_path):
     }
     for row in (root, reply):
         m = _message(row)
-        # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
-        assert re.fullmatch(r"[UW][A-Z0-9]{2,}", m["edited"]["user"])
+        assert USER_ID.fullmatch(m["edited"]["user"])
         # The editor is the author on the surface a client reads, which is the identity Slack's
         # own message-event example shows (`user` and `edited.user` are both `U123ABC456`).
         assert m["edited"]["user"] == m["user"]
@@ -2307,11 +2320,11 @@ def test_slack_edited_renders_the_editors_id(tmp_path):
 
 def test_slack_file_renders_its_owner_id(tmp_path):
     """`user` on a file is rendered the same way `edited.user` and `reactions.users` are: the
-    corpus names it by address and `synth.slack_user_id` mints the id, confirmed live against
-    every file `search.files` serves on brekkylab.slack.com (2026-09-21). Every other file field
-    — `id`, `name`, `mimetype`, `title` — passes through unchanged.
+    corpus names it by address and `synth.slack_user_id` mints the id. Slack's file object
+    reference types `user` as "the ID of the user who created the object", and a live
+    `search.files` call (2026-09-21) found one on every file the workspace served. Every other
+    file field — `id`, `name`, `mimetype`, `title` — passes through unchanged.
     """
-    import re
 
     from backlot.routers.slack import _message
 
@@ -2347,8 +2360,7 @@ def test_slack_file_renders_its_owner_id(tmp_path):
             "user": synth.slack_user_id("ava@x.com"),
         }
     ]
-    # Slack's own `defs_user_id`, so an id Backlot mints is one the vendor's spec would accept.
-    assert re.fullmatch(r"[UW][A-Z0-9]{2,}", files[0]["user"])
+    assert USER_ID.fullmatch(files[0]["user"])
 
 
 def test_slack_has_2fa_answers_an_admin_caller_or_the_callers_own_member_and_only_a_person(
@@ -2599,8 +2611,6 @@ def test_slack_deactivation_changes_every_slack_answer_about_a_member_and_nothin
         ("POST", "conversations.list", "application/json", b"{}", "missing_charset"),
         ("POST", "conversations.history", "application/json", b"{}", "missing_charset"),
         ("POST", "conversations.history", f"{_FORM}; charset=utf-8", b"", "superfluous_charset"),
-        # a 404 carries none, as real's HTML 404 for a path that names no method does not
-        ("POST", "nonexistent-xyz", "application/json", b"{}", None),
     ],
 )
 def test_slack_post_charset_warnings(
@@ -3719,3 +3729,271 @@ def test_slack_refuses_a_body_before_the_method_runs(
     assert got.json() == client.get(url, headers=headers, params=params).json()
     elsewhere = client.post("/slack/api/nonexistent-xyz", headers=sent, params=params, content=body)
     assert elsewhere.status_code == 404
+
+
+_PAGE = "<real's 404 page>"
+_ROUTED = "<the route's answer>"
+_LEFT = "<the router's 404>"
+_RETIRED_MESSAGE = (
+    "[ERROR] This method is retired and can no longer be used. Please use {} instead. Learn more: "
+    "https://api.slack.com/changelog/2020-01-deprecating-antecedents-to-the-conversations-api."
+)
+_MARK_RETIRED = {
+    "ok": False,
+    "error": "method_deprecated",
+    "response_metadata": {"messages": [_RETIRED_MESSAGE.format("conversations.mark")]},
+}
+_LIST_RETIRED = {
+    "ok": False,
+    "error": "method_deprecated",
+    "response_metadata": {
+        "messages": [_RETIRED_MESSAGE.format("conversations.list or users.conversations")]
+    },
+}
+_ROUTED_ROWS = (("PUT", "api.test"), ("PATCH", "conversations.list"), ("DELETE", "auth.test"))
+_RETIRED = (
+    "apps.permissions.info",
+    "apps.permissions.request",
+    "apps.permissions.resources.list",
+    "apps.permissions.scopes.list",
+    "apps.permissions.users.list",
+    "apps.permissions.users.request",
+    "oauth.token",
+    "workflows.stepCompleted",
+    "workflows.stepFailed",
+    "workflows.updateStep",
+)
+
+
+@pytest.mark.parametrize(
+    "verb, path, credential, content_type, body, want",
+    [
+        # a name Slack has no method by, before the credential
+        *(
+            (
+                "GET",
+                "nonexistent.method",
+                cred,
+                None,
+                None,
+                ("unknown_method", "nonexistent.method"),
+            )
+            for cred in (None, "bogus", "query", "admin")
+        ),
+        # names of each shape, with no token
+        *(
+            ("GET", name, None, None, None, ("unknown_method", name))
+            for name in ("a.b", "A.B", "1.2", "a", "a..b", "api.test.x")
+        ),
+        ("GET", "chat.postmessage", None, None, None, ("unknown_method", "chat.postmessage")),
+        ("GET", "a%2Eb", None, None, None, ("unknown_method", "a.b")),
+        (
+            "POST",
+            "nonexistent.method",
+            None,
+            "application/json",
+            b"{}",
+            ("unknown_method", "nonexistent.method"),
+        ),
+        ("POST", "nonexistent.method", None, _FORM, b"{}", "invalid_form_data"),
+        # a name real has retired
+        *(
+            ("GET", name, cred, None, None, ("unknown_method", name))
+            for name in _RETIRED
+            for cred in (None, "bogus", "admin")
+        ),
+        *(
+            ("POST", name, cred, _FORM, b"", ("unknown_method", name))
+            for name in _RETIRED
+            for cred in (None, "bogus")
+        ),
+        # an unserved published method, with a `token` query parameter and with a body; the test
+        # below sends each one the other two credentials
+        ("GET", "emoji.list", "query", None, None, "invalid_auth"),
+        ("POST", "emoji.list", "query", _FORM, b"token=", "not_authed"),
+        ("POST", "emoji.list", "query", _FORM, b"a=b", "invalid_auth"),
+        ("POST", "emoji.list", None, "application/json", b"{}", "not_authed"),
+        ("POST", "emoji.list", None, None, b"{}", "missing_post_type"),
+        ("POST", "emoji.list", None, "text/html", b"{}", "invalid_post_type"),
+        # real's 404 page
+        *(
+            ("GET", path, None, None, None, _PAGE)
+            for path in (
+                "nonexistent-xyz",
+                "a-b.c",
+                "a_b.c",
+                "%C3%A9.x",
+                "a.b;c",
+                "a/b.c",
+                "/a/b.c",
+                "/a-b",
+                "a\\b.c",
+            )
+        ),
+        ("POST", "nonexistent-xyz", None, "application/json", b"{}", _PAGE),
+        ("POST", "nonexistent-xyz", None, None, b"{}", _PAGE),
+        # the other methods of `slack.UNSERVED_METHODS`, answered as a `GET` is once a body is read
+        *(
+            row
+            for verb in ("PUT", "PATCH", "DELETE")
+            for row in (
+                (
+                    verb,
+                    "nonexistent.method",
+                    None,
+                    None,
+                    None,
+                    ("unknown_method", "nonexistent.method"),
+                ),
+                (verb, "emoji.list", None, None, None, "not_authed"),
+                (verb, "emoji.list", "bogus", None, None, "invalid_auth"),
+                (verb, "nonexistent-xyz", None, None, None, _PAGE),
+                (verb, "emoji.list", None, _FORM, b"token=xoxb-not-a-real-token", "invalid_auth"),
+            )
+        ),
+        ("PUT", "emoji.list", None, _MULTIPART, _one_part("token", "xoxb-nope"), "invalid_auth"),
+        ("PUT", "emoji.list", None, "text/html", b"token=xoxb-not-a-real-token", "not_authed"),
+        ("PUT", "emoji.list", None, _FORM, b"{}", "not_authed"),
+        ("PUT", "emoji.list", None, _FORM, b"a{=b", "invalid_arg_name"),
+        ("PUT", "emoji.list", None, _FORM, b"a[b]=c", "invalid_array_arg"),
+        ("PUT", "nonexistent.method", None, _FORM, b"a{=b", "invalid_arg_name"),
+        ("PUT", "oauth.v2.access", None, _FORM, b"token=xoxb-not-a-real-token", "invalid_auth"),
+        # the methods that answer `invalid_code`, by their credential: a refused one, and one that
+        # resolves
+        ("GET", "oauth.v2.access", "query", None, None, "invalid_auth"),
+        ("GET", "oauth.v2.access", "admin", None, None, "invalid_code"),
+        ("GET", "oauth.access", "admin", None, None, "invalid_code"),
+        ("GET", "oauth.v2.user.access", "admin", None, None, "invalid_code"),
+        ("GET", "openid.connect.token", "bogus", None, None, "invalid_auth"),
+        # a method of `slack._ANSWERED_BY_ARGUMENTS`, answered before its arguments are read (its
+        # comment)
+        ("GET", "tooling.tokens.rotate", "bogus", None, None, "invalid_auth"),
+        *(
+            (verb, "blocks.validate", "bogus", None, None, "invalid_auth")
+            for verb in ("PUT", "PATCH", "DELETE")
+        ),
+        ("GET", "blocks.validate", "admin", None, None, "unsupported_http_method"),
+        # a name `slack_sdk` calls that the baseline does not list (`slack._OTHER_ANSWERS`)
+        *(
+            ("GET", name, None, None, None, _MARK_RETIRED)
+            for name in ("channels.mark", "groups.mark", "im.mark", "mpim.mark")
+        ),
+        *(("GET", name, None, None, None, _LIST_RETIRED) for name in ("im.list", "mpim.list")),
+        ("GET", "channels.mark", "admin", None, None, _MARK_RETIRED),
+        ("GET", "channels.mark", "bogus", None, None, "invalid_auth"),
+        ("POST", "im.list", None, _FORM, b"", _LIST_RETIRED),
+        ("GET", "channels.list", None, None, None, ("unknown_method", "channels.list")),
+        ("GET", "im.open", "bogus", None, None, ("unknown_method", "im.open")),
+        # a method a route serves, for another HTTP method, is the route's to answer
+        *((verb, m, None, None, None, _ROUTED) for verb, m in _ROUTED_ROWS),
+        # left to the router: a token that resolves, a method of `slack._ANSWERED_BY_ARGUMENTS`, a
+        # path ending in `/`, the dot segments, a name after two `/`s or a `\\`, and a method
+        # outside `slack.UNSERVED_METHODS`, its body unread
+        ("GET", "emoji.list", "admin", None, None, _LEFT),
+        ("GET", "files.getUploadURLExternal", "admin", None, None, _LEFT),
+        ("POST", "blocks.validate", None, _FORM, b"", _LEFT),
+        *(
+            (verb, "blocks.validate", None, None, None, _LEFT)
+            for verb in ("PUT", "PATCH", "DELETE")
+        ),
+        ("POST", "tooling.tokens.rotate", None, _FORM, b"refresh_token=xoxe-1-bogus", _LEFT),
+        ("GET", "oauth.v2.exchange", "bogus", None, None, _LEFT),
+        ("GET", "emoji.list/", None, None, None, _LEFT),
+        ("GET", "%2E", None, None, None, _LEFT),
+        ("GET", "%2E%2E", None, None, None, _LEFT),
+        ("GET", "/api.test", None, None, None, _LEFT),
+        ("GET", "//emoji.list", "bogus", None, None, _LEFT),
+        ("GET", "\\api.test", None, None, None, _LEFT),
+        ("POST", "%2E", None, None, b"{}", _LEFT),
+        ("POST", "%2E%2E", None, None, b"{}", _LEFT),
+        ("OPTIONS", "nonexistent.method", None, None, None, _LEFT),
+        ("OPTIONS", "nonexistent.method", None, _FORM, b"a{=b", _LEFT),
+    ],
+)
+def test_slack_answers_a_path_no_route_serves_as_real_does(
+    client, admin_h, verb, path, credential, content_type, body, want
+):
+    """A path under `/slack/api/` that none of the routes serves, answered as slack.com/api answered
+    each row but a ``_LEFT`` one (the comment above ``slack.UNSERVED_METHODS`` dates the
+    measurement): ``want`` is the error, (error, `req_method`) for `unknown_method`, the whole
+    answer, or real's 404 page. A `POST` with a JSON body carries the `missing_charset` warning, as
+    each of real's answers to one did but the page. A ``_ROUTED`` row only says this layer leaves it
+    be: real runs the method. A ``_LEFT`` row is one this layer leaves to the router, which real
+    answers otherwise."""
+    headers = {}
+    url = f"/slack/api/{path}"
+    if credential == "admin":
+        headers.update(admin_h)
+    elif credential == "bogus":
+        headers["Authorization"] = "Bearer xoxb-not-a-real-token"
+    elif credential == "query":
+        url += "?token=xoxb-not-a-real-token"
+    if content_type is not None:
+        headers["Content-Type"] = content_type
+    r = client.request(verb, url, headers=headers, content=body)
+    if want == _ROUTED:
+        assert b"unknown_method" not in r.content
+        return
+    if want == _LEFT:
+        assert (r.status_code, r.content) == (404, b'{"detail":"Not Found"}')
+        return
+    if want == _PAGE:
+        assert r.status_code == 404
+        assert r.headers["content-type"] == "text/html; charset=utf-8"
+        assert r.content == slack._NOT_FOUND_PAGE
+        return
+    if isinstance(want, dict):
+        expected = dict(want)
+    elif isinstance(want, tuple):
+        expected = {"ok": False, "error": want[0], "req_method": want[1]}
+    else:
+        expected = {"ok": False, "error": want}
+    if content_type == "application/json" and body:
+        expected |= {
+            "warning": "missing_charset",
+            "response_metadata": {"warnings": ["missing_charset"]},
+        }
+    assert r.status_code == 200
+    assert r.content == JSONResponse(expected).body
+
+
+# The two answers here where they are not `not_authed` and `invalid_auth`: real's, or `_LEFT` for
+# those `slack._ANSWERED_BY_ARGUMENTS` leaves to the router.
+_PUBLISHED_ANSWERS = {
+    "oauth.access": ("invalid_code", "invalid_code"),
+    **{
+        name: ("invalid_code", "invalid_auth")
+        for name in ("oauth.v2.access", "oauth.v2.user.access", "openid.connect.token")
+    },
+    "blocks.validate": {
+        "GET": ("unsupported_http_method", "unsupported_http_method"),
+        "POST": (_LEFT, "invalid_auth"),
+    },
+    "oauth.v2.exchange": (_LEFT, _LEFT),
+    "tooling.tokens.rotate": (_LEFT, "invalid_auth"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(published.missing_operations("slack")))
+def test_slack_answers_each_published_method_no_route_serves(client, name):
+    """Each method the baseline lists as published and not served, answered as real answered it but
+    those ``slack._ANSWERED_BY_ARGUMENTS`` leaves to the router (``slack._PUBLISHED_NOT_SERVED``
+    dates the measurement)."""
+    answers = _PUBLISHED_ANSWERS.get(name, ("not_authed", "invalid_auth"))
+    for verb in ("GET", "POST"):
+        none, bogus = answers[verb] if isinstance(answers, dict) else answers
+        for headers, error in (
+            ({}, none),
+            ({"Authorization": "Bearer xoxb-not-a-real-token"}, bogus),
+        ):
+            if verb == "POST":
+                headers = {**headers, "Content-Type": _FORM}
+            r = client.request(verb, f"/slack/api/{name}", headers=headers, content=b"")
+            if error == _LEFT:
+                assert (r.status_code, r.content) == (404, b'{"detail":"Not Found"}'), (verb, name)
+                continue
+            assert r.content == JSONResponse({"ok": False, "error": error}).body, (
+                verb,
+                name,
+                headers,
+            )

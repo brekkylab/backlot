@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import datetime as _dt
 import re
-import uuid
+import secrets
+import string
 
 from graphql import GraphQLError
 
@@ -304,28 +305,111 @@ def _transcript(row, info) -> dict:
 # --- Query roots ------------------------------------------------------------------
 
 
-# Reporter measurements cover person-filter collisions and these argument constraints. Field
-# order is the measured validation order, independent of the order in the GraphQL document.
+# One `invalid_arguments` error names each argument real refuses once, in this order whatever order
+# the document sends them in, and one refused twice lists `exclusiveFields` first and takes its
+# `message` from it (api.fireflies.ai, 2026-10-21).
 _PERSON_FIELDS = (
     ("userId", "user_id"),
     ("mine", "mine"),
+    ("organizers", "organizers"),
+    ("participants", "participants"),
     ("hostEmail", "host_email"),
     ("organizerEmail", "organizer_email"),
     ("participantEmail", "participant_email"),
 )
+_PLURAL = ("organizers", "participants")
 _EXCLUSIVE = (
     "Only one of the following fields can be provided: "
     "mine, userId, hostEmail, organizerEmail, participantEmail"
 )
+# The request-context slot for the one `correlationId` every `invalid_arguments` error in a
+# response carries, and what it is drawn from.
+_CORRELATION_ID = "_ff_correlation_id"
+_ALNUM = string.ascii_letters + string.digits
+
+# validator.js's patterns, read as JavaScript reads them: `\s` is JavaScript's (no \x1c-\x1f or
+# \x85, and a BOM), and a range ending at \uffff takes either half of a surrogate pair.
+_JS_SPACE = "\t\n\x0b\x0c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+_WIDE = "\u00a1-\ud7ff\uf900-\ufdcf\ufdf0-\uffef"
+_LOCAL_PART = re.compile(f"[a-zA-Z0-9!#$%&'*+\\-/=?^_`{{|}}~{_WIDE}]+")
+_QUOTED_LOCAL = re.compile(
+    f"(?:[{_JS_SPACE}\\x01-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f!#-\\[\\]-~\u00a0{_WIDE}]"
+    f"|\\\\[\\x01-\\x09\\x0b\\x0c\\x0d-\\x7f\u00a0{_WIDE}])*"
+)
+_TLD = re.compile(
+    "[a-zA-Z\u00a1-\u00a8\u00aa-\ud7ff\uf900-\ufdcf\ufdf0-\uffef]{2,}|[xX][nN][a-zA-Z0-9-]{2,}"
+)
+_LABEL = re.compile("[a-zA-Z0-9_\u00a1-\uffff-]+")
+
+
+def _is_email(value: str) -> bool:
+    """validator.js 13.15.15's ``isEmail`` with its default options, which answered as
+    api.fireflies.ai's ``IsEmailOnly`` did for each address sent on 2026-10-21. The address is read
+    as JavaScript reads it, in UTF-16 code units, but for the local part's and domain's byte limits,
+    which count UTF-8."""
+    raw = value.encode("utf-16-le", "surrogatepass")
+    s = "".join(chr(int.from_bytes(raw[i : i + 2], "little")) for i in range(0, len(raw), 2))
+    user, _, domain = s.rpartition("@")
+    if len(s) > 254 or _utf8_len(user) > 64 or _utf8_len(domain) > 254:
+        return False
+    labels = domain.split(".")
+    if (
+        len(labels) < 2
+        or not _TLD.fullmatch(labels[-1])
+        or re.search(f"[{_JS_SPACE}]", labels[-1])
+        or not all(
+            len(p) <= 63
+            and _LABEL.fullmatch(p)
+            and not re.search("[_\uff01-\uff5e]", p)
+            and not p.startswith("-")
+            and not p.endswith("-")
+            for p in labels
+        )
+    ):
+        return False
+    if user[:1] == '"' and user[-1:] == '"':
+        return bool(_QUOTED_LOCAL.fullmatch(user[1:-1]))
+    return all(_LOCAL_PART.fullmatch(p) for p in user.split("."))
+
+
+def _utf8_len(units: str) -> int:
+    text = units.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+    return len(text.encode("utf-8", "surrogatepass"))
+
+
+def _not_a_js_date(value) -> bool:
+    """Whether real refuses ``value`` as a date. On 2026-10-21 api.fireflies.ai refused the strings
+    V8's ``new Date()`` reads as an Invalid Date and no number or boolean. This tells the two kinds
+    of string that need no date parser: one with no ASCII digit, which V8 never reads, and one of
+    ASCII digits only, which it reads as a year when it has four and otherwise by value. Any other
+    string is left to :func:`to_epoch_seconds`."""
+    if not isinstance(value, str):
+        return False
+    if not re.search("[0-9]", value):
+        return True
+    if not re.fullmatch("[0-9]+", value) or len(value) == 4:
+        return False
+    digits = value.lstrip("0")
+    return len(digits) > 6 or 13 <= int(digits or "0") <= 31 or int(digits or "0") > 275760
 
 
 def _validate_transcripts(arguments):
+    """Raise real's ``invalid_arguments`` error for the dates, page bounds and person filters it
+    refuses.
+
+    ``mine``, ``user_id`` and the three singular addresses collide once two of them hold a value
+    (``false``, ``null`` and ``""`` do not), and the error then names each of them that was sent,
+    ``false`` and ``""`` included. ``organizers`` and ``participants`` collide with any one that
+    holds a value, ``[]`` included, and the error names only the plural for that."""
     fields = {}
 
     def add(name, kind, message):
         field = fields.setdefault(name, {"name": name, "message": message, "constraints": []})
         field["constraints"].append({"type": kind, "message": message})
 
+    for name in ("fromDate", "toDate"):
+        if _not_a_js_date(arguments[name]):
+            add(name, "isDate", f"{name} must be a Date instance")
     limit, skip = arguments["limit"], arguments["skip"]
     if limit is not None:
         if limit <= 0:
@@ -337,38 +421,30 @@ def _validate_transcripts(arguments):
             add("skip", "min", "skip must not be less than 0")
         elif skip > 5000:
             add("skip", "max", "skip must not be greater than 5000")
-    date = arguments["fromDate"]
-    if date is not None and (
-        isinstance(date, str)
-        and date.strip().lstrip("-").isdigit()
-        or to_epoch_seconds(date) is None
-    ):
-        add("fromDate", "isDate", "fromDate must be a Date instance")
-
-    singular = [(name, key) for name, key in _PERSON_FIELDS if arguments[key]]
-    plural = [name for name in ("organizers", "participants") if arguments[name] is not None]
-    if singular and plural:
-        for name in plural:
-            add(name, "exclusiveFields", f"{_EXCLUSIVE}, {name}.")
-    elif len(singular) > 1:
-        for name, _key in singular:
-            add(name, "exclusiveFields", f"{_EXCLUSIVE}.")
-    # Do not trim email filters: leading/trailing whitespace was measured as invalid, whereas
-    # an empty string is absent. No additional constraints on plural members were measured.
+    held = [key for name, key in _PERSON_FIELDS if name not in _PLURAL and arguments[key]]
     for name, key in _PERSON_FIELDS:
         value = arguments[key]
-        if (
-            key.endswith("_email")
-            and value
-            and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value)
-        ):
+        if value is None:
+            continue
+        if name in _PLURAL:
+            if held:
+                add(name, "exclusiveFields", f"{_EXCLUSIVE}, {name}.")
+            if not all(map(_is_email, value)):
+                add(name, "IsEmailOnly", f"{name} must be a valid email address")
+            continue
+        if len(held) > 1:
+            add(name, "exclusiveFields", f"{_EXCLUSIVE}.")
+        if key.endswith("_email") and value and not _is_email(value):
             add(name, "IsEmailOnly", f"{name} must be a valid email address")
     if fields:
+        context = arguments["info"].context
         raise GraphQLError(
             "Invalid argument(s) were provided",
             extensions={
                 "code": "invalid_arguments",
-                "correlationId": uuid.uuid4().hex[:8],
+                "correlationId": context.setdefault(
+                    _CORRELATION_ID, "".join(secrets.choice(_ALNUM) for _ in range(8))
+                ),
                 "status": 400,
                 "metadata": {"fields": list(fields.values())},
                 "helpUrls": [

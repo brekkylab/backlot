@@ -1270,7 +1270,7 @@ def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
     assert unescape(text).strip() == doc["content"].strip()
 
 
-def test_atlassian_errors_use_atlassian_envelope(client):
+def test_atlassian_errors_use_atlassian_envelope(client, admin_h):
     # atlassian-python-api's Confluence client does response.json()["message"] on any error, so
     # Backlot must shape /atlassian errors like Cloud does, not {"detail"}: each product's own two
     # members (`errors.atlassian.http_body`).
@@ -1278,9 +1278,9 @@ def test_atlassian_errors_use_atlassian_envelope(client):
     assert r.status_code == 403
     assert sorted(r.json()) == ["message", "statusCode"] and r.json()["statusCode"] == 403
     r2 = client.get(
-        "/atlassian/wiki/rest/api/content/search"
-    )  # 'search' fails int path validation -> 422
-    assert r2.status_code == 422 and sorted(r2.json()) == ["message", "statusCode"]
+        "/atlassian/wiki/rest/api/content/abc", headers=admin_h
+    )  # an id `ContentId` cannot read -> Spring's 400
+    assert r2.status_code == 400 and sorted(r2.json()) == ["message", "statusCode"]
     # non-atlassian paths keep FastAPI's default {"detail"} envelope
     r3 = client.get("/no-such-route")
     assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()
@@ -1744,7 +1744,7 @@ def test_confluence_restrictions_answer_what_expand_names_in_real_shape(tmp_path
         "headers": [(b"authorization", f"Bearer {s.admin_token}".encode())],
     }
     request = Request(scope)
-    result = asyncio.run(confluence_restrictions(cid, request))
+    result = asyncio.run(confluence_restrictions(str(cid), request))
     assert _members(result) == members
     path = f"{_site(request)}/wiki/rest/api/content/{cid}/restriction/byOperation"
     assert result["_links"] == {"self": path, "base": f"{_site(request)}/wiki", "context": "/wiki"}
@@ -1755,21 +1755,244 @@ def test_confluence_restrictions_answer_what_expand_names_in_real_shape(tmp_path
                 assert result[op]["restrictions"]["user"]["results"]  # the private doc's author
 
 
+@pytest.mark.parametrize("spelt", ["{}", "0{}", "att{}"])
 @pytest.mark.parametrize("route", ["child/page", "child/attachment", "restriction/byOperation"])
-def test_confluence_a_page_an_outsider_cannot_read_is_a_made_up_id(client, admin_h, tokens, route):
+def test_confluence_a_page_an_outsider_cannot_read_is_a_made_up_id(
+    client, admin_h, tokens, route, spelt
+):
     """A page the caller cannot read answers what a made-up id answers, status and body byte for
-    byte, so neither a listing's 200 nor `restriction/byOperation`'s reader roster tells an outsider
-    the page is there. The admin's 200 on the same URL is the control."""
+    byte but for the id each 404 names, which is the number the caller sent, so neither a
+    listing's 200 nor `restriction/byOperation`'s reader roster tells an outsider the page is
+    there, whichever of these spellings names it. The admin's 200 on the same URL is the
+    control."""
     cid = served_id("confluence", "cf-comp")  # people-only
-    path = f"/atlassian/wiki/rest/api/content/{cid}/{route}"
+    path = f"/atlassian/wiki/rest/api/content/{spelt.format(cid)}/{route}"
     served = client.get(path, headers=admin_h)
     assert served.status_code == 200, served.text
 
     h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}  # engineering; cannot see cf-comp
     hidden = client.get(path, headers=h)
-    made_up = client.get(f"/atlassian/wiki/rest/api/content/999999999/{route}", headers=h)
+    made_up = client.get(
+        f"/atlassian/wiki/rest/api/content/{spelt.format(999999999)}/{route}", headers=h
+    )
     assert hidden.status_code == made_up.status_code == 404
-    assert hidden.content == made_up.content
+    assert str(cid).encode() in hidden.content
+    assert hidden.content.replace(str(cid).encode(), b"999999999") == made_up.content
+
+
+# --- Confluence content/{id}: the id as `ContentId` reads it, and the 404 of one naming nothing --
+
+#: Spring's 400 for an id `ContentId` cannot read, up to the value it names.
+_CONTENT_ID_400_HEAD = (
+    "org.springframework.web.method.annotation.MethodArgumentTypeMismatchException: Failed to "
+    "convert value of type 'java.lang.String' to required type "
+    "'com.atlassian.confluence.api.model.content.id.ContentId'; nested exception is "
+    "org.springframework.core.convert.ConversionFailedException: Failed to convert from type "
+    "[java.lang.String] to type [@org.springframework.web.bind.annotation.PathVariable "
+    "com.atlassian.confluence.api.model.content.id.ContentId] for value "
+)
+_CANNOT_PARSE = (
+    "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
+    "Can't parse as a ContentId"
+)
+
+
+def _number_format(rest):
+    return f'java.lang.NumberFormatException: For input string: "{rest}"'
+
+
+@pytest.mark.parametrize(
+    "sent, read",
+    [
+        # sent on `child/page`, and the id real named in its 404
+        ("05", 5),
+        ("+5", 5),
+        ("%2B5", 5),
+        ("0000000000000000000000000005", 5),
+        ("-0", 0),
+        ("%D9%A5", 5),
+        ("%EF%BC%95", 5),
+        ("9223372036854775807", 2**63 - 1),
+        ("-9223372036854775808", -(2**63)),
+        ("att5", 5),
+        ("att05", 5),
+        ("att+5", 5),
+        ("att-5", -5),
+        ("att%D9%A5", 5),
+        # or the value its 400 named, and how the message ended
+        ("abc", ("abc", _CANNOT_PARSE)),
+        ("1.5", ("1.5", _CANNOT_PARSE)),
+        ("1e3", ("1e3", _CANNOT_PARSE)),
+        ("0x10", ("0x10", _CANNOT_PARSE)),
+        ("1_0", ("1_0", _CANNOT_PARSE)),
+        ("5.", ("5.", _CANNOT_PARSE)),
+        (".5", (".5", _CANNOT_PARSE)),
+        ("+", ("+", _CANNOT_PARSE)),
+        ("-", ("-", _CANNOT_PARSE)),
+        ("--5", ("--5", _CANNOT_PARSE)),
+        ("+-5", ("+-5", _CANNOT_PARSE)),
+        ("%20", (" ", _CANNOT_PARSE)),
+        ("%205", (" 5", _CANNOT_PARSE)),
+        ("5%09", ("5" + chr(9), _CANNOT_PARSE)),
+        ("%F0%9D%9F%93", (chr(0x1D7D3), _CANNOT_PARSE)),
+        ("9223372036854775808", ("9223372036854775808", _CANNOT_PARSE)),
+        ("-9223372036854775809", ("-9223372036854775809", _CANNOT_PARSE)),
+        ("99999999999999999999", ("99999999999999999999", _CANNOT_PARSE)),
+        ("search", ("search", _CANNOT_PARSE)),
+        ("ATT999999999", ("ATT999999999", _CANNOT_PARSE)),
+        ("Att5", ("Att5", _CANNOT_PARSE)),
+        ("xatt5", ("xatt5", _CANNOT_PARSE)),
+        ("att", ("att", _number_format(""))),
+        ("attabc", ("attabc", _number_format("abc"))),
+        ("att%205", ("att 5", _number_format(" 5"))),
+        (
+            "att9223372036854775808",
+            ("att9223372036854775808", _number_format("9223372036854775808")),
+        ),
+    ],
+)
+def test_confluence_reads_a_content_id_as_contentid_does(client, admin_h, sent, read):
+    """``read`` is the id real named in its 404, or the value its 400 named and the end of that
+    400's message."""
+    r = client.get(f"/atlassian/wiki/rest/api/content/{sent}/child/page", headers=admin_h)
+    if isinstance(read, int):
+        assert r.status_code == 404, r.text
+        assert r.json()["message"].endswith(f" : ContentId{{id={read}}}")
+    else:
+        value, cause = read
+        assert r.status_code == 400, r.text
+        message = f"{_CONTENT_ID_400_HEAD}[{value}]; nested exception is {cause}"
+        assert r.json() == {"statusCode": 400, "message": message}
+
+
+@pytest.mark.parametrize("route", ["", "/label", "/child/comment", "/restriction/byOperation"])
+@pytest.mark.parametrize("sent", ["abc", "attabc"])
+def test_confluence_reads_the_content_id_alike_on_every_route(client, admin_h, sent, route):
+    """The same 400 for the same id on each route under `content/{id}`, `child/page`'s being the
+    control."""
+    api = "/atlassian/wiki/rest/api/content"
+    r = client.get(f"{api}/{sent}{route}", headers=admin_h)
+    assert r.status_code == 400, r.text
+    assert r.content == client.get(f"{api}/{sent}/child/page", headers=admin_h).content
+
+
+_SERVED_PAGE = "{page}"
+
+
+@pytest.mark.parametrize(
+    "path, sentence, data, length",
+    [
+        # under `content/`; the sentence after `NotFoundException: `; which `data`; real's bytes
+        ("999999999", "No content found with id : 999999999", "refused", 287),
+        ("999999999/label", "No content found with id : 999999999", "refused", 287),
+        (
+            "999999999/child/page",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "999999999/child/comment",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "999999999/child/attachment",
+            "No content found with id: ContentId{id=999999999}",
+            "readable",
+            221,
+        ),
+        (
+            "999999999/restriction/byOperation",
+            "No content with id <ContentId{id=999999999}> can be found",
+            "refused",
+            329,
+        ),
+        # an attachment's id
+        ("att999999999", "null", "attachment", 178),
+        ("att999999999/label", "null", "attachment", 178),
+        (f"att{_SERVED_PAGE}", "null", "attachment", 178),
+        (f"att{_SERVED_PAGE}/label", "null", "attachment", 178),
+        (
+            "att999999999/child/page",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "att999999999/child/attachment",
+            "No content found with id: ContentId{id=999999999}",
+            "readable",
+            221,
+        ),
+        (
+            "att999999999/restriction/byOperation",
+            "No content with id <ContentId{id=999999999}> can be found",
+            "refused",
+            329,
+        ),
+        # what `label` refuses only after its lookup, which an id naming nothing never reaches
+        ("999999999/label?limit=-1", "No content found with id : 999999999", "refused", 287),
+        ("999999999/label?limit=0", "No content found with id : 999999999", "refused", 287),
+        ("999999999/label?start=-1", "No content found with id : 999999999", "refused", 287),
+        (f"att{_SERVED_PAGE}/label?limit=-1", "null", "attachment", 178),
+        (f"att{_SERVED_PAGE}/label?limit=0", "null", "attachment", 178),
+        # with nothing wrong but the id, each listing looks it up
+        (
+            "999999999/child/page?limit=0",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "999999999/child/comment?limit=0",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "999999999/child/attachment?limit=0",
+            "No content found with id: ContentId{id=999999999}",
+            "readable",
+            221,
+        ),
+    ],
+)
+def test_confluence_answers_an_id_naming_nothing_with_reals_404(
+    client, admin_h, path, sentence, data, length
+):
+    """Each row is real's 404 to the request named, in its three members in its order."""
+    page = served_id("confluence", "cf-comp")
+    r = client.get(f"/atlassian/wiki/rest/api/content/{path.format(page=page)}", headers=admin_h)
+    shape = {
+        "readable": {"authorized": True, "valid": True, "errors": [], "successful": True},
+        "refused": {
+            "authorized": False,
+            "valid": False,
+            "errors": [{"message": {"translation": sentence, "args": []}}],
+            "successful": False,
+        },
+        "attachment": {"authorized": False, "valid": True, "errors": [], "successful": False},
+    }[data]
+    want = {
+        "statusCode": 404,
+        "data": shape,
+        "message": f"com.atlassian.confluence.api.service.exceptions.api.NotFoundException: {sentence}",
+    }
+    assert r.status_code == 404, r.text
+    assert r.content == json.dumps(want, separators=(",", ":")).encode()
+    assert len(r.content) == length
+
+
+@pytest.mark.parametrize(
+    "path", ["abc", "abc/child/page", "att5/child/page", "abc/label?limit=abc"]
+)
+def test_confluence_reads_the_content_id_after_the_credential(client, path):
+    """With no `Authorization`, real's 403 comes ahead of the id's 400 and the parameter's."""
+    r = client.get(f"/atlassian/wiki/rest/api/content/{path}")
+    assert r.status_code == 403, r.text
+    assert "caller cannot access Confluence" in r.json()["message"]
 
 
 # --- Jira: a page of comments is a page -------------------------------------------------------
@@ -3417,9 +3640,36 @@ def test_confluence_names_the_trimmed_value_where_jira_names_the_raw_one(client,
         # `label`'s zero-`limit` refusal comes after conversion and after the negative
         ("label", "limit=0&start=abc", 'For input string: "abc"'),
         ("label", "limit=0&start=-1", "start cannot be less than zero"),
-        # on `child/attachment` the conversion and the negative both come before an unknown id's 404
+        # on an id naming nothing, the three `child/*` listings refuse both parameters ahead of the
+        # 404, and `label` its conversion and its `prefix`
         ("content/999999999/child/attachment", "limit=abc", 'For input string: "abc"'),
         ("content/999999999/child/attachment", "limit=-1", "limit cannot be less than zero"),
+        *[
+            (f"content/999999999/{route}", query, want)
+            for route in ("child/page", "child/comment")
+            for query, want in (
+                ("limit=abc", 'For input string: "abc"'),
+                ("start=abc", 'For input string: "abc"'),
+                ("limit=-1", "limit cannot be less than zero"),
+                ("start=-1", "start cannot be less than zero"),
+                ("limit=0&start=-1", "start cannot be less than zero"),
+            )
+        ],
+        ("content/999999999/label", "limit=abc", 'For input string: "abc"'),
+        ("content/999999999/label", "start=abc", 'For input string: "abc"'),
+        ("content/999999999/label", "prefix=bogus", "Could not convert label prefixes :[bogus]"),
+        ("content/999999999/label", "limit=-1&prefix=bogus", "label prefixes :[bogus]"),
+        ("content/999999999/label", "prefix=bogus&limit=0", "label prefixes :[bogus]"),
+        ("content/999999999/label", "prefix=bogus&limit=abc", 'For input string: "abc"'),
+        ("content/att999999999/child/page", "limit=-1", "limit cannot be less than zero"),
+        # an id `ContentId` cannot read comes ahead of each of them
+        ("content/abc/child/page", "limit=abc", "for value [abc]"),
+        ("content/abc/child/page", "limit=-1", "for value [abc]"),
+        ("content/abc/child/comment", "limit=-1", "for value [abc]"),
+        ("content/abc/child/attachment", "limit=-1", "for value [abc]"),
+        ("content/abc/label", "prefix=bogus", "for value [abc]"),
+        ("content/99999999999999999999/label", "limit=abc", "for value [99999999999999999999]"),
+        ("content/attabc/label", "limit=abc", "for value [attabc]"),
     ],
 )
 def test_confluence_refuses_the_parameter_real_names_when_both_are_wrong(

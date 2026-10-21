@@ -470,6 +470,19 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
 
 
 @app.middleware("http")
+async def read_a_notion_body_as_express_does(request: Request, call_next):
+    """Read a `/notion` request's body the way Express reads one in front of every Notion route,
+    and answer the refusal it draws there, ahead of the route, the credential and the version
+    (``notion.front_door_body``). Registered before the trailing-slash rewrite below, which makes it
+    the inner of the two, so the path it derives an answer's ids from is the one the route sees."""
+    path = request.url.path
+    if not (path == "/notion" or path.startswith("/notion/")):
+        return await call_next(request)
+    refusal = await notion.front_door_body(request)
+    return refusal if refusal is not None else await call_next(request)
+
+
+@app.middleware("http")
 async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, call_next):
     """One trailing slash on a `/notion` path is not part of the path: real serves what the
     slash-free spelling serves.

@@ -645,16 +645,29 @@ framework's 405 carries a `request_id` in the body and `x-notion-request-id` on 
 value; real's differs per response and this one is derived from the request, so a corpus served
 twice answers the same id.
 
+A request is read as the real API reads it before anything is looked up. A JSON body is read first,
+ahead of the credential and the version, as Express reads one: a body that does not parse is
+`invalid_json`, a charset or a `Content-Encoding` it cannot read is its 415 and a body past 512000
+bytes its 413, and a body sent as anything but `application/json` is not read at all. The query
+string is parsed as Node's `qs` parses one, so a repeated key is `Conflicting values` and a
+bracketed one an object, each value is read as Notion's validator reads it (`01` is 1, `0x10` is 16,
+`TRUE` is `true`), and a member a route does not take is refused by name, on a `GET`'s body as on
+its query string; `pages/{id}` and `comments` serve an unknown query parameter, as on real. A
+refusal quotes a value back as JSON cut after 55 UTF-16 units. A list starts at the item a
+`start_cursor` names and hands back the next item's id as its cursor (a data source query's is
+`s:<session>:<row>`), and a `page_size` of 0, past 100 or below 0 is the whole page, the empty page
+or a refusal, route by route as real answers it.
+
 | Endpoint | Notes |
 |---|---|
-| `POST search` | |
+| `POST search` | `filter` narrows to an object type and to the trash, which is empty here; `sort` is refused where real refuses it and otherwise not applied |
 | `pages/{id}` | |
 | `blocks/{id}` | |
 | `blocks/{id}/children` | |
 | `databases/{id}` | Version-aware: `data_sources` from `2025-09-03`, inline `properties` before it |
 | `POST databases/{id}/query` | Versions before `2025-09-03` only |
 | `data_sources/{id}` | `2025-09-03` and later only |
-| `POST data_sources/{id}/query` | `2025-09-03` and later only |
+| `POST data_sources/{id}/query` | `2025-09-03` and later only. `filter` and `sorts` are refused where real refuses them, a property the data source does not have included, and are not applied; `filter_properties` narrows each row |
 | `users[/{id}]` | |
 | `users/me` | |
 | `comments` | |

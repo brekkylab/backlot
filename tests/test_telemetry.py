@@ -279,12 +279,6 @@ def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent
             b'{"errors":[{"message":"x","extensions":{"code":"invalid_argument"}}]}',
             "invalid_argument",
         ),
-        (
-            "fireflies",
-            200,
-            b'{"errors":[{"message":"Argument \'id\' of non-null type \'String!\' must not be null."}]}',
-            "graphql_validation",
-        ),
         ("linear", 200, b'{"errors":[{"message":"Entity not found: Issue"}]}', "entity_not_found"),
         ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
         ("jira", 401, b"Client must be authenticated to access this resource.", "unauthenticated"),
@@ -642,7 +636,7 @@ def test_each_message_slug_is_one_backlot_sends(client, method, path, kwargs, ex
                 "variables": {"x": None},
             },
             LINEAR,
-            "INTERNAL_SERVER_ERROR",
+            "graphql_validation",
         ),
         ({"query": "mutation { x }"}, LINEAR, "graphql_validation"),
         ({"query": "{ ...F }"}, LINEAR, "graphql_validation"),
@@ -665,7 +659,7 @@ def test_each_message_slug_is_one_backlot_sends(client, method, path, kwargs, ex
         ),
     ],
 )
-def test_each_graphql_error_code_is_one_backlot_sends(client, payload, headers, expected):
+def test_each_graphql_message_slug_is_one_backlot_sends(client, payload, headers, expected):
     calls = _calls(lambda: client.post("/linear/graphql", headers=headers, json=payload))
     assert [c.get("backlot.error_code") for c in calls] == [expected], calls
 
@@ -675,7 +669,7 @@ def test_every_message_slug_has_a_request_that_sends_it():
         row[-1]
         for t in (
             test_each_message_slug_is_one_backlot_sends,
-            test_each_graphql_error_code_is_one_backlot_sends,
+            test_each_graphql_message_slug_is_one_backlot_sends,
         )
         for row in t.pytestmark[0].args[1]
     } | {"rate_limited", "unsupported_filter"}

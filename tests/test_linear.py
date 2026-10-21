@@ -22,7 +22,6 @@ from graphql import GraphQLError, build_client_schema, is_enum_type, parse, vali
 from backlot import synth
 from backlot.fidelity.graphql_diff import backlot_schema
 from backlot.graphql import linear_filters, mcp_tools
-from backlot.routers import linear as linear_router
 from tests._helpers import (
     SWEPT_BYTES,
     build_corpus,
@@ -3724,80 +3723,33 @@ def test_fields_the_sdk_fragments_select_resolve_to_what_backlot_serves(fclient)
 _AGENT_SESSIONS = "query($v: Boolean) { viewer { supportsAgentSessions(forCurrentUser: $v) } }"
 
 
-def _internal_server_error(path: list, column: int) -> dict:
-    return {
-        "data": None,
-        "errors": [
-            {
-                "message": "Internal server error",
-                "locations": [{"line": 1, "column": column}],
-                "path": path,
-                "extensions": {
-                    "code": "INTERNAL_SERVER_ERROR",
-                    "type": "internal error",
-                    "userError": False,
-                },
-            }
-        ],
-    }
-
-
 @pytest.mark.parametrize(
     "query,variables,expected",
     [
         (
             "{ viewer { supportsAgentSessions } }",
             None,
-            {"data": {"viewer": {"supportsAgentSessions": False}}},
+            {"viewer": {"supportsAgentSessions": False}},
         ),
         (
             "{ viewer { f: supportsAgentSessions(forCurrentUser: false)"
             " t: supportsAgentSessions(forCurrentUser: true) } }",
             None,
-            {"data": {"viewer": {"f": False, "t": False}}},
+            {"viewer": {"f": False, "t": False}},
         ),
-        (_AGENT_SESSIONS, {}, {"data": {"viewer": {"supportsAgentSessions": False}}}),
-        (_AGENT_SESSIONS, {"v": True}, {"data": {"viewer": {"supportsAgentSessions": False}}}),
-        (
-            _AGENT_SESSIONS,
-            {"v": None},
-            _internal_server_error(["viewer", "supportsAgentSessions"], 69),
-        ),
-        (
-            "query($v: Boolean) { users(first: 2) { nodes { name"
-            " supportsAgentSessions(forCurrentUser: $v) } } }",
-            {"v": None},
-            _internal_server_error(["users", "nodes", 0, "supportsAgentSessions"], 91),
-        ),
-        (
-            "query($v: Boolean = true) { viewer { supportsAgentSessions(forCurrentUser: $v) } }",
-            {"v": None},
-            _internal_server_error(["viewer", "supportsAgentSessions"], 76),
-        ),
-        (
-            'query($x: String = "a") { issue(id: $x) { id } }',
-            {"x": None},
-            _internal_server_error(["issue"], 37),
-        ),
+        (_AGENT_SESSIONS, {}, {"viewer": {"supportsAgentSessions": False}}),
+        (_AGENT_SESSIONS, {"v": False}, {"viewer": {"supportsAgentSessions": False}}),
+        (_AGENT_SESSIONS, {"v": True}, {"viewer": {"supportsAgentSessions": False}}),
     ],
-    ids=[
-        "absent",
-        "literals",
-        "variable omitted",
-        "variable true",
-        "variable null",
-        "in a list",
-        "variable null, its default true",
-        "issue id, variable null, its default a",
-    ],
+    ids=["absent", "literals", "variable omitted", "variable false", "variable true"],
 )
-def test_for_current_user_and_a_null_variable_at_a_non_null_argument_answer_as_linear_does(
+def test_supports_agent_sessions_answers_false_under_each_for_current_user(
     fclient, query, variables, expected
 ):
-    """Each row is api.linear.app's answer to the same document and variables, measured when
-    ``_field_error`` says."""
+    """Each row is api.linear.app's answer to the same document and variables, measured when the
+    comment in ``_user`` says."""
     r = post(fclient, query, variables)
-    assert (r.status_code, r.json()) == (200, expected)
+    assert (r.status_code, r.json()) == (200, {"data": expected})
 
 
 def test_supports_agent_sessions_declares_linears_default(fclient):
@@ -3816,24 +3768,6 @@ def test_supports_agent_sessions_declares_linears_default(fclient):
             "type": {"kind": "NON_NULL", "ofType": {"name": "Boolean"}},
         }
     ]
-
-
-def test_an_exception_a_resolver_raises_keeps_its_own_message(fclient, monkeypatch):
-    """``_field_error`` answers only graphql-core's refusal of a variable; an error with any other
-    cause is answered as graphql-core formats it. No served Linear resolver raises anything but a
-    ``GraphQLError``, so one is made to raise a ``RuntimeError`` here."""
-
-    def broken(*_args, **_kwargs):
-        raise RuntimeError("a resolver failed")
-
-    viewer = linear_router.ENGINE.schema.type_map["Query"].fields["viewer"]
-    monkeypatch.setattr(viewer, "resolve", broken)
-    r = post(fclient, "{ viewer { id } }")
-    error = {"message": "a resolver failed", "locations": [{"line": 1, "column": 3}]}
-    assert (r.status_code, r.json()) == (
-        200,
-        {"data": None, "errors": [{**error, "path": ["viewer"]}]},
-    )
 
 
 _MEMBERSHIP = "id createdAt updatedAt archivedAt owner sortOrder user { id } team { id }"

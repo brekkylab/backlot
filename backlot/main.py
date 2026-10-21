@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 import threading
 from contextlib import asynccontextmanager
 
@@ -20,7 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Match
 from starlette.types import Scope
 
-from backlot import auth, errors, openapi, store, synth
+from backlot import auth, errors, openapi, store, synth, telemetry
 from backlot.acl import Acl
 from backlot.config import get_settings
 from backlot.oauth import Oauth
@@ -36,6 +37,8 @@ from backlot.routers import (
     s3,
     slack,
 )
+from backlot.telemetry import naming, recorder
+from backlot.telemetry.middleware import TelemetryMiddleware
 
 
 @asynccontextmanager
@@ -118,9 +121,18 @@ async def lifespan(app: FastAPI):
     # On app.state, not fire-and-forget, so tests can join it instead of polling /health.
     app.state.warm_thread = threading.Thread(target=_warm_caches, daemon=True)
     app.state.warm_thread.start()
+    exporter = None
+    if telemetry.enabled(settings):
+        exporter = recorder.Exporter(
+            recorder.RECORDER, recorder.ENDPOINT, recorder.INTERVAL, surface=naming.surface
+        )
+        exporter.start()
+        print(telemetry.notice(recorder.ENDPOINT), file=sys.stderr)
     try:
         yield
     finally:
+        if exporter is not None:
+            exporter.stop()
         conn.close()
 
 
@@ -1020,6 +1032,11 @@ async def vendor_json_media_type(request: Request, call_next):
         if media_type is not None:
             response.headers["content-type"] = media_type
     return response
+
+
+# Registered after every middleware above, which makes it the outermost: it sees every answer,
+# including one a middleware gives without reaching a route.
+app.add_middleware(TelemetryMiddleware)
 
 
 @app.get("/health")

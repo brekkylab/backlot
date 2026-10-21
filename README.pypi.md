@@ -134,6 +134,7 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 | Auth schemes and tokens | [docs/auth.md](https://github.com/brekkylab/backlot/blob/main/docs/auth.md) |
 | Measuring Backlot against the real APIs | [docs/fidelity.md](https://github.com/brekkylab/backlot/blob/main/docs/fidelity.md) |
 | Every `BACKLOT_*` setting, and Docker | [docs/configuration.md](https://github.com/brekkylab/backlot/blob/main/docs/configuration.md) |
+| Usage telemetry: why it is collected, what is sent, and how to turn it off | [docs/telemetry.md](https://github.com/brekkylab/backlot/blob/main/docs/telemetry.md) |
 | Vendor names and trademarks | [NOTICE.md](https://github.com/brekkylab/backlot/blob/main/NOTICE.md) |
 
 ## Contributing

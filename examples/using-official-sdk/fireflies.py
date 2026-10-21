@@ -187,10 +187,10 @@ with serve_or_connect(CORPUS, url=args.url) as s:
                 where = f" @ {a['location']}" if a["location"] else ""
                 print(f"      attendee: {a['displayName']} <{a['email']}>{where}")
 
-        # `limit` is capped at 50 by the real API. It CLAMPS rather than erroring, so asking for
-        # more is safe — you just get 50.
-        big = gql(client, endpoint, token, TRANSCRIPTS, limit=500)
-        print(f"\nlimit=500 → served {len(big['transcripts'])} (the API's max is 50)")
+        # `limit` runs 1-50 on the real API, which refuses anything above with `invalid_arguments`
+        # rather than clamping it, so ask for 50 and page with `skip`.
+        big = gql(client, endpoint, token, TRANSCRIPTS, limit=50)
+        print(f"\nlimit=50, the API's max → served {len(big['transcripts'])}")
 
         # Offset pagination: `limit`/`skip`, NOT a Relay cursor connection.
         page = gql(client, endpoint, token, TRANSCRIPTS, limit=1, skip=1)

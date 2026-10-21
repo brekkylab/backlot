@@ -893,8 +893,40 @@ router = APIRouter(
 # which is silent corruption rather than a missing feature.
 
 
+# `application/vnd.github.` or legacy `…github.v3.`, a representation's name, `+json` if present.
+_GITHUB_MEDIA = re.compile(r"(application/vnd\.github\.(?:v3\.)?)([^+]*)(\+json)?", re.IGNORECASE)
+
+
 def _accept_types(request: Request) -> list[str]:
-    return [t.split(";")[0].strip().lower() for t in request.headers.get("accept", "").split(",")]
+    """The media types ``Accept`` lists, read as api.github.com read them on 2026-10-21.
+
+    A representation's name is read as spelt, and `application`, `github`, `v3` and `json` in any
+    case: a pull answers `…github.DIFF` with its JSON and `Application/vnd.github.diff`,
+    `…vnd.GitHub.diff`, `…github.V3.diff` and `…diff+JSON` each with the diff, and `raw` on
+    contents, readme and blobs and `text-match` on code search read those spellings the same way.
+    A ``diff`` whose first parameter is a ``q`` of zero is left out, and no other name is:
+    `patch;q=0`, `raw;q=0` and `text-match+json;q=0` are served as asked, and so is a diff under
+    `Q=0`, `q = 0` or a `q` after `charset`."""
+    types: list[str] = []
+    for member in request.headers.get("accept", "").split(","):
+        media_type, _, params = member.partition(";")
+        media_type = media_type.strip()
+        m = _GITHUB_MEDIA.fullmatch(media_type)
+        if m is not None:
+            if m[2] == "diff" and _zero_q(params.partition(";")[0].strip()):
+                continue
+            media_type = m[1].lower() + m[2] + (m[3] or "").lower()
+        types.append(media_type)
+    return types
+
+
+def _zero_q(param: str) -> bool:
+    """Whether ``param`` is a ``q`` weight that reads as zero."""
+    name, _, value = param.partition("=")
+    try:
+        return name == "q" and float(value) == 0
+    except ValueError:
+        return False
 
 
 def _github_media(request: Request, name: str) -> bool:

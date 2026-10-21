@@ -140,6 +140,7 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 | Auth schemes and tokens | [docs/auth.md](docs/auth.md) |
 | Measuring Backlot against the real APIs | [docs/fidelity.md](docs/fidelity.md) |
 | Every `BACKLOT_*` setting, and Docker | [docs/configuration.md](docs/configuration.md) |
+| Usage telemetry: why it is collected, what is sent, and how to turn it off | [docs/telemetry.md](docs/telemetry.md) |
 | Vendor names and trademarks | [NOTICE.md](NOTICE.md) |
 
 ## Contributing

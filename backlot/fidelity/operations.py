@@ -78,10 +78,10 @@ def from_backlot(
     """The operations Backlot serves for one source, taken from the app's own ``/openapi.json``.
 
     ``mount`` selects the paths belonging to this source; ``strip`` is the part of them the vendor's
-    own document does not repeat. The two differ per source and are not guessable: Slack is mounted
-    at ``/slack/api`` and its spec starts at ``/conversations.list``, so the whole mount comes off,
-    while Gmail is mounted at ``/gmail`` and Google's document already spells ``gmail/v1/...``, so
-    nothing does. Guessing here silently pairs the wrong operations.
+    own document does not repeat. The two differ per source and are not guessable: Jira is mounted
+    at ``/atlassian/rest/api/3`` and its document spells ``/rest/api/3/...``, so ``/atlassian``
+    comes off, while Gmail is mounted at ``/gmail`` and Google's document already spells
+    ``gmail/v1/...``, so nothing does. Guessing here silently pairs the wrong operations.
     """
     mount = tuple(mount)
     ops: dict[tuple[str, str], Operation] = {}
@@ -145,24 +145,16 @@ def diff_operations(
 def inventory(
     backlot: Mapping[tuple[str, str], Operation],
     real: Mapping[tuple[str, str], Operation],
-    *,
-    named_by_path: bool = False,
 ) -> OperationSurface:
     """One entry per operation either side has: the vendor's id for it, and which side has it.
 
-    ``named_by_path`` is for a vendor whose operation IS its path, whatever the verb: Slack's
-    ``conversations.list`` is one method, which its document declares under one verb (its
-    ``operationId`` spells it ``conversations_list``) and its server answers under both. There the
-    id is the path, served routes the document omits included; everywhere else it is only what the
-    document declares, so a served route with no path item in the document has none.
+    The id is only what the document declares, so a served route with no path item in the document
+    has none.
     """
     out = []
     for key in sorted(set(backlot) | set(real)):
         op = backlot.get(key) or real[key]
-        if named_by_path:
-            name = op.path
-        else:
-            name = real[key].id if key in real else ""
+        name = real[key].id if key in real else ""
         if key not in backlot:
             status = MISSING
         else:

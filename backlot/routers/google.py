@@ -2402,12 +2402,17 @@ _DRIVE_ORDER_KEYS = {
     "folder": lambda f: f.get("mimeType") != DRIVE_FOLDER_MIME,  # folders first
     "starred": lambda f: bool(f.get("starred")),
     "quotaBytesUsed": lambda f: int(f.get("quotaBytesUsed") or f.get("size") or 0),
-    # The per-caller keys read the served object, so a file the caller never viewed, modified or
-    # was shared sorts as real sorts a file without the time: ahead of every time, and after every
-    # one under `desc`. Nothing here is viewed by anyone, as `viewedByMe` says on every file.
+    # The per-caller keys read the served object, so a file the caller never modified or was
+    # shared sorts as real sorts a file without the time: ahead of every time, and after every one
+    # under `desc`.
     "sharedWithMeTime": lambda f: f.get("sharedWithMeTime") or "",
-    "viewedByMeTime": lambda f: f.get("viewedByMeTime") or "",
     "modifiedByMeTime": lambda f: f.get("modifiedByMeTime") or "",
+    # Real sorts a file shared with the caller that the caller never viewed after every file
+    # without a view time and ahead of every view time, one of 2001 included, measured 2026-10-21;
+    # a file reached through a shared folder carries no `sharedWithMeTime` and sorts with the
+    # first. Nothing here is viewed, as `viewedByMe` says on every file, so whether the caller was
+    # shared the file is all the key reads.
+    "viewedByMeTime": lambda f: bool(f.get("sharedWithMeTime")),
     # The later of the caller's last view and last modification; a file with neither after every
     # file with either.
     "recency": lambda f: max(f.get("viewedByMeTime") or "", f.get("modifiedByMeTime") or ""),
@@ -2459,8 +2464,10 @@ def _drive_sort(files: list[dict], specs: list[tuple]) -> list[dict]:
     """Apply the keys last-first: Python's sort is stable, so the first key wins. Files the keys
     tie stay newest modification first under either direction, as real lists them: of the tied
     pairs in its `name`, `name_natural`, `folder,name`, `starred` and `quotaBytesUsed` listings of
-    two accounts' files on 2026-10-20, none had the older first. The id under that keeps a sorted
-    walk from repeating or skipping a row across pages."""
+    two accounts' files on 2026-10-20, and in its `viewedByMeTime`, `sharedWithMeTime`,
+    `modifiedByMeTime` and `recency` listings of folders made for them on 2026-10-21, none had the
+    older first. The id under that keeps a sorted walk from repeating or skipping a row across
+    pages."""
     files.sort(key=lambda f: f.get("id") or "")
     files.sort(key=lambda f: f.get("modifiedTime") or "", reverse=True)
     for key, reverse in reversed(specs):

@@ -775,9 +775,9 @@ def test_gmail_negation_and_groups_over_the_wire(tmp_path):
     with client_for(settings, reload=True) as c:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
 
-        def ids(q):
-            r = c.get("/gmail/v1/users/ava@acme.com/messages", headers=h, params={"q": q})
-            return {m["id"] for m in r.json().get("messages", [])}
+        def ids(q, listing="messages"):
+            r = c.get(f"/gmail/v1/users/ava@acme.com/{listing}", headers=h, params={"q": q})
+            return {m["id"] for m in r.json().get(listing, [])}
 
         every = ids("")
         for plain, negated in (
@@ -799,6 +799,8 @@ def test_gmail_negation_and_groups_over_the_wire(tmp_path):
             assert ids(q) == every - both, q
         assert ids("-(attached from:bob)") == every - ids("attached from:bob")
         assert ids("NOT -(from:bob label:inbox)") == both
+        threads = ids("", "threads") - ids("from:bob label:inbox", "threads")
+        assert ids("-(from:bob label:inbox)", "threads") == threads
         assert ids("NOT (from:bob label:sent)") == ids("-from:bob label:sent")
         assert ids("-(from:bob)-(label:inbox)") == every
         assert ids("(from:bob)-(label:inbox)") == set()

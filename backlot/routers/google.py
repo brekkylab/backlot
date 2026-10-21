@@ -852,25 +852,25 @@ _GMAIL_NEGATED_EMPTY = re.compile(rf"(?<!\S)-+{_GMAIL_EMPTY_BEFORE}", re.IGNOREC
 # of `older_than:30d`, `-older_than:30d` those of `newer_than:30d`, and `-has:attachment` the
 # messages `has:attachment` does not.
 _GMAIL_AGE_NEGATION = {"newer_than": "older_than", "older_than": "newer_than"}
-# A `(…)` group, read before the operators (`_gmail_groups`). Measured on a Workspace mailbox of 642
-# messages on 2026-10-21, comparing `messages.list` id sets: `(from:me)`, `((from:me))`,
-# `( from:me )`, `(from:me` and `from:me)` answered the ids of `from:me`, and `probe(from:me)` and
-# `(from:me) probe` those of `from:me probe`; `-(from:me to:me)`, `-((from:me) to:me)`,
-# `-(from:me (to:me))`, `-( from:me to:me )` and `-(from:me to:me`, with no `)`, answered the
-# messages `from:me to:me` does not, `-(probe from:me)` those `from:me probe` does not, and
-# `-(NOT from:me to:me)` and `-(-from:me to:me)` those `-from:me to:me` does not; `-(from:me)`,
-# `-((from:me))`, `-(from:me`, `-(-from:me)`, `--(from:me)` and `-(NOT NOT from:me)` answered the
-# ids of `-from:me`, and `-(-(from:me to:me))` and `--(from:me to:me)` those of `-(from:me to:me)`;
-# `-( )`, `-()`, `(` and `)` every message. After `NOT` the brackets are no group, and `NOT` falls
-# on the first term inside them: `NOT (from:me to:me)`, `NOT((from:me to:me))` and
-# `NOT (from:me) to:me` answered the ids of `-from:me to:me`, `NOT (-from:me to:me)` those of
-# `from:me to:me`, and `NOT -(from:me to:me)` those of `from:me to:me` as well. `threads.list`
-# answered `-(from:me to:me)`, `-(probe from:me)` and `NOT (from:me to:me)` alike. A `)` with a `-`
-# and more after it, and a `-(` after a word, are no brackets: `-(from:me)-(to:me)` and
-# `-(from:me)-to:me` answered every message, and `(from:me)-(to:me)`, `from:me-(to:me)` and
-# `probe-(from:me)` nothing, where `-(from:me)- (to:me)` answered the ids of `-from:me to:me` and
-# `-(from:me)-` those of `-from:me`. Not modelled: `subject:" (from:me`, a lone quote before an
-# unclosed group, answered nothing, where `subject:" (from:me)` answered the ids of `from:me`.
+# A `(…)` group, read before the operators (`_gmail_groups`), measured with the queries at
+# `_GMAIL_NOT`: `(from:me)`, `((from:me))`, `( from:me )`, `(from:me` and `from:me)` answered the
+# ids of `from:me`, and `probe(from:me)` and `(from:me) probe` those of `from:me probe`;
+# `-(from:me to:me)`, `-((from:me) to:me)`, `-(from:me (to:me))`, `-( from:me to:me )` and
+# `-(from:me to:me`, with no `)`, answered the messages `from:me to:me` does not, `-(probe from:me)`
+# those `from:me probe` does not, and `-(NOT from:me to:me)` and `-(-from:me to:me)` those
+# `-from:me to:me` does not; `-(from:me)`, `-((from:me))`, `-(from:me`, `-(-from:me)`, `--(from:me)`
+# and `-(NOT NOT from:me)` answered the ids of `-from:me`, and `-(-(from:me to:me))` and
+# `--(from:me to:me)` those of `-(from:me to:me)`; `-( )`, `-()`, `(` and `)` every message. After
+# `NOT` the brackets are no group, and `NOT` falls on the first term inside them:
+# `NOT (from:me to:me)`, `NOT((from:me to:me))` and `NOT (from:me) to:me` answered the ids of
+# `-from:me to:me`, `NOT (-from:me to:me)` those of `from:me to:me`, and `NOT -(from:me to:me)`
+# those of `from:me to:me` as well. `threads.list` answered `-(from:me to:me)`, `-(probe from:me)`
+# and `NOT (from:me to:me)` alike. A `)` with a `-` and more after it, and a `-(` after a word, are
+# no brackets: `-(from:me)-(to:me)` and `-(from:me)-to:me` answered every message, and
+# `(from:me)-(to:me)`, `from:me-(to:me)` and `probe-(from:me)` nothing, where `-(from:me)- (to:me)`
+# answered the ids of `-from:me to:me` and `-(from:me)-` those of `-from:me`. Not modelled:
+# `subject:" (from:me`, a lone quote before an unclosed group, answered nothing, where
+# `subject:" (from:me)` answered the ids of `from:me`.
 _GMAIL_GROUP_PIECE = re.compile(r'\s+|"[^"]*"|(?:(?<=[^\s(-])-+\(|\)(?=-+\S)|[^\s()"])+|[()]|"')
 # The `ops` key holding the inner text of each `-(…)` group of more than one term, whose messages
 # `_gmail_query` leaves out. No operator can be named this, since `_GMAIL_OP` reads a name of word

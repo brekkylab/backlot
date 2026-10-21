@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from graphql import GraphQLError
+from graphql import GraphQLError, VariableNode
 
 from backlot import pagination, store, synth
 from backlot.graphql.linear_filters import (
@@ -400,6 +400,10 @@ def _user(email: str | None, display: str | None, info) -> dict | None:
         "app": False,
         "isMentionable": True,
         "isMe": bool(caller and caller == email),
+        # `false` whatever `forCurrentUser` asks: Linear describes it as "Whether to require an
+        # active webhook for sessions started by the current user", a condition added to the
+        # answer. api.linear.app answered `false` for each of a workspace's three users with it
+        # absent, `false` and `true` on 2026-10-21 (UTC).
         "supportsAgentSessions": False,
         "canAccessAnyPublicTeam": True,
         "createdIssueCount": 0,
@@ -1572,13 +1576,36 @@ RESOLVERS = {
 }
 
 
+def _field_error(error: GraphQLError, variables) -> GraphQLError:
+    """Linear's answer for a variable sent as ``null`` to a non-null argument with a default.
+    GraphQL lets a nullable variable stand at such an argument, so the ``null`` is refused only as
+    the field runs: graphql-core names the argument, and Linear answers ``Internal server error``
+    with ``INTERNAL_SERVER_ERROR`` at the field's path and the variable's location. api.linear.app
+    answered so on 2026-10-21 (UTC) at ``User.supportsAgentSessions(forCurrentUser)``, the one such
+    argument this schema declares, and at ``Query.ssoUrlFromEmail(type)``, the only other one its
+    own schema has. Every other error is kept."""
+    cause = error.original_error
+    node = cause.nodes[0] if isinstance(cause, GraphQLError) and cause.nodes else None
+    if not isinstance(node, VariableNode):
+        return error
+    name = node.name.value
+    if name not in variables or variables[name] is not None:
+        return error
+    return GraphQLError(
+        "Internal server error",
+        error.nodes,
+        path=error.path,
+        extensions={"code": "INTERNAL_SERVER_ERROR", "type": "internal error", "userError": False},
+    )
+
+
 def build_engine():
     """The Linear engine, over the SDL beside this module. ``SCALARS`` binds Linear's date-operand
     grammar onto ``DateTimeOrDuration`` / ``TimelessDateOrDuration``, so a malformed filter value is
     a validation error (a 400) exactly where the real API makes it one."""
     from backlot.graphql import engine
 
-    return engine.from_sdl(__file__, "linear", RESOLVERS, SCALARS)
+    return engine.from_sdl(__file__, "linear", RESOLVERS, SCALARS, _field_error)
 
 
 __all__ = ["RESOLVERS", "build_engine", "PAGE_DEFAULT", "PAGE_MAX"]

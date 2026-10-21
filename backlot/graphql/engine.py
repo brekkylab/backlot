@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from graphql import (
+    ExecutionResult,
     GraphQLError,
     GraphQLID,
     GraphQLInputObjectType,
@@ -81,6 +82,10 @@ def _ids_as_graphql_js_reads_them(value: Any, type_: Any) -> Any:
 # produce — rather than into a field error from whichever resolver first tried to use it.
 Scalar = Mapping[str, Callable[..., Any]]
 
+# A vendor's own answer for a field error raised while the document runs: given the error and the
+# request's variables, the error to answer with in its place, or the same error to keep it.
+FieldError = Callable[[GraphQLError, Mapping[str, Any]], GraphQLError]
+
 
 @dataclass(frozen=True)
 class Result:
@@ -108,7 +113,7 @@ def not_json() -> Result:
     return _client_error("POST body sent invalid JSON.")
 
 
-def from_sdl(module_file: str, name: str, resolvers, scalars=None) -> "Engine":
+def from_sdl(module_file: str, name: str, resolvers, scalars=None, field_error=None) -> "Engine":
     """An :class:`Engine` over the ``<name>.graphql`` sitting beside ``module_file``.
 
     Each vendor's resolver module keeps its SDL as a sibling file, so this is the one place that
@@ -117,6 +122,7 @@ def from_sdl(module_file: str, name: str, resolvers, scalars=None) -> "Engine":
         (Path(module_file).parent / f"{name}.graphql").read_text(encoding="utf-8"),
         resolvers,
         scalars,
+        field_error,
     )
 
 
@@ -134,8 +140,10 @@ class Engine:
         sdl: str,
         resolvers: Mapping[str, Mapping[str, Resolver]] | None = None,
         scalars: Mapping[str, Scalar] | None = None,
+        field_error: FieldError | None = None,
     ):
         self.schema: GraphQLSchema = build_schema(sdl)
+        self.field_error = field_error
         # validate() would do this on the first request otherwise, surfacing a vendor's broken
         # SDL as a 500 rather than as an import-time failure.
         assert_valid_schema(self.schema)
@@ -200,6 +208,9 @@ class Engine:
         # is what separates them from a non-null field error that propagated up to the root.
         if result.data is None and result.errors and all(e.path is None for e in result.errors):
             return _request_error(list(result.errors))
+        if result.errors and self.field_error is not None:
+            errors = [self.field_error(e, variables or {}) for e in result.errors]
+            result = ExecutionResult(result.data, errors)
         return Result(payload=result.formatted)
 
     def execute_payload(self, payload: Any, *, context: Any = None) -> Result:

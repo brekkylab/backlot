@@ -31,6 +31,10 @@ _TABLE = Path(__file__).resolve().parent / "data" / "drive_collation.json"
 _NUMBER_DIGITS = 254
 # Real lowers the ASCII capitals of a name before it collates it, and no other.
 _ASCII_LOWER = {cp: cp + 32 for cp in range(ord("A"), ord("Z") + 1)}
+# How many marks past a sequence Backlot looks for one that completes it: the 30 a run of marks
+# holds at most in the stream-safe text of Unicode's UAX #15. ICU looks further; this bound keeps a
+# name of a starter and a long run of marks from costing the square of its length.
+_MARKS_LOOKED_PAST = 30
 
 
 class _Weights:
@@ -58,28 +62,41 @@ class _Weights:
         self.digits = {start + v: v for start in table["digits"] for v in range(10)}
         self.ccc = {cp + k: ccc for cp, count, ccc in table["non_starters"] for k in range(count)}
 
-    def at(self, cps: list[int], i: int) -> tuple[int, tuple[tuple[int, int, int], ...]]:
-        """How many code points from ``i`` collate as one, and their elements. The longest
-        sequence the table lists from ``i`` also takes a mark further on, past marks of a lower
-        combining class, when the two are listed as one, and that mark is removed from ``cps``:
-        the Unicode Collation Algorithm's S2.1, as ICU matches."""
-        size, key = 1, (cps[i],)
+    def at(self, cps: list[int], i: int, taken: set[int]):
+        """Where the code points from ``i`` that collate as one end, and their elements, past the
+        positions in ``taken``. The longest sequence the table lists from ``i`` also takes a mark
+        further on, past marks of a lower combining class, when the two are listed as one, and that
+        mark's position joins ``taken``: the Unicode Collation Algorithm's S2.1, as ICU matches, as
+        far as ``_MARKS_LOOKED_PAST`` marks."""
+        key, end = (cps[i],), i + 1
         if cps[i] in self.starters:
-            for n in range(min(self.longest, len(cps) - i), 1, -1):
-                if tuple(cps[i : i + n]) in self.listed:
-                    size, key = n, tuple(cps[i : i + n])
+            ahead, j = [], i + 1
+            while j < len(cps) and len(ahead) < self.longest - 1:
+                if j not in taken:
+                    ahead.append(j)
+                j += 1
+            for n in range(len(ahead), 0, -1):
+                if (longer := (cps[i], *(cps[a] for a in ahead[:n]))) in self.listed:
+                    key, end = longer, ahead[n - 1] + 1
                     break
-            j, passed = i + size, 0
-            while j < len(cps) and (ccc := self.ccc.get(cps[j], 0)):
+            j, passed, looked = end, 0, 0
+            while j < len(cps) and looked < _MARKS_LOOKED_PAST:
+                if j in taken:
+                    j += 1
+                    continue
+                if not (ccc := self.ccc.get(cps[j], 0)):
+                    break
+                looked += 1
                 if passed < ccc and key + (cps[j],) in self.listed:
-                    key += (cps.pop(j),)
+                    key += (cps[j],)
+                    taken.add(j)
                 else:
                     passed = max(passed, ccc)
-                    j += 1
+                j += 1
         if (found := self.listed.get(key)) is not None:
-            return size, found
+            return end, found
         run = bisect.bisect_right(self.starts, cps[i]) - 1
-        return 1, ((self.firsts[run] + cps[i] - self.starts[run], self.common, self.tcommon),)
+        return end, ((self.firsts[run] + cps[i] - self.starts[run], self.common, self.tcommon),)
 
 
 @functools.cache
@@ -97,6 +114,7 @@ def _jamo(cp: int) -> tuple[int, ...]:
     return (lead, vowel, 0x11A7 + tail) if tail else (lead, vowel)
 
 
+@functools.lru_cache(maxsize=1 << 16)
 def sort_key(name: str) -> tuple[tuple, tuple, tuple]:
     """``name``'s place in the collation, as a key ``sorted`` compares: every element's primary
     in turn, then every secondary, then every tertiary. A run of decimal digits, in any script,
@@ -110,13 +128,19 @@ def sort_key(name: str) -> tuple[tuple, tuple, tuple]:
     primary: list[tuple] = []
     secondary: list[int] = []
     tertiary: list[int] = []
+    taken: set[int] = set()
     i = 0
     while i < len(cps):
+        if i in taken:
+            i += 1
+            continue
         if cps[i] in w.digits:
-            j = i
-            while j < len(cps) and cps[j] in w.digits:
+            j, digits = i, []
+            while j < len(cps) and (j in taken or cps[j] in w.digits):
+                if j not in taken:
+                    digits.append(cps[j])
                 j += 1
-            run = "".join(str(w.digits[cp]) for cp in cps[i:j])
+            run = "".join(str(w.digits[cp]) for cp in digits)
             at = 0
             while at < len(run):
                 while at < len(run) - 1 and run[at] == "0":
@@ -128,7 +152,7 @@ def sort_key(name: str) -> tuple[tuple, tuple, tuple]:
                 at += len(number)
             i = j
             continue
-        size, elements = w.at(cps, i)
+        i, elements = w.at(cps, i, taken)
         for p, s, t in elements:
             if p:
                 primary.append((p, 0, ""))
@@ -136,5 +160,4 @@ def sort_key(name: str) -> tuple[tuple, tuple, tuple]:
                 secondary.append(s)
             if t:
                 tertiary.append(t)
-        i += size
     return tuple(primary), tuple(secondary), tuple(tertiary)

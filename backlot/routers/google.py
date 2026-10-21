@@ -2502,9 +2502,8 @@ def _drive_file_field_keys(fields: str | None) -> set[str] | None:
     form (``files/id``); both are honored. ``None`` = no projection (an absent mask, one that asks
     for everything with ``*``, or one that names no ``files``).
 
-    Top-level names are validated but not projected: Backlot always returns ``kind`` and
-    ``incompleteSearch``, because its typed response model (``DriveFileList``, which the OpenAPI
-    schema is built from) declares them."""
+    Top-level names are validated but not projected: the route's typed response model
+    (``DriveFileList``, which the OpenAPI schema is built from) declares ``kind`` and ``files``."""
     paths = _drive_mask(fields)
     if not paths:
         return None

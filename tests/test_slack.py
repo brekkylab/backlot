@@ -82,10 +82,11 @@ def _send(client, path: str, method: str, query: str, authorization, form, t: di
     return getattr(client, method)(url, headers=headers, **body)
 
 
-# The shape Slack states for a user id, so an id Backlot mints is one a client written against
-# Slack will accept: `docs.slack.dev/enterprise#user_ids` gives an enterprise id as "a user ID
-# beginning with `U` or `W`" and a legacy one as beginning with `U`, and every id in the
-# reference's own examples is uppercase alphanumeric after that prefix.
+# A user id Backlot mints, in the shape a client written against Slack will accept:
+# `docs.slack.dev/enterprise#what` gives an enterprise user id as "a user ID beginning with `U` or
+# `W`" and a legacy one as beginning with `U`. The prefix is Slack's; the two or more uppercase
+# alphanumerics after it are what Backlot mints, as the message event reference's own example
+# lists reaction users as short as `U1`.
 USER_ID = re.compile(r"[UW][A-Z0-9]{2,}")
 
 

@@ -27,10 +27,10 @@ bodies are out of scope here: a vendor spec describes them through deep `$ref` c
 Backlot's `response_model` set does not mirror shape-for-shape, so a body diff would report how two
 documents are written rather than how two servers answer.
 
-For **Slack**, which publishes no machine-readable description, its reference documentation: which
-methods exist, which arguments each takes and at which type, and which fields each answer carries
-and at which type, in both directions. Backlot's side is `/openapi.json` for the arguments and a
-local Backlot's own answers for the fields. See
+For **Slack**, which maintains no machine-readable description, its reference documentation:
+which methods exist, which arguments each takes and at which type, and which fields each answer
+carries and at which type, in both directions. Backlot's side is `/openapi.json` for the arguments
+and a local Backlot's own answers for the fields. See
 [Slack is read off its reference documentation](#slack-is-read-off-its-reference-documentation).
 
 Path templates are compared with placeholders flattened. The vendor calling a segment `{userId}`
@@ -105,25 +105,29 @@ verify by hand*, never as proof of a bug. Those measurements are what the baseli
 
 Slack's OpenAPI document, `slackapi/slack-api-specs`, is archived, its last content change dated
 2020-10-06: it declares 174 methods where the reference lists 340, `canvases.*`, `bookmarks.*`
-and `assistant.threads.*` among those it lacks. Nothing replaced it. What Slack does maintain is
-the reference at `docs.slack.dev`, which serves every page as markdown (`docs.slack.dev/llms.txt`).
-Markdown is prose, not a schema, so each part is read only where the page gives it one fixed
-spelling, and a page that stops spelling it that way is a contract that could not be read (exit 2),
-never a divergence. Measured 2026-10-21 over all 340 method pages and the nine object pages:
+and `assistant.threads.*` among those it lacks. The copy `api.slack.com/specs/openapi/v2/` still
+serves is the same version, 1.7.0, with 170. What Slack maintains is the reference at
+`docs.slack.dev`, which serves every page as markdown (`docs.slack.dev/llms.txt`). Markdown is
+prose, not a schema, so each part is read only where the page gives it one fixed spelling, and a
+page that stops spelling it that way is a contract that could not be read (exit 2), never a
+divergence. Measured 2026-10-21 over all 340 method pages and the nine object pages:
 
-- **Methods** are the index's table rows, each a method's name linked to its own page. Every row but the header
-  must read that way. A method's own page is read only where Backlot serves it, and its
-  `method_name` frontmatter must be the name the index linked.
+- **Methods** are the index's table rows, each a method's name linked to its own page. Every row
+  but the header must read that way. A method's own page is read only where Backlot serves it,
+  and its `method_name` frontmatter must be the name the index linked.
 - **Arguments** are the lines of a page's `## Arguments` section: 1516 lines of one shape, a bolded
-  name, an optional type (`string`, `boolean`, `integer`, `number`, `array`, `object`) and
-  `Required` or `Optional`. No bolded line of any other shape appears in any section; 194 state no
-  type, and those are compared by name only. `integer` and `number` are one JSON type.
+  name, an optional type (`string` 968, `boolean` 131, `array` 129, `integer` 72, `object` 16,
+  `number` 6, none 194) and `Required` or `Optional`. Every bolded name anywhere in a section is
+  one of those lines, and every page but `admin.audit.anomaly.allow.getItem`, which Backlot does
+  not serve, reads at least one, so a served page that reads none is refused. An argument with no
+  type is compared by name only; `integer` and `number` are one JSON type.
 - **Fields** are read off the JSON examples in a page's `## Response` section, success examples
   only (`"ok": true`). 608 fenced blocks there open as JSON: 596 are JSON as written and 3 more
   once an elision (`...`, `// ...`) and a trailing comma outside every string are taken out. The
   9 left, single-quoted strings, missing commas and one JSON Lines file, are all on methods
-  Backlot does not serve, whose pages are not read. A key that is not a field name (a
-  profile's custom-field ids, a file's per-channel `shares`) collapses to `{}`.
+  Backlot does not serve, whose pages are not read. A key that is not a field name (a profile's
+  custom-field ids, a file's per-channel `shares`, a huddle's per-person `participants_events`)
+  collapses to `{}`.
 - An example shows one sample, so where the section links an **object page**
   (`reference/objects/user-object.md`), that page's Field/Type/Description tables add every field
   the object may carry. The first table names the object's own fields, and the object goes where
@@ -135,8 +139,10 @@ never a divergence. Measured 2026-10-21 over all 340 method pages and the nine o
   `Timestamp`, a string or a number as Slack's timestamps go, which types nothing. So do the 25
   rows of the conversation object's booleans table, which has no Type column.
 
-Backlot's side of the fields is what a local Backlot answers on a corpus `slack_docs` supplies, over
-every channel, thread and person it holds, so a finding reproduces with `backlot.serve(records=…)`.
+Backlot's side of the fields is what a local Backlot answers on a corpus `slack_docs` supplies,
+over every channel, thread and person it holds and with the arguments the reference's examples
+were sent where an answer echoes them (`api.test`'s `foo`, `conversations.history`'s `latest`, a
+page with more to follow), so a finding reproduces with `backlot.serve(records=…)`.
 A field Backlot answers under a list the documentation never looks inside, or the documentation
 under one Backlot answered empty, is compared against nothing and not reported; an empty object
 Backlot answers is looked inside, and an example's empty object is not. `null` beside a type is not

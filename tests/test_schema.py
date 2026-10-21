@@ -841,7 +841,8 @@ def test_slack_edited_needs_the_timestamp_too(on):
 def test_slack_edited_ts_refuses_a_bare_number(on):
     """Every `ts` this project has read off a live workspace is a quoted string in the shape of
     the message reference's own `"ts": "1355517536.000001"` (`^\\d{10}\\.\\d{6}$`), never a bare
-    JSON number — so a corpus stating one would have Backlot serve a shape real Slack never sends."""
+    JSON number — so a corpus stating one would have Backlot serve a shape real Slack never
+    sends."""
     number, at = _edited_record({"user": "ava@x.com", "ts": 1770311280}, on=on)
     assert record_errors(number) == [f"<root> [{at}/ts]: 1770311280 is not of type 'string'"]
     short, _ = _edited_record({"user": "ava@x.com", "ts": "1770311280.0"}, on=on)

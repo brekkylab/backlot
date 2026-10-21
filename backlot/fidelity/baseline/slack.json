@@ -940,10 +940,6 @@
         }
       },
       "fields": {
-        "args.foo": {
-          "kind": "missing_field",
-          "severity": "gap"
-        },
         "args.token": {
           "kind": "extra_field",
           "severity": "breaking",
@@ -1494,10 +1490,6 @@
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
         },
-        "latest": {
-          "kind": "missing_field",
-          "severity": "gap"
-        },
         "messages[].attachments": {
           "kind": "missing_field",
           "severity": "gap"
@@ -1579,10 +1571,6 @@
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
-        },
-        "response_metadata": {
-          "kind": "missing_field",
-          "severity": "gap"
         }
       }
     },

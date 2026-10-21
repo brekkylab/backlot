@@ -202,11 +202,9 @@ class Namer:
             return self._served(source, strip, method, route)
         if source == "slack":
             name = canonical(rest)
-            return (
-                Named(source, name, self._slack[name])
-                if name in self._slack
-                else (Named(source, "unmatched", UNKNOWN))
-            )
+            if name in self._slack:
+                return Named(source, name, self._slack[name])
+            return Named(source, "unmatched", UNKNOWN)
         best = self._best(source, rest, method)
         return Named(source, best.id, best.status) if best else Named(source, "unmatched", UNKNOWN)
 

@@ -5,7 +5,7 @@ Backlot's side is the SDL the server builds its engine from and the vendor's is 
 response, which needs a credential. For the seven document sources, Backlot's side is the app's own
 ``app.openapi()`` and the vendor's is one or more documents it publishes, which needs none. For
 S3, whose operations are selected by query string rather than by path, both sides are answers from
-a running server that ``backlot.serve()`` starts. Slack publishes no machine-readable description
+a running server that ``backlot.serve()`` starts. Slack maintains no machine-readable description
 at all, so its vendor side is its reference documentation, and Backlot's is ``app.openapi()`` for
 the arguments and a running server's answers for what each method returns.
 
@@ -286,7 +286,7 @@ class SlackComparison:
 
     The one kind named after a source rather than a format, because the format is one vendor's:
     a markdown page per method, read where the page gives a part one fixed spelling. The OpenAPI
-    document Slack once published is archived and last changed 2020-10-06, and an answer read off
+    document Slack published is archived and last changed 2020-10-06, and an answer read off
     a live workspace depends on what that workspace holds, so neither is the contract here.
     """
 

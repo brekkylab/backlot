@@ -1,24 +1,23 @@
-"""Slack is compared against its reference documentation, because it publishes nothing else.
+"""Slack is compared against its reference documentation, the one contract it maintains.
 
 Every other document source here reads a machine-readable description its vendor maintains. Slack
-has none: the OpenAPI document it once published is archived, its last content change dated
-2020-10-06. What it maintains is the reference at docs.slack.dev, which serves every page as
-markdown (``docs.slack.dev/llms.txt``). Markdown is not a schema, so each part is read only where
-the page gives it one fixed spelling, measured 2026-10-21 across all 340 method pages:
+maintains none: its OpenAPI document is archived, its last content change dated 2020-10-06, and the
+copy `api.slack.com` still serves is as old. What it maintains is the reference at docs.slack.dev,
+which serves every page as markdown (``docs.slack.dev/llms.txt``). Markdown is not a schema, so each
+part is read only where the page gives it one fixed spelling (``docs/fidelity.md``, "Slack is read
+off its reference documentation", carries the measurement of each):
 
 * the inventory, off the method index: one table row per method, its name linked to its own page;
-* a method's arguments, off its ``## Arguments`` section: 1516 lines of one shape, a name, an
-  optional type out of six and ``Required`` or ``Optional``, and no bolded line of any other shape;
-* what a method answers, off the JSON examples in its ``## Response`` section: 608 code blocks
-  that open as JSON, 596 of them JSON as written and 3 more once an elision (``...``,
-  ``// ...``) and a trailing comma are taken out, the 9 left all on methods Backlot does not serve;
+* a method's arguments, off its ``## Arguments`` section: one line each, a bolded name, an
+  optional type and ``Required`` or ``Optional``;
+* what a method answers, off the JSON examples in its ``## Response`` section;
 * the fields of an object such a section links (``reference/objects/user-object.md``), off that
   page's Field/Type/Description tables, which name fields an example leaves out.
 
 A page this cannot read that way is a contract that could not be read, never a divergence.
 
-Methods, not verbs: a page names one ``http_method`` and slack.com answers a method over GET and
-POST alike, so a method is one operation here, named as Slack names it.
+Methods, not verbs: a page names one ``http_method``, and slack.com answers every method Backlot
+serves over GET and POST alike, so a method is one operation here, named as Slack names it.
 
 Backlot's side is ``app.openapi()`` for the arguments, and for the fields what a running Backlot
 answers on ``PROBE_CORPUS`` below rather than the bundled demo corpus, so a finding reproduces with
@@ -51,8 +50,9 @@ from backlot.fidelity.surface import (
 
 # A response key that is a FIELD name. Measured 2026-09-22 across every method Backlot serves:
 # every key in Slack's answers matches this, except the conversation ids keying `shares.public` and
-# `shares.private` on a file. Those are map entries, not fields, and are collapsed to `{}`. The
-# reference's own examples key a profile's custom `fields` the same way (`Xf111AAA111`).
+# `shares.private` on a file, and the user ids keying a huddle message's `room.participants_events`.
+# Those are map entries, not fields, and are collapsed to `{}`. The reference's own examples key a
+# profile's custom `fields` the same way (`Xf111AAA111`).
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -269,6 +269,18 @@ PROBE_CORPUS: tuple[dict[str, Any], ...] = (
     },
     {
         "source_type": "slack",
+        "doc_id": "probe-later",
+        "channel": "probe-general",
+        "group": "probe",
+        "visibility": "public",
+        "author_email": "bob@probe.invalid",
+        "author_name": "Bob Probe",
+        "created": "2026-01-05T11:00:00Z",
+        # A second top-level message in this channel, so a page of one has more to follow.
+        "content": "release notes go out tomorrow",
+    },
+    {
+        "source_type": "slack",
         "doc_id": "probe-searchable",
         "channel": "probe-random",
         "group": "probe",
@@ -282,7 +294,7 @@ PROBE_CORPUS: tuple[dict[str, Any], ...] = (
     },
 )
 
-# A word only the second record carries.
+# A word only the last record carries.
 _QUERY = "drosophila"
 
 
@@ -317,7 +329,10 @@ def _calls(call: _Caller) -> list[tuple[str, dict[str, Any]]]:
 
     Every one rather than one of each, because Backlot drops fields per object as Slack does: a
     channel with no thread answers no `reply_count`, and a person without a file no file fields.
-    The ids are discovered through the API, since Backlot mints them on import."""
+    The ids are discovered through the API, since Backlot mints them on import. And with the
+    arguments the reference's own examples were sent where an answer echoes them: `api.test`'s
+    carries the `foo` it was sent, `conversations.history`'s the `latest`, and a page with more to
+    follow its `response_metadata`."""
     channels = call("conversations.list", limit=200).get("channels") or []
     people = call("users.list", limit=200).get("members") or []
     threads = [
@@ -334,11 +349,15 @@ def _calls(call: _Caller) -> list[tuple[str, dict[str, Any]]]:
             "the probe corpus served no channel, person or thread, so nothing can be compared"
         )
     return [
-        ("api.test", {}),
+        ("api.test", {"foo": "bar"}),
         ("auth.test", {}),
         ("conversations.list", {"limit": 200}),
         *(("conversations.info", {"channel": c["id"]}) for c in channels),
         *(("conversations.history", {"channel": c["id"], "limit": 200}) for c in channels),
+        *(
+            ("conversations.history", {"channel": c["id"], "limit": 1, "latest": "9999999999.0"})
+            for c in channels
+        ),
         *(("conversations.members", {"channel": c["id"]}) for c in channels),
         *(("conversations.replies", {"channel": c, "ts": ts}) for c, ts in threads),
         *(
@@ -351,8 +370,8 @@ def _calls(call: _Caller) -> list[tuple[str, dict[str, Any]]]:
 
 
 def answers(*, timeout: float = 120.0) -> dict[str, Shape]:
-    """Start a Backlot on the probe corpus, and the shape of its answers
-    to each method it serves, over every call aimed at that method."""
+    """Start a Backlot on the probe corpus, and the shape of its answers to each method it serves,
+    over every call aimed at that method."""
     import backlot
 
     # Backlot measuring itself is not anyone's use of it.
@@ -382,9 +401,10 @@ def _section(page: str, anchor: str) -> str:
     return found.group(1) if found else ""
 
 
-# One argument, as every method page writes it; the type is left out on 194 of the 1516.
+# One argument, as every method page writes it, its type left out on some; and a bolded name
+# anywhere on a line, which must be one of those.
 _ARGUMENT = re.compile(r"^\*\*`([^`]+)`\*\*(?:`([^`]*)`)?(?:Required|Optional)\s*$", re.M)
-_BOLD_NAME = re.compile(r"^\*\*`", re.M)
+_BOLD_NAME = re.compile(r"\*\*`[^`\n]+`\*\*")
 # An argument's type as JSON names it. `integer` and `number` are one JSON type, as they are in
 # `json_type`.
 _ARGUMENT_TYPES = {
@@ -405,9 +425,7 @@ _OBJECT_LINK = re.compile(r"\((https://docs\.slack\.dev/reference/objects/[a-z-]
 
 # A row's name in an object's field table, alone on its line.
 _ROW_NAME = re.compile(r"`([a-z][a-z0-9_.]*)`")
-# A field table's type cell as JSON names it, first match wins. Measured 2026-10-21 over the 513
-# typed rows of the nine object pages: every cell reads as one of these but `Timestamp`, on the
-# conversation object's `last_read`, which as Slack's timestamps go may be a string or a number.
+# A field table's type cell as JSON names it, first match wins; a cell none reads types nothing.
 # `user_id`, `team_id` and the other backticked id names are Slack's ids, all strings.
 _FIELD_TYPES = (
     (re.compile(r"^Array\b|\\?\[\\?\]$"), "array"),
@@ -479,11 +497,16 @@ def arguments(page: str, url: str = "the page") -> dict[str, str]:
     type or ``""`` where the page states none.
 
     Both, because the comparison is about which arguments a caller may send, and a vendor moving an
-    argument from required to optional is not surface Backlot is missing."""
+    argument from required to optional is not surface Backlot is missing.
+
+    A page that reads as taking none is refused: every page this reads is one Backlot serves, and
+    each of those takes arguments, so none read means the section moved or was respelled."""
     section = _section(page, "arguments")
     found = _ARGUMENT.findall(section)
     if len(found) != len(_BOLD_NAME.findall(section)):
         raise FidelityError(f"{url} has an argument line this does not read")
+    if not found:
+        raise FidelityError(f"{url} has no `## Arguments` section this reads")
     out = {}
     for name, stated in found:
         if stated and stated not in _ARGUMENT_TYPES:
@@ -500,12 +523,16 @@ def loads(text: str) -> Any:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+
+    def repaired(between: str) -> str:
+        return _TRAILING_COMMA.sub(r"\1", _ELIDED.sub("", between))
+
     parts, at = [], 0
     for string in _STRING.finditer(text):
-        parts += [_ELIDED.sub("", text[at : string.start()]), string.group()]
+        parts += [repaired(text[at : string.start()]), string.group()]
         at = string.end()
-    parts.append(_ELIDED.sub("", text[at:]))
-    return json.loads(_TRAILING_COMMA.sub(r"\1", "".join(parts)))
+    parts.append(repaired(text[at:]))
+    return json.loads("".join(parts))
 
 
 def examples(text: str, url: str = "the page") -> list[Any]:

@@ -81,6 +81,7 @@ def _send(client, path: str, method: str, query: str, authorization, form, t: di
     url = f"/slack/api/{path}?{query.format(**t)}" if query else f"/slack/api/{path}"
     return getattr(client, method)(url, headers=headers, **body)
 
+
 # The shape Slack states for a user id, so an id Backlot mints is one a client written against
 # Slack will accept: `docs.slack.dev/enterprise#user_ids` gives an enterprise id as "a user ID
 # beginning with `U` or `W`" and a legacy one as beginning with `U`, and every id in the
@@ -393,7 +394,7 @@ def test_slack_reads_the_token_where_real_reads_it(
 def test_slack_auth_test_identifies_the_caller(client, admin_h, tokens):
     """`auth.test` answers "who am I", and both fields it answers with are the caller's own.
 
-    Measured 2026-09-22 with a user token, `auth.test` answers `user` as that person's handle and
+    As `auth_test` records, with a user token `auth.test` answers `user` as that person's handle and
     `user_id` as their own `U…`; the method's own reference fixes the same shape, its user-token
     success example being `"user": "grace"`, `"user_id": "W12345678"`. So `user` is a handle rather
     than an address, and `user_id` is that person's id.
@@ -1497,6 +1498,8 @@ def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
         data={"channel": hit["channel"]["id"], "ts": hit["ts"]},
     ).json()
     assert rep.get("ok"), rep
+    # No `latest` or `oldest` beside them, which `conversations.history` echoes.
+    assert set(rep) == {"ok", "messages", "has_more"}
     texts = " ".join(m["text"] for m in rep["messages"])
     assert "Anyone else seeing 502s" in texts  # thread root is returned
     assert "Rolled back" in texts  # the reply we searched for is in the same thread
@@ -2179,7 +2182,7 @@ def test_slack_one_person_has_one_handle_across_the_surface(tmp_path):
     """`users.list` names a person by `name` and `search.messages` names the same person by
     `username`, and Slack spells both the handle: this method's own reference example carries
     `"username": "roach"` beside `"user": "U2U85N1RV"`
-    (`docs.slack.dev/reference/methods/search.messages`, read 2026-09-22). A client that reads the
+    (`docs.slack.dev/reference/methods/search.messages`). A client that reads the
     id off `user` and the label off `username` gets one person, so the two must not answer two
     spellings of them.
 

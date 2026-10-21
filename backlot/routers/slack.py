@@ -55,6 +55,12 @@ class SlackHistory(_SlackOk):
     has_more: bool = False
 
 
+class SlackReplies(_SlackOk):
+    # Real answers no `latest` or `oldest` here, sent or not (slack.com/api, 2026-10-21).
+    messages: list[dict] = []
+    has_more: bool = False
+
+
 class SlackMembers(_SlackOk):
     members: list[str] = []
 
@@ -1242,7 +1248,7 @@ async def conversations_history(request: Request):
 @router.api_route(
     "/conversations.replies",
     methods=["GET", "POST"],
-    response_model=SlackHistory,
+    response_model=SlackReplies,
     openapi_extra={"parameters": _P_REPLIES},
 )
 async def conversations_replies(request: Request):

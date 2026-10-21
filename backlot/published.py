@@ -2,10 +2,10 @@
 
 `backlot diff` keeps one baseline per source, the file ``backlot.fidelity.baseline_path`` names, and
 each operation in it whose status is ``missing`` is one the vendor's description publishes that
-Backlot does not serve, written ``METHOD /path`` with each path parameter as ``{}``. Notion's and
-GitHub's routers read the list from here to answer such an operation the way the vendor answers
-ahead of running one, so an operation the vendor adds gets that answer once the baseline
-acknowledges it.
+Backlot does not serve, written ``METHOD /path`` with each path parameter as ``{}``, or on Slack as
+the method's name. Notion's, GitHub's, HubSpot's and Slack's routers read the list from here to
+answer such an operation the way the vendor answers ahead of running one, so an operation the vendor
+adds gets that answer once the baseline acknowledges it.
 
 It reads the file itself: importing ``backlot.fidelity`` would load the comparison modules, which
 its ``__init__`` imports.
@@ -35,7 +35,7 @@ def operations(rows: Iterable[str]) -> Operations:
 
 
 def missing_operations(source: str) -> list[str]:
-    """The ``missing`` operations of ``source``'s baseline, each ``METHOD /path``."""
+    """The ``missing`` operations of ``source``'s baseline, as the baseline writes them."""
     baseline = _BASELINES / f"{source}.json"
     entries = json.loads(baseline.read_text(encoding="utf-8"))["operations"]
     return [e["operation"] for e in entries if e["status"] == "missing"]

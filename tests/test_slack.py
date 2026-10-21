@@ -6,11 +6,8 @@ or call the response builder directly.
 
 from __future__ import annotations
 
-import json
 import re
-import runpy
 import urllib.parse
-from pathlib import Path
 
 import pytest
 import yaml
@@ -3799,8 +3796,18 @@ _RETIRED = (
             ("unknown_method", "nonexistent.method"),
         ),
         ("POST", "nonexistent.method", None, _FORM, b"{}", "invalid_form_data"),
-        # a name real has retired, with a token that resolves; the test below sends the other two
-        *(("GET", name, "admin", None, None, ("unknown_method", name)) for name in _RETIRED),
+        # a name real has retired, by `GET` with each credential and by `POST` with no token and with
+        # a bogus one
+        *(
+            ("GET", name, cred, None, None, ("unknown_method", name))
+            for name in _RETIRED
+            for cred in (None, "bogus", "admin")
+        ),
+        *(
+            ("POST", name, cred, _FORM, b"", ("unknown_method", name))
+            for name in _RETIRED
+            for cred in (None, "bogus")
+        ),
         # an unserved published method, with a `token` query parameter and with a body; the test
         # below sends each one the other two credentials
         ("GET", "emoji.list", "query", None, None, "invalid_auth"),
@@ -3864,7 +3871,7 @@ _RETIRED = (
         ("GET", "tooling.tokens.rotate", "bogus", None, None, "invalid_auth"),
         ("PUT", "blocks.validate", "bogus", None, None, "invalid_auth"),
         ("GET", "blocks.validate", "admin", None, None, "unsupported_http_method"),
-        # a name `slack_sdk` calls that neither list holds (`slack._OTHER_ANSWERS`)
+        # a name `slack_sdk` calls that the baseline does not list (`slack._OTHER_ANSWERS`)
         *(
             ("GET", name, None, None, None, _MARK_RETIRED)
             for name in ("channels.mark", "groups.mark", "im.mark", "mpim.mark")
@@ -3952,7 +3959,6 @@ _PUBLISHED_ANSWERS = {
         name: ("invalid_code", "invalid_auth")
         for name in ("oauth.v2.access", "oauth.v2.user.access", "openid.connect.token")
     },
-    **{name: ("unknown_method", "unknown_method") for name in _RETIRED},
     "blocks.validate": {
         "GET": ("unsupported_http_method", "unsupported_http_method"),
         "POST": (_LEFT, "invalid_auth"),
@@ -3960,22 +3966,13 @@ _PUBLISHED_ANSWERS = {
     "oauth.v2.exchange": (_LEFT, _LEFT),
     "tooling.tokens.rotate": (_LEFT, "invalid_auth"),
 }
-_INDEX = Path(slack.__file__).resolve().parents[1] / "data" / "slack_methods.json"
 
 
-@pytest.mark.parametrize(
-    "name",
-    sorted(
-        {op.split(" ", 1)[1][1:] for op in published.missing_operations("slack")}
-        | set(json.loads(_INDEX.read_text(encoding="utf-8"))["methods"])
-        - {route.path.removeprefix("/slack/api/") for route in slack.router.routes}
-    ),
-)
+@pytest.mark.parametrize("name", sorted(published.missing_operations("slack")))
 def test_slack_answers_each_published_method_no_route_serves(client, name):
-    """Each method the baseline lists as published and not served, and each Slack's reference index
-    lists that no route serves, answered as real answered it but those
-    ``slack._ANSWERED_BY_ARGUMENTS`` leaves to the router (``slack._PUBLISHED`` dates the
-    measurement)."""
+    """Each method the baseline lists as published and not served, answered as real answered it but
+    those ``slack._ANSWERED_BY_ARGUMENTS`` leaves to the router (``slack._PUBLISHED_NOT_SERVED``
+    dates the measurement)."""
     answers = _PUBLISHED_ANSWERS.get(name, ("not_authed", "invalid_auth"))
     for verb in ("GET", "POST"):
         none, bogus = answers[verb] if isinstance(answers, dict) else answers
@@ -3989,91 +3986,8 @@ def test_slack_answers_each_published_method_no_route_serves(client, name):
             if error == _LEFT:
                 assert (r.status_code, r.content) == (404, b'{"detail":"Not Found"}'), (verb, name)
                 continue
-            expected = {"ok": False, "error": error}
-            if error == "unknown_method":
-                expected["req_method"] = name
-            assert r.content == JSONResponse(expected).body, (verb, name, headers)
-
-
-_INDEX_PAGE = (
-    "| Name | Description |\n|------|-------------|\n"
-    "| [users.list](https://docs.slack.dev/reference/methods/users.list.md) | Lists people. |\n"
-    "| [api.test](https://docs.slack.dev/reference/methods/api.test.md) | Checks calls. |\n"
-)
-
-
-class _IndexAnswer:
-    def __init__(self, status_code: int, text: str):
-        self.status_code, self.text = status_code, text
-
-
-@pytest.mark.parametrize(
-    "answer, want, said",
-    [
-        (_IndexAnswer(200, _INDEX_PAGE), 0, ""),
-        (None, 2, "unreachable"),
-        (_IndexAnswer(503, _INDEX_PAGE), 2, "answered 503"),
-        (_IndexAnswer(429, _INDEX_PAGE), 2, "answered 429"),
-        (_IndexAnswer(404, _INDEX_PAGE), 1, "answered 404"),
-        (_IndexAnswer(200, "| Name | Description |\n"), 1, "| Name | Description |"),
-        (_IndexAnswer(200, "<html><body>Methods</body></html>"), 1, "lists no methods"),
-        *(
-            (_IndexAnswer(200, _INDEX_PAGE + row + "\n"), 1, row)
-            for row in (
-                "| [chat.postMessage](methods/chat.postmessage.md) | Sends a message. |",
-                "| [Pagination](https://docs.slack.dev/apis/web-api/pagination.md) | Pages. |",
-                "| [users.info](https://docs.slack.dev/reference/methods/users.list.md) | A user. |",
-                "| users.info | A user. |",
+            assert r.content == JSONResponse({"ok": False, "error": error}).body, (
+                verb,
+                name,
+                headers,
             )
-        ),
-    ],
-)
-def test_the_slack_method_list_is_written_from_the_index(
-    tmp_path, monkeypatch, capsys, answer, want, said
-):
-    """``scripts/gen_slack_methods.py`` against a stand-in for the index: the file it writes, what
-    `--check` says of the file as written, of another and of none, 2 for no answer or a 5xx or 429,
-    and 1 for any other answer that is not a table of method rows, saying why; neither writes a
-    file."""
-    script = runpy.run_path(
-        str(Path(__file__).resolve().parents[1] / "scripts" / "gen_slack_methods.py"),
-        run_name="gen_slack_methods",
-    )["main"].__globals__
-    httpx = script["httpx"]
-
-    def get(url, **_):
-        assert url == "https://docs.slack.dev/reference/methods.md"
-        if answer is None:
-            raise httpx.ConnectError("no route to the index")
-        return answer
-
-    out = tmp_path / "slack_methods.json"
-    monkeypatch.setitem(script, "REPO", tmp_path)
-    monkeypatch.setitem(script, "OUT", out)
-    monkeypatch.setattr(httpx, "get", get)
-    monkeypatch.setattr("sys.argv", ["gen_slack_methods.py"])
-    assert script["main"].__globals__["OUT"] == out  # never the repository's file
-    assert script["main"]() == want
-    if want:
-        assert not out.exists()
-        assert said in capsys.readouterr().err
-        monkeypatch.setattr("sys.argv", ["gen_slack_methods.py", "--check"])
-        assert script["main"]() == want
-        assert said in capsys.readouterr().err
-        return
-    assert json.loads(out.read_text(encoding="utf-8")) == {
-        "about": (
-            "The methods Slack's reference index lists. Written by scripts/gen_slack_methods.py; "
-            "do not edit by hand."
-        ),
-        "index": "https://docs.slack.dev/reference/methods.md",
-        "methods": ["api.test", "users.list"],
-    }
-    monkeypatch.setattr("sys.argv", ["gen_slack_methods.py", "--check"])
-    assert script["main"]() == 0
-    out.write_text(
-        out.read_text(encoding="utf-8").replace("users.list", "users.info"), encoding="utf-8"
-    )
-    assert script["main"]() == 1
-    out.unlink()
-    assert script["main"]() == 1

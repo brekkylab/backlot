@@ -10,17 +10,15 @@ up — so ``_caller_or_error`` decides it once for every method here.
 
 from __future__ import annotations
 
-import json
 import math
 import re
 import urllib.parse
-from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, store, synth
+from backlot import auth, published, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.openapi import qp
@@ -805,27 +803,19 @@ UNSERVED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 #: `%3F`, `%5C` and a `%` that starts no escape at its front end, and `%0A` but at a name's end,
 #: where it drops `%09`, `%0A`, `%0B`, `%0D`, `%20` and `%2B`.
 _METHOD_NAME = re.compile(r"[0-9A-Za-z.]+")
-#: The methods Slack has, by name, for a path no route here matches: those Slack's reference index
-#: lists (``backlot/data/slack_methods.json``, written by ``scripts/gen_slack_methods.py``). The
-#: index holds each method the baseline's 2020 description lists but ten (`oauth.token`, three
-#: `workflows` ones and six `apps.permissions` ones), which real answers `unknown_method` for, as
-#: for a name it never had, whatever the credential, one that resolves included. Measured on
-#: 2026-10-20 with no token and with a bogus one, the 164 the baseline lists and no route here
-#: serves and the 174 only the index lists, by `GET` and by `POST`, answered the credential's
-#: refusal (`not_authed`, `invalid_auth`) but for those ten and those :data:`_OTHER_ANSWERS` and
-#: :data:`_ANSWERED_BY_ARGUMENTS` hold.
-_PUBLISHED = frozenset(
-    json.loads(
-        (Path(__file__).resolve().parent.parent / "data" / "slack_methods.json").read_text(
-            encoding="utf-8"
-        )
-    )["methods"]
-)
+#: The Slack baseline's ``missing`` operations (``backlot.published``): the methods Slack's
+#: reference index lists that no route here serves, by name. Measured on 2026-10-20 with no token
+#: and with a bogus one, by `GET` and by `POST`, each answered the credential's refusal
+#: (`not_authed`, `invalid_auth`) but those :data:`_OTHER_ANSWERS` and :data:`_ANSWERED_BY_ARGUMENTS`
+#: hold. Ten that Slack's archived OpenAPI document lists and the index does not, `oauth.token`,
+#: three `workflows` ones and six `apps.permissions` ones, real answered `unknown_method` for, as
+#: for a name it never had, whatever the credential, one that resolves included.
+_PUBLISHED_NOT_SERVED = frozenset(published.missing_operations("slack"))
 #: The answer, where it is not the credential's refusal, of a method no route here serves, and
 #: whether a credential sent that does not resolve is refused ahead of it, each also answered so to
 #: a token that resolves. The `.mark` and `.list` ones are among the names `slack_sdk` 3.45.0 calls
-#: that neither list holds, sent by `GET` with each credential and by `POST` with none; the rest of
-#: those names, `channels.list` and `im.open` among them, were `unknown_method`.
+#: that the baseline does not list, sent by `GET` with each credential and by `POST` with none; the
+#: rest of those names, `channels.list` and `im.open` among them, were `unknown_method`.
 _OTHER_ANSWERS: dict[str, tuple[dict, bool]] = {
     "oauth.access": ({"ok": False, "error": "invalid_code"}, False),
     **{
@@ -959,7 +949,7 @@ def unserved_answer(request: Request) -> Response | None:
         if not (_ANSWERED_BY_ARGUMENTS[name] and _credential_sent(request)):
             return None
     other = _OTHER_ANSWERS.get(name)
-    if other is None and name not in _PUBLISHED:
+    if other is None and name not in _PUBLISHED_NOT_SERVED:
         return JSONResponse({"ok": False, "error": "unknown_method", "req_method": name})
     refusal = _caller_or_error(request)[1]
     if other is None:

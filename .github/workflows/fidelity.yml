@@ -172,16 +172,3 @@ jobs:
             exit 0
           fi
           exit "$status"
-
-      # What this checks is scripts/gen_slack_methods.py's to say; 2 is an index that did not answer.
-      - name: Check the method list written from Slack's index
-        if: ${{ !cancelled() && matrix.source == 'slack' }}
-        run: |
-          set +e
-          python scripts/gen_slack_methods.py --check
-          status=$?
-          if [ "$status" = 2 ]; then
-            echo "::warning::Slack's reference index did not answer; backlot/data/slack_methods.json went unchecked."
-            exit 0
-          fi
-          exit "$status"

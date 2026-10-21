@@ -4,8 +4,7 @@ Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corp
 real MCP server against it: a document the admin can read is blocked for an ACL-restricted user —
 same tool, same object, different identity.
 
-- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless a Docker daemon running Linux
-  containers answers.
+- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless ``docker`` runs Linux containers here.
 - **Notion** (`@notionhq/notion-mcp-server`, npx) — skipped unless ``npx`` (Node) is on PATH; the
   first run downloads the npm package.
 - **S3** (`awslabs.aws-api-mcp-server`, uvx) — skipped unless ``uvx`` is on PATH; the first run
@@ -54,20 +53,24 @@ from tests._helpers import POSIX_SIGNALS, python_child_env, readline_within  # n
 
 
 def _docker_runs_linux_containers() -> bool:
-    """Whether a Docker daemon answers here and runs Linux containers. The index of
+    """Whether ``docker`` runs Linux containers here. The index of
     ``ghcr.io/sooperset/mcp-atlassian:latest`` lists ``linux/amd64`` and ``linux/arm64`` images only
     (fetched 2026-10-20), and Docker on ``windows-latest`` answers but runs Windows containers, so
-    the pull there finds no image and the server never starts.
+    the pull there finds no image and the server never starts. Podman 6.1.4 called as ``docker``
+    has no ``.OSType``, exits 125 on that template and names the OS at ``.Host.OS`` instead.
     """
     if not shutil.which("docker"):
         return False
     try:
-        info = subprocess.run(
-            ["docker", "info", "--format", "{{.OSType}}"],
-            capture_output=True,
-            encoding="utf-8",
-            timeout=10,
-        )
+        for template in ("{{.OSType}}", "{{.Host.OS}}"):
+            info = subprocess.run(
+                ["docker", "info", "--format", template],
+                capture_output=True,
+                encoding="utf-8",
+                timeout=10,
+            )
+            if info.returncode == 0:
+                break
     except Exception:  # noqa: BLE001
         return False
     return info.stdout.strip() == "linux"
@@ -168,30 +171,33 @@ async def _call(params, tool_pred, args, ok_pred) -> bool:
 
 
 @pytest.mark.parametrize(
-    ("docker", "info", "runs"),
+    ("docker", "answers", "runs"),
     [
-        pytest.param(None, None, False, id="no-docker"),
-        pytest.param("docker", (0, "linux\n"), True, id="linux-containers"),
-        pytest.param("docker", (0, "windows\n"), False, id="windows-containers"),
-        pytest.param("docker", (1, "\n"), False, id="no-daemon"),
-        pytest.param("docker", subprocess.TimeoutExpired("docker", 10), False, id="timeout"),
+        pytest.param(None, [], False, id="no-docker"),
+        pytest.param("docker", [(0, "linux\n")], True, id="linux-containers"),
+        pytest.param("docker", [(0, "windows\n")], False, id="windows-containers"),
+        pytest.param("docker", [(1, "\n"), (1, "\n")], False, id="no-daemon"),
+        pytest.param("docker", [(125, ""), (0, "linux\n")], True, id="podman"),
+        pytest.param("docker", [subprocess.TimeoutExpired("docker", 10)], False, id="timeout"),
     ],
 )
 def test_the_atlassian_test_runs_only_where_docker_runs_linux_containers(
-    monkeypatch, docker, info, runs
+    monkeypatch, docker, answers, runs
 ):
     calls = []
 
     def run(args, **kwargs):
         calls.append(args)
-        if isinstance(info, Exception):
-            raise info
-        return subprocess.CompletedProcess(args, info[0], stdout=info[1], stderr="")
+        answer = answers[len(calls) - 1]
+        if isinstance(answer, Exception):
+            raise answer
+        return subprocess.CompletedProcess(args, answer[0], stdout=answer[1], stderr="")
 
     monkeypatch.setattr(shutil, "which", lambda name: docker)
     monkeypatch.setattr(subprocess, "run", run)
     assert _docker_runs_linux_containers() is runs
-    assert calls == ([["docker", "info", "--format", "{{.OSType}}"]] if docker else [])
+    asked = [["docker", "info", "--format", t] for t in ("{{.OSType}}", "{{.Host.OS}}")]
+    assert calls == asked[: len(answers)]
 
 
 @pytest.mark.parametrize("name", ["DOCKER_HOST", "DOCKER_CONTEXT"])

@@ -2760,6 +2760,10 @@ async def drive_files_list(request: Request):
     if order and query is not None and any(t.field == "fullText" for t in _drive_q_terms(query)):
         raise gerr.sorting_not_supported_fulltext()
     order = _drive_order_keyfns(order)
+    # Real Drive (measured 2026-10-20) lists every file — folders among them — in descending
+    # modifiedTime when no orderBy is given, not in stored-row order.
+    if not order:
+        order = [(_DRIVE_ORDER_KEYS["modifiedTime"], True)]
     # Measured 2026-09-23: a token the API did not issue is 400 `Invalid Value`, where an empty one
     # is the first page.
     offset = decode_cursor_or_none(gerr.first_repeat(params, "pageToken"))
@@ -2827,23 +2831,10 @@ async def drive_files_list(request: Request):
         return [_drive_file(conn, r, shared=r["id"] in shared, me=me) for r in rows]
 
     total = total_rows + len(folders)
-    if order:
-        # A sort spans the whole result set, so it needs the whole set: paging in SQL would order
-        # each page in isolation. Materializing the corpus costs more than a paged listing, which
-        # is why it happens only when a sort is actually asked for — and `shared`, the one field
-        # that costs a query per page and that no sort key reads, is deferred to the page below.
-        files = _drive_sort(objects(0, total_rows, with_shared=False) + folders, order)[
-            offset : offset + limit
-        ]
-        _drive_fill_shared(conn, files, stored)
-    else:
-        # No sort: the stored rows first (SQL-paginated), the folder objects as the tail. Real
-        # Drive leaves the default order unspecified, and keeping folders last means a client that
-        # reads files[0] out of an unfiltered listing still gets a file.
-        files = objects(offset, min(limit, max(0, total_rows - offset)))
-        if len(files) < limit:
-            start = max(0, offset - total_rows)
-            files += folders[start : start + limit - len(files)]
+    files = _drive_sort(objects(0, total_rows, with_shared=False) + folders, order)[
+        offset : offset + limit
+    ]
+    _drive_fill_shared(conn, files, stored)
     body = {
         "kind": "drive#fileList",
         "incompleteSearch": False,

@@ -6732,6 +6732,67 @@ def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
         assert [f["id"] for f in asked["files"]] == [gone_id]
 
 
+def test_drive_files_list_defaults_to_descending_modified_time(tmp_path):
+    """Real Drive lists every file in descending modifiedTime when no orderBy is given (#894).
+
+    Measured 2026-10-20 against www.googleapis.com with two accounts' tokens: every adjacent
+    pair in 170 and 21,702-file listings was in descending modifiedTime, folders among the files."""
+    from tests._helpers import corpus_client
+
+    records = [
+        {
+            "source_type": "google_drive",
+            "doc_id": "old",
+            "folder": "mk",
+            "title": "Old",
+            "content": "x",
+            "author_email": "a@x.com",
+            "visibility": "public",
+            "created": "2024-01-01T00:00:00Z",
+        },
+        {
+            "source_type": "google_drive",
+            "doc_id": "new",
+            "folder": "mk",
+            "title": "New",
+            "content": "y",
+            "author_email": "a@x.com",
+            "visibility": "public",
+            "created": "2026-06-01T00:00:00Z",
+        },
+        {
+            "source_type": "google_drive",
+            "doc_id": "mid",
+            "folder": "mk",
+            "title": "Mid",
+            "content": "z",
+            "author_email": "a@x.com",
+            "visibility": "public",
+            "created": "2025-03-01T00:00:00Z",
+        },
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        body = client.get(
+            "/drive/v3/files",
+            headers=h,
+            params={"pageSize": 100, "fields": "files(name,modifiedTime)"},
+        ).json()
+        times = [f["modifiedTime"] for f in body["files"]]
+        assert times == sorted(times, reverse=True), times
+        # The default matches an explicit `modifiedTime desc`.
+        explicit = client.get(
+            "/drive/v3/files",
+            headers=h,
+            params={
+                "pageSize": 100,
+                "orderBy": "modifiedTime desc",
+                "fields": "files(name,modifiedTime)",
+            },
+        ).json()
+        assert [f["modifiedTime"] for f in explicit["files"]] == times
+
+
 _Q_RECORDS = [
     {
         "source_type": "google_drive",

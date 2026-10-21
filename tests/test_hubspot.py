@@ -96,9 +96,11 @@ def test_hubspot_archived_parameter_reads_its_first_value_and_only_true_as_true(
             assert (got.status_code, got.json()["id"]) == (200, rid)
             assert (batch.status_code, [x["id"] for x in batch.json()["results"]]) == (200, [rid])
         else:
-            assert (got.status_code, got.json()) == (
+            gone = client.get(f"{url}/{missing}", headers=admin_h)
+            assert (got.status_code, got.headers["content-type"], got.content) == (
                 404,
-                client.get(f"{url}/{missing}", headers=admin_h).json(),
+                gone.headers["content-type"],
+                gone.content,
             )
             assert (batch.status_code, json.loads(batch.text.replace(rid, missing))) == (
                 207,
@@ -307,6 +309,8 @@ def test_hubspot_unknown_object_type_is_400(client, admin_h):
         ("0-3", True),  # deals: a real type, so an empty page rather than an error
         ("0-6", False),  # no standard object holds it
         ("0-41", False),
+        ("0-166", False),
+        ("0-400", False),
         ("2-12345", False),  # a custom object's id, which no corpus of Backlot defines
     ],
 )
@@ -327,6 +331,99 @@ def test_hubspot_an_object_type_id_is_a_spelling_of_its_type(client, admin_h, as
             f"/hubspot/crm/v3/objects/{named}", headers=admin_h, params={"limit": 100}
         ).json()["results"]
     ]
+
+
+def test_hubspot_0_18_0_72_0_64_are_their_types(tmp_path):
+    """The three pairings the comment above `_TYPE_IDS` records, over a corpus holding one quote
+    template."""
+    from tests._helpers import client_for
+
+    records = [
+        {
+            "source_type": "hubspot",
+            "doc_id": "hs-quote-template",
+            "object_type": "quote_templates",
+            "title": "Standard",
+            "content": "Standard template.",
+            "author_email": "rep@acme.com",
+            "created": "2026-03-01T09:00:00Z",
+            "properties": {"hs_name": "Standard"},
+        },
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        rid = served_id("hubspot", "hs-quote-template")
+        for asked, named, label in (
+            ("0-18", "communications", "0-18 (COMMUNICATION)"),
+            ("0-72", "deal_splits", "0-72 (DEAL_SPLIT)"),
+            ("0-64", "quote_templates", "0-64 (QUOTE_TEMPLATE)"),
+        ):
+            listed = c.get(f"/hubspot/crm/v3/objects/{asked}", headers=h)
+            assert listed.status_code == 200, (asked, listed.json())
+            by_name = c.get(f"/hubspot/crm/v3/objects/{named}", headers=h)
+            assert listed.json()["results"] == by_name.json()["results"], asked
+            searched = c.post(f"/hubspot/crm/v3/objects/{asked}/search", headers=h, json={})
+            assert searched.status_code == 200, asked
+            assert searched.json()["total"] == (1 if asked == "0-64" else 0), asked
+            archived = c.get(
+                f"/hubspot/crm/v3/objects/{asked}", headers=h, params={"archived": "true"}
+            )
+            assert archived.status_code == 400, asked
+            assert archived.json()["message"] == (
+                f"Paging through deleted objects is not yet supported for object type {label}"
+            )
+        assert c.get(f"/hubspot/crm/v3/objects/0-64/{rid}", headers=h).json()["id"] == rid
+        read = c.post(
+            "/hubspot/crm/v3/objects/0-64/batch/read", headers=h, json={"inputs": [{"id": rid}]}
+        )
+        assert read.status_code == 200
+        assert [r["id"] for r in read.json()["results"]] == [rid]
+        for to in ("contacts", "0-18"):
+            linked = c.get(f"/hubspot/crm/v4/objects/0-64/{rid}/associations/{to}", headers=h)
+            assert (linked.status_code, linked.json()) == (200, {"results": []}), to
+
+
+@pytest.mark.parametrize(
+    "asked,named",
+    [
+        ("0-53", "invoices"),
+        ("0-54", "marketing_events"),
+        ("0-69", "subscriptions"),
+        ("0-74", "goal_targets"),
+        ("0-115", "users"),
+        ("0-123", "orders"),
+        ("0-136", "leads"),
+        ("0-142", "carts"),
+        ("0-145", "partner_clients"),
+        ("0-162", "services"),
+        ("0-410", "courses"),
+        ("0-420", "listings"),
+        ("0-421", "appointments"),
+    ],
+)
+def test_hubspot_a_measured_type_id_is_its_type(tmp_path, asked, named):
+    """The thirteen pairings the comment above `_TYPE_IDS` records from real's 403s, over a corpus
+    holding one record of the type, so an id read as any other type lists nothing."""
+    from tests._helpers import client_for
+
+    record = {
+        "source_type": "hubspot",
+        "doc_id": f"hs-{named}",
+        "object_type": named,
+        "title": named,
+        "content": f"One of {named}.",
+        "author_email": "rep@acme.com",
+        "created": "2026-03-01T09:00:00Z",
+    }
+    settings = tiny_corpus(tmp_path, [record])
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        by_id = c.get(f"/hubspot/crm/v3/objects/{asked}", headers=h)
+        assert by_id.status_code == 200, by_id.json()
+        assert [r["id"] for r in by_id.json()["results"]] == [
+            served_id("hubspot", record["doc_id"])
+        ]
 
 
 def test_hubspot_one_type_stated_both_ways_is_one_type(tmp_path):
@@ -433,8 +530,162 @@ def test_hubspot_missing_record_is_404(client, admin_h):
     )
 
 
+_MISSING_RECORD_PAGE = (
+    b"<html>\n<head>\n"
+    b'<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>\n'
+    b"<title>Error 404 Not Found</title>\n</head>\n"
+    b"<body><h2>HTTP ERROR 404</h2>\n<p>Resource not found</p>\n</body>\n</html>\n"
+)
+
+
 def test_hubspot_unauth_is_401(client):
     assert client.get("/hubspot/crm/v3/objects/companies").status_code == 401
+
+
+@pytest.mark.parametrize("authorization", [None, "Bearer nope"])
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/hubspot/crm/v3/objects/contacts"),
+        ("PATCH", "/hubspot/crm/v3/objects/contacts/abc123"),
+        ("DELETE", "/hubspot/crm/v3/objects/contacts/abc123"),
+        ("POST", "/hubspot/crm/v3/objects/contacts/batch/create"),
+        ("DELETE", "/hubspot/crm/v4/objects/contacts/1/associations/companies/2"),
+        ("POST", "/hubspot/crm/v4/associations/contacts/companies/batch/read"),
+        ("PATCH", "/hubspot/crm/v3/objects/zzz/1"),
+        ("DELETE", "/hubspot/crm/v3/objects/2-999/1"),
+    ],
+)
+def test_hubspot_refuses_an_unserved_operation_for_its_credential(
+    client, method, path, authorization
+):
+    """An operation HubSpot publishes and no route here serves, sent with no key or one that names
+    nothing, is the INVALID_AUTHENTICATION 401 a served route answers, ahead of an object type real
+    can't resolve, as `refuse_an_unserved_operation` in `backlot.routers.hubspot` records, not
+    FastAPI's 404 or 405."""
+    headers = {"Authorization": authorization} if authorization else {}
+    r = client.request(method, path, headers=headers, json={})
+    assert r.status_code == 401
+    assert r.json() == {
+        "status": "error",
+        "message": "Authentication credentials not found.",
+        "category": "INVALID_AUTHENTICATION",
+    }
+
+
+_CONTACT_SCOPES = [
+    "crm.schemas.contacts.write",
+    "crm.objects.contacts.write",
+    "crm.objects.contacts.sensitive.write.v2",
+    "crm.objects.contacts.highly_sensitive.write.v2",
+]
+
+
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+@pytest.mark.parametrize(
+    ("object_type", "scopes"),
+    [
+        ("contacts", _CONTACT_SCOPES),
+        ("contact", _CONTACT_SCOPES),
+        ("CONTACTS", _CONTACT_SCOPES),
+        ("0-1", _CONTACT_SCOPES),
+        (
+            "companies",
+            [
+                "crm.objects.companies.write",
+                "crm.schemas.companies.write",
+                "crm.objects.companies.highly_sensitive.write.v2",
+                "crm.objects.companies.sensitive.write.v2",
+            ],
+        ),
+        (
+            "deals",
+            [
+                "crm.objects.deals.write",
+                "crm.schemas.deals.write",
+                "crm.objects.deals.sensitive.write.v2",
+                "crm.objects.deals.highly_sensitive.write.v2",
+            ],
+        ),
+        ("quotes", ["crm.schemas.quotes.write", "crm.objects.quotes.write", "cpq.quotes.write"]),
+        (
+            "orders",
+            ["crm.schemas.orders.write", "crm.objects.orders.write", "crm.pipelines.orders.write"],
+        ),
+    ],
+)
+def test_hubspot_refuses_a_record_write_for_the_scopes_of_its_type(
+    client, admin_h, method, object_type, scopes
+):
+    """`PATCH` and `DELETE` on a record, with a key that resolves, are the 403 MISSING_SCOPES naming
+    the type's write scopes, as `_WRITE_SCOPES` in `backlot.routers.hubspot` records. `1` names no
+    record: the scopes come before the record is looked up."""
+    r = client.request(method, f"/hubspot/crm/v3/objects/{object_type}/1", headers=admin_h)
+    assert r.status_code == 403
+    assert list(r.json()) == ["status", "message", "errors", "links", "category"]
+    assert r.json() == {
+        "status": "error",
+        "message": "This app hasn't been granted all required scopes to make this call. "
+        "Read more about required scopes here: https://developers.hubspot.com/scopes.",
+        "errors": [
+            {
+                "message": "One or more of the following scopes are required.",
+                "context": {"requiredGranularScopes": scopes},
+            }
+        ],
+        "links": {"scopes": "https://developers.hubspot.com/scopes"},
+        "category": "MISSING_SCOPES",
+    }
+
+
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+@pytest.mark.parametrize(
+    ("object_type", "status", "body"),
+    [
+        ("zzz", 400, {"status": "error", "message": "Unable to infer object type from: zzz"}),
+        ("2-999", 400, {"status": "error", "message": "Invalid object or event type id: 2-999"}),
+    ],
+)
+def test_hubspot_checks_a_record_writes_type_before_its_scopes(
+    client, admin_h, method, object_type, status, body
+):
+    """With a key that resolves, a type real can't resolve is its 400 ahead of the scopes
+    (`refuse_an_unserved_operation` in `backlot.routers.hubspot`)."""
+    r = client.request(method, f"/hubspot/crm/v3/objects/{object_type}/1", headers=admin_h)
+    assert (r.status_code, r.json()) == (status, body)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "status"),
+    [
+        ("PATCH", "/hubspot/crm/v3/objects/tickets/1", 405),
+        ("DELETE", "/hubspot/crm/v3/objects/tickets/1", 405),
+        ("POST", "/hubspot/crm/v3/objects/contacts/merge", 405),
+        ("DELETE", "/hubspot/crm/v4/objects/contacts/1/associations/companies/2", 404),
+    ],
+)
+def test_hubspot_leaves_the_other_keyed_operations_to_the_router(
+    client, admin_h, method, path, status
+):
+    """With a key that resolves, a record write on a type outside `_WRITE_SCOPES`, and an operation
+    other than `PATCH` and `DELETE` on a record, go on to the router, whose 404 or 405 stands for an
+    operation Backlot cannot run (`refuse_an_unserved_operation` in `backlot.routers.hubspot`)."""
+    assert client.request(method, path, headers=admin_h, json={}).status_code == status
+
+
+def test_hubspot_answers_a_record_patch_that_does_not_parse_with_the_scopes(client, admin_h):
+    """A `PATCH` body that doesn't parse is answered with the scopes' 403, as
+    `refuse_an_unserved_operation` in `backlot.routers.hubspot` records."""
+    headers = {**admin_h, "Content-Type": "application/json"}
+    r = client.request("PATCH", "/hubspot/crm/v3/objects/contacts/1", headers=headers, content="{")
+    assert (r.status_code, r.json()["category"]) == (403, "MISSING_SCOPES")
+
+
+def test_hubspot_does_not_refuse_an_unpublished_path_for_its_credential(client):
+    """Only what HubSpot publishes is refused for its credential: a path HubSpot does not publish
+    is still a 404 with no key, as `refuse_an_unserved_operation` in `backlot.routers.hubspot`
+    records."""
+    assert client.get("/hubspot/crm/v3/nonexistent-xyz").status_code == 404
 
 
 def test_hubspot_acl_hides_restricted_record(client, tokens_yaml, admin_h):
@@ -457,9 +708,11 @@ def test_hubspot_acl_hides_restricted_record(client, tokens_yaml, admin_h):
         for r in crawl_hubspot(client, admin_h, "companies")
         if r["properties"].get("name") == "Stealth Health Co"
     )
-    url = f"/hubspot/crm/v3/objects/companies/{secret['id']}"
-    assert client.get(url, headers=ava_h).status_code == 404
-    assert client.get(url, headers=hana_h).status_code == 200
+    for record in (secret["id"], "0" + secret["id"]):
+        url = f"/hubspot/crm/v3/objects/companies/{record}"
+        hidden = client.get(url, headers=ava_h)
+        assert (hidden.status_code, hidden.content) == (404, _MISSING_RECORD_PAGE), record
+        assert client.get(url, headers=hana_h).status_code == 200, record
 
 
 def test_hubspot_associations_v4(client, admin_h):
@@ -497,7 +750,20 @@ def _cannot_infer(name):
 
 
 _EMPTY = {"results": []}
-_NOT_FOUND = {"status": "error", "message": "resource not found", "category": "OBJECT_NOT_FOUND"}
+
+
+def _not_looked_up(record, why):
+    """Real's 404 for an id it won't look up: `why` is "numeric" or "positive"."""
+    message = {
+        "numeric": "Object not found.  objectId are usually numeric.",
+        "positive": "Object not found. objectId is usually positive.",
+    }[why]
+    return {
+        "status": "error",
+        "message": message,
+        "context": {"id": [record]},
+        "category": "OBJECT_NOT_FOUND",
+    }
 
 
 @pytest.mark.parametrize(
@@ -515,13 +781,50 @@ _NOT_FOUND = {"status": "error", "message": "resource not found", "category": "O
         (_assoc("9223372036854775807"), 200, _EMPTY),
         (_assoc("0" * 25 + "1"), 200, _EMPTY),
         (_assoc("{ava}", source="deals"), 200, _EMPTY),
-        (_assoc("abc"), 404, _NOT_FOUND),
-        (_assoc("1.0"), 404, _NOT_FOUND),
-        (_assoc("\u0661"), 404, _NOT_FOUND),
-        (_assoc("0"), 404, _NOT_FOUND),
-        (_assoc("-1"), 404, _NOT_FOUND),
-        (_assoc("9223372036854775808"), 404, _NOT_FOUND),
-        (_assoc("abc") + "?after=bogus", 404, _NOT_FOUND),
+        (_assoc("0{ava}"), 200, _assoc("{ava}")),
+        (_assoc("abc"), 404, _not_looked_up("abc", "numeric")),
+        (_assoc("1.0"), 404, _not_looked_up("1.0", "numeric")),
+        (_assoc("+1"), 404, _not_looked_up("+1", "numeric")),
+        (_assoc("\u0661"), 404, _not_looked_up("\u0661", "numeric")),
+        (_assoc("0"), 404, _not_looked_up("0", "positive")),
+        (_assoc("-1"), 404, _not_looked_up("-1", "positive")),
+        (_assoc("9223372036854775808"), 404, _not_looked_up("9223372036854775808", "numeric")),
+        (_assoc("abc") + "?after=bogus", 404, _not_looked_up("abc", "numeric")),
+        ("/crm/v3/objects/contacts/0{ava}", 200, "/crm/v3/objects/contacts/{ava}"),
+        ("/crm/v3/objects/contacts/abc", 404, _not_looked_up("abc", "numeric")),
+        ("/crm/v3/objects/contacts/1.0", 404, _not_looked_up("1.0", "numeric")),
+        ("/crm/v3/objects/contacts/+1", 404, _not_looked_up("+1", "numeric")),
+        ("/crm/v3/objects/contacts/\u0661", 404, _not_looked_up("\u0661", "numeric")),
+        (
+            "/crm/v3/objects/contacts/99999999999999999999999",
+            404,
+            _not_looked_up("99999999999999999999999", "numeric"),
+        ),
+        (
+            "/crm/v3/objects/contacts/9223372036854775808",
+            404,
+            _not_looked_up("9223372036854775808", "numeric"),
+        ),
+        ("/crm/v3/objects/contacts/0", 404, _not_looked_up("0", "positive")),
+        ("/crm/v3/objects/contacts/-1", 404, _not_looked_up("-1", "positive")),
+        ("/crm/v3/objects/contacts/00", 404, _not_looked_up("00", "positive")),
+        ("/crm/v3/objects/contacts/-00", 404, _not_looked_up("-00", "positive")),
+        (
+            "/crm/v3/objects/contacts/-9223372036854775808",
+            404,
+            _not_looked_up("-9223372036854775808", "positive"),
+        ),
+        (
+            "/crm/v3/objects/contacts/-9223372036854775809",
+            404,
+            _not_looked_up("-9223372036854775809", "numeric"),
+        ),
+        # longer than `int` converts (4300 digits): the 23-digit row's answer, not a server error
+        ("/crm/v3/objects/contacts/" + "9" * 5000, 404, _not_looked_up("9" * 5000, "numeric")),
+        ("/crm/v3/objects/nosuch/abc", 400, _cannot_infer("nosuch")),
+        ("/crm/v3/objects/contacts/1", 404, _MISSING_RECORD_PAGE),
+        ("/crm/v3/objects/contacts/9223372036854775807", 404, _MISSING_RECORD_PAGE),
+        ("/crm/v3/objects/deals/{ava}", 404, _MISSING_RECORD_PAGE),
         (_assoc("1") + "?after=bogus", 400, _assoc("{ava}") + "?after=bogus"),
         (_assoc("{ava}", source="deals") + "?after=bogus", 400, _assoc("{ava}") + "?after=bogus"),
     ],
@@ -529,17 +832,22 @@ _NOT_FOUND = {"status": "error", "message": "resource not found", "category": "O
 def test_hubspot_object_types_resolve_as_real_resolves_them(
     client, admin_h, ava, path, status, want
 ):
-    """Each row is one that `_canonical`, `get_object` and `list_associations` record as measured.
-    Where `want` is a path, the row answers what that path does, here and on real: the target under
-    its plural, for another spelling of it; and Ava's own associations, for a bad `after`, since the
-    cursor is refused before a missing or mismatched record is an empty page."""
+    """Each row is one that `_canonical`, `_record_id`, `get_object` and `list_associations` record
+    as measured. Where `want` is a path, the row answers what that path does, here and on real: the
+    target under its plural, for another spelling of it; Ava's own associations, for a bad `after`,
+    since the cursor is refused before a missing or mismatched record is an empty page; and Ava
+    herself, or her associations, for her id with a leading zero. Where `want` is bytes, it is the
+    HTML page, under real's Latin-1 content type. A JSON answer's members come in real's order."""
     r = client.get("/hubspot" + path.format(ava=ava), headers=admin_h)
     assert r.status_code == status, path
+    if isinstance(want, bytes):
+        assert (r.headers["content-type"], r.content) == ("text/html;charset=iso-8859-1", want)
+        return
     if isinstance(want, str):
         twin = client.get("/hubspot" + want.format(ava=ava), headers=admin_h).json()
         assert twin != _EMPTY
         want = twin
-    assert r.json() == want
+    assert list(r.json().items()) == list(want.items())
 
 
 def test_hubspot_search_filter_groups(client, admin_h):
@@ -686,6 +994,53 @@ def test_hubspot_search_every_operator(client, admin_h):
     }
 
 
+def test_hubspot_search_string_filters_ignore_value_case(client, admin_h):
+    """A string property's value is compared in any case and an enumeration's exactly, as
+    `_match_one` records."""
+    f = lambda **kw: _hs_filter(client, admin_h, **kw)  # noqa: E731
+    others = {"Borealis Clinics", "Stealth Health Co"}
+
+    assert f(propertyName="name", operator="EQ", value="acme health") == {"Acme Health"}
+    assert f(propertyName="name", operator="EQ", value="ACME HEALTH") == {"Acme Health"}
+    assert f(propertyName="name", operator="NEQ", value="ACME HEALTH") == others
+    assert f(propertyName="name", operator="IN", values=["acme health"]) == {"Acme Health"}
+    assert f(propertyName="name", operator="NOT_IN", values=["ACME HEALTH"]) == others
+
+
+@pytest.mark.parametrize(
+    "object_type, prop, stored",
+    [
+        ("contacts", "lifecyclestage", "lead"),
+        ("deals", "dealstage", "closedwon"),
+        ("deals", "pipeline", "default"),
+        ("companies", "industry", "COMPUTER_SOFTWARE"),
+    ],
+)
+def test_hubspot_search_compares_an_enumeration_value_exactly(tmp_path, object_type, prop, stored):
+    """Each enumeration `_match_one` compares exactly is matched only as stored, under each of the
+    four operators."""
+    from tests._helpers import client_for
+
+    record = {"source_type": "hubspot", "doc_id": "hs-enum", "object_type": object_type}
+    s = tiny_corpus(tmp_path, [{**record, "title": "r", "properties": {prop: stored}}])
+    other = stored.swapcase()
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+
+        def total(op, **value):
+            body = {
+                "filterGroups": [{"filters": [{"propertyName": prop, "operator": op, **value}]}]
+            }
+            return c.post(
+                f"/hubspot/crm/v3/objects/{object_type}/search", headers=h, json=body
+            ).json()["total"]
+
+        assert (total("EQ", value=stored), total("EQ", value=other)) == (1, 0)
+        assert (total("IN", values=[stored]), total("IN", values=[other])) == (1, 0)
+        assert (total("NEQ", value=stored), total("NEQ", value=other)) == (0, 1)
+        assert (total("NOT_IN", values=[stored]), total("NOT_IN", values=[other])) == (0, 1)
+
+
 @pytest.mark.parametrize(
     "prop, value, want",
     [
@@ -775,6 +1130,11 @@ _OPERATOR_ROWS = [
     _op("default-separators", _jobtitle([("neq", "Salesperson")], compact=False), _enum_refusal(1, 73)),
     _op("indent", json.dumps(json.loads(_jobtitle([("neq", "Salesperson")])), indent=2), _enum_refusal(7, 23)),
     _op("crlf", json.dumps(json.loads(_jobtitle([("neq", "Salesperson")])), indent=2).replace("\n", "\r\n"), _enum_refusal(7, 23)),
+    _op("lone-cr", '{\r"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]}]}', _enum_refusal(2, 63), object_type="companies"),
+    _op("byte-order-mark", '\ufeff{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]}]}', _enum_refusal(1, 67), object_type="companies"),
+    # a UTF-16 body is read in its own encoding, and its byte-order mark takes no column
+    _op("utf-16", '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]}]}'.encode("utf-16-le"), _enum_refusal(1, 64), object_type="companies"),
+    _op("utf-16-byte-order-mark", '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]}]}'.encode("utf-16"), _enum_refusal(1, 64), object_type="companies"),
     _op("tab-indent", json.dumps(json.loads(_jobtitle([("neq", "Salesperson")])), indent="\t"), _enum_refusal(7, 18)),
     _op("two-byte-chars-before", _value_first("ééé", ensure_ascii=False), _enum_refusal(1, 85)),
     _op("escaped-chars-before", _value_first("ééé", ensure_ascii=True), _enum_refusal(1, 97)),
@@ -825,7 +1185,7 @@ def test_hubspot_search_reads_a_filter_operator_as_real_does(
     the body is served."""
     headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
     url = f"/hubspot/crm/v3/objects/{object_type}/search"
-    r = client.post(url, headers=headers, content=raw.encode())
+    r = client.post(url, headers=headers, content=raw if isinstance(raw, bytes) else raw.encode())
     if isinstance(want, dict):
         assert (r.status_code, r.json()) == (400, want)
     elif isinstance(want, tuple):
@@ -1027,10 +1387,10 @@ def test_hubspot_batch_read(client, admin_h):
     assert {r["id"] for r in j["results"]} == set(ids)
 
 
-def _batch_refusal(column: int, text: str) -> dict:
+def _batch_refusal(column: int, text: str, line: int = 1) -> dict:
     return {
         "status": "error",
-        "message": f"Invalid input JSON on line 1, column {column}: {text}",
+        "message": f"Invalid input JSON on line {line}, column {column}: {text}",
         "category": "VALIDATION_ERROR",
     }
 
@@ -1060,11 +1420,25 @@ def _br(id, raw, want, object_type="companies", authed=True):
 
 _ONE = '{"inputs":[{"id":"1"}],'
 _ARRAY = "Cannot deserialize value of type  from Array value (token `JsonToken.START_ARRAY`)"
+_OBJECT = "Cannot deserialize value of type  from Object value (token `JsonToken.START_OBJECT`)"
+
+
+def _no_id(column: int) -> dict:
+    return {
+        "status": "error",
+        "message": f"Invalid input JSON on line 1, column {column}. "
+        "Some required fields were not set: [id]",
+        "category": "VALIDATION_ERROR",
+    }
+
 
 # fmt: off
 _BATCH_BODY_ROWS = [
     _br("inputs-string", '{"inputs":"x"}', _batch_refusal(11, _not_a_list("String", "VALUE_STRING"))),
     _br("inputs-blank-string", '{"inputs":" "}', _batch_refusal(11, _not_a_list("String", "VALUE_STRING"))),
+    _br("inputs-string-after-a-lone-cr", '{\r"inputs":"x"}', _batch_refusal(10, _not_a_list("String", "VALUE_STRING"), line=2)),
+    _br("inputs-string-after-crlf", '{\r\n"inputs":"x"}', _batch_refusal(10, _not_a_list("String", "VALUE_STRING"), line=2)),
+    _br("inputs-string-after-a-byte-order-mark", '\ufeff{"inputs":"x"}', _batch_refusal(14, _not_a_list("String", "VALUE_STRING"))),
     _br("inputs-object", '{"inputs":{"id":"1"}}', _batch_refusal(11, _not_a_list("Object", "START_OBJECT"))),
     _br("inputs-integer", '{"inputs":5}', _batch_refusal(11, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
     _br("inputs-float", '{"inputs":1.5}', _batch_refusal(11, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
@@ -1087,6 +1461,16 @@ _BATCH_BODY_ROWS = [
     _br("array-element", '{"inputs":[["1"]]}', _batch_refusal(12, _ARRAY)),
     _br("int-after-a-string", '{"inputs":["1",7]}', _batch_refusal(16, _no_creator("int/Int", "Number value (7)"))),
     _br("int-after-an-object", '{"inputs":[{"id":"1"},7]}', _batch_refusal(23, _no_creator("int/Int", "Number value (7)"))),
+    _br("null-id", '{"inputs":[{"id":null}]}', _no_id(22)),
+    _br("null-id-spaced", '{"inputs":[{"id":null }]}', _no_id(23)),
+    _br("missing-id", '{"inputs":[{}]}', _no_id(13)),
+    _br("null-id-in-the-second-input", '{"inputs":[{"id":"1"},{"id":null}]}', _no_id(33)),
+    _br("object-id", '{"inputs":[{"id":{}}]}', _batch_refusal(18, _OBJECT)),
+    _br("empty-array-id", '{"inputs":[{"id":[]}]}', _batch_refusal(18, _ARRAY)),
+    _br("array-id", '{"inputs":[{"id":["1"]}]}', _batch_refusal(18, _ARRAY)),
+    _br("missing-id-before-an-int", '{"inputs":[{},7]}', _no_id(13)),
+    _br("int-before-a-missing-id", '{"inputs":[7,{}]}', _batch_refusal(12, _no_creator("int/Int", "Number value (7)"))),
+    _br("object-id-before-a-null-id", '{"inputs":[{"id":{}},{"id":null}]}', _batch_refusal(18, _OBJECT)),
     _br("null-element", '{"inputs":[null]}', {"status": "error", "message": "Input IDs must be non-null."}),
     _br("int-after-null", '{"inputs":[null,7]}', _batch_refusal(17, _no_creator("int/Int", "Number value (7)"))),
     _br("properties-after-null", '{"inputs":[null],"properties":"x"}', _batch_refusal(31, _no_creator("String", "String value ('x')"))),
@@ -1099,6 +1483,20 @@ _BATCH_BODY_ROWS = [
     _br("properties-integer", _ONE + '"properties":5}', _batch_refusal(37, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
     _br("properties-object", _ONE + '"properties":{}}', _batch_refusal(37, _not_a_list("Object", "START_OBJECT"))),
     _br("properties-false", _ONE + '"properties":false}', _batch_refusal(37, _not_a_list("Boolean", "VALUE_FALSE"))),
+    _br("properties-null-element", _ONE + '"properties":[null]}', _batch_refusal(43, "properties element")),
+    _br("properties-null-element-then-spaces", _ONE + '"properties":[null]}   ', _batch_refusal(43, "properties element")),
+    _br("properties-null-between-strings", _ONE + '"properties":["email",null,"firstname"]}', _batch_refusal(63, "properties element")),
+    _br("properties-object-element", _ONE + '"properties":[{}]}', _batch_refusal(38, _OBJECT)),
+    _br("properties-array-element", _ONE + '"properties":[[]]}', _batch_refusal(38, _ARRAY)),
+    _br("properties-null-before-an-object", _ONE + '"properties":[null,{}]}', _batch_refusal(43, _OBJECT)),
+    _br("with-history-null-element", _ONE + '"propertiesWithHistory":[null]}', _batch_refusal(54, "propertiesWithHistory element")),
+    _br("with-history-object-element", _ONE + '"propertiesWithHistory":[{}]}', _batch_refusal(49, _OBJECT)),
+    _br("with-history-array-element", _ONE + '"propertiesWithHistory":[[]]}', _batch_refusal(49, _ARRAY)),
+    _br("null-elements-with-history-first", _ONE + '"propertiesWithHistory":[null],"properties":[null]}', _batch_refusal(74, "properties element")),
+    _br("null-property-after-a-null-input", '{"inputs":[null],"properties":[null]}', _batch_refusal(37, "properties element")),
+    _br("null-history-before-a-null-input", '{"propertiesWithHistory":[null],"inputs":[null]}', _batch_refusal(48, "propertiesWithHistory element")),
+    _br("null-property-before-a-string-inputs", '{"properties":[null],"inputs":"x"}', _batch_refusal(31, _not_a_list("String", "VALUE_STRING"))),
+    _br("null-id-before-a-null-property", '{"inputs":[{"id":null}],"properties":[null]}', _no_id(22)),
     _br("with-history-string", _ONE + '"propertiesWithHistory":"name"}', _batch_refusal(48, _no_creator("String", "String value ('name')"))),
     _br("with-history-empty", _ONE + '"propertiesWithHistory":""}', _blank_field("propertiesWithHistory")),
     _br("with-history-float", _ONE + '"propertiesWithHistory":1.5}', _batch_refusal(48, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
@@ -1112,6 +1510,9 @@ _BATCH_BODY_ROWS = [
     _br("null-inputs", '{"inputs":null}', 200),
     _br("null-properties", _ONE + '"properties":null}', 207),
     _br("number-in-properties", _ONE + '"properties":[5]}', 207),
+    _br("boolean-in-properties", _ONE + '"properties":[true]}', 207),
+    _br("number-in-with-history", _ONE + '"propertiesWithHistory":[5]}', 207),
+    _br("boolean-in-with-history", _ONE + '"propertiesWithHistory":[true]}', 207),
 ]
 # fmt: on
 
@@ -1121,8 +1522,9 @@ def test_hubspot_batch_read_refuses_a_body_real_cannot_read(
     client, admin_h, raw, want, object_type, authed
 ):
     """`_refuse_a_batch_read_shape`'s rule, one body per row: the status and body real answered,
-    including which member it names when two are wrong, and the status for a null member or a
-    number in `properties`, which real reads (a 207 here because no company has id `1`)."""
+    including which member it names when two are wrong, and the status for a null member, or a
+    number or boolean in either properties list, which real reads (a 207 here because no company
+    has id `1`)."""
     headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
     url = f"/hubspot/crm/v3/objects/{object_type}/batch/read"
     r = client.post(url, headers=headers, content=raw.encode())
@@ -1130,6 +1532,74 @@ def test_hubspot_batch_read_refuses_a_body_real_cannot_read(
         assert (r.status_code, r.json()) == (400, want)
     else:
         assert r.status_code == want
+
+
+@pytest.mark.parametrize(
+    "raw_id, echoed",
+    [
+        ("true", "true"),
+        ("false", "false"),
+        ("1e3", "1e3"),
+        ("1E3", "1E3"),
+        ("1e7", "1e7"),
+        ("1.0", "1.0"),
+        ("-1", "-1"),
+        ("-0.0", "-0.0"),
+        ("99999999999999999999", "99999999999999999999"),
+        ('"missing-id"', "missing-id"),
+        (r'"missing\u002did"', "missing-id"),
+        (r'"missing\"\\id"', 'missing"\\id'),
+    ],
+)
+def test_hubspot_batch_read_names_a_missing_id_as_the_body_spells_it(
+    client, admin_h, raw_id, echoed
+):
+    """An input naming no record is the 207's one error, its id a number or boolean as the body
+    spells it and a string as it decodes. Backlot names the member `context.id` where real's is
+    `context.ids`."""
+    r = client.post(
+        "/hubspot/crm/v3/objects/contacts/batch/read",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content=('{"inputs":[{"id":' + raw_id + "}]}").encode(),
+    )
+    assert r.status_code == 207
+    j = r.json()
+    assert (j["status"], j["results"], j["numErrors"]) == ("COMPLETE", [], 1)
+    assert j["errors"][0]["category"] == "OBJECT_NOT_FOUND"
+    assert j["errors"][0]["context"] == {"id": [echoed]}
+
+
+@pytest.mark.parametrize(
+    "spelling, field, literal",
+    [
+        ("integer", None, None),
+        ("escaped-string", None, None),
+        ("escaped-string", "properties", "5"),
+        ("escaped-string", "properties", "true"),
+        ("escaped-string", "propertiesWithHistory", "5"),
+        ("escaped-string", "propertiesWithHistory", "true"),
+    ],
+)
+def test_hubspot_batch_read_finds_a_record_by_an_integer_or_an_escaped_id(
+    client, admin_h, spelling, field, literal
+):
+    """A record's id sent as a JSON integer, or as a string of `\\u` escapes, finds the record
+    as real's does, the escaped one also beside a `5` or a `true` in either properties list."""
+    listed = client.get("/hubspot/crm/v3/objects/contacts", headers=admin_h).json()["results"]
+    rid = listed[0]["id"]
+    assert rid.isascii() and rid.isdigit()
+    raw_id = rid if spelling == "integer" else '"' + "".join(f"\\u{ord(c):04x}" for c in rid) + '"'
+    raw = '{"inputs":[{"id":' + raw_id + "}]"
+    if field is not None:
+        raw += ',"' + field + '":[' + literal + "]"
+    raw += "}"
+    r = client.post(
+        "/hubspot/crm/v3/objects/contacts/batch/read",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content=raw.encode(),
+    )
+    assert r.status_code == 200
+    assert [record["id"] for record in r.json()["results"]] == [rid]
 
 
 def _token_refusal(column: int, token: str, line: int = 1) -> dict:
@@ -1168,6 +1638,9 @@ _TOKEN_ROWS = [
     # the position, counted as `_token_at` counts one
     _nt("lf", "search", '{\n"limit":NaN}', _token_refusal(12, "NaN", line=2)),
     _nt("crlf", "search", '{\r\n"limit":NaN}', _token_refusal(12, "NaN", line=2)),
+    _nt("lone-cr", "search", '{\r"limit":NaN}', _token_refusal(12, "NaN", line=2)),
+    _nt("double-cr", "search", '{\r\r"limit":NaN}', _token_refusal(12, "NaN", line=3)),
+    _nt("byte-order-mark", "search", b'\xef\xbb\xbf{"limit":NaN}', _token_refusal(16, "NaN")),
     _nt("tab", "search", '{\t"limit":NaN}', _token_refusal(14, "NaN")),
     _nt("two-byte-char-before", "search", '{"query":"é","limit":NaN}', _token_refusal(26, "NaN")),
     _nt("three-and-four-byte-chars-before", "search", '{"query":"' + chr(0x20AC) + chr(0x1F600) + '","limit":NaN}', _token_refusal(31, "NaN")),
@@ -1190,6 +1663,16 @@ _TOKEN_ROWS = [
     _nt("a-null-input-ahead", "batch/read", '{"inputs":[null],"properties":NaN}', _token_refusal(34, "NaN")),
     _nt("a-null-input-and-an-unknown-member", "batch/read", '{"inputs":[null],"bogus":NaN}', _token_refusal(29, "NaN")),
     _nt("a-null-input-and-an-id", "batch/read", '{"inputs":[null,{"id":NaN}]}', _token_refusal(26, "NaN")),
+    _nt("a-null-id-ahead", "batch/read", '{"inputs":[{"id":null}],"x":NaN}', _no_id(22)),
+    _nt("a-null-id-behind", "batch/read", '{"x":NaN,"inputs":[{"id":null}]}', _token_refusal(9, "NaN")),
+    _nt("the-token-before-a-null-ids-input-closes", "batch/read", '{"inputs":[{"id":null,"x":NaN}]}', _token_refusal(30, "NaN")),
+    _nt("an-object-id-ahead", "batch/read", '{"inputs":[{"id":{}}],"x":NaN}', _batch_refusal(18, _OBJECT)),
+    _nt("an-object-id-behind", "batch/read", '{"x":NaN,"inputs":[{"id":{}}]}', _token_refusal(9, "NaN")),
+    _nt("an-object-id-around-it", "batch/read", '{"inputs":[{"id":{"a":NaN}}]}', _batch_refusal(18, _OBJECT)),
+    _nt("an-object-element-behind", "batch/read", '{"x":NaN,"inputs":[{"id":"1"}],"properties":[{}]}', _token_refusal(9, "NaN")),
+    _nt("a-null-element-ahead", "batch/read", '{"inputs":[{"id":"1"}],"properties":[null],"x":NaN}', _token_refusal(51, "NaN")),
+    _nt("a-missing-id-ahead", "batch/read", '{"inputs":[{}],"x":NaN}', _no_id(13)),
+    _nt("a-missing-id-behind", "batch/read", '{"x":NaN,"inputs":[{}]}', _token_refusal(9, "NaN")),
     _nt("operator-ahead", "search", "{" + _AN_OPERATOR % '"BOGUS"' + ',"limit":NaN}', _enum_refusal(1, 64)),
     _nt("operator-behind", "search", '{"limit":NaN,' + _AN_OPERATOR % '"BOGUS"' + "}", _token_refusal(13, "NaN")),
     _nt("operator-ahead-in-its-filter", "search", '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS","value":NaN}]}]}', _enum_refusal(1, 64)),

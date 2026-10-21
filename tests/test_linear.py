@@ -9,7 +9,10 @@ not merely that it filters something.
 
 from __future__ import annotations
 
+import gzip
+import itertools
 import json
+import zlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -20,13 +23,16 @@ from backlot import synth
 from backlot.fidelity.graphql_diff import backlot_schema
 from backlot.graphql import linear_filters, mcp_tools
 from tests._helpers import (
+    SWEPT_BYTES,
     build_corpus,
     client_for,
     complete,
     corpus_client,
     db_count,
+    padded_query,
     selected_field_count,
     selected_fields,
+    sent_as,
     served_id,
 )
 
@@ -42,6 +48,13 @@ def gql(client, query, headers, **variables):
     if variables:
         body["variables"] = variables
     return client.post("/linear/graphql", json=body, headers=headers)
+
+
+@pytest.fixture(scope="module")
+def admin_h(tokens_yaml) -> dict[str, str]:
+    """The admin token with no scheme, as ``backlot.auth.api_key_token`` reads it; the shared
+    fixture's ``Bearer <token>`` is ``_API_KEY_AS_BEARER``."""
+    return {"Authorization": tokens_yaml["admin_token"]}
 
 
 def linear_user_token(tokens_yaml, email):
@@ -198,6 +211,23 @@ def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_ya
     hidden = gql(client, '{ team(id: "BLA") { key } }', ava_h)
     assert hidden.json()["data"] is None
     assert "Entity not found" in hidden.json()["errors"][0]["message"]
+    # So does `teamMembership(id:)`, though ava's membership id there is computable offline.
+    bla = synth.linear_team_membership_id("blackops", synth.linear_user_id("ava@acme.com"))
+    hidden = gql(client, "{ teamMembership(id: %s) { id } }" % lit(bla), ava_h)
+    assert "Entity not found" in hidden.json()["errors"][0]["message"]
+    # Each caller's membership in ENG is its own: a different id, at ENG's position in that caller's
+    # team list (third of the admin's three teams, second of ava's two).
+    q = "{ teams { nodes { key viewerMembership { id sortOrder } } } }"
+    eng = [
+        next(
+            t["viewerMembership"]
+            for t in gql(client, q, h).json()["data"]["teams"]["nodes"]
+            if t["key"] == "ENG"
+        )
+        for h in (admin_h, ava_h)
+    ]
+    assert [m["sortOrder"] for m in eng] == [2.0, 1.0]
+    assert eng[0]["id"] != eng[1]["id"]
 
 
 def test_linear_state_type_is_linears_category(client, admin_h):
@@ -371,7 +401,7 @@ def test_linear_the_hand_written_examples_query_still_validates(client, admin_h)
 
     from tests.conftest import REPO_ROOT
 
-    text = (REPO_ROOT / "examples/using-llamaindex-readers/linear.py").read_text()
+    text = (REPO_ROOT / "examples/using-llamaindex-readers/linear.py").read_text(encoding="utf-8")
     document = re.search(r'^QUERY = """(.*?)"""', text, re.S | re.M)
     assert document, "no QUERY literal found -- fix this extractor, not the assertion"
 
@@ -391,6 +421,1146 @@ def test_linear_unauthenticated_is_401(client):
     r = client.post("/linear/graphql", json={"query": "{ viewer { email } }"})
     assert r.status_code == 401
     assert r.json()["errors"][0]["message"] == "Authentication required"
+
+
+# --- the body, and where the credential is read against it ---------------------------------------
+# The headers a body was sent with beyond `Content-Type: application/json`, the body, and the bytes
+# Linear refused it with, at the status their `code` names (400 where there is none), or None where
+# Linear served the query, as `backlot.graphql.body` and `backlot.graphql.v8_json` read them.
+# `_GRAPHQL_JS_NOT_JSON` marks the rows `backlot.routers.linear._read` answers in graphql-js's
+# words for the key, no credential and `nope` alike: a body with no text. `_REQUEST_ERROR` marks a
+# JSON array, the 400 with the key; Linear answers it with `Operation batching disabled.` with or
+# without one.
+_GRAPHQL_JS_NOT_JSON = b'{"errors":[{"message":"POST body sent invalid JSON."}]}'
+_REQUEST_ERROR = object()
+_LINEAR_BODIES = [
+    pytest.param(
+        b"{",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="{",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":NaN}}',
+        b'{"error":"Unexpected token \'N\', ...\\"les\\":{\\"x\\":NaN}}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN at the end",
+    ),
+    pytest.param(
+        b"5",
+        b'{"error":"Unexpected token \'5\', \\"5\\" is not valid JSON","details":{},"code":400}',
+        id="top-level 5",
+    ),
+    pytest.param(
+        b'{"x":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="short object",
+    ),
+    pytest.param(
+        b'{"variables":{"x":NaN},"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'N\', ...\\"les\\":{\\"x\\":NaN},\\"quer\\"... is not valid JSON","details":{},"code":400}',
+        id="surround",
+    ),
+    pytest.param(
+        b'{"x":NaN,"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN,\\"query\\"... is not valid JSON","details":{},"code":400}',
+        id="start",
+    ),
+    pytest.param(
+        b"[NaN]",
+        b'{"error":"Unexpected token \'N\', \\"[NaN]\\" is not valid JSON","details":{},"code":400}',
+        id="short array",
+    ),
+    pytest.param(
+        b"NaN",
+        b'{"error":"Unexpected token \'N\', \\"NaN\\" is not valid JSON","details":{},"code":400}',
+        id="top-level NaN",
+    ),
+    pytest.param(
+        b'{"x":Infinity,"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'I\', \\"{\\"x\\":Infinity,\\"\\"... is not valid JSON","details":{},"code":400}',
+        id="Infinity",
+    ),
+    pytest.param(
+        b'{"x":-Infinity,"query":"{ __typename }"}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="-Infinity",
+    ),
+    pytest.param(
+        b'{\n  "query":"{ __typename }",\n  "variables": {"x": -Infinity}\n}',
+        b'{"error":"No number after minus sign in JSON at position 52 (line 3 column 23)","details":{},"code":400}',
+        id="-Infinity multi-line",
+    ),
+    pytest.param(
+        b'{\n  "query":"{ __typename }",\n  "variables": {"x": NaN}\n}',
+        b'{"error":"Unexpected token \'N\', ...\\"s\\": {\\"x\\": NaN}\\n}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN multi-line",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80","x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 55 (line 1 column 56)","details":{},"code":400}',
+        id="-Infinity after astral",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"e":"a\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80","x":NaN}}',
+        b'{"error":"Unexpected token \'N\', ...\\"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\\",\\"x\\":NaN}}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN window splits a pair",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":[1,NaN]}}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\":{\\"x\\":[1,NaN]}}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN in a list",
+    ),
+    pytest.param(
+        b'{\r\n"query":"{ __typename }",\r\n"variables":{"x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 48 (line 3 column 19)","details":{},"code":400}',
+        id="-Infinity after CRLF",
+    ),
+    pytest.param(
+        b'{\r"query":"{ __typename }",\r"variables":{"x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 46 (line 3 column 19)","details":{},"code":400}',
+        id="-Infinity after CR",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"e":"a\xe2\x80\xa8b","x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 54 (line 1 column 55)","details":{},"code":400}',
+        id="-Infinity after U+2028 in a string",
+    ),
+    pytest.param(
+        b'{"abcdefghijk":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"abcdefghijk\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="len 19",
+    ),
+    pytest.param(
+        b'{"abcdefghijkl":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"abcdefghijkl\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="len 20",
+    ),
+    pytest.param(
+        b'{"abc":[[NaN],1,2,3,4,5,6,7]}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"abc\\":[[NaN],1,2,3\\"... is not valid JSON","details":{},"code":400}',
+        id="pos 9",
+    ),
+    pytest.param(
+        b'{"abcd":[[NaN],1,2,3,4,5,6,7]}',
+        b'{"error":"Unexpected token \'N\', ...\\"{\\"abcd\\":[[NaN],1,2,3\\"... is not valid JSON","details":{},"code":400}',
+        id="pos 10",
+    ),
+    pytest.param(
+        b'{"abcdefghijklmnopq":[Infinity]}',
+        b'{"error":"Unexpected token \'I\', ...\\"klmnopq\\":[Infinity]}\\" is not valid JSON","details":{},"code":400}',
+        id="Infinity window at the end",
+    ),
+    pytest.param(
+        b'{"x":-NaN,"query":"{ __typename }"}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="-NaN",
+    ),
+    pytest.param(
+        b'{"x":Infinityx,"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'I\', \\"{\\"x\\":Infinityx,\\"... is not valid JSON","details":{},"code":400}',
+        id="Infinityx",
+    ),
+    pytest.param(
+        b'{"x":NaN,}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN,}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN then a later error",
+    ),
+    pytest.param(
+        b'{"abcdefghijklm":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"fghijklm\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="L21",
+    ),
+    pytest.param(
+        b'{"abcdefghijklmn":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"ghijklmn\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="L22",
+    ),
+    pytest.param(
+        b'{"abcdefgh":NaN,"z":1}',
+        b'{"error":"Unexpected token \'N\', ...\\"abcdefgh\\":NaN,\\"z\\":1}\\" is not valid JSON","details":{},"code":400}',
+        id="L22 pos12",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80","xy":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\ude00\xf0\x9f\x98\x80\\",\\"xy\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="end split low surrogate",
+    ),
+    pytest.param(
+        b'{"x":NaN,"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80"}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN,\\"e\\":\\"\\ud83d\\"... is not valid JSON","details":{},"code":400}',
+        id="start split",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80x","x":NaN,"f":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80"}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\ude00\xf0\x9f\x98\x80x\\",\\"x\\":NaN,\\"f\\":\\"\\ud83d\\"... is not valid JSON","details":{},"code":400}',
+        id="surround split both",
+    ),
+    pytest.param(
+        b'{\n\r"x":-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 8 (line 3 column 6)","details":{},"code":400}',
+        id="LF then CR",
+    ),
+    pytest.param(
+        b'{\t"x":\t-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 8 (line 1 column 9)","details":{},"code":400}',
+        id="tab lines",
+    ),
+    pytest.param(
+        b'"abcdefghijklmnopqrstuvwxyz0123456789"',
+        b'{"error":"Unexpected token \'\\"\', \\"\\"abcdefghi\\"... is not valid JSON","details":{},"code":400}',
+        id="top-level long string",
+    ),
+    pytest.param(
+        b"  \n 5",
+        b'{"error":"Unexpected token \'5\', \\"  \\n 5\\" is not valid JSON","details":{},"code":400}',
+        id="top-level ws then 5",
+    ),
+    pytest.param(
+        b"-Infinity",
+        b'{"error":"Unexpected token \'-\', \\"-Infinity\\" is not valid JSON","details":{},"code":400}',
+        id="top-level -Infinity",
+    ),
+    pytest.param(
+        b"Infinity",
+        b'{"error":"Unexpected token \'I\', \\"Infinity\\" is not valid JSON","details":{},"code":400}',
+        id="top-level Infinity",
+    ),
+    pytest.param(
+        b'{"a":"x\\"y\\\\z","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"y\\\\\\\\z\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="escaped quote in window",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","a":"p\xe2\x80\xa8q","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\"p\xe2\x80\xa8q\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="U+2028 raw in window",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","a":"\\n","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\":\\"\\\\n\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="control escape in window",
+    ),
+    pytest.param(
+        b"   ",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="whitespace only",
+    ),
+    pytest.param(
+        b"\n",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="newline only",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"__proto__":{"a":1}}}', None, id="__proto__ key"
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":{"prototype":{"a":1}}}}',
+        None,
+        id="constructor.prototype",
+    ),
+    pytest.param(
+        b'\xff\xfe{\x00"\x00q\x00u\x00e\x00r\x00y\x00"\x00:\x00"\x00{\x00 \x00_\x00_\x00t\x00y\x00p\x00e\x00n\x00a\x00m\x00e\x00 \x00}\x00"\x00}\x00',
+        b'{"error":"Unexpected token \'\xef\xbf\xbd\', \\"\xef\xbf\xbd\xef\xbf\xbd{\\u0000\\"\\u0000q\\u0000u\\u0000\\"... is not valid JSON","details":{},"code":400}',
+        id="utf-16 body",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":"\xff"}}', None, id="invalid utf-8 in a string"
+    ),
+    pytest.param(b'\xef\xbb\xbf{"query":"{ __typename }"}', None, id="utf-8 BOM"),
+    pytest.param(
+        b'{"a":"\xe2\x82","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 truncated 3-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xed\xa0\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 surrogate",
+    ),
+    pytest.param(
+        b'{"a":"\xf0\x9f\x98","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 truncated 4-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xc0\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 overlong 2-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xf4\x90\x80\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 above U+10FFFF",
+    ),
+    pytest.param(
+        b'{"a":"\xff","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 lone FF",
+    ),
+    pytest.param(
+        b'{"a":"\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 lone continuation",
+    ),
+    pytest.param(
+        b'{"a":"\xe0\x80\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 overlong 3-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xf8\x88\x80\x80\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 5-byte form",
+    ),
+    pytest.param(
+        b'{"a":"\xe0A","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbdA\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 E0 then ASCII",
+    ),
+    pytest.param(
+        b'{"a":"\xf0\x9fA","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbdA\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 F0 9F then ASCII",
+    ),
+    pytest.param(
+        b'\xef\xbb\xbf\xef\xbb\xbf{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xef\xbb\xbf\', \\"\xef\xbb\xbf{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="BOM twice",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":null}}', None, id="constructor null"
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 4300 + b"}}",
+        None,
+        id="4300 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 4301 + b"}}",
+        None,
+        id="4301 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 5000 + b"}}",
+        None,
+        id="5000 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": -' + b"1" * 4301 + b"}}",
+        None,
+        id="-4301 digits",
+    ),
+    pytest.param(b'{"query": "{ __typename }", "variables": {"x": 1e400}}', None, id="1e400"),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 1001 + b"]" * 1001 + b"}}",
+        None,
+        id="nested 1001",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 100000 + b"]" * 100000 + b"}}",
+        None,
+        id="nested 100000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 300000 + b"]" * 300000 + b"}}",
+        None,
+        id="nested 300000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": '
+        + b'{"a":' * 100000
+        + b"1"
+        + b"}" * 100000
+        + b"}}",
+        None,
+        id="objects nested 100000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": '
+        + b"[" * 100000
+        + b"NaN"
+        + b"]" * 100000
+        + b"}}",
+        b'{"error":"Unexpected token \'N\', ...\\"[[[[[[[[[[NaN]]]]]]]\\"... is not valid JSON","details":{},"code":400}',
+        id="nested 100000 then NaN",
+    ),
+    pytest.param(
+        b"null",
+        b'{"error":"Unexpected token \'n\', \\"null\\" is not valid JSON","details":{},"code":400}',
+        id="top-level null",
+    ),
+    pytest.param(
+        b'\xc2\xa0{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xc2\xa0\', \\"\xc2\xa0{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="U+00A0 then {",
+    ),
+    pytest.param(
+        b'\x0b{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\\u000b\', \\"\\u000b{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="a vertical tab then {",
+    ),
+    pytest.param(
+        b'\x0c{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\\f\', \\"\\f{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="a form feed then {",
+    ),
+    pytest.param(
+        b'\xe3\x80\x80{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xe3\x80\x80\', \\"\xe3\x80\x80{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="U+3000 then {",
+    ),
+    pytest.param(
+        b'\xe2\x80\xa8{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xe2\x80\xa8\', \\"\xe2\x80\xa8{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="U+2028 then {",
+    ),
+    pytest.param(
+        b'\x1c{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\\u001c\', \\"\\u001c{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="0x1C then {",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80",\n"x":-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 18 (line 2 column 6)","details":{},"code":400}',
+        id="-Infinity after two surrogate pairs on the line before",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80",\r\n"f":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80","x":-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 28 (line 2 column 17)","details":{},"code":400}',
+        id="-Infinity after surrogate pairs on both lines",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","b" 2}',
+        b'{"error":"Expected \':\' after property name in JSON at position 30 (line 1 column 31)","details":{},"code":400}',
+        id="colon after a later key",
+    ),
+    pytest.param(
+        b'{"query" 2}',
+        b'{"error":"Expected \':\' after property name in JSON at position 9 (line 1 column 10)","details":{},"code":400}',
+        id="colon after the first key",
+    ),
+    pytest.param(
+        b"[01]",
+        b'{"error":"Unexpected number in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="leading zero in an array",
+    ),
+    pytest.param(
+        b'{"a":01}',
+        b'{"error":"Unexpected number in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="leading zero in an object",
+    ),
+    pytest.param(
+        b'{"a":{"a":{"a":1,"b" 1}}}',
+        b'{"error":"Expected \':\' after property name in JSON at position 21 (line 1 column 22)","details":{},"code":400}',
+        id="nested later key no colon",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables"x:{}}',
+        b'{"error":"Expected \':\' after property name in JSON at position 37 (line 1 column 38)","details":{},"code":400}',
+        id="later key then a letter",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables",:{}}',
+        b'{"error":"Expected \':\' after property name in JSON at position 37 (line 1 column 38)","details":{},"code":400}',
+        id="later key then a comma",
+    ),
+    pytest.param(
+        b"[", b'{"error":"Unexpected end of JSON input","details":{},"code":400}', id="[ alone"
+    ),
+    pytest.param(
+        b"{ ",
+        b'{"error":"Expected property name or \'}\' in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="{ then space",
+    ),
+    pytest.param(
+        b"{} x",
+        b'{"error":"Unexpected non-whitespace character after JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="{} then x",
+    ),
+    pytest.param(
+        b"[1]]",
+        b'{"error":"Unexpected non-whitespace character after JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="[1] then ]",
+    ),
+    pytest.param(
+        b'{"query',
+        b'{"error":"Unterminated string in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="key unterminated",
+    ),
+    pytest.param(
+        b'{"query"',
+        b'{"error":"Expected \':\' after property name in JSON at position 8 (line 1 column 9)","details":{},"code":400}',
+        id="key then end",
+    ),
+    pytest.param(
+        b'{"query":',
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="key colon end",
+    ),
+    pytest.param(
+        b'{"query": ',
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="key colon space end",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }"',
+        b'{"error":"Expected \',\' or \'}\' after property value in JSON at position 25 (line 1 column 26)","details":{},"code":400}',
+        id="value then end",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }" x}',
+        b'{"error":"Expected \',\' or \'}\' after property value in JSON at position 26 (line 1 column 27)","details":{},"code":400}',
+        id="value then x",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }",}',
+        b'{"error":"Expected double-quoted property name in JSON at position 26 (line 1 column 27)","details":{},"code":400}',
+        id="trailing comma object",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }",1:2}',
+        b'{"error":"Expected double-quoted property name in JSON at position 26 (line 1 column 27)","details":{},"code":400}',
+        id="comma then number",
+    ),
+    pytest.param(
+        b"{'query':1}",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="single quotes",
+    ),
+    pytest.param(
+        b"{query:1}",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="bare key",
+    ),
+    pytest.param(
+        b"{1:2}",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="first key a number",
+    ),
+    pytest.param(
+        b"[1,]",
+        b'{"error":"Unexpected token \']\', \\"[1,]\\" is not valid JSON","details":{},"code":400}',
+        id="array trailing comma",
+    ),
+    pytest.param(
+        b"[1 2]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="array two values",
+    ),
+    pytest.param(
+        b"[1}",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="array then }",
+    ),
+    pytest.param(
+        b"[1",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="array end",
+    ),
+    pytest.param(
+        b"[1,",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="array comma end",
+    ),
+    pytest.param(
+        b'["a" "b"]',
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 5 (line 1 column 6)","details":{},"code":400}',
+        id="array of strings missing comma",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }',
+        b'{"error":"Unterminated string in JSON at position 24 (line 1 column 25)","details":{},"code":400}',
+        id="unterminated value string",
+    ),
+    pytest.param(
+        b'{"query":"\\x"}',
+        b'{"error":"Bad escaped character in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="bad escape",
+    ),
+    pytest.param(
+        b'{"query":"\\',
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="escape at end",
+    ),
+    pytest.param(
+        b'{"query":"\\u12G4"}',
+        b'{"error":"Bad Unicode escape in JSON at position 14 (line 1 column 15)","details":{},"code":400}',
+        id="bad unicode escape",
+    ),
+    pytest.param(
+        b'{"query":"\\u12',
+        b'{"error":"Bad Unicode escape in JSON at position 14 (line 1 column 15)","details":{},"code":400}',
+        id="unicode escape at end",
+    ),
+    pytest.param(
+        b'{"query":"a\x01b"}',
+        b'{"error":"Bad control character in string literal in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="control char in string",
+    ),
+    pytest.param(
+        b'{"query":"a\tb"}',
+        b'{"error":"Bad control character in string literal in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="tab in string",
+    ),
+    pytest.param(
+        b'{"query":"a\nb"}',
+        b'{"error":"Bad control character in string literal in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="newline in string",
+    ),
+    pytest.param(
+        b'{"query":"\\\xc3\xa9"}',
+        b'{"error":"Bad escaped character in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="escape of a two-byte char",
+    ),
+    pytest.param(
+        b'{"query":"\\\xe4\xb8\x80"}',
+        b'{"error":"Unexpected token \'\xe4\xb8\x80\', \\"{\\"query\\":\\"\\\\\xe4\xb8\x80\\"}\\" is not valid JSON","details":{},"code":400}',
+        id="escape of a char above 0xFF",
+    ),
+    pytest.param(
+        b'{"x":00}',
+        b'{"error":"Unexpected number in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="leading zero",
+    ),
+    pytest.param(
+        b'{"x":-}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="minus alone",
+    ),
+    pytest.param(
+        b'{"x":-a}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="minus then letter",
+    ),
+    pytest.param(
+        b'{"x":1.}',
+        b'{"error":"Unterminated fractional number in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="fraction missing",
+    ),
+    pytest.param(
+        b'{"x":1.e5}',
+        b'{"error":"Unterminated fractional number in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="fraction then e",
+    ),
+    pytest.param(
+        b'{"x":1e}',
+        b'{"error":"Exponent part is missing a number in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="exponent missing",
+    ),
+    pytest.param(
+        b'{"x":1e+}',
+        b'{"error":"Exponent part is missing a number in JSON at position 8 (line 1 column 9)","details":{},"code":400}',
+        id="exponent sign then no digit",
+    ),
+    pytest.param(
+        b"[1E",
+        b'{"error":"Exponent part is missing a number in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="exponent at end",
+    ),
+    pytest.param(
+        b"[1.5.3]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 4 (line 1 column 5)","details":{},"code":400}',
+        id="two dots",
+    ),
+    pytest.param(
+        b"[+1]",
+        b'{"error":"Unexpected token \'+\', \\"[+1]\\" is not valid JSON","details":{},"code":400}',
+        id="plus number",
+    ),
+    pytest.param(
+        b"[0x10]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="hex",
+    ),
+    pytest.param(
+        b"[tru]",
+        b'{"error":"Unexpected token \']\', \\"[tru]\\" is not valid JSON","details":{},"code":400}',
+        id="true misspelt",
+    ),
+    pytest.param(
+        b"[tru5]",
+        b'{"error":"Unexpected number in JSON at position 4 (line 1 column 5)","details":{},"code":400}',
+        id="true then digit",
+    ),
+    pytest.param(
+        b'[fals"e"]',
+        b'{"error":"Unexpected string in JSON at position 5 (line 1 column 6)","details":{},"code":400}',
+        id="false then quote",
+    ),
+    pytest.param(
+        b"[nul",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="null at end",
+    ),
+    pytest.param(
+        b"[nulll]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 5 (line 1 column 6)","details":{},"code":400}',
+        id="nulll",
+    ),
+    pytest.param(
+        b"[object Object]",
+        b'{"error":"\\"[object Object]\\" is not valid JSON","details":{},"code":400}',
+        id="object Object",
+    ),
+    pytest.param(
+        b"[undefined]",
+        b'{"error":"Unexpected token \'u\', \\"[undefined]\\" is not valid JSON","details":{},"code":400}',
+        id="undefined in array",
+    ),
+    pytest.param(
+        b"[:]",
+        b'{"error":"Unexpected token \':\', \\"[:]\\" is not valid JSON","details":{},"code":400}',
+        id="colon in array",
+    ),
+    pytest.param(
+        b"[,1]",
+        b'{"error":"Unexpected token \',\', \\"[,1]\\" is not valid JSON","details":{},"code":400}',
+        id="comma first in array",
+    ),
+    pytest.param(
+        b"[}]",
+        b'{"error":"Unexpected token \'}\', \\"[}]\\" is not valid JSON","details":{},"code":400}',
+        id="close brace in array",
+    ),
+    pytest.param(
+        b"[\xe4\xb8\x80]",
+        b'{"error":"Unexpected token \'\xe4\xb8\x80\', \\"[\xe4\xb8\x80]\\" is not valid JSON","details":{},"code":400}',
+        id="two-byte token in array",
+    ),
+    pytest.param(
+        b"[\xf0\x9f\x98\x80]",
+        b'{"error":"Unexpected token \'\\ud83d\', \\"[\xf0\x9f\x98\x80]\\" is not valid JSON","details":{},"code":400}',
+        id="astral token in array",
+    ),
+    pytest.param(
+        b"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1,]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+        b'{"error":"Unexpected token \']\', ...\\"[[[[[[[[1,]]]]]]]]]]\\"... is not valid JSON","details":{},"code":400}',
+        id="deep then bad",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":[1,2,3,4,5,6,7,8,9,10,]}}',
+        b'{"error":"Unexpected token \']\', ...\\",7,8,9,10,]}}\\" is not valid JSON","details":{},"code":400}',
+        id="bad after long prefix",
+    ),
+    pytest.param(
+        b'{"\\q":1}',
+        b'{"error":"Bad escaped character in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="key with escape bad",
+    ),
+    pytest.param(
+        b'{"12',
+        b'{"error":"Unterminated string in JSON at position 4 (line 1 column 5)","details":{},"code":400}',
+        id="numeric key unterminated",
+    ),
+    pytest.param(
+        b'{"12x":1,',
+        b'{"error":"Expected double-quoted property name in JSON at position 9 (line 1 column 10)","details":{},"code":400}',
+        id="numeric key then x",
+    ),
+    pytest.param(
+        b"[123456789.",
+        b'{"error":"Unterminated fractional number in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="nine digits then dot end",
+    ),
+    pytest.param(
+        b"[1234567890e]",
+        b'{"error":"Exponent part is missing a number in JSON at position 12 (line 1 column 13)","details":{},"code":400}',
+        id="ten digits then e",
+    ),
+    pytest.param(
+        b"[-01]",
+        b'{"error":"Unexpected number in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="negative zero then digit",
+    ),
+    pytest.param(
+        b"[0-1]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="zero then minus",
+    ),
+    pytest.param(
+        b'{ \n\t "query" \n : \n x}',
+        b'{"error":"Unexpected token \'x\', ...\\"ry\\" \\n : \\n x}\\" is not valid JSON","details":{},"code":400}',
+        id="whitespace then bad",
+    ),
+    pytest.param(
+        b'{\r\n"query":\r\n}',
+        b'{"error":"Unexpected token \'}\', \\"{\\r\\n\\"query\\":\\r\\n}\\" is not valid JSON","details":{},"code":400}',
+        id="CRLF then bad",
+    ),
+    pytest.param(b"", _GRAPHQL_JS_NOT_JSON, id="empty"),
+    pytest.param(b"\xef\xbb\xbf", _GRAPHQL_JS_NOT_JSON, id="a byte-order mark alone"),
+    pytest.param(b"[]", _REQUEST_ERROR, id="an array"),
+    pytest.param(b'[{"query":"{ __typename }"}]', _REQUEST_ERROR, id="a batch of one query"),
+]
+
+
+_TYPENAME = b'{"query":"{ __typename }"}'
+_LIMIT = 10 * 2**20
+
+
+def _express(status: int, message: bytes) -> bytes:
+    """Express's envelope as Linear writes it around ``message``, already JSON-escaped."""
+    return b'{"error":"%s","details":{},"code":%d}' % (message, status)
+
+
+def _charset(name: str) -> tuple:
+    return (("Content-Type", f"application/json; charset={name}"),)
+
+
+_GZIP = (("Content-Encoding", "gzip"),)
+_EXPECTED_PROPERTY = _express(
+    400, b"Expected property name or '}' in JSON at position 1 (line 1 column 2)"
+)
+_LATIN1 = _express(415, b'unsupported charset \\"LATIN1\\"')
+_HEADER_CHECK = _express(400, b"incorrect header check")
+_CUT_SHORT = _express(400, b"unexpected end of file")
+_BOGUS = _express(415, b'unsupported content encoding \\"bogus\\"')
+_TOO_LARGE = _express(413, b"request entity too large")
+_TOO_LARGE_DECLARED = (
+    b'{"error":"request entity too large","details":{},"extensions":{"code":"PAYLOAD_TOO_LARGE",'
+    b'"type":"payload too large","statusCode":413,"userError":true,"limit":10485760,'
+    b'"length":10485761},"code":413}'
+)
+# Forty ideographs outnumber the ASCII around them, so without a byte-order mark iconv-lite reads
+# the body in the order that is wrong for it, and Linear quotes the characters that make.
+_IDEOGRAPHS = '{"query":"{ __typename }","x":"' + "\u4e00" * 40 + '"}'
+_IDEOGRAPHS_MISREAD = _express(
+    400,
+    "Unexpected token '\u7b00', \\\"\u7b00\u2200\u7100\u7500\u6500\u7200\u7900\u2200\u3a00"
+    '\u2200\\"... is not valid JSON'.encode(),
+)
+_LINEAR_READS = [
+    pytest.param(_GZIP, gzip.compress(_TYPENAME), None, id="gzip"),
+    pytest.param((("Content-Encoding", "GZIP"),), gzip.compress(_TYPENAME), None, id="GZIP"),
+    pytest.param((("Content-Encoding", "deflate"),), zlib.compress(_TYPENAME), None, id="deflate"),
+    pytest.param((("Content-Encoding", ""),), _TYPENAME, None, id="an empty encoding"),
+    pytest.param(
+        (("Content-Encoding", " gzip "),), gzip.compress(_TYPENAME), None, id="spaces around gzip"
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip\t"),), gzip.compress(_TYPENAME), None, id="a tab after gzip"
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip\xa0"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"gzip\xa0\\"'.encode()),
+        id="U+00A0 after gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "\xa0gzip"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"\xa0gzip\\"'.encode()),
+        id="U+00A0 before gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip\x85"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"gzip\x85\\"'.encode()),
+        id="U+0085 after gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "g zip"),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"g zip\\"'),
+        id="a space inside",
+    ),
+    pytest.param(
+        (("Content-Encoding", "x-gzip"),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"x-gzip\\"'),
+        id="x-gzip",
+    ),
+    pytest.param((("Content-Encoding", "bogus"),), _TYPENAME, _BOGUS, id="bogus"),
+    pytest.param((("Content-Encoding", "BOGUS"),), _TYPENAME, _BOGUS, id="BOGUS"),
+    pytest.param(
+        (("Content-Encoding", "gzip"), ("Content-Encoding", "gzip")),
+        gzip.compress(gzip.compress(_TYPENAME)),
+        _express(415, b'unsupported content encoding \\"gzip, gzip\\"'),
+        id="gzip twice",
+    ),
+    pytest.param(
+        (("Content-Encoding", ""), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        None,
+        id="an empty encoding, then gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", " "), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        None,
+        id="a space, then gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", ""), ("Content-Encoding", ""), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        None,
+        id="two empty encodings, then gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", ""), ("Content-Encoding", "")),
+        _TYPENAME,
+        None,
+        id="two empty encodings",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip"), ("Content-Encoding", "")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,\\"'),
+        id="gzip, then an empty encoding",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip"), ("Content-Encoding", " ")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,\\"'),
+        id="gzip, then a space",
+    ),
+    pytest.param(
+        (("Content-Encoding", ""), ("Content-Encoding", "gzip"), ("Content-Encoding", "")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,\\"'),
+        id="gzip between empty encodings",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip"), ("Content-Encoding", " "), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip, , gzip\\"'),
+        id="gzip, a space, gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "bogus"), ("Content-Encoding", "")),
+        _TYPENAME,
+        _express(415, b'unsupported content encoding \\"bogus,\\"'),
+        id="bogus, then an empty encoding",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip, "),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,\\"'),
+        id="gzip and a comma and a space",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip ,"),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip ,\\"'),
+        id="a space before a comma",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip,"), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,, gzip\\"'),
+        id="a comma ending an encoding, then gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip, identity"),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip, identity\\"'),
+        id="gzip, identity",
+    ),
+    pytest.param(_GZIP, _TYPENAME, _HEADER_CHECK, id="gzip over a plain body"),
+    pytest.param(_GZIP, gzip.compress(_TYPENAME) + b"xx", _HEADER_CHECK, id="gzip then xx"),
+    pytest.param(_GZIP, gzip.compress(_TYPENAME)[:-5], _CUT_SHORT, id="gzip cut short"),
+    pytest.param(_GZIP, b"", _CUT_SHORT, id="gzip over no bytes"),
+    pytest.param(_GZIP, gzip.compress(b""), _GRAPHQL_JS_NOT_JSON, id="gzip of no bytes"),
+    pytest.param(_GZIP, gzip.compress(b"{"), _EXPECTED_PROPERTY, id="gzip of {"),
+    pytest.param(
+        (("Content-Encoding", "deflate"),),
+        zlib.compress(_TYPENAME)[2:-4],
+        _HEADER_CHECK,
+        id="raw deflate",
+    ),
+    pytest.param(_charset("utf-16le"), _TYPENAME.decode().encode("utf-16-le"), None, id="utf-16le"),
+    pytest.param(
+        _charset("utf-16-le"), _TYPENAME.decode().encode("utf-16-le"), None, id="utf-16-le"
+    ),
+    pytest.param(_charset("utf-16be"), _TYPENAME.decode().encode("utf-16-be"), None, id="utf-16be"),
+    pytest.param(
+        _charset("utf-16"), _TYPENAME.decode().encode("utf-16"), None, id="utf-16, marked"
+    ),
+    pytest.param(
+        _charset("utf-16"), _TYPENAME.decode().encode("utf-16-be"), None, id="utf-16, big-endian"
+    ),
+    pytest.param(
+        _charset("utf-16"), _TYPENAME.decode().encode("utf-16-le"), None, id="utf-16, little-endian"
+    ),
+    pytest.param(
+        _charset("utf-16le"),
+        '\ufeff{"query":"{ __typename }"}'.encode("utf-16-le"),
+        None,
+        id="utf-16le, marked",
+    ),
+    pytest.param(
+        _charset("utf-16le"), _TYPENAME.decode().encode("utf-16-le") + b"x", None, id="odd bytes"
+    ),
+    pytest.param(
+        _charset("utf-16le"),
+        b'{"query":"{ __typename }","x":"'.decode().encode("utf-16-le")
+        + b"\x00\xd8"
+        + b'"}'.decode().encode("utf-16-le"),
+        None,
+        id="a lone surrogate",
+    ),
+    pytest.param(
+        _charset("utf-32"), _TYPENAME.decode().encode("utf-32"), None, id="utf-32, marked"
+    ),
+    pytest.param(
+        _charset("utf-32"), _TYPENAME.decode().encode("utf-32-be"), None, id="utf-32, big-endian"
+    ),
+    pytest.param(_charset("utf-32le"), _TYPENAME.decode().encode("utf-32-le"), None, id="utf-32le"),
+    pytest.param(_charset("UTF-8"), _TYPENAME, None, id="UTF-8"),
+    pytest.param(_charset('"utf-8"'), _TYPENAME, None, id="utf-8 quoted"),
+    pytest.param(_charset("utf-7"), _TYPENAME, None, id="utf-7"),
+    pytest.param(_charset("utf-7-imap"), _TYPENAME, None, id="utf-7-imap"),
+    pytest.param(
+        _charset("utf-16le"),
+        "5".encode("utf-16-le"),
+        _express(400, b"Unexpected token '5', \\\"5\\\" is not valid JSON"),
+        id="utf-16le 5",
+    ),
+    pytest.param(
+        _charset("utf-16le"), "{".encode("utf-16-le"), _EXPECTED_PROPERTY, id="utf-16le {"
+    ),
+    pytest.param(_charset("utf-16le"), b"", _GRAPHQL_JS_NOT_JSON, id="utf-16le, no bytes"),
+    pytest.param(_charset("utf-8; foo=bar"), _TYPENAME, None, id="another parameter"),
+    pytest.param(_charset('"utf\\-8"'), _TYPENAME, None, id="a quoted pair"),
+    pytest.param(_charset('"lat\\in1"'), _TYPENAME, _LATIN1, id="a quoted pair, latin1"),
+    pytest.param(
+        (("Content-Type", "application/json; charset = latin1"),),
+        _TYPENAME,
+        _LATIN1,
+        id="spaces around =",
+    ),
+    pytest.param(_charset('"utf-8:1234"'), _TYPENAME, None, id="a trailing :1234"),
+    pytest.param(_charset("utf-32be"), _TYPENAME.decode().encode("utf-32-be"), None, id="utf-32be"),
+    pytest.param(
+        _charset("utf-32be"),
+        b'{"query":"{ __typename }","x":"'.decode().encode("utf-32-be")
+        + b"\x00\x11\x00\x00"
+        + b'"}'.decode().encode("utf-32-be"),
+        None,
+        id="past U+10FFFF",
+    ),
+    pytest.param(
+        _charset("utf-16le"), _IDEOGRAPHS.encode("utf-16-le"), None, id="utf-16le, ideographs"
+    ),
+    pytest.param(
+        _charset("utf-16"), _IDEOGRAPHS.encode("utf-16"), None, id="utf-16, marked, ideographs"
+    ),
+    pytest.param(
+        _charset("utf-16"),
+        b"\xfe\xff" + _IDEOGRAPHS.encode("utf-16-be"),
+        None,
+        id="utf-16, marked big-endian, ideographs",
+    ),
+    pytest.param(
+        _charset("utf-16"),
+        _IDEOGRAPHS.encode("utf-16-le"),
+        _IDEOGRAPHS_MISREAD,
+        id="utf-16, little-endian ideographs",
+    ),
+    pytest.param(
+        _charset("utf-16"),
+        _IDEOGRAPHS.encode("utf-16-be"),
+        _IDEOGRAPHS_MISREAD,
+        id="utf-16, big-endian ideographs",
+    ),
+    pytest.param(_charset("latin1"), _TYPENAME, _LATIN1, id="latin1"),
+    pytest.param(
+        _charset("iso-8859-1"),
+        _TYPENAME,
+        _express(415, b'unsupported charset \\"ISO-8859-1\\"'),
+        id="iso-8859-1",
+    ),
+    pytest.param(
+        _charset("utf8"), _TYPENAME, _express(415, b'unsupported charset \\"UTF8\\"'), id="utf8"
+    ),
+    pytest.param(
+        _charset("utf-nope"),
+        _TYPENAME,
+        _express(415, b'unsupported charset \\"UTF-NOPE\\"'),
+        id="utf-nope",
+    ),
+    pytest.param(
+        _charset("utf_16le"),
+        _TYPENAME.decode().encode("utf-16-le"),
+        _express(415, b'unsupported charset \\"UTF_16LE\\"'),
+        id="utf_16le",
+    ),
+    pytest.param(
+        (("Content-Type", "Application/JSON; Charset=Latin1"),), _TYPENAME, _LATIN1, id="Charset"
+    ),
+    pytest.param(_charset("utf-8; charset=latin1"), _TYPENAME, _LATIN1, id="two charsets"),
+    pytest.param(
+        _charset("latin1") + (("Content-Encoding", "bogus"),),
+        _TYPENAME,
+        _LATIN1,
+        id="latin1, bogus",
+    ),
+    pytest.param(
+        _charset("utf-nope") + (("Content-Encoding", "bogus"),),
+        _TYPENAME,
+        _BOGUS,
+        id="utf-nope, bogus",
+    ),
+    pytest.param((), padded_query(_LIMIT), None, id="the limit"),
+    pytest.param((), padded_query(_LIMIT + 1), _TOO_LARGE_DECLARED, id="past the limit"),
+    pytest.param(_GZIP, gzip.compress(padded_query(_LIMIT)), None, id="the limit, gzipped"),
+    pytest.param(_GZIP, gzip.compress(padded_query(_LIMIT + 1)), _TOO_LARGE, id="past it, gzipped"),
+    pytest.param(
+        _GZIP, gzip.compress(padded_query(_LIMIT + 2)), _TOO_LARGE, id="past it by two, gzipped"
+    ),
+    pytest.param(
+        (("Content-Encoding", "deflate"),),
+        zlib.compress(padded_query(_LIMIT + 1)),
+        _TOO_LARGE,
+        id="past it, deflated",
+    ),
+    pytest.param(_GZIP, b"x" * (_LIMIT + 1), _HEADER_CHECK, id="past it, not gzip"),
+    pytest.param((), b"{" * (_LIMIT + 1), _TOO_LARGE_DECLARED, id="past it, not JSON"),
+    pytest.param(
+        (("Content-Encoding", "bogus"),), padded_query(_LIMIT + 1), _BOGUS, id="past it, bogus"
+    ),
+    pytest.param(_charset("latin1"), padded_query(_LIMIT + 1), _LATIN1, id="past it, latin1"),
+    pytest.param(
+        _charset("utf-nope"), padded_query(_LIMIT + 1), _TOO_LARGE_DECLARED, id="past it, utf-nope"
+    ),
+]
+
+
+# `Bearer` and a value in a Linear API key's shape that no account holds.
+_KEY_SHAPED = "Bearer lin_api_" + "0" * 40
+
+
+@pytest.mark.parametrize("credential", ["key", "none", "nope", "Bearer key", "Bearer, key-shaped"])
+@pytest.mark.parametrize(
+    "headers,body,answer",
+    [pytest.param((), *row.values, id=row.id) for row in _LINEAR_BODIES] + _LINEAR_READS,
+)
+def test_linear_orders_the_body_and_the_credential(
+    client, tokens_yaml, credential, headers, body, answer
+):
+    """Each row answers as the comment over `_LINEAR_BODIES` says, and every refusal but a
+    `_REQUEST_ERROR` row's is the same for the key, no credential and `nope`; an API key under
+    `Bearer`, and `_KEY_SHAPED`, are `_API_KEY_AS_BEARER` ahead of every body."""
+    admin = tokens_yaml["admin_token"]
+    if not any(name == "Content-Type" for name, _ in headers):
+        headers = (("Content-Type", "application/json"), *headers)
+    if credential != "none":
+        key = {"key": admin, "nope": "nope", "Bearer key": f"Bearer {admin}"}.get(
+            credential, _KEY_SHAPED
+        )
+        headers = (*headers, ("Authorization", key))
+    r = sent_as(client, "POST", "/linear/graphql", headers, content=body)
+    if credential.startswith("Bearer"):
+        assert (r.status_code, r.content) == (400, _API_KEY_AS_BEARER)
+    elif answer is _REQUEST_ERROR:
+        if credential == "key":
+            assert r.content == _GRAPHQL_JS_NOT_JSON
+        assert r.status_code == (400 if credential == "key" else 401)
+    elif answer is not None:
+        assert (r.status_code, r.content) == (json.loads(answer).get("code", 400), answer)
+    elif credential == "key":
+        assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
+    else:
+        assert r.status_code == 401
 
 
 def test_linear_parent_resolves_and_is_acl_scoped(client, admin_h, tokens_yaml):
@@ -416,20 +1586,25 @@ def test_linear_issue_without_a_parent_is_null(client, admin_h):
     )
 
 
+@pytest.mark.parametrize(("connection", "args"), [("issues", "first: 50"), ("users", "")])
 @pytest.mark.parametrize(
     ("order_by", "field"),
     [
         ("", "createdAt"),
-        (", orderBy: createdAt", "createdAt"),
-        (", orderBy: updatedAt", "updatedAt"),
+        ("orderBy: createdAt", "createdAt"),
+        ("orderBy: updatedAt", "updatedAt"),
     ],
     ids=["default", "createdAt", "updatedAt"],
 )
-def test_linear_default_and_order_by_are_newest_first(client, admin_h, order_by, field):
-    """`issues` is newest first by the field `orderBy` names, and by `createdAt` with no `orderBy`,
-    as the comment on `LINEAR_DEFAULT_ORDER_BY` records."""
-    q = "{ issues(first: 50%s) { nodes { createdAt updatedAt } } }" % order_by
-    stamps = [n[field] for n in gql(client, q, admin_h).json()["data"]["issues"]["nodes"]]
+def test_linear_default_and_order_by_are_newest_first(
+    client, admin_h, connection, args, order_by, field
+):
+    """`issues` and `users` are newest first by the field `orderBy` names, and by `createdAt` with
+    no `orderBy`, as the comment on `LINEAR_DEFAULT_ORDER_BY` records."""
+    joined = ", ".join(a for a in (args, order_by) if a)
+    q = "{ %s%s { nodes { createdAt updatedAt } } }" % (connection, f"({joined})" if joined else "")
+    stamps = [n[field] for n in gql(client, q, admin_h).json()["data"][connection]["nodes"]]
+    assert len(stamps) >= 2
     assert stamps == sorted(stamps, reverse=True)
 
 
@@ -494,6 +1669,71 @@ def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
 
 
 # --- Linear relations / children / attachments / releases -----------------------
+
+
+@pytest.mark.parametrize(
+    ("args", "served"),
+    [
+        ("", ["ENG-3", "ENG-2"]),
+        ("(orderBy: createdAt)", ["ENG-3", "ENG-2"]),
+        ("(orderBy: updatedAt)", ["ENG-2", "ENG-3"]),
+        ("(first: 1)", ["ENG-3"]),
+        ("(last: 1)", ["ENG-2"]),
+    ],
+)
+def test_linear_children_are_newest_first(tmp_path, args, served):
+    """Each row is an issue's `children` in the order the comment on `LINEAR_DEFAULT_ORDER_BY`
+    records; `ENG-2` was created first and edited last, so the two fields disagree."""
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "linear",
+                "doc_id": "parent",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Parent",
+                "content": "p",
+                "identifier": "ENG-1",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "created": "2026-01-01T00:00:00Z",
+            },
+            {
+                "source_type": "linear",
+                "doc_id": "edited-last",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Edited last",
+                "content": "a",
+                "identifier": "ENG-2",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+                "parent": "ENG-1",
+                "created": "2026-01-02T00:00:00Z",
+                "updated": "2026-04-01T00:00:00Z",
+            },
+            {
+                "source_type": "linear",
+                "doc_id": "created-last",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Created last",
+                "content": "b",
+                "identifier": "ENG-3",
+                "author_email": "mia@acme.com",
+                "visibility": "public",
+                "parent": "ENG-1",
+                "created": "2026-03-01T00:00:00Z",
+                "updated": "2026-02-01T00:00:00Z",
+            },
+        ],
+    )
+    query = '{ issue(id: "ENG-1") { children%s { nodes { identifier } } } }' % args
+    with client_for(settings) as client:
+        body = gql(client, query, {"Authorization": settings.admin_token}).json()
+    assert "errors" not in body, body.get("errors")
+    assert [n["identifier"] for n in body["data"]["issue"]["children"]["nodes"]] == served
 
 
 def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):
@@ -2308,6 +3548,8 @@ LINEAR_TYPES = {
     # selected by `@linear/sdk`'s own Team and Project fragments
     "Team.initiativesEnabled": "Boolean!",
     "Team.viewerCanJoin": "Boolean!",
+    "Team.viewerCanLeave": "Boolean!",
+    "Team.viewerMembership": "TeamMembership",
     "Project.resourceCount": "Int!",
     # non-null where Backlot was nullable
     "Issue.sharedAccess": "IssueSharedAccess!",
@@ -2456,20 +3698,67 @@ def test_counts_are_served_as_json_integers(fclient):
 
 
 def test_fields_the_sdk_fragments_select_resolve_to_what_backlot_serves(fclient):
-    """All three are non-null, so a declaration with nothing behind it voids the whole result. A
+    """All four are non-null, so a declaration with nothing behind it voids the whole result. A
     real team answers `initiativesEnabled: false` (measured 2026-09-07), and `_team` gives the
-    reason `viewerCanJoin` is `false`; Backlot serves no project resources, so `resourceCount` is
-    a count rather than a stand-in."""
+    reason `viewerCanJoin` is `false`; the caller here is in two teams, so leaving one does not
+    leave it without an active team; Backlot serves no project resources, so `resourceCount` is a
+    count rather than a stand-in."""
     r = post(
         fclient,
-        '{ issue(id: "ENG-2") { team { initiativesEnabled viewerCanJoin }'
+        '{ issue(id: "ENG-2") { team { initiativesEnabled viewerCanJoin viewerCanLeave }'
         " project { resourceCount } } }",
     ).json()
     assert "errors" not in r, r.get("errors")
     d = r["data"]["issue"]
     team = d["team"]
-    served = (team["initiativesEnabled"], team["viewerCanJoin"], d["project"]["resourceCount"])
-    assert served == (False, False, 0)
+    served = (
+        team["initiativesEnabled"],
+        team["viewerCanJoin"],
+        team["viewerCanLeave"],
+        d["project"]["resourceCount"],
+    )
+    assert served == (False, False, True, 0)
+
+
+_MEMBERSHIP = "id createdAt updatedAt archivedAt owner sortOrder user { id } team { id }"
+
+
+def test_linear_viewer_membership_is_the_callers_own(tmp_path):
+    """The measurement above `_membership`: a member of a workspace's one team is answered its
+    membership, `viewerCanLeave: false`, and the same membership again from `teamMembership(id:)`,
+    the query `@linear/sdk`'s `team.viewerMembership` accessor sends. ava sees one of the corpus's
+    two teams, so it is the teams she can see that `viewerCanLeave` counts."""
+    sealed = {
+        "source_type": "linear",
+        "doc_id": "lin-sealed",
+        "team": "blackops",
+        "title": "Sealed",
+        "content": "Sealed.",
+        "author_email": "hana@acme.com",
+        "readers": ["hana@acme.com"],
+        "identifier": "BLA-1",
+    }
+    with corpus_client(tmp_path, [*LINEAR_CORPUS, sealed]) as (client, _settings):
+        users = client.get("/_meta/users").json()["users"]
+        h = {"Authorization": next(u["token"] for u in users if u["email"] == "ava@acme.com")}
+        q = "{ viewer { id createdAt } teams { nodes { id createdAt viewerCanLeave"
+        d = gql(client, q + " viewerMembership { %s } } } }" % _MEMBERSHIP, h).json()["data"]
+        (team,) = d["teams"]["nodes"]
+        m = team["viewerMembership"]
+        assert team["viewerCanLeave"] is False
+        assert (m["user"]["id"], m["team"]["id"]) == (d["viewer"]["id"], team["id"])
+        assert (m["owner"], m["archivedAt"], m["sortOrder"]) == (False, None, 0)
+        assert m["createdAt"] == m["updatedAt"] == max(team["createdAt"], d["viewer"]["createdAt"])
+        by_id = gql(client, "{ teamMembership(id: %s) { %s } }" % (lit(m["id"]), _MEMBERSHIP), h)
+        assert by_id.json()["data"]["teamMembership"] == m
+        # A lone surrogate is answered as any other unknown id; the raw body carries it as JSON's
+        # `\ud800` escape, which a client encoding the string as UTF-8 first cannot send.
+        for x in (synth.linear_id("nope"), "a\ud800b"):
+            body = {"query": "query($x: String!) { teamMembership(id: $x) { id } }"}
+            body["variables"] = {"x": x}
+            miss = client.post("/linear/graphql", content=json.dumps(body), headers=h)
+            assert miss.status_code == 200
+            assert miss.json()["errors"][0]["message"] == "Entity not found: TeamMembership"
 
 
 def test_enum_fields_serve_a_member_of_the_vendors_enum(fclient):
@@ -2810,10 +4099,6 @@ def test_attachment_string_fields_follow_linears_null_rules(fclient):
 
 
 # --- Linear -----------------------------------------------------------------------
-# Linear's auth is the one shape no other source in this repo uses: the personal API key is the
-# BARE `Authorization` value with no scheme, while an OAuth access token is `Bearer <token>`, and
-# the real API accepts both on the same header. Getting this wrong is silent — a stripped-scheme
-# parse would accept `Bearer <key>` and reject the bare key that every real Linear client sends.
 
 LINEAR_CORPUS = [
     {
@@ -2833,10 +4118,58 @@ LINEAR_CORPUS = [
 ]
 
 
-def _linear_identifiers(client, authorization):
-    """``authorization`` verbatim, not a Bearer-wrapped token — these tests assert on the scheme."""
-    r = gql(client, "{ issues { nodes { identifier } } }", {"Authorization": authorization})
-    return r.status_code, r.json()
+@pytest.mark.parametrize(
+    "caller, unassigned",
+    [
+        ("mia@acme.com", "mia/eng-2-rotate-the-signing-keys"),
+        # the admin token has no address, so there is no user segment
+        ("admin", "eng-2-rotate-the-signing-keys"),
+    ],
+)
+def test_an_unassigned_issue_branch_name_starts_with_the_callers_handle(
+    tmp_path, caller, unassigned
+):
+    """An issue with no assignee takes the caller's email local part as its branch prefix.
+    An assigned issue keeps the assignee's local part in front of the same slug."""
+    records = [
+        {
+            "source_type": "linear",
+            "doc_id": "assigned",
+            "team": "engineering",
+            "title": "Rotate the signing keys",
+            "identifier": "ENG-1",
+            "content": "Keys expire in March.",
+            "state": "Todo",
+            "author_email": "mia@acme.com",
+            "assignee": "raj@acme.com",
+            "created": "2026-02-01T09:00:00Z",
+        },
+        {
+            "source_type": "linear",
+            "doc_id": "unassigned",
+            "team": "engineering",
+            "title": "Rotate the signing keys",
+            "identifier": "ENG-2",
+            "content": "Keys expire in March.",
+            "state": "Todo",
+            "author_email": "mia@acme.com",
+            "created": "2026-02-01T09:00:00Z",
+        },
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        users = client.get("/_meta/users").json()["users"]
+        if caller == "admin":
+            token = settings.admin_token
+        else:
+            token = next(u["token"] for u in users if u["email"] == caller)
+        body = gql(
+            client,
+            "{ issues { nodes { identifier branchName } } }",
+            {"Authorization": token},
+        ).json()
+        assert "errors" not in body, body.get("errors")
+        got = {n["identifier"]: n["branchName"] for n in body["data"]["issues"]["nodes"]}
+        assert got == {"ENG-1": "raj/eng-1-rotate-the-signing-keys", "ENG-2": unassigned}
 
 
 def test_an_issue_with_no_recorded_edit_is_filtered_on_the_updatedAt_it_serves(tmp_path):
@@ -2966,30 +4299,6 @@ def test_an_unset_priority_filters_and_sorts_as_the_zero_it_is_served_as(tmp_pat
         assert [n["identifier"] for n in asc] == ["ENG-1", "ENG-2"]
 
 
-def test_linear_accepts_a_bare_api_key_with_no_scheme(tmp_path):
-    """What `LinearReader` and `@linear/sdk` both send: `Authorization: <key>`, no prefix."""
-    with _linear_client(tmp_path) as (client, settings):
-        status, body = _linear_identifiers(client, settings.admin_token)
-        assert status == 200
-        assert [n["identifier"] for n in body["data"]["issues"]["nodes"]] == ["ENG-9"]
-
-
-def test_linear_accepts_a_bearer_oauth_token(tmp_path):
-    """The OAuth shape, on the same header."""
-    with _linear_client(tmp_path) as (client, settings):
-        status, body = _linear_identifiers(client, f"Bearer {settings.admin_token}")
-        assert status == 200
-        assert [n["identifier"] for n in body["data"]["issues"]["nodes"]] == ["ENG-9"]
-
-
-def test_linear_rejects_a_stray_scheme_rather_than_stripping_it(tmp_path):
-    """To the real API the WHOLE header value is the key, so `Token <key>` is simply a wrong key —
-    not a key with a scheme to discard. Stripping the first word would authenticate a credential
-    the real API refuses."""
-    with _linear_client(tmp_path) as (client, settings):
-        assert _linear_identifiers(client, f"Token {settings.admin_token}")[0] == 401
-
-
 def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
     """Real Linear splits these: a bad document never executed is a 400 with no `data` key, while
     an error raised mid-execution is a 200 carrying `data` alongside `errors`."""
@@ -3003,6 +4312,102 @@ def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
         )
         assert missing.status_code == 200
         assert "data" in missing.json() and missing.json()["errors"]
+
+
+_API_KEY_AS_BEARER = (
+    b'{"errors":[{"message":"It looks like you\'re trying to use an API key as a Bearer token.'
+    b' Remove the Bearer prefix from the Authorization header.","extensions":{"type":"invalid'
+    b' input","code":"INPUT_ERROR","statusCode":400,"userError":true}}]}'
+)
+# `Authorization` values, `{t}` for an API key that resolves, and the status Linear gave each: 200
+# serving the query and 400 being `_API_KEY_AS_BEARER`. Backlot's 401 keeps its own body.
+_LINEAR_SPELLINGS = [
+    pytest.param("{t}", 200, id="bare"),
+    pytest.param(" {t}", 200, id="a space before"),
+    pytest.param("{t} ", 200, id="a space after"),
+    pytest.param("\xa0{t}", 401, id="U+00A0 before"),
+    pytest.param("{t}\xa0", 401, id="U+00A0 after"),
+    pytest.param("{t} extra", 401, id="a word after"),
+    pytest.param("Bearer {t}", 400, id="Bearer"),
+    pytest.param("bearer {t}", 400, id="bearer"),
+    pytest.param("Bearer {t} ", 400, id="Bearer, a space after"),
+    pytest.param(" Bearer {t}", 400, id="Bearer, a space before"),
+    pytest.param("Bearer  {t}", 401, id="Bearer, two spaces"),
+    pytest.param("Bearer\t{t}", 401, id="Bearer, a tab"),
+    pytest.param("Bearer \t{t}", 401, id="Bearer, a space and a tab"),
+    pytest.param("Bearer \xa0{t}", 401, id="Bearer, a space and U+00A0"),
+    pytest.param("Bearer{t}", 401, id="Bearer, no space"),
+    pytest.param("Bearer,{t}", 401, id="Bearer, a comma"),
+    pytest.param("Bearer {t} extra", 401, id="Bearer, a word after"),
+    pytest.param("Bearer {t}x", 401, id="Bearer, a key that does not resolve"),
+    pytest.param("Bearer lin_api_nope", 401, id="Bearer lin_api_nope"),
+    pytest.param(_KEY_SHAPED, 400, id="Bearer, a key's shape Linear never issued"),
+    pytest.param("bearer lin_api_" + "0" * 40, 400, id="bearer, a key's shape"),
+    pytest.param(
+        "Bearer lin_api_" + "aB3" * 13 + "a", 400, id="Bearer, a key's shape in both cases"
+    ),
+    pytest.param(
+        "Bearer lin_api_" + "0" * 39, 401, id="Bearer, a character short of a key's shape"
+    ),
+    pytest.param("Bearer lin_api_" + "0" * 41, 401, id="Bearer, a character past a key's shape"),
+    pytest.param("Bearer lin_api_" + "0" * 39 + "-", 401, id="Bearer, a key's shape ending in -"),
+    pytest.param(_KEY_SHAPED + " x", 401, id="Bearer, a key's shape and a word after"),
+    pytest.param("Bearer LIN_API_" + "0" * 40, 401, id="Bearer, LIN_API_"),
+    pytest.param("Bearer lin_oauth_" + "0" * 40, 401, id="Bearer, lin_oauth_"),
+    pytest.param("BEARER lin_api_" + "0" * 40, 401, id="BEARER, a key's shape"),
+    pytest.param("lin_api_" + "0" * 40, 401, id="a key's shape alone"),
+    pytest.param("Bearer nope", 401, id="Bearer nope"),
+    pytest.param("bearer nope", 401, id="bearer nope"),
+    pytest.param("Token {t}", 401, id="Token"),
+]
+
+
+# `SWEPT_BYTES` in five places of `Authorization`: the statuses other than the 401 every other byte
+# drew.
+_LINEAR_BYTES = {
+    "Bearer{x}{t}": {0x20: 400},
+    "Bearer {x}{t}": {},
+    "Bearer {t}{x}": {0x09: 400, 0x20: 400},
+    "{x}{t}": {0x09: 200, 0x20: 200},
+    "{t}{x}": {0x09: 200, 0x20: 200},
+}
+
+
+def _linear_credentials() -> list:
+    """`_LINEAR_SPELLINGS`, then each of `SWEPT_BYTES` in each place `_LINEAR_BYTES` names and
+    each of the 64 casings of the scheme, less the values the table already holds."""
+    rows = list(_LINEAR_SPELLINGS)
+    seen = {row.values[0] for row in rows}
+
+    def add(value: str, status: int, id: str) -> None:
+        if value not in seen:
+            seen.add(value)
+            rows.append(pytest.param(value, status, id=id))
+
+    for shape, answers in _LINEAR_BYTES.items():
+        for byte in SWEPT_BYTES:
+            add(shape.replace("{x}", chr(byte)), answers.get(byte, 401), f"{shape} {byte:#04x}")
+    for letters in itertools.product(*[(c, c.upper()) for c in "bearer"]):
+        scheme = "".join(letters)
+        add(f"{scheme} {{t}}", 400 if scheme in ("Bearer", "bearer") else 401, scheme)
+    return rows
+
+
+@pytest.mark.parametrize("value, status", _linear_credentials())
+def test_linear_reads_a_credential_as_linear_does(client, tokens_yaml, value, status):
+    header = value.replace("{t}", tokens_yaml["admin_token"])
+    r = sent_as(
+        client,
+        "POST",
+        "/linear/graphql",
+        {"Authorization": header, "Content-Type": "application/json"},
+        content=b'{"query":"{ viewer { id } }"}',
+    )
+    assert r.status_code == status
+    if status == 200:
+        assert r.json()["data"]["viewer"]["id"]
+    elif status == 400:
+        assert r.content == _API_KEY_AS_BEARER
 
 
 def test_linear_issue_asserts_rather_than_re_derive_a_missing_identifier():

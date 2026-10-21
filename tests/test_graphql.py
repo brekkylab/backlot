@@ -8,16 +8,26 @@ search tests belong to the Fireflies and Linear test files.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
+import math
+import random
+import shutil
+import struct
+import subprocess
+import zlib
 
 import pytest
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
-from graphql import GraphQLError, parse, validate
+from graphql import GraphQLError, GraphQLID, parse, validate
+from graphql.type.scalars import coerce_id
 from starlette.testclient import TestClient
 
 from backlot import auth, pagination, store
-from backlot.graphql import engine, mcp_tools
+from backlot.graphql import body as request_body
+from backlot.graphql import engine, mcp_tools, v8_json
 from tests._helpers import selected_fields
 
 SDL = """
@@ -200,9 +210,10 @@ def test_operation_name_picks_the_operation_to_run(gql):
     assert r.payload["data"] == {"widget": {"name": "Worker"}}
 
 
-def test_ambiguous_operation_without_a_name_is_a_request_error(gql):
+@pytest.mark.parametrize("variables", [None, {"id": "w1"}], ids=["no variables", "variables"])
+def test_ambiguous_operation_without_a_name_is_a_request_error(gql, variables):
     q = 'query A { widget(id: "w1") { name } } query B { widget(id: "w2") { name } }'
-    r = gql.execute(q)
+    r = gql.execute(q, variables=variables)
     assert r.request_error is True
     assert "data" not in r.payload
 
@@ -218,41 +229,528 @@ def test_context_is_visible_to_resolvers(gql):
 # --- request body (GraphQL over HTTP) -------------------------------------------
 
 
-def test_execute_request_runs_the_body_query(gql):
-    body = json.dumps({"query": '{ widget(id: "w1") { name } }'}).encode()
-    r = gql.execute_request(body)
-    assert r.payload["data"] == {"widget": {"name": "Gateway"}}
-
-
-def test_execute_request_honours_variables_and_operation_name(gql):
-    body = json.dumps(
+def test_execute_payload_honours_variables_and_operation_name(gql):
+    r = gql.execute_payload(
         {
             "query": 'query A { widget(id: "w1") { name } } '
             "query B($id: ID!) { widget(id: $id) { name } }",
             "variables": {"id": "w2"},
             "operationName": "B",
         }
-    ).encode()
-    r = gql.execute_request(body)
+    )
     assert r.payload["data"] == {"widget": {"name": "Worker"}}
 
 
-def test_execute_request_rejects_a_non_json_body(gql):
-    r = gql.execute_request(b"not json")
-    assert r.request_error is True
-    assert "data" not in r.payload
-    assert r.payload["errors"][0]["message"] == "POST body sent invalid JSON."
+_WIDGETS = b'{"query": "{ widgets { id } }", "variables": {"x": %s}}'
 
 
-def test_execute_request_requires_a_query_string(gql):
-    r = gql.execute_request(json.dumps({"variables": {}}).encode())
+@pytest.mark.parametrize(
+    "body, served",
+    [
+        pytest.param(b"not json", False, id="not JSON"),
+        pytest.param(_WIDGETS % b"NaN", False, id="NaN"),
+        pytest.param(_WIDGETS % b"-Infinity", False, id="-Infinity"),
+        pytest.param('{"query": "{ widgets { id } }"}'.encode("utf-16"), False, id="UTF-16"),
+        pytest.param(b"\xef\xbb\xbf" * 2 + _WIDGETS % b"1", False, id="two byte-order marks"),
+        pytest.param(_WIDGETS % (b"1" * 4301), True, id="4301 digits"),
+        pytest.param(_WIDGETS % (b"[" * 100000 + b"]" * 100000), True, id="nested 100000 deep"),
+        pytest.param(
+            _WIDGETS % (b"[" * 100000 + "1\u0663".encode() + b"]" * 100000),
+            False,
+            id="a digit outside 0-9 nested 100000 deep",
+        ),
+        pytest.param(_WIDGETS % b'"\xff"', True, id="a byte that is not UTF-8"),
+        pytest.param(b"\xef\xbb\xbf" + _WIDGETS % b"1", True, id="a byte-order mark"),
+    ],
+)
+def test_a_body_is_read_as_node_reads_it(gql, body, served):
+    """A body the reader refuses is :class:`~backlot.graphql.body.NotJson`, and one it reads runs,
+    those ``json.loads`` refuses or raises on among them."""
+    if served:
+        payload = request_body.parse(request_body.decode(body))
+        assert gql.execute_payload(payload).payload == {
+            "data": {"widgets": [{"id": "w1"}, {"id": "w2"}]}
+        }
+    else:
+        with pytest.raises(request_body.NotJson):
+            request_body.parse(request_body.decode(body))
+
+
+_ECHO = engine.Engine(
+    "input F { id: ID, ids: [ID!] } type Query { echo(id: ID!): ID list(ids: [ID!]): [ID!] "
+    "f(f: F): [ID] num(n: Float): Float }",
+    {
+        "Query": {
+            "echo": lambda _r, _i, id: id,
+            "list": lambda _r, _i, ids: ids,
+            "f": lambda _r, _i, f: [f.get("id"), *f.get("ids", [])],
+            "num": lambda _r, _i, n: n,
+        }
+    },
+)
+_ECHO_FIELDS = {
+    "ID!": "echo(id: $x)",
+    "[ID!]": "list(ids: $x)",
+    "F": "f(f: $x)",
+    "Float": "num(n: $x)",
+}
+
+
+@pytest.mark.parametrize(
+    "type_, value, answer",
+    [
+        pytest.param("ID!", "1e21", {"data": {"echo": "1e+21"}}, id="1e21"),
+        pytest.param("ID!", "1e300", {"data": {"echo": "1e+300"}}, id="1e300"),
+        pytest.param(
+            "ID!", "734946803407896717", {"data": {"echo": "734946803407896700"}}, id="past 2**53"
+        ),
+        pytest.param(
+            "ID!",
+            "12345678901234567890",
+            {"data": {"echo": "12345678901234567000"}},
+            id="20 digits",
+        ),
+        pytest.param(
+            "ID!", "9007199254740993", {"data": {"echo": "9007199254740992"}}, id="2**53 + 1"
+        ),
+        pytest.param("ID!", "5", {"data": {"echo": "5"}}, id="5"),
+        pytest.param("ID!", "-0", {"data": {"echo": "0"}}, id="-0"),
+        pytest.param("ID!", "1.0", {"data": {"echo": "1"}}, id="1.0"),
+        pytest.param("ID!", '"w1"', {"data": {"echo": "w1"}}, id="a string"),
+        pytest.param(
+            "ID!",
+            "1.5",
+            {
+                "errors": [
+                    {
+                        "message": "Variable '$x' got invalid value 1.5; "
+                        "ID cannot represent value: 1.5",
+                        "locations": [{"line": 1, "column": 7}],
+                    }
+                ]
+            },
+            id="1.5",
+        ),
+        pytest.param(
+            "[ID!]", '[1e21, 5, "w1"]', {"data": {"list": ["1e+21", "5", "w1"]}}, id="IDs in a list"
+        ),
+        pytest.param("[ID!]", "1e21", {"data": {"list": ["1e+21"]}}, id="one ID for a list"),
+        pytest.param(
+            "F",
+            '{"id": 1e21, "ids": [1e300, 5]}',
+            {"data": {"f": ["1e+21", "1e+300", "5"]}},
+            id="IDs in an input object",
+        ),
+        pytest.param(
+            "F",
+            '{"nope": 1e21}',
+            {
+                "errors": [
+                    {
+                        "message": "Variable '$x' got invalid value {'nope': 1e+21}; "
+                        "Field 'nope' is not defined by type 'F'.",
+                        "locations": [{"line": 1, "column": 7}],
+                    }
+                ]
+            },
+            id="a field the input object does not have",
+        ),
+        pytest.param(
+            "F",
+            "5",
+            {
+                "errors": [
+                    {
+                        "message": "Variable '$x' got invalid value 5; "
+                        "Expected type 'F' to be a mapping.",
+                        "locations": [{"line": 1, "column": 7}],
+                    }
+                ]
+            },
+            id="a number for an input object",
+        ),
+        pytest.param("Float", "1e21", {"data": {"num": 1e21}}, id="a Float"),
+    ],
+)
+def test_a_variable_is_read_as_graphql_js_reads_it(type_, value, answer):
+    """Each value is read by :func:`backlot.graphql.engine._ids_as_graphql_js_reads_them`."""
+    query = "query($x: %s) { %s }" % (type_, _ECHO_FIELDS[type_])
+    body = '{"query": "%s", "variables": {"x": %s}}' % (query, value)
+    assert _ECHO.execute_payload(request_body.parse(body)).payload == answer
+
+
+def test_graphql_cores_id_scalar_is_left_as_graphql_core_has_it():
+    assert GraphQLID.parse_value is coerce_id
+
+
+def _fuzz_texts(seed: int, count: int):
+    """``count`` JSON texts, constant tokens among their values, and as many again with one
+    character of each deleted, doubled or replaced."""
+    rng = random.Random(seed)
+    pieces = ["0", "-0", "7", "-12", "3.5", "-0.25e3", "1E+2", "2e-3", "1" * 40, "1" * 4301]
+    strings = ['""', '"a"', '"\\u00e9\\n"', '"\\ud83d\\ude00"', '"\\ud800"', '"x\\"y"', '"\u2028"']
+    constants = ["NaN", "Infinity", "-Infinity"]
+    ws = ["", " ", "\n", "\t", "\r\n"]
+
+    def value(out: list, depth: int):
+        roll = rng.random()
+        if depth < 6 and roll < 0.2:
+            out.append("[" + rng.choice(ws))
+            for k in range(rng.randrange(4)):
+                if k:
+                    out.append(rng.choice(ws) + "," + rng.choice(ws))
+                value(out, depth + 1)
+            out.append(rng.choice(ws) + "]")
+        elif depth < 6 and roll < 0.4:
+            out.append("{" + rng.choice(ws))
+            for k in range(rng.randrange(4)):
+                if k:
+                    out.append(",")
+                out.append(
+                    rng.choice(['"k"', '"a"', '"__proto__"', '"\\u006b"']) + rng.choice(ws) + ":"
+                )
+                value(out, depth + 1)
+            out.append("}")
+        elif roll < 0.45:
+            out.append(rng.choice(constants))
+        else:
+            out.append(rng.choice(pieces + strings + ["true", "false", "null"]))
+
+    for _ in range(count):
+        out: list = [rng.choice(ws)]
+        value(out, 0)
+        out.append(rng.choice(ws))
+        text = "".join(out)
+        yield text
+        i = rng.randrange(len(text))
+        yield rng.choice(
+            [
+                text[:i] + text[i + 1 :],
+                text[:i] + text[i] + text[i:],
+                text[:i] + rng.choice('{}[],:"-.e0 x\u0663') + text[i + 1 :],
+            ]
+        )
+
+
+def _refuse(token):
+    raise json.JSONDecodeError(f"{token} is refused", token, 0)
+
+
+def _outcome_of_json_loads(text: str):
+    try:
+        value = json.loads(
+            text,
+            parse_int=request_body._int,
+            parse_float=request_body.Double,
+            parse_constant=_refuse,
+        )
+        return repr(value), json.dumps(value)
+    except json.JSONDecodeError:
+        return "refused"
+
+
+def test_the_iterative_reader_reads_what_json_loads_reads():
+    """Thousands of texts, valid and broken: the reader :func:`backlot.graphql.body.parse` falls
+    back to answers as ``json.loads`` does, value for value and type for type, and refuses a text
+    holding a constant token."""
+    checked = 0
+    for text in _fuzz_texts(seed=20261018, count=3000):
+        try:
+            value = request_body._parse_iteratively(text)
+            got = repr(value), json.dumps(value)
+        except request_body.NotJson:
+            got = "refused"
+        assert got == _outcome_of_json_loads(text), text
+        checked += 1
+    assert checked == 6000
+
+
+# Characters a mutation of `_v8_texts` puts in: each token, each escape letter, what may follow a
+# number's digits, the letters of the literals, `é`, `一` and an emoji on either side of U+FFFF,
+# U+2028, a byte-order mark, control characters, some of the whitespace Python's `str.isspace` knows
+# and JSON does not, a digit outside 0 to 9, and two characters V8 has no use for.
+_V8_ALPHABET = list('{}[],:"\\/-+.eE0123456789 \t\r\ntrufalsenbx#') + [
+    "\u00e9",
+    "\u4e00",
+    "\U0001f600",
+    "\u2028",
+    "\ufeff",
+    "\x00",
+    "\x0b",
+    "\x0c",
+    "\x1f",
+    "\x7f",
+    "\u00a0",
+    "\u0663",
+]
+
+
+def _v8_texts():
+    """The texts the V8 tests read: :func:`_fuzz_texts`'s and three mutations of each of them,
+    every prefix of four texts, a token V8 refuses between two strings of 0 to 12 of ``x``, of
+    ``é`` or of an emoji two UTF-16 units long, a refusal after 0 to 3 repetitions of ``\\n``,
+    ``\\r``, ``\\r\\n`` or ``\\n\\r``, the four sources V8 quotes back whole, ``NaN`` with a space
+    before or after it and ``{}x``, and a text nested 100000 deep."""
+    rng = random.Random(20261019)
+    for text in _fuzz_texts(seed=20261019, count=1500):
+        yield text
+        for _ in range(3):
+            mutated = text
+            for _ in range(rng.randint(1, 3)):
+                i = rng.randrange(len(mutated) + 1)
+                c = rng.choice(_V8_ALPHABET)
+                mutated = rng.choice(
+                    [
+                        mutated[:i] + mutated[i + 1 :],
+                        mutated[:i] + c + mutated[i:],
+                        mutated[:i] + c + mutated[i + 1 :],
+                        mutated[:i],
+                    ]
+                )
+            yield mutated
+    for whole in (
+        '{"query":"{ __typename }","variables":{"x":[1,-2.5e3,true,null,"\\u00e9\\n"]}}',
+        '[{"a":"\U0001f600"},0,-0,0.5,1E+2,false]',
+        '{"k":{"k":{"k":[[]]}},"\\"":"\\/"}',
+        '"\\b\\f\\n\\r\\t\\u12aB\\uabcd\\uefAB\\uCDEF\\u4567\\u89c0"',
+    ):
+        for end in range(len(whole) + 1):
+            yield whole[:end]
+    for filler in ("x", "\u00e9", "\U0001f600"):
+        for before in range(13):
+            for after in range(13):
+                yield '["' + filler * before + '",#,"' + filler * after + '"]'
+    for newline in ("\n", "\r", "\r\n", "\n\r"):
+        for lines in range(4):
+            yield "[1," + (newline + '"\U0001f600\u2028",') * lines + " 2 3]"
+    yield from ("[object Object]", "undefined", "Infinity", "NaN", " NaN", "NaN ", "{}x")
+    yield "[" * 100000 + "1,}" + "]" * 100000
+
+
+def test_v8_json_refuses_what_the_reader_refuses():
+    """:func:`backlot.graphql.v8_json.error` refuses a text exactly when
+    :func:`backlot.graphql.body.parse` does, so the two readers the Linear router runs one after
+    the other never disagree on whether a body is JSON."""
+    for text in _v8_texts():
+        try:
+            request_body.parse(text)
+            read = True
+        except request_body.NotJson:
+            read = False
+        assert (v8_json.error(text) is None) == read, text
+
+
+# What `JSON.parse` throws for each text on stdin, `null` for one it reads.
+_NODE_JSON_PARSE = """
+const texts = JSON.parse(require("fs").readFileSync(0, "utf8"));
+process.stdout.write(JSON.stringify(texts.map((text) => {
+  try { JSON.parse(text); return null; } catch (e) { return e.message; }
+})));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_v8_json_words_each_refusal_as_node_does():
+    """Node's own ``JSON.parse`` is the oracle: :func:`backlot.graphql.v8_json.error` says what it
+    says, word for word, to every one of :func:`_v8_texts`."""
+    texts = list(_v8_texts())
+    run = subprocess.run(
+        ["node", "-e", _NODE_JSON_PARSE],
+        input=json.dumps(texts),
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+    )
+    node = json.loads(run.stdout)
+    assert len(node) == len(texts)
+    for text, expected in zip(texts, node, strict=True):
+        assert v8_json.error(text) == expected, text
+
+
+def _numbers():
+    """Texts of numbers: doubles from random bit patterns, mantissas at each power of ten from 1e-30
+    to 1e30, an integer of each length up to thirty digits, zeros and the two infinities."""
+    rng = random.Random(20261019)
+    for _ in range(5000):
+        double = struct.unpack("<d", rng.getrandbits(64).to_bytes(8, "little"))[0]
+        if math.isfinite(double):
+            yield repr(double)
+    for exponent in range(-30, 31):
+        for mantissa in ("1", "1.5", "123456789", "9.999999999999999"):
+            yield f"{mantissa}e{exponent}"
+    for digits in range(1, 31):
+        yield str(rng.randrange(10 ** (digits - 1), 10**digits))
+    yield from ("0", "-0", "-0.0", "1e400", "-1e400")
+
+
+# What Node prints for the number in each text on stdin.
+_NODE_STRING = """
+const texts = JSON.parse(require("fs").readFileSync(0, "utf8"));
+process.stdout.write(JSON.stringify(texts.map((text) => String(JSON.parse(text)))));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_a_number_is_read_and_printed_as_node_does():
+    """Node is the oracle: :func:`backlot.graphql.body.parse` reads each of :func:`_numbers` as a
+    value whose ``repr`` is what ``String(JSON.parse(text))`` prints."""
+    texts = list(_numbers())
+    run = subprocess.run(
+        ["node", "-e", _NODE_STRING],
+        input=json.dumps(texts),
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+    )
+    for text, expected in zip(texts, json.loads(run.stdout), strict=True):
+        assert repr(request_body.parse(text)) == expected, text
+
+
+def _surrogate_texts():
+    """Texts holding U+D83D and U+DE00, each raw or as its escape, in either order: in a string,
+    beside each alone in an array, as a key, as a key the escaped pair follows as a key too, as a
+    value, and in an array and an object inside an array and an object."""
+    for high in (chr(0xD83D), "\\ud83d"):
+        for low in (chr(0xDE00), "\\ude00"):
+            for pair in (high + low, low + high):
+                yield f'"{pair}"'
+                yield f'["a{pair}b", "{high}", "{low}"]'
+                yield f'{{"{pair}": 1}}'
+                yield f'{{"{pair}": 1, "x": 2, "\\ud83d\\ude00": [3, "{pair}"]}}'
+                yield f'{{"k": "{pair}"}}'
+                yield f'[["{pair}"], {{"{pair}": "{pair}"}}]'
+                yield f'{{"a": {{"{pair}": [1]}}}}'
+
+
+# What Node gives back for each text on stdin: what JSON.parse reads, as JSON.stringify writes it.
+_NODE_STRINGIFY = """
+const texts = JSON.parse(require("fs").readFileSync(0, "utf8"));
+process.stdout.write(JSON.stringify(texts.map((text) => JSON.stringify(JSON.parse(text)))));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_a_surrogate_pair_is_read_as_node_reads_it():
+    """What :func:`backlot.graphql.body.parse` makes of each of :func:`_surrogate_texts`, written
+    by :func:`backlot.graphql.body.node_json`, is what Node makes of it."""
+    texts = list(_surrogate_texts())
+    run = subprocess.run(
+        ["node", "-e", _NODE_STRINGIFY],
+        input=json.dumps(texts),
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+    )
+    for text, expected in zip(texts, json.loads(run.stdout), strict=True):
+        assert request_body.node_json(request_body.parse(text)).decode() == expected, text
+
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), request_body.Double("-inf")],
+    ids=["nan", "inf", "a Double holding -inf"],
+)
+def test_node_json_refuses_a_float_that_is_not_finite(value):
+    with pytest.raises(ValueError):
+        request_body.node_json({"x": value})
+
+
+def _compressed():
+    """Whole gzip and deflate streams, each also cut short, with a bit flipped, and followed by
+    bytes that start another member or none, and the bytes of no stream, as (gzip?, bytes)."""
+    rng = random.Random(20261019)
+    tails = (b"\x00", b"\x00x", b"x", b"xx", b"\x1f", b"\x1f\x8b")
+    tails += (gzip.compress(b"t"), zlib.compress(b"t"))
+    for _ in range(100):
+        payload = rng.randbytes(rng.randrange(300))
+        for gz in (True, False):
+            whole = gzip.compress(payload) if gz else zlib.compress(payload)
+            flipped = bytearray(whole)
+            flipped[rng.randrange(len(whole))] ^= 1 << rng.randrange(8)
+            yield from ((gz, whole), (gz, whole[: rng.randrange(len(whole))]), (gz, bytes(flipped)))
+            yield from ((gz, whole + tail) for tail in tails)
+    yield from ((True, b""), (False, b""), (True, b"x"), (False, zlib.compress(b"t")[2:-4]))
+
+
+# What Node's zlib stream yields from each case on stdin, or the error it throws.
+_NODE_INFLATE = """
+const zlib = require("zlib");
+const cases = JSON.parse(require("fs").readFileSync(0, "utf8"));
+(async () => {
+  const out = [];
+  for (const [gzip, base64] of cases) {
+    out.push(await new Promise((resolve) => {
+      const stream = gzip ? zlib.createGunzip() : zlib.createInflate();
+      const chunks = [];
+      stream.on("data", (chunk) => chunks.push(chunk));
+      stream.on("end", () => resolve(Buffer.concat(chunks).toString("base64")));
+      stream.on("error", (error) => resolve({ error: error.message }));
+      stream.end(Buffer.from(base64, "base64"));
+    }));
+  }
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+def test_a_compressed_body_is_inflated_as_node_inflates_it():
+    """Node's zlib streams are the oracle: for each of :func:`_compressed`,
+    :func:`backlot.graphql.body._inflate` yields the same bytes or fails with the same message."""
+    cases = list(_compressed())
+    run = subprocess.run(
+        ["node", "-e", _NODE_INFLATE],
+        input=json.dumps([[gz, base64.b64encode(raw).decode()] for gz, raw in cases]),
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+    )
+    for (gz, raw), expected in zip(cases, json.loads(run.stdout), strict=True):
+        try:
+            got = base64.b64encode(request_body._inflate(raw, gz)).decode()
+        except request_body.Unread as unread:
+            got = {"error": unread.message}
+        assert got == expected, (gz, raw)
+
+
+# Bodies with no byte-order mark, as hex, and the order iconv-lite 0.7.2 reads each in
+# (`backlot.graphql.body._byte_order`): a row for each test its heuristic makes of a unit, where the
+# two orders read the body differently.
+_BYTE_ORDERS = [
+    pytest.param(2, "0111", "le"),
+    pytest.param(2, "ff4e000041ff41114eff", "le"),
+    pytest.param(2, "0000101100411041fe01", "be"),
+    pytest.param(2, "10fe0001014e", "be"),
+    pytest.param(4, "00fe414e0000ff001100fe11410001fe01ff0100ff11ff01", "be"),
+    pytest.param(4, "fffe1041014e11410000004111fe010011ff1041", "be"),
+    pytest.param(4, "00fe014e104101fffe000100410000fe", "le"),
+    pytest.param(4, "ffff10000041ffff0011fe10", "le"),
+    pytest.param(4, "114efe4e101001fffe101110ff41ff001110011041ff1000", "le"),
+    pytest.param(4, "0000010141014e4e11000000414e4e01fe110101", "le"),
+    pytest.param(4, "0001ff10000100004e411141ffff41414141114e014e1001", "le"),
+    pytest.param(4, "001000ff000000000101fefe104100014e00ff41", "be"),
+    pytest.param(4, "41fe4efe000101fffe41ff11fe104e1100fffe00", "be"),
+    pytest.param(4, "001000114141fe4e004e41004e4101ff104e0141", "be"),
+    pytest.param(4, "0010414efe4eff1011ff014e11004e4e", "be"),
+    pytest.param(4, "000000004100000000000041", "le"),
+]
+
+
+@pytest.mark.parametrize("width, hex_bytes, order", _BYTE_ORDERS)
+def test_a_body_with_no_byte_order_mark_is_read_in_the_order_iconv_lite_picks(
+    width, hex_bytes, order
+):
+    assert request_body._byte_order(bytes.fromhex(hex_bytes), width) == order
+
+
+def test_execute_payload_requires_a_query_string(gql):
+    r = gql.execute_payload({"variables": {}})
     assert r.request_error is True
     assert r.payload["errors"][0]["message"] == "Must provide query string."
 
 
-def test_execute_request_rejects_non_object_variables(gql):
-    body = json.dumps({"query": "{ widgets { id } }", "variables": "nope"}).encode()
-    r = gql.execute_request(body)
+def test_execute_payload_rejects_non_object_variables(gql):
+    r = gql.execute_payload({"query": "{ widgets { id } }", "variables": "nope"})
     assert r.request_error is True
     assert r.payload["errors"][0]["message"] == "Variables are invalid JSON."
 
@@ -279,10 +777,10 @@ def test_an_unsound_schema_fails_at_construction_not_at_request_time():
 
 
 # --- mounted over HTTP ----------------------------------------------------------
-# A throwaway vendor ("acme") wired the way a real GraphQL source will be: an APIRouter with
-# a prefix, the API-key auth resolver, and the caller's visible_ids injected into the
-# resolver context so the resolver reaches store.py's existing ACL path with no per-source
-# ACL code. Proves the seams line up; the vendor schemas themselves ship with their issues.
+# A throwaway vendor ("acme") wired with the parts every GraphQL source here shares: an APIRouter
+# with a prefix, the API-key auth resolver, and the caller's visible_ids injected into the resolver
+# context so the resolver reaches store.py's existing ACL path with no per-source ACL code. Proves
+# the seams line up; the vendor schemas themselves ship with their issues.
 
 ACME_SDL = """
 type Query {
@@ -325,7 +823,12 @@ def acme_client(db, acl):
                 {"errors": [{"message": "Authentication required"}]}, status_code=401
             )
         context = {"conn": auth.conn(request), "visible_ids": auth.visible_ids(request, caller)}
-        result = ACME.execute_request(await request.body(), context=context)
+        try:
+            payload = request_body.parse(request_body.decode(await request.body()))
+        except request_body.NotJson:
+            result = engine.not_json()
+        else:
+            result = ACME.execute_payload(payload, context=context)
         return JSONResponse(result.payload, status_code=400 if result.request_error else 200)
 
     app.include_router(router)

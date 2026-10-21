@@ -3,105 +3,742 @@
   "endpoints": [
     "https://api.fireflies.ai/graphql"
   ],
-  "measured": "2026-09-01",
-  "acknowledged": [
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.active_meetings",
-      "detail": "vendor serves active_meetings: [ActiveMeeting!]; Backlot does not",
-      "note": "Meetings in progress right now. Backlot serves a fixed corpus, so there is no live state to report."
+  "measured": "2026-10-14",
+  "root": {
+    "query": "Query"
+  },
+  "types": {
+    "AIFilters": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "date_and_time": {
+          "status": "implemented"
+        },
+        "metric": {
+          "status": "implemented"
+        },
+        "pricing": {
+          "status": "implemented"
+        },
+        "question": {
+          "status": "implemented"
+        },
+        "sentiment": {
+          "status": "implemented"
+        },
+        "task": {
+          "status": "implemented"
+        },
+        "text_cleanup": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.analytics",
-      "detail": "vendor serves analytics: Analytics!; Backlot does not",
-      "note": "Workspace-wide meeting analytics. Per-meeting MeetingAnalytics IS served on Transcript; the aggregate rollup is not modelled."
+    "AnalyticsCategories": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "date_times": {
+          "status": "implemented"
+        },
+        "metrics": {
+          "status": "implemented"
+        },
+        "questions": {
+          "status": "implemented"
+        },
+        "tasks": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.apps",
-      "detail": "vendor serves apps: Apps; Backlot does not",
-      "note": "Third-party app outputs. No corpus carries them; the Apps wrapper is served on Transcript because Fireflies serves it even when empty."
+    "AnalyticsSpeaker": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "duration": {
+          "status": "implemented"
+        },
+        "duration_pct": {
+          "status": "implemented"
+        },
+        "filler_words": {
+          "status": "implemented"
+        },
+        "longest_monologue": {
+          "status": "implemented"
+        },
+        "monologues_count": {
+          "status": "implemented"
+        },
+        "name": {
+          "status": "implemented"
+        },
+        "questions": {
+          "status": "implemented"
+        },
+        "speaker_id": {
+          "status": "implemented"
+        },
+        "word_count": {
+          "status": "implemented"
+        },
+        "words_per_minute": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.askfred_thread",
-      "detail": "vendor serves askfred_thread: AskFredThread; Backlot does not",
-      "note": "AskFred is Fireflies' own LLM assistant. Serving it would mean generating answers, which Backlot deliberately does not."
+    "AppOutput": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "app_id": {
+          "status": "implemented"
+        },
+        "created_at": {
+          "status": "implemented"
+        },
+        "prompt": {
+          "status": "implemented"
+        },
+        "response": {
+          "status": "implemented"
+        },
+        "title": {
+          "status": "implemented"
+        },
+        "transcript_id": {
+          "status": "implemented"
+        },
+        "user_id": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.askfred_threads",
-      "detail": "vendor serves askfred_threads: [AskFredThreadSummary!]; Backlot does not",
-      "note": "AskFred is Fireflies' own LLM assistant. Serving it would mean generating answers, which Backlot deliberately does not."
+    "Apps": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "outputs": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.auditEvents",
-      "detail": "vendor serves auditEvents: AuditEventsResponse!; Backlot does not",
-      "note": "Workspace audit log \u2014 account administration, not meeting content."
+    "Channel": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "created_at": {
+          "status": "implemented"
+        },
+        "created_by": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "is_private": {
+          "status": "implemented"
+        },
+        "members": {
+          "status": "implemented"
+        },
+        "title": {
+          "status": "implemented"
+        },
+        "updated_at": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.bite",
-      "detail": "vendor serves bite: Bite; Backlot does not",
-      "note": "Bites are user-authored clips of a transcript, a write product. Backlot's data enters through `backlot import`."
+    "ChannelMember": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "email": {
+          "status": "implemented"
+        },
+        "name": {
+          "status": "implemented"
+        },
+        "user_id": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.bites",
-      "detail": "vendor serves bites: [Bite!]!; Backlot does not",
-      "note": "Bites are user-authored clips of a transcript, a write product. Backlot's data enters through `backlot import`."
+    "DateTime": {
+      "type_kind": "SCALAR",
+      "status": "implemented"
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.channel",
-      "detail": "vendor serves channel: Channel; Backlot does not",
-      "note": "Channel is served as a type; the by-id root is not, because no corpus states channel membership."
+    "MeetingAnalytics": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "categories": {
+          "status": "implemented"
+        },
+        "sentiments": {
+          "status": "implemented"
+        },
+        "speakers": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.channels",
-      "detail": "vendor serves channels: [Channel!]!; Backlot does not",
-      "note": "Channel is served as a type; the root listing is not, because no corpus states channel membership."
+    "MeetingAttendance": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "join_time": {
+          "status": "implemented"
+        },
+        "leave_time": {
+          "status": "implemented"
+        },
+        "name": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.contacts",
-      "detail": "vendor serves contacts: [Contact!]!; Backlot does not",
-      "note": "CRM contacts synced into Fireflies from an external system, which is a different source's corpus."
+    "MeetingAttendeeModel": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "displayName": {
+          "status": "implemented"
+        },
+        "email": {
+          "status": "implemented"
+        },
+        "location": {
+          "status": "implemented"
+        },
+        "name": {
+          "status": "implemented"
+        },
+        "phoneNumber": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.live_action_items",
-      "detail": "vendor serves live_action_items: [LiveActionItem!]!; Backlot does not",
-      "note": "Action items extracted from a meeting in progress. Same reason as active_meetings."
+    "MeetingInfo": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "fred_joined": {
+          "status": "implemented"
+        },
+        "silent_meeting": {
+          "status": "implemented"
+        },
+        "summary_status": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.rule_executions_by_meeting",
-      "detail": "vendor serves rule_executions_by_meeting: RuleExecutionsByMeetingResponse!; Backlot does not",
-      "note": "Automation-rule run history. Backlot runs no automations."
+    "Query": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "active_meetings": {
+          "status": "missing",
+          "type": "[ActiveMeeting!]",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Meetings in progress right now. Backlot serves a fixed corpus, so there is no live state to report."
+        },
+        "analytics": {
+          "status": "missing",
+          "type": "Analytics!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Workspace-wide meeting analytics. Per-meeting MeetingAnalytics IS served on Transcript; the aggregate rollup is not modelled."
+        },
+        "apps": {
+          "status": "missing",
+          "type": "Apps",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Third-party app outputs. No corpus carries them; the Apps wrapper is served on Transcript because Fireflies serves it even when empty."
+        },
+        "askfred_thread": {
+          "status": "missing",
+          "type": "AskFredThread",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "AskFred is Fireflies' own LLM assistant. Serving it would mean generating answers, which Backlot deliberately does not."
+        },
+        "askfred_threads": {
+          "status": "missing",
+          "type": "[AskFredThreadSummary!]",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "AskFred is Fireflies' own LLM assistant. Serving it would mean generating answers, which Backlot deliberately does not."
+        },
+        "auditEvents": {
+          "status": "missing",
+          "type": "AuditEventsResponse!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Workspace audit log \u2014 account administration, not meeting content."
+        },
+        "bite": {
+          "status": "missing",
+          "type": "Bite",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Bites are user-authored clips of a transcript, a write product. Backlot's data enters through `backlot import`."
+        },
+        "bites": {
+          "status": "missing",
+          "type": "[Bite!]!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Bites are user-authored clips of a transcript, a write product. Backlot's data enters through `backlot import`."
+        },
+        "channel": {
+          "status": "missing",
+          "type": "Channel",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Channel is served as a type; the by-id root is not, because no corpus states channel membership."
+        },
+        "channels": {
+          "status": "missing",
+          "type": "[Channel!]!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Channel is served as a type; the root listing is not, because no corpus states channel membership."
+        },
+        "contacts": {
+          "status": "missing",
+          "type": "[Contact!]!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "CRM contacts synced into Fireflies from an external system, which is a different source's corpus."
+        },
+        "live_action_items": {
+          "status": "missing",
+          "type": "[LiveActionItem!]!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Action items extracted from a meeting in progress. Same reason as active_meetings."
+        },
+        "rule_executions_by_meeting": {
+          "status": "missing",
+          "type": "RuleExecutionsByMeetingResponse!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Automation-rule run history. Backlot runs no automations."
+        },
+        "transcript": {
+          "status": "implemented",
+          "args": {
+            "id": {
+              "status": "implemented"
+            }
+          }
+        },
+        "transcripts": {
+          "status": "implemented",
+          "args": {
+            "channel_id": {
+              "status": "implemented"
+            },
+            "date": {
+              "status": "implemented"
+            },
+            "fromDate": {
+              "status": "implemented"
+            },
+            "host_email": {
+              "status": "implemented"
+            },
+            "keyword": {
+              "status": "implemented"
+            },
+            "limit": {
+              "status": "implemented"
+            },
+            "mine": {
+              "status": "implemented"
+            },
+            "organizer_email": {
+              "status": "implemented"
+            },
+            "organizers": {
+              "status": "implemented"
+            },
+            "participant_email": {
+              "status": "implemented"
+            },
+            "participants": {
+              "status": "implemented"
+            },
+            "scope": {
+              "status": "implemented"
+            },
+            "skip": {
+              "status": "implemented"
+            },
+            "title": {
+              "status": "implemented"
+            },
+            "toDate": {
+              "status": "implemented"
+            },
+            "user_id": {
+              "status": "implemented"
+            }
+          }
+        },
+        "user": {
+          "status": "implemented",
+          "args": {
+            "id": {
+              "status": "implemented"
+            }
+          }
+        },
+        "user_groups": {
+          "status": "missing",
+          "type": "[UserGroup!]",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Account membership state. Backlot's ACL groups are a permission mechanism and are deliberately not served under this name."
+        },
+        "users": {
+          "status": "implemented"
+        }
+      }
     },
-    {
-      "kind": "missing_field",
-      "severity": "gap",
-      "path": "Query.user_groups",
-      "detail": "vendor serves user_groups: [UserGroup!]; Backlot does not",
-      "note": "Account membership state. Backlot's ACL groups are a permission mechanism and are deliberately not served under this name."
+    "Sentence": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "ai_filters": {
+          "status": "implemented"
+        },
+        "end_time": {
+          "status": "implemented"
+        },
+        "index": {
+          "status": "implemented"
+        },
+        "raw_text": {
+          "status": "implemented"
+        },
+        "speaker_id": {
+          "status": "implemented"
+        },
+        "speaker_name": {
+          "status": "implemented"
+        },
+        "start_time": {
+          "status": "implemented"
+        },
+        "text": {
+          "status": "implemented"
+        }
+      }
+    },
+    "Sentiments": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "negative_pct": {
+          "status": "implemented"
+        },
+        "neutral_pct": {
+          "status": "implemented"
+        },
+        "positive_pct": {
+          "status": "implemented"
+        }
+      }
+    },
+    "SharedWith": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "email": {
+          "status": "implemented"
+        },
+        "expires_at": {
+          "status": "implemented"
+        },
+        "name": {
+          "status": "implemented"
+        },
+        "photo_url": {
+          "status": "implemented"
+        }
+      }
+    },
+    "Speaker": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "id": {
+          "status": "implemented"
+        },
+        "name": {
+          "status": "implemented"
+        }
+      }
+    },
+    "Summary": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "action_items": {
+          "status": "implemented"
+        },
+        "bullet_gist": {
+          "status": "implemented"
+        },
+        "extended_sections": {
+          "status": "implemented"
+        },
+        "gist": {
+          "status": "implemented"
+        },
+        "keywords": {
+          "status": "implemented"
+        },
+        "meeting_type": {
+          "status": "implemented"
+        },
+        "notes": {
+          "status": "implemented"
+        },
+        "outline": {
+          "status": "implemented"
+        },
+        "overview": {
+          "status": "implemented"
+        },
+        "short_overview": {
+          "status": "implemented"
+        },
+        "short_summary": {
+          "status": "implemented"
+        },
+        "shorthand_bullet": {
+          "status": "implemented"
+        },
+        "topics_discussed": {
+          "status": "implemented"
+        },
+        "transcript_chapters": {
+          "status": "implemented"
+        }
+      }
+    },
+    "SummarySection": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "content": {
+          "status": "implemented"
+        },
+        "title": {
+          "status": "implemented"
+        }
+      }
+    },
+    "SummaryStatus": {
+      "type_kind": "ENUM",
+      "status": "implemented",
+      "values": {
+        "default": {
+          "status": "implemented"
+        },
+        "failed": {
+          "status": "implemented"
+        },
+        "processed": {
+          "status": "implemented"
+        },
+        "processing": {
+          "status": "implemented"
+        },
+        "skipped": {
+          "status": "implemented"
+        }
+      }
+    },
+    "Transcript": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "analytics": {
+          "status": "implemented"
+        },
+        "apps_preview": {
+          "status": "implemented"
+        },
+        "audio_url": {
+          "status": "implemented"
+        },
+        "cal_id": {
+          "status": "implemented"
+        },
+        "calendar_id": {
+          "status": "implemented"
+        },
+        "calendar_type": {
+          "status": "implemented"
+        },
+        "channels": {
+          "status": "implemented"
+        },
+        "date": {
+          "status": "implemented"
+        },
+        "dateString": {
+          "status": "implemented"
+        },
+        "duration": {
+          "status": "implemented"
+        },
+        "fireflies_users": {
+          "status": "implemented"
+        },
+        "host_email": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "is_live": {
+          "status": "implemented"
+        },
+        "meeting_attendance": {
+          "status": "implemented"
+        },
+        "meeting_attendees": {
+          "status": "implemented"
+        },
+        "meeting_info": {
+          "status": "implemented"
+        },
+        "meeting_link": {
+          "status": "implemented"
+        },
+        "organizer_email": {
+          "status": "implemented"
+        },
+        "participants": {
+          "status": "implemented"
+        },
+        "privacy": {
+          "status": "implemented"
+        },
+        "sentences": {
+          "status": "implemented"
+        },
+        "shared_with": {
+          "status": "implemented"
+        },
+        "speakers": {
+          "status": "implemented"
+        },
+        "summary": {
+          "status": "implemented"
+        },
+        "title": {
+          "status": "implemented"
+        },
+        "transcript_url": {
+          "status": "implemented"
+        },
+        "user": {
+          "status": "implemented"
+        },
+        "video_url": {
+          "status": "implemented"
+        },
+        "workspace_users": {
+          "status": "implemented"
+        }
+      }
+    },
+    "User": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "email": {
+          "status": "implemented"
+        },
+        "integrations": {
+          "status": "implemented"
+        },
+        "is_admin": {
+          "status": "implemented"
+        },
+        "is_calendar_in_sync": {
+          "status": "implemented"
+        },
+        "minutes_consumed": {
+          "status": "implemented"
+        },
+        "name": {
+          "status": "implemented"
+        },
+        "num_transcripts": {
+          "status": "implemented"
+        },
+        "recent_meeting": {
+          "status": "implemented"
+        },
+        "recent_transcript": {
+          "status": "implemented"
+        },
+        "user_groups": {
+          "status": "implemented"
+        },
+        "user_id": {
+          "status": "implemented"
+        }
+      }
+    },
+    "UserGroup": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "handle": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "members": {
+          "status": "implemented"
+        },
+        "name": {
+          "status": "implemented"
+        }
+      }
+    },
+    "UserGroupMember": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "email": {
+          "status": "implemented"
+        },
+        "first_name": {
+          "status": "implemented"
+        },
+        "last_name": {
+          "status": "implemented"
+        },
+        "user_id": {
+          "status": "implemented"
+        }
+      }
     }
-  ]
+  }
 }

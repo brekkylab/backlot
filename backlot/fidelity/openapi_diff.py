@@ -15,7 +15,6 @@ from typing import Any, Callable, Mapping, Protocol
 
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.fetch import fetch_json
-from backlot.fidelity.findings import Finding
 from backlot.fidelity.operations import (
     _METHODS,
     Operation,
@@ -24,7 +23,9 @@ from backlot.fidelity.operations import (
     canonical,
     diff_operations,
     from_backlot,
+    inventory,
 )
+from backlot.fidelity.surface import Measurement
 
 
 def from_openapi(spec: Mapping[str, Any]) -> dict[tuple[str, str], Operation]:
@@ -40,7 +41,7 @@ def from_openapi(spec: Mapping[str, Any]) -> dict[tuple[str, str], Operation]:
             if not isinstance(op, dict):
                 continue
             params = shared | _query_params(op.get("parameters"), spec)
-            o = Operation(method, canonical(path), frozenset(params))
+            o = Operation(method, canonical(path), frozenset(params), op.get("operationId") or "")
             ops[o.key] = o
     return ops
 
@@ -53,6 +54,7 @@ class SpecTarget(Protocol):
     mount: tuple[str, ...]
     strip: str
     resolve_url: "Callable[[Mapping[str, Any]], str] | None"
+    named_by_path: bool
 
 
 def fetch_spec(
@@ -82,10 +84,10 @@ def fetch_spec(
     return doc
 
 
-def divergences(
+def measure(
     spec: SpecTarget, *, timeout: float = 120.0, seen: dict[str, dict] | None = None
-) -> list[Finding]:
-    """This module's entry point: load both contracts and compare them.
+) -> Measurement:
+    """This module's entry point: load both contracts, compare them and pair their operations.
 
     ONE document. A source published as several — Jira's v2 and v3 — is the caller's
     concatenation, not this module's: the two contracts here are a document and the paths it speaks
@@ -99,4 +101,7 @@ def divergences(
             f"{spec.spec_url} declared no operations; is it still an OpenAPI document?"
         )
     served = from_backlot(app.openapi(), spec.mount, spec.strip)
-    return diff_operations(served, vendor)
+    return Measurement(
+        diff_operations(served, vendor),
+        inventory(served, vendor, named_by_path=spec.named_by_path),
+    )

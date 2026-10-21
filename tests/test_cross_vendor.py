@@ -11,11 +11,14 @@ these share are in ``tests/_helpers.py``.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 
 import pytest
 
-from tests._helpers import build_corpus, client_for, crawl_confluence, db_count
+from backlot.graphql import body as request_body
+from backlot.graphql import v8_json
+from tests._helpers import build_corpus, client_for, crawl_confluence, db_count, padded_query
 
 
 def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
@@ -283,3 +286,206 @@ def test_health_source_documents_is_null_without_the_meta_key(tmp_path):
         body = client.get("/health").json()
     assert body["source_documents"] is None
     assert body["documents"] == 1
+
+
+# A variable declared `Int` holding a number as the body spells it, and that number as both vendors
+# quoted it back, which the docstrings of `backlot.graphql.body._int` and `Double` record.
+_NUMBERS = [
+    pytest.param("1" * 4301, "Infinity", id="4301 ones"),
+    pytest.param("1" * 311, "Infinity", id="311 ones"),
+    pytest.param("9" * 309, "Infinity", id="309 nines"),
+    pytest.param("1e400", "Infinity", id="1e400"),
+    pytest.param("-1e400", "-Infinity", id="-1e400"),
+    pytest.param("9" * 308, "1e+308", id="308 nines"),
+    pytest.param("9007199254740993", "9007199254740992", id="2**53 + 1"),
+    pytest.param("734946803407896717", "734946803407896700", id="past 2**53"),
+    pytest.param("123456789012345678901234", "1.2345678901234569e+23", id="24 digits"),
+    pytest.param("1e21", "1e+21", id="1e21"),
+    pytest.param("1e20", "100000000000000000000", id="1e20"),
+    pytest.param("3000000000.0", "3000000000", id="3000000000.0"),
+    pytest.param("0.00001", "0.00001", id="0.00001"),
+    pytest.param("1e-7", "1e-7", id="1e-7"),
+]
+
+
+@pytest.mark.parametrize(
+    "vendor, document",
+    [
+        ("linear", "query($x: Int) { issues(first: $x) { nodes { id } } }"),
+        ("fireflies", "query($x: Int) { transcripts(limit: $x) { id } }"),
+    ],
+)
+@pytest.mark.parametrize("number, quoted", _NUMBERS)
+def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
+    client, tokens_yaml, vendor, document, number, quoted
+):
+    """The variable's value is read as the double ``JSON.parse`` reads and quoted as JavaScript
+    prints it, at both places graphql-js quotes it."""
+    admin = tokens_yaml["admin_token"]
+    credential = admin if vendor == "linear" else f"Bearer {admin}"
+    body = '{"query":"%s","variables":{"x":%s}}' % (document, number)
+    r = client.post(
+        f"/{vendor}/graphql", content=body.encode(), headers={"Authorization": credential}
+    )
+    assert r.status_code == 400
+    message = r.json()["errors"][0]["message"]
+    assert f" got invalid value {quoted}; Int cannot represent " in message
+    assert message.endswith(f" value: {quoted}")
+
+
+# A request to Linear or Fireflies with `Authorization` sent more than once, `{key}` standing for
+# the vendor's own spelling of the admin token, each answered with the 400 page
+# `backlot.main.refuse_a_repeated_authorization_on_linear_and_fireflies` records. The last three
+# rows are the control: one header reaches the vendor, and a path that only starts with the
+# vendor's name is not the vendor's.
+_TYPENAME = b'{"query":"{ __typename }"}'
+_CLOUDFLARE = 400
+_REPEATED = [
+    pytest.param("POST", "/graphql", _TYPENAME, ("{key}", "{key}"), _CLOUDFLARE, id="two keys"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("{key}", "nope"), _CLOUDFLARE, id="a key, nope"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("nope", "{key}"), _CLOUDFLARE, id="nope, a key"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("{key}", ""), _CLOUDFLARE, id="a key, empty"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("", ""), _CLOUDFLARE, id="two empty"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("{key}",) * 3, _CLOUDFLARE, id="three keys"),
+    pytest.param("POST", "/graphql", b"", ("{key}", "nope"), _CLOUDFLARE, id="no bytes"),
+    pytest.param("POST", "/graphql", b"{", ("{key}", "nope"), _CLOUDFLARE, id="{"),
+    pytest.param("POST", "/graphql", None, ("{key}", "nope"), _CLOUDFLARE, id="past the limit"),
+    pytest.param("GET", "/graphql", b"", ("{key}", "nope"), _CLOUDFLARE, id="GET"),
+    pytest.param("HEAD", "/graphql", b"", ("{key}", "nope"), _CLOUDFLARE, id="HEAD"),
+    pytest.param("POST", "/nosuch", _TYPENAME, ("{key}", "nope"), _CLOUDFLARE, id="another path"),
+    pytest.param("POST", "", _TYPENAME, ("{key}", "nope"), _CLOUDFLARE, id="the root"),
+    pytest.param("POST", "/graphql", _TYPENAME, ("{key}",), 200, id="one key"),
+    pytest.param("POST", "x/graphql", _TYPENAME, ("{key}", "nope"), 404, id="a longer name"),
+]
+
+
+@pytest.mark.parametrize("vendor", ["linear", "fireflies"])
+@pytest.mark.parametrize("method, path, body, values, status", _REPEATED)
+def test_cloudflare_refuses_a_repeated_authorization(
+    client, tokens_yaml, vendor, method, path, body, values, status
+):
+    admin = tokens_yaml["admin_token"]
+    key = admin if vendor == "linear" else f"Bearer {admin}"
+    if body is None:
+        body = padded_query({"linear": 10 * 2**20, "fireflies": 2**20}[vendor] + 1)
+    headers = [("Content-Type", "application/json")]
+    headers += [("Authorization", value.format(key=key)) for value in values]
+    r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
+    assert r.status_code == status
+    page = (
+        b"<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n"
+        b"<center><h1>400 Bad Request</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
+        b"</body>\r\n</html>\r\n"
+    )
+    if status != _CLOUDFLARE:
+        assert page not in r.content
+        if status == 200:
+            assert r.json() == {"data": {"__typename": "Query"}}
+        return
+    assert (r.headers["content-type"], r.headers["content-length"]) == ("text/html", "155")
+    if method != "HEAD":
+        assert r.content == page
+
+
+@pytest.mark.parametrize(
+    "vendor, reader, body",
+    [
+        pytest.param("linear", (request_body, "decode"), _TYPENAME, id="linear"),
+        pytest.param("fireflies", (request_body, "decode"), _TYPENAME, id="fireflies"),
+        pytest.param("linear", (v8_json, "error"), b"{", id="linear, V8's message"),
+    ],
+)
+def test_a_graphql_vendor_reads_the_body_in_a_worker_thread(
+    client, monkeypatch, vendor, reader, body
+):
+    """The router hands the body to its reader through ``run_in_threadpool``, so the reader runs
+    where no event loop does and the loop serves other requests while it reads."""
+    module, name = reader
+    where = []
+    original = getattr(module, name)
+
+    def recording(*args):
+        try:
+            asyncio.get_running_loop()
+            where.append("the event loop")
+        except RuntimeError:
+            where.append("a worker thread")
+        return original(*args)
+
+    monkeypatch.setattr(module, name, recording)
+    client.post(f"/{vendor}/graphql", content=body, headers={"Content-Type": "application/json"})
+    assert where == ["a worker thread"]
+
+
+# Half a surrogate pair where graphql-core quotes the client's text without escaping it: the `\u`
+# escape sent, the text the message names, and the bytes that text is on the wire. A pair is the
+# control, the one character it makes.
+_ISSUE_FILTER = "query($f: IssueFilter) { issues(filter: $f) { nodes { id } } }"
+_TWO_OPERATIONS = "query A { __typename } query B { __typename }"
+_HIGH, _LOW = chr(0xD83D), chr(0xDC00)
+_LONE_SURROGATES = [
+    pytest.param("linear", "key", "\\ud83d", _HIGH, b"\\ud83d", id="Linear, a key, the high half"),
+    pytest.param(
+        "linear",
+        "key",
+        "\\uD83D",
+        _HIGH,
+        b"\\ud83d",
+        id="Linear, a key, the high half in upper case",
+    ),
+    pytest.param("linear", "key", "\\udc00", _LOW, b"\\udc00", id="Linear, a key, the low half"),
+    pytest.param(
+        "linear",
+        "key",
+        "\\udc00\\ud83d",
+        _LOW + _HIGH,
+        b"\\udc00\\ud83d",
+        id="Linear, a key, low then high",
+    ),
+    pytest.param(
+        "linear", "operationName", "\\ud83d", _HIGH, b"\\ud83d", id="Linear, an operationName"
+    ),
+    pytest.param(
+        "fireflies", "operationName", "\\ud83d", _HIGH, b"\\ud83d", id="Fireflies, an operationName"
+    ),
+    pytest.param(
+        "fireflies",
+        "operationName",
+        "\\uDC00",
+        _LOW,
+        b"\\udc00",
+        id="Fireflies, the low half in upper case",
+    ),
+    pytest.param(
+        "linear",
+        "key",
+        "\\ud83d" + "\\ude00",
+        chr(0x1F600),
+        chr(0x1F600).encode(),
+        id="Linear, a key, a pair",
+    ),
+]
+
+
+@pytest.mark.parametrize("vendor, where, sent, named, wire", _LONE_SURROGATES)
+def test_a_graphql_vendor_writes_a_lone_surrogate_as_an_escape(
+    client, tokens_yaml, vendor, where, sent, named, wire
+):
+    """The answer is the request error, its message naming the text and its bytes carrying it as
+    `backlot.graphql.body.node_json` writes it."""
+    admin = tokens_yaml["admin_token"]
+    if where == "key":
+        body = '{"query":"%s","variables":{"f":{"%s":1}}}' % (_ISSUE_FILTER, sent)
+        quoted = f"'{named}' is not defined by type"
+    else:
+        body = '{"query":"%s","operationName":"%s"}' % (_TWO_OPERATIONS, sent)
+        quoted = f"operation named '{named}'"
+    credential = admin if vendor == "linear" else f"Bearer {admin}"
+    r = client.post(
+        f"/{vendor}/graphql",
+        content=body.encode(),
+        headers={"Authorization": credential, "Content-Type": "application/json"},
+    )
+    assert r.status_code == 400
+    assert quoted in r.json()["errors"][0]["message"]
+    assert wire in r.content

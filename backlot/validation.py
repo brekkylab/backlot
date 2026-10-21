@@ -30,7 +30,7 @@ def _load_schemas() -> dict[str, dict]:
     """Load every ``*.schema.json`` in ``SCHEMA_DIR``, keyed by its ``source_type`` const."""
     schemas: dict[str, dict] = {}
     for p in sorted(SCHEMA_DIR.glob("*.schema.json")):
-        schema = json.loads(p.read_text())
+        schema = json.loads(p.read_text(encoding="utf-8"))
         const = schema.get("properties", {}).get("source_type", {}).get("const")
         schemas[const or p.name.split(".")[0]] = schema
     if not schemas:
@@ -327,7 +327,7 @@ def jsonl_lines(text: str) -> list[str]:
 def validate_file(path: Path) -> list[tuple[int, str]]:
     """Return [(lineno, message), ...] for every problem in a JSONL corpus ([] == all valid)."""
     problems: list[tuple[int, str]] = []
-    for lineno, raw in enumerate(jsonl_lines(Path(path).read_text()), 1):
+    for lineno, raw in enumerate(jsonl_lines(Path(path).read_text(encoding="utf-8")), 1):
         line = raw.strip()
         if not line:
             continue

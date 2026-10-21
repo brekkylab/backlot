@@ -20,9 +20,9 @@ pointing a real vendor client at Backlot is its own thing to show.
 
 **One credential input.** ``--user <email>`` names a person, and this module resolves that person's
 whole credential set from the server's own ``GET /_meta/users`` — bearer token, and the S3
-access-key pair. Each source is then spelled the way it authenticates: Bearer, Atlassian's Basic
-``email:token``, S3's SigV4. Every tool call carries it, so Backlot's per-document ACL decides what
-comes back. Without ``--user`` the admin sees everything.
+access-key pair. Each source is then spelled the way it authenticates: Bearer, Linear's bare token,
+Atlassian's Basic ``email:token``, S3's SigV4. Every tool call carries it, so Backlot's per-document
+ACL decides what comes back. Without ``--user`` the admin sees everything.
 
 **Which server.** ``--url`` when given; otherwise the default local port if a Backlot server already
 answers there; otherwise one started here, as a subprocess over the data dir's corpus (or the
@@ -158,10 +158,13 @@ def resolve(base_url: str, user: str | None) -> Credentials:
 
 def _auth_header(creds: Credentials, source: str) -> dict[str, str]:
     # Basic `email:token` is Atlassian's scheme, where the api_token IS the Backlot token, and the
-    # email is what mcp-atlassian sends. S3 has no header here at all: `_sign_sigv4` signs it.
+    # email is what mcp-atlassian sends. Linear takes the token with no scheme
+    # (`backlot.auth.api_key_token`). S3 has no header here at all: `_sign_sigv4` signs it.
     if source == "atlassian" and creds.email:
         raw = f"{creds.email}:{creds.token}".encode()
         return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
+    if source == "linear":
+        return {"Authorization": creds.token}
     return {"Authorization": f"Bearer {creds.token}"}
 
 

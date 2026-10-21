@@ -3,14 +3,595 @@
   "endpoints": [
     "https://raw.githubusercontent.com/boto/botocore/develop/botocore/data/s3/2006-03-01/service-2.json"
   ],
-  "measured": "2026-09-29",
-  "acknowledged": [
+  "measured": "2026-10-15",
+  "operations": [
     {
+      "operation": "AbortMultipartUpload: DELETE /{object}?uploadId",
+      "id": "AbortMultipartUpload",
+      "status": "refused"
+    },
+    {
+      "operation": "CompleteMultipartUpload: POST /{object}?uploadId",
+      "id": "CompleteMultipartUpload",
+      "status": "refused"
+    },
+    {
+      "operation": "CopyObject: PUT /{object}",
+      "id": "CopyObject",
+      "status": "refused"
+    },
+    {
+      "operation": "CreateBucket: PUT /{bucket}",
+      "id": "CreateBucket",
+      "status": "refused"
+    },
+    {
+      "operation": "CreateBucketMetadataConfiguration: POST /{bucket}?metadataConfiguration",
+      "id": "CreateBucketMetadataConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "CreateBucketMetadataTableConfiguration: POST /{bucket}?metadataTable",
+      "id": "CreateBucketMetadataTableConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "CreateMultipartUpload: POST /{object}?uploads",
+      "id": "CreateMultipartUpload",
+      "status": "refused"
+    },
+    {
+      "operation": "CreateSession: GET /{bucket}?session",
+      "id": "CreateSession",
+      "status": "missing",
       "kind": "silent_fallthrough",
       "severity": "breaking",
-      "path": "CreateSession: GET /{bucket}?session",
       "detail": "CreateSession is answered 200 <ListBucketResult>, which is what the same path answers with no operation selected: Backlot neither implements it nor refuses it, so a caller parses another operation's body",
       "note": "Not a fallthrough Backlot chose: CreateSession exists for directory buckets only, and real S3 answers `GET /{bucket}?session` on a general purpose bucket with the ListBucketResult too, and `?session&versioning` as GetBucketVersioning with no conflict (measured in us-east-1 and ap-northeast-2), so the listing is the faithful answer and `session` is deliberately not a selector Backlot refuses."
+    },
+    {
+      "operation": "DeleteBucket: DELETE /{bucket}",
+      "id": "DeleteBucket",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketAnalyticsConfiguration: DELETE /{bucket}?analytics",
+      "id": "DeleteBucketAnalyticsConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketCors: DELETE /{bucket}?cors",
+      "id": "DeleteBucketCors",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketEncryption: DELETE /{bucket}?encryption",
+      "id": "DeleteBucketEncryption",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketIntelligentTieringConfiguration: DELETE /{bucket}?intelligent-tiering",
+      "id": "DeleteBucketIntelligentTieringConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketInventoryConfiguration: DELETE /{bucket}?inventory",
+      "id": "DeleteBucketInventoryConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketLifecycle: DELETE /{bucket}?lifecycle",
+      "id": "DeleteBucketLifecycle",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketMetadataConfiguration: DELETE /{bucket}?metadataConfiguration",
+      "id": "DeleteBucketMetadataConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketMetadataTableConfiguration: DELETE /{bucket}?metadataTable",
+      "id": "DeleteBucketMetadataTableConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketMetricsConfiguration: DELETE /{bucket}?metrics",
+      "id": "DeleteBucketMetricsConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketOwnershipControls: DELETE /{bucket}?ownershipControls",
+      "id": "DeleteBucketOwnershipControls",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketPolicy: DELETE /{bucket}?policy",
+      "id": "DeleteBucketPolicy",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketReplication: DELETE /{bucket}?replication",
+      "id": "DeleteBucketReplication",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketTagging: DELETE /{bucket}?tagging",
+      "id": "DeleteBucketTagging",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteBucketWebsite: DELETE /{bucket}?website",
+      "id": "DeleteBucketWebsite",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteObject: DELETE /{object}",
+      "id": "DeleteObject",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteObjectAnnotation: DELETE /{object}?annotation",
+      "id": "DeleteObjectAnnotation",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteObjectTagging: DELETE /{object}?tagging",
+      "id": "DeleteObjectTagging",
+      "status": "refused"
+    },
+    {
+      "operation": "DeleteObjects: POST /{bucket}?delete",
+      "id": "DeleteObjects",
+      "status": "refused"
+    },
+    {
+      "operation": "DeletePublicAccessBlock: DELETE /{bucket}?publicAccessBlock",
+      "id": "DeletePublicAccessBlock",
+      "status": "refused"
+    },
+    {
+      "operation": "GetBucketAbac: GET /{bucket}?abac",
+      "id": "GetBucketAbac",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketAccelerateConfiguration: GET /{bucket}?accelerate",
+      "id": "GetBucketAccelerateConfiguration",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketAcl: GET /{bucket}?acl",
+      "id": "GetBucketAcl",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketAnalyticsConfiguration: GET /{bucket}?analytics",
+      "id": "GetBucketAnalyticsConfiguration",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketCors: GET /{bucket}?cors",
+      "id": "GetBucketCors",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketEncryption: GET /{bucket}?encryption",
+      "id": "GetBucketEncryption",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketIntelligentTieringConfiguration: GET /{bucket}?intelligent-tiering",
+      "id": "GetBucketIntelligentTieringConfiguration",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketInventoryConfiguration: GET /{bucket}?inventory",
+      "id": "GetBucketInventoryConfiguration",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketLifecycle: GET /{bucket}?lifecycle",
+      "id": "GetBucketLifecycle",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketLifecycleConfiguration: GET /{bucket}?lifecycle",
+      "id": "GetBucketLifecycleConfiguration",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketLocation: GET /{bucket}?location",
+      "id": "GetBucketLocation",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketLogging: GET /{bucket}?logging",
+      "id": "GetBucketLogging",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketMetadataConfiguration: GET /{bucket}?metadataConfiguration",
+      "id": "GetBucketMetadataConfiguration",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketMetadataTableConfiguration: GET /{bucket}?metadataTable",
+      "id": "GetBucketMetadataTableConfiguration",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketMetricsConfiguration: GET /{bucket}?metrics",
+      "id": "GetBucketMetricsConfiguration",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketNotification: GET /{bucket}?notification",
+      "id": "GetBucketNotification",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketNotificationConfiguration: GET /{bucket}?notification",
+      "id": "GetBucketNotificationConfiguration",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketOwnershipControls: GET /{bucket}?ownershipControls",
+      "id": "GetBucketOwnershipControls",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketPolicy: GET /{bucket}?policy",
+      "id": "GetBucketPolicy",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketPolicyStatus: GET /{bucket}?policyStatus",
+      "id": "GetBucketPolicyStatus",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketReplication: GET /{bucket}?replication",
+      "id": "GetBucketReplication",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketRequestPayment: GET /{bucket}?requestPayment",
+      "id": "GetBucketRequestPayment",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketTagging: GET /{bucket}?tagging",
+      "id": "GetBucketTagging",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketVersioning: GET /{bucket}?versioning",
+      "id": "GetBucketVersioning",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetBucketWebsite: GET /{bucket}?website",
+      "id": "GetBucketWebsite",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetObject: GET /{object}",
+      "id": "GetObject",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetObjectAcl: GET /{object}?acl",
+      "id": "GetObjectAcl",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetObjectAnnotation: GET /{object}?annotation",
+      "id": "GetObjectAnnotation",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetObjectAttributes: GET /{object}?attributes",
+      "id": "GetObjectAttributes",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetObjectLegalHold: GET /{object}?legal-hold",
+      "id": "GetObjectLegalHold",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetObjectLockConfiguration: GET /{bucket}?object-lock",
+      "id": "GetObjectLockConfiguration",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetObjectRetention: GET /{object}?retention",
+      "id": "GetObjectRetention",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetObjectTagging: GET /{object}?tagging",
+      "id": "GetObjectTagging",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetObjectTorrent: GET /{object}?torrent",
+      "id": "GetObjectTorrent",
+      "status": "implemented"
+    },
+    {
+      "operation": "GetPublicAccessBlock: GET /{bucket}?publicAccessBlock",
+      "id": "GetPublicAccessBlock",
+      "status": "implemented"
+    },
+    {
+      "operation": "HeadBucket: HEAD /{bucket}",
+      "id": "HeadBucket",
+      "status": "implemented"
+    },
+    {
+      "operation": "HeadObject: HEAD /{object}",
+      "id": "HeadObject",
+      "status": "implemented"
+    },
+    {
+      "operation": "ListBucketAnalyticsConfigurations: GET /{bucket}?analytics",
+      "id": "ListBucketAnalyticsConfigurations",
+      "status": "implemented"
+    },
+    {
+      "operation": "ListBucketIntelligentTieringConfigurations: GET /{bucket}?intelligent-tiering",
+      "id": "ListBucketIntelligentTieringConfigurations",
+      "status": "implemented"
+    },
+    {
+      "operation": "ListBucketInventoryConfigurations: GET /{bucket}?inventory",
+      "id": "ListBucketInventoryConfigurations",
+      "status": "implemented"
+    },
+    {
+      "operation": "ListBucketMetricsConfigurations: GET /{bucket}?metrics",
+      "id": "ListBucketMetricsConfigurations",
+      "status": "implemented"
+    },
+    {
+      "operation": "ListBuckets: GET /{service}",
+      "id": "ListBuckets",
+      "status": "implemented"
+    },
+    {
+      "operation": "ListDirectoryBuckets: GET /{service}",
+      "id": "ListDirectoryBuckets",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "ListMultipartUploads: GET /{bucket}?uploads",
+      "id": "ListMultipartUploads",
+      "status": "implemented"
+    },
+    {
+      "operation": "ListObjectAnnotations: GET /{object}?annotation",
+      "id": "ListObjectAnnotations",
+      "status": "implemented"
+    },
+    {
+      "operation": "ListObjectVersions: GET /{bucket}?versions",
+      "id": "ListObjectVersions",
+      "status": "implemented"
+    },
+    {
+      "operation": "ListObjects: GET /{bucket}",
+      "id": "ListObjects",
+      "status": "implemented"
+    },
+    {
+      "operation": "ListObjectsV2: GET /{bucket}?list-type=2",
+      "id": "ListObjectsV2",
+      "status": "implemented"
+    },
+    {
+      "operation": "ListParts: GET /{object}?uploadId",
+      "id": "ListParts",
+      "status": "implemented"
+    },
+    {
+      "operation": "PutBucketAbac: PUT /{bucket}?abac",
+      "id": "PutBucketAbac",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketAccelerateConfiguration: PUT /{bucket}?accelerate",
+      "id": "PutBucketAccelerateConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketAcl: PUT /{bucket}?acl",
+      "id": "PutBucketAcl",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketAnalyticsConfiguration: PUT /{bucket}?analytics",
+      "id": "PutBucketAnalyticsConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketCors: PUT /{bucket}?cors",
+      "id": "PutBucketCors",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketEncryption: PUT /{bucket}?encryption",
+      "id": "PutBucketEncryption",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketIntelligentTieringConfiguration: PUT /{bucket}?intelligent-tiering",
+      "id": "PutBucketIntelligentTieringConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketInventoryConfiguration: PUT /{bucket}?inventory",
+      "id": "PutBucketInventoryConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketLifecycle: PUT /{bucket}?lifecycle",
+      "id": "PutBucketLifecycle",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketLifecycleConfiguration: PUT /{bucket}?lifecycle",
+      "id": "PutBucketLifecycleConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketLogging: PUT /{bucket}?logging",
+      "id": "PutBucketLogging",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketMetricsConfiguration: PUT /{bucket}?metrics",
+      "id": "PutBucketMetricsConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketNotification: PUT /{bucket}?notification",
+      "id": "PutBucketNotification",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketNotificationConfiguration: PUT /{bucket}?notification",
+      "id": "PutBucketNotificationConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketOwnershipControls: PUT /{bucket}?ownershipControls",
+      "id": "PutBucketOwnershipControls",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketPolicy: PUT /{bucket}?policy",
+      "id": "PutBucketPolicy",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketReplication: PUT /{bucket}?replication",
+      "id": "PutBucketReplication",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketRequestPayment: PUT /{bucket}?requestPayment",
+      "id": "PutBucketRequestPayment",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketTagging: PUT /{bucket}?tagging",
+      "id": "PutBucketTagging",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketVersioning: PUT /{bucket}?versioning",
+      "id": "PutBucketVersioning",
+      "status": "refused"
+    },
+    {
+      "operation": "PutBucketWebsite: PUT /{bucket}?website",
+      "id": "PutBucketWebsite",
+      "status": "refused"
+    },
+    {
+      "operation": "PutObject: PUT /{object}",
+      "id": "PutObject",
+      "status": "refused"
+    },
+    {
+      "operation": "PutObjectAcl: PUT /{object}?acl",
+      "id": "PutObjectAcl",
+      "status": "refused"
+    },
+    {
+      "operation": "PutObjectAnnotation: PUT /{object}?annotation",
+      "id": "PutObjectAnnotation",
+      "status": "refused"
+    },
+    {
+      "operation": "PutObjectLegalHold: PUT /{object}?legal-hold",
+      "id": "PutObjectLegalHold",
+      "status": "refused"
+    },
+    {
+      "operation": "PutObjectLockConfiguration: PUT /{bucket}?object-lock",
+      "id": "PutObjectLockConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "PutObjectRetention: PUT /{object}?retention",
+      "id": "PutObjectRetention",
+      "status": "refused"
+    },
+    {
+      "operation": "PutObjectTagging: PUT /{object}?tagging",
+      "id": "PutObjectTagging",
+      "status": "refused"
+    },
+    {
+      "operation": "PutPublicAccessBlock: PUT /{bucket}?publicAccessBlock",
+      "id": "PutPublicAccessBlock",
+      "status": "refused"
+    },
+    {
+      "operation": "RenameObject: PUT /{object}?renameObject",
+      "id": "RenameObject",
+      "status": "refused"
+    },
+    {
+      "operation": "RestoreObject: POST /{object}?restore",
+      "id": "RestoreObject",
+      "status": "refused"
+    },
+    {
+      "operation": "SelectObjectContent: POST /{object}?select&select-type=2",
+      "id": "SelectObjectContent",
+      "status": "refused"
+    },
+    {
+      "operation": "UpdateBucketMetadataAnnotationTableConfiguration: PUT /{bucket}?metadataAnnotationTable",
+      "id": "UpdateBucketMetadataAnnotationTableConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "UpdateBucketMetadataInventoryTableConfiguration: PUT /{bucket}?metadataInventoryTable",
+      "id": "UpdateBucketMetadataInventoryTableConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "UpdateBucketMetadataJournalTableConfiguration: PUT /{bucket}?metadataJournalTable",
+      "id": "UpdateBucketMetadataJournalTableConfiguration",
+      "status": "refused"
+    },
+    {
+      "operation": "UpdateObjectEncryption: PUT /{object}?encryption",
+      "id": "UpdateObjectEncryption",
+      "status": "refused"
+    },
+    {
+      "operation": "UploadPart: PUT /{object}?partNumber",
+      "id": "UploadPart",
+      "status": "refused"
+    },
+    {
+      "operation": "UploadPartCopy: PUT /{object}?partNumber",
+      "id": "UploadPartCopy",
+      "status": "refused"
+    },
+    {
+      "operation": "WriteGetObjectResponse: POST /WriteGetObjectResponse",
+      "id": "WriteGetObjectResponse",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
     }
   ]
 }

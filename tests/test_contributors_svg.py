@@ -14,7 +14,7 @@ REPO = Path(__file__).resolve().parent.parent
 def _wall():
     """`scripts/contributors_svg.py`, imported by path since `scripts/` is no package."""
     spec = importlib.util.spec_from_file_location(
-        "contributors_svg", REPO / "scripts" / "contributors_svg.py"
+        "scripts.contributors_svg", REPO / "scripts" / "contributors_svg.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

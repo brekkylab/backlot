@@ -17,8 +17,11 @@ import importlib
 import json
 import os
 import re
+import sys
+import threading
 from pathlib import Path
 
+import pytest
 from starlette.testclient import TestClient
 
 from backlot.config import Settings, get_settings
@@ -195,7 +198,7 @@ def build_corpus(
         records = [
             complete(**r) if isinstance(r, dict) and "source_type" in r else r for r in records
         ]
-    corpus.write_text("\n".join(json.dumps(r) for r in records))
+    corpus.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
     load(corpus, settings)
     return settings
 
@@ -228,6 +231,32 @@ def client_for(settings: Settings, *, reload: bool = True):
             os.environ["BACKLOT_DATA_DIR"] = prev
 
 
+def python_child_env(**extra: str) -> dict[str, str]:
+    """The environment for a Python child process whose output a test reads as UTF-8."""
+    return {**os.environ, "PYTHONIOENCODING": "utf-8", **extra}
+
+
+# Delivering a POSIX signal, which Windows cannot: it has no SIGHUP and no `signal.pthread_kill`,
+# and its `Popen.send_signal` takes SIGTERM (sent as `Popen.terminate()`), CTRL_C_EVENT and
+# CTRL_BREAK_EVENT, and refuses the rest.
+POSIX_SIGNALS = pytest.mark.skipif(
+    sys.platform == "win32", reason="delivers a POSIX signal, which Windows has no equivalent of"
+)
+
+
+def readline_within(pipe, timeout: float) -> bytes | None:
+    """One line from a child's ``pipe``, or None when none arrives within ``timeout`` seconds.
+
+    A thread does the read, because ``select`` on a pipe is POSIX only: Windows' takes sockets, and
+    a pipe there raises WinError 10038. A read that times out stays pending on that thread, so a
+    test that gets None has to end the child rather than read the pipe again."""
+    line: list[bytes] = []
+    reader = threading.Thread(target=lambda: line.append(pipe.readline()), daemon=True)
+    reader.start()
+    reader.join(timeout)
+    return line[0] if line else None
+
+
 def gql(client, path: str, query: str, token: str | None = None, **variables):
     """POST a GraphQL document and return the raw response.
 
@@ -240,6 +269,32 @@ def gql(client, path: str, query: str, token: str | None = None, **variables):
         body["variables"] = variables
     headers = {"Authorization": token} if token is not None else {}
     return client.post(path, json=body, headers=headers)
+
+
+# The bytes the credential sweeps put into `Authorization`: each latin-1 byte but the control
+# characters other than the tab, whose answers, where they were sent, are in
+# `backlot.auth.api_key_token`.
+SWEPT_BYTES = (0x09, *range(0x20, 0x7F), *range(0x80, 0x100))
+
+
+def sent_as(client, method: str, path: str, headers, content=None):
+    """``method`` on ``path`` with each header's latin-1 bytes as sent, ``headers`` a mapping or a
+    sequence of pairs, which can name a header twice. The TestClient re-encodes a header's bytes
+    above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's own
+    `ASGITransport` hands the app what it was given, over the app the fixture started."""
+    import asyncio
+
+    import httpx
+
+    pairs = headers.items() if isinstance(headers, dict) else headers
+    raw = [(name.encode("latin-1"), value.encode("latin-1")) for name, value in pairs]
+
+    async def send():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            return await c.request(method, path, headers=raw, content=content)
+
+    return asyncio.run(send())
 
 
 def selected_fields(document: str, *path: str) -> set[str]:
@@ -461,3 +516,9 @@ def crawl_confluence(client, headers):
             break
         start += limit
     return out
+
+
+def padded_query(length: int) -> bytes:
+    """A GraphQL body asking for ``__typename``, padded out to ``length`` bytes."""
+    head, tail = b'{"query":"{ __typename }","pad":"', b'"}'
+    return head + b"a" * (length - len(head) - len(tail)) + tail

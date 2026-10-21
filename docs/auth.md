@@ -68,7 +68,7 @@ sees least. Nothing about the request changes but the identity.
 | Gmail, Google Drive/Docs/Sheets/Slides | `Authorization: Bearer <token>`, or `OAuth <token>` |
 | GitHub | `Authorization: Bearer <token>`, or the legacy `token <token>` |
 | Jira, Confluence | HTTP Basic with the token as the **password**, or a plain `Bearer` |
-| Linear | A **bare** `Authorization: <token>`, or `Bearer` |
+| Linear | A **bare** `Authorization: <token>`; `Bearer <token>` is a `400` |
 | Amazon S3 | AWS SigV4, SigV4a or Signature Version 2, signed with the identity's key pair |
 | A Google client with a config | Exchange it at `POST /oauth2/token` — see the Google section |
 
@@ -81,8 +81,13 @@ curl -s localhost:8000/slack/api/auth.test \
 
 The scheme is required: a bare token answers `not_authed`. As with the real Web API, an auth failure
 is **HTTP 200 with `ok: false`** — `not_authed` when the header is missing or unscheme'd,
-`invalid_auth` when the token resolves to nobody. The token is also accepted as a `token` query
-parameter or form field, which is where Slack's own clients put it.
+`invalid_auth` when the token resolves to nobody. The token is also accepted as a `token` form
+field, which is where Slack's own clients put it and which real reads ahead of the header. A
+`token` query parameter is refused, since Slack stopped taking one from apps created after February
+24, 2021, the kind of app Backlot answers as: `invalid_auth` for a non-empty value, and for an empty
+one beside a token in the header or the form. A `token` form field, even an empty one, takes the
+parameter's place, so beside one the parameter is refused only when a token is read from the header
+or the form.
 
 **It is a user token, not a bot token.** Slack has two kinds and they are not interchangeable; a
 Backlot token behaves as the first:
@@ -115,10 +120,11 @@ curl -s "localhost:8000/drive/v3/files?fields=files(id,name)" \
   -H "Authorization: Bearer usr-29b84da5703116c2a832"
 ```
 
-How the header is read, spelling by spelling, is in
-[supported-sources.md](supported-sources.md#google-drive-docs-sheets-slides--drivev3-docsv1-sheetsv4-slidesv1).
-`me` works as the mailbox id, in any case, resolving to whoever the token is; a user's token reads
-no other mailbox, and the admin token reads any.
+How the header is read, spelling by spelling, and where a token in the query string is read instead,
+is in
+[supported-sources.md](supported-sources.md#google-drive-docs-sheets-slides--drivev3-docsv1-sheetsv4-slidesv1);
+send the token in the header. `me` works as the mailbox id, in any case, resolving to whoever the
+token is; a user's token reads no other mailbox, and the admin token reads any.
 
 #### A client carrying a config, not a token — `POST /oauth2/token`
 
@@ -227,10 +233,9 @@ it, so `bearer <token>`, `BEARER <token>`, `token <token>` and `Bearer  <token>`
 `401` of category `INVALID_AUTHENTICATION`, there and here. Space or tab around the whole header
 value is ignored by both.
 
-### Linear — bare, or `Bearer`
+### Linear — bare
 
-Linear's personal API keys go in the header with **no scheme**, and Backlot accepts that spelling
-as well as `Bearer`, exactly as the real API does:
+Linear's personal API keys go in the header with **no scheme**, and a Backlot token is one:
 
 ```bash
 curl -s localhost:8000/linear/graphql \
@@ -238,6 +243,15 @@ curl -s localhost:8000/linear/graphql \
   -H "Content-Type: application/json" \
   -d '{"query":"{ viewer { id name } }"}'
 ```
+
+`Bearer` is how Linear carries an OAuth access token. An API key sent as `Bearer <token>` or
+`bearer <token>` is refused with a `400` that says to drop the prefix, there and here, before the
+body is read. Linear tells an API key there by its shape, `lin_api_` and forty ASCII letters and
+digits, so a value in that shape draws the `400` whether or not Linear issued it; Backlot gives the
+same `400` to its own tokens, which stand for API keys. Any other value is the key itself, so
+`Token <token>` or `BEARER <token>` is a key that does not resolve: a `401`. Space or tab around the
+whole header value is ignored by both. A request carrying `Authorization` twice is a `400` HTML page
+from Cloudflare, in front of Linear and Fireflies alike, there and here.
 
 ### Fireflies — `Bearer`
 
@@ -247,6 +261,11 @@ curl -s localhost:8000/fireflies/graphql \
   -H "Content-Type: application/json" \
   -d '{"query":"{ users { name } }"}'
 ```
+
+The scheme is read in any case and followed by spaces, and space, tab or U+00A0 around the token is
+ignored. A credential that is refused is a `500` with an `auth_failed` entry, there and here, in one
+of two messages: the `Bearer` prefix is missing, or the key did not authenticate. No
+`Authorization`, or an empty one, is the second.
 
 ### Amazon S3 — SigV4
 
@@ -278,7 +297,8 @@ refused credential get is in [supported-sources.md](supported-sources.md#amazon-
 **Signature Version 2 is verified too**, in the header and in the query, since real S3 still
 verifies it; botocore signs that way with `Config(signature_version="s3")`, though its signature for
 a bucket's own operations is the mismatch real answers it with. The two refuse differently and each
-refuses as real does.
+refuses as real does. Reading an object's `?annotation` takes SigV4 or SigV4a, as on real
+([supported-sources.md](supported-sources.md#amazon-s3--s3)).
 
 **So is SigV4a** (`AWS4-ECDSA-P256-SHA256`), in the header and in the query, with the key botocore's
 CRT signer derives from the same secret: install `awscrt` and pass

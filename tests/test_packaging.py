@@ -34,6 +34,7 @@ def _tracked_non_py_files_under_backlot() -> list[str]:
         capture_output=True,
         text=True,
         check=True,
+        encoding="utf-8",
     ).stdout
     return [
         line[len("backlot/") :] for line in out.splitlines() if line and not line.endswith(".py")
@@ -68,7 +69,7 @@ def test_the_sdist_prunes_the_readme_illustrations():
     """
     directives = [
         line.split()
-        for line in (REPO_ROOT / "MANIFEST.in").read_text().splitlines()
+        for line in (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
     assert ["prune", "assets"] in directives, (
@@ -103,7 +104,7 @@ def test_pypi_readme_has_no_relative_links():
     both survive the renderer, and a relative ``src``/``srcset`` in one is invisible to the
     ``](target)`` pattern above while breaking on PyPI just the same.
     """
-    text = (REPO_ROOT / "README.pypi.md").read_text()
+    text = (REPO_ROOT / "README.pypi.md").read_text(encoding="utf-8")
     targets = re.findall(r"\]\(([^)\s]+)\)", text)
     targets += [
         candidate.strip().split()[0]
@@ -196,7 +197,7 @@ def _importorskip_modules() -> dict[str, list[str]]:
     """
     found: dict[str, list[str]] = {}
     for path in sorted((REPO_ROOT / "tests").glob("*.py")):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and node.args):
                 continue
@@ -247,7 +248,7 @@ def test_the_contributing_extras_are_the_pyproject_extras():
     or added in pyproject leaves the table telling contributors to install something that does not
     exist, or not naming something they need. Both directions are asserted, plus that every test
     file the table points at is still there."""
-    text = (REPO_ROOT / "CONTRIBUTING.md").read_text()
+    text = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
     # `[\w,\s-]`, not `[\w,]`: an extra may be hyphenated and a list may be spaced (`.[dev, mcp]`),
     # and a pattern that cannot match those reports a correctly documented extra as missing.
     named = {
@@ -309,7 +310,12 @@ def test_every_optional_import_gate_is_reachable_from_an_extra():
 
 def _tracked_files() -> list[Path]:
     out = subprocess.run(
-        ["git", "ls-files"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+        ["git", "ls-files"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+        encoding="utf-8",
     ).stdout
     return [REPO_ROOT / line for line in out.splitlines() if line]
 
@@ -331,7 +337,7 @@ def test_no_tracked_file_installs_an_extra_pyproject_does_not_define():
     undefined = []
     for path in _tracked_files():
         try:
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, FileNotFoundError):
             continue  # an asset, or a path this checkout does not materialise
         for lineno, line in enumerate(text.splitlines(), 1):

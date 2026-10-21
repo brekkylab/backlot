@@ -402,7 +402,7 @@ def test_no_blanket_replace_writes_a_table_with_a_non_pk_unique_index(tmp_path):
     assert "fireflies_users" in standalone_guarded  # sanity: the guard reaches this table at all
 
     backlot_src = "\n".join(
-        p.read_text() for p in Path(store.__file__).resolve().parent.rglob("*.py")
+        p.read_text(encoding="utf-8") for p in Path(store.__file__).resolve().parent.rglob("*.py")
     )
     for t in sorted(standalone_guarded):
         assert f"INSERT OR REPLACE INTO {t}" not in backlot_src, (
@@ -1683,6 +1683,48 @@ def test_fts_add_docs_is_idempotent(tmp_path):
     assert len(store.search_documents(conn, "alpha", "notion")) == 1  # no duplicate row
 
 
+@pytest.mark.parametrize("source_type", ["notion", "slack"])
+def test_fts_add_docs_reindexes_multiple_chunks(tmp_path, source_type):
+    conn = store.connect_rw(tmp_path / "chunks.sqlite")
+    try:
+        assert store.build_fts(conn)
+        # Cross the chunk boundary for both a single-column and a composite document key.
+        count = 900 // len(store.id_columns(source_type)) + 1
+        if source_type == "notion":
+            keys = [f"page-{i}" for i in range(count)]
+            conn.executemany(
+                "INSERT INTO notion_pages(id,teamspace,author_email,title,content,created_ts) "
+                "VALUES(?,'eng','a@x.com','Chunk guide','chunkmarker',1)",
+                [(key,) for key in keys],
+            )
+        else:
+            keys = [("eng", str(i)) for i in range(count)]
+            conn.executemany(
+                "INSERT INTO slack_messages(channel,ts,author_email,content,created_ts) "
+                "VALUES(?,?,'a@x.com','chunkmarker',1)",
+                keys,
+            )
+        conn.commit()
+        assert store.search_documents(conn, "chunkmarker", source_type) == []
+        assert store.fts_add_docs(conn, source_type, keys) == count
+        columns = store.id_columns(source_type)
+        found = store.search_documents(conn, "chunkmarker", source_type, limit=count + 1)
+        assert {tuple(row[col] for col in columns) for row in found} == {
+            key if isinstance(key, tuple) else (key,) for key in keys
+        }
+        # Re-index updated content through both chunks: stale terms disappear without duplicates.
+        conn.execute(f"UPDATE {store.table(source_type)} SET content='replacementmarker'")
+        conn.commit()
+        assert store.fts_add_docs(conn, source_type, keys) == count
+        assert store.search_documents(conn, "chunkmarker", source_type) == []
+        assert (
+            len(store.search_documents(conn, "replacementmarker", source_type, limit=count + 1))
+            == count
+        )
+    finally:
+        conn.close()
+
+
 def test_fts_add_docs_noop_without_index(tmp_path):
     conn = store.connect_rw(tmp_path / "n.sqlite")  # no build_fts called
     assert store.fts_add_docs(conn, "notion", ["x"]) == 0
@@ -2123,10 +2165,10 @@ def test_linear_entities_are_rebuilt_whole_so_an_append_is_resolvable(tmp_path):
 
     settings = Settings(data_dir=tmp_path)
     first = tmp_path / "a.jsonl"
-    first.write_text(json.dumps(issue("l1", "alpha")) + "\n")
+    first.write_text(json.dumps(issue("l1", "alpha")) + "\n", encoding="utf-8")
     load(first, settings, reset=True)
     second = tmp_path / "b.jsonl"
-    second.write_text(json.dumps(issue("l2", "beta")) + "\n")
+    second.write_text(json.dumps(issue("l2", "beta")) + "\n", encoding="utf-8")
     load(second, settings, reset=False)
 
     conn = store.connect_ro(settings.db_path)
@@ -2151,7 +2193,7 @@ def test_linear_entities_are_rebuilt_whole_so_an_append_is_resolvable(tmp_path):
     # which refuses one) and nothing is left carrying `alpha`. Appending to the table instead of
     # rebuilding it would leave `alpha` answering for an entity that exists nowhere.
     third = tmp_path / "c.jsonl"
-    third.write_text(json.dumps(issue("l1", "gamma")) + "\n")
+    third.write_text(json.dumps(issue("l1", "gamma")) + "\n", encoding="utf-8")
     load(third, settings, reset=False)
     conn = store.connect_ro(settings.db_path)
     try:

@@ -487,7 +487,10 @@ def test_fireflies_channel_members_name_only_readable_meetings(tmp_path):
             },
         ],
     )
-    toks = {u["email"]: u["token"] for u in yaml.safe_load(s.tokens_path.read_text())["users"]}
+    toks = {
+        u["email"]: u["token"]
+        for u in yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))["users"]
+    }
     q = "{ transcripts(limit: 50) { title participants channels { members { email } } } }"
     with client_for(s) as client:
         ava = _ff_gql(client, q, toks["ava@acme.com"])["data"]["transcripts"]
@@ -639,7 +642,7 @@ def test_a_shared_doc_id_does_not_share_visibility(tmp_path):
     # ava is a member of the org the public confluence grant names but holds no grant of her own on
     # the drive file, and a scoping that read the two sources' grants together would let her
     # through on the strength of the confluence one alone.
-    toks = yaml.safe_load(s.tokens_path.read_text())
+    toks = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
     ava_token = next(u["token"] for u in toks["users"] if u["email"] == "ava@acme.com")
     hana_token = next(u["token"] for u in toks["users"] if u["email"] == "hana@acme.com")
     with client_for(s) as client:

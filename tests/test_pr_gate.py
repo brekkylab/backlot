@@ -15,7 +15,9 @@ REPO = Path(__file__).resolve().parent.parent
 
 def _gate():
     """The script as a module, loaded the way `_gen_docs` in `tests/test_skills.py` is."""
-    spec = importlib.util.spec_from_file_location("pr_gate", REPO / "scripts" / "pr_gate.py")
+    spec = importlib.util.spec_from_file_location(
+        "scripts.pr_gate", REPO / "scripts" / "pr_gate.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -23,7 +25,7 @@ def _gate():
 
 gate = _gate()
 
-TEMPLATE = (REPO / ".github" / "pull_request_template.md").read_text()
+TEMPLATE = (REPO / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
 FILLED = TEMPLATE + "\nCloses #412.\n"
 OTHER_HEADINGS = "## Summary\n\nServes it.\n\n## Changes\n\n- one\n\n## Testing\n\n- pytest\n"
 

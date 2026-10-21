@@ -277,6 +277,7 @@ def test_fireflies_supporting_measured_validation(fireflies_http, arguments, nam
         ("a@" + "b" * 64 + ".co", True),
         ("a@b.c", True),
         ("a@b.12", True),
+        ("someone@example.com", False),
         ("a@b.co1", True),
         ("a..b@b.co", True),
         (".a@b.co", True),
@@ -355,7 +356,6 @@ def test_fireflies_measured_email_whitespace(fireflies_http, key, side):
         'fromDate: "2020-01-01"',
         'fromDate: "2020-01-01T00:00:00Z"',
         "fromDate: 1700000000000",
-        'host_email: "someone@example.com"',
         'fromDate: "2020"',
         'fromDate: "0"',
         'fromDate: "00"',
@@ -373,7 +373,7 @@ def test_fireflies_measured_validation_boundaries(fireflies_http, arguments):
     assert response.status_code == 200
     body = response.json()
     assert "errors" not in body
-    if arguments in ("skip: 5000", 'host_email: "someone@example.com"'):
+    if arguments == "skip: 5000":
         assert body["data"]["transcripts"] == []
     else:
         assert isinstance(body["data"]["transcripts"], list)

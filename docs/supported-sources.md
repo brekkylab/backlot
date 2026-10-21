@@ -769,6 +769,31 @@ line breaks after a `[`, which are dropped (`a[ b` is `a_b`, where a form's is `
 its value is taken as sent, `+` and `%XX` included, and its `token` is read as a form's is; an
 argument the body sends is read ahead of the same name in the query string.
 
+A `GET`, `POST`, `PUT`, `PATCH` or `DELETE` to a path under `/slack/api` that is none of the methods
+above is answered as real answers it, but for the requests the next paragraph names. A method
+Slack's reference index (`docs.slack.dev/reference/methods.md`) lists is refused for its credential
+(`not_authed`, `invalid_auth`), but for `oauth.access`, which answers `invalid_code`, and
+`oauth.v2.access`, `oauth.v2.user.access` and `openid.connect.token`, which answer it too unless the
+credential sent is refused. `channels.mark`, `groups.mark`, `im.mark`, `mpim.mark`, `im.list` and
+`mpim.list`, which the index does not list, answer `method_deprecated` with real's message, and
+`invalid_auth` to a credential that does not resolve. Any other name is `unknown_method` with
+`req_method`, whatever the credential, `oauth.token` and the `apps.permissions` methods among them,
+and a path holding a byte other than an ASCII letter, a digit or `.` is real's HTML 404 page. A body
+real refuses is refused ahead of the credential and of `unknown_method`, and not read on a path that
+names no method. Under `PUT`, `PATCH` and `DELETE` a body is refused only for a name
+(`invalid_arg_name`, `invalid_array_arg`).
+
+Real answers these otherwise. A caller whose token resolves is left to the router's
+`{"detail": "Not Found"}` 404 on a method the index lists, where real checks the token's scopes, but
+for those that answer `invalid_code`. `blocks.validate`, `oauth.v2.exchange` and
+`tooling.tokens.rotate`, whose answer turns on the arguments sent, are left to the router, but for a
+credential sent that does not resolve, which the first and last refuse as any method does, and a
+`GET` of `blocks.validate`, which is `unsupported_http_method`; so are a path ending in `/`, the
+names `.` and `..`, and a name after two `/`s or a `\`, which real reads as that name. A name
+holding a byte real's front end answers itself, or ending in one real drops from a name's end, gets
+real's 404 page (`backlot.routers.slack._METHOD_NAME` lists those measured), but for a `%2F` or
+`%5C` before a method's name, and a `%2F` at its end, which leave the path to the router.
+
 A POST whose form or multipart type names a charset is answered with real's `superfluous_charset`
 warning, and one with a body under any other type that names none with `missing_charset`, each in
 `warning` and in `response_metadata.warnings`. A body refused as above carries neither.

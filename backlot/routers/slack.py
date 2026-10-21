@@ -15,10 +15,10 @@ import re
 import urllib.parse
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, store, synth
+from backlot import auth, published, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.openapi import qp
@@ -234,6 +234,12 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
     return caller, None
 
 
+def _credential_sent(request: Request) -> bool:
+    """Whether the request sends a credential ``_caller_or_error`` resolves or refuses: a token it
+    reads (``auth.slack_token``), or a `token` query parameter it refuses."""
+    return auth.slack_query_token_refused(request) or auth.slack_token(request) is not None
+
+
 def _missing_argument(request: Request, *names: str) -> JSONResponse | None:
     """``invalid_arguments`` if one of these required arguments was not sent at all.
 
@@ -364,6 +370,20 @@ def read_post_body(content_type: str | None, body: bytes) -> tuple[dict[str, str
     if args is None and body and media_type in (_FORM, _MULTIPART):
         return {}, "invalid_form_data"
     return args or {}, None
+
+
+def read_body(
+    method: str, content_type: str | None, body: bytes
+) -> tuple[dict[str, str], str | None]:
+    """:func:`read_post_body` for a request's method: a `PUT`, `PATCH` or `DELETE` body is read as a
+    `POST`'s and refused only for a name, `invalid_arg_name` or `invalid_array_arg`. Measured
+    against slack.com/api on 2026-10-20: a form `token=<bogus>` under each of them is
+    `invalid_auth`, and a form `{}`, a body with no Content-Type and one under `text/html` are read
+    as no body."""
+    args, error = read_post_body(content_type, body)
+    if method != "POST" and error not in ("invalid_arg_name", "invalid_array_arg"):
+        return args, None
+    return args, error
 
 
 def _form_pairs(body: bytes) -> list[tuple[bytes, bytes]]:
@@ -768,6 +788,179 @@ def _register(pairs: list[tuple[bytes, bytes | None]]) -> tuple[dict | None, str
     }, None
 
 
+# --- Paths no route here serves -----------------------------------------------
+# How real answers a request for a path under `/api/` that none of the methods routed below is,
+# measured against slack.com/api on 2026-09-28 and 2026-10-20.
+
+#: The HTTP methods real answers such a path for by the rules below, each as it answers a `GET` once
+#: its body is read (:func:`read_body`), but for `blocks.validate` (:data:`_ANSWERED_BY_ARGUMENTS`).
+UNSERVED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+#: A path segment this server reads as a method's name once it is decoded (`a%2Eb` is `a.b`): ASCII
+#: letters, digits and `.`, but not `.` or `..` alone (:func:`method_name`); any other byte in it,
+#: where :func:`unserved_answer` does not leave the path to the router, is answered with real's 404
+#: page. Real answers `-`, `_` and the bytes past ASCII so, but refuses `%00`, `%2F`, `%3F`, `%5C`
+#: and a `%` that starts no escape at its front end, and `%0A` but at a name's end, where it drops
+#: `%09`, `%0A`, `%0B`, `%0D`, `%20` and `%2B`.
+_METHOD_NAME = re.compile(r"[0-9A-Za-z.]+")
+#: The Slack baseline's ``missing`` operations (``backlot.published``): the methods Slack's
+#: reference index lists that no route here serves, by name. Measured on 2026-10-20 with no token
+#: and with a bogus one, by `GET` and by `POST`, each answered the credential's refusal
+#: (`not_authed`, `invalid_auth`) but those :data:`_OTHER_ANSWERS` and
+#: :data:`_ANSWERED_BY_ARGUMENTS` hold. Ten that Slack's archived OpenAPI document lists and the
+#: index does not, `oauth.token`, three `workflows` ones and six `apps.permissions` ones, real
+#: answered `unknown_method` for, as for a name it never had, whatever the credential, one that
+#: resolves included.
+_PUBLISHED_NOT_SERVED = frozenset(published.missing_operations("slack"))
+#: The answer, where it is not the credential's refusal, of a method no route here serves, and
+#: whether a credential sent that does not resolve is refused ahead of it, each also answered so to
+#: a token that resolves. The `.mark` and `.list` ones are among the names `slack_sdk` 3.45.0 calls
+#: that the baseline does not list, sent by `GET` with each credential and by `POST` with none; the
+#: rest of those names, `channels.list` and `im.open` among them, were `unknown_method`.
+_OTHER_ANSWERS: dict[str, tuple[dict, bool]] = {
+    "oauth.access": ({"ok": False, "error": "invalid_code"}, False),
+    **{
+        name: ({"ok": False, "error": "invalid_code"}, True)
+        for name in ("oauth.v2.access", "oauth.v2.user.access", "openid.connect.token")
+    },
+    **{
+        name: (
+            {
+                "ok": False,
+                "error": "method_deprecated",
+                "response_metadata": {
+                    "messages": [
+                        "[ERROR] This method is retired and can no longer be used. Please use "
+                        f"{instead} instead. Learn more: https://api.slack.com/changelog/"
+                        "2020-01-deprecating-antecedents-to-the-conversations-api."
+                    ]
+                },
+            },
+            True,
+        )
+        for name, instead in (
+            ("channels.mark", "conversations.mark"),
+            ("groups.mark", "conversations.mark"),
+            ("im.mark", "conversations.mark"),
+            ("mpim.mark", "conversations.mark"),
+            ("im.list", "conversations.list or users.conversations"),
+            ("mpim.list", "conversations.list or users.conversations"),
+        )
+    },
+}
+#: Methods whose answer to a caller real lets through turns on the arguments sent, which is left to
+#: the router, each with whether it refuses a credential that does not resolve before reading them
+#: (`invalid_auth`, as on any method). Real answered `oauth.v2.exchange` `invalid_arguments` naming
+#: the arguments missing whatever the credential, `tooling.tokens.rotate` `invalid_arguments`
+#: without a `refresh_token` and `invalid_refresh_token` with a bogus one, and `blocks.validate`
+#: `ok` to a `POST` of `blocks=[]` and `invalid_arguments` to a `POST`, `PUT`, `PATCH` or `DELETE`
+#: of nothing; a `GET` of `blocks.validate` was `unsupported_http_method` whatever the credential,
+#: which :func:`unserved_answer` answers (2026-10-20, the `PATCH` on 2026-10-21). The rest is left
+#: to the router: an answer for one set of arguments does not hold for another.
+_ANSWERED_BY_ARGUMENTS = {
+    "blocks.validate": True,
+    "oauth.v2.exchange": False,
+    "tooling.tokens.rotate": True,
+}
+#: Real's answer to a path that names no method, where :func:`unserved_answer` gives it, but for the
+#: bytes :data:`_METHOD_NAME` says real refuses at its front end: this page, 1736 bytes under
+#: `text/html; charset=utf-8`, the same on each of the 611 answers that carried it on 2026-10-20.
+_NOT_FOUND_PAGE = (
+    b"<!DOCTYPE html>\n"
+    b'<html lang="en-US">\n'
+    b"<head>\n"
+    b'<meta charset="utf-8">\n'
+    b'<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    b'<meta name="robots" content="noindex">\n'
+    b"<title>There\xe2\x80\x99s been a glitch\xe2\x80\xa6 | Slack</title>\n"
+    b"<style>\n"
+    b"html, body { height: 100%; margin: 0; }\n"
+    b"body {\n"
+    b"\tbackground: #c6f5ff url('https://a.slack-edge.com/80588/img/404/marrakesh-meadow-80.j"
+    b"pg') no-repeat 50% 100% / cover;\n"
+    b"\tcolor: #1d1c1d;\n"
+    b"\tfont: 17px/1.5 Slack-Lato, Lato, -apple-system, BlinkMacSystemFont, 'Segoe UI', Robot"
+    b"o, Helvetica, Arial, sans-serif;\n"
+    b"}\n"
+    b"header { background: rgba(255, 255, 255, 0.95); border-bottom: 1px solid #ddd; padding:"
+    b" 20px 24px; }\n"
+    b"header img { display: block; height: 28px; }\n"
+    b"main {\n"
+    b"\tbackground: #fff; border: 1px solid #ddd; border-radius: 4px; box-shadow: 0 1px 0 rgb"
+    b"a(0, 0, 0, 0.25);\n"
+    b"\tmargin: 56px auto 0; max-width: 390px; padding: 32px 36px;\n"
+    b"}\n"
+    b"h1 { font-size: 32px; font-weight: 900; letter-spacing: -0.5px; line-height: 1.2; margi"
+    b"n: 0 0 20px; }\n"
+    b"h1 svg { height: 32px; margin-right: 8px; vertical-align: -5px; width: 32px; }\n"
+    b"p { margin: 0 0 12px; }\n"
+    b"a { color: #1264a3; }\n"
+    b"@media (max-width: 480px) { main { margin: 24px 16px 0; } }\n"
+    b"</style>\n"
+    b"</head>\n"
+    b"<body>\n"
+    b'<header><a href="https://slack.com/"><img src="https://a.slack-edge.com/9cc0056/img/sla'
+    b'ck_logo.svg" alt="Slack"></a></header>\n'
+    b"<main>\n"
+    b'<h1><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="#de4e2b" stro'
+    b'ke-width="2" stroke-linejoin="round" d="M12 3 2 21h20L12 3z"/><path fill="#de4e2b" d="M'
+    b'11 10h2v6h-2zM11 17.5h2v2h-2z"/></svg>There\xe2\x80\x99s been a glitch\xe2\x80\xa6</h1>'
+    b"\n"
+    b"<p>We\xe2\x80\x99re not quite sure what went wrong. You can go back, or try looking on "
+    b'our <a href="http://get.slack.help" target="_blank">Help Center</a> if you need a hand.'
+    b"</p>\n"
+    b"</main>\n"
+    b"</body>\n"
+    b"</html>"
+)
+
+
+def method_name(path: str) -> str | None:
+    """The method a `/slack/api/` path names, as :data:`_METHOD_NAME` reads it, or None for one it
+    reads as none, for `.` and `..`, and for a path elsewhere."""
+    name = path.removeprefix("/slack/api/")
+    if name in (".", "..") or not _METHOD_NAME.fullmatch(name):
+        return None
+    return name
+
+
+def unserved_answer(request: Request) -> Response | None:
+    """Real's answer to a request for a path no route here matches, or None for the router's 404:
+    the method's credential refusal (``_caller_or_error``) for a method Slack has, ahead of whatever
+    the method would read, or the answer :data:`_OTHER_ANSWERS` holds for it; `unknown_method` with
+    the name for one it has none by, whatever the credential; and its 404 page for a path that names
+    no method. A credential that resolves, on a method :data:`_OTHER_ANSWERS` does not hold, is left
+    to the router, and so is a method of :data:`_ANSWERED_BY_ARGUMENTS` but for the answers its
+    comment gives here, and so are an empty name, the names `.` and `..`, a path ending in `/`, and
+    a name after two or more `/`s or a backslash, which real reads as that name (`//api.test` and
+    `\\api.test` are its `api.test`, slack.com/api, 2026-10-20)."""
+    path = request.scope["path"]
+    rest = path.removeprefix("/slack/api/")
+    if rest in ("", ".", "..") or path.endswith("/"):
+        return None
+    lead = rest.replace("\\", "/")
+    if lead.startswith("/") and _METHOD_NAME.fullmatch(lead.lstrip("/")):
+        return None
+    name = method_name(path)
+    if name is None:
+        return Response(_NOT_FOUND_PAGE, status_code=404, media_type="text/html; charset=utf-8")
+    if name in _ANSWERED_BY_ARGUMENTS:
+        if name == "blocks.validate" and request.method == "GET":
+            return _err("unsupported_http_method")
+        if not (_ANSWERED_BY_ARGUMENTS[name] and _credential_sent(request)):
+            return None
+    other = _OTHER_ANSWERS.get(name)
+    if other is None and name not in _PUBLISHED_NOT_SERVED:
+        return JSONResponse({"ok": False, "error": "unknown_method", "req_method": name})
+    refusal = _caller_or_error(request)[1]
+    if other is None:
+        return refusal
+    answer, refused_first = other
+    if refused_first and refusal is not None and _credential_sent(request):
+        return refusal
+    return JSONResponse(answer)
+
+
 def attach_warning(payload: dict, warning: str) -> dict:
     """Add `warning` and `response_metadata.warnings` to a Slack answer where real puts them:
     `warning` after the method's own keys, `response_metadata` after it, and `warnings` after
@@ -992,7 +1185,7 @@ async def api_test(request: Request):
     in the bearer header alone. A non-empty `error` answers `ok: false` with that error, `null` for
     a body's that is not UTF-8, and `args` beside it. Measured against slack.com/api on 2026-10-13
     and 2026-10-20."""
-    if auth.slack_query_token_refused(request) or auth.slack_token(request) is not None:
+    if _credential_sent(request):
         _, refusal = _caller_or_error(request)
         if refusal is not None:
             return refusal

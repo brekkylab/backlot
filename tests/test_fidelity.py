@@ -1979,7 +1979,7 @@ def test_a_slack_response_is_its_examples_with_each_linked_object_placed_where_t
 
 
 def test_a_json_shape_keeps_types_and_enters_only_what_it_looked_inside():
-    """A JSON type is told apart before a number, since a bool is an int to Python. An empty array
+    """A boolean is told apart before a number, since a bool is an int to Python. An empty array
     is never a container; an empty object is where Backlot answers it, and not in an example."""
     shape = slack_docs.shape_of({"a": True, "b": 1, "c": "s", "d": None, "e": [], "f": {}})
     assert {k: set(v) for k, v in shape.fields.items()} == {
@@ -2018,7 +2018,10 @@ def test_slack_divergences_are_classified_like_operation_ones():
     assert served["users.list"].arguments == {"limit": "number", "cursor": "string", "x": ""}
 
     ours = slack_docs.shape_of(
-        {"members": [{"id": "U1", "tz": 3, "bot": {"a": 1}, "name": None}], "cache_ts": "x"}
+        {
+            "members": [{"id": "U1", "tz": 3, "bot": {"a": 1}, "name": None, "locale": "en"}],
+            "cache_ts": "x",
+        }
     )
     documented = slack_docs.Shape.union(
         [
@@ -2029,19 +2032,19 @@ def test_slack_divergences_are_classified_like_operation_ones():
                 },
                 empty_object_entered=False,
             ),
-            slack_docs.Shape({"members[].id": frozenset()}, frozenset()),
+            slack_docs.Shape({"members[].locale": frozenset()}, frozenset()),
         ]
     )
     backlot = {
         "users.list": slack_docs.Method(
-            "users.list", {"limit": "number", "cursor": "array", "x": ""}, ours
+            "users.list", {"limit": "number", "cursor": "array", "x": "", "y": "string"}, ours
         ),
         "a.b": slack_docs.Method("a.b"),
     }
     real = {
         "users.list": slack_docs.Method(
             "users.list",
-            {"limit": "number", "cursor": "string", "x": "string", "team_id": ""},
+            {"limit": "number", "cursor": "string", "x": "string", "y": "", "team_id": ""},
             documented,
         ),
         "c.d": slack_docs.Method("c.d"),
@@ -2130,12 +2133,28 @@ def test_slack_is_measured_off_the_reference_with_each_page_read_once(monkeypatc
             httpx.Response(200, json={"ok": False, "error": "invalid_auth"}),
             lambda: slack_docs._Caller("https://x.invalid/api", "t", timeout=1)("api.test"),
         ),
-        (
-            httpx.Response(200, json={"ok": True}),
-            lambda: slack_docs._calls(slack_docs._Caller("https://x.invalid/api", "t", timeout=1)),
+        *(
+            (
+                httpx.Response(200, json={"ok": True, **served}),
+                lambda: slack_docs._calls(
+                    slack_docs._Caller("https://x.invalid/api", "t", timeout=1)
+                ),
+            )
+            for served in (
+                {},
+                {"channels": [{"id": "C1"}], "messages": [{"ts": "1", "reply_count": 1}]},
+                {"channels": [{"id": "C1"}], "members": [{"id": "U1"}], "messages": [{"ts": "1"}]},
+            )
         ),
     ],
-    ids=["page-not-found", "unreachable", "backlot-refused", "corpus-serves-nothing"],
+    ids=[
+        "page-not-found",
+        "unreachable",
+        "backlot-refused",
+        "corpus-serves-nothing",
+        "corpus-serves-no-person",
+        "corpus-serves-no-thread",
+    ],
 )
 def test_a_slack_contract_that_cannot_be_read_is_not_a_divergence(answer, read, monkeypatch):
     """Exit 2, never a finding: a page that is not there, and a Backlot that refuses a call or
@@ -2165,6 +2184,9 @@ def test_the_probe_corpus_answers_every_method_backlot_serves():
     history = answered["conversations.history"].fields
     for field in ("reply_count", "reactions", "edited", "files[].id"):
         assert f"messages[].{field}" in history, field
+    # And with the arguments the reference's examples were sent, where an answer echoes them.
+    assert {"latest", "response_metadata"} <= set(history)
+    assert "args.foo" in answered["api.test"].fields
 
     rerun = "slack: rerun `backlot diff -s slack --update-baseline`"
     for f in Baseline.load(baseline_path("slack")).acknowledged.values():

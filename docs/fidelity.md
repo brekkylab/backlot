@@ -30,8 +30,8 @@ documents are written rather than how two servers answer.
 For **Slack**, which maintains no machine-readable description, its reference documentation:
 which methods exist, which arguments each takes and at which type, and which fields each answer
 carries and at which type, in both directions. Backlot's side is `/openapi.json` for the arguments
-and a local Backlot's own answers for the fields. See
-[Slack is read off its reference documentation](#slack-is-read-off-its-reference-documentation).
+and a local Backlot's own answers for the fields. See [Slack is read off its reference
+documentation](#slack-is-read-off-its-reference-documentation).
 
 Path templates are compared with placeholders flattened. The vendor calling a segment `{userId}`
 and Backlot calling it `{user_id}` is not a divergence.
@@ -115,12 +115,12 @@ divergence. Measured 2026-10-21 over all 340 method pages and the nine object pa
 - **Methods** are the index's table rows, each a method's name linked to its own page. Every row
   but the header must read that way. A method's own page is read only where Backlot serves it,
   and its `method_name` frontmatter must be the name the index linked.
-- **Arguments** are the lines of a page's `## Arguments` section: 1516 lines of one shape, a bolded
-  name, an optional type (`string` 968, `boolean` 131, `array` 129, `integer` 72, `object` 16,
-  `number` 6, none 194) and `Required` or `Optional`. Every bolded name anywhere in a section is
-  one of those lines, and every page but `admin.audit.anomaly.allow.getItem`, which Backlot does
-  not serve, reads at least one, so a served page that reads none is refused. An argument with no
-  type is compared by name only; `integer` and `number` are one JSON type.
+- **Arguments** are the lines of a page's `## Arguments` section: 1516 lines of one shape, a
+  bolded code name, an optional type (`string` 968, `boolean` 131, `array` 129, `integer` 72,
+  `object` 16, `number` 6, none 194) and `Required` or `Optional`. Every bolded code name anywhere
+  in a section is one of those lines, and every page but `admin.audit.anomaly.allow.getItem`, which
+  Backlot does not serve, reads at least one, so a served page that reads none is refused. An
+  argument with no type is compared by name only; `integer` and `number` are one JSON type.
 - **Fields** are read off the JSON examples in a page's `## Response` section, success examples
   only (`"ok": true`). 608 fenced blocks there open as JSON: 596 are JSON as written and 3 more
   once an elision (`...`, `// ...`) and a trailing comma outside every string are taken out. The

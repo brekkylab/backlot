@@ -8,7 +8,7 @@ part is read only where the page gives it one fixed spelling (``docs/fidelity.md
 off its reference documentation", carries the measurement of each):
 
 * the inventory, off the method index: one table row per method, its name linked to its own page;
-* a method's arguments, off its ``## Arguments`` section: one line each, a bolded name, an
+* a method's arguments, off its ``## Arguments`` section: one line each, a bolded code name, an
   optional type and ``Required`` or ``Optional``;
 * what a method answers, off the JSON examples in its ``## Response`` section;
 * the fields of an object such a section links (``reference/objects/user-object.md``), off that
@@ -50,9 +50,10 @@ from backlot.fidelity.surface import (
 
 # A response key that is a FIELD name. Measured 2026-09-22 across every method Backlot serves:
 # every key in Slack's answers matches this, except the conversation ids keying `shares.public` and
-# `shares.private` on a file, and the user ids keying a huddle message's `room.participants_events`.
-# Those are map entries, not fields, and are collapsed to `{}`. The reference's own examples key a
-# profile's custom `fields` the same way (`Xf111AAA111`).
+# `shares.private` on a file; and 2026-10-21 over `conversations.history`, the user ids keying a
+# huddle message's `room.participants_events`. Those are map entries, not fields, and are collapsed
+# to `{}`. The reference's own examples key a profile's custom `fields` the same way
+# (`Xf111AAA111`).
 _FIELD_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -401,7 +402,7 @@ def _section(page: str, anchor: str) -> str:
     return found.group(1) if found else ""
 
 
-# One argument, as every method page writes it, its type left out on some; and a bolded name
+# One argument, as every method page writes it, its type left out on some; and a bolded code name
 # anywhere on a line, which must be one of those.
 _ARGUMENT = re.compile(r"^\*\*`([^`]+)`\*\*(?:`([^`]*)`)?(?:Required|Optional)\s*$", re.M)
 _BOLD_NAME = re.compile(r"\*\*`[^`\n]+`\*\*")

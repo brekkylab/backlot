@@ -12,7 +12,7 @@ ties, such as ``A`` and ``a``, keep the order ``backlot.routers.google._drive_so
 :func:`sort_key` builds that order out of ``unicodedata`` and the tables below, each checked against
 the root collation table ICU 78.3 implements, CLDR 48's ``allkeys_CLDR.txt``. It reads a name in
 NFC, so names that are canonically equivalent tie. Where the tables stop, it sorts otherwise than
-ICU:
+ICU, as in these:
 
 - A letter sorts by its code point, where ICU orders some otherwise: Cyrillic ``ғ`` after ``г``,
   Greek ``ϝ`` after ``ε``, Latin ``ƀ`` after ``b``, and Han across its blocks, U+20000 between
@@ -20,8 +20,8 @@ ICU:
 - A mark outside ``_ACCENT_RANGES`` is weighed as a letter, where ICU weighs some as accents, such
   as Devanagari's anusvara, and an accent ``_ACCENTS`` does not list sorts after the listed ones,
   where ICU puts some among them, such as the kana voicing mark ahead of the short stroke.
-- White space, punctuation or a symbol ``_VARIABLE`` does not list sorts after the listed ones of
-  its kind, where ICU puts some among them, such as ``‰`` after ``%``.
+- Punctuation or a symbol ``_VARIABLE`` does not list sorts after the listed ones of its kind,
+  where ICU puts some among them, such as ``‰`` after ``%``.
 - Two code points are weighed as one only where NFC or ``_JOINED`` joins them. ICU also joins a
   Tibetan vowel sign to an AA sign past another AA sign (U+0F71 U+0F71 U+0F72), and weighs marks
   written out of their canonical order as written, where NFC reorders them first.
@@ -77,8 +77,8 @@ _PREVOWEL = re.compile(
 _WHOLE = frozenset("\u0419\u0439\u0622\u0623\u0624\u0625\u0626" + "".join(_JOINED.values()))
 
 # The white space, punctuation and symbols a name is likely to hold, in the order of the table's
-# primary weights, but for the ones it weighs as their decomposition. Another of each kind sorts
-# after the last of that kind here, by code point.
+# primary weights, but for the ones it weighs as their decomposition. Other punctuation or a symbol
+# sorts after the last of its kind here, by code point.
 _VARIABLE = (
     "\t\n\x0b\x0c\r\x85\u2028\u2029 _\u2017-\u2010\u2012\u2013\u2014\u2015"
     "\u301c\u30fb,\u3001;:!\xa1?\xbf.\u3002\xb7'\u2018\u2019\u201a\u201b\""
@@ -92,10 +92,8 @@ _VAR_RANK = {c: i for i, c in enumerate(_VARIABLE)}
 
 
 def _kind(c: str) -> str | None:
-    """Which of ``_VARIABLE``'s kinds ``c`` is, if any."""
+    """Which of ``_VARIABLE``'s kinds ``c`` is, if it is punctuation or a symbol."""
     category = unicodedata.category(c)
-    if category[0] == "Z" or c in "\t\n\x0b\x0c\r\x85":
-        return "space"
     return {"P": "punctuation", "S": "currency" if category == "Sc" else "symbol"}.get(category[0])
 
 
@@ -115,10 +113,8 @@ _ACCENT_RANK = {c: i + 1 for i, c in enumerate(_ACCENTS)}
 _ACCENT_RANGES = (
     (0x0300, 0x0362),  # Combining Diacritical Marks, without the combining Latin letters
     (0x0591, 0x05C7),  # Hebrew
-    (0x0610, 0x061A),  # Arabic
-    (0x064B, 0x065F),
+    (0x064B, 0x065F),  # Arabic
     (0x0670, 0x0670),
-    (0x06D6, 0x06ED),
     (0x0E47, 0x0E4E),  # Thai
     (0x0EC8, 0x0ECE),  # Lao
     (0x20D0, 0x20FF),  # Combining Diacritical Marks for Symbols

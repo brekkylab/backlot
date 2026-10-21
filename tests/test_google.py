@@ -5005,6 +5005,85 @@ _BY_NAME_NATURAL_DESC_8 = [_MADE_8[i] for i in (3, 2, 5, 4, 1, 0)]
 # Korean-language account; `name_natural desc` was the exact reverse. None holds Hangul or Han,
 # which a Korean-language account orders otherwise than an English-language one.
 _ELEVEN = ["2²3", "10²", "²", "a", "x2", "x2①", "x2²", "x3", "x10", "x22", "x²"]
+# The ninth folder, made on 2026-10-21 in the consumer account's Drive and listed the same three
+# times: for each table of `backlot.collation`, names whose order turns on its entries, made in
+# code point order. None holds Hangul or Han, so the root and `ko` orders are the same for them.
+# fmt: off
+_MADE_9 = [f"a{c}b" for c in (
+    "\t\n\x0b\x0c\r !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~\x85\xa1\xa2\xa3\xa4\xa5\xa6\xa7"
+    "\xa8\xa9\xab\xac\xae\xaf\xb0\xb1\xb4\xb6\xb7\xb8\xbb\xbf\xd7\xf7\u0e46\u0ec6\u2010"
+    "\u2012\u2013\u2014\u2015\u2016\u2017\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f"
+    "\u2020\u2021\u2022\u2023\u2027\u2028\u2029\u2038\u2044\u20a7\u20ac\u2190\u2191\u2192"
+    "\u2193\u2194\u2195\u2196\u2197\u2198\u2199\u219c\u219d\u219e\u219f\u3001\u3002\u3003"
+    "\u3005\u3006\u3008\u3009\u300a\u300b\u300c\u300d\u300e\u300f\u3010\u3011\u3014\u3015"
+    "\u301c\u301d\u301e\u303b\u309d\u30fb\u30fc\u30fd"
+)]
+_MADE_9 += ["xa"] + ["xa" + mark for mark in (
+    "\u0300\u0301\u0302\u0303\u0304\u0306\u0307\u0308\u030a\u030b\u030c\u0310\u0327\u0328"
+    "\u0335\u0338"
+)]
+_MADE_9 += [f"w{a}{b}" for a, b in zip("acgimoqsu", "\u0305\u05b0\u064b\u0670\u0e47\u0ec8\u20d0\ufe20\u3099")]
+_MADE_9 += [f"w{a}{b}" for a in "acgimoqsu" for b in ("", "b")]
+_MADE_9 += [
+    "la", "lb", "l\xb7a", "l\u0387a", "x a", "x,", "x1\u20442", "x\xa0a", "x\xbd", "x\u0628",
+    "x\u1d2c", "x\u1d43", "x\u2002a", "x\u2090", "x\u24b6", "x\u24d0", "x\u3000a", "x\u3002",
+    "x\ufe10", "x\ufe50", "x\ufe8f", "x\ufe90", "x\ufe91", "x\ufe92", "x\uff21", "x\uff41",
+    "x\uff61", "x\U0001d400", "x\U0001d41a", "x\U0001f130", "yae", "yaf", "yd", "ye", "yh",
+    "yi", "yj", "yl", "ym", "yn", "yo", "yoe", "yof", "yp", "yq", "yr", "yss", "yst", "yt",
+    "yu", "yz", "y\xc6", "y\xd0", "y\xd8", "y\xde", "y\xdf", "y\xe6", "y\xf0", "y\xf8", "y\xfe",
+    "y\u0110", "y\u0111", "y\u0126", "y\u0127", "y\u0131", "y\u0138", "y\u0141", "y\u0142",
+    "y\u014a", "y\u014b", "y\u0152", "y\u0153", "y\u0166", "y\u0167", "y\u1e9e", "\u013fa",
+    "\u0140a", "\u0430\u0418\u0306", "\u0430\u0419", "\u0430\u0438\u0306", "\u0430\u0438\u043a",
+    "\u0430\u0439", "\u0622\u0628", "\u0623\u0628", "\u0624\u0628", "\u0625\u0628",
+    "\u0626\u0628", "\u0627\u0628", "\u0627\u062c", "\u0627\u0653\u0628", "\u0627\u0654\u0628",
+    "\u0627\u0655\u0628", "\u0648\u0628", "\u0648\u0654\u0628", "\u064a\u0628",
+    "\u064a\u0654\u0628", "\u0e02", "\u0e40\u0e01", "\u0e81\u0eb2", "\u0e81\u0eb3",
+    "\u0e81\u0ec0", "\u0e81\u0ecd", "\u0e81\u0ecd\u0eb2", "\u0e82", "\u0ec0\u0e01",
+    "\u0ec0\u0e81", "\u0f40\u0e33", "\u0f40\u0e4d\u0e32", "\u0f40\u0eb3", "\u0f40\u0ecd\u0eb2",
+    "\u0f40\u0f71", "\u0f40\u0f71\u0f72", "\u0f40\u0f71\u0f74", "\u0f40\u0f71\u0f80",
+    "\u0f40\u0f72", "\u0f40\u0f73", "\u0f40\u0f74", "\u0f40\u0f75", "\u0f40\u0f76",
+    "\u0f40\u0f77", "\u0f40\u0f78", "\u0f40\u0f79", "\u0f40\u0f7a", "\u0f40\u0f7b",
+    "\u0f40\u0f7c", "\u0f40\u0f7d", "\u0f40\u0f80", "\u0f40\u0f81", "\u0f40\u0f84",
+    "\u0f40\u0f88", "\u0f40\u0f90", "\u0f40\u0fb2\u0f71\u0f80", "\u0f40\u0fb2\u0f80",
+    "\u0f40\u0fb2\u0f81", "\u0f40\u0fb3\u0f71\u0f80", "\u0f40\u0fb3\u0f80",
+    "\u0f40\u0fb3\u0f81", "\u0f41", "\u1981", "\u19b5\u1980", "\u2764", "\u2764\ufe0e",
+    "\u2764\ufe0f", "\u3041", "\u3041\u3044", "\u3042", "\u304b\u3042", "\u304b\u30fc",
+    "\u30a1", "\u30a2", "\u30ab\u30a2", "\u30ab\u30fc", "\u32d0", "\uff67", "\uff71",
+]
+_MADE_9.sort()
+_BY_NAME_NATURAL_9 = [_MADE_9[int(i)] for i in (
+    "315 314 313 0 1 2 3 4 38 84 85 5 32 70 18 64 65 66 67 68 121 126 17 104 22 21 6 39 26 59 "
+    "19 105 56 12 71 72 73 74 7 75 76 77 78 122 123 48 58 13 14 28 30 34 36 109 110 111 112 "
+    "113 114 115 116 117 118 119 120 69 45 55 27 15 20 29 11 8 10 79 80 81 82 83 106 86 33 54 "
+    "31 51 46 57 52 47 50 90 92 91 93 94 95 96 97 98 99 100 101 102 103 16 53 61 60 23 24 25 "
+    "49 35 44 37 87 62 63 107 124 125 127 128 42 40 9 41 43 89 88 108 129 249 132 131 248 130 "
+    "133 135 134 136 138 137 139 141 140 142 144 143 145 147 146 148 150 149 151 153 152 154 "
+    "156 155 157 159 158 160 189 185 180 161 192 191 190 199 162 181 163 198 201 188 197 200 "
+    "187 184 186 202 183 165 164 169 166 174 172 171 173 167 170 179 176 177 168 178 175 182 "
+    "195 196 194 193 203 229 224 204 205 234 233 230 225 206 207 236 235 208 237 209 210 240 "
+    "239 211 212 242 241 213 231 226 214 244 243 215 216 217 238 218 219 228 247 220 221 246 "
+    "245 222 223 232 227 253 254 252 251 250 262 255 263 256 266 257 264 258 268 259 260 261 "
+    "265 267 270 269 274 271 275 272 278 273 276 277 280 279 282 281 303 302 283 287 288 284 "
+    "299 300 286 289 290 285 305 291 306 304 292 308 293 309 307 294 295 296 297 298 301 310 "
+    "312 311 316 318 321 326 322 327 325 317 320 324 319 323"
+).split()]
+_BY_NAME_NATURAL_DESC_9 = [_MADE_9[int(i)] for i in (
+    "323 319 324 320 317 325 327 322 326 321 318 316 311 312 310 301 298 297 296 295 309 307 "
+    "294 308 293 306 304 292 305 291 290 285 289 300 286 299 288 284 287 283 302 303 282 281 "
+    "280 279 277 276 278 273 275 272 271 274 269 270 267 265 261 260 268 259 264 258 266 257 "
+    "263 256 262 255 251 250 254 252 253 227 232 223 222 245 246 221 220 247 228 219 218 238 "
+    "217 216 215 243 244 214 226 231 213 241 242 212 211 239 240 210 209 237 208 235 236 207 "
+    "206 225 230 233 234 205 204 224 229 203 193 194 196 195 182 175 178 168 177 176 179 170 "
+    "167 173 171 172 174 166 169 164 165 202 183 186 184 187 200 197 188 201 198 163 181 162 "
+    "199 190 191 192 161 180 185 189 160 158 159 157 155 156 154 152 153 151 149 150 148 146 "
+    "147 145 143 144 142 140 141 139 137 138 136 134 135 133 130 248 249 132 131 129 108 88 89 "
+    "43 41 9 40 42 128 127 125 124 107 63 62 87 37 44 35 49 25 24 23 60 61 53 16 103 102 101 "
+    "100 99 98 97 96 95 94 93 91 92 90 50 47 52 57 46 51 31 54 33 86 106 83 82 81 80 79 10 8 "
+    "11 29 20 15 27 55 45 69 120 119 118 117 116 115 114 113 112 111 110 109 36 34 30 28 14 13 "
+    "58 48 123 122 78 77 76 75 7 74 73 72 71 12 56 105 19 59 26 39 6 21 22 104 17 126 121 68 "
+    "67 66 65 64 18 70 32 5 85 84 38 4 3 2 1 0 315 314 313"
+).split()]
+# fmt: on
 
 
 @pytest.mark.parametrize(
@@ -5030,6 +5109,8 @@ _ELEVEN = ["2²3", "10²", "²", "a", "x2", "x2①", "x2²", "x3", "x10", "x22",
         (_MADE_8, "name_natural desc", _BY_NAME_NATURAL_DESC_8),
         (_ELEVEN, "name_natural", _ELEVEN),
         (_ELEVEN, "name_natural desc", _ELEVEN[::-1]),
+        (_MADE_9, "name_natural", _BY_NAME_NATURAL_9),
+        (_MADE_9, "name_natural desc", _BY_NAME_NATURAL_DESC_9),
     ],
 )
 def test_drive_order_by_a_name_lists_a_folder_as_real_did(tmp_path, made, order_by, listed):
@@ -5044,8 +5125,8 @@ def test_drive_order_by_a_name_lists_a_folder_as_real_did(tmp_path, made, order_
                 "folder": "names",
                 "title": title,
                 "content": "p",
-                "created": f"2026-10-20T17:36:{i:02d}Z",
-                "updated": f"2026-10-20T17:36:{i:02d}Z",
+                "created": f"2026-10-20T17:{36 + i // 60}:{i % 60:02d}Z",
+                "updated": f"2026-10-20T17:{36 + i // 60}:{i % 60:02d}Z",
             }
             for i, title in enumerate(made)
         ],
@@ -5055,7 +5136,11 @@ def test_drive_order_by_a_name_lists_a_folder_as_real_did(tmp_path, made, order_
         r = c.get(
             "/drive/v3/files",
             headers={"Authorization": f"Bearer {admin}"},
-            params={"orderBy": order_by, "q": "mimeType != 'application/vnd.google-apps.folder'"},
+            params={
+                "orderBy": order_by,
+                "q": "mimeType != 'application/vnd.google-apps.folder'",
+                "pageSize": 1000,
+            },
         )
     assert r.status_code == 200, r.text
     assert [f["name"] for f in r.json()["files"]] == listed

@@ -129,6 +129,11 @@ async def graphql(request: Request):
         "roster": frozenset(state.acl.email_to_token()) if getattr(state, "acl", None) else None,
     }
     result = ENGINE.execute_payload(payload, context=context)
+    # Resolver field errors retain GraphQL's alias-aware locations/path and partial data. These
+    # measured Fireflies validation errors also carry two top-level vendor fields.
+    for error in result.payload.get("errors", []):
+        if error.get("extensions", {}).get("code") == "invalid_arguments":
+            error.update(friendly=True, code="invalid_arguments")
     return Response(
         request_body.node_json(result.payload),
         status_code=400 if result.request_error else 200,

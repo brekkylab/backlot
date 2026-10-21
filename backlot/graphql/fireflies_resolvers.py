@@ -7,8 +7,7 @@ explicitly are those that take arguments or hit the DB.
 Three things are worth knowing before reading further:
 
 - **Pagination is offset-based**, not a Relay connection: `limit`/`skip` straight through to
-  SQL. `limit` is CLAMPED to Fireflies' documented maximum of 50 rather than rejected, because
-  that is what the real API does — a client asking for 200 gets 50, not an error.
+  SQL. The measured validation bounds are checked before a page is read.
 - **ACL comes from the context, not from here.** ``info.context["visible_ids"]`` is threaded
   into every store call, so a resolver never makes an access decision of its own. A transcript
   the caller may not read is indistinguishable from one that does not exist.
@@ -19,6 +18,10 @@ Three things are worth knowing before reading further:
 from __future__ import annotations
 
 import datetime as _dt
+import re
+import uuid
+
+from graphql import GraphQLError
 
 from backlot import store, synth
 
@@ -40,12 +43,11 @@ def _ctx(info):
 
 
 def clamp_limit(value) -> int:
-    """Fireflies documents `limit` as "max 50". It CLAMPS rather than erroring, so a client that
-    asks for 200 is served 50. A non-positive or unparseable value falls back to the default.
+    """Normalize an internal page size after the resolver validates supplied arguments.
 
-    Not ``pagination.clamp_limit``, which looks equivalent and is not: it compares the value
-    without coercing, so a non-numeric ``limit`` raises TypeError there instead of falling back.
-    That path is reachable and pinned (see tests/test_pagination.py)."""
+    Kept separate from ``pagination.clamp_limit``: that helper does not coerce an unparseable
+    value. The direct helper behavior is pinned in tests/test_pagination.py.
+    """
     try:
         n = int(value)
     except (TypeError, ValueError):
@@ -302,6 +304,80 @@ def _transcript(row, info) -> dict:
 # --- Query roots ------------------------------------------------------------------
 
 
+# Reporter measurements cover person-filter collisions and these argument constraints. Field
+# order is the measured validation order, independent of the order in the GraphQL document.
+_PERSON_FIELDS = (
+    ("userId", "user_id"),
+    ("mine", "mine"),
+    ("hostEmail", "host_email"),
+    ("organizerEmail", "organizer_email"),
+    ("participantEmail", "participant_email"),
+)
+_EXCLUSIVE = (
+    "Only one of the following fields can be provided: "
+    "mine, userId, hostEmail, organizerEmail, participantEmail"
+)
+
+
+def _validate_transcripts(arguments):
+    fields = {}
+
+    def add(name, kind, message):
+        field = fields.setdefault(name, {"name": name, "message": message, "constraints": []})
+        field["constraints"].append({"type": kind, "message": message})
+
+    limit, skip = arguments["limit"], arguments["skip"]
+    if limit is not None:
+        if limit <= 0:
+            add("limit", "isPositive", "limit must be a positive number")
+        elif limit > PAGE_MAX:
+            add("limit", "max", "limit must not be greater than 50")
+    if skip is not None:
+        if skip < 0:
+            add("skip", "min", "skip must not be less than 0")
+        elif skip > 5000:
+            add("skip", "max", "skip must not be greater than 5000")
+    date = arguments["fromDate"]
+    if date is not None and (
+        isinstance(date, str)
+        and date.strip().lstrip("-").isdigit()
+        or to_epoch_seconds(date) is None
+    ):
+        add("fromDate", "isDate", "fromDate must be a Date instance")
+
+    singular = [(name, key) for name, key in _PERSON_FIELDS if arguments[key]]
+    plural = [name for name in ("organizers", "participants") if arguments[name] is not None]
+    if singular and plural:
+        for name in plural:
+            add(name, "exclusiveFields", f"{_EXCLUSIVE}, {name}.")
+    elif len(singular) > 1:
+        for name, _key in singular:
+            add(name, "exclusiveFields", f"{_EXCLUSIVE}.")
+    # Do not trim email filters: leading/trailing whitespace was measured as invalid, whereas
+    # an empty string is absent. No additional constraints on plural members were measured.
+    for name, key in _PERSON_FIELDS:
+        value = arguments[key]
+        if (
+            key.endswith("_email")
+            and value
+            and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value)
+        ):
+            add(name, "IsEmailOnly", f"{name} must be a valid email address")
+    if fields:
+        raise GraphQLError(
+            "Invalid argument(s) were provided",
+            extensions={
+                "code": "invalid_arguments",
+                "correlationId": uuid.uuid4().hex[:8],
+                "status": 400,
+                "metadata": {"fields": list(fields.values())},
+                "helpUrls": [
+                    "https://docs.fireflies.ai/miscellaneous/error-codes#invalid_arguments"
+                ],
+            },
+        )
+
+
 def resolve_transcripts(
     _root,
     info,
@@ -323,6 +399,7 @@ def resolve_transcripts(
     skip=None,
     **_ignored,
 ):
+    _validate_transcripts(locals())
     ctx = _ctx(info)
     if store.fireflies_scope_columns(scope) is None:
         # An unknown `scope` is a client mistake, and silently searching everything would hide it.
@@ -339,12 +416,8 @@ def resolve_transcripts(
         hosts.append(caller or "\x00none")
     if user_id:
         hosts.append(_email_for_user_id(ctx, user_id) or "\x00none")
-    # Several host constraints that disagree can match nothing; that is the honest answer.
-    if len({h.lower() for h in hosts}) > 1:
-        return []
-
-    # The singular forms are aliases of the plural filters, so they combine the same way:
-    # `organizers` is any-of, `participants` is all-of.
+    # Validation above leaves at most one singular person constraint. The plural-only pair
+    # remains valid: `organizers` is any-of, `participants` is all-of.
     organizers = [*(organizers or []), *([organizer_email] if organizer_email else [])]
     participants = [*(participants or []), *([participant_email] if participant_email else [])]
 

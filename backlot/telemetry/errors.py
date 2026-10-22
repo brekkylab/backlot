@@ -1,11 +1,14 @@
 """The error code an answer carries, and the class of a failure.
 
 An error code is the vendor's own identifier where its envelope has one: Slack's ``error``, S3's
-``<Code>``, Google's ``reason`` or else its ``status``, Notion's ``code``, HubSpot's ``category``, a
-GraphQL ``extensions.code``. GitHub, Jira, Confluence and the GraphQL engine answer with a message
-only; those messages are Backlot's own text, so each maps to a fixed slug here and the message
-itself, which can carry a key, a sha or a field name from the request, is never sent. A message
-this table does not know is ``unrecognized``.
+``<Code>``, Google's ``reason`` or else its ``status``, Notion's ``code``, HubSpot's ``category``,
+Microsoft Graph's ``error.code``, a GraphQL ``extensions.code``. GitHub, Jira, Confluence, the
+GraphQL engine and Graph's OData validator answer with a message only; those messages are Backlot's
+own text, so each maps to a fixed slug here and the message itself, which can carry a key, a sha or
+a field name from the request, is never sent. A message this table does not know is
+``unrecognized``, except at 400 from Linear or Fireflies: the GraphQL engine answers 400 only for a
+request it refuses before any resolver runs, and the refusals no row names are graphql-core's
+validation of the document and its variables, so they are ``graphql_validation``.
 
 The class is the cause a failed call is put down to, sent as ``backlot.error_class`` on every
 failure:
@@ -98,6 +101,8 @@ _GRAPHQL = [
         "graphql_validation",
     ),
 ]
+# Graph's OData validator answers with an empty `error.code`; its message names the option.
+_MSGRAPH = [(r"^The query specified in the URI is not valid\.", "invalid_query_option")]
 _S3_CODE = re.compile(rb"<Code>([A-Za-z0-9_.-]{1,64})</Code>")
 
 
@@ -136,7 +141,10 @@ def error_code(source: str, status: int, body: bytes) -> str:
             return ""
         extensions = errors[0].get("extensions")
         code = extensions.get("code") if isinstance(extensions, dict) else None
-        return code if isinstance(code, str) and code else _slug(errors[0].get("message"), _GRAPHQL)
+        if isinstance(code, str) and code:
+            return code
+        slug = _slug(errors[0].get("message"), _GRAPHQL)
+        return "graphql_validation" if slug == "unrecognized" and status == 400 else slug
     if status < 400:
         return ""
     if source == "github":
@@ -154,6 +162,11 @@ def error_code(source: str, status: int, body: bytes) -> str:
         return error["status"] if isinstance(error.get("status"), str) else ""
     if source == "notion":
         return doc["code"] if isinstance(doc.get("code"), str) else ""
+    if source == "msteams":
+        error = doc.get("error")
+        if not isinstance(error, dict) or not isinstance(error.get("code"), str):
+            return ""
+        return error["code"] or _slug(error.get("message"), _MSGRAPH)
     if source == "hubspot":
         return doc["category"] if isinstance(doc.get("category"), str) else ""
     if source == "jira":

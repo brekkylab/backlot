@@ -3828,8 +3828,9 @@ def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org, 
 
     The tell that it isn't happening is the byte count disagreeing with the `size` the tree reported
     for the same blob, so that is what these assert against rather than "some content came back".
-    Real GitHub answers git/blobs with text/plain and contents/readme with vnd.github.raw — the same
-    bytes either way, but the difference is GitHub's own, so it is reproduced.
+    Real answers `git/blobs` with `text/plain` in each spelling (`_BLOB_RAW_TYPE`), and contents and
+    readme with the raw type as the header spells it (`_representation_content_type`): the same
+    bytes either way.
     """
     c, _ = gh_client
     sha = hashlib.sha1(_MAIN_PY.encode()).hexdigest()
@@ -3848,7 +3849,8 @@ def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org, 
     ]:
         r = c.get(url, headers={**gh_admin_h, "Accept": accept})
         assert r.status_code == 200, url
-        assert r.headers["content-type"].startswith(ctype), url
+        expected_type = ctype if ctype == "text/plain" else accept.partition(";")[0]
+        assert r.headers["content-type"] == expected_type + "; charset=utf-8", url
         assert r.text == body and len(r.content) == len(body.encode()), url
 
 
@@ -4880,6 +4882,221 @@ def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accep
     r = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers={**h, "Accept": accept})
     assert r.status_code == 200
     assert r.text.startswith({"json": "{", "diff": "diff --git ", "patch": "From "}[served])
+
+
+@pytest.mark.parametrize(
+    "accept, expected",
+    [
+        ("application/vnd.github.v3.diff", "application/vnd.github.v3.diff"),
+        ("Application/vnd.github.diff", "Application/vnd.github.diff"),
+        ("application/vnd.github.diff;foo=bar", "application/vnd.github.diff"),
+        (
+            "application/json, application/vnd.github.diff",
+            "application/json,application/vnd.github.diff",
+        ),
+        ("*/*, application/vnd.github.diff", "application/vnd.github.diff,*/*"),
+        (
+            "application/json;q=0.1, application/vnd.github.diff;q=0.9, text/plain;q=0.5",
+            "application/vnd.github.diff,text/plain,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.9, application/json;q=0",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff, application/vnd.github.diff",
+            "application/vnd.github.diff,application/vnd.github.diff",
+        ),
+        (
+            "text/*, application/*, application/vnd.github.diff",
+            "application/vnd.github.diff,text/*,application/*",
+        ),
+        (
+            "application/vnd.github.diff;Q=0.1, application/json;q=0.5",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q = 0.1, application/json;q=0.5",
+            "application/vnd.github.diff,application/json",
+        ),
+        ("application/vnd.github.v3.patch+json", "application/vnd.github.v3.patch+json"),
+        ("*/*, text/*, application/vnd.github.diff", "application/vnd.github.diff,text/*,*/*"),
+        (
+            "application/*, */*, text/*, application/vnd.github.diff",
+            "application/vnd.github.diff,application/*,text/*,*/*",
+        ),
+        ("application/vnd.github.diff,", "application/vnd.github.diff"),
+        (",application/vnd.github.diff", "application/vnd.github.diff"),
+        (";q=0.5, application/vnd.github.diff", "application/vnd.github.diff"),
+        (
+            "application/vnd.github.diff,,application/json",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=0.1;q=0.9",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=0.9;q=0.1",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;foo=bar;q=0.1",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;charset=utf-8;q=0.1",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=+0.9",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q= 0.9",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=inf",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            'application/json;q="0.1", application/vnd.github.diff;q=0.5',
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/json;q=abc, text/plain;q=0, application/vnd.github.diff",
+            "application/vnd.github.diff,application/json,text/plain",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;foo=a-b;q=0.1",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=0.1-;q=0.9",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;charset=x;q=0.1",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=1e-1",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            'application/vnd.github.diff;q=0.5, application/json;q="0.9"',
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/json;q=-0.9, text/plain;q=0, application/vnd.github.diff",
+            "application/vnd.github.diff,application/json,text/plain",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json; q=0.1",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;a.b=c;q=0.1",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;foo=\xe9;q=0.1",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=0.9\xa0;q=0.1",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=0.9x",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=.9x",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/json,\xa0application/vnd.github.diff",
+            "application/json,application/vnd.github.diff",
+        ),
+    ],
+)
+def test_github_pull_representation_content_type_echoes_accept(diff_pr, accept, expected):
+    """The live measurement beside `_representation_content_type`: pull 7619, version 2022-11-28.
+    Parameters are removed, not members with q=0; case and duplicates survive the stable sort.
+    """
+    c, h, org, num = diff_pr
+    headers = {**{k: v.encode() for k, v in h.items()}, "Accept": accept.encode("latin-1")}
+    r = _sent_raw(c, f"/github/repos/{org}/diffable/pulls/{num}", headers)
+    assert r.status_code == 200
+    assert r.headers["content-type"] == expected + "; charset=utf-8"
+    assert r.text.startswith("From " if "patch" in accept else "diff --git ")
+
+
+@pytest.mark.parametrize(
+    "suffix, accept, expected",
+    [
+        (
+            "contents/README.md",
+            "application/vnd.github.v3.raw+json",
+            "application/vnd.github.v3.raw+json",
+        ),
+        (
+            "contents/README.md",
+            "text/plain;q=0.2, application/vnd.github.raw;q=0.9",
+            "application/vnd.github.raw,text/plain",
+        ),
+        ("contents/README.md", "application/vnd.github.raw,", "application/vnd.github.raw"),
+        (
+            "contents/README.md",
+            "*/*, text/*, application/vnd.github.raw",
+            "application/vnd.github.raw,text/*,*/*",
+        ),
+        ("readme", "application/vnd.github.v3.raw+json", "application/vnd.github.v3.raw+json"),
+        (
+            "readme",
+            "text/plain;q=0.2, application/vnd.github.raw;q=0.9",
+            "application/vnd.github.raw,text/plain",
+        ),
+        ("readme", "application/vnd.github.raw,", "application/vnd.github.raw"),
+        (
+            "readme",
+            "*/*, text/*, application/vnd.github.raw",
+            "application/vnd.github.raw,text/*,*/*",
+        ),
+        (
+            "contents/README.md",
+            "application/vnd.github.raw;q=0.5, application/json;q=abc",
+            "application/json,application/vnd.github.raw",
+        ),
+        (
+            "readme",
+            "application/vnd.github.raw;q=0.5, application/json;q=abc",
+            "application/vnd.github.raw,application/json",
+        ),
+        (
+            "contents/README.md",
+            "application/vnd.github.raw;q=0.5, application/json;q= 0.9",
+            "application/json,application/vnd.github.raw",
+        ),
+        (
+            "readme",
+            "application/vnd.github.raw;q=0.5, application/json;q= 0.9",
+            "application/vnd.github.raw,application/json",
+        ),
+    ],
+)
+def test_github_content_raw_type_echoes_accept(
+    gh_client, gh_admin_h, gh_org, suffix, accept, expected
+):
+    """The same measurement beside `_representation_content_type`, on README contents and readme,
+    which read a `q` that is no number differently."""
+    c, _ = gh_client
+    r = c.get(f"/github/repos/{gh_org}/codebase/{suffix}", headers={**gh_admin_h, "Accept": accept})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == expected + "; charset=utf-8"
+    assert r.text == _CODEBASE_README
 
 
 def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):

@@ -31,8 +31,9 @@
 # says so.
 #
 # OUT OF SCOPE (deliberate): mutations — there is no Mutation type, so introspection reports
-# `mutationType: null` rather than advertising writes that would fail. Also attachments,
-# webhooks, roadmaps/initiatives and `documents` as first-class queries.
+# `mutationType: null` rather than advertising writes that would fail. Also webhooks and
+# roadmaps/initiatives. `documents` is declared and answers an empty connection: a corpus carries
+# no Linear documents, and a workspace without any answers exactly that.
 
 # --- custom scalars ---------------------------------------------------------------
 # Linear's own scalar names. graphql-core passes the output scalars through unchanged, which is
@@ -66,6 +67,11 @@ type Query {
   teams(after: String, before: String, filter: TeamFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): TeamConnection!
   comments(after: String, before: String, filter: CommentFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): CommentConnection!
   users(after: String, before: String, filter: UserFilter, first: Int, includeArchived: Boolean, includeDisabled: Boolean, last: Int, orderBy: PaginationOrderBy, sort: [UserSortInput!]): UserConnection!
+  """Issues matching a search term by identifier, by a word of the title or description, or by
+  a word of a comment unless `includeComments` is false; best match first unless `orderBy` is
+  given."""
+  searchIssues(after: String, before: String, filter: IssueFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, term: String!, includeComments: Boolean, teamId: String): IssueSearchPayload!
+  documents(after: String, before: String, filter: DocumentFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): DocumentConnection!
   """The authenticated user — how a client confirms which identity (and therefore which ACL scope) its credential resolved to."""
   viewer: User!
 
@@ -83,6 +89,7 @@ type Query {
   issueRelation(id: String!): IssueRelation!
   release(id: String!): Release!
   teamMembership(id: String!): TeamMembership!
+  teamMemberships(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): TeamMembershipConnection!
 }
 
 # --- connections & entity types -----------------------------------------------------
@@ -97,14 +104,12 @@ type Query {
 # else. They exist so those documents validate; Backlot has no data behind them, so the
 # owning field always resolves to null and the type is never actually reached.
 type AgentSession { id: ID! }
-type Document { id: ID! }
 type ExternalUser { id: ID! }
 type Favorite { id: ID! }
 type Initiative { id: ID! }
 type InitiativeUpdate { id: ID! }
 type IntegrationsSettings { id: ID! }
 type ProjectMilestone { id: ID! }
-type ProjectStatus { id: ID! }
 type ReleasePipeline { id: ID! }
 type ReleaseStage { id: ID! }
 type ProjectUpdate { id: ID! }
@@ -368,6 +373,40 @@ input CommentFilter {
   or: [CommentFilter!]
 }
 
+"""The keys of Linear's `DocumentFilter` whose input types are declared here. `documents` answers
+an empty connection, so no filter narrows anything."""
+input DocumentFilter {
+  id: IDComparator
+  createdAt: DateComparator
+  updatedAt: DateComparator
+  title: StringComparator
+  slugId: StringComparator
+  creator: UserFilter
+  owner: NullableUserFilter
+  issue: IssueFilter
+  team: NullableTeamFilter
+  release: ReleaseFilter
+  and: [DocumentFilter!]
+  or: [DocumentFilter!]
+}
+
+"""The keys of Linear's `NullableTeamFilter` whose input types are declared here; it is read only
+under `DocumentFilter`."""
+input NullableTeamFilter {
+  id: IDComparator
+  createdAt: DateComparator
+  updatedAt: DateComparator
+  name: StringComparator
+  key: StringComparator
+  description: NullableStringComparator
+  retiredAt: NullableDateComparator
+  parent: NullableTeamFilter
+  restrictedBy: NullableTeamFilter
+  null: Boolean
+  and: [NullableTeamFilter!]
+  or: [NullableTeamFilter!]
+}
+
 # No `branchName`: Linear's `IssueFilter` has no such field (measured 2026-09-03 — the real API
 # answers `Field "branchName" is not defined by type "IssueFilter"`), so a predicate over it was one
 # no client written against Linear could send.
@@ -391,11 +430,11 @@ input IssueFilter {
   team: TeamFilter
   project: NullableProjectFilter
   labels: IssueLabelCollectionFilter
+  number: NumberComparator
   and: [IssueFilter!]
   """The keys of one branch are alternatives: `{or: [{number: {eq: 1}, title: {eq: T}}]}` answered
   the issue numbered 1 and the one titled T, where the same object under `and` answered none
-  (measured 2026-09-04 on api.linear.app; `number` is not declared here, the keys that are read the
-  same way)."""
+  (measured 2026-09-04 on api.linear.app)."""
   or: [IssueFilter!]
 }
 
@@ -566,6 +605,41 @@ type Cycle {
   team: Team!
 }
 
+"""A Linear document. Declared in full so a document selecting any of its fields validates; the
+corpus holds none, so `documents` never reaches one."""
+type Document {
+  id: ID!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  archivedAt: DateTime
+  title: String!
+  summary: String
+  icon: String
+  color: String
+  creator: User
+  owner: User
+  updatedBy: User
+  project: Project
+  initiative: Initiative
+  team: Team
+  issue: Issue
+  release: Release
+  cycle: Cycle
+  parentDocument: Document
+  subDocumentSortOrder: Float
+  slugId: String!
+  lastAppliedTemplate: Template
+  hiddenAt: DateTime
+  trashed: Boolean
+  sortOrder: Float!
+  comments(filter: CommentFilter, before: String, after: String, first: Int, last: Int, includeArchived: Boolean, orderBy: PaginationOrderBy): CommentConnection!
+  subscribers(filter: UserFilter, includeDisabled: Boolean, before: String, after: String, first: Int, last: Int, includeArchived: Boolean, orderBy: PaginationOrderBy): UserConnection!
+  content: String
+  contentState: String
+  documentContentId: String
+  url: String!
+}
+
 type DocumentContent {
   content: String
   contentState: String
@@ -684,6 +758,81 @@ type Issue {
   releases(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: ReleaseFilter): ReleaseConnection!
 }
 
+"""One `searchIssues` match: an `Issue`, and the search's own `metadata`."""
+type IssueSearchResult {
+  trashed: Boolean
+  reactionData: JSONObject!
+  labelIds: [String!]!
+  integrationSourceType: IntegrationService
+  url: String!
+  identifier: String!
+  priorityLabel: String!
+  previousIdentifiers: [String!]!
+  customerTicketCount: Int!
+  branchName: String!
+  dueDate: TimelessDate
+  estimate: Float
+  description: String
+  title: String!
+  number: Float!
+  updatedAt: DateTime!
+  boardOrder: Float!
+  sortOrder: Float!
+  prioritySortOrder: Float!
+  subIssueSortOrder: Float
+  priority: Float!
+  archivedAt: DateTime
+  createdAt: DateTime!
+  startedTriageAt: DateTime
+  triagedAt: DateTime
+  addedToCycleAt: DateTime
+  addedToProjectAt: DateTime
+  addedToTeamAt: DateTime
+  autoArchivedAt: DateTime
+  autoClosedAt: DateTime
+  canceledAt: DateTime
+  completedAt: DateTime
+  startedAt: DateTime
+  slaStartedAt: DateTime
+  slaBreachesAt: DateTime
+  slaHighRiskAt: DateTime
+  slaMediumRiskAt: DateTime
+  snoozedUntilAt: DateTime
+  slaType: String
+  id: ID!
+  inheritsSharedAccess: Boolean!
+  reactions: [Reaction!]!
+  sharedAccess: IssueSharedAccess!
+  delegate: User
+  botActor: ActorBot
+  sourceComment: Comment
+  cycle: Cycle
+  syncedWith: [ExternalEntityInfo!]
+  externalUserCreator: ExternalUser
+  asksExternalUserRequester: ExternalUser
+  asksRequester: User
+  lastAppliedTemplate: Template
+  parent: Issue
+  projectMilestone: ProjectMilestone
+  project: Project
+  recurringIssueTemplate: Template
+  team: Team!
+  assignee: User
+  creator: User
+  snoozedBy: User
+  favorite: Favorite
+  state: WorkflowState!
+  labels(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: IssueLabelFilter): IssueLabelConnection!
+  comments(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: CommentFilter): CommentConnection!
+  relations(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): IssueRelationConnection!
+  inverseRelations(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): IssueRelationConnection!
+  children(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: IssueFilter): IssueConnection!
+  attachments(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: AttachmentFilter): AttachmentConnection!
+  releases(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: ReleaseFilter): ReleaseConnection!
+  """`{context: {}, score}`, as real's were (measured 2026-10-22)."""
+  metadata: JSONObject!
+}
+
 type IssueConnection {
   nodes: [Issue!]!
   pageInfo: PageInfo!
@@ -741,6 +890,27 @@ type PageInfo {
   hasPreviousPage: Boolean!
   hasNextPage: Boolean!
 }
+
+"""A project's status. Linear's are workspace-wide: these five came back from `projectStatuses` with
+`team: null` (measured 2026-10-22), and a project in `state: "started"` is in the `started` one."""
+type ProjectStatus {
+  id: ID!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  archivedAt: DateTime
+  name: String!
+  color: String!
+  description: String
+  position: Float!
+  type: ProjectStatusType!
+  indefinite: Boolean!
+  team: Team
+  teamId: String
+  inheritedFrom: ProjectStatus
+}
+
+"""Linear's `ProjectStatusType`, its full member list as introspected on 2026-10-22."""
+enum ProjectStatusType { backlog planned started paused completed canceled }
 
 type Project {
   trashed: Boolean
@@ -953,11 +1123,22 @@ type Team {
   triageIssueState: WorkflowState
   markedAsDuplicateWorkflowState: WorkflowState
   issues(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, filter: IssueFilter, includeSubTeams: Boolean): IssueConnection!
+  """The people in the team's ACL group."""
+  members(after: String, before: String, filter: UserFilter, first: Int, includeArchived: Boolean, includeDisabled: Boolean, last: Int, orderBy: PaginationOrderBy, sort: [UserSortInput!]): UserConnection!
+  membership(userId: String!): TeamMembership
+  memberships(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): TeamMembershipConnection!
+  """Linear's six default states, and every other state the team's issues are in."""
+  states(after: String, before: String, filter: WorkflowStateFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): WorkflowStateConnection!
+  """Every label the caller sees an issue carrying: labels are workspace-wide (`team: null`), and
+  a real team lists those whether or not any of its issues carries one (measured 2026-10-22)."""
+  labels(after: String, before: String, filter: IssueLabelFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): IssueLabelConnection!
+  # No `filter` or `sort`: `ProjectFilter` and `ProjectSortInput` are not declared here.
+  projects(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, includeSubTeams: Boolean = false): ProjectConnection!
+  # No `filter`: `CycleFilter` is not declared here.
+  cycles(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): CycleConnection!
 }
 
-# Backlot serves the viewer's own membership in each team it can see, and no one else's:
-# `teamMembership(id:)` finds only those, and `Team.members`, `membership`, `memberships` and
-# `User.teamMemberships` are gaps.
+# A team's members are the people in its ACL group, each with a membership in it.
 type TeamMembership {
   id: ID!
   createdAt: DateTime!
@@ -972,6 +1153,49 @@ type TeamMembership {
 type TeamConnection {
   nodes: [Team!]!
   pageInfo: PageInfo!
+}
+
+type TeamMembershipConnection {
+  nodes: [TeamMembership!]!
+  pageInfo: PageInfo!
+}
+
+type WorkflowStateConnection {
+  nodes: [WorkflowState!]!
+  pageInfo: PageInfo!
+}
+
+type ProjectConnection {
+  nodes: [Project!]!
+  pageInfo: PageInfo!
+}
+
+type CycleConnection {
+  nodes: [Cycle!]!
+  pageInfo: PageInfo!
+}
+
+type DocumentConnection {
+  nodes: [Document!]!
+  pageInfo: PageInfo!
+}
+
+"""`searchIssues`' answer. `totalCount` counts every match before `filter` narrows the nodes, as
+real's did (measured 2026-10-22)."""
+type IssueSearchPayload {
+  nodes: [IssueSearchResult!]!
+  pageInfo: PageInfo!
+  archivePayload: ArchiveResponse!
+  totalCount: Float!
+}
+
+"""Linear's own description: "Contains requested archived model objects." Backlot archives
+nothing into a payload, so each is empty."""
+type ArchiveResponse {
+  archive: String!
+  totalCount: Float!
+  databaseVersion: Float!
+  includesDependencies: [String!]!
 }
 
 type User {
@@ -1008,6 +1232,8 @@ type User {
   canAccessAnyPublicTeam: Boolean!
   calendarHash: String
   inviteHash: String!
+  teamMemberships(after: String, before: String, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): TeamMembershipConnection!
+  teams(after: String, before: String, filter: TeamFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): TeamConnection!
 }
 
 type UserConnection {

@@ -199,6 +199,10 @@ def test_partial_data_survives_alongside_an_error(gql):
     r = gql.execute('{ boom widget(id: "w1") { name } }')
     assert r.payload["data"] == {"boom": None, "widget": {"name": "Gateway"}}
     assert len(r.payload["errors"]) == 1
+    # the body opens with "errors", as the real Fireflies and Linear APIs send it; a response
+    # with no error still opens with "data"
+    assert list(r.payload) == ["errors", "data"]
+    assert list(gql.execute('{ widget(id: "w1") { name } }').payload) == ["data"]
 
 
 # --- operation selection --------------------------------------------------------

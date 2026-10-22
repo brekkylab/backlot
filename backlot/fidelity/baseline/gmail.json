@@ -3,7 +3,7 @@
   "endpoints": [
     "https://gmail.googleapis.com/$discovery/rest?version=v1"
   ],
-  "measured": "2026-10-16",
+  "measured": "2026-10-22",
   "operations": [
     {
       "operation": "DELETE /gmail/v1/users/{}/drafts/{}",
@@ -78,6 +78,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/drafts",
       "id": "gmail.users.drafts.list",
+      "response": "gmail.ListDraftsResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -85,6 +86,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/drafts/{}",
       "id": "gmail.users.drafts.get",
+      "response": "gmail.Draft",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -92,6 +94,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/history",
       "id": "gmail.users.history.list",
+      "response": "gmail.ListHistoryResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -99,6 +102,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/labels",
       "id": "gmail.users.labels.list",
+      "response": "gmail.ListLabelsResponse",
       "status": "implemented",
       "params": {
         "alt": {
@@ -138,6 +142,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/labels/{}",
       "id": "gmail.users.labels.get",
+      "response": "gmail.Label",
       "status": "implemented",
       "params": {
         "alt": {
@@ -177,6 +182,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/messages",
       "id": "gmail.users.messages.list",
+      "response": "gmail.ListMessagesResponse",
       "status": "implemented",
       "params": {
         "alt": {
@@ -224,6 +230,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/messages/{}",
       "id": "gmail.users.messages.get",
+      "response": "gmail.Message",
       "status": "implemented",
       "params": {
         "alt": {
@@ -263,6 +270,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/messages/{}/attachments/{}",
       "id": "gmail.users.messages.attachments.get",
+      "response": "gmail.MessagePartBody",
       "status": "implemented",
       "params": {
         "alt": {
@@ -302,6 +310,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/profile",
       "id": "gmail.users.getProfile",
+      "response": "gmail.Profile",
       "status": "implemented",
       "params": {
         "alt": {
@@ -341,6 +350,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/autoForwarding",
       "id": "gmail.users.settings.getAutoForwarding",
+      "response": "gmail.AutoForwarding",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -348,6 +358,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/cse/identities",
       "id": "gmail.users.settings.cse.identities.list",
+      "response": "gmail.ListCseIdentitiesResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -355,6 +366,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/cse/identities/{}",
       "id": "gmail.users.settings.cse.identities.get",
+      "response": "gmail.CseIdentity",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -362,6 +374,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/cse/keypairs",
       "id": "gmail.users.settings.cse.keypairs.list",
+      "response": "gmail.ListCseKeyPairsResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -369,6 +382,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/cse/keypairs/{}",
       "id": "gmail.users.settings.cse.keypairs.get",
+      "response": "gmail.CseKeyPair",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -376,6 +390,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/delegates",
       "id": "gmail.users.settings.delegates.list",
+      "response": "gmail.ListDelegatesResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -383,6 +398,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/delegates/{}",
       "id": "gmail.users.settings.delegates.get",
+      "response": "gmail.Delegate",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -390,6 +406,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/filters",
       "id": "gmail.users.settings.filters.list",
+      "response": "gmail.ListFiltersResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -397,6 +414,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/filters/{}",
       "id": "gmail.users.settings.filters.get",
+      "response": "gmail.Filter",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -404,6 +422,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/forwardingAddresses",
       "id": "gmail.users.settings.forwardingAddresses.list",
+      "response": "gmail.ListForwardingAddressesResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -411,6 +430,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/forwardingAddresses/{}",
       "id": "gmail.users.settings.forwardingAddresses.get",
+      "response": "gmail.ForwardingAddress",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -418,6 +438,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/imap",
       "id": "gmail.users.settings.getImap",
+      "response": "gmail.ImapSettings",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -425,6 +446,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/language",
       "id": "gmail.users.settings.getLanguage",
+      "response": "gmail.LanguageSettings",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -432,6 +454,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/pop",
       "id": "gmail.users.settings.getPop",
+      "response": "gmail.PopSettings",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -439,6 +462,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/sendAs",
       "id": "gmail.users.settings.sendAs.list",
+      "response": "gmail.ListSendAsResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -446,6 +470,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/sendAs/{}",
       "id": "gmail.users.settings.sendAs.get",
+      "response": "gmail.SendAs",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -453,6 +478,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo",
       "id": "gmail.users.settings.sendAs.smimeInfo.list",
+      "response": "gmail.ListSmimeInfoResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -460,6 +486,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo/{}",
       "id": "gmail.users.settings.sendAs.smimeInfo.get",
+      "response": "gmail.SmimeInfo",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -467,6 +494,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/settings/vacation",
       "id": "gmail.users.settings.getVacation",
+      "response": "gmail.VacationSettings",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -474,6 +502,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/threads",
       "id": "gmail.users.threads.list",
+      "response": "gmail.ListThreadsResponse",
       "status": "implemented",
       "params": {
         "alt": {
@@ -521,6 +550,7 @@
     {
       "operation": "GET /gmail/v1/users/{}/threads/{}",
       "id": "gmail.users.threads.get",
+      "response": "gmail.Thread",
       "status": "implemented",
       "params": {
         "alt": {
@@ -560,6 +590,7 @@
     {
       "operation": "PATCH /gmail/v1/users/{}/labels/{}",
       "id": "gmail.users.labels.patch",
+      "response": "gmail.Label",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -567,6 +598,7 @@
     {
       "operation": "PATCH /gmail/v1/users/{}/settings/cse/identities/{}",
       "id": "gmail.users.settings.cse.identities.patch",
+      "response": "gmail.CseIdentity",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -574,6 +606,7 @@
     {
       "operation": "PATCH /gmail/v1/users/{}/settings/sendAs/{}",
       "id": "gmail.users.settings.sendAs.patch",
+      "response": "gmail.SendAs",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -581,6 +614,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/drafts",
       "id": "gmail.users.drafts.create",
+      "response": "gmail.Draft",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -588,6 +622,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/drafts/send",
       "id": "gmail.users.drafts.send",
+      "response": "gmail.Message",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -595,6 +630,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/labels",
       "id": "gmail.users.labels.create",
+      "response": "gmail.Label",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -602,6 +638,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/messages",
       "id": "gmail.users.messages.insert",
+      "response": "gmail.Message",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -623,6 +660,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/messages/import",
       "id": "gmail.users.messages.import",
+      "response": "gmail.Message",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -630,6 +668,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/messages/send",
       "id": "gmail.users.messages.send",
+      "response": "gmail.Message",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -637,6 +676,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/messages/{}/modify",
       "id": "gmail.users.messages.modify",
+      "response": "gmail.Message",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -644,6 +684,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/messages/{}/trash",
       "id": "gmail.users.messages.trash",
+      "response": "gmail.Message",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -651,6 +692,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/messages/{}/untrash",
       "id": "gmail.users.messages.untrash",
+      "response": "gmail.Message",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -658,6 +700,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/settings/cse/identities",
       "id": "gmail.users.settings.cse.identities.create",
+      "response": "gmail.CseIdentity",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -665,6 +708,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/settings/cse/keypairs",
       "id": "gmail.users.settings.cse.keypairs.create",
+      "response": "gmail.CseKeyPair",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -672,6 +716,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/settings/cse/keypairs/{}:disable",
       "id": "gmail.users.settings.cse.keypairs.disable",
+      "response": "gmail.CseKeyPair",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -679,6 +724,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/settings/cse/keypairs/{}:enable",
       "id": "gmail.users.settings.cse.keypairs.enable",
+      "response": "gmail.CseKeyPair",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -693,6 +739,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/settings/delegates",
       "id": "gmail.users.settings.delegates.create",
+      "response": "gmail.Delegate",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -700,6 +747,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/settings/filters",
       "id": "gmail.users.settings.filters.create",
+      "response": "gmail.Filter",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -707,6 +755,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/settings/forwardingAddresses",
       "id": "gmail.users.settings.forwardingAddresses.create",
+      "response": "gmail.ForwardingAddress",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -714,6 +763,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/settings/sendAs",
       "id": "gmail.users.settings.sendAs.create",
+      "response": "gmail.SendAs",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -721,6 +771,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/settings/sendAs/{}/smimeInfo",
       "id": "gmail.users.settings.sendAs.smimeInfo.insert",
+      "response": "gmail.SmimeInfo",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -749,6 +800,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/threads/{}/modify",
       "id": "gmail.users.threads.modify",
+      "response": "gmail.Thread",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -756,6 +808,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/threads/{}/trash",
       "id": "gmail.users.threads.trash",
+      "response": "gmail.Thread",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -763,6 +816,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/threads/{}/untrash",
       "id": "gmail.users.threads.untrash",
+      "response": "gmail.Thread",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -770,6 +824,7 @@
     {
       "operation": "POST /gmail/v1/users/{}/watch",
       "id": "gmail.users.watch",
+      "response": "gmail.WatchResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -777,6 +832,7 @@
     {
       "operation": "PUT /gmail/v1/users/{}/drafts/{}",
       "id": "gmail.users.drafts.update",
+      "response": "gmail.Draft",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -784,6 +840,7 @@
     {
       "operation": "PUT /gmail/v1/users/{}/labels/{}",
       "id": "gmail.users.labels.update",
+      "response": "gmail.Label",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -791,6 +848,7 @@
     {
       "operation": "PUT /gmail/v1/users/{}/settings/autoForwarding",
       "id": "gmail.users.settings.updateAutoForwarding",
+      "response": "gmail.AutoForwarding",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -798,6 +856,7 @@
     {
       "operation": "PUT /gmail/v1/users/{}/settings/imap",
       "id": "gmail.users.settings.updateImap",
+      "response": "gmail.ImapSettings",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -805,6 +864,7 @@
     {
       "operation": "PUT /gmail/v1/users/{}/settings/language",
       "id": "gmail.users.settings.updateLanguage",
+      "response": "gmail.LanguageSettings",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -812,6 +872,7 @@
     {
       "operation": "PUT /gmail/v1/users/{}/settings/pop",
       "id": "gmail.users.settings.updatePop",
+      "response": "gmail.PopSettings",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -819,6 +880,7 @@
     {
       "operation": "PUT /gmail/v1/users/{}/settings/sendAs/{}",
       "id": "gmail.users.settings.sendAs.update",
+      "response": "gmail.SendAs",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -826,6 +888,7 @@
     {
       "operation": "PUT /gmail/v1/users/{}/settings/vacation",
       "id": "gmail.users.settings.updateVacation",
+      "response": "gmail.VacationSettings",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"

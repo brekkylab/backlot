@@ -2127,6 +2127,13 @@ _DRIVES_Q_TAKEN = [
     "name < 'a' and hidden = false",
     "not (not hidden)",
     "not (hidden)",
+    "()",
+    "not ()",
+    "name contains 'a' and ()",
+    "hidden = true or",
+    "(name contains 'a' or) and hidden = false",
+    'name = "x"',
+    'name contains "a"',
 ]
 _DRIVES_Q_REFUSED = [
     " ",
@@ -2153,6 +2160,10 @@ _DRIVES_Q_REFUSED = [
     "not not name contains 'a'",
     "not(hidden)",
     "hidden" + chr(0xA0) + "= true",
+    "( )",
+    "()()",
+    "not()",
+    "hidden = true and",
 ]
 _PAGE_EXPIRED = (403, "pageTokenExpired", None, None)
 _UNKNOWN = (500, None, None, None)
@@ -8357,9 +8368,9 @@ _LIVE = {"Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"}
         ("trashed > false", _LIVE),
         ("trashed >= true", {"Old Deck"}),
         ("trashed >= false", _LIVE),
-        ("()", _LIVE),
+        ("()", _LIVE | {"Old Deck"}),
         ("name = 'Q1 Deck' and ()", {"Q1 Deck"}),
-        ("name = 'Q1 Deck' or", _LIVE),
+        ("name = 'Q1 Deck' or", _LIVE | {"Old Deck"}),
         ("(name = 'Q1 Deck' or) and name contains 'Q1'", {"Q1 Deck", "Q1 Revenue"}),
         ("not (not name = 'Q1 Deck')", {"Q1 Deck"}),
         ("(" * 64 + "name = 'Q1 Deck'" + ")" * 64, {"Q1 Deck"}),

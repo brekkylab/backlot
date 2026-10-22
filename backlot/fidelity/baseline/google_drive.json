@@ -140,10 +140,6 @@
           "kind": "missing_param",
           "severity": "gap"
         },
-        "fields": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "key": {
           "kind": "missing_param",
           "severity": "gap"
@@ -157,10 +153,6 @@
           "severity": "gap"
         },
         "prettyPrint": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "q": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -445,10 +437,6 @@
           "severity": "gap"
         },
         "callback": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "fields": {
           "kind": "missing_param",
           "severity": "gap"
         },

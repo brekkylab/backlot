@@ -256,11 +256,11 @@ One `source_type` (`google_drive`) across four prefixes.
 
 | Endpoint | Notes |
 |---|---|
-| `/drive/v3/files` | `q`, parsed as the reference's grammar (`and`, `or`, `not`, parentheses, `\'` inside a value): `name` and `mimeType` with `contains`/`=`/`!=`, `fullText contains`, `modifiedTime` and `createdTime` with `<`/`<=`/`=`/`!=`/`>`/`>=`, `trashed`, `sharedWithMe`, `… in parents` incl. `'root'`, `… in owners`. A term Backlot cannot evaluate is a 400 on `q`, never a silently unfiltered listing. `orderBy`: `name`/`name_natural`/`createdTime`/`modifiedTime`/`recency`/`folder`/`starred`/`quotaBytesUsed`/`sharedWithMeTime` (+` desc`). `fields` projection, validated |
+| `/drive/v3/files` | `q`, parsed as the reference's grammar (`and`, `or`, `not`, parentheses, `\'` inside a value): `name` and `mimeType` with `contains`/`=`/`!=`, `fullText contains`, `modifiedTime`, `createdTime` and `viewedByMeTime` with `<`/`<=`/`=`/`!=`/`>`/`>=`, `trashed` and `starred`, each alone meaning `= true`, `sharedWithMe` as `= true` alone and never under a `not`, `… in parents` incl. `'root'`, `… in owners`; nothing is viewed or starred. A term Backlot cannot evaluate is a 400 on `q`, never a silently unfiltered listing, and so are a `q` of white space alone and a `not` straight before another. `orderBy`: the eleven keys the reference lists, each with or without ` asc` or ` desc`; `name_natural` as an English-language account lists it, in ICU's root collation as Python's `unicodedata` and a few tables give it (`backlot.collation` says where they sort otherwise), `recency` newest first whichever way, and files a key ties newest modification first. `fields` projection, validated |
 | `/drive/v3/files/{id}` | `fields` |
 | `/drive/v3/files/{id}/export` | |
-| `/drive/v3/files/{id}/permissions` | |
-| `/drive/v3/drives` | |
+| `/drive/v3/files/{id}/permissions` | `fields`, validated and applied to the list and its entries |
+| `/drive/v3/drives` | `q`, as a member who is not the domain's administrator may send it: `name` with `contains`/`=`/`!=`/`<`/`<=`/`>`/`>=` and `hidden` with `=`/`!=` or alone; any other term is a 400. `fields`, validated and applied to the list and its entries |
 | `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
 | `/docs/v1/documents/{id}` | |
 | `/sheets/v4/spreadsheets/{id}` | One entry per sheet, with its own `sheetId`, `index`, `title` and `gridProperties`. Structure only — cells need `includeGridData=true`, as in real Sheets. `ranges` filters the `sheets` array itself, and gives a sheet one `data` block per range that touches it |
@@ -274,7 +274,8 @@ The three editor APIs serve native-doc content for editor-aware clients, read st
 of via Google Drive export.
 
 Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like
-stored rows. Trashed files are excluded unless `trashed = true` asks for them.
+stored rows. A trashed file is listed to its owner with the rest unless `q` leaves it out with
+`trashed = false`, and to no other user; the admin token lists them all.
 
 A spreadsheet has two shapes, and the corpus record picks which. A record that states `sheets` is a
 real workbook: named sheets over a 2D grid whose cells keep the type the corpus gave them, so
@@ -376,21 +377,23 @@ values carry the same `details`. A typed refusal comes after the credential chec
 file or spreadsheet is looked up. On Drive's `files.list`, one `pageSize` outside 1-1000 is refused
 with the range sentence (1-100 on `permissions.list` and `drives.list`), while a repeated one is
 read from the first and never range-checked; a `pageToken` it did not issue is 400 `Invalid Value`;
-and the refusals come in the order `pageSize`, `orderBy`, `q`, an `orderBy` beside a `fullText` term
-in `q` (403 `forbidden`), `pageToken`, `fields`, an `orderBy` naming `starred` after another key
-being real's 500 `Internal Error` between `pageToken` and `fields`. `drives.list` issues no
-`nextPageToken` and refuses every non-empty `pageToken` with that 400, after the typed and range
-refusals and ahead of the `useDomainAdminAccess=true` refusal. `permissions.list` pages in the order
-of its unpaged list and issues a `nextPageToken` that only the file it pages takes back. After its
-typed and range refusals, it refuses in the order an empty `pageToken` (403 `pageTokenExpired`) or
-one it did not issue (that 400), two or more `pageSize` values whose first is outside 1-100 (500
-`Unknown Error.`), `useDomainAdminAccess=true`, a file it cannot find, and a token issued for
-another file (403 `pageTokenExpired`). A blank `fields` on `files.list` or `files.get` answers `{}`.
-`files.export` refuses a format the file's type does not export to, the empty `mimeType=` among
-them, with `The requested conversion is not supported.`, matching the format without regard to case,
-refuses an absent `mimeType` ahead of looking the file up, and serves an export under the `mimeType`
-exactly as sent, with no `charset`. Measured against the live Drive and Sheets APIs on 2026-09-23,
-the `fullText` 403 on 2026-10-05 and 2026-10-07, the `starred` 500 on 2026-10-04 and 2026-10-07, the
+and the refusals come in the order `pageSize`, a `fields` ending in a comma, `orderBy`, `q`, an
+`orderBy` beside a `fullText` term in `q` (403 `forbidden`), `pageToken`, `fields`, an `orderBy`
+naming `starred` after another key being real's 500 `Internal Error` between `pageToken` and
+`fields`. `drives.list` issues no `nextPageToken` and refuses every non-empty `pageToken` with that
+400, after the typed and range refusals, a `fields` ending in a comma and a `q` it does not take,
+and ahead of the `useDomainAdminAccess=true` refusal. `permissions.list` pages in the order of its
+unpaged list and issues a `nextPageToken` that only the file it pages takes back. After its typed
+and range refusals and a `fields` ending in a comma, it refuses in the order an empty `pageToken`
+(403 `pageTokenExpired`) or one it did not issue (that 400), two or more `pageSize` values whose
+first is outside 1-100 (500 `Unknown Error.`), `useDomainAdminAccess=true`, a file it cannot find,
+and a token issued for another file (403 `pageTokenExpired`). A `fields` of spaces and tabs alone on
+`files.list`, `files.get`, `permissions.list` or `drives.list` answers `{}`. `files.export` refuses
+a format the file's type does not export to, the empty `mimeType=` among them, with
+`The requested conversion is not supported.`, matching the format without regard to case, refuses an
+absent `mimeType` ahead of looking the file up, and serves an export under the `mimeType` exactly as
+sent, with no `charset`. Measured against the live Drive and Sheets APIs on 2026-09-23, the
+`fullText` 403 on 2026-10-05 and 2026-10-07, the `starred` 500 on 2026-10-04 and 2026-10-07, the
 `pageToken` of `permissions.list` and `drives.list` on 2026-10-04, 2026-10-05 and 2026-10-07, the
 paging of `permissions.list` on 2026-10-05 and 2026-10-08, and the export's `Content-Type` on
 2026-09-30.

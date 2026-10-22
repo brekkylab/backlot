@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import base64
 import datetime
+import functools
 import hashlib
 import json
 import quopri
 import re
 import string
+import xml.parsers.expat
 from contextvars import ContextVar
 from email.parser import BytesParser
 from email.utils import formataddr, getaddresses
@@ -30,7 +32,7 @@ from pydantic import BaseModel, ConfigDict
 from starlette.datastructures import QueryParams
 from starlette.routing import Match
 
-from backlot import auth, protojson, sheets_grid, store, synth
+from backlot import auth, collation, protojson, sheets_grid, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import google as gerr
@@ -113,7 +115,8 @@ class DrivePermissionList(_GLoose):
 # drive_files_get / .export return a raw Response on some branches — they get openapi_extra params
 # only (no JSON response_model, which would mis-serialize the raw body).
 _P_DRIVE_LIST = [qp("pageSize", "integer"), qp("pageToken"), qp("q"), qp("fields"), qp("orderBy")]
-_P_DRIVE_PERMISSIONS = [qp("pageSize", "integer"), qp("pageToken")]
+_P_DRIVE_PERMISSIONS = [qp("pageSize", "integer"), qp("pageToken"), qp("fields")]
+_P_DRIVE_DRIVES = [qp("q"), qp("fields")]
 _P_DRIVE_ALT = [qp("alt"), qp("fields")]
 _P_DRIVE_EXPORT = [qp("mimeType", required=True)]
 _P_DRIVE_ABOUT = [qp("fields", required=True)]
@@ -1948,24 +1951,48 @@ def _gmail_message(
 # "Escape single quotes in queries with \'". Parentheses group. Whether `and` binds before `or` the
 # reference does not say; Backlot reads it as SQL does, `and` first.
 #
-# A term Backlot cannot evaluate is a 400 on `q`, never a silence. Two kinds: a term the reference
-# does not list (`bogusField = 'x'`), which real Drive refuses too — its wording is unmeasured, so
-# the bare `Invalid Value` of the parameter envelope stands — and a documented term Backlot holds no
-# fact for, refused with a message that says so, the way an unmodelled `orderBy` key is. Honouring
-# `starred = true` as "everything" would be the listing this section exists to stop.
+# A term Backlot cannot evaluate is a 400 on `q`, never a silence. Two kinds: a term the listing
+# does not take (`bogusField = 'x'`), which real Drive refuses too with the bare `Invalid Value` of
+# the parameter envelope, and a term `_FILES_Q.unmodelled` names, which `files.list` documents and
+# Backlot holds no fact for, refused with a message that says so.
 
-# Every term Backlot evaluates, with the operators the reference lists for it.
-_DRIVE_Q_OPERATORS: dict[str, frozenset[str]] = {
-    "name": frozenset({"contains", "=", "!="}),
-    "fullText": frozenset({"contains"}),
-    "mimeType": frozenset({"contains", "=", "!="}),
-    "modifiedTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
-    "createdTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
-    "trashed": frozenset({"=", "!=", "<", "<=", ">", ">="}),
-    "sharedWithMe": frozenset({"=", "!="}),
-}
-_DRIVE_Q_COLLECTIONS = frozenset({"parents", "owners"})
-_DRIVE_Q_BOOLEAN = frozenset({"trashed", "sharedWithMe"})
+_TIME_OPS = frozenset({"<=", "<", "=", "!=", ">", ">="})
+_TIME_FIELDS = frozenset({"modifiedTime", "createdTime", "viewedByMeTime"})
+
+
+class _DriveQTerms(NamedTuple):
+    """The terms one listing's `q` takes: each field with the operators it takes, the fields whose
+    value is `true` or `false` (and which alone mean `= true`), those of them taken only as `true`
+    and never under a `not`, the fields `'x' in <field>` takes, and the documented fields refused
+    with a sentence saying Backlot does not evaluate them."""
+
+    operators: dict[str, frozenset[str]]
+    boolean: frozenset[str]
+    collections: frozenset[str]
+    unmodelled: frozenset[str]
+    only_true: frozenset[str] = frozenset()
+
+
+_FILES_Q = _DriveQTerms(
+    operators={
+        "name": frozenset({"contains", "=", "!="}),
+        "fullText": frozenset({"contains"}),
+        "mimeType": frozenset({"contains", "=", "!="}),
+        "modifiedTime": _TIME_OPS,
+        "createdTime": _TIME_OPS,
+        "viewedByMeTime": _TIME_OPS,
+        "trashed": frozenset({"=", "!=", "<", "<=", ">", ">="}),
+        "starred": frozenset({"=", "!="}),
+        "sharedWithMe": frozenset({"="}),
+    },
+    boolean=frozenset({"trashed", "starred", "sharedWithMe"}),
+    collections=frozenset({"parents", "owners"}),
+    unmodelled=frozenset({"writers", "readers", "properties", "appProperties", "visibility"}),
+    # Real answered `sharedWithMe`, `= true`, `= TRUE` and `(sharedWithMe)`, and refused with the
+    # 400 at `q` `= false`, `!= true`, `not sharedWithMe` and
+    # `not (name contains 'a' and sharedWithMe)`, measured 2026-10-20.
+    only_true=frozenset({"sharedWithMe"}),
+)
 #: What `trashed` with `<`, `<=`, `>` or `>=` lists: the files `trashed = <value>` lists, or none
 #: (None). No order of `false` and `true` gives all eight. Measured on Drive v3 on 2026-10-21 over
 #: a Workspace member's files with two trashed ones among them; `sharedWithMe` with any of the four
@@ -1980,17 +2007,32 @@ _DRIVE_Q_TRASHED_ORDERED = {
     (">=", "true"): "true",
     (">=", "false"): "false",
 }
-# Documented on the reference, and nothing in a corpus record to evaluate them against.
-_DRIVE_Q_UNMODELLED = frozenset(
-    {"starred", "viewedByMeTime", "writers", "readers", "properties", "appProperties", "visibility"}
+# What `drives.list` takes from a caller who is not the domain's administrator, measured 2026-10-20
+# as a Google Workspace member of two shared drives: `name` with `<`, `<=`, `>` and `>=` too, which
+# the reference does not list for it. The reference's other four terms for it, `memberCount`,
+# `organizerCount`, `orgUnitId` and `createdTime`, were each the 400 at `q` with a value of their
+# own type. On 2026-10-22 `drives.list` served `()`, `not ()`, a trailing `or` and a value in double
+# quotes, and refused `( )`, a trailing `and`, `not()` and `()()` with the 400 at `q`.
+_DRIVES_Q = _DriveQTerms(
+    operators={
+        "name": frozenset({"contains", "=", "!=", "<", "<=", ">", ">="}),
+        "hidden": frozenset({"=", "!="}),
+    },
+    boolean=frozenset({"hidden"}),
+    collections=frozenset(),
+    unmodelled=frozenset(),
 )
 # `{` and `}` are tokens so that `properties has { key='x' and value='y' }`, the reference's own
 # spelling, reaches `term()` with the field read — the refusal then names `properties` instead of
 # the bare `Invalid Value` an unlexable character gets. `()` with nothing between is a token of its
 # own, the empty group real lists every file for, where `( )` is the 400 (2026-10-21); a value in
-# double quotes is read as the same value in single quotes (2026-10-20).
+# double quotes is read as the same value in single quotes (2026-10-20). Tokens stand apart by a
+# space, a tab, a line feed, a form feed or a carriage return: real served each of those five
+# between two tokens and before the first, and refused U+000B, U+001C, U+0085, U+00A0, U+2003 and
+# U+3000 in either place with the 400 at `q`, measured 2026-10-21.
+_DRIVE_Q_SPACE = " \t\n\f\r"
 _DRIVE_Q_TOKEN = re.compile(
-    r"\s*(?:(?P<empty>\(\))|(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)"
+    r"[ \t\n\f\r]*(?:(?P<empty>\(\))|(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)"
     r"|(?P<str>'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")"
     r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))"
 )
@@ -2034,26 +2076,33 @@ def _drive_q_tokens(q: str) -> list[tuple[str, str]]:
     while pos < len(q):
         m = _DRIVE_Q_TOKEN.match(q, pos)
         if m is None:
-            if q[pos:].strip():
+            if q[pos:].strip(_DRIVE_Q_SPACE):
                 raise _drive_q_refused()
             break
         pos = m.end()
         kind = m.lastgroup or ""
         text = m.group(kind)
+        # Real refused `not(trashed)`, `NOT(trashed)` and `not(hidden)`, a `not` its group's
+        # parenthesis touches, and served `not (trashed)`, `not\t(trashed)` and
+        # `trashed and(starred)`, measured 2026-10-21.
+        if kind == "word" and text.lower() == "not" and q.startswith("(", pos):
+            raise _drive_q_refused()
         if kind == "str":
             text = re.sub(r"\\(.)", r"\1", text[1:-1])  # strip surrounding quotes
         out.append((kind, text))
     return out
 
 
-def _drive_q_parse(q: str):
-    """The parsed query, or ``None`` for an empty one. A clause Backlot cannot evaluate is a 400.
-
-    A query that names no ``trashed`` term gets ``and trashed = false`` appended: real Drive leaves
-    trashed files out of a listing unless a clause asks for them, as the plain listing does through
-    ``exclude_trashed``."""
+def _drive_q_parse(q: str, terms: _DriveQTerms = _FILES_Q):
+    """The parsed query, or ``None`` for an empty one; a query of the separators `_DRIVE_Q_TOKEN`
+    reads alone is the 400, as real answered a space, a tab and a newline on `files.list` and a
+    space and a tab on `drives.list`. A clause ``terms`` does not take is a 400. A query that names
+    no ``trashed`` term matches a trashed file, as `drive_files_list` lists the caller's trash with
+    no ``q``."""
     tokens = _drive_q_tokens(q)
     if not tokens:
+        if q:
+            raise _drive_q_refused()
         return None
     pos = 0
 
@@ -2096,9 +2145,15 @@ def _drive_q_parse(q: str):
         try:
             if is_word("not"):
                 take()
-                if is_word("not"):  # `not not x` is the 400, `not (not x)` x (2026-10-21)
+                # Real refused `not not hidden` and `not not name contains 'a'` on `drives.list`,
+                # and `not not starred` on `files.list`, with the 400 at `q`, and served
+                # `not (not hidden)`, measured 2026-10-20.
+                if is_word("not"):
                     raise _drive_q_refused()
-                return _QNot(unary())
+                inner = unary()
+                if any(t.field in terms.only_true for t in _drive_q_terms(inner)):
+                    raise _drive_q_refused()
+                return _QNot(inner)
             if peek() == ("empty", "()"):
                 take()
                 return _QAll()
@@ -2113,7 +2168,7 @@ def _drive_q_parse(q: str):
             depth -= 1
 
     def unmodelled(field: str) -> gerr.GoogleError:
-        evaluated = ", ".join(sorted(_DRIVE_Q_OPERATORS))
+        evaluated = ", ".join(sorted(terms.operators))
         return _drive_q_refused(
             f"'{field}' is not evaluated by Backlot: a corpus record carries nothing to answer it "
             f"from. Terms it evaluates: {evaluated}, and 'x' in parents / owners."
@@ -2128,17 +2183,17 @@ def _drive_q_parse(q: str):
             fkind, field = take()
             if fkind != "word":
                 raise _drive_q_refused()
-            if field in _DRIVE_Q_UNMODELLED:
+            if field in terms.unmodelled:
                 raise unmodelled(field)
-            if field not in _DRIVE_Q_COLLECTIONS:
+            if field not in terms.collections:
                 raise _drive_q_refused()
             return _QTerm(field, "in", text or "")
         if kind != "word" or text is None:
             raise _drive_q_refused()
         field = text
-        if field in _DRIVE_Q_UNMODELLED:
+        if field in terms.unmodelled:
             raise unmodelled(field)
-        if field not in _DRIVE_Q_OPERATORS:
+        if field not in terms.operators:
             raise _drive_q_refused()
         okind, op = peek()
         if okind == "op":
@@ -2146,32 +2201,35 @@ def _drive_q_parse(q: str):
         elif okind == "word" and (op or "").lower() in ("contains", "has", "in"):
             take()
             op = (op or "").lower()
-        elif field == "sharedWithMe":
-            # The bare `sharedWithMe` Drive also accepts, meaning true.
+        elif field in terms.boolean:
+            # The bare `sharedWithMe`, `trashed`, `starred` or `hidden` Drive also accepts,
+            # meaning true.
             return _QTerm(field, "=", "true")
         else:
             raise _drive_q_refused()
-        if op not in _DRIVE_Q_OPERATORS[field]:
+        if op not in terms.operators[field]:
             raise _drive_q_refused()
         vkind, value = take()
-        if field in _DRIVE_Q_BOOLEAN:
-            if vkind != "word" or (value or "").lower() not in ("true", "false"):
+        if field in terms.boolean:
+            value = (value or "").lower()
+            if vkind != "word" or value not in ("true", "false"):
                 raise _drive_q_refused()
-            return _QTerm(field, op or "", (value or "").lower())
+            if field in terms.only_true and value != "true":
+                raise _drive_q_refused()
+            return _QTerm(field, op or "", value)
         if vkind != "str":
             raise _drive_q_refused()
-        if field in ("modifiedTime", "createdTime") and _drive_q_time(value or "") is None:
+        if field in _TIME_FIELDS and _drive_q_time(value or "") is None:
             # The reference wants RFC 3339 here. A value that is not one would otherwise compare
-            # as a string against the file's timestamp and answer something for every file; what
-            # real Drive answers for it is unmeasured, so this is a refusal rather than its wording.
+            # as a string against the file's timestamp and answer something for every file; real
+            # answered `modifiedTime < 'yesterday'`, `createdTime < 'yesterday'` and
+            # `viewedByMeTime > 'garbage'` with this 400, measured 2026-10-20.
             raise _drive_q_refused()
         return _QTerm(field, op or "", value or "")
 
     node = disjunction()
     if pos != len(tokens):
         raise _drive_q_refused()
-    if not any(t.field == "trashed" for t in _drive_q_terms(node)):
-        node = _QAnd((node, _QTerm("trashed", "=", "false")))
     return node
 
 
@@ -2249,6 +2307,13 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
             return ((value == "true") == f["trashed"]) == (op == "=")
         same = _DRIVE_Q_TRASHED_ORDERED[op, value]
         return same is not None and (same == "true") == f["trashed"]
+    if field == "starred":
+        # Nothing here is starred, as every file's `starred` says.
+        return (value == "false") == (op == "=")
+    if field == "viewedByMeTime":
+        # No file has one: real matched a file its caller never viewed under `!=` and under no
+        # other comparison, measured 2026-10-20, and `not` around any of them matches the rest.
+        return op == "!="
     if field == "sharedWithMe":
         # "Shared with me" = visible to the caller and not owned by them. Items shared with you
         # carry no My Drive parent on real Drive, so this clause is the only way to enumerate
@@ -2315,10 +2380,23 @@ def _drive_q_fulltext_ids(hits: dict[str, list]) -> dict[str, set[str]]:
     return {value: {r["id"] for r in rows} for value, rows in hits.items()}
 
 
+def _drive_listed_trash(ids: set[str] | None, me: str | None) -> bool | str:
+    """The trashed files `files.list` lists to this caller, as the ``trash`` the store's Drive
+    listings take: those it owns. Real listed a trashed file to its owner, with no `q` and under
+    each `q` it was sent that named no `trashed` term, on two accounts' Drives, the folder scope on
+    one, and to no one else: a Google Workspace member's `files.get` answered two files another
+    user owns and trashed, and `files.list` listed neither with no `q` or under `trashed = true`,
+    `trashed`, the file's name, its folder or `not 'me' in owners`, measured 2026-10-20. The admin
+    token, ``ids`` ``None``, sees every file and lists them all."""
+    return True if ids is None else (me or False)
+
+
 def _drive_owned_by(owner_email: str | None, me: str | None) -> bool:
     """Whether the caller owns this file. The admin/service token is not a Drive user (its
-    ``caller.email`` is None), so it owns nothing — for it, everything reads as shared."""
-    return bool(me) and (owner_email or "").lower() == me.lower()
+    ``caller.email`` is None), so it owns nothing — for it, everything reads as shared. ASCII
+    letters fold, as SQLite's ``lower()`` folds them in the trash rule `_drive_listed_trash`
+    hands the store, so a listing and ``ownedByMe`` agree on whose a file is."""
+    return bool(me) and _ascii_lower(owner_email or "") == _ascii_lower(me)
 
 
 def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) -> dict:
@@ -2332,6 +2410,17 @@ def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) 
     if not me or _drive_owned_by(owner_email, me):
         return {}
     return {"sharedWithMeTime": synth.rfc3339(created)}
+
+
+def _modified_by_me(owner_email: str | None, me: str | None, modified: int) -> dict:
+    """``modifiedByMe``, and ``modifiedByMeTime`` when it is true, as a ``**``-mergeable fragment.
+    A row's author is its owner and the one user ``lastModifyingUser`` names, so the caller
+    modified a file exactly when it owns it, last at ``modifiedTime``. Real sends ``modifiedByMe``
+    on every file and the time only when it is true, and on 21,074 of the 21,085 files two
+    accounts owned and had modified the time was ``modifiedTime``, measured 2026-10-20."""
+    if not _drive_owned_by(owner_email, me):
+        return {"modifiedByMe": False}
+    return {"modifiedByMe": True, "modifiedByMeTime": synth.rfc3339(modified)}
 
 
 def _drive_created(row) -> int:
@@ -2413,6 +2502,7 @@ def _drive_folder_obj(conn, name: str, me: str | None = None) -> dict:
         "starred": False,
         "shared": True,
         "ownedByMe": False,
+        "modifiedByMe": False,
         "viewedByMe": False,
         "version": "1",
         "spaces": ["drive"],
@@ -2451,8 +2541,9 @@ def _drive_folder_name_by_id(conn, file_id: str) -> str | None:
 # Validating against it is what makes a Backlot-backed test able to catch a typo'd or stale mask.
 _DRIVE_FILE_FIELDS = frozenset(
     """
-    appProperties capabilities contentHints contentRestrictions copyRequiresWriterPermission
-    createdTime description driveId explicitlyTrashed exportLinks fileExtension folderColorRgb
+    appProperties capabilities clientEncryptionDetails contentHints contentRestrictions
+    copyRequiresWriterPermission createdTime description downloadRestrictions driveId
+    explicitlyTrashed exportLinks fileExtension folderColorRgb
     fullFileExtension hasAugmentedPermissions hasThumbnail headRevisionId iconLink id
     imageMediaMetadata inheritedPermissionsDisabled isAppAuthorized kind labelInfo
     lastModifyingUser linkShareMetadata md5Checksum mimeType modifiedByMe modifiedByMeTime
@@ -2466,64 +2557,223 @@ _DRIVE_FILE_FIELDS = frozenset(
 _DRIVE_LIST_FIELDS = frozenset({"kind", "nextPageToken", "incompleteSearch", "files"})
 
 
-def _split_mask(mask: str) -> list[str]:
-    """Split a `fields` mask on its top-level commas, so a nested group stays whole
-    (``files(id,name),nextPageToken`` -> ``['files(id,name)', 'nextPageToken']``)."""
-    out, depth, cur = [], 0, ""
-    for ch in mask:
-        if ch == "," and depth == 0:
-            out.append(cur)
-            cur = ""
-            continue
-        depth += (ch == "(") - (ch == ")")
-        depth = max(depth, 0)
-        cur += ch
-    out.append(cur)
-    return [t.strip() for t in out if t.strip()]
+# `permissions.list`'s and `drives.list`'s entries, each field the reference lists for them.
+_DRIVE_PERMISSION_FIELDS = frozenset(
+    """
+    allowFileDiscovery deleted displayName domain emailAddress expirationTime id
+    inheritedPermissionsDisabled kind pendingOwner permissionDetails photoLink role
+    teamDrivePermissionDetails type view
+""".split()
+)
+_DRIVE_DRIVE_FIELDS = frozenset(
+    """
+    backgroundImageFile backgroundImageLink capabilities colorRgb createdTime hidden id kind name
+    orgUnitId restrictions themeId
+""".split()
+)
+# The fields a resource's default answer holds, which an empty group selects: real answered
+# `id()`, `name()`, `kind()` and `mimeType()` on a file, `id()`, `type()`, `kind()` and `role()` on
+# a permission, `id()`, `name()` and `kind()` on a drive, and a listing's `kind()` and
+# `nextPageToken()` with those keys, and `createdTime()`, `owners()`, `trashed()`,
+# `permissions(emailAddress())` and `drives(hidden())` with nothing, measured 2026-10-20.
+_DRIVE_FILE_DEFAULT = frozenset({"kind", "id", "name", "mimeType"})
+_DRIVE_PERMISSION_DEFAULT = frozenset({"id", "type", "kind", "role"})
+_DRIVE_DRIVE_DEFAULT = frozenset({"id", "name", "kind"})
+_DRIVE_LIST_DEFAULT = frozenset({"kind", "nextPageToken", "incompleteSearch"})
+# Documented fields real gave each of a Google Workspace member's 228 files, or each of 40 of their
+# permissions, measured 2026-10-20, that no file or permission here carries: a mask that names one
+# is refused, saying so, rather than answered without it.
+_DRIVE_FILE_UNSERVED = frozenset(
+    """
+    clientEncryptionDetails copyRequiresWriterPermission downloadRestrictions hasThumbnail
+    inheritedPermissionsDisabled isAppAuthorized linkShareMetadata thumbnailVersion
+    viewersCanCopyContent writersCanShare
+""".split()
+)
+_DRIVE_PERMISSION_UNSERVED = frozenset(
+    {"deleted", "pendingOwner", "permissionDetails", "photoLink"}
+)
+# What a name in a `fields` mask is made of, as real read each character between `id,b` and `x` on
+# 2026-10-20: the ASCII below, and past ASCII the name characters of XML 1.0's fourth edition
+# (Appendix B), whose table expat's is. None of the 1,345 code points past ASCII it was sent, every
+# one from U+0080 to U+02FF and the rest chosen by category, was read otherwise. Every other
+# character it was sent, white space other than a space or a tab among them, made the whole mask the
+# 400's subject, and so did a name ending in `-` or holding `:` other than once between two other
+# characters (`x-`, `:x`, `x:`, `x::y`, `x:y:z`), where `-x`, `x--y` and `x:y` were names.
+_MASK_NAME = frozenset("$+-.:_" + string.ascii_letters + string.digits)
+# The last name of a path an empty group, `owners()`, ends.
+_MASK_EMPTY = "()"
+# How many names of a path `_mask_paths` keeps: a listing, an entry's field and the empty group
+# after it are all `_check_mask` and `_mask_keys` read, so a mask nested a thousand deep costs its
+# length rather than the square of its depth.
+_MASK_DEPTH = 3
 
 
-def _mask_names(mask: str) -> set[str]:
-    """The leading key of each comma-separated entry: a nested mask (``capabilities/canEdit``,
-    ``owners(emailAddress)``) selects — and is validated as — its parent key."""
-    return {t.split("/")[0].split("(")[0].strip() for t in _split_mask(mask)}
+def _mask_paths(mask: str) -> list[tuple[str, ...]]:
+    """The paths a `fields` mask selects, in its order: ``files(id,owners(kind)),kind`` is
+    ``files/id``, ``files/owners/kind`` and ``kind``, and ``files()`` is ``files`` then
+    ``_MASK_EMPTY``, each path to its first ``_MASK_DEPTH`` names. A space or a tab may stand beside
+    a name, a ``/`` or a parenthesis. A mask that is not one — an empty entry, a name `_mask_name`
+    does not take, a group never opened or never closed — is the 400 naming the whole mask, as real
+    answered ``id,,name``, ``files(id,)``, ``id,`` and ``owners(``; that refusal comes before any
+    name's.
+
+    Read without recursion: real answered a group nested a thousand deep with the name it did not
+    take, not a refusal of the mask."""
+    paths: list[tuple[str, ...]] = []
+    prefixes: list[tuple[str, ...]] = [()]
+    i = 0
+
+    def refused() -> gerr.GoogleError:
+        return gerr.invalid_parameter("fields", f"Invalid field selection {mask}")
+
+    def blank() -> None:
+        nonlocal i
+        while i < len(mask) and mask[i] in " \t":
+            i += 1
+
+    def name() -> str:
+        nonlocal i
+        blank()
+        start = i
+        if mask.startswith("*", i):
+            i += 1
+        while i < len(mask) and mask[start] != "*" and _mask_name_char(mask[i]):
+            i += 1
+        end = i
+        if not _mask_name(mask[start:end]):
+            raise refused()
+        blank()
+        return mask[start:end]
+
+    while True:
+        path = [name()]
+        while mask.startswith("/", i):
+            i += 1
+            path.append(name())
+        full = (prefixes[-1] + tuple(path))[:_MASK_DEPTH]
+        if mask.startswith("(", i):
+            i += 1
+            blank()
+            if not mask.startswith(")", i):
+                prefixes.append(full)
+                continue
+            i += 1
+            paths.append((*full, _MASK_EMPTY)[:_MASK_DEPTH])
+        else:
+            paths.append(full)
+        blank()
+        while mask.startswith(")", i) and len(prefixes) > 1:
+            i += 1
+            prefixes.pop()
+            blank()
+        if i == len(mask) and len(prefixes) == 1:
+            return paths
+        if not mask.startswith(",", i):
+            raise refused()
+        i += 1
 
 
-def _check_mask(names, allowed: frozenset) -> None:
-    """Reject an unknown field name the way real Drive does. Without this a bogus name simply
-    matched nothing and vanished, so the response was a 200 full of empty objects and no
-    Backlot-backed test could catch a mask that 400s in production."""
-    for n in sorted(names):
-        if n != "*" and n not in allowed:
-            raise gerr.invalid_parameter("fields", f"Invalid field selection {n}")
+def _mask_name(text: str) -> bool:
+    """Whether ``text``, read of the characters `_mask_name_char` takes, is a name, as the comment
+    above ``_MASK_NAME`` says."""
+    if text == "*":
+        return True
+    colons = text.count(":")
+    if not text or text.endswith("-") or colons > 1:
+        return False
+    return not colons or (text[0] != ":" and text[-1] != ":")
+
+
+@functools.lru_cache(maxsize=4096)
+def _mask_name_char(ch: str) -> bool:
+    if ch.isascii():
+        return ch in _MASK_NAME
+    parser = xml.parsers.expat.ParserCreate()
+    try:
+        parser.Parse(f"<a{ch}/>", True)
+    except (xml.parsers.expat.ExpatError, ValueError):
+        return False
+    return True
+
+
+def _check_mask(
+    paths,
+    top: frozenset,
+    under: str | None = None,
+    entries: frozenset = frozenset(),
+    unserved: frozenset = frozenset(),
+):
+    """Refuse the first name, in the mask's order, the resource does not have, as real names it:
+    a top-level name outside ``top`` or, under the list ``under``, an entry's name outside
+    ``entries``. A name deeper than that is not checked. Then refuse the first of the ``unserved``
+    names of a file or permission, the top level's on `files.get` and an entry's on a listing, with
+    a sentence saying Backlot does not carry it."""
+    served: list[str] = []
+    for path in paths:
+        checks = [(path[0], top)]
+        if under is not None and path[0] == under and len(path) > 1:
+            checks.append((path[1], entries))
+        for name, allowed in checks:
+            if name not in ("*", _MASK_EMPTY) and name not in allowed:
+                raise gerr.invalid_parameter("fields", f"Invalid field selection {name}")
+        served.append(checks[-1][0] if under is None or path[0] == under else "")
+    for name in served:
+        if name in unserved:
+            raise gerr.invalid_parameter(
+                "fields",
+                f"'{name}' is not served by Backlot: real Drive answers it, and nothing here "
+                f"carries it.",
+            )
+
+
+def _mask_keys(paths, under: str | None = None, defaults: frozenset = frozenset()):
+    """The names a mask selects at the top level, or of each entry of the list ``under``; ``None``
+    selects every one. A key an empty group names is selected only when it is one of the
+    ``defaults``, as the comment above ``_DRIVE_FILE_DEFAULT`` says."""
+    if under is not None:
+        paths = [p[1:] for p in paths if p[0] == under]
+        if any(not p for p in paths):
+            return None
+    keys = {p[0] for p in paths if not (len(p) > 1 and p[1] == _MASK_EMPTY) or p[0] in defaults}
+    return None if "*" in keys else keys
+
+
+def _drive_refuse_a_trailing_comma(request: Request) -> None:
+    """Refuse a `fields` mask whose last character but white space (`string.whitespace`) is a comma,
+    with the 400 naming the whole mask, on a metadata read. Real answered it after the typed and
+    range refusals and ahead of the rest, measured 2026-10-20 beside a bad `pageToken`, `q` and
+    `orderBy`, an `orderBy` naming a key twice or `starred` after another, `fullText` beside an
+    `orderBy`, `includeItemsFromAllDrives` alone, `acknowledgeAbuse`, `useDomainAdminAccess`, a
+    repeated `pageSize` and a file that does not exist. A download read no mask."""
+    mask = gerr.first_repeat(request.query_params, "fields")
+    if mask is not None and mask.rstrip(string.whitespace).endswith(","):
+        raise gerr.invalid_parameter("fields", f"Invalid field selection {mask}")
+
+
+def _drive_mask(fields: str | None) -> list[tuple[str, ...]] | None:
+    """A mask's paths; ``None`` for an absent one, and no paths (``[]``) for one of spaces and tabs
+    alone, the blank mask `_drive_get_field_keys` describes."""
+    if fields is None:
+        return None
+    return _mask_paths(fields) if fields.strip(" \t") else []
 
 
 def _drive_file_field_keys(fields: str | None) -> set[str] | None:
     """File keys a ``files.list`` caller selected — so the response carries only those, not the
     full ~30-field object. Google accepts both the group form (``files(id,name)``) and the path
-    form (``files/id``); both are honored. ``None`` = no projection (an absent mask, or one that
-    asks for everything with ``*``).
+    form (``files/id``); both are honored. ``None`` = no projection (an absent mask, one that asks
+    for everything with ``*``, or one that names no ``files``).
 
-    Top-level names are validated but not projected: Backlot always returns ``kind`` and
-    ``incompleteSearch``, because its typed response model (``DriveFileList``, which the OpenAPI
-    schema is built from) declares them."""
-    if not (fields or "").strip():
+    Top-level names are validated but not projected: the route's typed response model
+    (``DriveFileList``, which the OpenAPI schema is built from) declares ``kind`` and ``files``."""
+    paths = _drive_mask(fields)
+    if not paths:
         return None
-    top, keys = set(), set()
-    for tok in _split_mask(fields):
-        if tok == "*":
-            return None
-        group = re.fullmatch(r"files\s*\((.*)\)", tok, re.DOTALL)
-        if group:
-            top.add("files")
-            keys |= _mask_names(group.group(1))
-        elif tok.startswith("files/"):
-            top.add("files")
-            keys |= _mask_names(tok[len("files/") :])
-        else:
-            top.add(tok.split("/")[0].split("(")[0])
-    _check_mask(top, _DRIVE_LIST_FIELDS)
-    _check_mask(keys, _DRIVE_FILE_FIELDS)
-    return None if "*" in keys else (keys or None)
+    _check_mask(paths, _DRIVE_LIST_FIELDS, "files", _DRIVE_FILE_FIELDS, _DRIVE_FILE_UNSERVED)
+    if _mask_keys(paths) is None or not any(p[0] == "files" for p in paths):
+        return None
+    return _mask_keys(paths, "files", _DRIVE_FILE_DEFAULT)
 
 
 def _drive_get_field_keys(fields: str | None) -> set[str] | None:
@@ -2531,16 +2781,49 @@ def _drive_get_field_keys(fields: str | None) -> set[str] | None:
     (``fields=id,name,size``). Applying it is what makes one file look the same whether a client
     read it out of a listing or resolved it by id.
 
-    A mask that is empty or blank selects nothing, which is not the same as no mask: measured
-    2026-09-23, `fields=` and `fields=%20` answer ``{}`` where an absent `fields` answers the
-    default object. So an absent mask is ``None`` and a blank one the empty set."""
-    if fields is None:
+    A mask that is empty or of spaces and tabs alone selects nothing, which is not the same as no
+    mask: measured 2026-09-23, `fields=` and `fields=%20` answer ``{}`` where an absent `fields`
+    answers the default object, and `fields=%09` did too on 2026-10-20. So an absent mask is
+    ``None`` and one of spaces and tabs the empty set."""
+    paths = _drive_mask(fields)
+    if paths is None:
         return None
-    if not fields.strip():
-        return set()
-    keys = _mask_names(fields)
-    _check_mask(keys, _DRIVE_FILE_FIELDS)
-    return None if "*" in keys else (keys or None)
+    _check_mask(paths, _DRIVE_FILE_FIELDS, unserved=_DRIVE_FILE_UNSERVED)
+    return _mask_keys(paths, defaults=_DRIVE_FILE_DEFAULT)
+
+
+def _drive_project_listing(
+    body: dict,
+    fields: str | None,
+    under: str,
+    entries: frozenset,
+    defaults: frozenset,
+    unserved: frozenset = frozenset(),
+):
+    """``permissions.list`` or ``drives.list`` trimmed to its mask: the top-level keys it names,
+    and the entries of the list ``under`` trimmed to theirs by `_drive_project_entries`. The list
+    stays when only its entries are emptied. ``None`` for no mask."""
+    paths = _drive_mask(fields)
+    if paths is None:
+        return None
+    _check_mask(paths, frozenset({"kind", "nextPageToken", under}), under, entries, unserved)
+    tops = _mask_keys(paths, defaults=_DRIVE_LIST_DEFAULT)
+    if tops is None:
+        return body
+    if any(p[:2] == (under, _MASK_EMPTY) for p in paths):
+        tops.add(under)
+    out = {k: v for k, v in body.items() if k in tops}
+    if under in out:
+        keys = _mask_keys(paths, under, defaults)
+        out[under] = _drive_project_entries(out[under], keys)
+    return out
+
+
+def _drive_project_entries(entries: list[dict], keys: set[str] | None) -> list[dict]:
+    """A list's entries trimmed to ``keys``, an entry left with none dropped: real answered
+    `files(trashingUser)` and `permissions(teamDrivePermissionDetails)` with an empty list on
+    listings none of whose entries had the field, measured 2026-10-20."""
+    return [e for e in _drive_project(entries, keys) if e]
 
 
 def _drive_project(files: list[dict], keys: set[str] | None) -> list[dict]:
@@ -2565,56 +2848,64 @@ def _drive_fill_shared(conn, files: list[dict], stored: set[str]) -> None:
 # --- `orderBy` -----------------------------------------------------------------------------
 
 
-def _natural_key(name: str) -> list[tuple]:
-    """Drive's ``name_natural``: digit runs compare numerically, so ``v2`` sorts before ``v10``."""
-    return [
-        (0, int(t), "") if t.isdigit() else (1, 0, t.casefold())
-        for t in re.split(r"(\d+)", name)
-        if t
-    ]
-
-
 # Real Drive's documented `orderBy` keys -> the sort key each takes from the served file object
-# (sorting what the client actually sees, so folders and stored rows order together). Names sort
-# case-insensitively, the way Drive's collation presents them. `recency` is Drive's "most recent
-# by any signal"; Backlot models exactly one modification timestamp, which stands in for it.
+# (sorting what the client actually sees, so folders and stored rows order together). `name`
+# compares names case-insensitively, code point by code point; `name_natural` is
+# `backlot.collation`'s.
 _DRIVE_ORDER_KEYS = {
     "createdTime": lambda f: f.get("createdTime") or "",
     "modifiedTime": lambda f: f.get("modifiedTime") or "",
-    "recency": lambda f: f.get("modifiedTime") or "",
     "name": lambda f: (f.get("name") or "").casefold(),
-    "name_natural": lambda f: _natural_key(f.get("name") or ""),
+    "name_natural": lambda f: collation.sort_key(f.get("name") or ""),
     "folder": lambda f: f.get("mimeType") != DRIVE_FOLDER_MIME,  # folders first
     "starred": lambda f: bool(f.get("starred")),
     "quotaBytesUsed": lambda f: int(f.get("quotaBytesUsed") or f.get("size") or 0),
-    # Sortable because Backlot DOES model the relation behind it — owner vs caller — even though it
-    # records no share event (see _shared_with_me_time). Absent for the admin/service token, where
-    # every key ties and the order falls back to the id, as it would on real Drive over nulls.
+    # The per-caller keys read the served object, so a file the caller never modified or was
+    # shared sorts as real sorts a file without the time: ahead of every time, and after every one
+    # under `desc`.
     "sharedWithMeTime": lambda f: f.get("sharedWithMeTime") or "",
+    "modifiedByMeTime": lambda f: f.get("modifiedByMeTime") or "",
+    # Real sorts a file shared with the caller that the caller never viewed after every file
+    # without a view time and ahead of every view time, one of 2001 included, measured 2026-10-21;
+    # a file reached through a shared folder carries no `sharedWithMeTime` and sorts with the
+    # first. Nothing here is viewed, as `viewedByMe` says on every file, so whether the caller was
+    # shared the file is all the key reads.
+    "viewedByMeTime": lambda f: bool(f.get("sharedWithMeTime")),
+    # The later of the caller's last view and last modification; a file with neither after every
+    # file with either.
+    "recency": lambda f: max(f.get("viewedByMeTime") or "", f.get("modifiedByMeTime") or ""),
 }
-# Documented by Drive, but derived from per-caller signals Backlot does not model at all: nothing
-# here is ever viewed or modified *by* anyone in particular. Sorting by one of these could only be a
-# no-op, and a silently unapplied sort is the very failure this fix is about — so they 400, which
-# tells a consumer "verify this against real Drive" instead of quietly agreeing.
-_DRIVE_ORDER_UNMODELLED = ("viewedByMeTime", "modifiedByMeTime")
+# Listed newest first whichever direction is asked for: real answered `recency` and `recency asc`
+# newest first, as it answers `recency desc`, measured 2026-10-20.
+_DRIVE_ORDER_NEWEST_FIRST = frozenset({"recency"})
+# What separates an `orderBy` key from its direction, and what may stand around either: the 25
+# code points of Unicode's White_Space property, each a 200 between `name` and `desc`, ahead of
+# `name` and after it, measured 2026-10-20. `str.split()` also splits on U+001C-U+001F, which real
+# refuses as part of the key.
+_DRIVE_ORDER_SPACE = re.compile(
+    "[\t-\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+"
+)
+
+
+def _drive_order_words(order_by: str | None) -> list[list[str]]:
+    """``orderBy``'s comma-separated keys, each as its words. A key with no words is no key:
+    ``,name``, ``name,`` and ``name,,modifiedTime`` are each served."""
+    words = ([w for w in _DRIVE_ORDER_SPACE.split(tok) if w] for tok in (order_by or "").split(","))
+    return [w for w in words if w]
 
 
 def _drive_order_specs(order_by: str | None) -> list[tuple]:
-    """Parse ``orderBy`` — comma-separated keys, each optionally suffixed ``desc`` — into
-    ``(key, reverse)`` pairs. An unusable key is a 400, as on the real API — accepting one and not
-    applying it would let a client relying on server-side ordering pass here and misbehave against
-    the real thing. A key named twice is a 403."""
+    """Parse ``orderBy`` — comma-separated keys, each optionally followed by ``asc`` or ``desc`` in
+    lower case — into ``(key, reverse)`` pairs. Anything else is real's 400 ``Invalid Value``: an
+    unknown key, a key or direction in another case, a third word. A key named twice is a 403."""
     specs = []
     seen: set[str] = set()
-    for tok in (order_by or "").split(","):
-        parts = tok.split()
-        if not parts:
-            continue
+    for parts in _drive_order_words(order_by):
         key = parts[0]
-        if len(parts) > 2 or (len(parts) == 2 and parts[1] != "desc"):
-            raise gerr.invalid_value("orderBy", f"Invalid sort key: {tok.strip()}")
-        if key not in _DRIVE_ORDER_KEYS and key not in _DRIVE_ORDER_UNMODELLED:
-            raise gerr.invalid_value("orderBy", f"Invalid sort key: {tok.strip()}")
+        if parts[1:] not in ([], ["asc"], ["desc"]):
+            raise gerr.invalid_value("orderBy")
+        if key not in _DRIVE_ORDER_KEYS:
+            raise gerr.invalid_value("orderBy")
         # Real Drive (measured 2026-10-04) 403s a key named twice whatever either direction is, and
         # reads `name_natural` as `name` but `recency` and `modifiedTime` as two keys — so this
         # compares names, not the key functions. It reads left to right and answers the first
@@ -2623,30 +2914,22 @@ def _drive_order_specs(order_by: str | None) -> list[tuple]:
         if name in seen:
             raise gerr.duplicate_sort_keys()
         seen.add(name)
-        specs.append((key, len(parts) == 2))
+        specs.append((key, parts[1:] == ["desc"]))
     return specs
 
 
-def _drive_order_keyfns(specs: list[tuple]) -> list[tuple]:
-    """``(key function, reverse)`` pairs for the keys ``_drive_order_specs`` passed. A key Backlot
-    cannot sort by is refused here, after the 403 a `fullText` term gets."""
-    for key, _ in specs:
-        if key in _DRIVE_ORDER_UNMODELLED:
-            raise gerr.invalid_value(
-                "orderBy",
-                f"Sorting by '{key}' is not supported by Backlot (it models no per-caller "
-                f"view/share timestamps). Supported: {', '.join(sorted(_DRIVE_ORDER_KEYS))}.",
-            )
-    return [(_DRIVE_ORDER_KEYS[key], reverse) for key, reverse in specs]
-
-
 def _drive_sort(files: list[dict], specs: list[tuple]) -> list[dict]:
-    """Apply the keys last-first: Python's sort is stable, so the first key wins. The id pre-sort
-    makes ties deterministic, which is what keeps a sorted walk from repeating or skipping a row
-    across pages."""
+    """Apply the keys last-first: Python's sort is stable, so the first key wins. Files the keys
+    tie stay newest modification first under either direction, as real lists them: of the tied
+    pairs in its `name`, `name_natural`, `folder,name`, `starred` and `quotaBytesUsed` listings of
+    two accounts' files on 2026-10-20, and in its `viewedByMeTime`, `sharedWithMeTime`,
+    `modifiedByMeTime` and `recency` listings of folders made for them on 2026-10-21, none had the
+    older first. The id under that keeps a sorted walk from repeating or skipping a row across
+    pages."""
     files.sort(key=lambda f: f.get("id") or "")
-    for keyfn, reverse in reversed(specs):
-        files.sort(key=keyfn, reverse=reverse)
+    files.sort(key=lambda f: f.get("modifiedTime") or "", reverse=True)
+    for key, reverse in reversed(specs):
+        files.sort(key=_DRIVE_ORDER_KEYS[key], reverse=reverse or key in _DRIVE_ORDER_NEWEST_FIRST)
     return files
 
 
@@ -2668,26 +2951,29 @@ def _drive_newest_first(objects, folders: list[dict], offset: int, limit: int) -
     ``offset - len(folders)``, and a folder ahead of every row from there sorts before the page."""
     start = max(0, offset - len(folders))
     window = objects(start, offset + limit - start, with_shared=False)
-    newest = [(_DRIVE_ORDER_KEYS["modifiedTime"], True)]
+    newest = [("modifiedTime", True)]
     return _drive_sort(window + folders, newest)[offset - start : offset - start + limit]
 
 
 def _drive_starred_after_another_key(order_by: str | None) -> bool:
     """Whether ``starred`` follows another key in an ``orderBy`` that ``_drive_order_specs`` passed,
-    the case `gerr.drive_internal_error` answers. An empty token is no key: `,starred` is served and
-    `name,,starred` is the 500."""
-    keys = [parts[0] for tok in (order_by or "").split(",") if (parts := tok.split())]
+    the case `gerr.drive_internal_error` answers: `,starred` is served and `name,,starred` is the
+    500."""
+    keys = [parts[0] for parts in _drive_order_words(order_by)]
     return "starred" in keys[1:]
 
 
-def _drive_q_plain_folder(query) -> bool:
-    """True when the query is just a folder scope (``'<id>' in parents``, and the ``trashed =
-    false`` every query carries) with no other clause — the shape a tree-walking client sends,
-    servable straight from SQL."""
-    return _drive_q_is_conjunction(query) and all(
-        t.field == "parents" or t == _QTerm("trashed", "=", "false")
-        for t in _drive_q_conjuncts(query)
-    )
+def _drive_q_plain_folder(query) -> str | None:
+    """Whether the query is just a folder scope, the shape a tree-walking client sends, servable
+    straight from SQL: ``"live"`` for ``'<id>' in parents and trashed = false``, whose listing
+    leaves the trash out, ``"all"`` for ``'<id>' in parents`` alone, as LlamaIndex's Google Drive
+    reader sends it, whose listing holds the caller's own trash too, and ``None`` for any other
+    clause."""
+    conjuncts = _drive_q_conjuncts(query) if _drive_q_is_conjunction(query) else []
+    trashed_false = _QTerm("trashed", "=", "false")
+    if not conjuncts or not all(t.field == "parents" or t == trashed_false for t in conjuncts):
+        return None
+    return "live" if trashed_false in conjuncts else "all"
 
 
 def _drive_q_excludes_folders(conjuncts: list[_QTerm]) -> bool:
@@ -2745,20 +3031,19 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
     # same one `_drive_q_eval` makes, so the candidate set is the answer for that term and the
     # evaluator only applies the others. Nothing the evaluator accepts is outside it.
     name = next((t for t in conjuncts if t.field == "name" and t.op in ("contains", "=")), None)
-    # `list_drive_by_name` answers non-trashed rows only, so it can be the candidate set only when
-    # every match is non-trashed — `trashed = false` a conjunct, not merely present: under a `not`
-    # it asks for the trash.
-    non_trashed = _QTerm("trashed", "=", "false") in conjuncts or (
-        _QTerm("trashed", "!=", "true") in conjuncts
-    )
+    trash = _drive_listed_trash(ids, me)
     if fulltext is not None:  # the index's candidates, in rank order, then the other terms
-        candidates = hits[fulltext.value]
-    elif name is not None and non_trashed:
+        candidates = [
+            r
+            for r in hits[fulltext.value]
+            if not r["trashed"] or trash is True or _drive_owned_by(r["author_email"], me)
+        ]
+    elif name is not None:
         # A name lookup (mirage resolves every gdrive file with `name='…'`) — SQL title LIKE
         # instead of materializing the whole corpus (~25k rows, ~1.6s) to match in Python. The
-        # remaining terms still filter the (small) name-matched set below.
+        # remaining terms, `trashed` among them, still filter the (small) name-matched set below.
         candidates = store.list_drive_by_name(
-            conn, name.value, container, ids, limit=100_000, exact=name.op == "="
+            conn, name.value, container, ids, limit=100_000, exact=name.op == "=", trash=trash
         )
     else:  # scope to the folder and/or the owner (if any) to shrink the set before the filter
         owner, not_owner = _drive_shared_with_me_scope(conjuncts, me)
@@ -2770,6 +3055,7 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
             limit=100_000,
             author_email=owner,
             not_author_email=not_owner,
+            trash=trash,
         )
     ids_by_value = _drive_q_fulltext_ids(hits)
     return [r for r in candidates if _drive_q_eval(query, _drive_facts(r), me, ids_by_value)]
@@ -2792,16 +3078,15 @@ def _drive_about_field_keys(fields: str | None) -> set[str] | None:
     """``about.get`` is the one Drive read whose ``fields`` mask is MANDATORY — the resource has no
     default projection, and real Drive 400s without one. ``None`` = serve everything (``*``).
 
-    A mask that parses to no names at all (``fields=,``) 400s rather than falling through to "no
-    projection": on a resource where the mask is required, answering a request for nothing with
-    everything is the one outcome the caller certainly did not ask for."""
-    if not (fields or "").strip():
+    A mask that selects nothing is that 400 too: real answered it to white space alone, any one of
+    the 29 code points `str.isspace` takes, and to `user()`, `user( )` and `kind()`, measured
+    2026-10-20."""
+    paths = _mask_paths(fields) if (fields or "").strip() else []
+    _check_mask(paths, _DRIVE_ABOUT_FIELDS)
+    keys = _mask_keys(paths)
+    if keys is not None and not keys:
         raise gerr.required("fields", "The 'fields' parameter is required for this method.")
-    keys = _mask_names(fields)
-    _check_mask(keys, _DRIVE_ABOUT_FIELDS)
-    if not keys:
-        raise gerr.invalid_parameter("fields", f"Invalid field selection {fields}")
-    return None if "*" in keys else keys
+    return keys
 
 
 # The conversion tables below describe the *API's* capabilities, not this account's, so they carry
@@ -2954,7 +3239,7 @@ async def drive_about(request: Request):
     return _drive_project([about], keys)[0]
 
 
-@router.get("/drive/v3/drives")
+@router.get("/drive/v3/drives", openapi_extra={"parameters": _P_DRIVE_DRIVES})
 async def drive_shared_drives(request: Request):
     """Shared (Team) Drives — Backlot's corpus lives entirely in My Drive, so this is empty.
     Present so shared-drive-aware clients don't 404 while enumerating."""
@@ -2962,13 +3247,24 @@ async def drive_shared_drives(request: Request):
     _drive_page_size_in_range(
         _drive_typed(request, "useDomainAdminAccess", page_size=True)["pageSize"], 100
     )
+    _drive_refuse_a_trailing_comma(request)
+    # A `q` it does not take comes after the typed and range refusals and ahead of a bad
+    # `pageToken` and the 403 below, measured 2026-10-20 by sending one of each beside it.
+    _drive_q_parse(gerr.first_repeat(request.query_params, "q") or "", _DRIVES_Q)
     _drive_listing_page_token(request)
     # Every caller here is a member of one Workspace domain and none is its administrator: a
     # member's 403, with a `q` sent and without one, on its own and in a batch, measured 2026-10-06.
     # Real answers a domain administrator 200 and a consumer account 400 at `q`.
     if _drive_true(request, "useDomainAdminAccess"):
         raise gerr.domain_admin_privilege_required()
-    return {"kind": "drive#driveList", "drives": []}
+    body = {"kind": "drive#driveList", "drives": []}
+    # The rest of the mask's refusals last: real answered a name the list does not have after a bad
+    # `q`, a bad `pageToken` and the 403, each sent beside it, measured 2026-10-20.
+    mask = gerr.first_repeat(request.query_params, "fields")
+    projected = _drive_project_listing(
+        body, mask, "drives", _DRIVE_DRIVE_FIELDS, _DRIVE_DRIVE_DEFAULT
+    )
+    return body if projected is None else projected
 
 
 @router.get(
@@ -2980,8 +3276,8 @@ async def drive_files_list(request: Request):
     and every row comes back shaped the way the caller asked for."""
     conn = auth.conn(request)
     caller = _require(request)
-    ids = auth.visible_ids(request, caller)
     me = caller.email
+    ids = auth.visible_ids(request, caller)
     # Each read off the first repeat, as real reads them -- see `gerr.first_repeat`. Refused in
     # real's order, measured 2026-09-23 by sending two bad values at once: `pageSize` first, then
     # `orderBy`, `q`, `pageToken` and `fields`, whichever order the query names them in. The 403 for
@@ -2989,7 +3285,8 @@ async def drive_files_list(request: Request):
     # 403 between `orderBy` and `q`, measured 2026-10-04, the 403 for an `orderBy` on a `q` with a
     # `fullText` term between `q` and `pageToken`, measured 2026-10-05 and 2026-10-07, and the 500
     # for `starred` after another key between `pageToken` and `fields`, measured 2026-10-04 and
-    # 2026-10-07.
+    # 2026-10-07. A `fields` ending in a comma comes right after `pageSize`, as
+    # `_drive_refuse_a_trailing_comma` says.
     params = request.query_params
     typed = _drive_typed(
         request,
@@ -3000,6 +3297,7 @@ async def drive_files_list(request: Request):
         page_size=True,
     )
     limit = _drive_page_size(typed["pageSize"])
+    _drive_refuse_a_trailing_comma(request)
     # 400 on an unusable key, 403 on a key named twice
     order = _drive_order_specs(gerr.first_repeat(params, "orderBy"))
     shared_items = _drive_true(request, "includeItemsFromAllDrives") or _drive_true(
@@ -3014,7 +3312,6 @@ async def drive_files_list(request: Request):
     fulltext = any(t.field == "fullText" for t in _drive_q_terms(query))
     if order and fulltext:
         raise gerr.sorting_not_supported_fulltext()
-    order = _drive_order_keyfns(order)
     # Measured 2026-09-23: a token the API did not issue is 400 `Invalid Value`, where an empty one
     # is the first page.
     offset = decode_cursor_or_none(gerr.first_repeat(params, "pageToken"))
@@ -3023,7 +3320,7 @@ async def drive_files_list(request: Request):
     if _drive_starred_after_another_key(gerr.first_repeat(params, "orderBy")):
         raise gerr.drive_internal_error()
     mask = gerr.first_repeat(params, "fields")
-    if mask is not None and not mask.strip():
+    if mask is not None and not mask.strip(" \t"):
         # The blank mask `_drive_get_field_keys` describes; on a listing it drops `kind` and
         # `files` too, so the typed response model is bypassed.
         return JSONResponse({})
@@ -3047,10 +3344,13 @@ async def drive_files_list(request: Request):
     # of rows per request, not a full-corpus scan re-run for every page.
     if "root" in parent_ids:
         total_rows, fetch = 0, lambda o, n: []  # every stored file lives in a folder
-    elif container is not None and _drive_q_plain_folder(query):
+    elif container is not None and (scope := _drive_q_plain_folder(query)):
         # The common case: a client walking the tree wants just this folder's files.
-        total_rows = store.count_drive_folder(conn, container, ids)
-        fetch = lambda o, n: store.list_drive_folder(conn, container, ids, limit=n, offset=o)  # noqa: E731
+        trash = _drive_listed_trash(ids, me) if scope == "all" else False
+        total_rows = store.count_drive_folder(conn, container, ids, trash)
+        fetch = lambda o, n: store.list_drive_folder(  # noqa: E731
+            conn, container, ids, limit=n, offset=o, trash=trash
+        )
     elif query is not None:  # filter the visible set by the query, then paginate
         matched = _drive_q_rows(conn, query, container, ids, me, hits)
         if not fulltext:  # in the order `_drive_newest_first` reads rows in
@@ -3058,22 +3358,10 @@ async def drive_files_list(request: Request):
             matched.sort(key=_drive_modified, reverse=True)
         total_rows, fetch = len(matched), lambda o, n: matched[o : o + n]  # noqa: E731
     else:
-        # exclude_trashed: with no `q` at all there is no query to carry `trashed = false`, and
-        # real Drive leaves trashed files out of files.list unless `trashed = true` asks for them.
-        # The q-bearing paths already do this (the `trashed = false` _drive_q_parse appends,
-        # store.list_drive_folder's WHERE), so without it the DEFAULT listing was the one call that
-        # returned trash.
-        total_rows = store.count_documents(
-            conn, "google_drive", visible_ids=ids, exclude_trashed=True
-        )
+        trash = _drive_listed_trash(ids, me)  # the caller's own trash with the rest
+        total_rows = store.count_documents(conn, "google_drive", visible_ids=ids, trash=trash)
         fetch = lambda o, n: store.list_documents(  # noqa: E731
-            conn,
-            "google_drive",
-            visible_ids=ids,
-            limit=n,
-            offset=o,
-            exclude_trashed=True,
-            newest_first=True,
+            conn, "google_drive", visible_ids=ids, limit=n, offset=o, trash=trash, newest_first=True
         )
 
     # The file ids that came from the row stream, as opposed to a synthesized folder -- see
@@ -3113,7 +3401,7 @@ async def drive_files_list(request: Request):
     body = {
         "kind": "drive#fileList",
         "incompleteSearch": False,
-        "files": _drive_project(files, keys),
+        "files": _drive_project_entries(files, keys),
     }
     token = next_page_token(offset, len(files), total)
     if token:
@@ -3141,10 +3429,12 @@ async def drive_files_get(file_id: str, request: Request):
     _drive_typed(request, "acknowledgeAbuse", "supportsAllDrives", "supportsTeamDrives")
     if download:
         caller = _require(request, download=True)
+    else:
+        _drive_refuse_a_trailing_comma(request)
     # Measured 2026-10-04: before the lookup, so a file that does not exist is refused alike, and
-    # before `fields`. Inside a batch real checks a part's own flag only when the part is the
-    # batch's one part that is not a download, measured 2026-10-05 beside downloads, other reads and
-    # a second flagged part.
+    # before each `fields` refusal but `_drive_refuse_a_trailing_comma`'s. Inside a batch real
+    # checks a part's own flag only when the part is the batch's one part that is not a download,
+    # measured 2026-10-05 beside downloads, other reads and a second flagged part.
     outer = _BATCH_OUTER.get()
     if not download and _drive_true(request, "acknowledgeAbuse") and (outer is None or outer.lone):
         raise gerr.abuse_acknowledgment_not_applicable()
@@ -3261,10 +3551,11 @@ async def drive_files_permissions(file_id: str, request: Request):
         request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
     )["pageSize"]
     _drive_page_size_in_range(sizes, 100)
+    _drive_refuse_a_trailing_comma(request)
     # Refused in real's order, measured by sending two bad values at once: the `pageToken`
     # refusals, a repeated `pageSize`'s 500, the domain-administrator refusal and the file lookup
-    # below, and a token issued for another file last, in `_drive_permission_page`. The places of
-    # the 500 and of that last refusal were measured 2026-10-08.
+    # below, and a token issued for another file after those, in `_drive_permission_page`. The
+    # places of the 500 and of the other-file token were measured 2026-10-08.
     token = _drive_permissions_page_token(request)
     size = _drive_permissions_page_size(sizes)
     # No caller here is a domain administrator: 404 for the file, even one the caller owns,
@@ -3285,7 +3576,19 @@ async def drive_files_permissions(file_id: str, request: Request):
         permissions = _drive_permissions(conn, file_id, folder=name)
     else:
         permissions = _drive_permissions(conn, row["id"])
-    return _drive_permission_page(permissions, file_id, size, token)
+    body = _drive_permission_page(permissions, file_id, size, token)
+    # Real answered a name the list does not have after the `pageToken` refusals, the
+    # domain-administrator 404 and the file lookup, each sent beside it, measured 2026-10-20.
+    mask = gerr.first_repeat(request.query_params, "fields")
+    projected = _drive_project_listing(
+        body,
+        mask,
+        "permissions",
+        _DRIVE_PERMISSION_FIELDS,
+        _DRIVE_PERMISSION_DEFAULT,
+        _DRIVE_PERMISSION_UNSERVED,
+    )
+    return body if projected is None else JSONResponse(projected)
 
 
 # --- Google Workspace editors read APIs (Docs / Sheets / Slides) ------------------
@@ -5193,6 +5496,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "shared": bool(shared),
         "viewedByMe": False,
         "ownedByMe": _drive_owned_by(author, me),
+        **_modified_by_me(author, me, modified),
         **_shared_with_me_time(author, me, created),
         "version": str(2 if row["updated_ts"] else 1),
         "spaces": ["drive"],
@@ -5581,8 +5885,8 @@ def _drive_listing_page_token(request: Request) -> None:
     """Refuse a `pageToken` sent to `drives.list`, which is empty and issues no `nextPageToken`,
     so every token is one it did not issue. Presence is the whole test: `decode_cursor_or_none`,
     which `files.list` calls, reads `bzow` and that route's own tokens as offsets. Read from the
-    first repeat, after the typed and range refusals and ahead of the `useDomainAdminAccess=true`
-    refusal. What real answers is the `drives.list` column of the table
+    first repeat, ahead of the `useDomainAdminAccess=true` refusal; the route comment says what
+    precedes it. What real answers is the `drives.list` column of the table
     `_drive_permissions_page_token` records."""
     token = gerr.first_repeat(request.query_params, "pageToken")
     if token:

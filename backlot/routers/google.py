@@ -3800,102 +3800,229 @@ _P_SHEETS_STD = [
 ]
 
 
-def _gmask_parse(mask: str) -> dict:
-    """A ``fields`` mask as a nested selection tree; ``{}`` at a leaf means "this whole subtree".
+def _sheets_types() -> dict[str, dict[str, str | None]]:
+    """The messages a Sheets read answers with and every message they reach, each as its fields and
+    the message each holds (`None` for a scalar, an enum, a map or a list of lists): the `types`
+    `backlot diff` records in the `google_drive` baseline from the discovery document. A field only
+    Backlot serves is not one a mask may name."""
+    types = json.loads((_BASELINES / "google_drive.json").read_text(encoding="utf-8"))["types"]
+
+    def held(type_: str) -> str | None:
+        name = type_.strip("[]")
+        return name if name in types else None
+
+    return {
+        name: {f: held(m["type"]) for f, m in entry.get("fields", {}).items() if "type" in m}
+        for name, entry in types.items()
+    }
+
+
+_SHEETS_FIELDS = _sheets_types()
+
+
+def _gmask_paths(mask: str) -> tuple[list[tuple[str, ...]], str]:
+    """The paths a ``fields`` mask names, in its order, each as its names, and the bracket it leaves
+    unpaired (``""`` for none).
 
     Measured grammar: ``.`` and ``/`` both descend, ``a(b,c)`` groups a sub-selection, ``,``
-    separates siblings, ``*`` selects everything, and a trailing comma is tolerated. A name is
-    matched case-sensitively and is not trimmed -- `` spreadsheetId`` with a leading space 400s."""
-    tree: dict = {}
-    # (node, key-so-far) as the parser descends into a group
-    stack, cur, token = [], tree, ""
+    separates siblings and a trailing comma is tolerated. A name is matched case-sensitively and is
+    not trimmed -- `` spreadsheetId`` with a leading space 400s. An empty group names nothing, not
+    even the name before it: measured 2026-10-22, `a()` answered the whole spreadsheet with no
+    refusal for `a`, and `spreadsheetId,sheets()` the `spreadsheetId` alone.
 
-    def land(node, name):
-        if not name:
-            return node
-        head, _, rest = name.replace("/", ".").partition(".")
-        child = node.setdefault(head, {})
-        while rest:
-            head, _, rest = rest.partition(".")
-            child = child.setdefault(head, {})
-        return child
+    A bracket left unpaired is refused after the paths before it, a ``)`` where it stands and a
+    ``(`` at the end (`gerr.unbalanced_field_mask`): measured 2026-10-22, `a)` and
+    `bogus)spreadsheetId` named `a` and `bogus`, `spreadsheetId)bogus` was the `)` refusal, and
+    `sheets(properties/title,bogus` named `sheets.bogus` where `sheets(properties/title` was the
+    `(` one."""
+    paths: list[tuple[str, ...]] = []
+    # the prefix of each open group
+    stack: list[tuple[str, ...]] = []
+    prefix: tuple[str, ...] = ()
+    token = ""
+
+    def names(text: str) -> tuple[str, ...]:
+        return tuple(text.replace("/", ".").split("."))
 
     for ch in mask:
         if ch == "(":
-            stack.append((cur, token))
-            cur, token = land(cur, token), ""
+            stack.append(prefix)
+            prefix += names(token) if token else ()
+            token = ""
         elif ch == ")":
+            if token:
+                paths.append(prefix + names(token))
             if not stack:
-                raise gerr.bad_field_mask(mask)
-            land(cur, token)
-            cur, token = stack.pop()[0], ""
+                return paths, ")"
+            prefix, token = stack.pop(), ""
         elif ch == ",":
-            land(cur, token)
+            if token:
+                paths.append(prefix + names(token))
             token = ""
         else:
             token += ch
-    if stack:
-        raise gerr.bad_field_mask(mask)
-    land(cur, token)
-    return tree
+    if token:
+        paths.append(prefix + names(token))
+    return paths, "(" if stack else ""
 
 
-def _gmask_check(tree: dict, allowed: dict, path: str = "") -> None:
-    """Refuse a name the response has no field for, naming the full path as the real API does.
+def _gmask_resolve(path: tuple[str, ...], message: str | None) -> dict | None:
+    """What ``path`` selects in ``message`` (`None` for a field that holds no message), or ``None``
+    when it names nothing there; ``{}`` is all of it.
 
-    Validated against the fields Backlot CAN emit rather than against the whole Sheets schema:
-    a mask naming a real field this module does not model -- a cell's `userEnteredFormat`, say --
-    400s here where the real API answers 200. Stated rather than hidden; the alternative is to
-    accept any name at all, which is how a typo becomes a silently empty response."""
-    for name, sub in tree.items():
-        if name == "*":
-            continue
-        full = f"{path}.{name}" if path else name
-        if name not in allowed:
-            raise gerr.bad_field_mask(full)
-        if sub:
-            _gmask_check(sub, allowed[name], full)
+    A ``*`` stands for one name. Measured 2026-10-22: `sheets.*.title` is
+    `sheets.properties.title`, `*.*.title` the same, `*.*.rowCount` refused as naming nothing (the
+    row count is three names under `sheets`), and `*.data` is `sheets.data`. A ``*`` that ends a
+    path selects all of what it is under, a field holding no message included, and so does a run
+    of them: `spreadsheetId.*`, `spreadsheetId.*.*`, a map's `criteria.*` and `*.*.*` answered,
+    where `spreadsheetId.*.x` names nothing."""
+    if not path:
+        return {}
+    head, rest = path[0], path[1:]
+    if message is None:
+        return {} if all(name == "*" for name in path) else None
+    fields = _SHEETS_FIELDS[message]
+    if head == "*":
+        if not rest:
+            return {}
+        out = {}
+        for name, held in fields.items():
+            sub = _gmask_resolve(rest, held)
+            if sub is not None:
+                out[name] = sub
+        return out or None
+    if head not in fields:
+        return None
+    sub = _gmask_resolve(rest, fields[head])
+    return None if sub is None else {head: sub}
 
 
-def _gmask_wants_grid(mask: str | None) -> bool:
-    """Whether a `fields` mask reaches the cells, which is what decides the grid when one is set.
+def _gmask_merge(into: dict, selection: dict) -> None:
+    """Merge one path's selection into the tree, a narrower selection replacing a wider one:
+    measured 2026-10-22, `spreadsheetId,*` answered `spreadsheetId` alone, and
+    `sheets,sheets.properties.title` and `sheets.*,sheets.properties.title` the title alone."""
+    for name, sub in selection.items():
+        _gmask_merge(into.setdefault(name, {}), sub)
+
+
+def _gmask_select(mask: str | None, message: str) -> tuple[dict | None, bool]:
+    """The selection tree a ``fields`` mask makes of a ``message`` response, ``{}`` at a leaf
+    meaning all of it, and whether the mask names a comment field. ``None`` for no mask, which an
+    empty one, an empty group and a ``*`` alone each are: measured 2026-10-22, `fields=*` answered
+    what no mask does, `includeGridData` deciding the grid.
+
+    A path that names nothing is refused, the first such in the mask's order (measured on
+    `sheets.properties.title,bogus2,sheets.bogus3`: `bogus2`), so a declared field the response
+    holds no value for answers 200 without it rather than the 400 a field it does not declare gets.
+    Checked against the whole schema, not against what this module builds: measured 2026-10-22,
+    `namedRanges`, `sheets(merges,conditionalFormats)` and a cell's `userEnteredFormat` each
+    answered 200 on a spreadsheet holding none. A bracket left unpaired is refused after the paths
+    before it (`_gmask_paths`).
+
+    A comment field is one a path reaches by naming something: measured 2026-10-22, `comments`,
+    `comments.*`, `*.commentId` and `*.headPost` were refused for asking after comments that
+    `commentsViewMode` did not request, and `*.*`, which reaches `comments` through ``*`` alone, was
+    answered."""
+    if not mask:
+        return None, False
+    tree: dict = {}
+    comments = False
+    paths, unpaired = _gmask_paths(mask)
+    for path in paths:
+        selection = _gmask_resolve(path, message)
+        if selection is None:
+            raise gerr.bad_field_mask(mask, ".".join(path))
+        comments |= "comments" in selection and any(name != "*" for name in path)
+        _gmask_merge(tree, selection)
+    if unpaired:
+        raise gerr.unbalanced_field_mask(mask, unpaired)
+    return (tree or None), comments
+
+
+def _gmask_wants_grid(tree: dict | None, include_grid_data: bool) -> bool:
+    """Whether the cells are served: as `includeGridData` says with no mask, and otherwise when the
+    mask reaches `sheets.data`.
 
     The discovery document says of `includeGridData`, on both methods that take it: "This parameter
     is ignored if a field mask was set in the request." Measured, that is narrower than it reads --
-    the mask has to reach `sheets.data`. `fields=sheets` and `fields=sheets.data...` build the
-    grid; `fields=*` and `fields=sheets.properties.title` do not, even though the first of those
-    selects everything."""
-    if not mask:
-        return False
-    tree = _gmask_parse(mask)
+    the mask has to reach `sheets.data`. `fields=sheets`, `sheets.*`, `*.data` and
+    `fields=sheets.data...` build the grid whatever `includeGridData` says, and
+    `fields=sheets.properties.title` does not. `fields=*` is no mask at all (`_gmask_select`)."""
+    if tree is None:
+        return include_grid_data
     under = tree.get("sheets")
     return under is not None and (not under or "data" in under)
 
 
 def _gmask_apply(tree: dict, value):
     """Project ``value`` through a selection tree, mapping over a list rather than indexing it —
-    which is what lets ``sheets.properties.title`` reach into every sheet."""
-    if not tree or "*" in tree:
+    which is what lets ``sheets.properties.title`` reach into every sheet — and keeping the order
+    ``value`` has: measured 2026-10-22, `*.title,spreadsheetId` answered `spreadsheetId` first."""
+    if not tree:
         return value
     if isinstance(value, list):
         return [_gmask_apply(tree, v) for v in value]
     if not isinstance(value, dict):
         return value
-    out = {}
-    for name, sub in tree.items():
-        if name in value:
-            out[name] = _gmask_apply(sub, value[name])
+    out = {name: _gmask_apply(tree[name], v) for name, v in value.items() if name in tree}
+    if "rowData" in out:
+        _gmask_trim_rows(out)
     return out
 
 
-def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
+def _gmask_trim_rows(block: dict) -> None:
+    """Cut a projected `GridData` block's rows the way `_sheets_grid_data` cuts them, a cell the
+    mask left empty counting as an empty cell. Measured 2026-10-22 over `D1:F4` holding `a` in D1
+    and `b` in F2: `rowData.values.userEnteredValue` answered
+    `[{"values": [{…}]}, {"values": [{}, {}, {…}]}]`, and `rowData.values.userEnteredFormat`, which
+    no cell held, no `rowData` at all."""
+    rows = []
+    for row in block["rowData"]:
+        values = list(row.get("values", []))
+        while values and not values[-1]:
+            values.pop()
+        rows.append({"values": values} if values else {})
+    while rows and not rows[-1]:
+        rows.pop()
+    if rows:
+        block["rowData"] = rows
+    else:
+        del block["rowData"]
+
+
+def _sheets_alt(request: Request) -> None:
+    """Refuse an `alt` that names no format, ahead of everything else a Sheets read checks: measured
+    2026-10-22, `alt=zzz` answered its 400 with no credential, with a bad one, beside a bad
+    `includeGridData`, a bad body and a `fields` mask naming nothing, and for a spreadsheet that
+    does not exist. An `alt` that names one is `_sheets_respond`'s, after the read has run."""
+    alt = gerr.alt_format(request.query_params)
+    if alt and alt not in ("json", "media", "proto"):
+        # Through the spelling that arrived, not the folded one: measured 2026-09-17 on Sheets,
+        # `alt=ZZZ` answers `Invalid value "ZZZ"`.
+        raise gerr.invalid_argument(
+            "Invalid value \"{}\" for query parameter 'alt'".format(
+                gerr.first_repeat(request.query_params, gerr.ALT)
+            )
+        )
+
+
+def _sheets_mask(request: Request, message: str) -> tuple[dict | None, bool]:
+    """`_gmask_select` over this request's ``fields``. A read checks it once its typed values and
+    body are read and before the spreadsheet is looked up: measured 2026-10-22 on the five reads, a
+    mask naming nothing answered its 400 ahead of a missing spreadsheet's 404, a range that does
+    not parse, an empty filter list and `alt=media`, and behind a bad `includeGridData`,
+    `commentsViewMode`, `majorDimension` and body."""
+    return _gmask_select(gerr.first_repeat(request.query_params, "fields"), message)
+
+
+def _sheets_respond(request: Request, body: dict, tree: dict | None) -> Response:
     """One Sheets response, with the standard query parameters applied.
 
-    Order matters and is measured: `alt` decides whether the answer can be JSON at all, then
-    `fields` narrows the body, then `prettyPrint` decides the indentation, then `callback` wraps
-    what is left. An unparseable `callback` is refused ahead of all of them, in
-    ``gerr.validate_system_parameters`` — measured, that refusal beats a mistyped `fields` mask —
-    so by here the name is one the answer can be handed to.
+    Order matters and is measured: `alt` decides whether the answer can be JSON at all, then the
+    `fields` selection (`_sheets_mask`) narrows the body, then `prettyPrint` decides the
+    indentation, then `callback` wraps what is left. An unparseable `callback` is refused ahead of
+    all of them, in ``gerr.validate_system_parameters`` — measured, that refusal beats a mistyped
+    `fields` mask — so by here the name is one the answer can be handed to.
 
     The bytes themselves are ``gerr.respond``'s, which is also what every Google ERROR is rendered
     through: a success and a failure on the same route come back through the same serializer on
@@ -3905,16 +4032,11 @@ def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
     # see one `alt` in both places.
     alt = gerr.alt_format(request.query_params)
     if alt and alt != "json":
-        # Measured on `media` and `zzz`: `media` gets its own sentence, everything else the
-        # generic one. NOT `proto`, which the discovery document also declares and which real
-        # answers with a protobuf body ("Proto over HTTP is not allowed for service …") under
-        # `application/x-protobuf` — a format this module does not serve, so it lands on the
-        # generic sentence here.
-        #
-        # The two sentences quote different spellings, measured 2026-09-17 on Sheets: `alt=MEDIA`
-        # answers `Unsupported alt type "media"` with the format lowercased, while `alt=ZZZ`
-        # answers `Invalid value "ZZZ"` through the spelling that arrived. So the generic one
-        # reads the parameter again rather than reusing the folded value.
+        # `media` or `proto`, `_sheets_alt` having refused the rest. `media` gets its own sentence,
+        # the format lowercased: measured 2026-09-17 on Sheets, `alt=MEDIA` answers `Unsupported
+        # alt type "media"`. `proto` gets the one `_sheets_alt` gives: real answers it with a
+        # protobuf body ("Proto over HTTP is not allowed for service …") under
+        # `application/x-protobuf`, a format this module does not serve.
         raise gerr.invalid_argument(
             f'Unsupported alt type "{alt}" for non byte stream request.'
             if alt == "media"
@@ -3922,10 +4044,7 @@ def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
                 gerr.first_repeat(request.query_params, gerr.ALT)
             )
         )
-    mask = gerr.first_repeat(request.query_params, "fields")
-    if mask:
-        tree = _gmask_parse(mask)
-        _gmask_check(tree, allowed)
+    if tree is not None:
         body = _gmask_apply(tree, body)
     # Measured 2026-09-23, twenty spellings one request each: `false` and `0` turn it off and the
     # other eighteen leave it indented, `FALSE`, `False`, `f`, `no`, `n`, `00` and a padded ` false`
@@ -3935,90 +4054,11 @@ def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
     return gerr.respond(body, compact=compact, callback=gerr.jsonp_callback(request))
 
 
-# What a `fields` mask may name, per response — the fields these routes actually build. A cell's
-# value objects are leaves: their members are the one-of `stringValue`/`numberValue`/`boolValue`,
-# which a mask reaches by naming the value itself.
-# Google's Color, whose members a mask may name. Spelled out rather than left a leaf: an empty
-# subtree would make `...rgbColor.red` a refusal where the real API answers it.
-_F_COLOR = {"red": {}, "green": {}, "blue": {}, "alpha": {}}
-_F_TEXT_FORMAT = {
-    "foregroundColor": _F_COLOR,
-    "fontFamily": {},
-    "fontSize": {},
-    "bold": {},
-    "italic": {},
-    "strikethrough": {},
-    "underline": {},
-    "foregroundColorStyle": {"rgbColor": _F_COLOR},
-}
-_F_CELL = {
-    "userEnteredValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
-    "effectiveValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
-    "formattedValue": {},
-    "effectiveFormat": {
-        "backgroundColor": _F_COLOR,
-        "padding": {"top": {}, "right": {}, "bottom": {}, "left": {}},
-        "horizontalAlignment": {},
-        "verticalAlignment": {},
-        "wrapStrategy": {},
-        "textFormat": _F_TEXT_FORMAT,
-        "hyperlinkDisplayType": {},
-        "backgroundColorStyle": {"rgbColor": _F_COLOR},
-    },
-}
-_F_GRID_DATA = {
-    "startRow": {},
-    "startColumn": {},
-    "rowData": {"values": _F_CELL},
-    "rowMetadata": {"pixelSize": {}},
-    "columnMetadata": {"pixelSize": {}},
-}
-_F_SPREADSHEET = {
-    "spreadsheetId": {},
-    "spreadsheetUrl": {},
-    "properties": {
-        "title": {},
-        "locale": {},
-        "autoRecalc": {},
-        "timeZone": {},
-        "defaultFormat": {
-            "backgroundColor": _F_COLOR,
-            "padding": {"top": {}, "right": {}, "bottom": {}, "left": {}},
-            "verticalAlignment": {},
-            "wrapStrategy": {},
-            "textFormat": _F_TEXT_FORMAT,
-            "backgroundColorStyle": {"rgbColor": _F_COLOR},
-        },
-        "spreadsheetTheme": {
-            "primaryFontFamily": {},
-            "themeColors": {"colorType": {}, "color": {"rgbColor": _F_COLOR}},
-        },
-    },
-    "sheets": {
-        "properties": {
-            "sheetId": {},
-            "title": {},
-            "index": {},
-            "sheetType": {},
-            "gridProperties": {"rowCount": {}, "columnCount": {}},
-        },
-        "data": _F_GRID_DATA,
-    },
-}
-_F_VALUE_RANGE = {"range": {}, "majorDimension": {}, "values": {}}
-_F_BATCH_BY_FILTER = {
-    "spreadsheetId": {},
-    "valueRanges": {
-        "valueRange": {"range": {}, "majorDimension": {}, "values": {}},
-        "dataFilters": {"a1Range": {}, "gridRange": {}},
-    },
-}
-_F_BATCH_VALUES = {"spreadsheetId": {}, "valueRanges": _F_VALUE_RANGE}
-
 _P_SHEETS_GET = [
     qp("includeGridData", "boolean"),
     qp("ranges"),
     qp("excludeTablesInBandedRanges", "boolean"),
+    qp("commentsViewMode"),
     *_P_SHEETS_STD,
 ]
 
@@ -4032,10 +4072,10 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     whole grid would hand a reader cells the real API never would, so the document it assembles
     would differ between the two backends. With the flag, ``ranges`` scopes the returned rows
     (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
-    # The credential, then the typed values, then the lookup -- `_typed_query` records the order.
-    _require(request)
-    # A mask that reaches the cells decides the grid, and `includeGridData` is then ignored rather
-    # than consulted -- the vendor's own wording. Still parsed, so a bad value is still refused.
+    # `alt` (`_sheets_alt`), the credential and the typed values (`_typed_query`), the mask
+    # (`_sheets_mask`), then the lookup.
+    _sheets_alt(request)
+    caller = _require(request)
     flags = _typed_query(
         request,
         {
@@ -4043,30 +4083,48 @@ async def sheets_get(spreadsheet_id: str, request: Request):
             "excludeTablesInBandedRanges": lambda raw: _sheets_bool_value(
                 raw, "exclude_tables_in_banded_ranges"
             ),
+            # Read as `documents.get` reads its own (`_DOCS_COMMENTS_VIEW`), measured 2026-10-22:
+            # `03`, `+1` and `comments_view_mode_included` read, `4`, `-1`, `BOGUS` and empty
+            # refused, and of several the last decides.
+            "commentsViewMode": lambda raw: _sheets_enum_value(
+                raw, "comments_view_mode", _PJ_COMMENTS_VIEW
+            ),
         },
     )
-    grid = (flags["includeGridData"] or [False])[-1]
+    tree, comments = _sheets_mask(request, "sheets.Spreadsheet")
     row, sheets = _workbook(request, spreadsheet_id)
-    mask = gerr.first_repeat(request.query_params, "fields")
-    if mask:
-        grid = _gmask_wants_grid(mask)
+    mode = (flags["commentsViewMode"] or [_PJ_COMMENTS_VIEW.names[0]])[-1]
+    owned = _drive_owned_by(row["author_email"], caller.email)
+    view = _sheets_comments_view(_PJ_COMMENTS_VIEW.names.index(mode), comments, owned)
+    # A mask that reaches the cells decides the grid, and `includeGridData` is then ignored rather
+    # than consulted -- the vendor's own wording. Still parsed, so a bad value is still refused.
+    grid = _gmask_wants_grid(tree, (flags["includeGridData"] or [False])[-1])
     # `excludeTablesInBandedRanges` is validated above and then unused, deliberately: it drops the
     # tables that sit inside a banded range, and a corpus states neither tables nor banded ranges,
     # so there is nothing here to exclude. Leaving it unvalidated instead would accept the one
     # thing a client can get wrong about it.
+    ranges = request.query_params.getlist("ranges")
     return _sheets_respond(
-        request,
-        _sheets_book(spreadsheet_id, row, sheets, request.query_params.getlist("ranges"), grid),
-        _F_SPREADSHEET,
+        request, _sheets_book(spreadsheet_id, row, sheets, ranges, grid, view, tree), tree
     )
 
 
-def _sheets_book(spreadsheet_id: str, row, sheets: list[_Sheet], specs: list, grid: bool):
+def _sheets_book(
+    spreadsheet_id: str,
+    row,
+    sheets: list[_Sheet],
+    specs: list,
+    grid: bool,
+    view: str,
+    tree: dict | None,
+):
     """The `Spreadsheet` body both `spreadsheets.get` and `:getByDataFilter` answer with.
 
     ``specs`` is what to serve — A1 ranges from `ranges` for one, and from the data filters for the
     other A1 ranges and the empty grid ranges they may select (`_Empty`); empty means every sheet,
-    whole."""
+    whole. ``view`` is the `commentsViewMode` it answers, which a read with no mask (``tree``)
+    carries only beside the grid: measured 2026-10-22, with no `fields` it was there under
+    `includeGridData=true` alone, and a mask naming it got it with no grid."""
     # Each sheet paired with the cell parts to serve for it: `("", title)` is the whole grid, which
     # is what a sheet nobody named gets. Resolved ONCE, here — a sheet is never re-derived from its
     # own title further down, or one titled like a cell reference (`A1`, `AB`) would come back
@@ -4105,7 +4163,8 @@ def _sheets_book(spreadsheet_id: str, row, sheets: list[_Sheet], specs: list, gr
                 for part in parts
             ]
         out.append(entry)
-    return {
+    # Real's order, measured 2026-10-22 with and without the grid and under `fields=*.*`.
+    book = {
         "spreadsheetId": spreadsheet_id,
         "properties": {
             "title": row["title"],
@@ -4115,9 +4174,12 @@ def _sheets_book(spreadsheet_id: str, row, sheets: list[_Sheet], specs: list, gr
             "defaultFormat": SHEETS_DEFAULT_FORMAT,
             "spreadsheetTheme": SHEETS_THEME,
         },
-        "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
         "sheets": out,
+        "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
     }
+    if tree is not None or grid:
+        book["commentsViewMode"] = view
+    return book
 
 
 # --- Sheets `values` reads ------------------------------------------------------------------
@@ -4880,14 +4942,16 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
     With no ``ranges`` at all, nothing is selected and ``valueRanges`` is omitted. NOTE: that is
     the natural reading of a parameter with no default, NOT a response diffed against real
     Sheets — unlike the rest of this module's behaviour, it is unverified."""
+    _sheets_alt(request)
     _require(request)
     major, render = _sheets_options(request)
+    tree, _ = _sheets_mask(request, "sheets.BatchGetValuesResponse")
     _row, sheets = _workbook(request, spreadsheet_id)
     ranges = request.query_params.getlist("ranges")
     body = {"spreadsheetId": spreadsheet_id}
     if ranges:
         body["valueRanges"] = [_sheets_value_range(r, sheets, major, render) for r in ranges]
-    return _sheets_respond(request, body, _F_BATCH_VALUES)
+    return _sheets_respond(request, body, tree)
 
 
 @router.get(
@@ -4896,12 +4960,12 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
 )
 async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request):
     """One range of a spreadsheet, ACL-enforced through the same lookup as ``spreadsheets.get``."""
+    _sheets_alt(request)
     _require(request)
     major, render = _sheets_options(request)
+    tree, _ = _sheets_mask(request, "sheets.ValueRange")
     _row, sheets = _workbook(request, spreadsheet_id)
-    return _sheets_respond(
-        request, _sheets_value_range(a1_range, sheets, major, render), _F_VALUE_RANGE
-    )
+    return _sheets_respond(request, _sheets_value_range(a1_range, sheets, major, render), tree)
 
 
 # --- the two reads issued over POST ------------------------------------------------------------
@@ -5017,24 +5081,54 @@ _PJ_BATCH_GET_BY_FILTER = protojson.Message(
         ),
     ),
 )
+_PJ_COMMENTS_VIEW = _pj_enum(
+    "CommentsViewMode",
+    "COMMENTS_VIEW_MODE_UNSPECIFIED",
+    "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+    "COMMENTS_VIEW_MODE_OMITTED",
+    "COMMENTS_VIEW_MODE_INCLUDED",
+)
+
+
+def _sheets_comments_view(mode: int, comments: bool, can_comment: bool) -> str:
+    """The `commentsViewMode` a spreadsheet read answers with, for the mode it was asked for by
+    number, refusing a mask that names a comment field (`_gmask_select`) when it asked for none, and
+    a caller who may not comment when it asked for them outright.
+
+    Measured 2026-10-22 as the spreadsheet's owner, and as a user it was shared with as a reader and
+    then as a commenter: `UNSPECIFIED` and `OMITTED`, an absent mode among them, answer `OMITTED`
+    and refuse a comment field with the 400 below. `DEFAULT_FOR_CURRENT_ACCESS` answers `INCLUDED`
+    to a caller whose `files.get` says `canComment: true` and `OMITTED` to the reader, and
+    `INCLUDED` the same to the first and the 403 below to the reader. Here the owner alone may
+    comment (`_drive_file_capabilities`). A number the enum does not declare, which a body may
+    send (`4`, `99`, `-1`), answers `OMITTED`, takes a comment field and is no 403. These follow
+    the spreadsheet's lookup and precede the `ranges` `spreadsheets.get` reads, where
+    `:getByDataFilter` reads its filters first."""
+    if mode in (0, 2):
+        if comments:
+            raise gerr.invalid_argument(
+                "Field mask may not contain comment-specific fields if comments are not requested"
+            )
+        return "COMMENTS_VIEW_MODE_OMITTED"
+    if mode == 3 and not can_comment:
+        raise gerr.GoogleError(
+            403,
+            "You do not have permission to view comments on this spreadsheet.",
+            reason="forbidden",
+            status="PERMISSION_DENIED",
+        )
+    if mode in (1, 3) and can_comment:
+        return "COMMENTS_VIEW_MODE_INCLUDED"
+    return "COMMENTS_VIEW_MODE_OMITTED"
+
+
 _PJ_GET_BY_FILTER = protojson.Message(
     f"{_SHEETS_ENUM}.GetSpreadsheetByDataFilterRequest",
     (
         _PJ_FILTERS,
         protojson.Field("includeGridData", "include_grid_data", "bool"),
         protojson.Field("excludeTablesInBandedRanges", "exclude_tables_in_banded_ranges", "bool"),
-        protojson.Field(
-            "commentsViewMode",
-            "comments_view_mode",
-            "enum",
-            enum=_pj_enum(
-                "CommentsViewMode",
-                "COMMENTS_VIEW_MODE_UNSPECIFIED",
-                "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
-                "COMMENTS_VIEW_MODE_OMITTED",
-                "COMMENTS_VIEW_MODE_INCLUDED",
-            ),
-        ),
+        protojson.Field("commentsViewMode", "comments_view_mode", "enum", enum=_PJ_COMMENTS_VIEW),
     ),
 )
 
@@ -5293,13 +5387,16 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     the ``valueRange`` AND the filters that selected it — measured — so a caller that sent several
     can tell which answer belongs to which.
 
-    In the order real answers, measured 2026-10-04 with two wrong at once: the credential, then the
-    body (``protojson.read``), then the spreadsheet's lookup, then a `valueRenderOption` number the
+    In the order real answers, measured 2026-10-04 with two wrong at once: an `alt` naming no format
+    (`_sheets_alt`), the credential, then the body (``protojson.read``), then the `fields` mask
+    (`_sheets_mask`), then the spreadsheet's lookup, then a `valueRenderOption` number the
     enum does not declare (a 400 of the service's own), then an empty filter list, then the filters
     (:func:`_sheets_selections`), then a `majorDimension` number it does not declare (a 500). A
     `dateTimeRenderOption` number it does not declare is ignored, as the option is."""
+    _sheets_alt(request)
     _require(request)
     body = protojson.read(await request.body(), _PJ_BATCH_GET_BY_FILTER)
+    tree, _ = _sheets_mask(request, "sheets.BatchGetValuesByDataFilterResponse")
     _row, sheets = _workbook(request, spreadsheet_id)
     render = body.get("value_render_option", 0)
     if not 0 <= render < len(_PJ_RENDER.names):
@@ -5347,7 +5444,7 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
         # A lookup selects nothing and leaves no entry; with nothing else, there is no
         # `valueRanges` at all, measured 2026-10-04.
         out["valueRanges"] = [entries[k] for k in sorted(entries, key=lambda k: where(first[k]))]
-    return _sheets_respond(request, out, _F_BATCH_BY_FILTER)
+    return _sheets_respond(request, out, tree)
 
 
 @router.post(
@@ -5361,10 +5458,14 @@ async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
     gives, and so does a list of developer metadata lookups alone, which select nothing (measured
     2026-10-04). The credential, the body, the spreadsheet's lookup and the filters come in the
     order its sibling's docstring gives."""
-    _require(request)
+    _sheets_alt(request)
+    caller = _require(request)
     body = protojson.read(await request.body(), _PJ_GET_BY_FILTER)
+    tree, comments = _sheets_mask(request, "sheets.Spreadsheet")
     row, sheets = _workbook(request, spreadsheet_id)
     selections = _sheets_selections(body.get("data_filters", []), sheets, values_level=False)
+    owned = _drive_owned_by(row["author_email"], caller.email)
+    view = _sheets_comments_view(body.get("comments_view_mode", 0), comments, owned)
     # Filters that cover the same cells share one `data` block, placed where the first of them was
     # sent, measured 2026-10-04 on the pairs with cells `sheets_values_batch_get_by_data_filter`
     # lists and on one empty range sent twice. Two empty ranges in different places stay two
@@ -5377,11 +5478,9 @@ async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
         if (sheet.index, *cells) not in seen:
             seen.add((sheet.index, *cells))
             specs.append(selection)
-    grid = body.get("include_grid_data", False)
-    if mask := gerr.first_repeat(request.query_params, "fields"):
-        grid = _gmask_wants_grid(mask)
+    grid = _gmask_wants_grid(tree, body.get("include_grid_data", False))
     return _sheets_respond(
-        request, _sheets_book(spreadsheet_id, row, sheets, specs, grid), _F_SPREADSHEET
+        request, _sheets_book(spreadsheet_id, row, sheets, specs, grid, view, tree), tree
     )
 
 
@@ -5456,6 +5555,29 @@ def _drive_mime(row) -> str:
     return native[0] if native else (row["mime_type"] or "application/octet-stream")
 
 
+def _drive_file_capabilities(is_folder: bool, owned: bool) -> dict:
+    """A stored file's `capabilities`, for its owner or for anyone else, whom every grant here makes
+    a reader. Measured 2026-10-22 on a spreadsheet, a plain-text file and a folder, each read by its
+    owner and by a user it was shared with as a reader: the owner may comment, edit, rename, trash,
+    delete, share and modify content, and the reader may do none of those; both may download. A
+    file can be copied and its owner may read its revisions; a folder lists its children to both
+    and takes new ones from its owner."""
+    return {
+        "canDownload": True,
+        "canListChildren": is_folder,
+        "canComment": owned,
+        "canEdit": owned,
+        "canCopy": not is_folder,
+        "canShare": owned,
+        "canRename": owned,
+        "canTrash": owned,
+        "canDelete": owned,
+        "canReadRevisions": owned and not is_folder,
+        "canAddChildren": owned and is_folder,
+        "canModifyContent": owned,
+    }
+
+
 def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) -> dict:
     """The served ``files`` resource for a stored row. ``me`` is the caller's email, which decides
     the per-caller ``ownedByMe`` (None for the admin/service token, which owns nothing)."""
@@ -5502,20 +5624,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "spaces": ["drive"],
         "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
-        "capabilities": {
-            "canDownload": True,
-            "canListChildren": is_folder,
-            "canComment": not is_folder,
-            "canEdit": False,
-            "canCopy": not is_folder,
-            "canShare": _drive_owned_by(author, me),
-            "canRename": False,
-            "canTrash": False,
-            "canDelete": False,
-            "canReadRevisions": not is_folder,
-            "canAddChildren": is_folder,
-            "canModifyContent": False,
-        },
+        "capabilities": _drive_file_capabilities(is_folder, _drive_owned_by(author, me)),
     }
     # Per Google's reference, `size` "is populated for files with binary content stored in Google
     # Drive AND for Docs Editors files; it is not populated for shortcuts or folders" — so a native

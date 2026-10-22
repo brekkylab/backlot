@@ -6,7 +6,7 @@
     "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
     "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest"
   ],
-  "measured": "2026-10-16",
+  "measured": "2026-10-22",
   "operations": [
     {
       "operation": "DELETE /drive/v3/drives/{}",
@@ -67,6 +67,7 @@
     {
       "operation": "GET /drive/v3/about",
       "id": "drive.about.get",
+      "response": "drive.About",
       "status": "implemented",
       "params": {
         "alt": {
@@ -102,6 +103,7 @@
     {
       "operation": "GET /drive/v3/apps",
       "id": "drive.apps.list",
+      "response": "drive.AppList",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -109,6 +111,7 @@
     {
       "operation": "GET /drive/v3/apps/{}",
       "id": "drive.apps.get",
+      "response": "drive.App",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -116,6 +119,7 @@
     {
       "operation": "GET /drive/v3/changes",
       "id": "drive.changes.list",
+      "response": "drive.ChangeList",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -123,6 +127,7 @@
     {
       "operation": "GET /drive/v3/changes/startPageToken",
       "id": "drive.changes.getStartPageToken",
+      "response": "drive.StartPageToken",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -130,6 +135,7 @@
     {
       "operation": "GET /drive/v3/drives",
       "id": "drive.drives.list",
+      "response": "drive.DriveList",
       "status": "implemented",
       "params": {
         "alt": {
@@ -177,6 +183,7 @@
     {
       "operation": "GET /drive/v3/drives/{}",
       "id": "drive.drives.get",
+      "response": "drive.Drive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -184,6 +191,7 @@
     {
       "operation": "GET /drive/v3/files",
       "id": "drive.files.list",
+      "response": "drive.FileList",
       "status": "implemented",
       "params": {
         "alt": {
@@ -263,6 +271,7 @@
     {
       "operation": "GET /drive/v3/files/generateCseToken",
       "id": "drive.files.generateCseToken",
+      "response": "drive.GenerateCseTokenResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -270,6 +279,7 @@
     {
       "operation": "GET /drive/v3/files/generateIds",
       "id": "drive.files.generateIds",
+      "response": "drive.GeneratedIds",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -277,6 +287,7 @@
     {
       "operation": "GET /drive/v3/files/{}",
       "id": "drive.files.get",
+      "response": "drive.File",
       "status": "implemented",
       "params": {
         "acknowledgeAbuse": {
@@ -328,6 +339,7 @@
     {
       "operation": "GET /drive/v3/files/{}/accessproposals",
       "id": "drive.accessproposals.list",
+      "response": "drive.ListAccessProposalsResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -335,6 +347,7 @@
     {
       "operation": "GET /drive/v3/files/{}/accessproposals/{}",
       "id": "drive.accessproposals.get",
+      "response": "drive.AccessProposal",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -342,6 +355,7 @@
     {
       "operation": "GET /drive/v3/files/{}/approvals",
       "id": "drive.approvals.list",
+      "response": "drive.ApprovalList",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -349,6 +363,7 @@
     {
       "operation": "GET /drive/v3/files/{}/approvals/{}",
       "id": "drive.approvals.get",
+      "response": "drive.Approval",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -356,6 +371,7 @@
     {
       "operation": "GET /drive/v3/files/{}/comments",
       "id": "drive.comments.list",
+      "response": "drive.CommentList",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -363,6 +379,7 @@
     {
       "operation": "GET /drive/v3/files/{}/comments/{}",
       "id": "drive.comments.get",
+      "response": "drive.Comment",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -370,6 +387,7 @@
     {
       "operation": "GET /drive/v3/files/{}/comments/{}/replies",
       "id": "drive.replies.list",
+      "response": "drive.ReplyList",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -377,6 +395,7 @@
     {
       "operation": "GET /drive/v3/files/{}/comments/{}/replies/{}",
       "id": "drive.replies.get",
+      "response": "drive.Reply",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -423,6 +442,7 @@
     {
       "operation": "GET /drive/v3/files/{}/listLabels",
       "id": "drive.files.listLabels",
+      "response": "drive.LabelList",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -430,6 +450,7 @@
     {
       "operation": "GET /drive/v3/files/{}/permissions",
       "id": "drive.permissions.list",
+      "response": "drive.PermissionList",
       "status": "implemented",
       "params": {
         "alt": {
@@ -481,6 +502,7 @@
     {
       "operation": "GET /drive/v3/files/{}/permissions/{}",
       "id": "drive.permissions.get",
+      "response": "drive.Permission",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -488,6 +510,7 @@
     {
       "operation": "GET /drive/v3/files/{}/revisions",
       "id": "drive.revisions.list",
+      "response": "drive.RevisionList",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -495,6 +518,7 @@
     {
       "operation": "GET /drive/v3/files/{}/revisions/{}",
       "id": "drive.revisions.get",
+      "response": "drive.Revision",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -502,6 +526,7 @@
     {
       "operation": "GET /drive/v3/operations/{}",
       "id": "drive.operations.get",
+      "response": "drive.Operation",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -509,6 +534,7 @@
     {
       "operation": "GET /drive/v3/teamdrives",
       "id": "drive.teamdrives.list",
+      "response": "drive.TeamDriveList",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -516,6 +542,7 @@
     {
       "operation": "GET /drive/v3/teamdrives/{}",
       "id": "drive.teamdrives.get",
+      "response": "drive.TeamDrive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -523,6 +550,7 @@
     {
       "operation": "GET /v1/documents/{}",
       "id": "docs.documents.get",
+      "response": "docs.Document",
       "status": "implemented",
       "params": {
         "alt": {
@@ -536,7 +564,7 @@
         "commentsViewMode": {
           "kind": "missing_param",
           "severity": "gap",
-          "note": "One family with `GET /v1/presentations/{}?commentsViewMode` and `GET /v4/spreadsheets/{}?commentsViewMode`, all three marked Developer Preview. Google's own description (Docs): \"The comments view mode to apply to the document. This allows viewing the document with comments omitted or included. If one is not specified, COMMENTS_VIEW_MODE_OMITTED is used.\" Backlot declares it on none of the three and answers the four enum values, `BOGUS` and the empty value with the bytes it answers without the parameter. Measured against the three hosts on 2026-09-29 with a user token: Sheets and Slides answer each of the four enum values 200, and `comments_view_mode_omitted` in lower case as well, and refuse `BOGUS` and the empty value with 400 `Invalid value at 'comments_view_mode' (type.googleapis.com/google.apps.sheets.v4.CommentsViewMode), \"BOGUS\"` (`google.apps.slides.v1` on Slides). Docs refuses those two the same way under `google.apps.docs.v1` and answers `COMMENTS_VIEW_MODE_UNSPECIFIED` 200, but refuses the other three with 400 `Comments view mode may only be specified if tabs content is also requested.` unless `includeTabsContent=true` or a `fields` mask naming `tabs` comes with them. With tabs requested, `COMMENTS_VIEW_MODE_INCLUDED` is refused with `Comments may only be explicitly included if inline suggestions are also explicitly requested.` until `suggestionsViewMode=SUGGESTIONS_INLINE` joins it, and `COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS` beside `suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS` with `Comments may not be requested when previewing suggestions.` Those two Docs parameters are gaps in this file as well: this server reads neither, so the rules that tie them to this one have nothing to act on."
+          "note": "One family with `GET /v1/presentations/{}?commentsViewMode` and `GET /v4/spreadsheets/{}?commentsViewMode`, all three marked Developer Preview. Google's own description (Docs): \"The comments view mode to apply to the document. This allows viewing the document with comments omitted or included. If one is not specified, COMMENTS_VIEW_MODE_OMITTED is used.\" Backlot declares it on Sheets alone (`routers.google._sheets_comments_view`). Measured against the three hosts on 2026-09-29 with a user token: Sheets and Slides answer each of the four enum values 200, and `comments_view_mode_omitted` in lower case as well, and refuse `BOGUS` and the empty value with 400 `Invalid value at 'comments_view_mode' (type.googleapis.com/google.apps.sheets.v4.CommentsViewMode), \"BOGUS\"` (`google.apps.slides.v1` on Slides). Docs refuses those two the same way under `google.apps.docs.v1` and answers `COMMENTS_VIEW_MODE_UNSPECIFIED` 200, but refuses the other three with 400 `Comments view mode may only be specified if tabs content is also requested.` unless `includeTabsContent=true` or a `fields` mask naming `tabs` comes with them. With tabs requested, `COMMENTS_VIEW_MODE_INCLUDED` is refused with `Comments may only be explicitly included if inline suggestions are also explicitly requested.` until `suggestionsViewMode=SUGGESTIONS_INLINE` joins it, and `COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS` beside `suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS` with `Comments may not be requested when previewing suggestions.` Those two Docs parameters are gaps in this file as well: this server reads neither, so the rules that tie them to this one have nothing to act on."
         },
         "fields": {
           "kind": "missing_param",
@@ -575,6 +603,7 @@
     {
       "operation": "GET /v1/presentations/{}",
       "id": "slides.presentations.get",
+      "response": "slides.Presentation",
       "status": "implemented",
       "params": {
         "alt": {
@@ -619,6 +648,7 @@
     {
       "operation": "GET /v1/presentations/{}/pages/{}",
       "id": "slides.presentations.pages.get",
+      "response": "slides.Page",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -626,6 +656,7 @@
     {
       "operation": "GET /v1/presentations/{}/pages/{}/thumbnail",
       "id": "slides.presentations.pages.getThumbnail",
+      "response": "slides.Thumbnail",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -633,13 +664,9 @@
     {
       "operation": "GET /v4/spreadsheets/{}",
       "id": "sheets.spreadsheets.get",
+      "response": "sheets.Spreadsheet",
       "status": "implemented",
       "params": {
-        "commentsViewMode": {
-          "kind": "missing_param",
-          "severity": "gap",
-          "note": "Same family as `GET /v1/documents/{}?commentsViewMode`, whose note carries the measurement on all three hosts."
-        },
         "key": {
           "kind": "missing_param",
           "severity": "gap"
@@ -653,6 +680,7 @@
     {
       "operation": "GET /v4/spreadsheets/{}/developerMetadata/{}",
       "id": "sheets.spreadsheets.developerMetadata.get",
+      "response": "sheets.DeveloperMetadata",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -660,6 +688,7 @@
     {
       "operation": "GET /v4/spreadsheets/{}/values/{}",
       "id": "sheets.spreadsheets.values.get",
+      "response": "sheets.ValueRange",
       "status": "implemented",
       "params": {
         "key": {
@@ -675,6 +704,7 @@
     {
       "operation": "GET /v4/spreadsheets/{}/values:batchGet",
       "id": "sheets.spreadsheets.values.batchGet",
+      "response": "sheets.BatchGetValuesResponse",
       "status": "implemented",
       "params": {
         "key": {
@@ -690,6 +720,7 @@
     {
       "operation": "PATCH /drive/v3/drives/{}",
       "id": "drive.drives.update",
+      "response": "drive.Drive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -697,6 +728,7 @@
     {
       "operation": "PATCH /drive/v3/files/{}",
       "id": "drive.files.update",
+      "response": "drive.File",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -704,6 +736,7 @@
     {
       "operation": "PATCH /drive/v3/files/{}/comments/{}",
       "id": "drive.comments.update",
+      "response": "drive.Comment",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -711,6 +744,7 @@
     {
       "operation": "PATCH /drive/v3/files/{}/comments/{}/replies/{}",
       "id": "drive.replies.update",
+      "response": "drive.Reply",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -718,6 +752,7 @@
     {
       "operation": "PATCH /drive/v3/files/{}/permissions/{}",
       "id": "drive.permissions.update",
+      "response": "drive.Permission",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -725,6 +760,7 @@
     {
       "operation": "PATCH /drive/v3/files/{}/revisions/{}",
       "id": "drive.revisions.update",
+      "response": "drive.Revision",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -732,6 +768,7 @@
     {
       "operation": "PATCH /drive/v3/teamdrives/{}",
       "id": "drive.teamdrives.update",
+      "response": "drive.TeamDrive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -739,6 +776,7 @@
     {
       "operation": "POST /drive/v3/changes/watch",
       "id": "drive.changes.watch",
+      "response": "drive.Channel",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -753,6 +791,7 @@
     {
       "operation": "POST /drive/v3/drives",
       "id": "drive.drives.create",
+      "response": "drive.Drive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -760,6 +799,7 @@
     {
       "operation": "POST /drive/v3/drives/{}/hide",
       "id": "drive.drives.hide",
+      "response": "drive.Drive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -767,6 +807,7 @@
     {
       "operation": "POST /drive/v3/drives/{}/unhide",
       "id": "drive.drives.unhide",
+      "response": "drive.Drive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -774,6 +815,7 @@
     {
       "operation": "POST /drive/v3/files",
       "id": "drive.files.create",
+      "response": "drive.File",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -788,6 +830,7 @@
     {
       "operation": "POST /drive/v3/files/{}/approvals/{}:approve",
       "id": "drive.approvals.approve",
+      "response": "drive.Approval",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -795,6 +838,7 @@
     {
       "operation": "POST /drive/v3/files/{}/approvals/{}:cancel",
       "id": "drive.approvals.cancel",
+      "response": "drive.Approval",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -802,6 +846,7 @@
     {
       "operation": "POST /drive/v3/files/{}/approvals/{}:comment",
       "id": "drive.approvals.comment",
+      "response": "drive.Approval",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -809,6 +854,7 @@
     {
       "operation": "POST /drive/v3/files/{}/approvals/{}:decline",
       "id": "drive.approvals.decline",
+      "response": "drive.Approval",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -816,6 +862,7 @@
     {
       "operation": "POST /drive/v3/files/{}/approvals/{}:reassign",
       "id": "drive.approvals.reassign",
+      "response": "drive.Approval",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -823,6 +870,7 @@
     {
       "operation": "POST /drive/v3/files/{}/approvals:start",
       "id": "drive.approvals.start",
+      "response": "drive.Approval",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -830,6 +878,7 @@
     {
       "operation": "POST /drive/v3/files/{}/comments",
       "id": "drive.comments.create",
+      "response": "drive.Comment",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -837,6 +886,7 @@
     {
       "operation": "POST /drive/v3/files/{}/comments/{}/replies",
       "id": "drive.replies.create",
+      "response": "drive.Reply",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -844,6 +894,7 @@
     {
       "operation": "POST /drive/v3/files/{}/copy",
       "id": "drive.files.copy",
+      "response": "drive.File",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -851,6 +902,7 @@
     {
       "operation": "POST /drive/v3/files/{}/download",
       "id": "drive.files.download",
+      "response": "drive.Operation",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -858,6 +910,7 @@
     {
       "operation": "POST /drive/v3/files/{}/modifyLabels",
       "id": "drive.files.modifyLabels",
+      "response": "drive.ModifyLabelsResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -865,6 +918,7 @@
     {
       "operation": "POST /drive/v3/files/{}/permissions",
       "id": "drive.permissions.create",
+      "response": "drive.Permission",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -872,6 +926,7 @@
     {
       "operation": "POST /drive/v3/files/{}/watch",
       "id": "drive.files.watch",
+      "response": "drive.Channel",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -879,6 +934,7 @@
     {
       "operation": "POST /drive/v3/teamdrives",
       "id": "drive.teamdrives.create",
+      "response": "drive.TeamDrive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -886,6 +942,7 @@
     {
       "operation": "POST /v1/documents",
       "id": "docs.documents.create",
+      "response": "docs.Document",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -893,6 +950,7 @@
     {
       "operation": "POST /v1/documents/{}:batchUpdate",
       "id": "docs.documents.batchUpdate",
+      "response": "docs.BatchUpdateDocumentResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -900,6 +958,7 @@
     {
       "operation": "POST /v1/presentations",
       "id": "slides.presentations.create",
+      "response": "slides.Presentation",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -907,6 +966,7 @@
     {
       "operation": "POST /v1/presentations/{}:batchUpdate",
       "id": "slides.presentations.batchUpdate",
+      "response": "slides.BatchUpdatePresentationResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -914,6 +974,7 @@
     {
       "operation": "POST /v4/spreadsheets",
       "id": "sheets.spreadsheets.create",
+      "response": "sheets.Spreadsheet",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -921,6 +982,7 @@
     {
       "operation": "POST /v4/spreadsheets/{}/developerMetadata:search",
       "id": "sheets.spreadsheets.developerMetadata.search",
+      "response": "sheets.SearchDeveloperMetadataResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -928,6 +990,7 @@
     {
       "operation": "POST /v4/spreadsheets/{}/sheets/{}:copyTo",
       "id": "sheets.spreadsheets.sheets.copyTo",
+      "response": "sheets.SheetProperties",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -935,6 +998,7 @@
     {
       "operation": "POST /v4/spreadsheets/{}/values/{}:append",
       "id": "sheets.spreadsheets.values.append",
+      "response": "sheets.AppendValuesResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -942,6 +1006,7 @@
     {
       "operation": "POST /v4/spreadsheets/{}/values/{}:clear",
       "id": "sheets.spreadsheets.values.clear",
+      "response": "sheets.ClearValuesResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -949,6 +1014,7 @@
     {
       "operation": "POST /v4/spreadsheets/{}/values:batchClear",
       "id": "sheets.spreadsheets.values.batchClear",
+      "response": "sheets.BatchClearValuesResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -956,6 +1022,7 @@
     {
       "operation": "POST /v4/spreadsheets/{}/values:batchClearByDataFilter",
       "id": "sheets.spreadsheets.values.batchClearByDataFilter",
+      "response": "sheets.BatchClearValuesByDataFilterResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -963,6 +1030,7 @@
     {
       "operation": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter",
       "id": "sheets.spreadsheets.values.batchGetByDataFilter",
+      "response": "sheets.BatchGetValuesByDataFilterResponse",
       "status": "implemented",
       "params": {
         "key": {
@@ -978,6 +1046,7 @@
     {
       "operation": "POST /v4/spreadsheets/{}/values:batchUpdate",
       "id": "sheets.spreadsheets.values.batchUpdate",
+      "response": "sheets.BatchUpdateValuesResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -985,6 +1054,7 @@
     {
       "operation": "POST /v4/spreadsheets/{}/values:batchUpdateByDataFilter",
       "id": "sheets.spreadsheets.values.batchUpdateByDataFilter",
+      "response": "sheets.BatchUpdateValuesByDataFilterResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -992,6 +1062,7 @@
     {
       "operation": "POST /v4/spreadsheets/{}:batchUpdate",
       "id": "sheets.spreadsheets.batchUpdate",
+      "response": "sheets.BatchUpdateSpreadsheetResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -999,6 +1070,7 @@
     {
       "operation": "POST /v4/spreadsheets/{}:getByDataFilter",
       "id": "sheets.spreadsheets.getByDataFilter",
+      "response": "sheets.Spreadsheet",
       "status": "implemented",
       "params": {
         "key": {
@@ -1014,6 +1086,7 @@
     {
       "operation": "PUT /v4/spreadsheets/{}/values/{}",
       "id": "sheets.spreadsheets.values.update",
+      "response": "sheets.UpdateValuesResponse",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -1052,5 +1125,3411 @@
         "status": "implemented"
       }
     ]
+  },
+  "types": {
+    "sheets.BandedRange": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "bandedRangeId": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "bandedRangeReference": {
+          "status": "missing",
+          "type": "string"
+        },
+        "columnProperties": {
+          "status": "missing",
+          "type": "sheets.BandingProperties"
+        },
+        "range": {
+          "status": "missing",
+          "type": "sheets.GridRange"
+        },
+        "rowProperties": {
+          "status": "missing",
+          "type": "sheets.BandingProperties"
+        }
+      }
+    },
+    "sheets.BandingProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "firstBandColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "firstBandColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "footerColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "footerColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "headerColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "headerColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "secondBandColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "secondBandColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        }
+      }
+    },
+    "sheets.BaselineValueFormat": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "comparisonType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "description": {
+          "status": "missing",
+          "type": "string"
+        },
+        "negativeColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "negativeColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "position": {
+          "status": "missing",
+          "type": "sheets.TextPosition"
+        },
+        "positiveColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "positiveColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "textFormat": {
+          "status": "missing",
+          "type": "sheets.TextFormat"
+        }
+      }
+    },
+    "sheets.BasicChartAxis": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "format": {
+          "status": "missing",
+          "type": "sheets.TextFormat"
+        },
+        "position": {
+          "status": "missing",
+          "type": "string"
+        },
+        "title": {
+          "status": "missing",
+          "type": "string"
+        },
+        "titleTextPosition": {
+          "status": "missing",
+          "type": "sheets.TextPosition"
+        },
+        "viewWindowOptions": {
+          "status": "missing",
+          "type": "sheets.ChartAxisViewWindowOptions"
+        }
+      }
+    },
+    "sheets.BasicChartDomain": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "domain": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "reversed": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "sheets.BasicChartSeries": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "color": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "colorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "dataLabel": {
+          "status": "missing",
+          "type": "sheets.DataLabel"
+        },
+        "lineStyle": {
+          "status": "missing",
+          "type": "sheets.LineStyle"
+        },
+        "pointStyle": {
+          "status": "missing",
+          "type": "sheets.PointStyle"
+        },
+        "series": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "styleOverrides": {
+          "status": "missing",
+          "type": "[sheets.BasicSeriesDataPointStyleOverride]"
+        },
+        "targetAxis": {
+          "status": "missing",
+          "type": "string"
+        },
+        "type": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.BasicChartSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "axis": {
+          "status": "missing",
+          "type": "[sheets.BasicChartAxis]"
+        },
+        "chartType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "compareMode": {
+          "status": "missing",
+          "type": "string"
+        },
+        "domains": {
+          "status": "missing",
+          "type": "[sheets.BasicChartDomain]"
+        },
+        "headerCount": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "interpolateNulls": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "legendPosition": {
+          "status": "missing",
+          "type": "string"
+        },
+        "lineSmoothing": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "series": {
+          "status": "missing",
+          "type": "[sheets.BasicChartSeries]"
+        },
+        "stackedType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "threeDimensional": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "totalDataLabel": {
+          "status": "missing",
+          "type": "sheets.DataLabel"
+        }
+      }
+    },
+    "sheets.BasicFilter": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "criteria": {
+          "status": "missing",
+          "type": "map<string, sheets.FilterCriteria>"
+        },
+        "filterSpecs": {
+          "status": "missing",
+          "type": "[sheets.FilterSpec]"
+        },
+        "range": {
+          "status": "missing",
+          "type": "sheets.GridRange"
+        },
+        "sortSpecs": {
+          "status": "missing",
+          "type": "[sheets.SortSpec]"
+        },
+        "tableId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.BasicSeriesDataPointStyleOverride": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "color": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "colorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "index": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "pointStyle": {
+          "status": "missing",
+          "type": "sheets.PointStyle"
+        }
+      }
+    },
+    "sheets.BatchGetValuesByDataFilterResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "spreadsheetId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "valueRanges": {
+          "status": "implemented",
+          "type": "[sheets.MatchedValueRange]"
+        }
+      }
+    },
+    "sheets.BatchGetValuesResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "spreadsheetId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "valueRanges": {
+          "status": "implemented",
+          "type": "[sheets.ValueRange]"
+        }
+      }
+    },
+    "sheets.BigQueryDataSourceSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "projectId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "querySpec": {
+          "status": "missing",
+          "type": "sheets.BigQueryQuerySpec"
+        },
+        "tableSpec": {
+          "status": "missing",
+          "type": "sheets.BigQueryTableSpec"
+        }
+      }
+    },
+    "sheets.BigQueryQuerySpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "rawQuery": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.BigQueryTableSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "datasetId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tableId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tableProjectId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.BooleanCondition": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "type": {
+          "status": "missing",
+          "type": "string"
+        },
+        "values": {
+          "status": "missing",
+          "type": "[sheets.ConditionValue]"
+        }
+      }
+    },
+    "sheets.BooleanRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "condition": {
+          "status": "missing",
+          "type": "sheets.BooleanCondition"
+        },
+        "format": {
+          "status": "missing",
+          "type": "sheets.CellFormat"
+        }
+      }
+    },
+    "sheets.Border": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "color": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "colorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "style": {
+          "status": "missing",
+          "type": "string"
+        },
+        "width": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.Borders": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "bottom": {
+          "status": "missing",
+          "type": "sheets.Border"
+        },
+        "left": {
+          "status": "missing",
+          "type": "sheets.Border"
+        },
+        "right": {
+          "status": "missing",
+          "type": "sheets.Border"
+        },
+        "top": {
+          "status": "missing",
+          "type": "sheets.Border"
+        }
+      }
+    },
+    "sheets.BubbleChartSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "bubbleBorderColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "bubbleBorderColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "bubbleLabels": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "bubbleMaxRadiusSize": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "bubbleMinRadiusSize": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "bubbleOpacity": {
+          "status": "missing",
+          "type": "number"
+        },
+        "bubbleSizes": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "bubbleTextStyle": {
+          "status": "missing",
+          "type": "sheets.TextFormat"
+        },
+        "domain": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "groupIds": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "legendPosition": {
+          "status": "missing",
+          "type": "string"
+        },
+        "series": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        }
+      }
+    },
+    "sheets.CandlestickChartSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "data": {
+          "status": "missing",
+          "type": "[sheets.CandlestickData]"
+        },
+        "domain": {
+          "status": "missing",
+          "type": "sheets.CandlestickDomain"
+        }
+      }
+    },
+    "sheets.CandlestickData": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "closeSeries": {
+          "status": "missing",
+          "type": "sheets.CandlestickSeries"
+        },
+        "highSeries": {
+          "status": "missing",
+          "type": "sheets.CandlestickSeries"
+        },
+        "lowSeries": {
+          "status": "missing",
+          "type": "sheets.CandlestickSeries"
+        },
+        "openSeries": {
+          "status": "missing",
+          "type": "sheets.CandlestickSeries"
+        }
+      }
+    },
+    "sheets.CandlestickDomain": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "data": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "reversed": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "sheets.CandlestickSeries": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "data": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        }
+      }
+    },
+    "sheets.CellData": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "chipRuns": {
+          "status": "missing",
+          "type": "[sheets.ChipRun]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "dataSourceFormula": {
+          "status": "missing",
+          "type": "sheets.DataSourceFormula",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "dataSourceTable": {
+          "status": "missing",
+          "type": "sheets.DataSourceTable",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "dataValidation": {
+          "status": "missing",
+          "type": "sheets.DataValidationRule",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "effectiveFormat": {
+          "status": "implemented",
+          "type": "sheets.CellFormat"
+        },
+        "effectiveValue": {
+          "status": "implemented",
+          "type": "sheets.ExtendedValue"
+        },
+        "formattedValue": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "hyperlink": {
+          "status": "missing",
+          "type": "string",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "note": {
+          "status": "missing",
+          "type": "string",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "pivotTable": {
+          "status": "missing",
+          "type": "sheets.PivotTable",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "textFormatRuns": {
+          "status": "missing",
+          "type": "[sheets.TextFormatRun]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "userEnteredFormat": {
+          "status": "missing",
+          "type": "sheets.CellFormat",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "userEnteredValue": {
+          "status": "implemented",
+          "type": "sheets.ExtendedValue"
+        }
+      }
+    },
+    "sheets.CellFormat": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "backgroundColor": {
+          "status": "implemented",
+          "type": "sheets.Color"
+        },
+        "backgroundColorStyle": {
+          "status": "implemented",
+          "type": "sheets.ColorStyle"
+        },
+        "borders": {
+          "status": "missing",
+          "type": "sheets.Borders",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "horizontalAlignment": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "hyperlinkDisplayType": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "numberFormat": {
+          "status": "missing",
+          "type": "sheets.NumberFormat",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "padding": {
+          "status": "implemented",
+          "type": "sheets.Padding"
+        },
+        "textDirection": {
+          "status": "missing",
+          "type": "string",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "textFormat": {
+          "status": "implemented",
+          "type": "sheets.TextFormat"
+        },
+        "textRotation": {
+          "status": "missing",
+          "type": "sheets.TextRotation",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "verticalAlignment": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "wrapStrategy": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.ChartAxisViewWindowOptions": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "viewWindowMax": {
+          "status": "missing",
+          "type": "number"
+        },
+        "viewWindowMin": {
+          "status": "missing",
+          "type": "number"
+        },
+        "viewWindowMode": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.ChartCustomNumberFormatOptions": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "prefix": {
+          "status": "missing",
+          "type": "string"
+        },
+        "suffix": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.ChartData": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "aggregateType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "columnReference": {
+          "status": "missing",
+          "type": "sheets.DataSourceColumnReference"
+        },
+        "groupRule": {
+          "status": "missing",
+          "type": "sheets.ChartGroupRule"
+        },
+        "sourceRange": {
+          "status": "missing",
+          "type": "sheets.ChartSourceRange"
+        }
+      }
+    },
+    "sheets.ChartDateTimeRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "type": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.ChartGroupRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dateTimeRule": {
+          "status": "missing",
+          "type": "sheets.ChartDateTimeRule"
+        },
+        "histogramRule": {
+          "status": "missing",
+          "type": "sheets.ChartHistogramRule"
+        }
+      }
+    },
+    "sheets.ChartHistogramRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "intervalSize": {
+          "status": "missing",
+          "type": "number"
+        },
+        "maxValue": {
+          "status": "missing",
+          "type": "number"
+        },
+        "minValue": {
+          "status": "missing",
+          "type": "number"
+        }
+      }
+    },
+    "sheets.ChartSourceRange": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "sources": {
+          "status": "missing",
+          "type": "[sheets.GridRange]"
+        }
+      }
+    },
+    "sheets.ChartSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "altText": {
+          "status": "missing",
+          "type": "string"
+        },
+        "backgroundColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "backgroundColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "basicChart": {
+          "status": "missing",
+          "type": "sheets.BasicChartSpec"
+        },
+        "bubbleChart": {
+          "status": "missing",
+          "type": "sheets.BubbleChartSpec"
+        },
+        "candlestickChart": {
+          "status": "missing",
+          "type": "sheets.CandlestickChartSpec"
+        },
+        "dataSourceChartProperties": {
+          "status": "missing",
+          "type": "sheets.DataSourceChartProperties"
+        },
+        "filterSpecs": {
+          "status": "missing",
+          "type": "[sheets.FilterSpec]"
+        },
+        "fontName": {
+          "status": "missing",
+          "type": "string"
+        },
+        "hiddenDimensionStrategy": {
+          "status": "missing",
+          "type": "string"
+        },
+        "histogramChart": {
+          "status": "missing",
+          "type": "sheets.HistogramChartSpec"
+        },
+        "maximized": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "orgChart": {
+          "status": "missing",
+          "type": "sheets.OrgChartSpec"
+        },
+        "pieChart": {
+          "status": "missing",
+          "type": "sheets.PieChartSpec"
+        },
+        "scorecardChart": {
+          "status": "missing",
+          "type": "sheets.ScorecardChartSpec"
+        },
+        "sortSpecs": {
+          "status": "missing",
+          "type": "[sheets.SortSpec]"
+        },
+        "subtitle": {
+          "status": "missing",
+          "type": "string"
+        },
+        "subtitleTextFormat": {
+          "status": "missing",
+          "type": "sheets.TextFormat"
+        },
+        "subtitleTextPosition": {
+          "status": "missing",
+          "type": "sheets.TextPosition"
+        },
+        "title": {
+          "status": "missing",
+          "type": "string"
+        },
+        "titleTextFormat": {
+          "status": "missing",
+          "type": "sheets.TextFormat"
+        },
+        "titleTextPosition": {
+          "status": "missing",
+          "type": "sheets.TextPosition"
+        },
+        "treemapChart": {
+          "status": "missing",
+          "type": "sheets.TreemapChartSpec"
+        },
+        "waterfallChart": {
+          "status": "missing",
+          "type": "sheets.WaterfallChartSpec"
+        }
+      }
+    },
+    "sheets.Chip": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "personProperties": {
+          "status": "missing",
+          "type": "sheets.PersonProperties"
+        },
+        "richLinkProperties": {
+          "status": "missing",
+          "type": "sheets.RichLinkProperties"
+        }
+      }
+    },
+    "sheets.ChipRun": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "chip": {
+          "status": "missing",
+          "type": "sheets.Chip"
+        },
+        "startIndex": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.Color": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "alpha": {
+          "status": "missing",
+          "type": "number",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "blue": {
+          "status": "implemented",
+          "type": "number"
+        },
+        "green": {
+          "status": "implemented",
+          "type": "number"
+        },
+        "red": {
+          "status": "implemented",
+          "type": "number"
+        }
+      }
+    },
+    "sheets.ColorStyle": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "rgbColor": {
+          "status": "implemented",
+          "type": "sheets.Color"
+        },
+        "themeColor": {
+          "status": "missing",
+          "type": "string",
+          "kind": "missing_field",
+          "severity": "gap"
+        }
+      }
+    },
+    "sheets.CommentAnchor": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "anchorId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "range": {
+          "status": "missing",
+          "type": "sheets.GridRange"
+        }
+      }
+    },
+    "sheets.CommentThread": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "anchorId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "commentId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "headPost": {
+          "status": "missing",
+          "type": "sheets.Post"
+        },
+        "plainTextQuote": {
+          "status": "missing",
+          "type": "string"
+        },
+        "replies": {
+          "status": "missing",
+          "type": "[sheets.Post]"
+        },
+        "status": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.ConditionValue": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "relativeDate": {
+          "status": "missing",
+          "type": "string"
+        },
+        "userEnteredValue": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.ConditionalFormatRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "booleanRule": {
+          "status": "missing",
+          "type": "sheets.BooleanRule"
+        },
+        "gradientRule": {
+          "status": "missing",
+          "type": "sheets.GradientRule"
+        },
+        "ranges": {
+          "status": "missing",
+          "type": "[sheets.GridRange]"
+        }
+      }
+    },
+    "sheets.DataExecutionStatus": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "errorCode": {
+          "status": "missing",
+          "type": "string"
+        },
+        "errorMessage": {
+          "status": "missing",
+          "type": "string"
+        },
+        "lastRefreshTime": {
+          "status": "missing",
+          "type": "string"
+        },
+        "state": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.DataFilter": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "a1Range": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "developerMetadataLookup": {
+          "status": "missing",
+          "type": "sheets.DeveloperMetadataLookup",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "gridRange": {
+          "status": "implemented",
+          "type": "sheets.GridRange"
+        }
+      }
+    },
+    "sheets.DataLabel": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "customLabelData": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "placement": {
+          "status": "missing",
+          "type": "string"
+        },
+        "textFormat": {
+          "status": "missing",
+          "type": "sheets.TextFormat"
+        },
+        "type": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.DataSource": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "calculatedColumns": {
+          "status": "missing",
+          "type": "[sheets.DataSourceColumn]"
+        },
+        "dataSourceId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "sheetId": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "spec": {
+          "status": "missing",
+          "type": "sheets.DataSourceSpec"
+        }
+      }
+    },
+    "sheets.DataSourceChartProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dataExecutionStatus": {
+          "status": "missing",
+          "type": "sheets.DataExecutionStatus"
+        },
+        "dataSourceId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.DataSourceColumn": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "formula": {
+          "status": "missing",
+          "type": "string"
+        },
+        "reference": {
+          "status": "missing",
+          "type": "sheets.DataSourceColumnReference"
+        }
+      }
+    },
+    "sheets.DataSourceColumnReference": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "name": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.DataSourceFormula": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dataExecutionStatus": {
+          "status": "missing",
+          "type": "sheets.DataExecutionStatus"
+        },
+        "dataSourceId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.DataSourceParameter": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "name": {
+          "status": "missing",
+          "type": "string"
+        },
+        "namedRangeId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "range": {
+          "status": "missing",
+          "type": "sheets.GridRange"
+        }
+      }
+    },
+    "sheets.DataSourceRefreshDailySchedule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "startTime": {
+          "status": "missing",
+          "type": "sheets.TimeOfDay"
+        }
+      }
+    },
+    "sheets.DataSourceRefreshMonthlySchedule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "daysOfMonth": {
+          "status": "missing",
+          "type": "[integer]"
+        },
+        "startTime": {
+          "status": "missing",
+          "type": "sheets.TimeOfDay"
+        }
+      }
+    },
+    "sheets.DataSourceRefreshSchedule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dailySchedule": {
+          "status": "missing",
+          "type": "sheets.DataSourceRefreshDailySchedule"
+        },
+        "enabled": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "monthlySchedule": {
+          "status": "missing",
+          "type": "sheets.DataSourceRefreshMonthlySchedule"
+        },
+        "nextRun": {
+          "status": "missing",
+          "type": "sheets.Interval"
+        },
+        "refreshScope": {
+          "status": "missing",
+          "type": "string"
+        },
+        "weeklySchedule": {
+          "status": "missing",
+          "type": "sheets.DataSourceRefreshWeeklySchedule"
+        }
+      }
+    },
+    "sheets.DataSourceRefreshWeeklySchedule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "daysOfWeek": {
+          "status": "missing",
+          "type": "[string]"
+        },
+        "startTime": {
+          "status": "missing",
+          "type": "sheets.TimeOfDay"
+        }
+      }
+    },
+    "sheets.DataSourceSheetProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columns": {
+          "status": "missing",
+          "type": "[sheets.DataSourceColumn]"
+        },
+        "dataExecutionStatus": {
+          "status": "missing",
+          "type": "sheets.DataExecutionStatus"
+        },
+        "dataSourceId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.DataSourceSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "bigQuery": {
+          "status": "missing",
+          "type": "sheets.BigQueryDataSourceSpec"
+        },
+        "looker": {
+          "status": "missing",
+          "type": "sheets.LookerDataSourceSpec"
+        },
+        "parameters": {
+          "status": "missing",
+          "type": "[sheets.DataSourceParameter]"
+        }
+      }
+    },
+    "sheets.DataSourceTable": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columnSelectionType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "columns": {
+          "status": "missing",
+          "type": "[sheets.DataSourceColumnReference]"
+        },
+        "dataExecutionStatus": {
+          "status": "missing",
+          "type": "sheets.DataExecutionStatus"
+        },
+        "dataSourceId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "filterSpecs": {
+          "status": "missing",
+          "type": "[sheets.FilterSpec]"
+        },
+        "rowLimit": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "sortSpecs": {
+          "status": "missing",
+          "type": "[sheets.SortSpec]"
+        }
+      }
+    },
+    "sheets.DataValidationRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "condition": {
+          "status": "missing",
+          "type": "sheets.BooleanCondition"
+        },
+        "inputMessage": {
+          "status": "missing",
+          "type": "string"
+        },
+        "showCustomUi": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "strict": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "sheets.DateTimeRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "type": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.DeveloperMetadata": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "location": {
+          "status": "missing",
+          "type": "sheets.DeveloperMetadataLocation"
+        },
+        "metadataId": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "metadataKey": {
+          "status": "missing",
+          "type": "string"
+        },
+        "metadataValue": {
+          "status": "missing",
+          "type": "string"
+        },
+        "visibility": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.DeveloperMetadataLocation": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dimensionRange": {
+          "status": "missing",
+          "type": "sheets.DimensionRange"
+        },
+        "locationType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "sheetId": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "spreadsheet": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "sheets.DeveloperMetadataLookup": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "locationMatchingStrategy": {
+          "status": "missing",
+          "type": "string"
+        },
+        "locationType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "metadataId": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "metadataKey": {
+          "status": "missing",
+          "type": "string"
+        },
+        "metadataLocation": {
+          "status": "missing",
+          "type": "sheets.DeveloperMetadataLocation"
+        },
+        "metadataValue": {
+          "status": "missing",
+          "type": "string"
+        },
+        "visibility": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.DimensionGroup": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "collapsed": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "depth": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "range": {
+          "status": "missing",
+          "type": "sheets.DimensionRange"
+        }
+      }
+    },
+    "sheets.DimensionProperties": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "dataSourceColumnReference": {
+          "status": "missing",
+          "type": "sheets.DataSourceColumnReference",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "developerMetadata": {
+          "status": "missing",
+          "type": "[sheets.DeveloperMetadata]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "hiddenByFilter": {
+          "status": "missing",
+          "type": "boolean",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "hiddenByUser": {
+          "status": "missing",
+          "type": "boolean",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "pixelSize": {
+          "status": "implemented",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.DimensionRange": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dimension": {
+          "status": "missing",
+          "type": "string"
+        },
+        "endIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "sheetId": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "startIndex": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.Editors": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "domainUsersCanEdit": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "groups": {
+          "status": "missing",
+          "type": "[string]"
+        },
+        "users": {
+          "status": "missing",
+          "type": "[string]"
+        }
+      }
+    },
+    "sheets.EmbeddedChart": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "border": {
+          "status": "missing",
+          "type": "sheets.EmbeddedObjectBorder"
+        },
+        "chartId": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "position": {
+          "status": "missing",
+          "type": "sheets.EmbeddedObjectPosition"
+        },
+        "spec": {
+          "status": "missing",
+          "type": "sheets.ChartSpec"
+        }
+      }
+    },
+    "sheets.EmbeddedObjectBorder": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "color": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "colorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        }
+      }
+    },
+    "sheets.EmbeddedObjectPosition": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "newSheet": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "overlayPosition": {
+          "status": "missing",
+          "type": "sheets.OverlayPosition"
+        },
+        "sheetId": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.ErrorValue": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "message": {
+          "status": "missing",
+          "type": "string"
+        },
+        "type": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.ExtendedValue": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "boolValue": {
+          "status": "implemented",
+          "type": "boolean"
+        },
+        "errorValue": {
+          "status": "missing",
+          "type": "sheets.ErrorValue",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "formulaValue": {
+          "status": "missing",
+          "type": "string",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "numberValue": {
+          "status": "implemented",
+          "type": "number"
+        },
+        "stringValue": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.FilterCriteria": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "condition": {
+          "status": "missing",
+          "type": "sheets.BooleanCondition"
+        },
+        "hiddenValues": {
+          "status": "missing",
+          "type": "[string]"
+        },
+        "visibleBackgroundColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "visibleBackgroundColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "visibleForegroundColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "visibleForegroundColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        }
+      }
+    },
+    "sheets.FilterSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columnIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "dataSourceColumnReference": {
+          "status": "missing",
+          "type": "sheets.DataSourceColumnReference"
+        },
+        "filterCriteria": {
+          "status": "missing",
+          "type": "sheets.FilterCriteria"
+        }
+      }
+    },
+    "sheets.FilterView": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "criteria": {
+          "status": "missing",
+          "type": "map<string, sheets.FilterCriteria>"
+        },
+        "filterSpecs": {
+          "status": "missing",
+          "type": "[sheets.FilterSpec]"
+        },
+        "filterViewId": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "namedRangeId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "range": {
+          "status": "missing",
+          "type": "sheets.GridRange"
+        },
+        "sortSpecs": {
+          "status": "missing",
+          "type": "[sheets.SortSpec]"
+        },
+        "tableId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "title": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.GradientRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "maxpoint": {
+          "status": "missing",
+          "type": "sheets.InterpolationPoint"
+        },
+        "midpoint": {
+          "status": "missing",
+          "type": "sheets.InterpolationPoint"
+        },
+        "minpoint": {
+          "status": "missing",
+          "type": "sheets.InterpolationPoint"
+        }
+      }
+    },
+    "sheets.GridCoordinate": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columnIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "rowIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "sheetId": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.GridData": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "columnMetadata": {
+          "status": "implemented",
+          "type": "[sheets.DimensionProperties]"
+        },
+        "rowData": {
+          "status": "implemented",
+          "type": "[sheets.RowData]"
+        },
+        "rowMetadata": {
+          "status": "implemented",
+          "type": "[sheets.DimensionProperties]"
+        },
+        "startColumn": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "startRow": {
+          "status": "implemented",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.GridProperties": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "columnCount": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "columnGroupControlAfter": {
+          "status": "missing",
+          "type": "boolean",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "frozenColumnCount": {
+          "status": "missing",
+          "type": "integer",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "frozenRowCount": {
+          "status": "missing",
+          "type": "integer",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "hideGridlines": {
+          "status": "missing",
+          "type": "boolean",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "rowCount": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "rowGroupControlAfter": {
+          "status": "missing",
+          "type": "boolean",
+          "kind": "missing_field",
+          "severity": "gap"
+        }
+      }
+    },
+    "sheets.GridRange": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "endColumnIndex": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "endRowIndex": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "sheetId": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "startColumnIndex": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "startRowIndex": {
+          "status": "implemented",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.HistogramChartSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "bucketSize": {
+          "status": "missing",
+          "type": "number"
+        },
+        "legendPosition": {
+          "status": "missing",
+          "type": "string"
+        },
+        "outlierPercentile": {
+          "status": "missing",
+          "type": "number"
+        },
+        "series": {
+          "status": "missing",
+          "type": "[sheets.HistogramSeries]"
+        },
+        "showItemDividers": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "sheets.HistogramRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "end": {
+          "status": "missing",
+          "type": "number"
+        },
+        "interval": {
+          "status": "missing",
+          "type": "number"
+        },
+        "start": {
+          "status": "missing",
+          "type": "number"
+        }
+      }
+    },
+    "sheets.HistogramSeries": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "barColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "barColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "data": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        }
+      }
+    },
+    "sheets.InterpolationPoint": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "color": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "colorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "type": {
+          "status": "missing",
+          "type": "string"
+        },
+        "value": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.Interval": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "endTime": {
+          "status": "missing",
+          "type": "string"
+        },
+        "startTime": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.IterativeCalculationSettings": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "convergenceThreshold": {
+          "status": "missing",
+          "type": "number"
+        },
+        "maxIterations": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.KeyValueFormat": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "position": {
+          "status": "missing",
+          "type": "sheets.TextPosition"
+        },
+        "textFormat": {
+          "status": "missing",
+          "type": "sheets.TextFormat"
+        }
+      }
+    },
+    "sheets.LineStyle": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "type": {
+          "status": "missing",
+          "type": "string"
+        },
+        "width": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.Link": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "uri": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.LookerDataSourceSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "explore": {
+          "status": "missing",
+          "type": "string"
+        },
+        "instanceUri": {
+          "status": "missing",
+          "type": "string"
+        },
+        "model": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.ManualRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "groups": {
+          "status": "missing",
+          "type": "[sheets.ManualRuleGroup]"
+        }
+      }
+    },
+    "sheets.ManualRuleGroup": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "groupName": {
+          "status": "missing",
+          "type": "sheets.ExtendedValue"
+        },
+        "items": {
+          "status": "missing",
+          "type": "[sheets.ExtendedValue]"
+        }
+      }
+    },
+    "sheets.MatchedValueRange": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "dataFilters": {
+          "status": "implemented",
+          "type": "[sheets.DataFilter]"
+        },
+        "valueRange": {
+          "status": "implemented",
+          "type": "sheets.ValueRange"
+        }
+      }
+    },
+    "sheets.NamedRange": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "name": {
+          "status": "missing",
+          "type": "string"
+        },
+        "namedRangeId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "range": {
+          "status": "missing",
+          "type": "sheets.GridRange"
+        }
+      }
+    },
+    "sheets.NumberFormat": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "pattern": {
+          "status": "missing",
+          "type": "string"
+        },
+        "type": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.OrgChartSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "labels": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "nodeColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "nodeColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "nodeSize": {
+          "status": "missing",
+          "type": "string"
+        },
+        "parentLabels": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "selectedNodeColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "selectedNodeColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "tooltips": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        }
+      }
+    },
+    "sheets.OverlayPosition": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "anchorCell": {
+          "status": "missing",
+          "type": "sheets.GridCoordinate"
+        },
+        "heightPixels": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "offsetXPixels": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "offsetYPixels": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "widthPixels": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.Padding": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "bottom": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "left": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "right": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "top": {
+          "status": "implemented",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.PersonProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "displayFormat": {
+          "status": "missing",
+          "type": "string"
+        },
+        "email": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.PieChartSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "domain": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "legendPosition": {
+          "status": "missing",
+          "type": "string"
+        },
+        "pieHole": {
+          "status": "missing",
+          "type": "number"
+        },
+        "series": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "threeDimensional": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "sheets.PivotFilterCriteria": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "condition": {
+          "status": "missing",
+          "type": "sheets.BooleanCondition"
+        },
+        "visibleByDefault": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "visibleValues": {
+          "status": "missing",
+          "type": "[string]"
+        }
+      }
+    },
+    "sheets.PivotFilterSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columnOffsetIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "dataSourceColumnReference": {
+          "status": "missing",
+          "type": "sheets.DataSourceColumnReference"
+        },
+        "filterCriteria": {
+          "status": "missing",
+          "type": "sheets.PivotFilterCriteria"
+        }
+      }
+    },
+    "sheets.PivotGroup": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dataSourceColumnReference": {
+          "status": "missing",
+          "type": "sheets.DataSourceColumnReference"
+        },
+        "groupLimit": {
+          "status": "missing",
+          "type": "sheets.PivotGroupLimit"
+        },
+        "groupRule": {
+          "status": "missing",
+          "type": "sheets.PivotGroupRule"
+        },
+        "label": {
+          "status": "missing",
+          "type": "string"
+        },
+        "repeatHeadings": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "showTotals": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "sortOrder": {
+          "status": "missing",
+          "type": "string"
+        },
+        "sourceColumnOffset": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "valueBucket": {
+          "status": "missing",
+          "type": "sheets.PivotGroupSortValueBucket"
+        },
+        "valueMetadata": {
+          "status": "missing",
+          "type": "[sheets.PivotGroupValueMetadata]"
+        }
+      }
+    },
+    "sheets.PivotGroupLimit": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "applyOrder": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "countLimit": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.PivotGroupRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dateTimeRule": {
+          "status": "missing",
+          "type": "sheets.DateTimeRule"
+        },
+        "histogramRule": {
+          "status": "missing",
+          "type": "sheets.HistogramRule"
+        },
+        "manualRule": {
+          "status": "missing",
+          "type": "sheets.ManualRule"
+        }
+      }
+    },
+    "sheets.PivotGroupSortValueBucket": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "buckets": {
+          "status": "missing",
+          "type": "[sheets.ExtendedValue]"
+        },
+        "valuesIndex": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.PivotGroupValueMetadata": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "collapsed": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "value": {
+          "status": "missing",
+          "type": "sheets.ExtendedValue"
+        }
+      }
+    },
+    "sheets.PivotTable": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columns": {
+          "status": "missing",
+          "type": "[sheets.PivotGroup]"
+        },
+        "criteria": {
+          "status": "missing",
+          "type": "map<string, sheets.PivotFilterCriteria>"
+        },
+        "dataExecutionStatus": {
+          "status": "missing",
+          "type": "sheets.DataExecutionStatus"
+        },
+        "dataSourceId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "filterSpecs": {
+          "status": "missing",
+          "type": "[sheets.PivotFilterSpec]"
+        },
+        "rows": {
+          "status": "missing",
+          "type": "[sheets.PivotGroup]"
+        },
+        "source": {
+          "status": "missing",
+          "type": "sheets.GridRange"
+        },
+        "valueLayout": {
+          "status": "missing",
+          "type": "string"
+        },
+        "values": {
+          "status": "missing",
+          "type": "[sheets.PivotValue]"
+        }
+      }
+    },
+    "sheets.PivotValue": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "calculatedDisplayType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "dataSourceColumnReference": {
+          "status": "missing",
+          "type": "sheets.DataSourceColumnReference"
+        },
+        "formula": {
+          "status": "missing",
+          "type": "string"
+        },
+        "name": {
+          "status": "missing",
+          "type": "string"
+        },
+        "sourceColumnOffset": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "summarizeFunction": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.PointStyle": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "shape": {
+          "status": "missing",
+          "type": "string"
+        },
+        "size": {
+          "status": "missing",
+          "type": "number"
+        }
+      }
+    },
+    "sheets.Post": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "assigneeEmail": {
+          "status": "missing",
+          "type": "string"
+        },
+        "author": {
+          "status": "missing",
+          "type": "sheets.PostAuthor"
+        },
+        "commentAction": {
+          "status": "missing",
+          "type": "string"
+        },
+        "content": {
+          "status": "missing",
+          "type": "string"
+        },
+        "contentHtml": {
+          "status": "missing",
+          "type": "string"
+        },
+        "createTime": {
+          "status": "missing",
+          "type": "string"
+        },
+        "deleted": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "fromCopiedSpreadsheet": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "fromImportedSpreadsheet": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "postId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "updateTime": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.PostAuthor": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "anonymous": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "displayName": {
+          "status": "missing",
+          "type": "string"
+        },
+        "me": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "user": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.ProtectedRange": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "description": {
+          "status": "missing",
+          "type": "string"
+        },
+        "editors": {
+          "status": "missing",
+          "type": "sheets.Editors"
+        },
+        "namedRangeId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "protectedRangeId": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "range": {
+          "status": "missing",
+          "type": "sheets.GridRange"
+        },
+        "requestingUserCanEdit": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "tableId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "unprotectedRanges": {
+          "status": "missing",
+          "type": "[sheets.GridRange]"
+        },
+        "warningOnly": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "sheets.RichLinkProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "mimeType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "uri": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.RowData": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "values": {
+          "status": "implemented",
+          "type": "[sheets.CellData]"
+        }
+      }
+    },
+    "sheets.ScorecardChartSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "aggregateType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "baselineValueData": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "baselineValueFormat": {
+          "status": "missing",
+          "type": "sheets.BaselineValueFormat"
+        },
+        "customFormatOptions": {
+          "status": "missing",
+          "type": "sheets.ChartCustomNumberFormatOptions"
+        },
+        "keyValueData": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "keyValueFormat": {
+          "status": "missing",
+          "type": "sheets.KeyValueFormat"
+        },
+        "numberFormatSource": {
+          "status": "missing",
+          "type": "string"
+        },
+        "scaleFactor": {
+          "status": "missing",
+          "type": "number"
+        }
+      }
+    },
+    "sheets.Sheet": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "bandedRanges": {
+          "status": "missing",
+          "type": "[sheets.BandedRange]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "basicFilter": {
+          "status": "missing",
+          "type": "sheets.BasicFilter",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "charts": {
+          "status": "missing",
+          "type": "[sheets.EmbeddedChart]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "columnGroups": {
+          "status": "missing",
+          "type": "[sheets.DimensionGroup]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "commentAnchors": {
+          "status": "missing",
+          "type": "[sheets.CommentAnchor]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "conditionalFormats": {
+          "status": "missing",
+          "type": "[sheets.ConditionalFormatRule]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "data": {
+          "status": "implemented",
+          "type": "[sheets.GridData]"
+        },
+        "developerMetadata": {
+          "status": "missing",
+          "type": "[sheets.DeveloperMetadata]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "filterViews": {
+          "status": "missing",
+          "type": "[sheets.FilterView]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "merges": {
+          "status": "missing",
+          "type": "[sheets.GridRange]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "properties": {
+          "status": "implemented",
+          "type": "sheets.SheetProperties"
+        },
+        "protectedRanges": {
+          "status": "missing",
+          "type": "[sheets.ProtectedRange]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "rowGroups": {
+          "status": "missing",
+          "type": "[sheets.DimensionGroup]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "slicers": {
+          "status": "missing",
+          "type": "[sheets.Slicer]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "tables": {
+          "status": "missing",
+          "type": "[sheets.Table]",
+          "kind": "missing_field",
+          "severity": "gap"
+        }
+      }
+    },
+    "sheets.SheetProperties": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "dataSourceSheetProperties": {
+          "status": "missing",
+          "type": "sheets.DataSourceSheetProperties",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "gridProperties": {
+          "status": "implemented",
+          "type": "sheets.GridProperties"
+        },
+        "hidden": {
+          "status": "missing",
+          "type": "boolean",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "index": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "rightToLeft": {
+          "status": "missing",
+          "type": "boolean",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "sheetId": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "sheetType": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "tabColor": {
+          "status": "missing",
+          "type": "sheets.Color",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "tabColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "title": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.Slicer": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "position": {
+          "status": "missing",
+          "type": "sheets.EmbeddedObjectPosition"
+        },
+        "slicerId": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "spec": {
+          "status": "missing",
+          "type": "sheets.SlicerSpec"
+        }
+      }
+    },
+    "sheets.SlicerSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "applyToPivotTables": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "backgroundColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "backgroundColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "columnIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "dataRange": {
+          "status": "missing",
+          "type": "sheets.GridRange"
+        },
+        "filterCriteria": {
+          "status": "missing",
+          "type": "sheets.FilterCriteria"
+        },
+        "horizontalAlignment": {
+          "status": "missing",
+          "type": "string"
+        },
+        "textFormat": {
+          "status": "missing",
+          "type": "sheets.TextFormat"
+        },
+        "title": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.SortSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "backgroundColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "backgroundColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "dataSourceColumnReference": {
+          "status": "missing",
+          "type": "sheets.DataSourceColumnReference"
+        },
+        "dimensionIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "foregroundColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "foregroundColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "sortOrder": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.Spreadsheet": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "comments": {
+          "status": "missing",
+          "type": "[sheets.CommentThread]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "commentsViewMode": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "dataSourceSchedules": {
+          "status": "missing",
+          "type": "[sheets.DataSourceRefreshSchedule]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "dataSources": {
+          "status": "missing",
+          "type": "[sheets.DataSource]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "developerMetadata": {
+          "status": "missing",
+          "type": "[sheets.DeveloperMetadata]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "namedRanges": {
+          "status": "missing",
+          "type": "[sheets.NamedRange]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "properties": {
+          "status": "implemented",
+          "type": "sheets.SpreadsheetProperties"
+        },
+        "sheets": {
+          "status": "implemented",
+          "type": "[sheets.Sheet]"
+        },
+        "spreadsheetId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "spreadsheetUrl": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.SpreadsheetProperties": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "autoRecalc": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "defaultFormat": {
+          "status": "implemented",
+          "type": "sheets.CellFormat"
+        },
+        "importFunctionsExternalUrlAccessAllowed": {
+          "status": "missing",
+          "type": "boolean",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "iterativeCalculationSettings": {
+          "status": "missing",
+          "type": "sheets.IterativeCalculationSettings",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "locale": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "spreadsheetTheme": {
+          "status": "implemented",
+          "type": "sheets.SpreadsheetTheme"
+        },
+        "timeZone": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "title": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.SpreadsheetTheme": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "primaryFontFamily": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "themeColors": {
+          "status": "implemented",
+          "type": "[sheets.ThemeColorPair]"
+        }
+      }
+    },
+    "sheets.Table": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columnProperties": {
+          "status": "missing",
+          "type": "[sheets.TableColumnProperties]"
+        },
+        "name": {
+          "status": "missing",
+          "type": "string"
+        },
+        "range": {
+          "status": "missing",
+          "type": "sheets.GridRange"
+        },
+        "rowsProperties": {
+          "status": "missing",
+          "type": "sheets.TableRowsProperties"
+        },
+        "tableId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.TableColumnDataValidationRule": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "condition": {
+          "status": "missing",
+          "type": "sheets.BooleanCondition"
+        }
+      }
+    },
+    "sheets.TableColumnProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columnIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "columnName": {
+          "status": "missing",
+          "type": "string"
+        },
+        "columnType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "dataValidationRule": {
+          "status": "missing",
+          "type": "sheets.TableColumnDataValidationRule"
+        }
+      }
+    },
+    "sheets.TableRowsProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "firstBandColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "footerColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "headerColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "secondBandColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        }
+      }
+    },
+    "sheets.TextFormat": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "bold": {
+          "status": "implemented",
+          "type": "boolean"
+        },
+        "fontFamily": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "fontSize": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "foregroundColor": {
+          "status": "implemented",
+          "type": "sheets.Color"
+        },
+        "foregroundColorStyle": {
+          "status": "implemented",
+          "type": "sheets.ColorStyle"
+        },
+        "italic": {
+          "status": "implemented",
+          "type": "boolean"
+        },
+        "link": {
+          "status": "missing",
+          "type": "sheets.Link",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "strikethrough": {
+          "status": "implemented",
+          "type": "boolean"
+        },
+        "underline": {
+          "status": "implemented",
+          "type": "boolean"
+        }
+      }
+    },
+    "sheets.TextFormatRun": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "format": {
+          "status": "missing",
+          "type": "sheets.TextFormat"
+        },
+        "startIndex": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.TextPosition": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "horizontalAlignment": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.TextRotation": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "angle": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "vertical": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "sheets.ThemeColorPair": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "color": {
+          "status": "implemented",
+          "type": "sheets.ColorStyle"
+        },
+        "colorType": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.TimeOfDay": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "hours": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "minutes": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "nanos": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "seconds": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.TreemapChartColorScale": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "maxValueColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "maxValueColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "midValueColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "midValueColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "minValueColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "minValueColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "noDataColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "noDataColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        }
+      }
+    },
+    "sheets.TreemapChartSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "colorData": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "colorScale": {
+          "status": "missing",
+          "type": "sheets.TreemapChartColorScale"
+        },
+        "headerColor": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "headerColorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "hideTooltips": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "hintedLevels": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "labels": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "levels": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "maxValue": {
+          "status": "missing",
+          "type": "number"
+        },
+        "minValue": {
+          "status": "missing",
+          "type": "number"
+        },
+        "parentLabels": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "sizeData": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "textFormat": {
+          "status": "missing",
+          "type": "sheets.TextFormat"
+        }
+      }
+    },
+    "sheets.ValueRange": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "majorDimension": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "range": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "values": {
+          "status": "implemented",
+          "type": "[[any]]"
+        }
+      }
+    },
+    "sheets.WaterfallChartColumnStyle": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "color": {
+          "status": "missing",
+          "type": "sheets.Color"
+        },
+        "colorStyle": {
+          "status": "missing",
+          "type": "sheets.ColorStyle"
+        },
+        "label": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.WaterfallChartCustomSubtotal": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dataIsSubtotal": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "label": {
+          "status": "missing",
+          "type": "string"
+        },
+        "subtotalIndex": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.WaterfallChartDomain": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "data": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "reversed": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "sheets.WaterfallChartSeries": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "customSubtotals": {
+          "status": "missing",
+          "type": "[sheets.WaterfallChartCustomSubtotal]"
+        },
+        "data": {
+          "status": "missing",
+          "type": "sheets.ChartData"
+        },
+        "dataLabel": {
+          "status": "missing",
+          "type": "sheets.DataLabel"
+        },
+        "hideTrailingSubtotal": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "negativeColumnsStyle": {
+          "status": "missing",
+          "type": "sheets.WaterfallChartColumnStyle"
+        },
+        "positiveColumnsStyle": {
+          "status": "missing",
+          "type": "sheets.WaterfallChartColumnStyle"
+        },
+        "subtotalColumnsStyle": {
+          "status": "missing",
+          "type": "sheets.WaterfallChartColumnStyle"
+        }
+      }
+    },
+    "sheets.WaterfallChartSpec": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "connectorLineStyle": {
+          "status": "missing",
+          "type": "sheets.LineStyle"
+        },
+        "domain": {
+          "status": "missing",
+          "type": "sheets.WaterfallChartDomain"
+        },
+        "firstValueIsTotal": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "hideConnectorLines": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "series": {
+          "status": "missing",
+          "type": "[sheets.WaterfallChartSeries]"
+        },
+        "stackedType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "totalDataLabel": {
+          "status": "missing",
+          "type": "sheets.DataLabel"
+        }
+      }
+    }
   }
 }

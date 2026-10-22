@@ -646,7 +646,8 @@ def test_each_message_slug_is_one_backlot_sends(client, method, path, kwargs, ex
     assert [c.get("backlot.error_code") for c in calls] == [expected], calls
 
 
-# Linear's rows; Fireflies runs the same engine, so a few of them are sent there as well.
+# Linear's rows; Fireflies runs the same engine, so a few of them are sent there as well. The
+# `transcripts` rows there are Fireflies' own.
 _GRAPHQL_MESSAGES = [
     ({"query": "{"}, LINEAR, "graphql_parse"),
     ({"query": '{ issue(id: "nope") { id } }'}, LINEAR, "entity_not_found"),

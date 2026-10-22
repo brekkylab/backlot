@@ -2150,6 +2150,14 @@ def test_github_code_search_text_matches_only_under_the_media_type(gh_client, gh
     c, _ = gh_client
     plain = c.get("/github/search/code", headers=gh_admin_h, params={"q": "helper"}).json()
     assert "text_matches" not in plain["items"][0]
+    # the name read as spelt, and a `q=0` that leaves text matches in (see `_accept_types`)
+    for accept, matched in (
+        ("application/vnd.github.TEXT-MATCH+json", False),
+        ("application/vnd.github.text-match+json;q=0", True),
+    ):
+        h = {**gh_admin_h, "Accept": accept}
+        hit = c.get("/github/search/code", headers=h, params={"q": "helper"}).json()["items"][0]
+        assert ("text_matches" in hit) is matched, accept
 
     h = {**gh_admin_h, "Accept": "application/vnd.github.text-match+json"}
     item = c.get("/github/search/code", headers=h, params={"q": "helper"}).json()["items"][0]
@@ -2718,6 +2726,68 @@ def test_github_deleting_the_installation_token_is_answered_as_a_served_route(
     if five:
         second = c.delete("/github/installation/token", headers=headers)
         assert second.headers["x-ratelimit-used"] == first.headers["x-ratelimit-used"], headers
+
+
+_NO_CREDENTIAL_ROUTES = {
+    "org teams": "orgs/{org}/teams",
+    "collaborators": "repos/{org}/gateway/collaborators",
+    "repo teams": "repos/{org}/gateway/teams",
+    "protection": "repos/{org}/gateway/branches/main/protection",
+    "code search": "search/code?q=x",
+}
+_REFUSED_COUNTED = (401, "Requires authentication", None, True)
+_REFUSED_UNCOUNTED = (401, "Requires authentication", None, False)
+_V1999 = {"X-GitHub-Api-Version": "1999-01-01"}
+_NO_CREDENTIAL_ROWS = [
+    *(
+        (route, headers, answer)
+        for route in _NO_CREDENTIAL_ROUTES
+        for headers, answer in [
+            ({}, _REFUSED_COUNTED),
+            (_V1999, _REFUSED_COUNTED),
+            ({"Authorization": "Foo bar"}, _REFUSED_UNCOUNTED),
+            ({"Authorization": "Foo bar", **_V1999}, _REFUSED_UNCOUNTED),
+            ({"Authorization": "Digest x", **_V1999}, _REFUSED_UNCOUNTED),
+            ({"Authorization": "Bearer\tnope", **_V1999}, _REFUSED_UNCOUNTED),
+            ({"Authorization": "token"}, (401, "Bad credentials", None, False)),
+        ]
+    ),
+    *(
+        (route, headers, answer)
+        for route in ("org teams", "collaborators", "repo teams", "protection")
+        for headers, answer in [
+            ({"X-GitHub-Api-Version": "2022-11-28"}, _REFUSED_COUNTED),
+            ({"Authorization": "Basic eDp5", **_V1999}, (400, "Bad Request", None, True)),
+        ]
+    ),
+    # `Basic eDp5` (`x:y`) names no token: each route's own answer to a caller with none
+    (
+        "org teams",
+        {"Authorization": "Basic eDp5"},
+        (401, "Requires authentication", "2022-11-28", True),
+    ),
+    (
+        "collaborators",
+        {"Authorization": "Basic eDp5"},
+        (401, "Requires authentication", "2022-11-28", True),
+    ),
+    ("repo teams", {"Authorization": "Basic eDp5"}, (404, "Not Found", "2022-11-28", True)),
+    ("protection", {"Authorization": "Basic eDp5"}, (404, "Not Found", "2022-11-28", True)),
+]
+
+
+@pytest.mark.parametrize("route, headers, answer", _NO_CREDENTIAL_ROWS)
+def test_github_teams_collaborators_protection_and_code_search_refuse_no_credential_first(
+    gh_client, gh_org, route, headers, answer
+):
+    """Each row is real's answer as `_refuse_an_anonymous_caller` records it: the status, the
+    message, the version echo and whether the five `x-ratelimit-*` ride on it."""
+    c, _ = gh_client
+    r = c.get(f"/github/{_NO_CREDENTIAL_ROUTES[route].format(org=gh_org)}", headers=headers)
+    status, message, echo, five = answer
+    assert (r.status_code, r.json()["message"]) == (status, message), headers
+    assert r.headers.get("x-github-api-version-selected") == echo, headers
+    assert ("x-ratelimit-limit" in r.headers) is five, headers
 
 
 def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, gh_org):
@@ -3748,6 +3818,9 @@ _CODEBASE_README = "# codebase\n\nCore service source, browsable via the tree/co
         # GitHub's own docs spelled it `application/vnd.github.VERSION.raw+json`; missing this one
         # meant a caller using it got the base64 envelope with a 200 and no way to tell
         "application/vnd.github.v3.raw+json",
+        # spellings `backlot.routers.github._accept_types` reads as raw
+        "Application/vnd.GitHub.V3.raw+JSON",
+        "application/vnd.github.raw;q=0",
     ],
 )
 def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org, accept):
@@ -3783,7 +3856,7 @@ def test_github_raw_accept_leaves_the_json_envelope_alone(gh_client, gh_admin_h,
     """Only a `raw` request changes shape: the default and an explicit `+json` still get the
     base64 envelope, and a DIRECTORY listing has no raw form so it stays a JSON array."""
     c, _ = gh_client
-    for accept in (None, "application/vnd.github+json", "*/*"):
+    for accept in (None, "application/vnd.github+json", "*/*", "application/vnd.github.RAW"):
         h = dict(gh_admin_h) if accept is None else {**gh_admin_h, "Accept": accept}
         body = c.get(f"/github/repos/{gh_org}/codebase/contents/src/main.py", headers=h).json()
         assert body["encoding"] == "base64"
@@ -4346,9 +4419,10 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     (measured 2026-09-15, see `test_github_401_says_which_credential_failed`).
 
     The missing-credential half is only visible on a route real refuses an anonymous caller, since
-    it serves the public ones 200: `/user/repos` is the one Backlot serves, and real answers the
-    version's 400 there where a supported version is `Requires authentication` (measured 2026-09-17,
-    three runs of each).
+    it serves the public ones 200: on `/user/repos` real answers the version's 400 where a supported
+    version is `Requires authentication` (see `_validate_bad_credential`). Teams, collaborators,
+    branch protection and code search refuse that caller ahead of the version instead
+    (`test_github_teams_collaborators_protection_and_code_search_refuse_no_credential_first`).
 
     The gateway sends no `Selected` echo on this 400; the pull and contents backend answer their
     own (``test_github_version_error_depends_on_endpoint_and_representation``). A 404 does carry
@@ -4390,6 +4464,10 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
         ("pulls/1", "application/vnd.github.diff, application/json", False, False),
         ("pulls/1", "application/json, application/vnd.github.diff", False, False),
         ("pulls/1", "application/vnd.github.v3.diff+json", False, False),
+        ("pulls/1", "application/vnd.github.DIFF", True, False),
+        ("pulls/1", "Application/vnd.github.diff", False, False),
+        ("pulls/1", "application/vnd.github.diff;q=0", True, False),
+        ("pulls/1", "application/vnd.github.patch;q=0", False, False),
         ("pulls/1", "application/vnd.github.sha", True, False),
         *[
             (path, accept, True, True)
@@ -4771,6 +4849,37 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
         headers={**gh_admin_h, "Accept": "application/vnd.github.diff"},
     ).json()
     assert issue["number"] == issue_num
+
+
+# What api.github.com served a pull for each `Accept` at 2022-11-28 (see `_accept_types`).
+@pytest.mark.parametrize(
+    "accept, served",
+    [
+        ("application/vnd.github.DIFF", "json"),
+        ("APPLICATION/VND.GITHUB.DIFF", "json"),
+        ("Application/vnd.github.diff", "diff"),
+        ("application/vnd.GitHub.diff", "diff"),
+        ("application/vnd.github.V3.diff", "diff"),
+        ("application/vnd.github.diff+JSON", "diff"),
+        ("application/vnd.github.diff;q=0", "json"),
+        ("application/vnd.github.diff; q=0, application/json", "json"),
+        ("application/vnd.github.diff;Q=0", "diff"),
+        ("application/vnd.github.diff; q = 0", "diff"),
+        ("application/vnd.github.diff;charset=utf-8;q=0", "diff"),
+        ("application/vnd.github.diff;q=0;charset=utf-8", "json"),
+        ("application/vnd.github.diff;q=abc", "diff"),
+        ("application/vnd.github.diff;charset=utf-8", "diff"),
+        ("text/plain, application/vnd.github.diff", "diff"),
+        ("application/vnd.github.diff;q=0.5", "diff"),
+        ("application/vnd.github.patch;q=0", "patch"),
+        ("application/vnd.github.patch;q=0.5, application/json;q=1", "patch"),
+    ],
+)
+def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accept, served):
+    c, h, org, num = diff_pr
+    r = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers={**h, "Accept": accept})
+    assert r.status_code == 200
+    assert r.text.startswith({"json": "{", "diff": "diff --git ", "patch": "From "}[served])
 
 
 def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):

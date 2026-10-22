@@ -350,7 +350,7 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             "POST",
             "/slack/api/nonexistent.method",
             {},
-            ("slack", "unmatched", "unknown", 404, None, "client"),
+            ("slack", "unmatched", "unknown", 200, "unknown_method", "client"),
         ),
         (
             "GET",

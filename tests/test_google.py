@@ -1122,6 +1122,10 @@ _BATCH_ROWS = [
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?alt=media", None, None), 501, 400, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?$.xgafv=1", None, None), 501, 200, _UNIMPLEMENTED_AT_XGAFV_1),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?majorDimension=NOPE", None, None), 400, 400, None),
+    # a bad `fields` mask is refused ahead of that 501, as `_sheets_check_mask` records
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?fields=bogus", None, None), 400, 400, None),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1?fields=bogus", None, None), 400, 400, None),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{nope}:getByDataFilter?fields=bogus", "{}", None), 400, 400, None),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", _BAD_FILTER, None), 400, 400, None),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _BAD_FILTER, None), 400, 400, None),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _BAD), 401, 401, _CHALLENGED),
@@ -8491,6 +8495,70 @@ def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, mask):
             ],
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("GET", "/sheets/v4/spreadsheets/nosuch/values/Sheet1!A1", None),
+        ("GET", "/sheets/v4/spreadsheets/nosuch", None),
+        ("GET", "/sheets/v4/spreadsheets/nosuch/values:batchGet?ranges=A1", None),
+        ("POST", "/sheets/v4/spreadsheets/nosuch:getByDataFilter", {}),
+        (
+            "POST",
+            "/sheets/v4/spreadsheets/nosuch/values:batchGetByDataFilter",
+            {"dataFilters": [{"a1Range": "A1"}]},
+        ),
+    ],
+)
+def test_a_bad_fields_mask_is_refused_before_a_missing_spreadsheet_is_looked_up(
+    client, admin_h, method, path, body
+):
+    """The mask refusal a spreadsheet that exists gets, on one that does not: the 400 naming the
+    path, not the lookup's 404, on every Sheets read."""
+    r = client.request(method, path, headers=admin_h, params={"fields": "bogus"}, json=body)
+    assert r.status_code == 400, r.text
+    err = r.json()["error"]
+    assert err["message"] == "Request contains an invalid argument."
+    assert err["status"] == "INVALID_ARGUMENT"
+    assert err["details"] == [
+        {
+            "@type": "type.googleapis.com/google.rpc.BadRequest",
+            "fieldViolations": [
+                {
+                    "field": "bogus",
+                    "description": (
+                        "Error expanding 'fields' parameter. Cannot find matching fields for "
+                        "path 'bogus'."
+                    ),
+                }
+            ],
+        }
+    ]
+
+
+def test_a_bad_fields_mask_on_a_missing_spreadsheet_keeps_the_typed_and_alt_orders(client, admin_h):
+    """What moving the mask does not move: a typed value is still refused ahead of it, `alt` is
+    still refused after the lookup, and a mask the response does have still reaches the 404."""
+    typed = client.get(
+        "/sheets/v4/spreadsheets/nosuch/values/Sheet1!A1",
+        headers=admin_h,
+        params={"fields": "bogus", "majorDimension": "NOPE"},
+    )
+    assert typed.status_code == 400
+    assert typed.json()["error"]["details"] == _bad_request([("major_dimension", _DIM + '"NOPE"')])
+    alt = client.get(
+        "/sheets/v4/spreadsheets/nosuch/values/Sheet1!A1",
+        headers=admin_h,
+        params={"alt": "media"},
+    )
+    assert alt.status_code == 404
+    good_mask = client.get(
+        "/sheets/v4/spreadsheets/nosuch/values/Sheet1!A1",
+        headers=admin_h,
+        params={"fields": "range"},
+    )
+    assert good_mask.status_code == 404
 
 
 _A1_INDENTED = (

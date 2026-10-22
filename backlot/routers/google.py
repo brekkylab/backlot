@@ -3554,6 +3554,19 @@ def _gmask_check(tree: dict, allowed: dict, path: str = "") -> None:
             _gmask_check(sub, allowed[name], full)
 
 
+def _sheets_check_mask(request: Request, allowed: dict) -> None:
+    """Refuse a `fields` mask the response has no field for, ahead of the spreadsheet lookup.
+
+    Measured 2026-10-04 against sheets.googleapis.com: a bad mask on a spreadsheet that does not
+    exist answers the mask's 400, not the lookup's 404, on `spreadsheets.get`, `values.get`,
+    `values:batchGet` and the two POST reads — and inside a batch, ahead of the 501 a Sheets read
+    gets there. The caller still reads its typed values first, and `alt` is still read in
+    `_sheets_respond`, after the lookup."""
+    mask = gerr.first_repeat(request.query_params, "fields")
+    if mask:
+        _gmask_check(_gmask_parse(mask), allowed)
+
+
 def _gmask_wants_grid(mask: str | None) -> bool:
     """Whether a `fields` mask reaches the cells, which is what decides the grid when one is set.
 
@@ -3743,6 +3756,7 @@ async def sheets_get(spreadsheet_id: str, request: Request):
         },
     )
     grid = (flags["includeGridData"] or [False])[-1]
+    _sheets_check_mask(request, _F_SPREADSHEET)
     row, sheets = _workbook(request, spreadsheet_id)
     mask = gerr.first_repeat(request.query_params, "fields")
     if mask:
@@ -4488,8 +4502,9 @@ def _workbook(request: Request, spreadsheet_id: str) -> tuple:
 
     Inside a batch there is no lookup: real's batch does not implement the Sheets reads. Measured
     2026-10-04 on the five reads this module serves, and on the two POST reads' bodies 2026-10-06,
-    the answer is 501 after the credential, the typed query values and a POST read's body and before
-    the spreadsheet is looked up, so one that does not exist gets it as well."""
+    the answer is 501 after the credential, the typed query values, a POST read's body and the
+    `fields` mask and before the spreadsheet is looked up, so one that does not exist gets it as
+    well."""
     if _BATCH_OUTER.get() is not None:
         raise gerr.unimplemented()
     row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
@@ -4579,6 +4594,7 @@ async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
     Sheets — unlike the rest of this module's behaviour, it is unverified."""
     _require(request)
     major, render = _sheets_options(request)
+    _sheets_check_mask(request, _F_BATCH_VALUES)
     _row, sheets = _workbook(request, spreadsheet_id)
     ranges = request.query_params.getlist("ranges")
     body = {"spreadsheetId": spreadsheet_id}
@@ -4595,6 +4611,7 @@ async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request
     """One range of a spreadsheet, ACL-enforced through the same lookup as ``spreadsheets.get``."""
     _require(request)
     major, render = _sheets_options(request)
+    _sheets_check_mask(request, _F_VALUE_RANGE)
     _row, sheets = _workbook(request, spreadsheet_id)
     return _sheets_respond(
         request, _sheets_value_range(a1_range, sheets, major, render), _F_VALUE_RANGE
@@ -4991,12 +5008,14 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     can tell which answer belongs to which.
 
     In the order real answers, measured 2026-10-04 with two wrong at once: the credential, then the
-    body (``protojson.read``), then the spreadsheet's lookup, then a `valueRenderOption` number the
-    enum does not declare (a 400 of the service's own), then an empty filter list, then the filters
-    (:func:`_sheets_selections`), then a `majorDimension` number it does not declare (a 500). A
+    body (``protojson.read``), then the `fields` mask, then the spreadsheet's lookup, then a
+    `valueRenderOption` number the enum does not declare (a 400 of the service's own), then an
+    empty filter list, then the filters (:func:`_sheets_selections`), then a `majorDimension`
+    number it does not declare (a 500). A
     `dateTimeRenderOption` number it does not declare is ignored, as the option is."""
     _require(request)
     body = protojson.read(await request.body(), _PJ_BATCH_GET_BY_FILTER)
+    _sheets_check_mask(request, _F_BATCH_BY_FILTER)
     _row, sheets = _workbook(request, spreadsheet_id)
     render = body.get("value_render_option", 0)
     if not 0 <= render < len(_PJ_RENDER.names):
@@ -5056,10 +5075,11 @@ async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
     ``sheets`` array as ``ranges`` does but for cells two filters cover (below) — measured,
     including that NO filter means every sheet rather than the refusal its values-level sibling
     gives, and so does a list of developer metadata lookups alone, which select nothing (measured
-    2026-10-04). The credential, the body, the spreadsheet's lookup and the filters come in the
-    order its sibling's docstring gives."""
+    2026-10-04). The credential, the body, the `fields` mask, the spreadsheet's lookup and the
+    filters come in the order its sibling's docstring gives."""
     _require(request)
     body = protojson.read(await request.body(), _PJ_GET_BY_FILTER)
+    _sheets_check_mask(request, _F_SPREADSHEET)
     row, sheets = _workbook(request, spreadsheet_id)
     selections = _sheets_selections(body.get("data_filters", []), sheets, values_level=False)
     # Filters that cover the same cells share one `data` block, placed where the first of them was

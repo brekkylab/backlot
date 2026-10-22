@@ -129,6 +129,7 @@ _UNPUBLISHED_ROWS = [
     ("DELETE", f"/notion/v1/blocks/{_ID}//"),
     ("GET", "/notion/v1/oauth/token"),
     ("POST", "/notion/v1/oauth/other"),
+    ("GET", f"/notion/v1/ai/skills/{_ID}/upload"),
 ]
 
 
@@ -155,6 +156,7 @@ _PUBLISHED_NOT_SERVED_ROWS = [
     ("DELETE", f"/notion/v1/views/{_ID}/queries/{_ID}"),
     ("PATCH", "/notion/v1/pages/abc"),
     ("PATCH", f"/notion/v1/pages/{_ID}/"),
+    ("POST", f"/notion/v1/ai/skills/{_ID}/upload"),
 ]
 
 

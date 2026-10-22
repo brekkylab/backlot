@@ -940,14 +940,32 @@ def _issue(row, info) -> dict:
     }
 
 
+def _parent_issue(info, issue_id: str):
+    """The comment's issue, remembered for the request so a page looks each parent up once."""
+    ctx = _ctx(info)
+    found = ctx.setdefault("_comment_issues", {})
+    if issue_id not in found:
+        found[issue_id] = store.linear_by_id(ctx["conn"], issue_id)
+    return found[issue_id]
+
+
 def _comment(row, info) -> dict:
     ts = synth.rfc3339(row["created_ts"])
+    comment_id = synth.linear_comment_id(row["id"])
+    parent = _parent_issue(info, row["issue_id"])
+    # api.linear.app on 2026-10-22: Comment.url is the issue's url with `#comment-` and the
+    # first eight characters of the comment id, from `comment(id:)`, `comments` and
+    # `issue.comments`.
+    if parent is not None and parent["identifier"]:
+        page = synth.linear_url(parent["identifier"], parent["title"] or "", _org(info))
+    else:
+        page = f"https://linear.app/{_org(info)}/issue"
     return {
-        "id": synth.linear_comment_id(row["id"]),
+        "id": comment_id,
         "body": row["body"],
         "createdAt": ts,
         "updatedAt": ts,
-        "url": f"https://linear.app/{_org(info)}/issue/#comment-{synth.linear_comment_id(row['id'])}",
+        "url": f"{page}#comment-{comment_id[:8]}",
         "reactionData": {},
         "reactions": [],
         "user": _user(row["author_email"], None, info),

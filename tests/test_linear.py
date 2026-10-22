@@ -531,6 +531,22 @@ def test_linear_comments_connection_on_an_issue(client, admin_h):
     assert nodes[0]["user"]["email"] == "bob@acme.com"
 
 
+def test_linear_comment_url_is_its_issue_url(client, admin_h):
+    """`Comment.url` is the issue's url plus the id's first eight characters, as `_comment` records,
+    on the issue's own connection and on the root that lists every comment."""
+    issue = gql(
+        client,
+        '{ issue(id: "ENG-101") { url comments { nodes { id url } } } }',
+        admin_h,
+    ).json()["data"]["issue"]
+    assert issue["comments"]["nodes"]
+    for comment in issue["comments"]["nodes"]:
+        assert comment["url"] == f"{issue['url']}#comment-{comment['id'][:8]}"
+    listed = gql(client, "{ comments { nodes { id url } } }", admin_h).json()["data"]["comments"]
+    by_id = {comment["id"]: comment["url"] for comment in issue["comments"]["nodes"]}
+    assert by_id.items() <= {(comment["id"], comment["url"]) for comment in listed["nodes"]}
+
+
 def test_linear_by_id_relation_roots_answer(client, admin_h):
     """`@linear/sdk` resolves relations lazily — `await issue.state` fires `workflowState(id:)`
     rather than reading the value off the issue it already has. Without these roots every

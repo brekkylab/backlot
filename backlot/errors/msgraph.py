@@ -286,7 +286,7 @@ def forbidden(
 
 
 def not_the_caller() -> GraphError:
-    """``/users/{id}/joinedTeams`` for anyone but the caller, to a caller who is no administrator."""
+    """``/users/{id}/joinedTeams`` for someone else, to a caller who is no administrator."""
     message = "Invalid UserId. UserId does not match Access token UserObjectId"
     return forbidden(message, inner="AccessDenied", inner_message=message, inner_details=True)
 

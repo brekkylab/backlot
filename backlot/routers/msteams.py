@@ -48,6 +48,7 @@ from backlot.odata import (
     ExecutionError,
     Filter,
     FilterError,
+    Node,
     ascii_lower,
     compile_filter,
     is_blank,
@@ -141,6 +142,7 @@ _CHANNEL_PROPERTIES = frozenset(_CHANNEL_TYPES)
 _MESSAGE_PROPERTIES = frozenset(_MESSAGE_TYPES)
 _MEMBER_PROPERTIES = frozenset(_MEMBER_TYPES)
 _USER_PROPERTIES = frozenset(_USER_TYPES)
+_USER_KNOWN = frozenset(ascii_lower(p) for p in _USER_TYPES)
 # Every enum a filter above can compare, with its members in declared order.
 _ENUMS = {
     f"{_G}.channelMembershipType": ("standard", "private", "unknownFutureValue", "shared"),
@@ -454,24 +456,125 @@ _ADVANCED = (
 
 
 def _user_filter_refusal(e: FilterError, raw: str):
-    if e.kind == "property":
-        return msgraph.unsupported_query(
-            f"Property '{e.name}' does not exist as a declared property or extension property."
-        )
-    if e.kind == "function" and e.name == "contains":
-        return msgraph.unsupported_query("Filter operator 'Contains' is not supported.")
-    if e.kind == "function":
-        return msgraph.unsupported_query(f"Operator 'endsWith' {_ADVANCED}")
-    if e.kind == "operator" and e.name == "ne":
-        return msgraph.unsupported_query("Filter operator 'NotEqualsMatch' is not supported.")
-    if e.kind == "operator":
-        return msgraph.unsupported_query(f"Operator 'not' {_ADVANCED}")
-    if e.kind == "lambda":
-        return msgraph.unsupported_query(
-            f"Unsupported or invalid query filter clause specified for property '{e.name}' of "
-            "resource 'User'."
-        )
+    """What the binder refuses on the directory. A name the type does not declare binds there,
+    and `_directory_refusal` refuses it in the directory's own order."""
     return msgraph.bad_request(f"Invalid filter clause: {e.message}")
+
+
+# The directory's names for the comparison operators.
+_DIRECTORY_OPERATORS = {
+    "eq": "EqualsMatch",
+    "ne": "NotEqualsMatch",
+    "gt": "Greater",
+    "ge": "GreaterOrEqual",
+    "lt": "Less",
+    "le": "LessOrEqual",
+}
+
+
+def _directory_refusal(root: Node, *, eventual: bool, counted: bool) -> None:
+    """The directory's refusal of a bound filter, as measured: first the shape of every
+    comparison, in the order the filter is written, then — again in that order — a property it does
+    not have, an operator it does not run, a comparison with null, and the advanced operators an
+    advanced query is needed for. Within one comparison, a plain query reads the property before
+    the operator, and an advanced one the operator first."""
+    unsupported = msgraph.unsupported_query("Unsupported Query.")
+
+    def is_property(node: Node) -> bool:
+        return node.kind in ("name", "path")
+
+    def shapes(node: Node) -> None:
+        if node.kind in ("nary", "not"):
+            for child in node.children:
+                shapes(child)
+        elif node.kind == "lambda":
+            for child in node.children[1:]:
+                shapes(child)
+        elif node.kind == "in":
+            if not is_property(node.children[0]):
+                raise unsupported
+        elif node.kind == "binary" and node.op in _DIRECTORY_OPERATORS:
+            left, right = node.children
+            if is_property(left) or (left.kind == "literal" and is_property(right)):
+                if is_property(left) and is_property(right):
+                    raise unsupported
+                return
+            if left.kind == "literal" and right.kind == "literal":
+                raise unsupported
+            raise msgraph.unsupported_query(
+                f"Invalid expression caused by operator '{_DIRECTORY_OPERATORS[node.op]}'."
+            )
+        elif node.kind != "call":
+            raise unsupported
+
+    def declared(node: Node, variables: set[str]) -> None:
+        name = node.token.text
+        if node.kind == "name" and name not in variables and ascii_lower(name) not in _USER_KNOWN:
+            raise msgraph.unsupported_query(
+                f"Property '{name}' does not exist as a declared property or extension property."
+            )
+
+    def operator(op: str) -> None:
+        if op in ("gt", "lt"):
+            word = _DIRECTORY_OPERATORS[op]
+            if eventual:
+                raise msgraph.unsupported_query(f"Operator: '{word}' is not supported.")
+            raise msgraph.unsupported_query(
+                f"Filter operator '{word}' is not supported. Use '{word}OrEqual' instead."
+            )
+        if op == "ne" and not counted:
+            raise msgraph.unsupported_query("Filter operator 'NotEqualsMatch' is not supported.")
+
+    def refusals(node: Node, variables: set[str]) -> None:
+        if node.kind == "nary":
+            for child in node.children:
+                refusals(child, variables)
+        elif node.kind == "not":
+            if not eventual:
+                raise msgraph.unsupported_query(f"Operator 'not' {_ADVANCED}")
+            refusals(node.children[0], variables)
+        elif node.kind == "lambda":
+            collection = node.children[0]
+            declared(collection, variables)
+            if not eventual:
+                raise _null_clause(collection.token.text)
+            if node.variable is not None:
+                refusals(node.children[1], variables | {node.variable})
+        elif node.kind == "call":
+            name = ascii_lower(node.token.text)
+            if name == "contains":
+                raise msgraph.unsupported_query(
+                    "Operator: 'Contains' is not supported."
+                    if eventual
+                    else "Filter operator 'Contains' is not supported."
+                )
+            if name == "endswith" and not eventual:
+                raise msgraph.unsupported_query(f"Operator 'endsWith' {_ADVANCED}")
+            for arg in node.children:
+                declared(arg, variables)
+        elif node.kind == "in":
+            declared(node.children[0], variables)
+        elif node.kind == "binary":
+            left, right = node.children
+            prop, other = (left, right) if is_property(left) else (right, left)
+            if eventual:
+                operator(node.op)
+                declared(prop, variables)
+            else:
+                declared(prop, variables)
+                operator(node.op)
+                if other.kind == "literal" and other.token.text == "null":
+                    raise _null_clause(prop.token.text)
+
+    shapes(root)
+    refusals(root, set())
+
+
+def _null_clause(name: str):
+    return msgraph.unsupported_query(
+        f"Unsupported or invalid query filter clause specified for property '{name}' of resource "
+        "'User'."
+    )
 
 
 # `$search` on the directory: one or more `"property:term"` clauses joined by AND or OR, each
@@ -1232,11 +1335,11 @@ _USER_NAVIGATIONS = frozenset(
     "calendarGroups calendarView calendars chats cloudClipboard cloudPCs contactFolders contacts "
     "createdObjects dataSecurityAndGovernance deviceManagementTroubleshootingEvents directReports "
     "drive drives employeeExperience events extensions followedSites inferenceClassification "
-    "insights joinedTeams licenseDetails mailFolders managedAppRegistrations managedDevices manager "
-    "memberOf messages notes oauth2PermissionGrants onPremisesSyncBehavior onenote onlineMeetings "
-    "outlook ownedDevices ownedObjects people permissionGrants photo photos planner presence "
-    "registeredDevices scopedRoleMemberOf settings solutions sponsorOf sponsors teamwork todo "
-    "transitiveMemberOf".split()
+    "insights joinedTeams licenseDetails mailFolders managedAppRegistrations managedDevices "
+    "manager memberOf messages notes oauth2PermissionGrants onPremisesSyncBehavior onenote "
+    "onlineMeetings outlook ownedDevices ownedObjects people permissionGrants photo photos planner "
+    "presence registeredDevices scopedRoleMemberOf settings solutions sponsorOf sponsors teamwork "
+    "todo transitiveMemberOf".split()
 )
 
 
@@ -1365,12 +1468,17 @@ async def users_list(request: Request):
             terms = parse_orderby(raw_order)
         except FilterError as e:
             raise msgraph.bad_request(e.message) from None
-    refuse = {"contains"}
-    if not eventual:
-        refuse |= {"endswith", "not", "lambda"}
-    if not counted:
-        refuse.add("ne")
-    keep = _filter(opts, _USER_TYPES, refusal=_user_filter_refusal, fold_case=True, refuse=refuse)
+    # The directory reads `'a' le displayName` as `displayName le 'a'`, measured.
+    keep = _filter(
+        opts,
+        _USER_TYPES,
+        refusal=_user_filter_refusal,
+        fold_case=True,
+        open_type=True,
+        literal_first=True,
+    )
+    if keep is not None:
+        _directory_refusal(keep.root, eventual=eventual, counted=counted)
     if keep is not None and not eventual:
         for op, limit in (("or", 15), ("and", 25)):
             if (n := keep.clauses(op)) > limit:
@@ -1456,12 +1564,11 @@ async def users_get(request: Request, user_id: str):
 )
 async def users_joined_teams(request: Request, user_id: str):
     """A user's teams — how a client that cannot ask ``/me`` lists them. Everyone in the directory
-    is in the one team. The id is an object id or an address. A caller who is no administrator
-    lists only its own, and asking for anyone else's — whether or not they exist, unless an
-    address names nobody — is a 403, as it is live for a member's token with
-    ``Team.ReadBasic.All``. The admin token, which a tenant administrator's stands for, lists
-    anyone's, and an id the directory does not have is refused in the words of the lookup that
-    failed."""
+    is in the one team. The id is an object id or an address. A caller who is no administrator lists
+    only its own, and asking for anyone else's — whether or not they exist, unless an address names
+    nobody — is a 403, as it is live for a member's token with ``Team.ReadBasic.All``. The admin
+    token, which a tenant administrator's stands for, lists anyone's, and an id the directory does
+    not have is refused in the words of the lookup that failed."""
     conn = auth.conn(request)
     caller = _caller(request)
     body = _joined_teams(_options(request))

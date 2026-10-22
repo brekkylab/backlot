@@ -628,27 +628,39 @@ refused and `$top`, `$orderby` and `$count` ignored; `/users` refuses `$skip`. A
 does not decode is a `400`, and a `502` on replies, as live.
 
 `$filter` is read as Microsoft's OData library reads it (`backlot/odata.py`): `eq`, `ne`,
-`gt`/`ge`/`lt`/`le`, `has`, `in`, `add`/`sub`/`mul`/`div`/`mod`, `and`, `or`, `not` and
-`any`/`all` over a collection (`roles/any(r:r eq 'owner')`), with operators in any case and `not`
-binding tighter than a comparison; string, number, date, date-time and enum literals, and `true`,
-`false` and `null` in lower case only; the string functions `startswith`, `endswith`, `contains`,
-`indexof`, `concat`, `tolower`, `toupper`, `trim`, `length` and `substring`; and a boolean property
-as a predicate on its own. Each property is typed as Graph's CSDL types it, so a comparison of
-mismatched types, a collection where one value belongs, a function given the wrong arguments and a
-filter that is not a boolean are each refused in the library's words, and an empty filter is none.
-Parsing gives up past 800 levels of the library's recursion (99 parentheses fit), and the validator
-refuses a lambda inside a lambda and, on the channel and member listings, a filter of more than 100
-nodes. A boolean ordered against another binds and is refused once the team or channel is found, as
-.NET cannot run it. The directory compares strings without regard to case, channels and members with
-it, and every route orders them as .NET's culture comparison does. On `/users`, `contains` is
-refused; `endswith`, `not`, a lambda and `$search` (`"property:term"` clauses, matching words that
-start with the term, joined by `AND`/`OR`) need `ConsistencyLevel: eventual`, and `ne` needs
-`$count=true` beside it as well; outside an advanced query a filter joins at most 15 children with
+`gt`/`ge`/`lt`/`le`, `has`, `in`, `add`/`sub`/`mul`/`div`/`mod`, `and`, `or`, `not` and `any`/`all`
+over a collection (`roles/any(r:r eq 'owner')`), with operators in any case and `not` binding
+tighter than a comparison; string, number, date, date-time and enum literals, and `true`, `false`
+and `null` in lower case only; the string functions `startswith`, `endswith`, `contains`, `indexof`,
+`concat`, `tolower`, `toupper`, `trim`, `length` and `substring`; and a boolean property as a
+predicate on its own. A number is typed as the library types it — an integer the narrowest integer
+type that holds it, a fraction the first of `Edm.Single`, `Edm.Double` and `Edm.Decimal` that holds
+it exactly — and computed as .NET computes that type: an integer division truncates, a `Single` is
+rounded as one, and a floating division by zero is an infinity or NaN. Each property is typed as
+Graph's CSDL types it, so a comparison of mismatched types, a collection where one value belongs, a
+function given the wrong arguments and a filter that is not a boolean are each refused in the
+library's words, and an empty filter is none. Parsing gives up past 800 levels of the library's
+recursion (99 parentheses fit), and the validator refuses a lambda inside a lambda and, on the
+channel and member listings, a filter of more than 100 nodes. A boolean ordered against another, and
+an integer or decimal divided by zero, bind and are refused once the team or channel is found, as
+.NET cannot run them; the division is Graph's `500`. Channels and members compare strings with
+regard to case, and every route orders them as .NET's culture comparison does.
+
+The directory reads a filter in its own terms after the library binds it, without regard to case,
+and refuses in the order the filter is written: first a comparison that is not a property against a
+constant (a function or arithmetic on its left is `Invalid expression caused by operator '…'`, two
+properties, two constants or a bare property `Unsupported Query.`), then a property it does not
+have, `gt` and `lt`, `contains`, `ne` without `$count=true` beside it, and, outside an advanced
+query (`ConsistencyLevel: eventual`), a comparison with null, `endswith`, `not` and a lambda; within
+one comparison, a plain query reads the property before the operator and an advanced one after. A
+constant before a property is read as the property before it, the operator unchanged. `$search`
+takes `"property:term"` clauses, matching words that start with the term, joined by `AND`, `OR` or a
+blank, and needs the header too. Outside an advanced query a filter joins at most 15 children with
 `or`, an `in` list's values among them, and 25 with `and`. `$orderby` takes `displayName` and
-`userPrincipalName`, and is refused beside a `$filter` outside an advanced query. The directory
-reads `$count` (`true` or `false`, exactly) first, then `$top`, then `ConsistencyLevel` — which it
-refuses twice or naming anything but `eventual` — then `$search` and `$orderby` as written, then the
-filter, and answers a `$format` other than JSON with a `415`.
+`userPrincipalName`, refuses a constant, and is refused beside a `$filter` outside an advanced
+query. The directory reads `$count` (`true` or `false`, exactly) first, then `$top`, then
+`ConsistencyLevel` — which it refuses twice or naming anything but `eventual` — then `$search` and
+`$orderby` as written, then the filter, and answers a `$format` other than JSON with a `415`.
 
 A path is read as Graph reads it: the version and resource names in any case, an id as an OData key
 segment (`teams('{id}')`), a GUID in either case, and trailing slashes. An id that is not one is a
@@ -671,17 +683,18 @@ is served as `messageType: unknownFutureValue` unless the request sends
 `Prefer: include-unknown-enum-members`.
 
 **Not modelled:** the order of an advanced directory query's results (live, an index order of its
-own; here, userPrincipalName order), owners (every member's `roles` is empty, and
-`summary.ownersCount` 0), deleted messages (live keeps them in the listing with `deletedDateTime`
-set), a system event's typed `eventDetail`, the `post` channel layout, the
-`19:<base64url>@thread.tacv2` id a private or General channel has live (every channel id here takes
-the 32-hex form), paging of a standard channel's members (live pages them in pages shorter than
-`$top`; here all of the directory is one page), which unknown message ids live answers `403`, `404`
-or `400` (it depends on the number's range; here every unknown id is a `403`), the beta version and
-the service document at `/v1.0`, the request URI length past which the front end answers `414`,
-chats, writes, and real tenant authorization. Imported reply times must advance by a whole second,
-and at most 1,000 ids fit one channel-second, both because an id is a creation millisecond; an edit
-must not precede its message.
+own; here, userPrincipalName order), a directory filter over a property the default answer leaves
+out (`accountEnabled`, `createdDateTime`; here null, as a corpus states neither), owners (every
+member's `roles` is empty, and `summary.ownersCount` 0), deleted messages (live keeps them in the
+listing with `deletedDateTime` set), a system event's typed `eventDetail`, the `post` channel
+layout, the `19:<base64url>@thread.tacv2` id a private or General channel has live (every channel id
+here takes the 32-hex form), paging of a standard channel's members (live pages them in pages
+shorter than `$top`; here all of the directory is one page), which unknown message ids live answers
+`403`, `404` or `400` (it depends on the number's range; here every unknown id is a `403`), the beta
+version and the service document at `/v1.0`, the request URI length past which the front end answers
+`414`, chats, writes, and real tenant authorization. Imported reply times must advance by a whole
+second, and at most 1,000 ids fit one channel-second, both because an id is a creation millisecond;
+an edit must not precede its message.
 
 ### Notion — `/notion/v1`
 

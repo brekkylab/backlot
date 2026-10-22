@@ -27,8 +27,10 @@ vendor words it.
 
 from __future__ import annotations
 
+import decimal
 import math
 import re
+import struct
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping
@@ -58,9 +60,8 @@ def strip_blanks(text: str) -> str:
 
 class FilterError(ValueError):
     """``kind`` is ``syntax`` or ``type`` (``message`` is ODL's words for it), ``depth`` (the
-    recursion limit), ``property`` (``name`` is not a property of the type), ``enum`` (``name`` is
-    not a member of the property's enum, and ``message`` says so), or ``function``, ``operator``
-    or ``lambda`` (``name`` is one the caller refuses)."""
+    recursion limit), ``property`` (``name`` is not a property of the type) or ``enum`` (``name`` is
+    not a member of the property's enum, and ``message`` says so)."""
 
     def __init__(self, kind: str, message: str = "", *, name: str = ""):
         super().__init__(message or f"{kind} {name}")
@@ -80,8 +81,9 @@ def _mistyped(message: str) -> FilterError:
 # --- lexing ------------------------------------------------------------------
 
 STRING, BOOLEAN, DATETIME, DATE = "Edm.String", "Edm.Boolean", "Edm.DateTimeOffset", "Edm.Date"
-INT32, INT64, DECIMAL, SINGLE = "Edm.Int32", "Edm.Int64", "Edm.Decimal", "Edm.Single"
-_NUMERIC = frozenset({INT32, INT64, DECIMAL, SINGLE, "Edm.Double", "Edm.Int16", "Edm.Byte"})
+INT32, INT64, DECIMAL = "Edm.Int32", "Edm.Int64", "Edm.Decimal"
+SINGLE, DOUBLE = "Edm.Single", "Edm.Double"
+_NUMERIC = frozenset({INT32, INT64, DECIMAL, SINGLE, DOUBLE, "Edm.Int16", "Edm.Byte"})
 
 # What ODL reads as one date-time literal, well-formed or not, and what a well-formed one is; a
 # literal's digits are ASCII ones.
@@ -109,23 +111,74 @@ class _Token:
     type: str | None = None
 
 
+def _f32(x: float) -> float:
+    """``x`` as a .NET ``Single`` holds it."""
+    try:
+        return struct.unpack("f", struct.pack("f", x))[0]
+    except OverflowError:
+        return math.copysign(math.inf, x)
+
+
+def _shortest32(f: float) -> str:
+    """The shortest text that reads back as the ``Single`` ``f``, as .NET writes one."""
+    for digits in range(1, 10):
+        text = f"{f:.{digits}g}"
+        if _f32(float(text)) == f:
+            return text
+    return repr(f)
+
+
+def _as_decimal(text: str) -> decimal.Decimal | None:
+    """``text`` as a .NET ``decimal`` holds it exactly — at most 29 digits, 28 after the point,
+    within its range — or None."""
+    value = decimal.Decimal(text)
+    if value == 0:
+        return decimal.Decimal(0)
+    _, digits, exponent = value.as_tuple()
+    digits = list(digits)
+    while digits and digits[-1] == 0 and exponent < 0:
+        digits.pop()
+        exponent += 1
+    if exponent < -28 or len(digits) + max(exponent, 0) > 29 or abs(value) > _DECIMAL_MAX:
+        return None
+    return value
+
+
 def _number(text: str) -> tuple[Any, str]:
-    """A number literal's value and the type ODL infers for it: the narrowest integer type that
-    holds it, ``Edm.Decimal`` past Int64, and ``Edm.Single`` for a fraction, an exponent, or an
-    integer too long for a decimal."""
-    if "." in text or "e" in text or "E" in text:
-        return float(text), SINGLE
-    digits = text.lstrip("-").lstrip("0") or "0"
-    if len(digits) > 29:
-        return float(text), SINGLE
-    value = -int(digits) if text.startswith("-") else int(digits)
-    if -_INT32_MAX - 1 <= value <= _INT32_MAX:
-        return value, INT32
-    if -_INT64_MAX - 1 <= value <= _INT64_MAX:
-        return value, INT64
-    if abs(value) <= _DECIMAL_MAX:
-        return value, DECIMAL
-    return float(text), SINGLE
+    """A number literal's value and the type ODL infers for it. An integer is the narrowest integer
+    type that holds it, ``Edm.Decimal`` past Int64, and ``Edm.Single`` past that. A fraction or an
+    exponent is the first of ``Edm.Single``, ``Edm.Double`` and ``Edm.Decimal`` that holds it
+    exactly; one no decimal holds is the first floating type it does not overflow or underflow,
+    and ``Edm.Single`` when it fits neither."""
+    if "." not in text and "e" not in text and "E" not in text:
+        digits = text.lstrip("-").lstrip("0") or "0"
+        if len(digits) > 29:
+            return _f32(float(text)), SINGLE
+        value = -int(digits) if text.startswith("-") else int(digits)
+        if -_INT32_MAX - 1 <= value <= _INT32_MAX:
+            return value, INT32
+        if -_INT64_MAX - 1 <= value <= _INT64_MAX:
+            return value, INT64
+        if abs(value) <= _DECIMAL_MAX:
+            return decimal.Decimal(value), DECIMAL
+        return _f32(float(text)), SINGLE
+    zero = decimal.Decimal(text) == 0
+    double = float(text)
+    single = _f32(double)
+    fits32 = math.isfinite(single) and (single != 0 or zero)
+    fits64 = math.isfinite(double) and (double != 0 or zero)
+    exact = _as_decimal(text)
+    if exact is not None:
+        if fits32 and decimal.Decimal(_shortest32(single)) == exact:
+            return single, SINGLE
+        if fits64 and decimal.Decimal(repr(double)) == exact:
+            return double, DOUBLE
+        return exact, DECIMAL
+    if fits32:
+        return single, SINGLE
+    if fits64:
+        return double, DOUBLE
+    return single, SINGLE
 
 
 def _datetime(text: str) -> datetime:
@@ -178,6 +231,8 @@ def _tokens(expr: str) -> list[_Token]:
                 i = m.end()
                 continue
             m = _NUMBER.match(expr, i)
+            if m.end() < n and expr[m.end()] == ".":
+                raise _syntax(f"A digit was expected at position {m.end() + 1} in '{expr}'.")
             value, kind = _number(m.group())
             out.append(_Token("number", m.group(), i, m.end(), value, kind))
             i = m.end()
@@ -243,8 +298,13 @@ _UNREACHABLE = (
 
 
 @dataclass
-class _Node:
-    kind: str  # literal, name, path, lambda, call, not, binary, nary, in
+class Node:
+    """One node of a parsed filter, for a caller whose service reads more than ODL binds:
+    ``kind`` is ``literal``, ``name`` (a property or a lambda's variable), ``path``, ``lambda``
+    (``op`` is ``any`` or ``all``), ``call``, ``not``, ``binary`` (a comparison or an arithmetic
+    ``op``), ``nary`` (``and`` or ``or``) or ``in``; ``token`` is the text it was read from."""
+
+    kind: str
     token: _Token | None = None
     children: list = field(default_factory=list)
     op: str = ""
@@ -271,13 +331,13 @@ class _Parser:
         t = self._peek()
         return t.start if t is not None else len(self.expr)
 
-    def parse(self) -> _Node:
+    def parse(self) -> Node:
         node = self._expression(1)
         if (extra := self._peek()) is not None:
             raise _syntax(f"Syntax error at position {extra.end} in '{self.expr}'.")
         return node
 
-    def _expression(self, depth: int, floor: int = 1) -> _Node:
+    def _expression(self, depth: int, floor: int = 1) -> Node:
         """Precedence climbing over the binary levels; ``depth`` is ODL's at the expression."""
         left = self._unary(depth)
         while (t := self._peek()) is not None and t.kind == "name":
@@ -287,27 +347,27 @@ class _Parser:
                 break
             self.i += 1
             if op == "in":
-                left = _Node("in", t, [left], items=self._in_list(t))
+                left = Node("in", t, [left], items=self._in_list(t))
                 continue
             right = self._expression(depth, precedence + 1)
             if op in ("and", "or") and left.kind == "nary" and left.op == op:
                 left.children.append(right)
             elif op in ("and", "or"):
-                left = _Node("nary", t, [left, right], op=op)
+                left = Node("nary", t, [left, right], op=op)
             else:
-                left = _Node("binary", t, [left, right], op=op)
+                left = Node("binary", t, [left, right], op=op)
         return left
 
-    def _unary(self, depth: int) -> _Node:
+    def _unary(self, depth: int) -> Node:
         nots = 0
         first = self._peek()
         while (t := self._peek()) is not None and t.kind == "name" and ascii_lower(t.text) == "not":
             nots += 1
             self.i += 1
         operand = self._primary(depth + _EXPRESSION_LEVELS + nots)
-        return _Node("not", first, [operand], count=nots) if nots else operand
+        return Node("not", first, [operand], count=nots) if nots else operand
 
-    def _primary(self, depth: int) -> _Node:
+    def _primary(self, depth: int) -> Node:
         if depth > _DEPTH_LIMIT:
             raise FilterError("depth", "Recursion depth exceeded allowed limit.")
         t = self._peek()
@@ -323,15 +383,15 @@ class _Parser:
             self.i += 1
             return inner
         if t.kind != "name":
-            return _Node("literal", t)
+            return Node("literal", t)
         if t.text in ("true", "false", "null"):
-            return _Node("literal", t)
+            return Node("literal", t)
         if self._at("("):
             self.i += 1
-            args: list[_Node] = []
+            args: list[Node] = []
             if self._at(")"):
                 self.i += 1
-                return _Node("call", t, args)
+                return Node("call", t, args)
             while True:
                 args.append(self._expression(depth + 1))
                 if self._at(","):
@@ -339,7 +399,7 @@ class _Parser:
                     continue
                 if self._at(")"):
                     self.i += 1
-                    return _Node("call", t, args)
+                    return Node("call", t, args)
                 raise _syntax(
                     f"')' or ',' expected at position {self._position()} in '{self.expr}'."
                 )
@@ -353,13 +413,13 @@ class _Parser:
             self.i += 1
             if ascii_lower(segment.text) in ("any", "all") and self._at("("):
                 return self._lambda(t, segment, depth)
-            return _Node("path", segment, [_Node("name", t)])
-        return _Node("name", t)
+            return Node("path", segment, [Node("name", t)])
+        return Node("name", t)
 
-    def _lambda(self, collection: _Token, quantifier: _Token, depth: int) -> _Node:
+    def _lambda(self, collection: _Token, quantifier: _Token, depth: int) -> Node:
         self.i += 1  # the `(`
-        node = _Node(
-            "lambda", quantifier, [_Node("name", collection)], op=ascii_lower(quantifier.text)
+        node = Node(
+            "lambda", quantifier, [Node("name", collection)], op=ascii_lower(quantifier.text)
         )
         if self._at(")"):
             self.i += 1
@@ -462,18 +522,20 @@ class _Binder:
         enums: Mapping[str, Iterable[str]],
         *,
         fold_case: bool,
-        refuse: Iterable[str],
+        open_type: bool,
+        literal_first: bool,
     ):
         self.properties = {ascii_lower(p): (p, t) for p, t in properties.items()}
         self.enums = {name: list(members) for name, members in enums.items()}
         self.fold = fold_case
-        self.refuse = set(refuse)
+        self.open = open_type
+        self.literal_first = literal_first
         self.deferred: str | None = None
         self.lambda_depth = 0
 
     # Each bound node is a type and an evaluator over (entity, lambda variables).
 
-    def bind(self, node: _Node, scope: Mapping[str, str], lambdas: int = 0) -> _Bound:
+    def bind(self, node: Node, scope: Mapping[str, str], lambdas: int = 0) -> _Bound:
         return getattr(self, f"_{node.kind}")(node, scope, lambdas)
 
     def _literal(self, node, scope, lambdas) -> _Bound:
@@ -507,6 +569,8 @@ class _Binder:
         if name in scope:
             return _Bound(scope[name], lambda e, v: v.get(name))
         found = self.properties.get(ascii_lower(name))
+        if found is None and self.open:
+            return _Bound(None, lambda e, v: e.get(name))
         if found is None:
             raise FilterError("property", name=name)
         prop, type_name = found
@@ -521,10 +585,8 @@ class _Binder:
 
     def _lambda(self, node, scope, lambdas) -> _Bound:
         collection = self._name(node.children[0], scope, lambdas)
-        if "lambda" in self.refuse:
-            raise FilterError("lambda", name=node.children[0].token.text)
         element = _element(collection.type)
-        if element is None:
+        if element is None and not (self.open and collection.type is None):
             raise _mistyped("Any/All may only be used following a collection.")
         self.lambda_depth = max(self.lambda_depth, lambdas + 1)
         test = any if node.op == "any" else all
@@ -548,8 +610,6 @@ class _Binder:
                 f"An unknown function with name '{node.token.text}' was found. This may also be a "
                 "function import or a key lookup on a navigation property, which is not allowed."
             )
-        if name in self.refuse:
-            raise FilterError("function", name=name)
         args = [self.bind(a, scope, lambdas) for a in node.children]
         signatures, returns = _FUNCTIONS[name]
         if not any(
@@ -593,8 +653,6 @@ class _Binder:
         return _Bound(returns, evaluate)
 
     def _not(self, node, scope, lambdas) -> _Bound:
-        if "not" in self.refuse:
-            raise FilterError("operator", name="not")
         operand = self.bind(node.children[0], scope, lambdas)
         if operand.type not in (BOOLEAN, None):
             raise _mistyped(
@@ -624,9 +682,9 @@ class _Binder:
 
     def _binary(self, node, scope, lambdas) -> _Bound:
         op = node.op
-        if op in self.refuse:
-            raise FilterError("operator", name=op)
         left, right = (self.bind(c, scope, lambdas) for c in node.children)
+        if self.literal_first and op in _COMPARISONS and left.literal and not right.literal:
+            left, right = right, left
         if op == "has":
             if left.type not in self.enums:
                 raise _mistyped(_UNREACHABLE)
@@ -646,19 +704,23 @@ class _Binder:
         if op not in _COMPARISONS:
             if left.type not in _NUMERIC | {None} or right.type not in _NUMERIC | {None}:
                 raise self._incompatible(left.type, right.type, kind)
-            arithmetic = {
-                "add": lambda a, b: a + b,
-                "sub": lambda a, b: a - b,
-                "mul": lambda a, b: a * b,
-                "div": _divide,
-                "divby": _divide,
-                "mod": _remainder,
-            }[op]
-            result = SINGLE if SINGLE in (left.type, right.type) else (left.type or right.type)
+            types = {left.type, right.type}
+            if types & {SINGLE, DOUBLE}:
+                result = DOUBLE if DOUBLE in types else SINGLE
+                arithmetic, cast = _FLOAT_ARITHMETIC[op], float
+            elif DECIMAL in types:
+                result = DECIMAL
+                arithmetic, cast = _DECIMAL_ARITHMETIC[op], decimal.Decimal
+            else:
+                result = INT64 if INT64 in types else INT32
+                arithmetic, cast = _INTEGER_ARITHMETIC[op], int
+            rounded = _f32 if result == SINGLE else (lambda x: x)
 
             def compute(e, v):
                 a, b = left.evaluate(e, v), right.evaluate(e, v)
-                return None if a is None or b is None else arithmetic(a, b)
+                if a is None or b is None:
+                    return None
+                return rounded(arithmetic(cast(a), cast(b)))
 
             return _Bound(result, compute)
         if not self._comparable(left.type, right.type):
@@ -685,7 +747,7 @@ class _Binder:
                 return False
             try:
                 return {"gt": a > b, "ge": a >= b, "lt": a < b, "le": a <= b}[op]
-            except TypeError:
+            except (TypeError, ArithmeticError):  # a decimal ordered against NaN, or no order
                 return False
 
         return _Bound(BOOLEAN, compare)
@@ -714,7 +776,7 @@ class _Binder:
                 raise _mistyped(f"String item should be single/double quoted: '{item.text}'.")
             if item.kind == "punct":
                 raise _syntax("Invalid JSON. A token was not recognized in the JSON content.")
-            bound = self._literal(_Node("literal", item), scope, lambdas)
+            bound = self._literal(Node("literal", item), scope, lambdas)
             if left.type in self.enums:
                 bound = self._against_enum(left.type, bound)
             values.append(self._fold(bound.evaluate({}, {})))
@@ -759,21 +821,60 @@ class ExecutionError(Exception):
     """A filter that binds and fails as .NET runs it over an entity — a division by zero."""
 
 
-def _divide(a: Any, b: Any) -> Any:
-    """C#'s division: an integer one truncates toward zero, and zero is no divisor."""
+def _int_divide(a: int, b: int) -> int:
+    """C#'s integer division: it truncates toward zero, and zero is no divisor."""
     if b == 0:
         raise ExecutionError()
-    if isinstance(a, int) and isinstance(b, int):
-        q = abs(a) // abs(b)
-        return q if (a < 0) == (b < 0) else -q
+    q = abs(a) // abs(b)
+    return q if (a < 0) == (b < 0) else -q
+
+
+def _int_remainder(a: int, b: int) -> int:
+    """C#'s ``%``: the remainder takes the dividend's sign."""
+    return a - b * _int_divide(a, b)
+
+
+def _decimal_divide(a: decimal.Decimal, b: decimal.Decimal) -> decimal.Decimal:
+    if b == 0:
+        raise ExecutionError()
+    with decimal.localcontext(prec=28):
+        return a / b
+
+
+def _decimal_remainder(a: decimal.Decimal, b: decimal.Decimal) -> decimal.Decimal:
+    if b == 0:
+        raise ExecutionError()
+    return a % b
+
+
+def _float_divide(a: float, b: float) -> float:
+    """A floating division by zero is an infinity of the signs' product, or NaN for zero or NaN
+    over zero."""
+    if b == 0:
+        if a == 0 or math.isnan(a):
+            return math.nan
+        return math.copysign(math.inf, a) * math.copysign(1.0, b)
     return a / b
 
 
-def _remainder(a: Any, b: Any) -> Any:
-    """C#'s ``%``: the remainder takes the dividend's sign."""
-    if b == 0:
-        raise ExecutionError()
-    return a - b * _divide(a, b) if isinstance(a, int) and isinstance(b, int) else math.fmod(a, b)
+def _float_remainder(a: float, b: float) -> float:
+    return math.nan if b == 0 else math.fmod(a, b)
+
+
+_SUM = {"add": lambda a, b: a + b, "sub": lambda a, b: a - b, "mul": lambda a, b: a * b}
+_INTEGER_ARITHMETIC = {**_SUM, "div": _int_divide, "divby": _int_divide, "mod": _int_remainder}
+_DECIMAL_ARITHMETIC = {
+    **_SUM,
+    "div": _decimal_divide,
+    "divby": _decimal_divide,
+    "mod": _decimal_remainder,
+}
+_FLOAT_ARITHMETIC = {
+    **_SUM,
+    "div": _float_divide,
+    "divby": _float_divide,
+    "mod": _float_remainder,
+}
 
 
 def _substring(text: str, start: int, length: int | None = None) -> str:
@@ -791,7 +892,7 @@ def _as_datetime(value: Any) -> Any:
     return value
 
 
-def _count(node: _Node, weight: Callable[[str | None], int], binder: _Binder) -> int:
+def _count(node: Node, weight: Callable[[str | None], int], binder: _Binder) -> int:
     """ODL's validator node count: every node is one, under the property weights the caller
     measured, and an ``in`` with its list is one in all."""
     if node.kind == "name":
@@ -806,19 +907,19 @@ def _count(node: _Node, weight: Callable[[str | None], int], binder: _Binder) ->
     return 1 + sum(_count(c, weight, binder) for c in node.children)
 
 
-def _clauses(node: _Node, op: str) -> int:
+def _clauses(node: Node, op: str) -> int:
     """How many children ``op`` joins across the filter; an ``in`` list's values are ``or``'s."""
     here = len(node.children) if node.kind == "nary" and node.op == op else 0
     if node.kind == "in" and op == "or":
         here = len(node.items)
-    return here + sum(_clauses(c, op) for c in node.children if isinstance(c, _Node))
+    return here + sum(_clauses(c, op) for c in node.children if isinstance(c, Node))
 
 
 class Filter:
     """A bound ``$filter``: call it on an entity's served JSON to test it."""
 
-    def __init__(self, root: _Node, bound: _Bound, binder: _Binder):
-        self._root = root
+    def __init__(self, root: Node, bound: _Bound, binder: _Binder):
+        self.root = root
         self._bound = bound
         self._binder = binder
         self.lambda_depth = binder.lambda_depth
@@ -833,12 +934,12 @@ class Filter:
 
     def nodes(self, weight: Callable[[str | None], int]) -> int:
         try:
-            return _count(self._root, weight, self._binder)
+            return _count(self.root, weight, self._binder)
         except RecursionError:
             return _DEPTH_LIMIT
 
     def clauses(self, op: str) -> int:
-        return _clauses(self._root, op)
+        return _clauses(self.root, op)
 
 
 def compile_filter(
@@ -847,18 +948,27 @@ def compile_filter(
     *,
     enums: Mapping[str, Iterable[str]] | None = None,
     fold_case: bool = False,
-    refuse: Iterable[str] = (),
+    open_type: bool = False,
+    literal_first: bool = False,
 ) -> Filter:
     """A :class:`Filter`, or :class:`FilterError`.
 
     ``properties`` maps each name the type declares to its EDM type (``Edm.String``,
     ``Collection(Edm.String)``, an enum's qualified name…); one the response does not carry
     compares as null. ``enums`` lists each enum type's members, in declared order. ``fold_case``
-    compares strings without regard to case; ``refuse`` names functions (``contains``…),
-    operators (``ne``, ``not``) and ``lambda`` that this caller does not evaluate.
+    compares strings without regard to case; ``open_type`` binds a name the type does not declare as
+    an untyped property, for a caller that refuses it in words of its own; ``literal_first`` reads
+    a comparison with a literal before a property as the property before the literal, operator
+    unchanged, as a service that translates the filter rather than evaluating it may.
     """
     root = _Parser(expr).parse()
-    binder = _Binder(properties, enums or {}, fold_case=fold_case, refuse=refuse)
+    binder = _Binder(
+        properties,
+        enums or {},
+        fold_case=fold_case,
+        open_type=open_type,
+        literal_first=literal_first,
+    )
     try:
         bound = binder.bind(root, {})
     except RecursionError:

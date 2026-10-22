@@ -432,6 +432,7 @@ _ADVANCED = (
     "https://aka.ms/graph-docs/advanced-queries for more information"
 )
 _EVENTUAL = {"ConsistencyLevel": "eventual"}
+_DIRECTORY_EXPRESSION = "Invalid expression caused by operator '{}'."
 
 
 @pytest.mark.parametrize(
@@ -712,6 +713,123 @@ _EVENTUAL = {"ConsistencyLevel": "eventual"}
             "BadRequest",
             _INCOMPATIBLE.format("Edm.Boolean", "Edm.String", "Equal"),
         ),
+        # The shape of every comparison first, in the order written: a property or a constant
+        # against one, never two properties or two constants, and no bare property.
+        (
+            "$filter=length(displayName) div 0 eq 1",
+            {},
+            "Request_UnsupportedQuery",
+            _DIRECTORY_EXPRESSION.format("EqualsMatch"),
+        ),
+        (
+            "$filter=length(displayName) le 1",
+            {},
+            "Request_UnsupportedQuery",
+            _DIRECTORY_EXPRESSION.format("LessOrEqual"),
+        ),
+        ("$filter=1 eq 1", _EVENTUAL, "Request_UnsupportedQuery", "Unsupported Query."),
+        (
+            "$filter=displayName eq displayName",
+            {},
+            "Request_UnsupportedQuery",
+            "Unsupported Query.",
+        ),
+        ("$filter=accountEnabled", {}, "Request_UnsupportedQuery", "Unsupported Query."),
+        (
+            "$filter=length(displayName) in (1)",
+            {},
+            "Request_UnsupportedQuery",
+            "Unsupported Query.",
+        ),
+        (
+            "$filter=1 eq 1 and length(displayName) eq 1",
+            {},
+            "Request_UnsupportedQuery",
+            "Unsupported Query.",
+        ),
+        (
+            "$filter=length(displayName) eq 1 and 1 eq 1",
+            {},
+            "Request_UnsupportedQuery",
+            _DIRECTORY_EXPRESSION.format("EqualsMatch"),
+        ),
+        (
+            "$filter=foo eq 'x' and length(displayName) eq 1",
+            {},
+            "Request_UnsupportedQuery",
+            _DIRECTORY_EXPRESSION.format("EqualsMatch"),
+        ),
+        (
+            "$filter=businessPhones/any(p:p eq p)",
+            _EVENTUAL,
+            "Request_UnsupportedQuery",
+            "Unsupported Query.",
+        ),
+        # Then, again in that order, a property it does not have, an operator it does not run
+        # (worded per query), and a comparison with null outside an advanced query.
+        (
+            "$filter=displayName gt 'a'",
+            {},
+            "Request_UnsupportedQuery",
+            "Filter operator 'Greater' is not supported. Use 'GreaterOrEqual' instead.",
+        ),
+        (
+            "$filter=displayName lt 'z'",
+            _EVENTUAL,
+            "Request_UnsupportedQuery",
+            "Operator: 'Less' is not supported.",
+        ),
+        (
+            "$filter=contains(displayName,'a')",
+            _EVENTUAL,
+            "Request_UnsupportedQuery",
+            "Operator: 'Contains' is not supported.",
+        ),
+        (
+            "$filter=contains(displayName,'a') and foo eq 'x'",
+            {},
+            "Request_UnsupportedQuery",
+            "Filter operator 'Contains' is not supported.",
+        ),
+        (
+            "$filter=foo eq 'x' and contains(displayName,'a')",
+            {},
+            "Request_UnsupportedQuery",
+            "Property 'foo' does not exist as a declared property or extension property.",
+        ),
+        # Within one comparison, a plain query reads the property first, an advanced one the
+        # operator.
+        (
+            "$filter=foo gt 'a'",
+            {},
+            "Request_UnsupportedQuery",
+            "Property 'foo' does not exist as a declared property or extension property.",
+        ),
+        (
+            "$filter=foo gt 'a'",
+            _EVENTUAL,
+            "Request_UnsupportedQuery",
+            "Operator: 'Greater' is not supported.",
+        ),
+        (
+            "$filter=businessPhones/any(p:p gt '1')",
+            _EVENTUAL,
+            "Request_UnsupportedQuery",
+            "Operator: 'Greater' is not supported.",
+        ),
+        (
+            "$filter=displayName eq null",
+            {},
+            "Request_UnsupportedQuery",
+            "Unsupported or invalid query filter clause specified for property 'displayName' of "
+            "resource 'User'.",
+        ),
+        (
+            "$filter=length(displayName) eq 'x'",
+            {},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.Int32", "Edm.String", "Equal"),
+        ),
         (
             "$filter=businessPhones in ('1')",
             {},
@@ -809,6 +927,18 @@ def test_the_directory_answers_an_advanced_query(client, admin_h):
         "Request_BadRequest",
         "One or more headers are invalid.",
     )
+    # A constant before a property is read as the property before it, the operator unchanged,
+    # so `'a' le displayName` is `displayName le 'a'`; null is a value an advanced query compares.
+    for expr, matched in (
+        ("displayName ge 'a'", len(everyone)),
+        ("'a' le displayName", 0),
+        (f"'{ava['displayName']}' eq displayName", 1),
+        ("startswith('a',displayName)", 0),
+    ):
+        assert len(client.get(f"{V1}/users?$filter={expr}", headers=admin_h).json()["value"]) == (
+            matched
+        ), expr
+    assert client.get(f"{V1}/users?$filter=displayName eq null", headers=h).json()["value"] == []
     # An advanced query lifts the limits on `or` and on a lambda.
     many = " or ".join(["displayName eq 'x'"] * 16)
     assert client.get(f"{V1}/users?$filter={many}", headers=h).status_code == 200
@@ -1053,7 +1183,13 @@ _ALL_CHANNELS = ["Incidents", "People Confidential", "Platform"]
 
 
 @pytest.mark.parametrize(
-    "expr", ["length(displayName) div 0 eq 1", "length(displayName) mod 0 eq 1"]
+    "expr",
+    [
+        "length(displayName) div 0 eq 1",
+        "length(displayName) mod 0 eq 1",
+        # A decimal divides as an integer does.
+        "1.0000000000000000000000000001 div 0 eq 1",
+    ],
 )
 @pytest.mark.parametrize("suffix", ["/channels", "/channels/{channel}/members"])
 def test_a_filter_dotnet_fails_to_run_is_graphs_500(client, admin_h, team_id, expr, suffix):
@@ -1111,6 +1247,18 @@ def test_a_filter_dotnet_fails_to_run_is_graphs_500(client, admin_h, team_id, ex
         ("substring(displayName,-1) eq displayName", _ALL_CHANNELS),
         ("substring(displayName,1,-1) eq ''", _ALL_CHANNELS),
         ("indexof(displayName,'zz') eq -1", _ALL_CHANNELS),
+        ("-7 div 2 eq -3", _ALL_CHANNELS),
+        ("-7 mod 3 eq -1", _ALL_CHANNELS),
+        # A floating division by zero is an infinity or NaN, compared as a number; a `Single` is
+        # computed as one, so 0.1 and 0.2 make 0.3.
+        ("length(displayName) div 0.0 eq 1", []),
+        ("length(displayName) div 0.0 gt 1", _ALL_CHANNELS),
+        ("length(displayName) div -0.0 lt 0", _ALL_CHANNELS),
+        ("length(displayName) mod 0.0 ne 1", _ALL_CHANNELS),
+        ("1.5 div 0 eq 1", []),
+        ("1.23456789 div 0 gt 1", _ALL_CHANNELS),
+        ("0.0 div 0.0 ne 0.0 div 0.0", _ALL_CHANNELS),
+        ("0.1 add 0.2 eq 0.3", _ALL_CHANNELS),
         # The limits, at the edge: 99 parentheses, 16 terms and 98 `not`s fit.
         ("(" * 99 + "displayName eq 'Platform'" + ")" * 99, ["Platform"]),
         (" and ".join(["displayName ne 'x'"] * 16), _ALL_CHANNELS),
@@ -1265,6 +1413,33 @@ def test_a_channel_filter_selects_what_graph_selects(client, admin_h, team_id, e
             {"$filter": "displayName eq 1.5"},
             "BadRequest",
             _INCOMPATIBLE.format("Edm.String", "Edm.Single", "Equal"),
+        ),
+        # A fraction is the first floating or decimal type that holds it exactly; one no decimal
+        # holds is the first floating type that does not overflow or underflow.
+        *(
+            (
+                {"$filter": f"displayName eq {literal}"},
+                "BadRequest",
+                _INCOMPATIBLE.format("Edm.String", kind, "Equal"),
+            )
+            for literal, kind in (
+                ("1.2345678", "Edm.Single"),
+                ("1.23456789", "Edm.Double"),
+                ("16777217.0", "Edm.Double"),
+                ("0.30000000000000004", "Edm.Double"),
+                ("0.3000000000000000444", "Edm.Decimal"),
+                ("1.0000000000000000000000000001", "Edm.Decimal"),
+                ("1e29", "Edm.Single"),
+                ("1e39", "Edm.Double"),
+                ("1e309", "Edm.Single"),
+                ("1e-30", "Edm.Single"),
+                ("1e-50", "Edm.Double"),
+            )
+        ),
+        (
+            {"$filter": "displayName eq 1.e5"},
+            "BadRequest",
+            "Invalid filter clause: A digit was expected at position 17 in 'displayName eq 1.e5'.",
         ),
         (
             {"$filter": "isArchived eq 'x'"},

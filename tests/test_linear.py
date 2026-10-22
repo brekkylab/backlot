@@ -2300,6 +2300,7 @@ def test_number_comparators_are_pinned_at_their_boundary(fclient):
     assert ids(fclient, "{number: {gt: 1}}") == ["ENG-2"]
     assert ids(fclient, '{team: {key: {eq: "ENG"}}, number: {eq: 2}}') == ["ENG-2"]
     assert ids(fclient, "{number: {lt: 1}}") == []
+    assert ids(fclient, "{number: {eq: null}}") == []
     for spec in ("{eq: 0}", "{gt: 0}", "{lt: 1.5}", "{in: [1.5]}", "{nin: [0]}"):
         r = post(fclient, "{ issues(filter: {number: %s}) { nodes { identifier } } }" % spec)
         assert r.json()["errors"][0]["message"] == "Argument Validation Error", spec

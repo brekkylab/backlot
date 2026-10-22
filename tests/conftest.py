@@ -793,7 +793,7 @@ SAMPLE = [
         "created": "2026-01-16T10:00:00Z",
     },
     # A team no ACL-restricted caller can see into, so `teams` and `team(id:)` can be checked for
-    # agreement. Only hana is granted it.
+    # agreement, and the team's own state and cycle stay hidden with it. Only hana is granted it.
     {
         "source_type": "linear",
         "doc_id": "lin-blackops",
@@ -806,6 +806,7 @@ SAMPLE = [
         "readers": ["hana@acme.com"],
         "identifier": "BLA-1",
         "state": "Triage",
+        "cycle": "2026-W41-sealed",
         "created": "2026-02-25T09:00:00Z",
     },
     # --- fireflies: meeting transcripts -------------------------------------------------

@@ -182,12 +182,18 @@ def served_id(source_type: str, seed: str):
 
 
 def build_corpus(
-    data_dir: Path, records: list[dict], *, name: str = "_corpus.jsonl", raw: bool = False
+    data_dir: Path,
+    records: list[dict],
+    *,
+    name: str = "_corpus.jsonl",
+    raw: bool = False,
+    roster: dict | None = None,
 ) -> Settings:
     """Write ``records`` as a BYO-JSONL corpus under ``data_dir`` and load it into a fresh DB.
 
     Each record is completed against its schema first (see :func:`complete`), so a test states only
     the fields it is about. ``raw=True`` writes them as given, for the tests about refusal itself.
+    ``roster`` is written as the roster sidecar the corpus loads with.
     """
     from backlot.importer.byo import load
 
@@ -200,7 +206,11 @@ def build_corpus(
             complete(**r) if isinstance(r, dict) and "source_type" in r else r for r in records
         ]
     corpus.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
-    load(corpus, settings)
+    roster_path = None
+    if roster is not None:
+        roster_path = data_dir / "_roster.yaml"
+        roster_path.write_text(json.dumps(roster), encoding="utf-8")
+    load(corpus, settings, roster=roster_path)
     return settings
 
 
@@ -332,17 +342,17 @@ def tok(tokens_yaml, email: str) -> str:
     return next(u["token"] for u in tokens_yaml["users"] if u["email"] == email)
 
 
-def tiny_corpus(tmp_path, records):
+def tiny_corpus(tmp_path, records, *, roster: dict | None = None):
     """One small corpus in ``tmp_path``. Many shape tests call a router's response builder against
     the resulting rows rather than over HTTP, so they want the settings, not a client."""
-    return build_corpus(tmp_path, records, name="corpus.jsonl")
+    return build_corpus(tmp_path, records, name="corpus.jsonl", roster=roster)
 
 
 @contextlib.contextmanager
-def corpus_client(tmp_path, records):
+def corpus_client(tmp_path, records, *, roster: dict | None = None):
     """``records`` built and served, yielding ``(client, settings)`` — the GraphQL tests need the
     admin token off the settings alongside the client."""
-    settings = tiny_corpus(tmp_path, records)
+    settings = tiny_corpus(tmp_path, records, roster=roster)
     with client_for(settings) as client:
         yield client, settings
 

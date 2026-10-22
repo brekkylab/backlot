@@ -4742,17 +4742,58 @@ def test_drive_order_by_a_per_caller_time(tmp_path, order_by, listed):
     assert [f["name"] for f in r.json()["files"]] == listed.split()
 
 
+# Each set of `capabilities` true for a file or a folder, as its owner and as a reader read it
+# (`_drive_file_capabilities`); every other one is false.
+_CAPS_TRUE = {
+    ("file", True): {
+        "canDownload",
+        "canComment",
+        "canEdit",
+        "canCopy",
+        "canShare",
+        "canRename",
+        "canTrash",
+        "canDelete",
+        "canReadRevisions",
+        "canModifyContent",
+    },
+    ("file", False): {"canDownload", "canCopy"},
+    ("folder", True): {
+        "canDownload",
+        "canListChildren",
+        "canComment",
+        "canEdit",
+        "canShare",
+        "canRename",
+        "canTrash",
+        "canDelete",
+        "canAddChildren",
+        "canModifyContent",
+    },
+    ("folder", False): {"canDownload", "canListChildren"},
+}
+
+
 @pytest.mark.parametrize(
-    "name, owned",
-    [("Mine", True), ("Theirs", False), ("Plans", False), ("Figures", True), ("Drafts", False)],
+    "name, owned, kind",
+    [
+        ("Mine", True, "file"),
+        ("Theirs", False, "file"),
+        ("Plans", False, "folder"),
+        ("Figures", True, "folder"),
+        ("Drafts", False, "folder"),
+    ],
 )
-def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(tmp_path, name, owned):
+def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(
+    tmp_path, name, owned, kind
+):
     """`ownedByMe` is per caller, and `canShare` and `modifiedByMe` with it: what the caller owns it
     can share, and what it can only read it cannot; `_modified_by_me` says why the caller modified
     exactly what it owns. Real answered `canShare: true` on 117 of the 118 items a Google Workspace
     member's `files.list` named as its own on 2026-10-18 and on 2026-10-19, and `false` on each
     folder and each file shared with it to read. `Plans` is a folder a record's `folder` names, and
-    `Figures` and `Drafts` are `subtype: folder` records."""
+    `Figures` and `Drafts` are `subtype: folder` records. The rest of `capabilities` is
+    `_CAPS_TRUE`'s."""
     record = {
         "source_type": "google_drive",
         "folder": "Plans",
@@ -4792,9 +4833,10 @@ def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(tmp_pa
     for f in (listed, got):
         assert (f["ownedByMe"], f["capabilities"]["canShare"], f["modifiedByMe"]) == (owned,) * 3
         assert f.get("modifiedByMeTime") == (f["modifiedTime"] if owned else None)
+        assert {k for k, v in f["capabilities"].items() if v} == _CAPS_TRUE[kind, owned]
 
 
-_PER_CALLER = "ownedByMe,capabilities/canShare,modifiedByMe,modifiedByMeTime,modifiedTime"
+_PER_CALLER = "ownedByMe,capabilities,modifiedByMe,modifiedByMeTime,modifiedTime"
 
 
 def test_drive_order_by_sorts_the_result(client, admin_h):
@@ -9782,6 +9824,10 @@ def test_a_prose_export_round_trips_through_its_lines_not_through_a_csv_parser(g
         ("range,majorDimension", {"range": "Summary!A1:B2", "majorDimension": "ROWS"}),
         # a trailing comma is tolerated, measured
         ("range,", {"range": "Summary!A1:B2"}),
+        # a run of `*` under a field holding no message is all of it
+        ("range.*.*", {"range": "Summary!A1:B2"}),
+        # `*` beside a name is dropped
+        ("range,*", {"range": "Summary!A1:B2"}),
         ("*", None),
     ],
 )
@@ -9795,6 +9841,9 @@ def test_fields_narrows_a_value_range(gc, gh, book, mask, want):
     )
 
 
+_BOOK_KEYS = ["spreadsheetId", "properties", "sheets", "spreadsheetUrl"]
+
+
 @pytest.mark.parametrize(
     "mask, want",
     [
@@ -9804,12 +9853,105 @@ def test_fields_narrows_a_value_range(gc, gh, book, mask, want):
         ("properties/title", ["properties"]),
         ("properties(title)", ["properties"]),
         ("spreadsheetId,sheets.properties.index", ["spreadsheetId", "sheets"]),
+        # the response's order, not the mask's
+        ("sheets.properties.index,spreadsheetId", ["spreadsheetId", "sheets"]),
+        # declared, and held by no spreadsheet here
+        ("namedRanges", []),
+        ("developerMetadata,dataSources", []),
+        ("properties.iterativeCalculationSettings", ["properties"]),
+        ("commentsViewMode", ["commentsViewMode"]),
+        # `*` alone is no mask, and beside a name is dropped
+        ("*", _BOOK_KEYS),
+        ("(*)", _BOOK_KEYS),
+        (",", _BOOK_KEYS),
+        ("spreadsheetId,*", ["spreadsheetId"]),
+        ("*.*", [*_BOOK_KEYS, "commentsViewMode"]),
+        ("*.title", ["properties"]),
+        # a run of `*` under a field holding no message is all of it
+        ("*.*.*", [*_BOOK_KEYS, "commentsViewMode"]),
+        ("spreadsheetId.*.*", ["spreadsheetId"]),
+        # an empty group names nothing
+        ("a()", _BOOK_KEYS),
+        ("spreadsheetId,sheets()", ["spreadsheetId"]),
+        ("sheets(merges,conditionalFormats)", {"sheets": [{}]}),
+        ("sheets.properties.hidden", {"sheets": [{"properties": {}}]}),
+        ("sheets.*.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
+        # a narrower path wins over a wider one and over `*`
+        ("sheets,sheets.properties.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
+        ("sheets.*,sheets.properties.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
+        # a cell left empty by the mask is cut as an empty cell is
+        (
+            "sheets.data.rowData.values.userEnteredValue",
+            {
+                "sheets": [
+                    {
+                        "data": [
+                            {
+                                "rowData": [
+                                    {
+                                        "values": [
+                                            {"userEnteredValue": {"stringValue": "a"}},
+                                            {},
+                                            {"userEnteredValue": {"stringValue": "c"}},
+                                        ]
+                                    },
+                                    {},
+                                    {"values": [{"userEnteredValue": {"stringValue": "z"}}]},
+                                    {
+                                        "values": [
+                                            {},
+                                            {},
+                                            {"userEnteredValue": {"stringValue": "w"}},
+                                        ]
+                                    },
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+        ),
+        (
+            "sheets.data.rowData.values.effectiveValue.formulaValue",
+            {
+                "sheets": [
+                    {
+                        "data": [
+                            {
+                                "rowData": [
+                                    {
+                                        "values": [
+                                            {"effectiveValue": {}},
+                                            {},
+                                            {"effectiveValue": {}},
+                                        ]
+                                    },
+                                    {},
+                                    {"values": [{"effectiveValue": {}}]},
+                                    {"values": [{}, {}, {"effectiveValue": {}}]},
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+        ),
+        ("sheets.data.rowData.values.note", {"sheets": [{"data": [{}]}]}),
+        ("sheets.data.rowData.values.userEnteredFormat", {"sheets": [{"data": [{}]}]}),
+        (
+            "sheets.data.rowMetadata.hiddenByUser",
+            {"sheets": [{"data": [{"rowMetadata": [{}, {}, {}, {}]}]}]},
+        ),
     ],
 )
 def test_fields_narrows_a_spreadsheet(gc, gh, book, mask, want):
-    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"fields": mask})
-    assert r.status_code == 200
-    assert sorted(r.json()) == sorted(want)
+    """Each row as real answered it, as `_gmask_select` records: its keys, or for a row whose
+    `want` is a body, the whole answer over `Ragged`, whose rows hold a gap, nothing at all, one
+    cell and a cell after two gaps, as `_gmask_tree` and `_gmask_trim_rows` read it."""
+    params = {"fields": mask} | ({"ranges": "Ragged!A1:C4"} if isinstance(want, dict) else {})
+    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params=params)
+    assert r.status_code == 200, r.text
+    assert (r.json() if isinstance(want, dict) else list(r.json())) == want
 
 
 def test_fields_reaches_through_the_sheets_list(gc, gh, book):
@@ -9824,11 +9966,47 @@ def test_fields_reaches_through_the_sheets_list(gc, gh, book):
     assert all(set(s["properties"]) == {"title", "index"} for s in got)
 
 
-@pytest.mark.parametrize("mask", ["nope", "sheets.properties.nope", "SpreadsheetId"])
-def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, mask):
+@pytest.mark.parametrize(
+    "url, mask, field, path",
+    [
+        ("{book}", "nope", "nope", "nope"),
+        ("{book}", "sheets.properties.nope", "sheets.properties.nope", "sheets.properties.nope"),
+        ("{book}", "SpreadsheetId", "SpreadsheetId", "SpreadsheetId"),
+        ("{book}", "spreadsheetId,bogus", "spreadsheetId,bogus", "bogus"),
+        (
+            "{book}",
+            "sheets(properties/bogus)",
+            "sheets(properties.bogus)",
+            "sheets.properties.bogus",
+        ),
+        ("{book}", "sheets.properties.title,bogus2,sheets.bogus3", None, "bogus2"),
+        ("{book}", "bogus.x", "bogus.x", "bogus.x"),
+        ("{book}", "namedRanges.bogus", "namedRanges.bogus", "namedRanges.bogus"),
+        # a map's keys are not names
+        ("{book}", "sheets.filterViews.criteria.foo", None, "sheets.filterViews.criteria.foo"),
+        ("{book}", "sheets.*.bogus", "sheets.*.bogus", "sheets.*.bogus"),
+        ("{book}", "*.*.rowCount", "*.*.rowCount", "*.*.rowCount"),
+        ("{book}", "spreadsheetId.*.x", "spreadsheetId.*.x", "spreadsheetId.*.x"),
+        ("{book}/values/Summary!A1", "values.foo", "values.foo", "values.foo"),
+        ("{book}/values:batchGet?ranges=A1", "valueRanges.values.x", None, "valueRanges.values.x"),
+        # a path ahead of an unpaired bracket is read first
+        ("{book}", "a)", None, "a"),
+        ("{book}", "bogus)spreadsheetId", None, "bogus"),
+        (
+            "{book}",
+            "sheets(properties/title,bogus",
+            "sheets(properties.title,bogus",
+            "sheets.bogus",
+        ),
+    ],
+)
+def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, url, mask, field, path):
     """Measured: the top-level message is generic and the failing PATH is named only inside a
-    google.rpc.BadRequest detail. Matching is case-sensitive."""
-    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"fields": mask})
+    google.rpc.BadRequest detail, beside the whole mask (`gerr.bad_field_mask`). Matching is
+    case-sensitive, and the first path in the mask's order that names nothing is the one named."""
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{url.format(book=book)}", headers=gh, params={"fields": mask}
+    )
     assert r.status_code == 400
     err = r.json()["error"]
     assert err["message"] == "Request contains an invalid argument."
@@ -9838,13 +10016,44 @@ def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, mask):
             "@type": "type.googleapis.com/google.rpc.BadRequest",
             "fieldViolations": [
                 {
-                    "field": mask,
+                    "field": field or mask,
                     "description": (
                         "Error expanding 'fields' parameter. Cannot find matching fields for "
-                        f"path '{mask}'."
+                        f"path '{path}'."
                     ),
                 }
             ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "mask, unpaired",
+    [
+        ("(", "("),
+        ("sheets(", "("),
+        ("sheets(properties/title", "("),
+        ("sheets(properties(title)", "("),
+        ("spreadsheetId,(", "("),
+        ("sheets()(", "("),
+        (")", ")"),
+        ("spreadsheetId)", ")"),
+        ("spreadsheetId)bogus", ")"),
+        ("sheets(properties))", ")"),
+    ],
+)
+def test_a_fields_mask_with_an_unpaired_bracket_is_refused(gc, gh, book, mask, unpaired):
+    """`gerr.unbalanced_field_mask`, reached once the paths before the bracket name something."""
+    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"fields": mask})
+    assert r.status_code == 400
+    pair = ")" if unpaired == "(" else "("
+    dotted = mask.replace("/", ".")
+    assert r.json()["error"]["details"][0]["fieldViolations"] == [
+        {
+            "field": dotted,
+            "description": (
+                f"Invalid FieldMask '{dotted}'. Cannot find matching '{pair}' for all '{unpaired}'."
+            ),
         }
     ]
 
@@ -9894,11 +10103,13 @@ def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(
     ],
 )
 def test_alt_serves_json_and_refuses_anything_else(gc, gh, book, alt, message):
+    """`NOPE` is refused ahead of the credential and `media` behind it (`_sheets_alt`)."""
     url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
     assert gc.get(url, headers=gh, params={"alt": "json"}).status_code == 200
     r = gc.get(url, headers=gh, params={"alt": alt})
     assert r.status_code == 400
     assert r.json()["error"]["message"] == message
+    assert gc.get(url, params={"alt": alt}).status_code == (403 if alt == "media" else 400)
 
 
 def test_callback_wraps_the_body_as_jsonp(gc, gh, book):
@@ -10729,6 +10940,230 @@ def test_get_by_data_filter_takes_no_filters_to_mean_every_sheet(gc, gh, book):
     assert len(r.json()["sheets"]) == 7
 
 
+_NO_COMMENTS = "Field mask may not contain comment-specific fields if comments are not requested"
+_NO_PERMISSION = "You do not have permission to view comments on this spreadsheet."
+_INCLUDED, _OMITTED = "COMMENTS_VIEW_MODE_INCLUDED", "COMMENTS_VIEW_MODE_OMITTED"
+
+
+@pytest.fixture(scope="module")
+def dana(grid_settings):
+    """The owner of every gridded record, where the admin token owns nothing and so reads them."""
+    data = yaml.safe_load(grid_settings.tokens_path.read_text(encoding="utf-8"))
+    return {"Authorization": f"Bearer {tok(data, 'dana@acme.com')}"}
+
+
+@pytest.mark.parametrize(
+    "route, mode, fields, owner, status, want",
+    [
+        ("get", None, None, True, 200, None),
+        ("get", None, "commentsViewMode", False, 200, _OMITTED),
+        ("get", "COMMENTS_VIEW_MODE_UNSPECIFIED", "commentsViewMode", True, 200, _OMITTED),
+        ("get", "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS", None, True, 200, None),
+        (
+            "get",
+            "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+            "commentsViewMode",
+            True,
+            200,
+            _INCLUDED,
+        ),
+        (
+            "get",
+            "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+            "commentsViewMode",
+            False,
+            200,
+            _OMITTED,
+        ),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "commentsViewMode", False, 403, _NO_PERMISSION),
+        ("get", "+1", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "03", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "comments_view_mode_included", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "COMMENTS_VIEW_MODE_OMITTED", "comments", True, 400, _NO_COMMENTS),
+        ("get", None, "comments.headPost", True, 400, _NO_COMMENTS),
+        ("get", None, "*.commentId", True, 400, _NO_COMMENTS),
+        ("get", None, "*.*", True, 200, _OMITTED),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "comments", True, 200, None),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "comments", False, 403, _NO_PERMISSION),
+        (
+            "get",
+            "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+            "comments.commentId",
+            False,
+            200,
+            None,
+        ),
+        ("get", "4", None, True, 400, None),
+        ("get", "", None, True, 400, None),
+        ("getByDataFilter", None, "comments", True, 400, _NO_COMMENTS),
+        ("getByDataFilter", 3, "comments", True, 200, None),
+        ("getByDataFilter", 3, "comments", False, 403, _NO_PERMISSION),
+        ("getByDataFilter", "1", "commentsViewMode", True, 200, _INCLUDED),
+        ("getByDataFilter", "1", "commentsViewMode", False, 200, _OMITTED),
+        # a number the enum does not declare is taken, and answered as no comments
+        ("getByDataFilter", 4, "commentsViewMode", False, 200, _OMITTED),
+        ("getByDataFilter", 4, "commentsViewMode", True, 200, _OMITTED),
+        ("getByDataFilter", 4, "comments", False, 200, None),
+        ("getByDataFilter", -1, "comments", True, 200, None),
+    ],
+)
+def test_comments_view_mode_is_read_as_real_reads_it(
+    gc, gh, dana, book, route, mode, fields, owner, status, want
+):
+    """`commentsViewMode` (`_sheets_comments_view`) in `spreadsheets.get`'s query and in
+    `:getByDataFilter`'s body, each row as real answered it to the spreadsheet's owner or a reader.
+    With no mask it shows only beside the grid: a mode alone answers none."""
+    headers = dana if owner else gh
+    params = {} if fields is None else {"fields": fields}
+    if route == "get":
+        params |= {} if mode is None else {"commentsViewMode": mode}
+        r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=headers, params=params)
+    else:
+        body = {} if mode is None else {"commentsViewMode": mode}
+        r = gc.post(
+            f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+            headers=headers,
+            params=params,
+            json=body,
+        )
+    assert r.status_code == status, r.text
+    if status != 200:
+        message = want or (
+            "Invalid value at 'comments_view_mode' "
+            f'(type.googleapis.com/google.apps.sheets.v4.CommentsViewMode), "{mode}"'
+        )
+        assert r.json()["error"]["message"] == message
+    else:
+        assert r.json().get("commentsViewMode") == want
+        if fields is not None and "commentsViewMode" not in fields and "*" not in fields:
+            assert r.json() == {}
+
+
+_INCLUDE = {"commentsViewMode": "COMMENTS_VIEW_MODE_INCLUDED"}
+
+
+@pytest.mark.parametrize(
+    "method, url, params, body, status, message",
+    [
+        # a mask naming nothing: behind the typed values, ahead of the lookup, a range and `alt`
+        (
+            "GET",
+            "{book}",
+            {"fields": "bogus", "includeGridData": "x"},
+            None,
+            400,
+            "include_grid_data",
+        ),
+        ("GET", "{missing}", {"fields": "bogus"}, None, 400, "Request contains"),
+        ("GET", "{book}", {"fields": "bogus", "ranges": "Nope!A1"}, None, 400, "Request contains"),
+        ("GET", "{book}", {"fields": "bogus", "alt": "media"}, None, 400, "Request contains"),
+        ("GET", "{missing}/values/A1", {"fields": "bogus"}, None, 400, "Request contains"),
+        (
+            "POST",
+            "{book}/values:batchGetByDataFilter",
+            {"fields": "bogus"},
+            {},
+            400,
+            "Request contains",
+        ),
+        (
+            "POST",
+            "{book}:getByDataFilter",
+            {"fields": "bogus"},
+            {"includeGridData": "x"},
+            400,
+            "include_grid_data",
+        ),
+        # a comment field: behind the lookup, ahead of `ranges` and `alt=media`, and behind a
+        # filter on `:getByDataFilter`
+        ("GET", "{missing}", {"fields": "comments"}, None, 404, "Requested entity"),
+        ("GET", "{book}", {"fields": "comments", "ranges": "Nope!A1"}, None, 400, "Field mask"),
+        ("GET", "{book}", {"fields": "comments", "alt": "media"}, None, 400, "Field mask"),
+        (
+            "POST",
+            "{book}:getByDataFilter",
+            {"fields": "comments"},
+            {"dataFilters": [{"a1Range": "Nope!A1"}]},
+            400,
+            "Unable to parse range",
+        ),
+        # an `alt` naming no format: ahead of the typed values and the body
+        ("GET", "{book}", {"alt": "zzz", "includeGridData": "x"}, None, 400, 'Invalid value "zzz"'),
+        (
+            "POST",
+            "{book}:getByDataFilter",
+            {"alt": "zzz"},
+            {"includeGridData": "x"},
+            400,
+            'Invalid value "zzz"',
+        ),
+        ("GET", "{missing}", {"alt": "media"}, None, 404, "Requested entity"),
+        # a reader asking for comments: behind the mask, ahead of `ranges` and `alt=media`, and
+        # behind a filter
+        ("GET", "{book}", {**_INCLUDE, "fields": "bogus"}, None, 400, "Request contains"),
+        ("GET", "{book}", {**_INCLUDE, "ranges": "Nope!A1"}, None, 403, "You do not have"),
+        ("GET", "{book}", {**_INCLUDE, "alt": "media"}, None, 403, "You do not have"),
+        (
+            "POST",
+            "{book}:getByDataFilter",
+            {},
+            {**_INCLUDE, "dataFilters": [{"a1Range": "Nope!A1"}]},
+            400,
+            "Unable to parse range",
+        ),
+    ],
+)
+def test_a_sheets_read_answers_its_refusals_in_reals_order(
+    gc, gh, book, method, url, params, body, status, message
+):
+    """Each pair of refusals as real ordered them (`_sheets_alt`, `_sheets_mask`,
+    `_sheets_comments_view`), `message` the start of the one it gave, or the proto field a typed
+    refusal names."""
+    url = url.format(book=book, missing="1nonexistentAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    r = gc.request(method, f"/sheets/v4/spreadsheets/{url}", headers=gh, params=params, json=body)
+    assert r.status_code == status, r.text
+    err = r.json()["error"]
+    assert err["message"].startswith(message) or message in err["message"]
+
+
+@pytest.mark.parametrize(
+    "fields, want",
+    [
+        ("valueRanges.dataFilters.developerMetadataLookup", [{"dataFilters": [{}]}] * 2),
+        (
+            "valueRanges.dataFilters.gridRange.sheetId",
+            [{"dataFilters": [{"gridRange": {}}]}, {"dataFilters": [{}]}],
+        ),
+        (
+            "valueRanges.dataFilters.gridRange.endRowIndex",
+            [{"dataFilters": [{"gridRange": {"endRowIndex": 1}}]}, {"dataFilters": [{}]}],
+        ),
+        (
+            "valueRanges.dataFilters.developerMetadataLookup.metadataLocation.dimensionRange.sheetId",
+            [{"dataFilters": [{}]}] * 2,
+        ),
+    ],
+)
+def test_a_values_level_mask_may_name_what_a_filter_declares(gc, gh, book, fields, want):
+    """A `DataFilter`'s declared fields answer 200, the lookup no filter here holds absent, and
+    `gridRange.sheetId` absent at its default of 0, as real answered."""
+    body = {
+        "dataFilters": [
+            {"gridRange": {"sheetId": 0, "startRowIndex": 0, "endRowIndex": 1}},
+            {"a1Range": "Summary!B1:B2"},
+        ]
+    }
+    r = gc.post(
+        f"/sheets/v4/spreadsheets/{book}/values:batchGetByDataFilter",
+        headers=gh,
+        params={"fields": fields},
+        json=body,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"valueRanges": want}
+
+
 @pytest.mark.parametrize(
     "key, field, enum",
     [
@@ -10914,7 +11349,12 @@ def test_the_spreadsheet_carries_the_default_format_and_theme_a_fresh_one_has(gc
 
 
 def test_the_properties_are_emitted_in_the_order_real_sends_them(gc, gh, book):
-    props = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh).json()["properties"]
+    url = f"/sheets/v4/spreadsheets/{book}"
+    body = gc.get(url, headers=gh).json()
+    assert list(body) == _BOOK_KEYS
+    grid = gc.get(url, headers=gh, params={"includeGridData": "true", "ranges": "Summary!A1"})
+    assert list(grid.json()) == [*_BOOK_KEYS, "commentsViewMode"]
+    props = body["properties"]
     assert list(props) == [
         "title",
         "locale",
@@ -10973,25 +11413,29 @@ def test_a_mask_may_name_a_colour_component_wherever_a_colour_appears(gc, gh, bo
 
 
 @pytest.mark.parametrize(
-    "mask, wants_grid",
+    "mask, include, wants_grid",
     [
-        ("sheets.data.rowData.values.formattedValue", True),
-        ("sheets", True),
-        ("sheets.properties.title", False),
-        # measured: `*` selects everything and still does NOT build the grid
-        ("*", False),
-        ("spreadsheetId", False),
+        ("sheets.data.rowData.values.formattedValue", None, True),
+        ("sheets", "false", True),
+        ("sheets.*", "false", True),
+        ("*.data", None, True),
+        ("*.*", None, True),
+        ("sheets.properties.title", "true", False),
+        ("spreadsheetId", "true", False),
+        # no mask at all, so `includeGridData` decides
+        ("*", None, False),
+        ("*", "true", True),
+        ("a()", "true", True),
     ],
 )
-def test_a_field_mask_decides_the_grid_when_one_is_set(gc, gh, book, mask, wants_grid):
+def test_a_field_mask_decides_the_grid_when_one_is_set(gc, gh, book, mask, include, wants_grid):
     """The vendor's own wording for `includeGridData`: "This parameter is ignored if a field mask
     was set in the request." Measured, that is narrower than it reads — the mask has to reach
-    `sheets.data`, which `*` does not."""
-    r = gc.get(
-        f"/sheets/v4/spreadsheets/{book}",
-        headers=gh,
-        params={"fields": mask, "ranges": "Summary!A1:A1"},
-    )
+    `sheets.data` (`_gmask_wants_grid`)."""
+    params = {"fields": mask, "ranges": "Summary!A1:A1"}
+    if include is not None:
+        params["includeGridData"] = include
+    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params=params)
     assert r.status_code == 200, r.text
     sheets = r.json().get("sheets") or [{}]
     assert ("data" in sheets[0]) is wants_grid

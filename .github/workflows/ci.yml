@@ -36,13 +36,28 @@ jobs:
         # keeps the fetch off the clock the MCP client's `initialize` waits on, which a uv cache
         # that has not seen this version otherwise loses.
         run: uv tool install --with "mcp<2" "awslabs.aws-api-mcp-server@latest"
+      - name: Wait for the Docker daemon
+        # In this workflow's test-job logs from 2026-08-17 to 2026-10-22, `docker info` failed in 108
+        # of 8,366 jobs while pytest collected the suite, in 62 of the 94 whose logs time it within
+        # ten seconds, short of its timeout. So this step asks until the daemon answers, for two
+        # minutes at most, and fails with docker's own error after that.
+        run: |
+          start=$SECONDS
+          until timeout 10 docker info --format '{{.OSType}}' > /dev/null 2>&1; do
+            if (( SECONDS - start >= 120 )); then
+              timeout 10 docker info --format '{{.OSType}}' > /dev/null
+              exit
+            fi
+            sleep 2
+          done
+          echo "docker info answered $((SECONDS - start)) s into this step"
       - name: Unit tests
         env:
           # Makes a text file opened without encoding= an EncodingWarning, which pyproject.toml's
           # filterwarnings turns into a failure of the test that opened it.
           PYTHONWARNDEFAULTENCODING: "1"
-          # GitHub's ubuntu runner image installs Docker, so the Atlassian MCP test fails here,
-          # naming what `docker info` did, rather than skip inside a run that reads green.
+          # The ubuntu-24.04 runner image lists Docker Server among its tools, so a daemon that
+          # does not answer here is a fault to report in red (`_require_linux_docker`).
           BACKLOT_TEST_REQUIRE_DOCKER: "1"
         run: uv run --no-sync pytest -rs
 

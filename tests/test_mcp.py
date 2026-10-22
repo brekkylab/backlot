@@ -4,7 +4,8 @@ Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corp
 real MCP server against it: a document the admin can read is blocked for an ACL-restricted user —
 same tool, same object, different identity.
 
-- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless ``docker`` runs Linux containers here
+- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless ``docker`` runs Linux containers here,
+  and failed in its place where ``BACKLOT_TEST_REQUIRE_DOCKER`` is ``1``
   (``_require_linux_docker``).
 - **Notion** (`@notionhq/notion-mcp-server`, npx) — skipped unless ``npx`` (Node) is on PATH; the
   first run downloads the npm package.
@@ -32,6 +33,7 @@ import dataclasses
 import http.server
 import json
 import os
+import pathlib
 import re
 import shutil
 import signal
@@ -60,7 +62,8 @@ def _why_docker_runs_no_linux_containers() -> str | None:
     the pull there finds no image and the server never starts. Podman 6.1.4 called as ``docker``
     has no ``.OSType``, exits 125 on that template and names the OS at ``.Host.OS`` instead.
 
-    The reason names what ``docker info`` did, since a CI job keeps no other record of it.
+    The reason names what ``docker info`` did, or that there was no ``docker`` to ask, since a CI
+    job keeps no other record of it.
     """
     if not shutil.which("docker"):
         return "no `docker` on PATH"
@@ -87,13 +90,14 @@ def _why_docker_runs_no_linux_containers() -> str | None:
 
 def _require_linux_docker() -> None:
     """Skip the calling test where ``docker`` runs no Linux containers, naming why, or fail it with
-    that reason where ``BACKLOT_TEST_REQUIRE_DOCKER`` is set."""
+    that reason where ``BACKLOT_TEST_REQUIRE_DOCKER`` is ``1``; any other value, ``0`` among them,
+    leaves the skip."""
     why = _why_docker_runs_no_linux_containers()
     if why is None:
         return
     why = f"mcp-atlassian needs Docker's Linux containers: {why}"
-    if os.environ.get("BACKLOT_TEST_REQUIRE_DOCKER"):
-        pytest.fail(f"BACKLOT_TEST_REQUIRE_DOCKER is set, and {why}")
+    if os.environ.get("BACKLOT_TEST_REQUIRE_DOCKER") == "1":
+        pytest.fail(f"BACKLOT_TEST_REQUIRE_DOCKER is 1, and {why}")
     pytest.skip(why)
 
 
@@ -204,7 +208,7 @@ _NO_HOST_FIELD = (
 )
 
 
-@pytest.mark.parametrize("required", [None, "1"], ids=["skipped", "required"])
+@pytest.mark.parametrize("required", [None, "", "0", "1"], ids=["unset", "empty", "0", "1"])
 @pytest.mark.parametrize(
     ("docker", "answers", "why"),
     [
@@ -233,9 +237,16 @@ _NO_HOST_FIELD = (
         pytest.param("docker", [(125, "", ""), (0, "linux\n", "")], None, id="podman"),
         pytest.param(
             "docker",
-            [subprocess.TimeoutExpired("docker", 10)],
-            "`docker info` raised TimeoutExpired: Command 'docker' timed out after 10 seconds",
+            [subprocess.TimeoutExpired],
+            "`docker info` raised TimeoutExpired: Command '['docker', 'info', '--format',"
+            " '{{.OSType}}']' timed out after 10 seconds",
             id="timeout",
+        ),
+        pytest.param(
+            "docker",
+            [OSError(8, "Exec format error", "docker")],
+            "`docker info` raised OSError: [Errno 8] Exec format error: 'docker'",
+            id="not-executable",
         ),
     ],
 )
@@ -247,6 +258,8 @@ def test_the_atlassian_test_runs_only_where_docker_runs_linux_containers(
     def run(args, **kwargs):
         calls.append(args)
         answer = answers[len(calls) - 1]
+        if answer is subprocess.TimeoutExpired:
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
         if isinstance(answer, Exception):
             raise answer
         return subprocess.CompletedProcess(args, answer[0], stdout=answer[1], stderr=answer[2])
@@ -260,14 +273,29 @@ def test_the_atlassian_test_runs_only_where_docker_runs_linux_containers(
     if why is None:
         _require_linux_docker()
     else:
-        outcome = pytest.skip.Exception if required is None else pytest.fail.Exception
+        outcome = pytest.fail.Exception if required == "1" else pytest.skip.Exception
         with pytest.raises((pytest.skip.Exception, pytest.fail.Exception)) as raised:
             _require_linux_docker()
         assert type(raised.value) is outcome
-        prefix = "" if required is None else "BACKLOT_TEST_REQUIRE_DOCKER is set, and "
+        prefix = "BACKLOT_TEST_REQUIRE_DOCKER is 1, and " if required == "1" else ""
         assert raised.value.msg == f"{prefix}mcp-atlassian needs Docker's Linux containers: {why}"
     asked = [["docker", "info", "--format", t] for t in ("{{.OSType}}", "{{.Host.OS}}")]
     assert calls == asked[: len(answers)]
+
+
+def test_ci_requires_docker_for_the_atlassian_test_on_linux_alone():
+    """The wait step and the variable, for the reasons the comments in `ci.yml` give, and neither in
+    `windows.yml`, whose Docker runs Windows containers."""
+    workflows = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    ci = yaml.safe_load((workflows / "ci.yml").read_text(encoding="utf-8"))
+    test = ci["jobs"]["test"]
+    assert test["runs-on"].startswith("ubuntu-")
+    names = [s.get("name") for s in test["steps"]]
+    assert names.index("Wait for the Docker daemon") < names.index("Unit tests")
+    assert test["steps"][names.index("Unit tests")]["env"]["BACKLOT_TEST_REQUIRE_DOCKER"] == "1"
+    windows = (workflows / "windows.yml").read_text(encoding="utf-8")
+    assert "BACKLOT_TEST_REQUIRE_DOCKER" not in windows
+    assert "Wait for the Docker daemon" not in windows
 
 
 @pytest.mark.parametrize("name", ["DOCKER_HOST", "DOCKER_CONTEXT"])

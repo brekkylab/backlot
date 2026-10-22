@@ -3831,7 +3831,7 @@ def _gmask_paths(mask: str) -> tuple[list[tuple[str, ...]], str]:
     refusal for `a`, and `spreadsheetId,sheets()` the `spreadsheetId` alone.
 
     A bracket left unpaired is refused after the paths before it, a ``)`` where it stands and a
-    ``(`` at the end (`gerr.unbalanced_field_mask`): measured 2026-10-22 over 25 masks, `a)` and
+    ``(`` at the end (`gerr.unbalanced_field_mask`): measured 2026-10-22, `a)` and
     `bogus)spreadsheetId` named `a` and `bogus`, `spreadsheetId)bogus` was the `)` refusal, and
     `sheets(properties/title,bogus` named `sheets.bogus` where `sheets(properties/title` was the
     `(` one."""
@@ -3916,7 +3916,8 @@ def _gmask_select(mask: str | None, message: str) -> tuple[dict | None, bool]:
     holds no value for answers 200 without it rather than the 400 a field it does not declare gets.
     Checked against the whole schema, not against what this module builds: measured 2026-10-22,
     `namedRanges`, `sheets(merges,conditionalFormats)` and a cell's `userEnteredFormat` each
-    answered 200 on a spreadsheet holding none. A bracket left unpaired is refused after them.
+    answered 200 on a spreadsheet holding none. A bracket left unpaired is refused after the paths
+    before it (`_gmask_paths`).
 
     A comment field is one a path reaches by naming something: measured 2026-10-22, `comments`,
     `comments.*`, `*.commentId` and `*.headPost` were refused for asking after comments that

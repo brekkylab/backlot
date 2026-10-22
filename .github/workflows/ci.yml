@@ -38,9 +38,10 @@ jobs:
         run: uv tool install --with "mcp<2" "awslabs.aws-api-mcp-server@latest"
       - name: Wait for the Docker daemon
         # In this workflow's test-job logs from 2026-08-17 to 2026-10-22, `docker info` failed in 108
-        # of 8,366 jobs while pytest collected the suite, in 62 of the 94 whose logs time it within
-        # ten seconds, short of its timeout. So this step asks until the daemon answers, for two
-        # minutes at most, logging each attempt that fails, and fails with docker's error after that.
+        # of 8,366 jobs while pytest collected the suite. 94 of those logs time the check, and in 62
+        # it failed within ten seconds, before its timeout. So this step asks until the daemon
+        # answers, for two minutes at most, logging each attempt that fails. After that it warns and
+        # ends 0, so the suite still runs and the Atlassian MCP test fails with its own reason.
         run: |
           start=$SECONDS
           failed=0
@@ -49,7 +50,8 @@ jobs:
             failed=$((failed + 1))
             echo "attempt $failed exited $code at $((SECONDS - start)) s: ${out%%$'\n'*}"
             if (( SECONDS - start >= 120 )); then
-              exit 1
+              echo "::warning::docker info did not answer in $failed attempts over two minutes"
+              exit 0
             fi
             sleep 2
           done

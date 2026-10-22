@@ -30,8 +30,10 @@ from backlot.fidelity import (
     OperationEntry,
     baseline_path,
     comparisons,
+    csdl_diff,
     google_discovery_diff,
     hubspot_catalog,
+    msgraph,
     openapi_diff,
     operations,
     s3_probe,
@@ -39,6 +41,7 @@ from backlot.fidelity import (
 )
 from backlot.fidelity.comparisons import (
     COMPARISONS,
+    CSDL,
     GOOGLE_DISCOVERY,
     GRAPHQL,
     OPENAPI,
@@ -47,7 +50,7 @@ from backlot.fidelity.comparisons import (
     UNCOMPARED,
 )
 from backlot.fidelity.graphql_diff import backlot_schema, diff_schemas, schema_surface
-from backlot.fidelity.surface import OperationSurface, SchemaSurface
+from backlot.fidelity.surface import GraphSurface, OperationSurface, SchemaSurface
 
 VENDOR = """
 type Query { transcripts(limit: Int, keyword: String): [Transcript!], origin: Origin }
@@ -496,19 +499,40 @@ def test_jira_compares_both_rest_versions_against_their_own_documents():
     assert by_mount["/atlassian/rest/api/3"].endswith("/swagger-v3.v3.json")
 
 
-def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkeypatch):
-    """A discovery document describes operations under `resources` AND a batch endpoint in its
-    top-level `batchPath`, and a Google source reads it once for both."""
+def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatch):
+    """A discovery document describes operations under `resources`, a batch endpoint in its
+    top-level `batchPath` and, for a document a walk reads, the messages its methods answer with
+    under `schemas` (`google_discovery_diff.types_measure`), and a Google source reads it once for
+    all three."""
     URL = "https://gmail.invalid/rest"
     doc = {
         "id": "gmail:v1",
+        "name": "gmail",
         "batchPath": "batch",
         "resources": {
             "users": {
                 "methods": {
-                    "getProfile": {"path": "gmail/v1/users/{userId}/profile", "httpMethod": "GET"}
+                    "getProfile": {
+                        "id": "gmail.users.getProfile",
+                        "path": "gmail/v1/users/{userId}/profile",
+                        "httpMethod": "GET",
+                        "response": {"$ref": "Profile"},
+                    }
                 }
             }
+        },
+        "schemas": {
+            "Profile": {
+                "properties": {
+                    "emailAddress": {"type": "string"},
+                    "labels": {"type": "array", "items": {"$ref": "Label"}},
+                    "history": {"$ref": "History"},
+                    "byKey": {"type": "object", "additionalProperties": {"$ref": "Unreached"}},
+                }
+            },
+            "Label": {"properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
+            "History": {"properties": {"id": {"type": "string"}}},
+            "Unreached": {"properties": {"x": {"type": "string"}}},
         },
     }
     fetched = []
@@ -518,9 +542,14 @@ def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkey
         return doc
 
     monkeypatch.setattr(google_discovery_diff, "fetch_json", fake_fetch)
+
+    def walk(timeout):
+        profile = {"emailAddress": "a@b", "labels": [{"id": "1"}], "nickname": "a"}
+        return [("gmail.users.getProfile", profile)]
+
     c = comparisons.GoogleDiscoveryComparison(
         name="gmail",
-        specs=(comparisons.Spec(URL, ("/gmail",)),),
+        specs=(comparisons.Spec(URL, ("/gmail",), walk=walk),),
         # A route that cannot answer what this document declares, so the batch check has something
         # to say and reading it off the memoized document is what the assertion below proves.
         batch_mount=("/batch/{api}/{version}",),
@@ -532,8 +561,47 @@ def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkey
         ("extra_batch_route", "/batch/{}/{}"),
         ("missing_batch_path", "gmail:v1 batch"),
     ]
-    # The batch contract joins the operations' surface, so those two have elements to sit on.
-    _, back = OperationSurface.from_json(measured.surface.to_json(found))
+    assert [(f.kind, f.path) for f in found if "field" in f.kind] == [
+        ("extra_field", "gmail.Profile.nickname"),
+        ("missing_field", "gmail.Label.name"),
+        ("missing_field", "gmail.Profile.byKey"),
+        ("missing_field", "gmail.Profile.history"),
+    ]
+    written = measured.surface.to_json(found)
+    profile = next(e for e in written["operations"] if e.get("id") == "gmail.users.getProfile")
+    assert profile["response"] == "gmail.Profile"
+    assert "root" not in written
+    assert written["types"]["gmail.Profile"]["status"] == "implemented"
+    assert written["types"]["gmail.Profile"]["fields"] == {
+        "byKey": {
+            "status": "missing",
+            "type": "map<string, gmail.Unreached>",
+            "kind": "missing_field",
+            "severity": "gap",
+        },
+        "emailAddress": {"status": "implemented", "type": "string"},
+        "history": {
+            "status": "missing",
+            "type": "gmail.History",
+            "kind": "missing_field",
+            "severity": "gap",
+        },
+        "labels": {"status": "implemented", "type": "[gmail.Label]"},
+        "nickname": {
+            "status": "extra",
+            "kind": "extra_field",
+            "severity": "breaking",
+            "detail": "Backlot serves it, and the vendor's message declares no such field",
+        },
+    }
+    assert written["types"]["gmail.History"] == {
+        "type_kind": "object",
+        "status": "missing",
+        "fields": {"id": {"status": "missing", "type": "string"}},
+    }
+    assert "gmail.Unreached" not in written["types"]
+    # Each finding has an element to sit on, operations, batch and types alike.
+    _, back = GraphSurface.from_json(written)
     assert sorted(f.key for f in back) == sorted(f.key for f in found)
 
 
@@ -598,6 +666,7 @@ def test_every_comparison_is_registered_once_as_the_class_its_registry_implies()
         (OPENAPI, comparisons.OpenAPIComparison),
         (GOOGLE_DISCOVERY, comparisons.GoogleDiscoveryComparison),
         (GRAPHQL, comparisons.GraphQLComparison),
+        (CSDL, comparisons.CSDLComparison),
         (PROBE, comparisons.ProbeComparison),
         (SLACK, comparisons.SlackComparison),
     ]
@@ -629,13 +698,14 @@ def test_every_comparison_ships_a_baseline(tmp_path):
         names = [e.operation for e in entries]
         assert names == sorted(set(names)), f"{name}: one entry per operation, in order"
         surface = baseline.surface
-        if isinstance(surface, SchemaSurface):
-            statuses = set(surface.elements().values())
-        else:
-            statuses = {e.status for e in entries}
-            if surface.batch is not None:
-                statuses |= {d.status for d in surface.batch.documents}
-                statuses |= {r.status for r in surface.batch.routes}
+        statuses = {e.status for e in entries}
+        if isinstance(surface, GraphSurface):
+            statuses |= set(surface.schema.elements().values())
+        elif isinstance(surface, SchemaSurface):
+            statuses |= set(surface.elements().values())
+        elif surface.batch is not None:
+            statuses |= {d.status for d in surface.batch.documents}
+            statuses |= {r.status for r in surface.batch.routes}
         allowed = {IMPLEMENTED, MISSING, EXTRA}
         if isinstance(comparison, comparisons.ProbeComparison):
             allowed.add(REFUSED)
@@ -755,6 +825,15 @@ def test_every_served_element_is_one_its_baseline_records_served():
         baseline = Baseline.load(baseline_path(name))
         assert baseline.operations, f"{name}: the baseline names no operations"
         rerun = f"{name}: rerun `backlot diff -s {name} --update-baseline`"
+        recorded_ops = {
+            e.operation for e in baseline.operations if e.status in (IMPLEMENTED, EXTRA)
+        }
+        # A probe's and a CSDL walk's served surface is what a running Backlot answers; a CSDL
+        # source's operations are still the app's routes under its mount.
+        if isinstance(comparison, comparisons.CSDLComparison):
+            mine = operations.from_backlot(spec, comparison.mount, comparison.mount[0])
+            assert recorded_ops == {str(op) for op in mine.values()}, rerun
+            continue
         if isinstance(comparison, comparisons.ProbeComparison):
             continue
         if isinstance(comparison, comparisons.GraphQLComparison):
@@ -783,8 +862,7 @@ def test_every_served_element_is_one_its_baseline_records_served():
                 for s in comparison.specs
                 for op in operations.from_backlot(spec, s.mount, s.strip).values()
             }
-        recorded = {e.operation for e in baseline.operations if e.status in (IMPLEMENTED, EXTRA)}
-        assert recorded == set(served_ops), rerun
+        assert recorded_ops == set(served_ops), rerun
         served_params = {f"{o}?{p}" for o, params in served_ops.items() for p in params}
         missing = {f.path for f in baseline.acknowledged.values() if f.kind == "missing_param"}
         assert not served_params & missing, rerun
@@ -794,6 +872,20 @@ def test_every_served_element_is_one_its_baseline_records_served():
         batch = baseline.surface.batch
         routes = {r.route for r in (batch.routes if batch else ()) if r.status != MISSING}
         assert routes == {"/" + operations.canonical(r) for r in _batch_routes(comparison)}, rerun
+        # A walked document's types: what a running Backlot serves, read through the types and
+        # responses the file records, is exactly what it records served.
+        walks = [s.walk for s in getattr(comparison, "specs", ()) if getattr(s, "walk", None)]
+        assert isinstance(baseline.surface, GraphSurface) == bool(walks), rerun
+        if walks:
+            schema = baseline.surface.schema
+            types = {n: {f: m.type for f, m in t.fields.items()} for n, t in schema.types.items()}
+            answers = {e.id: e.response for e in baseline.operations if e.response}
+            served: dict[str, set[str]] = {}
+            for method, body in (read for walk in walks for read in walk(20.0)):
+                google_discovery_diff.served_fields(types, answers[method], body, served)
+            elements = set(served) | {f"{n}.{f}" for n, fs in served.items() for f in fs}
+            recorded = {p for p, st in schema.elements().items() if st in (IMPLEMENTED, EXTRA)}
+            assert recorded == elements, rerun
 
     pytest.importorskip("botocore")
     from botocore.loaders import Loader
@@ -861,6 +953,7 @@ def test_the_package_exports_exactly_what_the_command_needs():
 
 
 A_DISCOVERY_DOC = {
+    "name": "drive",
     "servicePath": "drive/v3/",
     "parameters": {"fields": {"location": "query"}, "alt": {"location": "query"}},
     "resources": {
@@ -871,6 +964,7 @@ A_DISCOVERY_DOC = {
                     "httpMethod": "GET",
                     "path": "files",
                     "parameters": {"q": {"location": "query"}},
+                    "response": {"$ref": "FileList"},
                 },
                 "get": {"httpMethod": "GET", "path": "files/{fileId}", "parameters": {}},
             },
@@ -911,6 +1005,9 @@ def test_a_discovery_document_joins_its_service_path_and_nests_its_resources():
     # The method's own `id` is the vendor's name for it; a method declaring none has no name.
     assert found[("get", "drive/v3/files")].id == "drive.files.list"
     assert found[("get", "drive/v3/files/{}")].id == ""
+    # And its `response` the message it answers with, keyed as the baseline's `types` are.
+    assert found[("get", "drive/v3/files")].response == "drive.FileList"
+    assert found[("get", "drive/v3/files/{}")].response == ""
 
 
 def test_an_openapi_document_follows_refs_and_keeps_path_level_parameters():
@@ -1429,6 +1526,182 @@ def test_a_probe_declares_its_prober_and_the_dispatcher_only_hands_over(monkeypa
     assert comparisons.measure(probe, timeout=5) == Measurement([], OperationSurface(()))
     assert seen["model"] == {"operations": {}} and seen["timeout"] == 5
     assert seen["base_url"].startswith("http")
+
+
+# --------------------------------------------------------------------------- CSDL
+
+
+# A CSDL small enough to read, carrying every feature the parser has to get right: an alias
+# (`g.`), inheritance through `BaseType`, an open type beside a closed one, an enum, a navigation
+# property, `Nullable="false"`, and a type name declared in TWO namespaces.
+CSDL_DOC = """<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx" Version="4.0">
+  <edmx:DataServices>
+    <Schema xmlns="http://docs.oasis-open.org/odata/ns/edm" Namespace="vendor.api" Alias="g">
+      <EnumType Name="importance">
+        <Member Name="normal" Value="0"/>
+        <Member Name="high" Value="1"/>
+      </EnumType>
+      <EntityType Name="entity" Abstract="true">
+        <Property Name="id" Type="Edm.String" Nullable="false"/>
+      </EntityType>
+      <EntityType Name="message" BaseType="g.entity">
+        <Property Name="body" Type="Edm.String" Nullable="false"/>
+        <Property Name="importance" Type="g.importance"/>
+        <NavigationProperty Name="replies" Type="Collection(g.message)"/>
+      </EntityType>
+      <EntityType Name="person" BaseType="g.entity" OpenType="true">
+        <Property Name="mail" Type="Edm.String"/>
+      </EntityType>
+    </Schema>
+    <Schema xmlns="http://docs.oasis-open.org/odata/ns/edm" Namespace="vendor.security">
+      <EntityType Name="person">
+        <Property Name="riskLevel" Type="Edm.String"/>
+      </EntityType>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>
+"""
+
+
+@pytest.fixture(scope="module")
+def csdl():
+    return csdl_diff.schema(CSDL_DOC)
+
+
+def test_a_csdl_type_carries_what_it_inherits_and_is_keyed_by_its_namespace(csdl):
+    """`id` is declared once, on an abstract base, so without the walk through `BaseType` every
+    entity in every response reports it as invented.
+
+    And the two `person` types are why the key is fully qualified: keyed by bare name, one
+    namespace silently answers for the other, and every property of the one that lost is reported
+    as undeclared.
+    """
+    message = csdl.declared("vendor.api.message")
+    assert set(message.properties) == {"id", "body", "importance"}
+    assert message.navigations == frozenset({"replies"})
+    assert message.required == frozenset({"id", "body"})
+    assert not message.open
+
+    assert csdl.declared("vendor.api.person").open  # OpenType is inherited-or-own, not overridden
+    assert set(csdl.declared("vendor.security.person").properties) == {"riskLevel"}
+    assert csdl.members("g.importance") == frozenset({"normal", "high"})
+    assert csdl.members("Edm.String") is None
+
+
+@pytest.mark.parametrize(
+    "type_name, obj, expected",
+    [
+        # A closed type has no field to bind an undeclared property to.
+        (
+            "vendor.api.message",
+            {"id": "1", "invented": 1},
+            ["undeclared_property:message.invented"],
+        ),
+        # An open one is declared to accept them, so reporting it would report what the vendor
+        # permits. Two of Graph's own Teams types are open.
+        ("vendor.api.person", {"id": "1", "invented": 1}, []),
+        # `$expand` serves a navigation property inline, which is a request the vendor documents.
+        ("vendor.api.message", {"id": "1", "replies": []}, []),
+        (
+            "vendor.api.message",
+            {"id": "1", "body": None},
+            ["null_where_declared_non_nullable:message.body"],
+        ),
+        # `Nullable="false"` means "not null WHEN RETURNED", never "always returned": these APIs
+        # project, so a declared property the response omits is the normal case.
+        ("vendor.api.message", {"id": "1"}, []),
+        (
+            "vendor.api.message",
+            {"id": "1", "importance": "URGENT"},
+            ["value_outside_enum:message.importance"],
+        ),
+        ("vendor.api.message", {"id": "1", "importance": "high"}, []),
+        # OData plumbing is not a property of the entity.
+        ("vendor.api.message", {"id": "1", "@odata.context": "x", "replies@odata.count": 2}, []),
+    ],
+)
+def test_what_a_served_object_is_and_is_not_held_to(csdl, type_name, obj, expected):
+    found = csdl_diff.check(csdl, type_name, obj, "GET /messages")
+    assert [f"{f.kind}:{f.path}" for f in found] == expected
+    assert all(f.severity == BREAKING for f in found)
+    assert all("GET /messages" in f.detail for f in found)
+
+
+def test_a_type_the_walk_names_and_the_vendor_does_not_is_not_a_divergence(csdl):
+    """A renamed vendor type has to stop the run. Reported as a finding it would read as Backlot
+    inventing a property, and the baseline would then acknowledge a name that no longer exists."""
+    with pytest.raises(FidelityError, match="not a type this vendor's document declares"):
+        csdl_diff.check(csdl, "vendor.api.chat", {"id": "1"}, "GET /chats")
+
+    with pytest.raises(FidelityError, match="not parseable XML"):
+        csdl_diff.schema("<Edmx")
+    with pytest.raises(FidelityError, match="declares no types"):
+        csdl_diff.schema('<?xml version="1.0"?><Edmx/>')
+
+
+def test_a_csdl_source_declares_its_walk_and_the_dispatcher_only_hands_over(monkeypatch):
+    """Same handover as a probe's, and for the same reason: which request answers with which
+    declared type is knowledge no document carries, so the source names it and a rename is
+    something a linter catches rather than a nightly ImportError."""
+    with pytest.raises(TypeError):
+        comparisons.CSDLComparison(name="x", spec_url="https://example.invalid")
+
+    seen = {}
+
+    measured = Measurement([], SchemaSurface("GraphService", {}))
+
+    def fake_walk(base_url, token, schema, timeout):
+        seen.update(base_url=base_url, token=token, timeout=timeout, types=len(schema.types))
+        return measured
+
+    monkeypatch.setattr(csdl_diff, "fetch_text", lambda url, timeout: CSDL_DOC)
+    source = comparisons.CSDLComparison("x", "https://e.invalid", fake_walk)
+    assert comparisons.measure(source, timeout=5) is measured
+    assert seen["timeout"] == 5 and seen["types"] == 4
+    assert seen["base_url"].startswith("http")
+    # The token is `serve()`'s MEASURED one, not a re-fetch of `/_meta/users`: a type nothing
+    # serves is a type nothing checks, and an ACL-filtered caller would leave whole channels
+    # unasked and report clean.
+    assert seen["token"]
+
+
+def test_the_teams_walk_asks_as_the_service_account_and_reaches_every_type_it_names():
+    """The walk is the only thing that decides what gets compared, so a request it stops making is
+    coverage that silently disappears. `backlot.serve()`'s own corpus is what it is asked against.
+    """
+    import backlot
+
+    with backlot.serve() as server:
+        with httpx.Client(
+            base_url=server.base_url,
+            timeout=30,
+            headers={"Authorization": f"Bearer {server.token}"},
+        ) as client:
+            reached = {t for t, _, _ in msgraph._objects(client)}
+        anonymous = httpx.get(f"{server.base_url}{msgraph.V1}/me")
+    assert anonymous.status_code == 401  # the walk's answers are the authenticated ones
+
+    named = {
+        f"microsoft.graph.{n}"
+        for n in (
+            "user",
+            "team",
+            "channel",
+            "aadUserConversationMember",
+            "chatMessage",
+            "itemBody",
+            "channelIdentity",
+            "chatMessageFromIdentitySet",
+            "teamworkUserIdentity",
+            "chatMessageReaction",
+            "chatMessageReactionIdentitySet",
+            "chatMessageAttachment",
+            "chatMessageMention",
+            "chatMessageMentionedIdentitySet",
+        )
+    }
+    assert named <= reached
 
 
 # --------------------------------------------------------------------------- the command

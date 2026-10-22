@@ -23,6 +23,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
+| `msteams` | Microsoft Teams | `/msgraph/v1.0` | 13 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
 | `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
 | `s3` | Amazon S3 | `/s3` | 5 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
 | `slack` | Slack | `/slack/api` | 12 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
@@ -255,11 +256,11 @@ One `source_type` (`google_drive`) across four prefixes.
 
 | Endpoint | Notes |
 |---|---|
-| `/drive/v3/files` | `q`, parsed as the reference's grammar (`and`, `or`, `not`, parentheses, `\'` inside a value): `name` and `mimeType` with `contains`/`=`/`!=`, `fullText contains`, `modifiedTime` and `createdTime` with `<`/`<=`/`=`/`!=`/`>`/`>=`, `trashed`, `sharedWithMe`, `… in parents` incl. `'root'`, `… in owners`. A term Backlot cannot evaluate is a 400 on `q`, never a silently unfiltered listing. `orderBy`: `name`/`name_natural`/`createdTime`/`modifiedTime`/`recency`/`folder`/`starred`/`quotaBytesUsed`/`sharedWithMeTime` (+` desc`). `fields` projection, validated |
+| `/drive/v3/files` | `q`, parsed as the reference's grammar (`and`, `or`, `not`, parentheses, `\'` inside a value): `name` and `mimeType` with `contains`/`=`/`!=`, `fullText contains`, `modifiedTime`, `createdTime` and `viewedByMeTime` with `<`/`<=`/`=`/`!=`/`>`/`>=`, `trashed` and `starred`, each alone meaning `= true`, `sharedWithMe` as `= true` alone and never under a `not`, `… in parents` incl. `'root'`, `… in owners`; nothing is viewed or starred. A term Backlot cannot evaluate is a 400 on `q`, never a silently unfiltered listing, and so are a `q` of white space alone and a `not` straight before another. `orderBy`: the eleven keys the reference lists, each with or without ` asc` or ` desc`; `name_natural` as an English-language account lists it, in ICU's root collation as Python's `unicodedata` and a few tables give it (`backlot.collation` says where they sort otherwise), `recency` newest first whichever way, and files a key ties newest modification first. `fields` projection, validated |
 | `/drive/v3/files/{id}` | `fields` |
 | `/drive/v3/files/{id}/export` | |
-| `/drive/v3/files/{id}/permissions` | |
-| `/drive/v3/drives` | |
+| `/drive/v3/files/{id}/permissions` | `fields`, validated and applied to the list and its entries |
+| `/drive/v3/drives` | `q`, as a member who is not the domain's administrator may send it: `name` with `contains`/`=`/`!=`/`<`/`<=`/`>`/`>=` and `hidden` with `=`/`!=` or alone; any other term is a 400. `fields`, validated and applied to the list and its entries |
 | `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
 | `/docs/v1/documents/{id}` | |
 | `/sheets/v4/spreadsheets/{id}` | One entry per sheet, with its own `sheetId`, `index`, `title` and `gridProperties`. Structure only — cells need `includeGridData=true`, as in real Sheets. `ranges` filters the `sheets` array itself, and gives a sheet one `data` block per range that touches it |
@@ -273,7 +274,8 @@ The three editor APIs serve native-doc content for editor-aware clients, read st
 of via Google Drive export.
 
 Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like
-stored rows. Trashed files are excluded unless `trashed = true` asks for them.
+stored rows. A trashed file is listed to its owner with the rest unless `q` leaves it out with
+`trashed = false`, and to no other user; the admin token lists them all.
 
 A spreadsheet has two shapes, and the corpus record picks which. A record that states `sheets` is a
 real workbook: named sheets over a 2D grid whose cells keep the type the corpus gave them, so
@@ -375,21 +377,23 @@ values carry the same `details`. A typed refusal comes after the credential chec
 file or spreadsheet is looked up. On Drive's `files.list`, one `pageSize` outside 1-1000 is refused
 with the range sentence (1-100 on `permissions.list` and `drives.list`), while a repeated one is
 read from the first and never range-checked; a `pageToken` it did not issue is 400 `Invalid Value`;
-and the refusals come in the order `pageSize`, `orderBy`, `q`, an `orderBy` beside a `fullText` term
-in `q` (403 `forbidden`), `pageToken`, `fields`, an `orderBy` naming `starred` after another key
-being real's 500 `Internal Error` between `pageToken` and `fields`. `drives.list` issues no
-`nextPageToken` and refuses every non-empty `pageToken` with that 400, after the typed and range
-refusals and ahead of the `useDomainAdminAccess=true` refusal. `permissions.list` pages in the order
-of its unpaged list and issues a `nextPageToken` that only the file it pages takes back. After its
-typed and range refusals, it refuses in the order an empty `pageToken` (403 `pageTokenExpired`) or
-one it did not issue (that 400), two or more `pageSize` values whose first is outside 1-100 (500
-`Unknown Error.`), `useDomainAdminAccess=true`, a file it cannot find, and a token issued for
-another file (403 `pageTokenExpired`). A blank `fields` on `files.list` or `files.get` answers `{}`.
-`files.export` refuses a format the file's type does not export to, the empty `mimeType=` among
-them, with `The requested conversion is not supported.`, matching the format without regard to case,
-refuses an absent `mimeType` ahead of looking the file up, and serves an export under the `mimeType`
-exactly as sent, with no `charset`. Measured against the live Drive and Sheets APIs on 2026-09-23,
-the `fullText` 403 on 2026-10-05 and 2026-10-07, the `starred` 500 on 2026-10-04 and 2026-10-07, the
+and the refusals come in the order `pageSize`, a `fields` ending in a comma, `orderBy`, `q`, an
+`orderBy` beside a `fullText` term in `q` (403 `forbidden`), `pageToken`, `fields`, an `orderBy`
+naming `starred` after another key being real's 500 `Internal Error` between `pageToken` and
+`fields`. `drives.list` issues no `nextPageToken` and refuses every non-empty `pageToken` with that
+400, after the typed and range refusals, a `fields` ending in a comma and a `q` it does not take,
+and ahead of the `useDomainAdminAccess=true` refusal. `permissions.list` pages in the order of its
+unpaged list and issues a `nextPageToken` that only the file it pages takes back. After its typed
+and range refusals and a `fields` ending in a comma, it refuses in the order an empty `pageToken`
+(403 `pageTokenExpired`) or one it did not issue (that 400), two or more `pageSize` values whose
+first is outside 1-100 (500 `Unknown Error.`), `useDomainAdminAccess=true`, a file it cannot find,
+and a token issued for another file (403 `pageTokenExpired`). A `fields` of spaces and tabs alone on
+`files.list`, `files.get`, `permissions.list` or `drives.list` answers `{}`. `files.export` refuses
+a format the file's type does not export to, the empty `mimeType=` among them, with
+`The requested conversion is not supported.`, matching the format without regard to case, refuses an
+absent `mimeType` ahead of looking the file up, and serves an export under the `mimeType` exactly as
+sent, with no `charset`. Measured against the live Drive and Sheets APIs on 2026-09-23, the
+`fullText` 403 on 2026-10-05 and 2026-10-07, the `starred` 500 on 2026-10-04 and 2026-10-07, the
 `pageToken` of `permissions.list` and `drives.list` on 2026-10-04, 2026-10-05 and 2026-10-07, the
 paging of `permissions.list` on 2026-10-05 and 2026-10-08, and the export's `Content-Type` on
 2026-09-30.
@@ -559,15 +563,145 @@ operation's 415 carry the account id alone.
 | `teams` | |
 | `comments` | |
 | `users` | |
+| `searchIssues(term:)` | identifier, a word of the title or description, or of a comment |
+| `documents` | always empty: a corpus carries no Linear documents |
+| `teamMemberships` | |
 | `viewer` | |
 
-Plus the `Team.issues` and `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}`
-connections, and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`,
+Plus the `Team.{issues,members,memberships,states,labels,projects,cycles}`,
+`User.{teamMemberships,teams}` and `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}`
+connections, `Team.membership(userId:)`, and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`,
 `release`, `attachment`, `issueRelation`, `teamMembership`) the official SDK's lazy relation accessors
 call.
 
 Relay pagination (`first`/`after`, `last`/`before` → `{nodes, pageInfo}`), server-side `filter`
 compiled into SQL, and full introspection.
+
+### Microsoft Teams — `/msgraph/v1.0`
+
+Microsoft Graph's own base path, so a Graph client changes its base URL and nothing else.
+Responses are OData: `@odata.context`, `value`, and an absolute `@odata.nextLink` carrying a
+`$skiptoken` (`$skipToken` on an expanded thread's continuation). Errors are real status codes with
+an `{"error": {"code", "message"}}` body.
+Shapes, status codes and query-option answers below were measured against graph.microsoft.com in
+October 2026, with app-only and delegated tokens, on a tenant with a private channel.
+
+| Endpoint | Notes |
+|---|---|
+| `me` | `$select` |
+| `me/joinedTeams` | The one team this corpus models. `$select`, keeping a name the type does not declare |
+| `users` | `$top` (1–999, default 100), `$skiptoken`, `$select`, `$filter`, `$search`, `$orderby`; `@odata.count` only with `$count=true` and `ConsistencyLevel: eventual` |
+| `users/{id}` | Object id *or* userPrincipalName |
+| `users/{id}/joinedTeams` | The same answer as `me/joinedTeams`: a scoped token's own, and another person's a `403`; the admin token, anyone's |
+| `teams/{team-id}` | The team, with the settings a new team has. `$select`, keeping a name the type does not declare |
+| `teams/{team-id}/channels` | Every visible channel in one response: no paging. `$select`, `$filter` |
+| `teams/{team-id}/channels/{channel-id}` | `$select`; the method that reports `layoutType` and `summary` |
+| `teams/{team-id}/channels/{channel-id}/messages` | Root messages, newest reply chain first. `$top` (1–50, default 20), `$skip`, `$select`, `$expand=replies` |
+| `.../messages/{message-id}` | A root; a reply's id is a `404` here, and an id that names nothing a `403` |
+| `.../messages/{message-id}/replies` | Newest first, paged as messages are; `$skip` drops that many from the `$top` page |
+| `.../messages/{message-id}/replies/{reply-id}` | One reply; one of another root is a `404`, and an id that names nothing a `403` |
+| `teams/{team-id}/channels/{channel-id}/members` | `aadUserConversationMember` objects, all of them: `$top` is ignored. `$select`, `$filter` |
+
+On the Teams collections `@odata.count` is the number of items on the page; on `/users` it is the
+total, sent only for an advanced query. A credential that does not resolve is the 401 before
+anything else, on any path and any method, as it is live. Every answer carries `request-id` and
+`client-request-id` headers — the ids its `innerError` names, the second echoing a GUID the caller
+sent — and a 200 is served as `application/json;odata.metadata=minimal;…` under `OData-Version:
+4.0`.
+
+Query option names match in any case; the Teams routes read them with or without the `$`, the
+directory's (`/me`, `/users`) refuse one without it, and every route refuses one given twice. A
+`$select` without the `$` projects the same but leaves the list out of `@odata.context`. Property
+names and enum members in `$select`, `$filter` and `$orderby` match in any ASCII case and are
+answered in the declared spelling, and an `$expand` must name a navigation property. `$top` and
+`$skip` are 64-bit integers: ASCII digits with an optional sign and .NET's blanks around them
+(U+001C–U+001F are not among them); past Int64 a value is refused as not one, echoed cut to 1,024
+characters, and past Int32 each option has the validator's limit. An empty `$skiptoken` is refused
+on the Teams routes before anything else, and a blank one is the first page.
+
+A Teams route reads its query in Graph's order: the values of `$top` and `$skip`, then the property
+names a `$filter`, `$orderby`, `$select` or `$expand` uses, then the options the method allows none
+of and the validator's limits, then its own checks, and only then the team, channel or message, so a
+refused query is a `400` whatever it names. The options each method refuses: every Teams method
+`$format`; the channel listing `$skip`, `$search`, `$orderby`, `$expand` and `$count`, and then
+`$top` and `$skiptoken` in words of its own; get-channel every option but `$select`; get-team every
+option but `$select` and `$expand`, and then every `$expand` that binds; the message listing
+`$orderby`, `$count` and `$search`, and a `$filter` that binds in words of its own; replies
+`$orderby`, `$filter`, `$count` and `$search`; a single message or reply `$top`, `$skip`,
+`$skiptoken`, `$orderby`, `$filter` and `$count`, and `expand=replies`; members `$skip`, `$orderby`,
+`$count` and `$search`, with a `$skiptoken` a `502`; `joinedTeams` every option but `$select` and
+`$filter`, which it ignores. On `/me` and `/users/{id}`, `$filter`, `$search` and `$skiptoken` are
+refused and `$top`, `$orderby` and `$count` ignored; `/users` refuses `$skip`. A `$skiptoken` that
+does not decode is a `400`, and a `502` on replies, as live.
+
+`$filter` is read as Microsoft's OData library reads it (`backlot/odata.py`): `eq`, `ne`,
+`gt`/`ge`/`lt`/`le`, `has`, `in`, `add`/`sub`/`mul`/`div`/`mod`, `and`, `or`, `not` and `any`/`all`
+over a collection (`roles/any(r:r eq 'owner')`), with operators in any case and `not` binding
+tighter than a comparison; string, number, date, date-time and enum literals, and `true`, `false`
+and `null` in lower case only; the string functions `startswith`, `endswith`, `contains`, `indexof`,
+`concat`, `tolower`, `toupper`, `trim`, `length` and `substring`; and a boolean property as a
+predicate on its own. A number is typed as the library types it — an integer the narrowest integer
+type that holds it, a fraction the first of `Edm.Single`, `Edm.Double` and `Edm.Decimal` that holds
+it exactly — and computed as .NET computes that type: an integer division truncates, a `Single` is
+rounded as one, and a floating division by zero is an infinity or NaN. Each property is typed as
+Graph's CSDL types it, so a comparison of mismatched types, a collection where one value belongs, a
+function given the wrong arguments and a filter that is not a boolean are each refused in the
+library's words, and an empty filter is none. Parsing gives up past 800 levels of the library's
+recursion (99 parentheses fit), and the validator refuses a lambda inside a lambda and, on the
+channel and member listings, a filter of more than 100 nodes. A boolean ordered against another, and
+an integer or decimal divided by zero, bind and are refused once the team or channel is found, as
+.NET cannot run them; the division is Graph's `500`. Channels and members compare strings with
+regard to case, and every route orders them as .NET's culture comparison does.
+
+The directory reads a filter in its own terms after the library binds it, without regard to case,
+and refuses in the order the filter is written: first a comparison that is not a property against a
+constant (a function or arithmetic on its left is `Invalid expression caused by operator '…'`, two
+properties, two constants or a bare property `Unsupported Query.`), then a property it does not
+have, `gt` and `lt`, `contains`, `ne` without `$count=true` beside it, and, outside an advanced
+query (`ConsistencyLevel: eventual`), a comparison with null, `endswith`, `not` and a lambda; within
+one comparison, a plain query reads the property before the operator and an advanced one after. A
+constant before a property is read as the property before it, the operator unchanged. `$search`
+takes `"property:term"` clauses, matching words that start with the term, joined by `AND`, `OR` or a
+blank, and needs the header too. Outside an advanced query a filter joins at most 15 children with
+`or`, an `in` list's values among them, and 25 with `and`. `$orderby` takes `displayName` and
+`userPrincipalName`, refuses a constant, and is refused beside a `$filter` outside an advanced
+query. The directory reads `$count` (`true` or `false`, exactly) first, then `$top`, then
+`ConsistencyLevel` — which it refuses twice or naming anything but `eventual` — then `$search` and
+`$orderby` as written, then the filter, and answers a `$format` other than JSON with a `415`.
+
+A path is read as Graph reads it: the version and resource names in any case, an id as an OData key
+segment (`teams('{id}')`), a GUID in either case, and trailing slashes. An id that is not one is a
+`400` (`teamId needs to be a valid GUID.`, `channelId is not valid.`, and a message or root id that
+is not an unsigned 64-bit number), another version a `404`, and `OPTIONS` or `HEAD` an empty `405`
+before the credential is read. A write is not served: one with no `Content-Type` is a `400`, and a
+`POST` to `/me` a `405`.
+
+A private channel the caller is not in is left out of the listing, and every method that names it
+by id answers `403 Forbidden` — the status Graph gives, which does tell the caller the id exists.
+A channel id the team does not have is a `404` from get-channel and members and a `410 Gone` from
+the message methods; another team's id is a `404` worded per method.
+
+A standard channel's members are the whole team — everyone in the directory — and a private
+channel's are the people granted it. One team, and channels only: a Backlot corpus has one org and
+no DMs, so `chatId` is null on every message. A message `id` is its creation time in epoch
+milliseconds and its `etag` the last-modified time in the same units, which an edit or a reaction
+moves; a reply does not move its root's, but it does move the root up the listing. A system event
+is served as `messageType: unknownFutureValue` unless the request sends
+`Prefer: include-unknown-enum-members`.
+
+**Not modelled:** the order of an advanced directory query's results (live, an index order of its
+own; here, userPrincipalName order), a directory filter over a property the default answer leaves
+out (`accountEnabled`, `createdDateTime`; here null, as a corpus states neither), owners (every
+member's `roles` is empty, and `summary.ownersCount` 0), deleted messages (live keeps them in the
+listing with `deletedDateTime` set), a system event's typed `eventDetail`, the `post` channel
+layout, the `19:<base64url>@thread.tacv2` id a private or General channel has live (every channel id
+here takes the 32-hex form), paging of a standard channel's members (live pages them in pages
+shorter than `$top`; here all of the directory is one page), which unknown message ids live answers
+`403`, `404` or `400` (it depends on the number's range; here every unknown id is a `403`), the beta
+version and the service document at `/v1.0`, the request URI length past which the front end answers
+`414`, chats, writes, and real tenant authorization. Imported reply times must advance by a whole
+second, and at most 1,000 ids fit one channel-second, both because an id is a creation millisecond;
+an edit must not precede its message.
 
 ### Notion — `/notion/v1`
 

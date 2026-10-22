@@ -1414,13 +1414,14 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     a POST to an unknown `/v1` path. A path that does exist answers the credential's 401 instead,
     so the URL is the first thing that API checks.
 
-    A published operation exists for that check whether or not Backlot serves it. On 2026-09-28
-    each of the 53 the baseline lists as ``missing_operation`` (see ``backlot.published``) answered
-    the format's 401 with no header and the token's 401 with `Bearer nope`, the two a served route
-    answers, apart from the three OAuth client endpoints and their own refusal (see
-    :func:`_invalid_client`). A request that clears the credential and the version on one of the
-    other fifty gets the URL's 400 here, as Backlot has no operation to run: that is the gap each of
-    those operations acknowledges.
+    A published operation exists for that check whether or not Backlot serves it. Of the
+    operations the baseline lists as ``missing_operation`` (see ``backlot.published``), the 53 it
+    listed on 2026-09-28 each answered the format's 401 with no header and the token's 401 with
+    `Bearer nope`, the two a served route answers, apart from the three OAuth client endpoints and
+    their own refusal (see :func:`_invalid_client`); `POST /v1/ai/skills/{id}/upload` answered the
+    same two on 2026-10-22, where `GET` on that path was the URL's 400. A request that clears the
+    credential and the version on one of them but those three gets the URL's 400 here, as Backlot
+    has no operation to run: that is the gap each of those operations acknowledges.
 
     The method is part of the URL that check reads: `GET /v1/search` and `GET /v1/pages`, both POST
     routes, `DELETE`, `PUT`, `PATCH` and `OPTIONS` on `/v1/users/me`, a GET route, and `PUT` on

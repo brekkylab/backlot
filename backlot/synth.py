@@ -242,6 +242,62 @@ def slack_fmt_ts(epoch_sec: int, key: str) -> str:
     return f"{int(epoch_sec)}.{micro:06d}"
 
 
+def msteams_channel_id(channel_name: str) -> str:
+    """A Graph channel id, ``19:<32 hex>@thread.tacv2``.
+
+    The shape is quoted from the vendor's own examples — ``channel-list`` returns
+    ``19:561fbdbbfca848a484f0a6f00ce9dbbd@thread.tacv2``. Nothing parses it (Microsoft says to
+    treat it as opaque), but a client percent-encodes it into a URL, so the two reserved
+    characters real ids carry have to be there.
+    """
+    return "19:" + _digest("msteams-chan:" + channel_name)[:32] + "@thread.tacv2"
+
+
+def msteams_team_id(org: str) -> str:
+    """The one team's id: a GUID, which is the Entra group id Graph addresses a team by."""
+    return _uuid_from("msteams-team:" + org)
+
+
+def msteams_tenant_id(org: str) -> str:
+    """The Entra tenant id a channel and a message webUrl both carry."""
+    return _uuid_from("msteams-tenant:" + org)
+
+
+def msteams_user_id(email: str) -> str:
+    """An Entra user object id — what ``from.user.id``, ``/users/{id}`` and a member's
+    ``userId`` all carry."""
+    return _uuid_from("msteams-user:" + email)
+
+
+def msteams_member_id(tenant_id: str, channel_id: str, user_id: str) -> str:
+    """A channel membership id: base64 of ``0##2##<tenantId>##<channelId>##<userId>``.
+
+    Every member id read off graph.microsoft.com on 2026-10-20, of a standard channel and a private
+    one alike, decoded to exactly that. Microsoft documents the value as opaque, so this is not a
+    contract a client may rely on — it is what makes Backlot's ids indistinguishable from real ones
+    for the clients that log or diff them.
+    """
+    return base64.b64encode(f"0##2##{tenant_id}##{channel_id}##{user_id}".encode()).decode()
+
+
+def msteams_attachment_id(message_id: str, position: int) -> str:
+    """A file attachment's id, a GUID as live ones are, for a corpus that states none."""
+    return _uuid_from(f"msteams-attachment:{message_id}:{position}")
+
+
+# Capacity of Backlot's synthetic channel-second id space, not a Microsoft throughput limit.
+# Millisecond-shaped ids resemble Graph examples, but Microsoft declares ids opaque strings.
+# The importer's collision probe walks exactly this many steps.
+MSTEAMS_ID_FRACTIONS = 1000
+
+
+def msteams_fmt_id(epoch_sec: int, key: str) -> str:
+    """A Graph channel-message id for a given second: epoch milliseconds as a decimal string, with
+    the millisecond keyed on ``key``."""
+    milli = hnum(key, 12, 6) % MSTEAMS_ID_FRACTIONS
+    return str(int(epoch_sec) * 1000 + milli)
+
+
 def gmail_id(seed: str, salt: str = "msg") -> str:
     """An opaque 16-hex token, used for attachment ids — the value is never parsed, so it
     deliberately spans the full 64-bit range. A *message* id is parsed by Gmail and must not; use
@@ -663,6 +719,11 @@ def linear_project_id(name: str) -> str:
     return _uuid_from("linear-project:" + (name or ""))
 
 
+def linear_project_status_id(status_type: str) -> str:
+    """Project statuses are workspace-wide in Linear, one per type, so the type is the whole seed."""
+    return _uuid_from("linear-project-status:" + status_type)
+
+
 def linear_cycle_id(name: str, team: str = "") -> str:
     """Cycles belong to a team, like workflow states."""
     return _uuid_from(f"linear-cycle:{team}:{name or ''}")
@@ -795,9 +856,26 @@ _LINEAR_STATE_TYPES = (
 )
 
 
+# The workflow states every new Linear team is created with, as (name, type, color, position):
+# api.linear.app answered these six for a workspace's first team and for a team created on
+# 2026-10-22, before either had an issue in most of them.
+LINEAR_DEFAULT_STATES = (
+    ("Backlog", "backlog", "#bec2c8", 0.0),
+    ("Todo", "unstarted", "#e2e2e2", 1.0),
+    ("In Progress", "started", "#f2c94c", 2.0),
+    ("Done", "completed", "#5e6ad2", 3.0),
+    ("Canceled", "canceled", "#95a2b3", 4.0),
+    ("Duplicate", "duplicate", "#95a2b3", 5.0),
+)
+_LINEAR_DEFAULT_STATE_TYPES = {name: t for name, t, _, _ in LINEAR_DEFAULT_STATES}
+
+
 def linear_state_type(name: str) -> str:
-    """Map a workflow-state name onto Linear's category. Unknown names fall to ``unstarted``,
-    which is Linear's own bucket for "created but not begun" (Todo / Planned)."""
+    """Map a workflow-state name onto Linear's category. A default state's name is its measured
+    type; any other name is read for a keyword, and unknown names fall to ``unstarted``, which is
+    Linear's own bucket for "created but not begun" (Todo / Planned)."""
+    if name in _LINEAR_DEFAULT_STATE_TYPES:
+        return _LINEAR_DEFAULT_STATE_TYPES[name]
     n = (name or "").strip().lower()
     for state_type, needles in _LINEAR_STATE_TYPES:
         if any(needle in n for needle in needles):
@@ -812,11 +890,29 @@ _LINEAR_STATE_COLORS = {
     "started": "#f2c94c",
     "completed": "#5e6ad2",
     "canceled": "#95a2b3",
+    "duplicate": "#95a2b3",
 }
 
 
 def linear_state_color(name: str) -> str:
     return _LINEAR_STATE_COLORS[linear_state_type(name)]
+
+
+def linear_state_positions(names) -> dict[str, float]:
+    """A team's state name -> ``position``, over the defaults and every other name given.
+
+    A default keeps its measured position. Any other name sits after the default of its type, the
+    names of one type spread evenly before the next whole position in name order; a triage state
+    has no default to follow, so it sits before ``Backlog``."""
+    out = {name: position for name, _, _, position in LINEAR_DEFAULT_STATES}
+    anchors = {t: position for _, t, _, position in LINEAR_DEFAULT_STATES} | {"triage": -1.0}
+    by_type: dict[str, list[str]] = {}
+    for name in sorted(set(names) - set(out)):
+        by_type.setdefault(linear_state_type(name), []).append(name)
+    for state_type, group in by_type.items():
+        for i, name in enumerate(group, start=1):
+            out[name] = anchors[state_type] + i / (len(group) + 1)
+    return out
 
 
 def linear_branch_name(identifier: str, title: str, user_email: str | None = None) -> str:

@@ -105,6 +105,15 @@ _CLIENTS = [
         "python-httpx2/{v}",
         {"user-agent": "python-httpx2/2.12.0"},
     ),
+    # examples/using-official-sdk/msteams.py (msgraph-sdk), which sends its own `SdkVersion` only to
+    # graph.microsoft.com: what names it to any other host is the Kiota runtime its requests run on.
+    # Measured 2026-10-21 (msgraph-sdk 1.64.0).
+    _Rule(
+        "user-agent",
+        r"\bkiota-python/(\d+)\.(\d+)",
+        "kiota-python/{v}",
+        {"user-agent": "python-httpx/0.28.1 kiota-python/1.14.2"},
+    ),
     # examples/using-official-sdk/fireflies.py and using-llamaindex-readers/github.py
     _Rule(
         "user-agent",

@@ -16,12 +16,15 @@ path diff has nothing to pair Backlot's batch routes with, and :func:`batch_meas
 compares the field instead. It reads per SOURCE rather than per document, because Backlot serves
 one batch route for several of them.
 
+A third, read where the source names a walk for the document: the messages its methods answer
+with, declared under ``schemas``, against what a running Backlot answers (:func:`types_measure`).
+
 Like OpenAPI, these documents are public: no credential, no quota, no account.
 """
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from backlot.fidelity.errors import FidelityError
 from backlot.fidelity.fetch import fetch_json
@@ -41,7 +44,10 @@ from backlot.fidelity.surface import (
     BatchRoute,
     BatchSurface,
     Measurement,
+    Member,
     OperationSurface,
+    SchemaSurface,
+    TypeNode,
 )
 
 
@@ -53,6 +59,7 @@ def from_google_discovery(doc: Mapping[str, Any]) -> dict[tuple[str, str], Opera
     be joined before anything lines up with what Backlot serves.
     """
     service_path = doc.get("servicePath") or ""
+    prefix = str(doc.get("name") or "")
     # Google declares `fields`, `alt`, `prettyPrint` and the rest ONCE at the top of the document,
     # not on each method. Reading only the per-method block reports every one of them as surface
     # Backlot invented, which is how this comparison first accused Drive's `fields` projection.
@@ -72,11 +79,13 @@ def from_google_discovery(doc: Mapping[str, Any]) -> dict[tuple[str, str], Opera
                 for name, p in (method.get("parameters") or {}).items()
                 if isinstance(p, dict) and p.get("location") == "query"
             }
+            ref = (method.get("response") or {}).get("$ref")
             o = Operation(
                 method.get("httpMethod", "GET").lower(),
                 canonical(service_path + method["path"]),
                 frozenset(params | common),
                 method.get("id") or "",
+                f"{prefix}.{ref}" if ref else "",
             )
             ops[o.key] = o
         for child in (node.get("resources") or {}).values():
@@ -232,3 +241,134 @@ def measure(
         )
     served = from_backlot(app.openapi(), spec.mount, spec.strip)
     return Measurement(diff_operations(served, vendor), inventory(served, vendor))
+
+
+# --------------------------------------------------------------------------- the response types
+#
+# A discovery document declares, beside its methods, the messages each one answers with: a method's
+# `response` names one of `schemas`, and a schema's `properties` name the messages they hold. Those
+# are the `types` of a Google baseline, each keyed by the document's `name` and its own
+# (`sheets.Spreadsheet`), since the editor APIs' documents reuse names (`Color`, `Link`).
+
+
+def _type(prop: Mapping[str, Any], prefix: str) -> str:
+    """What a property holds, spelled for a baseline: a message as its qualified name, a list as
+    the element in brackets, a map as ``map<string, …>``, and anything else as its JSON type."""
+    if "$ref" in prop:
+        return f"{prefix}.{prop['$ref']}"
+    if prop.get("type") == "array" and isinstance(prop.get("items"), Mapping):
+        return f"[{_type(prop['items'], prefix)}]"
+    if isinstance(prop.get("additionalProperties"), Mapping):
+        return f"map<string, {_type(prop['additionalProperties'], prefix)}>"
+    return str(prop.get("type", "any"))
+
+
+def held(type_: str, types: Mapping[str, Any]) -> str | None:
+    """The message a field holds, itself or as the element of a list, or None: a map is a leaf,
+    since real refuses a key under one as naming nothing (measured 2026-10-22,
+    `sheets.filterViews.criteria.foo`)."""
+    name = type_.strip("[]")
+    return name if name in types else None
+
+
+def declared_types(doc: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    """Every message the document declares, as its fields and what each holds."""
+    prefix = str(doc.get("name") or "")
+    return {
+        f"{prefix}.{name}": {
+            field: _type(prop, prefix)
+            for field, prop in (schema.get("properties") or {}).items()
+            if isinstance(prop, Mapping)
+        }
+        for name, schema in (doc.get("schemas") or {}).items()
+        if isinstance(schema, Mapping)
+    }
+
+
+def served_fields(
+    types: Mapping[str, Mapping[str, str]], type_name: str, value: Any, out: dict[str, set[str]]
+) -> None:
+    """Add to ``out`` each field ``value`` carries, under the message it is, through every message
+    it holds: what one answer of type ``type_name`` serves."""
+    if isinstance(value, list):
+        for item in value:
+            served_fields(types, type_name, item, out)
+        return
+    if not isinstance(value, Mapping):
+        return
+    fields = types.get(type_name, {})
+    seen = out.setdefault(type_name, set())
+    for name, item in value.items():
+        seen.add(name)
+        inner = held(fields[name], types) if name in fields else None
+        if inner is not None:
+            served_fields(types, inner, item, out)
+
+
+class TypesTarget(Protocol):
+    """What :func:`types_measure` needs of one document's comparison."""
+
+    spec_url: str
+    walk: Callable[[float], list[tuple[str, Any]]] | None
+
+
+def types_measure(spec: TypesTarget, doc: Mapping[str, Any], *, timeout: float) -> Measurement:
+    """The messages the methods a walk asked answer with, and every message they reach, measured
+    against what a running Backlot served, with the statuses ``docs/fidelity.md`` gives a Google
+    source's `types`.
+
+    Every one of them is listed whether or not Backlot serves it, where a GraphQL source lists none
+    of the vendor's types Backlot does not declare: a `fields` mask is read against the whole of
+    each (`backlot.routers.google._gmask_select`), so the baseline has to carry it offline. A field
+    the vendor does not declare is `extra`, and breaking."""
+    types = declared_types(doc)
+    answers = {o.id: o.response for o in from_google_discovery(doc).values() if o.response}
+    walked: list[tuple[str, Any]] = spec.walk(timeout) if spec.walk else []
+    served: dict[str, set[str]] = {}
+    for method, body in walked:
+        if method not in answers:
+            raise FidelityError(f"{spec.spec_url} declares no response for {method!r}")
+        served_fields(types, answers[method], body, served)
+    reached: set[str] = set()
+    todo = sorted({answers[m] for m, _ in walked})
+    while todo:
+        name = todo.pop()
+        if name in reached or name not in types:
+            continue
+        reached.add(name)
+        todo += [h for t in types[name].values() if (h := held(t, types))]
+    findings: list[Finding] = []
+    nodes: dict[str, TypeNode] = {}
+    for name in sorted(reached):
+        carried = served.get(name)
+        fields: dict[str, Member] = {}
+        for field, type_ in types[name].items():
+            if carried is None:
+                fields[field] = Member(MISSING, type_)
+            elif field in carried:
+                fields[field] = Member(IMPLEMENTED, type_)
+            else:
+                fields[field] = Member(MISSING, type_)
+                findings.append(
+                    Finding(
+                        "missing_field",
+                        GAP,
+                        f"{name}.{field}",
+                        f"the vendor declares it ({type_}); no answer the walk read carried it",
+                    )
+                )
+        for field in sorted((carried or set()) - set(types[name])):
+            fields[field] = Member(EXTRA)
+            findings.append(
+                Finding(
+                    "extra_field",
+                    BREAKING,
+                    f"{name}.{field}",
+                    "Backlot serves it, and the vendor's message declares no such field",
+                )
+            )
+        nodes[name] = TypeNode("object", IMPLEMENTED if carried is not None else MISSING, fields)
+    return Measurement(
+        sorted(findings, key=lambda f: (f.severity != BREAKING, f.path, f.kind)),
+        SchemaSurface("", nodes),
+    )

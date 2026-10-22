@@ -1,8 +1,8 @@
 """Auth helpers shared by the vendor routers.
 
 Each vendor carries credentials differently (Slack bearer/form token, Google/GitHub
-bearer, Atlassian Basic email:api_token, Linear a scheme-less API key). These helpers
-extract the raw token, resolve it to a :class:`~backlot.acl.Caller` via the app's ACL, and
+bearer, Atlassian Basic email:api_token, Linear a scheme-less API key, Microsoft Graph `Bearer`
+in any case or no scheme at all). These helpers extract the raw token, resolve it to a :class:`~backlot.acl.Caller` via the app's ACL, and
 compute the caller's visible principal set. Error *shaping* (Slack's ``ok:false`` vs a
 real 401) stays in the routers.
 """
@@ -311,6 +311,37 @@ def slack_bearer_token(request: Request) -> str | None:
     if not hdr.startswith("Bearer "):
         return None
     return hdr[len("Bearer ") :].strip() or None
+
+
+def msgraph_token(request: Request) -> tuple[str, str | None]:
+    """Parse the ``Authorization`` header the way Microsoft Graph does.
+
+    Graph reads the token after ``Bearer`` in any case, or with no scheme at all, with any run of
+    spaces or tabs between. Anything else — another scheme (``token``, ``Basic``), or a word after
+    the token — is a token it cannot read, however valid the token itself is (measured with a
+    delegated token on graph.microsoft.com, see :mod:`backlot.errors.msgraph`).
+
+    Returns ``(state, token)`` where state is one of:
+
+        "absent"     no Authorization header       -> "Access token is empty."
+        "empty"      `Bearer` with nothing after   -> "UnableToParseTokens"
+        "unreadable" a spelling Graph cannot read  -> the malformed-token message
+        "present"    a token to resolve            -> the malformed-token message if unknown
+
+    Deliberately NOT :func:`bearer_token`: that one returns None for a ``Basic`` header, which
+    would report a missing credential where Graph reports a malformed one.
+    """
+    hdr = _authorization(request)
+    if hdr is None:
+        return "absent", None
+    parts = hdr.split()
+    if not parts or (len(parts) == 1 and parts[0].lower() == "bearer"):
+        return "empty", None
+    if len(parts) == 1:
+        return "present", parts[0]
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return "present", parts[1]
+    return "unreadable", None
 
 
 def slack_token(request: Request) -> str | None:

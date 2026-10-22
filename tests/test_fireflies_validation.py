@@ -38,6 +38,8 @@ _SINGULAR_MESSAGE = (
     "Only one of the following fields can be provided: "
     "mine, userId, hostEmail, organizerEmail, participantEmail."
 )
+_SCOPE_ENUM = ("isEnum", "scope must be one of the following values: title, sentences, all")
+_SCOPE_KEYWORD = ("conditionalRequired", "keyword is required when scope is provided")
 
 
 def _field(name, *constraints):
@@ -196,6 +198,16 @@ _ALL_PERSON = (
                     "organizerEmail",
                     "participantEmail",
                 )
+            ],
+        ),
+        (
+            'scope: "bogus", fromDate: "x", limit: 0, mine: true, user_id: "x"',
+            [
+                _field("scope", _SCOPE_KEYWORD, _SCOPE_ENUM),
+                _field("fromDate", ("isDate", "fromDate must be a Date instance")),
+                _field("limit", ("isPositive", "limit must be a positive number")),
+                _exclusive("userId"),
+                _exclusive("mine"),
             ],
         ),
     ],
@@ -405,3 +417,37 @@ def test_fireflies_errors_in_one_response_share_one_correlation_id(fireflies_htt
     ).json()
     assert len(body["errors"]) == 2
     assert len({error["extensions"]["correlationId"] for error in body["errors"]}) == 1
+
+
+@pytest.mark.parametrize(
+    "arguments,constraints",
+    [
+        ('scope: "title"', [_SCOPE_KEYWORD]),
+        ('scope: "sentences"', [_SCOPE_KEYWORD]),
+        ('scope: "all"', [_SCOPE_KEYWORD]),
+        ('scope: "title", keyword: null', [_SCOPE_KEYWORD]),
+        ('scope: "title", keyword: ""', [_SCOPE_KEYWORD]),
+        ('scope: "title", keyword: " \\t\\n"', [_SCOPE_KEYWORD]),
+        ('scope: "title", keyword: "\\u00a0"', [_SCOPE_KEYWORD]),
+        ('scope: "title", keyword: "\\ufeff"', [_SCOPE_KEYWORD]),
+        ('scope: "title", keyword: "\\u001c"', []),
+        ('scope: "title", keyword: "\\u0085"', []),
+        ('scope: "all", keyword: "k"', []),
+        ('scope: "TITLE", keyword: "k"', [_SCOPE_ENUM]),
+        ('scope: "all ", keyword: "k"', [_SCOPE_ENUM]),
+        ('scope: "", keyword: "k"', [_SCOPE_ENUM]),
+        ('scope: ""', [_SCOPE_ENUM]),
+        ('scope: "bogus", keyword: "k"', [_SCOPE_ENUM]),
+        ('scope: "bogus"', [_SCOPE_KEYWORD, _SCOPE_ENUM]),
+        ('scope: " "', [_SCOPE_KEYWORD, _SCOPE_ENUM]),
+        ("scope: null", []),
+        ('keyword: ""', []),
+    ],
+)
+def test_fireflies_measured_scope_and_keyword(fireflies_http, arguments, constraints):
+    response = _query(fireflies_http, arguments)
+    if constraints:
+        _assert_invalid(response, [_field("scope", *constraints)])
+    else:
+        assert "errors" not in response.json()
+        assert isinstance(response.json()["data"]["transcripts"], list)

@@ -61,8 +61,9 @@ jobs:
           # Makes a text file opened without encoding= an EncodingWarning, which pyproject.toml's
           # filterwarnings turns into a failure of the test that opened it.
           PYTHONWARNDEFAULTENCODING: "1"
-          # The ubuntu-24.04 runner image lists Docker Server among its tools, so a daemon that
-          # does not answer here is a fault to report in red (`_require_linux_docker`).
+          # The `ubuntu-latest` runner image (ubuntu-24.04 on 2026-10-22) lists Docker Server among
+          # its tools, so a daemon that does not answer here is a fault to report in red
+          # (`_require_linux_docker`).
           BACKLOT_TEST_REQUIRE_DOCKER: "1"
         run: uv run --no-sync pytest -rs
 

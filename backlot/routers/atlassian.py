@@ -515,9 +515,51 @@ def _jira_project_order(raw: str) -> None:
     )
 
 
+# Every project served here. Real's `typeKey` is `software`, `business`, `service_desk` or
+# `customer_service`; this server has only the first.
+_JIRA_PROJECT_TYPE = "software"
+
+
+def _jira_project_kept(request: Request, name: str, key: str) -> bool:
+    """Whether ``project/search`` keeps this project under `query`, `keys`, `typeKey` and
+    `categoryId`.
+
+    Measured against Jira Cloud on 2026-10-09, one value at a time. `query` keeps a project whose
+    name holds the text in any case: the first three letters of the name kept that project, and
+    `zzqq` kept none. The key is compared the same way, so a fragment of it keeps the project too.
+    `keys` keeps a project whose key is one of the values as sent, so `keys=PA&keys=PB` keeps
+    either: the key kept the project, and the same key in lower case and `NOPE` kept none.
+    `typeKey=software` kept the project and `typeKey=bogus` kept none, both at 200. `categoryId=99`
+    kept none. A project here is software and carries no category, so any other `typeKey`, and any
+    `categoryId`, matches nothing.
+    """
+    query = request.query_params.get("query")
+    if query:
+        folded = query.casefold()
+        if folded not in name.casefold() and folded not in key.casefold():
+            return False
+    if "keys" in request.query_params and key not in request.query_params.getlist("keys"):
+        return False
+    type_key = request.query_params.get("typeKey")
+    if type_key and type_key != _JIRA_PROJECT_TYPE:
+        return False
+    if request.query_params.get("categoryId"):
+        return False
+    return True
+
+
 @router.get(
     "/rest/api/3/project/search",
-    openapi_extra={"parameters": [qp("startAt", "integer"), qp("maxResults", "integer")]},
+    openapi_extra={
+        "parameters": [
+            qp("startAt", "integer"),
+            qp("maxResults", "integer"),
+            qp("query"),
+            qp("keys"),
+            qp("typeKey"),
+            qp("categoryId", "integer"),
+        ]
+    },
 )
 async def jira_project_search(request: Request):
     # Jira Cloud, measured 2026-10-16: integer conversion precedes orderBy;
@@ -536,6 +578,8 @@ async def jira_project_search(request: Request):
     values = []
     for r in _reachable_projects(conn, ids):
         key = _project_key(conn, r["name"])
+        if not _jira_project_kept(request, r["name"], key):
+            continue
         values.append(
             {
                 "id": str(synth.github_user_id(r["name"])),

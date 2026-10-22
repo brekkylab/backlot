@@ -19,6 +19,7 @@ from tests._helpers import complete
 
 ALL_SOURCES = [
     "slack",
+    "msteams",
     "gmail",
     "google_drive",
     "github",
@@ -314,16 +315,17 @@ def test_acl_table_registry_covers_every_source(tmp_path):
 def test_id_seed_registry_covers_every_source_whose_id_is_a_1_arity_hash():
     """`ID_SEED` holds the sources whose served id is a pure function of ONE value — the incoming
     record's own dataset identifier — so a single assignment method can seed and probe all of them.
-    It is deliberately NOT total over `SOURCE_TABLE`; three sources cannot honour that contract and
+    It is deliberately NOT total over `SOURCE_TABLE`; four sources cannot honour that contract and
     get their own assignment pass instead:
 
     - `jira`'s key is COMPOSED from its project's prefix, so its seed is (project, dataset id).
-    - `slack`'s ts is a function of the row's `created_ts` and its thread root as well.
+    - `slack`'s ts and `msteams`' message id are functions of the row's `created_ts` and of what
+      the channel has already issued in that second, not of the dataset id alone.
     - `s3`'s (bucket, key) is stated outright by the corpus; nothing synthesizes it at all.
 
     Widening the tuple to fit those would make every other source pay for their shape — the same
     call `fireflies_users` and `linear_teams` made when they were converted."""
-    assert set(store.ID_SEED) == set(store.SOURCE_TABLE) - {"jira", "slack", "s3"}
+    assert set(store.ID_SEED) == set(store.SOURCE_TABLE) - {"jira", "slack", "msteams", "s3"}
     # Confluence's own entry -- seed function, then the columns its probe holds fixed (none:
     # confluence resolves an id corpus-wide). The column the seed FILLS is not in this registry:
     # it is the table's primary key, which `id_columns` already names.
@@ -2265,8 +2267,10 @@ def test_fireflies_scope_columns_are_the_api_vocabulary():
     assert store.fireflies_scope_columns("title") == ("title",)
     assert store.fireflies_scope_columns("sentences") == ("content",)
     assert store.fireflies_scope_columns("all") == ("title", "content")
-    assert store.fireflies_scope_columns(None) == ("title", "content")  # default
-    assert store.fireflies_scope_columns("ALL") == ("title", "content")  # case-insensitive
+    assert store.fireflies_scope_columns(None) == ("title", "content")  # default when absent
+    assert store.fireflies_scope_columns("ALL") is None
+    assert store.fireflies_scope_columns("TITLE") is None
+    assert store.fireflies_scope_columns("") is None
     assert store.fireflies_scope_columns("body") is None  # not an API value
 
 
@@ -2554,3 +2558,37 @@ def test_jira_numeric_ids_are_order_independent_and_preserved_across_append(tmp_
     with pytest.raises(SystemExit, match="already claimed"):
         byo.load_records(lambda: enumerate(records, 1), shard, reset=False)
     assert ids(shard) == after
+
+
+@pytest.mark.parametrize("visibility", ["public", "private"])
+def test_slacks_deactivated_roster_removes_no_teams_member(tmp_path, visibility):
+    """The channel-membership SQL is shared by both conversation sources, and Slack's deactivated
+    roster is Slack's: a person on it still speaks in, and belongs to, a Teams channel."""
+    from tests._helpers import build_corpus
+
+    email = "ava@acme.com"
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": source,
+                "channel": "shared-name",
+                "author_email": email,
+                "visibility": visibility,
+            }
+            for source in ("slack", "msteams")
+        ],
+    )
+    conn = store.connect_rw(settings.db_path)
+    try:
+        conn.execute("INSERT INTO slack_deactivated_users(email) VALUES (?)", (email,))
+        for source, expected in (("slack", []), ("msteams", [email])):
+            assert store.conversation_member_emails(conn, source, "shared-name") == expected
+            assert store.count_conversation_members(conn, source, "shared-name") == len(expected)
+            assert store.conversation_member_counts(conn, source)["shared-name"] == len(expected)
+            assert store.conversation_has_author(conn, source, "shared-name", email) == bool(
+                expected
+            )
+            assert store.conversation_membership_violations(conn, source) == []
+    finally:
+        conn.close()

@@ -119,7 +119,7 @@
     },
     "trashed": {
       "type": "boolean",
-      "description": "Whether the file is trashed (files.list excludes trashed by default)."
+      "description": "Whether the file is trashed."
     },
     "sheets": {
       "type": "array",

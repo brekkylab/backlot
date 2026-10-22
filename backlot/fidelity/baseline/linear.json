@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-21",
+  "measured": "2026-10-22",
   "root": {
     "query": "Query"
   },
@@ -6953,6 +6953,13 @@
         },
         "groupIssueHistory": {
           "status": "implemented"
+        },
+        "hierarchySettings": {
+          "status": "missing",
+          "type": "JSONObject!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description marks it internal: \"[Internal] Inheritance requirements that this team applies to its descendants.\" `@linear/sdk` 98.0.0, which the example's lockfile pins, and 99.0.0, npm's latest on 2026-10-22, neither declare nor select it. Measured against api.linear.app on 2026-10-22: the workspace's one team, which has no `parent`, `children` or `ancestors`, answers `{}`; what a team with descendants answers is not measured, since a second team is a write to the workspace. `Team.children` and `Team.ancestors` are recorded gaps too."
         },
         "icon": {
           "status": "implemented"

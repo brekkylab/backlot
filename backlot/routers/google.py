@@ -2011,9 +2011,8 @@ _DRIVE_Q_TRASHED_ORDERED = {
 # as a Google Workspace member of two shared drives: `name` with `<`, `<=`, `>` and `>=` too, which
 # the reference does not list for it. The reference's other four terms for it, `memberCount`,
 # `organizerCount`, `orgUnitId` and `createdTime`, were each the 400 at `q` with a value of their
-# own type. Its grammar is the one `files.list` reads: on 2026-10-22 it served `()`, `not ()`, a
-# trailing `or` and a value in double quotes, and refused `( )`, a trailing `and`, `not()` and
-# `()()` with the 400 at `q`.
+# own type. On 2026-10-22 `drives.list` served `()`, `not ()`, a trailing `or` and a value in double
+# quotes, and refused `( )`, a trailing `and`, `not()` and `()()` with the 400 at `q`.
 _DRIVES_Q = _DriveQTerms(
     operators={
         "name": frozenset({"contains", "=", "!=", "<", "<=", ">", ">="}),

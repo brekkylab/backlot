@@ -77,7 +77,7 @@ def _why_docker_runs_no_linux_containers() -> str | None:
                 timeout=10,
             )
         except Exception as exc:  # noqa: BLE001
-            return f"`docker info` raised {type(exc).__name__}: {exc}"
+            return "`docker info` " + "; ".join([*exits, f"raised {type(exc).__name__}: {exc}"])
         if info.returncode == 0:
             break
         first = next(iter(info.stderr.strip().splitlines()), "nothing on stderr")
@@ -208,50 +208,68 @@ _NO_HOST_FIELD = (
 )
 
 
-@pytest.mark.parametrize("required", [None, "", "0", "1"], ids=["unset", "empty", "0", "1"])
+_NO_DAEMON_ANSWERS = [(1, "\n", _NO_DAEMON + "\n"), (1, "\n", _NO_DAEMON + "\n" + _NO_HOST_FIELD)]
+_NO_DAEMON_WHY = (
+    f"`docker info` exited 1 on `{{{{.OSType}}}}`: {_NO_DAEMON}; exited 1 on"
+    f" `{{{{.Host.OS}}}}`: {_NO_DAEMON}"
+)
+
+
 @pytest.mark.parametrize(
-    ("docker", "answers", "why"),
+    ("docker", "answers", "required", "why"),
     [
-        pytest.param(None, [], "no `docker` on PATH", id="no-docker"),
-        pytest.param("docker", [(0, "linux\n", "")], None, id="linux-containers"),
+        pytest.param(None, [], None, "no `docker` on PATH", id="no-docker"),
+        pytest.param("docker", [(0, "linux\n", "")], None, None, id="linux-containers"),
+        pytest.param("docker", [(0, "linux\n", "")], "1", None, id="linux-containers-required-1"),
         pytest.param(
             "docker",
             [(0, "windows\n", "")],
+            None,
             "`docker info` names 'windows' as its OS",
             id="windows-containers",
         ),
+        pytest.param("docker", _NO_DAEMON_ANSWERS, None, _NO_DAEMON_WHY, id="no-daemon"),
         pytest.param(
-            "docker",
-            [(1, "\n", _NO_DAEMON + "\n"), (1, "\n", _NO_DAEMON + "\n" + _NO_HOST_FIELD)],
-            f"`docker info` exited 1 on `{{{{.OSType}}}}`: {_NO_DAEMON}; exited 1 on"
-            f" `{{{{.Host.OS}}}}`: {_NO_DAEMON}",
-            id="no-daemon",
+            "docker", _NO_DAEMON_ANSWERS, "", _NO_DAEMON_WHY, id="no-daemon-required-empty"
         ),
+        pytest.param("docker", _NO_DAEMON_ANSWERS, "0", _NO_DAEMON_WHY, id="no-daemon-required-0"),
+        pytest.param("docker", _NO_DAEMON_ANSWERS, "1", _NO_DAEMON_WHY, id="no-daemon-required-1"),
         pytest.param(
             "docker",
             [(1, "", "\n"), (2, "", "")],
+            None,
             "`docker info` exited 1 on `{{.OSType}}`: nothing on stderr; exited 2 on"
             " `{{.Host.OS}}`: nothing on stderr",
             id="no-daemon-silent",
         ),
-        pytest.param("docker", [(125, "", ""), (0, "linux\n", "")], None, id="podman"),
+        pytest.param("docker", [(125, "", ""), (0, "linux\n", "")], None, None, id="podman"),
         pytest.param(
             "docker",
             [subprocess.TimeoutExpired],
+            None,
             "`docker info` raised TimeoutExpired: Command '['docker', 'info', '--format',"
             " '{{.OSType}}']' timed out after 10 seconds",
             id="timeout",
         ),
         pytest.param(
             "docker",
+            [(125, "", ""), subprocess.TimeoutExpired],
+            None,
+            "`docker info` exited 125 on `{{.OSType}}`: nothing on stderr; raised TimeoutExpired:"
+            " Command '['docker', 'info', '--format', '{{.Host.OS}}']' timed out after 10 seconds",
+            id="exit-then-timeout",
+        ),
+        pytest.param(
+            "docker",
             [OSError(8, "Exec format error", "docker")],
+            None,
             "`docker info` raised OSError: [Errno 8] Exec format error: 'docker'",
             id="not-executable",
         ),
     ],
 )
 def test_the_atlassian_test_runs_only_where_docker_runs_linux_containers(
-    monkeypatch, docker, answers, why, required
+    monkeypatch, docker, answers, required, why
 ):
     calls = []
 
@@ -289,7 +307,9 @@ def test_ci_requires_docker_for_the_atlassian_test_on_linux_alone():
     workflows = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows"
     ci = yaml.safe_load((workflows / "ci.yml").read_text(encoding="utf-8"))
     test = ci["jobs"]["test"]
-    assert test["runs-on"].startswith("ubuntu-")
+    from_matrix = re.fullmatch(r"\$\{\{ *matrix\.([\w-]+) *\}\}", test["runs-on"])
+    images = test["strategy"]["matrix"][from_matrix[1]] if from_matrix else [test["runs-on"]]
+    assert all(image.startswith("ubuntu-") for image in images), images
     names = [s.get("name") for s in test["steps"]]
     assert names.index("Wait for the Docker daemon") < names.index("Unit tests")
     assert test["steps"][names.index("Unit tests")]["env"]["BACKLOT_TEST_REQUIRE_DOCKER"] == "1"

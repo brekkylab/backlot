@@ -3484,17 +3484,22 @@ def _jaxrs_media_refusal(request: Request, *, checks_type: bool) -> Response | N
     """What a Confluence JAX-RS service answers a `Content-Type` it will not read, or None:
     Tomcat's 400 page for one Jersey cannot read, or an empty 415 with no `content-type` where
     the service checks the type, as ``errors.atlassian.jaxrs_media_type_refusal`` decides, and the
-    400 page for the header sent more than once, whatever its values. Measured with no credential
-    on 2026-10-22: the header twice, as `application/json` twice, `text/plain` twice or the two
+    400 page for the header sent with more than one value that is not blank; blank ones are left
+    out, and the header sent blank alone reads as an empty value. Measured with no credential on
+    2026-10-22: the header twice, as `application/json` twice, `text/plain` twice or the two
     together, was the 400 page on `POST template`, on the `audit`, `settings/lookandfeel` and CQL
     search GETs and on `/wiki/rest/api/nosuch`, where the Spring `GET content/{id}` and
-    `POST content` gave the 403 they give to one."""
+    `POST content` gave the 403 they give to one. On `audit` an empty, space or tab value beside
+    `application/json` was its 403 and beside `text/plain` its 415, an empty one beside two
+    `application/json` the 400 page, and two empty ones beside one `application/json` the 403; two
+    empty ones alone were the 400 page there, on `POST template` and on `/wiki/rest/api/nosuch`."""
     values = request.headers.getlist("content-type")
-    if len(values) > 1:
+    read = [value for value in values if value.strip(" \t")] or values[:1]
+    if len(read) > 1:
         status = 400
     else:
         status = errors_atlassian.jaxrs_media_type_refusal(
-            values[0] if values else None, checks_type=checks_type
+            read[0] if read else None, checks_type=checks_type
         )
     if status == 400:
         return Response(

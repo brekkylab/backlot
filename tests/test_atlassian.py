@@ -6843,6 +6843,18 @@ _JSON_TYPE = "application/json"
         ),
         ("GET", "/wiki/rest/api/content/1", None, (_JSON_TYPE, "text/plain"), 403)
         + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+        # a blank value beside one is left out, and blank ones alone read as an empty value
+        ("GET", "/wiki/rest/api/audit", None, ("", _JSON_TYPE), 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("GET", "/wiki/rest/api/audit", None, (_JSON_TYPE, " "), 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("GET", "/wiki/rest/api/audit", None, ("\t", "text/plain"), 415, b""),
+        ("GET", "/wiki/rest/api/audit", None, ("", _JSON_TYPE, _JSON_TYPE), 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("GET", "/wiki/rest/api/audit", None, ("", "", _JSON_TYPE), 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("GET", "/wiki/rest/api/nosuch", None, ("", ""), 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
         ("POST", "/wiki/rest/api/content", None, (_JSON_TYPE, "text/plain"), 403)
         + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
         *(

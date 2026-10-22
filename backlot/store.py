@@ -1139,6 +1139,11 @@ def _scope(
     return sql
 
 
+#: A Drive file's last-modified second as ``backlot.routers.google._drive_modified`` reads it, for
+#: an ORDER BY: its own, else an hour after its creation.
+DRIVE_MODIFIED = "COALESCE(updated_ts, created_ts + 3600)"
+
+
 def list_documents(
     conn,
     source_type,
@@ -1152,12 +1157,13 @@ def list_documents(
     title=None,
     subtype=None,
     trash=True,
+    newest_first=False,
 ) -> list[sqlite3.Row]:
     # state: only valid for source_type="github" — it's the only items table with a `state`
     # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise trash
-    # other than True: `_drive_trash` reads a column only gdrive_files has. title matches the whole
-    # title, ignoring ASCII case. subtype is Confluence's content type, where a row with none is a
-    # page.
+    # other than True: `_drive_trash` reads a column only gdrive_files has. newest_first orders
+    # gdrive_files rows by DRIVE_MODIFIED, newest first, ties by id. title matches the whole title,
+    # ignoring ASCII case. subtype is Confluence's content type, where a row with none is a page.
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE 1=1"
     params: list = []
@@ -1173,7 +1179,8 @@ def list_documents(
         sql += " AND COALESCE(subtype, 'page') = ?"
         params.append(subtype)
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
-    sql += clause + f" ORDER BY {_order_by(source_type)} LIMIT ? OFFSET ?"
+    order = f"{DRIVE_MODIFIED} DESC, id" if newest_first else _order_by(source_type)
+    sql += clause + f" ORDER BY {order} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
@@ -1786,10 +1793,15 @@ def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
 
 def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:
     """team -> visible issue count, in one grouped scan — ``Team.issueCount`` for a whole page of
-    teams without a COUNT(*) per team."""
+    teams without a COUNT(*) per team. An archived issue is left out, as the default `issues`
+    listing leaves it out (:func:`_linear_archived`): on api.linear.app a team's `issueCount` was 8
+    beside 8 listed issues and 9 under `includeArchived: true` (2026-10-09), and went from 9 to 8
+    when one of its issues was archived (2026-10-21)."""
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
     rows = conn.execute(
-        f"SELECT team, COUNT(*) FROM linear_issues WHERE 1=1{clause} GROUP BY team", cparams
+        f"SELECT team, COUNT(*) FROM linear_issues WHERE 1=1{_linear_archived(False)}{clause} "
+        "GROUP BY team",
+        cparams,
     )
     return {r[0]: r[1] for r in rows}
 
@@ -1826,14 +1838,13 @@ def list_drive_folder(
     conn, folder, visible_ids=None, limit=100, offset=0, trash=False
 ) -> list[sqlite3.Row]:
     """The files directly in a Drive folder, with the trashed ones ``trash`` keeps (see
-    `_drive_trash`) — SQL-scoped + SQL-paginated, so listing a big folder costs one page of rows
-    per request, not a full-corpus scan on every page."""
+    `_drive_trash`), newest first by :data:`DRIVE_MODIFIED`, ties by id — SQL-scoped +
+    SQL-paginated, so listing a big folder costs one page of rows per request, not a full-corpus
+    scan on every page."""
     params: list = [folder]
     sql = _drive_trash("SELECT * FROM gdrive_files WHERE folder = ?", params, trash)
     clause, cparams = _acl_clause("google_drive", visible_ids=visible_ids)
-    # No ORDER BY: the folder index already yields a stable order for pagination, and adding
-    # ORDER BY id forces a per-page sort of the whole folder (≈30x slower on a big folder).
-    sql += clause + " LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {DRIVE_MODIFIED} DESC, id LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 

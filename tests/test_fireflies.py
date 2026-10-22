@@ -493,12 +493,10 @@ def test_fireflies_transcript_by_id_matches_the_listing(client, admin_h):
     assert absent["data"]["transcript"] is None
 
 
-def test_fireflies_limit_is_clamped_over_http(client, admin_h, ro_conn):
-    total = store.count_fireflies_transcripts(ro_conn)
-    got = ff_gql(client, "query($l:Int){ transcripts(limit:$l) { id } }", admin_h, l=10_000).json()[
-        "data"
-    ]["transcripts"]
-    assert len(got) == min(50, total)  # clamped to the documented max, not an error
+def test_fireflies_limit_outside_measured_bounds_is_refused_over_http(client, admin_h):
+    body = ff_gql(client, "query($l:Int){ transcripts(limit:$l) { id } }", admin_h, l=51).json()
+    assert body["data"]["transcripts"] is None
+    assert body["errors"][0]["extensions"]["metadata"]["fields"][0]["name"] == "limit"
 
 
 def test_fireflies_skip_pages_without_gaps_or_repeats(client, admin_h, ro_conn):
@@ -511,7 +509,7 @@ def test_fireflies_skip_pages_without_gaps_or_repeats(client, admin_h, ro_conn):
         walked += [t["id"] for t in page]
     assert len(walked) == total == len(set(walked))
     # past the end is an empty list, not an error
-    beyond = ff_gql(client, "{ transcripts(limit: 5, skip: 9999) { id } }", admin_h).json()
+    beyond = ff_gql(client, "{ transcripts(limit: 5, skip: 5000) { id } }", admin_h).json()
     assert beyond["data"]["transcripts"] == []
 
 

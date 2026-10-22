@@ -26,10 +26,10 @@ There are twelve, and this page is all of them.
 **A vendor's own numbers still win.** Where the real API documents or measures a page size, Backlot
 serves that one instead: GitHub pages at 30 when `per_page` is not sent and caps it at 100, on every
 listing and search (its OpenAPI declares `per-page` as "The number of results per page (max 100)."
-with default 30, and api.github.com answers exactly that); Fireflies clamps `limit` to 50 rather
-than erroring, and HubSpot to 100 — the value its official client pages at. Neither variable moves
-any of these, because a client that gets 1000 rows from a call the real API caps at 100 is a client
-that breaks in production.
+with default 30, and api.github.com answers exactly that); Fireflies refuses a `limit` above 50 with
+an `invalid_arguments` error, and HubSpot clamps one to 100 — the value its official client pages
+at. Neither variable moves any of these, because a client that gets 1000 rows from a call the real
+API caps at 100 is a client that breaks in production.
 
 ## GitHub
 

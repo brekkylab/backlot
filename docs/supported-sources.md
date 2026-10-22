@@ -95,9 +95,10 @@ what `search` answers a `GET` or `HEAD`, but for a 401 and a refusal of its `Acc
 | `user[(id:)]` | |
 | `users` | |
 
-Offset pagination — `limit` (**max 50**, clamped) / `skip` — returning a **bare list**, not a Relay
-connection. The documented filters are `keyword` × `scope` (`title`\|`sentences`\|`all`),
-`fromDate`/`toDate`, `host_email`, `organizers`, `participants`, `user_id`, `mine` and `channel_id`.
+Offset pagination — `limit` (**1–50**) / `skip` (0–5000), refused outside those — returning a **bare
+list**, not a Relay connection. The documented filters are `keyword` × `scope`
+(`title`\|`sentences`\|`all`), `fromDate`/`toDate`, `host_email`, `organizers`, `participants`,
+`user_id`, `mine` and `channel_id`.
 
 Field names are snake_case, as Fireflies' own schema has them. Full introspection.
 

@@ -2680,7 +2680,7 @@ def _drive_newest_first(objects, folders: list[dict], offset: int, limit: int) -
     ``offset - len(folders)``, and a folder ahead of every row from there sorts before the page."""
     start = max(0, offset - len(folders))
     window = objects(start, offset + limit - start, with_shared=False)
-    newest = [(_DRIVE_ORDER_KEYS["modifiedTime"], True)]
+    newest = [("modifiedTime", True)]
     return _drive_sort(window + folders, newest)[offset - start : offset - start + limit]
 
 

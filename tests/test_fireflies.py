@@ -584,7 +584,7 @@ def test_fireflies_unknown_scope_is_a_field_error_not_a_silent_widening(client, 
     body = r.json()
     assert "data" in body  # field error -> data key present
     assert body["data"]["transcripts"] is None
-    assert "scope must be one of" in body["errors"][0]["message"]
+    assert body["errors"][0]["code"] == "invalid_arguments"
     # control: a clean response still opens with "data"
     ok = ff_gql(client, '{ transcripts(keyword: "x", scope: "all") { id } }', admin_h)
     assert ok.content.startswith(b'{"data":')

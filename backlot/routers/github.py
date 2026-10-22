@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import re
 import time
 from collections.abc import Callable
@@ -999,18 +1000,110 @@ def _github_media(request: Request, name: str) -> bool:
     return any(t in wanted for t in _accept_types(request))
 
 
-def _raw_response(request: Request, content: str, media_type: str) -> Response | None:
+# A parameter of an `Accept` member, as api.github.com reads one: spaces or tabs, a name of ASCII
+# word characters and dots, `=`, and a value of the same or in quotes. The first parameter that does
+# not read so ends the member's parameters, and so does anything but spaces and tabs left after the
+# value of one that does. Measured on 2026-10-22 on the pull and under the version
+# :func:`_representation_content_type` names: `application/vnd.github.diff` with `foo=a.b;q=0`,
+# `foo=;q=0`, `foo="a-b";q=0`, `charset=utf8;q=0` or `q=1;foo=bar;q=0` was the JSON pull, and with
+# `foo=a-b;q=0`, `charset=utf-8;q=0`, `foo;q=0`, `foo-bar=x;q=0`, `foo=é;q=0`, `foo=1e-1;q=0` or
+# `q=0.5-;q=0` the diff. As a member's weight, `; q=0.1`, `;\tq=0.1`, `;a.b=c;q=0.1` and
+# `;q=0.9 ;q=0.1` read as `0.1`, `;foo=\xe9;q=0.1` as no `q` and `;q=0.9\xa0;q=0.1` as `0.9`, each
+# `\x..` one byte.
+_ACCEPT_PARAM = re.compile(r'[ \t]*([\w.]+)=("[^"]*"|[\w.]*)', re.ASCII)
+# The number a `q` value that `float()` cannot read, or reads as no finite number, starts with.
+_Q_LEAD = re.compile(r"\d+(?:\.\d*)?|\.\d+", re.ASCII)
+
+
+def _accept_q(params: str) -> str | None:
+    """The value of the last `q` among a member's parameters (:data:`_ACCEPT_PARAM` reads them),
+    out of its quotes, or None with no `q`."""
+    value = None
+    for param in params.split(";"):
+        m = _ACCEPT_PARAM.match(param)
+        if m is None:
+            break
+        if m[1] == "q":
+            value = m[2][1:-1] if m[2][:1] == '"' else m[2]
+        if param[m.end() :].strip(" \t"):
+            break
+    return value
+
+
+def _q_weight(params: str, unread: float | None = None) -> float:
+    """The weight a member's parameters give it: 1 with no `q`, else its `q` (:func:`_accept_q`)
+    read as a finite number, else ``unread``, or with no ``unread`` the number the value starts
+    with, or 0 where it starts with none."""
+    value = _accept_q(params)
+    if value is None:
+        return 1.0
+    try:
+        weight = float(value)
+    except ValueError:
+        weight = math.nan
+    if math.isfinite(weight):
+        return weight
+    if unread is not None:
+        return unread
+    lead = _Q_LEAD.match(value)
+    return float(lead[0]) if lead else 0.0
+
+
+def _representation_content_type(request: Request, unread: float | None = None) -> str:
+    """The `Content-Type` of a diff, a patch, or a raw file or readme: each `Accept` member with
+    nothing after its `;`, spelt as sent, heaviest first (:func:`_q_weight`, with ``unread``), and
+    at the same weight a concrete type before a `type/*` and that before `*/*`, otherwise in the
+    order sent; a member with nothing before its `;` is left out.
+
+    Measured on api.github.com on 2026-10-21 and 2026-10-22 under
+    `X-GitHub-Api-Version: 2022-11-28`, on `pulls/7619` of `psf/requests` and its `README.md`
+    through `contents` and `readme`: `application/vnd.github.v3.diff`, `Application/vnd.github.diff`
+    and `application/vnd.github.diff;foo=bar` were echoed without the parameter;
+    `application/json;q=0.1, application/vnd.github.diff;q=0.9, text/plain;q=0.5` as
+    `application/vnd.github.diff,text/plain,application/json`, a member at `q=0` kept, last, and the
+    same member twice kept twice; `*/*, text/*, application/vnd.github.diff` and
+    `text/*, */*, application/vnd.github.diff` as `application/vnd.github.diff,text/*,*/*` and
+    `application/*, */*, text/*, application/vnd.github.diff` as
+    `application/vnd.github.diff,application/*,text/*,*/*`; and `application/vnd.github.diff,`,
+    `,application/vnd.github.diff` and `;q=0.5, application/vnd.github.diff` as
+    `application/vnd.github.diff`. Beside a diff at `q=0.5`, `application/json` came first under
+    `q=0.1;q=0.9`, `foo=bar;q=0.6`, `q="0.9"`, `charset=utf-8;q=0.1`, `foo=a-b;q=0.1` and
+    `q=0.9;foo=a-b;q=0.1`, and after it under `q=0.9;q=0.1`, `foo=bar;q=0.1`, `q="0.1"`,
+    `charset=x;q=0.1` and `q=0.1-;q=0.9`; it came first under `q=9e-1`, `q=9E-1`, `q=1e-1`,
+    `q=9e-1x`, `q=0.9x` and `q=.9x` too, read as the number they start with. Under `q=abc`, `q=`,
+    `q=+0.9`, `q=inf` and `q=-0.9` it ranked as `q=0` does on the pull
+    (`application/json;q=abc, text/plain;q=0, …` kept that order), and under those, `q= 0.9` and
+    `q=nan` below a raw at `q=0.5` on the readme; on contents all of those seven but `q=nan` ranked
+    above the raw (``unread`` 1). Not modelled: `q=nan` on contents, and `*/ *`, which the pull
+    echoed as `*/`."""
+    members = []
+    for member in request.headers.get("accept", "").split(","):
+        media_type, _, params = member.partition(";")
+        media_type = media_type.strip()
+        if not media_type:
+            continue
+        members.append((media_type, _q_weight(params, unread)))
+    members.sort(key=lambda m: (-m[1], m[0].count("*")))
+    return ",".join(media_type for media_type, _ in members) + "; charset=utf-8"
+
+
+def _raw_response(
+    request: Request, content: str, media_type: str | None = None, unread: float | None = None
+) -> Response | None:
     """The raw body when the caller asked for it, else ``None`` so the handler falls through to its
-    JSON envelope."""
+    JSON envelope. A blob names ``media_type``; contents and readme name what they were sent
+    (`_representation_content_type`)."""
     if not _github_media(request, "raw"):
         return None
-    return Response(content=content.encode(), media_type=media_type)
+    content_type = media_type or _representation_content_type(request, unread)
+    return Response(content=content.encode(), headers={"Content-Type": content_type})
 
 
-# Real GitHub answers git/blobs raw with text/plain and contents/readme with vnd.github.raw. Both
-# are the same bytes; the difference is GitHub's own, so it is reproduced rather than unified.
+# A raw git blob's type, however `Accept` spells the raw type: api.github.com answered `git/blobs`
+# with it under `application/json, application/vnd.github.raw` on 2026-10-21, and under
+# `application/vnd.github.raw`, `…v3.raw`, `…raw+json`, `…v3.raw+json`,
+# `Application/vnd.GitHub.V3.raw+JSON` and `application/vnd.github.raw;q=0` on 2026-10-22.
 _BLOB_RAW_TYPE = "text/plain; charset=utf-8"
-_CONTENT_RAW_TYPE = "application/vnd.github.raw; charset=utf-8"
 
 
 class _Loose(BaseModel):
@@ -2519,9 +2612,11 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
     if wants_patch:
         return Response(
             content=_pr_mbox(row, obj, diff).encode(),
-            media_type="application/vnd.github.patch; charset=utf-8",
+            headers={"Content-Type": _representation_content_type(request)},
         )
-    return Response(content=diff.encode(), media_type="application/vnd.github.diff; charset=utf-8")
+    return Response(
+        content=diff.encode(), headers={"Content-Type": _representation_content_type(request)}
+    )
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/reviews")
@@ -2931,7 +3026,7 @@ async def _contents_response(
     if path:
         row = store.get_repo_file(conn, repo, path, ids, ref=ref)
         if row is not None:
-            return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
+            return _raw_response(request, row["content"], unread=1.0) or _file_obj(
                 owner, repo, row, ab, ref
             )
     rows = store.list_repo_files(conn, repo, ids)
@@ -3347,7 +3442,7 @@ async def get_readme_for_a_directory(
     row = _readme_row(conn, repo, f"{inside}/" if inside else "", ids, ref)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
+    return _raw_response(request, row["content"]) or _file_obj(
         owner, repo, row, _api_base(request), ref
     )
 
@@ -3368,9 +3463,7 @@ async def get_readme(owner: str, repo: str, request: Request, ref: str | None = 
     ab = _api_base(request)
     row = _readme_row(conn, repo, "", ids, ref)
     if row is not None:
-        return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
-            owner, repo, row, ab, ref
-        )
+        return _raw_response(request, row["content"]) or _file_obj(owner, repo, row, ab, ref)
     raise HTTPException(status_code=404, detail="Not Found")
 
 

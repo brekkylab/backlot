@@ -2267,8 +2267,10 @@ def test_fireflies_scope_columns_are_the_api_vocabulary():
     assert store.fireflies_scope_columns("title") == ("title",)
     assert store.fireflies_scope_columns("sentences") == ("content",)
     assert store.fireflies_scope_columns("all") == ("title", "content")
-    assert store.fireflies_scope_columns(None) == ("title", "content")  # default
-    assert store.fireflies_scope_columns("ALL") == ("title", "content")  # case-insensitive
+    assert store.fireflies_scope_columns(None) == ("title", "content")  # default when absent
+    assert store.fireflies_scope_columns("ALL") is None
+    assert store.fireflies_scope_columns("TITLE") is None
+    assert store.fireflies_scope_columns("") is None
     assert store.fireflies_scope_columns("body") is None  # not an API value
 
 

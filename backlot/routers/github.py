@@ -13,6 +13,7 @@ import json
 import math
 import re
 import time
+import unicodedata
 from collections.abc import Callable
 from email.utils import format_datetime
 from typing import NamedTuple
@@ -211,18 +212,161 @@ def honours_api_version(request: Request) -> bool:
     return request.url.path != RATE_LIMIT_PATH or "authorization" in request.headers
 
 
+# What Go's `unicode.IsSpace` holds, the set `strings.TrimSpace` trims from both ends: the pull and
+# contents backend trimmed each member a header value can carry (see `_read_api_version`), and CR,
+# LF, VT and FF never reach it.
+_GO_SPACE = (
+    "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009"
+    "\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+
+
+def _answered_by_backend(request: Request) -> bool:
+    """Whether the pull and contents backend reads this request's version, where the gateway reads
+    it on the other routes that read it (see :func:`honours_api_version`).
+
+    Measured against api.github.com on 2026-10-18: contents and the JSON pull backend answer a
+    one-member body, newline and empty Selected header, ahead of a missing repository or path and
+    of a missing credential, though a bad bearer is still `Bad credentials` first. A pull
+    `_github_media` reads as a diff or a patch keeps the gateway's envelope, a diff after
+    `application/json` included, and so does a HEAD on the pull whatever `Accept` holds, where a
+    HEAD on contents is the backend's (measured 2026-10-19).
+    """
+    route = getattr(request.scope.get("route"), "path", None)
+    return route in {
+        "/github/repos/{owner}/{repo}/contents",
+        "/github/repos/{owner}/{repo}/contents/{path:path}",
+    } or (
+        route == "/github/repos/{owner}/{repo}/pulls/{number}"
+        and not getattr(request.state, "answering_head", False)
+        and not (_github_media(request, "diff") or _github_media(request, "patch"))
+    )
+
+
+def _read_api_version(request: Request) -> str | None:
+    """The pinned value as the side reading it on this route reads it (see
+    :func:`_answered_by_backend`), or ``None`` with no header.
+
+    Starlette hands a header's bytes back decoded as latin-1, so encoding as latin-1 is the bytes
+    that arrived. Measured against api.github.com on 2026-10-25, on `issues/1`, `contents/README.md`
+    and `pulls/7619` of `psf/requests` with the bytes sent as they are:
+
+    - The gateway reads them as UTF-8, a truncated sequence as one U+FFFD (`a`, 0xE2 0x82, `b` is
+      `"a\\ufffdb"`) and each other byte that is not UTF-8 as one of its own (0xC0 0xAF is
+      two), and trims the spaces and tabs around the value: `2022-11-28` with a space, a tab or two
+      spaces after it, or a space before it, selects `2022-11-28`, where any character of
+      ``_GO_SPACE`` past ASCII after it is the version's 400 naming it.
+    - The backend keeps each byte that is not UTF-8 for :func:`_go_quoted` to name, and trims every
+      character of ``_GO_SPACE`` from both ends: `2022-11-28` with any one of them after it, or
+      U+00A0 before it, selects `2022-11-28`, a value of U+00A0 alone selects the default as an
+      empty one does, and U+200B, U+180E and U+FEFF stay to be quoted.
+    """
+    raw = request.headers.get(API_VERSION_HEADER)
+    if raw is None:
+        return None
+    data = raw.encode("latin-1")
+    if _answered_by_backend(request):
+        return data.decode("utf-8", "surrogateescape").strip(_GO_SPACE)
+    return data.strip(b" \t").decode("utf-8", "replace")
+
+
 def selected_api_version(request: Request) -> str | None:
     """The version this request selected, or ``None`` if it pinned one that does not exist.
 
     An empty header selects the default, as no header does: on api.github.com on 2026-10-18,
     `X-GitHub-Api-Version:` with nothing after it was answered as an unpinned request and echoed
     `2022-11-28` on `/repos/{owner}/{repo}`, its `/issues`, `/orgs/{org}`, `/zen` and
-    `DELETE /installation/token`, where `1999-01-01` is the version's 400.
+    `DELETE /installation/token`, where `1999-01-01` is the version's 400. So does a value the side
+    reading it trims to nothing, U+00A0 alone on contents among them (see
+    :func:`_read_api_version`).
     """
-    pinned = request.headers.get(API_VERSION_HEADER)
+    pinned = _read_api_version(request)
     if not pinned:
         return DEFAULT_API_VERSION
     return pinned if pinned in API_VERSIONS else None
+
+
+# Real's Go carries Unicode 15.0 (see `_go_quoted`), but `unicodedata` carries the running
+# Python's database — 14.0 on 3.11, 15.1 on 3.13, 16.0 on 3.14, 17.0 on 3.15 — and a code point
+# one database prints and the other leaves unassigned is where the two backends disagree. The
+# disagreements are exactly the runs below, read off the two versions' UnicodeData.txt: a run
+# one database assigns a letter, mark, number, punctuation or symbol and the other does not.
+# `_PRINTABLE_FROM_15` is printed by 15.0 and not by 14.0; `_UNPRINTABLE_FROM_15` is keyed by
+# the running database's version and lists what it prints that 15.0 does not.
+# fmt: off
+_PRINTABLE_FROM_15 = (
+    (0xCF3, 0xCF3), (0xECE, 0xECE), (0x10EFD, 0x10EFF), (0x1123F, 0x11241), (0x11B00, 0x11B09),
+    (0x11F00, 0x11F10), (0x11F12, 0x11F3A), (0x11F3E, 0x11F59), (0x1342F, 0x1342F),
+    (0x13440, 0x13455), (0x1B132, 0x1B132), (0x1B155, 0x1B155), (0x1D2C0, 0x1D2D3),
+    (0x1DF25, 0x1DF2A), (0x1E030, 0x1E06D), (0x1E08F, 0x1E08F), (0x1E4D0, 0x1E4F9),
+    (0x1F6DC, 0x1F6DC), (0x1F774, 0x1F776), (0x1F77B, 0x1F77F), (0x1F7D9, 0x1F7D9),
+    (0x1FA75, 0x1FA77), (0x1FA87, 0x1FA88), (0x1FAAD, 0x1FAAF), (0x1FABB, 0x1FABD),
+    (0x1FABF, 0x1FABF), (0x1FACE, 0x1FACF), (0x1FADA, 0x1FADB), (0x1FAE8, 0x1FAE8),
+    (0x1FAF7, 0x1FAF8), (0x2B739, 0x2B739), (0x31350, 0x323AF)
+)
+_UNPRINTABLE_FROM_15 = {
+    "15.1.0": ((0x2FFC, 0x2FFF), (0x31EF, 0x31EF), (0x2EBF0, 0x2EE5D)),
+    "16.0.0": (
+        (0x897, 0x897), (0x1B4E, 0x1B4F), (0x1B7F, 0x1B7F), (0x1C89, 0x1C8A), (0x2427, 0x2429),
+        (0x2FFC, 0x2FFF), (0x31E4, 0x31E5), (0x31EF, 0x31EF), (0xA7CB, 0xA7CD), (0xA7DA, 0xA7DC),
+        (0x105C0, 0x105F3), (0x10D40, 0x10D65), (0x10D69, 0x10D85), (0x10D8E, 0x10D8F),
+        (0x10EC2, 0x10EC4), (0x10EFC, 0x10EFC), (0x11380, 0x11389), (0x1138B, 0x1138B),
+        (0x1138E, 0x1138E), (0x11390, 0x113B5), (0x113B7, 0x113C0), (0x113C2, 0x113C2),
+        (0x113C5, 0x113C5), (0x113C7, 0x113CA), (0x113CC, 0x113D5), (0x113D7, 0x113D8),
+        (0x113E1, 0x113E2), (0x116D0, 0x116E3), (0x11BC0, 0x11BE1), (0x11BF0, 0x11BF9),
+        (0x11F5A, 0x11F5A), (0x13460, 0x143FA), (0x16100, 0x16139), (0x16D40, 0x16D79),
+        (0x18CFF, 0x18CFF), (0x1CC00, 0x1CCF9), (0x1CD00, 0x1CEB3), (0x1E5D0, 0x1E5FA),
+        (0x1E5FF, 0x1E5FF), (0x1F8B2, 0x1F8BB), (0x1F8C0, 0x1F8C1), (0x1FA89, 0x1FA89),
+        (0x1FA8F, 0x1FA8F), (0x1FABE, 0x1FABE), (0x1FAC6, 0x1FAC6), (0x1FADC, 0x1FADC),
+        (0x1FADF, 0x1FADF), (0x1FAE9, 0x1FAE9), (0x1FBCB, 0x1FBEF), (0x2EBF0, 0x2EE5D),
+    ),
+    "17.0.0": (
+        (0x88F, 0x88F), (0x897, 0x897), (0xC5C, 0xC5C), (0xCDC, 0xCDC), (0x1ACF, 0x1ADD),
+        (0x1AE0, 0x1AEB), (0x1B4E, 0x1B4F), (0x1B7F, 0x1B7F), (0x1C89, 0x1C8A), (0x20C1, 0x20C1),
+        (0x2427, 0x2429), (0x2B96, 0x2B96), (0x2FFC, 0x2FFF), (0x31E4, 0x31E5), (0x31EF, 0x31EF),
+        (0xA7CB, 0xA7CF), (0xA7D2, 0xA7D2), (0xA7D4, 0xA7D4), (0xA7DA, 0xA7DC), (0xA7F1, 0xA7F1),
+        (0xFBC3, 0xFBD2), (0xFD90, 0xFD91), (0xFDC8, 0xFDCE), (0x105C0, 0x105F3),
+        (0x10940, 0x10959), (0x10D40, 0x10D65), (0x10D69, 0x10D85), (0x10D8E, 0x10D8F),
+        (0x10EC2, 0x10EC7), (0x10ED0, 0x10ED8), (0x10EFA, 0x10EFC), (0x11380, 0x11389),
+        (0x1138B, 0x1138B), (0x1138E, 0x1138E), (0x11390, 0x113B5), (0x113B7, 0x113C0),
+        (0x113C2, 0x113C2), (0x113C5, 0x113C5), (0x113C7, 0x113CA), (0x113CC, 0x113D5),
+        (0x113D7, 0x113D8), (0x113E1, 0x113E2), (0x116D0, 0x116E3), (0x11B60, 0x11B67),
+        (0x11BC0, 0x11BE1), (0x11BF0, 0x11BF9), (0x11DB0, 0x11DDB), (0x11DE0, 0x11DE9),
+        (0x11F5A, 0x11F5A), (0x13460, 0x143FA), (0x16100, 0x16139), (0x16D40, 0x16D79),
+        (0x16EA0, 0x16EB8), (0x16EBB, 0x16ED3), (0x16FF2, 0x16FF6), (0x187F8, 0x187FF),
+        (0x18CFF, 0x18CFF), (0x18D09, 0x18D1E), (0x18D80, 0x18DF2), (0x1CC00, 0x1CCFC),
+        (0x1CD00, 0x1CEB3), (0x1CEBA, 0x1CED0), (0x1CEE0, 0x1CEF0), (0x1E5D0, 0x1E5FA),
+        (0x1E5FF, 0x1E5FF), (0x1E6C0, 0x1E6DE), (0x1E6E0, 0x1E6F5), (0x1E6FE, 0x1E6FF),
+        (0x1F6D8, 0x1F6D8), (0x1F777, 0x1F77A), (0x1F8B2, 0x1F8BB), (0x1F8C0, 0x1F8C1),
+        (0x1F8D0, 0x1F8D8), (0x1FA54, 0x1FA57), (0x1FA89, 0x1FA8A), (0x1FA8E, 0x1FA8F),
+        (0x1FABE, 0x1FABE), (0x1FAC6, 0x1FAC6), (0x1FAC8, 0x1FAC8), (0x1FACD, 0x1FACD),
+        (0x1FADC, 0x1FADC), (0x1FADF, 0x1FADF), (0x1FAE9, 0x1FAEA), (0x1FAEF, 0x1FAEF),
+        (0x1FBCB, 0x1FBEF), (0x1FBFA, 0x1FBFA), (0x2B73A, 0x2B73F), (0x2CEA2, 0x2CEAD),
+        (0x2EBF0, 0x2EE5D), (0x323B0, 0x33479),
+    ),
+}
+# fmt: on
+
+
+def _in_runs(runs: tuple[tuple[int, int], ...], cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in runs)
+
+
+def _go_printable(ch: str) -> bool:
+    """Whether Go's `unicode.IsPrint` prints `ch`, by Unicode 15.0 as real's Go carries it:
+    letters, marks, numbers, punctuation, symbols and the ASCII space. `str.isprintable`
+    keeps the same classes by the running Python's database instead, so on a Python whose
+    database is not 15.0 the runs above correct it (see the tables' comment)."""
+    version = unicodedata.unidata_version
+    if version == "15.0.0":
+        return ch.isprintable()
+    cp = ord(ch)
+    if version == "14.0.0":
+        return ch.isprintable() or _in_runs(_PRINTABLE_FROM_15, cp)
+    later = _UNPRINTABLE_FROM_15.get(version)
+    if later is not None:
+        return ch.isprintable() and not _in_runs(later, cp)
+    return ch.isprintable()
 
 
 def _go_quoted(value: str) -> str:
@@ -230,8 +374,8 @@ def _go_quoted(value: str) -> str:
     backend names the version it refused: `"` and `\\` behind a backslash, a tab as `\\t`, a byte
     that is not UTF-8 as `\\x` and its two hex digits, a character Go does not print as `\\u` and
     four (`\\U` and eight past U+FFFF), and every other character as it came. What Go prints is
-    what `str.isprintable` keeps: letters, marks, numbers, punctuation, symbols and the ASCII space,
-    each by the Unicode version it carries.
+    what :func:`_go_printable` keeps. ``value`` is :func:`_read_api_version`'s reading on the
+    backend, each byte that is not UTF-8 still a surrogate.
 
     Measured against api.github.com on 2026-10-19, sending each byte from 0x01 to 0xFF but CR and
     LF between an `a` and a `b` on `contents/README.md`, then UTF-8 sequences the same way: the
@@ -241,10 +385,11 @@ def _go_quoted(value: str) -> str:
     and each byte of a truncated, overlong, surrogate or past-U+10FFFF sequence as `\\x`. The other
     control bytes and DEL were the front door's 400 and reached no backend. Real's Go carries
     Unicode 15.0, as Python 3.12 does: U+1F6DC and U+31350, new in 15.0, came back as sent, and
-    U+2EBF0, U+31EF and U+2FFC from 15.1 and U+1CC00 from 16.0 as escapes.
+    U+2EBF0, U+31EF and U+2FFC from 15.1 and U+1CC00, U+0897 and U+1E5D0 from 16.0 as escapes, as
+    were U+0C5C and U+1E6C0 from 17.0 on 2026-10-25.
     """
     out = []
-    for ch in value.encode("latin-1").decode("utf-8", "surrogateescape"):
+    for ch in value:
         cp = ord(ch)
         if 0xDC80 <= cp <= 0xDCFF:  # where `surrogateescape` puts an undecodable byte
             out.append(f"\\x{cp & 0xFF:02x}")
@@ -252,7 +397,7 @@ def _go_quoted(value: str) -> str:
             out.append("\\" + ch)
         elif ch == "\t":
             out.append("\\t")
-        elif ch.isprintable():
+        elif _go_printable(ch):
             out.append(ch)
         else:
             out.append(f"\\u{cp:04x}" if cp < 0x10000 else f"\\U{cp:08x}")
@@ -321,22 +466,9 @@ async def _validate_api_version(request: Request) -> None:
     """
     if honours_api_version(request) and selected_api_version(request) is None:
         # `None` is only reachable with the header present, so this read cannot miss.
-        # Measured against api.github.com on 2026-10-18: contents and the JSON pull backend
-        # answer a one-member body, newline and empty Selected header, ahead of a missing repository
-        # or path and of a missing credential, though a bad bearer is still `Bad credentials` first.
-        # A pull `_github_media` reads as a diff or a patch keeps the gateway's envelope, a diff
-        # after `application/json` included, and so does a HEAD on the pull whatever `Accept`
-        # holds, where a HEAD on contents is the backend's (measured 2026-10-19).
-        route = getattr(request.scope.get("route"), "path", None)
-        backend = route in {
-            "/github/repos/{owner}/{repo}/contents",
-            "/github/repos/{owner}/{repo}/contents/{path:path}",
-        } or (
-            route == "/github/repos/{owner}/{repo}/pulls/{number}"
-            and not getattr(request.state, "answering_head", False)
-            and not (_github_media(request, "diff") or _github_media(request, "patch"))
+        raise _unsupported_version_error(
+            _read_api_version(request), backend=_answered_by_backend(request)
         )
-        raise _unsupported_version_error(request.headers[API_VERSION_HEADER], backend=backend)
 
 
 async def _validate_path_owner(request: Request) -> None:

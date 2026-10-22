@@ -146,6 +146,16 @@ def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSO
     )
 
 
+# batch/read refuses more than this many inputs. Measured against api.hubapi.com on 2026-10-01:
+# 101 inputs is 400 with this message, and 100 is still read. An empty `inputs`, and a body
+# without one, stay 200.
+_HUBSPOT_BATCH_MAX = 100
+_HUBSPOT_BATCH_TOO_MANY = (
+    "The maximum number of inputs supported in a batch is 100. "
+    "Please reduce the number of items and try again"
+)
+
+
 # Real's answer on the record route for an id that parses but names nothing visible: this page,
 # 197 bytes, under a Latin-1 content type although its own `<meta>` says utf-8. `contacts/1`,
 # `contacts/9223372036854775807` and `deals/{a contact's id}` answered it byte for byte the same
@@ -1376,10 +1386,13 @@ async def batch_read(object_type: str, request: Request):
     refused = _refuse_a_batch_read_shape(await request.body(), body, before) or refused
     if refused is not None:
         return refused
+    inputs = body.get("inputs") or []
+    if len(inputs) > _HUBSPOT_BATCH_MAX:
+        return _error(400, _HUBSPOT_BATCH_TOO_MANY)
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     keep = _keep(body.get("properties"))
     results, errors = [], []
-    for i, item in enumerate(body.get("inputs") or []):
+    for i, item in enumerate(inputs):
         # A string in `inputs` is answered as `{"id": <that string>}` is (measured 2026-10-11).
         rid = item if isinstance(item, str) else item["id"]
         if not isinstance(rid, str):

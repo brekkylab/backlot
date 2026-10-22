@@ -1374,6 +1374,26 @@ def test_hubspot_batch_read_partial_is_207(client, admin_h):
     assert j["errors"][0]["context"]["id"] == ["111111111111"]
 
 
+def test_hubspot_batch_read_refuses_more_than_100_inputs(client, admin_h):
+    """batch/read with more than 100 inputs is 400, and 100 is still read."""
+    url = "/hubspot/crm/v3/objects/contacts/batch/read"
+    too_many = client.post(
+        url, headers=admin_h, json={"inputs": [{"id": str(i)} for i in range(1, 102)]}
+    )
+    assert too_many.status_code == 400, too_many.text
+    assert too_many.json() == {
+        "status": "error",
+        "message": "The maximum number of inputs supported in a batch is 100. "
+        "Please reduce the number of items and try again",
+        "category": "VALIDATION_ERROR",
+    }
+    accepted = client.post(
+        url, headers=admin_h, json={"inputs": [{"id": str(i)} for i in range(1, 101)]}
+    )
+    assert accepted.status_code == 207, accepted.text
+    assert accepted.json()["numErrors"] == 100
+
+
 def test_hubspot_batch_read(client, admin_h):
     listed = client.get(
         "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"limit": 100}

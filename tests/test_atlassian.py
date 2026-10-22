@@ -1203,6 +1203,20 @@ def test_confluence_cql_search_reads_its_content_type_as_jaxrs_does(client, admi
     assert r.status_code == 415, r.text
     r = client.get(url, headers={**admin_h, "Content-Type": "application/json"})
     assert r.status_code == 200, r.text
+    # ahead of the 406, and the 415 behind the 400 for an `Accept` Jersey cannot parse
+    for accept, ctype, status, ctype_out in [
+        ("application/xml", "text/plain", 415, None),
+        ("application/xml", "foo", 400, errors_atlassian.TOMCAT_MEDIA_TYPE),
+        ("application/json;q=2", "foo", 400, errors_atlassian.TOMCAT_MEDIA_TYPE),
+        ("application/json;q=2", "text/plain", 400, "text/plain"),
+        ("application/xml", "application/json", 406, None),
+    ]:
+        r = client.get(url, headers={**admin_h, "Accept": accept, "Content-Type": ctype})
+        assert (r.status_code, r.headers.get("content-type")) == (status, ctype_out), r.text
+    # where a Spring GET answers either type as it answers none
+    for ctype in ("text/plain", "foo"):
+        r = client.get("/atlassian/wiki/rest/api/content/1", headers={"Content-Type": ctype})
+        assert r.status_code == 403, r.text
 
 
 def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
@@ -6812,6 +6826,12 @@ _JSON_TYPE = "application/json"
         ("GET", "/wiki/rest/api/nosuch", None, "", 400)
         + (errors_atlassian.tomcat_page(400).encode(),),
         ("GET", "/wiki/rest/api/nosuch", None, "text/plain", 404, None),
+        # the two `contentbody/convert` reads, which ``_CONFLUENCE_JAXRS_GETS`` names as well
+        ("GET", "/wiki/rest/api/contentbody/convert/async/1", None, "text/plain", 415, b""),
+        ("GET", "/wiki/rest/api/contentbody/convert/async/bulk/tasks", None, "application/xml")
+        + (415, b""),
+        ("GET", "/wiki/rest/api/contentbody/convert/async/1", None, "foo", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
         *(
             (method, path, None, None, 403, errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY)
             for method, path in (

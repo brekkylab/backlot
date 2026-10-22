@@ -979,32 +979,6 @@ def _accept_types(request: Request) -> list[str]:
     return types
 
 
-# A parameter of an `Accept` member, as api.github.com reads one: a name of word characters and
-# dots, `=`, and a value of the same or in quotes. The first parameter that does not read so ends
-# the member's parameters, and so does anything left after the value of one that does. Measured on
-# 2026-10-22 on `pulls/7619` of `psf/requests` under `X-GitHub-Api-Version: 2022-11-28`:
-# `application/vnd.github.diff` with `foo=a.b;q=0`, `foo=;q=0`, `foo="a-b";q=0`,
-# `charset=utf8;q=0` or `q=1;foo=bar;q=0` was the JSON pull, and with `foo=a-b;q=0`,
-# `charset=utf-8;q=0`, `foo;q=0`, `foo-bar=x;q=0`, `foo=é;q=0`, `foo=1e-1;q=0` or `q=0.5-;q=0` the
-# diff.
-_ACCEPT_PARAM = re.compile(r'[ \t]*([\w.]+)=("[^"]*"|[\w.]*)', re.ASCII)
-
-
-def _accept_q(params: str) -> str | None:
-    """The value of the last `q` among a member's parameters (:data:`_ACCEPT_PARAM` reads them),
-    out of its quotes, or None with no `q`."""
-    value = None
-    for param in params.split(";"):
-        m = _ACCEPT_PARAM.match(param)
-        if m is None:
-            break
-        if m[1] == "q":
-            value = m[2][1:-1] if m[2][:1] == '"' else m[2]
-        if param[m.end() :].strip(" \t"):
-            break
-    return value
-
-
 def _zero_q(params: str) -> bool:
     """Whether the `q` a member's parameters give it (:func:`_accept_q`) is a zero ``float()``
     reads. Measured against api.github.com on 2026-10-21: `q=0;q=1` kept the diff and `q=1;q=0`

@@ -4923,11 +4923,14 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
         ("application/vnd.github.diff;q=0.5", "diff"),
         ("application/vnd.github.patch;q=0", "patch"),
         ("application/vnd.github.patch;q=0.5, application/json;q=1", "patch"),
+        ("application/vnd.github.diff;q=\xa00", "diff"),
+        ("application/vnd.github.diff;q=0\xa0", "json"),
     ],
 )
 def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accept, served):
     c, h, org, num = diff_pr
-    r = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers={**h, "Accept": accept})
+    headers = {**{k: v.encode() for k, v in h.items()}, "Accept": accept.encode("latin-1")}
+    r = _sent_raw(c, f"/github/repos/{org}/diffable/pulls/{num}", headers)
     assert r.status_code == 200
     assert r.text.startswith({"json": "{", "diff": "diff --git ", "patch": "From "}[served])
 

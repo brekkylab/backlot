@@ -16,7 +16,7 @@ from backlot.config import Settings, get_settings
 from backlot.importer import byo
 from backlot.importer.byo import load
 from backlot.routers.slack import _message
-from tests._helpers import complete, served_id
+from tests._helpers import build_corpus, complete, served_id
 
 
 def _write(tmp_path, records, name="corpus.jsonl", *, raw=False):
@@ -2664,6 +2664,83 @@ def test_byo_empty_readers_means_nobody(tmp_path):
         assert store.get_document(conn, "gmail", served_id("gmail", "gm-dark")) is not None
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("source", ["msteams", "slack"])
+def test_byo_an_appended_empty_readers_revokes_what_the_thread_had(tmp_path, source):
+    """A re-imported thread's grants are REPLACED, and an empty `readers` replaces them with none:
+    it contributes no grant rows, so a rewrite keyed on the grants it adds would leave the old
+    readers in place."""
+    record = complete(
+        source,
+        doc_id="reimported-thread",
+        channel="restricted",
+        author_email="ava@acme.com",
+        readers=["user:ava@acme.com"],
+        replies=[{"content": "A reply.", "author_email": "ava@acme.com"}],
+    )
+    settings = build_corpus(tmp_path, [record])
+
+    def grants():
+        conn = store.connect_ro(settings.db_path)
+        try:
+            cols = ", ".join(store.id_columns(source))
+            keys = [tuple(r) for r in conn.execute(f"SELECT {cols} FROM {store.table(source)}")]
+            return [store.doc_grants(conn, source, *key) for key in keys]
+        finally:
+            conn.close()
+
+    assert len(grants()) == 2 and all(grants())
+    load(_write(tmp_path, [{**record, "readers": []}], name="nobody.jsonl"), settings, reset=False)
+    assert grants() == [[], []]
+
+
+def test_byo_msteams_ids_fill_every_millisecond_of_a_second_and_reimport_stably(tmp_path):
+    """A Teams message id is its creation time in epoch milliseconds, so one channel-second holds
+    a thousand of them: the probe walks every one before refusing, and a re-import of a message
+    already stored lands on the id it has rather than probing on."""
+    records = [
+        complete("msteams", doc_id=f"d{i}", channel="busy", content=f"Message {i}", created=100)
+        for i in range(1000)
+    ]
+    settings = build_corpus(tmp_path / "first", records)
+
+    def assigned(settings):
+        conn = store.connect_ro(settings.db_path)
+        try:
+            return dict(conn.execute("SELECT content, id FROM msteams_messages"))
+        finally:
+            conn.close()
+
+    first = assigned(settings)
+    assert {int(mid) for mid in first.values()} == set(range(100000, 101000))
+    assert assigned(build_corpus(tmp_path / "fresh", records)) == first
+    load(_write(tmp_path, [records[0], records[-1]], name="again.jsonl"), settings, reset=False)
+    assert assigned(settings) == first
+    overflow = complete(
+        "msteams", doc_id="overflow", channel="busy", content="One more", created=100
+    )
+    with pytest.raises(SystemExit, match="1000 sub-second values"):
+        load(_write(tmp_path, [overflow], name="overflow.jsonl"), settings, reset=False)
+    assert assigned(settings) == first
+
+
+@pytest.mark.parametrize("part", ["root", "reply"])
+@pytest.mark.parametrize("edited", ["not-a-date", "", 99, 100])
+def test_byo_a_teams_edit_that_does_not_parse_or_precedes_its_message_is_refused(
+    tmp_path, part, edited
+):
+    """100 is refused too: the served creation time carries the id's milliseconds, so an edit in
+    the message's own whole second would read as before it."""
+    record = complete("msteams", doc_id="edited", created=100)
+    target = record
+    if part == "reply":
+        record["created"] = 50
+        record["replies"] = [{"content": "Reply", "author_email": "ava@acme.com", "created": 100}]
+        target = record["replies"][0]
+    target["edited"] = edited
+    with pytest.raises(SystemExit, match="edited"):
+        build_corpus(tmp_path, [record])
 
 
 def _shard_artifact(tmp_path):

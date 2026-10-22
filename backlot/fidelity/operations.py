@@ -35,6 +35,8 @@ class Operation:
     params: frozenset[str]
     # What the vendor's document calls the operation; empty on Backlot's side.
     id: str = ""
+    # The message it answers with, where the document names one: a discovery method's `response`.
+    response: str = ""
 
     @property
     def key(self) -> tuple[str, str]:
@@ -159,5 +161,6 @@ def inventory(
             status = MISSING
         else:
             status = IMPLEMENTED if key in real else EXTRA
-        out.append(OperationEntry(str(op), status, name))
+        response = real[key].response if key in real else ""
+        out.append(OperationEntry(str(op), status, name, response))
     return OperationSurface(tuple(out))

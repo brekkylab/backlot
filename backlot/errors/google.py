@@ -402,12 +402,35 @@ def unsupported_conversion() -> GoogleError:
     )
 
 
-def bad_field_mask(path: str) -> GoogleError:
+def bad_field_mask(mask: str, path: str) -> GoogleError:
     """A ``fields`` mask naming something the response has no field for.
 
     Measured on Sheets: the top-level message is the generic ``Request contains an invalid
     argument.`` and the path that failed is named only inside a ``google.rpc.BadRequest`` detail —
-    so a client that wants to know WHICH path was wrong has to read `details`."""
+    so a client that wants to know WHICH path was wrong has to read `details`. The violation's
+    `field` is the whole mask, each ``/`` written ``.``: measured 2026-10-22, `spreadsheetId,bogus`
+    named `spreadsheetId,bogus` there and `sheets(properties/bogus)` named
+    `sheets(properties.bogus)`, the description naming the path alone."""
+    return _field_mask_refused(
+        mask, f"Error expanding 'fields' parameter. Cannot find matching fields for path '{path}'."
+    )
+
+
+def unbalanced_field_mask(mask: str, unpaired: str) -> GoogleError:
+    """:func:`bad_field_mask`'s 400 for a mask that leaves ``unpaired``, ``(`` or ``)``, without its
+    pair, the description naming the whole mask: measured 2026-10-22 on Sheets, `sheets(` answered
+    `Invalid FieldMask 'sheets('. Cannot find matching ')' for all '('.`, `spreadsheetId)`
+    `Cannot find matching '(' for all ')'.`, and `sheets(properties/title` wrote the mask
+    `sheets(properties.title` there."""
+    pair = ")" if unpaired == "(" else "("
+    return _field_mask_refused(
+        mask,
+        f"Invalid FieldMask '{mask.replace('/', '.')}'. "
+        f"Cannot find matching '{pair}' for all '{unpaired}'.",
+    )
+
+
+def _field_mask_refused(mask: str, description: str) -> GoogleError:
     return GoogleError(
         400,
         "Request contains an invalid argument.",
@@ -416,15 +439,7 @@ def bad_field_mask(path: str) -> GoogleError:
         details=[
             {
                 "@type": "type.googleapis.com/google.rpc.BadRequest",
-                "fieldViolations": [
-                    {
-                        "field": path,
-                        "description": (
-                            "Error expanding 'fields' parameter. Cannot find matching fields for "
-                            f"path '{path}'."
-                        ),
-                    }
-                ],
+                "fieldViolations": [{"field": mask.replace("/", "."), "description": description}],
             }
         ],
     )

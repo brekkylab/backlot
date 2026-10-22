@@ -117,9 +117,9 @@ def test_every_bench_source_has_a_converter():
 
 
 def test_byo_only_sources_have_no_bench_representation():
-    """Notion and S3 are the only sources Backlot serves that the bench does not ship, so they can
-    arrive solely through a BYO corpus."""
-    assert set(store.SOURCE_TABLE) - BENCH_SOURCES == {"notion", "s3"}
+    """Notion, S3 and Microsoft Teams are the sources Backlot serves that the bench does not ship,
+    so they can arrive solely through a BYO corpus."""
+    assert set(store.SOURCE_TABLE) - BENCH_SOURCES == {"notion", "s3", "msteams"}
 
 
 # ---------------------------------------------------------------------------
@@ -2044,8 +2044,10 @@ def test_linear_completed_timestamp_derives_from_the_state_category():
     assert row["canceled_ts"] is None
 
 
-def test_linear_canceled_timestamp_derives_from_the_state_category():
-    _conn_, row, _c = _load_linear({**LINEAR_RAW, "status": "Canceled"})
+@pytest.mark.parametrize("status", ["Canceled", "Duplicate"])
+def test_linear_canceled_timestamp_derives_from_the_state_category(status):
+    """A real issue moved to `Duplicate`, whose type is `duplicate`, answered a `canceledAt` too."""
+    _conn_, row, _c = _load_linear({**LINEAR_RAW, "status": status})
     assert row["canceled_ts"] == erb.to_epoch("2025-03-04")
     assert row["completed_ts"] is None
 

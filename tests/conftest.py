@@ -129,6 +129,59 @@ SAMPLE = [
         "created": "2026-02-06T11:00:00Z",
     },
     {
+        "source_type": "msteams",
+        "channel": "Platform",
+        "group": "engineering",
+        "subject": "Deploy freeze",
+        "content": "Production deploy freeze starts Friday 5pm through Monday.",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "created": "2026-02-05T17:00:00Z",
+    },
+    {
+        "source_type": "msteams",
+        "doc_id": "ms-gateway-502",
+        "channel": "Incidents",
+        "group": "engineering",
+        "content": "Anyone else seeing 502s from the gateway?",
+        "author_email": "bob@acme.com",
+        "author_groups": ["engineering"],
+        "visibility": "public",
+        "importance": "high",
+        "reactions": [
+            {
+                "reactionType": "like",
+                "user": "ava@acme.com",
+                "createdDateTime": "2026-02-10T18:01:00Z",
+            }
+        ],
+        "replies": [
+            {
+                "content": "Yeah, looking now.",
+                "author_email": "ava@acme.com",
+                "created": "2026-02-10T18:00:40Z",
+            },
+            {
+                "content": "<p>Rolled back; 502s clearing.</p>",
+                "author_email": "bob@acme.com",
+                "content_type": "html",
+                "created": "2026-02-10T18:06:00Z",
+                "edited": "2026-02-10T18:07:00Z",
+            },
+        ],
+        "created": "2026-02-10T18:00:00Z",
+    },
+    {
+        "source_type": "msteams",
+        "channel": "People Confidential",
+        "group": "people",
+        "content": "Confidential people-ops note: Q3 reorg headcount plan.",
+        "author_email": "hana@acme.com",
+        "author_groups": ["people"],
+        "visibility": "group",
+        "created": "2026-02-06T11:00:00Z",
+    },
+    {
         "source_type": "github",
         "doc_id": "gh-issue-1",
         "repo": "gateway",
@@ -740,7 +793,7 @@ SAMPLE = [
         "created": "2026-01-16T10:00:00Z",
     },
     # A team no ACL-restricted caller can see into, so `teams` and `team(id:)` can be checked for
-    # agreement. Only hana is granted it.
+    # agreement, and the team's own state and cycle stay hidden with it. Only hana is granted it.
     {
         "source_type": "linear",
         "doc_id": "lin-blackops",
@@ -753,6 +806,7 @@ SAMPLE = [
         "readers": ["hana@acme.com"],
         "identifier": "BLA-1",
         "state": "Triage",
+        "cycle": "2026-W41-sealed",
         "created": "2026-02-25T09:00:00Z",
     },
     # --- fireflies: meeting transcripts -------------------------------------------------
@@ -996,9 +1050,9 @@ def live_server(sample_settings):
     ``--add-host=…:host-gateway``. On Linux that is the bridge address, where a loopback-only
     server never answers; Docker Desktop forwards it to the host's own loopback instead, so on
     macOS the wider bind would buy nothing and cost every contributor the firewall prompt that
-    opening a port to the network raises. With no ``docker`` at all, that test does not run and
-    nothing dials the wider bind either — the same predicate ``_docker_runs_linux_containers``
-    opens with.
+    opening a port to the network raises. With no ``docker`` at all, that test stops at
+    ``_require_linux_docker`` before it starts a container, so nothing dials the wider bind either;
+    ``_why_docker_runs_no_linux_containers`` opens with the same ``shutil.which`` check.
     """
     host = "0.0.0.0" if sys.platform == "linux" and shutil.which("docker") else "127.0.0.1"
     with backlot.serve(SAMPLE, host=host) as s:

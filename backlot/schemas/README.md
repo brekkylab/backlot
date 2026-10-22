@@ -6,6 +6,7 @@ truth** for the JSONL record that `backlot/importer/byo.py` accepts:
 | File | `source_type` | grouping-unit field |
 |---|---|---|
 | `slack.schema.json` | `slack` | `channel` |
+| `msteams.schema.json` | `msteams` | `channel` |
 | `gmail.schema.json` | `gmail` | `mailbox` |
 | `google_drive.schema.json` | `google_drive` | `folder` |
 | `github.schema.json` | `github` | `repo` |
@@ -23,10 +24,13 @@ type is just a new `*.schema.json` file here.
 
 ## Child rows are named per source
 
-Most sources' child rows are **comments** (`comments`). Three are not, and each uses the array a
+Most sources' child rows are **comments** (`comments`). Four are not, and each uses the array a
 reader of that source would expect:
 
 - **Slack** uses `replies` — threaded replies to a message, carrying reactions and files.
+- **Microsoft Teams** uses `replies` too — replies to a channel post, each carrying the root's id
+  as its `replyToId`. Its own per-message fields differ from Slack's (`attachments` and `mentions`
+  where Slack has `files`), which is why the two are separate schemas rather than one shared one.
 - **Gmail** uses `messages` — the rest of the thread. Each is a full RFC822 message with its own
   sender, recipients and Message-ID, which a *reply* is not; and one may have an empty body, since
   a header-only auto-ack is still a message in the thread.
@@ -109,7 +113,7 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
 
 ## What the schemas enforce
 
-- **Strict** — `source_type` (const); `content` (+ `title` for every source except Slack and
+- **Strict** — `source_type` (const); `content` (+ `title` for every source except Slack, Teams and
   hubspot, whose notes have no name); the container each source groups by (`channel`, `mailbox`,
   `folder`, `repo`, `project`, `space`, `teamspace`, `bucket`, `object_type`, `team`);
   `author_email` (fireflies may spell it `host_email`); `created`; and per source whatever its
@@ -156,12 +160,12 @@ backlot import generated.jsonl --dry-run && backlot import generated.jsonl
   a record cannot be told apart from a row already imported. There is no update path — an id an
   earlier import already answers at is refused, and so is restating an s3 `(bucket, key)` or a
   fireflies `transcript_id`. Re-import from scratch to change a document that is already in.
-  (slack is the one source with nothing to state: a re-imported message is recognised by its
-  channel, second, author and text.)
+  (slack and msteams have nothing to state: a re-imported message is recognised by its channel,
+  second, author and text.)
 - **`--id-map out.json`** writes what the import served each record under: per source, the
   record's dataset id (`doc_id`, or its documented default) mapped to the row's full served key,
-  plus the container ids a client needs to address them (slack channel ids, drive folder ids,
-  linear team id/key, jira project keys, confluence space keys). A dataset id is a seed the DB
+  plus the container ids a client needs to address them (slack and msteams channel ids, drive
+  folder ids, linear team id/key, jira project keys, confluence space keys). A dataset id is a seed the DB
   never stores, so this file is what corpus-side tooling joins on to check documents by id.
   It covers one run — a sharded corpus loaded with `--append` gets one manifest per shard.
 - **Per-service fidelity fields** (all optional; see each schema):

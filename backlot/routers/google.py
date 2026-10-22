@@ -680,6 +680,11 @@ async def gmail_label_get(user_id: str, label_id: str, request: Request):
 _GMAIL_SPACED = (
     r"(?<=\bfrom:)|(?<=\bto:)|(?<=\bcc:)|(?<=\bbcc:)|(?<=\bsubject:)|(?<=\blabel:)|(?<=\bin:)"
 )
+# In the whitespace `_GMAIL_SPACED` reads after an operator, a no-break space counts only after
+# `subject:`: measured on 2026-10-22, `subject:<no-break space>probe` answered the ids of
+# `subject:probe`, where `from:<no-break space>me` answered nothing — after the other operators
+# the no-break space is part of the value it touches, and no value reading it matches.
+_GMAIL_SPACED_NBSP = r"(?<=\bsubject:)"
 _GMAIL_DATED = r"(?<=\bafter:)|(?<=\bbefore:)|(?<=\bnewer:)|(?<=\bolder:)"
 # A `"` after `subject:`, `label:` or `in:` that no later `"` closes. What follows it is the
 # operator's value, read as if a `"` closed it at the end of `q`, with the whitespace around it and
@@ -767,6 +772,16 @@ _GMAIL_BARE_LONE_QUOTE = re.compile(
     r'^[ \t]*"[ \t]+-*(?=(?i:from|to|cc|bcc|subject|label|in|has|after|before|newer|older'
     r"|newer_than|older_than):\S+[ \t]*$)"
 )
+# A lone quote in front of a group no `)` closes: measured on 2026-10-22,
+# `subject:" (from:me` answered nothing, where `subject:" (from:me)`, with the `)`, answered the
+# ids of `from:me` — so `_parse_gmail_q` reads such a search as nothing before `_gmail_groups`
+# can read the group inside it, as it reads the closed one.
+_GMAIL_LONE_QUOTE_UNCLOSED = re.compile(
+    r'^\s*-*(?:subject|label|in):\s*"(?![^"]*")\s+\(\s*'
+    r"(?:from|to|cc|bcc|subject|label|in|has|after|before|newer|older|newer_than|older_than):"
+    r"[^)]*$",
+    re.IGNORECASE,
+)
 # An empty operator `_GMAIL_OP` drops, so that the operator after it applies. Measured on a
 # Workspace mailbox of 625 messages on 2026-10-19, comparing `messages.list` id sets
 # (`threads.list` answered the ten queries sent to it alike):
@@ -789,9 +804,13 @@ _GMAIL_EMPTY_BEFORE = (
     r'(?:(?:subject|from|to|cc|bcc):|(?:label|in):(?=[ \t"]))(?:[ \t]|"[ \t]*")*'
     r'(?=(?:label|in|has|newer_than|older_than):[^\s"]|(?:after|before|newer|older): *[^\s"-])'
 )
+# An operator does not start in the middle of a term: a no-break space glues the word before it
+# to what follows, so `(?<!\xa0)` keeps `probe<no-break space>from:me` one free-text term
+# no message holds, where a space in that place would leave `from:me` an operator.
 _GMAIL_OP = re.compile(
-    rf"(?:{_GMAIL_EMPTY_BEFORE})?(?:(?<!\S)-+)?(\w+):"
-    rf'(?:(?:{_GMAIL_SPACED})(?:\s|"\s*")*|(?:{_GMAIL_DATED}) *)?("[^"]*"|\S*)',
+    rf"(?<!\xa0)(?:{_GMAIL_EMPTY_BEFORE})?(?:(?<!\S)-+)?(\w+):"
+    rf'(?:(?:{_GMAIL_SPACED_NBSP})(?:\s|"\s*")*|(?:{_GMAIL_SPACED})(?:[ \t]|"[ \t]*")*'
+    rf'|(?:{_GMAIL_DATED}) *)?("[^"]*"|(?:\S|\xa0)*)',
     re.IGNORECASE,
 )
 # operators we honor; anything else stays as free text
@@ -921,10 +940,23 @@ _GMAIL_NEGATABLE = {"subject", "label", "in"}
 # `NOT - from:me` and `- NOT from:me` those of `-from:me`; `NOT -has:attachment` and
 # `NOT NOT has:attachment` those of `has:attachment`. In small capitals `not` is a word:
 # `not has:attachment` and `Not has:attachment` answered the ids of `has:attachment not`.
+# Measured again on a Workspace mailbox of 649 messages on 2026-10-22, the reading of a `-`
+# touching the operator had changed: the `NOT`s in front of it are left out and the `-` is read
+# alone, so `NOT -from:me`, `NOT NOT NOT -from:me`, `NOT -label:inbox`, `NOT -subject:probe`,
+# `NOT -in:sent`, `NOT -has:attachment` and `probe NOT -from:me` answered the ids of the operator
+# with its `-`, where a `-` standing apart (`NOT - from:me`, `- NOT from:me`) still lets each `NOT`
+# flip it, as the 2026-10-21 measurements read it. A `-` touching a `NOT` flips the search as
+# another `NOT` would: `-NOT subject:` and `-NOT subject:"` answered every message, and
+# `NOT -NOT label:` every message too. A no-break space is no separator in the run either:
+# `NOT<no-break space>from:me` answered nothing, as one term no message holds.
 _GMAIL_NOT = re.compile(
-    r"(?<!\S)((?:NOT\s+(?:-+\s+)*)+)(-*)"
+    r"(?:^|(?<=[^\S\xa0]))((?:(?:-*)NOT[^\S\xa0]+(?:-+[^\S\xa0]+)*)+)(-*)"
     r"(?=(?i:from|to|cc|bcc|subject|label|in|has|after|before|newer|older|newer_than|older_than):)"
 )
+_GMAIL_NOT_DASH = re.compile(r"-(?=NOT)")
+# `NOT`s glued by no-break spaces are one term, and the term reads as the word `not`: measured
+# on 2026-10-22, `NOT<no-break space>NOT from:me` answered what `not from:me` answers.
+_GMAIL_NOT_GLUE = re.compile(r"NOT(?:\xa0NOT)+")
 _GMAIL_NEGATION = {"after": "before", "before": "after", "newer": "older", "older": "newer"}
 # A `-` in front of an empty operator `_GMAIL_OP` drops is moved onto the operator after it.
 # Measured on a Workspace mailbox, comparing `messages.list` id sets: on 2026-10-19,
@@ -959,10 +991,18 @@ _GMAIL_AGE_NEGATION = {"newer_than": "older_than", "older_than": "newer_than"}
 # and `NOT (from:me to:me)` alike. A `)` with a `-` and more after it, and a `-(` after a word, are
 # no brackets: `-(from:me)-(to:me)` and `-(from:me)-to:me` answered every message, and
 # `(from:me)-(to:me)`, `from:me-(to:me)` and `probe-(from:me)` nothing, where `-(from:me)- (to:me)`
-# answered the ids of `-from:me to:me` and `-(from:me)-` those of `-from:me`. Not modelled:
-# `subject:" (from:me`, a lone quote before an unclosed group, answered nothing, where
-# `subject:" (from:me)` answered the ids of `from:me`.
-_GMAIL_GROUP_PIECE = re.compile(r'\s+|"[^"]*"|(?:(?<=[^\s(-])-+\(|\)(?=-+\S)|[^\s()"])+|[()]|"')
+# answered the ids of `-from:me to:me` and `-(from:me)-` those of `-from:me`. A lone quote
+# before an unclosed group, `subject:" (from:me`, answered nothing, where `subject:" (from:me)`
+# answered the ids of `from:me`; `_GMAIL_LONE_QUOTE_UNCLOSED` reads it in `_parse_gmail_q`. A
+# no-break space is no separator here or anywhere in `_parse_gmail_q`: measured on
+# 2026-10-22, `probe<no-break space>from:me` and `from:me<no-break space>to:me` answered
+# nothing, `NOT<no-break space>from:me` nothing, and `-(from:me<no-break space>to:me)` every
+# message — the no-break space is part of the term it touches, where after `subject:` it reads
+# as whitespace (the measurements at `_GMAIL_SPACED`).
+_GMAIL_GROUP_PIECE = re.compile(
+    r'[ \t\n\r\f\v]+|"[^"]*"|'
+    r'(?:(?<=[^ \t\n\r\f\v(-])-+\(|\)(?=-+[^ \t\n\r\f\v])|[^ \t\n\r\f\v()"])+|[()]|"'
+)
 # The `ops` key holding the inner text of each `-(…)` group of more than one term, whose messages
 # `_gmail_query` leaves out. No operator can be named this, since `_GMAIL_OP` reads a name of word
 # characters.
@@ -1014,6 +1054,17 @@ def _gmail_lone_quote(m: re.Match) -> str:
     return f'{dashes}{key}"{rest.lstrip("-")}"'
 
 
+def _gmail_not(m: re.Match) -> str:
+    """A run of `NOT`s in front of an operator as the `-` it leaves on it, or nothing: a `-`
+    touching the operator is read alone, and otherwise each `NOT` in the run, and each `-`
+    touching one, flips the operator once more (the measurements at `_GMAIL_NOT`)."""
+    if m.group(2):
+        return "-"
+    run = m.group(1)
+    flips = run.count("NOT") + len(_GMAIL_NOT_DASH.findall(run))
+    return "-" if flips % 2 else ""
+
+
 def _gmail_group_items(text: str) -> list:
     """The top-level items of ``text``: each run of characters between whitespace and brackets, and
     each `(…)` group as ``(negated, inner text)``, a group running to its `)` or to the end. A group
@@ -1057,6 +1108,17 @@ def _gmail_flatten(items: list, out: list, negated: list) -> None:
         is_negated, inner = item
         sub = _gmail_group_items(inner)
         if not is_negated:
+            # A `NOT` in front of a group falls on its first term (the comment at
+            # `_GMAIL_GROUP_PIECE`), so the `NOT`s in front of this one flip a `-` on that
+            # term here; a `-` touching an operator with no group around it is read alone
+            # instead (the comment at `_GMAIL_NOT`).
+            if sub and isinstance(sub[0], str) and sub[0].startswith("-") and sub[0].strip("-"):
+                nots = 0
+                while out and out[-1] == "NOT":
+                    out.pop()
+                    nots += 1
+                if nots and not (nots + 1) % 2:
+                    sub[0] = sub[0].lstrip("-")
             _gmail_flatten(sub, out, negated)
             continue
         terms = [s for s in sub if not (isinstance(s, str) and not s.strip("-"))]
@@ -1106,17 +1168,33 @@ def _gmail_take_negated_words(free: str) -> tuple[str, list[str]]:
     `probe+` answers nothing. A `-(…)` of one word arrives here as that word with a `-` in front
     (:func:`_gmail_flatten`); one of several terms is :data:`_GMAIL_NOT_ALL`. The word is then
     matched by the same search the word alone runs, and those messages are left out, so `-plan` on
-    its own has no free text left and the listing path answers.
+    its own has no free text left and the listing path answers. Measured on 2026-10-22, a `NOT`
+    with no term after it is left out rather than read as a term, and a search of `NOT`s alone is
+    left out whole; a `-(…)` of the one word `NOT` arrives here as `-NOT` and counts as one.
     """
     kept: list[str] = []
     negated: list[str] = []
     terms = _GMAIL_FREE_TERM.findall(free)
+
+    def _bare_not(term: str) -> bool:
+        dashed = _GMAIL_DASHED_WORD.fullmatch(term)
+        word = (
+            (dashed.group(1) if dashed.group(1) is not None else dashed.group(2)).strip('"')
+            if dashed
+            else term
+        )
+        return word == "NOT"
+
+    if terms and all(_bare_not(t) for t in terms):
+        return "", []
     i = 0
     while i < len(terms):
         j = i
         while j < len(terms) and terms[j] == "NOT":
             j += 1
-        dashed = _GMAIL_DASHED_WORD.fullmatch(terms[j]) if j < len(terms) else None
+        if j == len(terms):
+            break  # a `NOT` with no term after it is left out
+        dashed = _GMAIL_DASHED_WORD.fullmatch(terms[j])
         if dashed:
             word = (dashed.group(1) if dashed.group(1) is not None else dashed.group(2)).strip('"')
         else:
@@ -1148,6 +1226,21 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
     after:/before:/newer:/older:/newer_than:/older_than:/label:/in:/has: — the rest is free text
     matched full-text."""
+    # A search that is one quoted group is read as the group inside the quotes:
+    # `"(from:me)"` answered the ids of `from:me`, where read as a phrase it answers nothing.
+    stripped = q.strip()
+    if (
+        len(stripped) > 2
+        and stripped[0] == stripped[-1] == '"'
+        and stripped.count('"') == 2
+        and stripped[1:-1].lstrip().startswith("(")
+    ):
+        free, ops = _parse_gmail_q(stripped[1:-1])
+        if ops and not free:
+            return free, ops
+    # A lone quote in front of a group no `)` closes answers nothing.
+    if _GMAIL_LONE_QUOTE_UNCLOSED.match(q):
+        return "", {_GMAIL_NOTHING: [q]}
     ops: dict[str, list[str]] = {}
 
     def _take(m):
@@ -1177,6 +1270,12 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                     return m.group(0)
                 read = _gmail_q_date(value)
                 ops.setdefault(_GMAIL_NOTHING if read is None else key, []).append(read or value)
+                return " "
+            if key in _GMAIL_ADDRESS_KEYS and value.startswith("\xa0"):
+                # A no-break space after an address operator is part of the value it touches,
+                # and a value read with it in front matches no address:
+                # `from:<no-break space>me` answered nothing.
+                ops.setdefault(_GMAIL_NOTHING, []).append(value)
                 return " "
             stored = key
             if key in _GMAIL_ADDRESS_KEYS and value.startswith("-"):
@@ -1236,16 +1335,17 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
         ops[_GMAIL_NOT_ALL] = groups
     q = _GMAIL_CLOSED_QUOTE.sub(_gmail_closed_quote, q)
     q = _GMAIL_LONE_QUOTE.sub(_gmail_lone_quote, q)
-    q = _GMAIL_NOT.sub(lambda m: "-" if (m[1].count("NOT") + bool(m[2])) % 2 else "", q)
+    q = _GMAIL_NOT.sub(_gmail_not, q)
     q = _GMAIL_NEGATED_EMPTY.sub("-", q)
     q = _GMAIL_NEGATED_DATE.sub(_gmail_negated_date, q)
     q = _GMAIL_NEGATED_ADDRESS.sub(lambda m: f"{m.group(1)}:-", q)
-    free = re.sub(r"\s+", " ", _GMAIL_OP.sub(_take, q)).strip()
+    free = re.sub(r"[^\S\xa0]+", " ", _GMAIL_OP.sub(_take, q)).strip(" \t\n\r\f\v")
     # A `+` or a `-` standing alone is no search term, and a word ending in a `+` matches nothing
     # (the measurements at `_GMAIL_PLUS_ENDS` and `_GMAIL_NEGATABLE`). Negated words come out
     # first, so a `-` on a word ending in `+` does not mark the whole search as matching nothing.
     if not (len(free) >= 2 and free[0] == free[-1] == '"'):
         words = [t for t in free.split(" ") if t not in ("+", "-")]
+        words = ["not" if _GMAIL_NOT_GLUE.fullmatch(t) else t for t in words]
         free, negated = _gmail_take_negated_words(" ".join(words))
         if negated:
             ops[_GMAIL_NOT_WORD] = negated

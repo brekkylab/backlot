@@ -60,9 +60,9 @@ from __future__ import annotations
 
 from fastapi import Request, Response
 
-from backlot.errors import atlassian, github, google, notion, s3
+from backlot.errors import atlassian, github, google, s3
 
-_ENVELOPES = (atlassian, github, google, notion, s3)
+_ENVELOPES = (atlassian, github, google, s3)
 
 
 def http_body(path: str, exc, query=None) -> dict | None:
@@ -151,3 +151,7 @@ __all__ = [
     "rendered",
     "validation_body",
 ]
+
+from backlot.errors import notion  # noqa: E402
+
+_ENVELOPES = (*_ENVELOPES, notion)

@@ -580,10 +580,14 @@ def test_fireflies_unknown_scope_is_a_field_error_not_a_silent_widening(client, 
     GraphQL-over-HTTP contract: 200 with partial data alongside errors."""
     r = ff_gql(client, '{ transcripts(keyword: "x", scope: "body") { id } }', admin_h)
     assert r.status_code == 200
+    assert r.content.startswith(b'{"errors":[')
     body = r.json()
     assert "data" in body  # field error -> data key present
     assert body["data"]["transcripts"] is None
     assert "scope must be one of" in body["errors"][0]["message"]
+    # control: a clean response still opens with "data"
+    ok = ff_gql(client, '{ transcripts(keyword: "x", scope: "all") { id } }', admin_h)
+    assert ok.content.startswith(b'{"data":')
 
 
 def test_fireflies_request_errors_are_400_with_no_data_key(client, admin_h):

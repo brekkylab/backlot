@@ -1674,16 +1674,17 @@ _PAST_BMP = re.compile(r"[\U00010000-\U0010FFFF]")
 
 
 def _confluence_json(body: dict) -> bytes:
-    """The JSON bytes of a Confluence refusal, written the way real writes them.
+    """The JSON bytes of a Confluence refusal, written the way real writes them: compact and
+    unescaped, as ``JSONResponse`` writes them, but for a character past U+FFFF, which goes out as
+    two ``\\u`` escapes, its UTF-16 surrogates in upper-case hex, where ``JSONResponse`` writes its
+    UTF-8 bytes. Decoded, the two writings are one string, so the escapes are made in the dumped
+    text, where such a character can only stand inside a string.
 
-    Measured on Confluence Cloud 2026-10-21: a character inside U+FFFF goes out as its UTF-8
-    bytes — `é` (U+00E9) named in a refused space key, on `space/{key}`, `content` and the
-    label and conversion refusals — and one past it as two ``\\u`` escapes, its UTF-16
-    surrogates in upper-case hex: `No space found with key : \\uD83D\\uDE00` for U+1F600 and
-    `for value [\\uD835\\uDFD3]` for U+1D7D3. ``JSONResponse``'s unescaped dump writes the past-
-    plane character as its UTF-8 bytes instead. The decoded body is the same either way; only
-    the bytes differ, so the escapes are made in the dumped text, where such a character can
-    only stand inside a string. The dump itself is ``JSONResponse``'s own — compact, unescaped.
+    Measured on Confluence Cloud 2026-10-21: `é` (U+00E9) named in a refused space key went out as
+    its UTF-8 bytes on `space/{key}`, `content` and the label and conversion refusals, and U+1F600
+    and U+1D7D3 as escapes, `No space found with key : \\uD83D\\uDE00` and
+    `for value [\\uD835\\uDFD3]`; on 2026-10-22 `content?type=` with U+1F600 answered
+    `Cannot find custom content type : \\uD83D\\uDE00`.
     """
 
     def escapes(match: re.Match[str]) -> str:

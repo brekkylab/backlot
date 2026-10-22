@@ -1459,10 +1459,8 @@ def test_confluence_single_space_get(client, admin_h):
 
 
 def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(client, admin_h):
-    """A refused value holding a character past U+FFFF is written as its two ``\\u`` escapes, its
-    UTF-16 surrogates in upper-case hex, where one inside the plane goes out as its UTF-8 bytes
-    (``errors.atlassian._confluence_json``). ``.json()`` decodes the two writings to the same
-    body, so the assertions are on the raw bytes."""
+    """Pins the bytes ``errors.atlassian._confluence_json`` writes, on the raw body, since
+    ``.json()`` decodes both writings to one string."""
     emoji = "%F0%9F%98%80"  # U+1F600
     for path, status, written in (
         (
@@ -1484,6 +1482,11 @@ def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(client,
             f"/atlassian/wiki/rest/api/content/229469/label?prefix={emoji}",
             400,
             rb"label prefixes :[\uD83D\uDE00]",
+        ),
+        (
+            f"/atlassian/wiki/rest/api/content?type={emoji}",
+            501,
+            rb"Cannot find custom content type : \uD83D\uDE00",
         ),
         (
             "/atlassian/wiki/rest/api/content/%F0%9D%9F%93/child/page",

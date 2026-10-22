@@ -1007,6 +1007,60 @@ def test_hubspot_search_string_filters_ignore_value_case(client, admin_h):
     assert f(propertyName="name", operator="NOT_IN", values=["ACME HEALTH"]) == others
 
 
+def test_hubspot_search_folds_accents_on_a_string_value(tmp_path):
+    """A string property matches under the fold `_hubspot_fold` records, a value stored with an
+    accent included. An enumeration stays exact, accents included."""
+    from tests._helpers import client_for
+
+    records = [
+        {
+            "source_type": "hubspot",
+            "doc_id": doc_id,
+            "object_type": "contacts",
+            "title": first,
+            "properties": {"firstname": first, "lifecyclestage": stage},
+        }
+        for doc_id, first, stage in (
+            ("hs-maria", "Maria", "lead"),
+            ("hs-accent", "Mar\u00eda", "lead"),
+            ("hs-bob", "Bob", "customer"),
+        )
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as client:
+        headers = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def total(prop, op, **value):
+            body = {
+                "filterGroups": [{"filters": [{"propertyName": prop, "operator": op, **value}]}]
+            }
+            return client.post(
+                "/hubspot/crm/v3/objects/contacts/search", headers=headers, json=body
+            ).json()["total"]
+
+        for value in (
+            "Maria",
+            "maria",
+            "MAR\u00cdA",
+            "m\u00e1ria",
+            "M\u00c4RIA",
+            "Mar\u00efa",
+            "maria\u0301",
+            "MAR\u0130A",
+            "mar\u0131a",
+            "ma\u0280ia",
+            "\uff2d\uff21\uff32\uff29\uff21",
+        ):
+            assert total("firstname", "EQ", value=value) == 2, value
+        assert total("firstname", "IN", values=["m\u00e1ria"]) == 2
+        assert total("firstname", "NEQ", value="M\u00c1RIA") == 1
+        for value in ("MAR\u0399A", "MARIA ", " maria", "mar ia"):
+            assert total("firstname", "EQ", value=value) == 0, value
+        assert total("lifecyclestage", "EQ", value="lead") == 2
+        assert total("lifecyclestage", "EQ", value="LEAD") == 0
+        assert total("lifecyclestage", "EQ", value="l\u00e9ad") == 0
+
+
 @pytest.mark.parametrize(
     "object_type, prop, stored",
     [

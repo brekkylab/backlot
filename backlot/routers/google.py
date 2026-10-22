@@ -190,13 +190,14 @@ def _parse_batch_subrequest(payload: str):
 def _drive_batch_cut_path(target: str) -> str:
     """A Drive batch part's target with its path cut at the first ``;`` in it, its query kept.
 
-    Measured 2026-10-05 against ``www.googleapis.com/batch/drive/v3``: real ends a part's path
+    Measured 2026-10-05 against ``www.googleapis.com/batch/drive/v3``, and on 2026-10-22 with each
+    part alone in its batch and all ten of ``_BATCH_CUT_ROWS`` in one: real ends a part's path
     there, so ``files/{id};x`` is that file, ``files/{id};x/export`` is ``files.get`` on that file
     with its ``/export`` dropped, and ``files;x``, ``about;x``, ``drives;x`` and
     ``files/{id}/permissions;x`` are those routes' answers. The cut is read off the target as
     sent, so an escaped ``%3B`` stays in the path and names the file whose id carries a ``;``.
-    A request sent on its own is not cut: that same ``files/{id};x`` there names a file that
-    does not exist."""
+    A request sent on its own is not cut: each of those paths was a 404 there on 2026-10-22, that
+    same ``files/{id};x`` naming a file that does not exist."""
     path, sep, query = target.partition("?")
     cut = path.find(";")
     if cut != -1:

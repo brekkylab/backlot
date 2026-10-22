@@ -1238,9 +1238,8 @@ _BATCH_CUT_ROWS = [
 def test_google_drive_batch_cuts_a_part_path_at_a_semicolon(
     client, admin_h, target, status, detail
 ):
-    """The rows `_BATCH_CUT_ROWS` records, each as the one part of its batch: the part's path is
-    read up to its `;` and its query is kept, so the export a `;` follows is dropped to the
-    `files.get` it follows and the one a `;` cuts short is the download it names."""
+    """The rows `_BATCH_CUT_ROWS` records, each as the one part of its batch
+    (`_drive_batch_cut_path`), and the same request on its own, which no batch cuts."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     ids = {"doc": doc}
     got, lines, sub_body = _batch_answer(
@@ -1261,6 +1260,7 @@ def test_google_drive_batch_cuts_a_part_path_at_a_semicolon(
         assert detail in body, sub_body
         if detail == "id":
             assert body["id"] == doc and body["name"]
+    assert client.get(target.format(**ids), headers=admin_h).status_code == 404
 
 
 def test_google_drive_batch_cuts_every_part_path_at_a_semicolon(client, admin_h):
@@ -1281,15 +1281,6 @@ def test_google_drive_batch_cuts_every_part_path_at_a_semicolon(client, admin_h)
     assert [int(code) for code in re.findall(r"^HTTP/1\.1 (\d+)", r.text, re.M)] == [
         status for _, status, _ in _BATCH_CUT_ROWS
     ]
-
-
-def test_google_drive_semicolon_path_on_its_own_is_not_cut(client, admin_h):
-    """The same part sent on its own keeps its `;`: the cut is the Drive batch's reading of a
-    part's path, not the route's."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    r = client.get(f"/drive/v3/files/{doc};x", headers=admin_h, params={"fields": "id,name"})
-    assert r.status_code == 404
-    assert r.json()["error"]["message"] == f"File not found: {doc};x."
 
 
 _ACK = "/drive/v3/files/{doc}?acknowledgeAbuse=true&fields=id"

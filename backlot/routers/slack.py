@@ -1039,8 +1039,9 @@ def unserved_answer(request: Request) -> Response | None:
     no method. A credential that resolves, on a method :data:`_OTHER_ANSWERS` does not hold, is left
     to the router, and so is a method of :data:`_ANSWERED_BY_ARGUMENTS` but for the answers its
     comment gives here, and so are an empty name, the names `.` and `..`, a path ending in `/`, and
-    a name after two or more `/`s or a backslash, which real reads as that name (`//api.test` and
-    `\\api.test` are its `api.test`, slack.com/api, 2026-10-20)."""
+    a name after a `/` or `\\` sent escaped (`%2Fapi.test`), which real's front end refuses with an
+    empty 400. A run of them sent as themselves has been merged before this runs
+    (`merge_slashes_before_a_slack_method_name` in ``backlot.main``)."""
     path = request.scope["path"]
     rest = path.removeprefix("/slack/api/")
     if rest in ("", ".", "..") or path.endswith("/"):

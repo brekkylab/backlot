@@ -2485,7 +2485,8 @@ def _byo_linear(dsid, raw, P):
         parent=_linear_parent(raw.get("parent_issue")),
         release=_linear_release(raw.get("release")),
         completedAt=(ended if state_type == "completed" else None),
-        canceledAt=(ended if state_type == "canceled" else None),
+        # A real issue moved to `Duplicate` answered a `canceledAt` (api.linear.app, 2026-10-22).
+        canceledAt=(ended if state_type in ("canceled", "duplicate") else None),
         startedAt=(created if state_type in ("started", "completed") else None),
         attachments=(parse_linear_attachments(raw.get("links"), raw.get("attachments")) or None),
         comments=(comments or None),

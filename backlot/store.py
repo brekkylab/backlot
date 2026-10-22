@@ -735,9 +735,10 @@ CREATE INDEX IF NOT EXISTS idx_linear_state ON linear_issues(state);
 -- column; json_each cannot be indexed) — only a MISS pays a full scan, and a miss is exactly the
 -- enumeration attempt.
 CREATE INDEX IF NOT EXISTS idx_linear_project ON linear_issues(project);
-CREATE INDEX IF NOT EXISTS idx_linear_cycle ON linear_issues(cycle);
 CREATE INDEX IF NOT EXISTS idx_linear_assignee ON linear_issues(assignee_email);
 CREATE INDEX IF NOT EXISTS idx_linear_author ON linear_issues(author_email);
+-- A cycle is visible with its team, so no probe seeks by cycle.
+DROP INDEX IF EXISTS idx_linear_cycle;
 -- `Issue.children` is "every issue whose parent_id is me" — an indexed equality, not a join
 -- on the non-unique identifier text.
 CREATE INDEX IF NOT EXISTS idx_linear_parent_doc ON linear_issues(parent_id);
@@ -1419,6 +1420,12 @@ LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": LINEAR_UPDATED_E
 # `priority` put an unset issue outside `priority: {eq: 0}` and after every other row in a sort.
 LINEAR_PRIORITY_EXPR = "COALESCE(priority, 0)"
 
+# `Issue.number` is `synth.linear_issue_number` of the identifier, its trailing run of digits (0
+# when there is none). The same reading in SQL, so `IssueFilter.number` compares what is served.
+LINEAR_NUMBER_EXPR = (
+    "CAST(substr(rtrim(identifier), length(rtrim(rtrim(identifier), '0123456789')) + 1) AS INTEGER)"
+)
+
 LINEAR_SORT_COLUMNS = {
     "title": "title",
     "priority": LINEAR_PRIORITY_EXPR,
@@ -1764,15 +1771,14 @@ LINEAR_DEFAULT_STATE = "Todo"
 # of its own: it exists only as a column value on some issue. So "can the caller see it" means
 # "can the caller see any issue carrying it", and each kind names the predicate that asks.
 # Keyed exactly as `linear_entities` keys its rows.
+#
+# A workflow state and a cycle belong to their team, and `Team.states` / `Team.cycles` list every
+# one of a team's to whoever sees the team, so either is visible with its team rather than with
+# an issue carrying it.
 _LINEAR_ENTITY_PREDICATES = {
     "project": lambda v: ("project = ?", [v]),
-    "cycle": lambda v: ("cycle = ? AND team = ?", [v[1], v[0]]),  # v = (team, name)
-    # COALESCE, to match the synthesized default above: a caller reading an issue with no state
-    # must be able to resolve the state id that issue served them.
-    "state": lambda v: (
-        f"COALESCE(state, '{LINEAR_DEFAULT_STATE}') = ? AND team = ?",
-        [v[1], v[0]],
-    ),  # v = (team, name)
+    "cycle": lambda v: ("team = ?", [v[0]]),  # v = (team, name)
+    "state": lambda v: ("team = ?", [v[0]]),  # v = (team, name)
     # A person is reachable as either end of an issue.
     "user": lambda v: ("(author_email = ? OR assignee_email = ?)", [v[0], v[0]]),  # v = (email, _)
     "label": lambda v: (
@@ -1822,11 +1828,12 @@ def linear_entity_by_id(conn, kind: str, served_id):
 
 
 def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
-    """Whether the caller can see ANY issue carrying this project / cycle / state / person / label.
+    """Whether the caller can see ANY issue carrying this project / person / label, or any issue of
+    this state's or cycle's team.
 
     Without it the by-id roots are an existence oracle: `linear_entities` is an unfiltered DISTINCT
-    over every issue, so a caller denied an issue could still resolve that issue's project, label,
-    cycle, state and assignee. A ``LIMIT 1`` probe, so it stops at the first visible carrier."""
+    over every issue, so a caller denied an issue could still resolve that issue's project, label
+    and assignee. A ``LIMIT 1`` probe, so it stops at the first visible row."""
     build = _LINEAR_ENTITY_PREDICATES.get(kind)
     if build is None:
         raise ValueError(f"unknown linear entity kind {kind!r}")
@@ -1853,6 +1860,144 @@ def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:
         cparams,
     )
     return {r[0]: r[1] for r in rows}
+
+
+def linear_team_entity_names(conn, kind: str, team) -> list[str]:
+    """The names of one team's workflow states or cycles in the corpus, read off
+    ``linear_entities``, which keys both on the team. Unscoped: a team's states and cycles are
+    visible with the team (see :data:`_LINEAR_ENTITY_PREDICATES`)."""
+    if kind not in ("state", "cycle"):
+        raise ValueError(f"not a team-scoped linear entity kind: {kind!r}")
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM linear_entities WHERE kind = ? AND team = ? ORDER BY name",
+            (kind, team),
+        )
+    ]
+
+
+def linear_team_projects(conn, team, visible_ids=None) -> list[str]:
+    """The projects the caller can see an issue of this team in. A Linear project belongs to the
+    teams whose issues it holds, and is visible as `project(id:)` sees it: with an issue."""
+    clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT project FROM linear_issues "
+            f"WHERE team = ? AND project IS NOT NULL AND project != ''{clause}",
+            [team, *cparams],
+        )
+    ]
+
+
+def linear_visible_labels(conn, visible_ids=None) -> list[str]:
+    """Every label the caller can see an issue carrying. Labels are workspace-wide, so this is
+    the same list for every team."""
+    if visible_ids is None:
+        return [r[0] for r in conn.execute("SELECT name FROM linear_entities WHERE kind = 'label'")]
+    clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT value FROM linear_issues, json_each(COALESCE(labels, '[]'))"
+            f" WHERE 1=1{clause}",
+            cparams,
+        )
+    ]
+
+
+def search_linear_issues(
+    conn,
+    term: str,
+    *,
+    visible_ids=None,
+    team=None,
+    prefilter=None,
+    include_comments=True,
+    archived=False,
+    order_by=None,
+) -> tuple[list[tuple[str, float]], int]:
+    """``searchIssues``: every matching issue as ``(id, score)`` in the order served, and the count
+    ``totalCount`` reports.
+
+    An issue matches when its identifier is ``term`` (any case), when a space-separated word of
+    ``term`` starts a word of its title or description, read through the porter-stemmed index with
+    a hyphenated word as the phrase it spells (measured 2026-10-22: `prob`, `pro` and `chil` matched
+    where `robe` did not, and `BRE-2` did not match a title holding `(child 2)`), or, with
+    ``include_comments``, when one of its comments contains a word. That count leaves
+    ``prefilter`` out, as api.linear.app's did on 2026-10-22: a `filter` narrowed the nodes and left
+    `totalCount` at the unfiltered total.
+
+    ``score`` is 1 for the identifier, as real's was, and ``|bm25| / (1 + |bm25|)`` for an index
+    match, so it falls between 0 and 1 and orders as the rank does; a comment-only match scores 0.
+    Real's own scores are not reproducible."""
+    words = re.findall(r"\w+", term.lower())
+    # Each kind of match is collected on its own and the candidates are scoped afterwards: an FTS
+    # MATCH joined into a scan of the issues is re-run per issue.
+    ranks: dict[str, float | None] = {}
+    phrases = [w.replace('"', '""') for w in term.lower().split() if re.search(r"\w", w)]
+    if phrases and _has_fts(conn, "linear"):
+        match = " OR ".join(f'"{w}"*' for w in phrases)
+        for row in conn.execute(
+            "SELECT id, rank FROM linear_fts WHERE linear_fts MATCH ?", [match]
+        ):
+            ranks[row[0]] = row[1]
+    elif words:
+        found = " OR ".join("instr(lower(title || ' ' || content), ?) > 0" for _ in words)
+        for row in conn.execute(f"SELECT id FROM linear_issues WHERE {found}", words):
+            ranks[row[0]] = None
+    if include_comments and words:
+        found = " OR ".join("instr(lower(body), ?) > 0" for _ in words)
+        for row in conn.execute(
+            f"SELECT DISTINCT issue_id FROM linear_comments WHERE {found}", words
+        ):
+            ranks.setdefault(row[0], None)
+    key, sep, suffix = term.strip().partition("-")
+    spellings = list(
+        dict.fromkeys((term.strip(), f"{key.upper()}{sep}{suffix}", term.strip().upper()))
+    )
+    exact = {
+        r[0]
+        for r in conn.execute(
+            f"SELECT id FROM linear_issues WHERE identifier IN ({','.join('?' * len(spellings))})",
+            spellings,
+        )
+    }
+    for issue_id in exact:
+        ranks.setdefault(issue_id, None)
+    where = " WHERE id IN (SELECT value FROM json_each(?))"
+    params: list = [json.dumps(list(ranks))]
+    if team is not None:
+        where += " AND team = ?"
+        params.append(team)
+    where += _linear_archived(archived)
+    clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
+    where += clause
+    params += cparams
+    total = conn.execute(f"SELECT COUNT(*) FROM linear_issues{where}", params).fetchone()[0]
+    if prefilter:
+        frag, fparams = prefilter
+        where += f" AND {frag}"
+        params += fparams
+    sort = LINEAR_ORDER_COLUMNS[order_by] if order_by else "created_ts"
+    rows = conn.execute(f"SELECT id, {sort} AS at FROM linear_issues{where}", params).fetchall()
+    # Newest first and then by id, as `_linear_order` sorts; without `order_by`, relevance first.
+    rows.sort(key=lambda r: r["id"])
+    rows.sort(key=lambda r: r["at"], reverse=True)
+    if not order_by:
+        rows.sort(key=lambda r: (r["id"] not in exact, ranks[r["id"]] is None, ranks[r["id"]] or 0))
+    out = []
+    for row in rows:
+        rank = ranks[row["id"]]
+        if row["id"] in exact:
+            score = 1.0
+        elif rank is not None:
+            score = abs(rank) / (1 + abs(rank))
+        else:
+            score = 0.0
+        out.append((row["id"], score))
+    return out, total
 
 
 def hubspot_associations(

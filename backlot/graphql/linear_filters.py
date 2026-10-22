@@ -842,6 +842,16 @@ def _issue_parts(conn, flt: dict, team_keys: dict | None) -> tuple[str, list, bo
         # No `branchName`: Linear's `IssueFilter` has no such field (measured 2026-09-03 -- the
         # real API answers `Field "branchName" is not defined by type "IssueFilter"`), so this
         # compiled a predicate no client written against Linear could ever send.
+        elif key == "number":
+            # Each operand a positive integer: api.linear.app refused `eq: 0`, `gt: 0`, `lt: 1.5`,
+            # `in: [1.5]` and `nin: [0]` with `Argument Validation Error` ("number comparisons must
+            # use positive integers.") and took `lt: 1`, `eq: null` and `in: []` (2026-10-22).
+            operands = [
+                v for raw in spec.values() for v in (raw if isinstance(raw, list) else [raw])
+            ]
+            if any(v is not None and (v < 1 or not float(v).is_integer()) for v in operands):
+                raise argument_validation_error()
+            add(*_Comparator(store.LINEAR_NUMBER_EXPR).render(spec))
         elif key == "priority":
             # Against the COALESCE the field is served with, so `priority: {eq: 0}` finds an issue
             # whose column is NULL and `Issue.priority` reads 0 (see store.LINEAR_PRIORITY_EXPR).

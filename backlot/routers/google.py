@@ -4966,7 +4966,10 @@ def _workbook(request: Request, spreadsheet_id: str) -> tuple:
     Inside a batch there is no lookup: real's batch does not implement the Sheets reads. Measured
     2026-10-04 on the five reads this module serves, and on the two POST reads' bodies 2026-10-06,
     the answer is 501 after the credential, the typed query values and a POST read's body and before
-    the spreadsheet is looked up, so one that does not exist gets it as well."""
+    the spreadsheet is looked up, so one that does not exist gets it as well. A `fields` mask naming
+    nothing is refused ahead of it: measured 2026-10-22, `values/A1?fields=bogus` on a spreadsheet
+    that exists and on one that does not, and `:getByDataFilter?fields=bogus` on one that does not,
+    were the mask's 400 inside a batch."""
     if _BATCH_OUTER.get() is not None:
         raise gerr.unimplemented()
     row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")

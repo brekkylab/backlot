@@ -1554,11 +1554,12 @@ def list_linear_comments(
     """Comments on one issue, or across the corpus when ``issue_id`` is None (``Query.comments``).
 
     A comment row carries no ACL grant of its own; visibility is the parent issue's, so the ACL
-    is applied to ``linear_issues`` through a join rather than to the comment table."""
-    # The join exists ONLY to reach the parent issue's ACL, so an admin read (visible_ids None)
-    # skips it: measured over 165k comments, the join cost ~40ms per page for nothing.
-    join = "" if visible_ids is None else " JOIN linear_issues i ON i.id = c.issue_id"
-    sql = f"SELECT c.* FROM linear_comments c{join} WHERE 1=1"
+    is applied to ``linear_issues`` through a join rather than to the comment table. The join
+    also reads the parent's identifier and title, which ``Comment.url`` is answered from, so it
+    runs for admin reads too: the ~40ms/page it cost over a 165k-comment corpus is now buying
+    served data, not only the ACL."""
+    join = " JOIN linear_issues i ON i.id = c.issue_id"
+    sql = f"SELECT c.*, i.identifier AS issue_identifier, i.title AS issue_title FROM linear_comments c{join} WHERE 1=1"
     params: list = []
     if issue_id is not None:
         sql += " AND c.issue_id = ?"

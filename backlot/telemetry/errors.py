@@ -87,6 +87,8 @@ _GRAPHQL = [
     (r"^Syntax Error", "graphql_parse"),
     (r"^Entity not found", "entity_not_found"),
     (r"^unsupported ", "unsupported_filter"),
+    # Fireflies' `transcripts` refusing a `scope` it does not have, as a field error at 200.
+    (r"^scope must be one of ", "invalid_scope"),
     (r"^Authentication required", "authentication_required"),
     (
         r"^(Must provide |Variables are invalid JSON|POST body sent invalid JSON|Unknown operation named )",

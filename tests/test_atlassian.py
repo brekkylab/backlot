@@ -1180,11 +1180,9 @@ def test_confluence_cql_search_refuses_a_request_with_no_first_cql(
 
 
 def test_confluence_cql_search_reads_its_content_type_as_jaxrs_does(client, admin_h):
-    """The search reads the request's `Content-Type` as Confluence's other JAX-RS GETs do
-    (``backlot.routers.atlassian._CONFLUENCE_JAXRS_GETS`` records the measurement): a type JSON
-    is not compatible with is the empty 415 and a header Jersey cannot read is Tomcat's 400 page,
-    each ahead of the caller check and of the `cql` refusal, with no credential and with one,
-    where a type it reads reaches the search as before."""
+    """Pins the search's `Content-Type` refusal (``_refuse_the_search_media_type`` and
+    ``_CONFLUENCE_JAXRS_GETS`` in ``backlot.routers.atlassian``), with no credential and with one,
+    against `Accept` and on a `HEAD`."""
     url = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
     for credential in ({}, admin_h):
         r = client.get(url, headers={**credential, "Content-Type": "text/plain"})
@@ -1203,6 +1201,9 @@ def test_confluence_cql_search_reads_its_content_type_as_jaxrs_does(client, admi
     assert r.status_code == 415, r.text
     r = client.get(url, headers={**admin_h, "Content-Type": "application/json"})
     assert r.status_code == 200, r.text
+    twice = [*admin_h.items(), ("Content-Type", _JSON_TYPE), ("Content-Type", _JSON_TYPE)]
+    r = sent_as(client, "GET", url, twice)
+    assert r.status_code == 400 and r.content == errors_atlassian.tomcat_page(400).encode()
     # ahead of the 406, and the 415 behind the 400 for an `Accept` Jersey cannot parse
     for accept, ctype, status, ctype_out in [
         ("application/xml", "text/plain", 415, None),
@@ -6781,10 +6782,7 @@ _JSON_TYPE = "application/json"
                 "atlassian-connect/1/app/module/dynamic",
             )
         ),
-        # the same GETs reading a `Content-Type`, as ``_CONFLUENCE_JAXRS_GETS`` records: a type
-        # JSON is not compatible with is the empty 415 ahead of the caller check, on each but
-        # `settings/lookandfeel`, which takes any type and reaches it, and a header Jersey
-        # cannot read is Tomcat's 400 page on either kind
+        # the same GETs reading a `Content-Type` (``_CONFLUENCE_JAXRS_GETS``)
         *(
             ("GET", f"/wiki/rest/{path}", None, "text/plain", 415, b"")
             for path in (
@@ -6832,6 +6830,21 @@ _JSON_TYPE = "application/json"
         + (415, b""),
         ("GET", "/wiki/rest/api/contentbody/convert/async/1", None, "foo", 400)
         + (errors_atlassian.tomcat_page(400).encode(),),
+        # the header sent twice (``_jaxrs_media_refusal``), and a Spring GET and write as controls
+        *(
+            ("GET" if path else "POST", path or "/wiki/rest/api/template", None, twice, 400)
+            + (errors_atlassian.tomcat_page(400).encode(),)
+            for path, twice in (
+                ("", (_JSON_TYPE, _JSON_TYPE)),
+                ("/wiki/rest/api/audit", (_JSON_TYPE, "text/plain")),
+                ("/wiki/rest/api/settings/lookandfeel", ("text/plain", "text/plain")),
+                ("/wiki/rest/api/nosuch", (_JSON_TYPE, _JSON_TYPE)),
+            )
+        ),
+        ("GET", "/wiki/rest/api/content/1", None, (_JSON_TYPE, "text/plain"), 403)
+        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+        ("POST", "/wiki/rest/api/content", None, (_JSON_TYPE, "text/plain"), 403)
+        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
         *(
             (method, path, None, None, 403, errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY)
             for method, path in (
@@ -6904,10 +6917,13 @@ def test_confluence_answers_an_operation_before_it_runs(
     ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in ``backlot.routers.atlassian`` carry the measurement for.
     A 415's ``body`` is the reason Spring gives; the 401 is asserted by status alone, its body being
     JSON here where real's is Tomcat's page. An `OPTIONS` at a published write's path is the 404
-    real answers it, not a refusal."""
-    headers = {} if ctype is None else {"Content-Type": ctype}
+    real answers it, not a refusal, and `/wiki/rest/api/nosuch`, at which no operation is, the 404
+    or the 400 page ``_confluence_not_found`` gives. A ``ctype`` of two values sends the header
+    twice."""
+    ctypes = () if ctype is None else (ctype,) if isinstance(ctype, str) else ctype
+    headers = [("Content-Type", value) for value in ctypes]
     if authorization is not None:
-        headers["Authorization"] = authorization
+        headers.append(("Authorization", authorization))
     r = sent_as(
         client, method, f"/atlassian{vendor_path}", headers, content=b"x" if ctype else None
     )
@@ -6928,6 +6944,32 @@ def test_confluence_answers_an_operation_before_it_runs(
             if status == 400
             else _JSON_TYPE
         )
+
+
+@pytest.mark.parametrize(
+    "path, ctypes, accept, status, body",
+    [
+        # a path whose answer is the page reads no `Content-Type`
+        ("/wiki/rest/api/space/ENG/nope", ("foo",), None, 404, errors_atlassian.HTML_NOT_FOUND),
+        ("/wiki/rest/api/space/ENG/nope", (_JSON_TYPE, _JSON_TYPE), None, 404)
+        + (errors_atlassian.HTML_NOT_FOUND,),
+        # elsewhere the 400 page comes ahead of the empty 500 for an `Accept` Jersey cannot parse
+        ("/wiki/rest/api/nosuch", ("foo",), "application/json;q=2", 400)
+        + (errors_atlassian.tomcat_page(400),),
+        ("/wiki/rest/api/nosuch", (_JSON_TYPE, _JSON_TYPE), "application/json;q=2", 400)
+        + (errors_atlassian.tomcat_page(400),),
+        ("/wiki/rest/api/nosuch", ("text/plain",), "application/json;q=2", 500, ""),
+    ],
+)
+def test_confluence_unserved_path_reads_its_content_type_where_real_does(
+    client, path, ctypes, accept, status, body
+):
+    """Pins where ``_confluence_not_found`` reads a `Content-Type` among its other answers."""
+    headers = [("Content-Type", value) for value in ctypes]
+    if accept is not None:
+        headers.append(("Accept", accept))
+    r = sent_as(client, "GET", f"/atlassian{path}", headers)
+    assert (r.status_code, r.text) == (status, body)
 
 
 # --- what `Accept` asks for: the 406, and the shapes a refusal takes from it --------------------

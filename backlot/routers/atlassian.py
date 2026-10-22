@@ -51,12 +51,12 @@ async def _checked_before_the_route(request: Request) -> None:
     then an `Accept` that admits no JSON with its 406 (``errors.atlassian.not_acceptable``), the
     empty one JAX-RS gives on `search` and on the others Tomcat's page or, under a `+json` type
     `Accept` names, the `errors` list, ahead of the anonymous 403, a parameter's 400 and the route's
-    own 404; on `search` a `Content-Type` its JAX-RS service will not read comes between the 401 and
-    the 406 (:func:`_refuse_the_search_media_type`). Jira answers a `POST search/jql` body of a type
-    it does not read with its 415 (:func:`_refuse_a_search_media_type`) and then the 406, ahead of
-    an empty body's 400, an unbounded query's 400, a parameter's 400 and the route's own answer.
-    `space/{key}/permission` is the one route this asks the 401 alone of: the 405 it answers comes
-    before the 406.
+    own 404. Jira answers a `POST search/jql` body of a type it does not read with its 415
+    (:func:`_refuse_a_search_media_type`) and then the 406, ahead of an empty body's 400, an
+    unbounded query's 400, a parameter's 400 and the route's own answer. `space/{key}/permission` is
+    the one route this asks the 401 alone of: the 405 it answers comes before the 406. On `search`
+    a `Content-Type` its JAX-RS service will not read is refused between the 401 and the 406
+    (:func:`_refuse_the_search_media_type`).
     """
     endpoint = getattr(request.scope.get("route"), "endpoint", None)
     jaxrs = False
@@ -1921,11 +1921,8 @@ async def confluence_cql_search(request: Request):
     `~`: real's `type=page` is every page on the site and `space=<KEY> and type=page` that space's
     pages; its `space=<KEY>` also holds the space's attachments, comments and the space itself,
     where this server answers the space's pages and blogposts. A CQL holding none of the four names
-    only fields this route does not read, and answers no row. The request's `Content-Type` is read
-    before this runs, as on the other JAX-RS GETs (:func:`_refuse_the_search_media_type`):
-    measured 2026-10-19, a type JSON is not compatible with is the empty 415 and a header Jersey
-    cannot read is Tomcat's 400 page, ahead of the caller check and of the `cql` refusal below,
-    with no credential and with one."""
+    only fields this route does not read, and answers no row. A `Content-Type` it will not read is
+    refused before this runs (:func:`_refuse_the_search_media_type`)."""
     conn = auth.conn(request)
     caller = _confluence_caller(request, not_permitted=True)
     ids = auth.visible_ids(request, caller)
@@ -3486,10 +3483,19 @@ _CONFLUENCE_PRODUCES = tuple(
 def _jaxrs_media_refusal(request: Request, *, checks_type: bool) -> Response | None:
     """What a Confluence JAX-RS service answers a `Content-Type` it will not read, or None:
     Tomcat's 400 page for one Jersey cannot read, or an empty 415 with no `content-type` where
-    the service checks the type, as ``errors.atlassian.jaxrs_media_type_refusal`` decides."""
-    status = errors_atlassian.jaxrs_media_type_refusal(
-        request.headers.get("content-type"), checks_type=checks_type
-    )
+    the service checks the type, as ``errors.atlassian.jaxrs_media_type_refusal`` decides, and the
+    400 page for the header sent more than once, whatever its values. Measured with no credential
+    on 2026-10-22: the header twice, as `application/json` twice, `text/plain` twice or the two
+    together, was the 400 page on `POST template`, on the `audit`, `settings/lookandfeel` and CQL
+    search GETs and on `/wiki/rest/api/nosuch`, where the Spring `GET content/{id}` and
+    `POST content` gave the 403 they give to one."""
+    values = request.headers.getlist("content-type")
+    if len(values) > 1:
+        status = 400
+    else:
+        status = errors_atlassian.jaxrs_media_type_refusal(
+            values[0] if values else None, checks_type=checks_type
+        )
     if status == 400:
         return Response(
             errors_atlassian.tomcat_page(400),
@@ -3502,11 +3508,10 @@ def _jaxrs_media_refusal(request: Request, *, checks_type: bool) -> Response | N
 
 def _refuse_the_search_media_type(request: Request) -> None:
     """Raise what the CQL search answers a `Content-Type` it will not read
-    (:func:`_jaxrs_media_refusal`), where it does: Tomcat's 400 page ahead of an `Accept` Jersey
-    cannot parse, and the empty 415 after that one's 400 and ahead of the 406. Measured on
-    Confluence Cloud on 2026-10-22 with a credential: `text/plain` under `Accept: application/xml`
-    was the 415 and under `Accept: application/json;q=2` the `Accept` 400, and `foo` under either
-    was Tomcat's 400 page."""
+    (:func:`_jaxrs_media_refusal`): Tomcat's 400 page, or the empty 415 unless `Accept` is one
+    Jersey cannot parse, whose 400 comes first. Measured on Confluence Cloud on 2026-10-22 with a
+    credential: `text/plain` under `Accept: application/xml` was the 415 and under
+    `Accept: application/json;q=2` the `Accept` 400, and `foo` under either the 400 page."""
     refused = _jaxrs_media_refusal(request, checks_type=True)
     if refused is None or (
         refused.status_code == 415
@@ -3523,8 +3528,7 @@ def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Respo
     (:data:`_CONFLUENCE_JAXRS_GETS`) answers a `Content-Type` it will not read, or None, as
     :func:`_jaxrs_media_refusal` gives it: the services that check the type are all but the
     untyped ones of each kind (:data:`_CONFLUENCE_JAXRS_UNTYPED`,
-    :data:`_CONFLUENCE_JAXRS_GETS_UNTYPED`). On a GET the refusal stands ahead of the caller
-    check and of the operation's own 400, as on a write (measured 2026-10-19)."""
+    :data:`_CONFLUENCE_JAXRS_GETS_UNTYPED`)."""
     if _is(_CONFLUENCE_JAXRS, request.method, vendor_path):
         checks_type = not _is(_CONFLUENCE_JAXRS_UNTYPED, request.method, vendor_path)
     elif _is(_CONFLUENCE_JAXRS_GETS, request.method, vendor_path):
@@ -3785,10 +3789,10 @@ def _confluence_not_found(request: Request) -> Response:
         )
     refused = _jaxrs_media_refusal(request, checks_type=False)
     if refused is not None:
-        # a `Content-Type` Jersey cannot read is Tomcat's 400 page ahead of this 404, as on the
-        # services it does serve (measured 2026-10-19 on `/wiki/rest/api/nosuch` with `foo`,
-        # `application/json;x=` and an empty value); one it can read, `text/plain` among them,
-        # leaves the 404 below alone
+        # ahead of this 404 and of the 500 below, measured 2026-10-19 on `/wiki/rest/api/nosuch`
+        # with `foo`, `application/json;x=` and an empty value and 2026-10-22 with `foo` under
+        # `Accept: application/json;q=2`, where a type Jersey reads leaves both alone; the page
+        # above answered `foo` as it answers no type
         return refused
     if errors_atlassian.jaxrs_cannot_parse(request.headers.get("accept")):
         # Jersey fails to write its 404 under an `Accept` it cannot parse: an empty 500 with no

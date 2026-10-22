@@ -6,7 +6,9 @@ Microsoft Graph's ``error.code``, a GraphQL ``extensions.code``. GitHub, Jira, C
 GraphQL engine and Graph's OData validator answer with a message only; those messages are Backlot's
 own text, so each maps to a fixed slug here and the message itself, which can carry a key, a sha or
 a field name from the request, is never sent. A message this table does not know is
-``unrecognized``.
+``unrecognized``, except at 400 from Linear or Fireflies: the GraphQL engine answers 400 only for a
+request it refuses before any resolver runs, and the refusals no row names are graphql-core's
+validation of the document and its variables, so they are ``graphql_validation``.
 
 The class is the cause a failed call is put down to, sent as ``backlot.error_class`` on every
 failure:
@@ -87,8 +89,6 @@ _GRAPHQL = [
     (r"^Syntax Error", "graphql_parse"),
     (r"^Entity not found", "entity_not_found"),
     (r"^unsupported ", "unsupported_filter"),
-    # Fireflies' `transcripts` refusing a `scope` it does not have, as a field error at 200.
-    (r"^scope must be one of ", "invalid_scope"),
     (r"^Authentication required", "authentication_required"),
     (
         r"^(Must provide |Variables are invalid JSON|POST body sent invalid JSON|Unknown operation named )",
@@ -141,7 +141,10 @@ def error_code(source: str, status: int, body: bytes) -> str:
             return ""
         extensions = errors[0].get("extensions")
         code = extensions.get("code") if isinstance(extensions, dict) else None
-        return code if isinstance(code, str) and code else _slug(errors[0].get("message"), _GRAPHQL)
+        if isinstance(code, str) and code:
+            return code
+        slug = _slug(errors[0].get("message"), _GRAPHQL)
+        return "graphql_validation" if slug == "unrecognized" and status == 400 else slug
     if status < 400:
         return ""
     if source == "github":

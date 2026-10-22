@@ -2268,7 +2268,6 @@ def test_fireflies_scope_columns_are_the_api_vocabulary():
     assert store.fireflies_scope_columns("sentences") == ("content",)
     assert store.fireflies_scope_columns("all") == ("title", "content")
     assert store.fireflies_scope_columns(None) == ("title", "content")  # default when absent
-    # Matched with its case; empty is a value, not an absence. See fireflies_scope_columns.
     assert store.fireflies_scope_columns("ALL") is None
     assert store.fireflies_scope_columns("TITLE") is None
     assert store.fireflies_scope_columns("") is None

@@ -2137,12 +2137,8 @@ _FF_SCOPE_COLS = {"title": ("title",), "sentences": ("content",), "all": ("title
 
 
 def fireflies_scope_columns(scope: str | None) -> tuple[str, ...] | None:
-    """The columns a `scope` searches, or None if the value isn't one Fireflies accepts.
-
-    Matched with its case: only ``title``, ``sentences`` and ``all`` count, and an empty string is
-    a value rather than an absence (api.fireflies.ai, 2026-10-21). ``None`` alone means the
-    argument was left out and defaults to ``all``.
-    """
+    """The columns a `scope` searches: its entry in ``_FF_SCOPE_COLS`` as spelled, the ``"all"``
+    entry when it is left out (None), or None when it has no entry."""
     if scope is None:
         return _FF_SCOPE_COLS["all"]
     return _FF_SCOPE_COLS.get(scope)

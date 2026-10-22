@@ -404,9 +404,11 @@ def _validate_transcripts(arguments):
     ``mine``, ``user_id`` and the three singular addresses collide once two of them hold a value
     (``false``, ``null`` and ``""`` do not), and the error then names each of them that was sent,
     ``false`` and ``""`` included. ``organizers`` and ``participants`` collide with any one that
-    holds a value, ``[]`` included, and the error names only the plural for that. A sent ``scope``
-    needs a non-empty ``keyword`` and an exact ``title``/``sentences``/``all`` spelling
-    (api.fireflies.ai, 2026-10-21); ``scope`` is listed ahead of the other refused arguments."""
+    holds a value, ``[]`` included, and the error names only the plural for that. A ``scope`` that
+    holds a value (``""`` does not) needs a ``keyword`` holding a character outside ``_JS_SPACE``,
+    and a ``scope`` spelled other than ``title``, ``sentences`` or ``all`` is refused, ``""``
+    included; real lists ``scope`` ahead of the other arguments it refuses (api.fireflies.ai,
+    2026-10-21 and 2026-10-22)."""
     fields = {}
 
     def add(name, kind, message):
@@ -414,11 +416,10 @@ def _validate_transcripts(arguments):
         field["constraints"].append({"type": kind, "message": message})
 
     scope, keyword = arguments["scope"], arguments["keyword"]
-    if scope is not None:
-        if not keyword:
-            add("scope", "conditionalRequired", _SCOPE_NEEDS_KEYWORD)
-        if store.fireflies_scope_columns(scope) is None:
-            add("scope", "isEnum", _SCOPE_ENUM)
+    if scope and re.fullmatch(f"[{_JS_SPACE}]*", keyword or ""):
+        add("scope", "conditionalRequired", _SCOPE_NEEDS_KEYWORD)
+    if store.fireflies_scope_columns(scope) is None:
+        add("scope", "isEnum", _SCOPE_ENUM)
     for name in ("fromDate", "toDate"):
         if _not_a_js_date(arguments[name]):
             add(name, "isDate", f"{name} must be a Date instance")

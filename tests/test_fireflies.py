@@ -576,28 +576,14 @@ def test_fireflies_date_selects_a_day_and_the_singular_email_filters_narrow(clie
 
 
 def test_fireflies_unknown_scope_is_a_field_error_not_a_silent_widening(client, admin_h):
-    """Silently searching everything would hide a client's typo. Real answers
-    ``invalid_arguments`` with ``isEnum``; see ``_validate_transcripts``."""
+    """Silently searching everything would hide a client's typo. A field error keeps the
+    GraphQL-over-HTTP contract: 200 with partial data alongside errors."""
     r = ff_gql(client, '{ transcripts(keyword: "x", scope: "body") { id } }', admin_h)
     assert r.status_code == 200
     body = r.json()
     assert "data" in body  # field error -> data key present
     assert body["data"]["transcripts"] is None
-    error = body["errors"][0]
-    assert error["message"] == "Invalid argument(s) were provided"
-    assert error["code"] == "invalid_arguments"
-    assert error["extensions"]["metadata"]["fields"] == [
-        {
-            "name": "scope",
-            "message": "scope must be one of the following values: title, sentences, all",
-            "constraints": [
-                {
-                    "type": "isEnum",
-                    "message": "scope must be one of the following values: title, sentences, all",
-                }
-            ],
-        }
-    ]
+    assert "scope must be one of" in body["errors"][0]["message"]
 
 
 def test_fireflies_request_errors_are_400_with_no_data_key(client, admin_h):

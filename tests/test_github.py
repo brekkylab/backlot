@@ -2728,6 +2728,68 @@ def test_github_deleting_the_installation_token_is_answered_as_a_served_route(
         assert second.headers["x-ratelimit-used"] == first.headers["x-ratelimit-used"], headers
 
 
+_NO_CREDENTIAL_ROUTES = {
+    "org teams": "orgs/{org}/teams",
+    "collaborators": "repos/{org}/gateway/collaborators",
+    "repo teams": "repos/{org}/gateway/teams",
+    "protection": "repos/{org}/gateway/branches/main/protection",
+    "code search": "search/code?q=x",
+}
+_REFUSED_COUNTED = (401, "Requires authentication", None, True)
+_REFUSED_UNCOUNTED = (401, "Requires authentication", None, False)
+_V1999 = {"X-GitHub-Api-Version": "1999-01-01"}
+_NO_CREDENTIAL_ROWS = [
+    *(
+        (route, headers, answer)
+        for route in _NO_CREDENTIAL_ROUTES
+        for headers, answer in [
+            ({}, _REFUSED_COUNTED),
+            (_V1999, _REFUSED_COUNTED),
+            ({"Authorization": "Foo bar"}, _REFUSED_UNCOUNTED),
+            ({"Authorization": "Foo bar", **_V1999}, _REFUSED_UNCOUNTED),
+            ({"Authorization": "Digest x", **_V1999}, _REFUSED_UNCOUNTED),
+            ({"Authorization": "Bearer\tnope", **_V1999}, _REFUSED_UNCOUNTED),
+            ({"Authorization": "token"}, (401, "Bad credentials", None, False)),
+        ]
+    ),
+    *(
+        (route, headers, answer)
+        for route in ("org teams", "collaborators", "repo teams", "protection")
+        for headers, answer in [
+            ({"X-GitHub-Api-Version": "2022-11-28"}, _REFUSED_COUNTED),
+            ({"Authorization": "Basic eDp5", **_V1999}, (400, "Bad Request", None, True)),
+        ]
+    ),
+    # `Basic eDp5` (`x:y`) names no token: each route's own answer to a caller with none
+    (
+        "org teams",
+        {"Authorization": "Basic eDp5"},
+        (401, "Requires authentication", "2022-11-28", True),
+    ),
+    (
+        "collaborators",
+        {"Authorization": "Basic eDp5"},
+        (401, "Requires authentication", "2022-11-28", True),
+    ),
+    ("repo teams", {"Authorization": "Basic eDp5"}, (404, "Not Found", "2022-11-28", True)),
+    ("protection", {"Authorization": "Basic eDp5"}, (404, "Not Found", "2022-11-28", True)),
+]
+
+
+@pytest.mark.parametrize("route, headers, answer", _NO_CREDENTIAL_ROWS)
+def test_github_teams_collaborators_protection_and_code_search_refuse_no_credential_first(
+    gh_client, gh_org, route, headers, answer
+):
+    """Each row is real's answer as `_refuse_an_anonymous_caller` records it: the status, the
+    message, the version echo and whether the five `x-ratelimit-*` ride on it."""
+    c, _ = gh_client
+    r = c.get(f"/github/{_NO_CREDENTIAL_ROUTES[route].format(org=gh_org)}", headers=headers)
+    status, message, echo, five = answer
+    assert (r.status_code, r.json()["message"]) == (status, message), headers
+    assert r.headers.get("x-github-api-version-selected") == echo, headers
+    assert ("x-ratelimit-limit" in r.headers) is five, headers
+
+
 def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, gh_org):
     """Real answers a `HEAD` on each GitHub route measured as the `GET` with nothing in the body: the GET's
     status, its headers, `content-length` of the body the GET would have carried and `Link` where
@@ -4357,9 +4419,10 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     (measured 2026-09-15, see `test_github_401_says_which_credential_failed`).
 
     The missing-credential half is only visible on a route real refuses an anonymous caller, since
-    it serves the public ones 200: `/user/repos` is the one Backlot serves, and real answers the
-    version's 400 there where a supported version is `Requires authentication` (measured 2026-09-17,
-    three runs of each).
+    it serves the public ones 200: on `/user/repos` real answers the version's 400 where a supported
+    version is `Requires authentication` (see `_validate_bad_credential`). Teams, collaborators,
+    branch protection and code search refuse that caller ahead of the version instead
+    (`test_github_teams_collaborators_protection_and_code_search_refuse_no_credential_first`).
 
     The gateway sends no `Selected` echo on this 400; the pull and contents backend answer their
     own (``test_github_version_error_depends_on_endpoint_and_representation``). A 404 does carry

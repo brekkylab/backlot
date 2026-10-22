@@ -698,20 +698,67 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
         ("-(from:bob)", ("", {"-from": ["bob"]})),
         ("-( subject:plan )", ("", {"-subject": ["plan"]})),
         ("not from:bob", ("not", {"from": ["bob"]})),
+        ("NOT has:attachment", ("", {"-has": ["attachment"]})),
+        ("NOT  has:attachment", ("", {"-has": ["attachment"]})),
+        ("not has:attachment", ("not", {"has": ["attachment"]})),
+        ("NOT after:2026/10/01", ("", {"before": [_OCT_1]})),
+        ("NOT newer:2026/10/01", ("", {"before": [_OCT_1]})),
+        ("NOT before:2026/10/01", ("", {"after": [_OCT_1]})),
+        ("NOT newer_than:30d", ("", {"older_than": ["30d"]})),
+        ("NOT older_than:30d", ("", {"newer_than": ["30d"]})),
+        ("NOT NOT from:bob", ("", {"from": ["bob"]})),
+        ("NOT NOT NOT from:bob", ("", {"-from": ["bob"]})),
+        ("NOT NOT NOT NOT from:bob", ("", {"from": ["bob"]})),
+        ("NOT NOT -from:bob", ("", {"-from": ["bob"]})),
+        ("NOT NOT NOT -from:bob", ("", {"from": ["bob"]})),
+        ("NOT - from:bob", ("", {"-from": ["bob"]})),
+        ("NOT -has:attachment", ("", {"has": ["attachment"]})),
+        ("-(has:attachment)", ("", {"-has": ["attachment"]})),
+        ("-(newer_than:30d)", ("", {"older_than": ["30d"]})),
+        ("-(-after:2026/10/01)", ("", {"before": [_OCT_1]})),
+        ("-((from:bob))", ("", {"-from": ["bob"]})),
+        ("-(from:bob", ("", {"-from": ["bob"]})),
+        ("-(-from:bob)", ("", {"-from": ["bob"]})),
+        ("--(from:bob)", ("", {"-from": ["bob"]})),
+        ("NOT(from:bob)", ("", {"-from": ["bob"]})),
+        ("NOT ((from:bob))", ("", {"-from": ["bob"]})),
+        ("(from:bob)", ("", {"from": ["bob"]})),
+        ("( from:bob )", ("", {"from": ["bob"]})),
+        ("(from:bob", ("", {"from": ["bob"]})),
+        ("from:bob)", ("", {"from": ["bob"]})),
+        ("probe(from:bob)", ("probe", {"from": ["bob"]})),
+        ("-(from:bob)to:ava", ("", {"-from": ["bob"], "to": ["ava"]})),
+        ("-()", ("", {})),
+        ("-( )", ("", {})),
+        ("(", ("", {})),
+        ("-(from:bob to:ava)", ("", {"-()": ["from:bob to:ava"]})),
+        ("-( from:bob to:ava )", ("", {"-()": [" from:bob to:ava "]})),
+        ("-(from:bob to:ava", ("", {"-()": ["from:bob to:ava"]})),
+        ("-(probe from:bob)", ("", {"-()": ["probe from:bob"]})),
+        ("probe -(from:bob to:ava)", ("probe", {"-()": ["from:bob to:ava"]})),
+        ("-(-(from:bob to:ava))", ("", {"-()": ["from:bob to:ava"]})),
+        ("--(from:bob to:ava)", ("", {"-()": ["from:bob to:ava"]})),
+        ("-(NOT from:bob to:ava)", ("", {"-()": ["NOT from:bob to:ava"]})),
+        ("NOT NOT -(from:bob to:ava)", ("", {"-()": ["from:bob to:ava"]})),
+        ("NOT (from:bob to:ava)", ("", {"-from": ["bob"], "to": ["ava"]})),
+        ("NOT ((from:bob to:ava))", ("", {"-from": ["bob"], "to": ["ava"]})),
+        ("NOT (-from:bob to:ava)", ("", {"from": ["bob"], "to": ["ava"]})),
+        ("NOT -(from:bob to:ava)", ("", {"from": ["bob"], "to": ["ava"]})),
         ("label:-", ("", {"label": ["-"]})),
         ("mary-jane", ("mary-jane", {})),
         # Not modelled; the comment on `_GMAIL_NEGATABLE` lists it.
         ("NOT probe", ("NOT probe", {})),
     ],
 )
-def test_gmail_negation_of_subject_label_in_and_not(q, want):
-    """The readings the comment on `_GMAIL_NEGATABLE` measures."""
+def test_gmail_negation_and_groups(q, want):
+    """The readings the comments on `_GMAIL_NEGATABLE`, `_GMAIL_NOT` and `_GMAIL_GROUP_PIECE`
+    measure; `-()` holds a negated group of several terms, which `_gmail_query` reads."""
     from backlot.routers.google import _parse_gmail_q
 
     assert _parse_gmail_q(q) == want
 
 
-def test_gmail_negation_of_subject_label_in_over_the_wire(tmp_path):
+def test_gmail_negation_and_groups_over_the_wire(tmp_path):
     """The issue's reproduction: one message in the inbox from bob, one sent by mia."""
     from tests._helpers import client_for, tiny_corpus
 
@@ -728,9 +775,9 @@ def test_gmail_negation_of_subject_label_in_over_the_wire(tmp_path):
     with client_for(settings, reload=True) as c:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
 
-        def ids(q):
-            r = c.get("/gmail/v1/users/ava@acme.com/messages", headers=h, params={"q": q})
-            return {m["id"] for m in r.json().get("messages", [])}
+        def ids(q, listing="messages"):
+            r = c.get(f"/gmail/v1/users/ava@acme.com/{listing}", headers=h, params={"q": q})
+            return {m["id"] for m in r.json().get(listing, [])}
 
         every = ids("")
         for plain, negated in (
@@ -746,6 +793,17 @@ def test_gmail_negation_of_subject_label_in_over_the_wire(tmp_path):
         assert ids("- from:bob") == ids("NOT -from:bob") == ids("from:bob")
         assert ids("in:anywhere") == every
         assert ids("label:-inbox") == ids("in:-sent") == ids("-in:anywhere") == set()
+        both = ids("from:bob label:inbox")
+        assert both and both != every
+        for q in ("-(from:bob label:inbox)", "-((from:bob) label:inbox)", "-(from:bob label:inbox"):
+            assert ids(q) == every - both, q
+        assert ids("-(attached from:bob)") == every - ids("attached from:bob")
+        assert ids("NOT -(from:bob label:inbox)") == both
+        threads = ids("", "threads") - ids("from:bob label:inbox", "threads")
+        assert ids("-(from:bob label:inbox)", "threads") == threads
+        assert ids("NOT (from:bob label:sent)") == ids("-from:bob label:sent")
+        assert ids("-(from:bob)-(label:inbox)") == every
+        assert ids("(from:bob)-(label:inbox)") == set()
 
 
 def test_github_search_q_parse():

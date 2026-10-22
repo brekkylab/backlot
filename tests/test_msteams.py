@@ -14,6 +14,7 @@ import pytest
 
 from backlot import store, synth
 from backlot.errors.msgraph import WWW_AUTHENTICATE
+from backlot.pagination import encode_cursor
 from tests._helpers import complete, corpus_client, db_count, tok
 
 V1 = "/msgraph/v1.0"
@@ -618,6 +619,57 @@ _EVENTUAL = {"ConsistencyLevel": "eventual"}
             "Syntax error: character ':' is not valid at position 0 in ':abc'.",
         ),
         ("$search=", _EVENTUAL, "BadRequest", "Expression expected at position 0 in ''."),
+        # U+001C–U+001F are no blanks, and no character a clause is made of.
+        (
+            "$search=a%1Cb",
+            {},
+            "BadRequest",
+            "Syntax error: character '\x1c' is not valid at position 1 in 'a\x1cb'.",
+        ),
+        (
+            "$search=%1Cabc",
+            _EVENTUAL,
+            "BadRequest",
+            "Syntax error: character '\x1c' is not valid at position 0 in '\x1cabc'.",
+        ),
+        (
+            '$search="displayName:a"%1F',
+            _EVENTUAL,
+            "BadRequest",
+            "Syntax error: character '\x1f' is not valid at position 15 in '\"displayName:a\"\x1f'.",
+        ),
+        # A blank between clauses joins them, and each is then read.
+        (
+            "$search=a%C2%85b",
+            _EVENTUAL,
+            "Request_UnsupportedQuery",
+            "Clause 'a' in $search is not of right format \"property:value\"",
+        ),
+        (
+            "$filter=createdDateTime gt 0000-01-01",
+            {},
+            "BadRequest",
+            "Invalid filter clause: Syntax error at position 26 in 'createdDateTime gt 0000-01-01'.",
+        ),
+        (
+            "$filter=displayName eq " + "0" * 4301 + "1",
+            {},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Int32", "Equal"),
+        ),
+        (
+            "$orderby=1",
+            {},
+            "Request_BadRequest",
+            "Given expression for $orderby Microsoft.OData.UriParser.ConstantNode is not supported",
+        ),
+        (
+            "$orderby=" + "0" * 4301 + "1",
+            {},
+            "Request_BadRequest",
+            "Given expression for $orderby Microsoft.OData.UriParser.ConstantNode is not supported",
+        ),
+        ("$orderby=2020-13-45", {}, "BadRequest", "Syntax error at position 7 in '2020-13-45'."),
         # Outside an advanced query, `or` joins at most 15 children — an `in` list's values among
         # them — and `and` 25; a lambda wants the header too.
         (
@@ -789,10 +841,24 @@ def test_joined_teams_is_the_one_team_the_corpus_models(client, admin_h, tokens_
         f"{V1}/users/{synth.msteams_user_id('ava@acme.com')}/joinedTeams", headers=admin_h
     ).json()
     assert by_user == body
-    # Anyone's, to a delegated caller.
+    # A scoped caller lists its own only, by id or by address; anyone else's is a 403, whether or
+    # not they exist, unless an address names nobody.
     bob = {"Authorization": f"Bearer {tok(tokens_yaml, 'bob@acme.com')}"}
-    ava = synth.msteams_user_id("ava@acme.com")
-    assert client.get(f"{V1}/users/{ava}/joinedTeams", headers=bob).json() == body
+    own = synth.msteams_user_id("bob@acme.com")
+    for user in (own, own.upper(), "bob@acme.com"):
+        assert client.get(f"{V1}/users/{user}/joinedTeams", headers=bob).json() == body, user
+    for user in (
+        synth.msteams_user_id("ava@acme.com"),
+        "ava@acme.com",
+        "00000000-0000-0000-0000-00000000000a",
+    ):
+        err = _error(client.get(f"{V1}/users/{user}/joinedTeams", headers=bob), 403)
+        message = "Invalid UserId. UserId does not match Access token UserObjectId"
+        assert (err["code"], err["message"]) == ("Forbidden", message), user
+        inner = err["innerError"]
+        assert (inner["code"], inner["message"], inner["details"]) == ("AccessDenied", message, [])
+    err = _error(client.get(f"{V1}/users/nobody@acme.com/joinedTeams", headers=bob), 404)
+    assert err["message"] == "Failed to find user with id 'nobody@acme.com' in the tenant"
     # A person the directory does not have, in the words of the lookup that failed.
     for user, status, message in (
         ("nobody@acme.com", 404, "Failed to find user with id 'nobody@acme.com' in the tenant"),
@@ -987,6 +1053,17 @@ _ALL_CHANNELS = ["Incidents", "People Confidential", "Platform"]
 
 
 @pytest.mark.parametrize(
+    "expr", ["length(displayName) div 0 eq 1", "length(displayName) mod 0 eq 1"]
+)
+@pytest.mark.parametrize("suffix", ["/channels", "/channels/{channel}/members"])
+def test_a_filter_dotnet_fails_to_run_is_graphs_500(client, admin_h, team_id, expr, suffix):
+    path = suffix.format(channel=_channels(client, admin_h, team_id)["Platform"])
+    r = client.get(f"{V1}/teams/{team_id}{path}", headers=admin_h, params={"$filter": expr})
+    err = _error(r, 500)
+    assert (err["code"], err["message"]) == ("InternalServerError", "Failed to execute request.")
+
+
+@pytest.mark.parametrize(
     "expr,names",
     [
         ("membershipType eq 'private'", ["People Confidential"]),
@@ -1026,6 +1103,14 @@ _ALL_CHANNELS = ["Incidents", "People Confidential", "Platform"]
         ("displayName gt null", _ALL_CHANNELS),
         ("null eq displayName", []),
         ("5 eq 5", _ALL_CHANNELS),
+        ("createdDateTime gt 2020-01-01T00:00:00z", _ALL_CHANNELS),
+        # .NET's arithmetic and `substring`: an integer division truncates, a remainder takes the
+        # dividend's sign, and a negative start or length is no characters skipped or taken.
+        ("length(displayName) div 2 eq 4", ["Incidents", "Platform"]),
+        ("length(displayName) mod 4 eq 1", ["Incidents"]),
+        ("substring(displayName,-1) eq displayName", _ALL_CHANNELS),
+        ("substring(displayName,1,-1) eq ''", _ALL_CHANNELS),
+        ("indexof(displayName,'zz') eq -1", _ALL_CHANNELS),
         # The limits, at the edge: 99 parentheses, 16 terms and 98 `not`s fit.
         ("(" * 99 + "displayName eq 'Platform'" + ")" * 99, ["Platform"]),
         (" and ".join(["displayName ne 'x'"] * 16), _ALL_CHANNELS),
@@ -1309,6 +1394,59 @@ def test_a_channel_filter_selects_what_graph_selects(client, admin_h, team_id, e
             "format 'yyyy-mm-ddThh:mm:ss('.'s+)?(zzzzzz)?' and each field value is within valid "
             "range.",
         ),
+        # Text that is not a date is read as the number in front of it.
+        (
+            {"$filter": "createdDateTime gt 2020-13-45"},
+            "BadRequest",
+            "Invalid filter clause: Syntax error at position 26 in 'createdDateTime gt 2020-13-45'.",
+        ),
+        (
+            {"$filter": "createdDateTime gt 2020-02-30"},
+            "BadRequest",
+            "Invalid filter clause: Syntax error at position 26 in 'createdDateTime gt 2020-02-30'.",
+        ),
+        (
+            {"$filter": "createdDateTime gt 2020-01-01t00:00:00z"},
+            "BadRequest",
+            "Invalid filter clause: Syntax error at position 26 in "
+            "'createdDateTime gt 2020-01-01t00:00:00z'.",
+        ),
+        (
+            {"$filter": "displayName eq " + "0" * 4301 + "1"},
+            "BadRequest",
+            _INCOMPATIBLE.format("Edm.String", "Edm.Int32", "Equal"),
+        ),
+        (
+            {"$filter": "isArchived in (/)"},
+            "BadRequest",
+            "Invalid filter clause: Invalid JSON. A token was not recognized in the JSON content.",
+        ),
+        (
+            {"$filter": "displayName in ('a',/)"},
+            "BadRequest",
+            "Invalid filter clause: String item should be single/double quoted: '/'.",
+        ),
+        (
+            {"$filter": "isArchived in (()"},
+            "BadRequest",
+            "Invalid filter clause: Found an unbalanced bracket expression.",
+        ),
+        (
+            {"$filter": "summary in ('x')"},
+            "BadRequest",
+            "Invalid filter clause: The property with name '' was found with a value node of type "
+            "'PrimitiveValue'; however, a resource value of type 'microsoft.graph.channelSummary' "
+            "was expected.",
+        ),
+        # An `$orderby` term is an expression: a constant binds, and the option is refused.
+        (
+            {"$orderby": "1"},
+            "",
+            "The query specified in the URI is not valid. Query option 'OrderBy' is not allowed. "
+            "To allow it, set the 'AllowedQueryOptions' property on EnableQueryAttribute or "
+            "QueryValidationSettings.",
+        ),
+        ({"$orderby": "2020-13-45"}, "BadRequest", "Syntax error at position 7 in '2020-13-45'."),
         # The parser's recursion limit, reached before the binder reads a property.
         ({"$filter": "(" * 100 + "bogus eq 'x'" + ")" * 100}, "BadRequest", _DEPTH),
         ({"$filter": "not " * 1200 + "isArchived"}, "BadRequest", _DEPTH),
@@ -1560,6 +1698,20 @@ def test_select_is_read_in_every_spelling_and_only_dollar_select_is_echoed(
         ("/members", "$filter=roles/any(r:roles/any(s:s eq r))", "", _NESTING),
         ("/members", "$skip=1&$filter=roles/any(r:roles/any(s:s eq r))", "", "Skip"),
         ("/members", "$filter=" + " or ".join(["displayName eq 'x'"] * 21), "", _NODES),
+        (
+            "/members",
+            "$filter=visibleHistoryStartDateTime gt 2020-13-45",
+            "BadRequest",
+            "Invalid filter clause: Syntax error at position 38 in "
+            "'visibleHistoryStartDateTime gt 2020-13-45'.",
+        ),
+        ("/messages", "$orderby=1", "", "OrderBy"),
+        (
+            "/messages",
+            "$orderby=2020-13-45",
+            "BadRequest",
+            "Syntax error at position 7 in '2020-13-45'.",
+        ),
         # A message listing binds a filter before refusing it.
         (
             "/messages",
@@ -1627,6 +1779,26 @@ def test_a_channel_method_refuses_the_options_graph_refuses_on_it(
             "property on EnableQueryAttribute or QueryValidationSettings.",
         ),
         ("/teams/abc/channels?$top=1", "teamId needs to be a valid GUID."),
+        ("/teams/abc/channels?$skiptoken=", _RAW_VALUE),
+        ("/teams/abc/channels/{channel}/messages?$top=abc", _invalid("top", "abc")),
+        (
+            "/teams/abc/channels/{channel}/members?$filter=bogus eq 1",
+            "Invalid filter clause: Could not find a property named 'bogus' on type "
+            "'microsoft.graph.conversationMember'.",
+        ),
+        (
+            "/teams/abc/channels/bad?$select=bogus",
+            "Parsing OData Select and Expand failed: Could not find a property named 'bogus' on "
+            "type 'microsoft.graph.channel'.",
+        ),
+        (
+            "/teams/abc/channels/{channel}/messages/1111111111111?$top=1",
+            "The query specified in the URI is not valid. Query option 'Top' is not allowed. To "
+            "allow it, set the 'AllowedQueryOptions' property on EnableQueryAttribute or "
+            "QueryValidationSettings.",
+        ),
+        ("/teams/abc/channels/{channel}/messages?$top=0", "teamId needs to be a valid GUID."),
+        ("/teams/abc/channels/{channel}/messages/abc", "teamId needs to be a valid GUID."),
         ("/teams/{other}/channels?$filter=" + " or ".join(["displayName eq 'x'"] * 17), _NODES),
         (
             "/teams/{other}/channels/{channel}/members?$filter=roles/any(r:roles/any(s:s eq r))",
@@ -1646,8 +1818,9 @@ def test_a_channel_method_refuses_the_options_graph_refuses_on_it(
 def test_a_query_is_refused_before_what_it_names_is_looked_up(
     client, admin_h, team_id, path, message
 ):
-    """Graph reads the query before the team, channel, message or person — all but a team id
-    that is not a GUID at all."""
+    """Graph reads the query before the form of the team id, and that before the team, channel,
+    message or person; a method's own refusals, such as the listing's `$top`, come after the id's
+    form."""
     url = path.format(
         team=team_id,
         other="00000000-0000-0000-0000-000000000000",
@@ -1976,6 +2149,10 @@ def test_a_reply_is_read_under_its_root_and_not_at_the_root_route(client, admin_
     ]
     empty = client.get(f"{base}/18446744073709551615/replies", headers=admin_h).json()
     assert empty["value"] == []
+    zeros = "0" * 4301 + "1"
+    assert client.get(f"{base}/{zeros}/replies", headers=admin_h).json()["value"] == []
+    for path in (f"{base}/{zeros}", f"{thread}/{zeros}"):
+        assert _error(client.get(path, headers=admin_h), 403)["message"] == "UnknownError"
 
 
 def test_expand_replies_inlines_every_thread_and_counts_only_a_nonempty_one(
@@ -2113,6 +2290,9 @@ def test_skip_skips_roots_and_drops_replies_from_the_page_top_reads(client, admi
     roots = client.get(f"{platform}/messages", headers=admin_h).json()["value"]
     skipped = client.get(f"{platform}/messages?$skip=1", headers=admin_h).json()["value"]
     assert [m["id"] for m in skipped] == [m["id"] for m in roots[1:]]
+    last = encode_cursor(2**63 - 1)
+    past = client.get(f"{platform}/messages?$skiptoken={last}&$skip=1", headers=admin_h).json()
+    assert past["value"] == []
     thread = f"{base}/{root['id']}/replies"
     every = client.get(thread, headers=admin_h).json()["value"]
     replies = client.get(f"{thread}?$skip=1", headers=admin_h).json()

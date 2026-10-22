@@ -269,9 +269,26 @@ def post_not_allowed() -> GraphError:
 
 
 def forbidden(
-    message: str, *, inner: str | None = None, inner_message: str | None = None
+    message: str,
+    *,
+    inner: str | None = None,
+    inner_message: str | None = None,
+    inner_details: bool = False,
 ) -> GraphError:
-    return GraphError(403, "Forbidden", message, inner=inner, inner_message=inner_message)
+    return GraphError(
+        403,
+        "Forbidden",
+        message,
+        inner=inner,
+        inner_message=inner_message,
+        inner_details=inner_details,
+    )
+
+
+def not_the_caller() -> GraphError:
+    """``/users/{id}/joinedTeams`` for anyone but the caller, to a caller who is no administrator."""
+    message = "Invalid UserId. UserId does not match Access token UserObjectId"
+    return forbidden(message, inner="AccessDenied", inner_message=message, inner_details=True)
 
 
 def not_in_roster(user_id: str, channel_id: str) -> GraphError:
@@ -372,6 +389,11 @@ def user_not_found(user_id: str) -> GraphError:
         f"Resource '{user_id}' does not exist or one of its queried reference-property objects "
         "are not present.",
     )
+
+
+def execution_failed() -> GraphError:
+    """A filter that binds and that .NET fails to run, such as a division by zero."""
+    return GraphError(500, "InternalServerError", "Failed to execute request.")
 
 
 def backend_failure() -> GraphError:

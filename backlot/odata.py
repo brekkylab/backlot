@@ -27,6 +27,7 @@ vendor words it.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -84,11 +85,11 @@ _NUMERIC = frozenset({INT32, INT64, DECIMAL, SINGLE, "Edm.Double", "Edm.Int16", 
 
 # What ODL reads as one date-time literal, well-formed or not, and what a well-formed one is; a
 # literal's digits are ASCII ones.
-_DATETIME_LIKE = re.compile(r"\d+-\d+-\d+T[\d:.]*(?:Z|[+-]\d+:\d+)?", re.ASCII)
+_DATETIME_LIKE = re.compile(r"\d+-\d+-\d+T[\d:.]*(?:[Zz]|[+-]\d+:\d+)?", re.ASCII)
 _DATETIME_FORM = re.compile(
-    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})", re.ASCII
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[Zz]|[+-]\d{2}:\d{2})", re.ASCII
 )
-_DATE_FORM = re.compile(r"\d{4}-\d{2}-\d{2}(?![\dT])", re.ASCII)
+_DATE_FORM = re.compile(r"\d{4}-\d{2}-\d{2}(?!\w)", re.ASCII)
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", re.ASCII)
 _NAME = re.compile(r"[^\W\d]\w*(?:\.[^\W\d]\w*)*")
 _QUOTED = re.compile(r"'(?:[^']|'')*'")
@@ -117,7 +118,7 @@ def _number(text: str) -> tuple[Any, str]:
     digits = text.lstrip("-").lstrip("0") or "0"
     if len(digits) > 29:
         return float(text), SINGLE
-    value = int(text)
+    value = -int(digits) if text.startswith("-") else int(digits)
     if -_INT32_MAX - 1 <= value <= _INT32_MAX:
         return value, INT32
     if -_INT64_MAX - 1 <= value <= _INT64_MAX:
@@ -135,9 +136,19 @@ def _datetime(text: str) -> datetime:
     if not _DATETIME_FORM.fullmatch(text):
         raise _syntax(form)
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return datetime.fromisoformat(text[:-1] + "+00:00" if text[-1] in "Zz" else text)
     except ValueError:
         raise _syntax(form) from None
+
+
+def _date(text: str) -> datetime | None:
+    """A date literal's midnight, or None for text that is not a date, which ODL reads as the number
+    in front of it."""
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return when.replace(tzinfo=timezone.utc) if when.year else None
 
 
 def _tokens(expr: str) -> list[_Token]:
@@ -162,8 +173,7 @@ def _tokens(expr: str) -> list[_Token]:
                 out.append(_Token("datetime", m.group(), i, m.end(), _datetime(m.group())))
                 i = m.end()
                 continue
-            if m := _DATE_FORM.match(expr, i):
-                when = datetime.fromisoformat(m.group()).replace(tzinfo=timezone.utc)
+            if (m := _DATE_FORM.match(expr, i)) and (when := _date(m.group())) is not None:
                 out.append(_Token("date", m.group(), i, m.end(), when))
                 i = m.end()
                 continue
@@ -398,6 +408,8 @@ class _Parser:
                     "Invalid JSON. A comma character ',' was expected in scope 'Array'. Every two "
                     "elements in an array and properties of an object must be separated by commas."
                 )
+            if t.kind == "punct" and t.text == "(":
+                raise _syntax("Found an unbalanced bracket expression.")
             items.append(t)
             expect_item = False
 
@@ -564,7 +576,7 @@ class _Binder:
             "toupper": str.upper,
             "trim": str.strip,
             "length": len,
-            "substring": lambda a, i, j=None: a[i:] if j is None else a[i : i + j],
+            "substring": _substring,
         }
         fn = fns[name]
         fold = self._fold if returns == BOOLEAN else (lambda x: x)
@@ -638,9 +650,9 @@ class _Binder:
                 "add": lambda a, b: a + b,
                 "sub": lambda a, b: a - b,
                 "mul": lambda a, b: a * b,
-                "div": lambda a, b: a / b if b else None,
-                "divby": lambda a, b: a / b if b else None,
-                "mod": lambda a, b: a % b if b else None,
+                "div": _divide,
+                "divby": _divide,
+                "mod": _remainder,
             }[op]
             result = SINGLE if SINGLE in (left.type, right.type) else (left.type or right.type)
 
@@ -686,11 +698,22 @@ class _Binder:
                 "require the left operand to be a single value and the right operand to be a "
                 "collection value."
             )
+        if (
+            left.type is not None
+            and not left.type.startswith("Edm.")
+            and left.type not in self.enums
+        ):
+            raise _mistyped(
+                "The property with name '' was found with a value node of type 'PrimitiveValue'; "
+                f"however, a resource value of type '{left.type}' was expected."
+            )
         values = []
         for item in node.items:
             literal = item.kind != "name" or item.text in ("true", "false", "null")
             if (left.type == STRING and item.kind != "string") or not literal:
                 raise _mistyped(f"String item should be single/double quoted: '{item.text}'.")
+            if item.kind == "punct":
+                raise _syntax("Invalid JSON. A token was not recognized in the JSON content.")
             bound = self._literal(_Node("literal", item), scope, lambdas)
             if left.type in self.enums:
                 bound = self._against_enum(left.type, bound)
@@ -730,6 +753,33 @@ class _Binder:
 
     def _fold(self, value: Any) -> Any:
         return value.casefold() if self.fold and isinstance(value, str) else value
+
+
+class ExecutionError(Exception):
+    """A filter that binds and fails as .NET runs it over an entity — a division by zero."""
+
+
+def _divide(a: Any, b: Any) -> Any:
+    """C#'s division: an integer one truncates toward zero, and zero is no divisor."""
+    if b == 0:
+        raise ExecutionError()
+    if isinstance(a, int) and isinstance(b, int):
+        q = abs(a) // abs(b)
+        return q if (a < 0) == (b < 0) else -q
+    return a / b
+
+
+def _remainder(a: Any, b: Any) -> Any:
+    """C#'s ``%``: the remainder takes the dividend's sign."""
+    if b == 0:
+        raise ExecutionError()
+    return a - b * _divide(a, b) if isinstance(a, int) and isinstance(b, int) else math.fmod(a, b)
+
+
+def _substring(text: str, start: int, length: int | None = None) -> str:
+    """A negative start reads from the first character, and a negative length takes none."""
+    start = max(start, 0)
+    return text[start:] if length is None else text[start : start + max(length, 0)]
 
 
 def _as_datetime(value: Any) -> Any:
@@ -775,6 +825,7 @@ class Filter:
         self.deferred = binder.deferred
 
     def __call__(self, entity: Mapping[str, Any]) -> bool:
+        """Raises :class:`ExecutionError` where .NET's run of the filter fails."""
         try:
             return self._bound.evaluate(entity, {}) is True
         except RecursionError:  # a comparison chain thousands long; no limit stops it sooner
@@ -811,34 +862,49 @@ def compile_filter(
     try:
         bound = binder.bind(root, {})
     except RecursionError:
-        # ODL reads `a eq b eq c …` in a loop; binding the tree that builds is what recursion bounds.
+        # ODL reads `a eq b eq c …` in a loop; binding the tree it builds is what recursion
+        # bounds.
         raise FilterError("depth", "Recursion depth exceeded allowed limit.") from None
     if bound.type not in (BOOLEAN, None):
         raise _mistyped("The $filter expression must evaluate to a single boolean value.")
     return Filter(root, bound, binder)
 
 
+# The ODL node a parsed `$orderby` term binds to, where it is not a property.
+_ORDERBY_NODES = {
+    "literal": "ConstantNode",
+    "call": "SingleValueFunctionCallNode",
+    "binary": "BinaryOperatorNode",
+    "nary": "BinaryOperatorNode",
+    "not": "UnaryOperatorNode",
+    "in": "InNode",
+    "lambda": "AnyNode",
+    "path": "SingleValuePropertyAccessNode",
+}
+
+
+ORDERBY_NODES = frozenset(_ORDERBY_NODES.values())
+
+
 def parse_orderby(expr: str) -> list[tuple[str, bool]]:
-    """``$orderby``'s ``property [asc|desc]`` terms, in order, each with whether it descends."""
-    tokens = _tokens(expr)
+    """``$orderby``'s terms, in order, each with whether it descends. A term is an expression, as
+    ODL parses one: a property is its name, and anything else the ODL node it is, such as
+    ``ConstantNode``, for the caller to refuse."""
+    parser = _Parser(expr)
     terms: list[tuple[str, bool]] = []
-    i = 0
     while True:
-        t = tokens[i] if i < len(tokens) else None
-        if t is None or t.kind != "name":
-            position = t.start if t is not None else len(expr)
-            raise _syntax(f"Expression expected at position {position} in '{expr}'.")
-        i += 1
+        term = parser._expression(1)
+        name = term.token.text if term.kind == "name" else _ORDERBY_NODES[term.kind]
+        nxt = parser._peek()
         descending = False
-        nxt = tokens[i] if i < len(tokens) else None
         if nxt is not None and nxt.kind == "name" and ascii_lower(nxt.text) in ("asc", "desc"):
             descending = ascii_lower(nxt.text) == "desc"
-            i += 1
-        terms.append((t.text, descending))
-        nxt = tokens[i] if i < len(tokens) else None
+            parser.i += 1
+            nxt = parser._peek()
+        terms.append((name, descending))
         if nxt is None:
             return terms
         if nxt.kind == "punct" and nxt.text == ",":
-            i += 1
+            parser.i += 1
             continue
         raise _syntax(f"Syntax error at position {nxt.end} in '{expr}'.")

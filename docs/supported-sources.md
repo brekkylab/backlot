@@ -584,7 +584,7 @@ October 2026, with app-only and delegated tokens, on a tenant with a private cha
 | `me/joinedTeams` | The one team this corpus models. `$select`, keeping a name the type does not declare |
 | `users` | `$top` (1–999, default 100), `$skiptoken`, `$select`, `$filter`, `$search`, `$orderby`; `@odata.count` only with `$count=true` and `ConsistencyLevel: eventual` |
 | `users/{id}` | Object id *or* userPrincipalName |
-| `users/{id}/joinedTeams` | The same answer as `me/joinedTeams`, for anyone in the directory |
+| `users/{id}/joinedTeams` | The same answer as `me/joinedTeams`: a scoped token's own, and another person's a `403`; the admin token, anyone's |
 | `teams/{team-id}` | The team, with the settings a new team has. `$select`, keeping a name the type does not declare |
 | `teams/{team-id}/channels` | Every visible channel in one response: no paging. `$select`, `$filter` |
 | `teams/{team-id}/channels/{channel-id}` | `$select`; the method that reports `layoutType` and `summary` |
@@ -622,9 +622,9 @@ option but `$select` and `$expand`, and then every `$expand` that binds; the mes
 `$orderby`, `$filter`, `$count` and `$search`; a single message or reply `$top`, `$skip`,
 `$skiptoken`, `$orderby`, `$filter` and `$count`, and `expand=replies`; members `$skip`, `$orderby`,
 `$count` and `$search`, with a `$skiptoken` a `502`; `joinedTeams` every option but `$select` and
-`$filter`, which it ignores. On `/me` and `/users/{id}`, `$filter`, `$search` and `$skiptoken` are refused and
-`$top`, `$orderby` and `$count` ignored; `/users` refuses `$skip`. A `$skiptoken` that does not
-decode is a `400`, and a `502` on replies, as live.
+`$filter`, which it ignores. On `/me` and `/users/{id}`, `$filter`, `$search` and `$skiptoken` are
+refused and `$top`, `$orderby` and `$count` ignored; `/users` refuses `$skip`. A `$skiptoken` that
+does not decode is a `400`, and a `502` on replies, as live.
 
 `$filter` is read as Microsoft's OData library reads it (`backlot/odata.py`): `eq`, `ne`,
 `gt`/`ge`/`lt`/`le`, `has`, `in`, `add`/`sub`/`mul`/`div`/`mod`, `and`, `or`, `not` and
@@ -678,9 +678,9 @@ the 32-hex form), paging of a standard channel's members (live pages them in pag
 `$top`; here all of the directory is one page), which unknown message ids live answers `403`, `404`
 or `400` (it depends on the number's range; here every unknown id is a `403`), the beta version and
 the service document at `/v1.0`, the request URI length past which the front end answers `414`,
-chats, writes, and real tenant authorization. Imported reply times must advance by a whole second, and at
-most 1,000 ids fit one channel-second, both because an id is a creation millisecond; an edit must
-not precede its message.
+chats, writes, and real tenant authorization. Imported reply times must advance by a whole second,
+and at most 1,000 ids fit one channel-second, both because an id is a creation millisecond; an edit
+must not precede its message.
 
 ### Notion — `/notion/v1`
 

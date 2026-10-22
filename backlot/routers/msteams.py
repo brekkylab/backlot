@@ -44,6 +44,8 @@ from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import msgraph
 from backlot.odata import (
+    ORDERBY_NODES,
+    ExecutionError,
     Filter,
     FilterError,
     ascii_lower,
@@ -476,20 +478,20 @@ def _user_filter_refusal(e: FilterError, raw: str):
 # matching a property any of whose words starts with the term, without regard to case. A clause is
 # a quoted phrase or a bare word; a colon or an apostrophe outside quotes is not a character the
 # lexer reads.
-_SEARCH_WORD = re.compile(r"[^\s\"':]+")
+_SEARCH_WORD = re.compile(r"(?:(?![\x1c-\x1f])[^\s\"':])+")
 _WORD = re.compile(r"[^\W_]+")
 
 
 def _search_clauses(text: str) -> tuple[list[str], list[str]]:
     clauses: list[str] = []
     joins: list[str] = []
-    i, end = 0, 0
+    i = 0
     while i < len(text):
         c = text[i]
         if is_blank(c):
             i += 1
             continue
-        if c in ":'":
+        if c != '"' and (c in ":'" or not _SEARCH_WORD.match(text, i)):
             raise msgraph.bad_request(
                 f"Syntax error: character '{c}' is not valid at position {i} in '{text}'."
             )
@@ -503,10 +505,10 @@ def _search_clauses(text: str) -> tuple[list[str], list[str]]:
             if phrase in ("AND", "OR") and len(clauses) > len(joins):
                 joins.append(phrase)
                 continue
+        # Two clauses side by side are joined by AND.
         if len(clauses) > len(joins):
-            raise msgraph.bad_request(f"Syntax error at position {end} in '{text}'.")
+            joins.append("AND")
         clauses.append(phrase)
-        end = i
     if not clauses or len(joins) == len(clauses):
         raise msgraph.bad_request(f"Expression expected at position {len(text)} in '{text}'.")
     return clauses, joins
@@ -514,7 +516,7 @@ def _search_clauses(text: str) -> tuple[list[str], list[str]]:
 
 def _search(raw: str):
     """A predicate over a served user for ``$search``, or Graph's refusal of it."""
-    clause_texts, joins = _search_clauses(raw.strip())
+    clause_texts, joins = _search_clauses(strip_blanks(raw))
     known = {ascii_lower(p): p for p in _USER_PROPERTIES}
     clauses = []
     for clause in clause_texts:
@@ -558,8 +560,9 @@ def _search(raw: str):
 # `$skip`, then the OData binder resolves every property a `$filter`, `$orderby`, `$select` or
 # `$expand` names (an `$expand` must name a navigation property), then the validator refuses the
 # options the method allows none of, a `$top` or `$skip` past its limit and a filter past its
-# limits, then the method's own checks run, and only then is the team, channel or message looked
-# up. A comparison .NET cannot run is refused after that, where the query runs (`_Query.run`).
+# limits, then the team id's form is checked, then the method's own checks run, and only then is
+# the team, channel or message looked up. A comparison .NET cannot run is refused after that, where
+# the query runs (`_Query.run`, `_kept`).
 
 # The validator's order, where a request carries more than one option it refuses.
 _VALIDATOR_ORDER = (
@@ -613,6 +616,17 @@ class _Query:
             raise msgraph.query_option_invalid(self.keep.deferred)
 
 
+def _kept(keep: Filter | None, items: list[dict]) -> list[dict]:
+    """The items ``keep`` keeps. A filter .NET fails to run over them — a division by zero — is
+    Graph's 500."""
+    if keep is None:
+        return items
+    try:
+        return [item for item in items if keep(item)]
+    except ExecutionError:
+        raise msgraph.execution_failed() from None
+
+
 def _validate_filter(keep: Filter, method: _Method) -> None:
     if keep.lambda_depth > 1:
         raise msgraph.query_option_invalid(
@@ -641,7 +655,7 @@ def _read_query(opts, method: _Method) -> _Query:
             raise msgraph.bad_request(e.message) from None
         known = {ascii_lower(p) for p in method.properties}
         for name, _ in terms:
-            if ascii_lower(name) not in known:
+            if name not in ORDERBY_NODES and ascii_lower(name) not in known:
                 raise msgraph.bad_request(
                     f"Could not find a property named '{name}' on type "
                     f"'microsoft.graph.{method.type_name}'."
@@ -1364,9 +1378,7 @@ async def users_list(request: Request):
                     "Too many child clauses specified in search filter expression containing "
                     f"'{op.upper()}' operators: {n}. Max allowed: {limit}."
                 )
-    users = [_user(conn, e) for e in store.all_user_emails(conn)]
-    if keep is not None:
-        users = [u for u in users if keep(u)]
+    users = _kept(keep, [_user(conn, e) for e in store.all_user_emails(conn)])
     if matches is not None:
         if not eventual:
             raise msgraph.unsupported_query(
@@ -1398,6 +1410,10 @@ def _order_users(users: list[dict], terms: list[tuple[str, bool]], *, filtered: 
         raise msgraph.unsupported_query("Sorting not supported for current query.")
     resolved = []
     for name, descending in terms:
+        if name in ORDERBY_NODES:
+            raise msgraph.request_bad_request(
+                f"Given expression for $orderby Microsoft.OData.UriParser.{name} is not supported"
+            )
         prop = _USER_SORTS.get(ascii_lower(name))
         if prop is None:
             raise msgraph.unsupported_query(f"Unsupported sort property '{name}' for 'User'.")
@@ -1440,17 +1456,26 @@ async def users_get(request: Request, user_id: str):
 )
 async def users_joined_teams(request: Request, user_id: str):
     """A user's teams — how a client that cannot ask ``/me`` lists them. Everyone in the directory
-    is in the one team, and a delegated caller may list anyone's, as a token with
-    ``Team.ReadBasic.All`` may live. The id is an object id or an address; one the directory does
-    not have is refused in the words of the lookup that failed."""
+    is in the one team. The id is an object id or an address. A caller who is no administrator
+    lists only its own, and asking for anyone else's — whether or not they exist, unless an
+    address names nobody — is a 403, as it is live for a member's token with
+    ``Team.ReadBasic.All``. The admin token, which a tenant administrator's stands for, lists
+    anyone's, and an id the directory does not have is refused in the words of the lookup that
+    failed."""
     conn = auth.conn(request)
-    _caller(request)
+    caller = _caller(request)
     body = _joined_teams(_options(request))
+    own = synth.msteams_user_id(caller.email or "")
     if "@" in user_id:
-        if _resolve_user(request, conn, user_id) is None:
+        email = _resolve_user(request, conn, user_id)
+        if email is None:
             raise msgraph.no_such_person(user_id)
+        if not caller.is_admin and synth.msteams_user_id(email) != own:
+            raise msgraph.not_the_caller()
     elif not _GUID.fullmatch(user_id):
         raise msgraph.bad_request("userId must be a GUID.")
+    elif not caller.is_admin and user_id.lower() != own:
+        raise msgraph.not_the_caller()
     elif _resolve_user(request, conn, user_id) is None:
         raise msgraph.no_such_member_of(user_id.lower())
     return body
@@ -1580,9 +1605,9 @@ async def channels_list(request: Request, team_id: str):
     options that would page it."""
     conn = auth.conn(request)
     caller = _caller(request)
-    _check_team_id(team_id)
     opts = _options(request)
     q = _read_query(opts, _CHANNEL_LIST)
+    _check_team_id(team_id)
     for option, name in (("top", "Top"), ("skiptoken", "SkipToken")):
         if option in opts:
             raise msgraph.bad_request(
@@ -1597,8 +1622,7 @@ async def channels_list(request: Request, team_id: str):
     channels = [
         _channel(request, conn, n, single=False) for n in _channel_names(conn) if visible(n)
     ]
-    if q.keep is not None:
-        channels = [c for c in channels if q.keep(c)]
+    channels = _kept(q.keep, channels)
     page = [_project(c, q.select) for c in channels]
     return _collection(f"teams('{quote(_team_id(), safe='')}')/channels", page, select=q.echoed)
 
@@ -1611,8 +1635,8 @@ async def channels_list(request: Request, team_id: str):
 async def channels_get(request: Request, team_id: str, channel_id: str):
     conn = auth.conn(request)
     caller = _caller(request)
-    _check_team_id(team_id)
     q = _read_query(_options(request), _CHANNEL_GET)
+    _check_team_id(team_id)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "channel", caller)
     return {
@@ -1637,15 +1661,15 @@ async def channel_messages(request: Request, team_id: str, channel_id: str):
     """
     conn = auth.conn(request)
     caller = _caller(request)
-    _check_team_id(team_id)
     opts = _options(request)
     q = _read_query(opts, _MESSAGE_LIST)
+    _check_team_id(team_id)
     if q.keep is not None:
         raise msgraph.bad_request("Parameter 'Filter' not supported for this request.")
     top = _top(opts, _MESSAGES_DEFAULT, _MESSAGES_MAX)
     if top == 0:
         raise msgraph.bad_request("PageSize needs to be more than 0. (Parameter 'pageSize')")
-    offset = _offset(opts, lambda: msgraph.bad_request("UnknownError")) + q.skip
+    offset = min(_offset(opts, lambda: msgraph.bad_request("UnknownError")) + q.skip, _INT64)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages", caller)
     expand = "replies" in q.expand
@@ -1693,11 +1717,12 @@ def _check_message_id(message_id: str) -> str:
     """The id a message or reply route names, as a number reads: one that is not an unsigned
     64-bit number is a 400, before the channel is checked at all. Which unknown ids live answers
     403, 404 or 400 depends on the number's range, which is not modelled."""
-    if not message_id.isascii() or not message_id.isdigit() or len(message_id.lstrip("0")) > 20:
+    digits = message_id.lstrip("0") or "0"
+    if not message_id.isascii() or not message_id.isdigit() or len(digits) > 20:
         raise msgraph.bad_request("UnknownError")
-    if int(message_id) > _UINT64:
+    if int(digits) > _UINT64:
         raise msgraph.bad_request("UnknownError")
-    return str(int(message_id))
+    return digits
 
 
 def _message_row(conn, name: str, message_id: str, ids):
@@ -1719,8 +1744,8 @@ async def channel_message(request: Request, team_id: str, channel_id: str, messa
     ``…/messages/{rootId}/replies/{replyId}``."""
     conn = auth.conn(request)
     caller = _caller(request)
-    _check_team_id(team_id)
     q = _single_message_query(_options(request), refer=True)
+    _check_team_id(team_id)
     message_id = _check_message_id(message_id)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "messages", caller)
@@ -1745,9 +1770,9 @@ async def message_replies(request: Request, team_id: str, channel_id: str, messa
     drops that many from the page ``$top`` reads, so it never reaches past it."""
     conn = auth.conn(request)
     caller = _caller(request)
-    _check_team_id(team_id)
     opts = _options(request)
     q = _read_query(opts, _REPLY_LIST)
+    _check_team_id(team_id)
     top = _top(opts, _MESSAGES_DEFAULT, _MESSAGES_MAX)
     if top == 0:
         raise msgraph.bad_request("PageSize needs to be more than 0. (Parameter 'pageSize')")
@@ -1777,8 +1802,8 @@ async def message_reply(
     """One reply, addressed under its root. One that is under another root is a 404."""
     conn = auth.conn(request)
     caller = _caller(request)
-    _check_team_id(team_id)
     q = _single_message_query(_options(request), refer=False)
+    _check_team_id(team_id)
     root = _check_message_id(message_id)
     reply = _check_message_id(reply_id)
     ids = auth.visible_ids(request, caller)
@@ -1805,17 +1830,16 @@ async def channel_members(request: Request, team_id: str, channel_id: str):
     modelled."""
     conn = auth.conn(request)
     caller = _caller(request)
-    _check_team_id(team_id)
     opts = _options(request)
     q = _read_query(opts, _MEMBER_LIST)
+    _check_team_id(team_id)
     ids = auth.visible_ids(request, caller)
     name = _resolve_channel(request, conn, team_id, channel_id, ids, "members", caller)
     if strip_blanks(_value(opts, "skiptoken") or ""):
         raise msgraph.backend_failure()
     q.run()
     members = [_member(conn, e, channel_id) for e in _member_emails(request, conn, name)]
-    if q.keep is not None:
-        members = [m for m in members if q.keep(m)]
+    members = _kept(q.keep, members)
     return _collection(
         f"{_channel_fragment(team_id, channel_id)}/members",
         [_project(m, q.select) for m in members],

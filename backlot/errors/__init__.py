@@ -60,9 +60,9 @@ from __future__ import annotations
 
 from fastapi import Request, Response
 
-from backlot.errors import atlassian, github, google, msgraph, s3
+from backlot.errors import atlassian, github, google, msgraph, notion, s3
 
-_ENVELOPES = (atlassian, github, google, msgraph, s3)
+_ENVELOPES = (atlassian, github, google, msgraph, notion, s3)
 
 
 def http_body(path: str, exc, query=None) -> dict | None:
@@ -145,14 +145,10 @@ __all__ = [
     "github",
     "google",
     "msgraph",
+    "notion",
     "http_body",
     "json_media_type",
     "method_not_allowed",
-    "notion",
     "rendered",
     "validation_body",
 ]
-
-from backlot.errors import notion  # noqa: E402
-
-_ENVELOPES = (*_ENVELOPES, notion)

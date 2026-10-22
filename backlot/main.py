@@ -1077,15 +1077,14 @@ async def vendor_json_media_type(request: Request, call_next):
     Real GitHub answers `application/json; charset=utf-8` on every JSON response but code search's
     (see ``backlot.errors.github.json_media_type``), Jira `application/json;charset=UTF-8` on
     every `application/json` body but its gateway's 403
-    (``backlot.errors.atlassian.json_media_type``), and Notion
-    `application/json; charset=utf-8` on every JSON answer
-    (``backlot.errors.notion.json_media_type``); FastAPI's ``JSONResponse`` answers
-    `application/json`. A middleware rather than a ``default_response_class`` on the router, because
-    FastAPI writes a response class's media type into the OpenAPI document as the content key, and
-    real's own spec says `application/json` there: the charset is a fact about the wire, not about
-    the contract, and `backlot diff` compares the contract. Only a response that is exactly
-    `application/json` is touched, so the raw, diff and text/plain answers keep their own types.
-    Registered last of the middlewares, which makes it the outermost, so a JSON body another
+    (``backlot.errors.atlassian.json_media_type``), and Notion `application/json; charset=utf-8` on
+    every JSON answer (``backlot.errors.notion.json_media_type``); FastAPI's ``JSONResponse``
+    answers `application/json`. A middleware rather than a ``default_response_class`` on the router,
+    because FastAPI writes a response class's media type into the OpenAPI document as the content
+    key, and real's own spec says `application/json` there: the charset is a fact about the wire,
+    not about the contract, and `backlot diff` compares the contract. Only a response that is
+    exactly `application/json` is touched, so the raw, diff and text/plain answers keep their own
+    types. Registered last of the middlewares, which makes it the outermost, so a JSON body another
     middleware returns (``refuse_a_bearer_jira_cannot_read``'s 403) passes through it too rather
     than around it; the route handlers and the two exception handlers above are covered from either
     position, those handlers because they run inside ``ExceptionMiddleware``. The status goes along

@@ -257,8 +257,8 @@ schema, over standard introspection, so that is what `backlot mcp` reads. Same s
 OpenAPI bridge — the app does the schema work, the bridge is transport:
 
 - **`backlot/graphql/mcp_tools.py`** turns the introspection result into one tool per root `Query`
-  field: 15 for Linear (`issues`, `issue`, `teams`, `comments`, `viewer`, the by-id relation
-  roots …), 4 for Fireflies (`transcripts`, `transcript`, `user`, `users`). It derives each tool's
+  field: 19 for Linear (`issues`, `issue`, `searchIssues`, `teams`, `comments`, `viewer`, the by-id
+  relation roots …), 4 for Fireflies (`transcripts`, `transcript`, `user`, `users`). It derives each tool's
   argument JSON Schema *and* its GraphQL document, which is the one thing OpenAPI never has to
   decide: a REST operation returns a fixed body, a GraphQL field returns whatever was asked for.
 - **the bridge** posts `tool.document` with the caller's credential, as `Authorization: Bearer

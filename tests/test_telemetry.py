@@ -31,7 +31,7 @@ UNREACHABLE = "http://127.0.0.1:9/v1/metrics"
 # The values an export may carry. The collector replaces a value outside its own shape checks with
 # `invalid`, and every pattern here is narrower than those.
 STORED = {
-    "backlot.source": r"^(github|slack|gmail|google_drive|jira|confluence|notion|s3|hubspot|linear|fireflies|other)$",
+    "backlot.source": r"^(github|slack|gmail|google_drive|jira|confluence|notion|s3|hubspot|linear|fireflies|msteams|other)$",
     "backlot.support": r"^(implemented|extra|refused|missing|unknown)$",
     "backlot.operation": r"^[A-Za-z_][A-Za-z0-9_.,/+{}-]{0,127}$",
     "backlot.error_code": r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$",
@@ -200,6 +200,7 @@ def test_each_client_rule_names_the_headers_it_was_measured_from():
         "PyGithub",
         "aiohttp",
         "python-httpx2",
+        "kiota-python",
         "python-httpx",
         "python-requests",
         "python-urllib",
@@ -280,9 +281,15 @@ def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent
             "invalid_argument",
         ),
         ("linear", 200, b'{"errors":[{"message":"Entity not found: Issue"}]}', "entity_not_found"),
-        ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
+        ("linear", 200, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
+        ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "graphql_validation"),
+        ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":5}}]}', "unrecognized"),
+        ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":""}}]}', "unrecognized"),
         ("jira", 401, b"Client must be authenticated to access this resource.", "unauthenticated"),
         ("jira", 400, b"<!DOCTYPE html><html><head><title>(null)</title></head></html>", ""),
+        ("msteams", 404, b'{"error":{"code":"NotFound","message":"x"}}', "NotFound"),
+        ("msteams", 400, b'{"error":{"code":"","message":"Something else."}}', "unrecognized"),
+        ("msteams", 400, b"<html><title>Bad Request</title></html>", ""),
     ],
 )
 def test_an_error_code_is_the_envelopes_own_identifier(source, status, body, expected):
@@ -290,6 +297,7 @@ def test_an_error_code_is_the_envelopes_own_identifier(source, status, body, exp
 
 
 GITHUB = "/github/repos/acme/docs-site"
+TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
 
 
 @pytest.mark.parametrize(
@@ -426,6 +434,18 @@ GITHUB = "/github/repos/acme/docs-site"
             "/s3/acme-artifacts/k.txt",
             {"content": b"x"},
             ("s3", "PutObject", "refused", 400, "InvalidArgument", "unsupported"),
+        ),
+        (
+            "GET",
+            f"{TEAM}/Channels",
+            {},
+            ("msteams", "teams.ListChannels", "implemented", 200, None, None),
+        ),
+        (
+            "GET",
+            "/msgraph/v1.0/ME/chats",
+            {},
+            ("msteams", "me.ListChats", "missing", 404, "Request_ResourceNotFound", "unsupported"),
         ),
         (
             "GET",
@@ -616,6 +636,7 @@ OLD_VERSION = {"X-GitHub-Api-Version": "1999-01-01"}
         ("GET", f"{W}/space?limit=abc", {}, "invalid_parameter"),
         ("GET", f"{W}/space?limit=-1", {}, "invalid_parameter"),
         ("GET", f"{W}/content?type=bogus", {}, "content_type_not_found"),
+        ("GET", f"{TEAM}/channels?$orderby=displayName", {}, "invalid_query_option"),
     ],
 )
 def test_each_message_slug_is_one_backlot_sends(client, method, path, kwargs, expected):
@@ -625,48 +646,73 @@ def test_each_message_slug_is_one_backlot_sends(client, method, path, kwargs, ex
     assert [c.get("backlot.error_code") for c in calls] == [expected], calls
 
 
+# Linear's rows; Fireflies runs the same engine, so a few of them are sent there as well. The
+# `transcripts` rows there are Fireflies' own.
+_GRAPHQL_MESSAGES = [
+    ({"query": "{"}, LINEAR, "graphql_parse"),
+    ({"query": '{ issue(id: "nope") { id } }'}, LINEAR, "entity_not_found"),
+    ({"query": "{ __typename }"}, {}, "authentication_required"),
+    ({"query": "{ nosuch }"}, LINEAR, "graphql_validation"),
+    ({"query": '{ issue(id: "x", bogus: 1) { id } }'}, LINEAR, "graphql_validation"),
+    ({"query": 'query($x: Nope) { issue(id: "x") { id } }'}, LINEAR, "graphql_validation"),
+    ({"query": "{ issue { id } }"}, LINEAR, "graphql_validation"),
+    ({"query": "query($x: String!) { issue(id: $x) { id } }"}, LINEAR, "graphql_validation"),
+    (
+        {
+            "query": 'query($x: String = "a") { issue(id: $x) { id } }',
+            "variables": {"x": None},
+        },
+        LINEAR,
+        "graphql_validation",
+    ),
+    ({"query": "mutation { x }"}, LINEAR, "graphql_validation"),
+    ({"query": "{ ...F }"}, LINEAR, "graphql_validation"),
+    ({"query": "{ issues @nope { nodes { id } } }"}, LINEAR, "graphql_validation"),
+    (
+        {"query": "query A { viewer { id } } query A { viewer { id } }"},
+        LINEAR,
+        "graphql_validation",
+    ),
+    ({"query": "{ issue(id: 5) { id } }"}, LINEAR, "graphql_validation"),
+    ({"query": "{ issue(id: null) { id } }"}, LINEAR, "graphql_validation"),
+    ({"query": '{ issues(first: "x") { nodes { id } } }'}, LINEAR, "graphql_validation"),
+    ({"query": "{ issues(orderBy: createdat) { nodes { id } } }"}, LINEAR, "graphql_validation"),
+    ({"query": "fragment F on User { id } { viewer { id } }"}, LINEAR, "graphql_validation"),
+    ({}, LINEAR, "graphql_request"),
+    ([], LINEAR, "graphql_request"),
+    ({"query": "{ viewer { id } }", "variables": "{"}, LINEAR, "graphql_request"),
+    ({"query": "query A { viewer { id } }", "operationName": "B"}, LINEAR, "graphql_request"),
+    (
+        {"query": "query A { viewer { id } } query B { viewer { id } }"},
+        LINEAR,
+        "graphql_request",
+    ),
+]
+
+
 @pytest.mark.parametrize(
-    "payload, headers, expected",
-    [
-        ({"query": "{"}, LINEAR, "graphql_parse"),
-        ({"query": '{ issue(id: "nope") { id } }'}, LINEAR, "entity_not_found"),
-        ({"query": "{ __typename }"}, {}, "authentication_required"),
-        ({"query": "{ nosuch }"}, LINEAR, "graphql_validation"),
-        ({"query": '{ issue(id: "x", bogus: 1) { id } }'}, LINEAR, "graphql_validation"),
-        ({"query": 'query($x: Nope) { issue(id: "x") { id } }'}, LINEAR, "graphql_validation"),
-        ({"query": "{ issue { id } }"}, LINEAR, "graphql_validation"),
-        ({"query": "query($x: String!) { issue(id: $x) { id } }"}, LINEAR, "graphql_validation"),
+    "path, payload, headers, expected",
+    [("/linear/graphql", *row) for row in _GRAPHQL_MESSAGES]
+    + [
+        ("/fireflies/graphql", {"query": "{"}, ADMIN, "graphql_parse"),
+        ("/fireflies/graphql", {"query": "{ nosuch }"}, ADMIN, "graphql_validation"),
         (
-            {
-                "query": 'query($x: String = "a") { issue(id: $x) { id } }',
-                "variables": {"x": None},
-            },
-            LINEAR,
+            "/fireflies/graphql",
+            {"query": '{ transcripts(limit: "x") { id } }'},
+            ADMIN,
             "graphql_validation",
         ),
-        ({"query": "mutation { x }"}, LINEAR, "graphql_validation"),
-        ({"query": "{ ...F }"}, LINEAR, "graphql_validation"),
-        ({"query": "{ issues @nope { nodes { id } } }"}, LINEAR, "graphql_validation"),
         (
-            {"query": "query A { viewer { id } } query A { viewer { id } }"},
-            LINEAR,
+            "/fireflies/graphql",
+            {"query": '{ transcripts(date: "x") { id } }'},
+            ADMIN,
             "graphql_validation",
         ),
-        ({"query": "{ issue(id: 5) { id } }"}, LINEAR, "graphql_validation"),
-        ({"query": "{ issue(id: null) { id } }"}, LINEAR, "graphql_validation"),
-        ({}, LINEAR, "graphql_request"),
-        ([], LINEAR, "graphql_request"),
-        ({"query": "{ viewer { id } }", "variables": "{"}, LINEAR, "graphql_request"),
-        ({"query": "query A { viewer { id } }", "operationName": "B"}, LINEAR, "graphql_request"),
-        (
-            {"query": "query A { viewer { id } } query B { viewer { id } }"},
-            LINEAR,
-            "graphql_request",
-        ),
+        ("/fireflies/graphql", {}, ADMIN, "graphql_request"),
     ],
 )
-def test_each_graphql_message_slug_is_one_backlot_sends(client, payload, headers, expected):
-    calls = _calls(lambda: client.post("/linear/graphql", headers=headers, json=payload))
+def test_each_graphql_message_slug_is_one_backlot_sends(client, path, payload, headers, expected):
+    calls = _calls(lambda: client.post(path, headers=headers, json=payload))
     assert [c.get("backlot.error_code") for c in calls] == [expected], calls
 
 
@@ -679,7 +725,7 @@ def test_every_message_slug_has_a_request_that_sends_it():
         )
         for row in t.pytestmark[0].args[1]
     } | {"rate_limited", "unsupported_filter"}
-    tables = errors._GITHUB + errors._JIRA + errors._CONFLUENCE + errors._GRAPHQL
+    tables = errors._GITHUB + errors._JIRA + errors._CONFLUENCE + errors._GRAPHQL + errors._MSGRAPH
     assert {slug for _, slug in tables} <= sent
 
 
@@ -1003,4 +1049,5 @@ def test_a_server_sends_what_it_counted_when_it_stops(hello, collector):
         "hubspot",
         "linear",
         "fireflies",
+        "msteams",
     }

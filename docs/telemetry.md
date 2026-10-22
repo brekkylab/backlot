@@ -43,7 +43,7 @@ Each count carries these attributes:
 
 | Attribute | Value |
 |---|---|
-| `backlot.source` | The source whose API the path belongs to: `github`, `slack`, `gmail`, `google_drive`, `jira`, `confluence`, `notion`, `s3`, `hubspot`, `linear`, `fireflies`, or `other` for a path under none |
+| `backlot.source` | The source whose API the path belongs to: `github`, `slack`, `gmail`, `google_drive`, `jira`, `confluence`, `notion`, `s3`, `hubspot`, `linear`, `fireflies`, `msteams`, or `other` for a path under none |
 | `backlot.operation` | The vendor operation, by the vendor's own id, e.g. `repos/list-commits`, `conversations.history`, `ListObjectsV2`, `query.issues` |
 | `backlot.support` | `implemented`, `extra` (a route the vendor's contract does not describe), `refused` (routed only to be refused, as S3 writes are), `missing` (the vendor has it and this Backlot does not), or `unknown` |
 | `http.request.method` | `GET`, `POST`, … |

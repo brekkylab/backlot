@@ -3,7 +3,7 @@
   "endpoints": [
     "https://developers.notion.com/openapi.json"
   ],
-  "measured": "2026-10-21",
+  "measured": "2026-10-22",
   "operations": [
     {
       "operation": "DELETE /v1/agents/{}",
@@ -296,6 +296,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/ai/skills/{}/upload",
+      "id": "upload-skill",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Imports a skill directory, sent as \"a gzip-compressed tar archive (maximum 20 MiB)\" in Notion's reference, into a page of a Skills database, so it writes the per-workspace skill state the note on `GET /v1/ai/skills/{}` records the corpus does not represent. Measured against api.notion.com on 2026-10-22 with a random id: the format's 401 with no header and the token's 401 with `Bearer nope`, and `GET` on the same path the URL's 400; not sent with a working token, since an upload writes to the connected workspace."
     },
     {
       "operation": "POST /v1/blocks/meeting_notes",

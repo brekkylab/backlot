@@ -1,8 +1,8 @@
 # Contributing
 
 Thanks for your interest in improving **Backlot**! Its essence is to serve each vendor's
-**API** — Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3,
-HubSpot, Linear, Fireflies — with the **smallest possible gap** from the real thing, so clients
+**API** — Slack, Microsoft Teams, Gmail, Google Drive, GitHub, Jira, Confluence, Notion,
+Amazon S3, HubSpot, Linear, Fireflies — with the **smallest possible gap** from the real thing, so clients
 built against the real APIs work unchanged against Backlot. The corpus is yours to supply;
 EnterpriseRAG-Bench is just one dataset you can load into that surface. Contributions that shrink
 the gap between Backlot and the real APIs — request/response shapes, status codes, pagination,
@@ -94,7 +94,9 @@ uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 
 CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request (see
 `.github/workflows/ci.yml`). On a pull request it also runs `scripts/prose_check.py`, whose findings
-show as warnings on the lines they name and do not fail the run.
+show as warnings on the lines they name and do not fail the run. CI's `test` jobs set
+`BACKLOT_TEST_REQUIRE_DOCKER=1`, under which the Atlassian MCP test fails where a local run without
+Docker skips it (`_require_linux_docker` in `tests/test_mcp.py`).
 
 Windows, where the default text encoding is the locale's code page (cp1252 on `windows-latest`)
 rather than UTF-8, has its own workflow (`.github/workflows/windows.yml`). It runs on a pull request

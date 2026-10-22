@@ -64,7 +64,7 @@ sees least. Nothing about the request changes but the identity.
 
 | Service | Header |
 |---|---|
-| Slack, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
+| Slack, Microsoft Teams, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
 | Gmail, Google Drive/Docs/Sheets/Slides | `Authorization: Bearer <token>`, or `OAuth <token>` |
 | GitHub | `Authorization: Bearer <token>`, or the legacy `token <token>` |
 | Jira, Confluence | HTTP Basic with the token as the **password**, or a plain `Bearer` |
@@ -204,6 +204,31 @@ against Confluence, or against a Jira read you know the account can see.
 not one username and one password (an empty password included). Measured against a public
 Atlassian Cloud site and a private one on 2026-09-04, with a wrong password, an empty one, a value
 that is not base64, an unknown scheme, and no header at all.
+
+### Microsoft Teams — `Bearer`
+
+```bash
+curl -s "localhost:8000/msgraph/v1.0/me/joinedTeams" \
+  -H "Authorization: Bearer usr-29b84da5703116c2a832"
+```
+
+Graph reads the token after `Bearer` in any case, or with no scheme at all, with any run of spaces
+or tabs between; Backlot reads it the same way. Measured against graph.microsoft.com in October
+2026, every refusal is a 401 with `error.code` `InvalidAuthenticationToken`, the same
+`WWW-Authenticate: Bearer realm="", authorization_uri="https://login.microsoftonline.com/common/oauth2/authorize", client_id="00000003-0000-0000-c000-000000000000"`
+header, and an `innerError` of `date`, `request-id` and `client-request-id`:
+
+| What was sent | `error.message` |
+|---|---|
+| No `Authorization` header | `Access token is empty.` |
+| `Authorization: Bearer` with nothing after it | `UnableToParseTokens` |
+| A JWT (three base64url segments) that names no application | `NoAppIdInToken` |
+| A token that resolves to nobody, or any token under another scheme (`token …`, `Basic …`) or with a word after it | `Protocol 'Bearer' failed to validate because The token could not be read.` |
+
+Two `Authorization` headers are a `400` HTML page from the front Graph sits behind, before either is
+read. The credential is read before the path and the method: an unknown path, or `POST`/`DELETE` on
+`/me`, with no valid token is the same 401. `error.code` is the stable contract; human-readable
+messages can change.
 
 ### Notion — `Bearer`
 

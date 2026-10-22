@@ -35,6 +35,7 @@ from backlot import synth
 # source_type -> its dedicated table
 SOURCE_TABLE = {
     "slack": "slack_messages",
+    "msteams": "msteams_messages",
     "gmail": "gmail_messages",
     "google_drive": "gdrive_files",
     "github": "github_items",
@@ -118,6 +119,9 @@ def acl_table(source_type: str) -> str:
 # Confluence space) instead of a vague generic "container".
 GROUPING = {
     "slack": ("slack_channels", "channel"),
+    # Teams groups messages by channel too, and spells the container the same word Slack does —
+    # but the tables are separate like every other pair, because a served id is per source.
+    "msteams": ("msteams_channels", "channel"),
     "gmail": ("gmail_mailboxes", "mailbox"),
     "google_drive": ("gdrive_folders", "folder"),
     "github": ("github_repos", "repo"),
@@ -191,6 +195,10 @@ def mailbox_for(conn, email: str) -> str:
 # uniformly and no source needs a special case.
 ID_COLUMNS = {
     "slack": ("channel", "ts"),
+    # Graph says outright that a chatMessage id "is unique within a chat/channel/reply-to-message,
+    # but might be duplicated in other chats/channels" — so the channel is part of the key, exactly
+    # as it is for a Slack ts.
+    "msteams": ("channel", "id"),
     "gmail": ("id",),
     "google_drive": ("id",),
     "github": ("repo", "number"),
@@ -209,7 +217,9 @@ ID_COLUMNS = {
 # own API uses), so ordering by it compares digit by digit — `"9.5"` after `"10.5"`. Ordering by
 # the integer second first restores chronology, with the ts breaking ties so the order stays
 # total and an offset page still cannot skip or repeat a row.
-ORDER_COLUMNS = {"slack": ("created_ts", "ts")}
+# `msteams` is here for the same reason slack is: its `id` is epoch milliseconds stored as TEXT
+# (the spelling Graph serves), so ordering by it alone compares digit by digit.
+ORDER_COLUMNS = {"slack": ("created_ts", "ts"), "msteams": ("created_ts", "id")}
 
 
 def order_columns(source_type: str) -> tuple[str, ...]:
@@ -323,6 +333,44 @@ CREATE INDEX IF NOT EXISTS idx_slack_channel_ts ON slack_messages(channel, creat
 -- conversations.members pages a channel's distinct speakers; without this the DISTINCT
 -- is a per-channel row scan (768k rows in the biggest channel) on every request.
 CREATE INDEX IF NOT EXISTS idx_slack_channel_author ON slack_messages(channel, author_email);
+
+-- `id` IS a Graph channel message's id, and it is STORED for the reason slack's `ts` is: the
+-- value has to be unique within its channel and a per-request derivation cannot see the other
+-- messages it must avoid. Graph's own spelling is epoch MILLIseconds as a decimal string
+-- (`"1616965872395"`), quoted from the vendor's channel-list-messages example, so a second holds a
+-- thousand messages -- assigned once at import and probed within the channel (see
+-- `_Loader._message_id` in backlot.importer.byo).
+--
+-- `reply_to_id` is Graph's own `replyToId`: NULL on a root, the ROOT's id on a reply. That is the
+-- vendor's model rather than slack's `thread_ts` (which a root carries for itself), so a top-level
+-- listing is `reply_to_id IS NULL` -- the same question `channel-list-messages` answers by
+-- returning "the list of messages (without the replies)". `thread_seq` orders the replies below a
+-- root and is 0 on the root, so the two agree by construction.
+--
+-- `subject` is the chatMessage field of that name, null where the corpus states none;
+-- `content_type` is the `body.contentType` ("text" or "html") the corpus wrote its content as.
+CREATE TABLE IF NOT EXISTS msteams_messages (
+    channel TEXT NOT NULL, id TEXT NOT NULL, author_email TEXT NOT NULL,
+    content TEXT NOT NULL,
+    reply_to_id TEXT, thread_seq INTEGER NOT NULL DEFAULT 0,
+    subject TEXT, message_type TEXT, content_type TEXT, importance TEXT,
+    reactions TEXT, attachments TEXT, mentions TEXT,
+    last_edited_ts INTEGER, created_ts INTEGER NOT NULL,
+    PRIMARY KEY (channel, id)
+);
+-- No `idx_msteams_channel`: the PRIMARY KEY leads with `channel`, so a per-channel scan seeks.
+-- A thread is read within its channel, so the reply index carries it. It ends on `created_ts`
+-- rather than `thread_seq` because it answers two questions, not one: a root's replies in order,
+-- and the LAST of them -- which is what orders the channel listing (Graph sorts it "by the last
+-- modified date of the entire reply chain"), one index seek per root instead of a scan. The two
+-- orderings cannot disagree: the importer refuses a reply whose second is not after the message
+-- before it (see byo._thread_seconds), so `created_ts` and `thread_seq` rise together.
+CREATE INDEX IF NOT EXISTS idx_msteams_thread
+    ON msteams_messages(channel, reply_to_id, created_ts);
+-- Lets the import-time membership check seek a private channel's speakers rather than scan the
+-- channel.
+CREATE INDEX IF NOT EXISTS idx_msteams_channel_author
+    ON msteams_messages(channel, author_email);
 
 -- `id` is the id the API reports, assigned at import (see backlot.importer.byo) rather than hashed
 -- at serve time, so a get-by-id is a PRIMARY KEY lookup. Unlike confluence it is the raw seed,
@@ -687,9 +735,10 @@ CREATE INDEX IF NOT EXISTS idx_linear_state ON linear_issues(state);
 -- column; json_each cannot be indexed) — only a MISS pays a full scan, and a miss is exactly the
 -- enumeration attempt.
 CREATE INDEX IF NOT EXISTS idx_linear_project ON linear_issues(project);
-CREATE INDEX IF NOT EXISTS idx_linear_cycle ON linear_issues(cycle);
 CREATE INDEX IF NOT EXISTS idx_linear_assignee ON linear_issues(assignee_email);
 CREATE INDEX IF NOT EXISTS idx_linear_author ON linear_issues(author_email);
+-- A cycle is visible with its team, so no probe seeks by cycle.
+DROP INDEX IF EXISTS idx_linear_cycle;
 -- `Issue.children` is "every issue whose parent_id is me" — an indexed equality, not a join
 -- on the non-unique identifier text.
 CREATE INDEX IF NOT EXISTS idx_linear_parent_doc ON linear_issues(parent_id);
@@ -791,6 +840,7 @@ CREATE INDEX IF NOT EXISTS idx_fireflies_sentences_doc ON fireflies_sentences(tr
 -- ── appended below instead, since a served id is unique only within a source) ──
 -- ── per-service grouping tables (name of the grouping unit + its owning ACL group) ──
 CREATE TABLE IF NOT EXISTS slack_channels    (channel TEXT PRIMARY KEY, group_id TEXT);
+CREATE TABLE IF NOT EXISTS msteams_channels  (channel TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS gmail_mailboxes   (mailbox TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS gdrive_folders    (folder  TEXT PRIMARY KEY, group_id TEXT);
 -- `default_branch`, `branches` and `tags` are the repo's own refs, stated by a
@@ -1154,14 +1204,14 @@ def list_documents(
     author_email=None,
     state=None,
     not_author_email=None,
-    exclude_trashed=False,
     title=None,
     subtype=None,
+    trash=True,
     newest_first=False,
 ) -> list[sqlite3.Row]:
     # state: only valid for source_type="github" — it's the only items table with a `state`
-    # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
-    # exclude_trashed, which only gdrive_files has a column for, and newest_first, which orders
+    # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise trash
+    # other than True: `_drive_trash` reads a column only gdrive_files has. newest_first orders
     # gdrive_files rows by DRIVE_MODIFIED, newest first, ties by id. title matches the whole title,
     # ignoring ASCII case. subtype is Confluence's content type, where a row with none is a page.
     tbl = table(source_type)
@@ -1171,8 +1221,7 @@ def list_documents(
     if state is not None:
         sql += " AND COALESCE(state, 'open') = ?"
         params.append(state)
-    if exclude_trashed:
-        sql += " AND COALESCE(trashed, 0) = 0"
+    sql = _drive_trash(sql, params, trash)
     if title is not None:
         sql += " AND title = ? COLLATE NOCASE"
         params.append(title)
@@ -1370,6 +1419,12 @@ LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": LINEAR_UPDATED_E
 # field is non-null there), so every comparison and sort over it has to see the same 0 -- a raw
 # `priority` put an unset issue outside `priority: {eq: 0}` and after every other row in a sort.
 LINEAR_PRIORITY_EXPR = "COALESCE(priority, 0)"
+
+# `Issue.number` is `synth.linear_issue_number` of the identifier, its trailing run of digits (0
+# when there is none). The same reading in SQL, so `IssueFilter.number` compares what is served.
+LINEAR_NUMBER_EXPR = (
+    "CAST(substr(rtrim(identifier), length(rtrim(rtrim(identifier), '0123456789')) + 1) AS INTEGER)"
+)
 
 LINEAR_SORT_COLUMNS = {
     "title": "title",
@@ -1716,15 +1771,14 @@ LINEAR_DEFAULT_STATE = "Todo"
 # of its own: it exists only as a column value on some issue. So "can the caller see it" means
 # "can the caller see any issue carrying it", and each kind names the predicate that asks.
 # Keyed exactly as `linear_entities` keys its rows.
+#
+# A workflow state and a cycle belong to their team, and `Team.states` / `Team.cycles` list every
+# one of a team's to whoever sees the team, so either is visible with its team rather than with
+# an issue carrying it.
 _LINEAR_ENTITY_PREDICATES = {
     "project": lambda v: ("project = ?", [v]),
-    "cycle": lambda v: ("cycle = ? AND team = ?", [v[1], v[0]]),  # v = (team, name)
-    # COALESCE, to match the synthesized default above: a caller reading an issue with no state
-    # must be able to resolve the state id that issue served them.
-    "state": lambda v: (
-        f"COALESCE(state, '{LINEAR_DEFAULT_STATE}') = ? AND team = ?",
-        [v[1], v[0]],
-    ),  # v = (team, name)
+    "cycle": lambda v: ("team = ?", [v[0]]),  # v = (team, name)
+    "state": lambda v: ("team = ?", [v[0]]),  # v = (team, name)
     # A person is reachable as either end of an issue.
     "user": lambda v: ("(author_email = ? OR assignee_email = ?)", [v[0], v[0]]),  # v = (email, _)
     "label": lambda v: (
@@ -1774,11 +1828,12 @@ def linear_entity_by_id(conn, kind: str, served_id):
 
 
 def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
-    """Whether the caller can see ANY issue carrying this project / cycle / state / person / label.
+    """Whether the caller can see ANY issue carrying this project / person / label, or any issue of
+    this state's or cycle's team.
 
     Without it the by-id roots are an existence oracle: `linear_entities` is an unfiltered DISTINCT
-    over every issue, so a caller denied an issue could still resolve that issue's project, label,
-    cycle, state and assignee. A ``LIMIT 1`` probe, so it stops at the first visible carrier."""
+    over every issue, so a caller denied an issue could still resolve that issue's project, label
+    and assignee. A ``LIMIT 1`` probe, so it stops at the first visible row."""
     build = _LINEAR_ENTITY_PREDICATES.get(kind)
     if build is None:
         raise ValueError(f"unknown linear entity kind {kind!r}")
@@ -1805,6 +1860,144 @@ def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:
         cparams,
     )
     return {r[0]: r[1] for r in rows}
+
+
+def linear_team_entity_names(conn, kind: str, team) -> list[str]:
+    """The names of one team's workflow states or cycles in the corpus, read off
+    ``linear_entities``, which keys both on the team. Unscoped: a team's states and cycles are
+    visible with the team (see :data:`_LINEAR_ENTITY_PREDICATES`)."""
+    if kind not in ("state", "cycle"):
+        raise ValueError(f"not a team-scoped linear entity kind: {kind!r}")
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM linear_entities WHERE kind = ? AND team = ? ORDER BY name",
+            (kind, team),
+        )
+    ]
+
+
+def linear_team_projects(conn, team, visible_ids=None) -> list[str]:
+    """The projects the caller can see an issue of this team in. A Linear project belongs to the
+    teams whose issues it holds, and is visible as `project(id:)` sees it: with an issue."""
+    clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT project FROM linear_issues "
+            f"WHERE team = ? AND project IS NOT NULL AND project != ''{clause}",
+            [team, *cparams],
+        )
+    ]
+
+
+def linear_visible_labels(conn, visible_ids=None) -> list[str]:
+    """Every label the caller can see an issue carrying. Labels are workspace-wide, so this is
+    the same list for every team."""
+    if visible_ids is None:
+        return [r[0] for r in conn.execute("SELECT name FROM linear_entities WHERE kind = 'label'")]
+    clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT value FROM linear_issues, json_each(COALESCE(labels, '[]'))"
+            f" WHERE 1=1{clause}",
+            cparams,
+        )
+    ]
+
+
+def search_linear_issues(
+    conn,
+    term: str,
+    *,
+    visible_ids=None,
+    team=None,
+    prefilter=None,
+    include_comments=True,
+    archived=False,
+    order_by=None,
+) -> tuple[list[tuple[str, float]], int]:
+    """``searchIssues``: every matching issue as ``(id, score)`` in the order served, and the count
+    ``totalCount`` reports.
+
+    An issue matches when its identifier is ``term`` (any case), when a space-separated word of
+    ``term`` starts a word of its title or description, read through the porter-stemmed index with
+    a hyphenated word as the phrase it spells (measured 2026-10-22: `prob`, `pro` and `chil` matched
+    where `robe` did not, and `BRE-2` did not match a title holding `(child 2)`), or, with
+    ``include_comments``, when one of its comments contains a word. That count leaves
+    ``prefilter`` out, as api.linear.app's did on 2026-10-22: a `filter` narrowed the nodes and left
+    `totalCount` at the unfiltered total.
+
+    ``score`` is 1 for the identifier, as real's was, and ``|bm25| / (1 + |bm25|)`` for an index
+    match, so it falls between 0 and 1 and orders as the rank does; a comment-only match scores 0.
+    Real's own scores are not reproducible."""
+    words = re.findall(r"\w+", term.lower())
+    # Each kind of match is collected on its own and the candidates are scoped afterwards: an FTS
+    # MATCH joined into a scan of the issues is re-run per issue.
+    ranks: dict[str, float | None] = {}
+    phrases = [w.replace('"', '""') for w in term.lower().split() if re.search(r"\w", w)]
+    if phrases and _has_fts(conn, "linear"):
+        match = " OR ".join(f'"{w}"*' for w in phrases)
+        for row in conn.execute(
+            "SELECT id, rank FROM linear_fts WHERE linear_fts MATCH ?", [match]
+        ):
+            ranks[row[0]] = row[1]
+    elif words:
+        found = " OR ".join("instr(lower(title || ' ' || content), ?) > 0" for _ in words)
+        for row in conn.execute(f"SELECT id FROM linear_issues WHERE {found}", words):
+            ranks[row[0]] = None
+    if include_comments and words:
+        found = " OR ".join("instr(lower(body), ?) > 0" for _ in words)
+        for row in conn.execute(
+            f"SELECT DISTINCT issue_id FROM linear_comments WHERE {found}", words
+        ):
+            ranks.setdefault(row[0], None)
+    key, sep, suffix = term.strip().partition("-")
+    spellings = list(
+        dict.fromkeys((term.strip(), f"{key.upper()}{sep}{suffix}", term.strip().upper()))
+    )
+    exact = {
+        r[0]
+        for r in conn.execute(
+            f"SELECT id FROM linear_issues WHERE identifier IN ({','.join('?' * len(spellings))})",
+            spellings,
+        )
+    }
+    for issue_id in exact:
+        ranks.setdefault(issue_id, None)
+    where = " WHERE id IN (SELECT value FROM json_each(?))"
+    params: list = [json.dumps(list(ranks))]
+    if team is not None:
+        where += " AND team = ?"
+        params.append(team)
+    where += _linear_archived(archived)
+    clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
+    where += clause
+    params += cparams
+    total = conn.execute(f"SELECT COUNT(*) FROM linear_issues{where}", params).fetchone()[0]
+    if prefilter:
+        frag, fparams = prefilter
+        where += f" AND {frag}"
+        params += fparams
+    sort = LINEAR_ORDER_COLUMNS[order_by] if order_by else "created_ts"
+    rows = conn.execute(f"SELECT id, {sort} AS at FROM linear_issues{where}", params).fetchall()
+    # Newest first and then by id, as `_linear_order` sorts; without `order_by`, relevance first.
+    rows.sort(key=lambda r: r["id"])
+    rows.sort(key=lambda r: r["at"], reverse=True)
+    if not order_by:
+        rows.sort(key=lambda r: (r["id"] not in exact, ranks[r["id"]] is None, ranks[r["id"]] or 0))
+    out = []
+    for row in rows:
+        rank = ranks[row["id"]]
+        if row["id"] in exact:
+            score = 1.0
+        elif rank is not None:
+            score = abs(rank) / (1 + abs(rank))
+        else:
+            score = 0.0
+        out.append((row["id"], score))
+    return out, total
 
 
 def hubspot_associations(
@@ -1835,12 +2028,15 @@ def hubspot_associations(
     return conn.execute(sql, params).fetchall()
 
 
-def list_drive_folder(conn, folder, visible_ids=None, limit=100, offset=0) -> list[sqlite3.Row]:
-    """Non-trashed files directly in a Drive folder, newest first by :data:`DRIVE_MODIFIED`, ties by
-    id — SQL-scoped + SQL-paginated, so listing a big folder costs one page of rows per request, not
-    a full-corpus scan on every page."""
-    sql = "SELECT * FROM gdrive_files WHERE folder = ? AND COALESCE(trashed, 0) = 0"
+def list_drive_folder(
+    conn, folder, visible_ids=None, limit=100, offset=0, trash=False
+) -> list[sqlite3.Row]:
+    """The files directly in a Drive folder, with the trashed ones ``trash`` keeps (see
+    `_drive_trash`), newest first by :data:`DRIVE_MODIFIED`, ties by id — SQL-scoped +
+    SQL-paginated, so listing a big folder costs one page of rows per request, not a full-corpus
+    scan on every page."""
     params: list = [folder]
+    sql = _drive_trash("SELECT * FROM gdrive_files WHERE folder = ?", params, trash)
     clause, cparams = _acl_clause("google_drive", visible_ids=visible_ids)
     sql += clause + f" ORDER BY {DRIVE_MODIFIED} DESC, id LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
@@ -1864,11 +2060,20 @@ def drive_name_fold(title: str) -> str:
 
 
 def list_drive_by_name(
-    conn, name, container=None, visible_ids=None, limit=100_000, offset=0, *, exact=False
+    conn,
+    name,
+    container=None,
+    visible_ids=None,
+    limit=100_000,
+    offset=0,
+    *,
+    exact=False,
+    trash=False,
 ) -> list[sqlite3.Row]:
-    """Non-trashed Drive files whose title matches ``name``, optionally within a folder — the SQL
-    path for a name lookup, which otherwise listed the WHOLE corpus (~25k rows, ~1.6s) to compare
-    in Python. ``exact`` is Drive's ``name = 'X'``; without it, ``name contains 'X'``.
+    """Drive files whose title matches ``name``, optionally within a folder, less the trashed ones
+    `_drive_trash` drops for ``trash`` — the SQL path for a name lookup, which otherwise listed the
+    WHOLE corpus (~25k rows, ~1.6s) to compare in Python. ``exact`` is Drive's ``name = 'X'``;
+    without it, ``name contains 'X'``.
 
     Each is the comparison real Drive makes, measured 2026-09-14, so the rows this returns are the
     rows the evaluator accepts — not a superset it narrows. ``name =`` folds case for ASCII letters
@@ -1880,17 +2085,13 @@ def list_drive_by_name(
         needle = _like_escape(name)
         # SQLite LIKE is case-insensitive for ASCII and exact elsewhere — real's `name =` rule;
         # no lower() wrapper, which would force a per-row scan.
-        sql = (
-            "SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 AND title LIKE ? ESCAPE '\\'"
-        )
+        sql = "SELECT * FROM gdrive_files WHERE title LIKE ? ESCAPE '\\'"
         params: list = [needle]
     else:
         needle = _like_escape(drive_name_fold(name))
-        sql = (
-            "SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 "
-            "AND title_fold LIKE ? ESCAPE '\\'"
-        )
+        sql = "SELECT * FROM gdrive_files WHERE title_fold LIKE ? ESCAPE '\\'"
         params = [f"%{needle}%"]
+    sql = _drive_trash(sql, params, trash)
     if container is not None:
         sql += " AND folder = ?"
         params.append(container)
@@ -1900,9 +2101,10 @@ def list_drive_by_name(
     return conn.execute(sql, params).fetchall()
 
 
-def count_drive_folder(conn, folder, visible_ids=None) -> int:
-    sql = "SELECT COUNT(*) FROM gdrive_files WHERE folder = ? AND COALESCE(trashed, 0) = 0"
+def count_drive_folder(conn, folder, visible_ids=None, trash=False) -> int:
+    """How many files `list_drive_folder` lists for the same arguments."""
     params: list = [folder]
+    sql = _drive_trash("SELECT COUNT(*) FROM gdrive_files WHERE folder = ?", params, trash)
     clause, cparams = _acl_clause("google_drive", visible_ids=visible_ids)
     sql += clause
     params += cparams
@@ -1915,6 +2117,19 @@ def drive_folder_has_visible(conn, folder, visible_ids=None) -> bool:
     clause, params = _acl_clause("google_drive", visible_ids=visible_ids)
     sql = f"SELECT 1 FROM gdrive_files WHERE folder = ?{clause} LIMIT 1"
     return conn.execute(sql, [folder, *params]).fetchone() is not None
+
+
+def _drive_trash(sql: str, params: list, trash) -> str:
+    """``sql`` keeping the trashed Drive files ``trash`` names: each of them when it is True, none
+    when it is False or empty, and when it is an address the ones whose ``author_email`` is that
+    address, ASCII letters folded as SQLite's ``lower()`` folds them. At most one bound value
+    whatever the corpus holds, so a listing never runs into SQLite's limit on bound variables."""
+    if trash is True:
+        return sql
+    if not trash:
+        return sql + " AND COALESCE(trashed, 0) = 0"
+    params.append(trash)
+    return sql + " AND (COALESCE(trashed, 0) = 0 OR lower(COALESCE(author_email, '')) = lower(?))"
 
 
 def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
@@ -2005,16 +2220,15 @@ def count_documents(
     visible_ids=None,
     author_email=None,
     state=None,
-    exclude_trashed=False,
     roots_only=False,
     title=None,
     subtype=None,
+    trash=True,
 ) -> int:
     # state: only valid for source_type="github" — it's the only items table with a `state`
-    # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
-    # exclude_trashed, which only gdrive_files has a column for, and roots_only, which counts
-    # gmail THREADS rather than messages. It has to track list_documents': a count that includes
-    # rows the listing drops makes nextPageToken lie.
+    # column; passing it for any other source_type raises sqlite3.OperationalError. trash is
+    # list_documents', and roots_only counts gmail THREADS rather than messages. It has to track
+    # list_documents': a count that includes rows the listing drops makes nextPageToken lie.
     tbl = table(source_type)
     sql = f"SELECT COUNT(*) FROM {tbl} WHERE 1=1"
     params: list = []
@@ -2022,8 +2236,7 @@ def count_documents(
     if state is not None:
         sql += " AND COALESCE(state, 'open') = ?"
         params.append(state)
-    if exclude_trashed:
-        sql += " AND COALESCE(trashed, 0) = 0"
+    sql = _drive_trash(sql, params, trash)
     if roots_only:
         sql += _GMAIL_ROOT
     if title is not None:
@@ -2069,8 +2282,11 @@ _FF_SCOPE_COLS = {"title": ("title",), "sentences": ("content",), "all": ("title
 
 
 def fireflies_scope_columns(scope: str | None) -> tuple[str, ...] | None:
-    """The columns a `scope` searches, or None if the value isn't one Fireflies accepts."""
-    return _FF_SCOPE_COLS.get((scope or "all").lower())
+    """The columns a `scope` searches: its entry in ``_FF_SCOPE_COLS`` as spelled, the ``"all"``
+    entry when it is left out (None), or None when it has no entry."""
+    if scope is None:
+        return _FF_SCOPE_COLS["all"]
+    return _FF_SCOPE_COLS.get(scope)
 
 
 def _fireflies_where(
@@ -2319,7 +2535,10 @@ def _fts_table(source_type: str) -> str:
 
 # Sources with no `title` column. The FTS index keeps a `title` column for every source so its shape
 # and the queries over it stay uniform; for these it is fed a constant.
-TITLELESS = frozenset({"slack"})
+# A Teams message has a `subject`, null where the corpus states none, and a corpus is not asked for
+# a title it has no use for — so the column is a nullable service field, not the shared `title`,
+# and this source indexes `content` alone the way slack does.
+TITLELESS = frozenset({"slack", "msteams"})
 
 
 def title_expr(source_type: str, alias: str = "") -> str:
@@ -2557,15 +2776,19 @@ def children(
 # --- slack threading ------------------------------------------------------------
 
 
-def slack_created_bounds(conn, channel) -> sqlite3.Row:
-    """Cheap aggregate for a channel's ``created`` (see routers.slack._channel_created): the
+def conversation_created_bounds(conn, source_type, channel) -> sqlite3.Row:
+    """Cheap aggregate for a channel's creation time (see routers.slack._channel_created): the
     earliest explicit ``created_ts``, the row count, and how many rows carry a ``created_ts``.
     A single indexed aggregate — no per-row transfer — so it stays fast on huge channels."""
     return conn.execute(
         "SELECT MIN(created_ts) AS min_ts, COUNT(*) AS total, COUNT(created_ts) AS have "
-        "FROM slack_messages WHERE channel = ?",
+        f"FROM {table(source_type)} WHERE {grouping_col(source_type)} = ?",
         (channel,),
     ).fetchone()
+
+
+def slack_created_bounds(conn, channel) -> sqlite3.Row:
+    return conversation_created_bounds(conn, "slack", channel)
 
 
 def list_slack_top_level(
@@ -2666,22 +2889,29 @@ def slack_reply_count(conn, channel, thread_ts, visible_ids=None) -> int:
     return conn.execute(sql, params).fetchone()[0]
 
 
-def slack_channels_for_principals(conn, principals) -> set[str]:
+def conversation_channels_for_principals(conn, source_type, principals) -> set[str]:
     """Channels with at least one doc granted to any of ``principals``. Reads the
-    principal-indexed ``slack_acl`` (idx_slack_acl_pid) and nothing else, so it's cheap even at
+    principal-indexed ACL table (idx_<source>_acl_pid) and nothing else, so it's cheap even at
     millions of rows — used to list a non-admin caller's visible channels.
 
-    No join to ``slack_messages``: a Slack message is identified by (channel, ts), so the grant
-    row carries the channel itself and the answer is a DISTINCT over the ACL table alone."""
+    No join to the message table: a message of either conversation source is identified by
+    (channel, <its id>), so the grant row carries the channel itself and the answer is a DISTINCT
+    over the ACL table alone."""
     principals = list(principals)
     if not principals:
         return set()
     marks = ",".join("?" for _ in principals)
+    gcol = grouping_col(source_type)
     rows = conn.execute(
-        f"SELECT DISTINCT a.channel FROM {acl_table('slack')} a WHERE a.principal_id IN ({marks})",
+        f"SELECT DISTINCT a.{gcol} FROM {acl_table(source_type)} a "
+        f"WHERE a.principal_id IN ({marks})",
         principals,
     )
     return {r[0] for r in rows}
+
+
+def slack_channels_for_principals(conn, principals) -> set[str]:
+    return conversation_channels_for_principals(conn, "slack", principals)
 
 
 def slack_latest_ts(conn, channel, visible_ids=None) -> str | None:
@@ -2743,6 +2973,86 @@ def slack_thread(conn, channel, thread_ts, visible_ids=None) -> list[sqlite3.Row
     sql += clause + " ORDER BY thread_seq"
     params += cparams
     return conn.execute(sql, params).fetchall()
+
+
+# --- Microsoft Teams (Graph) ----------------------------------------------------
+# A thread is expressed the way Graph expresses it: `reply_to_id` is NULL on a root and holds the
+# ROOT's id on a reply, so "the messages without the replies" — which is what
+# `channel-list-messages` returns — is a NULL test rather than the `thread_seq = 0` slack uses.
+
+
+def _msteams_modified(alias: str) -> str:
+    """A message's last-modified time in epoch milliseconds, as SQL: its creation (the id), its last
+    edit, and its newest reaction, each of which moves ``lastModifiedDateTime`` live. A reaction
+    with no time of its own is the message's, which the id already counts."""
+    return (
+        f"MAX(CAST({alias}.id AS INTEGER), COALESCE({alias}.last_edited_ts * 1000, 0), "
+        "COALESCE((SELECT MAX(CAST(json_extract(j.value, '$.createdDateTime') AS INTEGER)) * 1000 "
+        f"FROM json_each(COALESCE({alias}.reactions, '[]')) j), 0))"
+    )
+
+
+# What a channel listing is ordered by: the newest last-modified time across the root and every
+# reply. Measured: a new reply to the oldest root moved it to the top, while the root's own
+# `lastModifiedDateTime` stayed where it was. The correlated MAX uses idx_msteams_thread.
+_MSTEAMS_CHAIN_TS = (
+    f"MAX({_msteams_modified('m')}, COALESCE((SELECT MAX({_msteams_modified('r')}) "
+    "FROM msteams_messages r WHERE r.channel = m.channel AND r.reply_to_id = m.id), 0))"
+)
+
+
+def list_msteams_top_level(
+    conn, channel, visible_ids=None, limit=100, offset=0
+) -> list[sqlite3.Row]:
+    """Root messages in a channel — what ``GET /channels/{id}/messages`` lists, newest chain first.
+
+    The reply chain needs no ACL clause of its own: a reply inherits its root's grants (they are
+    one thread, granted together at import), so a caller who can see the root can see every reply
+    whose time this orders by.
+    """
+    sql = f"SELECT m.* FROM {table('msteams')} m WHERE m.channel = ? AND m.reply_to_id IS NULL"
+    params: list = [channel]
+    clause, cparams = _acl_clause("msteams", "m", visible_ids)
+    sql += clause + f" ORDER BY {_MSTEAMS_CHAIN_TS} DESC, m.id DESC LIMIT ? OFFSET ?"
+    params += cparams + [limit, offset]
+    return conn.execute(sql, params).fetchall()
+
+
+def count_msteams_top_level(conn, channel, visible_ids=None) -> int:
+    sql = f"SELECT COUNT(*) FROM {table('msteams')} WHERE channel = ? AND reply_to_id IS NULL"
+    params: list = [channel]
+    clause, cparams = _acl_clause("msteams", visible_ids=visible_ids)
+    return conn.execute(sql + clause, params + cparams).fetchone()[0]
+
+
+def msteams_by_id(conn, channel, message_id, visible_ids=None) -> sqlite3.Row | None:
+    """One message by its (channel, id), a root or a reply alike; each route decides which of the
+    two it serves."""
+    sql = f"SELECT * FROM {table('msteams')} WHERE channel = ? AND id = ?"
+    params: list = [channel, message_id]
+    clause, cparams = _acl_clause("msteams", visible_ids=visible_ids)
+    return conn.execute(sql + clause, params + cparams).fetchone()
+
+
+def list_msteams_replies(
+    conn, channel, root_id, visible_ids=None, limit=1000, offset=0
+) -> list[sqlite3.Row]:
+    """A root's replies, newest first — the order ``chatmessage-list-replies`` returns them in
+    (its own example lists Reply3, Reply2, Reply1). Scoped to the channel because a message id is
+    unique only within one."""
+    sql = f"SELECT * FROM {table('msteams')} WHERE channel = ? AND reply_to_id = ?"
+    params: list = [channel, root_id]
+    clause, cparams = _acl_clause("msteams", visible_ids=visible_ids)
+    sql += clause + " ORDER BY created_ts DESC, thread_seq DESC LIMIT ? OFFSET ?"
+    params += cparams + [limit, offset]
+    return conn.execute(sql, params).fetchall()
+
+
+def count_msteams_replies(conn, channel, root_id, visible_ids=None) -> int:
+    sql = f"SELECT COUNT(*) FROM {table('msteams')} WHERE channel = ? AND reply_to_id = ?"
+    params: list = [channel, root_id]
+    clause, cparams = _acl_clause("msteams", visible_ids=visible_ids)
+    return conn.execute(sql + clause, params + cparams).fetchone()[0]
 
 
 def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
@@ -3296,26 +3606,47 @@ def group_members(conn, group_id) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def slack_private_channel_members(conn, channel) -> list[str] | None:
+# --- channel membership, for the sources whose documents are conversations -------
+#
+# A private channel's members are the people granted it, for Slack and Teams alike, and a speaker
+# outside them is refused at import for both; that SQL is written once and parameterized by
+# source. A PUBLIC channel's members differ by vendor: Slack's are its speakers (below), while a
+# standard Teams channel's are the whole team, which `routers.msteams` answers from the directory.
+# Both are keyed `(channel, <message id>)` with the channel FIRST (see ID_COLUMNS), which is what
+# lets a grant row name its container without joining the document table; a source whose grouping
+# column is not part of its key has no membership in this sense and must not be passed here.
+#
+# The `slack_*` wrappers below are the names the Slack router and the importer call.
+
+
+def _conversation_active_author(source_type: str, qualifier: str = "") -> str:
+    """Slack's deactivated roster is source-specific, not a Teams membership signal."""
+    if source_type == "slack":
+        return f"{qualifier}author_email NOT IN (SELECT email FROM slack_deactivated_users)"
+    return "1"
+
+
+def conversation_members_by_grant(conn, source_type, channel) -> list[str] | None:
     """The user principals who may read a private channel — its membership — in email order.
     ``None`` for a public channel, which has no such list.
 
-    A private channel and a public one derive membership from different facts, because Slack shows
-    them differently. Slack lists a private channel to its members ONLY, so being able to read one
-    IS being in it: the grants ARE the membership, and a group grant is expanded to the people in
-    it because the membership a client walks is a list of people. A public channel is shown to
-    everyone in the org, so its org grant says nothing about who is in it — see
-    :func:`slack_channel_member_emails` for what answers there.
+    A private channel and a public one derive membership from different facts, because Slack and
+    Teams both show them differently. A private channel is listed to its members ONLY, so being
+    able to read one IS being in it: the grants ARE the membership, and a group grant is expanded
+    to the people in it because the membership a client walks is a list of people. A public channel
+    is shown to everyone in the org, so its org grant says nothing about who is in it — see
+    :func:`conversation_member_emails` for what answers there.
 
     An empty list is a private channel nobody may read (``"readers": []``, a grant to a group with
     no members, or every grantee deactivated): it has no membership rather than a membership of
     everyone.
     """
-    if container_has_public(conn, "slack", channel):
+    if container_has_public(conn, source_type, channel):
         return None
     members: set[str] = set()
     for ptype, pid in conn.execute(
-        "SELECT DISTINCT principal_type, principal_id FROM slack_acl WHERE channel = ?",
+        f"SELECT DISTINCT principal_type, principal_id FROM {acl_table(source_type)} "
+        f"WHERE {grouping_col(source_type)} = ?",
         (channel,),
     ):
         if ptype == "user":
@@ -3331,63 +3662,69 @@ def slack_private_channel_members(conn, channel) -> list[str] | None:
     # for somebody who was never in the channel. Private channels are outside that token's scopes
     # as well (types=private_channel answers missing_scope without groups:read), so no live
     # observation reaches this path at all.
-    deactivated = {r[0] for r in conn.execute("SELECT email FROM slack_deactivated_users")}
+    deactivated = (
+        {r[0] for r in conn.execute("SELECT email FROM slack_deactivated_users")}
+        if source_type == "slack"
+        else set()
+    )
     return sorted(members - deactivated)
 
 
-def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]:
+def conversation_member_emails(conn, source_type, channel, limit=100, offset=0) -> list[str]:
     """One page of a channel's members, in email order.
 
     A private channel's members are the people who may read it
-    (:func:`slack_private_channel_members`). A public channel's are the people who have spoken in
-    it — everyone in the org may read a public channel, and real Slack lists public channels to
-    people who are not in them, so readership cannot be the membership there. Speaking is the only
-    other per-channel signal a corpus carries, and answering with the whole roster instead would
-    give every public channel the same members, which real Slack cannot produce.
+    (:func:`conversation_members_by_grant`). A public Slack channel's are the people who have spoken
+    in it — everyone in the org may read a public channel, and Slack lists public channels to people
+    who are not in them, so readership cannot be the membership there. Speaking is the only other
+    per-channel signal a corpus carries, and answering with the whole roster instead would give
+    every public channel the same members, which real Slack cannot produce. (A standard Teams
+    channel's members ARE the whole team; the Teams router does not ask this.)
 
-    The public path is index-only on idx_slack_channel_author, so a page costs a seek rather than a
-    scan of the channel; the private path pages a set small enough to hold (a channel's grantees).
+    The public path is index-only on the source's (channel, author_email) index, so a page costs a
+    seek rather than a scan of the channel; the private path pages a set small enough to hold (a
+    channel's grantees).
     """
-    members = slack_private_channel_members(conn, channel)
+    members = conversation_members_by_grant(conn, source_type, channel)
     if members is not None:
         return members[offset : offset + limit]
     return [
         r[0]
         for r in conn.execute(
-            "SELECT DISTINCT author_email FROM slack_messages WHERE channel = ? "
-            "AND author_email NOT IN (SELECT email FROM slack_deactivated_users) "
-            "ORDER BY author_email LIMIT ? OFFSET ?",
+            f"SELECT DISTINCT author_email FROM {table(source_type)} "
+            f"WHERE {grouping_col(source_type)} = ? "
+            f"AND {_conversation_active_author(source_type)} ORDER BY author_email LIMIT ? OFFSET ?",
             (channel, limit, offset),
         )
     ]
 
 
-def slack_membership_violations(conn) -> list[tuple[str, str]]:
+def conversation_membership_violations(conn, source_type) -> list[tuple[str, str]]:
     """``(channel, email)`` for every speaker who cannot read the private channel they spoke in.
 
     Speaking in a channel means being in it, and a member of a private channel can read it — so a
-    speaker outside that channel's grantees is two facts that cannot both hold: the same person is
-    served by :func:`slack_channel_member_emails` and told `channel_not_found` by
-    conversations.info. The corpus has no way to say "left the channel", which is the one state
-    real Slack reaches this from, so within this model it is a corpus that cannot be true.
+    speaker outside that channel's grantees is two facts that cannot both hold: the same person
+    posted in the channel and is refused it by the router (Slack's `channel_not_found`, Teams'
+    403). The corpus has no way to say "left the channel", which is the one state the real APIs
+    reach this from, so within this model it is a corpus that cannot be true.
 
     Only PRIVATE channels can produce it — a public channel's org grant covers every principal —
     and only speakers who are principals: a display-only speaker has no identity to authenticate
     with, so there is nobody for the two answers to disagree about.
     """
+    tbl, gcol = table(source_type), grouping_col(source_type)
     out: list[tuple[str, str]] = []
-    for row in list_containers(conn, "slack"):
+    for row in list_containers(conn, source_type):
         channel = row["name"]
         # `None` is a public channel, whose org grant admits every principal, and an empty list is
         # a channel nobody may read — neither has a membership a speaker can fall outside of.
-        allowed = slack_private_channel_members(conn, channel)
+        allowed = conversation_members_by_grant(conn, source_type, channel)
         if not allowed:
             continue
         for (email,) in conn.execute(
-            "SELECT DISTINCT m.author_email FROM slack_messages m "
+            f"SELECT DISTINCT m.author_email FROM {tbl} m "
             "JOIN principals p ON p.id = m.author_email AND p.type = 'user' "
-            "WHERE m.channel = ? "
-            "AND m.author_email NOT IN (SELECT email FROM slack_deactivated_users) "
+            f"WHERE m.{gcol} = ? AND {_conversation_active_author(source_type, 'm.')} "
             "ORDER BY m.author_email",
             (channel,),
         ):
@@ -3396,24 +3733,25 @@ def slack_membership_violations(conn) -> list[tuple[str, str]]:
     return out
 
 
-def slack_channel_has_author(conn, channel, email) -> bool:
+def conversation_has_author(conn, source_type, channel, email) -> bool:
     """Whether ``email`` has spoken in a channel — which is being a member of a PUBLIC one, the
-    same set :func:`slack_channel_member_emails` pages there, asked about one person. Deactivation
+    same set :func:`conversation_member_emails` pages there, asked about one person. Slack deactivation
     is excluded here for the same reason it is there: a channel's membership and one person's
     place in it are one fact, and the two cannot be allowed to disagree. Index-only on
-    idx_slack_channel_author with equality on both columns, so it is a seek rather than the DISTINCT
+    the (channel, author_email) index with equality on both columns, so it is a seek rather than the DISTINCT
     scan that counting the members is."""
     return (
         conn.execute(
-            "SELECT 1 FROM slack_messages WHERE channel = ? AND author_email = ? "
-            "AND author_email NOT IN (SELECT email FROM slack_deactivated_users) LIMIT 1",
+            f"SELECT 1 FROM {table(source_type)} "
+            f"WHERE {grouping_col(source_type)} = ? AND author_email = ? "
+            f"AND {_conversation_active_author(source_type)} LIMIT 1",
             (channel, email),
         ).fetchone()
         is not None
     )
 
 
-def slack_channel_member_counts(conn) -> dict[str, int]:
+def conversation_member_counts(conn, source_type) -> dict[str, int]:
     """Every channel's member count in one pass, paid once at startup instead of per request.
     conversations.list shapes every channel in the page and a member count is a DISTINCT over that
     channel's messages, so a page costs that work however it is spread: measured 2026-09-17 on a
@@ -3422,39 +3760,64 @@ def slack_channel_member_counts(conn) -> dict[str, int]:
     idx_slack_channel_author, with the deactivated set entering the plan as USING INDEX
     sqlite_autoindex_slack_deactivated_users_1 FOR IN-OPERATOR.
 
-    Counted from whatever membership that channel has, so `num_members` and walking
-    :func:`slack_channel_member_emails` cannot disagree — the speakers for a public channel, the
+
+    Counted from whatever membership that channel has, so a reported count and walking
+    :func:`conversation_member_emails` cannot disagree — the speakers for a public channel, the
     grantees for a private one. Every channel is keyed, including one with no messages at all,
     which the GROUP BY alone cannot reach.
     """
+    gcol = grouping_col(source_type)
     counts = {
         r[0]: r[1]
         for r in conn.execute(
-            "SELECT channel, COUNT(DISTINCT author_email) FROM slack_messages "
-            "WHERE author_email NOT IN (SELECT email FROM slack_deactivated_users) "
-            "GROUP BY channel"
+            f"SELECT {gcol}, COUNT(DISTINCT author_email) FROM {table(source_type)} "
+            f"WHERE {_conversation_active_author(source_type)} GROUP BY {gcol}"
         )
     }
     return {
         channel: (len(members) if members is not None else counts.get(channel, 0))
         for channel, members in (
-            (row["name"], slack_private_channel_members(conn, row["name"]))
-            for row in list_containers(conn, "slack")
+            (row["name"], conversation_members_by_grant(conn, source_type, row["name"]))
+            for row in list_containers(conn, source_type)
         )
     }
 
 
-def count_slack_channel_members(conn, channel) -> int:
-    """One channel's member count — :func:`slack_channel_member_counts` for a single channel, for
+def count_conversation_members(conn, source_type, channel) -> int:
+    """One channel's member count — :func:`conversation_member_counts` for a single channel, for
     the window before that cache is warm."""
-    members = slack_private_channel_members(conn, channel)
+    members = conversation_members_by_grant(conn, source_type, channel)
     if members is not None:
         return len(members)
     return conn.execute(
-        "SELECT COUNT(DISTINCT author_email) FROM slack_messages WHERE channel = ? "
-        "AND author_email NOT IN (SELECT email FROM slack_deactivated_users)",
+        f"SELECT COUNT(DISTINCT author_email) FROM {table(source_type)} "
+        f"WHERE {grouping_col(source_type)} = ? AND {_conversation_active_author(source_type)}",
         (channel,),
     ).fetchone()[0]
+
+
+def slack_private_channel_members(conn, channel) -> list[str] | None:
+    return conversation_members_by_grant(conn, "slack", channel)
+
+
+def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]:
+    return conversation_member_emails(conn, "slack", channel, limit=limit, offset=offset)
+
+
+def slack_membership_violations(conn) -> list[tuple[str, str]]:
+    return conversation_membership_violations(conn, "slack")
+
+
+def slack_channel_has_author(conn, channel, email) -> bool:
+    return conversation_has_author(conn, "slack", channel, email)
+
+
+def slack_channel_member_counts(conn) -> dict[str, int]:
+    return conversation_member_counts(conn, "slack")
+
+
+def count_slack_channel_members(conn, channel) -> int:
+    return count_conversation_members(conn, "slack", channel)
 
 
 def all_user_emails(conn) -> list[str]:
@@ -3470,11 +3833,15 @@ def slack_is_deactivated(conn, email) -> bool:
     )
 
 
+def distinct_conversation_author_emails(conn, source_type) -> list[str]:
+    """Every author on a message of this source — the display-only speakers/bots (deploybot@…)
+    that aren't org principals but still need to resolve by their served user id. Scanned once and
+    cached by the caller (a full-table DISTINCT)."""
+    return [r[0] for r in conn.execute(f"SELECT DISTINCT author_email FROM {table(source_type)}")]
+
+
 def distinct_slack_author_emails(conn) -> list[str]:
-    """Every author on a Slack message — the display-only speakers/bots (e.g. deploybot@…) that
-    aren't org principals but still need to resolve via users.info. Scanned once and cached by
-    the caller (a full-table DISTINCT)."""
-    return [r[0] for r in conn.execute("SELECT DISTINCT author_email FROM slack_messages")]
+    return distinct_conversation_author_emails(conn, "slack")
 
 
 # --- ACL grants (container/doc scoped) ------------------------------------------

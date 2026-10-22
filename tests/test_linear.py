@@ -288,9 +288,13 @@ def test_linear_state_type_is_linears_category(client, admin_h):
 
 _TEAM_LISTS = """query($id: String!) { team(id: $id) {
   createdAt
+  cyclesEnabled
   states { nodes { id name type color position createdAt } }
+  started: states(filter: {type: {eq: "started"}}) { nodes { name } }
   labels { nodes { name team { id } } }
-  projects { nodes { name status { name type color position indefinite } } }
+  bug: labels(filter: {name: {eq: "bug"}}) { nodes { name } }
+  projects { nodes { name status { id name type color position indefinite createdAt updatedAt
+    archivedAt description team { id } teamId inheritedFrom { id } } } }
   cycles { nodes { name } }
 } }"""
 
@@ -324,6 +328,7 @@ def test_linear_team_lists_its_states_labels_projects_and_cycles(client, admin_h
     for state in nodes:
         q = "{ workflowState(id: %s) { id name type color position createdAt } }"
         assert gql(client, q % lit(state["id"]), admin_h).json()["data"]["workflowState"] == state
+    assert {s["name"] for s in des["started"]["nodes"]} == {"In Progress", "In Review"}
     triage = {s["name"]: s["position"] for s in lists("BLA", admin_h)["states"]["nodes"]}
     assert triage["Triage"] == -0.5
 
@@ -334,20 +339,32 @@ def test_linear_team_lists_its_states_labels_projects_and_cycles(client, admin_h
         "ava": {"bug", "gateway", "latency", "tokens"},
     }
     assert {n["team"] for t in eng.values() for n in t["labels"]["nodes"]} == {None}
+    assert eng["ava"]["bug"]["nodes"] == [{"name": "bug"}]
     assert lists("DES", ava_h)["labels"] == eng["ava"]["labels"]
     projects = {who: [n["name"] for n in t["projects"]["nodes"]] for who, t in eng.items()}
     assert sorted(projects["admin"]) == ["runtime-stability", "vault-rotation"]
     assert projects["ava"] == ["runtime-stability"]
-    assert eng["ava"]["projects"]["nodes"][0]["status"] == {
+    status = eng["ava"]["projects"]["nodes"][0]["status"]
+    assert status == {
+        "id": synth.linear_project_status_id("started"),
         "name": "In Progress",
         "type": "started",
         "color": "#F2C94C",
         "position": 2.0,
         "indefinite": False,
+        "createdAt": status["createdAt"],
+        "updatedAt": status["createdAt"],
+        "archivedAt": None,
+        "description": None,
+        "team": None,
+        "teamId": None,
+        "inheritedFrom": None,
     }
     assert des["projects"]["nodes"] == []
     cycles = {who: {n["name"] for n in t["cycles"]["nodes"]} for who, t in eng.items()}
     assert cycles["admin"] == cycles["ava"] == {"2025-W08", "2026-W40-embargo"}
+    # a team with cycles has them on, as real's did once they were turned on
+    assert (eng["ava"]["cyclesEnabled"], des["cyclesEnabled"]) == (True, False)
 
 
 _SEARCH = """query($term: String!, $filter: IssueFilter, $teamId: String, $c: Boolean,
@@ -368,6 +385,8 @@ _SEARCH = """query($term: String!, $filter: IssueFilter, $teamId: String, $c: Bo
         ({"term": "eng-101"}, "admin", ["ENG-101"], 1),
         # porter-stemmed, as real matched "familiarity" to "familiar"
         ({"term": "bursting"}, "admin", ["ENG-101"], 1),
+        # a word's start, as real matched "prob" to "probe"; off the comments, which match "burst"
+        ({"term": "burs", "c": False}, "admin", ["ENG-101"], 1),
         # any word matches
         ({"term": "compaction selects"}, "admin", ["DES-77", "ENG-102"], 2),
         # comments are searched unless `includeComments: false`
@@ -379,6 +398,14 @@ _SEARCH = """query($term: String!, $filter: IssueFilter, $teamId: String, $c: Bo
         ({"term": "50ms", "orderBy": "createdAt"}, "admin", ["ENG-102", "ENG-101"], 2),
         ({"term": "50ms", "teamId": synth.linear_team_id("design")}, "admin", [], 0),
         ({"term": "50ms", "teamId": synth.linear_id("no team")}, "admin", [], 0),
+        # a team id in upper case, and the nil UUID, both looked up
+        (
+            {"term": "50ms", "teamId": synth.linear_team_id("engineering").upper()},
+            "admin",
+            ["ENG-101", "ENG-102"],
+            2,
+        ),
+        ({"term": "50ms", "teamId": "00000000-0000-0000-0000-000000000000"}, "admin", [], 0),
         # an issue the caller cannot read is no match, its comments included
         ({"term": "rotate rotation"}, "admin", ["ENG-103"], 1),
         ({"term": "rotate rotation"}, "ava@acme.com", [], 0),
@@ -407,13 +434,36 @@ def test_linear_search_issues(client, admin_h, tokens_yaml, variables, caller, i
     }
 
 
-@pytest.mark.parametrize("variables", [{"term": ""}, {"term": "x", "teamId": "ENG"}])
+@pytest.mark.parametrize(
+    "variables",
+    [
+        {"term": ""},
+        {"term": "x", "teamId": "ENG"},
+        {"term": "x", "teamId": "11111111-1111-0111-8111-111111111111"},
+    ],
+)
 def test_linear_search_issues_refuses_what_real_refuses(client, admin_h, variables):
     """An empty term and a team key for `teamId`, each refused as `resolve_search_issues`
     records."""
     r = gql(client, _SEARCH, admin_h, **variables).json()
     assert r["data"] is None
     assert r["errors"][0]["message"] == "Argument Validation Error"
+
+
+def test_linear_search_ranks_by_relevance_unless_order_by(client, admin_h):
+    """ENG-101 holds both words and ENG-102 one, while ENG-102 is the newer: relevance puts
+    ENG-101 first and `orderBy` the newest. The identifier alone scores 1."""
+
+    def search(**variables):
+        r = gql(client, _SEARCH, admin_h, **variables).json()
+        return [
+            (n["identifier"], n["metadata"]["score"]) for n in r["data"]["searchIssues"]["nodes"]
+        ]
+
+    (first, best), (second, other) = search(term="burst 50ms")
+    assert (first, second) == ("ENG-101", "ENG-102") and 1 > best > other > 0
+    assert [i for i, _ in search(term="burst 50ms", orderBy="createdAt")] == ["ENG-102", "ENG-101"]
+    assert search(term="ENG-102") == [("ENG-102", 1)]
 
 
 # The read documents mirage 0.0.7's `LinearVFS` sends (`mirage.core.linear.queries`), trimmed to
@@ -2249,6 +2299,10 @@ def test_number_comparators_are_pinned_at_their_boundary(fclient):
     assert ids(fclient, "{number: {eq: 1}}") == ["DES-1", "ENG-1"]
     assert ids(fclient, "{number: {gt: 1}}") == ["ENG-2"]
     assert ids(fclient, '{team: {key: {eq: "ENG"}}, number: {eq: 2}}') == ["ENG-2"]
+    assert ids(fclient, "{number: {lt: 1}}") == []
+    for spec in ("{eq: 0}", "{gt: 0}", "{lt: 1.5}", "{in: [1.5]}", "{nin: [0]}"):
+        r = post(fclient, "{ issues(filter: {number: %s}) { nodes { identifier } } }" % spec)
+        assert r.json()["errors"][0]["message"] == "Argument Validation Error", spec
 
 
 def test_null_comparator_on_a_nullable_number(fclient):
@@ -4037,7 +4091,9 @@ def test_linear_team_membership_is_the_teams_group(tmp_path, ava_groups):
             " viewerCanLeave members { nodes { email createdAt id } }"
             " viewerMembership { %s } } } }" % _MEMBERSHIP
         )
-        d = gql(client, q, h).json()["data"]
+        r = gql(client, q, h).json()
+        assert "errors" not in r, r["errors"]
+        d = r["data"]
         teams = {t["key"]: t for t in d["teams"]["nodes"]}
         assert list(teams) == ["DES", "ENG"]  # blackops is hidden from ava
         for team in teams.values():
@@ -4074,7 +4130,8 @@ def test_linear_team_membership_is_the_teams_group(tmp_path, ava_groups):
         q = (
             "{ teams { nodes { key memberships { nodes { %s } } } }"
             " teamMemberships { nodes { %s } }"
-            " users { nodes { email teamMemberships { nodes { id } } teams { nodes { key } } } } }"
+            " users { nodes { email teamMemberships { nodes { id } } teams { nodes { key } }"
+            ' eng: teams(filter: {key: {eq: "ENG"}}) { nodes { key } } } } }'
         ) % (_MEMBERSHIP, _MEMBERSHIP)
         d = gql(client, q, h).json()["data"]
         by_team = {t["key"]: t["memberships"]["nodes"] for t in d["teams"]["nodes"]}
@@ -4087,10 +4144,12 @@ def test_linear_team_membership_is_the_teams_group(tmp_path, ava_groups):
             m["id"] for m in everyone
         )
         for m in everyone:
-            q = "{ teamMembership(id: %s) { %s } }" % (lit(m["id"]), _MEMBERSHIP)
-            assert gql(client, q, h).json()["data"]["teamMembership"] == m
+            for spelt in (m["id"], m["id"].upper()):
+                q = "{ teamMembership(id: %s) { %s } }" % (lit(spelt), _MEMBERSHIP)
+                assert gql(client, q, h).json()["data"]["teamMembership"] == m
         users = {u["email"]: u for u in d["users"]["nodes"]}
         assert [t["key"] for t in users["ava@acme.com"]["teams"]["nodes"]] == mine
+        assert users["ava@acme.com"]["eng"]["nodes"] == [{"key": "ENG"}]
         assert users["hana@acme.com"]["teams"]["nodes"] == []
         admin = {"Authorization": settings.admin_token}
         q = '{ users(filter: {email: {eq: "hana@acme.com"}}) { nodes { teams { nodes { key } } } } }'
@@ -4101,10 +4160,11 @@ def test_linear_team_membership_is_the_teams_group(tmp_path, ava_groups):
         }
         q = '{ team(id: "ENG") { membership(userId: %s) { id user { email } } } }'
         for email, member in (("bo@acme.com", True), ("mia@acme.com", False)):
-            got = gql(client, q % lit(synth.linear_user_id(email)), h).json()["data"]
-            assert (got["team"]["membership"] or {}).get("user") == (
-                {"email": email} if member else None
-            )
+            for user_id in (synth.linear_user_id(email), synth.linear_user_id(email).upper()):
+                got = gql(client, q % lit(user_id), h).json()["data"]
+                assert (got["team"]["membership"] or {}).get("user") == (
+                    {"email": email} if member else None
+                )
         refused = gql(client, q % lit("bo@acme.com"), h).json()
         assert refused["data"] == {"team": {"membership": None}}
         assert refused["errors"][0]["message"] == "Internal server error"

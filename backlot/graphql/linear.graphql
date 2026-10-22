@@ -67,8 +67,9 @@ type Query {
   teams(after: String, before: String, filter: TeamFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): TeamConnection!
   comments(after: String, before: String, filter: CommentFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): CommentConnection!
   users(after: String, before: String, filter: UserFilter, first: Int, includeArchived: Boolean, includeDisabled: Boolean, last: Int, orderBy: PaginationOrderBy, sort: [UserSortInput!]): UserConnection!
-  """Issues matching a search term, best match first. See `store.search_linear_issues` for what
-  matches and how it is scored."""
+  """Issues matching a search term by identifier, by a word of the title or description, or by
+  a word of a comment unless `includeComments` is false; best match first unless `orderBy` is
+  given."""
   searchIssues(after: String, before: String, filter: IssueFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy, term: String!, includeComments: Boolean, teamId: String): IssueSearchPayload!
   documents(after: String, before: String, filter: DocumentFilter, first: Int, includeArchived: Boolean, last: Int, orderBy: PaginationOrderBy): DocumentConnection!
   """The authenticated user — how a client confirms which identity (and therefore which ACL scope) its credential resolved to."""

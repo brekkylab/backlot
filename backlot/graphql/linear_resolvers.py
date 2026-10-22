@@ -790,7 +790,6 @@ def _team(container: str, info) -> dict:
         "visibility": "public",
         "private": False,
         "inviteHash": synth.hnum("linear-team:" + container, 0, 12).__format__("012x"),
-        "cyclesEnabled": False,
         "cycleDuration": 2,
         "cycleCooldownTime": 0,
         "cycleStartDay": 1.0,
@@ -1120,9 +1119,14 @@ def resolve_search_issues(
         raise argument_validation_error()
     team = None
     if teamId is not None:
-        if not UUID_SHAPE.match(teamId):
+        # Measured 2026-10-22: a UUID of version 1-8 and variant 8-b, the nil UUID and the all-`f`
+        # one were looked up, in either case; version 0 or 9, variant c, no dashes and a trailing
+        # space were refused.
+        versioned = r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+        nil_or_max = r"0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12}"
+        if not re.fullmatch(f"{versioned}|{nil_or_max}", teamId, re.IGNORECASE):
             raise argument_validation_error()
-        team = store.linear_team_by_served_id(conn, teamId) or "\x00none"
+        team = store.linear_team_by_served_id(conn, teamId.lower()) or "\x00none"
     _slice(first, after, last, before)
     prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
     hits, total = store.search_linear_issues(
@@ -1565,7 +1569,7 @@ def resolve_team_membership(_root, info, id) -> dict:
     for container in _visible_teams(info):
         for row in _team_member_rows(container, info):
             user_id = synth.linear_user_id(row["email"])
-            if synth.linear_team_membership_id(container, user_id) == str(id):
+            if synth.linear_team_membership_id(container, user_id) == str(id).lower():
                 user = _user(row["email"], row["display_name"], info)
                 return _membership(container, user, info)
     raise GraphQLError("Entity not found: TeamMembership")
@@ -1584,7 +1588,7 @@ def resolve_team_membership_of(team, info, userId) -> dict | None:
         )
     container = team["_container"]
     for row in _team_member_rows(container, info):
-        if synth.linear_user_id(row["email"]) == str(userId):
+        if synth.linear_user_id(row["email"]) == str(userId).lower():
             return _membership(container, _user(row["email"], row["display_name"], info), info)
     return None
 
@@ -1683,11 +1687,25 @@ def resolve_team_projects(
     return page
 
 
+def _team_cycle_names(container: str, info) -> list[str]:
+    ctx = _ctx(info)
+    cache = ctx.setdefault("_team_cycle_names", {})
+    if container not in cache:
+        cache[container] = store.linear_team_entity_names(ctx["conn"], "cycle", container)
+    return cache[container]
+
+
+def resolve_team_cycles_enabled(team, info) -> bool:
+    """Whether the team has cycles: a real team answered `cyclesEnabled: true` beside the cycles
+    turning them on created, and `false` beside none once they were off (measured 2026-10-22)."""
+    return bool(_team_cycle_names(team["_container"], info))
+
+
 def resolve_team_cycles(
     team, info, first=None, after=None, last=None, before=None, **_ignored
 ) -> dict:
     container = team["_container"]
-    names = store.linear_team_entity_names(_ctx(info)["conn"], "cycle", container)
+    names = _team_cycle_names(container, info)
     names = _newest_first(
         names,
         lambda n: (synth.epoch("linear-cycle:" + n), synth.linear_cycle_id(n, container)),
@@ -1953,6 +1971,7 @@ RESOLVERS = {
         "issueCount": resolve_team_issue_count,
         "viewerMembership": resolve_team_viewer_membership,
         "viewerCanJoin": resolve_team_viewer_can_join,
+        "cyclesEnabled": resolve_team_cycles_enabled,
         "viewerCanLeave": resolve_team_viewer_can_leave,
         "members": resolve_team_members,
         "membership": resolve_team_membership_of,

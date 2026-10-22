@@ -1921,10 +1921,13 @@ def search_linear_issues(
     """``searchIssues``: every matching issue as ``(id, score)`` in the order served, and the count
     ``totalCount`` reports.
 
-    An issue matches when its identifier is ``term`` (any case), when any word of ``term`` is in its
-    title or description through the porter-stemmed index, or, with ``include_comments``, when one
-    of its comments contains a word. That count leaves ``prefilter`` out, as api.linear.app's did
-    on 2026-10-22: a `filter` narrowed the nodes and left `totalCount` at the unfiltered total.
+    An issue matches when its identifier is ``term`` (any case), when a space-separated word of
+    ``term`` starts a word of its title or description, read through the porter-stemmed index with
+    a hyphenated word as the phrase it spells (measured 2026-10-22: `prob`, `pro` and `chil` matched
+    where `robe` did not, and `BRE-2` did not match a title holding `(child 2)`), or, with
+    ``include_comments``, when one of its comments contains a word. That count leaves
+    ``prefilter`` out, as api.linear.app's did on 2026-10-22: a `filter` narrowed the nodes and left
+    `totalCount` at the unfiltered total.
 
     ``score`` is 1 for the identifier, as real's was, and ``|bm25| / (1 + |bm25|)`` for an index
     match, so it falls between 0 and 1 and orders as the rank does; a comment-only match scores 0.
@@ -1933,8 +1936,9 @@ def search_linear_issues(
     # Each kind of match is collected on its own and the candidates are scoped afterwards: an FTS
     # MATCH joined into a scan of the issues is re-run per issue.
     ranks: dict[str, float | None] = {}
-    if words and _has_fts(conn, "linear"):
-        match = " OR ".join(f'"{w}"' for w in words)
+    phrases = [w.replace('"', '""') for w in term.lower().split() if re.search(r"\w", w)]
+    if phrases and _has_fts(conn, "linear"):
+        match = " OR ".join(f'"{w}"*' for w in phrases)
         for row in conn.execute(
             "SELECT id, rank FROM linear_fts WHERE linear_fts MATCH ?", [match]
         ):

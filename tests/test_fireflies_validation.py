@@ -405,3 +405,55 @@ def test_fireflies_errors_in_one_response_share_one_correlation_id(fireflies_htt
     ).json()
     assert len(body["errors"]) == 2
     assert len({error["extensions"]["correlationId"] for error in body["errors"]}) == 1
+
+
+_SCOPE_ENUM = ("isEnum", "scope must be one of the following values: title, sentences, all")
+_SCOPE_KEYWORD = (
+    "conditionalRequired",
+    "keyword is required when scope is provided",
+)
+
+
+@pytest.mark.parametrize(
+    "arguments,constraints",
+    [
+        ('scope: "title"', [_SCOPE_KEYWORD]),
+        ('scope: "sentences"', [_SCOPE_KEYWORD]),
+        ('scope: "title", keyword: ""', [_SCOPE_KEYWORD]),
+        ('scope: "TITLE", keyword: "k"', [_SCOPE_ENUM]),
+        ('scope: "", keyword: "k"', [_SCOPE_ENUM]),
+        ('scope: "bogus", keyword: "k"', [_SCOPE_ENUM]),
+        ('scope: "bogus"', [_SCOPE_KEYWORD, _SCOPE_ENUM]),
+        ('scope: "body", keyword: "x"', [_SCOPE_ENUM]),
+    ],
+)
+def test_fireflies_measured_scope_keyword_refusal(fireflies_http, arguments, constraints):
+    # A sent scope needs a non-empty keyword and an exact title/sentences/all spelling; both land
+    # on the same scope field, keyword first. See ``_validate_transcripts``.
+    _assert_invalid(_query(fireflies_http, arguments), [_field("scope", *constraints)])
+
+
+def test_fireflies_measured_scope_lists_ahead_of_other_refusals(fireflies_http):
+    _assert_invalid(
+        _query(fireflies_http, 'scope: "bogus", keyword: "k", fromDate: "x"'),
+        [
+            _field("scope", _SCOPE_ENUM),
+            _field("fromDate", ("isDate", "fromDate must be a Date instance")),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        'scope: "all", keyword: "k"',
+        'scope: "title", keyword: "all-hands"',
+        'keyword: "k"',
+    ],
+)
+def test_fireflies_measured_scope_keyword_accepted(fireflies_http, arguments):
+    response = _query(fireflies_http, arguments + ", limit: 50")
+    assert response.status_code == 200
+    body = response.json()
+    assert "errors" not in body
+    assert isinstance(body["data"]["transcripts"], list)

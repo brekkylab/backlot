@@ -393,20 +393,32 @@ def _not_a_js_date(value) -> bool:
     return len(digits) > 6 or 13 <= int(digits or "0") <= 31 or int(digits or "0") > 275760
 
 
+_SCOPE_ENUM = "scope must be one of the following values: title, sentences, all"
+_SCOPE_NEEDS_KEYWORD = "keyword is required when scope is provided"
+
+
 def _validate_transcripts(arguments):
-    """Raise real's ``invalid_arguments`` error for the dates, page bounds and person filters it
-    refuses.
+    """Raise real's ``invalid_arguments`` error for the dates, page bounds, scope/keyword and
+    person filters it refuses.
 
     ``mine``, ``user_id`` and the three singular addresses collide once two of them hold a value
     (``false``, ``null`` and ``""`` do not), and the error then names each of them that was sent,
     ``false`` and ``""`` included. ``organizers`` and ``participants`` collide with any one that
-    holds a value, ``[]`` included, and the error names only the plural for that."""
+    holds a value, ``[]`` included, and the error names only the plural for that. A sent ``scope``
+    needs a non-empty ``keyword`` and an exact ``title``/``sentences``/``all`` spelling
+    (api.fireflies.ai, 2026-10-21); ``scope`` is listed ahead of the other refused arguments."""
     fields = {}
 
     def add(name, kind, message):
         field = fields.setdefault(name, {"name": name, "message": message, "constraints": []})
         field["constraints"].append({"type": kind, "message": message})
 
+    scope, keyword = arguments["scope"], arguments["keyword"]
+    if scope is not None:
+        if not keyword:
+            add("scope", "conditionalRequired", _SCOPE_NEEDS_KEYWORD)
+        if store.fireflies_scope_columns(scope) is None:
+            add("scope", "isEnum", _SCOPE_ENUM)
     for name in ("fromDate", "toDate"):
         if _not_a_js_date(arguments[name]):
             add(name, "isDate", f"{name} must be a Date instance")
@@ -477,10 +489,6 @@ def resolve_transcripts(
 ):
     _validate_transcripts(locals())
     ctx = _ctx(info)
-    if store.fireflies_scope_columns(scope) is None:
-        # An unknown `scope` is a client mistake, and silently searching everything would hide it.
-        # A field error (partial data + errors), which is what the real API returns.
-        raise ValueError(f"scope must be one of title, sentences, all — got {scope!r}")
 
     hosts = [host_email] if host_email else []
     # `mine` and `user_id` both mean "restrict to this user's own meetings". The caller's own

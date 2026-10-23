@@ -143,7 +143,7 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 | Writes, and where they go | [docs/write-overlay.md](docs/write-overlay.md) |
 | Every `BACKLOT_*` setting, and Docker | [docs/configuration.md](docs/configuration.md) |
 | Usage telemetry: why it is collected, what is sent, and how to turn it off | [docs/telemetry.md](docs/telemetry.md) |
-| Vendor names and trademarks | [NOTICE.md](NOTICE.md) |
+| Notices and trademarks | [NOTICE.md](NOTICE.md) |
 
 ## Contributing
 

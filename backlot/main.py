@@ -21,7 +21,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.routing import Match
+from starlette.routing import BaseRoute, Match
 from starlette.types import Scope
 
 from backlot import auth, errors, openapi, overlay, store, synth, telemetry
@@ -297,6 +297,35 @@ async def refuse_an_unserved_hubspot_operation(request: Request, call_next):
         refusal = hubspot.refuse_an_unserved_operation(request)
         if refusal is not None:
             return refusal
+    return await call_next(request)
+
+
+def _hubspot_route(scope: Scope) -> BaseRoute | None:
+    """The route the router matches this scope to: the first HubSpot route that matches it in
+    full, else the first that matches its path alone (the router's 405). Asked of
+    ``backlot.routers.hubspot.router``, which holds the HubSpot routes and nothing else."""
+    partial = None
+    for route in hubspot.router.routes:
+        match = route.matches(scope)[0]
+        if match is Match.FULL:
+            return route
+        if match is Match.PARTIAL and partial is None:
+            partial = route
+    return partial
+
+
+@app.middleware("http")
+async def answer_a_hubspot_method_or_accept_no_route_takes(request: Request, call_next):
+    """`OPTIONS`, `GET` on `search` and `batch/read`, `PUT` on a record and an `Accept` that admits
+    no JSON are answered on `/hubspot` as real answers them, ahead of the credential and the router
+    (``backlot.routers.hubspot.answer_ahead_of_the_routes``). It leaves on the scope the route the
+    router matches the request to (``_hubspot_route``), where telemetry names the call by it
+    (``backlot.telemetry.naming.Namer.name``)."""
+    if request.scope["path"].startswith("/hubspot/"):
+        answer = hubspot.answer_ahead_of_the_routes(request)
+        if answer is not None:
+            request.scope["route"] = _hubspot_route(request.scope)
+            return answer
     return await call_next(request)
 
 
@@ -584,6 +613,25 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     return await call_next(request)
 
 
+@app.middleware("http")
+async def serve_a_slashed_hubspot_path_as_the_path_without_it(request: Request, call_next):
+    """Trailing slashes on a `/hubspot` path are not part of the path: real serves what the
+    slash-free spelling serves, where Starlette's router would answer a 307 to it.
+
+    Measured against api.hubapi.com with a service key: on 2026-10-19, `GET` on the contacts
+    listing, a contact and its v4 associations, and `POST` on `search` and `batch/read`, each with a
+    slash, answered 200; the associations page and the search answer were byte for byte the
+    slash-free ones, and the contact was the same contact. On 2026-10-22 `contacts//` and
+    `contacts///` were the listing and `contacts/1//` the 404 page `contacts/1` gets, so every
+    trailing slash is dropped."""
+    path = request.url.path
+    trimmed = path.rstrip("/")
+    if path.startswith("/hubspot/") and trimmed != path and len(trimmed) > len("/hubspot"):
+        request.scope["path"] = trimmed
+        request.scope["raw_path"] = trimmed.encode()
+    return await call_next(request)
+
+
 def _google_route_match(scope: Scope) -> Match:
     """How the best Google route matches this scope: in full, by its path alone (``PARTIAL``, the
     router's 405), or not at all. Asked of ``backlot.routers.google.router``, which holds the Google
@@ -772,6 +820,7 @@ _HEAD_IS_THE_GET_WITHOUT_ITS_BODY = (
     "/notion",
     "/drive/v3",
     "/gmail/v1",
+    "/hubspot",
     "/health",
     "/_meta",
 )
@@ -812,7 +861,7 @@ async def answer_an_atlassian_write_that_fails(request: Request, call_next):
 @app.middleware("http")
 async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub, both Atlassian
-    products, Notion, Drive and Gmail answer one.
+    products, Notion, Drive, Gmail and HubSpot answer one.
 
     FastAPI's ``APIRoute`` does not add `HEAD` to a GET route the way Starlette's ``Route`` does, so
     without this a `HEAD` on a route that serves the GET is a 405, whatever the GET answers. Real
@@ -836,10 +885,11 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     `content-length` a client reads a `HEAD` for is the GET body's length and computing the body is
     the only way to have that number; a `HEAD` costs what its GET costs, here as on real.
 
-    What the vendors do NOT share is the `content-length`: GitHub and Notion declare the length of
-    the body the `GET` would have carried, and Atlassian's and Google's answers split, so that
-    header is asked for rather than assumed, through ``errors.head_content_length``. The request
-    is marked ``answering_head`` on its state for ``errors.google.jsonp_callback`` and
+    What the vendors do NOT share is the `content-length`: GitHub, Notion and HubSpot declare the
+    length of the body the `GET` would have carried (HubSpot's `HEAD` on `search` declared the 229
+    of its `GET`'s 405 page, measured 2026-10-19), and Atlassian's and Google's answers split, so
+    that header is asked for rather than assumed, through ``errors.head_content_length``. The
+    request is marked ``answering_head`` on its state for ``errors.google.jsonp_callback`` and
     ``routers.github._validate_api_version``, which read it.
 
     The method goes back to `HEAD` on the scope once the GET has answered, because the server frames

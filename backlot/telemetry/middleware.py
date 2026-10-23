@@ -1,7 +1,8 @@
 """The ASGI middleware that counts each call, installed outermost by ``backlot.main``.
 
 It reads the request after the app has answered: by then the router has put the matched
-route on the scope, the path rewrites have run, and the HEAD middleware has put the method back.
+route on the scope (or, where a HubSpot middleware answers ahead of the router, the route the
+router matches), the path rewrites have run, and the HEAD middleware has put the method back.
 It reads an answer's body only to find an error code, and only for an error status, a Slack
 ``ok: false``, or a GraphQL answer.
 """

@@ -434,13 +434,27 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             {},
             ("google_drive", "unmatched", "unknown", 405, None, "client"),
         ),
-        # The first route whose `{param}` takes the path answers it; a vendor template with more
-        # literal segments, under any method, names the call.
+        # The first route whose `{param}` takes the path is the matched one; a vendor template with
+        # more literal segments, under any method, names the call.
         (
             "OPTIONS",
             "/hubspot/crm/v3/objects/contacts/search",
             {},
-            ("hubspot", "crm/v3/objects/{}/search", "unknown", 405, None, "client"),
+            ("hubspot", "crm/v3/objects/{}/search", "unknown", 401, None, "auth"),
+        ),
+        # An `Accept` refused on an operation a route serves is a call of that operation.
+        (
+            "POST",
+            "/hubspot/crm/v3/objects/contacts/batch/read",
+            {"headers": {"Accept": "text/html"}},
+            (
+                "hubspot",
+                "post-/crm/v3/objects/{objectType}/batch/read_read",
+                "implemented",
+                406,
+                None,
+                "client",
+            ),
         ),
         (
             "PUT",

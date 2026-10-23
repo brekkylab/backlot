@@ -5,7 +5,7 @@ Mirage mounts a repo's git file tree as a filesystem — read it with plain ``ls
 ``grep``, same as the S3/Notion examples. The host comes from a module constant,
 ``mirage.core.github.constants.API_BASE = "https://api.github.com"``, which ``github_url`` falls
 back to whenever ``GitHubConfig.base_url`` is unset — so ``point_github_at`` rebinds that constant
-before the resource is built, the same way ``point_google_at`` does for Google (where the config
+before the VFS is built, the same way ``point_google_at`` does for Google (where the config
 seam cannot work at all — see ``backlot.integrations.mirage``).
 
 mirage's GitHub connector only mirrors the *file tree* (git ``trees``/``blobs``), not issues/PRs —
@@ -18,7 +18,7 @@ use `examples/using-official-sdk/github.py` for those.
     python examples/using-mirage/github.py --url http://localhost:8000 --fuse   # real OS mount
 
 With ``--fuse`` the tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read with
-plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
+plain ``os``/shell tools; otherwise it's driven in-process via ``ws.shell``.
 """
 
 import argparse
@@ -29,7 +29,7 @@ import urllib.request
 
 from _helpers import FUSE_HELP, lines, run_mirage
 from mirage import MountMode, Workspace
-from mirage.resource.github import GitHubConfig, GitHubResource
+from mirage.vfs.github import GitHubConfig, GitHubVFS
 
 from backlot import serve_or_connect
 from backlot.integrations.mirage import point_github_at
@@ -93,8 +93,8 @@ def _api_get(url: str, token: str) -> dict:
 
 def discover_repo(base_url: str, token: str) -> tuple[str, str] | None:
     """Find a repo the token can reach that actually has files, instead of assuming the throwaway
-    CORPUS's own ``REPO`` exists — against a ``--url`` serving a different corpus,
-    ``GitHubResource.__init__`` 404s immediately (it eagerly fetches the repo + its tree).
+    CORPUS's own ``REPO`` exists — against a ``--url`` serving a different corpus, the mount's
+    first command 404s (that is when ``GitHubVFS`` fetches the tree at the ref ``build`` pins).
 
     Goes through ``GET /user/repos`` — the CREDENTIAL's own view of what it can reach — so nothing
     here has to guess the owner: Backlot derives its org from the corpus's email domain and 404s
@@ -124,22 +124,22 @@ def discover_repo(base_url: str, token: str) -> tuple[str, str] | None:
 
 
 def build(s, token, owner, repo):
-    # Redirect the API_BASE constant first, then construct the resource: its __init__ makes
-    # synchronous HTTP calls to fetch the default branch and the recursive tree, so a resource
-    # built before the rebind would already have talked to api.github.com.
+    # Redirect the API_BASE constant before the VFS reaches the network. Its first command
+    # fetches the recursive tree at the pinned ref, so a rebind after that would come too late
+    # for the requests that decide what the mount holds.
     point_github_at(s.base_url)
-    return GitHubResource(GitHubConfig(token=token, owner=owner, repo=repo, ref="main"))
+    return GitHubVFS(GitHubConfig(token=token, owner=owner, repo=repo, ref="main"))
 
 
-async def main(resource) -> None:
-    ws = Workspace({"/github": resource}, mode=MountMode.READ)
+async def main(vfs) -> None:
+    ws = Workspace({"/github": vfs}, mode=MountMode.READ)
 
     print("=== ls /github/ ===")
-    print((await (await ws.execute("ls /github/")).stdout_str()).rstrip())
+    print((await (await ws.shell("ls /github/")).stdout_str()).rstrip())
 
     # Don't assume a fixed layout (e.g. "src/") — a discovered repo's file tree is unknown ahead
     # of time, so `find` the actual files and read whichever one turns up.
-    files = lines(await (await ws.execute("find /github/ -type f")).stdout_str())
+    files = lines(await (await ws.shell("find /github/ -type f")).stdout_str())
     print(f"\n=== find /github/ -type f  ({len(files)} file(s)) ===")
     for f in files[:5]:
         print(f)
@@ -147,16 +147,16 @@ async def main(resource) -> None:
     if files:
         cat_path = files[0]
         print(f"\n$ cat {cat_path}")
-        print((await (await ws.execute(f'cat "{cat_path}"')).stdout_str()).rstrip()[:600])
+        print((await (await ws.shell(f'cat "{cat_path}"')).stdout_str()).rstrip()[:600])
 
     print("\n$ grep -r BUG /github/")
-    print((await (await ws.execute("grep -r BUG /github/")).stdout_str()).rstrip())
+    print((await (await ws.shell("grep -r BUG /github/")).stdout_str()).rstrip())
 
 
-def main_fuse(resource) -> None:
+def main_fuse(vfs) -> None:
     """--fuse: mount the repo tree as a *real* filesystem, then read it with ordinary tools."""
     try:
-        with Workspace({"/github": resource}, mode=MountMode.READ) as ws:
+        with Workspace({"/github": vfs}, mode=MountMode.READ) as ws:
             mnt = ws.add_fuse_mount("/github")  # "/github" is now a real directory on disk
             print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
             first_file = None
@@ -215,8 +215,8 @@ if __name__ == "__main__":
         owner, repo = discovered
         print(f"mounting {owner}/{repo}")
 
-        resource = build(s, token, owner, repo)
+        vfs = build(s, token, owner, repo)
         if args.fuse:
-            main_fuse(resource)
+            main_fuse(vfs)
         else:
-            run_mirage(main(resource))
+            run_mirage(main(vfs))

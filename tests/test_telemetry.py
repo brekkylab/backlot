@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from backlot import store
 from backlot.config import get_settings
 from backlot.server import HELLO_CORPUS
 from backlot.telemetry import clients, enabled, errors, naming, notice, recorder
@@ -27,6 +28,7 @@ from tests._helpers import build_corpus, client_for
 
 ADMIN = {"Authorization": "Bearer admin-service-token"}
 LINEAR = {"Authorization": "admin-service-token"}
+JSON = {"Content-Type": "application/json"}
 UNREACHABLE = "http://127.0.0.1:9/v1/metrics"
 # The values an export may carry. The collector replaces a value outside its own shape checks with
 # `invalid`, and every pattern here is narrower than those.
@@ -285,6 +287,8 @@ def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent
         ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "graphql_validation"),
         ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":5}}]}', "unrecognized"),
         ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":""}}]}', "unrecognized"),
+        ("fireflies", 200, b'{"data":{},"extensions":{"code":"X"}}', ""),
+        ("fireflies", 400, b'{"data":{},"extensions":{"code":"X"}}', "X"),
         ("jira", 401, b"Client must be authenticated to access this resource.", "unauthenticated"),
         ("jira", 400, b"<!DOCTYPE html><html><head><title>(null)</title></head></html>", ""),
         ("msteams", 404, b'{"error":{"code":"NotFound","message":"x"}}', "NotFound"),
@@ -345,9 +349,9 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
         ),
         (
             "POST",
-            "/slack/api/chat.postMessage",
+            "/slack/api/chat.scheduleMessage",
             {},
-            ("slack", "chat.postMessage", "missing", 404, None, "unsupported"),
+            ("slack", "chat.scheduleMessage", "missing", 404, None, "unsupported"),
         ),
         (
             "POST",
@@ -409,6 +413,68 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             {},
             ("confluence", "wiki/rest/api/content/{}", "extra", 404, "content_not_found", "client"),
         ),
+        # A path a route serves under other methods is named by the route's template; one whose
+        # template the collector would not keep (`values:batchGet`) stays unmatched.
+        ("OPTIONS", GITHUB, {}, ("github", "repos/{}/{}", "unknown", 405, None, "client")),
+        (
+            "PUT",
+            "/hubspot/crm/v3/objects/contacts/1",
+            {},
+            ("hubspot", "crm/v3/objects/{}/{}", "unknown", 405, None, "client"),
+        ),
+        (
+            "PUT",
+            f"{GITHUB}/contents",
+            {},
+            ("github", "repos/{}/{}/contents", "unknown", 405, None, "client"),
+        ),
+        (
+            "POST",
+            "/sheets/v4/spreadsheets/x/values:batchGet",
+            {},
+            ("google_drive", "unmatched", "unknown", 405, None, "client"),
+        ),
+        # The first route whose `{param}` takes the path is the matched one; a vendor template with
+        # more literal segments, under any method, names the call.
+        (
+            "OPTIONS",
+            "/hubspot/crm/v3/objects/contacts/search",
+            {},
+            ("hubspot", "crm/v3/objects/{}/search", "unknown", 401, None, "auth"),
+        ),
+        # An `Accept` refused on an operation a route serves is a call of that operation.
+        (
+            "POST",
+            "/hubspot/crm/v3/objects/contacts/batch/read",
+            {"headers": {"Accept": "text/html"}},
+            (
+                "hubspot",
+                "post-/crm/v3/objects/{objectType}/batch/read_read",
+                "implemented",
+                406,
+                None,
+                "client",
+            ),
+        ),
+        (
+            "PUT",
+            f"{GITHUB}/issues/comments",
+            {},
+            ("github", "repos/{}/{}/issues/comments", "unknown", 405, None, "client"),
+        ),
+        # Teams answers both from its catch-all or before routing: no route names them.
+        (
+            "OPTIONS",
+            "/msgraph/v1.0/me",
+            {},
+            ("msteams", "unmatched", "unknown", 405, None, "client"),
+        ),
+        (
+            "POST",
+            "/msgraph/v1.0/me",
+            {},
+            ("msteams", "unmatched", "unknown", 400, "BadRequest", "client"),
+        ),
         # Google Docs is mounted at /docs/v1, beside FastAPI's own /docs page.
         (
             "GET",
@@ -446,6 +512,30 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             "/msgraph/v1.0/ME/chats",
             {},
             ("msteams", "me.ListChats", "missing", 404, "Request_ResourceNotFound", "unsupported"),
+        ),
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"headers": JSON, "content": b""},
+            ("fireflies", "unparsed", "unknown", 400, "http", "client"),
+        ),
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"headers": JSON, "content": b"x" * (1024 * 1024 + 1)},
+            ("fireflies", "unparsed", "unknown", 413, "http", "client"),
+        ),
+        (
+            "POST",
+            "/linear/graphql",
+            {"headers": LINEAR | JSON, "content": b"x" * (10 * 1024 * 1024 + 1)},
+            ("linear", "unparsed", "unknown", 413, "PAYLOAD_TOO_LARGE", "client"),
+        ),
+        (
+            "POST",
+            "/linear/graphql",
+            {"headers": LINEAR | JSON, "content": b"{"},
+            ("linear", "unparsed", "unknown", 400, None, "client"),
         ),
         (
             "GET",
@@ -558,7 +648,6 @@ def test_a_fragment_that_spreads_others_is_named_in_bounded_time():
 J = "/atlassian/rest/api/3"
 W = "/atlassian/wiki/rest/api"
 ISSUE = "PLAD294FC-1825"
-JSON = {"Content-Type": "application/json"}
 OLD_VERSION = {"X-GitHub-Api-Version": "1999-01-01"}
 
 
@@ -858,6 +947,46 @@ def test_an_unhandled_exception_is_an_internal_error(client):
         c["backlot.error_class"],
         c["backlot.support"],
     ) == (500, "internal_error", "internal", "extra")
+    assert "corpus-secret" not in json.dumps(c)
+
+
+# A resolver made to raise by replacing the store read it makes, beside a refusal the same field
+# raises on purpose.
+@pytest.mark.parametrize(
+    "path, headers, broken, query, expected",
+    [
+        ("/linear/graphql", LINEAR, "linear_by_id", '{ issue(id: "x") { id } }', "internal_error"),
+        ("/linear/graphql", LINEAR, None, '{ issue(id: "nope") { id } }', "entity_not_found"),
+        (
+            "/fireflies/graphql",
+            ADMIN,
+            "list_fireflies_transcripts",
+            "{ transcripts { id } }",
+            "internal_error",
+        ),
+        (
+            "/fireflies/graphql",
+            ADMIN,
+            None,
+            "{ transcripts(limit: 0) { id } }",
+            "invalid_arguments",
+        ),
+    ],
+)
+def test_an_exception_a_graphql_resolver_raises_is_an_internal_error(
+    client, monkeypatch, path, headers, broken, query, expected
+):
+    def boom(*args, **kwargs):
+        raise RuntimeError("corpus-secret")
+
+    if broken:
+        monkeypatch.setattr(store, broken, boom)
+    (c,) = _calls(lambda: client.post(path, headers=headers, json={"query": query}))
+    assert (
+        c["http.response.status_code"],
+        c["backlot.error_code"],
+        c["backlot.error_class"],
+    ) == (200, expected, "internal" if broken else "client")
     assert "corpus-secret" not in json.dumps(c)
 
 

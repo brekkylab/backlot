@@ -18,9 +18,9 @@ import sys
 from pathlib import Path
 
 from mirage import MountMode, Workspace
-from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
-from mirage.resource.gmail import GmailConfig, GmailResource
-from mirage.resource.slack import SlackConfig, SlackResource
+from mirage.vfs.gdrive import GoogleDriveConfig, GoogleDriveVFS
+from mirage.vfs.gmail import GmailConfig, GmailVFS
+from mirage.vfs.slack import SlackConfig, SlackVFS
 
 from backlot import serve_or_connect
 from backlot.integrations.mirage import point_google_at
@@ -60,7 +60,7 @@ CORPUS = [
 
 
 async def _ls(ws, path):
-    return lines(await (await ws.execute(f'ls "{path}"')).stdout_str())
+    return lines(await (await ws.shell(f'ls "{path}"')).stdout_str())
 
 
 async def _first_slack_chat(ws):
@@ -85,11 +85,11 @@ async def _first_gmail_msg(ws):
 
 
 async def _first_drive_file(ws):
-    root = lines(await (await ws.execute("ls -F /gdrive/")).stdout_str())
+    root = lines(await (await ws.shell("ls -F /gdrive/")).stdout_str())
     folders = [e.rstrip("/") for e in root if e.endswith("/")]
     if not folders:
         return None
-    entries = lines(await (await ws.execute(f'ls -F "/gdrive/{folders[0]}/"')).stdout_str())
+    entries = lines(await (await ws.shell(f'ls -F "/gdrive/{folders[0]}/"')).stdout_str())
     files = [e for e in entries if not e.endswith("/")]
     return f"/gdrive/{folders[0]}/{files[0]}" if files else None
 
@@ -99,17 +99,17 @@ def build(s, token, user) -> dict:
     client_id, client_secret, refresh_token, _ = google_oauth_user(s.base_url, user)
     google = dict(client_id=client_id, client_secret=client_secret, refresh_token=refresh_token)
     return {  # three backends, one filesystem
-        "/slack": SlackResource(SlackConfig(token=token, base_url=f"{s.base_url}/slack/api")),
-        "/gmail": GmailResource(GmailConfig(**google)),
-        "/gdrive": GoogleDriveResource(GoogleDriveConfig(**google)),
+        "/slack": SlackVFS(SlackConfig(token=token, base_url=f"{s.base_url}/slack/api")),
+        "/gmail": GmailVFS(GmailConfig(**google)),
+        "/gdrive": GoogleDriveVFS(GoogleDriveConfig(**google)),
     }
 
 
-async def main(resources: dict) -> None:
-    ws = Workspace(resources, mode=MountMode.READ)
+async def main(mounts: dict) -> None:
+    ws = Workspace(mounts, mode=MountMode.READ)
 
     print("=== ls -F / (all backends mounted side by side) ===")
-    print((await (await ws.execute("ls -F /")).stdout_str()).rstrip())
+    print((await (await ws.shell("ls -F /")).stdout_str()).rstrip())
 
     # Read one file from each backend with the SAME commands — the point of mirage. We navigate
     # top-down (bounded) instead of grepping whole mounts, so this stays fast on a big corpus.
@@ -121,11 +121,11 @@ async def main(resources: dict) -> None:
         print(f"\n=== [{backend}] cat {path or '(nothing visible)'} ===")
         if not path:
             continue
-        head = (await (await ws.execute(f'cat "{path}"')).stdout_str()).strip().splitlines()
+        head = (await (await ws.shell(f'cat "{path}"')).stdout_str()).strip().splitlines()
         print("  " + (head[0][:160] if head else "(empty)"))
 
 
-def main_fuse(resources: dict) -> None:
+def main_fuse(mounts: dict) -> None:
     """--fuse: mount all three backends under ONE filesystem root (so slack/, gmail/, gdrive/
     are subdirectories — a single mountpoint, which works on macOS too, since macFUSE limits the
     number of mountpoints per process, not the number of sources behind one), then run a single
@@ -134,9 +134,9 @@ def main_fuse(resources: dict) -> None:
     ``grep -r`` walks the whole mount, so it's meant for the small default corpus; against a
     large ``--url`` use the per-source scripts (their bounded navigation)."""
     try:
-        with Workspace(resources, mode=MountMode.READ) as ws:
+        with Workspace(mounts, mode=MountMode.READ) as ws:
             mnt = ws.add_fuse_mount("/")  # the workspace root is now one real directory
-            backends = [p.strip("/") for p in resources]
+            backends = [p.strip("/") for p in mounts]
             print(f"=== mounted at {mnt}: {', '.join(backends)} — one filesystem ===")
             print(f"\n$ grep -rl Q1 {' '.join(backends)}   # one command, all three backends")
             hits = subprocess.run(
@@ -179,8 +179,8 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     with serve_or_connect(CORPUS, url=args.url) as s:
-        resources = build(s, args.token or s.token, args.user)
+        mounts = build(s, args.token or s.token, args.user)
         if args.fuse:
-            main_fuse(resources)
+            main_fuse(mounts)
         else:
-            run_mirage(main(resources))
+            run_mirage(main(mounts))

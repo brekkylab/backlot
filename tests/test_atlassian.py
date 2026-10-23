@@ -316,6 +316,77 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
     }
 
 
+def test_jira_project_search_filters_by_query_keys_type_and_category(tmp_path):
+    """`project/search` applies `query`, `keys`, `typeKey` and `categoryId`, so a value that
+    matches no project is an empty page (`_jira_project_kept`)."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": f"issue-{name}",
+                "project": name,
+                "title": name,
+                "content": "Issue",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            }
+            for name in ("scrum", "orders")
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
+        listing = client.get("/atlassian/rest/api/3/project/search", headers=admin_h)
+        assert listing.status_code == 200, listing.text
+        projects = listing.json()["values"]
+        assert len(projects) == 2
+        one, other = projects[0], projects[1]
+
+        def keys_of(params):
+            response = client.get(
+                "/atlassian/rest/api/3/project/search", params=params, headers=admin_h
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            found = [project["key"] for project in body["values"]]
+            assert body["total"] == len(found)
+            return found
+
+        all_keys = [project["key"] for project in projects]
+        assert keys_of({}) == all_keys
+        assert keys_of({"query": "zzqq"}) == []
+        assert keys_of({"query": one["name"][:3].lower()}) == [one["key"]]
+        assert keys_of({"query": one["name"][:3].upper()}) == [one["key"]]
+        fragment = next(
+            one["key"][i : i + 4]
+            for i in range(len(one["key"]) - 3)
+            if one["key"][i : i + 4].lower() not in one["name"].lower()
+            and one["key"][i : i + 4].lower() not in other["name"].lower()
+            and one["key"][i : i + 4].lower() not in other["key"].lower()
+        )
+        assert keys_of({"query": fragment}) == [one["key"]]
+        assert keys_of({"keys": one["key"]}) == [one["key"]]
+        assert keys_of({"keys": one["key"].lower()}) == []
+        assert keys_of({"keys": "NOPE"}) == []
+        assert keys_of([("keys", one["key"]), ("keys", other["key"])]) == all_keys
+        assert keys_of({"typeKey": "software"}) == all_keys
+        assert keys_of({"typeKey": "bogus"}) == []
+        assert keys_of({"categoryId": "99"}) == []
+        with_s = next(project for project in projects if "s" in project["name"].lower())
+        assert keys_of({"query": with_s["name"].replace("s", "\u017f")}) == []
+        assert keys_of({"keys": ""}) == all_keys
+        assert keys_of([("keys", ""), ("keys", "")]) == []
+        assert keys_of({"typeKey": "Software"}) == all_keys
+        assert keys_of({"typeKey": " software"}) == all_keys
+        assert keys_of({"typeKey": "business,software"}) == all_keys
+        assert keys_of([("typeKey", "software"), ("typeKey", "business")]) == all_keys
+        assert keys_of([("typeKey", "business"), ("typeKey", "software")]) == all_keys
+        assert keys_of({"typeKey": "business"}) == []
+        assert keys_of({"typeKey": ","}) == all_keys
+        assert keys_of({"categoryId": " "}) == all_keys
+        assert keys_of({"categoryId": "-1"}) == []
+
+
 @pytest.mark.parametrize(
     "query, start, limit",
     [
@@ -420,6 +491,11 @@ def test_jira_project_search_links_itself_with_what_it_was_sent(client, admin_h,
         ([("orderBy", "bogus"), ("maxResults", "abc")], "maxResults", "abc"),
         ([("startAt", "abc"), ("maxResults", "xyz")], "startAt", "abc"),
         ([("maxResults", "xyz"), ("startAt", "abc")], "startAt", "abc"),
+        ([("categoryId", "abc")], "categoryId", "abc"),
+        ([("categoryId", "1.5")], "categoryId", "1.5"),
+        ([("orderBy", "bogus"), ("categoryId", "abc")], "categoryId", "abc"),
+        ([("categoryId", "abc"), ("startAt", "x")], "startAt", "x"),
+        ([("categoryId", "abc"), ("maxResults", "x")], "maxResults", "x"),
     ],
 )
 def test_jira_project_search_integer_conversion_precedes_order(client, admin_h, query, name, value):

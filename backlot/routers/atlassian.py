@@ -519,15 +519,67 @@ def _jira_project_order(raw: str) -> None:
     )
 
 
+# The `projectTypeKey` of every project served here.
+_JIRA_PROJECT_TYPE = "software"
+
+
+def _jira_project_kept(request: Request, name: str, key: str, category: int | None) -> bool:
+    """Whether ``project/search`` keeps this project under `query`, `keys`, `typeKey` and the
+    ``category`` its `categoryId` converted to.
+
+    Measured against Jira Cloud on 2026-10-09 and 2026-10-22, on a site of one project. `query`
+    keeps a project whose name or key holds the text, both lower-cased and nothing trimmed: the
+    first three letters of the name, a fragment of the key in either case and the name with a
+    KELVIN SIGN (U+212A) for its `k` kept that project, where `zzqq`, a space or a tab in front of
+    the name's first letters, `bre*` and the key with a LONG S (U+017F) for its `s` kept none.
+    `keys` keeps a project whose key is one of the values as sent, so `keys=PA&keys=PB` keeps
+    either: the key kept the project, and the key in lower case, with a space in front, `NOPE` and
+    `<KEY>,NOPE` kept none. A lone empty `keys=` filters nothing, where `keys=&keys=` kept none.
+    `typeKey` is a list split at its commas over every value sent, each trimmed and lower-cased:
+    `software`, `Software`, `%20software`, `%C2%A0software`, `software,business` and
+    `typeKey=business&typeKey=software` kept the project, `business`, `bogus`, `%01software` and
+    `ſoftware` kept none, and an empty value or `,` filtered nothing, all at 200. A project here
+    is software and carries no category, so any `categoryId` that converts keeps none
+    (`categoryId=99`, `0` and `-1` kept none).
+    """
+    query = request.query_params.get("query")
+    if query:
+        lowered = query.lower()
+        if lowered not in name.lower() and lowered not in key.lower():
+            return False
+    keys = request.query_params.getlist("keys")
+    if keys and keys != [""] and key not in keys:
+        return False
+    types = {
+        part.strip().lower()
+        for value in request.query_params.getlist("typeKey")
+        for part in value.split(",")
+    }
+    if types - {""} and _JIRA_PROJECT_TYPE not in types:
+        return False
+    return category is None
+
+
 @router.get(
     "/rest/api/3/project/search",
-    openapi_extra={"parameters": [qp("startAt", "integer"), qp("maxResults", "integer")]},
+    openapi_extra={
+        "parameters": [
+            qp("startAt", "integer"),
+            qp("maxResults", "integer"),
+            qp("query"),
+            qp("keys"),
+            qp("typeKey"),
+            qp("categoryId", "integer"),
+        ]
+    },
 )
 async def jira_project_search(request: Request):
     # Jira Cloud, measured 2026-10-16: integer conversion precedes orderBy;
     # startAt is a long floored at zero, and maxResults is clamped to 1..100.
     start = max(0, _int_param(request, "startAt", 0, width=JAVA_LONG))
     limit = min(100, max(1, _int_param(request, "maxResults", 50)))
+    # Converted after `startAt` and `maxResults` and before `orderBy` is read, as real converts it.
+    category = _int_param(request, "categoryId", None, width=JAVA_LONG)
     # Read for the refusal above. The sort itself is not served, so `orderBy` stays undeclared:
     # `qp` is for a parameter Backlot honours, and advertising this one would offer a client an
     # order the listing never applies. `backlot diff --source jira` keeps the gap.
@@ -540,6 +592,8 @@ async def jira_project_search(request: Request):
     values = []
     for r in _reachable_projects(conn, ids):
         key = _project_key(conn, r["name"])
+        if not _jira_project_kept(request, r["name"], key, category):
+            continue
         values.append(
             {
                 "id": str(synth.github_user_id(r["name"])),

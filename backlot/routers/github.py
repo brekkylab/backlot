@@ -565,9 +565,9 @@ def _a_header_without_a_credential(request: Request) -> bool:
 
 def is_an_unserved_operation(method: str, path: str) -> bool:
     """Whether ``method`` on the `/github` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`. The path is
-    the scope's, decoded but whole: ``request.url.path`` ends at a decoded `#` or `?`, which would
-    take `/zen%23` for `/zen`, where real answered `GET /zen%23` and `POST …/forks%23` with the 404
-    on 2026-10-14."""
+    the scope's, decoded but whole, not ``request.url.path`` (``backlot.main._REPARSED``), which
+    would take `/zen%23` for `/zen`, where real answered `GET /zen%23` and `POST …/forks%23` with
+    the 404 on 2026-10-14."""
     return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/github"))
 
 

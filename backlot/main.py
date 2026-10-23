@@ -248,7 +248,7 @@ class _Layer:
     add 2.2 to 4.4 ms to an answer that goes through all of them. So ``runs_on(scope)`` is asked
     first, ahead of the ``BaseHTTPMiddleware``, and a request it does not pick is one the function
     would have handed straight on: it holds the function's own test for whether it has anything to
-    do, or the part of that test that reads neither the answer nor the body. It is asked where the
+    do, or a part of that test that reads neither the answer nor the body. It is asked where the
     function stands in the order, so it sees the path and the method the middlewares outside it
     leave. Where the function reads ``request.url.path``, ``runs_on`` reads :func:`_url_path`.
     """
@@ -929,7 +929,9 @@ def _spring_failure(scope: Scope):
     if not errors.atlassian.owns(path):
         return None
     # the product the gateway routes to, which reads each run of slashes as one
-    # (``errors.atlassian.front_door``)
+    # (``errors.atlassian.front_door``): under an `Accept` Spring fails on, `GET` and `OPTIONS` on
+    # `//wiki/rest/api/space` and `GET //wiki/rest/api/content` drew what each draws with one
+    # slash (Confluence Cloud, 2026-10-23)
     product = re.sub("/{2,}", "/", path)
     reader = "spring" if errors.atlassian.is_confluence(product) else "jira"
     accept = Headers(scope=scope).get("accept")

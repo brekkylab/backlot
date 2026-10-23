@@ -1180,7 +1180,8 @@ def merged_source(
 
     For a source outside :data:`WRITABLE`, with no overlay attached, or with nothing yet written
     to it, this is the table name and every reader is character-for-character what it was before
-    writes existed -- the emptiness is probed rather than assumed, by :func:`_overlay_holds_anything`.
+    writes existed -- the emptiness is probed rather than assumed, by
+    :func:`_overlay_holds_anything`.
     Otherwise it is the corpus and the overlay unioned, tombstoned documents subtracted and patches
     applied, **aliased to the corpus table's own name**.
 
@@ -1286,9 +1287,9 @@ def insert_document(conn, source_type: str, values: dict) -> None:
     container it landed in. Without them it is visible to nobody: a grant names its document by
     :func:`id_columns`, so a row with no ACL rows fails every ``_acl_clause``.
 
-    The copy reads the corpus's grants directly. Nothing revokes one yet, but the
-    ACL view already honours one, and the two have to agree — otherwise the next message posted to
-    a channel would re-grant the principal a kick had just removed from it.
+    The copy reads the corpus's grants directly, which is what the ACL view reads too, so the
+    two agree by reading the same rows. Revocation is what would part them, and nothing records
+    one yet.
     """
     from backlot import overlay
 
@@ -3183,10 +3184,16 @@ def _overlay_matches(conn, source_type, query, visible_ids, *, container, phrase
     }
     if not hits:
         return []
-    # The keys go in a temp table and are JOINED, not spelt as one `OR` term per hit. An OR chain
-    # is an expression tree as deep as the hit count, and SQLite refuses one deeper than 1,000:
-    # a search matching 990 written rows answered `Expression tree is too large`. A join does not
+    # The keys go in a temp table, not into one `OR` term per hit: an OR chain is an expression
+    # tree as deep as the hit count, and SQLite refuses one deeper than 1,000, so a search
+    # matching 990 written rows answered `Expression tree is too large`. A temp table does not
     # grow the expression at all, so the ceiling is the overlay's own size.
+    #
+    # It is read as a row-value `IN`, not as a JOIN. `EXPLAIN QUERY PLAN` puts `SCAN m` on both
+    # arms of the union for the JOIN and a primary-key `SEARCH m` on both for the `IN`: driving
+    # from the temp table costs a read of every corpus row. On a 201,000-message corpus, with
+    # the search matching one written row, the page and its total took 37.1 ms as a JOIN and
+    # 1.0 ms as an `IN`; at 2,000 matching rows, 506 ms and 453 ms.
     with overlay.LOCK:
         conn.execute("DROP TABLE IF EXISTS temp.overlay_hits")
         conn.execute(
@@ -3198,17 +3205,17 @@ def _overlay_matches(conn, source_type, query, visible_ids, *, container, phrase
             f"VALUES ({','.join('?' for _ in key)})",
             list(hits),
         )
-        on = " AND ".join(f"h.{c} = o.{c}" for c in key)
         params: list = []
         cont_sql = ""
         if container is not None:
             cont_sql = f" AND o.{grouping_col(source_type)} = ?"
             params.append(container)
         clause, cparams = _acl_clause(source_type, "o", visible_ids)
+        cols = ", ".join(f"o.{c}" for c in key)
         rows = conn.execute(
-            f"SELECT o.* FROM temp.overlay_hits h "
-            f"JOIN ({merged_source(conn, source_type)}) o ON {on} "
-            f"WHERE 1{cont_sql}{clause}",
+            f"SELECT o.* FROM ({merged_source(conn, source_type)}) o "
+            f"WHERE ({cols}) IN (SELECT {', '.join(key)} FROM temp.overlay_hits)"
+            f"{cont_sql}{clause}",
             [*params, *cparams],
         ).fetchall()
         conn.execute("DROP TABLE IF EXISTS temp.overlay_hits")

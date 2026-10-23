@@ -1987,8 +1987,8 @@ def _blocks_error(request: Request) -> JSONResponse | None:
 
     Measured against slack.com on 2026-10-22: `blocks=abc`, `blocks={}` and an empty `blocks`
     are each refused, with or without a `text` beside them, where `blocks=[]` is read as an
-    empty list. `attachments` is not checked — every value of it measured was read as carrying
-    no message.
+    empty list. Only `blocks` has the format error — an `attachments` of `abc` or of an object
+    answers `no_text`, so a malformed one is simply a value carrying no message.
     """
     raw = _param(request, "blocks")
     if raw is None:
@@ -2000,20 +2000,42 @@ def _blocks_error(request: Request) -> JSONResponse | None:
     return None if isinstance(parsed, list) else _err("invalid_blocks_format")
 
 
-def _has_blocks(request: Request) -> bool:
-    """Whether `blocks` carries a message in place of `text`: a non-empty JSON array, and only
-    that. `blocks=[]` and every `attachments` value answer `no_text` on real (`_blocks_error`)."""
-    raw = _param(request, "blocks")
+def _json_array(request: Request, name: str) -> list:
+    """The argument read as a JSON array, or empty for anything else."""
+    raw = _param(request, name)
     if raw is None:
-        return False
+        return []
     try:
-        return bool(json.loads(raw))
+        parsed = json.loads(raw)
     except ValueError:
-        return False
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
-def _writer(caller: Caller) -> tuple[str, str]:
-    """Who a write is attributed to: ``(author_email, user_id)``.
+#: The `attachments` keys that make a member carry the message. Measured against slack.com on
+#: 2026-10-23 with no `text`: `[{"text":"a"}]`, `[{"fallback":"a"}]` and `[{"title":"a"}]` each
+#: post, and so does `[{"text":""}]` — the key being there is what counts, not what it says —
+#: where `[{"color":"good"}]` answers `no_text`.
+_ATTACHMENT_TEXT_KEYS = ("text", "fallback", "title")
+
+
+def _has_content(request: Request) -> bool:
+    """Whether `blocks` or `attachments` carries the message in place of `text`.
+
+    For `blocks` that is a non-empty JSON array, and only that. For `attachments` it is an array
+    with a member stating one of :data:`_ATTACHMENT_TEXT_KEYS`, so `[]`, `[{}]`, a member with
+    `color` alone, and a value that is not an array all leave the message textless.
+    """
+    if _json_array(request, "blocks"):
+        return True
+    return any(
+        isinstance(a, dict) and any(k in a for k in _ATTACHMENT_TEXT_KEYS)
+        for a in _json_array(request, "attachments")
+    )
+
+
+def _writer(caller: Caller) -> str:
+    """The corpus address a write is attributed to.
 
     The service token has no corpus email -- `_is_member` says outright that it "is not a person"
     -- and `auth.test` already answers it as ``USERVICE0`` by analogy to a bot token, on the
@@ -2024,9 +2046,7 @@ def _writer(caller: Caller) -> tuple[str, str]:
     `bot_profile`, `team`, `text`, `ts`, `type` and the bot user's `user`, and no `subtype`. A
     `bot_message` here would also drop `blocks`, which real serves.
     """
-    if caller.is_admin:
-        return SERVICE_EMAIL, SERVICE_USER_ID
-    return caller.email, synth.slack_user_id(caller.email)
+    return SERVICE_EMAIL if caller.is_admin else caller.email
 
 
 def _writable_channel(request: Request, conn, caller: Caller, *, by_name: bool = False):
@@ -2073,15 +2093,16 @@ async def chat_post_message(request: Request):
     When `no_text` fires is measured, not chosen: against slack.com on 2026-10-21, `text`
     absent and `text=` both answer `no_text`, where `channel` absent answers `invalid_arguments`
     and `channel=` `channel_not_found`. A `text` of spaces posts, so the test is emptiness rather
-    than blankness. `chat.update` reads `text` and `blocks` by the same rules and `ts` by
-    `channel`'s.
+    than blankness. `chat.update` reads `ts` by `channel`'s rules.
 
-    `blocks` and `attachments` are READ, not merely looked for. Measured 2026-10-22, with no
-    `text`: a `blocks` naming one section posts, `blocks=[]` and every `attachments` value
-    answer `no_text`, and a `blocks` that is not a JSON array — `abc`, `{}`, empty — answers
-    `invalid_blocks_format`, which it does even beside a `text`. So only a NON-EMPTY `blocks`
-    array stands in for `text`; `attachments` never does. `chat.update` reads them the same way
-    and edits with `blocks` alone.
+    `blocks` and `attachments` are READ, not merely looked for, and each by its own rule --
+    see :func:`_has_content`. Measured with no `text`: a `blocks` naming one section posts and
+    `blocks=[]` answers `no_text`, where a `blocks` that is not a JSON array -- `abc`, `{}`,
+    empty -- answers `invalid_blocks_format`, which it does even beside a `text`. An
+    `attachments` array posts when a member states `text`, `fallback` or `title`, and answers
+    `no_text` otherwise, a member with `color` alone included; it has no format error of its
+    own. `chat.update` reads `text`, `blocks` and `attachments` by these same rules, each row
+    of them re-measured against it on 2026-10-23.
 
     Posting does not join a public channel the caller is not in, and nothing here has to arrange
     that: membership there is derived from `main.slack_messages`, which a written row never joins.
@@ -2111,10 +2132,10 @@ async def chat_post_message(request: Request):
         return err
     if err := _blocks_error(request):
         return err
-    if not (_param(request, "text") or "") and not _has_blocks(request):
+    if not (_param(request, "text") or "") and not _has_content(request):
         return _err("no_text")
     text = _param(request, "text") or ""
-    author, uid = _writer(caller)
+    author = _writer(caller)
     ids = auth.visible_ids(request, caller)
     thread_ts, thread_seq = None, 0
     wanted = _slack_ts(_param(request, "thread_ts"))
@@ -2206,6 +2227,14 @@ async def chat_post_ephemeral(request: Request):
     name, err = _writable_channel(request, conn, caller)
     if err is not None:
         return err
+    # Two lookups because they cover different people. `all_user_emails` has the principals,
+    # including one who holds an account and has never posted -- a private channel's grantee is
+    # a member whether or not they spoke. `_slack_author_by_uid` has the message authors,
+    # including the display-only speakers that hold no account (deploybot@...) and the service
+    # id, which is not a corpus author at all. Neither is a superset. The sample corpus cannot
+    # tell them apart -- every author there holds an account, and its one private channel is
+    # granted to a group whose only member posted -- so dropping either line leaves the suite
+    # green; that is the corpus being small, not the line being spare.
     email = next(
         (e for e in store.all_user_emails(conn) if synth.slack_user_id(e) == uid), None
     ) or _slack_author_by_uid(request, conn, uid)
@@ -2247,7 +2276,7 @@ def _own_message(request: Request, conn, caller: Caller, ts_param: str, refusal:
         # address: measured 2026-10-22, `chat.update` and `chat.delete` on it answer
         # `message_not_found`, where reacting to it and asking its permalink still answer.
         return None, None, None, _err("message_not_found")
-    author, _uid_ = _writer(caller)
+    author = _writer(caller)
     # Case-folded, the way `_subscribed` compares the same addresses: a corpus states an author's
     # address however it was written, and a mixed-case one could not edit their own message.
     if (row["author_email"] or "").lower() != (author or "").lower():
@@ -2282,9 +2311,9 @@ async def chat_update(request: Request):
     if err := _blocks_error(request):
         return err
     text = _param(request, "text") or ""
-    if not text and not _has_blocks(request):
+    if not text and not _has_content(request):
         return _err("no_text")
-    author, _uid_ = _writer(caller)
+    author = _writer(caller)
     store.patch_document(conn, "slack", (name, ts), "content", text)
     # Real Slack stamps an edited message with `edited: {user, ts}`, which is what a client renders
     # "(edited)" from. `_message` already serves the column, so filling it is the whole of it.
@@ -2495,28 +2524,61 @@ class _NoReaction(Exception):
     """The caller has no such reaction to remove. See :class:`_AlreadyReacted`."""
 
 
-def _reaction_target(request: Request, conn, caller: Caller):
+#: The `timestamp` values real refuses rather than reads. Measured on `reactions.get`
+#: 2026-10-23: of `0`, `0.0`, `00`, `-1`, `1.5`, `x5`, `abc`, two spaces, `1e9`, `inf` and
+#: `0.000001`, only `0` answers `bad_timestamp` — every other value is read as a ts that names
+#: no message. An absent or empty one is refused with it.
+_BAD_TIMESTAMPS = ("", "0")
+
+
+def _reaction_target(
+    request: Request, conn, caller: Caller, *, item_forms: bool, channel_first: bool
+):
     """``(channel_name, ts, row, None)`` for a reaction's message, else an error in the last slot.
 
     Slack addresses a reaction target three ways — `channel` + `timestamp`, `file`, or
     `file_comment`. Backlot has no file corpus (see search.files), so the two file forms name
-    nothing; real answers them `file_not_found` and `file_comment_not_found`, which are in the
-    vendor's enum for each of the three methods.
+    nothing and are answered `file_not_found` and `file_comment_not_found`. Naming one wins over
+    a `channel` and `timestamp` beside it, and an empty `file=` is refused as a present one is.
 
-    `no_item_specified` when none of the three is given, which is what `reactions.remove` and
-    `reactions.get` answer (measured 2026-10-22). `reactions.add` is the one that NAMES the
-    arguments it is missing, and it does that for itself before calling here — the rule is the
-    method's, not this helper's, which is why applying it to all three changed four answers that
-    were already right.
+    The two flags are the three methods disagreeing, each measured against slack.com on
+    2026-10-23 with an emoji nothing has:
 
-    The channel is then checked before the message, so `channel_not_found` is the answer for a
-    caller outside it whether or not the ts they named is real. A ts that resolved differently
-    would let them confirm a message exists in a channel they cannot read.
+    - ``item_forms`` — `reactions.add` reads neither file argument: given all of `name`,
+      `channel`, `timestamp` and `file` it answers `message_not_found` where the other two
+      answer `file_not_found`. It is also the method that NAMES its missing arguments, so the
+      `no_item_specified` an absent `channel` draws here is not its answer; `_missing_argument`
+      has already spoken for it.
+    - ``channel_first`` — `reactions.get` resolves the channel before reading the timestamp, and
+      the other two read the timestamp first. A channel nothing has, with no timestamp, is
+      `channel_not_found` on `reactions.get` and `bad_timestamp` on the other two.
+
+    An absent `channel` is `no_item_specified` whatever the `timestamp` beside it says, so a
+    `timestamp` alone draws it too.
+
+    The channel is resolved before the message either way, so `channel_not_found` is the answer
+    for a caller outside it whether or not the ts they named is real. A ts that resolved
+    differently would let them confirm a message exists in a channel they cannot read.
     """
-    if not _param(request, "channel") and not _param(request, "timestamp"):
-        return None, None, None, _err("no_item_specified")
+
+    def bad_timestamp():
+        if (_param(request, "timestamp") or "") in _BAD_TIMESTAMPS:
+            return _err("bad_timestamp")
+        return None
+
+    if item_forms:
+        if _param(request, "file") is not None:
+            return None, None, None, _err("file_not_found")
+        if _param(request, "file_comment") is not None:
+            return None, None, None, _err("file_comment_not_found")
+        if _param(request, "channel") is None:
+            return None, None, None, _err("no_item_specified")
+    if not channel_first and (err := bad_timestamp()):
+        return None, None, None, err
     name, err = _writable_channel(request, conn, caller)
     if err is not None:
+        return None, None, None, err
+    if channel_first and (err := bad_timestamp()):
         return None, None, None, err
     ts = _param(request, "timestamp") or ""
     row = store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller))
@@ -2536,9 +2598,10 @@ async def reactions_add(request: Request):
     `no_item_specified`, `invalid_name`, `already_reacted`, `too_many_emoji`,
     `too_many_reactions`. Backlot answers `message_not_found` and `invalid_name`;
     `no_item_specified` is in the enum but is not what real answers THIS method for a missing
-    argument; it names them. The two ceilings are workspace limits no corpus states, and `bad_timestamp` is
-    not distinguished: a `timestamp` that does not name a message is `message_not_found` whether it
-    is malformed or merely absent.
+    argument; it names them. The two ceilings are workspace limits no corpus states.
+    `bad_timestamp` is answered for the values real refuses outright (see
+    :data:`_BAD_TIMESTAMPS`); a `timestamp` real reads and finds nothing under is
+    `message_not_found`.
 
     `reactions` is a column the corpus already carries and every message payload already serves,
     so this is a patch to a served field rather than a new entity. The patch REPLACES the column,
@@ -2561,7 +2624,9 @@ async def reactions_add(request: Request):
     # applied here rather than in the helper the three share.
     if err := _missing_argument(request, "name", "timestamp", "channel"):
         return err
-    name, ts, row, err = _reaction_target(request, conn, caller)
+    name, ts, row, err = _reaction_target(
+        request, conn, caller, item_forms=False, channel_first=False
+    )
     if err is not None:
         return err
     # Not stripped: measured 2026-10-22, ` eyes ` is `invalid_name` on real where stripping it
@@ -2570,7 +2635,7 @@ async def reactions_add(request: Request):
     emoji = _param(request, "name") or ""
     if not emoji:
         return _err("invalid_name")
-    author, _uid_ = _writer(caller)
+    author = _writer(caller)
 
     def add(fresh):
         # Re-read inside the lock: `row` above was read before it, and two callers reacting at
@@ -2615,11 +2680,13 @@ async def reactions_remove(request: Request):
         return err
     if err := _missing_argument(request, "name"):
         return err
-    name, ts, row, err = _reaction_target(request, conn, caller)
+    name, ts, row, err = _reaction_target(
+        request, conn, caller, item_forms=True, channel_first=False
+    )
     if err is not None:
         return err
     emoji = _param(request, "name") or ""
-    author, _uid_ = _writer(caller)
+    author = _writer(caller)
 
     def drop(fresh):
         current = store.jcol(fresh, "reactions")
@@ -2656,7 +2723,9 @@ async def reactions_get(request: Request):
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
-    name, _ts, row, err = _reaction_target(request, conn, caller)
+    name, _ts, row, err = _reaction_target(
+        request, conn, caller, item_forms=True, channel_first=True
+    )
     if err is not None:
         return err
     return {
@@ -2717,7 +2786,7 @@ async def reactions_list(request: Request):
     offset = decode_cursor_or_none(_param(request, "cursor"))
     if offset is None:
         return _err("invalid_cursor")
-    author, _uid_ = _writer(caller)
+    author = _writer(caller)
     wanted = _param(request, "user")
     if wanted is not None:
         # Read as SENT, not as absent-when-empty: measured 2026-10-22, `user=` is

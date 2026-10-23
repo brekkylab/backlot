@@ -2916,6 +2916,33 @@ def test_a_phrase_is_scored_as_one_unit_not_as_its_tokens(ov_db):
         -store._bm25_term(1, as_phrase.n_docs[match], as_phrase.n_rows, doclen, as_phrase.avgdl),
         rel=1e-9,
     )
+    # An UNQUOTED multi-term query is scored by its terms, so `_overlay_hits` reads the phrase
+    # statistics only when the caller asked for a phrase. Passing the match through
+    # unconditionally scores `from the gateway` as though it were quoted, and the suite stayed
+    # green: an overlay row is what reaches that line.
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": "4000000000.000001",
+            "author_email": "ava@acme.com",
+            "content": "a note from the gateway",
+            "created_ts": 4000000000,
+        },
+    )
+    ((_row, scored),) = store._overlay_hits(
+        ov_db, "slack", "from the gateway", None, container=None, phrase=False
+    )
+    ((_same, written),) = store._overlay_matches(
+        ov_db, "slack", "from the gateway", None, container=None, phrase=False
+    )
+    assert scored == pytest.approx(
+        store._corpus_bm25(
+            ov_db, "slack", "from the gateway", written, terms=terms, stats=as_terms
+        ),
+        rel=1e-9,
+    )
 
 
 def test_the_corpus_size_cache_is_keyed_on_the_corpus_file(tmp_path):

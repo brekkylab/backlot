@@ -4042,6 +4042,18 @@ def test_post_message_is_readable_back_by_the_poster(wclient, tokens):
     ).json()
     assert posted["ts"] in [m["ts"] for m in hist["messages"]]
 
+    # `last_read` is `slack_latest_ts`, which asks each side of the merge separately and keeps
+    # the newer. The channel written to now reads back the posted ts, and a channel the caller
+    # can see but nothing was written to still answers — the overlay side has no row there, and
+    # the merge has to carry that rather than subscript it.
+    def info(channel):
+        return wclient.post(
+            "/slack/api/conversations.info", headers=h, data={"channel": channel}
+        ).json()["channel"]
+
+    assert info(cid)["last_read"] == posted["ts"]
+    assert float(info(synth.slack_channel_id("eng-announcements"))["last_read"]) > 0
+
 
 def test_only_post_message_takes_a_channel_by_name(wclient, tokens):
     # Naming a channel is a property of the method, not of the argument: `_writable_channel`
@@ -4634,6 +4646,13 @@ def test_a_json_token_is_not_a_credential(wclient, tokens):
         ({"attachments": "[]"}, "no_text"),
         ({"attachments": "[{}]"}, "no_text"),
         ({"attachments": "abc"}, "no_text"),
+        ({"attachments": '{"text": "a"}'}, "no_text"),
+        ({"attachments": '[{"color": "good"}]'}, "no_text"),
+        ({"attachments": '[{"text": "a"}]'}, None),
+        ({"attachments": '[{"fallback": "a"}]'}, None),
+        ({"attachments": '[{"title": "a"}]'}, None),
+        ({"attachments": '[{"text": ""}]'}, None),
+        ({"attachments": '[{}, {"text": "a"}]'}, None),
         ({"blocks": '[{"type": "section"}]'}, None),
         ({"blocks": "abc"}, "invalid_blocks_format"),
         ({"blocks": "{}"}, "invalid_blocks_format"),
@@ -4643,9 +4662,10 @@ def test_a_json_token_is_not_a_credential(wclient, tokens):
 )
 @pytest.mark.parametrize("method", ["chat.postMessage", "chat.update"])
 def test_blocks_is_read_as_a_value_not_looked_for(wclient, tokens, method, sent, want):
-    # `chat_post_message` records the measurement: only a non-empty `blocks` array stands in for
-    # `text`, `attachments` never does, and a `blocks` that is not an array is refused even
-    # beside a `text`. Dropping the operand from the `no_text` test left the suite green.
+    # `chat_post_message` records the measurement: a non-empty `blocks` array stands in for
+    # `text`, an `attachments` array does when a member states one of `_ATTACHMENT_TEXT_KEYS`,
+    # and a `blocks` that is not an array is refused even beside a `text`. Dropping either
+    # operand from the `no_text` test left the suite green.
     h = _uh(tokens, "ava@acme.com")
     cid = synth.slack_channel_id("incidents")
     ts = wclient.post(
@@ -4696,9 +4716,21 @@ def test_post_ephemeral_reads_the_shape_of_user_then_its_membership(wclient, tok
         ).json()["ok"]
         is True
     )
+    # The service id is served too, and it is the one `user` no part of the lookup can refuse:
+    # it is not a corpus author, so `all_user_emails` misses it and `_slack_author_by_uid`'s
+    # own entry answers, and it is in no channel, so the membership check has to be skipped
+    # rather than passed. Each of those three lines survived a mutation without this.
+    assert (
+        wclient.post(
+            "/slack/api/chat.postEphemeral",
+            headers=insider,
+            data={"channel": private, "user": slack.SERVICE_USER_ID},
+        ).json()["ok"]
+        is True
+    )
 
 
-def test_reactions_list_reads_an_empty_user_and_lists_each_message_once(wclient, tokens):
+def test_reactions_list_reads_an_empty_user_and_lists_each_message_once(wclient, tokens, admin_h):
     # Two survivors: `user=` read as absent, and the `seen` guard, without which a message the
     # caller reacted to through the API is listed twice — once from the patch and once from the
     # merged source.
@@ -4723,6 +4755,22 @@ def test_reactions_list_reads_an_empty_user_and_lists_each_message_once(wclient,
         ]
     ]
     assert listed.count(ts) == 1, listed
+    # The service id resolves too, and by its own branch: it is not a corpus author, so the
+    # scan over `all_user_emails` cannot find it. Asked for it, the admin's own reaction is
+    # what comes back, where dropping the branch answers `user_not_found`.
+    admin_ts = wclient.post(
+        "/slack/api/chat.postMessage", headers=admin_h, data={"channel": cid, "text": "by the app"}
+    ).json()["ts"]
+    wclient.post(
+        "/slack/api/reactions.add",
+        headers=admin_h,
+        data={"channel": cid, "timestamp": admin_ts, "name": "tada"},
+    )
+    answered = wclient.post(
+        "/slack/api/reactions.list", headers=admin_h, data={"user": slack.SERVICE_USER_ID}
+    ).json()
+    assert answered["ok"] is True
+    assert admin_ts in [i["message"]["ts"] for i in answered["items"]]
 
 
 def test_a_quoted_query_scores_a_written_message_against_the_corpus(wclient, tokens):
@@ -4852,6 +4900,16 @@ def test_a_written_message_is_in_a_search_under_either_sort_and_an_in_filter(wcl
         data={"query": "zarquonsearch in:#incidents", "sort": sort},
     ).json()["messages"]["matches"]
     assert ts in [m["ts"] for m in scoped], sort
+    # And the filter narrows rather than decorates: the same term, asked of a channel the
+    # message is not in, finds nothing. Without the overlay's own container clause the written
+    # row answered every channel's search.
+    elsewhere = wclient.post(
+        "/slack/api/search.messages",
+        headers=h,
+        data={"query": "zarquonsearch in:#eng-announcements", "sort": sort},
+    ).json()["messages"]
+    assert elsewhere["matches"] == [], sort
+    assert elsewhere["total"] == 0, sort
 
 
 #: Every write and write-adjacent method, with arguments that would otherwise reach the handler,
@@ -4892,6 +4950,10 @@ def test_every_write_method_refuses_a_caller_with_no_credential(wclient, tokens,
         "ok": False,
         "error": "not_authed",
     }
+    # The credential is read BEFORE the arguments, so a call with neither is still about the
+    # credential: a bogus bearer with an empty body answers `invalid_auth` on real, not the
+    # missing arguments. Swapping the two calls left the suite green.
+    assert wclient.post(f"/slack/api/{method}").json() == {"ok": False, "error": "not_authed"}
 
 
 @pytest.mark.parametrize("method", sorted(m for m in _WRITE_METHODS if _WRITE_METHODS[m][1]))
@@ -5188,6 +5250,100 @@ def test_reacting_to_an_unreadable_message_does_not_reveal_it(wclient, tokens, r
         data={"channel": cid, "timestamp": "1.000001", "name": "tada"},
     ).json()
     assert real == invented == {"ok": False, "error": "channel_not_found"}
+
+
+# Each row is one request and what `reactions.add`, `reactions.remove` and `reactions.get`
+# answer it, with an emoji the workspace has and a `timestamp` naming no message. `GOOD` stands
+# for a channel the caller can read, `BAD` for an id nothing has. `_reaction_target` records
+# the measurement and the three rules the table encodes: the file forms
+# win and `reactions.add` does not read them, `reactions.get` resolves the channel before the
+# timestamp where the other two read the timestamp first, and an absent `channel` is
+# `no_item_specified` however the `timestamp` beside it reads.
+_ITEM_FORMS = [
+    ({}, "invalid_arguments", "invalid_arguments", "no_item_specified"),
+    ({"name": "tada"}, "invalid_arguments", "no_item_specified", "no_item_specified"),
+    ({"name": "tada", "channel": "GOOD"}, "invalid_arguments", "bad_timestamp", "bad_timestamp"),
+    (
+        {"name": "tada", "channel": "BAD"},
+        "invalid_arguments",
+        "bad_timestamp",
+        "channel_not_found",
+    ),
+    (
+        {"name": "tada", "timestamp": "1.000001"},
+        "invalid_arguments",
+        "no_item_specified",
+        "no_item_specified",
+    ),
+    (
+        {"name": "tada", "channel": "GOOD", "timestamp": ""},
+        "bad_timestamp",
+        "bad_timestamp",
+        "bad_timestamp",
+    ),
+    (
+        {"name": "tada", "channel": "GOOD", "timestamp": "0"},
+        "bad_timestamp",
+        "bad_timestamp",
+        "bad_timestamp",
+    ),
+    (
+        {"name": "tada", "channel": "", "timestamp": "1.000001"},
+        "channel_not_found",
+        "channel_not_found",
+        "channel_not_found",
+    ),
+    (
+        {"name": "tada", "channel": "BAD", "timestamp": "1.000001"},
+        "channel_not_found",
+        "channel_not_found",
+        "channel_not_found",
+    ),
+    (
+        {"name": "tada", "channel": "GOOD", "timestamp": "abc"},
+        "message_not_found",
+        "message_not_found",
+        "message_not_found",
+    ),
+    (
+        {"name": "tada", "file": "F00000000"},
+        "invalid_arguments",
+        "file_not_found",
+        "file_not_found",
+    ),
+    ({"name": "tada", "file": ""}, "invalid_arguments", "file_not_found", "file_not_found"),
+    (
+        {"name": "tada", "file_comment": "Fc00000000"},
+        "invalid_arguments",
+        "file_comment_not_found",
+        "file_comment_not_found",
+    ),
+    (
+        {"name": "tada", "channel": "GOOD", "timestamp": "1.000001", "file": "F00000000"},
+        "message_not_found",
+        "file_not_found",
+        "file_not_found",
+    ),
+]
+
+
+@pytest.mark.parametrize("sent, add, remove, get", _ITEM_FORMS)
+def test_each_reaction_method_answers_an_unresolvable_item_its_own_way(
+    wclient, tokens, sent, add, remove, get
+):
+    h = _uh(tokens, "ava@acme.com")
+    args = {
+        k: {"GOOD": synth.slack_channel_id("incidents"), "BAD": "C00000000"}.get(v, v)
+        for k, v in sent.items()
+    }
+    for method, want in (
+        ("reactions.add", add),
+        ("reactions.remove", remove),
+        ("reactions.get", get),
+    ):
+        answered = wclient.post(f"/slack/api/{method}", headers=h, data=args).json()
+        assert answered["ok"] is False, (method, sent)
+        assert answered["error"] == want, (method, sent)
 
 
 def test_reacting_with_no_item_names_the_arguments_that_are_missing(wclient, tokens):

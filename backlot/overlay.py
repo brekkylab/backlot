@@ -118,8 +118,8 @@ def _source_ddl(conn: sqlite3.Connection, source_type: str) -> list[str]:
     return [
         # The document mirror, and the ACL rows a written document needs: a grant names its
         # document by ID_COLUMNS, so a row written without grants is visible to nobody at all,
-        # including its own author. A later revocation of a CORPUS grant will
-        # set, since a corpus row cannot be deleted.
+        # including its own author. Nothing records a revocation: a corpus grant cannot be
+        # deleted, so revoking one will need a column here to mark it with.
         _mirror_ddl(conn, names["doc"]),
         _mirror_ddl(conn, names["acl"]),
         # An overwrite of ONE column of a row that may live in either database. A corpus row is a

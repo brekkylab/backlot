@@ -88,9 +88,9 @@ field list, so the ordering divergence below has no entry to live in and is stat
   public channel you have not joined succeeds with `chat:write.public` and answers
   `not_in_channel` without it. Backlot has no scope concept and takes the permissive branch.
 - **An app identity.** Real adds `app_id`, `bot_profile` and `parent_user_id` to the message a
-  write echoes back. A corpus has nothing to populate them from. `bot_id` is served: real
-  carries it on every message posted through the Web API, over a user token as well as a bot
-  one, so it is keyed on the author rather than on the token.
+  write echoes back. A corpus has nothing to populate them from. `bot_id` is served on every
+  written message whoever wrote it, and on no corpus message: real carries it on everything
+  posted through the Web API, over a user token as well as a bot one.
 - **Per-reaction times.** Real orders `reactions.list` by when the caller reacted and lists one
   item per reaction, so a message the caller put two emoji on appears twice. A corpus states a
   message's reactions as a set with no times in it, so Backlot orders by the message and lists

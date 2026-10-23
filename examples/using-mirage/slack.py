@@ -12,7 +12,7 @@ day — so an agent reads it with plain ``ls`` / ``cat``. Slack's API host is a 
     python examples/using-mirage/slack.py --url http://localhost:8000 --fuse   # real OS mount
 
 With ``--fuse`` the channel tree is exposed as an actual filesystem (needs macFUSE/fuse3) and
-read with plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
+read with plain ``os``/shell tools; otherwise it's driven in-process via ``ws.shell``.
 """
 
 import argparse
@@ -21,7 +21,7 @@ import subprocess
 
 from _helpers import FUSE_HELP, lines, run_mirage
 from mirage import MountMode, Workspace
-from mirage.resource.slack import SlackConfig, SlackResource
+from mirage.vfs.slack import SlackConfig, SlackVFS
 
 from backlot import serve_or_connect
 
@@ -58,16 +58,16 @@ CORPUS = [  # `created` keeps the throwaway channels' dates tight (one day) rath
 def build(s, token):
     # Slack's host is a config knob — point it at Backlot (no monkeypatch needed).
     # --token <usr-token> (from /_meta/users) → ACL-filtered to that user; else admin sees all.
-    return SlackResource(SlackConfig(token=token, base_url=f"{s.base_url}/slack/api"))
+    return SlackVFS(SlackConfig(token=token, base_url=f"{s.base_url}/slack/api"))
 
 
-async def main(resource) -> None:
-    ws = Workspace({"/slack": resource}, mode=MountMode.READ)
+async def main(vfs) -> None:
+    ws = Workspace({"/slack": vfs}, mode=MountMode.READ)
 
     print("=== ls /slack/ ===")
-    print((await (await ws.execute("ls /slack/")).stdout_str()).rstrip())
+    print((await (await ws.shell("ls /slack/")).stdout_str()).rstrip())
 
-    r = await ws.execute("ls /slack/channels/")
+    r = await ws.shell("ls /slack/channels/")
     channels = lines(await r.stdout_str())
     if not channels:
         print("no channels visible to this identity")
@@ -76,26 +76,26 @@ async def main(resource) -> None:
 
     # channels/<name>/<date>/chat.jsonl — grab the most recent day's transcript.
     base = f"/slack/channels/{channels[0]}"
-    dates = lines(await (await ws.execute(f'ls "{base}/"')).stdout_str())
+    dates = lines(await (await ws.shell(f'ls "{base}/"')).stdout_str())
     if not dates:
         print("  channel has no dated messages")
         return
     day = dates[-1].rstrip("/")
     chat = f"{base}/{day}/chat.jsonl"
     print(f"$ cat {chat}")
-    print((await (await ws.execute(f'cat "{chat}"')).stdout_str()).rstrip()[:600])
+    print((await (await ws.shell(f'cat "{chat}"')).stdout_str()).rstrip()[:600])
 
     # grep is scoped to the one day's transcript (walking every channel/day would be huge).
     print(f"\n=== grep -c message {base}/{day}/ ===")
-    r = await ws.execute(f'grep -rc message "{base}/{day}/"')
+    r = await ws.shell(f'grep -rc message "{base}/{day}/"')
     print("  " + ((await r.stdout_str()).rstrip() or "(no matches)"))
 
 
-def main_fuse(resource) -> None:
+def main_fuse(vfs) -> None:
     """--fuse: mount the channel tree as a *real* filesystem, then read it with ordinary tools —
     any process (grep, an editor, an indexer) can open the files. Needs macFUSE/fuse3."""
     try:
-        with Workspace({"/slack": resource}, mode=MountMode.READ) as ws:
+        with Workspace({"/slack": vfs}, mode=MountMode.READ) as ws:
             mnt = ws.add_fuse_mount("/slack")  # "/slack" is now a real directory on disk
             print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
             channel = sorted(os.listdir(f"{mnt}/channels"))[0]
@@ -137,8 +137,8 @@ if __name__ == "__main__":
     with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        resource = build(s, args.token or s.token)
+        vfs = build(s, args.token or s.token)
         if args.fuse:
-            main_fuse(resource)
+            main_fuse(vfs)
         else:
-            run_mirage(main(resource))
+            run_mirage(main(vfs))

@@ -857,7 +857,7 @@ _HEAD_IS_THE_GET_WITHOUT_ITS_BODY = (
 def _spring_failure(scope: Scope):
     """Which of ``atlassian.spring_sort_failure`` and ``atlassian.spring_write_failure``
     :func:`answer_an_atlassian_write_that_fails` hands this request's answer to, or ``None``
-    where it hands the answer on untouched."""
+    where it hands the answer on as it is."""
     path = _url_path(scope)
     if not errors.atlassian.owns(path):
         return None

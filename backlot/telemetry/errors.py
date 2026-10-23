@@ -144,7 +144,7 @@ def error_code(source: str, status: int, body: bytes) -> str:
         )
     if source in ("linear", "fireflies"):
         errors = doc.get("errors")
-        if errors is None:
+        if errors is None and status >= 400:
             extensions = doc.get("extensions")
             code = extensions.get("code") if isinstance(extensions, dict) else doc.get("code")
             return code if isinstance(code, str) else ""

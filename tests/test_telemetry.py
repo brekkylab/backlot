@@ -287,6 +287,8 @@ def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent
         ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "graphql_validation"),
         ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":5}}]}', "unrecognized"),
         ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":""}}]}', "unrecognized"),
+        ("fireflies", 200, b'{"data":{},"extensions":{"code":"X"}}', ""),
+        ("fireflies", 400, b'{"data":{},"extensions":{"code":"X"}}', "X"),
         ("jira", 401, b"Client must be authenticated to access this resource.", "unauthenticated"),
         ("jira", 400, b"<!DOCTYPE html><html><head><title>(null)</title></head></html>", ""),
         ("msteams", 404, b'{"error":{"code":"NotFound","message":"x"}}', "NotFound"),

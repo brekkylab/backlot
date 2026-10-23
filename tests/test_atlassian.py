@@ -1547,6 +1547,17 @@ def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(client,
     assert "é".encode() in inside.content
 
 
+def test_confluence_cql_search_writes_a_character_past_the_bmp_as_surrogate_escapes(client, admin_h):
+    """Pins that CQL search writes a character past U+FFFF in cqlQuery as surrogate escapes (#974)."""
+    res = client.get(
+        "/atlassian/wiki/rest/api/search?cql=title~%22%F0%9F%98%80x%22&limit=1",
+        headers=admin_h,
+    )
+    assert res.status_code == 200
+    assert rb'"cqlQuery":"title~\"\uD83D\uDE00x\""' in res.content
+    assert "\U0001f600".encode() not in res.content
+
+
 # --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------
 
 

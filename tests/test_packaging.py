@@ -87,6 +87,25 @@ def test_the_sdist_prunes_the_readme_illustrations():
     assert (REPO_ROOT / "assets").is_dir(), "assets/ is gone — drop the prune and this test with it"
 
 
+def test_the_image_copies_every_file_pyproject_reads():
+    """The Dockerfile builds from the files its ``COPY`` lists, so each one ``pyproject.toml`` names
+    for the build (``readme``, ``license-files``) has to be on that list; the comment above the
+    ``COPY`` says what the image loses without one.
+    """
+    with open(REPO_ROOT / "pyproject.toml", "rb") as f:
+        project = tomllib.load(f)["project"]
+    named = {project["readme"], *project["license-files"]}
+    copied = set()
+    for line in (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines():
+        words = line.split()
+        if words[:1] == ["COPY"] and not any(w.startswith("--") for w in words):
+            copied.update(words[1:-1])
+    assert named <= copied, (
+        f"pyproject.toml names {sorted(named - copied)} for the build, and no COPY in the "
+        "Dockerfile brings it into the image's build context"
+    )
+
+
 # README.md carries relative image and link paths that only resolve on GitHub. PyPI passes them
 # through unchanged (measured 2026-08-14 against readme_renderer[md]: `<picture>` and `<details>`
 # survive, relative targets are left alone and therefore 404 under pypi.org), so the long

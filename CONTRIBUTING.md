@@ -196,5 +196,5 @@ Taking part in this project means following our [Code of Conduct](CODE_OF_CONDUC
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the
-[MIT License](LICENSE).
+By contributing, you agree that your contributions are licensed under the [Apache License, Version
+2.0](LICENSE).

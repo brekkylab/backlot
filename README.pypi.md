@@ -3,7 +3,7 @@
 [![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/)
 [![PyPI](https://img.shields.io/pypi/v/backlot)](https://pypi.org/project/backlot/)
 [![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/brekkylab/backlot/blob/main/LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/brekkylab/backlot/blob/main/LICENSE)
 
 [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R)
 [![X](https://img.shields.io/badge/Tweet-000000?logo=x&logoColor=white)](https://x.com/brekkylab)
@@ -137,7 +137,7 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 | Writes, and where they go | [docs/write-overlay.md](https://github.com/brekkylab/backlot/blob/main/docs/write-overlay.md) |
 | Every `BACKLOT_*` setting, and Docker | [docs/configuration.md](https://github.com/brekkylab/backlot/blob/main/docs/configuration.md) |
 | Usage telemetry: why it is collected, what is sent, and how to turn it off | [docs/telemetry.md](https://github.com/brekkylab/backlot/blob/main/docs/telemetry.md) |
-| Vendor names and trademarks | [NOTICE.md](https://github.com/brekkylab/backlot/blob/main/NOTICE.md) |
+| Notices and trademarks | [NOTICE.md](https://github.com/brekkylab/backlot/blob/main/NOTICE.md) |
 
 ## Contributing
 
@@ -149,6 +149,6 @@ Backlot exists thanks to all the people who contribute.
 
 ## License
 
-[MIT](https://github.com/brekkylab/backlot/blob/main/LICENSE)
+[Apache-2.0](https://github.com/brekkylab/backlot/blob/main/LICENSE). [NOTICE.md](https://github.com/brekkylab/backlot/blob/main/NOTICE.md) has the MIT License earlier releases were under.
 
 <!-- mcp-name: io.github.brekkylab/backlot -->

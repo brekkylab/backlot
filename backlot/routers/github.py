@@ -565,9 +565,9 @@ def _a_header_without_a_credential(request: Request) -> bool:
 
 def is_an_unserved_operation(method: str, path: str) -> bool:
     """Whether ``method`` on the `/github` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`. The path is
-    the scope's, decoded but whole: ``request.url.path`` ends at a decoded `#` or `?`, which would
-    take `/zen%23` for `/zen`, where real answered `GET /zen%23` and `POST …/forks%23` with the 404
-    on 2026-10-14."""
+    the scope's, decoded but whole, not ``request.url.path`` (``backlot.main._REPARSED``), which
+    would take `/zen%23` for `/zen`, where real answered `GET /zen%23` and `POST …/forks%23` with
+    the 404 on 2026-10-14."""
     return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/github"))
 
 
@@ -602,7 +602,7 @@ def _deletes_the_installation_token(request: Request) -> bool:
 
 # --- rate limits ----------------------------------------------------------------
 #
-# Real puts five `x-ratelimit-*` headers on every response it gives, 200 and error alike, and
+# Real puts five `x-ratelimit-*` headers on every response its API gives, 200 and error alike, and
 # serves `GET /rate_limit`. Measured against api.github.com on 2026-09-09 and 2026-09-10,
 # unauthenticated with curl and authenticated with `gh api`: an anonymous caller has `limit: 60`
 # on `core` and `10` on `search`, a token `5000`, `30` and `10` on `core`, `search` and

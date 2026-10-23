@@ -6555,7 +6555,8 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
 ):
     """Refusal is not token-only: a caller with no credential is refused the same as a token once
     its own window is spent, with real's message naming the caller's own address (measured against
-    api.github.com 2026-09-17, see `_rate_limit_exceeded_message`).
+    api.github.com 2026-09-17, see `_rate_limit_exceeded_message`). The anonymous caller's 403
+    outranks a trailing slash's 404, where a token's spent window leaves it the 404.
 
     `Settings.github_enforce_rate_limits` is the escape hatch instead of a non-refusing default:
     off, nothing is refused, but the reported `used` still never climbs past `limit`."""
@@ -6615,6 +6616,14 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         assert trailing_slash.status_code == 403
         assert _ratelimit(trailing_slash) == _ratelimit(second)  # pinned, not counted
 
+        # a token's spent window leaves a trailing slash its 404
+        # (`refuse_a_trailing_slash_on_github`)
+        monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._ResourceLimit(2, 1, gh.RATE_LIMIT_WINDOW))
+        token = {"Authorization": f"Bearer {settings.admin_token}"}
+        c.get("/github/user/repos", headers=token)
+        assert c.get("/github/user/repos", headers=token).status_code == 403
+        assert c.get("/github/search/issues/", headers=token).status_code == 404
+
         # `RATE_LIMIT_PATH` stays the one escape hatch — real keeps answering it through
         # exhaustion — and its trailing-slash spelling is not refused either: the front that
         # answers `/rate_limit` answers it, a plain-text 404 with none of the five
@@ -6656,14 +6665,6 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         search_refused = c.get("/github/search/issues", params={"q": "x"})
         assert search_refused.status_code == 403
         assert _ratelimit(search_refused)["resource"] == "search"
-
-        # a token's spent window does not outrank the trailing slash's 404 the way the anonymous
-        # one does above
-        monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._ResourceLimit(2, 1, gh.RATE_LIMIT_WINDOW))
-        token = {"Authorization": f"Bearer {settings.admin_token}"}
-        c.get("/github/user/repos", headers=token)
-        assert c.get("/github/user/repos", headers=token).status_code == 403
-        assert c.get("/github/search/issues/", headers=token).status_code == 404
 
         # the switch: no refusal, and `used` still capped in what is reported
         monkeypatch.setattr(gh.get_settings(), "github_enforce_rate_limits", False)

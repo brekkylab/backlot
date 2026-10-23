@@ -4903,7 +4903,8 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
 
     rows = [
         *((path, admin_h) for path in _routes(keys)),
-        # slashed spellings Confluence answers as the slash-free ones (2026-10-23)
+        # slashed spellings, answered as the slash-free ones
+        # (``backlot.main.normalise_the_slashes_in_an_atlassian_path``)
         ("/atlassian/wiki/rest/api/search/?cql=type%3Dpage", admin_h),
         ("/atlassian//wiki/rest/api/space", admin_h),
         ("/atlassian/wiki/rest/api/space/NOPESUCH", admin_h),
@@ -7868,7 +7869,7 @@ _ACCEPT_ROWS = [
     ("GET", _SPACES, "admin", "application/json;Q=2;Charset=bogus", None, 400, None, b"", {}),
     ("GET", _SPACES, "admin", "application/json;q=0.5;Q=2;q=0.5", None, 400, None, b"", {}),
     ("OPTIONS", _SPACES, "admin", _Q2, None, 403, _TOMCAT, "page", {}),
-    # a run of slashes is one before the product is picked (2026-10-23)
+    # a run of slashes is one before the product is picked (``backlot.main._spring_failure``)
     ("GET", "/atlassian//wiki/rest/api/space", "admin", _Q2, None, 400, None, b"", {}),
     ("GET", "/atlassian//wiki/rest/api/content", "admin", _Q2, None, 400, None, b"", {}),
     ("OPTIONS", "/atlassian//wiki/rest/api/space", "admin", _Q2, None, 403, _TOMCAT, "page", {}),

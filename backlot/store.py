@@ -2282,8 +2282,11 @@ _FF_SCOPE_COLS = {"title": ("title",), "sentences": ("content",), "all": ("title
 
 
 def fireflies_scope_columns(scope: str | None) -> tuple[str, ...] | None:
-    """The columns a `scope` searches, or None if the value isn't one Fireflies accepts."""
-    return _FF_SCOPE_COLS.get((scope or "all").lower())
+    """The columns a `scope` searches: its entry in ``_FF_SCOPE_COLS`` as spelled, the ``"all"``
+    entry when it is left out (None), or None when it has no entry."""
+    if scope is None:
+        return _FF_SCOPE_COLS["all"]
+    return _FF_SCOPE_COLS.get(scope)
 
 
 def _fireflies_where(

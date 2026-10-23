@@ -36,11 +36,35 @@ jobs:
         # keeps the fetch off the clock the MCP client's `initialize` waits on, which a uv cache
         # that has not seen this version otherwise loses.
         run: uv tool install --with "mcp<2" "awslabs.aws-api-mcp-server@latest"
+      - name: Wait for the Docker daemon
+        # In this workflow's test-job logs from 2026-08-17 to 2026-10-22, `docker info` failed in 108
+        # of 8,366 jobs while pytest collected the suite. 94 of those logs time the check, and in 62
+        # it failed within ten seconds, before its timeout. So this step asks until the daemon
+        # answers, for two minutes at most, logging each attempt that fails. After that it warns and
+        # ends 0, so the suite still runs and the Atlassian MCP test fails with its own reason.
+        run: |
+          start=$SECONDS
+          failed=0
+          until out=$(timeout 10 docker info --format '{{.OSType}}' 2>&1); do
+            code=$?
+            failed=$((failed + 1))
+            echo "attempt $failed exited $code at $((SECONDS - start)) s: ${out%%$'\n'*}"
+            if (( SECONDS - start >= 120 )); then
+              echo "::warning::docker info did not answer in $failed attempts over two minutes"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "docker info answered $out at $((SECONDS - start)) s, after $failed failed attempts"
       - name: Unit tests
         env:
           # Makes a text file opened without encoding= an EncodingWarning, which pyproject.toml's
           # filterwarnings turns into a failure of the test that opened it.
           PYTHONWARNDEFAULTENCODING: "1"
+          # The `ubuntu-latest` runner image (ubuntu-24.04 on 2026-10-22) lists Docker Server among
+          # its tools, so a daemon that does not answer here is a fault to report in red
+          # (`_require_linux_docker`).
+          BACKLOT_TEST_REQUIRE_DOCKER: "1"
         run: uv run --no-sync pytest -rs
 
       - name: Install the Linear example's dependencies

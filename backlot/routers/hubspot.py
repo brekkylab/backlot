@@ -1366,8 +1366,8 @@ def answer_ahead_of_the_routes(request: Request) -> Response | None:
 
 
 def answers_ahead_of_the_routes(method: str, path: str, accept: str | None) -> bool:
-    """Whether :func:`answer_ahead_of_the_routes` answers ``method`` on the `/hubspot` ``path``
-    under this `Accept` rather than going on to the routes."""
+    """Whether :func:`answer_ahead_of_the_routes` answers a request with this method, path and
+    `Accept` rather than going on to the routes."""
     return _answered_ahead(method, path, accept) is not None
 
 

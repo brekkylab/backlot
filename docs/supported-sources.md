@@ -563,10 +563,14 @@ operation's 415 carry the account id alone.
 | `teams` | |
 | `comments` | |
 | `users` | |
+| `searchIssues(term:)` | identifier, a word of the title or description, or of a comment |
+| `documents` | always empty: a corpus carries no Linear documents |
+| `teamMemberships` | |
 | `viewer` | |
 
-Plus the `Team.issues` and `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}`
-connections, and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`,
+Plus the `Team.{issues,members,memberships,states,labels,projects,cycles}`,
+`User.{teamMemberships,teams}` and `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}`
+connections, `Team.membership(userId:)`, and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`,
 `release`, `attachment`, `issueRelation`, `teamMembership`) the official SDK's lazy relation accessors
 call.
 

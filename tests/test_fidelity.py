@@ -499,19 +499,40 @@ def test_jira_compares_both_rest_versions_against_their_own_documents():
     assert by_mount["/atlassian/rest/api/3"].endswith("/swagger-v3.v3.json")
 
 
-def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkeypatch):
-    """A discovery document describes operations under `resources` AND a batch endpoint in its
-    top-level `batchPath`, and a Google source reads it once for both."""
+def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatch):
+    """A discovery document describes operations under `resources`, a batch endpoint in its
+    top-level `batchPath` and, for a document a walk reads, the messages its methods answer with
+    under `schemas` (`google_discovery_diff.types_measure`), and a Google source reads it once for
+    all three."""
     URL = "https://gmail.invalid/rest"
     doc = {
         "id": "gmail:v1",
+        "name": "gmail",
         "batchPath": "batch",
         "resources": {
             "users": {
                 "methods": {
-                    "getProfile": {"path": "gmail/v1/users/{userId}/profile", "httpMethod": "GET"}
+                    "getProfile": {
+                        "id": "gmail.users.getProfile",
+                        "path": "gmail/v1/users/{userId}/profile",
+                        "httpMethod": "GET",
+                        "response": {"$ref": "Profile"},
+                    }
                 }
             }
+        },
+        "schemas": {
+            "Profile": {
+                "properties": {
+                    "emailAddress": {"type": "string"},
+                    "labels": {"type": "array", "items": {"$ref": "Label"}},
+                    "history": {"$ref": "History"},
+                    "byKey": {"type": "object", "additionalProperties": {"$ref": "Unreached"}},
+                }
+            },
+            "Label": {"properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
+            "History": {"properties": {"id": {"type": "string"}}},
+            "Unreached": {"properties": {"x": {"type": "string"}}},
         },
     }
     fetched = []
@@ -521,9 +542,14 @@ def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkey
         return doc
 
     monkeypatch.setattr(google_discovery_diff, "fetch_json", fake_fetch)
+
+    def walk(timeout):
+        profile = {"emailAddress": "a@b", "labels": [{"id": "1"}], "nickname": "a"}
+        return [("gmail.users.getProfile", profile)]
+
     c = comparisons.GoogleDiscoveryComparison(
         name="gmail",
-        specs=(comparisons.Spec(URL, ("/gmail",)),),
+        specs=(comparisons.Spec(URL, ("/gmail",), walk=walk),),
         # A route that cannot answer what this document declares, so the batch check has something
         # to say and reading it off the memoized document is what the assertion below proves.
         batch_mount=("/batch/{api}/{version}",),
@@ -535,8 +561,47 @@ def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkey
         ("extra_batch_route", "/batch/{}/{}"),
         ("missing_batch_path", "gmail:v1 batch"),
     ]
-    # The batch contract joins the operations' surface, so those two have elements to sit on.
-    _, back = OperationSurface.from_json(measured.surface.to_json(found))
+    assert [(f.kind, f.path) for f in found if "field" in f.kind] == [
+        ("extra_field", "gmail.Profile.nickname"),
+        ("missing_field", "gmail.Label.name"),
+        ("missing_field", "gmail.Profile.byKey"),
+        ("missing_field", "gmail.Profile.history"),
+    ]
+    written = measured.surface.to_json(found)
+    profile = next(e for e in written["operations"] if e.get("id") == "gmail.users.getProfile")
+    assert profile["response"] == "gmail.Profile"
+    assert "root" not in written
+    assert written["types"]["gmail.Profile"]["status"] == "implemented"
+    assert written["types"]["gmail.Profile"]["fields"] == {
+        "byKey": {
+            "status": "missing",
+            "type": "map<string, gmail.Unreached>",
+            "kind": "missing_field",
+            "severity": "gap",
+        },
+        "emailAddress": {"status": "implemented", "type": "string"},
+        "history": {
+            "status": "missing",
+            "type": "gmail.History",
+            "kind": "missing_field",
+            "severity": "gap",
+        },
+        "labels": {"status": "implemented", "type": "[gmail.Label]"},
+        "nickname": {
+            "status": "extra",
+            "kind": "extra_field",
+            "severity": "breaking",
+            "detail": "Backlot serves it, and the vendor's message declares no such field",
+        },
+    }
+    assert written["types"]["gmail.History"] == {
+        "type_kind": "object",
+        "status": "missing",
+        "fields": {"id": {"status": "missing", "type": "string"}},
+    }
+    assert "gmail.Unreached" not in written["types"]
+    # Each finding has an element to sit on, operations, batch and types alike.
+    _, back = GraphSurface.from_json(written)
     assert sorted(f.key for f in back) == sorted(f.key for f in found)
 
 
@@ -807,6 +872,20 @@ def test_every_served_element_is_one_its_baseline_records_served():
         batch = baseline.surface.batch
         routes = {r.route for r in (batch.routes if batch else ()) if r.status != MISSING}
         assert routes == {"/" + operations.canonical(r) for r in _batch_routes(comparison)}, rerun
+        # A walked document's types: what a running Backlot serves, read through the types and
+        # responses the file records, is exactly what it records served.
+        walks = [s.walk for s in getattr(comparison, "specs", ()) if getattr(s, "walk", None)]
+        assert isinstance(baseline.surface, GraphSurface) == bool(walks), rerun
+        if walks:
+            schema = baseline.surface.schema
+            types = {n: {f: m.type for f, m in t.fields.items()} for n, t in schema.types.items()}
+            answers = {e.id: e.response for e in baseline.operations if e.response}
+            served: dict[str, set[str]] = {}
+            for method, body in (read for walk in walks for read in walk(20.0)):
+                google_discovery_diff.served_fields(types, answers[method], body, served)
+            elements = set(served) | {f"{n}.{f}" for n, fs in served.items() for f in fs}
+            recorded = {p for p, st in schema.elements().items() if st in (IMPLEMENTED, EXTRA)}
+            assert recorded == elements, rerun
 
     pytest.importorskip("botocore")
     from botocore.loaders import Loader
@@ -874,6 +953,7 @@ def test_the_package_exports_exactly_what_the_command_needs():
 
 
 A_DISCOVERY_DOC = {
+    "name": "drive",
     "servicePath": "drive/v3/",
     "parameters": {"fields": {"location": "query"}, "alt": {"location": "query"}},
     "resources": {
@@ -884,6 +964,7 @@ A_DISCOVERY_DOC = {
                     "httpMethod": "GET",
                     "path": "files",
                     "parameters": {"q": {"location": "query"}},
+                    "response": {"$ref": "FileList"},
                 },
                 "get": {"httpMethod": "GET", "path": "files/{fileId}", "parameters": {}},
             },
@@ -924,6 +1005,9 @@ def test_a_discovery_document_joins_its_service_path_and_nests_its_resources():
     # The method's own `id` is the vendor's name for it; a method declaring none has no name.
     assert found[("get", "drive/v3/files")].id == "drive.files.list"
     assert found[("get", "drive/v3/files/{}")].id == ""
+    # And its `response` the message it answers with, keyed as the baseline's `types` are.
+    assert found[("get", "drive/v3/files")].response == "drive.FileList"
+    assert found[("get", "drive/v3/files/{}")].response == ""
 
 
 def test_an_openapi_document_follows_refs_and_keeps_path_level_parameters():

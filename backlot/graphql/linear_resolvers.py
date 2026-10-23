@@ -169,6 +169,26 @@ def _connection(nodes: list, offset: int, has_next: bool, *, backward: bool = Fa
     }
 
 
+def _list_page(nodes: list, first, after, last, before) -> dict:
+    """A connection page sliced out of a list already in hand."""
+    offset, limit, floor = _slice(first, after, last, before)
+    offset = _from_end(offset, limit, floor, len(nodes))
+    return _connection(
+        nodes[offset : offset + limit],
+        offset,
+        offset + limit < len(nodes),
+        backward=_backward(first, last, before),
+    )
+
+
+def _newest_first(keys: list, created) -> list:
+    """``keys`` in the order a Linear connection serves with no ``orderBy``: newest ``createdAt``
+    first, a tie broken by the higher id. api.linear.app answered `Team.states`, `Team.labels` and
+    `Team.members` so on 2026-10-22, the six states of a team created in one instant in descending
+    id order. ``created`` maps a key to its ``(createdAt, id)``."""
+    return sorted(keys, key=created, reverse=True)
+
+
 def _page(rows: list, limit: int) -> tuple[list, bool]:
     """Split a limit+1 fetch into (page, has_next). Reading one row past the page is what makes
     ``hasNextPage`` free — the extra row is discarded, never served."""
@@ -455,16 +475,28 @@ def _user(email: str | None, display: str | None, info) -> dict | None:
     }
 
 
+def _state_positions(team: str, info) -> dict[str, float]:
+    """A team's states -- Linear's six defaults and every other name its issues are in -- each with
+    its ``position``, read once per team per request."""
+    ctx = _ctx(info)
+    cache = ctx.setdefault("_state_positions", {})
+    if team not in cache:
+        names = store.linear_team_entity_names(ctx["conn"], "state", team)
+        cache[team] = synth.linear_state_positions(names)
+    return cache[team]
+
+
 def _state(name: str, team: str, info) -> dict:
-    """An issue's ``WorkflowState``. States are per-team in Linear, so both the id and the
-    back-reference carry the team."""
-    created = synth.rfc3339(synth.epoch(f"linear-state:{team}:{name}"))
+    """A ``WorkflowState``. States are per-team in Linear, so both the id and the back-reference
+    carry the team. A state takes its team's ``createdAt``: a new team's six defaults answered the
+    team's own creation instant (measured 2026-10-22), and no state can predate its team."""
+    created = _team_created(team)
     return {
         "id": synth.linear_state_id(name, team),
         "name": name,
         "type": synth.linear_state_type(name),
         "color": synth.linear_state_color(name),
-        "position": 0.0,
+        "position": _state_positions(team, info).get(name, 0.0),
         "description": None,
         "createdAt": created,
         "updatedAt": created,
@@ -493,7 +525,7 @@ def _project(name: str | None, info) -> dict | None:
         "color": "#5e6ad2",
         "icon": None,
         "state": "started",
-        "status": {"id": synth.linear_project_id("status:" + name)},
+        "status": _project_status(),
         # `Int!` in Linear (a real project answers `priority: 0`, measured 2026-09-03), not the
         # `Float!` the SDK's TypeScript `number` once suggested.
         "priority": 0,
@@ -548,6 +580,27 @@ def _project(name: str | None, info) -> dict | None:
         "creator": None,
         "lead": None,
         "favorite": None,
+    }
+
+
+def _project_status() -> dict:
+    """The workspace's ``started`` project status, the one a project in ``state: "started"`` is in.
+    Name, color and position are the values `projectStatuses` answered for it on 2026-10-22."""
+    created = synth.rfc3339(synth.epoch("linear-project-status:started"))
+    return {
+        "id": synth.linear_project_status_id("started"),
+        "createdAt": created,
+        "updatedAt": created,
+        "archivedAt": None,
+        "name": "In Progress",
+        "color": "#F2C94C",
+        "description": None,
+        "position": 2.0,
+        "type": "started",
+        "indefinite": False,
+        "team": None,
+        "teamId": None,
+        "inheritedFrom": None,
     }
 
 
@@ -714,12 +767,16 @@ def resolve_team_issue_count(team, info) -> int:
     return _team_counts(info).get(team["_container"], 0)
 
 
+def _team_created(container: str) -> str:
+    return synth.rfc3339(synth.epoch("linear-team:" + container))
+
+
 def _team(container: str, info) -> dict:
     """A ``Team``. 43 of its fields are non-null in the SDK's fragment, and so is ``__typename``;
     the ones Backlot cannot know take Linear's own product defaults (cycles off, 2-week duration,
     estimate scale ``notUsed``) rather than zero values that would read as configured."""
     key = _team_key(container, info)
-    created = synth.rfc3339(synth.epoch("linear-team:" + container))
+    created = _team_created(container)
     return {
         "id": synth.linear_team_id(container),
         "key": key,
@@ -733,7 +790,6 @@ def _team(container: str, info) -> dict:
         "visibility": "public",
         "private": False,
         "inviteHash": synth.hnum("linear-team:" + container, 0, 12).__format__("012x"),
-        "cyclesEnabled": False,
         "cycleDuration": 2,
         "cycleCooldownTime": 0,
         "cycleStartDay": 1.0,
@@ -767,12 +823,6 @@ def _team(container: str, info) -> dict:
         "slackIssueStatuses": False,
         "scimManaged": False,
         "scimGroupName": None,
-        # A real team answers its own member `false` (measured 2026-10-08), and the caller is one
-        # (see `_membership`). What a real team answers a non-member is unmeasured, as the workspace
-        # measured has one team with the key's user in it and a second would be a write; the
-        # field's own description says it "Runs the same checks `teamMembershipCreate` applies",
-        # and this server declares no `Mutation` type.
-        "viewerCanJoin": False,
         "icon": None,
         "color": None,
         "description": None,
@@ -1043,6 +1093,78 @@ def resolve_issues(_root, info, **kwargs) -> dict:
     return _issue_page(info, **kwargs)
 
 
+def resolve_search_issues(
+    _root,
+    info,
+    term,
+    first=None,
+    after=None,
+    last=None,
+    before=None,
+    filter=None,
+    orderBy=None,
+    includeArchived=False,
+    includeComments=None,
+    teamId=None,
+    **_ignored,
+) -> dict:
+    """``searchIssues``. api.linear.app answered `Argument Validation Error` for an empty ``term``
+    and for a ``teamId`` that is not a UUID (a team key included), an empty page for an unknown
+    UUID, and with ``includeComments`` absent matched a word found only in a comment, as with
+    ``true``, where ``false`` did not (measured 2026-10-22). ``orderBy`` replaces the relevance
+    order with the newest first."""
+    ctx = _ctx(info)
+    conn = ctx["conn"]
+    if not term:
+        raise argument_validation_error()
+    team = None
+    if teamId is not None:
+        # Measured 2026-10-22: a UUID of version 1-8 and variant 8-b, the nil UUID and the all-`f`
+        # one were looked up, in either case; version 0 or 9, variant c, no dashes and a trailing
+        # space were refused.
+        versioned = r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+        nil_or_max = r"0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12}"
+        if not re.fullmatch(f"{versioned}|{nil_or_max}", teamId, re.IGNORECASE):
+            raise argument_validation_error()
+        team = store.linear_team_by_served_id(conn, teamId.lower()) or "\x00none"
+    _slice(first, after, last, before)
+    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
+    hits, total = store.search_linear_issues(
+        conn,
+        term,
+        visible_ids=ctx["visible_ids"],
+        team=team,
+        prefilter=prefilter,
+        include_comments=includeComments is not False,
+        archived=includeArchived,
+        order_by=orderBy,
+    )
+    page = _list_page(hits, first, after, last, before)
+    page["nodes"] = [
+        {
+            **_issue(store.linear_by_id(conn, issue_id), info),
+            "metadata": {"context": {}, "score": score},
+        }
+        for issue_id, score in page["nodes"]
+    ]
+    # What every search measured answered, `databaseVersion` aside: that is the workspace's own
+    # sync counter, which a corpus does not have.
+    page["archivePayload"] = {
+        "archive": "[]",
+        "totalCount": 0.0,
+        "databaseVersion": 0.0,
+        "includesDependencies": [],
+    }
+    page["totalCount"] = float(total)
+    return page
+
+
+def resolve_documents(_root, info, first=None, after=None, last=None, before=None, **_ignored):
+    """Always empty: a corpus carries no Linear documents. A workspace without any answered this
+    page, its cursors null (measured 2026-10-22)."""
+    return _list_page([], first, after, last, before)
+
+
 def resolve_issue(_root, info, id):
     """``issue(id:)`` takes a UUID or a human identifier, as the real API does. Linear declares
     this non-null, so a miss is an error rather than a null — the same thing the real API does
@@ -1192,22 +1314,18 @@ def resolve_users(
     sort=None,
     **_ignored,
 ) -> dict:
-    ctx = _ctx(info)
-    offset, limit, floor = _slice(first, after, last, before)
-    _reject_sort_with_order_by(sort, orderBy)
-    users = [
-        _user(r["email"], r["display_name"], info)
-        for r in store.list_users(ctx["conn"])
-        if _match_user(r, filter)
-    ]
-    users = _sorted_users(users, sort) if sort else _ordered_users(users, orderBy)
-    offset = _from_end(offset, limit, floor, len(users))
-    return _connection(
-        users[offset : offset + limit],
-        offset,
-        offset + limit < len(users),
-        backward=_backward(first, last, before),
-    )
+    rows = store.list_users(_ctx(info)["conn"])
+    return _user_page(rows, info, first, after, last, before, filter, orderBy, sort)
+
+
+def _user_page(rows, info, first, after, last, before, filter, order_by, sort) -> dict:
+    """A ``UserConnection`` page over principal rows: ``users`` and ``Team.members`` take the same
+    arguments and read them the same way."""
+    _slice(first, after, last, before)
+    _reject_sort_with_order_by(sort, order_by)
+    users = [_user(r["email"], r["display_name"], info) for r in rows if _match_user(r, filter)]
+    users = _sorted_users(users, sort) if sort else _ordered_users(users, order_by)
+    return _list_page(users, first, after, last, before)
 
 
 # --- by-id roots for the SDK's lazy relation accessors ------------------------------------
@@ -1231,20 +1349,26 @@ def resolve_users(
 # entities hanging off an issue it just successfully read, so the probe always finds that issue.
 
 
-def _by_id(info, kind: str, id_value, entity: str):
+def _by_id(info, kind: str, id_value, entity: str, *, unstored=None):
     """The entity a by-id root names, or a GraphQL "not found" error.
 
     Two questions, deliberately separate. `linear_entity_by_id` answers "does the corpus hold this
     id" from `linear_entities`. `linear_entity_has_visible` then answers "may THIS caller see it",
     which no lookup can fold in: an entity is a distinct column value with no ACL of its own, so
-    visibility is whether any issue carrying it is readable.
+    visibility is whether an issue carrying it is readable, or for a state or cycle, an issue of its
+    team (see ``store._LINEAR_ENTITY_PREDICATES``).
 
     A hit the caller cannot see answers exactly as a miss does. Without that, the by-id roots are an
     existence oracle: the id is a one-way hash of a name, so anyone can compute it offline, and a
     distinguishable error would confirm the project/label/person exists.
+
+    ``unstored`` names the entities Backlot serves without a row: given the id, it returns the
+    value or None.
     """
     ctx = _ctx(info)
     found = store.linear_entity_by_id(ctx["conn"], kind, id_value)
+    if found is None and unstored is not None:
+        found = unstored(id_value)
     if found is not None and not store.linear_entity_has_visible(
         ctx["conn"], kind, found, visible_ids=ctx["visible_ids"]
     ):
@@ -1261,8 +1385,19 @@ def resolve_user(_root, info, id) -> dict:
     return _user(email, display, info)
 
 
+def _default_state(info, id_value) -> tuple[str, str] | None:
+    """The ``(team, name)`` of the default state an id names, for a team no issue puts in it."""
+    for team in _team_groups(info):
+        for name, *_ in synth.LINEAR_DEFAULT_STATES:
+            if synth.linear_state_id(name, team) == str(id_value):
+                return team, name
+    return None
+
+
 def resolve_workflow_state(_root, info, id) -> dict:
-    team, name = _by_id(info, "state", id, "WorkflowState")
+    team, name = _by_id(
+        info, "state", id, "WorkflowState", unstored=lambda v: _default_state(info, v)
+    )
     return _state(name, team, info)
 
 
@@ -1277,7 +1412,7 @@ def resolve_cycle(_root, info, id) -> dict:
 
 def resolve_issue_label(_root, info, id) -> dict:
     name = _by_id(info, "label", id, "IssueLabel")
-    return _label(name, synth.rfc3339(synth.epoch("linear-label:" + name)))
+    return _label(name, _label_created(name))
 
 
 def resolve_release(_root, info, id) -> dict:
@@ -1320,55 +1455,264 @@ def resolve_viewer(_root, info) -> dict:
     return _user(email, row["display_name"] if row else None, info)
 
 
-# --- the viewer's team memberships ---------------------------------------------------------
-# Backlot reads the caller as a member of every team it can see. Measured against api.linear.app
-# on 2026-10-20, the one team in a workspace answered a member a `TeamMembership` with
-# `owner: false`, `archivedAt: null` and `createdAt == updatedAt`, `false` for `viewerCanLeave`,
-# and the same membership by id from `teamMembership(id:)`; an unknown id answers "Entity not
-# found: TeamMembership", a message that carries no id.
+# --- team membership ---------------------------------------------------------------------
+# A team's members are the people in its ACL group: the group its issues are granted to, which a
+# roster's department or `groups:` entry fills. Measured against api.linear.app on 2026-10-20 and
+# 2026-10-22: a member is answered a `TeamMembership` with `owner: false`, `archivedAt: null` and
+# `createdAt == updatedAt`, and the same membership by id from `teamMembership(id:)`, another
+# member's included; a team the viewer is not in answers `viewerMembership: null`,
+# `viewerCanJoin: true`, `viewerCanLeave: false` and lists neither the viewer in `members` nor its
+# old membership by id ("Entity not found: TeamMembership", a message that carries no id). Being
+# assigned one of a team's issues made the assignee no member of it. `Team.memberships`,
+# `User.teamMemberships` and `Query.teamMemberships` listed the same memberships newest first, and
+# an app user in no team answered empty `teamMemberships` and `teams`.
+
+# The shape of a UUID, any version. `Team.membership(userId:)` answered null for an unknown one and
+# "Internal server error" for anything else (measured 2026-10-22).
+_ANY_UUID = re.compile(r"^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 
 
-def _membership(container: str, info) -> dict:
-    """The caller's ``TeamMembership`` in one team.
+def _team_groups(info) -> dict[str, str | None]:
+    """team -> the ACL group that owns it, read once per request."""
+    ctx = _ctx(info)
+    groups = ctx.get("_team_groups")
+    if groups is None:
+        groups = {r["name"]: r["group_id"] for r in store.list_containers(ctx["conn"], "linear")}
+        ctx["_team_groups"] = groups
+    return groups
+
+
+def _team_member_rows(container: str, info) -> list:
+    """The principal rows of a team's members, read once per team per request."""
+    ctx = _ctx(info)
+    cache = ctx.setdefault("_team_member_rows", {})
+    if container not in cache:
+        group = _team_groups(info).get(container)
+        cache[container] = store.group_members(ctx["conn"], group) if group else []
+    return cache[container]
+
+
+def _user_teams(email: str | None, info) -> list[str]:
+    """The teams the caller sees that ``email`` is a member of, in the order ``teams`` lists
+    them."""
+    if not email:
+        return []
+    ctx = _ctx(info)
+    cache = ctx.setdefault("_user_teams", {})
+    if email not in cache:
+        mine = set(store.user_group_ids(ctx["conn"], email))
+        groups = _team_groups(info)
+        cache[email] = [t for t in _visible_teams(info) if groups.get(t) in mine]
+    return cache[email]
+
+
+def _member_teams(info) -> list[str]:
+    """The caller's teams. The admin token is no person, so it is in none."""
+    return _user_teams(_ctx(info).get("caller_email"), info)
+
+
+def _membership(container: str, user: dict, info) -> dict:
+    """``user``'s ``TeamMembership`` in one team.
 
     A membership cannot predate its team or its user, so it is created at the later of the two, the
     earliest it can be: one member's was created with both in the same instant, another's 64 seconds
     after its user. Linear describes ``sortOrder`` as "The sort order of this team in the user's
-    personal team list", so a team's is its position in the caller's team list; the two memberships
-    measured answered 41 and 0."""
-    viewer = resolve_viewer(None, info)
+    personal team list", so a team's is its position in the user's list of teams; the two
+    memberships measured answered 41 and 0."""
     team = _team(container, info)
-    created = max(team["createdAt"], viewer["createdAt"])
+    created = max(team["createdAt"], user["createdAt"])
     return {
-        "id": synth.linear_team_membership_id(container, viewer["id"]),
+        "id": synth.linear_team_membership_id(container, user["id"]),
         "createdAt": created,
         "updatedAt": created,
         "archivedAt": None,
         "owner": False,
-        "sortOrder": float(_visible_teams(info).index(container)),
-        "user": viewer,
+        "sortOrder": float(_user_teams(user["email"], info).index(container)),
+        "user": user,
         "team": team,
     }
 
 
-def resolve_team_viewer_membership(team, info) -> dict:
-    return _membership(team["_container"], info)
+def _team_memberships(container: str, info) -> list[dict]:
+    rows = _team_member_rows(container, info)
+    return [_membership(container, _user(r["email"], r["display_name"], info), info) for r in rows]
 
 
-def resolve_team_viewer_can_leave(_parent, info) -> bool:
+def _memberships_page(memberships: list[dict], first, after, last, before) -> dict:
+    nodes = _newest_first(memberships, lambda m: (m["createdAt"], m["id"]))
+    return _list_page(nodes, first, after, last, before)
+
+
+def resolve_team_viewer_membership(team, info) -> dict | None:
+    if team["_container"] not in _member_teams(info):
+        return None
+    return _membership(team["_container"], resolve_viewer(None, info), info)
+
+
+def resolve_team_viewer_can_join(team, info) -> bool:
+    """``true`` for a team the viewer is not in, as a public team answered an admin who had left it
+    (measured 2026-10-22); every served team is public."""
+    return team["_container"] not in _member_teams(info)
+
+
+def resolve_team_viewer_can_leave(team, info) -> bool:
     """Linear's own description: false when "leaving would leave the viewer without an active
-    team", the case measured. A caller in two teams answers true, which is unmeasured: the
-    description's other conditions are SCIM management, which no served team has, and an app user
-    the team does not accept, which nothing in a corpus records."""
-    return len(_visible_teams(info)) > 1
+    team". A member of one team answered false, a member of two true for each, and a non-member
+    false (measured 2026-10-22)."""
+    teams = _member_teams(info)
+    return team["_container"] in teams and len(teams) > 1
 
 
 def resolve_team_membership(_root, info, id) -> dict:
-    viewer_id = resolve_viewer(None, info)["id"]
+    """Anyone's membership in a team the caller sees. Each candidate's id is hashed before any
+    membership is built, so a lookup costs one hash per member."""
     for container in _visible_teams(info):
-        if synth.linear_team_membership_id(container, viewer_id) == str(id):
-            return _membership(container, info)
+        for row in _team_member_rows(container, info):
+            user_id = synth.linear_user_id(row["email"])
+            if synth.linear_team_membership_id(container, user_id) == str(id).lower():
+                user = _user(row["email"], row["display_name"], info)
+                return _membership(container, user, info)
     raise GraphQLError("Entity not found: TeamMembership")
+
+
+def resolve_team_membership_of(team, info, userId) -> dict | None:
+    """``Team.membership(userId:)``: null for someone who is not a member."""
+    if not _ANY_UUID.match(str(userId)):
+        raise GraphQLError(
+            "Internal server error",
+            extensions={
+                "code": "INTERNAL_SERVER_ERROR",
+                "type": "internal error",
+                "userError": False,
+            },
+        )
+    container = team["_container"]
+    for row in _team_member_rows(container, info):
+        if synth.linear_user_id(row["email"]) == str(userId).lower():
+            return _membership(container, _user(row["email"], row["display_name"], info), info)
+    return None
+
+
+def resolve_team_memberships(
+    team, info, first=None, after=None, last=None, before=None, **_ignored
+) -> dict:
+    return _memberships_page(
+        _team_memberships(team["_container"], info), first, after, last, before
+    )
+
+
+def resolve_team_memberships_root(
+    _root, info, first=None, after=None, last=None, before=None, **_ignored
+) -> dict:
+    """``Query.teamMemberships``: every membership in the teams the caller sees."""
+    memberships = [m for t in _visible_teams(info) for m in _team_memberships(t, info)]
+    return _memberships_page(memberships, first, after, last, before)
+
+
+def resolve_user_team_memberships(
+    user, info, first=None, after=None, last=None, before=None, **_ignored
+) -> dict:
+    memberships = [_membership(t, user, info) for t in _user_teams(user["email"], info)]
+    return _memberships_page(memberships, first, after, last, before)
+
+
+def resolve_user_teams(
+    user, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+) -> dict:
+    """A user's teams, in the order ``teams`` lists them."""
+    teams = [t for t in _user_teams(user["email"], info) if _match_team(t, filter, info)]
+    return _list_page([_team(t, info) for t in teams], first, after, last, before)
+
+
+def resolve_team_members(
+    team,
+    info,
+    first=None,
+    after=None,
+    last=None,
+    before=None,
+    filter=None,
+    orderBy=None,
+    sort=None,
+    **_ignored,
+) -> dict:
+    rows = _team_member_rows(team["_container"], info)
+    return _user_page(rows, info, first, after, last, before, filter, orderBy, sort)
+
+
+# --- a team's states, labels, projects and cycles -------------------------------------------
+
+
+def resolve_team_states(
+    team, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+) -> dict:
+    container = team["_container"]
+    nodes = [_state(name, container, info) for name in _state_positions(container, info)]
+    nodes = [n for n in nodes if _match_fields(filter, {"name": n["name"], "type": n["type"]})]
+    nodes = _newest_first(nodes, lambda n: (n["createdAt"], n["id"]))
+    return _list_page(nodes, first, after, last, before)
+
+
+def _label_created(name: str) -> str:
+    return synth.rfc3339(synth.epoch("linear-label:" + name))
+
+
+def resolve_team_labels(
+    _team, info, first=None, after=None, last=None, before=None, filter=None, **_ignored
+) -> dict:
+    ctx = _ctx(info)
+    names = [
+        n
+        for n in store.linear_visible_labels(ctx["conn"], visible_ids=ctx["visible_ids"])
+        if _match_label({"name": n}, filter)
+    ]
+    names = _newest_first(names, lambda n: (_label_created(n), synth.linear_label_id(n)))
+    page = _list_page(names, first, after, last, before)
+    page["nodes"] = [_label(n, _label_created(n)) for n in page["nodes"]]
+    return page
+
+
+def resolve_team_projects(
+    team, info, first=None, after=None, last=None, before=None, **_ignored
+) -> dict:
+    ctx = _ctx(info)
+    names = store.linear_team_projects(
+        ctx["conn"], team["_container"], visible_ids=ctx["visible_ids"]
+    )
+    names = _newest_first(
+        names, lambda n: (synth.epoch("linear-project:" + n), synth.linear_project_id(n))
+    )
+    page = _list_page(names, first, after, last, before)
+    page["nodes"] = [_project(n, info) for n in page["nodes"]]
+    return page
+
+
+def _team_cycle_names(container: str, info) -> list[str]:
+    ctx = _ctx(info)
+    cache = ctx.setdefault("_team_cycle_names", {})
+    if container not in cache:
+        cache[container] = store.linear_team_entity_names(ctx["conn"], "cycle", container)
+    return cache[container]
+
+
+def resolve_team_cycles_enabled(team, info) -> bool:
+    """Whether the team has cycles: a real team answered `cyclesEnabled: true` beside the cycles
+    turning them on created, and `false` beside none once they were off (measured 2026-10-22)."""
+    return bool(_team_cycle_names(team["_container"], info))
+
+
+def resolve_team_cycles(
+    team, info, first=None, after=None, last=None, before=None, **_ignored
+) -> dict:
+    container = team["_container"]
+    names = _team_cycle_names(container, info)
+    names = _newest_first(
+        names,
+        lambda n: (synth.epoch("linear-cycle:" + n), synth.linear_cycle_id(n, container)),
+    )
+    page = _list_page(names, first, after, last, before)
+    page["nodes"] = [_cycle(n, container, info) for n in page["nodes"]]
+    return page
 
 
 # --- relation fields that take arguments ------------------------------------------------
@@ -1608,6 +1952,8 @@ RESOLVERS = {
         "teams": resolve_teams,
         "comments": resolve_comments,
         "users": resolve_users,
+        "searchIssues": resolve_search_issues,
+        "documents": resolve_documents,
         "viewer": resolve_viewer,
         "user": resolve_user,
         "workflowState": resolve_workflow_state,
@@ -1618,12 +1964,22 @@ RESOLVERS = {
         "attachment": resolve_attachment,
         "issueRelation": resolve_issue_relation,
         "teamMembership": resolve_team_membership,
+        "teamMemberships": resolve_team_memberships_root,
     },
     "Team": {
         "issues": resolve_team_issues,
         "issueCount": resolve_team_issue_count,
         "viewerMembership": resolve_team_viewer_membership,
+        "viewerCanJoin": resolve_team_viewer_can_join,
+        "cyclesEnabled": resolve_team_cycles_enabled,
         "viewerCanLeave": resolve_team_viewer_can_leave,
+        "members": resolve_team_members,
+        "membership": resolve_team_membership_of,
+        "memberships": resolve_team_memberships,
+        "states": resolve_team_states,
+        "labels": resolve_team_labels,
+        "projects": resolve_team_projects,
+        "cycles": resolve_team_cycles,
     },
     "Issue": {
         "comments": resolve_issue_comments,
@@ -1635,12 +1991,18 @@ RESOLVERS = {
         "attachments": resolve_issue_attachments,
         "releases": resolve_issue_releases,
     },
+    "User": {
+        "teamMemberships": resolve_user_team_memberships,
+        "teams": resolve_user_teams,
+    },
     "IssueRelation": {
         "issue": resolve_relation_issue,
         "relatedIssue": resolve_relation_related_issue,
     },
     "Attachment": {"issue": resolve_attachment_issue},
 }
+# A search result is an issue with `metadata` beside it, so it resolves its relations as one.
+RESOLVERS["IssueSearchResult"] = RESOLVERS["Issue"]
 
 
 def build_engine():

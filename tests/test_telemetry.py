@@ -281,7 +281,10 @@ def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent
             "invalid_argument",
         ),
         ("linear", 200, b'{"errors":[{"message":"Entity not found: Issue"}]}', "entity_not_found"),
-        ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
+        ("linear", 200, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
+        ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "graphql_validation"),
+        ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":5}}]}', "unrecognized"),
+        ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":""}}]}', "unrecognized"),
         ("jira", 401, b"Client must be authenticated to access this resource.", "unauthenticated"),
         ("jira", 400, b"<!DOCTYPE html><html><head><title>(null)</title></head></html>", ""),
         ("msteams", 404, b'{"error":{"code":"NotFound","message":"x"}}', "NotFound"),
@@ -643,48 +646,73 @@ def test_each_message_slug_is_one_backlot_sends(client, method, path, kwargs, ex
     assert [c.get("backlot.error_code") for c in calls] == [expected], calls
 
 
+# Linear's rows; Fireflies runs the same engine, so a few of them are sent there as well. The
+# `transcripts` rows there are Fireflies' own.
+_GRAPHQL_MESSAGES = [
+    ({"query": "{"}, LINEAR, "graphql_parse"),
+    ({"query": '{ issue(id: "nope") { id } }'}, LINEAR, "entity_not_found"),
+    ({"query": "{ __typename }"}, {}, "authentication_required"),
+    ({"query": "{ nosuch }"}, LINEAR, "graphql_validation"),
+    ({"query": '{ issue(id: "x", bogus: 1) { id } }'}, LINEAR, "graphql_validation"),
+    ({"query": 'query($x: Nope) { issue(id: "x") { id } }'}, LINEAR, "graphql_validation"),
+    ({"query": "{ issue { id } }"}, LINEAR, "graphql_validation"),
+    ({"query": "query($x: String!) { issue(id: $x) { id } }"}, LINEAR, "graphql_validation"),
+    (
+        {
+            "query": 'query($x: String = "a") { issue(id: $x) { id } }',
+            "variables": {"x": None},
+        },
+        LINEAR,
+        "graphql_validation",
+    ),
+    ({"query": "mutation { x }"}, LINEAR, "graphql_validation"),
+    ({"query": "{ ...F }"}, LINEAR, "graphql_validation"),
+    ({"query": "{ issues @nope { nodes { id } } }"}, LINEAR, "graphql_validation"),
+    (
+        {"query": "query A { viewer { id } } query A { viewer { id } }"},
+        LINEAR,
+        "graphql_validation",
+    ),
+    ({"query": "{ issue(id: 5) { id } }"}, LINEAR, "graphql_validation"),
+    ({"query": "{ issue(id: null) { id } }"}, LINEAR, "graphql_validation"),
+    ({"query": '{ issues(first: "x") { nodes { id } } }'}, LINEAR, "graphql_validation"),
+    ({"query": "{ issues(orderBy: createdat) { nodes { id } } }"}, LINEAR, "graphql_validation"),
+    ({"query": "fragment F on User { id } { viewer { id } }"}, LINEAR, "graphql_validation"),
+    ({}, LINEAR, "graphql_request"),
+    ([], LINEAR, "graphql_request"),
+    ({"query": "{ viewer { id } }", "variables": "{"}, LINEAR, "graphql_request"),
+    ({"query": "query A { viewer { id } }", "operationName": "B"}, LINEAR, "graphql_request"),
+    (
+        {"query": "query A { viewer { id } } query B { viewer { id } }"},
+        LINEAR,
+        "graphql_request",
+    ),
+]
+
+
 @pytest.mark.parametrize(
-    "payload, headers, expected",
-    [
-        ({"query": "{"}, LINEAR, "graphql_parse"),
-        ({"query": '{ issue(id: "nope") { id } }'}, LINEAR, "entity_not_found"),
-        ({"query": "{ __typename }"}, {}, "authentication_required"),
-        ({"query": "{ nosuch }"}, LINEAR, "graphql_validation"),
-        ({"query": '{ issue(id: "x", bogus: 1) { id } }'}, LINEAR, "graphql_validation"),
-        ({"query": 'query($x: Nope) { issue(id: "x") { id } }'}, LINEAR, "graphql_validation"),
-        ({"query": "{ issue { id } }"}, LINEAR, "graphql_validation"),
-        ({"query": "query($x: String!) { issue(id: $x) { id } }"}, LINEAR, "graphql_validation"),
+    "path, payload, headers, expected",
+    [("/linear/graphql", *row) for row in _GRAPHQL_MESSAGES]
+    + [
+        ("/fireflies/graphql", {"query": "{"}, ADMIN, "graphql_parse"),
+        ("/fireflies/graphql", {"query": "{ nosuch }"}, ADMIN, "graphql_validation"),
         (
-            {
-                "query": 'query($x: String = "a") { issue(id: $x) { id } }',
-                "variables": {"x": None},
-            },
-            LINEAR,
+            "/fireflies/graphql",
+            {"query": '{ transcripts(limit: "x") { id } }'},
+            ADMIN,
             "graphql_validation",
         ),
-        ({"query": "mutation { x }"}, LINEAR, "graphql_validation"),
-        ({"query": "{ ...F }"}, LINEAR, "graphql_validation"),
-        ({"query": "{ issues @nope { nodes { id } } }"}, LINEAR, "graphql_validation"),
         (
-            {"query": "query A { viewer { id } } query A { viewer { id } }"},
-            LINEAR,
+            "/fireflies/graphql",
+            {"query": '{ transcripts(date: "x") { id } }'},
+            ADMIN,
             "graphql_validation",
         ),
-        ({"query": "{ issue(id: 5) { id } }"}, LINEAR, "graphql_validation"),
-        ({"query": "{ issue(id: null) { id } }"}, LINEAR, "graphql_validation"),
-        ({}, LINEAR, "graphql_request"),
-        ([], LINEAR, "graphql_request"),
-        ({"query": "{ viewer { id } }", "variables": "{"}, LINEAR, "graphql_request"),
-        ({"query": "query A { viewer { id } }", "operationName": "B"}, LINEAR, "graphql_request"),
-        (
-            {"query": "query A { viewer { id } } query B { viewer { id } }"},
-            LINEAR,
-            "graphql_request",
-        ),
+        ("/fireflies/graphql", {}, ADMIN, "graphql_request"),
     ],
 )
-def test_each_graphql_message_slug_is_one_backlot_sends(client, payload, headers, expected):
-    calls = _calls(lambda: client.post("/linear/graphql", headers=headers, json=payload))
+def test_each_graphql_message_slug_is_one_backlot_sends(client, path, payload, headers, expected):
+    calls = _calls(lambda: client.post(path, headers=headers, json=payload))
     assert [c.get("backlot.error_code") for c in calls] == [expected], calls
 
 

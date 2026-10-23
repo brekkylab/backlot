@@ -14,7 +14,8 @@ description at all, so its vendor side is its reference documentation, and Backl
 A document does not always carry one contract. Google names its batch endpoint in a top-level
 ``batchPath`` rather than declaring it under ``resources``, so each Google document is read for two:
 the operations a path diff pairs, and that field, compared against the batch routes ``batch_mount``
-says the source speaks for. Both read the same fetched document.
+says the source speaks for. A document a ``walk`` reads is read for a third, the messages its
+methods answer with, against what a running server answers. All read the same fetched document.
 
 
 Ten of the twelve need no credential. All twelve run on a schedule and never on a pull request:
@@ -32,6 +33,7 @@ from typing import Any, Callable, Mapping
 from backlot.fidelity import (
     csdl_diff,
     google_discovery_diff,
+    google_walks,
     graphql_diff,
     hubspot_catalog,
     msgraph,
@@ -41,7 +43,13 @@ from backlot.fidelity import (
 )
 from backlot.fidelity.errors import CredentialsMissing, FidelityError
 from backlot.fidelity.findings import BREAKING, Finding
-from backlot.fidelity.surface import MISSING, Measurement, OperationSurface
+from backlot.fidelity.surface import (
+    MISSING,
+    GraphSurface,
+    Measurement,
+    OperationSurface,
+    SchemaSurface,
+)
 
 
 def _one_report(per_spec: list[Measurement]) -> Measurement:
@@ -118,6 +126,10 @@ class Spec:
     # into the baseline's identity: a lambda would render as `<function … at 0x…>` and write a
     # fresh memory address into the file on every run.
     resolve_url: hubspot_catalog.Entry | None = None
+    # A discovery document's reads to make of a running Backlot, each named by the method it is
+    # (`google_walks.sheets`). Set, the document's response types join the source's baseline as
+    # `types` (`google_discovery_diff.types_measure`).
+    walk: Callable[[float], list[tuple[str, Any]]] | None = None
 
     @property
     def endpoint(self) -> str:
@@ -206,7 +218,19 @@ class GoogleDiscoveryComparison:
                     self.batch_mount, [(s.spec_url, fetched[s.spec_url]) for s in self.specs]
                 )
             )
-        return _one_report(per_spec)
+        report = _one_report(per_spec)
+        typed = [
+            google_discovery_diff.types_measure(s, fetched[s.spec_url], timeout=timeout)
+            for s in self.specs
+            if s.walk
+        ]
+        if not typed:
+            return report
+        types = {n: t for m in typed for n, t in m.surface.types.items()}
+        return Measurement(
+            report.findings + [f for m in typed for f in m.findings],
+            GraphSurface(report.surface, SchemaSurface("", types)),
+        )
 
 
 @dataclass(frozen=True)
@@ -463,6 +487,7 @@ GOOGLE_DISCOVERY = {
                 spec_url="https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
                 mount=("/sheets/v4",),
                 strip="/sheets",
+                walk=google_walks.sheets,
             ),
             Spec(
                 spec_url="https://www.googleapis.com/discovery/v1/apis/slides/v1/rest",

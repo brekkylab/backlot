@@ -1557,7 +1557,7 @@ def list_linear_comments(
     is applied to ``linear_issues`` through a join rather than to the comment table. An admin read
     (``visible_ids`` None) skips the join. ``Comment.url``'s identifier and title come from scalar
     subqueries, which SQLite evaluates only for the rows a page returns, where a join runs for every
-    row OFFSET skips (165k comments, offset 100,000: 2.6ms against 126ms)."""
+    row OFFSET skips."""
     join = "" if visible_ids is None else " JOIN linear_issues i ON i.id = c.issue_id"
     sql = (
         "SELECT c.*,"

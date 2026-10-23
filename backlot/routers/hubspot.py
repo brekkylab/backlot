@@ -1190,6 +1190,12 @@ def _missing_scopes(object_type: str) -> JSONResponse:
     )
 
 
+def is_an_unserved_operation(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/hubspot` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`, the path
+    read as ``backlot.routers.github.is_an_unserved_operation`` reads one."""
+    return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/hubspot"))
+
+
 def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
     """The INVALID_AUTHENTICATION 401 for an operation of :data:`_PUBLISHED_NOT_SERVED` sent with no
     key or one that does not resolve, as a served route refuses it before running. With a key that
@@ -1209,12 +1215,11 @@ def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
     publish, was a 404 with no key, so only the baseline's operations are refused. On 2026-10-19
     every other operation the baseline lists answered the same 401 both ways, the v4 association
     writes and `batch/read` among them, and so did `PATCH` on `zzz/1` and `DELETE` on `2-999/1`,
-    whose types real can't resolve. The path is the scope's, decoded but whole, as
-    ``backlot.routers.github.is_an_unserved_operation`` reads it.
+    whose types real can't resolve.
     """
-    path = request.scope["path"].removeprefix("/hubspot")
-    if not published.includes(_PUBLISHED_NOT_SERVED, request.method, path):
+    if not is_an_unserved_operation(request.method, request.scope["path"]):
         return None
+    path = request.scope["path"].removeprefix("/hubspot")
     if _caller(request) is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     record = _RECORD_PATH.fullmatch(path)

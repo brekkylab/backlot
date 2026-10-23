@@ -244,8 +244,8 @@ class _Layer:
 
     A middleware function runs as Starlette's ``BaseHTTPMiddleware``, which hands the request on in
     a task of its own and streams the answer back up through a channel, whether or not the function
-    then does anything: measured over ``backlot.serve()`` on 2026-10-23 with 25 registered, they
-    add 2.0 to 2.9 ms to an answer that goes through all of them. So ``runs_on(scope)`` is asked
+    then does anything: measured over ``backlot.serve()`` on 2026-10-23 with 27 registered, they
+    add 2.2 to 4.4 ms to an answer that goes through all of them. So ``runs_on(scope)`` is asked
     first, ahead of the ``BaseHTTPMiddleware``, and a request it does not pick is one the function
     would have handed straight on: it holds the function's own test for whether it has anything to
     do, or the part of that test that reads neither the answer nor the body. It is asked where the

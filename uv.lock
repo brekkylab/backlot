@@ -541,7 +541,7 @@ requires-dist = [
     { name = "llama-index-readers-s3", marker = "extra == 'llamaindex'", specifier = ">=0.6" },
     { name = "llama-index-readers-slack", marker = "extra == 'llamaindex'", specifier = ">=0.5" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2" },
-    { name = "mirage-ai", extras = ["fuse", "s3"], marker = "extra == 'mirage'", specifier = ">=0.0.6" },
+    { name = "mirage-ai", extras = ["fuse", "s3"], marker = "extra == 'mirage'", specifier = ">=0.0.7" },
     { name = "msgraph-sdk", marker = "extra == 'official-sdk'", specifier = ">=1.5" },
     { name = "notion-client", marker = "extra == 'official-sdk'", specifier = ">=3.1" },
     { name = "openai", marker = "extra == 'mcp'", specifier = ">=1.40" },
@@ -3119,7 +3119,7 @@ wheels = [
 
 [[package]]
 name = "mirage-ai"
-version = "0.0.6"
+version = "0.0.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -3128,20 +3128,30 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jq" },
+    { name = "jsonschema" },
     { name = "mcp" },
+    { name = "multidict" },
     { name = "orjson" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "python-multipart" },
     { name = "pyyaml" },
+    { name = "regex" },
     { name = "tenacity" },
     { name = "tree-sitter" },
     { name = "tree-sitter-bash" },
     { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/25/10/f5135624da350ed12c868e9dd1117d965bd3d91379f8a2ea80d81ccb8eb6/mirage_ai-0.0.6.tar.gz", hash = "sha256:693facf5b39093897bcc9307b08b844f3040e3b224472db9d952d6b8f4ac11ac", size = 1914697, upload-time = "2026-09-03T16:11:53.287Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ad/11/b55a498b7c15c51c2b26ec8bd187e7a9f9a4d2c12805427ed8b94313eef3/mirage_ai-0.0.7.tar.gz", hash = "sha256:e7e9e6a69b388cc79c93eb6cb1e3fbd86b5b62f8b040f0aae6fd5a6360953f2b", size = 3639432, upload-time = "2026-10-20T16:23:38.896Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/ef/7f8324f3eb9ca097175bbcf0f732c2f3d4d10932438f535f3a5f9464d2aa/mirage_ai-0.0.6-py3-none-any.whl", hash = "sha256:f9f52b65e4d1f869c5698a62bae3f8716ae042e58dc5d5ba9f1debae5e6c9246", size = 3328264, upload-time = "2026-09-03T16:11:51.317Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/fb/fd55fb306b4052542a0dbfe71d112db9226c1491dd459a31fb6a57ad3315/mirage_ai-0.0.7-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:861ccdde9e8864210440017e11b3d3b29b6b877e8ceba2b2f971ac61720caea0", size = 6600665, upload-time = "2026-10-20T16:23:28.137Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/a1/a88c4dc9056eb4912c140054c62c764ed665df52a1ef1f020d0cda391c6d/mirage_ai-0.0.7-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:a4c8eb2177754228dbe6a1c87c6a669e76b26ff495cfa651c3c6a52ca87a837c", size = 6494129, upload-time = "2026-10-20T16:23:40.833Z" },
+    { url = "https://files.pythonhosted.org/packages/22/4e/28d7599495d4825e98fe09cd693a8cf0ab0e7b372a557ec43e0ad0663da3/mirage_ai-0.0.7-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:5da1df2821f020e9409569589932827aaf9a1d0729104254d2f2eac0bb3ee52e", size = 6578171, upload-time = "2026-10-20T16:23:34.984Z" },
+    { url = "https://files.pythonhosted.org/packages/82/7b/2f4295ef8b3309f5a3d23a8a16dbc3c1c6649c460c231d3072b67a69ab7a/mirage_ai-0.0.7-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c2161dcf516b2419ea6ea6f55037f68e9b706d51b1f0fd143e7662b8f242487c", size = 6671182, upload-time = "2026-10-20T16:23:43.362Z" },
+    { url = "https://files.pythonhosted.org/packages/60/a3/fbb28a1e8b1f5c19d806d0e0a908c2f2346cced1a4b971cd832b23d283ab/mirage_ai-0.0.7-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:f05fe3be3c1995cf2bae7818247dd1e8073944b2ccb086df7dafbe15f2bab6ec", size = 6757172, upload-time = "2026-10-20T16:23:25.34Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/af/d023ba667fb8f66c2183934320507e1f3bb4fe4d779f889067489e796c4e/mirage_ai-0.0.7-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:64a9ae18c89f24e2b7b87e80bfd93186dc1a99669fe768e49fa5c73f4e54a9a0", size = 6895051, upload-time = "2026-10-20T16:23:30.519Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/22/0c877fccdf4f793dc76f36758246bd3b1806ca9850030de55e918e03cd02/mirage_ai-0.0.7-cp311-abi3-win_amd64.whl", hash = "sha256:4a354d6a243498703ebf32563ada84407e99987e7f4c81f7d9148c03cc23d25b", size = 6662994, upload-time = "2026-10-20T16:23:32.672Z" },
+    { url = "https://files.pythonhosted.org/packages/85/73/27ed58997aad9ba11af692bc0765aecd5bbf7c7b7a4514d49ada8fb78755/mirage_ai-0.0.7-cp311-abi3-win_arm64.whl", hash = "sha256:73b0f1fe221c5334e9d31b615afbb88e534602f373f2235622a1138466393e9b", size = 6551140, upload-time = "2026-10-20T16:23:36.874Z" },
 ]
 
 [package.optional-dependencies]
@@ -3150,6 +3160,7 @@ fuse = [
 ]
 s3 = [
     { name = "aioboto3" },
+    { name = "botocore" },
 ]
 
 [[package]]

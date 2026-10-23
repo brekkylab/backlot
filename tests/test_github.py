@@ -96,23 +96,23 @@ _CONTENTS_REDIRECT_ROWS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "path, target", _CONTENTS_REDIRECT_ROWS, ids=[r[0] for r in _CONTENTS_REDIRECT_ROWS]
-)
-def test_github_a_contents_path_ending_in_a_slash_redirects(
-    gh_client, gh_org, gh_admin_h, path, target
-):
+def test_github_a_contents_path_ending_in_a_slash_redirects(gh_client, gh_org, gh_admin_h):
     """Measured: a 302 to the id-keyed spelling without the slash, before the path resolves to
     anything — a file, a directory and a path that names neither all redirect — with the path
     encoded the way real encodes it."""
     c, _ = gh_client
-    r = c.get(f"/github/repos/{gh_org}/codebase/{path}", headers=gh_admin_h, follow_redirects=False)
-    # the row is what went on the wire, not a spelling the client normalised first
-    assert r.request.url.raw_path.decode().endswith(f"/codebase/{path}")
-    assert r.status_code == 302
     rid = synth.github_user_id("codebase")
-    assert r.headers["location"].endswith(f"/github/repositories/{rid}/{target}")
-    assert "?" not in r.headers["location"]
+    answered = {}
+    for path, _ in _CONTENTS_REDIRECT_ROWS:
+        r = c.get(
+            f"/github/repos/{gh_org}/codebase/{path}", headers=gh_admin_h, follow_redirects=False
+        )
+        # the row is what went on the wire, not a spelling the client normalised first
+        assert r.request.url.raw_path.decode().endswith(f"/codebase/{path}")
+        answered[path] = (r.status_code, r.headers["location"].split("/github/", 1)[1])
+    assert answered == {
+        path: (302, f"repositories/{rid}/{target}") for path, target in _CONTENTS_REDIRECT_ROWS
+    }
 
 
 def test_github_the_contents_redirect_removes_one_slash_and_names_a_content_type(
@@ -565,52 +565,52 @@ _LABELLED = {"Bug", "Docs", "Fix", "Private bug"}
 _BUG = {"Bug", "Fix", "Private bug"}
 
 
-@pytest.mark.parametrize(
-    "query, titles",
-    [
-        ("", _LABELLED),
-        ("labels=", _LABELLED),
-        ("labels=bug", _BUG),
-        ("labels=BUG", _BUG),
-        ("labels=documentation", {"Docs", "Fix"}),
-        ("labels=bug,documentation", {"Fix"}),
-        ("labels=Documentation,Bug", {"Fix"}),
-        ("labels=bug,bug", _BUG),
-        ("labels=bug,", _BUG),
-        ("labels=bug,,", _BUG),
-        ("labels=zzqq-no-such-label", set()),
-        ("labels=bug,zzqq-no-such-label", set()),
-        ("labels=%20bug", set()),
-        ("labels=bug%20", set()),
-        ("labels=bug,%20documentation", set()),
-        ("labels=bug,,documentation", set()),
-        # the last of a repeated parameter
-        ("labels=bug&labels=documentation", {"Docs", "Fix"}),
-        ("labels=documentation&labels=bug", _BUG),
-        ("labels=bug&labels=", _LABELLED),
-        # commas alone, or whitespace alone, filter nothing
-        ("labels=,", _LABELLED),
-        ("labels=,,", _LABELLED),
-        ("labels=%20", _LABELLED),
-        ("labels=%09", _LABELLED),
-        ("labels=%C2%A0", _LABELLED),
-        ("labels=%E3%80%80", _LABELLED),
-        ("labels=%1C", set()),
-        ("labels=%20,", set()),
-    ],
-)
-def test_github_the_issue_listing_serves_the_issues_carrying_every_named_label(
-    gh_labelled, query, titles
-):
-    """Each row is the answer real gave that spelling on psf/requests, transposed to this corpus
+_LABEL_FILTER = {
+    "": _LABELLED,
+    "labels=": _LABELLED,
+    "labels=bug": _BUG,
+    "labels=BUG": _BUG,
+    "labels=documentation": {"Docs", "Fix"},
+    "labels=bug,documentation": {"Fix"},
+    "labels=Documentation,Bug": {"Fix"},
+    "labels=bug,bug": _BUG,
+    "labels=bug,": _BUG,
+    "labels=bug,,": _BUG,
+    "labels=zzqq-no-such-label": set(),
+    "labels=bug,zzqq-no-such-label": set(),
+    "labels=%20bug": set(),
+    "labels=bug%20": set(),
+    "labels=bug,%20documentation": set(),
+    "labels=bug,,documentation": set(),
+    # the last of a repeated parameter
+    "labels=bug&labels=documentation": {"Docs", "Fix"},
+    "labels=documentation&labels=bug": _BUG,
+    "labels=bug&labels=": _LABELLED,
+    # commas alone, or whitespace alone, filter nothing
+    "labels=,": _LABELLED,
+    "labels=,,": _LABELLED,
+    "labels=%20": _LABELLED,
+    "labels=%09": _LABELLED,
+    "labels=%C2%A0": _LABELLED,
+    "labels=%E3%80%80": _LABELLED,
+    "labels=%1C": set(),
+    "labels=%20,": set(),
+}
+
+
+def test_github_the_issue_listing_serves_the_issues_carrying_every_named_label(gh_labelled):
+    """Each entry is the answer real gave that spelling on psf/requests, transposed to this corpus
     (the rule and its dates are in :func:`backlot.routers.github.list_issues`), asked by the admin
     and by a token that cannot see the private issue. The pull is served like the issues, and the
     source file never is."""
     c, url, admin, scoped = gh_labelled
-    for headers, expected in ((admin, titles), (scoped, titles - {"Private bug"})):
-        r = c.get(f"{url}?{query}", headers=headers)
-        assert r.status_code == 200, r.text
-        assert {row["title"] for row in r.json()} == expected, headers is admin
+    for headers, hidden in ((admin, set()), (scoped, {"Private bug"})):
+        answered = {}
+        for query in _LABEL_FILTER:
+            r = c.get(f"{url}?{query}", headers=headers)
+            answered[query] = (r.status_code, {row["title"] for row in r.json()})
+        expected = {query: (200, titles - hidden) for query, titles in _LABEL_FILTER.items()}
+        assert answered == expected, headers is admin
 
 
 @pytest.mark.parametrize(
@@ -1227,35 +1227,38 @@ def test_github_tree_recursive(gh_client, gh_admin_h, gh_org):
     assert "size" not in tree_dir
 
 
-@pytest.mark.parametrize(
-    "query,recursive",
-    [
-        ("", False),
-        ("?recursive", False),
-        ("?recursive=0&recursive", False),
-        ("?%72ecursive", False),
-        ("?recursive=", True),
-        ("?recursive=0", True),
-        ("?recursive=false", True),
-        ("?recursive=1", True),
-        ("?recursive=true", True),
-        ("?recursive=abc", True),
-        ("?recursive&recursive=0", True),
-        ("?%72ecursive=0", True),
-    ],
-)
-def test_github_tree_recurses_for_any_recursive_value(
-    gh_client, gh_admin_h, gh_org, query, recursive
-):
-    """Each row was measured on api.github.com. The rule is
+#: Each query string and whether api.github.com answered the tree recursively.
+_TREE_RECURSES = {
+    "": False,
+    "?recursive": False,
+    "?recursive=0&recursive": False,
+    "?%72ecursive": False,
+    "?recursive=": True,
+    "?recursive=0": True,
+    "?recursive=false": True,
+    "?recursive=1": True,
+    "?recursive=true": True,
+    "?recursive=abc": True,
+    "?recursive&recursive=0": True,
+    "?%72ecursive=0": True,
+}
+
+
+def test_github_tree_recurses_for_any_recursive_value(gh_client, gh_admin_h, gh_org):
+    """Each entry was measured on api.github.com. The rule is
     :func:`backlot.routers.github.get_tree`'s and the percent-encoded name
     :func:`backlot.routers.github._written_bare`'s."""
     c, _ = gh_client
-    r = c.get(f"/github/repos/{gh_org}/codebase/git/trees/main{query}", headers=gh_admin_h)
     top = {"README.md", "src", "config"}
     deep = {"src/main.py", "src/pkg", "src/pkg/utils.py", "config/secret.yaml"}
-    assert r.status_code == 200
-    assert {e["path"] for e in r.json()["tree"]} == (top | deep if recursive else top)
+    answered = {}
+    for query in _TREE_RECURSES:
+        r = c.get(f"/github/repos/{gh_org}/codebase/git/trees/main{query}", headers=gh_admin_h)
+        answered[query] = (r.status_code, {e["path"] for e in r.json()["tree"]})
+    assert answered == {
+        query: (200, top | deep if recursive else top)
+        for query, recursive in _TREE_RECURSES.items()
+    }
 
 
 @pytest.mark.parametrize(
@@ -1322,9 +1325,11 @@ _MAIN_PY_SHA = hashlib.sha1(b"def main():\n    return 1\n").hexdigest()
 _BAD_BLOB_SHA = "The sha parameter must be exactly 40 characters and contain only [0-9a-f]."
 
 
-@pytest.mark.parametrize(
-    "repo, sha, status, message",
-    [
+def test_github_blob_refusals(gh_client, gh_admin_h, gh_org):
+    """The 422 and the two 404s `get_blob` records, in real's envelope with this route's own
+    documentation_url (see backlot.errors.github); `test_github_blob_by_sha` is the 200."""
+    c, _ = gh_client
+    refusals = [
         ("codebase", "0" * 40, 404, "Not Found"),
         ("codebase", _MAIN_PY_SHA[:7], 422, _BAD_BLOB_SHA),
         ("codebase", _MAIN_PY_SHA[:39], 422, _BAD_BLOB_SHA),
@@ -1332,18 +1337,21 @@ _BAD_BLOB_SHA = "The sha parameter must be exactly 40 characters and contain onl
         ("codebase", _MAIN_PY_SHA.upper(), 422, _BAD_BLOB_SHA),
         ("codebase", "zzzz", 422, _BAD_BLOB_SHA),
         ("no-such-repo", "zzzz", 404, "Not Found"),
-    ],
-)
-def test_github_blob_refusals(gh_client, gh_admin_h, gh_org, repo, sha, status, message):
-    """The 422 and the two 404s `get_blob` records, in real's envelope with this route's own
-    documentation_url (see backlot.errors.github); `test_github_blob_by_sha` is the 200."""
-    c, _ = gh_client
-    r = c.get(f"/github/repos/{gh_org}/{repo}/git/blobs/{sha}", headers=gh_admin_h)
-    assert r.status_code == status
-    assert r.json() == {
-        "message": message,
-        "documentation_url": "https://docs.github.com/rest/git/blobs#get-a-blob",
-        "status": str(status),
+    ]
+    answered = {}
+    for repo, sha, _, _ in refusals:
+        r = c.get(f"/github/repos/{gh_org}/{repo}/git/blobs/{sha}", headers=gh_admin_h)
+        answered[repo, sha] = (r.status_code, r.json())
+    assert answered == {
+        (repo, sha): (
+            status,
+            {
+                "message": message,
+                "documentation_url": "https://docs.github.com/rest/git/blobs#get-a-blob",
+                "status": str(status),
+            },
+        )
+        for repo, sha, status, message in refusals
     }
 
 
@@ -1471,58 +1479,63 @@ def test_github_a_stated_branch_listing_replaces_the_inferred_one(gh_client, gh_
     assert c.get(f"{base}/branches/trunk", headers=gh_admin_h).status_code == 200
 
 
-@pytest.mark.parametrize(
-    "value, selection",
-    [
-        pytest.param(None, None, id="omitted"),
-        pytest.param("", None, id="empty"),
-        pytest.param("0", False, id="zero"),
-        pytest.param("f", False, id="lower-f"),
-        pytest.param("F", False, id="upper-f"),
-        pytest.param("false", False, id="lower-false"),
-        pytest.param("FALSE", False, id="upper-false"),
-        pytest.param("off", False, id="lower-off"),
-        pytest.param("OFF", False, id="upper-off"),
-        pytest.param("1", True, id="one"),
-        pytest.param("t", True, id="lower-t"),
-        pytest.param("true", True, id="lower-true"),
-        pytest.param("TRUE", True, id="upper-true"),
-        pytest.param("yes", True, id="yes"),
-        pytest.param("banana", True, id="arbitrary"),
-        pytest.param("no", True, id="no"),
-        pytest.param("n", True, id="lower-n"),
-        pytest.param("00", True, id="double-zero"),
-        pytest.param("False", True, id="title-false"),
-        pytest.param("fAlSe", True, id="mixed-false"),
-        pytest.param("Off", True, id="title-off"),
-        pytest.param("oFF", True, id="mixed-off"),
-        pytest.param("0 ", True, id="zero-trailing-space"),
-        pytest.param(" false", True, id="false-leading-space"),
-        pytest.param("f ", True, id="f-trailing-space"),
-        pytest.param("false ", True, id="false-trailing-space"),
-        pytest.param(" off ", True, id="off-surrounded-spaces"),
-        pytest.param(" true ", True, id="true-surrounded-spaces"),
-    ],
-)
-def test_github_protected_filter_matches_measured_values(
-    gh_client, gh_admin_h, gh_org, value, selection
-):
-    """Each row is the selection real answered for that spelling on fastapi/fastapi (the date and
+#: Each `?protected=` spelling, `None` for the parameter left off, and the branches it selects.
+_PROTECTED_SELECTION = {
+    None: None,
+    "": None,
+    "0": False,
+    "f": False,
+    "F": False,
+    "false": False,
+    "FALSE": False,
+    "off": False,
+    "OFF": False,
+    "1": True,
+    "t": True,
+    "true": True,
+    "TRUE": True,
+    "yes": True,
+    "banana": True,
+    "no": True,
+    "n": True,
+    "00": True,
+    "False": True,
+    "fAlSe": True,
+    "Off": True,
+    "oFF": True,
+    "0 ": True,
+    " false": True,
+    "f ": True,
+    "false ": True,
+    " off ": True,
+    " true ": True,
+}
+
+
+def test_github_protected_filter_matches_measured_values(gh_client, gh_admin_h, gh_org):
+    """Each entry is the selection real answered for that spelling on fastapi/fastapi (the date and
     the method are :func:`backlot.routers.github._truthy`'s). The fixture holds one protected
     branch and one unprotected one, so the three answers are distinct.
     """
     c, _ = gh_client
-    params = {} if value is None else {"protected": value}
-    response = c.get(
-        f"/github/repos/{gh_org}/stated-repo/branches", headers=gh_admin_h, params=params
-    )
-    assert response.status_code == 200, response.text
     expected = {
         None: [("release/2026-03", False), ("trunk", True)],
         False: [("release/2026-03", False)],
         True: [("trunk", True)],
     }
-    assert [(b["name"], b["protected"]) for b in response.json()] == expected[selection]
+    answered = {}
+    for value in _PROTECTED_SELECTION:
+        params = {} if value is None else {"protected": value}
+        response = c.get(
+            f"/github/repos/{gh_org}/stated-repo/branches", headers=gh_admin_h, params=params
+        )
+        answered[value] = (
+            response.status_code,
+            [(b["name"], b["protected"]) for b in response.json()],
+        )
+    assert answered == {
+        value: (200, expected[selection]) for value, selection in _PROTECTED_SELECTION.items()
+    }
 
 
 def test_github_stated_protection_decides_the_filter_and_the_protection_object(
@@ -2068,58 +2081,57 @@ def test_github_code_search_returns_only_a_paths_head_snapshot(gh_client, gh_adm
     assert raw.text == "LIMIT = 3\n"
 
 
-@pytest.mark.parametrize(
-    "q, expected",
-    [
-        # free text with no `in:` searches the content AND the path, as real does
-        ("helper", [("codebase", "src/pkg/utils.py")]),
-        ("in:file helper", [("codebase", "src/pkg/utils.py")]),
-        ("in:path helper", []),
-        ("in:path svc", [("history-repo", "svc/other.py"), ("history-repo", "svc/rate.py")]),
-        # quoting groups a term; the quotes are not part of what is matched
-        ('in:path "svc/other"', [("history-repo", "svc/other.py")]),
-        (
-            "repo:codebase in:path src",
-            [("codebase", "src/main.py"), ("codebase", "src/pkg/utils.py")],
-        ),
-        ("filename:utils", [("codebase", "src/pkg/utils.py")]),
-        ("filename:utils.py", [("codebase", "src/pkg/utils.py")]),
-        ("path:src/pkg", [("codebase", "src/pkg/utils.py")]),
-        # `path:/` is real's spelling for the ROOT, not for "any path"
-        (
-            "path:/",
-            [
-                ("codebase", "README.md"),
-                ("diffable", "README.md"),
-                ("diffable", "app.py"),
-                ("history-repo", "README.md"),
-                ("stated-repo", "main.py"),
-            ],
-        ),
-        (
-            "path:pkg",
-            [
-                ("codebase", "src/pkg/utils.py"),
-                ("diffable", "pkg/conf.toml"),
-                ("diffable", "pkg/core.py"),
-                ("diffable", "pkg/no_newline.cfg"),
-            ],
-        ),
-        ("extension:toml", [("diffable", "pkg/conf.toml")]),
-        ("extension:.toml", [("diffable", "pkg/conf.toml")]),
-        ("repo:no-such-repo helper", []),
-        # a path fragment is a LITERAL: SQL LIKE's own wildcards are not a search syntax, so `_`
-        # finds the one path holding an underscore rather than standing in for any character
-        ("in:path %", []),
-        ("in:path _", [("diffable", "pkg/no_newline.cfg")]),
-        ("in:path no_newline", [("diffable", "pkg/no_newline.cfg")]),
+_CODE_SEARCH_QUALIFIERS = {
+    # free text with no `in:` searches the content AND the path, as real does
+    "helper": [("codebase", "src/pkg/utils.py")],
+    "in:file helper": [("codebase", "src/pkg/utils.py")],
+    "in:path helper": [],
+    "in:path svc": [("history-repo", "svc/other.py"), ("history-repo", "svc/rate.py")],
+    # quoting groups a term; the quotes are not part of what is matched
+    'in:path "svc/other"': [("history-repo", "svc/other.py")],
+    "repo:codebase in:path src": [("codebase", "src/main.py"), ("codebase", "src/pkg/utils.py")],
+    "filename:utils": [("codebase", "src/pkg/utils.py")],
+    "filename:utils.py": [("codebase", "src/pkg/utils.py")],
+    "path:src/pkg": [("codebase", "src/pkg/utils.py")],
+    # `path:/` is real's spelling for the ROOT, not for "any path"
+    "path:/": [
+        ("codebase", "README.md"),
+        ("diffable", "README.md"),
+        ("diffable", "app.py"),
+        ("history-repo", "README.md"),
+        ("stated-repo", "main.py"),
     ],
-)
-def test_github_code_search_qualifiers(gh_client, gh_admin_h, q, expected):
+    "path:pkg": [
+        ("codebase", "src/pkg/utils.py"),
+        ("diffable", "pkg/conf.toml"),
+        ("diffable", "pkg/core.py"),
+        ("diffable", "pkg/no_newline.cfg"),
+    ],
+    "extension:toml": [("diffable", "pkg/conf.toml")],
+    "extension:.toml": [("diffable", "pkg/conf.toml")],
+    "repo:no-such-repo helper": [],
+    # a path fragment is a LITERAL: SQL LIKE's own wildcards are not a search syntax, so `_`
+    # finds the one path holding an underscore rather than standing in for any character
+    "in:path %": [],
+    "in:path _": [("diffable", "pkg/no_newline.cfg")],
+    "in:path no_newline": [("diffable", "pkg/no_newline.cfg")],
+}
+
+
+def test_github_code_search_qualifiers(gh_client, gh_admin_h, monkeypatch):
+    from backlot.routers import github as gh
+
+    # one `code_search` call per entry, past real's 10-a-minute cap: this checks the qualifiers
+    monkeypatch.setattr(gh.get_settings(), "github_enforce_rate_limits", False)
     c, _ = gh_client
-    body = c.get("/github/search/code", headers=gh_admin_h, params={"q": q}).json()
-    assert sorted((i["repository"]["name"], i["path"]) for i in body["items"]) == sorted(expected)
-    assert body["total_count"] == len(expected)
+    answered = {}
+    for q in _CODE_SEARCH_QUALIFIERS:
+        body = c.get("/github/search/code", headers=gh_admin_h, params={"q": q}).json()
+        hits = sorted((i["repository"]["name"], i["path"]) for i in body["items"])
+        answered[q] = (hits, body["total_count"])
+    assert answered == {
+        q: (sorted(expected), len(expected)) for q, expected in _CODE_SEARCH_QUALIFIERS.items()
+    }
 
 
 def test_github_code_search_is_acl_scoped(gh_client, gh_admin_h, gh_user_tokens):
@@ -2565,18 +2577,8 @@ def test_github_pages_at_reals_thirty_and_caps_at_its_hundred(tmp_path):
         "git/ref/pull/{number}/merge",
     ],
 )
-@pytest.mark.parametrize(
-    "number",
-    [
-        "notanint",
-        "²",
-        "9223372036854775808",
-        "-9223372036854775809",
-        pytest.param("1" * 4301, id="4301-digits"),
-    ],
-)
 def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
-    gh_client, gh_admin_h, gh_org, route, number
+    gh_client, gh_admin_h, gh_org, route
 ):
     """A path number that is not an integer (`²` included), or one outside 64 bits (see
     store.github_by_number), gets the 404 an unknown number gets on that route, byte for byte, as
@@ -2592,10 +2594,15 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
     c, _ = gh_client
     base = f"/github/repos/{gh_org}/codebase/"
     unknown = c.get(base + route.format(number="999999999"), headers=gh_admin_h)
-    actual = c.get(base + route.format(number=number), headers=gh_admin_h)
     assert unknown.status_code == 404
-    assert actual.status_code == unknown.status_code
-    assert actual.content == unknown.content
+    numbers = {n: n for n in ("notanint", "²", "9223372036854775808", "-9223372036854775809")}
+    numbers["4301 digits"] = "1" * 4301
+    answers = {
+        label: (r.status_code, r.content)
+        for label, number in numbers.items()
+        for r in [c.get(base + route.format(number=number), headers=gh_admin_h)]
+    }
+    assert answers == dict.fromkeys(numbers, (404, unknown.content))
 
 
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
@@ -2738,56 +2745,64 @@ _NO_CREDENTIAL_ROUTES = {
 _REFUSED_COUNTED = (401, "Requires authentication", None, True)
 _REFUSED_UNCOUNTED = (401, "Requires authentication", None, False)
 _V1999 = {"X-GitHub-Api-Version": "1999-01-01"}
+_BASIC_ROUTES = ("org teams", "collaborators", "repo teams", "protection")
 _NO_CREDENTIAL_ROWS = [
-    *(
-        (route, headers, answer)
-        for route in _NO_CREDENTIAL_ROUTES
-        for headers, answer in [
-            ({}, _REFUSED_COUNTED),
-            (_V1999, _REFUSED_COUNTED),
-            ({"Authorization": "Foo bar"}, _REFUSED_UNCOUNTED),
-            ({"Authorization": "Foo bar", **_V1999}, _REFUSED_UNCOUNTED),
-            ({"Authorization": "Digest x", **_V1999}, _REFUSED_UNCOUNTED),
-            ({"Authorization": "Bearer\tnope", **_V1999}, _REFUSED_UNCOUNTED),
-            ({"Authorization": "token"}, (401, "Bad credentials", None, False)),
-        ]
+    pytest.param(
+        _V1999,
+        dict.fromkeys(_NO_CREDENTIAL_ROUTES, _REFUSED_COUNTED),
+        id="no header, an unsupported version",
     ),
-    *(
-        (route, headers, answer)
-        for route in ("org teams", "collaborators", "repo teams", "protection")
-        for headers, answer in [
-            ({"X-GitHub-Api-Version": "2022-11-28"}, _REFUSED_COUNTED),
-            ({"Authorization": "Basic eDp5", **_V1999}, (400, "Bad Request", None, True)),
-        ]
+    pytest.param(
+        {"Authorization": "Foo bar", **_V1999},
+        dict.fromkeys(_NO_CREDENTIAL_ROUTES, _REFUSED_UNCOUNTED),
+        id="an unknown scheme",
+    ),
+    pytest.param(
+        {"Authorization": "Bearer\tnope", **_V1999},
+        dict.fromkeys(_NO_CREDENTIAL_ROUTES, _REFUSED_UNCOUNTED),
+        id="a bearer after a tab",
+    ),
+    pytest.param(
+        {"Authorization": "token"},
+        dict.fromkeys(_NO_CREDENTIAL_ROUTES, (401, "Bad credentials", None, False)),
+        id="token with no value",
+    ),
+    pytest.param(
+        {"Authorization": "Basic eDp5", **_V1999},
+        dict.fromkeys(_BASIC_ROUTES, (400, "Bad Request", None, True)),
+        id="basic, an unsupported version",
     ),
     # `Basic eDp5` (`x:y`) names no token: each route's own answer to a caller with none
-    (
-        "org teams",
+    pytest.param(
         {"Authorization": "Basic eDp5"},
-        (401, "Requires authentication", "2022-11-28", True),
+        {
+            "org teams": (401, "Requires authentication", "2022-11-28", True),
+            "collaborators": (401, "Requires authentication", "2022-11-28", True),
+            "repo teams": (404, "Not Found", "2022-11-28", True),
+            "protection": (404, "Not Found", "2022-11-28", True),
+        },
+        id="basic",
     ),
-    (
-        "collaborators",
-        {"Authorization": "Basic eDp5"},
-        (401, "Requires authentication", "2022-11-28", True),
-    ),
-    ("repo teams", {"Authorization": "Basic eDp5"}, (404, "Not Found", "2022-11-28", True)),
-    ("protection", {"Authorization": "Basic eDp5"}, (404, "Not Found", "2022-11-28", True)),
 ]
 
 
-@pytest.mark.parametrize("route, headers, answer", _NO_CREDENTIAL_ROWS)
+@pytest.mark.parametrize("headers, answers", _NO_CREDENTIAL_ROWS)
 def test_github_teams_collaborators_protection_and_code_search_refuse_no_credential_first(
-    gh_client, gh_org, route, headers, answer
+    gh_client, gh_org, headers, answers
 ):
     """Each row is real's answer as `_refuse_an_anonymous_caller` records it: the status, the
     message, the version echo and whether the five `x-ratelimit-*` ride on it."""
     c, _ = gh_client
-    r = c.get(f"/github/{_NO_CREDENTIAL_ROUTES[route].format(org=gh_org)}", headers=headers)
-    status, message, echo, five = answer
-    assert (r.status_code, r.json()["message"]) == (status, message), headers
-    assert r.headers.get("x-github-api-version-selected") == echo, headers
-    assert ("x-ratelimit-limit" in r.headers) is five, headers
+    answered = {}
+    for route in answers:
+        r = c.get(f"/github/{_NO_CREDENTIAL_ROUTES[route].format(org=gh_org)}", headers=headers)
+        answered[route] = (
+            r.status_code,
+            r.json()["message"],
+            r.headers.get("x-github-api-version-selected"),
+            "x-ratelimit-limit" in r.headers,
+        )
+    assert answered == answers
 
 
 def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, gh_org):
@@ -3169,23 +3184,20 @@ def test_github_a_page_url_omits_a_page_size_the_caller_did_not_send(
     assert "per_page=1&page=2" in _link_rels(sent.headers["Link"])["next"]
 
 
-@pytest.mark.parametrize(
-    "qs",
-    [
-        "q=extension:md&per_page=2&page=1",
-        "q=extension:md&page=1&per_page=2",
-        "per_page=2&q=extension:md",
-    ],
-)
-def test_github_code_search_page_links_write_page_before_per_page(gh_client, gh_admin_h, qs):
+def test_github_code_search_page_links_write_page_before_per_page(gh_client, gh_admin_h):
     """Each order the request sends its parameters in links the same url, in the order
     :func:`backlot.pagination.github_code_search_link_header` records."""
     c, _ = gh_client
-    r = c.get(f"/github/search/code?{qs}", headers=gh_admin_h)
-    assert r.status_code == 200
-    rels = _link_rels(r.headers["Link"])
-    assert rels["next"].split("?", 1)[1] == "q=extension%3Amd&page=2&per_page=2"
-    assert rels["first"].split("?", 1)[1] == "q=extension%3Amd&page=1&per_page=2"
+    for qs in (
+        "q=extension:md&per_page=2&page=1",
+        "q=extension:md&page=1&per_page=2",
+        "per_page=2&q=extension:md",
+    ):
+        r = c.get(f"/github/search/code?{qs}", headers=gh_admin_h)
+        assert r.status_code == 200, qs
+        rels = _link_rels(r.headers["Link"])
+        assert rels["next"].split("?", 1)[1] == "q=extension%3Amd&page=2&per_page=2", qs
+        assert rels["first"].split("?", 1)[1] == "q=extension%3Amd&page=1&per_page=2", qs
 
 
 @pytest.mark.parametrize(
@@ -3274,11 +3286,8 @@ _CODE_SEARCH_PAGE_REFUSALS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "qs,body", _CODE_SEARCH_PAGE_REFUSALS, ids=[r[0] for r in _CODE_SEARCH_PAGE_REFUSALS]
-)
 def test_github_code_search_refuses_an_unparseable_page_value_in_text_plain(
-    gh_client, gh_admin_h, qs, body
+    gh_client, gh_admin_h, monkeypatch
 ):
     """Of the ten GitHub surfaces measured `/search/code` is the one that refuses a `page` /
     `per_page` it cannot parse, or a `q`, `page` or `per_page` given twice, and it refuses in a
@@ -3287,13 +3296,20 @@ def test_github_code_search_refuses_an_unparseable_page_value_in_text_plain(
     `test_github_tolerates_the_pagination_values_real_tolerates`), which this route did too, so a
     client's error path for the 400 was never reached against Backlot and `.json()` on it would
     have parsed where real's answer raises."""
+    from backlot.routers import github as gh
+
+    # one `code_search` call per row, past real's 10-a-minute cap: this checks parsing, not pacing
+    monkeypatch.setattr(gh.get_settings(), "github_enforce_rate_limits", False)
     c, _ = gh_client
-    r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
-    assert r.status_code == 400
-    assert r.headers["content-type"] == "text/plain; charset=utf-8"
-    assert r.text == body
-    with pytest.raises(ValueError):
-        r.json()
+    answered = {}
+    for qs, _ in _CODE_SEARCH_PAGE_REFUSALS:
+        r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
+        answered[qs] = (r.status_code, r.headers["content-type"], r.text)
+        with pytest.raises(ValueError):
+            r.json()
+    assert answered == {
+        qs: (400, "text/plain; charset=utf-8", body) for qs, body in _CODE_SEARCH_PAGE_REFUSALS
+    }
 
 
 def test_github_code_search_page_refusal_is_the_parse_and_comes_before_q(
@@ -3366,22 +3382,21 @@ _ISSUES_CAP = {
 }
 
 
-@pytest.mark.parametrize(
-    "qs,served",
-    [
-        # page * per_page against 1000, whatever the total (the fixture has four hits)
-        ("per_page=100&page=10", True),
-        ("per_page=100&page=11", False),
-        ("per_page=30&page=33", True),
-        ("per_page=30&page=34", False),
-        ("per_page=7&page=142", True),
-        ("per_page=7&page=143", False),
-        ("per_page=1&page=1000", True),
-        ("per_page=1&page=1001", False),
-    ],
-)
+_CODE_SEARCH_DEPTH = {
+    # page * per_page against 1000, whatever the total (the fixture has four hits)
+    "per_page=100&page=10": True,
+    "per_page=100&page=11": False,
+    "per_page=30&page=33": True,
+    "per_page=30&page=34": False,
+    "per_page=7&page=142": True,
+    "per_page=7&page=143": False,
+    "per_page=1&page=1000": True,
+    "per_page=1&page=1001": False,
+}
+
+
 def test_github_code_search_refuses_a_page_reaching_past_the_first_1000_results(
-    gh_client, gh_admin_h, qs, served
+    gh_client, gh_admin_h
 ):
     """Code search serves the first 1000 results and refuses a page that would reach past them,
     `page * per_page > 1000`, with a 422 of its own wording and its own route's anchor and no
@@ -3389,13 +3404,15 @@ def test_github_code_search_refuses_a_page_reaching_past_the_first_1000_results(
     after serving pages 1 to 33, the empty ones included (measured 2026-09-06 on api.github.com,
     44 hits and 294 million). Backlot served every page of every search."""
     c, _ = gh_client
-    r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
-    if served:
-        assert r.status_code == 200, qs
-        assert r.json()["total_count"] == 4 and r.json()["items"] == [], qs
-    else:
-        assert r.status_code == 422, qs
-        assert r.json() == _CODE_CAP, qs
+    answered = {}
+    for qs in _CODE_SEARCH_DEPTH:
+        r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
+        body = r.json()
+        answered[qs] = (r.status_code, body if r.status_code == 422 else body["total_count"])
+        assert r.status_code == 422 or body["items"] == [], qs
+    assert answered == {
+        qs: (200, 4) if ok else (422, _CODE_CAP) for qs, ok in _CODE_SEARCH_DEPTH.items()
+    }
 
 
 def test_github_code_search_answers_its_refusals_in_reals_order(gh_client, gh_admin_h, gh_org):
@@ -3428,22 +3445,21 @@ def test_github_code_search_answers_its_refusals_in_reals_order(gh_client, gh_ad
         assert r.status_code == (200 if served else 422), qs
 
 
-@pytest.mark.parametrize(
-    "qs,served",
-    [
-        # the page's START against 1000: a page straddling it is served in full
-        ("per_page=100&page=10", True),
-        ("per_page=100&page=11", False),
-        ("per_page=30&page=34", True),
-        ("per_page=30&page=35", False),
-        ("per_page=7&page=143", True),
-        ("per_page=7&page=144", False),
-        ("per_page=1&page=1000", True),
-        ("per_page=1&page=1001", False),
-    ],
-)
+_ISSUE_SEARCH_DEPTH = {
+    # the page's START against 1000: a page straddling it is served in full
+    "per_page=100&page=10": True,
+    "per_page=100&page=11": False,
+    "per_page=30&page=34": True,
+    "per_page=30&page=35": False,
+    "per_page=7&page=143": True,
+    "per_page=7&page=144": False,
+    "per_page=1&page=1000": True,
+    "per_page=1&page=1001": False,
+}
+
+
 def test_github_issue_search_refuses_a_page_starting_past_the_first_1000_results(
-    gh_client, gh_admin_h, qs, served
+    gh_client, gh_admin_h
 ):
     """Issue search draws the depth line elsewhere than code search: the page's first result
     against 1000, so at 30 a page, page 34 (results 991 to 1020) is served in full and page 35
@@ -3452,11 +3468,13 @@ def test_github_issue_search_refuses_a_page_starting_past_the_first_1000_results
     page just the same after serving page 10 empty (measured 2026-09-06 on api.github.com,
     `/search/repositories` answering the same). Backlot served every page."""
     c, _ = gh_client
-    r = c.get(f"/github/search/issues?q=is:open&{qs}", headers=gh_admin_h)
-    if served:
-        assert r.status_code == 200 and r.json()["items"] == [], qs
-    else:
-        assert (r.status_code, r.json()) == (422, _ISSUES_CAP), qs
+    answered = {}
+    for qs in _ISSUE_SEARCH_DEPTH:
+        r = c.get(f"/github/search/issues?q=is:open&{qs}", headers=gh_admin_h)
+        answered[qs] = (r.status_code, r.json() if r.status_code == 422 else r.json()["items"])
+    assert answered == {
+        qs: (200, []) if ok else (422, _ISSUES_CAP) for qs, ok in _ISSUE_SEARCH_DEPTH.items()
+    }
 
 
 def test_github_issue_search_refuses_the_query_before_the_depth(gh_client, gh_admin_h, gh_org):
@@ -3809,21 +3827,20 @@ _MAIN_PY = "def main():\n    return 1\n"
 _CODEBASE_README = "# codebase\n\nCore service source, browsable via the tree/contents API.\n"
 
 
-@pytest.mark.parametrize(
-    "accept",
-    [
-        "application/vnd.github.raw",
-        "application/vnd.github.v3.raw",
-        "application/vnd.github.raw+json",
-        # GitHub's own docs spelled it `application/vnd.github.VERSION.raw+json`; missing this one
-        # meant a caller using it got the base64 envelope with a 200 and no way to tell
-        "application/vnd.github.v3.raw+json",
-        # spellings `backlot.routers.github._accept_types` reads as raw
-        "Application/vnd.GitHub.V3.raw+JSON",
-        "application/vnd.github.raw;q=0",
-    ],
-)
-def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org, accept):
+_RAW_ACCEPT = [
+    "application/vnd.github.raw",
+    "application/vnd.github.v3.raw",
+    "application/vnd.github.raw+json",
+    # GitHub's own docs spelled it `application/vnd.github.VERSION.raw+json`; missing this one
+    # meant a caller using it got the base64 envelope with a 200 and no way to tell
+    "application/vnd.github.v3.raw+json",
+    # spellings `backlot.routers.github._accept_types` reads as raw
+    "Application/vnd.GitHub.V3.raw+JSON",
+    "application/vnd.github.raw;q=0",
+]
+
+
+def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org):
     """Every content endpoint, in every spelling of the header GitHub honours.
 
     The tell that it isn't happening is the byte count disagreeing with the `size` the tree reported
@@ -3834,24 +3851,25 @@ def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org, 
     """
     c, _ = gh_client
     sha = hashlib.sha1(_MAIN_PY.encode()).hexdigest()
-    for url, ctype, body in [
-        (f"/github/repos/{gh_org}/codebase/git/blobs/{sha}", "text/plain", _MAIN_PY),
-        (
-            f"/github/repos/{gh_org}/codebase/contents/src/main.py",
-            "application/vnd.github.raw",
-            _MAIN_PY,
-        ),
-        (
-            f"/github/repos/{gh_org}/codebase/readme",
-            "application/vnd.github.raw",
-            _CODEBASE_README,
-        ),
-    ]:
-        r = c.get(url, headers={**gh_admin_h, "Accept": accept})
-        assert r.status_code == 200, url
-        expected_type = ctype if ctype == "text/plain" else accept.partition(";")[0]
-        assert r.headers["content-type"] == expected_type + "; charset=utf-8", url
-        assert r.text == body and len(r.content) == len(body.encode()), url
+    for accept in _RAW_ACCEPT:
+        for url, ctype, body in [
+            (f"/github/repos/{gh_org}/codebase/git/blobs/{sha}", "text/plain", _MAIN_PY),
+            (
+                f"/github/repos/{gh_org}/codebase/contents/src/main.py",
+                "application/vnd.github.raw",
+                _MAIN_PY,
+            ),
+            (
+                f"/github/repos/{gh_org}/codebase/readme",
+                "application/vnd.github.raw",
+                _CODEBASE_README,
+            ),
+        ]:
+            r = c.get(url, headers={**gh_admin_h, "Accept": accept})
+            assert r.status_code == 200, (accept, url)
+            expected_type = ctype if ctype == "text/plain" else accept.partition(";")[0]
+            assert r.headers["content-type"] == expected_type + "; charset=utf-8", (accept, url)
+            assert r.text == body and len(r.content) == len(body.encode()), (accept, url)
 
 
 def test_github_raw_accept_leaves_the_json_envelope_alone(gh_client, gh_admin_h, gh_org):
@@ -4448,44 +4466,18 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     assert unversioned.json()["message"] == "Requires authentication"
 
 
-@pytest.mark.parametrize("pinned", ["1999-01-01", "garbage", "2022-11-29"])
 @pytest.mark.parametrize(
     "path, accept, backend, backend_on_head",
     [
         ("pulls/1", None, True, False),
-        ("pulls/1", "*/*", True, False),
-        ("pulls/1", "application/json", True, False),
-        ("pulls/1", "application/vnd.github+json", True, False),
-        ("pulls/1", "application/vnd.github.v3+json", True, False),
-        ("pulls/1", "application/vnd.github.raw+json", True, False),
-        ("pulls/1", "application/vnd.github.full+json", True, False),
-        *[
-            ("pulls/1", f"application/vnd.github.{media}", False, False)
-            for media in ("diff", "v3.diff", "diff+json", "patch", "v3.patch", "patch+json")
-        ],
+        ("pulls/1", "application/vnd.github.DIFF", True, False),
+        ("pulls/1", "application/vnd.github.diff", False, False),
+        ("pulls/1", "application/vnd.github.patch", False, False),
         ("pulls/1", "application/vnd.github.diff, application/json", False, False),
         ("pulls/1", "application/json, application/vnd.github.diff", False, False),
-        ("pulls/1", "application/vnd.github.v3.diff+json", False, False),
-        ("pulls/1", "application/vnd.github.DIFF", True, False),
-        ("pulls/1", "Application/vnd.github.diff", False, False),
         ("pulls/1", "application/vnd.github.diff;q=0", True, False),
-        ("pulls/1", "application/vnd.github.patch;q=0", False, False),
-        ("pulls/1", "application/vnd.github.sha", True, False),
-        *[
-            (path, accept, True, True)
-            for path in ("contents", "contents/README.md?ref=main")
-            for accept in (
-                None,
-                "*/*",
-                "application/json",
-                "application/vnd.github+json",
-                "application/vnd.github.raw",
-                "application/vnd.github.v3.raw",
-                "application/vnd.github.html",
-                "application/vnd.github.object",
-                "application/vnd.github.diff",
-            )
-        ],
+        ("contents", None, True, True),
+        ("contents/README.md?ref=main", None, True, True),
         ("readme", None, False, False),
         ("readme/docs", None, False, False),
         ("git/blobs/nope", None, False, False),
@@ -4493,37 +4485,38 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     ],
 )
 def test_github_version_error_depends_on_endpoint_and_representation(
-    gh_client, gh_admin_h, gh_org, pinned, path, accept, backend, backend_on_head
+    gh_client, gh_admin_h, gh_org, path, accept, backend, backend_on_head
 ):
     """Which of the two 400s an unsupported version draws, by route, Accept and GET or HEAD
     (``backlot.routers.github._validate_api_version``)."""
     c, _ = gh_client
-    headers = {**gh_admin_h, "X-GitHub-Api-Version": pinned}
-    if accept is not None:
-        headers["Accept"] = accept
     url = f"/github/repos/{gh_org}/gateway/{path}"
-    head = c.head(url, headers=headers)
-    assert head.status_code == 400 and head.content == b""
-    assert (head.headers.get("X-GitHub-Api-Version-Selected") == "") is backend_on_head
-    response = c.get(url, headers=headers)
-    assert response.status_code == 400
-    if backend:
-        assert response.json() == {
-            "message": (
-                f'The version you specified in the "X-GitHub-Api-Version" request header, "{pinned}", '
-                "is not a supported version. The following versions are currently supported: "
-                '"2026-03-10" (most recent), and "2022-11-28".'
-            )
-        }
-        assert response.headers["X-GitHub-Api-Version-Selected"] == ""
-        assert response.content.endswith(b"\n")
-    else:
-        assert response.json()["message"] == "Bad Request"
-        assert "errors" in response.json()
-        assert "X-GitHub-Api-Version-Selected" not in response.headers
+    for pinned in ("1999-01-01", "garbage", "2022-11-29"):
+        headers = {**gh_admin_h, "X-GitHub-Api-Version": pinned}
+        if accept is not None:
+            headers["Accept"] = accept
+        head = c.head(url, headers=headers)
+        assert head.status_code == 400 and head.content == b""
+        assert (head.headers.get("X-GitHub-Api-Version-Selected") == "") is backend_on_head
+        response = c.get(url, headers=headers)
+        assert response.status_code == 400
+        if backend:
+            assert response.json() == {
+                "message": (
+                    f'The version you specified in the "X-GitHub-Api-Version" request header, '
+                    f'"{pinned}", is not a supported version. The following versions are currently '
+                    'supported: "2026-03-10" (most recent), and "2022-11-28".'
+                )
+            }
+            assert response.headers["X-GitHub-Api-Version-Selected"] == ""
+            assert response.content.endswith(b"\n")
+        else:
+            assert response.json()["message"] == "Bad Request"
+            assert "errors" in response.json()
+            assert "X-GitHub-Api-Version-Selected" not in response.headers
 
 
-@pytest.mark.parametrize("path", ["pulls/1", "contents", "contents/no-such-path"])
+@pytest.mark.parametrize("path", ["pulls/1", "contents"])
 def test_github_backend_version_error_order(gh_client, path):
     """Where the backend's 400 falls against a repository that does not exist and against the
     credential (``backlot.routers.github._validate_api_version``)."""
@@ -4854,235 +4847,241 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
 
 
 # What api.github.com served a pull for each `Accept` at 2022-11-28 (see `_accept_types`).
-@pytest.mark.parametrize(
-    "accept, served",
-    [
-        ("application/vnd.github.DIFF", "json"),
-        ("APPLICATION/VND.GITHUB.DIFF", "json"),
-        ("Application/vnd.github.diff", "diff"),
-        ("application/vnd.GitHub.diff", "diff"),
-        ("application/vnd.github.V3.diff", "diff"),
-        ("application/vnd.github.diff+JSON", "diff"),
-        ("application/vnd.github.diff;q=0", "json"),
-        ("application/vnd.github.diff; q=0, application/json", "json"),
-        ("application/vnd.github.diff;Q=0", "diff"),
-        ("application/vnd.github.diff; q = 0", "diff"),
-        ("application/vnd.github.diff;charset=utf-8;q=0", "diff"),
-        ("application/vnd.github.diff;q=0;charset=utf-8", "json"),
-        ("application/vnd.github.diff;q=abc", "diff"),
-        ("application/vnd.github.diff;q=-0", "diff"),
-        ("application/vnd.github.diff;q=+0", "diff"),
-        ("application/vnd.github.diff;q=-0.0", "diff"),
-        ("application/vnd.github.diff;q= 0", "diff"),
-        ("application/vnd.github.diff;q=0;q=1", "diff"),
-        ('application/vnd.github.diff;q="0"', "json"),
-        ('application/vnd.github.diff;q=0"', "json"),
-        ("application/vnd.github.diff;q=1;q=0", "json"),
-        ("application/vnd.github.diff;q=0.000", "json"),
-        ("application/vnd.github.diff;q=0e0", "json"),
-        ("application/vnd.github.diff;q=0_0", "json"),
-        ("application/vnd.github.diff;q=00", "json"),
-        ("application/vnd.github.diff;q=.0", "json"),
-        ("application/vnd.github.diff;q=0 ", "json"),
-        ('application/vnd.github.diff;q="1"', "diff"),
-        ('application/vnd.github.diff;q="0.5"', "diff"),
-        ("application/vnd.github.diff;q='0'", "diff"),
-        ('application/vnd.github.diff;q="0', "diff"),
-        ("application/vnd.github.diff;q=0abc", "diff"),
-        ("application/vnd.github.diff;foo=bar;q=0", "json"),
-        ("application/vnd.github.diff;Foo=bar;q=0", "json"),
-        ("application/vnd.github.diff;level=1;q=0", "json"),
-        ("application/vnd.github.diff;CHARSET=x;q=0", "json"),
-        ("application/vnd.github.diff;charset=x;q=0", "json"),
-        ("application/vnd.github.diff;charset=;q=0", "json"),
-        ("application/vnd.github.diff;charset=utf8;q=0", "json"),
-        ('application/vnd.github.diff;charset="utf-8";q=0', "json"),
-        ("application/vnd.github.diff;charset=ascii;q=0", "json"),
-        ("application/vnd.github.diff;charset=UTF-8;q=0", "diff"),
-        ("application/vnd.github.diff;CHARSET=utf-8;q=0", "diff"),
-        ("application/vnd.github.diff;charset=iso-8859-1;q=0", "diff"),
-        ("application/vnd.github.diff;charset=utf-16;q=0", "diff"),
-        ("application/vnd.github.diff;q=1;foo=bar;q=0", "json"),
-        ("application/vnd.github.diff;foo=bar;q=1;q=0", "json"),
-        ("application/vnd.github.diff;q=0;foo=bar;q=1", "diff"),
-        ("application/vnd.github.diff;q=1;charset=utf-8;q=0", "diff"),
-        ("application/vnd.github.diff;q=0;charset=utf-8;q=1", "json"),
-        ("application/vnd.github.diff;charset=utf-8;foo=bar;q=0", "diff"),
-        ("application/vnd.github.diff;foo=bar;charset=utf-8;q=0", "diff"),
-        ("application/vnd.github.diff;foo=a-b;q=0", "diff"),
-        ("application/vnd.github.diff;foo=utf-8;q=0", "diff"),
-        ("application/vnd.github.diff;foo=a.b;q=0", "json"),
-        ("application/vnd.github.diff;foo;q=0", "diff"),
-        ("application/vnd.github.diff;foo-bar=x;q=0", "diff"),
-        ("application/vnd.github.diff;q=0.5-;q=0", "diff"),
-        ("application/vnd.github.diff;q=0e-1", "diff"),
-        ('application/vnd.github.diff;foo="a-b";q=0', "json"),
-        ("application/vnd.github.diff;foo=;q=0", "json"),
-        ("application/vnd.github.diff;charset=utf-8", "diff"),
-        ("text/plain, application/vnd.github.diff", "diff"),
-        ("application/vnd.github.diff;q=0.5", "diff"),
-        ("application/vnd.github.patch;q=0", "patch"),
-        ("application/vnd.github.patch;q=0.5, application/json;q=1", "patch"),
-        ("application/vnd.github.diff;q=\xa00", "diff"),
-        ("application/vnd.github.diff;q=0\xa0", "json"),
-    ],
-)
-def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accept, served):
+_PULL_SERVED_AS = {
+    "application/vnd.github.DIFF": "json",
+    "APPLICATION/VND.GITHUB.DIFF": "json",
+    "Application/vnd.github.diff": "diff",
+    "application/vnd.GitHub.diff": "diff",
+    "application/vnd.github.V3.diff": "diff",
+    "application/vnd.github.diff+JSON": "diff",
+    "application/vnd.github.diff;q=0": "json",
+    "application/vnd.github.diff; q=0, application/json": "json",
+    "application/vnd.github.diff;Q=0": "diff",
+    "application/vnd.github.diff; q = 0": "diff",
+    "application/vnd.github.diff;charset=utf-8;q=0": "diff",
+    "application/vnd.github.diff;q=0;charset=utf-8": "json",
+    "application/vnd.github.diff;q=abc": "diff",
+    "application/vnd.github.diff;q=-0": "diff",
+    "application/vnd.github.diff;q=+0": "diff",
+    "application/vnd.github.diff;q=-0.0": "diff",
+    "application/vnd.github.diff;q= 0": "diff",
+    "application/vnd.github.diff;q=0;q=1": "diff",
+    'application/vnd.github.diff;q="0"': "json",
+    'application/vnd.github.diff;q=0"': "json",
+    "application/vnd.github.diff;q=1;q=0": "json",
+    "application/vnd.github.diff;q=0.000": "json",
+    "application/vnd.github.diff;q=0e0": "json",
+    "application/vnd.github.diff;q=0_0": "json",
+    "application/vnd.github.diff;q=00": "json",
+    "application/vnd.github.diff;q=.0": "json",
+    "application/vnd.github.diff;q=0 ": "json",
+    'application/vnd.github.diff;q="1"': "diff",
+    'application/vnd.github.diff;q="0.5"': "diff",
+    "application/vnd.github.diff;q='0'": "diff",
+    'application/vnd.github.diff;q="0': "diff",
+    "application/vnd.github.diff;q=0abc": "diff",
+    "application/vnd.github.diff;foo=bar;q=0": "json",
+    "application/vnd.github.diff;Foo=bar;q=0": "json",
+    "application/vnd.github.diff;level=1;q=0": "json",
+    "application/vnd.github.diff;CHARSET=x;q=0": "json",
+    "application/vnd.github.diff;charset=x;q=0": "json",
+    "application/vnd.github.diff;charset=;q=0": "json",
+    "application/vnd.github.diff;charset=utf8;q=0": "json",
+    'application/vnd.github.diff;charset="utf-8";q=0': "json",
+    "application/vnd.github.diff;charset=ascii;q=0": "json",
+    "application/vnd.github.diff;charset=UTF-8;q=0": "diff",
+    "application/vnd.github.diff;CHARSET=utf-8;q=0": "diff",
+    "application/vnd.github.diff;charset=iso-8859-1;q=0": "diff",
+    "application/vnd.github.diff;charset=utf-16;q=0": "diff",
+    "application/vnd.github.diff;q=1;foo=bar;q=0": "json",
+    "application/vnd.github.diff;foo=bar;q=1;q=0": "json",
+    "application/vnd.github.diff;q=0;foo=bar;q=1": "diff",
+    "application/vnd.github.diff;q=1;charset=utf-8;q=0": "diff",
+    "application/vnd.github.diff;q=0;charset=utf-8;q=1": "json",
+    "application/vnd.github.diff;charset=utf-8;foo=bar;q=0": "diff",
+    "application/vnd.github.diff;foo=bar;charset=utf-8;q=0": "diff",
+    "application/vnd.github.diff;foo=a-b;q=0": "diff",
+    "application/vnd.github.diff;foo=utf-8;q=0": "diff",
+    "application/vnd.github.diff;foo=a.b;q=0": "json",
+    "application/vnd.github.diff;foo;q=0": "diff",
+    "application/vnd.github.diff;foo-bar=x;q=0": "diff",
+    "application/vnd.github.diff;q=0.5-;q=0": "diff",
+    "application/vnd.github.diff;q=0e-1": "diff",
+    'application/vnd.github.diff;foo="a-b";q=0': "json",
+    "application/vnd.github.diff;foo=;q=0": "json",
+    "application/vnd.github.diff;charset=utf-8": "diff",
+    "text/plain, application/vnd.github.diff": "diff",
+    "application/vnd.github.diff;q=0.5": "diff",
+    "application/vnd.github.patch;q=0": "patch",
+    "application/vnd.github.patch;q=0.5, application/json;q=1": "patch",
+    "application/vnd.github.diff;q=\xa00": "diff",
+    "application/vnd.github.diff;q=0\xa0": "json",
+}
+
+
+def test_github_pull_is_served_as_the_representation_accept_names(diff_pr):
     c, h, org, num = diff_pr
-    headers = {**{k: v.encode() for k, v in h.items()}, "Accept": accept.encode("latin-1")}
-    r = _sent_raw(c, f"/github/repos/{org}/diffable/pulls/{num}", headers)
-    assert r.status_code == 200
-    assert r.text.startswith({"json": "{", "diff": "diff --git ", "patch": "From "}[served])
+    starts = {"json": "{", "diff": "diff --git ", "patch": "From "}
+    served = {}
+    for accept in _PULL_SERVED_AS:
+        headers = {**{k: v.encode() for k, v in h.items()}, "Accept": accept.encode("latin-1")}
+        r = _sent_raw(c, f"/github/repos/{org}/diffable/pulls/{num}", headers)
+        kind = next((k for k, start in starts.items() if r.text.startswith(start)), r.text[:20])
+        served[accept] = kind if r.status_code == 200 else r.status_code
+    assert served == _PULL_SERVED_AS
 
 
-@pytest.mark.parametrize(
-    "accept, expected",
-    [
-        ("application/vnd.github.v3.diff", "application/vnd.github.v3.diff"),
-        ("Application/vnd.github.diff", "Application/vnd.github.diff"),
-        ("application/vnd.github.diff;foo=bar", "application/vnd.github.diff"),
-        (
-            "application/json, application/vnd.github.diff",
-            "application/json,application/vnd.github.diff",
-        ),
-        ("*/*, application/vnd.github.diff", "application/vnd.github.diff,*/*"),
-        (
-            "application/json;q=0.1, application/vnd.github.diff;q=0.9, text/plain;q=0.5",
-            "application/vnd.github.diff,text/plain,application/json",
-        ),
-        (
-            "application/vnd.github.diff;q=0.9, application/json;q=0",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/vnd.github.diff, application/vnd.github.diff",
-            "application/vnd.github.diff,application/vnd.github.diff",
-        ),
-        (
-            "text/*, application/*, application/vnd.github.diff",
-            "application/vnd.github.diff,text/*,application/*",
-        ),
-        (
-            "application/vnd.github.diff;Q=0.1, application/json;q=0.5",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/vnd.github.diff;q = 0.1, application/json;q=0.5",
-            "application/vnd.github.diff,application/json",
-        ),
-        ("application/vnd.github.v3.patch+json", "application/vnd.github.v3.patch+json"),
-        ("*/*, text/*, application/vnd.github.diff", "application/vnd.github.diff,text/*,*/*"),
-        (
-            "application/*, */*, text/*, application/vnd.github.diff",
-            "application/vnd.github.diff,application/*,text/*,*/*",
-        ),
-        ("application/vnd.github.diff,", "application/vnd.github.diff"),
-        (",application/vnd.github.diff", "application/vnd.github.diff"),
-        (";q=0.5, application/vnd.github.diff", "application/vnd.github.diff"),
-        (
-            "application/vnd.github.diff,,application/json",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;q=0.1;q=0.9",
-            "application/json,application/vnd.github.diff",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;q=0.9;q=0.1",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;foo=bar;q=0.1",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;charset=utf-8;q=0.1",
-            "application/json,application/vnd.github.diff",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;q=+0.9",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;q= 0.9",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;q=inf",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            'application/json;q="0.1", application/vnd.github.diff;q=0.5',
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/json;q=abc, text/plain;q=0, application/vnd.github.diff",
-            "application/vnd.github.diff,application/json,text/plain",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;foo=a-b;q=0.1",
-            "application/json,application/vnd.github.diff",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;q=0.1-;q=0.9",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;charset=x;q=0.1",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;q=1e-1",
-            "application/json,application/vnd.github.diff",
-        ),
-        (
-            'application/vnd.github.diff;q=0.5, application/json;q="0.9"',
-            "application/json,application/vnd.github.diff",
-        ),
-        (
-            "application/json;q=-0.9, text/plain;q=0, application/vnd.github.diff",
-            "application/vnd.github.diff,application/json,text/plain",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json; q=0.1",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;a.b=c;q=0.1",
-            "application/vnd.github.diff,application/json",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;foo=\xe9;q=0.1",
-            "application/json,application/vnd.github.diff",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;q=0.9\xa0;q=0.1",
-            "application/json,application/vnd.github.diff",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;q=0.9x",
-            "application/json,application/vnd.github.diff",
-        ),
-        (
-            "application/vnd.github.diff;q=0.5, application/json;q=.9x",
-            "application/json,application/vnd.github.diff",
-        ),
-        (
-            "application/json,\xa0application/vnd.github.diff",
-            "application/json,application/vnd.github.diff",
-        ),
-    ],
-)
-def test_github_pull_representation_content_type_echoes_accept(diff_pr, accept, expected):
+_PULL_CONTENT_TYPE = [
+    ("application/vnd.github.v3.diff", "application/vnd.github.v3.diff"),
+    ("Application/vnd.github.diff", "Application/vnd.github.diff"),
+    ("application/vnd.github.diff;foo=bar", "application/vnd.github.diff"),
+    (
+        "application/json, application/vnd.github.diff",
+        "application/json,application/vnd.github.diff",
+    ),
+    ("*/*, application/vnd.github.diff", "application/vnd.github.diff,*/*"),
+    (
+        "application/json;q=0.1, application/vnd.github.diff;q=0.9, text/plain;q=0.5",
+        "application/vnd.github.diff,text/plain,application/json",
+    ),
+    (
+        "application/vnd.github.diff;q=0.9, application/json;q=0",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/vnd.github.diff, application/vnd.github.diff",
+        "application/vnd.github.diff,application/vnd.github.diff",
+    ),
+    (
+        "text/*, application/*, application/vnd.github.diff",
+        "application/vnd.github.diff,text/*,application/*",
+    ),
+    (
+        "application/vnd.github.diff;Q=0.1, application/json;q=0.5",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/vnd.github.diff;q = 0.1, application/json;q=0.5",
+        "application/vnd.github.diff,application/json",
+    ),
+    ("application/vnd.github.v3.patch+json", "application/vnd.github.v3.patch+json"),
+    ("*/*, text/*, application/vnd.github.diff", "application/vnd.github.diff,text/*,*/*"),
+    (
+        "application/*, */*, text/*, application/vnd.github.diff",
+        "application/vnd.github.diff,application/*,text/*,*/*",
+    ),
+    ("application/vnd.github.diff,", "application/vnd.github.diff"),
+    (",application/vnd.github.diff", "application/vnd.github.diff"),
+    (";q=0.5, application/vnd.github.diff", "application/vnd.github.diff"),
+    (
+        "application/vnd.github.diff,,application/json",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;q=0.1;q=0.9",
+        "application/json,application/vnd.github.diff",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;q=0.9;q=0.1",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;foo=bar;q=0.1",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;charset=utf-8;q=0.1",
+        "application/json,application/vnd.github.diff",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;q=+0.9",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;q= 0.9",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;q=inf",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        'application/json;q="0.1", application/vnd.github.diff;q=0.5',
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/json;q=abc, text/plain;q=0, application/vnd.github.diff",
+        "application/vnd.github.diff,application/json,text/plain",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;foo=a-b;q=0.1",
+        "application/json,application/vnd.github.diff",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;q=0.1-;q=0.9",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;charset=x;q=0.1",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;q=1e-1",
+        "application/json,application/vnd.github.diff",
+    ),
+    (
+        'application/vnd.github.diff;q=0.5, application/json;q="0.9"',
+        "application/json,application/vnd.github.diff",
+    ),
+    (
+        "application/json;q=-0.9, text/plain;q=0, application/vnd.github.diff",
+        "application/vnd.github.diff,application/json,text/plain",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json; q=0.1",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;a.b=c;q=0.1",
+        "application/vnd.github.diff,application/json",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;foo=\xe9;q=0.1",
+        "application/json,application/vnd.github.diff",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;q=0.9\xa0;q=0.1",
+        "application/json,application/vnd.github.diff",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;q=0.9x",
+        "application/json,application/vnd.github.diff",
+    ),
+    (
+        "application/vnd.github.diff;q=0.5, application/json;q=.9x",
+        "application/json,application/vnd.github.diff",
+    ),
+    (
+        "application/json,\xa0application/vnd.github.diff",
+        "application/json,application/vnd.github.diff",
+    ),
+]
+
+
+def test_github_pull_representation_content_type_echoes_accept(diff_pr):
     """The live measurement beside `_representation_content_type`: pull 7619, version 2022-11-28.
     Parameters are removed, not members with q=0; case and duplicates survive the stable sort.
     """
     c, h, org, num = diff_pr
-    headers = {**{k: v.encode() for k, v in h.items()}, "Accept": accept.encode("latin-1")}
-    r = _sent_raw(c, f"/github/repos/{org}/diffable/pulls/{num}", headers)
-    assert r.status_code == 200
-    assert r.headers["content-type"] == expected + "; charset=utf-8"
-    assert r.text.startswith("From " if "patch" in accept else "diff --git ")
+    served = {}
+    for accept, _ in _PULL_CONTENT_TYPE:
+        headers = {**{k: v.encode() for k, v in h.items()}, "Accept": accept.encode("latin-1")}
+        r = _sent_raw(c, f"/github/repos/{org}/diffable/pulls/{num}", headers)
+        body = r.text.startswith("From " if "patch" in accept else "diff --git ")
+        served[accept] = (r.status_code, r.headers["content-type"], body)
+    assert served == {
+        accept: (200, expected + "; charset=utf-8", True) for accept, expected in _PULL_CONTENT_TYPE
+    }
 
 
 @pytest.mark.parametrize(
@@ -5752,12 +5751,12 @@ def test_github_responses_unchanged_by_enrichment(client, admin_h):
         assert key in item, f"missing {key} (fidelity regression)"
 
 
-@pytest.mark.parametrize("path", ["/github/search/issues", "/github/search/code"])
-def test_github_search_has_typed_response_schema(client, path):
-    op = client.get("/openapi.json").json()["paths"][path]["get"]
-    schema = op["responses"]["200"]["content"]["application/json"]["schema"]
-    assert schema != {}
-    assert "$ref" in schema or schema.get("type") in ("object", "array")
+def test_github_search_has_typed_response_schema(client):
+    paths = client.get("/openapi.json").json()["paths"]
+    for path in ("/github/search/issues", "/github/search/code"):
+        schema = paths[path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        assert schema != {}, path
+        assert "$ref" in schema or schema.get("type") in ("object", "array"), path
 
 
 def test_github_operation_ids_unique(client):

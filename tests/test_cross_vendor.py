@@ -115,23 +115,23 @@ def test_unauthenticated_is_rejected(client):
 # router: the assertion is identical and only the path and the expected names differ.
 
 
-@pytest.mark.parametrize(
-    "path, expected",
-    [
-        ("/github/search/issues", {"q", "page", "per_page"}),
-        ("/slack/api/search.messages", {"query", "count", "page"}),
-        ("/slack/api/conversations.history", {"channel", "limit", "cursor"}),
-        # `user_id` is the path param, asserted here so enrichment cannot drop it
-        ("/gmail/v1/users/{user_id}/messages", {"q", "maxResults", "pageToken", "user_id"}),
-        ("/drive/v3/files", {"q", "pageSize", "pageToken", "fields"}),
-        ("/notion/v1/users", {"start_cursor", "page_size"}),
-        ("/atlassian/rest/api/3/search/jql", {"jql", "maxResults", "nextPageToken"}),
-        ("/atlassian/wiki/rest/api/search", {"cql"}),
-    ],
-)
-def test_router_advertises_the_params_it_honours(client, path, expected):
-    op = client.get("/openapi.json").json()["paths"][path]["get"]
-    assert expected <= {p["name"] for p in op.get("parameters", [])}
+_ADVERTISED_PARAMS = [
+    ("/github/search/issues", {"q", "page", "per_page"}),
+    ("/slack/api/search.messages", {"query", "count", "page"}),
+    ("/slack/api/conversations.history", {"channel", "limit", "cursor"}),
+    # `user_id` is the path param, asserted here so enrichment cannot drop it
+    ("/gmail/v1/users/{user_id}/messages", {"q", "maxResults", "pageToken", "user_id"}),
+    ("/drive/v3/files", {"q", "pageSize", "pageToken", "fields"}),
+    ("/notion/v1/users", {"start_cursor", "page_size"}),
+    ("/atlassian/rest/api/3/search/jql", {"jql", "maxResults", "nextPageToken"}),
+    ("/atlassian/wiki/rest/api/search", {"cql"}),
+]
+
+
+def test_router_advertises_the_params_it_honours(client):
+    paths = client.get("/openapi.json").json()["paths"]
+    for path, expected in _ADVERTISED_PARAMS:
+        assert expected <= {p["name"] for p in paths[path]["get"].get("parameters", [])}, path
 
 
 # --- /_meta/openapi/{source}: the MCP-ready spec endpoint ---------------
@@ -318,22 +318,23 @@ _NUMBERS = [
         ("fireflies", "query($x: Int) { transcripts(limit: $x) { id } }"),
     ],
 )
-@pytest.mark.parametrize("number, quoted", _NUMBERS)
 def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
-    client, tokens_yaml, vendor, document, number, quoted
+    client, tokens_yaml, vendor, document
 ):
     """The variable's value is read as the double ``JSON.parse`` reads and quoted as JavaScript
     prints it, at both places graphql-js quotes it."""
     admin = tokens_yaml["admin_token"]
     credential = admin if vendor == "linear" else f"Bearer {admin}"
-    body = '{"query":"%s","variables":{"x":%s}}' % (document, number)
-    r = client.post(
-        f"/{vendor}/graphql", content=body.encode(), headers={"Authorization": credential}
-    )
-    assert r.status_code == 400
-    message = r.json()["errors"][0]["message"]
-    assert f" got invalid value {quoted}; Int cannot represent " in message
-    assert message.endswith(f" value: {quoted}")
+    for row in _NUMBERS:
+        number, quoted = row.values
+        body = '{"query":"%s","variables":{"x":%s}}' % (document, number)
+        r = client.post(
+            f"/{vendor}/graphql", content=body.encode(), headers={"Authorization": credential}
+        )
+        assert r.status_code == 400, row.id
+        message = r.json()["errors"][0]["message"]
+        assert f" got invalid value {quoted}; Int cannot represent " in message, row.id
+        assert message.endswith(f" value: {quoted}"), row.id
 
 
 # A request to Linear or Fireflies with `Authorization` sent more than once, `{key}` standing for
@@ -363,31 +364,31 @@ _REPEATED = [
 
 
 @pytest.mark.parametrize("vendor", ["linear", "fireflies"])
-@pytest.mark.parametrize("method, path, body, values, status", _REPEATED)
-def test_cloudflare_refuses_a_repeated_authorization(
-    client, tokens_yaml, vendor, method, path, body, values, status
-):
+def test_cloudflare_refuses_a_repeated_authorization(client, tokens_yaml, vendor):
     admin = tokens_yaml["admin_token"]
     key = admin if vendor == "linear" else f"Bearer {admin}"
-    if body is None:
-        body = padded_query({"linear": 10 * 2**20, "fireflies": 2**20}[vendor] + 1)
-    headers = [("Content-Type", "application/json")]
-    headers += [("Authorization", value.format(key=key)) for value in values]
-    r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
-    assert r.status_code == status
     page = (
         b"<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n"
         b"<center><h1>400 Bad Request</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
         b"</body>\r\n</html>\r\n"
     )
-    if status != _CLOUDFLARE:
-        assert page not in r.content
-        if status == 200:
-            assert r.json() == {"data": {"__typename": "Query"}}
-        return
-    assert (r.headers["content-type"], r.headers["content-length"]) == ("text/html", "155")
-    if method != "HEAD":
-        assert r.content == page
+    for row in _REPEATED:
+        method, path, body, values, status = row.values
+        if body is None:
+            body = padded_query({"linear": 10 * 2**20, "fireflies": 2**20}[vendor] + 1)
+        headers = [("Content-Type", "application/json")]
+        headers += [("Authorization", value.format(key=key)) for value in values]
+        r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
+        assert r.status_code == status, row.id
+        if status != _CLOUDFLARE:
+            assert page not in r.content, row.id
+            if status == 200:
+                assert r.json() == {"data": {"__typename": "Query"}}, row.id
+            continue
+        ctype = (r.headers["content-type"], r.headers["content-length"])
+        assert ctype == ("text/html", "155"), row.id
+        if method != "HEAD":
+            assert r.content == page, row.id
 
 
 @pytest.mark.parametrize(

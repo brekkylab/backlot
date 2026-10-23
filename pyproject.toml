@@ -206,8 +206,10 @@ sigterm = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# loadfile, not the default: several modules share a module-scoped corpus.
-addopts = "-q -n auto --dist loadfile"
+# worksteal: an idle worker takes tests from a busy one, so a slow file such as tests/test_mcp.py
+# does not run alone after the rest have finished; each worker builds the module-scoped fixtures of
+# the modules it runs.
+addopts = "-q -n auto --dist worksteal"
 # Several routes serve more than one HTTP method for vendor fidelity (Slack GET+POST, Jira v2/v3,
 # S3 GET+HEAD), so FastAPI warns about duplicate operationIds — expected, and collapsed by
 # backlot.openapi. Silenced at import there too, but pytest resets filters per test.

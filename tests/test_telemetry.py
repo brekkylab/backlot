@@ -27,6 +27,7 @@ from tests._helpers import build_corpus, client_for
 
 ADMIN = {"Authorization": "Bearer admin-service-token"}
 LINEAR = {"Authorization": "admin-service-token"}
+JSON = {"Content-Type": "application/json"}
 UNREACHABLE = "http://127.0.0.1:9/v1/metrics"
 # The values an export may carry. The collector replaces a value outside its own shape checks with
 # `invalid`, and every pattern here is narrower than those.
@@ -496,6 +497,30 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             ("msteams", "me.ListChats", "missing", 404, "Request_ResourceNotFound", "unsupported"),
         ),
         (
+            "POST",
+            "/fireflies/graphql",
+            {"headers": JSON, "content": b""},
+            ("fireflies", "unparsed", "unknown", 400, "http", "client"),
+        ),
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"headers": JSON, "content": b"x" * (1024 * 1024 + 1)},
+            ("fireflies", "unparsed", "unknown", 413, "http", "client"),
+        ),
+        (
+            "POST",
+            "/linear/graphql",
+            {"headers": LINEAR | JSON, "content": b"x" * (10 * 1024 * 1024 + 1)},
+            ("linear", "unparsed", "unknown", 413, "PAYLOAD_TOO_LARGE", "client"),
+        ),
+        (
+            "POST",
+            "/linear/graphql",
+            {"headers": LINEAR | JSON, "content": b"{"},
+            ("linear", "unparsed", "unknown", 400, None, "client"),
+        ),
+        (
             "GET",
             "/calendar/v3/calendars/primary/events",
             {},
@@ -606,7 +631,6 @@ def test_a_fragment_that_spreads_others_is_named_in_bounded_time():
 J = "/atlassian/rest/api/3"
 W = "/atlassian/wiki/rest/api"
 ISSUE = "PLAD294FC-1825"
-JSON = {"Content-Type": "application/json"}
 OLD_VERSION = {"X-GitHub-Api-Version": "1999-01-01"}
 
 

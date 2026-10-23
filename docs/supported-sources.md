@@ -26,7 +26,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `msteams` | Microsoft Teams | `/msgraph/v1.0` | 13 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
 | `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
 | `s3` | Amazon S3 | `/s3` | 5 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
-| `slack` | Slack | `/slack/api` | 12 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
+| `slack` | Slack | `/slack/api` | 21 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
 <!-- generated:sources end -->
 
 ## Per-service detail
@@ -876,6 +876,22 @@ Each method answers on `GET` and `POST` alike, as the real Web API does.
 | `search.files` | |
 | `auth.test` | |
 | `api.test` | Auth-free connectivity check; a token it is sent meets the checks of the other methods' tokens, and `args` echoes it as `token` |
+| `chat.postMessage` | `thread_ts` posts a reply in that thread |
+| `chat.postEphemeral` | Stores nothing, as an ephemeral message is in no channel's history |
+| `chat.update` | The author's own message |
+| `chat.delete` | The author's own message, a corpus one included |
+| `chat.getPermalink` | |
+| `reactions.add` | |
+| `reactions.remove` | The caller's own |
+| `reactions.get` | |
+| `reactions.list` | The caller's own, from writes rather than the corpus |
+
+Of the nine below the reads, six write and three read what they wrote (`chat.getPermalink`,
+`reactions.get`, `reactions.list`). A write lands in a per-server overlay and the corpus file is
+never written; [Writes, and where they go](write-overlay.md) covers what a read then sees, how to read
+the overlay back and how to reset it. `chat.postMessage`, `chat.postEphemeral`, `chat.update`,
+`chat.delete`, `reactions.add` and `reactions.remove` accept a JSON body as well as a form, which
+is what their `consumes` declares and where `slack_sdk` puts three of them.
 
 A person the [roster](../backlot/schemas/README.md) marks `deactivated: true` is Slack's offboarded
 member: `users.list` and `users.info` answer them `deleted: true`, `conversations.members` and

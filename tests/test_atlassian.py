@@ -331,7 +331,7 @@ def test_jira_project_search_filters_by_query_keys_type_and_category(tmp_path):
                 "author_email": "a@x.com",
                 "visibility": "public",
             }
-            for name in ("payments", "orders")
+            for name in ("scrum", "orders")
         ],
     )
     with client_for(settings, reload=True) as client:
@@ -372,6 +372,19 @@ def test_jira_project_search_filters_by_query_keys_type_and_category(tmp_path):
         assert keys_of({"typeKey": "software"}) == all_keys
         assert keys_of({"typeKey": "bogus"}) == []
         assert keys_of({"categoryId": "99"}) == []
+        with_s = next(project for project in projects if "s" in project["name"].lower())
+        assert keys_of({"query": with_s["name"].replace("s", "\u017f")}) == []
+        assert keys_of({"keys": ""}) == all_keys
+        assert keys_of([("keys", ""), ("keys", "")]) == []
+        assert keys_of({"typeKey": "Software"}) == all_keys
+        assert keys_of({"typeKey": " software"}) == all_keys
+        assert keys_of({"typeKey": "business,software"}) == all_keys
+        assert keys_of([("typeKey", "software"), ("typeKey", "business")]) == all_keys
+        assert keys_of([("typeKey", "business"), ("typeKey", "software")]) == all_keys
+        assert keys_of({"typeKey": "business"}) == []
+        assert keys_of({"typeKey": ","}) == all_keys
+        assert keys_of({"categoryId": " "}) == all_keys
+        assert keys_of({"categoryId": "-1"}) == []
 
 
 @pytest.mark.parametrize(
@@ -478,6 +491,11 @@ def test_jira_project_search_links_itself_with_what_it_was_sent(client, admin_h,
         ([("orderBy", "bogus"), ("maxResults", "abc")], "maxResults", "abc"),
         ([("startAt", "abc"), ("maxResults", "xyz")], "startAt", "abc"),
         ([("maxResults", "xyz"), ("startAt", "abc")], "startAt", "abc"),
+        ([("categoryId", "abc")], "categoryId", "abc"),
+        ([("categoryId", "1.5")], "categoryId", "1.5"),
+        ([("orderBy", "bogus"), ("categoryId", "abc")], "categoryId", "abc"),
+        ([("categoryId", "abc"), ("startAt", "x")], "startAt", "x"),
+        ([("categoryId", "abc"), ("maxResults", "x")], "maxResults", "x"),
     ],
 )
 def test_jira_project_search_integer_conversion_precedes_order(client, admin_h, query, name, value):

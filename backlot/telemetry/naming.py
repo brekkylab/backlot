@@ -46,6 +46,9 @@ IMPLEMENTED, EXTRA, REFUSED, MISSING, UNKNOWN = (
 _PREFERENCE = {IMPLEMENTED: 0, EXTRA: 1, REFUSED: 2, MISSING: 3}
 # FastAPI's own documentation routes, matched exactly: Google Docs is mounted at `/docs/v1`.
 _FASTAPI_DOCS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"})
+# The shape the collector keeps an operation name in; a template outside it (Sheets'
+# `values:batchGet`) is left `unmatched` rather than replaced there with `invalid`.
+_OPERATION = re.compile(r"^[A-Za-z_][A-Za-z0-9_.,/+{}-]{0,127}$")
 # Introspection is answered by the GraphQL engine for every schema; no baseline lists it.
 _INTROSPECTION = {"__schema", "__type", "__typename"}
 _S3_ROW = re.compile(
@@ -213,7 +216,17 @@ class Namer:
                 return Named(source, name, self._slack[name])
             return Named(source, "unmatched", UNKNOWN)
         best = self._best(source, rest, method)
-        return Named(source, best.id, best.status) if best else Named(source, "unmatched", UNKNOWN)
+        if best is not None:
+            return Named(source, best.id, best.status)
+        # A path a route serves under other methods (a 405) is named by that route's template,
+        # which Backlot's code defines, so the call says where it went and nothing it spelled.
+        if "{rest" not in getattr(route, "path", "{rest"):
+            template = canonical(
+                route.path[len(strip) :] if strip and route.path.startswith(strip) else route.path
+            )
+            if _OPERATION.match(template):
+                return Named(source, template, UNKNOWN)
+        return Named(source, "unmatched", UNKNOWN)
 
     def _served(self, source: str, strip: str, method: str, route: Any) -> Named:
         route_path = (

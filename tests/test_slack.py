@@ -4647,11 +4647,44 @@ def test_a_json_token_is_not_a_credential(wclient, tokens):
         ({"attachments": "[{}]"}, "no_text"),
         ({"attachments": "abc"}, "no_text"),
         ({"attachments": '{"text": "a"}'}, "no_text"),
+        # Decoration, and shapes that are not an array of objects: each `no_text` on real,
+        # none of them a refusal and none of them an error here.
         ({"attachments": '[{"color": "good"}]'}, "no_text"),
+        ({"attachments": '[{"footer": "a"}]'}, "no_text"),
+        ({"attachments": '[{"author_link": "a"}]'}, "no_text"),
+        ({"attachments": '[{"title_link": "a"}]'}, "no_text"),
+        ({"attachments": '[{"image_url": "a"}]'}, "no_text"),
+        ({"attachments": '[{"mrkdwn_in": ["text"]}]'}, "no_text"),
+        ({"attachments": '[{"ts": "1"}]'}, "no_text"),
+        ({"attachments": '["text"]'}, "no_text"),
+        ({"attachments": "5"}, "no_text"),
+        ({"attachments": "true"}, "no_text"),
+        ({"attachments": '"text"'}, "no_text"),
+        ({"attachments": '[["text"]]'}, "no_text"),
+        ({"attachments": "null"}, "no_text"),
+        # A member's own `blocks` count only as a non-empty array, unlike its siblings.
+        ({"attachments": '[{"blocks": []}]'}, "no_text"),
+        ({"attachments": '[{"blocks": "abc"}]'}, "no_text"),
+        ({"attachments": '[{"blocks": {}}]'}, "no_text"),
+        (
+            {
+                "attachments": '[{"blocks": [{"type": "section", '
+                '"text": {"type": "mrkdwn", "text": "a"}}]}]'
+            },
+            None,
+        ),
+        # The six keys that carry a message by being there, each with an empty value where one
+        # is expressible, since the key is the test rather than what it says.
         ({"attachments": '[{"text": "a"}]'}, None),
         ({"attachments": '[{"fallback": "a"}]'}, None),
         ({"attachments": '[{"title": "a"}]'}, None),
+        ({"attachments": '[{"pretext": "a"}]'}, None),
+        ({"attachments": '[{"author_name": "a"}]'}, None),
+        ({"attachments": '[{"fields": [{"title": "a", "value": "b", "short": true}]}]'}, None),
         ({"attachments": '[{"text": ""}]'}, None),
+        ({"attachments": '[{"pretext": ""}]'}, None),
+        ({"attachments": '[{"author_name": ""}]'}, None),
+        ({"attachments": '[{"fields": []}]'}, None),
         ({"attachments": '[{}, {"text": "a"}]'}, None),
         ({"blocks": '[{"type": "section"}]'}, None),
         ({"blocks": "abc"}, "invalid_blocks_format"),
@@ -4663,9 +4696,9 @@ def test_a_json_token_is_not_a_credential(wclient, tokens):
 @pytest.mark.parametrize("method", ["chat.postMessage", "chat.update"])
 def test_blocks_is_read_as_a_value_not_looked_for(wclient, tokens, method, sent, want):
     # `chat_post_message` records the measurement: a non-empty `blocks` array stands in for
-    # `text`, an `attachments` array does when a member states one of `_ATTACHMENT_TEXT_KEYS`,
-    # and a `blocks` that is not an array is refused even beside a `text`. Dropping either
-    # operand from the `no_text` test left the suite green.
+    # `text`, an `attachments` array does when one of its members carries a message, and a
+    # `blocks` that is not an array is refused even beside a `text`. Dropping either operand
+    # from the `no_text` test left the suite green, as did reading three of the six keys.
     h = _uh(tokens, "ava@acme.com")
     cid = synth.slack_channel_id("incidents")
     ts = wclient.post(
@@ -4728,6 +4761,85 @@ def test_post_ephemeral_reads_the_shape_of_user_then_its_membership(wclient, tok
         ).json()["ok"]
         is True
     )
+
+
+#: Requests where two refusals apply, and which one real answers. Swapping either guard
+#: against its neighbour leaves the rest of the suite green, so the order is only stated here.
+#: `BAD` is a channel id nothing has; `file` wins over `file_comment` whichever is written
+#: first, so the pair is sent both ways round.
+_REFUSAL_ORDER = [
+    ("chat.postMessage", {"channel": "BAD", "blocks": "abc"}, "channel_not_found"),
+    ("chat.update", {"channel": "GOOD", "ts": "1.000001", "blocks": "abc"}, "message_not_found"),
+    ("chat.update", {"channel": "BAD", "ts": "1.000001", "blocks": "abc"}, "channel_not_found"),
+    (
+        "chat.postEphemeral",
+        {"channel": "BAD", "user": "abc", "text": "x"},
+        "invalid_arguments",
+    ),
+    (
+        "reactions.remove",
+        {"name": "eyes", "file": "F00000000", "file_comment": "Fc00000000"},
+        "file_not_found",
+    ),
+    (
+        "reactions.get",
+        {"name": "eyes", "file_comment": "Fc00000000", "file": "F00000000"},
+        "file_not_found",
+    ),
+]
+
+
+@pytest.mark.parametrize("method, sent, want", _REFUSAL_ORDER)
+def test_the_refusal_that_wins_is_the_one_real_answers(wclient, tokens, method, sent, want):
+    h = _uh(tokens, "ava@acme.com")
+    args = {
+        k: {"GOOD": synth.slack_channel_id("incidents"), "BAD": "C00000000"}.get(v, v)
+        for k, v in sent.items()
+    }
+    answered = wclient.post(f"/slack/api/{method}", headers=h, data=args).json()
+    assert answered["ok"] is False, (method, sent)
+    assert answered["error"] == want, (method, sent)
+
+
+def test_post_ephemeral_finds_a_member_who_has_never_posted(tmp_path):
+    """A private channel's grantee is a member whether or not they ever spoke, so `user` is
+    resolved against the PRINCIPALS and not only against the message authors.
+
+    SAMPLE cannot show it: every author there holds an account and its one private channel is
+    granted to a group whose only member posted, so dropping the `all_user_emails` lookup left
+    the suite green. A corpus of its own separates them -- zoe holds an account, is granted the
+    channel, and has written nothing."""
+    import yaml
+
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "closed",
+                "content": "the comp band lands at 240k",
+                "author_email": "ava@x.com",
+                "readers": ["user:ava@x.com", "user:zoe@x.com"],
+            }
+        ],
+    )
+    conn = store.connect_ro(s.db_path)
+    assert "zoe@x.com" in store.all_user_emails(conn)
+    assert "zoe@x.com" not in store.distinct_slack_author_emails(conn)
+    conn.close()
+    issued = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
+    tok = {u["email"]: u["token"] for u in issued["users"]}
+    with client_for(s, reload=True) as c:
+        answered = c.post(
+            "/slack/api/chat.postEphemeral",
+            headers={"Authorization": f"Bearer {tok['ava@x.com']}"},
+            data={
+                "channel": synth.slack_channel_id("closed"),
+                "user": synth.slack_user_id("zoe@x.com"),
+                "text": "only you can see this",
+            },
+        ).json()
+    assert answered["ok"] is True, answered
 
 
 def test_reactions_list_reads_an_empty_user_and_lists_each_message_once(wclient, tokens, admin_h):
@@ -5255,8 +5367,8 @@ def test_reacting_to_an_unreadable_message_does_not_reveal_it(wclient, tokens, r
 # Each row is one request and what `reactions.add`, `reactions.remove` and `reactions.get`
 # answer it, with an emoji the workspace has and a `timestamp` naming no message. `GOOD` stands
 # for a channel the caller can read, `BAD` for an id nothing has. `_reaction_target` records
-# the measurement and the three rules the table encodes: the file forms
-# win and `reactions.add` does not read them, `reactions.get` resolves the channel before the
+# the measurement and the three rules the table encodes: the file forms win and
+# `reactions.add` does not read them, `reactions.get` resolves the channel before the
 # timestamp where the other two read the timestamp first, and an absent `channel` is
 # `no_item_specified` however the `timestamp` beside it reads.
 _ITEM_FORMS = [

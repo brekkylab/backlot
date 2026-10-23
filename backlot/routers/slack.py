@@ -2012,26 +2012,40 @@ def _json_array(request: Request, name: str) -> list:
     return parsed if isinstance(parsed, list) else []
 
 
-#: The `attachments` keys that make a member carry the message. Measured against slack.com on
-#: 2026-10-23 with no `text`: `[{"text":"a"}]`, `[{"fallback":"a"}]` and `[{"title":"a"}]` each
-#: post, and so does `[{"text":""}]` — the key being there is what counts, not what it says —
-#: where `[{"color":"good"}]` answers `no_text`.
-_ATTACHMENT_TEXT_KEYS = ("text", "fallback", "title")
+#: The `attachments` keys that make a member carry the message by being there at all. Measured
+#: against slack.com on 2026-10-23 with no `text`, twenty values on `chat.postMessage` and the
+#: same on `chat.update`: each of these posts with an empty value as with a filled one
+#: (`"pretext": ""` and `"fields": []` post), where `footer`, `color`, `author_link`,
+#: `title_link`, `image_url`, `mrkdwn_in` and `ts` answer `no_text`.
+_ATTACHMENT_TEXT_KEYS = ("text", "fallback", "title", "pretext", "author_name", "fields")
+
+
+def _attachment_carries_text(a: object) -> bool:
+    """Whether one `attachments` member is a message rather than decoration.
+
+    Its own `blocks` count the way the top-level argument does and not the way its siblings do:
+    only a NON-EMPTY array, where `[]`, `"abc"` and `{}` are each `no_text`.
+    """
+    if not isinstance(a, dict):
+        return False
+    if any(k in a for k in _ATTACHMENT_TEXT_KEYS):
+        return True
+    blocks = a.get("blocks")
+    return isinstance(blocks, list) and bool(blocks)
 
 
 def _has_content(request: Request) -> bool:
     """Whether `blocks` or `attachments` carries the message in place of `text`.
 
     For `blocks` that is a non-empty JSON array, and only that. For `attachments` it is an array
-    with a member stating one of :data:`_ATTACHMENT_TEXT_KEYS`, so `[]`, `[{}]`, a member with
-    `color` alone, and a value that is not an array all leave the message textless.
+    with a member :func:`_attachment_carries_text` accepts, so `[]`, `[{}]`, a member carrying
+    decoration alone, and anything that is not an array of objects -- `5`, `true`, `"text"`,
+    `["text"]`, `[["text"]]`, `null` -- all leave the message textless. `chat.postMessage` and
+    `chat.update` answered identically on every value measured.
     """
     if _json_array(request, "blocks"):
         return True
-    return any(
-        isinstance(a, dict) and any(k in a for k in _ATTACHMENT_TEXT_KEYS)
-        for a in _json_array(request, "attachments")
-    )
+    return any(_attachment_carries_text(a) for a in _json_array(request, "attachments"))
 
 
 def _writer(caller: Caller) -> str:
@@ -2099,10 +2113,12 @@ async def chat_post_message(request: Request):
     see :func:`_has_content`. Measured with no `text`: a `blocks` naming one section posts and
     `blocks=[]` answers `no_text`, where a `blocks` that is not a JSON array -- `abc`, `{}`,
     empty -- answers `invalid_blocks_format`, which it does even beside a `text`. An
-    `attachments` array posts when a member states `text`, `fallback` or `title`, and answers
-    `no_text` otherwise, a member with `color` alone included; it has no format error of its
-    own. `chat.update` reads `text`, `blocks` and `attachments` by these same rules, each row
-    of them re-measured against it on 2026-10-23.
+    `attachments` array posts when one of its members carries a message -- see
+    :func:`_attachment_carries_text` for the keys that say so -- and answers `no_text`
+    otherwise, a member carrying only decoration included; it has no format error of its own,
+    so a value that is not an array of objects is `no_text` rather than a refusal.
+    `chat.update` reads `text`, `blocks` and `attachments` by these same rules, every value
+    re-measured against it.
 
     Posting does not join a public channel the caller is not in, and nothing here has to arrange
     that: membership there is derived from `main.slack_messages`, which a written row never joins.
@@ -2227,14 +2243,13 @@ async def chat_post_ephemeral(request: Request):
     name, err = _writable_channel(request, conn, caller)
     if err is not None:
         return err
-    # Two lookups because they cover different people. `all_user_emails` has the principals,
-    # including one who holds an account and has never posted -- a private channel's grantee is
-    # a member whether or not they spoke. `_slack_author_by_uid` has the message authors,
-    # including the display-only speakers that hold no account (deploybot@...) and the service
-    # id, which is not a corpus author at all. Neither is a superset. The sample corpus cannot
-    # tell them apart -- every author there holds an account, and its one private channel is
-    # granted to a group whose only member posted -- so dropping either line leaves the suite
-    # green; that is the corpus being small, not the line being spare.
+    # Two lookups because they cover different people, and neither is a superset.
+    # `all_user_emails` has the principals, including one who holds an account and has never
+    # posted: a private channel's grantee is a member whether or not they spoke.
+    # `_slack_author_by_uid` has the message authors, including the service id and the
+    # display-only speakers that hold no account (deploybot@...). Only a generated corpus has
+    # those -- the BYO importer makes a principal of every author it reads -- so the fallback
+    # is the one of the two no test here distinguishes.
     email = next(
         (e for e in store.all_user_emails(conn) if synth.slack_user_id(e) == uid), None
     ) or _slack_author_by_uid(request, conn, uid)

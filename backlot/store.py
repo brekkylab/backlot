@@ -1181,9 +1181,9 @@ def merged_source(
     For a source outside :data:`WRITABLE`, with no overlay attached, or with nothing yet written
     to it, this is the table name and every reader is character-for-character what it was before
     writes existed -- the emptiness is probed rather than assumed, by
-    :func:`_overlay_holds_anything`.
-    Otherwise it is the corpus and the overlay unioned, tombstoned documents subtracted and patches
-    applied, **aliased to the corpus table's own name**.
+    :func:`_overlay_holds_anything`. Otherwise it is the corpus and the overlay unioned,
+    tombstoned documents subtracted and patches applied, **aliased to the corpus table's own
+    name**.
 
     The alias is not cosmetic: :func:`_acl_clause` emits ``_acl.<col> = <table>.<col>``,
     hard-referencing whatever name the caller gave it, so the alias is what lets thirteen readers

@@ -94,7 +94,9 @@ uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 
 CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request (see
 `.github/workflows/ci.yml`). On a pull request it also runs `scripts/prose_check.py`, whose findings
-show as warnings on the lines they name and do not fail the run.
+show as warnings on the lines they name and do not fail the run. CI's `test` jobs set
+`BACKLOT_TEST_REQUIRE_DOCKER=1`, under which the Atlassian MCP test fails where a local run without
+Docker skips it (`_require_linux_docker` in `tests/test_mcp.py`).
 
 Windows, where the default text encoding is the locale's code page (cp1252 on `windows-latest`)
 rather than UTF-8, has its own workflow (`.github/workflows/windows.yml`). It runs on a pull request

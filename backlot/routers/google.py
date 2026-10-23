@@ -187,6 +187,24 @@ def _parse_batch_subrequest(payload: str):
     return method, target, headers, body
 
 
+def _drive_batch_cut_path(target: str) -> str:
+    """A Drive batch part's target with its path cut at the first ``;`` in it, its query kept.
+
+    Measured 2026-10-05 against ``www.googleapis.com/batch/drive/v3``, and on 2026-10-22 with each
+    part alone in its batch and all ten of ``_BATCH_CUT_ROWS`` in one: real ends a part's path
+    there, so ``files/{id};x`` is that file, ``files/{id};x/export`` is ``files.get`` on that file
+    with its ``/export`` dropped, and ``files;x``, ``about;x``, ``drives;x`` and
+    ``files/{id}/permissions;x`` are those routes' answers. The cut is read off the target as
+    sent, so an escaped ``%3B`` stays in the path and names the file whose id carries a ``;``.
+    A request sent on its own is not cut: each of those paths was a 404 there on 2026-10-22, that
+    same ``files/{id};x`` naming a file that does not exist."""
+    path, sep, query = target.partition("?")
+    cut = path.find(";")
+    if cut != -1:
+        path = path[:cut]
+    return f"{path}?{query}" if sep else path
+
+
 def _batch_sub_response(r, base: str) -> str:
     """One part's answer as the `application/http` payload a batch carries, `base` being the batch
     request's base URL. The download redirect (:func:`gerr.download_redirect`), the 302 whose
@@ -237,6 +255,13 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
         (part.get("Content-ID", ""), *_parse_batch_subrequest(part.get_payload(decode=False)))
         for part in parsed.get_payload()
     ]
+    if api == "drive":
+        # A Drive batch ends each part's path at a `;` it carries (`_drive_batch_cut_path`), ahead
+        # of the download a part is read as, so the cut decides that too.
+        parts = [
+            (cid, method, _drive_batch_cut_path(target) if target else target, headers, body)
+            for cid, method, target, headers, body in parts
+        ]
     others = sum(
         1
         for _, method, target, _, _ in parts
@@ -676,9 +701,72 @@ _GMAIL_DATED = r"(?<=\bafter:)|(?<=\bbefore:)|(?<=\bnewer:)|(?<=\bolder:)"
 # `subject:" from:me to:me` and `subject:" from:me+probe` answered nothing. `threads.list` answered
 # `label:"`, `subject:" probe`, `subject:" from:me` and `subject:" label:inbox` alike.
 _GMAIL_LONE_QUOTE = re.compile(
-    r'(?<!\S)(-*)((?:subject|label|in):)\s*"(?![^"]*")(\s*)(.*)', re.IGNORECASE
+    r'(?<!\S)(-*)((?:subject|label|in|from|to|cc|bcc):)\s*(?:"[ \t]*"\s*)*"(?![^"]*")(\s*)(.*)',
+    re.IGNORECASE,
 )
 _GMAIL_LONE_QUOTE_OPERATOR = re.compile(r"-*((?:from|to|cc|bcc|subject):)\s*-*(\S*)", re.IGNORECASE)
+# `from:`, `to:`, `cc:` and `bcc:` read a lone quote as `subject:`, `label:` and `in:` do, and a
+# pair of quotes holding nothing in front of the lone quote is left out. Measured on a Workspace
+# mailbox over 639 to 645 messages on 2026-10-21 and 2026-10-22, comparing `messages.list` id
+# sets: `from:" me` and `to:" me` answered what `from:me` and `to:me` answer; `from:" probe`,
+# `from:"me probe`, `to:" probe` and `from:" label:inbox` nothing; `from:" from:me`,
+# `to:" from:me`, `cc:" from:me`, `from:" FROM:me` and `to:" -from:me` what `from:me` answers,
+# `from:" to:me` and `from:" -to:me` what `to:me` answers, `from:" subject:probe` what
+# `subject:probe` answers, and `-from:" to:me` and `-to:" from:me` the negations of `to:me` and
+# `from:me`. `from:"` answered every message, `probe from:"` what `probe` answers and `from:"me`
+# what `from:me` answers. `label:"" "` and `label:"""` answered every message, `label:"" " inbox`
+# and `label:""" inbox` what `label:inbox` answers, `subject:"" " from:me` and
+# `subject:"" " -from:me` what `from:me` answers, `in:"" " to:me` what `to:me` answers, and
+# `subject:"" " label:inbox` nothing.
+#
+# A quote after `subject:`, `label:`, `in:` or an address operator that whitespace follows and a
+# later quote closes. Measured on the same mailboxes: `subject:" from:me"` and `subject:" from:"me"`
+# answered what `from:me` answers, `label:" inbox "` and `subject:" probe "` what `label:inbox` and
+# `subject:probe` answer, and `label:" inbox subject:"probe"`, `label:" inbox -subject:"probe"` and
+# `label:" inbox --subject:"probe"` what `label:inbox probe` answers; on 2026-10-22,
+# `subject:" from:" probe` answered nothing and `subject:" probe<no-break space>"` what
+# `subject:probe` answers.
+_GMAIL_CLOSED_QUOTE = re.compile(
+    r'(?<!\S)(-*)((?:subject|label|in|from|to|cc|bcc):)\s*"\s+(?=[^\s"])([^"]*)"', re.IGNORECASE
+)
+_GMAIL_BARE_OPERATOR = re.compile(r"-*(?:from|to|cc|bcc|subject):", re.IGNORECASE)
+_GMAIL_TRAILING_OPERATOR = re.compile(
+    r"\s+-*(?:from|to|cc|bcc|subject|label|in|has|after|before|newer|older|newer_than|older_than):$",
+    re.IGNORECASE,
+)
+# A word joined by a hyphen to an operator is one search term no message holds, and so is a word
+# joined by a hyphen to a bracket holding an address operator or `subject:`, negated or not; a word
+# of digits makes such a term only with those five. A `-` touching the word, or a `NOT` in front of
+# it, flips the term as `_GMAIL_NOT` flips an operator, and a flipped term is left out. Measured on
+# a Workspace mailbox on 2026-10-21 and 2026-10-22, comparing `messages.list` id sets:
+# `probe-label:inbox`, `probe-subject:" from:me`, `probe-has:attachment`, `probe-after:2020/01/01`,
+# `a1-label:inbox`, `probe-(from:me)`, `probe-( from:me)`, `probe-(to:me)`, `probe-(-from:me)`,
+# `2026-from:me` and `2026-(from:me)` answered nothing; `-probe-label:inbox`, `--probe-label:inbox`,
+# `NOT probe-label:inbox`, `NOT - probe-label:inbox`, `-probe-(from:me)`, `-probe-subject:" from:me`
+# and `-2026-from:me` every message; `NOT NOT probe-label:inbox` and `- probe-label:inbox` nothing;
+# and `-probe-label:inbox from:me` and `NOT probe-label:inbox from:me` what `from:me` answers.
+# `2026-label:inbox`, `2026-in:inbox` and `2026--label:inbox` answered what `2026 label:inbox`
+# answers, and `probe-(label:inbox)`, `probe-(in:inbox)` and `probe-(label:inbox` what
+# `label:inbox probe` answers, where `probe-(label:inbox from:me)`, `probe-(label:inbox to:me)`,
+# `probe-(label:inbox -subject:probe)` and `probe-(label:inbox NOT from:me)` answered nothing.
+_GMAIL_HYPHENED = re.compile(
+    r"(?<!\S)((?:NOT[ \t]+(?:-+[ \t]+)*)*)(-*)"
+    r"(?:\w+-+\((?=[^)]*(?<![^\s(])-*(?i:from|to|cc|bcc|subject):)[^)]*\)?"
+    r"|(?:\w+-+(?i:from|to|cc|bcc|subject)"
+    r"|\w*[^\W\d]\w*-+(?i:label|in|has|after|before|newer|older|newer_than|older_than))"
+    r':(?:"[^"]*"?|\S*))'
+)
+# A lone quote at the start of a search with one operator after it, and nothing more, stands for
+# that operator, with any `-` in front of the operator left out. Measured on a Workspace mailbox on
+# 2026-10-21 and 2026-10-22, comparing `messages.list` id sets: `" label:inbox`, `" -label:inbox`
+# and `" --label:inbox` answered what `label:inbox` answers, `" from:me` and `" -from:me` what
+# `from:me` answers, and `" has:attachment` and `" in:sent` what `has:attachment` and `in:sent`
+# answer; `" label:inbox -from:me`, `" -label:inbox -from:me`, `" label:`, `" -label:`, `" from:`
+# and `"` alone answered nothing.
+_GMAIL_BARE_LONE_QUOTE = re.compile(
+    r'^[ \t]*"[ \t]+-*(?=(?i:from|to|cc|bcc|subject|label|in|has|after|before|newer|older'
+    r"|newer_than|older_than):\S+[ \t]*$)"
+)
 # An empty operator `_GMAIL_OP` drops, so that the operator after it applies. Measured on a
 # Workspace mailbox of 625 messages on 2026-10-19, comparing `messages.list` id sets
 # (`threads.list` answered the ten queries sent to it alike):
@@ -883,6 +971,9 @@ _GMAIL_NOT_ALL = "-()"
 # (:func:`_gmail_take_negated_words`). No operator can be named this either.
 _GMAIL_NOT_WORD = "-w"
 _GMAIL_DASHED_WORD = re.compile(r'-+(?:"([^"]*)"|(\S+))\Z')
+# A free-text term: a quoted stretch, spaces and all, with what touches it, or a run of other
+# characters between spaces.
+_GMAIL_FREE_TERM = re.compile(r'[^ "]*"[^"]*"[^ "]*|[^ ]+')
 
 
 def _gmail_q_date(v: str) -> str | None:
@@ -1013,38 +1104,53 @@ def _gmail_take_negated_words(free: str) -> tuple[str, list[str]]:
     answered the messages `probe` does not, and so did `NOT probe` and `-( probe )`.
     `label:inbox -probe` answered the inbox messages `probe` leaves out, `probe -probe` answered
     nothing, and `-attachment`, a word no message holds, answered every message. Only `NOT` in
-    capitals reads this way: `not from:me` answered as `from:me not`. A `-(…)` of one word arrives
-    here as that word with a `-` in front (:func:`_gmail_flatten`); one of several terms is
-    :data:`_GMAIL_NOT_ALL`. The word is then matched by the same search the word alone runs, and
-    those messages are left out, so `-plan` on its own has no free text left and the listing path
-    answers.
+    capitals reads this way: `not from:me` answered as `from:me not`. On 2026-10-22 (655
+    messages), `-"backlot probe"`, `NOT "backlot probe"` and `-("backlot probe")` answered the
+    messages the phrase `"backlot probe"` does not, and `-"probe backlot"`, a phrase no message
+    holds, every message; `NOT -probe`, `NOT --probe`, `NOT NOT probe` and `NOT NOT NOT -probe`
+    answered what `probe` answers, and `NOT NOT NOT probe` what `-probe` answers, each `NOT` and a
+    `-` touching the word flipping it; and `-probe+` and `NOT probe+` answered every message, where
+    `probe+` answers nothing. A `-(…)` of one word arrives here as that word with a `-` in front
+    (:func:`_gmail_flatten`); one of several terms is :data:`_GMAIL_NOT_ALL`. The word is then
+    matched by the same search the word alone runs, and those messages are left out, so `-plan` on
+    its own has no free text left and the listing path answers.
     """
     if not free or (len(free) >= 2 and free[0] == free[-1] == '"'):
         return free, []
     kept: list[str] = []
     negated: list[str] = []
-    tokens = free.split(" ")
+    terms = _GMAIL_FREE_TERM.findall(free)
     i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
-        if token == "NOT" and nxt and nxt != "NOT" and not nxt.startswith("-"):
-            word = _gmail_word_token(nxt)
-            if word:
-                negated.append(word)
-                i += 2
-                continue
-        dashed = _GMAIL_DASHED_WORD.fullmatch(token)
+    while i < len(terms):
+        j = i
+        while j < len(terms) and terms[j] == "NOT":
+            j += 1
+        dashed = _GMAIL_DASHED_WORD.fullmatch(terms[j]) if j < len(terms) else None
         if dashed:
-            raw = dashed.group(1) if dashed.group(1) is not None else dashed.group(2)
-            word = (raw or "").strip('"')
-            if word:
-                negated.append(word)
-                i += 1
-                continue
-        kept.append(token)
-        i += 1
+            word = (dashed.group(1) if dashed.group(1) is not None else dashed.group(2)).strip('"')
+        else:
+            word = _gmail_word_token(terms[j]) if i < j < len(terms) else None
+        if not word:
+            kept += terms[i : j + 1]
+        elif (j - i + bool(dashed)) % 2 == 0:
+            kept.append(terms[j].lstrip("-"))
+        elif not word.endswith("+"):
+            negated.append(word)
+        i = j + 1
     return " ".join(kept), negated
+
+
+def _gmail_closed_quote(m: re.Match) -> str:
+    """The operator a quote that whitespace follows and a later quote closes stands for: the one
+    operator inside it on its own, the operator the closing quote opens a value for, or the
+    operator with what is inside the quotes as its value (the comment at `_GMAIL_CLOSED_QUOTE`)."""
+    dashes, key, content = m.group(1), m.group(2), m.group(3).rstrip()
+    if _GMAIL_BARE_OPERATOR.fullmatch(content):
+        return f'{dashes}{content.lstrip("-")}"'
+    alone = _GMAIL_LONE_QUOTE_OPERATOR.fullmatch(content)
+    if alone:
+        return f'{dashes}{alone.group(1)}"{alone.group(2)}"'
+    return f'{dashes}{key}"{_GMAIL_TRAILING_OPERATOR.sub("", content)}"'
 
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
@@ -1062,6 +1168,19 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 if key in _GMAIL_DROPPED_WHEN_EMPTY:
                     return " "
                 return m.group(0)
+            # A value is no age when it starts with a `"` or has a `"` followed by anything but
+            # quotes, and with a `-` in front it is left out; quotes that end an age are left out of
+            # it. Measured on a Workspace mailbox on 2026-10-21 and 2026-10-22: `newer_than:"`,
+            # `older_than:"`, `newer_than:""`, `older_than:""`, `newer_than:"30d"`,
+            # `newer_than:" 30d`, `newer_than:"probe` and `newer_than:30"d` answered nothing, and
+            # `-newer_than:"`, `NOT newer_than:"`, `-older_than:""` and `-newer_than:"30d"` every
+            # message; `newer_than:30d"`, `newer_than:30d""` and `newer_than:30d"""` answered what
+            # `newer_than:30d` answers, and `older_than:1d"`, `older_than:30d"` and
+            # `older_than:30d"" "` what `older_than:1d` and `older_than:30d` answer.
+            if key in _GMAIL_AGE_NEGATION and (value[:1] == '"' or '"' in value.rstrip('"')):
+                if not m.group(0).startswith("-"):
+                    ops.setdefault(_GMAIL_NOTHING, []).append(value)
+                return " "
             if key in _GMAIL_DATE_KEYS:
                 if value == "-":
                     return m.group(0)
@@ -1108,9 +1227,23 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             return " "
         return m.group(0)
 
+    trailing = re.search(r'\S[ \t]+"[ \t]*$', q)
+    hyphened = []
+
+    def _hyphened(m):
+        if m.string.count('"', 0, m.start()) % 2:
+            return m.group(0)
+        if (m[1].count("NOT") + bool(m[2])) % 2 == 0:
+            hyphened.append(m.group(0))
+        return " "
+
+    q = _GMAIL_HYPHENED.sub(_hyphened, _GMAIL_BARE_LONE_QUOTE.sub("", q))
+    if hyphened:
+        return "", {_GMAIL_NOTHING: hyphened}
     q, groups = _gmail_groups(q)
     if groups:
         ops[_GMAIL_NOT_ALL] = groups
+    q = _GMAIL_CLOSED_QUOTE.sub(_gmail_closed_quote, q)
     q = _GMAIL_LONE_QUOTE.sub(_gmail_lone_quote, q)
     q = _GMAIL_NOT.sub(lambda m: "-" if (m[1].count("NOT") + bool(m[2])) % 2 else "", q)
     q = _GMAIL_NEGATED_EMPTY.sub("-", q)
@@ -1118,15 +1251,24 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     q = _GMAIL_NEGATED_ADDRESS.sub(lambda m: f"{m.group(1)}:-", q)
     free = re.sub(r"\s+", " ", _GMAIL_OP.sub(_take, q)).strip()
     # A `+` or a `-` standing alone is no search term, and a word ending in a `+` matches nothing
-    # (the measurements at `_GMAIL_PLUS_ENDS` and `_GMAIL_NEGATABLE`).
+    # (the measurements at `_GMAIL_PLUS_ENDS` and `_GMAIL_NEGATABLE`). Negated words come out
+    # first, so a `-` on a word ending in `+` does not mark the whole search as matching nothing.
     if not (len(free) >= 2 and free[0] == free[-1] == '"'):
         words = [t for t in free.split(" ") if t not in ("+", "-")]
-        if any(t.endswith("+") for t in words):
+        free, negated = _gmail_take_negated_words(" ".join(words))
+        if negated:
+            ops[_GMAIL_NOT_WORD] = negated
+        if any(t.endswith("+") for t in free.split(" ")):
             ops.setdefault(_GMAIL_NOTHING, []).append(free)
-        free = " ".join(words)
-    free, negated = _gmail_take_negated_words(free)
-    if negated:
-        ops[_GMAIL_NOT_WORD] = negated
+    # A lone quote that no search term follows is no term beside the operators read; one in front of
+    # the operator is read at `_GMAIL_BARE_LONE_QUOTE`, where a search with two answers nothing, and
+    # an operator left with no value is not counted (`" from:` there). Measured on a Workspace
+    # mailbox on 2026-10-22: `label:inbox "` and `"label:inbox` answered what `label:inbox` answers,
+    # `from:me "` what `from:me` answers, and `label:inbox -from:me "` and `from:me to:me "` what
+    # `label:inbox -from:me` and `from:me to:me` answer.
+    valued = sum(1 for values in ops.values() for value in values if value)
+    if free == '"' and valued and (trailing or valued == 1):
+        free = ""
     return free, ops
 
 
@@ -4929,7 +5071,10 @@ def _workbook(request: Request, spreadsheet_id: str) -> tuple:
     Inside a batch there is no lookup: real's batch does not implement the Sheets reads. Measured
     2026-10-04 on the five reads this module serves, and on the two POST reads' bodies 2026-10-06,
     the answer is 501 after the credential, the typed query values and a POST read's body and before
-    the spreadsheet is looked up, so one that does not exist gets it as well."""
+    the spreadsheet is looked up, so one that does not exist gets it as well. A `fields` mask naming
+    nothing is refused ahead of it: measured 2026-10-22, `values/A1?fields=bogus` on a spreadsheet
+    that exists and on one that does not, and `:getByDataFilter?fields=bogus` on one that does not,
+    were the mask's 400 inside a batch."""
     if _BATCH_OUTER.get() is not None:
         raise gerr.unimplemented()
     row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")

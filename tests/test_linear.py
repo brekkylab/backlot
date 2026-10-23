@@ -163,8 +163,8 @@ def test_linear_issue_url_is_the_real_vendor_domain(client, admin_h):
 
 def test_linear_comment_url_is_the_issue_url_with_the_ids_first_eight(client, admin_h):
     """A comment's url is its ISSUE's url with `#comment-` and the first eight characters of
-    the comment's id — not a bare /issue/ fragment carrying the whole id. The measurement is
-    recorded beside `Comment.url`'s construction in `linear_resolvers.py`."""
+    the comment's id. The measurement is recorded beside `Comment.url`'s construction in
+    `linear_resolvers.py`."""
     query = (
         '{ issue(id: "ENG-101") { url comments { nodes { id url } } } '
         "comments(first: 100) { nodes { id url } } }"

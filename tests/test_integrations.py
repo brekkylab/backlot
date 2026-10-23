@@ -223,7 +223,8 @@ def test_mirage_patchers_rebind_every_constant_they_name(monkeypatch):
     declares must land, since the raise above is only as good as the set it checks. A copy
     outside ``mirage.core`` lands too, and another vendor's constant of the same name does not:
     mirage 0.0.7 imports ``API_BASE`` into ``mirage.accessor.github``, and names Hugging Face's
-    host ``API_BASE`` in ``mirage.core.hf_hub.constants``."""
+    host ``API_BASE`` in ``mirage.core.hf_hub.constants``. The ``gh`` CLI's accessor keeps its copy,
+    which ``web_origin`` compares a ``base_url`` against to tell github.com from another host."""
     from backlot.integrations.mirage import point_github_at, point_google_at
 
     real, real_github = _mirage_constant_modules()
@@ -239,6 +240,7 @@ def test_mirage_patchers_rebind_every_constant_they_name(monkeypatch):
             "mirage.core.github.constants": {n: getattr(real_github, n) for n in github_names},
             "mirage.accessor.github": {"API_BASE": real_github.API_BASE},
             "mirage.core.hf_hub.constants": {"API_BASE": "https://huggingface.co"},
+            "mirage.commands.cli.builtin.gh.accessor": {"API_BASE": real_github.API_BASE},
         },
     )
     point_google_at("http://127.0.0.1:9999")
@@ -256,6 +258,7 @@ def test_mirage_patchers_rebind_every_constant_they_name(monkeypatch):
     )
     assert mods["mirage.accessor.github"].API_BASE == "http://127.0.0.1:9999/github"
     assert mods["mirage.core.hf_hub.constants"].API_BASE == "https://huggingface.co"
+    assert mods["mirage.commands.cli.builtin.gh.accessor"].API_BASE == real_github.API_BASE
 
 
 def test_mirage_patchers_name_every_host_constant_mirage_ships():

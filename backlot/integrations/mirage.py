@@ -34,7 +34,9 @@ __all__ = [
 ]
 
 
-def _rebind_mirage_constants(source_module: str, overrides: dict[str, str]) -> None:
+def _rebind_mirage_constants(
+    source_module: str, overrides: dict[str, str], keep: frozenset[str] = frozenset()
+) -> None:
     """Rebind mirage's hardcoded API-host constants.
 
     Patches the source module — imported first so it exists — AND every already-imported
@@ -42,9 +44,10 @@ def _rebind_mirage_constants(source_module: str, overrides: dict[str, str]) -> N
     order-independent. Idempotent.
 
     A copy is a same-named attribute holding the source's own value. The value is what tells it
-    apart: copies sit outside ``mirage.core`` too (``mirage.accessor.github`` and the ``gh`` CLI's
-    accessor import ``API_BASE``), while ``mirage.core.hf_hub.constants.API_BASE`` is a different
-    vendor's host under the same name and is left alone.
+    apart: copies sit outside ``mirage.core`` too (``mirage.accessor.github`` imports ``API_BASE``),
+    while ``mirage.core.hf_hub.constants.API_BASE`` is a different vendor's host under the same name
+    and is left alone. A module named in ``keep`` holds a copy it compares against rather than sends
+    to, and is left alone too.
 
     Raises, before patching anything, if a name in ``overrides`` is missing from the source. A
     renamed constant is the one failure this sweep cannot notice on its own: a moved MODULE already
@@ -60,7 +63,8 @@ def _rebind_mirage_constants(source_module: str, overrides: dict[str, str]) -> N
         )
     current = {const: getattr(source, const) for const in overrides}
     for mod in list(sys.modules.values()):
-        if not getattr(mod, "__name__", "").startswith("mirage."):
+        name = getattr(mod, "__name__", "")
+        if not name.startswith("mirage.") or name in keep:
             continue
         for const, value in overrides.items():
             if getattr(mod, const, None) == current[const]:
@@ -118,6 +122,15 @@ def point_github_at(base_url: str) -> None:
     to every call site in ``mirage.core.github`` — but it is what redirects a VFS built without
     that field set. Call once, before the VFS's first command: that command fetches the tree at the
     mount's ref, and the repository's default branch first when the mount names no ref.
+
+    The ``gh`` CLI's accessor keeps its copy. Its requests go through ``github/client.py``, and
+    ``web_origin`` reads ``API_BASE`` only to tell GitHub's own API from another host, so a rebound
+    copy would read a ``base_url`` of Backlot's ``/github`` as github.com, and ``gh repo clone``
+    would build a github.com url from it.
     """
     base = base_url.rstrip("/")
-    _rebind_mirage_constants("mirage.core.github.constants", {"API_BASE": f"{base}/github"})
+    _rebind_mirage_constants(
+        "mirage.core.github.constants",
+        {"API_BASE": f"{base}/github"},
+        keep=frozenset({"mirage.commands.cli.builtin.gh.accessor"}),
+    )

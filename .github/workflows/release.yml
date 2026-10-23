@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -25,16 +27,6 @@ jobs:
         run: pip install build
       - name: Build the sdist and the wheel
         run: python -m build
-      - name: Hold the release tag to the version being built
-        if: github.event_name == 'release'
-        env:
-          TAG: ${{ github.event.release.tag_name }}
-        run: |
-          version=$(basename dist/*.whl | cut -d- -f2)
-          [ "$TAG" = "v$version" ] || {
-            echo "release $TAG builds $version: run \`uvx bump-my-version bump --new-version ${TAG#v}\`" >&2
-            exit 1
-          }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
@@ -73,9 +65,20 @@ jobs:
         with:
           name: dist
           path: dist/
+      # The registry checks each version server.json names against PyPI, and `uvx` needs the
+      # `--with` pin to match the package it runs, so all three are the wheel just uploaded.
+      - name: Point server.json at the version just uploaded
+        run: |
+          version=$(basename dist/*.whl | cut -d- -f2)
+          jq --arg v "$version" '
+            .version = $v
+            | .packages[0].version = $v
+            | .packages[0].runtimeArguments[0].value = "backlot[mcp]==\($v)"
+          ' server.json > server.json.tmp
+          mv server.json.tmp server.json
+          echo "VERSION=$version" >> "$GITHUB_ENV"
       - name: Wait for PyPI to serve the version
         run: |
-          VERSION=$(basename dist/*.whl | cut -d- -f2)
           for _ in $(seq 60); do
             curl -sf -o /dev/null "https://pypi.org/pypi/backlot/$VERSION/json" && exit 0
             sleep 10

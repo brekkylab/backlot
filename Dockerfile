@@ -30,7 +30,11 @@ RUN python -m venv /opt/venv
 # README.pypi.md `pip show backlot` in the container has an empty description.
 COPY pyproject.toml README.pypi.md LICENSE ./
 COPY backlot ./backlot
-RUN pip install --no-cache-dir .
+# .dockerignore keeps .git out of the build context, so setuptools-scm finds no tag to read and the
+# image carries the fallback version pyproject names. Pass the version being built to stamp it:
+#     docker build --build-arg VERSION=0.0.1 .
+ARG VERSION
+RUN SETUPTOOLS_SCM_PRETEND_VERSION=${VERSION} pip install --no-cache-dir .
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \

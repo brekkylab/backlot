@@ -160,8 +160,9 @@ def test_claude_plugin_manifest_names_the_plugin():
 def test_the_two_plugin_manifests_agree_on_version():
     """One plugin, two harnesses: a bump that lands in one manifest and not the other is a lie.
 
-    The plugin is versioned apart from the package, so neither follows `pyproject.toml`: they are
-    written by hand, and the realistic failure is bumping one and forgetting the other.
+    Neither can be derived from the package — setuptools-scm reports a dev version off the commit
+    count in a checkout, which is not a version a plugin catalog can show — so they are written by
+    hand, and the realistic failure is bumping one and forgetting the other.
     """
     claude = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     codex = json.loads((REPO / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))

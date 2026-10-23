@@ -1,12 +1,10 @@
 [build-system]
-# setuptools-scm is here for its file finder, which puts every git-tracked file in the sdist
-# (MANIFEST.in prunes from that). The version is static and moves with `bump-my-version`.
 requires = ["setuptools>=77", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "backlot"
-version = "0.0.6"
+dynamic = ["version"]
 description = "A local emulator for enterprise SaaS APIs, served over your own corpus with per-document ACLs"
 readme = "README.pypi.md"
 requires-python = ">=3.11"
@@ -230,6 +228,9 @@ filterwarnings = [
 markers = [
     "windows: a test the Windows workflow runs on every pull request it runs on",
 ]
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0.dev0"
 
 [tool.setuptools.packages.find]
 include = ["backlot*"]

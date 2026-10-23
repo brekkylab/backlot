@@ -398,7 +398,6 @@ wheels = [
 
 [[package]]
 name = "backlot"
-version = "0.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -512,7 +511,7 @@ requires-dist = [
     { name = "anthropic", extras = ["mcp"], marker = "extra == 'mcp'", specifier = ">=0.40" },
     { name = "atlassian-python-api", marker = "extra == 'llamaindex'", specifier = ">=4.0" },
     { name = "atlassian-python-api", marker = "extra == 'official-sdk'", specifier = ">=3.41" },
-    { name = "backlot", extras = ["dev", "official-sdk", "mcp", "llamaindex", "mirage", "fsspec"], marker = "extra == 'all'" },
+    { name = "backlot", extras = ["dev", "fsspec", "llamaindex", "mcp", "mirage", "official-sdk"], marker = "extra == 'all'" },
     { name = "boto3", marker = "extra == 'llamaindex'", specifier = ">=1.40" },
     { name = "boto3", marker = "extra == 'official-sdk'", specifier = ">=1.34" },
     { name = "cryptography", specifier = ">=3.4" },

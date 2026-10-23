@@ -1509,6 +1509,12 @@ async def conversations_history(request: Request):
                     return False
             return True
 
+        # Each page is newest first. The pages walk back in time from `latest`, or forward from
+        # `oldest` when it is the only bound. Measured against slack.com/api on 2026-10-23 over a
+        # 330-message channel with limit=3: `oldest` alone, and beside a `latest` of `0`, served the
+        # three messages just after it and then the next three; `latest`, alone or beside `oldest`,
+        # served the three just before it and then the three before those.
+        from_oldest = lo is not None and hi is None
         # SQL-narrow by created_ts (±1s to cover the sub-second fraction in a public ts), then apply
         # the exact window in Python — so a day window scans the day, not the whole channel.
         lo_sec = int(lo.split(".")[0]) - 1 if lo is not None else None
@@ -1516,15 +1522,25 @@ async def conversations_history(request: Request):
         matched = [
             r
             for r in store.list_slack_top_level(
-                conn, name, ids, limit=10**9, ts_lo=lo_sec, ts_hi=hi_sec
+                conn,
+                name,
+                ids,
+                limit=10**9,
+                ts_lo=lo_sec,
+                ts_hi=hi_sec,
+                newest_first=not from_oldest,
             )
             if _in_window(r)
         ]
         total = len(matched)
         rows = matched[offset : offset + limit]
+        if from_oldest:
+            rows.reverse()
     else:
         total = store.count_slack_top_level(conn, name, ids)
-        rows = store.list_slack_top_level(conn, name, ids, limit=limit, offset=offset)
+        rows = store.list_slack_top_level(
+            conn, name, ids, limit=limit, offset=offset, newest_first=True
+        )
     messages = []
     for r in rows:
         rc = store.slack_reply_count(conn, name, r["ts"], ids) if r["thread_ts"] else 0

@@ -3611,12 +3611,21 @@ def slack_created_bounds(conn, channel) -> sqlite3.Row:
 
 
 def list_slack_top_level(
-    conn, channel, visible_ids=None, limit=100, offset=0, ts_lo=None, ts_hi=None
+    conn,
+    channel,
+    visible_ids=None,
+    limit=100,
+    offset=0,
+    ts_lo=None,
+    ts_hi=None,
+    *,
+    newest_first=False,
 ) -> list[sqlite3.Row]:
-    """Top-level (thread-root/standalone) messages in a channel. ``ts_lo``/``ts_hi`` bound
-    ``created_ts`` for a time-windowed conversations.history, so a day window is an indexed range
-    rather than the whole channel filtered in Python. Widen the bounds by ±1s — the public ts
-    carries a sub-second fraction — and re-check the exact float window in the caller."""
+    """Top-level (thread-root/standalone) messages in a channel, oldest first unless
+    ``newest_first``. ``ts_lo``/``ts_hi`` bound ``created_ts`` for a time-windowed
+    conversations.history, so a day window is an indexed range rather than the whole channel
+    filtered in Python. Widen the bounds by ±1s — the public ts carries a sub-second fraction — and
+    re-check the exact float window in the caller."""
     sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
     params: list = [channel]
     if ts_lo is not None or ts_hi is not None:
@@ -3625,7 +3634,7 @@ def list_slack_top_level(
         sql += " AND created_ts >= ? AND created_ts <= ?"
         params += [lo, hi]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
-    sql += clause + f" ORDER BY {_order_by('slack')} LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {_order_by('slack', desc=newest_first)} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 

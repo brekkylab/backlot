@@ -4038,9 +4038,9 @@ def test_post_message_is_readable_back_by_the_poster(wclient, tokens):
     assert posted["message"]["text"] == "shipping now"
     assert posted["ts"] == posted["message"]["ts"]
     hist = wclient.post(
-        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+        "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 1}
     ).json()
-    assert posted["ts"] in [m["ts"] for m in hist["messages"]]
+    assert [m["ts"] for m in hist["messages"]] == [posted["ts"]]
 
     # `last_read` is `slack_latest_ts`, which asks each side of the merge separately and keeps
     # the newer. The channel written to now reads back the posted ts, and a channel the caller
@@ -4053,6 +4053,52 @@ def test_post_message_is_readable_back_by_the_poster(wclient, tokens):
 
     assert info(cid)["last_read"] == posted["ts"]
     assert float(info(synth.slack_channel_id("eng-announcements"))["last_read"]) > 0
+
+
+@pytest.mark.parametrize(
+    "bounds, forward",
+    [
+        ({}, False),
+        ({"oldest": "0"}, False),
+        ({"latest": 4}, False),
+        ({"oldest": 1, "latest": 5}, False),
+        ({"oldest": 1}, True),
+        ({"oldest": 1, "latest": "0"}, True),
+    ],
+)
+def test_slack_history_pages_newest_first_away_from_its_bound(wclient, tokens, bounds, forward):
+    """Each page is newest first, and the pages walk back in time from `latest` or the newest
+    message, or forward from `oldest` when it is the only bound; `conversations_history` holds the
+    measurement. An int bound is the index of a message, oldest first; a string is sent as is."""
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    history = "/slack/api/conversations.history"
+    for n in range(5):
+        wclient.post(
+            "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": f"m{n}"}
+        )
+    every = [
+        m["ts"] for m in wclient.post(history, headers=h, data={"channel": cid}).json()["messages"]
+    ]
+    oldest_first = sorted(every, key=lambda ts: tuple(map(int, ts.split("."))))
+    assert len(every) == 6 and every == oldest_first[::-1]
+
+    sent = {k: oldest_first[v] if isinstance(v, int) else v for k, v in bounds.items()}
+    pages, cursor = [], ""
+    while True:
+        body = wclient.post(
+            history, headers=h, data={"channel": cid, "limit": 2, "cursor": cursor, **sent}
+        ).json()
+        pages.append([m["ts"] for m in body["messages"]])
+        cursor = body.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+
+    lo, hi = bounds.get("oldest"), bounds.get("latest")
+    window = oldest_first[lo + 1 if isinstance(lo, int) else 0 : hi if isinstance(hi, int) else 6]
+    walk = window if forward else window[::-1]
+    chunks = [walk[i : i + 2] for i in range(0, len(walk), 2)]
+    assert pages == [chunk[::-1] if forward else chunk for chunk in chunks]
 
 
 def test_only_post_message_takes_a_channel_by_name(wclient, tokens):

@@ -18,6 +18,7 @@ Three things are worth knowing before reading further:
 from __future__ import annotations
 
 import datetime as _dt
+import math
 import re
 import secrets
 import string
@@ -322,10 +323,35 @@ _EXCLUSIVE = (
     "Only one of the following fields can be provided: "
     "mine, userId, hostEmail, organizerEmail, participantEmail"
 )
-# The request-context slot for the one `correlationId` every `invalid_arguments` error in a
-# response carries, and what it is drawn from.
+# The request-context slot for the one `correlationId` every `invalid_arguments` and
+# `INTERNAL_SERVER_ERROR` error in a response carries (the two shared it in one response on
+# api.fireflies.ai, 2026-10-22), and what it is drawn from.
 _CORRELATION_ID = "_ff_correlation_id"
 _ALNUM = string.ascii_letters + string.digits
+# `date` in milliseconds (api.fireflies.ai, 2026-10-22): real refuses a value past `_DATE_BOUNDS`
+# with `max` or `min`, adding `isNumber` for an infinite one, and answers one inside them with
+# `_internal_error` when, its fraction cut toward zero, it falls outside `_DATE_SERVED`,
+# 0000-01-01T00:00:00.000Z to 9999-12-31T23:59:59.999Z.
+_DATE_BOUNDS = (-8_640_000_000_000_000, 8_639_999_999_999_999)
+_DATE_SERVED = (-62_167_219_200_000, 253_402_300_799_999)
+_DATE_MESSAGE = "date must be a valid timestamp in milliseconds"
+
+
+def _correlation_id(context) -> str:
+    return context.setdefault(_CORRELATION_ID, "".join(secrets.choice(_ALNUM) for _ in range(8)))
+
+
+def _internal_error(context) -> GraphQLError:
+    """Real's ``INTERNAL_SERVER_ERROR``, a field error at 200."""
+    return GraphQLError(
+        "Something unexpected happened. Please try again",
+        extensions={
+            "code": "INTERNAL_SERVER_ERROR",
+            "correlationId": _correlation_id(context),
+            "status": 500,
+        },
+    )
+
 
 # validator.js's patterns, read as JavaScript reads them: `\s` is JavaScript's (no \x1c-\x1f or
 # \x85, and a BOM), and a range ending at \uffff takes either half of a surrogate pair.
@@ -420,6 +446,14 @@ def _validate_transcripts(arguments):
         add("scope", "conditionalRequired", _SCOPE_NEEDS_KEYWORD)
     if store.fireflies_scope_columns(scope) is None:
         add("scope", "isEnum", _SCOPE_ENUM)
+    date = arguments["date"]
+    if date is not None:
+        if date > _DATE_BOUNDS[1]:
+            add("date", "max", _DATE_MESSAGE)
+        elif date < _DATE_BOUNDS[0]:
+            add("date", "min", _DATE_MESSAGE)
+        if math.isinf(date):
+            add("date", "isNumber", "date must be a number conforming to the specified constraints")
     for name in ("fromDate", "toDate"):
         if _not_a_js_date(arguments[name]):
             add(name, "isDate", f"{name} must be a Date instance")
@@ -450,14 +484,11 @@ def _validate_transcripts(arguments):
         if key.endswith("_email") and value and not _is_email(value):
             add(name, "IsEmailOnly", f"{name} must be a valid email address")
     if fields:
-        context = arguments["info"].context
         raise GraphQLError(
             "Invalid argument(s) were provided",
             extensions={
                 "code": "invalid_arguments",
-                "correlationId": context.setdefault(
-                    _CORRELATION_ID, "".join(secrets.choice(_ALNUM) for _ in range(8))
-                ),
+                "correlationId": _correlation_id(arguments["info"].context),
                 "status": 400,
                 "metadata": {"fields": list(fields.values())},
                 "helpUrls": [
@@ -509,13 +540,17 @@ def resolve_transcripts(
     from_ts = to_epoch_seconds(fromDate)
     to_ts = to_epoch_seconds(toDate)
     if date is not None:
+        ms = math.trunc(date)
+        if not _DATE_SERVED[0] <= ms <= _DATE_SERVED[1]:
+            raise _internal_error(ctx)
         # `date` selects a DAY, not an instant: the real API returns every meeting sharing the
         # calendar day of the value passed, and that day is UTC — a value anywhere in the day
         # before or after returns nothing, whichever zone the caller is in. Narrowed against any
         # fromDate/toDate already given. The value is milliseconds whatever its size: real answered
         # a transcript's date divided by 1000 with no transcripts, and the millisecond before a
-        # midnight with the day before (2026-10-07).
-        day = int(date // 1000)
+        # midnight with the day before (2026-10-07). The day is read from `ms`, the value the year
+        # check above reads.
+        day = ms // 1000
         start = day - (day % 86400)
         from_ts = start if from_ts is None else max(from_ts, start)
         end = start + 86399

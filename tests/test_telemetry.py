@@ -345,9 +345,9 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
         ),
         (
             "POST",
-            "/slack/api/chat.postMessage",
+            "/slack/api/chat.scheduleMessage",
             {},
-            ("slack", "chat.postMessage", "missing", 404, None, "unsupported"),
+            ("slack", "chat.scheduleMessage", "missing", 404, None, "unsupported"),
         ),
         (
             "POST",

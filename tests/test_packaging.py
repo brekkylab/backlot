@@ -90,8 +90,7 @@ def test_the_sdist_prunes_the_readme_illustrations():
 def test_the_image_copies_every_file_pyproject_reads():
     """The Dockerfile builds from the files its ``COPY`` lists, so each one ``pyproject.toml`` names
     for the build (``readme``, ``license-files``) has to be on that list; the comment above the
-    ``COPY`` says what the image loses without one. Its own test because it reads the Dockerfile,
-    which nothing else here does.
+    ``COPY`` says what the image loses without one.
     """
     with open(REPO_ROOT / "pyproject.toml", "rb") as f:
         project = tomllib.load(f)["project"]

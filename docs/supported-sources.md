@@ -724,7 +724,8 @@ the body left off. A path in another case is the 400 here, where real routes it 
 path, and `PROPFIND` or `QUERY` is the framework's 405 here, where real answers the URL's 400. A
 credential that is not `Bearer <token>` (no header, no scheme, `Basic`, GitHub's legacy
 `token <t>`, or a bearer with a second word after its token) is refused by naming the format, where
-a bearer whose token does not resolve is `API token is invalid.`. Each refusal named here but the
+a bearer whose token does not resolve is `API token is invalid.`, with `additional_data`
+`{"reason":"token_invalid"}` ahead of the `request_id`. Each refusal named here but the
 framework's 405 carries a `request_id` in the body and `x-notion-request-id` on the response, one
 value; real's differs per response and this one is derived from the request, so a corpus served
 twice answers the same id.

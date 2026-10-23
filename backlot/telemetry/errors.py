@@ -11,9 +11,9 @@ request it refuses before any resolver runs, and the refusals no row names are g
 validation of the document and its variables, so they are ``graphql_validation``.
 
 The HTTP layer in front of Linear's and Fireflies' GraphQL refuses a body in an envelope of its own,
-with no ``errors``. Fireflies' names its code in ``code``. Express, in front of Linear's, names one
-in ``extensions.code`` when its envelope has ``extensions``; its ``code`` is the status as a number,
-which is not an identifier.
+with no ``errors``. Fireflies' HTTP layer names its code in ``code``. Linear's is Express, which
+names one in ``extensions.code`` when its envelope has ``extensions``; Express's ``code`` is the
+status as a number, which is not an identifier.
 
 The class is the cause a failed call is put down to, sent as ``backlot.error_class`` on every
 failure:

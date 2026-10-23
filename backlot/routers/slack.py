@@ -1482,6 +1482,14 @@ async def conversations_history(request: Request):
     offset = decode_cursor_or_none(_param(request, "cursor"))
     if offset is None:
         return _err("invalid_cursor")
+    # Each page is newest first. The pages walk back in time from the newest message or from
+    # `latest`, or forward from `oldest` when it is the only bound. Measured against slack.com/api
+    # on 2026-10-23 over a 330-message channel with limit=3: no bound, `oldest=0` and a `latest`
+    # past the newest message served the newest three and then the three before those; `latest`,
+    # alone or beside `oldest`, the three just before it and then the three before those; `oldest`
+    # alone, or beside a `latest` of `0` or an empty one, the three just after it and then the
+    # next three.
+    from_oldest = lo is not None and hi is None
     if lo is not None or hi is not None:  # time-bounded (e.g. a single day): filter, then paginate
         # Measured against slack.com/api on 2026-10-18: only absent, empty, "0" and
         # case-insensitive "false" exclude the bound. Other strings, including "00", "no"
@@ -1509,12 +1517,6 @@ async def conversations_history(request: Request):
                     return False
             return True
 
-        # Each page is newest first. The pages walk back in time from `latest`, or forward from
-        # `oldest` when it is the only bound. Measured against slack.com/api on 2026-10-23 over a
-        # 330-message channel with limit=3: `oldest` alone, and beside a `latest` of `0`, served the
-        # three messages just after it and then the next three; `latest`, alone or beside `oldest`,
-        # served the three just before it and then the three before those.
-        from_oldest = lo is not None and hi is None
         # SQL-narrow by created_ts (±1s to cover the sub-second fraction in a public ts), then apply
         # the exact window in Python — so a day window scans the day, not the whole channel.
         lo_sec = int(lo.split(".")[0]) - 1 if lo is not None else None

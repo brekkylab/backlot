@@ -4064,12 +4064,13 @@ def test_post_message_is_readable_back_by_the_poster(wclient, tokens):
         ({"oldest": 1, "latest": 5}, False),
         ({"oldest": 1}, True),
         ({"oldest": 1, "latest": "0"}, True),
+        ({"oldest": 1, "latest": ""}, True),
+        ({"oldest": "", "latest": 4}, False),
     ],
 )
 def test_slack_history_pages_newest_first_away_from_its_bound(wclient, tokens, bounds, forward):
-    """Each page is newest first, and the pages walk back in time from `latest` or the newest
-    message, or forward from `oldest` when it is the only bound; `conversations_history` holds the
-    measurement. An int bound is the index of a message, oldest first; a string is sent as is."""
+    """The pages `conversations_history` serves under each bound, as its comment records them. An
+    int bound is the index of a message, oldest first; a string is sent as is."""
     h = _uh(tokens, "ava@acme.com")
     cid = synth.slack_channel_id("incidents")
     history = "/slack/api/conversations.history"

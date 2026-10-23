@@ -38,29 +38,33 @@ def _rebind_mirage_constants(source_module: str, overrides: dict[str, str]) -> N
     """Rebind mirage's hardcoded API-host constants.
 
     Patches the source module — imported first so it exists — AND every already-imported
-    ``mirage.core.*`` that copied a same-named constant by value, which is what makes the redirect
+    ``mirage.*`` module that copied the constant by value, which is what makes the redirect
     order-independent. Idempotent.
 
-    Raises if any name in ``overrides`` matched nothing. A renamed constant is the one failure this
-    sweep cannot notice on its own: a moved MODULE already raises ``ImportError`` on the line below,
-    but ``hasattr`` on a renamed constant is simply False everywhere, and the caller would go on to
-    talk to the real vendor with whatever credentials it loaded.
+    A copy is a same-named attribute holding the source's own value. The value is what tells it
+    apart: copies sit outside ``mirage.core`` too (``mirage.accessor.github`` and the ``gh`` CLI's
+    accessor import ``API_BASE``), while ``mirage.core.hf_hub.constants.API_BASE`` is a different
+    vendor's host under the same name and is left alone.
+
+    Raises, before patching anything, if a name in ``overrides`` is missing from the source. A
+    renamed constant is the one failure this sweep cannot notice on its own: a moved MODULE already
+    raises ``ImportError`` on the line below, but a renamed constant is simply absent, and the
+    caller would go on to talk to the real vendor with whatever credentials it loaded.
     """
-    importlib.import_module(source_module)
-    patched: set[str] = set()
+    source = importlib.import_module(source_module)
+    if missing := sorted(const for const in overrides if not hasattr(source, const)):
+        raise RuntimeError(
+            f"{', '.join(missing)} not found in {source_module} — mirage's constants moved in an "
+            f"upgrade. Update this shim before the run silently reaches the real vendor instead of "
+            f"Backlot."
+        )
+    current = {const: getattr(source, const) for const in overrides}
     for mod in list(sys.modules.values()):
-        if not getattr(mod, "__name__", "").startswith("mirage.core."):
+        if not getattr(mod, "__name__", "").startswith("mirage."):
             continue
         for const, value in overrides.items():
-            if hasattr(mod, const):
+            if getattr(mod, const, None) == current[const]:
                 setattr(mod, const, value)
-                patched.add(const)
-    if missing := sorted(set(overrides) - patched):
-        raise RuntimeError(
-            f"{', '.join(missing)} not found in {source_module} or any imported mirage.core.* "
-            f"module — mirage's constants moved in an upgrade. Update this shim before the run "
-            f"silently reaches the real vendor instead of Backlot."
-        )
 
 
 def point_google_at(base_url: str) -> None:
@@ -112,8 +116,8 @@ def point_github_at(base_url: str) -> None:
 
     Unlike Google's, this rebind is not forced — ``GitHubConfig.base_url`` is a real seam, threaded
     to every call site in ``mirage.core.github`` — but it is what redirects a VFS built without
-    that field set. Call once, before the VFS's first command: that command fetches the default
-    branch and the tree.
+    that field set. Call once, before the VFS's first command: that command fetches the tree at the
+    mount's ref, and the repository's default branch first when the mount names no ref.
     """
     base = base_url.rstrip("/")
     _rebind_mirage_constants("mirage.core.github.constants", {"API_BASE": f"{base}/github"})

@@ -87,7 +87,7 @@ async def main(vfs) -> None:
         print("\n(folder holds only subfolders — descend further to reach files)")
         return
 
-    # Google-native docs get a .gdoc/.gsheet/.gslide.json resource name and are read structurally.
+    # Google-native docs get a .gdoc/.gsheet/.gslide.json vfs name and are read structurally.
     path = f"/gdrive/{folder}/{files[0]}"
     print(f"\n=== cat {path} ===")
     print((await (await ws.shell(f'cat "{path}"')).stdout_str()).rstrip())

@@ -135,7 +135,9 @@ llamaindex = [
 mirage = [
     # 0.0.7 is the floor: the examples import `mirage.vfs.*` and call `Workspace.shell`, both new
     # in it, and it holds the host constants `integrations.mirage` rebinds in
-    # `mirage.core.{google,github}.constants`. Earlier releases are not supported.
+    # `mirage.core.{google,github}.constants`. Earlier releases are not supported. It carries a
+    # Rust core and ships `cp311-abi3` wheels for macOS, glibc and musl Linux and Windows, each on
+    # x86_64 and arm64; anywhere else installs the sdist, which needs a Rust toolchain.
     "mirage-ai[fuse,s3]>=0.0.7",
 ]
 # fsspec examples (examples/using-fsspec/): read the mock through the filesystem interface that

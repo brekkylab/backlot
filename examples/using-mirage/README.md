@@ -11,7 +11,7 @@ python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py,
 ```
 
 Each script spins up its own throwaway server on a tiny in-code corpus, points a mirage
-`Resource` at it, and runs a few filesystem commands. Pass `--url http://host:port` to use an
+`VFS` at it, and runs a few filesystem commands. Pass `--url http://host:port` to use an
 already-running server instead (it falls back to a local one if that's unreachable).
 
 ```bash
@@ -66,8 +66,9 @@ so pages and databases both read correctly.
 
 **Linear** is one line too — `LinearConfig(api_key=token, base_url=f"{s.base_url}/linear/graphql")`.
 mirage sends the key bare in `Authorization`, the way Linear takes a personal API key, so a Backlot
-token goes into `api_key` unchanged. A team's directory lists `issues/`, `members/`, `projects/`,
-`cycles/` and `documents/`; `documents/` is empty, because a corpus carries no Linear documents.
+token goes into `api_key` unchanged. A team's directory holds `team.json` beside `issues/`,
+`members/`, `projects/`, `cycles/` and `documents/`; `documents/` is empty, because a corpus carries
+no Linear documents.
 
 **S3** is also plain config, no monkeypatch and no pin bump: `S3Config(endpoint_url=
 f"{s.base_url}/s3", path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.

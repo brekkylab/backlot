@@ -94,7 +94,7 @@ def _api_get(url: str, token: str) -> dict:
 def discover_repo(base_url: str, token: str) -> tuple[str, str] | None:
     """Find a repo the token can reach that actually has files, instead of assuming the throwaway
     CORPUS's own ``REPO`` exists — against a ``--url`` serving a different corpus, the mount's
-    first command 404s (that is when ``GitHubVFS`` fetches the default branch and the tree).
+    first command 404s (that is when ``GitHubVFS`` fetches the tree at the ref ``build`` pins).
 
     Goes through ``GET /user/repos`` — the CREDENTIAL's own view of what it can reach — so nothing
     here has to guess the owner: Backlot derives its org from the corpus's email domain and 404s
@@ -125,8 +125,8 @@ def discover_repo(base_url: str, token: str) -> tuple[str, str] | None:
 
 def build(s, token, owner, repo):
     # Redirect the API_BASE constant before the VFS reaches the network. Its first command
-    # fetches the default branch and the recursive tree, so a rebind after that would come too
-    # late for the requests that decide what the mount holds.
+    # fetches the recursive tree at the pinned ref, so a rebind after that would come too late
+    # for the requests that decide what the mount holds.
     point_github_at(s.base_url)
     return GitHubVFS(GitHubConfig(token=token, owner=owner, repo=repo, ref="main"))
 

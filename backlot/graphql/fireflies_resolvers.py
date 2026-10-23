@@ -540,15 +540,17 @@ def resolve_transcripts(
     from_ts = to_epoch_seconds(fromDate)
     to_ts = to_epoch_seconds(toDate)
     if date is not None:
-        if not _DATE_SERVED[0] <= math.trunc(date) <= _DATE_SERVED[1]:
+        ms = math.trunc(date)
+        if not _DATE_SERVED[0] <= ms <= _DATE_SERVED[1]:
             raise _internal_error(ctx)
         # `date` selects a DAY, not an instant: the real API returns every meeting sharing the
         # calendar day of the value passed, and that day is UTC — a value anywhere in the day
         # before or after returns nothing, whichever zone the caller is in. Narrowed against any
         # fromDate/toDate already given. The value is milliseconds whatever its size: real answered
         # a transcript's date divided by 1000 with no transcripts, and the millisecond before a
-        # midnight with the day before (2026-10-07).
-        day = int(date // 1000)
+        # midnight with the day before (2026-10-07). The day is read from `ms`, the value the year
+        # check above reads.
+        day = ms // 1000
         start = day - (day % 86400)
         from_ts = start if from_ts is None else max(from_ts, start)
         end = start + 86399

@@ -575,6 +575,25 @@ def test_fireflies_date_selects_a_day_and_the_singular_email_filters_narrow(clie
     assert titles('participant_email: "nobody@acme.com"') == set()
 
 
+def test_fireflies_date_reads_its_day_with_the_fraction_cut_toward_zero(tmp_path):
+    """`-0.5` cut toward zero is 0, a millisecond of 1970-01-01, and `-86400000.5` is the midnight
+    that opens 1969-12-31; each read as a floor would name the day before."""
+    records = [
+        {**FIREFLIES_CORPUS[0], "doc_id": f"ff-{day}", "title": day, "created": f"{day}T12:00:00Z"}
+        for day in ("1969-12-30", "1969-12-31", "1970-01-01")
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+
+        def titles(date):
+            query = "{ transcripts(date: %s) { title } }" % date
+            return [t["title"] for t in _ff(client, settings, query)["data"]["transcripts"]]
+
+        assert titles("-0.5") == ["1970-01-01"]
+        assert titles("-1") == ["1969-12-31"]
+        assert titles("-86400000.5") == ["1969-12-31"]
+        assert titles("-86400001") == ["1969-12-30"]
+
+
 def test_fireflies_unknown_scope_is_a_field_error_not_a_silent_widening(client, admin_h):
     """Silently searching everything would hide a client's typo. A field error keeps the
     GraphQL-over-HTTP contract: 200 with partial data alongside errors."""

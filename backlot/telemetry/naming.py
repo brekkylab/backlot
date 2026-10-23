@@ -46,6 +46,9 @@ IMPLEMENTED, EXTRA, REFUSED, MISSING, UNKNOWN = (
 _PREFERENCE = {IMPLEMENTED: 0, EXTRA: 1, REFUSED: 2, MISSING: 3}
 # FastAPI's own documentation routes, matched exactly: Google Docs is mounted at `/docs/v1`.
 _FASTAPI_DOCS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"})
+# The shape the collector keeps an operation name in; a template outside it (Sheets'
+# `values:batchGet`) is left `unmatched` rather than replaced there with `invalid`.
+_OPERATION = re.compile(r"^[A-Za-z_][A-Za-z0-9_.,/+{}-]{0,127}$")
 # Introspection is answered by the GraphQL engine for every schema; no baseline lists it.
 _INTROSPECTION = {"__schema", "__type", "__typename"}
 _S3_ROW = re.compile(
@@ -197,14 +200,12 @@ class Namer:
         # under another method. Neither is a served operation.
         methods = getattr(route, "methods", None) or set() if route is not None else set()
         rest = path[len(strip) :] if path.startswith(strip) else path
-        if "{rest" not in getattr(route, "path", "{rest") and (
-            method in methods or (method == "HEAD" and "GET" in methods)
-        ):
+        if not _catch_all(route) and (method in methods or (method == "HEAD" and "GET" in methods)):
             # A route's `{param}` can take a literal segment of an operation it does not serve
             # (`issues/{issue_number}` takes `issues/comments`). The vendor's router matches the
             # literal, so a baseline row with more literals than the route names the call.
             best = self._best(source, rest, method)
-            if best is not None and best.literals > _literals(route.path, strip):
+            if best is not None and best.literals > _literals(_route_key(route.path, strip)):
                 return Named(source, best.id, best.status)
             return self._served(source, strip, method, route)
         if source == "slack":
@@ -213,15 +214,25 @@ class Namer:
                 return Named(source, name, self._slack[name])
             return Named(source, "unmatched", UNKNOWN)
         best = self._best(source, rest, method)
-        return Named(source, best.id, best.status) if best else Named(source, "unmatched", UNKNOWN)
+        if best is not None:
+            return Named(source, best.id, best.status)
+        # A path a route serves under other methods (a 405) is named by a template, never by what
+        # the request spelled: the route's, or a vendor template under any method with more
+        # literal segments, since the first route whose `{param}` takes the path is the one that
+        # answers (`…/{}/{}` takes `…/{}/search`), as with a served call.
+        if not _catch_all(route):
+            template = _route_key(route.path, strip)
+            literal = self._best(source, rest, None)
+            if literal is not None and literal.literals > _literals(template):
+                template = "/".join(literal.segments)
+            if _OPERATION.match(template):
+                return Named(source, template, UNKNOWN)
+        return Named(source, "unmatched", UNKNOWN)
 
     def _served(self, source: str, strip: str, method: str, route: Any) -> Named:
-        route_path = (
-            route.path[len(strip) :] if strip and route.path.startswith(strip) else route.path
-        )
+        key = _route_key(route.path, strip)
         if source == "slack":
-            return Named(source, canonical(route_path), IMPLEMENTED)
-        key = canonical(route_path)
+            return Named(source, key, IMPLEMENTED)
         # An operation the vendor's contract does not describe has no vendor id, and is named by
         # its path template (`wiki/rest/api/content/{}`), which a refactor of the route leaves be.
         for m in (method, "GET") if method == "HEAD" else (method,):
@@ -231,12 +242,15 @@ class Namer:
                 return Named(source, op_id or key, status)
         return Named(source, key, EXTRA)
 
-    def _best(self, source: str, rest: str, method: str) -> _Template | None:
+    def _best(self, source: str, rest: str, method: str | None) -> _Template | None:
         """The vendor template ``rest`` fits with the most literal segments, the served one first
-        among equals."""
+        among equals; under any method where ``method`` is None."""
         segments = tuple(canonical(rest).split("/")) if canonical(rest) else ()
         methods = self._templates.get(source, {})
-        pool = methods.get(method, []) + (methods.get("GET", []) if method == "HEAD" else [])
+        if method is None:
+            pool = [t for templates in methods.values() for t in templates]
+        else:
+            pool = methods.get(method, []) + (methods.get("GET", []) if method == "HEAD" else [])
         best: _Template | None = None
         for t in pool:
             if len(t.segments) != len(segments):
@@ -303,11 +317,21 @@ class Namer:
         return Named(source, "query." + ",".join(roots), support)
 
 
-def _literals(route_path: str, strip: str) -> int:
-    key = canonical(
+def _route_key(route_path: str, strip: str) -> str:
+    """A route's path as its source's documents spell it: the mount's strip off, `{}` for each
+    parameter."""
+    return canonical(
         route_path[len(strip) :] if strip and route_path.startswith(strip) else route_path
     )
+
+
+def _literals(key: str) -> int:
     return sum(seg != "{}" for seg in key.split("/")) if key else 0
+
+
+def _catch_all(route: Any) -> bool:
+    """No route, or one (`/{rest:path}`) that answers whatever no other route serves."""
+    return "{rest" in getattr(route, "path", "{rest")
 
 
 def _under(path: str, prefix: str) -> bool:

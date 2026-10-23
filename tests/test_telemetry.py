@@ -410,6 +410,54 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             {},
             ("confluence", "wiki/rest/api/content/{}", "extra", 404, "content_not_found", "client"),
         ),
+        # A path a route serves under other methods is named by the route's template; one whose
+        # template the collector would not keep (`values:batchGet`) stays unmatched.
+        ("OPTIONS", GITHUB, {}, ("github", "repos/{}/{}", "unknown", 405, None, "client")),
+        (
+            "PUT",
+            "/hubspot/crm/v3/objects/contacts/1",
+            {},
+            ("hubspot", "crm/v3/objects/{}/{}", "unknown", 405, None, "client"),
+        ),
+        (
+            "PUT",
+            f"{GITHUB}/contents",
+            {},
+            ("github", "repos/{}/{}/contents", "unknown", 405, None, "client"),
+        ),
+        (
+            "POST",
+            "/sheets/v4/spreadsheets/x/values:batchGet",
+            {},
+            ("google_drive", "unmatched", "unknown", 405, None, "client"),
+        ),
+        # The first route whose `{param}` takes the path answers it; a vendor template with more
+        # literal segments, under any method, names the call.
+        (
+            "OPTIONS",
+            "/hubspot/crm/v3/objects/contacts/search",
+            {},
+            ("hubspot", "crm/v3/objects/{}/search", "unknown", 405, None, "client"),
+        ),
+        (
+            "PUT",
+            f"{GITHUB}/issues/comments",
+            {},
+            ("github", "repos/{}/{}/issues/comments", "unknown", 405, None, "client"),
+        ),
+        # Teams answers both from its catch-all or before routing: no route names them.
+        (
+            "OPTIONS",
+            "/msgraph/v1.0/me",
+            {},
+            ("msteams", "unmatched", "unknown", 405, None, "client"),
+        ),
+        (
+            "POST",
+            "/msgraph/v1.0/me",
+            {},
+            ("msteams", "unmatched", "unknown", 400, "BadRequest", "client"),
+        ),
         # Google Docs is mounted at /docs/v1, beside FastAPI's own /docs page.
         (
             "GET",

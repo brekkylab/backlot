@@ -246,11 +246,11 @@ class _Layer:
     a task of its own and streams the answer back up through a channel, whether or not the function
     then does anything: measured over ``backlot.serve()`` on 2026-10-23, the 25 registered that day
     add 2.0 to 2.9 ms to an answer that goes through all of them. So ``runs_on(scope)`` is asked
-    first, with no ``Request`` built, and a request it does not pick is one the function would have
-    handed straight on: it holds the function's own test for whether it has anything to do, or the
-    part of that test that reads neither the answer nor the body. It is asked where the function
-    stands in the order, so it sees the path and the method the middlewares outside it leave. Where
-    the function reads ``request.url.path``, ``runs_on`` reads :func:`_url_path`.
+    first, ahead of the ``BaseHTTPMiddleware``, and a request it does not pick is one the function
+    would have handed straight on: it holds the function's own test for whether it has anything to
+    do, or the part of that test that reads neither the answer nor the body. It is asked where the
+    function stands in the order, so it sees the path and the method the middlewares outside it
+    leave. Where the function reads ``request.url.path``, ``runs_on`` reads :func:`_url_path`.
     """
 
     def __init__(
@@ -286,9 +286,19 @@ _REPARSED = re.compile(r"[?#\t\r\n]")
 
 def _url_path(scope: Scope) -> str:
     """``request.url.path`` with no ``Request`` built: ``scope["path"]`` itself unless it holds one
-    of :data:`_REPARSED`."""
+    of :data:`_REPARSED` or the `Host` is in brackets, where the URL is built as ``request.url``
+    builds it, and raises where that raises (`Host: [0:0]`, which Python's ``urlsplit`` refuses)."""
     path = scope["path"]
-    return URL(scope=scope).path if _REPARSED.search(path) else path
+    if _REPARSED.search(path) or _bracketed_host(scope):
+        return URL(scope=scope).path
+    return path
+
+
+def _bracketed_host(scope: Scope) -> bool:
+    for name, value in scope["headers"]:
+        if name == b"host":
+            return value.startswith(b"[")
+    return False
 
 
 def _some_github_route_matches(scope: Scope) -> bool:
@@ -521,9 +531,9 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     An anonymous caller's spent rate-limit window outranks this 404 too: `GET /repos/{owner}/{repo}/`
     answers real's 403 rather than this 404 once the window is spent, `server: Varnish` (measured
     against api.github.com 2026-09-23) — this middleware runs OUTSIDE `report_github_rate_limit`, so
-    a path this branch intercepts would otherwise never reach ``rate_limit_refusal`` at all. A token
-    is unaffected: the same window spent under a token still answers this 404 (measured the same
-    day, on `/search/issues/`), which is why the refusal is checked only for a caller with no
+    a path this middleware intercepts would otherwise never reach ``rate_limit_refusal`` at all. A
+    token is unaffected: the same window spent under a token still answers this 404 (measured the
+    same day, on `/search/issues/`), which is why the refusal is checked only for a caller with no
     `Authorization` header, matching the header-reporting branch below it.
 
     `/rate_limit/` with no `Authorization` header is neither: it is answered by the `server:
@@ -656,8 +666,8 @@ def _google_route_match(scope: Scope) -> Match:
 
 
 def _google_path_not_routed_as_sent(scope: Scope) -> bool:
-    """Whether this scope's path is a Google family path that ends in a slash or that no Google
-    route serves under its method."""
+    """Whether this scope's path is a Google family path whose raw path ends in a slash, or that no
+    Google route serves under its method."""
     path = scope["path"]
     if not any(path.startswith(f"{p}/") for p in errors.google.PREFIXES):
         return False
@@ -684,8 +694,7 @@ async def route_a_google_path_the_way_google_does(request: Request, call_next):
 
     The raw path keeps the slashes, because a Drive download sent as a batch part is redirected to
     its path as sent, slashes and all, which ``backlot.routers.google._drive_batch_redirect`` builds
-    from the raw bytes. The path is the scope's rather than ``request.url``'s, in which a decoded
-    `%23` would start a fragment and cut the path short.
+    from the raw bytes. The path is the scope's rather than ``request.url``'s (:data:`_REPARSED`).
     """
     path = request.scope["path"]
     raw = request.scope.get("raw_path") or path.encode()
@@ -726,9 +735,9 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
     one. GitHub's trailing slash is the opposite rule and has its own middleware above -- the two
     vendors are measured separately.
     """
-    # the decoded path as the server parsed it: `request.url` parses it again, so an escaped `?` or
-    # `#` would end it there and hide a trailing slash after it (`POST /rest/api/3/issue/A%23B/` is
-    # real's 405, 2026-10-17)
+    # the decoded path as the server parsed it rather than `request.url`'s (:data:`_REPARSED`): an
+    # escaped `#` would hide a trailing slash after it (`POST /rest/api/3/issue/A%23B/` is real's
+    # 405, 2026-10-17)
     path = request.scope["path"]
     collapsed = re.sub("/{2,}", "/", path)
     routed = collapsed.rstrip("/")
@@ -846,12 +855,16 @@ _HEAD_IS_THE_GET_WITHOUT_ITS_BODY = (
 
 
 def _spring_failure(scope: Scope):
-    """Which answer :func:`answer_an_atlassian_write_that_fails` puts in place of this request's,
-    or ``None`` where it leaves the answer alone."""
-    path = _url_path(scope)  # picks the product only
+    """Which of ``atlassian.spring_sort_failure`` and ``atlassian.spring_write_failure``
+    :func:`answer_an_atlassian_write_that_fails` hands this request's answer to, or ``None``
+    where it hands the answer on untouched."""
+    path = _url_path(scope)
     if not errors.atlassian.owns(path):
         return None
-    reader = "spring" if errors.atlassian.is_confluence(path) else "jira"
+    # the product the gateway routes to, which reads each run of slashes as one
+    # (``errors.atlassian.front_door``)
+    product = re.sub("/{2,}", "/", path)
+    reader = "spring" if errors.atlassian.is_confluence(product) else "jira"
     accept = Headers(scope=scope).get("accept")
     if errors.atlassian.spring_cannot_sort(accept, reader=reader):
         return atlassian.spring_sort_failure

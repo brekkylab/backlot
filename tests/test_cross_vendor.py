@@ -573,10 +573,19 @@ def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
 
 
 @pytest.mark.parametrize(
-    "path",
-    ["/github/x", "/github/x%3Fy/", "/github/x%23y/", "/git%09hub/x", "/notion%0D", "/s3%0A/b"],
+    "path, host",
+    [
+        ("/github/x", b"testserver"),
+        ("/github/x%3Fy/", b"testserver"),
+        ("/github/x%23y/", b"testserver"),
+        ("/git%09hub/x", b"testserver"),
+        ("/notion%0D", b"testserver"),
+        ("/s3%0A/b", b"testserver"),
+        ("/github/x", b"[::1]:8000"),
+        ("/github/x", b"[0:0]"),
+    ],
 )
-def test_the_path_a_middleware_is_asked_with_is_the_one_its_request_url_reads(path):
+def test_url_path_is_the_path_request_url_reads(path, host):
     from starlette.requests import Request
 
     from backlot import main
@@ -590,6 +599,13 @@ def test_the_path_a_middleware_is_asked_with_is_the_one_its_request_url_reads(pa
         "path": urllib.parse.unquote(path),
         "raw_path": raw,
         "query_string": b"q=1",
-        "headers": [(b"host", b"testserver")],
+        "headers": [(b"host", host)],
     }
-    assert main._url_path(scope) == Request(scope).url.path
+
+    def read(path_of):
+        try:
+            return path_of(scope)
+        except ValueError as error:  # `[0:0]`, which `urlsplit` refuses
+            return type(error)
+
+    assert read(main._url_path) == read(lambda scope: Request(scope).url.path)

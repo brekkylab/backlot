@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from backlot import store
 from backlot.config import get_settings
 from backlot.server import HELLO_CORPUS
 from backlot.telemetry import clients, enabled, errors, naming, notice, recorder
@@ -906,6 +907,46 @@ def test_an_unhandled_exception_is_an_internal_error(client):
         c["backlot.error_class"],
         c["backlot.support"],
     ) == (500, "internal_error", "internal", "extra")
+    assert "corpus-secret" not in json.dumps(c)
+
+
+# A resolver made to raise by replacing the store read it makes, beside a refusal the same field
+# raises on purpose.
+@pytest.mark.parametrize(
+    "path, headers, broken, query, expected",
+    [
+        ("/linear/graphql", LINEAR, "linear_by_id", '{ issue(id: "x") { id } }', "internal_error"),
+        ("/linear/graphql", LINEAR, None, '{ issue(id: "nope") { id } }', "entity_not_found"),
+        (
+            "/fireflies/graphql",
+            ADMIN,
+            "list_fireflies_transcripts",
+            "{ transcripts { id } }",
+            "internal_error",
+        ),
+        (
+            "/fireflies/graphql",
+            ADMIN,
+            None,
+            "{ transcripts(limit: 0) { id } }",
+            "invalid_arguments",
+        ),
+    ],
+)
+def test_an_exception_a_graphql_resolver_raises_is_an_internal_error(
+    client, monkeypatch, path, headers, broken, query, expected
+):
+    def boom(*args, **kwargs):
+        raise RuntimeError("corpus-secret")
+
+    if broken:
+        monkeypatch.setattr(store, broken, boom)
+    (c,) = _calls(lambda: client.post(path, headers=headers, json={"query": query}))
+    assert (
+        c["http.response.status_code"],
+        c["backlot.error_code"],
+        c["backlot.error_class"],
+    ) == (200, expected, "internal" if broken else "client")
     assert "corpus-secret" not in json.dumps(c)
 
 

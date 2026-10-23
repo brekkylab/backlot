@@ -21,7 +21,12 @@ service (like the other `examples/` dirs) — run the one you want:
   (Gmail/Google Drive) are being added the same way.
 - **`slack.py`** via the same **OpenAPI→MCP bridge** — no maintained Slack MCP server accepts a
   base-URL override (they hard-wire `slack.com`), so the bridge serves Backlot's Slack Web API
-  (`/slack/api/*`) as tools instead.
+  (`/slack/api/*`) as tools instead. It is the one example whose agent **acts**: the bridge
+  serves the methods that write too, so the agent is given a task to finish rather than a
+  question to answer — find the incident, find the runbook, reply in the thread, react — and the
+  script then reads `/_meta/overlay` to print what it actually did, which is the record an
+  evaluation grades. Retrieval is part of the task, not a separate mode: the reply cannot be
+  written without reading both messages first.
 - **`gmail.py`** via the same **OpenAPI→MCP bridge** — Gmail MCP servers hard-wire `googleapis.com`
   and need real Google OAuth, so the bridge serves Backlot's Gmail API (`/gmail/*`) as tools.
 - **`gdrive.py`** via the same **OpenAPI→MCP bridge** — likewise for Google Drive, and for the three editors a Drive file opens in: the `gdrive` slice is `/drive/v3`, `/docs/v1`, `/sheets/v4` and `/slides/v1`, so an agent that finds a spreadsheet can read its cells in the next call.

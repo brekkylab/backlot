@@ -1,4 +1,4 @@
-"""Slack Web API (read-only).
+"""Slack Web API.
 
 Base URL for a client: ``http://<host>/slack/api/`` (methods live under ``/api/``).
 Slack always returns HTTP 200 with an ``{"ok": bool}`` envelope, so auth failures are
@@ -10,15 +10,17 @@ up — so ``_caller_or_error`` decides it once for every method here.
 
 from __future__ import annotations
 
+import json
 import math
 import re
+import time
 import urllib.parse
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, published, store, synth
+from backlot import auth, overlay, published, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.openapi import qp
@@ -113,6 +115,24 @@ _P_INFO = [qp("channel", required=True), qp("include_num_members", "boolean")]
 # The one workspace Backlot emulates. Every conversation is in it, shared with nobody, so the
 # sharing ids below are all this team or empty.
 TEAM_ID = "T0000BKLT"
+
+# The identity a write by the admin/service token carries. `auth.test` already answers that caller
+# `USERVICE0` -- "real Slack answers a bot token with the app's own id rather than a user's" -- and
+# a message it posts has to agree, because matching auth.test's `user_id` against message authors
+# is how a client finds its own messages (see auth.test's docstring). SERVICE_EMAIL is the row's
+# stored author, chosen to be improbable rather than impossible: `author_email` is free text in a
+# BYO record (display-only speakers already use that), so a corpus that stated this exact string
+# would have those messages served as USERVICE0.
+SERVICE_EMAIL = "service-account"
+SERVICE_USER_ID = "USERVICE0"
+BOT_ID = "B0000BKLT"
+#: The shape real requires of a `user` argument, quoted from the refusal it answers for one that
+#: does not match (measured 2026-10-22 on `chat.postEphemeral`).
+_SLACK_USER_ID = re.compile(r"^[UW][A-Z0-9]{2,}$")
+#: Slackbot, who the placeholder a deleted thread root leaves is attributed to.
+SLACKBOT_ID = "USLACKBOT"
+#: What real leaves in place of a deleted thread root (measured, see `chat_delete`).
+TOMBSTONE_TEXT = "This message was deleted."
 _P_HISTORY = [
     qp("channel", required=True),
     qp("limit", "integer"),
@@ -131,6 +151,56 @@ _P_SEARCH = [
     qp("sort_dir"),
 ]
 _P_SEARCH_FILES = [qp("query", required=True), qp("count", "integer")]
+
+# The methods that read arguments from a JSON body as well as a form. Slack's own spec says which:
+# `consumes` on these six lists `application/json` beside the urlencoded type, and on every other
+# method here -- the reads, and the three write-adjacent methods the spec types GET
+# (`chat.getPermalink`, `reactions.get`, `reactions.list`) -- it lists the form type alone.
+#
+# Both halves of the split are measured against slack.com. `POST chat.postMessage` carrying
+# `channel` and `text` as JSON posted the message and echoed the text it was sent (2026-10-21),
+# so real reads a JSON body where its spec declares one. `POST chat.getPermalink` with its
+# arguments as JSON answers `invalid_arguments` ("missing required field: channel"), so it
+# ignores one where its spec declines one. `slack_sdk` 3.44.1 sends `chat.postMessage`,
+# `chat.update` and `chat.postEphemeral` as JSON (`WebClient.api_call(..., json=kwargs)`) and the
+# rest as form, so a client that works against real works here only if this set is right.
+JSON_BODY_METHODS = frozenset(
+    {
+        "chat.postMessage",
+        "chat.postEphemeral",
+        "chat.update",
+        "chat.delete",
+        "reactions.add",
+        "reactions.remove",
+    }
+)
+
+# The write surface. Each lists what Backlot actually READS, the way every other `_P_` here does:
+# a param the vendor documents but Backlot ignores stays an acknowledged gap in the fidelity
+# baseline rather than a declaration that promises behaviour it does not have.
+_P_POST_MESSAGE = [qp("channel", required=True), qp("text", required=True), qp("thread_ts")]
+# `text` is NOT required here, where `chat.postMessage` requires it (`chat_post_ephemeral`).
+_P_POST_EPHEMERAL = [qp("channel", required=True), qp("user", required=True), qp("text")]
+_P_UPDATE = [qp("channel", required=True), qp("ts", required=True), qp("text", required=True)]
+_P_DELETE = [qp("channel", required=True), qp("ts", required=True)]
+_P_PERMALINK = [qp("channel", required=True), qp("message_ts", required=True)]
+# `reactions.add` requires all three; `reactions.remove` and `reactions.get` take `channel` and
+# `timestamp` together or neither, answering `no_item_specified` for neither — see
+# `_reaction_target`. A client generated from this reads the difference.
+_P_REACTION_ADD = [
+    qp("channel", required=True),
+    qp("timestamp", required=True),
+    qp("name", required=True),
+]
+_P_REACTION = [qp("channel"), qp("timestamp"), qp("name", required=True)]
+_P_REACTION_GET = [qp("channel"), qp("timestamp")]
+_P_REACTION_LIST = [
+    qp("count", "integer"),
+    qp("page", "integer"),
+    qp("limit", "integer"),
+    qp("cursor"),
+    qp("user"),
+]
 
 # conversations.history page cap (thread roots). Slack recommends limit<=200; capping here bounds
 # how many authors a client resolves per call so history stays fast even with a small users.list.
@@ -340,7 +410,9 @@ def post_charset_warning(content_type: str | None, has_body: bool) -> str | None
     return "missing_charset" if has_body and not named else None
 
 
-def read_post_body(content_type: str | None, body: bytes) -> tuple[dict[str, str], str | None]:
+def read_post_body(
+    content_type: str | None, body: bytes, method: str | None = None
+) -> tuple[dict[str, str], str | None]:
     """The arguments a POST body carries, and the error real answers it with instead of running the
     method, or None. Each error comes ahead of the credential, a `token` query parameter included,
     and of the arguments, in the order the checks here run.
@@ -348,9 +420,15 @@ def read_post_body(content_type: str | None, body: bytes) -> tuple[dict[str, str
     A body is read as multipart when :func:`_rfc1867_boundary` reads a boundary off its
     Content-Type, else as a form when the Content-Type starts with the form type in any case
     (`APPLICATION/X-WWW-FORM-URLENCODED`, `…-urlencodedx` and `…-urlencoded, text/html` are read
-    too); what it carries passes the media-type check whatever the media type is. A JSON or
-    `text/plain` body is not read here. `Content-Encoding` is not read: a gzipped body is read as
-    the bytes it is, and a plain one under `gzip`, `bogus` or an empty value is read as itself.
+    too); what it carries passes the media-type check whatever the media type is. A `text/plain`
+    body is not read. `Content-Encoding` is not read: a gzipped body is read as the bytes it is,
+    and a plain one under `gzip`, `bogus` or an empty value is read as itself.
+
+    A JSON body is read for the `method` in :data:`JSON_BODY_METHODS` alone, after every check
+    above, so what a body is refused for does not turn on which method it was sent to. Whether a
+    JSON body is READ does, and both answers are measured on slack.com: `POST chat.postMessage`
+    sent one posted the message (2026-10-21), and `POST chat.getPermalink` sent one answers
+    `invalid_arguments` ("missing required field: channel").
     """
     if not content_type:
         return {}, "missing_post_type" if body else None
@@ -369,19 +447,48 @@ def read_post_body(content_type: str | None, body: bytes) -> tuple[dict[str, str
             return {}, "invalid_charset"
     if args is None and body and media_type in (_FORM, _MULTIPART):
         return {}, "invalid_form_data"
+    if args is None and body and media_type == "application/json" and method in JSON_BODY_METHODS:
+        return _json_args(body), None
     return args or {}, None
 
 
+def _json_args(body: bytes) -> dict[str, str]:
+    """The arguments a JSON object body carries, as the text a form field would have carried: a
+    client that sends `7` or `true` and one that sends `"7"` or `"true"` name the same argument,
+    and a handler reads one type rather than two. A body that is not an object carries none.
+
+    `token` is dropped. It is a credential in a FORM body and `auth.slack_token` reads it ahead
+    of the header, which is right there and wrong here: measured against slack.com on 2026-10-22,
+    a JSON `{"token": <valid>}` with no header answers `not_authed`, and one carrying a bogus
+    `token` beside a valid header is answered for the header. Kept, it would authenticate a
+    client as whoever a stale field in its own payload names.
+    """
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        k: v if isinstance(v, str) else json.dumps(v)
+        for k, v in parsed.items()
+        if v is not None and k != "token"
+    }
+
+
 def read_body(
-    method: str, content_type: str | None, body: bytes
+    verb: str, content_type: str | None, body: bytes, method: str | None = None
 ) -> tuple[dict[str, str], str | None]:
-    """:func:`read_post_body` for a request's method: a `PUT`, `PATCH` or `DELETE` body is read as a
+    """:func:`read_post_body` for a request's verb: a `PUT`, `PATCH` or `DELETE` body is read as a
     `POST`'s and refused only for a name, `invalid_arg_name` or `invalid_array_arg`. Measured
     against slack.com/api on 2026-10-20: a form `token=<bogus>` under each of them is
     `invalid_auth`, and a form `{}`, a body with no Content-Type and one under `text/html` are read
-    as no body."""
-    args, error = read_post_body(content_type, body)
-    if method != "POST" and error not in ("invalid_arg_name", "invalid_array_arg"):
+    as no body.
+
+    ``method`` is the Slack method the path names, which decides whether a JSON body is read at
+    all (:data:`JSON_BODY_METHODS`)."""
+    args, error = read_post_body(content_type, body, method)
+    if verb != "POST" and error not in ("invalid_arg_name", "invalid_array_arg"):
         return args, None
     return args, error
 
@@ -1094,6 +1201,21 @@ def _channel_names(conn) -> list[str]:
     return [row["name"] for row in store.list_containers(conn, "slack")]
 
 
+def _uid(email: str) -> str:
+    """A stored author's Slack user id.
+
+    Every author but one is a corpus address hashed by :func:`synth.slack_user_id`. The exception
+    is the service account, which is not a person and whose id `auth.test` already fixes at
+    ``USERVICE0``; hashing its sentinel address instead would give a client two different ids for
+    the same caller.
+
+    Used wherever a STORED author becomes an id — the message, a search hit, a thread's reply
+    authors and its parent, a reaction, an edit stamp, a user object. A site that hashes directly
+    would answer a different id for the same person than the one beside it.
+    """
+    return SERVICE_USER_ID if email == SERVICE_EMAIL else synth.slack_user_id(email)
+
+
 def _handle(email: str) -> str:
     """A corpus email as Slack's handle — the `name` a user object carries and the `user`
     `auth.test` reports for the same person."""
@@ -1105,7 +1227,9 @@ def _user_obj(conn, email: str, caller: Caller) -> dict:
     display = u["display_name"] if u else email.split("@")[0]
     parts = display.split()
     updated = synth.epoch("user:" + email)
-    is_bot = not u and email.split("@")[0].endswith("bot")  # display-only "*bot" speakers
+    # The service account is a bot in the sense every client cares about: it posts as an app, and
+    # `auth.test` reports it with the app-shaped id `_uid` returns.
+    is_bot = email == SERVICE_EMAIL or (not u and email.split("@")[0].endswith("bot"))
     # A roster entry's `deactivated: true`. Measured against a live workspace on 2026-09-17:
     # `deleted` is present on all 19 members and true on the 9 deactivated ones, so it is served
     # unconditionally where docs.slack.dev's user object allows either ("Otherwise the value is
@@ -1115,7 +1239,7 @@ def _user_obj(conn, email: str, caller: Caller) -> dict:
     # active. A roster states no GDPR erasure, so there is nothing here to derive it from.
     deactivated = bool(u) and store.slack_is_deactivated(conn, email)
     obj = {
-        "id": synth.slack_user_id(email),
+        "id": _uid(email),
         "team_id": TEAM_ID,
         "name": _handle(email),
         "deleted": deactivated,
@@ -1222,14 +1346,14 @@ async def auth_test(request: Request):
     caller, err = _caller_or_error(request)
     if err is not None:
         return err
-    who = "service-account" if caller.is_admin else _handle(caller.email)
+    who = SERVICE_EMAIL if caller.is_admin else _handle(caller.email)
     return {
         "ok": True,
         "url": f"https://{get_settings().org_name}.slack.com/",
         "team": get_settings().org_name,
         "user": who,
         "team_id": TEAM_ID,
-        "user_id": "USERVICE0" if caller.is_admin else synth.slack_user_id(caller.email),
+        "user_id": SERVICE_USER_ID if caller.is_admin else synth.slack_user_id(caller.email),
         # Measured against slack.com on 2026-10-09 and 2026-10-11 with a user token, on a workspace
         # outside any Enterprise organization: every `ok: true` answer, over GET and POST, has these
         # members in this order and ends with `"is_enterprise_install": false`.
@@ -1406,7 +1530,7 @@ async def conversations_history(request: Request):
         rc = store.slack_reply_count(conn, name, r["ts"], ids) if r["thread_ts"] else 0
         latest = store.slack_latest_reply_ts(conn, name, r["ts"], ids) if rc else None
         ru = store.slack_reply_authors(conn, name, r["ts"], ids) if rc else []
-        ruids = [synth.slack_user_id(e) for e in ru[:5]]
+        ruids = [_uid(e) for e in ru[:5]]
         messages.append(
             _message(
                 r,
@@ -1494,8 +1618,8 @@ async def conversations_replies(request: Request):
     rc = sum(1 for x in rows if x["thread_seq"] > 0)
     latest = store.slack_latest_reply_ts(conn, name, root["ts"], ids) if rc else None
     ru = store.slack_reply_authors(conn, name, root["ts"], ids)
-    ruids = [synth.slack_user_id(e) for e in ru[:5]]
-    parent_uid = synth.slack_user_id(root["author_email"])
+    ruids = [_uid(e) for e in ru[:5]]
+    parent_uid = _uid(root["author_email"])
     messages = [
         _message(
             x,
@@ -1631,6 +1755,10 @@ def _slack_author_by_uid(request: Request, conn, uid: str) -> str | None:
     cache = getattr(request.app.state, "_slack_uid_map", None)
     if cache is None:
         cache = {synth.slack_user_id(e): e for e in store.distinct_slack_author_emails(conn)}
+        # The service account is not a corpus author, so the DISTINCT scan cannot find it — but a
+        # message it posted names it, and `auth.test` tells a client to match that id against
+        # message authors. Resolving to nothing there breaks the one flow that docstring describes.
+        cache[SERVICE_USER_ID] = SERVICE_EMAIL
         request.app.state._slack_uid_map = cache
     return cache.get(uid)
 
@@ -1808,6 +1936,906 @@ async def search_all(request: Request):
     return {"ok": True, "query": query, "messages": block, "files": empty}
 
 
+# --- writes ---------------------------------------------------------------------------------
+#
+# Every method here answers BOTH verbs. Measured against slack.com on 2026-09-06 with a read-only
+# token: each answers `missing_scope` -- not `unknown_method` -- over GET and POST alike, so the
+# method and the verb are recognised and the request reaches the scope check.
+#
+# Backlot models no OAuth scopes, so wherever real Slack splits an answer on one it takes the
+# permissive branch. `chat.postMessage` into a public channel the caller has not joined is the
+# case that matters: real Slack answers `not_in_channel` without `chat:write.public`. The
+# divergence is an acknowledged entry in the Slack fidelity baseline rather than a silent one.
+
+
+#: The earliest second a `thread_ts` may name: 1990-01-01T00:00:00Z. Measured against slack.com
+#: on 2026-10-22 — `631152000.000001` is refused and `631152001.000000` posts.
+_THREAD_TS_FLOOR = 631152000
+#: How far ahead of the request one may name. Bisected the same day: 3,649 s past the clock read
+#: when the bisection started posted, 3,650 s was refused, the bisection taking about 30 s.
+_THREAD_TS_AHEAD = 3600
+
+
+def _thread_ts_error(wanted) -> JSONResponse | None:
+    """`invalid_thread_ts` for a `thread_ts` outside the window real accepts, else None.
+
+    `_slack_ts` has already read the value the way real reads it (`1e9` is 19 seconds, `x5` is
+    5, `1.2.3` is 1,000,002 µs). What real adds is bounds: the seconds have to be above
+    :data:`_THREAD_TS_FLOOR` and no more than :data:`_THREAD_TS_AHEAD` past the request. A value
+    inside the window that names no message is not refused — it posts top-level.
+
+    The message carries the value as real read it, in MICROSECONDS: `abc` is
+    `0 is not a valid thread_ts`, `-1` is `1000000 is not`, `1e9` is `19000000 is not`.
+    """
+    if wanted is None:
+        return None
+    micros = 0 if wanted is False else int(float(wanted) * 1_000_000 + 0.5)
+    seconds = micros // 1_000_000
+    if _THREAD_TS_FLOOR < seconds <= int(time.time()) + _THREAD_TS_AHEAD:
+        return None
+    return JSONResponse(
+        {
+            "ok": False,
+            "error": "invalid_thread_ts",
+            "response_metadata": {"messages": [f"[ERROR] {micros} is not a valid thread_ts"]},
+        }
+    )
+
+
+def _blocks_error(request: Request) -> JSONResponse | None:
+    """`invalid_blocks_format` for a `blocks` that is not a JSON array.
+
+    Measured against slack.com on 2026-10-22: `blocks=abc`, `blocks={}` and an empty `blocks`
+    are each refused, with or without a `text` beside them, where `blocks=[]` is read as an
+    empty list. Only `blocks` has the format error — an `attachments` of `abc` or of an object
+    answers `no_text`, so a malformed one is simply a value carrying no message.
+    """
+    raw = _param(request, "blocks")
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return _err("invalid_blocks_format")
+    return None if isinstance(parsed, list) else _err("invalid_blocks_format")
+
+
+def _json_array(request: Request, name: str) -> list:
+    """The argument read as a JSON array, or empty for anything else."""
+    raw = _param(request, name)
+    if raw is None:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+#: The `attachments` keys that make a member carry the message by being there at all. Measured
+#: against slack.com on 2026-10-23 with no `text`, twenty values on `chat.postMessage` and the
+#: same on `chat.update`: each of these posts with an empty value as with a filled one
+#: (`"pretext": ""` and `"fields": []` post), where `footer`, `color`, `author_link`,
+#: `title_link`, `image_url`, `mrkdwn_in` and `ts` answer `no_text`.
+_ATTACHMENT_TEXT_KEYS = ("text", "fallback", "title", "pretext", "author_name", "fields")
+
+
+def _attachment_carries_text(a: object) -> bool:
+    """Whether one `attachments` member is a message rather than decoration.
+
+    Its own `blocks` count the way the top-level argument does and not the way its siblings do:
+    only a NON-EMPTY array, where `[]`, `"abc"` and `{}` are each `no_text`.
+    """
+    if not isinstance(a, dict):
+        return False
+    if any(k in a for k in _ATTACHMENT_TEXT_KEYS):
+        return True
+    blocks = a.get("blocks")
+    return isinstance(blocks, list) and bool(blocks)
+
+
+def _has_content(request: Request) -> bool:
+    """Whether `blocks` or `attachments` carries the message in place of `text`.
+
+    For `blocks` that is a non-empty JSON array, and only that. For `attachments` it is an array
+    with a member :func:`_attachment_carries_text` accepts, so `[]`, `[{}]`, a member carrying
+    decoration alone, and anything that is not an array of objects -- `5`, `true`, `"text"`,
+    `["text"]`, `[["text"]]`, `null` -- all leave the message textless. `chat.postMessage` and
+    `chat.update` answered identically on every value measured.
+    """
+    if _json_array(request, "blocks"):
+        return True
+    return any(_attachment_carries_text(a) for a in _json_array(request, "attachments"))
+
+
+def _writer(caller: Caller) -> str:
+    """The corpus address a write is attributed to.
+
+    The service token has no corpus email -- `_is_member` says outright that it "is not a person"
+    -- and `auth.test` already answers it as ``USERVICE0`` by analogy to a bot token, on the
+    grounds that "real Slack answers a bot token with the app's own id rather than a user's".
+
+    What it does NOT carry is a subtype. Measured against slack.com on 2026-10-22 with an app's
+    bot token: the echo and the history both answered `app_id`, `blocks`, `bot_id`,
+    `bot_profile`, `team`, `text`, `ts`, `type` and the bot user's `user`, and no `subtype`. A
+    `bot_message` here would also drop `blocks`, which real serves.
+    """
+    return SERVICE_EMAIL if caller.is_admin else caller.email
+
+
+def _writable_channel(request: Request, conn, caller: Caller, *, by_name: bool = False):
+    """``(channel_name, None)`` for a channel this caller may write to, else ``(None, error)``.
+
+    `channel_not_found` for one they cannot see, which is Slack's own non-leaking answer: a caller
+    outside a private channel is told it does not exist rather than that they lack permission, so
+    the error cannot be used to enumerate channels.
+
+    `by_name` also reads the argument as a channel's name, with or without a leading `#`. It is a
+    property of the method, not of the argument: measured against slack.com on 2026-10-21 in one
+    workspace, `chat.postMessage` posted for the id, the name and `#name` alike, where
+    `chat.update` and `reactions.add` answered `channel_not_found` for the name and took the id
+    alone. A name nothing has is `channel_not_found`, as an id nothing has is.
+    """
+    raw = _param(request, "channel") or ""
+    name = _channel_name(conn, raw)
+    if name is None and by_name:
+        wanted = raw[1:] if raw.startswith("#") else raw
+        name = wanted if wanted in _channel_names(conn) else None
+    ids = auth.visible_ids(request, caller)
+    if name is None or not _channel_visibility(request, conn, ids)(name):
+        return None, _err("channel_not_found")
+    return name, None
+
+
+@router.api_route(
+    "/chat.postMessage", methods=["GET", "POST"], openapi_extra={"parameters": _P_POST_MESSAGE}
+)
+async def chat_post_message(request: Request):
+    """Post a message to a channel.
+
+    Errors quoted from `slack_web_openapi_v2.json`,
+    ``paths./chat.postMessage.post.responses.default``: `channel_not_found`, `not_in_channel`,
+    `is_archived`, `msg_too_long`, `no_text`, `too_many_attachments`. Backlot answers
+    `channel_not_found` and `no_text`; `not_in_channel` needs a scope model, `is_archived` needs a
+    channel that can be archived, and `too_many_attachments` is a limit no corpus states.
+
+    `msg_too_long` is none of those: docs.slack.dev puts the number in the platform's own docs
+    ("Slack will truncate messages containing more than 40,000 characters"), so it is reproducible
+    where a workspace setting is not. Backlot does not truncate yet, and a 50,000-character text
+    posts and reads back whole.
+
+    When `no_text` fires is measured, not chosen: against slack.com on 2026-10-21, `text`
+    absent and `text=` both answer `no_text`, where `channel` absent answers `invalid_arguments`
+    and `channel=` `channel_not_found`. A `text` of spaces posts, so the test is emptiness rather
+    than blankness. `chat.update` reads `ts` by `channel`'s rules.
+
+    `blocks` and `attachments` are READ, not merely looked for, and each by its own rule --
+    see :func:`_has_content`. Measured with no `text`: a `blocks` naming one section posts and
+    `blocks=[]` answers `no_text`, where a `blocks` that is not a JSON array -- `abc`, `{}`,
+    empty -- answers `invalid_blocks_format`, which it does even beside a `text`. An
+    `attachments` array posts when one of its members carries a message -- see
+    :func:`_attachment_carries_text` for the keys that say so -- and answers `no_text`
+    otherwise, a member carrying only decoration included; it has no format error of its own,
+    so a value that is not an array of objects is `no_text` rather than a refusal.
+    `chat.update` reads `text`, `blocks` and `attachments` by these same rules, every value
+    re-measured against it.
+
+    Posting does not join a public channel the caller is not in, and nothing here has to arrange
+    that: membership there is derived from `main.slack_messages`, which a written row never joins.
+
+    `thread_ts` posts the message as a reply, under the ROOT of the thread it names, so replying
+    to a reply lands in the same thread. A value that names no message posts the message
+    TOP-LEVEL and carries no `thread_ts` back, as an empty one does. What is refused is a value
+    outside the window real accepts — see :func:`_thread_ts_error`.
+
+    `blocks` and `attachments` decide whether the message has content, and nothing more: the
+    `blocks` the message reads back with are composed from its `text` (`synth.slack_blocks`), as
+    a corpus message's are, rather than being the ones the caller sent. Arguments the vendor
+    documents and Backlot ignores outright: `as_user`, `username`, `icon_emoji`, `icon_url`,
+    `reply_broadcast`, `unfurl_links`, `unfurl_media`, `parse`, `link_names`, `mrkdwn`.
+    `backlot diff` cannot see them -- it compares query parameters and Slack's spec declares
+    these as form fields (see `backlot/fidelity/operations.py`) -- so this list is the record
+    until that gap is closed.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel"):
+        return err
+    name, err = _writable_channel(request, conn, caller, by_name=True)
+    if err is not None:
+        return err
+    if err := _blocks_error(request):
+        return err
+    if not (_param(request, "text") or "") and not _has_content(request):
+        return _err("no_text")
+    text = _param(request, "text") or ""
+    author = _writer(caller)
+    ids = auth.visible_ids(request, caller)
+    thread_ts, thread_seq = None, 0
+    wanted = _slack_ts(_param(request, "thread_ts"))
+    if err := _thread_ts_error(wanted):
+        return err
+    parent = (
+        store.document_by_key(conn, "slack", (name, wanted), ids) if wanted is not None else None
+    )
+    if parent is not None:
+        # Slack threads a reply under the ROOT, not under whichever message was named: replying to
+        # a reply puts it in the same thread. The corpus stores that as the root's own ts, which is
+        # what `thread_ts` holds on every row of a thread, the root included.
+        thread_ts = parent["thread_ts"] or parent["ts"]
+        thread_seq = store.slack_next_thread_seq(conn, name, thread_ts)
+        if not parent["thread_ts"]:
+            # The first reply turns a standalone message into a root, which the corpus spells as
+            # the message carrying its own ts. Without the stamp the parent stays NULL, and then
+            # `conversations.replies` answers the root alone and the message reads back with no
+            # thread at all — a thread this API made and cannot show.
+            store.patch_document(conn, "slack", (name, parent["ts"]), "thread_ts", thread_ts)
+    now = int(time.time())
+    ts = store.slack_next_ts(conn, name, now)
+    store.insert_document(
+        conn,
+        "slack",
+        {
+            "channel": name,
+            "ts": ts,
+            "author_email": author,
+            "content": text,
+            "created_ts": now,
+            "thread_ts": thread_ts,
+            "thread_seq": thread_seq,
+            "subtype": None,
+        },
+    )
+    row = store.document_by_key(conn, "slack", (name, ts))
+    return {
+        "ok": True,
+        "channel": synth.slack_channel_id(name),
+        "ts": ts,
+        "message": _message(row),
+    }
+
+
+@router.api_route(
+    "/chat.postEphemeral", methods=["GET", "POST"], openapi_extra={"parameters": _P_POST_EPHEMERAL}
+)
+async def chat_post_ephemeral(request: Request):
+    """A message only one user sees.
+
+    Nothing is stored: an ephemeral message is not in the channel's history in real Slack either,
+    so there is no state for a corpus to hold and nothing for a later read to disagree with.
+
+    Errors quoted from the spec's ``default`` response: `channel_not_found`, `is_archived`,
+    `msg_too_long`, `no_text`, `restricted_action`, `too_many_attachments`, `user_not_in_channel`.
+    Backlot answers `channel_not_found` and `user_not_in_channel`.
+
+    `text` is not required here, where `chat.postMessage` requires it: measured against
+    slack.com on 2026-10-22, this method posts with `text` absent, empty or blank. Reading
+    `text` by `chat.postMessage`'s rule is the mistake a shared name invites.
+
+    `user` is read in two steps, both measured the same day. Its SHAPE first: a value that does
+    not match ``^[UW][A-Z0-9]{2,}$`` — an empty one, a lower-cased id — is `invalid_arguments`
+    carrying that pattern, ahead of anything about the channel. Then its membership: an id
+    nobody has, and an active member who is not in the channel, are each `user_not_in_channel`.
+    A missing `user` is named before a missing `channel`.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "user", "channel"):
+        return err
+    uid = _param(request, "user") or ""
+    if not _SLACK_USER_ID.fullmatch(uid):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "invalid_arguments",
+                "response_metadata": {
+                    "messages": [
+                        "[ERROR] input must match regex pattern: "
+                        f"{_SLACK_USER_ID.pattern} [json-pointer:/user]"
+                    ]
+                },
+            }
+        )
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return err
+    # Two lookups because they cover different people, and neither is a superset.
+    # `all_user_emails` has the principals, including one who holds an account and has never
+    # posted: a private channel's grantee is a member whether or not they spoke.
+    # `_slack_author_by_uid` has the message authors, including the service id and the
+    # display-only speakers that hold no account (deploybot@...). Only a generated corpus has
+    # those -- the BYO importer makes a principal of every author it reads -- so the fallback
+    # is the one of the two no test here distinguishes.
+    email = next(
+        (e for e in store.all_user_emails(conn) if synth.slack_user_id(e) == uid), None
+    ) or _slack_author_by_uid(request, conn, uid)
+    if uid != SERVICE_USER_ID and not _in_channel(conn, name, email):
+        return _err("user_not_in_channel")
+    return {"ok": True, "message_ts": synth.slack_fmt_ts(int(time.time()), f"ephemeral:{name}")}
+
+
+def _in_channel(conn, name: str, email: str | None) -> bool:
+    """Whether this person is in the channel, for the one method that refuses on it.
+
+    A PRIVATE channel's members are its grantees, which the corpus states outright. A public
+    one's are its speakers, which a written message deliberately does not join — so a caller who
+    has posted here but never spoke in the corpus would be refused their own ephemeral, and the
+    public side answers yes for anyone the corpus knows instead. The private side is the half
+    real was measured on.
+    """
+    if not email:
+        return False
+    members = store.slack_private_channel_members(conn, name)
+    return email in members if members is not None else True
+
+
+def _own_message(request: Request, conn, caller: Caller, ts_param: str, refusal: str):
+    """``(channel_name, ts, row, None)`` for a message this caller wrote, else an error in the
+    last slot.
+
+    The three refusals are ordered the way Slack answers them, and the order is the point: a
+    caller outside the channel is told `channel_not_found` before anything about the message is
+    looked up, so the message-level errors cannot be used to probe a channel they cannot see.
+    """
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return None, None, None, err
+    ts = _param(request, ts_param) or ""
+    row = store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller))
+    if row is None or row["subtype"] == "tombstone":
+        # The placeholder a deleted root leaves is served but is no longer a message anyone can
+        # address: measured 2026-10-22, `chat.update` and `chat.delete` on it answer
+        # `message_not_found`, where reacting to it and asking its permalink still answer.
+        return None, None, None, _err("message_not_found")
+    author = _writer(caller)
+    # Case-folded, the way `_subscribed` compares the same addresses: a corpus states an author's
+    # address however it was written, and a mixed-case one could not edit their own message.
+    if (row["author_email"] or "").lower() != (author or "").lower():
+        return None, None, None, _err(refusal)
+    return name, ts, row, None
+
+
+@router.api_route("/chat.update", methods=["GET", "POST"], openapi_extra={"parameters": _P_UPDATE})
+async def chat_update(request: Request):
+    """Edit a message's text.
+
+    Errors quoted from `slack_web_openapi_v2.json`,
+    ``paths./chat.update.post.responses.default``: `message_not_found`, `cant_update_message`,
+    `channel_not_found`, `edit_window_closed`, `msg_too_long`, `too_many_attachments`, `no_text`,
+    `is_inactive`. Backlot answers the first three and `no_text`; `edit_window_closed` is a
+    workspace retention setting no corpus states, and the rest are limits it does not model.
+
+    The condition is the vendor's own: docs.slack.dev's error table for chat.update gives
+    `cant_update_message` as "Authenticated user does not have permission to update this message."
+    The admin/service token is refused under it too — bypassing the ACL is about what a caller may
+    SEE, and authorship is a different question it does not answer.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel", "ts"):
+        return err
+    name, ts, row, err = _own_message(request, conn, caller, "ts", "cant_update_message")
+    if err is not None:
+        return err
+    if err := _blocks_error(request):
+        return err
+    text = _param(request, "text") or ""
+    if not text and not _has_content(request):
+        return _err("no_text")
+    author = _writer(caller)
+    store.patch_document(conn, "slack", (name, ts), "content", text)
+    # Real Slack stamps an edited message with `edited: {user, ts}`, which is what a client renders
+    # "(edited)" from. `_message` already serves the column, so filling it is the whole of it.
+    #
+    # The ADDRESS is stored, not the id: `_edited` renders one from the other when it serves the
+    # message, so an id here would be rendered a second time — the same representation a corpus
+    # states and `reactions.users` keeps.
+    store.patch_document(
+        conn,
+        "slack",
+        (name, ts),
+        "edited",
+        json.dumps(
+            {"user": author, "ts": synth.slack_fmt_ts(int(time.time()), f"edit:{name}:{ts}")}
+        ),
+    )
+    updated = store.document_by_key(conn, "slack", (name, ts))
+    # The message an edit echoes is not the message a read answers: measured against slack.com on
+    # 2026-10-21, `chat.update` carried neither `ts` nor `reactions` for a threaded message with a
+    # reaction, where `conversations.replies` answered the same message carrying both. `ts` is on
+    # the answer beside it either way.
+    echoed = {k: v for k, v in _message(updated).items() if k not in ("ts", "reactions")}
+    return {
+        "ok": True,
+        "channel": synth.slack_channel_id(name),
+        "ts": ts,
+        "text": text,
+        "message": echoed,
+    }
+
+
+@router.api_route("/chat.delete", methods=["GET", "POST"], openapi_extra={"parameters": _P_DELETE})
+async def chat_delete(request: Request):
+    """Delete a message.
+
+    Errors quoted from the spec's ``default`` response: `message_not_found`, `channel_not_found`,
+    `cant_delete_message`, `compliance_exports_prevent_deletion`. The last is a workspace
+    compliance setting no corpus states. `cant_delete_message` carries the vendor's own condition:
+    docs.slack.dev gives it as "Authenticated user does not have permission to delete this
+    message."
+
+    A CORPUS message can be deleted. The row stays in the read-only database and is subtracted at
+    read time by the overlay's tombstone, which is the only way this can work over a corpus that
+    is never written.
+
+    A thread ROOT with replies still under it is not subtracted: real leaves it as a placeholder
+    so the thread stays readable. Measured against slack.com on 2026-10-21 — a deleted root came
+    back from `conversations.history` and `conversations.replies` as
+    ``subtype: "tombstone"``, ``text: "This message was deleted."``, ``hidden: true``, keeping its
+    `thread_ts`, `reply_count`, `reply_users` and `latest_reply`, with both replies intact beside
+    it; a deleted STANDALONE message came back from neither; and deleting the last reply took the
+    placeholder with it.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel", "ts"):
+        return err
+    name, ts, _row, err = _own_message(request, conn, caller, "ts", "cant_delete_message")
+    if err is not None:
+        return err
+    ids = auth.visible_ids(request, caller)
+    if _row["thread_seq"] == 0 and store.slack_reply_count(conn, name, ts, ids) > 0:
+        store.patch_document(conn, "slack", (name, ts), "content", TOMBSTONE_TEXT)
+        store.patch_document(conn, "slack", (name, ts), "subtype", "tombstone")
+        # Served, but found by nothing: real answers no search hit for the placeholder's words
+        # or for the message's own.
+        store.blank_index(conn, "slack", (name, ts))
+    else:
+        store.tombstone_document(conn, "slack", (name, ts))
+        _unthread_a_spent_root(conn, name, _row, ids)
+    return {"ok": True, "channel": synth.slack_channel_id(name), "ts": ts}
+
+
+def _unthread_a_spent_root(conn, channel: str, deleted, ids) -> None:
+    """What a thread's root becomes once ``deleted`` was its last reply.
+
+    Measured against slack.com on 2026-10-22: a placeholder goes with the last reply under it,
+    and a live root goes back to being a standalone message — no `thread_ts` on it in history,
+    and `chat.getPermalink` answers it without the thread query.
+    """
+    root_ts = deleted["thread_ts"]
+    if not root_ts or deleted["thread_seq"] == 0:
+        return
+    root = store.document_by_key(conn, "slack", (channel, root_ts))
+    if root is None or store.slack_reply_count(conn, channel, root_ts, ids) > 0:
+        return
+    if root["subtype"] == "tombstone":
+        store.tombstone_document(conn, "slack", (channel, root_ts))
+    else:
+        store.patch_document(conn, "slack", (channel, root_ts), "thread_ts", None)
+
+
+@router.api_route(
+    "/chat.getPermalink", methods=["GET", "POST"], openapi_extra={"parameters": _P_PERMALINK}
+)
+async def chat_get_permalink(request: Request):
+    """A message's archive URL.
+
+    Errors quoted from the spec's ``default`` response: `channel_not_found`, `message_not_found`.
+
+    The link itself is `_permalink`'s, which also names the thread a threaded message is in.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "channel", "message_ts"):
+        return err
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return err
+    ts = _param(request, "message_ts") or ""
+    row = store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller))
+    if row is None:
+        return _err("message_not_found")
+    return {
+        "ok": True,
+        "channel": synth.slack_channel_id(name),
+        "permalink": _permalink(name, row),
+    }
+
+
+def _permalink(channel_name: str, row) -> str:
+    """A message's archive URL.
+
+    The path is Slack's own shape -- ``/archives/<channel id>/p<ts with the dot removed>`` -- so
+    a permalink Backlot mints parses the way a real one does. A message in a THREAD also carries
+    ``?thread_ts=<root>&cid=<channel id>``, which is how a client opens the thread rather than
+    the channel: measured against slack.com on 2026-10-21, a thread root and a reply both carried
+    the query and a standalone message carried none.
+    """
+    cid = synth.slack_channel_id(channel_name)
+    link = (
+        f"https://{get_settings().org_name}.slack.com/archives/{cid}/p{row['ts'].replace('.', '')}"
+    )
+    if row["thread_ts"]:
+        link += f"?thread_ts={row['thread_ts']}&cid={cid}"
+    return link
+
+
+def _reacted_by(conn, address: str) -> list[tuple[str, str]]:
+    """``(channel, ts)`` of every message this person has reacted to, most recent first.
+
+    Two sources, because a reaction can come from either: the overlay's `reactions` patches,
+    ordered by the rowid their last write gave them, and then the corpus's own column. The
+    corpus side is prefiltered in SQL on the address appearing in the stored JSON, so the scan
+    is one pass over a column rather than a decode of every message.
+
+    Two ways this is not real's order, both measured 2026-10-22 and both wanting a per-reaction
+    time the corpus does not carry. Real orders by when THIS person reacted, where a patch's
+    rowid moves whenever anyone reacts to that message; and real lists one item per REACTION, so
+    a message the caller put two emoji on appears twice. Recorded rather than invented: a corpus
+    states a message's reactions as a set with no times in it.
+    """
+    patch = overlay.table_names("slack")["patch"]
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in conn.execute(
+        f"SELECT channel, ts, value FROM ov.{patch} WHERE field = 'reactions' ORDER BY rowid DESC"
+    ):
+        try:
+            reactions = json.loads(row["value"] or "[]")
+        except ValueError:
+            continue
+        key = (row["channel"], row["ts"])
+        seen.add(key)
+        if any(_has_reacted(r, address) for r in reactions):
+            out.append(key)
+    like = f'%"{address}"%'
+    for row in conn.execute(
+        f"SELECT channel, ts, reactions FROM {store.merged_source(conn, 'slack')} "
+        "WHERE reactions IS NOT NULL AND reactions LIKE ? ORDER BY created_ts DESC",
+        (like,),
+    ):
+        key = (row["channel"], row["ts"])
+        if key in seen:  # the overlay already answered for this message
+            continue
+        try:
+            reactions = json.loads(row["reactions"] or "[]")
+        except ValueError:
+            continue
+        if any(_has_reacted(r, address) for r in reactions):
+            out.append(key)
+    return out
+
+
+def _same_address(a: str, b: str) -> bool:
+    """Whether two stored reactor addresses are the same person.
+
+    Case-folded, the way `_subscribed` and the authorship check compare the same addresses: a
+    corpus states an address however it was written.
+    """
+    return (a or "").lower() == (b or "").lower()
+
+
+def _has_reacted(reaction: dict, address: str) -> bool:
+    return any(_same_address(u, address) for u in reaction.get("users") or [])
+
+
+class _AlreadyReacted(Exception):
+    """The caller already left this reaction. Raised from inside the edit callback so the write is
+    abandoned with the overlay lock still held, rather than decided on a value read before it."""
+
+
+class _NoReaction(Exception):
+    """The caller has no such reaction to remove. See :class:`_AlreadyReacted`."""
+
+
+#: The `timestamp` values real refuses rather than reads. Measured on `reactions.get`
+#: 2026-10-23: of `0`, `0.0`, `00`, `-1`, `1.5`, `x5`, `abc`, two spaces, `1e9`, `inf` and
+#: `0.000001`, only `0` answers `bad_timestamp` — every other value is read as a ts that names
+#: no message. An absent or empty one is refused with it.
+_BAD_TIMESTAMPS = ("", "0")
+
+
+def _reaction_target(
+    request: Request, conn, caller: Caller, *, item_forms: bool, channel_first: bool
+):
+    """``(channel_name, ts, row, None)`` for a reaction's message, else an error in the last slot.
+
+    Slack addresses a reaction target three ways — `channel` + `timestamp`, `file`, or
+    `file_comment`. Backlot has no file corpus (see search.files), so the two file forms name
+    nothing and are answered `file_not_found` and `file_comment_not_found`. Naming one wins over
+    a `channel` and `timestamp` beside it, and an empty `file=` is refused as a present one is.
+
+    The two flags are the three methods disagreeing, each measured against slack.com on
+    2026-10-23 with an emoji nothing has:
+
+    - ``item_forms`` — `reactions.add` reads neither file argument: given all of `name`,
+      `channel`, `timestamp` and `file` it answers `message_not_found` where the other two
+      answer `file_not_found`. It is also the method that NAMES its missing arguments, so the
+      `no_item_specified` an absent `channel` draws here is not its answer; `_missing_argument`
+      has already spoken for it.
+    - ``channel_first`` — `reactions.get` resolves the channel before reading the timestamp, and
+      the other two read the timestamp first. A channel nothing has, with no timestamp, is
+      `channel_not_found` on `reactions.get` and `bad_timestamp` on the other two.
+
+    An absent `channel` is `no_item_specified` whatever the `timestamp` beside it says, so a
+    `timestamp` alone draws it too.
+
+    The channel is resolved before the message either way, so `channel_not_found` is the answer
+    for a caller outside it whether or not the ts they named is real. A ts that resolved
+    differently would let them confirm a message exists in a channel they cannot read.
+    """
+
+    def bad_timestamp():
+        if (_param(request, "timestamp") or "") in _BAD_TIMESTAMPS:
+            return _err("bad_timestamp")
+        return None
+
+    if item_forms:
+        if _param(request, "file") is not None:
+            return None, None, None, _err("file_not_found")
+        if _param(request, "file_comment") is not None:
+            return None, None, None, _err("file_comment_not_found")
+        if _param(request, "channel") is None:
+            return None, None, None, _err("no_item_specified")
+    if not channel_first and (err := bad_timestamp()):
+        return None, None, None, err
+    name, err = _writable_channel(request, conn, caller)
+    if err is not None:
+        return None, None, None, err
+    if channel_first and (err := bad_timestamp()):
+        return None, None, None, err
+    ts = _param(request, "timestamp") or ""
+    row = store.document_by_key(conn, "slack", (name, ts), auth.visible_ids(request, caller))
+    if row is None:
+        return None, None, None, _err("message_not_found")
+    return name, ts, row, None
+
+
+@router.api_route(
+    "/reactions.add", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION_ADD}
+)
+async def reactions_add(request: Request):
+    """Add an emoji reaction to a message.
+
+    Errors quoted from `slack_web_openapi_v2.json`,
+    ``paths./reactions.add.post.responses.default``: `bad_timestamp`, `message_not_found`,
+    `no_item_specified`, `invalid_name`, `already_reacted`, `too_many_emoji`,
+    `too_many_reactions`. Backlot answers `message_not_found` and `invalid_name`;
+    `no_item_specified` is in the enum but is not what real answers THIS method for a missing
+    argument; it names them. The two ceilings are workspace limits no corpus states.
+    `bad_timestamp` is answered for the values real refuses outright (see
+    :data:`_BAD_TIMESTAMPS`); a `timestamp` real reads and finds nothing under is
+    `message_not_found`.
+
+    `reactions` is a column the corpus already carries and every message payload already serves,
+    so this is a patch to a served field rather than a new entity. The patch REPLACES the column,
+    so the existing value is read and put back — a corpus message that already carries reactions
+    keeps them.
+
+    What is stored is the reactor's ADDRESS, which is what a corpus states and what `_reactions`
+    hashes into a Slack id when it serves the message. Storing the id instead would be hashed a
+    second time. No `count` is stored either: `_reactions` derives it from the list, and the record
+    schema refuses a stated one for the same reason — a second place for it to be wrong.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    # `reactions.add` NAMES the arguments it is missing, where `reactions.remove` and
+    # `reactions.get` answer `no_item_specified` for the same request: measured 2026-10-22, an
+    # empty call lists `name`, `timestamp`, `channel` in that order, `channel` alone names
+    # `timestamp`, and `timestamp` alone names `channel`. The rule is this method's, so it is
+    # applied here rather than in the helper the three share.
+    if err := _missing_argument(request, "name", "timestamp", "channel"):
+        return err
+    name, ts, row, err = _reaction_target(
+        request, conn, caller, item_forms=False, channel_first=False
+    )
+    if err is not None:
+        return err
+    # Not stripped: measured 2026-10-22, ` eyes ` is `invalid_name` on real where stripping it
+    # reacts with `eyes`. `:eyes:` and `EYES` are refused there too, which needs the emoji set
+    # Backlot does not have and stays a recorded gap.
+    emoji = _param(request, "name") or ""
+    if not emoji:
+        return _err("invalid_name")
+    author = _writer(caller)
+
+    def add(fresh):
+        # Re-read inside the lock: `row` above was read before it, and two callers reacting at
+        # once would otherwise each write back a list missing the other's user.
+        current = store.jcol(fresh, "reactions")
+        for r in current:
+            if r["name"] != emoji:
+                continue
+            if _has_reacted(r, author):
+                raise _AlreadyReacted
+            r["users"] = [*r.get("users", []), author]
+            break
+        else:
+            current.append({"name": emoji, "users": [author]})
+        return json.dumps(current)
+
+    try:
+        store.edit_document(
+            conn, "slack", (name, ts), "reactions", add, auth.visible_ids(request, caller)
+        )
+    except _AlreadyReacted:
+        return _err("already_reacted")
+    return {"ok": True}
+
+
+@router.api_route(
+    "/reactions.remove", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION}
+)
+async def reactions_remove(request: Request):
+    """Remove one of the caller's own reactions.
+
+    Errors quoted from the spec's ``default`` response: `bad_timestamp`, `file_not_found`,
+    `file_comment_not_found`, `message_not_found`, `no_item_specified`, `invalid_name`,
+    `no_reaction`.
+
+    A reaction nobody is left on is dropped from the column entirely rather than kept at count 0,
+    so a message returns to the shape `_message` gives one nobody reacted to.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    if err := _missing_argument(request, "name"):
+        return err
+    name, ts, row, err = _reaction_target(
+        request, conn, caller, item_forms=True, channel_first=False
+    )
+    if err is not None:
+        return err
+    emoji = _param(request, "name") or ""
+    author = _writer(caller)
+
+    def drop(fresh):
+        current = store.jcol(fresh, "reactions")
+        for r in current:
+            if r["name"] == emoji and _has_reacted(r, author):
+                r["users"] = [u for u in r.get("users", []) if not _same_address(u, author)]
+                break
+        else:
+            raise _NoReaction
+        return json.dumps([r for r in current if r.get("users")])
+
+    try:
+        store.edit_document(
+            conn, "slack", (name, ts), "reactions", drop, auth.visible_ids(request, caller)
+        )
+    except _NoReaction:
+        return _err("no_reaction")
+    return {"ok": True}
+
+
+@router.api_route(
+    "/reactions.get", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION_GET}
+)
+async def reactions_get(request: Request):
+    """A message with its reactions.
+
+    Errors quoted from the spec's ``default`` response: `bad_timestamp`, `file_not_found`,
+    `file_comment_not_found`, `message_not_found`, `no_item_specified`.
+
+    The message is built by `_message`, the same builder conversations.history uses, so a client
+    that reads a reaction here and the message there cannot get two shapes for one message.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    name, _ts, row, err = _reaction_target(
+        request, conn, caller, item_forms=True, channel_first=True
+    )
+    if err is not None:
+        return err
+    return {
+        "ok": True,
+        "type": "message",
+        "channel": synth.slack_channel_id(name),
+        # `permalink` rides on the message here and on `reactions.list`, and on no other method
+        # that answers one: measured against slack.com on 2026-10-21, `conversations.history` and
+        # `conversations.replies` carry none. So it goes on at these two call sites rather than
+        # in `_message`, which all of them share.
+        "message": _message(row) | {"permalink": _permalink(name, row)},
+    }
+
+
+@router.api_route(
+    "/reactions.list", methods=["GET", "POST"], openapi_extra={"parameters": _P_REACTION_LIST}
+)
+async def reactions_list(request: Request):
+    """Items the caller has reacted to.
+
+    Errors quoted from the spec's ``default`` response: `user_not_found`.
+
+    A reaction the CORPUS states is listed too: measured against slack.com on 2026-10-22, 10 of
+    the 13 items real answered were reactions left long before the probe. Only reactions this
+    API wrote would answer a fresh server with an empty list where real answers a history.
+
+    The most recent is first. Real listed Y, Z, X for reactions left to X, then Z, then Y, so an
+    overlay patch is ordered by the rowid its last write gave it (`INSERT OR REPLACE` moves it),
+    and the corpus's own come after, in the order the corpus states.
+
+    `user` names whose reactions to list, and an id nobody has is `user_not_found`.
+
+    Measured 2026-10-21: the page is `limit` items long and carries `response_metadata`, with no
+    `paging` object. `count` and `page` are read and refused by the same rule but change neither
+    the page nor its size — `count=1` and `count=2` each answered all 100 of the default page,
+    where `limit=2` answered two. Reading an argument is not honouring it: real refuses
+    `page=abc` whatever it does with `page=2`.
+
+    `count`, `page` and `limit` are refused in that order whichever was sent first, and ahead of
+    both an undecodable `cursor` and an unknown `user`. `limit` takes the integer rule here, so
+    `1.5` is refused where a paged read method would serve one item, and a `limit` at or below
+    zero is the default page rather than every item: `0`, `00`, `-1` and `-2` each answered the
+    same 100 items and the same cursor as no `limit`, where `1000` answered all 247 and an empty
+    cursor. `full` is a recorded gap.
+    """
+    conn = auth.conn(request)
+    caller, err = _caller_or_error(request)
+    if err is not None:
+        return err
+    counts, err = _numbers(
+        request,
+        ("count", 100),
+        ("page", 1),
+        ("limit", get_settings().default_page_size, False),
+    )
+    if err is not None:
+        return err
+    offset = decode_cursor_or_none(_param(request, "cursor"))
+    if offset is None:
+        return _err("invalid_cursor")
+    author = _writer(caller)
+    wanted = _param(request, "user")
+    if wanted is not None:
+        # Read as SENT, not as absent-when-empty: measured 2026-10-22, `user=` is
+        # `user_not_found` on real, as a lower-cased id is.
+        author = next(
+            (e for e in store.all_user_emails(conn) if synth.slack_user_id(e) == wanted), None
+        ) or (SERVICE_EMAIL if wanted == SERVICE_USER_ID else None)
+        if author is None:
+            return _err("user_not_found")
+    ids = auth.visible_ids(request, caller)
+    limit = counts["limit"] if counts["limit"] > 0 else get_settings().default_page_size
+    items = []
+    # One document fetched per item SERVED, plus one to see whether a cursor is wanted — not one
+    # per message the caller has ever reacted to. A caller with 2,000 of them paid 90 ms a call
+    # to build a list of which twenty were then kept.
+    for channel, ts in _reacted_by(conn, author):
+        if len(items) > offset + limit:
+            break
+        row = store.document_by_key(conn, "slack", (channel, ts), ids)
+        if row is None:  # deleted, or no longer visible to this caller
+            continue
+        items.append(
+            {
+                "type": "message",
+                "channel": synth.slack_channel_id(channel),
+                "message": _message(row) | {"permalink": _permalink(channel, row)},
+            }
+        )
+    page = items[offset : offset + limit]
+    # `len(items)` is the page plus at most one, which is all `next_cursor` needs to know.
+    cursor = next_cursor(offset, len(page), offset + len(items[offset:]))
+    return {"ok": True, "items": page, "response_metadata": {"next_cursor": cursor}}
+
+
 # --- helpers --------------------------------------------------------------------
 
 
@@ -1833,7 +2861,7 @@ def _search_match(conn, row) -> dict:
             "name": ch,
             "is_private": not store.container_has_public(conn, "slack", ch),
         },
-        "user": synth.slack_user_id(row["author_email"]),
+        "user": _uid(row["author_email"]),
         "username": _handle(row["author_email"]),
         "ts": ts,
         "text": text,
@@ -1941,10 +2969,21 @@ def _is_member(conn, name: str, caller: Caller, *, is_private: bool) -> bool:
 def _member_count(request: Request, conn, name: str) -> int:
     """A channel's member count — the same set conversations.members pages, so `num_members` and
     walking the members cannot disagree. Read from the warm cache; if the background thread has not
-    finished, count this one channel directly rather than blocking on all of them."""
+    finished, count this one channel directly rather than blocking on all of them.
+
+    A MISSING key is counted, not answered as zero. `slack_channel_member_counts` keys every
+    channel, including one with no messages at all, so a key is absent only while the cache is
+    still being built; reading an absent key as zero would answer `num_members: 0` for a channel
+    that has members.
+
+    Nothing invalidates this cache, because no write moves what it holds: a public channel's
+    members are the speakers in `main.slack_messages`, which a written row never joins, and a
+    private channel's are the grantees a written row's own grants were copied from. Measured
+    both ways, over a post and over a delete, on a public channel and a private one.
+    """
     cache = getattr(request.app.state, "channel_members", None)
-    if cache is not None:
-        return cache.get(name, 0)
+    if cache is not None and name in cache:
+        return cache[name]
     return store.count_slack_channel_members(conn, name)
 
 
@@ -1960,6 +2999,12 @@ def _subscribed(caller: Caller, root_author: str | None, reply_authors) -> bool:
     return any((e or "").lower() == email for e in reply_authors or ())
 
 
+def _is_written(row) -> bool:
+    """Whether this row was written through the API rather than imported — `merged_source`'s
+    `_written`, absent from the bare-table shape it returns while nothing has been written."""
+    return "_written" in row.keys() and bool(row["_written"])
+
+
 def _message(
     row,
     reply_count: int = 0,
@@ -1973,23 +3018,36 @@ def _message(
     seed = f"{row['channel']}:{row['ts']}"
     m = {
         "type": "message",
-        "user": synth.slack_user_id(row["author_email"]),
+        "user": _uid(row["author_email"]),
         "text": text,
         "ts": row["ts"],
         "team": TEAM_ID,
     }
+    if row["author_email"] == SERVICE_EMAIL or _is_written(row):
+        # Real carries `bot_id` on every message posted through the Web API, over a user token
+        # as well as a bot one, in history as well as in the echo (measured 2026-10-22) — the
+        # app is what posted it either way. It is not a subtype that says so: a bot-token post
+        # has none. A corpus message stands for one a Slack client posted and carries none.
+        m["bot_id"] = BOT_ID
     if not row["subtype"]:
         # `client_msg_id` is minted by the CLIENT that posted, and `blocks` is what that client
         # composed, so neither belongs on a message Slack itself generated — measured: a
         # channel_join carries only type/user/text/ts/subtype. `team` is left on both: it is
-        # absent from a channel_join too, but a bot_message is a real posted message rather than a
+        # absent from a channel_join too, but a posted message is a real one rather than a
         # system notice and there was none to measure, so dropping it everywhere would generalise
         # past the evidence.
+        #
+        # `blocks` stays on a message posted through this API: measured against slack.com on
+        # 2026-10-22, a plain-text post over a user token and over a bot token, in the echo and
+        # in history, carried `blocks`. Only `client_msg_id` turns on where the row came from —
+        # a post over the Web API carries none, and a corpus message stands for one a Slack
+        # client posted, so it keeps its.
         #
         # Seeded on (channel, ts), not ts alone: a ts is unique within its channel (see
         # store.ID_COLUMNS), so the same second in two channels produced one client_msg_id — a
         # value real Slack makes globally unique.
-        m["client_msg_id"] = synth.slack_client_msg_id(seed)
+        if not _is_written(row):
+            m["client_msg_id"] = synth.slack_client_msg_id(seed)
         blocks = synth.slack_blocks(text, seed)
         if blocks:
             m["blocks"] = blocks
@@ -2004,6 +3062,15 @@ def _message(
         m["edited"] = _edited(edited)
     if row["subtype"]:
         m["subtype"] = row["subtype"]
+    if row["subtype"] == "tombstone":
+        # The placeholder a deleted root leaves is not attributed to the poster: measured
+        # 2026-10-22, real answers `user` and `parent_user_id` as `USLACKBOT`, carries `hidden`,
+        # and carries none of the author's own fields.
+        m["hidden"] = True
+        m["user"] = SLACKBOT_ID
+        m["parent_user_id"] = SLACKBOT_ID
+        m.pop("team", None)
+        m.pop("bot_id", None)
     if row["thread_ts"]:  # part of a thread
         m["thread_ts"] = row["thread_ts"]
         if row["thread_seq"] == 0 and reply_count > 0:  # thread root
@@ -2062,7 +3129,10 @@ def _reactions(row) -> list[dict]:
         out.append(
             {
                 "name": reaction.get("name"),
-                "users": [synth.slack_user_id(e) for e in users],
+                # `_uid`, not `synth.slack_user_id`: the service account is not a corpus address
+                # and its id is fixed at USERVICE0, the same value `auth.test` and a message it
+                # posted report. Hashing its sentinel would give a client two ids for one reactor.
+                "users": [_uid(e) for e in users],
                 "count": len(users),
             }
         )
@@ -2083,10 +3153,14 @@ def _files(row) -> list[dict]:
 
 
 def _edited(edited: dict) -> dict:
-    """Renders `edited.user` via `synth.slack_user_id`, the same lift `_reactions` gives
+    """Renders `edited.user` from the address it is stored as, the same lift `_reactions` gives
     `reactions.users` (see `backlot/schemas/slack.schema.json` for the vendor shape behind it);
-    `ts` passes through unchanged."""
-    return {"user": synth.slack_user_id(edited["user"]), "ts": edited["ts"]}
+    `ts` passes through unchanged.
+
+    Through `_uid` rather than `synth.slack_user_id`: an edit made by the service account is stored
+    against a sentinel that is not a corpus address, and its id is fixed at USERVICE0.
+    """
+    return {"user": _uid(edited["user"]), "ts": edited["ts"]}
 
 
 def _channel_name(conn, channel_id: str) -> str | None:
@@ -2120,15 +3194,20 @@ _SLACK_INTEGER = re.compile(r"[0-9]+|-[1-9][0-9]*")
 _SLACK_NUMBER = re.compile(r"-?(?:[0-9]+(?:[.][0-9]+)?|[.][0-9]+)(?:[eE]-?[0-9]+)?\n?")
 
 
-def _slack_number(key: str, raw: str) -> int | None:
+def _slack_number(key: str, raw: str, *, decimal: bool | None = None) -> int | None:
     """The value of one numeric argument by the rule on `_SLACK_INTEGER`, or None where real
-    refuses it. A `limit` is its integer part (`1.5` is 1, `3.99999` is 3, `-1.5` is -1). One too
-    large for a float is zero when it is positive (`1e400`), which `_limit` serves as no `limit`, as
-    real served every item, and -2**63 when it is negative, which each method serves as it serves
-    `-2`. An integer part at or past 2**63 wraps around 2**64, so `9223372036854775808`
-    and `1e19` are negative and `1e300` is zero, and one below -2**63 stays negative: the reading
-    that every row of the measurement on `_limit` agrees with."""
-    if key == "limit":
+    refuses it. A decimal argument is its integer part (`1.5` is 1, `3.99999` is 3, `-1.5` is -1).
+    One too large for a float is zero when it is positive (`1e400`), which `_limit` serves as no
+    `limit`, as real served every item, and -2**63 when it is negative, which each method serves
+    as it serves `-2`. An integer part at or past 2**63 wraps around 2**64, so
+    `9223372036854775808` and `1e19` are negative and `1e300` is zero, and one below -2**63 stays
+    negative: the reading that every row of the measurement on `_limit` agrees with.
+
+    Which of the two rules a key takes is a property of the method, not of the name. `limit` is
+    decimal on the paged read methods and an integer on `reactions.list`, where `1.5`, `2e0` and
+    `1.e1` are each refused (measured 2026-10-21). `decimal` names the rule; left None it follows
+    the name, which is what every paged method wants."""
+    if key == "limit" if decimal is None else decimal:
         if not _SLACK_NUMBER.fullmatch(raw):
             return None
         if _SLACK_INTEGER.fullmatch(raw) and (n := _within_64_bits(raw)) is not None:
@@ -2159,10 +3238,13 @@ def _within_64_bits(raw: str) -> int | None:
 
 
 def _numbers(
-    request: Request, *params: tuple[str, int], sort_dir_ok: bool | None = None
+    request: Request,
+    *params: tuple[str, int] | tuple[str, int, bool],
+    sort_dir_ok: bool | None = None,
 ) -> tuple[dict[str, int], JSONResponse | None]:
     """The numeric arguments `params` names as `(key, default)`, each read by `_slack_number` and
-    capped at `max_page_size`, and the `invalid_arguments` that names every one real refuses.
+    capped at `max_page_size`, and the `invalid_arguments` that names every one real refuses. A
+    third element is that key's `decimal`, for a method that reads it by the other rule.
 
     Real puts one line per refused field in one answer, in the order `params` lists them
     whichever was sent first, and on the search methods an unknown `sort_dir` adds its line after
@@ -2171,9 +3253,9 @@ def _numbers(
     `empty_ok` half of the rule on `_SORT_DIRS`; None leaves `sort_dir` unread."""
     values: dict[str, int] = {}
     messages: list[str] = []
-    for key, default in params:
+    for key, default, *rule in params:
         raw = _param(request, key)
-        n = default if raw is None else _slack_number(key, raw)
+        n = default if raw is None else _slack_number(key, raw, decimal=rule[0] if rule else None)
         if n is None:
             messages.append(f"[ERROR] must provide a number [json-pointer:/{key}]")
             n = default

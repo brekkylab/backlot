@@ -94,6 +94,8 @@ class OperationEntry:
     operation: str
     status: str
     id: str = ""
+    # The vendor's message it answers with, for a Google source: the `types` entry its answer is.
+    response: str = ""
 
 
 @dataclass(frozen=True)
@@ -206,6 +208,8 @@ class OperationSurface:
             entry: dict[str, Any] = {"operation": e.operation}
             if e.id:
                 entry["id"] = e.id
+            if e.response:
+                entry["response"] = e.response
             entry["status"] = e.status
             entry |= _accepted(own.pop(e.operation, None))
             if diverging := params.pop(e.operation, None):
@@ -236,7 +240,9 @@ class OperationSurface:
             if e["operation"] in seen:
                 raise ValueError(f"{e['operation']} is listed twice: an operation is one entry")
             seen.add(e["operation"])
-            entries.append(OperationEntry(e["operation"], e["status"], e.get("id", "")))
+            entries.append(
+                OperationEntry(e["operation"], e["status"], e.get("id", ""), e.get("response", ""))
+            )
             findings += _read(e, e["operation"])
             for name, p in (e.get("params") or {}).items():
                 findings += _read(p, f"{e['operation']}?{name}")
@@ -336,7 +342,7 @@ class SchemaSurface:
                     d[group] = {n: member(f"{name}.{n}", members[n]) for n in sorted(members)}
             types[name] = d
         _unplaced(by_path.values())
-        return {"root": {"query": self.query}, "types": types}
+        return ({"root": {"query": self.query}} if self.query else {}) | {"types": types}
 
     @classmethod
     def from_json(cls, raw: Mapping[str, Any]) -> tuple["SchemaSurface", list[Finding]]:
@@ -355,18 +361,15 @@ class SchemaSurface:
                 for group in ("fields", "values", "members")
             }
             types[name] = TypeNode(e["type_kind"], e["status"], **groups)
-        return cls(raw["root"]["query"], types), findings
-
-
-_OPERATION_KINDS = ("missing_operation", "extra_operation")
+        return cls((raw.get("root") or {}).get("query", ""), types), findings
 
 
 @dataclass(frozen=True)
 class GraphSurface:
-    """A source measured against two documents of one vendor: the operations a path document
-    declares, and the type system a CSDL declares. Microsoft Graph publishes both, and neither
-    answers the other's question. The file holds each in its own shape, side by side; a finding goes
-    to the half whose element it names."""
+    """A source measured for its operations and for the types they answer with, each in its own
+    shape, side by side. Microsoft Graph publishes the two in two documents, a path document and a
+    CSDL, and neither answers the other's question; a Google discovery document declares both. A
+    finding goes to the half whose element it names."""
 
     paths: OperationSurface
     schema: SchemaSurface
@@ -375,10 +378,15 @@ class GraphSurface:
     def operations(self) -> tuple[OperationEntry, ...]:
         return self.paths.operations
 
+    @property
+    def batch(self) -> BatchSurface | None:
+        return self.paths.batch
+
     def to_json(self, findings: Iterable[Finding]) -> dict[str, Any]:
         findings = list(findings)
-        ops = [f for f in findings if f.kind in _OPERATION_KINDS]
-        types = [f for f in findings if f.kind not in _OPERATION_KINDS]
+        elements = self.schema.elements()
+        ops = [f for f in findings if f.path not in elements]
+        types = [f for f in findings if f.path in elements]
         return {**self.paths.to_json(ops), **self.schema.to_json(types)}
 
     @classmethod

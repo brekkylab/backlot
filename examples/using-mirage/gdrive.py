@@ -13,7 +13,7 @@ per-API constants instead).
     python examples/using-mirage/gdrive.py --url http://localhost:8000 --fuse   # real OS mount
 
 With ``--fuse`` the Drive tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read
-with plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
+with plain ``os``/shell tools; otherwise it's driven in-process via ``ws.shell``.
 """
 
 import argparse
@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 from mirage import MountMode, Workspace
-from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
+from mirage.vfs.gdrive import GoogleDriveConfig, GoogleDriveVFS
 
 from backlot import serve_or_connect
 from backlot.integrations.mirage import point_google_at
@@ -59,19 +59,19 @@ CORPUS = [
 def build(s, user):
     point_google_at(s.base_url)
     client_id, client_secret, refresh_token, _ = google_oauth_user(s.base_url, user)
-    return GoogleDriveResource(
+    return GoogleDriveVFS(
         GoogleDriveConfig(
             client_id=client_id, client_secret=client_secret, refresh_token=refresh_token
         )
     )
 
 
-async def main(resource) -> None:
-    ws = Workspace({"/gdrive": resource}, mode=MountMode.READ)
+async def main(vfs) -> None:
+    ws = Workspace({"/gdrive": vfs}, mode=MountMode.READ)
 
     # Navigate top-down (bounded) rather than walking the whole tree — a corpus can be huge.
     print("=== ls -F /gdrive/ (folders marked with /) ===")
-    root = lines(await (await ws.execute("ls -F /gdrive/")).stdout_str())
+    root = lines(await (await ws.shell("ls -F /gdrive/")).stdout_str())
     print("\n".join(root) or "(empty)")
     folders = [e.rstrip("/") for e in root if e.endswith("/")]
     if not folders:
@@ -80,7 +80,7 @@ async def main(resource) -> None:
 
     folder = folders[0]
     print(f"\n=== ls -F /gdrive/{folder}/ ===")
-    entries = lines(await (await ws.execute(f'ls -F "/gdrive/{folder}/"')).stdout_str())
+    entries = lines(await (await ws.shell(f'ls -F "/gdrive/{folder}/"')).stdout_str())
     print("\n".join(entries[:10]) or "(empty)")
     files = [e for e in entries if not e.endswith("/")]
     if not files:
@@ -90,14 +90,14 @@ async def main(resource) -> None:
     # Google-native docs get a .gdoc/.gsheet/.gslide.json vfs name and are read structurally.
     path = f"/gdrive/{folder}/{files[0]}"
     print(f"\n=== cat {path} ===")
-    print((await (await ws.execute(f'cat "{path}"')).stdout_str()).rstrip())
+    print((await (await ws.shell(f'cat "{path}"')).stdout_str()).rstrip())
 
 
-def main_fuse(resource) -> None:
+def main_fuse(vfs) -> None:
     """--fuse: mount Drive as a *real* filesystem and read a file with ordinary tools. Needs
     macFUSE/fuse3. (Google-native docs read as their .gdoc/.gsheet/.gslide.json structure.)"""
     try:
-        with Workspace({"/gdrive": resource}, mode=MountMode.READ) as ws:
+        with Workspace({"/gdrive": vfs}, mode=MountMode.READ) as ws:
             mnt = ws.add_fuse_mount("/gdrive")  # "/gdrive" is now a real directory on disk
             print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
             folder = next(e for e in sorted(os.listdir(mnt)) if not e.startswith("."))
@@ -140,8 +140,8 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     with serve_or_connect(CORPUS, url=args.url) as s:
-        resource = build(s, args.user)
+        vfs = build(s, args.user)
         if args.fuse:
-            main_fuse(resource)
+            main_fuse(vfs)
         else:
-            run_mirage(main(resource))
+            run_mirage(main(vfs))

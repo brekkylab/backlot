@@ -793,7 +793,7 @@ SAMPLE = [
         "created": "2026-01-16T10:00:00Z",
     },
     # A team no ACL-restricted caller can see into, so `teams` and `team(id:)` can be checked for
-    # agreement. Only hana is granted it.
+    # agreement, and the team's own state and cycle stay hidden with it. Only hana is granted it.
     {
         "source_type": "linear",
         "doc_id": "lin-blackops",
@@ -806,6 +806,7 @@ SAMPLE = [
         "readers": ["hana@acme.com"],
         "identifier": "BLA-1",
         "state": "Triage",
+        "cycle": "2026-W41-sealed",
         "created": "2026-02-25T09:00:00Z",
     },
     # --- fireflies: meeting transcripts -------------------------------------------------
@@ -1049,9 +1050,9 @@ def live_server(sample_settings):
     ``--add-host=…:host-gateway``. On Linux that is the bridge address, where a loopback-only
     server never answers; Docker Desktop forwards it to the host's own loopback instead, so on
     macOS the wider bind would buy nothing and cost every contributor the firewall prompt that
-    opening a port to the network raises. With no ``docker`` at all, that test does not run and
-    nothing dials the wider bind either — the same predicate ``_docker_runs_linux_containers``
-    opens with.
+    opening a port to the network raises. With no ``docker`` at all, that test stops at
+    ``_require_linux_docker`` before it starts a container, so nothing dials the wider bind either;
+    ``_why_docker_runs_no_linux_containers`` opens with the same ``shutil.which`` check.
     """
     host = "0.0.0.0" if sys.platform == "linux" and shutil.which("docker") else "127.0.0.1"
     with backlot.serve(SAMPLE, host=host) as s:

@@ -18,11 +18,18 @@ different shape — a path resolving *outside* the package entirely — which en
 from __future__ import annotations
 
 import ast
+import json
+import os
 import re
+import shutil
 import subprocess
+import sys
 import tomllib
 from fnmatch import fnmatch
 from pathlib import Path
+
+import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -114,6 +121,55 @@ def test_pypi_readme_has_no_relative_links():
     ]
     relative = [t for t in targets if not t.startswith(("http://", "https://", "#"))]
     assert not relative, f"README.pypi.md links break on PyPI: {relative}"
+
+
+def test_server_json_names_the_release_it_publishes(tmp_path):
+    """The MCP Registry takes server.json at each release: it looks `packages[0].version` up at
+    `pypi.org/pypi/<identifier>/<version>/json` and refuses a description without an
+    `mcp-name: <name>` token that ends at the end of the text, a character a server name cannot
+    hold, `-->` or `--!>`. The committed file names no version; the release workflow's step writes
+    them from the wheel it uploaded. Run here over a copy, the step's output is what a client
+    assembles as `uvx [runtimeArguments] <identifier>@<version> [packageArguments]`.
+    """
+    with open(REPO_ROOT / "pyproject.toml", "rb") as f:
+        project = tomllib.load(f)["project"]
+    server = json.loads((REPO_ROOT / "server.json").read_text(encoding="utf-8"))
+    [package] = server["packages"]
+    assert package["identifier"] == project["name"]
+    assert "version" not in server
+    assert "version" not in package
+    assert "runtimeArguments" not in package
+    readme = (REPO_ROOT / "README.pypi.md").read_text(encoding="utf-8")
+    boundary = r"(?:[^A-Za-z0-9._/-]|-->|--!>|\Z)"
+    assert re.search(rf"mcp-name: {re.escape(server['name'])}{boundary}", readme)
+
+    if sys.platform == "win32" or not (shutil.which("bash") and shutil.which("jq")):
+        pytest.skip("the release step runs under bash with jq, on ubuntu-latest")
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    )
+    [step] = [
+        s["run"]
+        for s in workflow["jobs"]["mcp-registry"]["steps"]
+        if s.get("name") == "Write the version just uploaded into server.json"
+    ]
+    shutil.copy(REPO_ROOT / "server.json", tmp_path / "server.json")
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "backlot-1.2.3-py3-none-any.whl").touch()
+    subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step],
+        cwd=tmp_path,
+        env={**os.environ, "GITHUB_ENV": str(tmp_path / "github_env")},
+        check=True,
+    )
+    published = json.loads((tmp_path / "server.json").read_text(encoding="utf-8"))
+    assert published["version"] == "1.2.3"
+    [package] = published["packages"]
+    command = [v for a in package["runtimeArguments"] for v in (a["name"], a["value"])]
+    command.append(f"{package['identifier']}@{package['version']}")
+    command += [a["value"] for a in package["packageArguments"]]
+    assert command == ["--with", "backlot[mcp]==1.2.3", "backlot@1.2.3", "mcp"]
+    assert (tmp_path / "github_env").read_text(encoding="utf-8") == "VERSION=1.2.3\n"
 
 
 # The same drift class, one layer up: an OPTIONAL-dependency gate. `pytest.importorskip` makes a

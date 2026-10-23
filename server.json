@@ -1,0 +1,27 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.brekkylab/backlot",
+  "title": "Backlot",
+  "description": "Local emulator for Slack, Gmail, Drive, GitHub, Jira, Notion, S3 and more, with per-document ACLs",
+  "repository": {
+    "url": "https://github.com/brekkylab/backlot",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/brekkylab/backlot",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "backlot",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}

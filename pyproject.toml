@@ -8,8 +8,8 @@ dynamic = ["version"]
 description = "A local emulator for enterprise SaaS APIs, served over your own corpus with per-document ACLs"
 readme = "README.pypi.md"
 requires-python = ">=3.11"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE.md"]
 authors = [
     { name = "nuri-yoo", email = "yoonuri1@gmail.com" },
     { name = "khj809", email = "onsealeatang@gmail.com" },

@@ -420,6 +420,10 @@ def test_fireflies_measured_email_whitespace(fireflies_http, key, side):
         "fromDate: true",
         'toDate: "2020-01-01"',
         'organizers: ["\\"a b\\"@b.co"]',
+        "date: 253402300799999",
+        "date: 253402300799999.9",
+        "date: -62167219200000",
+        "date: -62167219200000.9",
     ],
 )
 def test_fireflies_measured_validation_boundaries(fireflies_http, arguments):
@@ -434,29 +438,19 @@ def test_fireflies_measured_validation_boundaries(fireflies_http, arguments):
 
 
 @pytest.mark.parametrize(
-    "arguments,served",
+    "arguments",
     [
-        ("date: 253402300799999", True),
-        ("date: 253402300799999.9", True),
-        ("date: 253402300800000", False),
-        ("date: 8639999999999999", False),
-        ("date: -62167219200000", True),
-        ("date: -62167219200000.9", True),
-        ("date: -62167219200001", False),
-        ("date: -8.64e15", False),
-        ('date: 1e15, fromDate: "2020-01-01"', False),
+        "date: 253402300800000",
+        "date: 8639999999999999",
+        "date: -62167219200001",
+        "date: -8.64e15",
+        'date: 1e15, fromDate: "2020-01-01"',
     ],
 )
-def test_fireflies_date_outside_the_years_0_to_9999_is_an_internal_error(
-    fireflies_http, arguments, served
-):
+def test_fireflies_date_outside_the_years_0_to_9999_is_an_internal_error(fireflies_http, arguments):
     response = _query(fireflies_http, arguments)
     assert response.status_code == 200
     body = response.json()
-    if served:
-        assert "errors" not in body
-        assert isinstance(body["data"]["transcripts"], list)
-        return
     assert body["data"]["transcripts"] is None
     (error,) = body["errors"]
     assert list(error) == ["friendly", "message", "locations", "path", "code", "extensions"]

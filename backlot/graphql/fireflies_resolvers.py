@@ -342,8 +342,7 @@ def _correlation_id(context) -> str:
 
 
 def _internal_error(context) -> GraphQLError:
-    """Real's ``INTERNAL_SERVER_ERROR``, a field error at 200 the router gives
-    ``friendly: false``."""
+    """Real's ``INTERNAL_SERVER_ERROR``, a field error at 200."""
     return GraphQLError(
         "Something unexpected happened. Please try again",
         extensions={

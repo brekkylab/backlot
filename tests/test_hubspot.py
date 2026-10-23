@@ -1374,6 +1374,40 @@ def test_hubspot_batch_read_partial_is_207(client, admin_h):
     assert j["errors"][0]["context"]["id"] == ["111111111111"]
 
 
+_ONE_TO_100 = [str(i) for i in range(1, 101)]
+
+
+@pytest.mark.parametrize(
+    "inputs, status",
+    [
+        pytest.param([{"id": str(i)} for i in range(1, 102)], 400, id="101-objects"),
+        pytest.param([*_ONE_TO_100, "101"], 400, id="101-strings"),
+        pytest.param([*_ONE_TO_100, {"id": 101}], 400, id="an-integer-101"),
+        pytest.param([*_ONE_TO_100, " 1"], 400, id="space-1"),
+        pytest.param([*_ONE_TO_100, "01"], 400, id="zero-1"),
+        pytest.param([*_ONE_TO_100, {"id": 5.0}], 400, id="5.0"),
+        pytest.param([*_ONE_TO_100, {"id": True}], 400, id="true"),
+        pytest.param([{"id": s} for s in _ONE_TO_100], 207, id="100-objects"),
+        pytest.param([{"id": "1"}] * 101, 207, id="one-id-101-times"),
+        pytest.param(_ONE_TO_100 * 2, 207, id="100-ids-twice"),
+        pytest.param([*_ONE_TO_100, {"id": 5}], 207, id="an-integer-5-beside-5"),
+    ],
+)
+def test_hubspot_batch_read_refuses_more_than_100_ids(client, admin_h, inputs, status):
+    """Each row is how `_HUBSPOT_BATCH_MAX` counts its inputs."""
+    r = client.post(
+        "/hubspot/crm/v3/objects/contacts/batch/read", headers=admin_h, json={"inputs": inputs}
+    )
+    assert r.status_code == status, r.text
+    if status == 400:
+        assert r.json() == {
+            "status": "error",
+            "message": "The maximum number of inputs supported in a batch is 100. "
+            "Please reduce the number of items and try again",
+            "category": "VALIDATION_ERROR",
+        }
+
+
 def test_hubspot_batch_read(client, admin_h):
     listed = client.get(
         "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"limit": 100}

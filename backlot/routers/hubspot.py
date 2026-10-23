@@ -146,6 +146,34 @@ def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSO
     )
 
 
+# batch/read refuses more than this many ids, each counted once as `_batch_read_id` reads it.
+# Measured against api.hubapi.com on 2026-10-01 and 2026-10-22: 101 ids is 400 with this message
+# on contacts, companies, deals and `0-1`, sent as strings or as `{"id": …}`, under `idProperty`
+# and `archived=true` alike; 100 is still read, and so are 101 copies of one id, 200 inputs naming
+# 100 ids twice, and the ids `1` to `100` with `{"id": 5}` among them. Beside those 100, `" 1"`,
+# `"01"`, `5.0`, `1e0`, `true` and `{"id": 101}` each made a 101st, and so did an email differing
+# from another only in case under `idProperty=email`. A `null` input, and a body
+# `_refuse_a_batch_read_shape` refuses, are refused first at any count. An empty `inputs`, and a
+# body without one, stay 200.
+_HUBSPOT_BATCH_MAX = 100
+_HUBSPOT_BATCH_TOO_MANY = (
+    "The maximum number of inputs supported in a batch is 100. "
+    "Please reduce the number of items and try again"
+)
+
+
+def _batch_read_id(raw: bytes, i: int, item) -> str:
+    """The id `batch_read` looks ``inputs[i]`` up by. A string in `inputs` is answered as
+    ``{"id": <that string>}`` is (measured 2026-10-11), and a number or boolean id is echoed as the
+    body ``raw`` spells it (`1e3`, `1E3`, `1.0`, `-0.0`, `true`), measured 2026-10-11 and
+    2026-10-18; an integer naming a record finds it."""
+    rid = item if isinstance(item, str) else item["id"]
+    if isinstance(rid, str):
+        return rid
+    text, start, end = _token_span(raw, ("inputs", i, "id"))
+    return text[start:end]
+
+
 # Real's answer on the record route for an id that parses but names nothing visible: this page,
 # 197 bytes, under a Latin-1 content type although its own `<meta>` says utf-8. `contacts/1`,
 # `contacts/9223372036854775807` and `deals/{a contact's id}` answered it byte for byte the same
@@ -1376,17 +1404,15 @@ async def batch_read(object_type: str, request: Request):
     refused = _refuse_a_batch_read_shape(await request.body(), body, before) or refused
     if refused is not None:
         return refused
+    inputs = body.get("inputs") or []
+    raw = await request.body()
+    if len({_batch_read_id(raw, i, item) for i, item in enumerate(inputs)}) > _HUBSPOT_BATCH_MAX:
+        return _error(400, _HUBSPOT_BATCH_TOO_MANY)
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     keep = _keep(body.get("properties"))
     results, errors = [], []
-    for i, item in enumerate(body.get("inputs") or []):
-        # A string in `inputs` is answered as `{"id": <that string>}` is (measured 2026-10-11).
-        rid = item if isinstance(item, str) else item["id"]
-        if not isinstance(rid, str):
-            # A number or boolean id is echoed as the body spells it (`1e3`, `1E3`, `1.0`, `-0.0`,
-            # `true`), measured 2026-10-11 and 2026-10-18; an integer naming a record finds it.
-            text, start, end = _token_span(await request.body(), ("inputs", i, "id"))
-            rid = text[start:end]
+    for i, item in enumerate(inputs):
+        rid = _batch_read_id(raw, i, item)
         # One ACL-scoped query, not a resolve followed by a get_document refetch of the same
         # row -- see get_object's comment for why the collapse is safe.
         row = store.hubspot_by_id(conn, rid, visible)

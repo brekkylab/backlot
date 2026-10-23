@@ -419,6 +419,12 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             ("hubspot", "crm/v3/objects/{}/{}", "unknown", 405, None, "client"),
         ),
         (
+            "PUT",
+            f"{GITHUB}/contents",
+            {},
+            ("github", "repos/{}/{}/contents", "unknown", 405, None, "client"),
+        ),
+        (
             "POST",
             "/sheets/v4/spreadsheets/x/values:batchGet",
             {},

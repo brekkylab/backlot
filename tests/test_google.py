@@ -1123,6 +1123,9 @@ _BATCH_ROWS = [
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?alt=media", None, None), 501, 400, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?$.xgafv=1", None, None), 501, 200, _UNIMPLEMENTED_AT_XGAFV_1),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?majorDimension=NOPE", None, None), 400, 400, None),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?fields=bogus", None, None), 400, 400, None),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1?fields=bogus", None, None), 400, 400, None),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{nope}:getByDataFilter?fields=bogus", "{}", None), 400, 400, None),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", _BAD_FILTER, None), 400, 400, None),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _BAD_FILTER, None), 400, 400, None),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _BAD), 401, 401, _CHALLENGED),
@@ -1207,6 +1210,77 @@ def test_google_batch_passes_on_no_location_on_the_host_it_sends_parts_to(client
     assert (alone.status_code, "location" in alone.headers) == (302, True)
     status, lines, _ = _batch_answer(client, admin_h, _DRIVE_BATCH, "GET", target, None, None)
     assert (status, lines) == (302, ["Content-Type: text/html;charset=utf-8"])
+
+
+# A Drive batch part whose path carries a `;`, as real's Drive batch answered each one. A row is
+# the part's target, the status in the batch and what the answer carries: a 302's `Location`
+# below the server's base URL, a 404's message, or the top-level key a 200 carries. The last row
+# is the escaped spelling, which stays in the path. `{doc}` is a Doc's id.
+_BATCH_CUT_ROWS = [
+    ("/drive/v3/files/{doc};x?fields=id,name", 200, "id"),
+    ("/drive/v3/files/{doc};a=b;c?fields=id,name", 200, "id"),
+    ("/drive/v3/files/{doc};x/export?mimeType=text/plain", 200, "id"),
+    (
+        "/drive/v3/files/{doc}/export;x?mimeType=text/plain",
+        302,
+        "download/drive/v3/files/{doc}/export?mimeType=text/plain&quotaUser=7",
+    ),
+    ("/drive/v3/files/{doc}/permissions;x?fields=permissions(role)", 200, "permissions"),
+    ("/drive/v3/files;x?pageSize=1&fields=files(id)", 200, "files"),
+    ("/drive/v3/about;x?fields=user", 200, "user"),
+    ("/drive/v3/drives;x", 200, "drives"),
+    ("/drive/v3/files/nosuch;x", 404, "File not found: nosuch."),
+    ("/drive/v3/files/{doc}%3Bx?fields=id,name", 404, "File not found: {doc};x."),
+]
+
+
+@pytest.mark.parametrize("target, status, detail", _BATCH_CUT_ROWS)
+def test_google_drive_batch_cuts_a_part_path_at_a_semicolon(
+    client, admin_h, target, status, detail
+):
+    """The rows `_BATCH_CUT_ROWS` records, each as the one part of its batch
+    (`_drive_batch_cut_path`), and the same request on its own, which no batch cuts."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    ids = {"doc": doc}
+    got, lines, sub_body = _batch_answer(
+        client, admin_h, _DRIVE_BATCH, "GET", target.format(**ids), None, None
+    )
+    assert got == status, sub_body
+    if status == 302:
+        assert lines == [
+            "Content-Length: 0",
+            "Content-Type: application/json; charset=UTF-8",
+            f"Location: http://testserver/{detail.format(**ids)}",
+        ]
+        assert json.loads(sub_body) == _REDIRECTED
+    elif status == 404:
+        assert json.loads(sub_body)["error"]["message"] == detail.format(**ids)
+    else:
+        body = json.loads(sub_body)
+        assert detail in body, sub_body
+        if detail == "id":
+            assert body["id"] == doc and body["name"]
+    assert client.get(target.format(**ids), headers=admin_h).status_code == 404
+
+
+def test_google_drive_batch_cuts_every_part_path_at_a_semicolon(client, admin_h):
+    """All the `_BATCH_CUT_ROWS` targets in one batch, as they were measured in one batch, each
+    part cut on its own."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    payload = "".join(
+        f"--b\r\nContent-Type: application/http\r\nContent-ID: <p{i}>\r\n\r\n"
+        f"GET {target.format(doc=doc)} HTTP/1.1\r\n\r\n"
+        for i, (target, _, _) in enumerate(_BATCH_CUT_ROWS)
+    )
+    r = client.post(
+        _DRIVE_BATCH,
+        headers={**admin_h, "Content-Type": "multipart/mixed; boundary=b"},
+        content=payload + "--b--\r\n",
+    )
+    assert r.status_code == 200, r.text
+    assert [int(code) for code in re.findall(r"^HTTP/1\.1 (\d+)", r.text, re.M)] == [
+        status for _, status, _ in _BATCH_CUT_ROWS
+    ]
 
 
 _ACK = "/drive/v3/files/{doc}?acknowledgeAbuse=true&fields=id"
@@ -11060,6 +11134,23 @@ _INCLUDE = {"commentsViewMode": "COMMENTS_VIEW_MODE_INCLUDED"}
         ("GET", "{book}", {"fields": "bogus", "alt": "media"}, None, 400, "Request contains"),
         ("GET", "{missing}/values/A1", {"fields": "bogus"}, None, 400, "Request contains"),
         (
+            "GET",
+            "{missing}/values:batchGet",
+            {"ranges": "A1", "fields": "bogus"},
+            None,
+            400,
+            "Request contains",
+        ),
+        ("POST", "{missing}:getByDataFilter", {"fields": "bogus"}, {}, 400, "Request contains"),
+        (
+            "POST",
+            "{missing}/values:batchGetByDataFilter",
+            {"fields": "bogus"},
+            {"dataFilters": [{"a1Range": "A1"}]},
+            400,
+            "Request contains",
+        ),
+        (
             "POST",
             "{book}/values:batchGetByDataFilter",
             {"fields": "bogus"},
@@ -11776,6 +11867,125 @@ def test_gmail_an_empty_or_lone_quoted_operator(tmp_path, surface, query, expect
                 ("plan", "Rollout plan", "attached"),
                 ("lunch", "Lunch", "Friday?"),
                 ("after", "Later", "see after the meeting"),
+            ]
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+    with client_for(settings, reload=True) as c:
+        r = c.get(
+            f"/gmail/v1/users/me/{surface}",
+            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
+            params={"q": query},
+        )
+    assert r.status_code == 200
+    assert {item["id"] for item in r.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ('from:" me', ["lunch"]),
+        ('to:" me', ["plan"]),
+        ('from:" probe', []),
+        ('from:"me probe', []),
+        ('to:" probe', []),
+        ('from:" label:inbox', []),
+        ('subject:" from:me"', ["lunch"]),
+        ('subject:" from:"me"', ["lunch"]),
+        ('label:" inbox "', ["plan"]),
+        ('subject:" probe "', ["lunch"]),
+        ('subject:" probe\u00a0"', ["lunch"]),
+        ('subject:" from:" probe', []),
+        ('label:" inbox subject:"probe"', ["plan"]),
+        ('" label:inbox', ["plan"]),
+        ('" from:me', ["lunch"]),
+        ('newer_than:"', []),
+        ('label:"" "', ["plan", "lunch"]),
+        ('label:"""', ["plan", "lunch"]),
+        ("probe-label:inbox", []),
+        ('probe-subject:" from:me', []),
+        ("probe-(from:me)", []),
+        ('from:" from:me', ["lunch"]),
+        ('to:" from:me', ["lunch"]),
+        ('cc:" from:me', ["lunch"]),
+        ('to:" -from:me', ["lunch"]),
+        ('from:" to:me', ["plan"]),
+        ('from:" -to:me', ["plan"]),
+        ('-from:" to:me', ["lunch"]),
+        ('from:" subject:probe', ["lunch"]),
+        ('label:"" " inbox', ["plan"]),
+        ('subject:"" " from:me', ["lunch"]),
+        ('subject:"" " -from:me', ["lunch"]),
+        ('in:"" " to:me', ["plan"]),
+        ('subject:"" " label:inbox', []),
+        ('label:" inbox -subject:"probe"', ["plan"]),
+        ('-newer_than:"', ["plan", "lunch"]),
+        ('NOT older_than:"', ["plan", "lunch"]),
+        ('newer_than:""', []),
+        ('older_than:""', []),
+        ('newer_than:"" "', []),
+        ('older_than:30d"', ["plan", "lunch"]),
+        ('older_than:30d"" "', ["plan", "lunch"]),
+        ('newer_than:30"d', []),
+        ("2026-label:inbox", ["plan"]),
+        ("2026-from:me", []),
+        ("probe-(label:inbox)", ["plan"]),
+        ("probe-(label:inbox", ["plan"]),
+        ("probe-(label:inbox from:me)", []),
+        ("probe-(-from:me)", []),
+        ("probe-(label:inbox -subject:probe)", []),
+        ("-probe-label:inbox", ["plan", "lunch"]),
+        ("NOT probe-label:inbox", ["plan", "lunch"]),
+        ("NOT NOT probe-label:inbox", []),
+        ("-probe-(from:me)", ["plan", "lunch"]),
+        ("-probe-label:inbox from:me", ["lunch"]),
+        ('" -label:inbox', ["plan"]),
+        ('" -from:me', ["lunch"]),
+        ('label:inbox "', ["plan"]),
+        ('"label:inbox', ["plan"]),
+        ('" label:inbox -from:me', []),
+        ('label:inbox -from:me "', ["plan"]),
+        ('" label:', []),
+        ('" from:', []),
+        ("label:inbox me", []),
+        ('from:"', ["plan", "lunch"]),
+        ('probe from:"', ["plan", "lunch"]),
+        ('from:"me', ["lunch"]),
+        ('subject:"', ["plan", "lunch"]),
+        ('-subject:"', ["plan", "lunch"]),
+        ('probe-label:" inbox', []),
+        ('" probe', ["plan", "lunch"]),
+        ('probe "', ["plan", "lunch"]),
+        ('"probe', ["plan", "lunch"]),
+        ('"', []),
+    ],
+)
+def test_gmail_a_stray_quote_beside_an_operator(tmp_path, surface, query, expected):
+    """Each row is how the comments on `_GMAIL_LONE_QUOTE`, `_GMAIL_CLOSED_QUOTE`,
+    `_GMAIL_HYPHENED` and `_GMAIL_BARE_LONE_QUOTE`, and those in `_parse_gmail_q`, read its query,
+    over both listings. `plan` is from bob to the caller in the inbox and `lunch` from the caller to
+    bob in sent; both hold the word `probe` and the number 2026."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "doc_id": doc_id,
+                "mailbox": "ava",
+                "title": title,
+                "content": content,
+                "author_email": author,
+                "to": to,
+                "label_ids": [label],
+                "readers": ["ava@acme.com"],
+                "created": "2026-03-01T09:00:00Z",
+            }
+            for doc_id, title, content, author, to, label in [
+                ("plan", "Rollout plan", "probe 2026", "bob@acme.com", "ava@acme.com", "INBOX"),
+                ("lunch", "Lunch probe", "Friday? 2026", "ava@acme.com", "bob@acme.com", "SENT"),
             ]
         ],
     )

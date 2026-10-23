@@ -150,3 +150,5 @@ Backlot exists thanks to all the people who contribute.
 ## License
 
 [MIT](https://github.com/brekkylab/backlot/blob/main/LICENSE)
+
+<!-- mcp-name: io.github.brekkylab/backlot -->

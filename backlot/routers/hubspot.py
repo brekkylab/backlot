@@ -1259,6 +1259,12 @@ def _missing_scopes(object_type: str) -> JSONResponse:
     )
 
 
+def is_an_unserved_operation(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/hubspot` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`, the path
+    read as ``backlot.routers.github.is_an_unserved_operation`` reads one."""
+    return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/hubspot"))
+
+
 def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
     """The INVALID_AUTHENTICATION 401 for an operation of :data:`_PUBLISHED_NOT_SERVED` sent with no
     key or one that does not resolve, as a served route refuses it before running. With a key that
@@ -1278,12 +1284,11 @@ def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
     publish, was a 404 with no key, so only the baseline's operations are refused. On 2026-10-19
     every other operation the baseline lists answered the same 401 both ways, the v4 association
     writes and `batch/read` among them, and so did `PATCH` on `zzz/1` and `DELETE` on `2-999/1`,
-    whose types real can't resolve. The path is the scope's, decoded but whole, as
-    ``backlot.routers.github.is_an_unserved_operation`` reads it.
+    whose types real can't resolve.
     """
-    path = request.scope["path"].removeprefix("/hubspot")
-    if not published.includes(_PUBLISHED_NOT_SERVED, request.method, path):
+    if not is_an_unserved_operation(request.method, request.scope["path"]):
         return None
+    path = request.scope["path"].removeprefix("/hubspot")
     if _caller(request) is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     record = _RECORD_PATH.fullmatch(path)
@@ -1347,18 +1352,38 @@ def answer_ahead_of_the_routes(request: Request) -> Response | None:
     not this 401, and its `GET` with `Accept: text/html` is the 404 that path gets, not the 406. A
     `HEAD` arrives here as its `GET` (``backlot.main.answer_head_as_the_get_without_its_body``).
     """
-    path = request.scope["path"].removeprefix("/hubspot")
+    path = request.scope["path"]
+    answered = _answered_ahead(request.method, path, request.headers.get("accept"))
+    if answered is None:
+        return None
+    status, allowed = answered
+    sniff = {"X-Content-Type-Options": "nosniff"} if path.endswith("/search") else {}
+    if status == 401:
+        return JSONResponse(status_code=401, content=_OPTIONS_REFUSAL, headers=sniff)
+    if status == 405:
+        return _error_page(request, 405, "Method Not Allowed", {"Allow": allowed, **sniff})
+    return _error_page(request, 406, "Not Acceptable", sniff)
+
+
+def answers_ahead_of_the_routes(method: str, path: str, accept: str | None) -> bool:
+    """Whether :func:`answer_ahead_of_the_routes` answers a request with this method, path and
+    `Accept` rather than going on to the routes."""
+    return _answered_ahead(method, path, accept) is not None
+
+
+def _answered_ahead(method: str, path: str, accept: str | None) -> tuple[int, str] | None:
+    """The status :func:`answer_ahead_of_the_routes` answers with and the path's `Allow`, or None
+    to go on to the routes."""
+    path = path.removeprefix("/hubspot")
     allowed = next((methods for route, methods in _ALLOWED_METHODS if route.fullmatch(path)), None)
     if allowed is None:
         return None
-    sniff = {"X-Content-Type-Options": "nosniff"} if path.endswith("/search") else {}
-    if request.method == "OPTIONS":
-        return JSONResponse(status_code=401, content=_OPTIONS_REFUSAL, headers=sniff)
-    if request.method in ("GET", "POST", "PUT", "PATCH", "DELETE"):
-        if request.method not in allowed.split(","):
-            return _error_page(request, 405, "Method Not Allowed", {"Allow": allowed, **sniff})
-    if not _admits_json(request.headers.get("accept") or "*/*"):
-        return _error_page(request, 406, "Not Acceptable", sniff)
+    if method == "OPTIONS":
+        return 401, allowed
+    if method in ("GET", "POST", "PUT", "PATCH", "DELETE") and method not in allowed.split(","):
+        return 405, allowed
+    if not _admits_json(accept or "*/*"):
+        return 406, allowed
     return None
 
 

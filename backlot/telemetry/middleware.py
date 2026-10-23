@@ -130,8 +130,8 @@ class TelemetryMiddleware:
                 else "user",
                 "backlot.client": client,
             }
-            # A GraphQL resolver's exception is answered as a field error, not raised, so the
-            # GraphQL routes leave `backlot.graphql.engine.Result.raised` here.
+            # A GraphQL execution answers Backlot's own failure as a field error, not raised, so
+            # the GraphQL routes leave `backlot.graphql.engine.Result.raised` here.
             raised = body is None or bool(state.get("graphql_raised"))
             if raised:
                 code = "internal_error"

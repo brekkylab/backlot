@@ -188,7 +188,7 @@ def test_unknown_field_returns_a_validation_error(gql):
 
 def test_resolver_error_nulls_the_field_and_reports_its_path(gql):
     r = gql.execute("{ boom }")
-    assert r.request_error is False
+    assert (r.request_error, r.raised) == (False, False)
     assert r.payload["data"] == {"boom": None}
     err = r.payload["errors"][0]
     assert err["message"] == "no widget factory today"
@@ -199,10 +199,64 @@ def test_partial_data_survives_alongside_an_error(gql):
     r = gql.execute('{ boom widget(id: "w1") { name } }')
     assert r.payload["data"] == {"boom": None, "widget": {"name": "Gateway"}}
     assert len(r.payload["errors"]) == 1
+    assert r.raised is False
     # the body opens with "errors", as the real Fireflies and Linear APIs send it; a response
     # with no error still opens with "data"
     assert list(r.payload) == ["errors", "data"]
-    assert list(gql.execute('{ widget(id: "w1") { name } }').payload) == ["data"]
+    clean = gql.execute('{ widget(id: "w1") { name } }')
+    assert (list(clean.payload), clean.raised) == (["data"], False)
+
+
+def _placed(_root, info):
+    raise GraphQLError("refused where it was raised", path=info.path.as_list())
+
+
+def _crashed(_root, _info):
+    raise ValueError("cannot convert float NaN to integer")
+
+
+@pytest.mark.parametrize(
+    "query, variables, raised",
+    [
+        ("{ placed }", None, False),
+        ("{ crashed }", None, True),
+        ("{ boom crashed }", None, True),
+        # graphql-core completing a value the schema refuses
+        ("{ blank }", None, True),
+        ("{ count }", None, True),
+        ("{ many }", None, True),
+        ("{ either { ... on Widget { id } } }", None, True),
+        # graphql-core refusing, as it runs the field, an argument the request sent
+        ('query W($id: ID = "w1") { widget(id: $id) { name } }', {"id": None}, False),
+        (
+            'query W($show: Boolean = true) { widget(id: "w1") { name @include(if: $show) } }',
+            {"show": None},
+            False,
+        ),
+    ],
+)
+def test_a_field_error_is_marked_raised_unless_it_refuses_the_request(query, variables, raised):
+    gql = engine.Engine(
+        SDL.replace(
+            "boom: String",
+            "boom: String\n  placed: String\n  crashed: String\n  blank: String!\n  count: Int\n"
+            "  many: [String]\n  either: Either",
+        )
+        + "\nunion Either = Widget | Part\n",
+        {
+            "Query": {
+                **RESOLVERS["Query"],
+                "placed": _placed,
+                "crashed": _crashed,
+                "blank": lambda _root, _info: None,
+                "count": lambda _root, _info: 2**31,
+                "many": lambda _root, _info: 5,
+                "either": lambda _root, _info: {"id": "w1"},
+            }
+        },
+    )
+    r = gql.execute(query, variables=variables)
+    assert (r.request_error, "errors" in r.payload, r.raised) == (False, True, raised)
 
 
 # --- operation selection --------------------------------------------------------

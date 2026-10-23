@@ -132,6 +132,7 @@ async def graphql(request: Request):
         "roster": frozenset(state.acl.email_to_token()) if getattr(state, "acl", None) else None,
     }
     result = ENGINE.execute_payload(payload, context=context)
+    request.state.graphql_raised = result.raised
     # Fireflies' invalid_arguments and INTERNAL_SERVER_ERROR errors carry two more members than a
     # field error, in this order (api.fireflies.ai: the refusal on 2026-10-21, the
     # INTERNAL_SERVER_ERROR on 2026-10-22).

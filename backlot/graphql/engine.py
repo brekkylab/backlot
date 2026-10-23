@@ -17,6 +17,7 @@ servers make that distinction and clients key off it, so Backlot does too —
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -29,6 +30,7 @@ from graphql import (
     GraphQLNonNull,
     GraphQLScalarType,
     GraphQLSchema,
+    ValueNode,
     assert_valid_schema,
     build_schema,
     execute_sync,
@@ -88,11 +90,46 @@ class Result:
 
     ``request_error`` marks the pre-execution failures above; routers map it to the status
     code their vendor uses (real Linear answers a malformed document with 400, while a
-    field error is still a 200 with ``errors``).
+    field error is still a 200 with ``errors``). ``raised`` marks a field error that is Backlot's
+    own failure rather than a refusal; :func:`_raised` tells the two apart.
     """
 
     payload: dict
     request_error: bool = False
+    raised: bool = False
+
+
+def _marking_refusals(fn: Resolver) -> Resolver:
+    """The resolver ``fn``, marking each ``GraphQLError`` it raises as a refusal it meant."""
+
+    @functools.wraps(fn)
+    def resolve(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except GraphQLError as error:
+            error.refusal = True
+            raise
+
+    return resolve
+
+
+def _raised(error: GraphQLError) -> bool:
+    """Whether the field error ``error`` is Backlot's own failure: an exception a resolver raised
+    that is not a ``GraphQLError``, or one graphql-core raised completing the value a resolver
+    returned, such as a null for a non-null field, a non-list for a list or a value its scalar
+    cannot serialize. A ``GraphQLError`` a resolver raises (:func:`_marking_refusals` marks it) is a
+    refusal, and so is graphql-core's refusal of an argument the request sent, which it makes as it
+    runs the field, such as a null variable, declared with a default, where the field or a directive
+    on it takes a non-null argument. graphql-core gives that refusal the argument's value as its
+    node."""
+    original = error.original_error
+    if getattr(error, "refusal", False) or getattr(original, "refusal", False):
+        return False
+    return not (
+        isinstance(original, GraphQLError)
+        and original.nodes
+        and all(isinstance(node, ValueNode) for node in original.nodes)
+    )
 
 
 def _request_error(errors: list[GraphQLError]) -> Result:
@@ -161,7 +198,7 @@ class Engine:
                     raise ValueError(
                         f"resolver map references unknown field {type_name}.{field_name}"
                     )
-                field.resolve = fn
+                field.resolve = _marking_refusals(fn)
 
     def execute(
         self,
@@ -203,7 +240,10 @@ class Engine:
         # graphql-core's ExecutionResult.formatted writes "data" first; api.fireflies.ai and
         # api.linear.app open a response carrying a field error with "errors" (2026-10-21), so flip
         # the two members here.
-        return Result(payload=dict(reversed(list(result.formatted.items()))))
+        return Result(
+            payload=dict(reversed(list(result.formatted.items()))),
+            raised=any(_raised(e) for e in result.errors or ()),
+        )
 
     def execute_payload(self, payload: Any, *, context: Any = None) -> Result:
         """Run a GraphQL-over-HTTP POST body (``{query, variables, operationName}``) its router has

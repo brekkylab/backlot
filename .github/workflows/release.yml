@@ -65,15 +65,18 @@ jobs:
         with:
           name: dist
           path: dist/
-      # The registry checks each version server.json names against PyPI, and `uvx` needs the
-      # `--with` pin to match the package it runs, so all three name the wheel just uploaded.
-      - name: Point server.json at the version just uploaded
+      # server.json carries no version: the registry checks each one it names against PyPI, so
+      # all of them are the wheel just uploaded. `uvx` installs no extra of the package it runs,
+      # so `--with` pins backlot[mcp] at that version beside it.
+      - name: Write the version just uploaded into server.json
         run: |
           version=$(basename dist/*.whl | cut -d- -f2)
           jq --arg v "$version" '
             .version = $v
             | .packages[0].version = $v
-            | .packages[0].runtimeArguments[0].value = "backlot[mcp]==\($v)"
+            | .packages[0].runtimeArguments = [
+                {type: "named", name: "--with", value: "backlot[mcp]==\($v)"}
+              ]
           ' server.json > server.json.tmp
           mv server.json.tmp server.json
           echo "VERSION=$version" >> "$GITHUB_ENV"

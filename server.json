@@ -8,23 +8,14 @@
     "source": "github"
   },
   "websiteUrl": "https://github.com/brekkylab/backlot",
-  "version": "0.0.6",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "backlot",
-      "version": "0.0.6",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
       },
-      "runtimeArguments": [
-        {
-          "type": "named",
-          "name": "--with",
-          "value": "backlot[mcp]==0.0.6"
-        }
-      ],
       "packageArguments": [
         {
           "type": "positional",

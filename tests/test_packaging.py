@@ -120,19 +120,17 @@ def test_pypi_readme_has_no_relative_links():
 def test_server_json_names_the_release_it_publishes():
     """The MCP Registry takes server.json at each release and checks it against PyPI: it fetches
     `pypi.org/pypi/<identifier>/<version>/json` and refuses a description without an
-    `mcp-name: <name>` token followed by whitespace, a tag or `-->`. The release workflow writes the
-    uploaded version into `version`, `packages[0].version` and the `--with` pin that `uvx` runs
-    beside `backlot@<version>`, so those three are where that version has to sit.
+    `mcp-name: <name>` token followed by whitespace, a tag or `-->`. The release workflow writes
+    every version the file names, from the wheel it uploaded, so the committed file names none.
     """
     with open(REPO_ROOT / "pyproject.toml", "rb") as f:
         project = tomllib.load(f)["project"]
     server = json.loads((REPO_ROOT / "server.json").read_text(encoding="utf-8"))
     [package] = server["packages"]
     assert package["identifier"] == project["name"]
-    assert server["version"] == package["version"]
-    assert package["runtimeArguments"] == [
-        {"type": "named", "name": "--with", "value": f"backlot[mcp]=={package['version']}"}
-    ]
+    assert "version" not in server
+    assert "version" not in package
+    assert "runtimeArguments" not in package
     readme = (REPO_ROOT / "README.pypi.md").read_text(encoding="utf-8")
     assert re.search(rf"mcp-name: {re.escape(server['name'])}(\s|<|-->)", readme)
 

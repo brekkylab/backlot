@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import urllib.parse
 
 import pytest
 
@@ -491,3 +492,120 @@ def test_a_graphql_vendor_writes_a_lone_surrogate_as_an_escape(
     assert r.status_code == 400
     assert quoted in r.json()["errors"][0]["message"]
     assert wire in r.content
+
+
+# The middlewares of `backlot.main` a request runs, outermost first: its own vendor's, and none of
+# another's. The Drive `HEAD` and the Slack `POST` each have a row beside their vendor's `GET`, for
+# the middlewares only that method runs.
+_ADMIN = "Bearer {admin}"
+_RUNS = [
+    pytest.param("GET", "/slack/api/auth.test", {}, [], id="slack"),
+    pytest.param(
+        "POST",
+        "/slack/api/auth.test",
+        {"Content-Type": "application/x-www-form-urlencoded"},
+        ["warn_slack_post_charset", "parse_slack_form"],
+        id="slack POST",
+    ),
+    pytest.param(
+        "GET",
+        "/notion/v1/users/me",
+        {"Notion-Version": "2022-06-28"},
+        ["vendor_json_media_type", "read_a_notion_body_as_express_does"],
+        id="notion",
+    ),
+    pytest.param(
+        "GET",
+        "/github/rate_limit",
+        {},
+        [
+            "vendor_json_media_type",
+            "put_a_request_id_on_github_answers",
+            "report_github_rate_limit",
+            "echo_github_api_version",
+        ],
+        id="github",
+    ),
+    pytest.param(
+        "GET",
+        "/atlassian/rest/api/3/serverInfo",
+        {},
+        [
+            "vendor_json_media_type",
+            "report_atlassian_headers",
+            "normalise_the_slashes_in_an_atlassian_path",
+        ],
+        id="jira",
+    ),
+    pytest.param("GET", "/drive/v3/about", {}, [], id="drive"),
+    pytest.param(
+        "HEAD", "/drive/v3/about", {}, ["answer_head_as_the_get_without_its_body"], id="drive HEAD"
+    ),
+    pytest.param("GET", "/s3/", {}, ["answer_s3_with_request_ids"], id="s3"),
+    pytest.param("GET", "/hubspot/crm/v3/objects/contacts", {}, [], id="hubspot"),
+    pytest.param("POST", "/linear/graphql", {}, [], id="linear"),
+    pytest.param(
+        "GET", "/msgraph/v1.0/me", {}, ["read_a_graph_request_the_way_graph_does"], id="teams"
+    ),
+    pytest.param("GET", "/health", {}, [], id="health"),
+]
+
+
+@pytest.mark.parametrize("method, path, headers, ran", _RUNS)
+def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
+    client, tokens_yaml, monkeypatch, method, path, headers, ran
+):
+    # the class the client's app was built with: `tests._helpers.client_for` reloads
+    # `backlot.main`, which defines `_Layer` again for each app
+    layer = next(m.cls for m in client.app.user_middleware if m.cls.__name__ == "_Layer")
+    seen = []
+    call = layer.__call__
+
+    async def watched(self, scope, receive, send):
+        if scope["type"] == "http" and self.runs_on(scope):
+            seen.append(self.layer.dispatch_func.__name__)
+        await call(self, scope, receive, send)
+
+    monkeypatch.setattr(layer, "__call__", watched)
+    admin = {"Authorization": _ADMIN.format(admin=tokens_yaml["admin_token"])}
+    client.request(method, path, headers={**admin, **headers})
+    assert seen == ran
+
+
+@pytest.mark.parametrize(
+    "path, host",
+    [
+        ("/github/x", b"testserver"),
+        ("/github/x%3Fy/", b"testserver"),
+        ("/github/x%23y/", b"testserver"),
+        ("/git%09hub/x", b"testserver"),
+        ("/notion%0D", b"testserver"),
+        ("/s3%0A/b", b"testserver"),
+        ("/github/x", b"[::1]:8000"),
+        ("/github/x", b"[0:0]"),
+    ],
+)
+def test_url_path_is_the_path_request_url_reads(path, host):
+    from starlette.requests import Request
+
+    from backlot import main
+
+    raw = path.encode()
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "path": urllib.parse.unquote(path),
+        "raw_path": raw,
+        "query_string": b"q=1",
+        "headers": [(b"host", host)],
+    }
+
+    def read(path_of):
+        try:
+            return path_of(scope)
+        except ValueError as error:  # `[0:0]`, which `urlsplit` refuses
+            return type(error)
+
+    assert read(main._url_path) == read(lambda scope: Request(scope).url.path)

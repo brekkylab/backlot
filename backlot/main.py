@@ -13,6 +13,7 @@ import re
 import sys
 import threading
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 import yaml
@@ -20,9 +21,11 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
+from starlette.datastructures import URL, Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware, DispatchFunction
 from starlette.routing import BaseRoute, Match
-from starlette.types import Scope
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from backlot import auth, errors, openapi, overlay, store, synth, telemetry
 from backlot.acl import Acl
@@ -235,6 +238,74 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
     return JSONResponse(status_code=status_code, content=body)
 
 
+class _Layer:
+    """One of the middlewares below, run on the requests ``runs_on`` picks; any other request goes
+    past it to the app below.
+
+    A middleware function runs as Starlette's ``BaseHTTPMiddleware``, which hands the request on in
+    a task of its own and streams the answer back up through a channel, whether or not the function
+    then does anything: measured over ``backlot.serve()`` on 2026-10-23 with 27 registered, they
+    add 2.2 to 4.4 ms to an answer that goes through all of them. So ``runs_on(scope)`` is asked
+    first, ahead of the ``BaseHTTPMiddleware``, and a request it does not pick is one the function
+    would have handed straight on: it holds the function's own test for whether it has anything to
+    do, or the part of that test that reads neither the answer nor the body. It is asked where the
+    function stands in the order, so it sees the path and the method the middlewares outside it
+    leave. Where the function reads ``request.url.path``, ``runs_on`` reads :func:`_url_path`.
+    """
+
+    def __init__(
+        self, app: ASGIApp, dispatch: DispatchFunction, runs_on: Callable[[Scope], bool]
+    ) -> None:
+        self.app = app
+        self.runs_on = runs_on
+        self.layer = BaseHTTPMiddleware(app, dispatch=dispatch)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and self.runs_on(scope):
+            await self.layer(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
+
+
+def _middleware(runs_on: Callable[[Scope], bool]):
+    """Register the decorated function as a middleware run on the requests ``runs_on`` picks
+    (:class:`_Layer`). Each one registered is outside those registered before it, so the last is
+    the outermost."""
+
+    def register(dispatch: DispatchFunction) -> DispatchFunction:
+        app.add_middleware(_Layer, dispatch=dispatch, runs_on=runs_on)
+        return dispatch
+
+    return register
+
+
+#: What ``request.url.path`` does not keep as ``scope["path"]`` holds it: Starlette builds that URL
+#: by parsing the path again, where a `?` or a `#` ends it and a tab, CR or LF is dropped.
+_REPARSED = re.compile(r"[?#\t\r\n]")
+
+
+def _url_path(scope: Scope) -> str:
+    """``request.url.path`` with no ``Request`` built: ``scope["path"]`` itself unless it holds one
+    of :data:`_REPARSED` or the `Host` is in brackets, where the URL is built as ``request.url``
+    builds it, and raises where that raises (`Host: [0:0]`, which Python's ``urlsplit`` refuses)."""
+    path = scope["path"]
+    if _REPARSED.search(path) or _bracketed_host(scope):
+        return URL(scope=scope).path
+    return path
+
+
+def _bracketed_host(scope: Scope) -> bool:
+    for name, value in scope["headers"]:
+        if name == b"host":
+            return value.startswith(b"[")
+    return False
+
+
+def _at_or_under(path: str, prefixes: tuple[str, ...]) -> bool:
+    """Whether ``path`` is one of ``prefixes`` or a path under one."""
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in prefixes)
+
+
 def _some_github_route_matches(scope: Scope) -> bool:
     """Whether some mounted route matches this scope's path, whatever the method."""
     return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
@@ -269,7 +340,13 @@ def _a_github_route_serves(scope: Scope) -> bool:
     return any(route.matches(scope)[0] is Match.FULL for route in github.router.routes)
 
 
-@app.middleware("http")
+@_middleware(
+    lambda scope: (
+        scope["path"].startswith("/github/")
+        and not _a_github_route_serves(scope)
+        and github.is_an_unserved_operation(scope["method"], scope["path"])
+    )
+)
 async def refuse_an_unserved_github_operation(request: Request, call_next):
     """An operation GitHub publishes that no route here serves under the request's method is
     refused as a served route refuses before it runs, ahead of the router's 404 or 405
@@ -280,23 +357,26 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
     its refusal leaves through the version echo and the rate-limit headers as a served route's 401
     does.
     """
-    if request.scope["path"].startswith("/github/") and not _a_github_route_serves(request.scope):
-        try:
-            await github.refuse_an_unserved_operation(request)
-        except StarletteHTTPException as exc:
-            return await _http_exception_handler(request, exc)
+    try:
+        await github.refuse_an_unserved_operation(request)
+    except StarletteHTTPException as exc:
+        return await _http_exception_handler(request, exc)
     return await call_next(request)
 
 
-@app.middleware("http")
+@_middleware(
+    lambda scope: (
+        scope["path"].startswith("/hubspot/")
+        and hubspot.is_an_unserved_operation(scope["method"], scope["path"])
+    )
+)
 async def refuse_an_unserved_hubspot_operation(request: Request, call_next):
     """An operation HubSpot publishes that no route here serves is refused for its credential as a
     served route refuses one, ahead of the router's 404 or 405
     (``backlot.routers.hubspot.refuse_an_unserved_operation``)."""
-    if request.scope["path"].startswith("/hubspot/"):
-        refusal = hubspot.refuse_an_unserved_operation(request)
-        if refusal is not None:
-            return refusal
+    refusal = hubspot.refuse_an_unserved_operation(request)
+    if refusal is not None:
+        return refusal
     return await call_next(request)
 
 
@@ -314,7 +394,14 @@ def _hubspot_route(scope: Scope) -> BaseRoute | None:
     return partial
 
 
-@app.middleware("http")
+@_middleware(
+    lambda scope: (
+        scope["path"].startswith("/hubspot/")
+        and hubspot.answers_ahead_of_the_routes(
+            scope["method"], scope["path"], Headers(scope=scope).get("accept")
+        )
+    )
+)
 async def answer_a_hubspot_method_or_accept_no_route_takes(request: Request, call_next):
     """`OPTIONS`, `GET` on `search` and `batch/read`, `PUT` on a record and an `Accept` that admits
     no JSON are answered on `/hubspot` as real answers them, ahead of the credential and the router
@@ -329,7 +416,7 @@ async def answer_a_hubspot_method_or_accept_no_route_takes(request: Request, cal
     return await call_next(request)
 
 
-@app.middleware("http")
+@_middleware(lambda scope: _url_path(scope).startswith("/github"))
 async def echo_github_api_version(request: Request, call_next):
     """Report which API version served the response, on the `/github` answers real echoes one for,
     200 and error alike.
@@ -351,8 +438,7 @@ async def echo_github_api_version(request: Request, call_next):
     """
     response = await call_next(request)
     if (
-        request.url.path.startswith("/github")
-        and github.honours_api_version(request)
+        github.honours_api_version(request)
         and _github_routes(request.scope)
         and not github.refused_a_credential(request)
         and (
@@ -366,7 +452,7 @@ async def echo_github_api_version(request: Request, call_next):
     return response
 
 
-@app.middleware("http")
+@_middleware(lambda scope: errors.s3.owns(_url_path(scope)))
 async def answer_s3_with_request_ids(request: Request, call_next):
     """Put `x-amz-request-id` and `x-amz-id-2` on every `/s3` answer, and hand the router the same
     pair for the body of an error.
@@ -377,8 +463,6 @@ async def answer_s3_with_request_ids(request: Request, call_next):
     real repeats there. Each header is set only where the answer has none, because the parse 400
     carries an id of its own shape (`backlot.errors.s3.method_not_allowed`).
     """
-    if not errors.s3.owns(request.url.path):
-        return await call_next(request)
     ids = s3.request_ids(request.method, request.url.path, request.url.query)
     s3.REQUEST_IDS.set(ids)
     response = await call_next(request)
@@ -387,7 +471,7 @@ async def answer_s3_with_request_ids(request: Request, call_next):
     return response
 
 
-@app.middleware("http")
+@_middleware(lambda scope: _url_path(scope).startswith("/github"))
 async def report_github_rate_limit(request: Request, call_next):
     """Refuse a `/github` request whose window is already spent, real's 403 (see
     ``backlot.routers.github.rate_limit_refusal``), and otherwise put the five `x-ratelimit-*`
@@ -408,10 +492,8 @@ async def report_github_rate_limit(request: Request, call_next):
     its credential, the ones ``github.refused_an_unserved_operation_uncounted`` names get none
     either and count nothing.
     """
-    gated = (
-        request.url.path.startswith("/github")
-        and not github.refused_without_a_window(request)
-        and (_github_routes(request.scope) or "authorization" not in request.headers)
+    gated = not github.refused_without_a_window(request) and (
+        _github_routes(request.scope) or "authorization" not in request.headers
     )
     if gated:
         refusal = github.rate_limit_refusal(request)
@@ -428,7 +510,7 @@ async def report_github_rate_limit(request: Request, call_next):
     return response
 
 
-def _would_redirect_to_the_slash_free_path(request: Request) -> bool:
+def _would_redirect_to_the_slash_free_path(scope: Scope) -> bool:
     """Whether the router's `redirect_slashes` would answer this path with a 307 to its slash-free
     spelling.
 
@@ -441,14 +523,22 @@ def _would_redirect_to_the_slash_free_path(request: Request) -> bool:
     a route's answer rather than a routing rule, and the one redirect this server sends under
     `/github`.
     """
-    scope = request.scope
     if _some_github_route_matches(scope):
         return False
     slash_free = {**scope, "path": scope["path"].rstrip("/")}
     return _some_github_route_matches(slash_free)
 
 
-@app.middleware("http")
+def _a_slashed_github_path_the_router_redirects(scope: Scope) -> bool:
+    path = _url_path(scope)
+    return (
+        path.startswith("/github/")
+        and path.endswith("/")
+        and _would_redirect_to_the_slash_free_path(scope)
+    )
+
+
+@_middleware(_a_slashed_github_path_the_router_redirects)
 async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     """A trailing slash on `/github` that matches no route is a 404, not the 307 to the slash-free
     path that Starlette's router answers by default.
@@ -485,9 +575,9 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     An anonymous caller's spent rate-limit window outranks this 404 too: `GET /repos/{owner}/{repo}/`
     answers real's 403 rather than this 404 once the window is spent, `server: Varnish` (measured
     against api.github.com 2026-09-23) — this middleware runs OUTSIDE `report_github_rate_limit`, so
-    a path this branch intercepts would otherwise never reach ``rate_limit_refusal`` at all. A token
-    is unaffected: the same window spent under a token still answers this 404 (measured the same
-    day, on `/search/issues/`), which is why the refusal is checked only for a caller with no
+    a path this middleware intercepts would otherwise never reach ``rate_limit_refusal`` at all. A
+    token is unaffected: the same window spent under a token still answers this 404 (measured the
+    same day, on `/search/issues/`), which is why the refusal is checked only for a caller with no
     `Authorization` header, matching the header-reporting branch below it.
 
     `/rate_limit/` with no `Authorization` header is neither: it is answered by the `server:
@@ -497,37 +587,27 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     header — a valid token, a bad bearer or `Basic` — gets the JSON 404 below, from `server:
     github.com`.
     """
-    path = request.url.path
-    if (
-        path.startswith("/github/")
-        and path.endswith("/")
-        and _would_redirect_to_the_slash_free_path(request)
-    ):
-        anonymous = "authorization" not in request.headers
-        if anonymous and path.rstrip("/") == github.RATE_LIMIT_PATH:
-            return PlainTextResponse("404 Not Found", status_code=404)
-        if anonymous:
-            refusal = github.rate_limit_refusal(request)
-            if refusal is not None:
-                return refusal
-        response = await _http_exception_handler(request, StarletteHTTPException(status_code=404))
-        if anonymous:
-            headers = github.rate_limit_headers(request, response.status_code)
-            for name, value in headers.items():
-                response.headers[name] = value
-        return response
-    return await call_next(request)
+    anonymous = "authorization" not in request.headers
+    if anonymous and request.url.path.rstrip("/") == github.RATE_LIMIT_PATH:
+        return PlainTextResponse("404 Not Found", status_code=404)
+    if anonymous:
+        refusal = github.rate_limit_refusal(request)
+        if refusal is not None:
+            return refusal
+    response = await _http_exception_handler(request, StarletteHTTPException(status_code=404))
+    if anonymous:
+        headers = github.rate_limit_headers(request, response.status_code)
+        for name, value in headers.items():
+            response.headers[name] = value
+    return response
 
 
-@app.middleware("http")
+@_middleware(lambda scope: errors.notion.owns(_url_path(scope)))
 async def read_a_notion_body_as_express_does(request: Request, call_next):
     """Read a `/notion` request's body the way Express reads one in front of every Notion route,
     and answer the refusal it draws there, ahead of the route, the credential and the version
     (``notion.front_door_body``). Registered before the trailing-slash rewrite below, which makes it
     the inner of the two, so the path it derives an answer's ids from is the one the route sees."""
-    path = request.url.path
-    if not (path == "/notion" or path.startswith("/notion/")):
-        return await call_next(request)
     refusal = await notion.front_door_body(request)
     return refusal if refusal is not None else await call_next(request)
 
@@ -540,7 +620,7 @@ def _is_guid(value: str) -> bool:
     return True
 
 
-@app.middleware("http")
+@_middleware(lambda scope: _url_path(scope).startswith("/msgraph/"))
 async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
     """A `/msgraph` request reaches the Teams routes as Graph reads it, and answers with the headers
     Graph sends.
@@ -553,8 +633,6 @@ async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
     sent a GUID one — with a 200's JSON served as OData under `OData-Version: 4.0` (measured against
     graph.microsoft.com, 2026-10-21).
     """
-    if not request.url.path.startswith("/msgraph/"):
-        return await call_next(request)
     if len(request.headers.getlist("authorization")) > 1:
         return Response(
             msteams.DUPLICATE_HEADER_PAGE,
@@ -586,7 +664,12 @@ async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
     return response
 
 
-@app.middleware("http")
+def _a_slashed_notion_path(scope: Scope) -> bool:
+    path = _url_path(scope)
+    return path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion/")
+
+
+@_middleware(_a_slashed_notion_path)
 async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, call_next):
     """One trailing slash on a `/notion` path is not part of the path: real serves what the
     slash-free spelling serves.
@@ -605,15 +688,22 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     GitHub's trailing slash is the opposite rule and has its own middleware above; the two are
     measured separately because the vendors answer differently.
     """
-    path = request.url.path
-    if path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion/"):
-        trimmed = path[:-1]
-        request.scope["path"] = trimmed
-        request.scope["raw_path"] = trimmed.encode()
+    trimmed = request.url.path[:-1]
+    request.scope["path"] = trimmed
+    request.scope["raw_path"] = trimmed.encode()
     return await call_next(request)
 
 
-@app.middleware("http")
+def _a_slashed_hubspot_path(scope: Scope) -> bool:
+    path = _url_path(scope)
+    return (
+        path.startswith("/hubspot/")
+        and path.endswith("/")
+        and len(path.rstrip("/")) > len("/hubspot")
+    )
+
+
+@_middleware(_a_slashed_hubspot_path)
 async def serve_a_slashed_hubspot_path_as_the_path_without_it(request: Request, call_next):
     """Trailing slashes on a `/hubspot` path are not part of the path: real serves what the
     slash-free spelling serves, where Starlette's router would answer a 307 to it.
@@ -624,11 +714,9 @@ async def serve_a_slashed_hubspot_path_as_the_path_without_it(request: Request, 
     slash-free ones, and the contact was the same contact. On 2026-10-22 `contacts//` and
     `contacts///` were the listing and `contacts/1//` the 404 page `contacts/1` gets, so every
     trailing slash is dropped."""
-    path = request.url.path
-    trimmed = path.rstrip("/")
-    if path.startswith("/hubspot/") and trimmed != path and len(trimmed) > len("/hubspot"):
-        request.scope["path"] = trimmed
-        request.scope["raw_path"] = trimmed.encode()
+    trimmed = request.url.path.rstrip("/")
+    request.scope["path"] = trimmed
+    request.scope["raw_path"] = trimmed.encode()
     return await call_next(request)
 
 
@@ -646,7 +734,17 @@ def _google_route_match(scope: Scope) -> Match:
     return best
 
 
-@app.middleware("http")
+def _google_path_not_routed_as_sent(scope: Scope) -> bool:
+    """Whether this scope's path is a Google family path whose raw path ends in a slash, or that no
+    Google route serves under its method."""
+    path = scope["path"]
+    if not any(path.startswith(f"{p}/") for p in errors.google.PREFIXES):
+        return False
+    raw = scope.get("raw_path") or path.encode()
+    return raw.endswith(b"/") or _google_route_match(scope) is not Match.FULL
+
+
+@_middleware(_google_path_not_routed_as_sent)
 async def route_a_google_path_the_way_google_does(request: Request, call_next):
     """Trailing slashes on a Google family path are not part of the path: real serves what the
     slash-free spelling serves, however many there are, refusals included. Measured 2026-10-11
@@ -665,12 +763,9 @@ async def route_a_google_path_the_way_google_does(request: Request, call_next):
 
     The raw path keeps the slashes, because a Drive download sent as a batch part is redirected to
     its path as sent, slashes and all, which ``backlot.routers.google._drive_batch_redirect`` builds
-    from the raw bytes. The path is the scope's rather than ``request.url``'s, in which a decoded
-    `%23` would start a fragment and cut the path short.
+    from the raw bytes. The path is the scope's rather than ``request.url``'s (:data:`_REPARSED`).
     """
     path = request.scope["path"]
-    if not any(path.startswith(f"{p}/") for p in errors.google.PREFIXES):
-        return await call_next(request)
     raw = request.scope.get("raw_path") or path.encode()
     slashes = len(raw) - len(raw.rstrip(b"/"))
     request.scope["path"] = path[: len(path) - slashes]
@@ -685,7 +780,7 @@ async def route_a_google_path_the_way_google_does(request: Request, call_next):
     return await call_next(request)
 
 
-@app.middleware("http")
+@_middleware(lambda scope: scope["path"].startswith(f"{errors.atlassian.PREFIX}/"))
 async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next):
     """Route an `/atlassian` path the way the real gateway does: runs of slashes are one, and a
     trailing slash is not part of the path.
@@ -709,29 +804,30 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
     one. GitHub's trailing slash is the opposite rule and has its own middleware above -- the two
     vendors are measured separately.
     """
-    # the decoded path as the server parsed it: `request.url` parses it again, so an escaped `?` or
-    # `#` would end it there and hide a trailing slash after it (`POST /rest/api/3/issue/A%23B/` is
-    # real's 405, 2026-10-17)
+    # the decoded path as the server parsed it rather than `request.url`'s (:data:`_REPARSED`): an
+    # escaped `#` would hide a trailing slash after it (`POST /rest/api/3/issue/A%23B/` is real's
+    # 405, 2026-10-17)
     path = request.scope["path"]
-    if path.startswith(f"{errors.atlassian.PREFIX}/"):
-        collapsed = re.sub("/{2,}", "/", path)
-        routed = collapsed.rstrip("/")
-        # `/atlassian/` is the mount itself rather than a path under it: stripping its slash leaves
-        # a path no route matches, which Starlette answers with a 307 back to the spelling that
-        # arrived. It keeps its slash and reaches the catch-all like any other unserved path.
-        if routed == errors.atlassian.PREFIX:
-            routed = collapsed
-        raw = request.scope.get("raw_path") or path.encode()
-        request.scope["atlassian_echo_path"] = errors.atlassian.echoed_spelling(
-            raw.decode("latin-1"), confluence=errors.atlassian.is_confluence(path)
-        )
-        if routed != path:
-            request.scope["path"] = routed
-            request.scope["raw_path"] = routed.encode()
+    collapsed = re.sub("/{2,}", "/", path)
+    routed = collapsed.rstrip("/")
+    # `/atlassian/` is the mount itself rather than a path under it: stripping its slash leaves a
+    # path no route matches, which Starlette answers with a 307 back to the spelling that arrived.
+    # It keeps its slash and reaches the catch-all like any other unserved path.
+    if routed == errors.atlassian.PREFIX:
+        routed = collapsed
+    raw = request.scope.get("raw_path") or path.encode()
+    request.scope["atlassian_echo_path"] = errors.atlassian.echoed_spelling(
+        raw.decode("latin-1"), confluence=errors.atlassian.is_confluence(path)
+    )
+    if routed != path:
+        request.scope["path"] = routed
+        request.scope["raw_path"] = routed.encode()
     return await call_next(request)
 
 
-@app.middleware("http")
+@_middleware(
+    lambda scope: _url_path(scope).startswith(("/github/repositories/", "/github/organizations/"))
+)
 async def resolve_github_id_paths(request: Request, call_next):
     """Serve `/github/repositories/{id}/…` and `/github/organizations/{id}/…` as what the
     login-keyed paths serve, because that is the form real's page urls take (see
@@ -745,18 +841,23 @@ async def resolve_github_id_paths(request: Request, call_next):
     tell an unauthenticated caller which ids the corpus holds.
     """
     path = request.url.path
-    if path.startswith("/github/repositories/") or path.startswith("/github/organizations/"):
-        acl = getattr(request.app.state, "acl", None)
-        canonical = github.canonical_id_path(
-            request.app.state.conn, getattr(acl, "org_name", None) or get_settings().org_name, path
-        )
-        if canonical is not None:
-            request.scope["path"] = canonical
-            request.scope["raw_path"] = canonical.encode()
+    acl = getattr(request.app.state, "acl", None)
+    canonical = github.canonical_id_path(
+        request.app.state.conn, getattr(acl, "org_name", None) or get_settings().org_name, path
+    )
+    if canonical is not None:
+        request.scope["path"] = canonical
+        request.scope["raw_path"] = canonical.encode()
     return await call_next(request)
 
 
-@app.middleware("http")
+@_middleware(
+    lambda scope: (
+        scope["method"] != "OPTIONS"
+        and _url_path(scope).startswith("/atlassian/rest/")
+        and auth.atlassian_bearer_unreadable(Request(scope))
+    )
+)
 async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     """Refuse a Jira read whose bearer the real gateway would not read, before the route runs.
 
@@ -776,17 +877,13 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     one with an unreadable bearer as it answers one with none
     (``backlot.routers.atlassian._options_answer``).
     """
-    if (
-        request.method != "OPTIONS"
-        and request.url.path.startswith("/atlassian/rest/")
-        and auth.atlassian_bearer_unreadable(request)
-    ):
-        media_type, body = errors.atlassian.connect_token_answer(request.headers.get("accept"))
-        return Response(body, status_code=403, media_type=media_type)
-    return await call_next(request)
+    media_type, body = errors.atlassian.connect_token_answer(request.headers.get("accept"))
+    return Response(body, status_code=403, media_type=media_type)
 
 
-@app.middleware("http")
+@_middleware(
+    lambda scope: scope["method"] == "HEAD" and errors.google.refuses_head(_url_path(scope))
+)
 async def refuse_a_head_on_the_google_editor_hosts(request: Request, call_next):
     """Refuse a `HEAD` on Docs, Sheets or Slides the way their host does, before anything else
     reads the request: ``errors.google.head_refusal``, where the measurement is.
@@ -794,9 +891,7 @@ async def refuse_a_head_on_the_google_editor_hosts(request: Request, call_next):
     Inside the `HEAD` middleware below, whose tuple leaves these prefixes out, so the method is
     still `HEAD` when it gets here.
     """
-    if request.method == "HEAD" and errors.google.refuses_head(request.url.path):
-        return errors.google.head_refusal()
-    return await call_next(request)
+    return errors.google.head_refusal()
 
 
 # The path prefixes whose `HEAD` is the GET with the body left off. GitHub, Atlassian, Notion,
@@ -826,7 +921,26 @@ _HEAD_IS_THE_GET_WITHOUT_ITS_BODY = (
 )
 
 
-@app.middleware("http")
+def _spring_failure(scope: Scope):
+    """Which of ``atlassian.spring_sort_failure`` and ``atlassian.spring_write_failure``
+    :func:`answer_an_atlassian_write_that_fails` hands this request's answer to, or ``None``
+    where it hands the answer on as it is."""
+    path = _url_path(scope)
+    if not errors.atlassian.owns(path):
+        return None
+    # the product the gateway routes to, which reads each run of slashes as one
+    # (``errors.atlassian.front_door``)
+    product = re.sub("/{2,}", "/", path)
+    reader = "spring" if errors.atlassian.is_confluence(product) else "jira"
+    accept = Headers(scope=scope).get("accept")
+    if errors.atlassian.spring_cannot_sort(accept, reader=reader):
+        return atlassian.spring_sort_failure
+    if errors.atlassian.quality_spring_cannot_copy(accept, reader=reader):
+        return atlassian.spring_write_failure
+    return None
+
+
+@_middleware(lambda scope: _spring_failure(scope) is not None)
 async def answer_an_atlassian_write_that_fails(request: Request, call_next):
     """Answer as real does where a Spring service could not sort `Accept`'s members
     (``errors.atlassian.spring_cannot_sort``) or could not write its answer under it
@@ -838,17 +952,7 @@ async def answer_an_atlassian_write_that_fails(request: Request, call_next):
     below, so it reads a `HEAD`'s answer as its GET's, and the front door and the headers are put on
     what it gives as on any answer.
     """
-    path = request.url.path  # picks the product only
-    if not errors.atlassian.owns(path):
-        return await call_next(request)
-    reader = "spring" if errors.atlassian.is_confluence(path) else "jira"
-    accept = request.headers.get("accept")
-    if errors.atlassian.spring_cannot_sort(accept, reader=reader):
-        answer = atlassian.spring_sort_failure
-    elif errors.atlassian.quality_spring_cannot_copy(accept, reader=reader):
-        answer = atlassian.spring_write_failure
-    else:
-        return await call_next(request)
+    answer = _spring_failure(request.scope)
     response = await call_next(request)
     body = b"".join([chunk async for chunk in response.body_iterator])
     failed = answer(request, response.status_code, response.headers, body)
@@ -858,7 +962,12 @@ async def answer_an_atlassian_write_that_fails(request: Request, call_next):
     return failed
 
 
-@app.middleware("http")
+@_middleware(
+    lambda scope: (
+        scope["method"] == "HEAD"
+        and _at_or_under(_url_path(scope), _HEAD_IS_THE_GET_WITHOUT_ITS_BODY)
+    )
+)
 async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub, both Atlassian
     products, Notion, Drive, Gmail and HubSpot answer one.
@@ -901,12 +1010,6 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     `requests.Session` that sent a `HEAD` had its following `GET /health` fail with
     `ConnectionResetError`; with the method restored that request is a 200 and the log is clean).
     """
-    path = request.url.path
-    if request.method != "HEAD" or not any(
-        path == prefix or path.startswith(f"{prefix}/")
-        for prefix in _HEAD_IS_THE_GET_WITHOUT_ITS_BODY
-    ):
-        return await call_next(request)
     request.scope["method"] = "GET"
     request.state.answering_head = True
     response = await call_next(request)
@@ -923,7 +1026,12 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     return head
 
 
-@app.middleware("http")
+@_middleware(
+    lambda scope: (
+        _url_path(scope).startswith(f"{errors.atlassian.PREFIX}/")
+        and auth.basic_names_a_user(Request(scope))
+    )
+)
 async def report_failed_jira_login(request: Request, call_next):
     """Say that a Jira read presented a credential Backlot could not resolve, as real Jira does.
 
@@ -935,13 +1043,31 @@ async def report_failed_jira_login(request: Request, call_next):
     brekkylab.atlassian.net on 2026-09-04.
     """
     response = await call_next(request)
-    if request.url.path.startswith("/atlassian/rest/") and auth.basic_names_a_user(request):
+    # the path once the slash rewrite inside this has run
+    if request.url.path.startswith("/atlassian/rest/"):
         if auth.atlassian_caller(request).is_anonymous:
             response.headers["X-Seraph-LoginReason"] = "AUTHENTICATED_FAILED"
     return response
 
 
-@app.middleware("http")
+def _atlassian_front_door(scope: Scope):
+    """The page :func:`answer_at_the_atlassian_front_door` answers this request with, or ``None``
+    for a request it hands on."""
+    path = _url_path(scope)
+    if not errors.atlassian.owns(path):
+        return None
+    # the decoded path stands in for a missing `raw_path`: the pages echo no path verbatim (the
+    # CloudFront id is a hash of it, the rest are static)
+    raw_path = scope.get("raw_path") or path.encode()
+    return errors.atlassian.front_door(
+        scope["method"],
+        raw_path.decode("latin-1"),
+        scope.get("query_string", b"").decode("latin-1"),
+        Headers(scope=scope).get("accept"),
+    )
+
+
+@_middleware(lambda scope: _atlassian_front_door(scope) is not None)
 async def answer_at_the_atlassian_front_door(request: Request, call_next):
     """Answer an `/atlassian` request the way a layer in front of Jira and Confluence does, where
     one answers it: the CDN, its firewall, the gateway and Confluence's Tomcat, each with its own
@@ -954,20 +1080,7 @@ async def answer_at_the_atlassian_front_door(request: Request, call_next):
     (``errors.atlassian.FrontDoor``) is left on the scope for
     ``backlot.routers.atlassian.vendor_headers``.
     """
-    # `request.url.path` only decides ownership and seeds the raw-path fallback; the pages echo no
-    # path verbatim (the CloudFront id is a hash of it, the rest are static), so the decoded form is
-    # safe here where `front_door` itself reads `raw_path`
-    if not errors.atlassian.owns(request.url.path):
-        return await call_next(request)
-    raw_path = request.scope.get("raw_path") or request.url.path.encode()
-    answer = errors.atlassian.front_door(
-        request.method,
-        raw_path.decode("latin-1"),
-        request.scope.get("query_string", b"").decode("latin-1"),
-        request.headers.get("accept"),
-    )
-    if answer is None:
-        return await call_next(request)
+    answer = _atlassian_front_door(request.scope)
     request.scope["atlassian_front_door"] = answer.layer
     body = answer.body.encode()
     headers = {"Content-Type": answer.media_type, **answer.headers}
@@ -977,7 +1090,7 @@ async def answer_at_the_atlassian_front_door(request: Request, call_next):
     return Response(body, status_code=answer.status, headers=headers)
 
 
-@app.middleware("http")
+@_middleware(lambda scope: errors.atlassian.owns(_url_path(scope)))
 async def report_atlassian_headers(request: Request, call_next):
     """Put on every `/atlassian` answer the headers real sends beside the body: which ones, on
     which answers, and what each is measured from is ``backlot.routers.atlassian.vendor_headers``.
@@ -996,9 +1109,8 @@ async def report_atlassian_headers(request: Request, call_next):
     not do.
     """
     response = await call_next(request)
-    if errors.atlassian.owns(request.url.path):
-        for name, value in atlassian.vendor_headers(request, response.status_code).items():
-            response.headers[name] = value
+    for name, value in atlassian.vendor_headers(request, response.status_code).items():
+        response.headers[name] = value
     return response
 
 
@@ -1008,47 +1120,48 @@ def _some_slack_route_matches(scope: Scope) -> bool:
     return any(route.matches(scope)[0] is not Match.NONE for route in slack.router.routes)
 
 
-@app.middleware("http")
+@_middleware(
+    lambda scope: (
+        scope["method"] in slack.UNSERVED_METHODS
+        and scope["path"].startswith("/slack/api/")
+        and not _some_slack_route_matches(scope)
+    )
+)
 async def answer_an_unserved_slack_method(request: Request, call_next):
     """A request to a `/slack/api/` path no Slack route matches, by one of
     ``slack.UNSERVED_METHODS``, is answered as real answers it (``slack.unserved_answer``).
     Registered before ``parse_slack_form``, which makes it the inner of the two: a body real refuses
     is refused first, as real refuses it, and a token sent in the body is read here."""
-    path = request.scope["path"]
-    if (
-        request.method in slack.UNSERVED_METHODS
-        and path.startswith("/slack/api/")
-        and not _some_slack_route_matches(request.scope)
-    ):
-        answer = slack.unserved_answer(request)
-        if answer is not None:
-            return answer
+    answer = slack.unserved_answer(request)
+    if answer is not None:
+        return answer
     return await call_next(request)
 
 
-@app.middleware("http")
+@_middleware(
+    lambda scope: (
+        scope["method"] != "GET"
+        and scope["method"] in slack.UNSERVED_METHODS
+        and slack.method_name(scope["path"]) is not None
+    )
+)
 async def parse_slack_form(request: Request, call_next):
     """Read the body of a Slack request with one, any of ``slack.UNSERVED_METHODS`` but `GET`, to a
     path ``slack.method_name`` reads as a method's name, served here or not, before the method runs,
     as real does (``slack.read_body``): answer one real refuses with its error, or stash the
     arguments it carries for the router's param lookup and the token's (``slack._param``,
     ``auth.slack_token``)."""
-    path = request.scope["path"]
-    if (
-        request.method != "GET"
-        and request.method in slack.UNSERVED_METHODS
-        and (method := slack.method_name(path))
-    ):
-        content_type = slack.post_content_type(request)
-        args, error = slack.read_body(request.method, content_type, await request.body(), method)
-        if error is not None:
-            request.state.slack_body_refused = True
-            return JSONResponse({"ok": False, "error": error})
-        request.state._form = args
+    method = slack.method_name(request.scope["path"])
+    content_type = slack.post_content_type(request)
+    args, error = slack.read_body(request.method, content_type, await request.body(), method)
+    if error is not None:
+        request.state.slack_body_refused = True
+        return JSONResponse({"ok": False, "error": error})
+    request.state._form = args
     return await call_next(request)
 
 
-@app.middleware("http")
+@_middleware(lambda scope: _url_path(scope).startswith("/slack/") and scope["method"] == "POST")
 async def warn_slack_post_charset(request: Request, call_next):
     """Add the charset warning ``slack.post_charset_warning`` decides to a Slack POST's answer.
 
@@ -1058,9 +1171,6 @@ async def warn_slack_post_charset(request: Request, call_next):
     one's bytes with the two keys added; ``slack.attach_warning`` says where they go. A body
     ``parse_slack_form`` refuses is answered with no warning, as real answers it.
     """
-    if not (request.url.path.startswith("/slack/") and request.method == "POST"):
-        return await call_next(request)
-
     warning = slack.post_charset_warning(
         slack.post_content_type(request), bool(await request.body())
     )
@@ -1087,7 +1197,12 @@ _CLOUDFLARE_REPEATED_AUTHORIZATION = (
 )
 
 
-@app.middleware("http")
+@_middleware(
+    lambda scope: (
+        _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
+        and auth.repeated_authorization(Request(scope))
+    )
+)
 async def refuse_a_repeated_authorization_on_linear_and_fireflies(request: Request, call_next):
     """Answer a `/linear` or `/fireflies` request that carries `Authorization` more than once with
     :data:`_CLOUDFLARE_REPEATED_AUTHORIZATION`'s 400, ahead of the route, the body and the
@@ -1096,13 +1211,6 @@ async def refuse_a_repeated_authorization_on_linear_and_fireflies(request: Reque
     copies and a second header named in lower case; on `POST /graphql` with a query, with no bytes,
     with `{` and with a body past each vendor's size limit, on `GET /graphql`, on `HEAD /graphql`,
     which declared the 155 bytes and sent none, and on `POST /nosuch` and `POST /`."""
-    path = request.url.path
-    if not any(
-        path == prefix or path.startswith(f"{prefix}/") for prefix in ("/linear", "/fireflies")
-    ):
-        return await call_next(request)
-    if not auth.repeated_authorization(request):
-        return await call_next(request)
     return Response(
         _CLOUDFLARE_REPEATED_AUTHORIZATION.encode(),
         status_code=400,
@@ -1110,7 +1218,7 @@ async def refuse_a_repeated_authorization_on_linear_and_fireflies(request: Reque
     )
 
 
-@app.middleware("http")
+@_middleware(lambda scope: _url_path(scope).startswith("/github"))
 async def put_a_request_id_on_github_answers(request: Request, call_next):
     """Put an `x-github-request-id` on every `/github` answer, as real does on each one measured.
 
@@ -1118,8 +1226,6 @@ async def put_a_request_id_on_github_answers(request: Request, call_next):
     early carry it too. Made before the route runs (``backlot.routers.github.request_id`` has why)
     and left on ``request.state`` for the token's spent-window `message`, which quotes it
     (``github._rate_limit_exceeded_message``)."""
-    if not request.url.path.startswith("/github"):
-        return await call_next(request)
     rid = github.request_id(request.method, request.url.path, request.url.query)
     request.state.github_request_id = rid
     response = await call_next(request)
@@ -1127,7 +1233,7 @@ async def put_a_request_id_on_github_answers(request: Request, call_next):
     return response
 
 
-@app.middleware("http")
+@_middleware(lambda scope: errors.has_json_media_type(_url_path(scope)))
 async def vendor_json_media_type(request: Request, call_next):
     """Put the vendor's own `content-type` on a JSON body, where one is measured.
 

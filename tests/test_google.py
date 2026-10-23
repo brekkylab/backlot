@@ -12104,3 +12104,79 @@ def test_gmail_hyphenated_address_search(tmp_path, surface, query, expected):
     assert {x["id"] for x in r.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
+
+
+_LONG_Q = " or ".join(f"name contains 'Brand{i}'" for i in range(80)) + " or name contains 'Brand'"
+_FORM = "application/x-www-form-urlencoded"
+_OVERRIDE_ROWS = [
+    # path, the query the GET sends, the URL query and the body the POST sends, `Content-Type`,
+    # `X-HTTP-Method-Override`
+    ("/drive/v3/files", f"q={_LONG_Q}&pageSize=2", "", f"q={_LONG_Q}&pageSize=2", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, "GET"),
+    ("/drive/v3/files/{file}", "fields=kind,mimeType", "", "fields=kind,mimeType", _FORM, "GET"),
+    ("/drive/v3/drives", "pageSize=1", "", "pageSize=1", _FORM, "GET"),
+    ("/gmail/v1/users/me/labels", "", "", "", _FORM, "GET"),
+    (
+        "/sheets/v4/spreadsheets/{sheet}",
+        "fields=spreadsheetId",
+        "",
+        "fields=spreadsheetId",
+        _FORM,
+        "GET",
+    ),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, "get"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, " GET "),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, "HEAD"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", None, "GET"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", f"{_FORM}; charset=UTF-8", "GET"),
+    ("/drive/v3/about", "", "", "fields=kind", "text/plain", "GET"),
+    ("/drive/v3/about", "", "", '{"fields": "kind"}', "application/json", "GET"),
+    ("/drive/v3/about", "fields=user", "fields=user", "fields=kind", _FORM, "GET"),
+]
+
+
+@pytest.mark.parametrize(
+    "path, get, query, body, content_type, override",
+    _OVERRIDE_ROWS,
+    ids=[
+        "files-list",
+        "about",
+        "files-get",
+        "drives",
+        "gmail-labels",
+        "sheets",
+        "lower-case-get",
+        "spaced-get",
+        "head",
+        "no-content-type",
+        "form-with-charset",
+        "text-plain",
+        "json",
+        "url-query-first",
+    ],
+)
+def test_google_read_sent_as_a_post_with_a_get_override_is_the_get(
+    client, admin_h, path, get, query, body, content_type, override
+):
+    """Each row is how `answer_a_google_read_sent_as_a_post` reads its POST: as the GET of the
+    query in the second column."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": "100"}).json()
+    sheet = next(f["id"] for f in files["files"] if f["mimeType"].endswith("spreadsheet"))
+    url = path.format(file=files["files"][0]["id"], sheet=sheet)
+    headers = {**admin_h, "X-HTTP-Method-Override": override}
+    if content_type is not None:
+        headers["Content-Type"] = content_type
+    got = client.get(f"{url}?{get}", headers=admin_h)
+    posted = client.post(f"{url}?{query}", headers=headers, content=body)
+    assert (posted.status_code, posted.content) == (got.status_code, got.content)
+
+
+@pytest.mark.parametrize("override", [None, "PUT", "GET, PUT"])
+def test_google_post_naming_no_read_is_not_the_get(client, admin_h, override):
+    """A POST naming no override, or a method other than `GET` or `HEAD`, is not read as the GET
+    (`answer_a_google_read_sent_as_a_post`)."""
+    headers = {**admin_h, "Content-Type": _FORM}
+    if override is not None:
+        headers["X-HTTP-Method-Override"] = override
+    posted = client.post("/drive/v3/about", headers=headers, content="fields=kind")
+    assert posted.status_code != 200, posted.text

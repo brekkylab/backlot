@@ -1233,6 +1233,56 @@ async def put_a_request_id_on_github_answers(request: Request, call_next):
     return response
 
 
+# The Google paths whose reads real answers when they arrive as a POST that names `GET` in
+# `X-HTTP-Method-Override`, with the query in a form body (`answer_a_google_read_sent_as_a_post`).
+_GOOGLE_READS_A_POST_CAN_CARRY = ("/drive/v3", "/gmail/v1", "/docs/v1", "/sheets/v4")
+_FORM_MEDIA_TYPE = "application/x-www-form-urlencoded"
+
+
+@_middleware(
+    lambda scope: (
+        scope["method"] == "POST" and _at_or_under(scope["path"], _GOOGLE_READS_A_POST_CAN_CARRY)
+    )
+)
+async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
+    """A Google read sent as a POST with `X-HTTP-Method-Override: GET` is answered as the GET it
+    stands for, its form body read as the query string after the URL's own.
+
+    The Google API Python client sends a read this way on its own: `HttpRequest.execute`
+    (google-api-python-client 2.201.0) turns a GET whose URI passes 2048 characters into a POST with
+    `x-http-method-override: GET`, `content-type: application/x-www-form-urlencoded` and the query
+    string as the body. Measured with a Workspace member's token: on www.googleapis.com/drive/v3 on
+    2026-10-21, `files.list` with a 2,058-byte form body and `about` with `fields=kind` each
+    answered 200 and what the same parameters get on a GET. On 2026-10-23 so did `files.get`,
+    `drives.list` and `changes/startPageToken`, Docs' `documents.get` and Sheets' `values.get`, and
+    Gmail's `labels.list` and `getProfile` answered the 403 the token gets on a GET. The override
+    was read in any case and with spaces around it, and a `HEAD` named there was answered as the
+    GET, body and all. The body was read under no `Content-Type` and under
+    `application/x-www-form-urlencoded` in any case and with a charset, and not under `text/plain`,
+    `application/json` or `multipart/form-data`, where `about` was the 400 a GET with no `fields`
+    gets. A `fields` in the URL was read over one in the body, as the first of two in a GET's query
+    is. A POST naming `PUT`, `PATCH`, `DELETE` or `GET, PUT` goes on as a POST: real answered
+    each on `about` as it answers a `PUT` there, with its 404 page.
+
+    Registered just before ``vendor_json_media_type``, outside every middleware that reads the
+    method or the query, so they and the router see the GET.
+    """
+    path = request.scope["path"]
+    override = request.headers.get("x-http-method-override", "").strip().upper()
+    if (
+        request.method == "POST"
+        and override in ("GET", "HEAD")
+        and any(path.startswith(f"{prefix}/") for prefix in _GOOGLE_READS_A_POST_CAN_CARRY)
+    ):
+        media = request.headers.get("content-type")
+        form = media is None or media.partition(";")[0].strip().lower() == _FORM_MEDIA_TYPE
+        body = await request.body() if form else b""
+        query = request.scope.get("query_string", b"")
+        request.scope["method"] = "GET"
+        request.scope["query_string"] = b"&".join(part for part in (query, body) if part)
+    return await call_next(request)
+
+
 @_middleware(lambda scope: errors.has_json_media_type(_url_path(scope)))
 async def vendor_json_media_type(request: Request, call_next):
     """Put the vendor's own `content-type` on a JSON body, where one is measured.

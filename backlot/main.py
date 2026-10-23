@@ -301,6 +301,11 @@ def _bracketed_host(scope: Scope) -> bool:
     return False
 
 
+def _at_or_under(path: str, prefixes: tuple[str, ...]) -> bool:
+    """Whether ``path`` is one of ``prefixes`` or a path under one."""
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in prefixes)
+
+
 def _some_github_route_matches(scope: Scope) -> bool:
     """Whether some mounted route matches this scope's path, whatever the method."""
     return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
@@ -524,13 +529,16 @@ def _would_redirect_to_the_slash_free_path(scope: Scope) -> bool:
     return _some_github_route_matches(slash_free)
 
 
-@_middleware(
-    lambda scope: (
-        _url_path(scope).startswith("/github/")
-        and _url_path(scope).endswith("/")
+def _a_slashed_github_path_the_router_redirects(scope: Scope) -> bool:
+    path = _url_path(scope)
+    return (
+        path.startswith("/github/")
+        and path.endswith("/")
         and _would_redirect_to_the_slash_free_path(scope)
     )
-)
+
+
+@_middleware(_a_slashed_github_path_the_router_redirects)
 async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     """A trailing slash on `/github` that matches no route is a 404, not the 307 to the slash-free
     path that Starlette's router answers by default.
@@ -656,13 +664,12 @@ async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
     return response
 
 
-@_middleware(
-    lambda scope: (
-        _url_path(scope).startswith("/notion/")
-        and _url_path(scope).endswith("/")
-        and len(_url_path(scope)) > len("/notion/")
-    )
-)
+def _a_slashed_notion_path(scope: Scope) -> bool:
+    path = _url_path(scope)
+    return path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion/")
+
+
+@_middleware(_a_slashed_notion_path)
 async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, call_next):
     """One trailing slash on a `/notion` path is not part of the path: real serves what the
     slash-free spelling serves.
@@ -819,10 +826,7 @@ async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next
 
 
 @_middleware(
-    lambda scope: (
-        _url_path(scope).startswith("/github/repositories/")
-        or _url_path(scope).startswith("/github/organizations/")
-    )
+    lambda scope: _url_path(scope).startswith(("/github/repositories/", "/github/organizations/"))
 )
 async def resolve_github_id_paths(request: Request, call_next):
     """Serve `/github/repositories/{id}/…` and `/github/organizations/{id}/…` as what the
@@ -961,10 +965,7 @@ async def answer_an_atlassian_write_that_fails(request: Request, call_next):
 @_middleware(
     lambda scope: (
         scope["method"] == "HEAD"
-        and any(
-            _url_path(scope) == prefix or _url_path(scope).startswith(f"{prefix}/")
-            for prefix in _HEAD_IS_THE_GET_WITHOUT_ITS_BODY
-        )
+        and _at_or_under(_url_path(scope), _HEAD_IS_THE_GET_WITHOUT_ITS_BODY)
     )
 )
 async def answer_head_as_the_get_without_its_body(request: Request, call_next):
@@ -1198,10 +1199,7 @@ _CLOUDFLARE_REPEATED_AUTHORIZATION = (
 
 @_middleware(
     lambda scope: (
-        any(
-            _url_path(scope) == prefix or _url_path(scope).startswith(f"{prefix}/")
-            for prefix in ("/linear", "/fireflies")
-        )
+        _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
         and auth.repeated_authorization(Request(scope))
     )
 )

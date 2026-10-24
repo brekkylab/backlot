@@ -242,8 +242,8 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
         # GitHub's legacy `token <t>` header is not a Slack scheme at all, in either casing.
         ({"headers": {"Authorization": "token xoxb-not-a-real-token"}}, "not_authed"),
         ({"headers": {"Authorization": "Token xoxb-not-a-real-token"}}, "not_authed"),
-        # A tab does not separate scheme from token, but repeated spaces do, and either end of the
-        # header value may carry slack.
+        # A tab does not separate scheme from token, neither end of the header value counts extra
+        # spaces, and extra spaces after the first are kept as part of the token.
         ({"headers": {"Authorization": "Bearer\txoxb-not-a-real-token"}}, "not_authed"),
         ({"headers": {"Authorization": "Bearerxoxb-not-a-real-token"}}, "not_authed"),
         ({"headers": {"Authorization": "Bearer  xoxb-not-a-real-token"}}, "invalid_auth"),
@@ -285,6 +285,39 @@ def test_slack_refuses_a_valid_token_under_an_unrecognised_scheme(client, tokens
         headers={"Authorization": f"Bearer {tokens_yaml['admin_token']}"},
     ).json()
     assert ok["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "header, ok, error",
+    [
+        ("Bearer  {token}", False, "invalid_auth"),  # two spaces
+        ("Bearer   {token}", False, "invalid_auth"),  # three spaces
+        (" Bearer {token}", True, None),  # leading space on header value
+        ("Bearer {token} ", True, None),  # trailing space on header value
+        (" Bearer {token} ", True, None),
+    ],
+)
+def test_slack_bearer_token_spaces_with_valid_token(client, tokens_yaml, header, ok, error):
+    hdr = header.format(token=tokens_yaml["admin_token"])
+    r = client.post("/slack/api/auth.test", headers={"Authorization": hdr}).json()
+    assert r["ok"] is ok
+    if not ok:
+        assert r["error"] == error
+
+
+def test_slack_repeated_authorization_header(client, tokens_yaml):
+    token = tokens_yaml["admin_token"]
+    for path in ("auth.test", "conversations.list"):
+        r = client.post(
+            f"/slack/api/{path}",
+            headers=[("Authorization", f"Bearer {token}"), ("Authorization", f"Bearer {token}")],
+        ).json()
+        assert r == {"ok": False, "error": "invalid_auth"}
+    r = client.get(
+        "/slack/api/api.test",
+        headers=[("Authorization", f"Bearer {token}"), ("Authorization", f"Bearer {token}")],
+    ).json()
+    assert r["ok"] is False and r["error"] == "invalid_auth"
 
 
 def test_slack_auth_error_split_is_uniform_across_methods(client, tokens_yaml):

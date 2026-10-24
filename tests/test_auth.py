@@ -141,10 +141,32 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
     implements neither, and sharing the permissive parser would authenticate five spellings the
     real site serves anonymously — so a client sending ``Authorization: bearer <t>`` would pass
     every test here and read nothing in production. Slack is strict in its own way (see
-    :func:`auth.slack_bearer_token`); it accepts the double space Atlassian refuses, which is why
-    that parser is not shared either.
+    :func:`auth.slack_bearer_token`); it reads the token after a single space and keeps any extra
+    spaces as part of it, which is why that parser is not shared either.
     """
     assert auth.atlassian_bearer_token(_request(header)) == token
+
+
+@pytest.mark.parametrize(
+    "header, token",
+    [
+        ("Bearer usr-abc123", "usr-abc123"),
+        (" Bearer usr-abc123", "usr-abc123"),  # leading space is stripped
+        ("Bearer usr-abc123 ", "usr-abc123"),  # so is trailing
+        ("bearer usr-abc123", None),  # the scheme is case-SENSITIVE here
+        ("BEARER usr-abc123", None),
+        ("token usr-abc123", None),  # GitHub's spelling, which Slack does not take
+        ("Bearer  usr-abc123", " usr-abc123"),  # keeps extra space
+        ("Bearer   usr-abc123", "  usr-abc123"),
+        ("Bearer\tusr-abc123", None),  # a tab is not a space
+        ("Bearerusr-abc123", None),
+        ("Bearer", None),
+        ("Bearer ", None),
+        (None, None),
+    ],
+)
+def test_slack_bearer_token_keeps_spaces_after_the_first(header, token):
+    assert auth.slack_bearer_token(_request(header)) == token
 
 
 # --- github_credential: which headers api.github.com reads as a credential -------

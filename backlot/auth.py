@@ -286,17 +286,17 @@ def basic_names_a_user(request: Request) -> bool:
 
 def slack_bearer_token(request: Request) -> str | None:
     """Parse the ``Authorization`` header the way Slack does, which is stricter than
-    :func:`bearer_token`: the scheme must be exactly ``Bearer``, separated from the token by one or
-    more SPACES.
+    :func:`bearer_token`: the scheme must be exactly ``Bearer``, separated from the token by a
+    single space, and any extra spaces after that first space are kept as part of the token.
 
-    Measured against slack.com (a bogus token is enough — the presented/absent split needs no
-    account). ``invalid_auth`` means the header counted as a credential, ``not_authed`` means it
-    did not::
+    Measured against slack.com/api on 2026-10-20 with a valid user token: a token sent after two
+    or more spaces is read with the extra spaces as part of the token, so it fails to resolve and
+    real answers ``invalid_auth``. Spaces around the header value itself are ignored::
 
-        Bearer <t>      invalid_auth      bearer <t>      not_authed
+        Bearer <t>      served            bearer <t>      not_authed
         Bearer  <t>     invalid_auth      BEARER <t>      not_authed
-        ' Bearer <t>'   invalid_auth      token <t>       not_authed
-        Bearer <t>' '   invalid_auth      Bearer<TAB><t>  not_authed
+        ' Bearer <t>'   served            token <t>       not_authed
+        Bearer <t>' '   served            Bearer<TAB><t>  not_authed
                                           Bearer<t>       not_authed
 
     A tab is not a space to Slack, so the generic whitespace split in :func:`bearer_token` is
@@ -310,7 +310,7 @@ def slack_bearer_token(request: Request) -> str | None:
     hdr = (_authorization(request) or "").strip()
     if not hdr.startswith("Bearer "):
         return None
-    return hdr[len("Bearer ") :].strip() or None
+    return hdr[len("Bearer ") :] or None
 
 
 def msgraph_token(request: Request) -> tuple[str, str | None]:
@@ -433,8 +433,8 @@ def atlassian_bearer_token(request: Request) -> str | None:
     answering them with a 400 on real and here. Sharing :func:`bearer_token` would authenticate six
     of those spellings — every "not read" row above but ``OAuth <t>``, ``Bearer<t>`` and the bare
     ``Bearer`` — so a client sending ``Authorization: token <t>`` would pass every test here and
-    read nothing in production. Slack refuses a different set: it takes the double space this
-    refuses.
+    read nothing in production. Slack treats it differently: it reads the token with the extra
+    space, so it fails resolution and answers invalid_auth.
     """
     hdr = (_authorization(request) or "").strip(" \t")
     if not hdr.startswith("Bearer "):

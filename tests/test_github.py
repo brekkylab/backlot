@@ -4000,6 +4000,43 @@ def test_github_user_repos(gh_client, gh_admin_h, gh_user_tokens, gh_org):
     assert len(page.json()) == 1 and 'rel="next"' in page.headers.get("Link", "")
 
 
+@pytest.mark.parametrize(
+    ("pair", "refused"),
+    [
+        ("x:ghp_" + "A" * 36, True),
+        ("x:gho_" + "A" * 36, True),
+        ("x:ghu_" + "A" * 36, True),
+        ("x:ghs_" + "A" * 36, True),
+        ("gho_" + "A" * 36 + ":", True),
+        ("gho_" + "A" * 36 + ":x-oauth-basic", True),
+        ("ghp_" + "A" * 36, True),
+        ("x:usr-" + "0" * 20, True),
+        ("x:nope", False),
+        ("x:ghp_", False),
+        ("x:ghr_" + "A" * 36, False),
+        ("x:ghp_" + "A" * 35, False),
+        ("x:ghp_" + "A" * 37, False),
+        ("x:github_pat_" + "A" * 82, False),
+        ("ghp_" + "A" * 36 + ":x", False),
+    ],
+)
+def test_github_basic_token_shape_that_does_not_resolve_is_bad_credentials(
+    gh_client, pair, refused
+):
+    """A `Basic` value naming something shaped like a token, in the slot real reads one from, is
+    "Bad credentials" when it resolves to no one; any other value is no credential (`backlot.auth.github_credential`)."""
+    c, _ = gh_client
+    h = {"Authorization": "Basic " + base64.b64encode(pair.encode()).decode()}
+    limit = c.get("/github/rate_limit", headers=h)
+    repos = c.get("/github/user/repos", headers=h)
+    if refused:
+        assert limit.status_code == 401 and limit.json()["message"] == "Bad credentials"
+        assert repos.status_code == 401 and repos.json()["message"] == "Bad credentials"
+    else:
+        assert limit.status_code == 200
+        assert repos.status_code == 401 and repos.json()["message"] == "Requires authentication"
+
+
 def test_github_repo_carries_a_url_template_for_each_resource_it_serves(
     gh_client, gh_admin_h, gh_org
 ):

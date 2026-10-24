@@ -52,6 +52,11 @@ _GITHUB_SCHEME = re.compile(r"([^ \t,]*)(.*)", re.DOTALL)
 # whose `validate=True` reads `abcd=` as base64 on Python 3.11 and refuses it from 3.12 on.
 _GITHUB_BASE64 = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
 
+# What a `Basic` value names that real refuses as "Bad credentials" even when it resolves to no one:
+# one of its own token shapes, `ghp_`, `gho_`, `ghu_` or `ghs_` and exactly 36 letters or digits,
+# and Backlot's own, `usr-` and the 20 hexadecimal digits the importers give each user.
+_GITHUB_TOKEN_SHAPE = re.compile(r"gh[pous]_[A-Za-z0-9]{36}|usr-[0-9a-f]{20}")
+
 
 def github_credential(request: Request) -> str | None:
     """The credential a GitHub request carries, read the way api.github.com reads ``Authorization``:
@@ -90,7 +95,10 @@ def github_credential(request: Request) -> str | None:
     So real splits the scheme off at the first space, tab or comma, reads the password of a `Basic`
     value that decodes, or its user when there is no colon or the password is empty or
     `x-oauth-basic`, and serves one that names no token as no credential at all, as it does an
-    unknown scheme. A `Basic` value that does not decode is no credential either where
+    unknown scheme, unless it is shaped like a token (:data:`_GITHUB_TOKEN_SHAPE`): ``x:ghp_<36 A>``,
+    ``x:gho_``, ``x:ghu_``, ``x:ghs_`` the same, ``gho_<36 A>:`` and ``ghp_<36 A>`` were "Bad
+    credentials" with none of the five `x-ratelimit-*`, where ``x:ghr_<36 A>``, ``x:ghp_<35 A>``,
+    ``x:ghp_<37 A>``, ``x:github_pat_<82 A>`` and ``ghp_<36 A>:x`` were 200 (2026-10-16, 2026-10-24). A `Basic` value that does not decode is no credential either where
     :func:`github_scheme_then_a_tab` holds. A space and a tab are the only whitespace it trims:
     ``Bearer <NBSP>``, ``Bearer <t><NBSP>``, ``Bearer <NBSP><t>``, ``Bearer <t><NEL>``,
     ``Bearer <t><0x1F>``, ``Basic <NBSP>`` and base64, and the base64 of ``x:<t>`` followed by a
@@ -117,7 +125,9 @@ def github_credential(request: Request) -> str | None:
             return None if github_scheme_then_a_tab(request) else ""
         user, _, password = base64.b64decode(value).decode("utf-8", "replace").partition(":")
         token = user if password in ("", "x-oauth-basic") else password
-        return token if acl(request).resolve(token) is not None else None
+        if acl(request).resolve(token) is not None or _GITHUB_TOKEN_SHAPE.fullmatch(token):
+            return token
+        return None
     return None
 
 

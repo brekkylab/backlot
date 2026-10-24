@@ -8399,3 +8399,63 @@ def test_jira_operations_that_answer_an_accept_with_no_406(client, operation):
     if operation in routers_atlassian._JIRA_UNSERVED["refused"]:
         assert r.status_code == 401
         assert r.headers["content-type"] == "text/html;charset=UTF-8"
+
+
+@pytest.mark.parametrize(
+    "cql, written",
+    [
+        ("type=page", "type = page"),
+        ("type=page  and  space=handbook", "type = page and space = handbook"),
+        ("TYPE=page", "TYPE = page"),
+        ("type=page AND space=handbook", "type = page AND space = handbook"),
+        ("type in (page,blogpost)", "type in ( page , blogpost )"),
+        ("type=page and (space=A or space=B)", "type = page and ( space = A or space = B )"),
+        ("type!=page", "type != page"),
+        ("text~probe", "text ~ probe"),
+        ('title~"a b"', 'title ~ "a b"'),
+        ("title='x'", "title = 'x'"),
+        ("space.key=handbook", "space.key = 'handbook'"),
+        ('created>now("-1d")', 'created > now ( "-1d" )'),
+        ("label=x order by created desc", "label = x order by created desc"),
+    ],
+)
+def test_confluence_cql_search_writes_the_query_back_as_it_parsed_it(client, admin_h, cql, written):
+    """`cqlQuery` is the query as real writes it back (`_cql_written_back`)."""
+    r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": cql})
+    assert r.status_code == 200, r.text
+    assert r.json()["cqlQuery"] == written
+
+
+_CQL_PREFIX = "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
+
+
+@pytest.mark.parametrize(
+    "cql, message",
+    [
+        ('"', "Could not parse cql : "),
+        ("type=page and", "Could not parse cql : "),
+        ("type=page)", "Could not parse cql : "),
+        ("\U0001f600", "Could not parse cql : "),
+        ("   ", "Could not parse cql : "),
+        ("type=", "Expecting a value for operator '=' after field 'type'"),
+        ("type==page", "Expecting a value for operator '=' after field 'type' but got '='"),
+        ("(type=page", "Missing closing parenthesis near field (()"),
+    ],
+)
+def test_confluence_cql_search_refuses_a_query_it_cannot_parse(client, admin_h, cql, message):
+    """The 400s `_cql_refusal` answers, each with the `data` object of a service refusal."""
+    r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": cql})
+    assert r.status_code == 400, r.text
+    assert r.json() == {
+        "statusCode": 400,
+        "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
+        "message": _CQL_PREFIX + message,
+    }
+
+
+@pytest.mark.parametrize("cql", ["foo", "a b", "type=PAGE"])
+def test_confluence_cql_search_leaves_the_unmeasured_refusals_as_they_were(client, admin_h, cql):
+    """A field with no operator and a value the field does not hold are refused on real with a
+    suggestion list not measured in full, so they are answered as before: a 200."""
+    r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": cql})
+    assert r.status_code == 200, r.text

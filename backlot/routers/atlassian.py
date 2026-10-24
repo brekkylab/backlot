@@ -1953,6 +1953,10 @@ async def confluence_cql_search(request: Request):
     ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
     want_label = ml.group(1) if ml else None
     _refuse_negative_page_params(limit, start)
+    tokens = _cql_tokens(cql)
+    refusal = _cql_refusal(tokens)
+    if refusal is not None:
+        raise refusal
     # An empty `cursor` is none, and of a repeated one the first is read, measured 2026-10-04.
     sent_cursor = (request.query_params.getlist("cursor") or [None])[0]
     after = _cql_search_after(sent_cursor) if sent_cursor else None
@@ -2018,7 +2022,7 @@ async def confluence_cql_search(request: Request):
         "limit": limit,
         "size": len(results),
         "totalSize": total,
-        "cqlQuery": cql,
+        "cqlQuery": _cql_written_back(tokens) if tokens is not None else cql,
         "searchDuration": 5,
         "_links": links,
     }
@@ -2857,6 +2861,148 @@ def _confluence_page_params(
 
 # What Java's `String.trim()` removes: every character up to and including the space.
 _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
+
+
+# One CQL token: a quoted value (in either quotes), an operator, a bracket or a comma, or a word.
+# A quote left open, or a character no token holds (an emoji), is a CQL real cannot parse.
+_CQL_TOKEN = re.compile(r"""\s*(?:("[^"]*"|'[^']*')|(!=|!~|>=|<=|=|~|>|<)|([(),])|([\w.*-]+))""")
+_CQL_OPERATORS = frozenset(("!=", "!~", ">=", "<=", "=", "~", ">", "<"))
+
+
+def _cql_tokens(cql: str) -> list[str] | None:
+    """The tokens of ``cql``, or None where a character starts no token."""
+    tokens, at = [], 0
+    while at < len(cql):
+        m = _CQL_TOKEN.match(cql, at)
+        if m is None or m.end() == at:
+            return None if cql[at:].strip() else tokens
+        tokens.append(m.group(m.lastindex))
+        at = m.end()
+    return tokens
+
+
+def _cql_written_back(tokens: list[str]) -> str:
+    """``cqlQuery`` as real writes the query back: its tokens one space apart, in the case and the
+    quotes they were sent in, and a `space.key` value in single quotes. Measured on Confluence
+    Cloud on 2026-10-22: `type=page` is `type = page`, `type=page  and  space=<KEY>`
+    `type = page and space = <KEY>`, `type in (page,blogpost)` `type in ( page , blogpost )`,
+    `created>now("-1d")` `created > now ( "-1d" )`, `title~"a b"` and `title='x'` keep their
+    quotes, and `space.key=<KEY>` is `space.key = '<KEY>'`."""
+    out = []
+    for i, token in enumerate(tokens):
+        quoted = token[:1] in ("'", '"')
+        if i >= 2 and tokens[i - 1] == "=" and tokens[i - 2].lower() == "space.key" and not quoted:
+            token = f"'{token}'"
+        out.append(token)
+    return " ".join(out)
+
+
+def _cql_refusal(tokens: list[str] | None):
+    """The 400 real answers a CQL it cannot read with, or None for one this server reads.
+
+    Measured on Confluence Cloud on 2026-10-22 (``errors.atlassian.cql_not_parsed`` and its
+    neighbours): a quote left open, a trailing `and`, a `)` with no `(` and an emoji are
+    `Could not parse cql : `, `type=` and `type==page` name the operator with no value, and
+    `(type=page` the missing `)`. A clause that is a field and no operator (`foo`, `a b`) and a value
+    the field does not hold (`type=PAGE`) are refused on real with a suggestion list that was not
+    measured in full, so they are read as before."""
+    if tokens is None or not tokens:
+        return errors_atlassian.cql_not_parsed()
+    at = 0
+
+    def peek():
+        return tokens[at] if at < len(tokens) else None
+
+    class _Stop(Exception):
+        def __init__(self, refusal):
+            self.refusal = refusal
+
+    def word(token):
+        return token is not None and token not in _CQL_OPERATORS and token not in ("(", ")", ",")
+
+    def value():
+        nonlocal at
+        if not word(peek()):
+            raise _Stop(errors_atlassian.cql_not_parsed())
+        at += 1
+        if peek() == "(":  # a function: now("-1d")
+            at += 1
+            while peek() != ")":
+                if peek() is None:
+                    raise _Stop(errors_atlassian.cql_not_parsed())
+                at += 1
+            at += 1
+
+    def clause():
+        nonlocal at
+        if peek() == "(":
+            at += 1
+            expression()
+            if peek() != ")":
+                raise _Stop(errors_atlassian.cql_missing_closing_parenthesis())
+            at += 1
+            return
+        if not word(peek()):
+            raise _Stop(errors_atlassian.cql_not_parsed())
+        field = peek()
+        at += 1
+        if peek() is not None and peek().lower() == "not":
+            at += 1
+        if peek() is not None and peek().lower() == "in":
+            at += 1
+            if peek() != "(":
+                raise _Stop(errors_atlassian.cql_not_parsed())
+            at += 1
+            value()
+            while peek() == ",":
+                at += 1
+                value()
+            if peek() != ")":
+                raise _Stop(errors_atlassian.cql_not_parsed())
+            at += 1
+            return
+        if peek() not in _CQL_OPERATORS:
+            raise _Stop(None)  # a field and no operator: not modelled
+        operator = peek()
+        at += 1
+        if peek() is None:
+            raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
+        if peek() in _CQL_OPERATORS:
+            raise _Stop(errors_atlassian.cql_expecting_value(operator, field, peek()))
+        value()
+
+    def expression():
+        nonlocal at
+        if peek() is not None and peek().lower() == "not":
+            at += 1
+        clause()
+        while peek() is not None and peek().lower() in ("and", "or"):
+            at += 1
+            if peek() is None:
+                raise _Stop(errors_atlassian.cql_not_parsed())
+            if peek().lower() == "not":
+                at += 1
+            clause()
+
+    try:
+        expression()
+        if peek() is not None and peek().lower() == "order":
+            at += 1
+            if peek() is None or peek().lower() != "by":
+                raise _Stop(errors_atlassian.cql_not_parsed())
+            at += 1
+            while True:
+                value()
+                if peek() is not None and peek().lower() in ("asc", "desc"):
+                    at += 1
+                if peek() != ",":
+                    break
+                at += 1
+        if peek() is not None:
+            raise _Stop(errors_atlassian.cql_not_parsed())
+    except _Stop as stop:
+        return stop.refusal
+    return None
 
 
 def _cql_page_param(request: Request, name: str, default: int) -> int | None:

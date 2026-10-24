@@ -2079,8 +2079,13 @@ _MASKS_REFUSED = (
     ]
     + [
         ("/drive/v3/about", mask, subject)
-        for mask, subject in [("user,", "user,"), (",", ","), ("zzz,bogus", "zzz")]
-        + [("bogus,user", "bogus")]
+        for mask, subject in [
+            ("user,", "user,"),
+            ("zzz,bogus", "zzz"),
+            ("bogus,user", "bogus"),
+            (",", ","),
+            ("user ,", "user ,"),  # a trailing comma is Invalid even after a space
+        ]
     ]
 )
 _FIELDS_REQUIRED = (
@@ -2107,10 +2112,8 @@ _MASKS_UNSERVED = [
     (_DOC, "copyRequiresWriterPermission,viewersCanCopyContent", "copyRequiresWriterPermission"),
     ("/drive/v3/files", "files(id,writersCanShare)", "writersCanShare"),
     ("/drive/v3/files", "files/linkShareMetadata", "linkShareMetadata"),
-    (_PERMS_OF_DOC, "permissions(deleted)", "deleted"),
-    (_PERMS_OF_DOC, "permissions(id,photoLink)", "photoLink"),
-    (_PERMS_OF_DOC, "permissions/permissionDetails", "permissionDetails"),
-    (_PERMS_OF_DOC, "permissions(pendingOwner)", "pendingOwner"),
+    # The four permission fields real answers on every permission are served now (#899): deleted,
+    # pendingOwner, permissionDetails and photoLink appear under a mask naming them or under `*`.
 ]
 _FULLTEXT = "q=" + quote("fullText contains 'a'")
 # Where real answered a mask ending in a comma among a route's other refusals, each sent beside it,
@@ -2174,8 +2177,30 @@ _MASK_ORDER = (
     + [(_PERMS_OF_DOC, "kind", "fields=" + quote("kind,"), _SERVED)]
     + [(_DOC, "id", "fields=" + quote("id,"), _SERVED)]
 )
-# Masks `about` answered with the missing-mask 400 `_drive_about_field_keys` describes.
-_ABOUT_MASKS_REQUIRED = ["\n", chr(0x1C), chr(0x3000), "user()", "user( )", "kind()"]
+# Masks `about` answered with the missing-mask 400 `_drive_about_field_keys` describes. The extra
+# rows are the #899 measurement (2026-10-20): an empty entry with a named part, an unbalanced or
+# root-opened group, a path past the root, a `*` glued to a name, and a mask with no name at all.
+_ABOUT_MASKS_REQUIRED = [
+    "\n",
+    chr(0x1C),
+    chr(0x3000),
+    "user()",
+    "user( )",
+    "kind()",
+    "user,,kind",
+    ",user",
+    "zzz,,user",
+    "user(",
+    "user)",
+    "(user)",
+    "user/",
+    "/user",
+    "*id",
+    chr(0x0000),
+    chr(0x0001),
+    chr(0x200B),
+    chr(0xFEFF),
+]
 # What a member's `drives.list` answered each `q` with, as `_DRIVES_Q` records.
 _DRIVES_Q_TAKEN = [
     "",
@@ -2633,11 +2658,11 @@ _MASKS_SERVED = [
     (_PERMS_OF_DOC, "permissions(emailAddress())", {"permissions"}, set()),
     (_PERMS_OF_DOC, "permissions( )", {"permissions"}, set()),
     (_PERMS_OF_DOC, "permissions(teamDrivePermissionDetails)", {"permissions"}, set()),
-    (_PERMS_OF_DOC, "permissions", {"permissions"}, "default"),
-    (_PERMS_OF_DOC, "permissions(*)", {"permissions"}, "default"),
-    (_PERMS_OF_DOC, "*", {"kind", "permissions"}, "default"),
-    (_PERMS_OF_DOC, "*,permissions(id)", {"kind", "permissions"}, "default"),
-    (_PERMS_OF_DOC, "permissions(id,*)", {"permissions"}, "default"),
+    (_PERMS_OF_DOC, "permissions", {"permissions"}, "full"),
+    (_PERMS_OF_DOC, "permissions(*)", {"permissions"}, "full"),
+    (_PERMS_OF_DOC, "*", {"kind", "permissions"}, "full"),
+    (_PERMS_OF_DOC, "*,permissions(id)", {"kind", "permissions"}, "full"),
+    (_PERMS_OF_DOC, "permissions(id,*)", {"permissions"}, "full"),
     ("/drive/v3/drives", "", set(), None),
     ("/drive/v3/drives", " ", set(), None),
     ("/drive/v3/drives", "nextPageToken", set(), None),
@@ -2685,6 +2710,11 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(
     listed = next((k for k in body if isinstance(body[k], list)), None)
     if entries == "default":
         assert body[listed] == get()[listed]
+    elif entries == "full":
+        # `permissions.list` has no unmasked full object: no mask answers only id/type/kind/role,
+        # while an explicit wrapper or `*` adds emailAddress and displayName. The `*` call is the
+        # unmasked-equivalent a mask naming the whole list must agree with.
+        assert body[listed] == get(fields="*")[listed]
     elif entries:
         assert body[listed] and all(set(e) == entries for e in body[listed])
     elif entries is not None:
@@ -6004,11 +6034,12 @@ def test_drive_about_needs_auth(client):
 
 
 def test_drive_about_nested_mask_selects_its_parent(client, admin_h):
-    """`storageQuota/limit` selects `storageQuota` whole, as `owners/kind` selects `owners` on
-    `files.get`."""
+    """`storageQuota/limit` reaches into the object and trims it to `limit`, as `owners(kind)`
+    trims an owners entry to `kind` and `user(kind)` trims about's user (measured 2026-10-20 for
+    #899)."""
     j = _about(client, admin_h, "storageQuota/limit").json()
     assert set(j) == {"storageQuota"}
-    assert "usage" in j["storageQuota"]
+    assert set(j["storageQuota"]) == {"limit"}
 
 
 def test_drive_about_user_is_the_caller(client, tokens_yaml):
@@ -12104,3 +12135,88 @@ def test_gmail_hyphenated_address_search(tmp_path, surface, query, expected):
     assert {x["id"] for x in r.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
+
+
+@pytest.mark.parametrize(
+    "mask, keys",
+    [
+        (
+            "permissions(deleted,pendingOwner,permissionDetails)",
+            {"deleted", "pendingOwner", "permissionDetails"},
+        ),
+        ("permissions/permissionDetails", {"permissionDetails"}),
+        ("permissions(type,id)", {"id", "type"}),
+    ],
+)
+def test_drive_permissions_serve_the_fields_real_always_answers(client, admin_h, mask, keys):
+    """#899: deleted, pendingOwner and permissionDetails are served on every permission (measured on
+    40 real permissions, 2026-10-20), no longer refused as unserved. photoLink is real's
+    user-permission-only field and is checked separately."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    r = client.get(
+        f"/drive/v3/files/{doc}/permissions",
+        headers=admin_h,
+        params={"fields": mask},
+    )
+    assert r.status_code == 200, r.text
+    entries = r.json()["permissions"]
+    assert entries
+    assert all(keys <= set(e) for e in entries)
+
+
+def test_drive_permissions_photo_link_is_user_only(client, admin_h):
+    """#899: `permissions(id,type,photoLink)` gives a photoLink on each user permission and none on
+    the anyone/group entries real never carries a photo on."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    r = client.get(
+        f"/drive/v3/files/{doc}/permissions",
+        headers=admin_h,
+        params={"fields": "permissions(id,type,photoLink)"},
+    )
+    assert r.status_code == 200, r.text
+    entries = r.json()["permissions"]
+    assert entries
+    for e in entries:
+        if e["type"] == "user":
+            assert "photoLink" in e
+        else:
+            assert "photoLink" not in e
+
+
+def test_drive_permissions_default_and_star_projection(client, admin_h):
+    """#899: no mask answers id/type/kind/role alone; `permissions` or `*` add emailAddress and
+    displayName (and the always-answered boolean/list fields)."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    url = f"/drive/v3/files/{doc}/permissions"
+    default_ = client.get(url, headers=admin_h).json()["permissions"][0]
+    assert set(default_) == {"id", "type", "kind", "role"}
+    full = client.get(url, headers=admin_h, params={"fields": "permissions"}).json()["permissions"][
+        0
+    ]
+    assert {"emailAddress", "displayName", "deleted", "pendingOwner", "permissionDetails"} <= set(
+        full
+    )
+
+
+def test_drive_list_fields_mask_trims_top_level_and_entries(client, admin_h):
+    """#899: files.list trims its own top-level keys to the mask (`fields=kind` answers only kind),
+    and a mask naming no list at all omits files even when a token exists."""
+    r = client.get("/drive/v3/files", headers=admin_h, params={"fields": "kind"})
+    assert set(r.json()) == {"kind"}
+    r = client.get(
+        "/drive/v3/files", headers=admin_h, params={"fields": "nextPageToken", "pageSize": 1}
+    )
+    assert "files" not in r.json()
+
+
+def test_drive_get_trims_an_object_field_to_its_mask(client, admin_h):
+    """#899: `owners(kind)` answers each owner with only kind, not the whole user object, and a
+    reach into a leaf field (`id/zzz`) is a 400 naming the deepest name."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    r = client.get(f"/drive/v3/files/{doc}", headers=admin_h, params={"fields": "owners(kind)"})
+    assert r.status_code == 200, r.text
+    owners = r.json()["owners"]
+    assert owners and all(set(o) == {"kind"} for o in owners)
+    for mask in ("owners(zzz)", "id/zzz", "kind/id"):
+        bad = client.get(f"/drive/v3/files/{doc}", headers=admin_h, params={"fields": mask})
+        assert bad.status_code == 400, (mask, bad.text)

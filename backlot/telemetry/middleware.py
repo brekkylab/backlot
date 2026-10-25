@@ -1,7 +1,8 @@
 """The ASGI middleware that counts each call, installed outermost by ``backlot.main``.
 
 It reads the request after the app has answered: by then the router has put the matched
-route on the scope, the path rewrites have run, and the HEAD middleware has put the method back.
+route on the scope (or, where a HubSpot middleware answers ahead of the router, the route the
+router matches), the path rewrites have run, and the HEAD middleware has put the method back.
 It reads an answer's body only to find an error code, and only for an error status, a Slack
 ``ok: false``, or a GraphQL answer.
 """
@@ -105,6 +106,7 @@ class TelemetryMiddleware:
     ) -> None:
         """Count one call. ``body`` is the answer's kept body, None for an unhandled exception."""
         try:
+            state = scope.get("state") or {}
             named = self.namer.name(
                 method=scope["method"],
                 path=scope["path"],
@@ -112,7 +114,7 @@ class TelemetryMiddleware:
                 query=query,
                 headers=headers,
                 # The GraphQL routes leave the document they parsed here.
-                graphql_payload=(scope.get("state") or {}).get("graphql_payload"),
+                graphql_payload=state.get("graphql_payload"),
             )
             kind, credential = _credential(headers, query, scope)
             attributes = {
@@ -129,7 +131,10 @@ class TelemetryMiddleware:
                 else "user",
                 "backlot.client": client,
             }
-            if body is None:
+            # A GraphQL execution answers Backlot's own failure as a field error, not raised, so
+            # the GraphQL routes leave `backlot.graphql.engine.Result.raised` here.
+            raised = body is None or bool(state.get("graphql_raised"))
+            if raised:
                 code = "internal_error"
             else:
                 code = errors.error_code(named.source, status, body) if body else ""
@@ -139,7 +144,7 @@ class TelemetryMiddleware:
                 attributes["backlot.error_code"] = code
             if code or status >= 400:
                 attributes["backlot.error_class"] = errors.error_class(
-                    named.source, named.support, int(status), code, spent, raised=body is None
+                    named.source, named.support, int(status), code, spent, raised=raised
                 )
             self.recorder.record(attributes, ((ended or time.perf_counter()) - began) * 1000)
         except Exception:  # noqa: BLE001 — counting a call must never change the answer to it

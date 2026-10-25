@@ -7,11 +7,11 @@ agent over a corpus **you** supply, entirely offline.
 
 ```bash
 uv sync --all-extras --locked
-python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py, s3.py, github.py, unified.py
+python examples/using-mirage/slack.py       # or gmail.py, gdrive.py, notion.py, s3.py, github.py, linear.py, unified.py
 ```
 
 Each script spins up its own throwaway server on a tiny in-code corpus, points a mirage
-`Resource` at it, and runs a few filesystem commands. Pass `--url http://host:port` to use an
+`VFS` at it, and runs a few filesystem commands. Pass `--url http://host:port` to use an
 already-running server instead (it falls back to a local one if that's unreachable).
 
 ```bash
@@ -23,14 +23,15 @@ of driving it in-process (see [FUSE mode](#fuse-mode---fuse) below).
 
 ## Sources
 
-| Script | mirage resource | mount | what it shows |
+| Script | mirage VFS | mount | what it shows |
 |---|---|---|---|
-| `slack.py` | `SlackResource` | `/slack` | `ls` channels → dated `chat.jsonl`; `cat` + scoped `grep` |
-| `gmail.py` | `GmailResource` | `/gmail` | `ls` labels → dates → messages; `cat` + `jq .subject` |
-| `gdrive.py` | `GoogleDriveResource` | `/gdrive` | `ls -F` folders → files; `cat` a native Google doc |
-| `notion.py` | `NotionResource` | `/notion` | `ls` `pages/` + `databases/`; `cat` a `page.json` / `database.json` |
-| `s3.py` | `S3Resource` | `/s3` | `ls` recursively → `cat` an object; `grep -r` across the bucket |
-| `github.py` | `GitHubResource` | `/github` | `ls` a repo's file tree → `cat` a source file; `grep -r` across it |
+| `slack.py` | `SlackVFS` | `/slack` | `ls` channels → dated `chat.jsonl`; `cat` + scoped `grep` |
+| `gmail.py` | `GmailVFS` | `/gmail` | `ls` labels → dates → messages; `cat` + `jq .subject` |
+| `gdrive.py` | `GoogleDriveVFS` | `/gdrive` | `ls -F` folders → files; `cat` a native Google doc |
+| `notion.py` | `NotionVFS` | `/notion` | `ls` `pages/` + `databases/`; `cat` a `page.json` / `database.json` |
+| `s3.py` | `S3VFS` | `/s3` | `ls` recursively → `cat` an object; `grep -r` across the bucket |
+| `github.py` | `GitHubVFS` | `/github` | `ls` a repo's file tree → `cat` a source file; `grep -r` across it |
+| `linear.py` | `LinearVFS` | `/linear` | `ls` teams → a team's `team.json` states; `cat` an `issue.json`, `jq` its `comments.jsonl` |
 | `unified.py` | all three | `/slack` `/gmail` `/gdrive` | one Workspace, one set of commands, three backends |
 
 The scripts navigate **top-down** (`ls` one level, `cat` one file) rather than walking a whole
@@ -47,21 +48,27 @@ both, together).
 
 ## Pointing mirage at Backlot
 
-**Slack** and **Notion** take a `base_url` config, so you point them straight at Backlot — no glue:
+**Slack**, **Notion** and **Linear** take a `base_url` config, so you point them straight at Backlot — no glue:
 
 ```python
 from backlot import serve_or_connect
 with serve_or_connect(CORPUS) as s:
-    resource = SlackResource(SlackConfig(token=s.token,
-                                         base_url=f"{s.base_url}/slack/api"))
-    ws = Workspace({"/slack": resource}, mode=MountMode.READ)
-    print(await (await ws.execute("ls /slack/channels/")).stdout_str())
+    vfs = SlackVFS(SlackConfig(token=s.token,
+                               base_url=f"{s.base_url}/slack/api"))
+    ws = Workspace({"/slack": vfs}, mode=MountMode.READ)
+    print(await (await ws.shell("ls /slack/channels/")).stdout_str())
 ```
 
 **Notion** is the same one-liner — `NotionConfig(base_url=f"{s.base_url}/notion/v1")`, no
 monkeypatch. mirage sends `Notion-Version: 2025-09-03`, which Backlot's version-aware router
 serves (the `data_sources` shape on a database, and its rows through `data_sources/{id}/query`),
 so pages and databases both read correctly.
+
+**Linear** is one line too — `LinearConfig(api_key=token, base_url=f"{s.base_url}/linear/graphql")`.
+mirage sends the key bare in `Authorization`, the way Linear takes a personal API key, so a Backlot
+token goes into `api_key` unchanged. A team's directory holds `team.json` beside `issues/`,
+`members/`, `projects/`, `cycles/` and `documents/`; `documents/` is empty, because a corpus carries
+no Linear documents.
 
 **S3** is also plain config, no monkeypatch and no pin bump: `S3Config(endpoint_url=
 f"{s.base_url}/s3", path_style=True, aws_access_key_id=ak, aws_secret_access_key=sk)`.
@@ -79,7 +86,7 @@ rewrites the per-API constants the helpers fall back to when `api_base` is unset
 ```python
 from backlot.integrations.mirage import point_google_at
 point_google_at(s.base_url)              # googleapis.com  ->  Backlot
-gmail = GmailResource(GmailConfig(**creds))
+gmail = GmailVFS(GmailConfig(**creds))
 ```
 
 It redirects the OAuth token endpoint, the Google Drive API, and the Docs/Sheets/Slides APIs (mirage
@@ -92,23 +99,23 @@ and `google_oauth_user` (Backlot-specific OAuth glue, not general API) from
 **GitHub** is the same shape as Google, but with one constant:
 `mirage.core.github.constants.API_BASE = "https://api.github.com"`, which mirage falls back to
 whenever `GitHubConfig.base_url` is unset. `point_github_at(base_url)` rebinds that constant (and
-any already-imported copy) before the resource is built:
+any already-imported copy) before the VFS is built:
 
 ```python
 from backlot.integrations.mirage import point_github_at
 point_github_at(s.base_url)                       # api.github.com  ->  Backlot
-repo = GitHubResource(GitHubConfig(token=T, owner="acme", repo="gateway"))
+repo = GitHubVFS(GitHubConfig(token=T, owner="acme", repo="gateway"))
 ```
 
 The copy-sweep matters here for the same reason it does for Google: `mirage/core/github/client.py`
 imports `API_BASE` by value and reads that copy in `github_url`, so patching only the constants
 module would leave every request pointed at api.github.com. What differs from Google is that
 `GitHubConfig.base_url` is a real seam — mirage threads it to every call site — so the rebind is
-what redirects a resource built without that field, rather than the only way in.
+what redirects a VFS built without that field, rather than the only way in.
 
 ## FUSE mode (`--fuse`)
 
-Everything above drives the filesystem **in-process** with `ws.execute("ls …")`. mirage can also
+Everything above drives the filesystem **in-process** with `ws.shell("ls …")`. mirage can also
 expose a mount as a **real filesystem** via FUSE, so *any* process — `cat`, `grep`, `rg`, an
 editor, an indexer — reads Backlot's data as ordinary files:
 

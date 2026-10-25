@@ -220,7 +220,11 @@ def test_mirage_patchers_raise_when_a_constant_is_renamed(monkeypatch):
 
 def test_mirage_patchers_rebind_every_constant_they_name(monkeypatch):
     """The success path, against the constants mirage actually ships: every name each patcher
-    declares must land, since the raise above is only as good as the set it checks."""
+    declares must land, since the raise above is only as good as the set it checks. A copy
+    outside ``mirage.core`` lands too, and another vendor's constant of the same name does not:
+    mirage 0.0.7 imports ``API_BASE`` into ``mirage.accessor.github``, and names Hugging Face's
+    host ``API_BASE`` in ``mirage.core.hf_hub.constants``. The ``gh`` CLI's accessor keeps its copy,
+    which ``web_origin`` compares a ``base_url`` against to tell github.com from another host."""
     from backlot.integrations.mirage import point_github_at, point_google_at
 
     real, real_github = _mirage_constant_modules()
@@ -234,6 +238,9 @@ def test_mirage_patchers_rebind_every_constant_they_name(monkeypatch):
         {
             "mirage.core.google.constants": {n: getattr(real, n) for n in google_names},
             "mirage.core.github.constants": {n: getattr(real_github, n) for n in github_names},
+            "mirage.accessor.github": {"API_BASE": real_github.API_BASE},
+            "mirage.core.hf_hub.constants": {"API_BASE": "https://huggingface.co"},
+            "mirage.commands.cli.builtin.gh.accessor": {"API_BASE": real_github.API_BASE},
         },
     )
     point_google_at("http://127.0.0.1:9999")
@@ -241,13 +248,17 @@ def test_mirage_patchers_rebind_every_constant_they_name(monkeypatch):
 
     patched = {
         n
-        for mod in mods.values()
+        for name, mod in mods.items()
+        if name.endswith(".constants")
         for n, v in vars(mod).items()
         if n.isupper() and isinstance(v, str) and "127.0.0.1" in v
     }
     assert patched == _NAMED_BY_THE_PATCHERS, (
         f"missing: {sorted(_NAMED_BY_THE_PATCHERS - patched)}, unexpected: {sorted(patched - _NAMED_BY_THE_PATCHERS)}"
     )
+    assert mods["mirage.accessor.github"].API_BASE == "http://127.0.0.1:9999/github"
+    assert mods["mirage.core.hf_hub.constants"].API_BASE == "https://huggingface.co"
+    assert mods["mirage.commands.cli.builtin.gh.accessor"].API_BASE == real_github.API_BASE
 
 
 def test_mirage_patchers_name_every_host_constant_mirage_ships():
@@ -270,6 +281,36 @@ def test_mirage_patchers_name_every_host_constant_mirage_ships():
         f"mirage ships host constants {shim.__name__} does not rebind, so they stay pointed at the "
         f"real vendor: {unpatched}"
     )
+
+
+def test_mirage_linear_documents_validate_against_the_served_schema(client, tokens_yaml):
+    """``LinearVFS`` sends the documents in ``mirage.core.linear.queries``, and a schema change can
+    turn one into a 400 that no test sees, since nothing runs ``examples/using-mirage/linear.py``.
+    Hold every one of them to the schema Backlot's own introspection reports."""
+    pytest.importorskip("mirage")
+    from graphql import build_client_schema, parse, validate
+    from mirage.core.linear import queries
+
+    from backlot.graphql import mcp_tools
+
+    intro = client.post(
+        "/linear/graphql",
+        json={"query": mcp_tools.INTROSPECTION_QUERY},
+        headers={"Authorization": tokens_yaml["admin_token"]},  # bare, as LinearConfig sends it
+    )
+    schema = build_client_schema(intro.json()["data"])
+    documents = {
+        name: text
+        for name, text in vars(queries).items()
+        if name.endswith("_QUERY") and isinstance(text, str)
+    }
+    assert documents, "no *_QUERY documents in mirage.core.linear.queries -- fix the extractor"
+    refused = {
+        name: [e.message for e in errors]
+        for name, text in documents.items()
+        if (errors := validate(schema, parse(text)))
+    }
+    assert refused == {}
 
 
 def test_patch_linear_at_only_rewrites_linear_urls():

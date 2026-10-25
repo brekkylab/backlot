@@ -24,11 +24,11 @@ ENV PATH="/opt/venv/bin:$PATH" \
 
 WORKDIR /app
 RUN python -m venv /opt/venv
-# Both are named by pyproject (`readme`, `license-files`). Neither is required to build — setuptools
-# tolerates either being absent, silently — but the installed dist-info then loses it: without
-# LICENSE the image redistributes MIT-licensed code carrying no copy of the notice, and without
-# README.pypi.md `pip show backlot` in the container has an empty description.
-COPY pyproject.toml README.pypi.md LICENSE ./
+# All three are named by pyproject (`readme`, `license-files`). None is required to build —
+# setuptools warns and carries on without any of them — but the installed dist-info then loses it:
+# without LICENSE and NOTICE.md the image redistributes the code without its license text and
+# notices, and without README.pypi.md `pip show backlot` in the container has an empty description.
+COPY pyproject.toml README.pypi.md LICENSE NOTICE.md ./
 COPY backlot ./backlot
 # .dockerignore keeps .git out of the build context, so setuptools-scm finds no tag to read and the
 # image carries the fallback version pyproject names. Pass the version being built to stamp it:

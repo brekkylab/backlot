@@ -238,6 +238,21 @@ def diff_shapes(method: str, backlot: Shape, documented: Shape) -> list[Finding]
 
 PROBE_CORPUS: tuple[dict[str, Any], ...] = (
     {
+        # A message with a SUBTYPE, which is the only way the comparison sees the field: a
+        # message posted through this API carries none (`slack._writer`), so without a corpus
+        # one the probe would report `subtype` as surface Backlot does not serve.
+        "source_type": "slack",
+        "doc_id": "probe-join",
+        "channel": "probe-general",
+        "group": "probe",
+        "visibility": "public",
+        "author_email": "bob@probe.invalid",
+        "author_name": "Bob Probe",
+        "created": "2026-01-05T09:00:00Z",
+        "content": "<@bob> has joined the channel",
+        "subtype": "channel_join",
+    },
+    {
         "source_type": "slack",
         "doc_id": "probe-thread",
         "channel": "probe-general",
@@ -333,7 +348,12 @@ def _calls(call: _Caller) -> list[tuple[str, dict[str, Any]]]:
     The ids are discovered through the API, since Backlot mints them on import. And with the
     arguments the reference's own examples were sent where an answer echoes them: `api.test`'s
     carries the `foo` it was sent, `conversations.history`'s the `latest`, and a page with more to
-    follow its `response_metadata`."""
+    follow its `response_metadata`.
+
+    A write method is asked like any other, and what it needs to name is written here first: a
+    message to edit and react to, and a second one for `chat.delete`, so each call in the list
+    names something that is there when the list runs. The writes land in this throwaway server's
+    overlay, so the corpus is unchanged and the reads above have already been taken."""
     channels = call("conversations.list", limit=200).get("channels") or []
     people = call("users.list", limit=200).get("members") or []
     threads = [
@@ -349,6 +369,10 @@ def _calls(call: _Caller) -> list[tuple[str, dict[str, Any]]]:
         raise FidelityError(
             "the probe corpus served no channel, person or thread, so nothing can be compared"
         )
+    room = channels[0]["id"]
+    edited = call("chat.postMessage", channel=room, text="a message to edit")["ts"]
+    call("reactions.add", channel=room, timestamp=edited, name="eyes")
+    doomed = call("chat.postMessage", channel=room, text="a message to delete")["ts"]
     return [
         ("api.test", {"foo": "bar"}),
         ("auth.test", {}),
@@ -367,6 +391,16 @@ def _calls(call: _Caller) -> list[tuple[str, dict[str, Any]]]:
         ),
         *(("users.info", {"user": p["id"]}) for p in people),
         ("users.list", {"limit": 200}),
+        ("chat.postMessage", {"channel": room, "text": "posted by the probe"}),
+        ("chat.postMessage", {"channel": room, "text": "a reply", "thread_ts": edited}),
+        ("chat.postEphemeral", {"channel": room, "user": people[0]["id"], "text": "seen once"}),
+        ("chat.update", {"channel": room, "ts": edited, "text": "edited by the probe"}),
+        ("chat.getPermalink", {"channel": room, "message_ts": edited}),
+        ("reactions.add", {"channel": room, "timestamp": edited, "name": "tada"}),
+        ("reactions.get", {"channel": room, "timestamp": edited}),
+        ("reactions.list", {"limit": 200}),
+        ("reactions.remove", {"channel": room, "timestamp": edited, "name": "tada"}),
+        ("chat.delete", {"channel": room, "ts": doomed}),
     ]
 
 
@@ -423,6 +457,17 @@ _STRING = re.compile(r'"(?:\\.|[^"\\])*"')
 _ELIDED = re.compile(r"(?://\s*)?\.\.\.\s*,?")
 _TRAILING_COMMA = re.compile(r",(\s*[}\]])")
 _OBJECT_LINK = re.compile(r"\((https://docs\.slack\.dev/reference/objects/[a-z-]+\.md)\)")
+
+#: Where a method puts an object its ``## Response`` links and none of its examples carries, by
+#: ``(method, the object page's file name)``. A page that documents one answer shape per item type
+#: and exemplifies one of them leaves the others' objects with no container to be read off, and
+#: guessing one would place a whole object wrong — so each entry here is measured, not inferred.
+#:
+#: ``reactions.get`` is the one method that needs it: its page links the file object twice and
+#: every success example is the message variant. Measured against slack.com on 2026-10-21,
+#: ``reactions.get`` aimed at a file answers ``{"ok": true, "type": "file", "file": {…}}`` and no
+#: ``channel``, putting the object at ``file`` as ``reactions.list`` puts it at ``items[].file``.
+_OBJECT_AT = {("reactions.get", "file-object.md"): "file"}
 
 # A row's name in an object's field table, alone on its line.
 _ROW_NAME = re.compile(r"`([a-z][a-z0-9_.]*)`")
@@ -646,13 +691,16 @@ def response_shape(page: str, read_object: Callable[[str], Shape], url: str = "t
     if not success:
         raise FidelityError(f"{url} documents no success response this reads")
     documented = Shape.union(shape_of(e, empty_object_entered=False) for e in success)
+    method = url.rsplit("/", 1)[-1].removesuffix(".md")
     shapes = [documented]
     for link in dict.fromkeys(_OBJECT_LINK.findall(section)):
         obj = read_object(link)
         own = obj.keys("")
         at = _best(documented, own)
         if at is None or 2 * len(documented.keys(at) & own) < len(documented.keys(at)):
-            raise FidelityError(f"{url} links {link}, and no example carries that object")
+            at = _OBJECT_AT.get((method, link.rsplit("/", 1)[-1]))
+            if at is None:
+                raise FidelityError(f"{url} links {link}, and no example carries that object")
         shapes.append(obj.under(at))
     return Shape.union(shapes)
 

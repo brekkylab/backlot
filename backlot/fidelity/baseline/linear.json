@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-22",
+  "measured": "2026-10-23",
   "root": {
     "query": "Query"
   },
@@ -6378,6 +6378,13 @@
           "type": "Organization!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "organizationCodingInferenceKeys": {
+          "status": "missing",
+          "type": "[CodingInferenceKey!]!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description marks it internal: \"[Internal] Saved workspace inference credentials for Coding Sessions, without their keys.\" No corpus states one: a Linear record here is an issue, and none of its fields is a credential. It answers for the workspace, whose root `Query.organization` is a gap in this file, as are `Team.codingAgentEnabled` (\"[Internal] Whether the team has enabled Coding Sessions.\") and `Query.oauthApplicationCodingSessionTrustedSource`. `@linear/sdk` 98.0.0, which the example's lockfile pins, and 99.0.0, npm's latest on 2026-10-23, neither declare nor select it. Measured against api.linear.app on 2026-10-23: it takes no argument and answers `[CodingInferenceKey!]!`, where `CodingInferenceKey` (\"[Internal] A saved workspace inference credential, without the key.\") is an object of four non-null fields, `harness: String!` (\"The coding harness that uses this credential: codex or claude.\"), `provider: String!` (\"The inference provider: openai, anthropic, or amazon-bedrock.\"), `baseUrl: String!` and `updatedAt: DateTime!`. Asked with a personal API key whose owner is a workspace admin, it answered a 200 whose body is `data: null` and an `errors` member, `Using an unexpected authentication method (apiKey) for an operation` with `FORBIDDEN`. Its answer to any other credential was not measured: the measurement held a personal API key and no other. This schema declares no `CodingInferenceKey`."
         },
         "organizationDomainClaimRequest": {
           "status": "missing",

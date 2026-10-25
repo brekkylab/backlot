@@ -49,7 +49,7 @@ Each count carries these attributes:
 | `http.request.method` | `GET`, `POST`, … |
 | `http.response.status_code` | The status Backlot answered with |
 | `backlot.error_code` | The vendor's error identifier when the answer is an error, e.g. `channel_not_found`, `NoSuchKey`, `not_found` |
-| `backlot.error_class` | On a failure, its cause, read from the status, the support state, the error code and a spent rate-limit header: `unsupported` (Backlot does not do this yet), `internal` (a Backlot bug), `rate_limit`, `auth`, or `client` (the request was wrong) |
+| `backlot.error_class` | On a failure, its cause, read from whether Backlot itself failed, the status, the support state, the error code and a spent rate-limit header: `unsupported` (Backlot does not do this yet), `internal` (a Backlot bug), `rate_limit`, `auth`, or `client` (the request was wrong) |
 | `backlot.auth.kind` | `bearer`, `basic`, `api_key`, `sigv4`, `sigv2`, `presigned`, `other` or `anonymous` |
 | `backlot.caller.kind` | `admin`, `user` or `anonymous` |
 | `backlot.client` | The client library the request headers name, by name and, where the headers carry one, major.minor version, e.g. `slack_sdk/3.44`, `boto3/1.40`, `python-requests/2.34`, or `other` |
@@ -67,7 +67,7 @@ Each export carries the Backlot version, the operating system family (`darwin`, 
 
 An export arrives from your network address, as any request does. The receiving side does not keep it: the collector stores only the values listed above, and the load balancer in front of it keeps no access log.
 
-An operation's name comes from Backlot's own fidelity baselines (`backlot/fidelity/baseline/`), which record every operation of each vendor's contract, or, for a route Backlot serves beyond that contract (`extra`), from the route's path template, such as `wiki/rest/api/content/{}`, never from the request. A Google batch envelope is `batch`, beside a call for each of its parts. A request that asks for something no baseline names is counted as `unmatched`, a GraphQL field outside the vendor's schema as `query.unmatched`, a GraphQL document that does not parse as `unparsed`, and a mutation or subscription as `mutation` or `subscription`.
+An operation's name comes from Backlot's own fidelity baselines (`backlot/fidelity/baseline/`), which record every operation of each vendor's contract, or, for a route Backlot serves beyond that contract (`extra`), from the route's path template, such as `wiki/rest/api/content/{}`, never from the request. A Google batch envelope is `batch`, beside a call for each of its parts. For the `github`, `hubspot`, `gmail` and `google_drive` sources, a request to a path Backlot serves, under a method neither Backlot nor the vendor's contract has there, is counted under a path template with support `unknown`, such as `crm/v3/objects/{}/{}` for a `PUT` to a record: the route's, or the vendor template with more literal segments where one fits the path under another method (`crm/v3/objects/{}/search` for an `OPTIONS` before a search). A template holding a character an operation name cannot (the `:` of Sheets' `values:batchGet`) is not used. Any other request that asks for something no baseline names is counted as `unmatched`, a GraphQL field outside the vendor's schema as `query.unmatched`, a GraphQL document that does not parse as `unparsed`, and a mutation or subscription as `mutation` or `subscription`.
 
 ## The code
 

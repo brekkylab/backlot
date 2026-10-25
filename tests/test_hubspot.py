@@ -688,6 +688,233 @@ def test_hubspot_does_not_refuse_an_unpublished_path_for_its_credential(client):
     assert client.get("/hubspot/crm/v3/nonexistent-xyz").status_code == 404
 
 
+_PAGE_TYPE = "text/html;charset=iso-8859-1"
+
+_METHOD_NOT_ALLOWED_PAGE = (
+    b"<html>\n<head>\n"
+    b'<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>\n'
+    b"<title>Error 405 Method Not Allowed</title>\n</head>\n"
+    b"<body><h2>HTTP ERROR 405</h2>\n<p>Reason:\n<pre>    Method Not Allowed</pre></p>\n"
+    b"</body>\n</html>\n"
+)
+
+_NOT_ACCEPTABLE_PAGE = (
+    b"<html>\n<head>\n"
+    b'<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>\n'
+    b"<title>Error 406 Not Acceptable</title>\n</head>\n"
+    b"<body><h2>HTTP ERROR 406</h2>\n<p>Reason:\n<pre>    Not Acceptable</pre></p>\n"
+    b"</body>\n</html>\n"
+)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/crm/v3/objects/contacts",
+        "/crm/v3/objects/contacts/{ava}",
+        "/crm/v4/objects/contacts/{ava}/associations/companies",
+        "/crm/v3/objects/contacts/1",
+        "/crm/v3/objects/contacts/abc",
+        "/crm/v3/objects/contacts/search",
+        "/crm/v3/objects/contacts/batch/read",
+    ],
+)
+@pytest.mark.parametrize("keyed", [True, False])
+def test_hubspot_answers_head_as_the_get_without_its_body(client, admin_h, ava, path, keyed):
+    """A `HEAD` is the `GET`'s status and headers with no body, declaring the length of the body
+    the `GET` carries (``answer_head_as_the_get_without_its_body`` in `backlot.main`)."""
+    url = "/hubspot" + path.format(ava=ava)
+    headers = admin_h if keyed else {}
+    got, head = client.get(url, headers=headers), client.head(url, headers=headers)
+    assert head.status_code == got.status_code
+    assert head.content == b""
+    assert head.headers["content-type"] == got.headers["content-type"]
+    assert head.headers["content-length"] == str(len(got.content))
+    assert head.headers.get("allow") == got.headers.get("allow")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/crm/v3/objects/contacts",
+        "/crm/v3/objects/contacts/{ava}",
+        "/crm/v4/objects/contacts/{ava}/associations/companies",
+        "/crm/v3/objects/contacts/search",
+        "/crm/v3/objects/zzz",
+    ],
+)
+@pytest.mark.parametrize(
+    "headers",
+    [
+        "key",
+        "none",
+        {"Origin": "https://example.com", "Access-Control-Request-Method": "GET"},
+    ],
+)
+def test_hubspot_refuses_options_for_its_own_credentials(client, admin_h, ava, path, headers):
+    """`OPTIONS` is real's 401 naming the credentials its front door looks for, the key sent or not
+    and as a CORS preflight, with no `Allow` and no CORS headers (`answer_ahead_of_the_routes` in
+    `backlot.routers.hubspot`)."""
+    sent = {"key": admin_h, "none": {}}.get(headers) if isinstance(headers, str) else headers
+    r = client.options("/hubspot" + path.format(ava=ava), headers=sent)
+    assert r.status_code == 401
+    assert list(r.json()) == ["status", "message", "engagement"]
+    assert r.json()["message"] == "Any of the listed authentication credentials are missing"
+    assert list(r.json()["engagement"]) == ["service-to-service", "internal-cookie", "app-cookie"]
+    assert not {"allow", "access-control-allow-origin", "access-control-allow-methods"} & set(
+        r.headers
+    )
+    assert (r.headers.get("x-content-type-options") == "nosniff") is path.endswith("/search")
+
+
+_SEARCH = "/crm/v3/objects/contacts/search"
+_BATCH = "/crm/v3/objects/contacts/batch/read"
+_LISTING = "/crm/v3/objects/contacts"
+_RECORD = "/crm/v3/objects/contacts/1"
+_V4 = "/crm/v4/objects/contacts/{ava}/associations/companies"
+_FORBIDDEN_ROWS = [
+    # method, path, keyed, Accept (None sends none), status, Allow, page, `nosniff`, no-store
+    ("GET", _SEARCH, True, None, 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, False, None, 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "application/json", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, False, "application/json", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/*", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "application/json, text/html", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "TEXT/HTML", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html;level=1", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html; q=0", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "application/*", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html;q=abc", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html;q=inf", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html;q=1d", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "text/html;q=NaN", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "text/html;q=-NaN", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "text/html;q=-0", 405, "POST,OPTIONS", False, True, True),
+    (
+        "GET",
+        _SEARCH,
+        True,
+        "text/html, application/json;q=-1",
+        405,
+        "POST,OPTIONS",
+        False,
+        True,
+        True,
+    ),
+    ("GET", _SEARCH, True, "text/html;Q=0.5", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html;q=0;q=0.5", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _BATCH, True, None, 405, "POST,OPTIONS", True, False, True),
+    ("GET", _BATCH, True, "application/json", 405, "POST,OPTIONS", False, False, True),
+    ("PUT", _SEARCH, True, None, 405, "POST,OPTIONS", False, True, False),
+    ("DELETE", _SEARCH, False, None, 405, "POST,OPTIONS", False, True, False),
+    ("PATCH", _BATCH, True, None, 405, "POST,OPTIONS", False, False, False),
+    ("PUT", _RECORD, True, None, 405, "DELETE,GET,OPTIONS,PATCH", False, False, False),
+    ("PUT", _RECORD, False, None, 405, "DELETE,GET,OPTIONS,PATCH", False, False, False),
+    ("PUT", _RECORD, True, "text/html", 405, "DELETE,GET,OPTIONS,PATCH", False, False, False),
+    ("POST", _RECORD, False, None, 405, "DELETE,GET,OPTIONS,PATCH", True, False, True),
+    ("PUT", _LISTING, True, None, 405, "POST,GET,OPTIONS", False, False, False),
+    ("DELETE", _LISTING, True, None, 405, "POST,GET,OPTIONS", False, False, False),
+    ("PUT", _V4, True, None, 405, "GET,OPTIONS", False, False, False),
+    ("GET", _LISTING, True, "text/html", 406, None, True, False, True),
+    ("GET", _LISTING, False, "text/html", 406, None, True, False, True),
+    ("GET", _LISTING, True, "text/*", 406, None, True, False, True),
+    ("GET", _LISTING, True, "text/html;q=0.5", 406, None, True, False, True),
+    ("GET", _LISTING, True, "application/xml", 406, None, False, False, True),
+    ("GET", _LISTING, True, "TEXT/HTML", 406, None, False, False, True),
+    ("GET", _LISTING, True, "text/html;level=1", 406, None, False, False, True),
+    ("GET", _LISTING, True, "application/hal+json", 406, None, False, False, True),
+    ("GET", _RECORD, True, "text/html", 406, None, True, False, True),
+    ("GET", _V4, True, "text/html", 406, None, True, False, True),
+    ("POST", _SEARCH, True, "text/html", 406, None, True, True, True),
+    ("POST", _SEARCH, True, "application/xml", 406, None, False, True, True),
+    ("POST", _BATCH, True, "text/html", 406, None, True, False, True),
+    ("PATCH", _RECORD, False, "text/html", 406, None, False, False, False),
+    ("DELETE", _RECORD, True, "text/html", 406, None, False, False, False),
+]
+
+
+@pytest.mark.parametrize(
+    "method, path, keyed, accept, status, allow, page, nosniff, no_store", _FORBIDDEN_ROWS
+)
+def test_hubspot_answers_a_method_or_accept_no_route_takes(
+    client, admin_h, ava, method, path, keyed, accept, status, allow, page, nosniff, no_store
+):
+    """Each row is what `answer_ahead_of_the_routes` in `backlot.routers.hubspot` measures."""
+    body = b"{}" if method in ("POST", "PUT", "PATCH") else None
+    request = client.build_request(
+        method, "/hubspot" + path.format(ava=ava), headers=admin_h if keyed else {}, content=body
+    )
+    if accept is None:
+        del request.headers["Accept"]
+    else:
+        request.headers["Accept"] = accept
+    r = client.send(request)
+    expected = {405: _METHOD_NOT_ALLOWED_PAGE, 406: _NOT_ACCEPTABLE_PAGE}[status] if page else b""
+    assert (r.status_code, r.content) == (status, expected)
+    assert r.headers.get("content-type") == (_PAGE_TYPE if page else None)
+    assert r.headers.get("allow") == allow
+    assert (r.headers.get("x-content-type-options") == "nosniff") is nosniff
+    assert (r.headers.get("cache-control") == "must-revalidate,no-cache,no-store") is no_store
+
+
+@pytest.mark.parametrize(
+    "accept",
+    [
+        "application/json",
+        "*/*",
+        "text/html, */*;q=0.8",
+        "Application/JSON",
+        "APPLICATION/*",
+        "application/json;q=0",
+        "*/*;q=0",
+        "",
+    ],
+)
+def test_hubspot_serves_an_accept_that_admits_json(client, admin_h, accept):
+    """An `Accept` that names JSON, `application/*` or any type, in any case and at any `q`, is
+    served (`_admits_json` in `backlot.routers.hubspot`)."""
+    r = client.get("/hubspot/crm/v3/objects/contacts", headers={**admin_h, "Accept": accept})
+    assert r.status_code == 200
+
+
+@pytest.mark.parametrize("method", ["OPTIONS", "GET"])
+def test_hubspot_leaves_a_path_no_route_serves_to_the_router(client, admin_h, method):
+    """`OPTIONS`, and an `Accept` of `text/html`, on a path no route serves are not the 401 and the
+    406 of a served one: real's `GET` there is its 404, and its `OPTIONS` a 405 page from its front
+    door, which this server does not answer."""
+    r = client.request(
+        method, "/hubspot/crm/v3/nonexistent-xyz", headers={**admin_h, "Accept": "text/html"}
+    )
+    assert r.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("GET", "/crm/v3/objects/contacts", None),
+        ("GET", "/crm/v3/objects/contacts/{ava}", None),
+        ("GET", "/crm/v4/objects/contacts/{ava}/associations/companies", None),
+        ("POST", "/crm/v3/objects/contacts/search", {}),
+        ("POST", "/crm/v3/objects/contacts/batch/read", {"inputs": [{"id": "{ava}"}]}),
+    ],
+)
+def test_hubspot_serves_a_trailing_slash_as_the_path_without_it(
+    client, admin_h, ava, method, path, body
+):
+    """Trailing slashes are served as the path without them, not redirected
+    (``serve_a_slashed_hubspot_path_as_the_path_without_it`` in `backlot.main`)."""
+    url = "/hubspot" + path.format(ava=ava)
+    sent = json.loads(json.dumps(body).replace("{ava}", ava)) if body is not None else None
+    bare = client.request(method, url, headers=admin_h, json=sent)
+    assert bare.status_code == 200
+    for slashes in ("/", "//", "///"):
+        slashed = client.request(
+            method, url + slashes, headers=admin_h, json=sent, follow_redirects=False
+        )
+        assert (slashed.status_code, slashed.content) == (200, bare.content), slashes
+
+
 def test_hubspot_acl_hides_restricted_record(client, tokens_yaml, admin_h):
     """`hs-co-secret` is readable only by hana; another user's crawl must not contain it, and a
     direct-by-id read must enforce the same grant -- not just the listing -- since get_object now

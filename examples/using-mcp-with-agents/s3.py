@@ -73,8 +73,9 @@ def build_params(base_url: str, access_key: str, secret_key: str) -> StdioServer
     We deliberately do NOT set READ_OPERATIONS_ONLY: it blocks `aws s3 cp s3://… -`, which is the
     only way this server streams an object's *body* back to the model (a read-only `s3api
     get-object` just writes the bytes to a sandboxed file and returns metadata, so the agent can
-    list objects but never read them). Backlot has no write endpoints, so dropping the read-only
-    guard is safe here; against real AWS you'd weigh read-only vs. being able to read object bodies."""
+    list objects but never read them). The `/s3` surface this reaches answers GET and HEAD and
+    nothing else, so dropping the guard is safe here; against real AWS you'd weigh read-only vs.
+    being able to read object bodies."""
     return StdioServerParameters(
         command="uvx",
         # `--with mcp<2`: uvx resolves this server in an env of its own, and the server is still

@@ -105,6 +105,9 @@ Two consequences worth knowing before you trust a passing test here:
 - **There is no "invite the bot to the channel" step.** Backlot scopes by per-document readers — the
   user model — so a caller reaches every channel their ACL allows. A bot in production starts with
   access to nothing until it is invited, which is a failure mode Backlot cannot reproduce.
+- **A write needs no scope.** Slack gates posting and reacting on `chat:write` and
+  `reactions:write`, and refuses a token without them before it reads an argument. A Backlot token
+  writes wherever its ACL lets it read ([docs/write-overlay.md](write-overlay.md)).
 
 So if the connector under test uses a bot token in production, Backlot is the more permissive of the
 two on both counts. `auth.test` reflects the user shape it emulates: `user`, `user_id`, `team`,

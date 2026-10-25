@@ -4870,16 +4870,67 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
         ("application/vnd.github.diff;charset=utf-8;q=0", "diff"),
         ("application/vnd.github.diff;q=0;charset=utf-8", "json"),
         ("application/vnd.github.diff;q=abc", "diff"),
+        ("application/vnd.github.diff;q=-0", "diff"),
+        ("application/vnd.github.diff;q=+0", "diff"),
+        ("application/vnd.github.diff;q=-0.0", "diff"),
+        ("application/vnd.github.diff;q= 0", "diff"),
+        ("application/vnd.github.diff;q=0;q=1", "diff"),
+        ('application/vnd.github.diff;q="0"', "json"),
+        ('application/vnd.github.diff;q=0"', "json"),
+        ("application/vnd.github.diff;q=1;q=0", "json"),
+        ("application/vnd.github.diff;q=0.000", "json"),
+        ("application/vnd.github.diff;q=0e0", "json"),
+        ("application/vnd.github.diff;q=0_0", "json"),
+        ("application/vnd.github.diff;q=00", "json"),
+        ("application/vnd.github.diff;q=.0", "json"),
+        ("application/vnd.github.diff;q=0 ", "json"),
+        ('application/vnd.github.diff;q="1"', "diff"),
+        ('application/vnd.github.diff;q="0.5"', "diff"),
+        ("application/vnd.github.diff;q='0'", "diff"),
+        ('application/vnd.github.diff;q="0', "diff"),
+        ("application/vnd.github.diff;q=0abc", "diff"),
+        ("application/vnd.github.diff;foo=bar;q=0", "json"),
+        ("application/vnd.github.diff;Foo=bar;q=0", "json"),
+        ("application/vnd.github.diff;level=1;q=0", "json"),
+        ("application/vnd.github.diff;CHARSET=x;q=0", "json"),
+        ("application/vnd.github.diff;charset=x;q=0", "json"),
+        ("application/vnd.github.diff;charset=;q=0", "json"),
+        ("application/vnd.github.diff;charset=utf8;q=0", "json"),
+        ('application/vnd.github.diff;charset="utf-8";q=0', "json"),
+        ("application/vnd.github.diff;charset=ascii;q=0", "json"),
+        ("application/vnd.github.diff;charset=UTF-8;q=0", "diff"),
+        ("application/vnd.github.diff;CHARSET=utf-8;q=0", "diff"),
+        ("application/vnd.github.diff;charset=iso-8859-1;q=0", "diff"),
+        ("application/vnd.github.diff;charset=utf-16;q=0", "diff"),
+        ("application/vnd.github.diff;q=1;foo=bar;q=0", "json"),
+        ("application/vnd.github.diff;foo=bar;q=1;q=0", "json"),
+        ("application/vnd.github.diff;q=0;foo=bar;q=1", "diff"),
+        ("application/vnd.github.diff;q=1;charset=utf-8;q=0", "diff"),
+        ("application/vnd.github.diff;q=0;charset=utf-8;q=1", "json"),
+        ("application/vnd.github.diff;charset=utf-8;foo=bar;q=0", "diff"),
+        ("application/vnd.github.diff;foo=bar;charset=utf-8;q=0", "diff"),
+        ("application/vnd.github.diff;foo=a-b;q=0", "diff"),
+        ("application/vnd.github.diff;foo=utf-8;q=0", "diff"),
+        ("application/vnd.github.diff;foo=a.b;q=0", "json"),
+        ("application/vnd.github.diff;foo;q=0", "diff"),
+        ("application/vnd.github.diff;foo-bar=x;q=0", "diff"),
+        ("application/vnd.github.diff;q=0.5-;q=0", "diff"),
+        ("application/vnd.github.diff;q=0e-1", "diff"),
+        ('application/vnd.github.diff;foo="a-b";q=0', "json"),
+        ("application/vnd.github.diff;foo=;q=0", "json"),
         ("application/vnd.github.diff;charset=utf-8", "diff"),
         ("text/plain, application/vnd.github.diff", "diff"),
         ("application/vnd.github.diff;q=0.5", "diff"),
         ("application/vnd.github.patch;q=0", "patch"),
         ("application/vnd.github.patch;q=0.5, application/json;q=1", "patch"),
+        ("application/vnd.github.diff;q=\xa00", "diff"),
+        ("application/vnd.github.diff;q=0\xa0", "json"),
     ],
 )
 def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accept, served):
     c, h, org, num = diff_pr
-    r = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers={**h, "Accept": accept})
+    headers = {**{k: v.encode() for k, v in h.items()}, "Accept": accept.encode("latin-1")}
+    r = _sent_raw(c, f"/github/repos/{org}/diffable/pulls/{num}", headers)
     assert r.status_code == 200
     assert r.text.startswith({"json": "{", "diff": "diff --git ", "patch": "From "}[served])
 
@@ -6510,7 +6561,7 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
     off, nothing is refused, but the reported `used` still never climbs past `limit`."""
     from backlot.routers import github as gh
 
-    with corpus_client(tmp_path, []) as (c, _):
+    with corpus_client(tmp_path, []) as (c, settings):
         monkeypatch.setitem(
             gh.RATE_LIMITS, "core", gh._ResourceLimit(2, 5000, gh.RATE_LIMIT_WINDOW)
         )
@@ -6605,6 +6656,14 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         search_refused = c.get("/github/search/issues", params={"q": "x"})
         assert search_refused.status_code == 403
         assert _ratelimit(search_refused)["resource"] == "search"
+
+        # a token's spent window does not outrank the trailing slash's 404 the way the anonymous
+        # one does above
+        monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._ResourceLimit(2, 1, gh.RATE_LIMIT_WINDOW))
+        token = {"Authorization": f"Bearer {settings.admin_token}"}
+        c.get("/github/user/repos", headers=token)
+        assert c.get("/github/user/repos", headers=token).status_code == 403
+        assert c.get("/github/search/issues/", headers=token).status_code == 404
 
         # the switch: no refusal, and `used` still capped in what is reported
         monkeypatch.setattr(gh.get_settings(), "github_enforce_rate_limits", False)

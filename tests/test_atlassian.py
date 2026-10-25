@@ -316,6 +316,87 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
     }
 
 
+def test_jira_project_search_filters_by_query_keys_type_and_category(tmp_path):
+    """`project/search` applies `query`, `keys`, `typeKey` and `categoryId`, so a value that
+    matches no project is an empty page (`_jira_project_kept`)."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": f"issue-{name}",
+                "project": name,
+                "title": name,
+                "content": "Issue",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            }
+            for name in ("scrum", "orders")
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
+        listing = client.get("/atlassian/rest/api/3/project/search", headers=admin_h)
+        assert listing.status_code == 200, listing.text
+        projects = listing.json()["values"]
+        assert len(projects) == 2
+        one, other = projects[0], projects[1]
+
+        def keys_of(params):
+            response = client.get(
+                "/atlassian/rest/api/3/project/search", params=params, headers=admin_h
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            found = [project["key"] for project in body["values"]]
+            assert body["total"] == len(found)
+            return found
+
+        all_keys = [project["key"] for project in projects]
+        assert keys_of({}) == all_keys
+        assert keys_of({"query": "zzqq"}) == []
+        assert keys_of({"query": one["name"][:3].lower()}) == [one["key"]]
+        assert keys_of({"query": one["name"][:3].upper()}) == [one["key"]]
+        fragment = next(
+            one["key"][i : i + 4]
+            for i in range(len(one["key"]) - 3)
+            if one["key"][i : i + 4].lower() not in one["name"].lower()
+            and one["key"][i : i + 4].lower() not in other["name"].lower()
+            and one["key"][i : i + 4].lower() not in other["key"].lower()
+        )
+        assert keys_of({"query": fragment}) == [one["key"]]
+        name_only = next(
+            one["name"][i : i + 3]
+            for i in range(len(one["name"]) - 2)
+            if one["name"][i : i + 3].lower() not in one["key"].lower()
+            and one["name"][i : i + 3].lower() not in other["name"].lower()
+            and one["name"][i : i + 3].lower() not in other["key"].lower()
+        )
+        assert keys_of({"query": name_only}) == [one["key"]]
+        assert keys_of({"keys": one["key"]}) == [one["key"]]
+        assert keys_of({"keys": one["key"].lower()}) == []
+        assert keys_of({"keys": "NOPE"}) == []
+        assert keys_of([("keys", one["key"]), ("keys", other["key"])]) == all_keys
+        assert keys_of({"typeKey": "software"}) == all_keys
+        assert keys_of({"typeKey": "bogus"}) == []
+        assert keys_of({"categoryId": "99"}) == []
+        with_s = next(project for project in projects if "s" in project["name"].lower())
+        assert keys_of({"query": with_s["name"].replace("s", "\u017f")}) == []
+        assert keys_of({"keys": ""}) == all_keys
+        assert keys_of([("keys", ""), ("keys", "")]) == []
+        assert keys_of({"typeKey": "Software"}) == all_keys
+        assert keys_of({"typeKey": " software"}) == all_keys
+        assert keys_of({"typeKey": "\u3000software\x85"}) == all_keys
+        assert keys_of({"typeKey": "\x1fsoftware"}) == []
+        assert keys_of({"typeKey": "business,software"}) == all_keys
+        assert keys_of([("typeKey", "software"), ("typeKey", "business")]) == all_keys
+        assert keys_of([("typeKey", "business"), ("typeKey", "software")]) == all_keys
+        assert keys_of({"typeKey": "business"}) == []
+        assert keys_of({"typeKey": ","}) == all_keys
+        assert keys_of({"categoryId": " "}) == all_keys
+        assert keys_of({"categoryId": "-1"}) == []
+
+
 @pytest.mark.parametrize(
     "query, start, limit",
     [
@@ -420,6 +501,11 @@ def test_jira_project_search_links_itself_with_what_it_was_sent(client, admin_h,
         ([("orderBy", "bogus"), ("maxResults", "abc")], "maxResults", "abc"),
         ([("startAt", "abc"), ("maxResults", "xyz")], "startAt", "abc"),
         ([("maxResults", "xyz"), ("startAt", "abc")], "startAt", "abc"),
+        ([("categoryId", "abc")], "categoryId", "abc"),
+        ([("categoryId", "1.5")], "categoryId", "1.5"),
+        ([("orderBy", "bogus"), ("categoryId", "abc")], "categoryId", "abc"),
+        ([("categoryId", "abc"), ("startAt", "x")], "startAt", "x"),
+        ([("categoryId", "abc"), ("maxResults", "x")], "maxResults", "x"),
     ],
 )
 def test_jira_project_search_integer_conversion_precedes_order(client, admin_h, query, name, value):
@@ -1179,6 +1265,47 @@ def test_confluence_cql_search_refuses_a_request_with_no_first_cql(
         assert r.json() == body
 
 
+def test_confluence_cql_search_reads_its_content_type_as_jaxrs_does(client, admin_h):
+    """Pins the search's `Content-Type` refusal (``_refuse_the_search_media_type`` and
+    ``_CONFLUENCE_JAXRS_GETS`` in ``backlot.routers.atlassian``), with no credential and with one,
+    against `Accept` and on a `HEAD`."""
+    url = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
+    for credential in ({}, admin_h):
+        r = client.get(url, headers={**credential, "Content-Type": "text/plain"})
+        assert r.status_code == 415 and r.content == b"", r.text
+        assert r.headers.get("content-type") is None
+        r = client.get(url, headers={**credential, "Content-Type": "foo"})
+        assert r.status_code == 400, r.text
+        assert r.content == errors_atlassian.tomcat_page(400).encode()
+        assert r.headers["content-type"] == errors_atlassian.TOMCAT_MEDIA_TYPE
+    # ahead of the operation's own 400 for a `cql` that names nothing, and on a `HEAD`
+    r = client.get(
+        "/atlassian/wiki/rest/api/search", headers={**admin_h, "Content-Type": "text/plain"}
+    )
+    assert r.status_code == 415, r.text
+    r = client.head(url, headers={"Content-Type": "text/plain"})
+    assert r.status_code == 415, r.text
+    r = client.get(url, headers={**admin_h, "Content-Type": "application/json"})
+    assert r.status_code == 200, r.text
+    twice = [*admin_h.items(), ("Content-Type", _JSON_TYPE), ("Content-Type", _JSON_TYPE)]
+    r = sent_as(client, "GET", url, twice)
+    assert r.status_code == 400 and r.content == errors_atlassian.tomcat_page(400).encode()
+    # ahead of the 406, and the 415 behind the 400 for an `Accept` Jersey cannot parse
+    for accept, ctype, status, ctype_out in [
+        ("application/xml", "text/plain", 415, None),
+        ("application/xml", "foo", 400, errors_atlassian.TOMCAT_MEDIA_TYPE),
+        ("application/json;q=2", "foo", 400, errors_atlassian.TOMCAT_MEDIA_TYPE),
+        ("application/json;q=2", "text/plain", 400, "text/plain"),
+        ("application/xml", "application/json", 406, None),
+    ]:
+        r = client.get(url, headers={**admin_h, "Accept": accept, "Content-Type": ctype})
+        assert (r.status_code, r.headers.get("content-type")) == (status, ctype_out), r.text
+    # where a Spring GET answers either type as it answers none
+    for ctype in ("text/plain", "foo"):
+        r = client.get("/atlassian/wiki/rest/api/content/1", headers={"Content-Type": ctype})
+        assert r.status_code == 403, r.text
+
+
 def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
     """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` says a CQL with no `~`
     clause answers, for the admin and for a caller one page is hidden from, and which value of a
@@ -1456,6 +1583,54 @@ def test_confluence_single_space_get(client, admin_h):
                 f'404 NOT_FOUND "No space found with key : {named}"'
             ),
         }, sent
+
+
+def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(client, admin_h):
+    """Pins the bytes ``errors.atlassian._confluence_json`` writes, on the raw body, since
+    ``.json()`` decodes both writings to one string."""
+    emoji = "%F0%9F%98%80"  # U+1F600
+    for path, status, written in (
+        (
+            f"/atlassian/wiki/rest/api/space/{emoji}",
+            404,
+            rb'No space found with key : \uD83D\uDE00\""',
+        ),
+        (
+            f"/atlassian/wiki/rest/api/content?spaceKey={emoji}",
+            404,
+            rb"No space with key : \uD83D\uDE00",
+        ),
+        (
+            f"/atlassian/wiki/rest/api/content?limit={emoji}",
+            400,
+            rb"For input string: \"\uD83D\uDE00\"",
+        ),
+        (
+            f"/atlassian/wiki/rest/api/content/229469/label?prefix={emoji}",
+            400,
+            rb"label prefixes :[\uD83D\uDE00]",
+        ),
+        (
+            f"/atlassian/wiki/rest/api/content?type={emoji}",
+            501,
+            rb"Cannot find custom content type : \uD83D\uDE00",
+        ),
+        (
+            "/atlassian/wiki/rest/api/content/%F0%9D%9F%93/child/page",
+            400,
+            rb"for value [\uD835\uDFD3]",
+        ),
+    ):
+        refused = client.get(path, headers=admin_h)
+        assert refused.status_code == status, path
+        assert written in refused.content, path
+        # and never the character's own UTF-8 bytes
+        assert "\U0001f600".encode() not in refused.content, path
+        assert "\U0001d7d3".encode() not in refused.content, path
+    # A character inside the plane is written as its UTF-8 bytes, unescaped.
+    inside = client.get("/atlassian/wiki/rest/api/space/%C3%A9", headers=admin_h)
+    assert inside.status_code == 404
+    assert "é".encode() in inside.content
 
 
 # --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------
@@ -4814,6 +4989,9 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
 
     rows = [
         *((path, admin_h) for path in _routes(keys)),
+        # slashed spellings Confluence answers as the slash-free ones (2026-10-23)
+        ("/atlassian/wiki/rest/api/search/?cql=type%3Dpage", admin_h),
+        ("/atlassian//wiki/rest/api/space", admin_h),
         ("/atlassian/wiki/rest/api/space/NOPESUCH", admin_h),
         ("/atlassian/rest/api/3/issue/NOPE-1", admin_h),
         ("/atlassian/rest/api/3/serverInfo/", admin_h),
@@ -6741,6 +6919,81 @@ _JSON_TYPE = "application/json"
                 "atlassian-connect/1/app/module/dynamic",
             )
         ),
+        # the same GETs reading a `Content-Type` (``_CONFLUENCE_JAXRS_GETS``)
+        *(
+            ("GET", f"/wiki/rest/{path}", None, "text/plain", 415, b"")
+            for path in (
+                "api/audit",
+                "api/audit/export",
+                "api/audit/retention",
+                "api/audit/since",
+                "api/content-states",
+                "api/longtask",
+                "api/longtask/1",
+                "api/relation/1/from/1/1/to/1",
+                "api/relation/1/from/1/1/to/1/1",
+                "api/relation/1/to/1/1/from/1",
+                "api/search/user",
+                "api/template/blueprint",
+                "api/template/page",
+                "api/template/1",
+                "api/user/watch/content/1",
+                "api/user/watch/label/1",
+                "api/user/watch/space/1",
+                "atlassian-connect/1/app/module/dynamic",
+            )
+        ),
+        ("GET", "/wiki/rest/api/settings/lookandfeel", None, "text/plain", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("GET", "/wiki/rest/api/audit", None, "application/*+json", 415, b""),
+        ("GET", "/wiki/rest/api/audit", None, "application/json;charset=_x", 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("GET", "/wiki/rest/api/audit", None, "foo", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("GET", "/wiki/rest/api/audit", None, "application/json;x=", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("GET", "/wiki/rest/api/settings/lookandfeel", None, "foo", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        # a path no service serves: the header Jersey cannot read is the 400 page ahead of
+        # its 404, and a type it can read leaves that 404 alone
+        ("GET", "/wiki/rest/api/nosuch", None, "foo", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("GET", "/wiki/rest/api/nosuch", None, "", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("GET", "/wiki/rest/api/nosuch", None, "text/plain", 404, None),
+        # the two `contentbody/convert` reads, which ``_CONFLUENCE_JAXRS_GETS`` names as well
+        ("GET", "/wiki/rest/api/contentbody/convert/async/1", None, "text/plain", 415, b""),
+        ("GET", "/wiki/rest/api/contentbody/convert/async/bulk/tasks", None, "application/xml")
+        + (415, b""),
+        ("GET", "/wiki/rest/api/contentbody/convert/async/1", None, "foo", 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        # the header sent twice (``_jaxrs_media_refusal``), and a Spring GET and write as controls
+        *(
+            ("GET" if path else "POST", path or "/wiki/rest/api/template", None, twice, 400)
+            + (errors_atlassian.tomcat_page(400).encode(),)
+            for path, twice in (
+                ("", (_JSON_TYPE, _JSON_TYPE)),
+                ("/wiki/rest/api/audit", (_JSON_TYPE, "text/plain")),
+                ("/wiki/rest/api/settings/lookandfeel", ("text/plain", "text/plain")),
+                ("/wiki/rest/api/nosuch", (_JSON_TYPE, _JSON_TYPE)),
+            )
+        ),
+        ("GET", "/wiki/rest/api/content/1", None, (_JSON_TYPE, "text/plain"), 403)
+        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+        # a blank value beside one is left out, and blank ones alone read as an empty value
+        ("GET", "/wiki/rest/api/audit", None, ("", _JSON_TYPE), 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("GET", "/wiki/rest/api/audit", None, (_JSON_TYPE, " "), 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("GET", "/wiki/rest/api/audit", None, ("\t", "text/plain"), 415, b""),
+        ("GET", "/wiki/rest/api/audit", None, ("", _JSON_TYPE, _JSON_TYPE), 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("GET", "/wiki/rest/api/audit", None, ("", "", _JSON_TYPE), 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+        ("GET", "/wiki/rest/api/nosuch", None, ("", ""), 400)
+        + (errors_atlassian.tomcat_page(400).encode(),),
+        ("POST", "/wiki/rest/api/content", None, (_JSON_TYPE, "text/plain"), 403)
+        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
         *(
             (method, path, None, None, 403, errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY)
             for method, path in (
@@ -6813,10 +7066,13 @@ def test_confluence_answers_an_operation_before_it_runs(
     ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in ``backlot.routers.atlassian`` carry the measurement for.
     A 415's ``body`` is the reason Spring gives; the 401 is asserted by status alone, its body being
     JSON here where real's is Tomcat's page. An `OPTIONS` at a published write's path is the 404
-    real answers it, not a refusal."""
-    headers = {} if ctype is None else {"Content-Type": ctype}
+    real answers it, not a refusal, and `/wiki/rest/api/nosuch`, at which no operation is, the 404
+    or the 400 page ``_confluence_not_found`` gives. A ``ctype`` of two values sends the header
+    twice."""
+    ctypes = () if ctype is None else (ctype,) if isinstance(ctype, str) else ctype
+    headers = [("Content-Type", value) for value in ctypes]
     if authorization is not None:
-        headers["Authorization"] = authorization
+        headers.append(("Authorization", authorization))
     r = sent_as(
         client, method, f"/atlassian{vendor_path}", headers, content=b"x" if ctype else None
     )
@@ -6837,6 +7093,32 @@ def test_confluence_answers_an_operation_before_it_runs(
             if status == 400
             else _JSON_TYPE
         )
+
+
+@pytest.mark.parametrize(
+    "path, ctypes, accept, status, body",
+    [
+        # a path whose answer is the page reads no `Content-Type`
+        ("/wiki/rest/api/space/ENG/nope", ("foo",), None, 404, errors_atlassian.HTML_NOT_FOUND),
+        ("/wiki/rest/api/space/ENG/nope", (_JSON_TYPE, _JSON_TYPE), None, 404)
+        + (errors_atlassian.HTML_NOT_FOUND,),
+        # elsewhere the 400 page comes ahead of the empty 500 for an `Accept` Jersey cannot parse
+        ("/wiki/rest/api/nosuch", ("foo",), "application/json;q=2", 400)
+        + (errors_atlassian.tomcat_page(400),),
+        ("/wiki/rest/api/nosuch", (_JSON_TYPE, _JSON_TYPE), "application/json;q=2", 400)
+        + (errors_atlassian.tomcat_page(400),),
+        ("/wiki/rest/api/nosuch", ("text/plain",), "application/json;q=2", 500, ""),
+    ],
+)
+def test_confluence_unserved_path_reads_its_content_type_where_real_does(
+    client, path, ctypes, accept, status, body
+):
+    """Pins where ``_confluence_not_found`` reads a `Content-Type` among its other answers."""
+    headers = [("Content-Type", value) for value in ctypes]
+    if accept is not None:
+        headers.append(("Accept", accept))
+    r = sent_as(client, "GET", f"/atlassian{path}", headers)
+    assert (r.status_code, r.text) == (status, body)
 
 
 # --- what `Accept` asks for: the 406, and the shapes a refusal takes from it --------------------
@@ -7672,6 +7954,11 @@ _ACCEPT_ROWS = [
     ("GET", _SPACES, "admin", "application/json;Q=2;Charset=bogus", None, 400, None, b"", {}),
     ("GET", _SPACES, "admin", "application/json;q=0.5;Q=2;q=0.5", None, 400, None, b"", {}),
     ("OPTIONS", _SPACES, "admin", _Q2, None, 403, _TOMCAT, "page", {}),
+    # a run of slashes is one before the product is picked (2026-10-23)
+    ("GET", "/atlassian//wiki/rest/api/space", "admin", _Q2, None, 400, None, b"", {}),
+    ("GET", "/atlassian//wiki/rest/api/content", "admin", _Q2, None, 400, None, b"", {}),
+    ("OPTIONS", "/atlassian//wiki/rest/api/space", "admin", _Q2, None, 403, _TOMCAT, "page", {}),
+    ("GET", "/atlassian//wiki/rest/api/space", "admin", _SORTED_33, None, 400, None, b"", {}),
     ("GET", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE)
     + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
     ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "admin", _Q2, None, 500, None, b"", {}),

@@ -40,6 +40,8 @@ _SINGULAR_MESSAGE = (
 )
 _SCOPE_ENUM = ("isEnum", "scope must be one of the following values: title, sentences, all")
 _SCOPE_KEYWORD = ("conditionalRequired", "keyword is required when scope is provided")
+_DATE = "date must be a valid timestamp in milliseconds"
+_NUMBER = ("isNumber", "date must be a number conforming to the specified constraints")
 
 
 def _field(name, *constraints):
@@ -210,6 +212,41 @@ _ALL_PERSON = (
                 _exclusive("mine"),
             ],
         ),
+        ("date: 1e400", [_field("date", ("max", _DATE), _NUMBER)]),
+        ("date: -1e400", [_field("date", ("min", _DATE), _NUMBER)]),
+        (
+            "limit: 0, date: 1e308",
+            [
+                _field("date", ("max", _DATE)),
+                _field("limit", ("isPositive", "limit must be a positive number")),
+            ],
+        ),
+        (
+            'date: 1e308, toDate: "x"',
+            [
+                _field("date", ("max", _DATE)),
+                _field("toDate", ("isDate", "toDate must be a Date instance")),
+            ],
+        ),
+        (
+            'date: 1e400, mine: true, user_id: "u"',
+            [_field("date", ("max", _DATE), _NUMBER), _exclusive("userId"), _exclusive("mine")],
+        ),
+        (
+            'scope: "bogus", keyword: "k", fromDate: "x", toDate: "x", date: 1e308, limit: 0, skip: -1',
+            [
+                _field("scope", _SCOPE_ENUM),
+                _field("date", ("max", _DATE)),
+                _field("fromDate", ("isDate", "fromDate must be a Date instance")),
+                _field("toDate", ("isDate", "toDate must be a Date instance")),
+                _field("limit", ("isPositive", "limit must be a positive number")),
+                _field("skip", ("min", "skip must not be less than 0")),
+            ],
+        ),
+        (
+            "date: 1e15, limit: 0",
+            [_field("limit", ("isPositive", "limit must be a positive number"))],
+        ),
     ],
 )
 def test_fireflies_measured_compound_refusal(fireflies_http, arguments, fields):
@@ -269,6 +306,11 @@ def test_fireflies_measured_compound_refusal(fireflies_http, arguments, fields):
             "IsEmailOnly",
             "participantEmail must be a valid email address",
         ),
+        ("date: 8.64e15", "date", "max", _DATE),
+        ("date: 8640000000000001", "date", "max", _DATE),
+        ("date: 1e308", "date", "max", _DATE),
+        ("date: -8640000000000001", "date", "min", _DATE),
+        ("date: -1e308", "date", "min", _DATE),
     ],
 )
 def test_fireflies_supporting_measured_validation(fireflies_http, arguments, name, kind, message):
@@ -378,6 +420,10 @@ def test_fireflies_measured_email_whitespace(fireflies_http, key, side):
         "fromDate: true",
         'toDate: "2020-01-01"',
         'organizers: ["\\"a b\\"@b.co"]',
+        "date: 253402300799999",
+        "date: 253402300799999.9",
+        "date: -62167219200000",
+        "date: -62167219200000.9",
     ],
 )
 def test_fireflies_measured_validation_boundaries(fireflies_http, arguments):
@@ -389,6 +435,35 @@ def test_fireflies_measured_validation_boundaries(fireflies_http, arguments):
         assert body["data"]["transcripts"] == []
     else:
         assert isinstance(body["data"]["transcripts"], list)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "date: 253402300800000",
+        "date: 8639999999999999",
+        "date: -62167219200001",
+        "date: -8.64e15",
+        'date: 1e15, fromDate: "2020-01-01"',
+    ],
+)
+def test_fireflies_date_outside_the_years_0_to_9999_is_an_internal_error(fireflies_http, arguments):
+    response = _query(fireflies_http, arguments)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["transcripts"] is None
+    (error,) = body["errors"]
+    assert list(error) == ["friendly", "message", "locations", "path", "code", "extensions"]
+    assert list(error["extensions"]) == ["code", "correlationId", "status"]
+    assert re.fullmatch(r"[A-Za-z0-9]{8}", error["extensions"].pop("correlationId"))
+    assert error == {
+        "friendly": False,
+        "message": "Something unexpected happened. Please try again",
+        "locations": [{"line": 1, "column": 3}],
+        "path": ["transcripts"],
+        "code": "INTERNAL_SERVER_ERROR",
+        "extensions": {"code": "INTERNAL_SERVER_ERROR", "status": 500},
+    }
 
 
 def test_fireflies_validation_preserves_scoped_acl(live_server, tokens):
@@ -409,12 +484,16 @@ def test_fireflies_validation_preserves_scoped_acl(live_server, tokens):
         assert body["data"]["good"] == baseline
 
 
-def test_fireflies_errors_in_one_response_share_one_correlation_id(fireflies_http):
+@pytest.mark.parametrize(
+    "query",
+    [
+        "{ a: transcripts(limit: 0) { id } b: transcripts(skip: -1) { id } }",
+        "{ a: transcripts(limit: 0) { id } b: transcripts(date: 1e15) { id } }",
+    ],
+)
+def test_fireflies_errors_in_one_response_share_one_correlation_id(fireflies_http, query):
     client, _host = fireflies_http
-    body = client.post(
-        "/fireflies/graphql",
-        json={"query": "{ a: transcripts(limit: 0) { id } b: transcripts(skip: -1) { id } }"},
-    ).json()
+    body = client.post("/fireflies/graphql", json={"query": query}).json()
     assert len(body["errors"]) == 2
     assert len({error["extensions"]["correlationId"] for error in body["errors"]}) == 1
 

@@ -14,7 +14,7 @@ refresh).
     python examples/using-mirage/gmail.py --url http://localhost:8000 --fuse   # real OS mount
 
 With ``--fuse`` the mailbox is exposed as an actual filesystem (needs macFUSE/fuse3) and read
-with plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
+with plain ``os``/shell tools; otherwise it's driven in-process via ``ws.shell``.
 """
 
 import argparse
@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 from mirage import MountMode, Workspace
-from mirage.resource.gmail import GmailConfig, GmailResource
+from mirage.vfs.gmail import GmailConfig, GmailVFS
 
 from backlot import serve_or_connect
 from backlot.integrations.mirage import point_google_at
@@ -62,47 +62,47 @@ CORPUS = [
 def build(s, user):
     point_google_at(s.base_url)
     client_id, client_secret, refresh_token, _ = google_oauth_user(s.base_url, user)
-    return GmailResource(
+    return GmailVFS(
         GmailConfig(client_id=client_id, client_secret=client_secret, refresh_token=refresh_token)
     )
 
 
-async def main(resource) -> None:
-    ws = Workspace({"/gmail": resource}, mode=MountMode.READ)
+async def main(vfs) -> None:
+    ws = Workspace({"/gmail": vfs}, mode=MountMode.READ)
 
     print("=== ls /gmail/ (labels) ===")
-    labels = lines(await (await ws.execute("ls /gmail/")).stdout_str())
+    labels = lines(await (await ws.shell("ls /gmail/")).stdout_str())
     print("\n".join(labels) or "(none)")
 
     # Tree is /gmail/<label>/<date>/<message>.gmail.json. Descend one label → one day → one
     # message (bounded), rather than walking every label.
     for label in (["INBOX"] if "INBOX" in labels else []) + labels:
-        dates = lines(await (await ws.execute(f'ls "/gmail/{label}/"')).stdout_str())
+        dates = lines(await (await ws.shell(f'ls "/gmail/{label}/"')).stdout_str())
         if not dates:
             continue
         day = dates[0].rstrip("/")
         files = [
             f
-            for f in lines(await (await ws.execute(f'ls "/gmail/{label}/{day}/"')).stdout_str())
+            for f in lines(await (await ws.shell(f'ls "/gmail/{label}/{day}/"')).stdout_str())
             if f.endswith(".gmail.json")
         ]
         if not files:
             continue
         msg = f"/gmail/{label}/{day}/{files[0]}"
         print(f"\n=== cat {msg} ===")
-        print((await (await ws.execute(f'cat "{msg}"')).stdout_str()).rstrip()[:600])
+        print((await (await ws.shell(f'cat "{msg}"')).stdout_str()).rstrip()[:600])
         print("\n=== jq .subject ===")
-        print((await (await ws.execute(f'jq ".subject" "{msg}"')).stdout_str()).rstrip())
+        print((await (await ws.shell(f'jq ".subject" "{msg}"')).stdout_str()).rstrip())
         return
     print("\nno messages visible to this identity")
 
 
-def main_fuse(resource) -> None:
+def main_fuse(vfs) -> None:
     """--fuse: mount the mailbox as a *real* filesystem and read a message with ordinary tools.
     Needs macFUSE/fuse3. (Listing a label makes mirage fetch every message in it — see the
     README's performance notes; keep the mailbox small when pointing at a large corpus.)"""
     try:
-        with Workspace({"/gmail": resource}, mode=MountMode.READ) as ws:
+        with Workspace({"/gmail": vfs}, mode=MountMode.READ) as ws:
             mnt = ws.add_fuse_mount("/gmail")  # "/gmail" is now a real directory on disk
             print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
             label = (
@@ -152,8 +152,8 @@ def _parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     with serve_or_connect(CORPUS, url=args.url) as s:
-        resource = build(s, args.user or MAILBOX_OWNER)
+        vfs = build(s, args.user or MAILBOX_OWNER)
         if args.fuse:
-            main_fuse(resource)
+            main_fuse(vfs)
         else:
-            run_mirage(main(resource))
+            run_mirage(main(vfs))

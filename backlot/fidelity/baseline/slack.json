@@ -3,7 +3,7 @@
   "endpoints": [
     "https://docs.slack.dev/reference/methods.md"
   ],
-  "measured": "2026-10-21",
+  "measured": "2026-10-22",
   "operations": [
     {
       "operation": "admin.analytics.getFile",
@@ -1325,9 +1325,17 @@
     {
       "operation": "chat.delete",
       "id": "chat.delete",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "as_user": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "chat.deleteScheduledMessage",
@@ -1339,9 +1347,13 @@
     {
       "operation": "chat.getPermalink",
       "id": "chat.getPermalink",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "chat.meMessage",
@@ -1353,16 +1365,171 @@
     {
       "operation": "chat.postEphemeral",
       "id": "chat.postEphemeral",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "as_user": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "attachments": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "blocks": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "icon_emoji": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "icon_url": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "link_names": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "markdown_text": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "metadata": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "parse": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "thread_ts": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "username": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "chat.postMessage",
       "id": "chat.postMessage",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "as_user": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "attachments": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "blocks": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "current_draft_last_updated_ts": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "icon_emoji": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "icon_url": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "link_names": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "markdown_text": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "metadata": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "mrkdwn": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "parse": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "reply_broadcast": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "unfurl_app_links": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "unfurl_links": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "unfurl_media": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "username": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      },
+      "fields": {
+        "message.attachments": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "message.blocks": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-22: a plain-text post over a user token and over a bot token both carried `blocks`, in the echo and in `conversations.history`, as did the messages `reactions.get` and `reactions.list` answer. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.subtype": {
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "A message posted through the Web API carries no subtype: measured against slack.com on 2026-10-22, a bot-token post echoed `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `ts`, `type` and `user` and no `subtype`, and a user-token post echoed the same nine fields -- `bot_id` and `bot_profile` included, since the app is what posted it either way. Backlot serves `subtype` on a corpus message that states one, which the probe corpus does through a `channel_join`; this entry is the echo of a post, where there is none to serve."
+        },
+        "message.team": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.thread_ts": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.user": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.username": {
+          "kind": "missing_field",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "chat.scheduleMessage",
@@ -1402,9 +1569,91 @@
     {
       "operation": "chat.update",
       "id": "chat.update",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "as_user": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "attachments": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "blocks": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "file_ids": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "link_names": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "markdown_text": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "metadata": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "parse": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "reply_broadcast": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "unfurled_attachments": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      },
+      "fields": {
+        "message.blocks": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-22: a plain-text post over a user token and over a bot token both carried `blocks`, in the echo and in `conversations.history`, as did the messages `reactions.get` and `reactions.list` answer. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.bot_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.edited": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.team": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.thread_ts": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.type": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        }
+      }
     },
     {
       "operation": "conversations.acceptSharedInvite",
@@ -1500,6 +1749,12 @@
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
         },
+        "messages[].bot_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. Over 100 `reactions.list` items and 527 `conversations.history` messages, each of `bot_id`, `subtype`, `edited`, `team`, `thread_ts`, `ts`, `type`, `user` and `reactions` was present on some message. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
         "messages[].client_msg_id": {
           "kind": "extra_field",
           "severity": "breaking",
@@ -1559,6 +1814,12 @@
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
+        },
+        "messages[].subtype": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. Over 100 `reactions.list` items and 527 `conversations.history` messages, each of `bot_id`, `subtype`, `edited`, `team`, `thread_ts`, `ts`, `type`, `user` and `reactions` was present on some message. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "messages[].team": {
           "kind": "extra_field",
@@ -2536,30 +2797,165 @@
     {
       "operation": "reactions.add",
       "id": "reactions.add",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "reactions.get",
       "id": "reactions.get",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "file": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "file_comment": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "full": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      },
+      "fields": {
+        "file": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "message.blocks": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-22: a plain-text post over a user token and over a bot token both carried `blocks`, in the echo and in `conversations.history`, as did the messages `reactions.get` and `reactions.list` answer. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.bot_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "The message Backlot serves is one builder's (`slack._message`), so it carries the same fields on every method that answers one. Measured against slack.com on 2026-10-21 on the methods a read reaches: real answers this field on `reactions.list` and `conversations.history`, and `reactions.get` itself answered `edited`, `team`, `ts`, `type` and `user`. The reference's example for this method abbreviates its message."
+        },
+        "message.edited": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "The message Backlot serves is one builder's (`slack._message`), so it carries the same fields on every method that answers one. Measured against slack.com on 2026-10-21 on the methods a read reaches: real answers this field on `reactions.list` and `conversations.history`, and `reactions.get` itself answered `edited`, `team`, `ts`, `type` and `user`. The reference's example for this method abbreviates its message."
+        },
+        "message.thread_ts": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "The message Backlot serves is one builder's (`slack._message`), so it carries the same fields on every method that answers one. Measured against slack.com on 2026-10-21 on the methods a read reaches: real answers this field on `reactions.list` and `conversations.history`, and `reactions.get` itself answered `edited`, `team`, `ts`, `type` and `user`. The reference's example for this method abbreviates its message."
+        }
+      }
     },
     {
       "operation": "reactions.list",
       "id": "reactions.list",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "full": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "team_id": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      },
+      "fields": {
+        "items[].comment": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "items[].file": {
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "items[].message.blocks": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-22: a plain-text post over a user token and over a bot token both carried `blocks`, in the echo and in `conversations.history`, as did the messages `reactions.get` and `reactions.list` answer. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "items[].message.edited": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. Over 100 `reactions.list` items and 527 `conversations.history` messages, each of `bot_id`, `subtype`, `edited`, `team`, `thread_ts`, `ts`, `type`, `user` and `reactions` was present on some message. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "items[].message.permalink": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers `permalink` on the message that `reactions.get` and `reactions.list` carry, and on no other method that answers one -- `conversations.history` and `conversations.replies` carry none, which is why Backlot puts it on at those two call sites rather than in the shared message builder. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "items[].message.subtype": {
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "A message posted through the Web API carries no subtype: measured against slack.com on 2026-10-22, a bot-token post echoed `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `ts`, `type` and `user` and no `subtype`, and a user-token post echoed the same nine fields -- `bot_id` and `bot_profile` included, since the app is what posted it either way. Backlot serves `subtype` on a corpus message that states one, which the probe corpus does through a `channel_join`; this entry is the echo of a post, where there is none to serve."
+        },
+        "items[].message.team": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. Over 100 `reactions.list` items and 527 `conversations.history` messages, each of `bot_id`, `subtype`, `edited`, `team`, `thread_ts`, `ts`, `type`, `user` and `reactions` was present on some message. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "items[].message.thread_ts": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. Over 100 `reactions.list` items and 527 `conversations.history` messages, each of `bot_id`, `subtype`, `edited`, `team`, `thread_ts`, `ts`, `type`, `user` and `reactions` was present on some message. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "items[].message.type": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. Over 100 `reactions.list` items and 527 `conversations.history` messages, each of `bot_id`, `subtype`, `edited`, `team`, `thread_ts`, `ts`, `type`, `user` and `reactions` was present on some message. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "items[].message.user": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. Over 100 `reactions.list` items and 527 `conversations.history` messages, each of `bot_id`, `subtype`, `edited`, `team`, `thread_ts`, `ts`, `type`, `user` and `reactions` was present on some message. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "items[].message.username": {
+          "kind": "missing_field",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "reactions.remove",
       "id": "reactions.remove",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "file": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "file_comment": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "token": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "reminders.add",

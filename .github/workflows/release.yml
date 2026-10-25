@@ -52,3 +52,50 @@ jobs:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.BACKLOT_PYPI_TOKEN }}
         run: twine upload dist/*
+
+  mcp-registry:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # mcp-publisher's GitHub OIDC login, which grants io.github.brekkylab/*
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      # server.json carries no version, and this writes the wheel's: the registry looks
+      # packages[0].version up on PyPI. A client runs `uvx <identifier>@<version>`, and the bare
+      # name the registry needs there installs no extra, so `--with` pins backlot[mcp] at that
+      # version beside it.
+      - name: Write the version just uploaded into server.json
+        run: |
+          version=$(basename dist/*.whl | cut -d- -f2)
+          jq --arg v "$version" '
+            .version = $v
+            | .packages[0].version = $v
+            | .packages[0].runtimeArguments = [
+                {type: "named", name: "--with", value: "backlot[mcp]==\($v)"}
+              ]
+          ' server.json > server.json.tmp
+          mv server.json.tmp server.json
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Wait for PyPI to serve the version
+        run: |
+          for _ in $(seq 60); do
+            curl -sf -o /dev/null "https://pypi.org/pypi/backlot/$VERSION/json" && exit 0
+            sleep 10
+          done
+          echo "PyPI does not serve backlot $VERSION after 10 minutes" >&2
+          exit 1
+      # Pinned with its digest, like the actions above; bump the version and the digest together.
+      - name: Install mcp-publisher
+        run: |
+          curl -sfL -o mcp-publisher.tar.gz https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
+          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz" | sha256sum -c
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+      - name: Log in to the MCP Registry
+        run: ./mcp-publisher login github-oidc
+      - name: Publish to the MCP Registry
+        run: ./mcp-publisher publish

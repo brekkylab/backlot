@@ -746,8 +746,13 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
         ("NOT -(from:bob to:ava)", ("", {"from": ["bob"], "to": ["ava"]})),
         ("label:-", ("", {"label": ["-"]})),
         ("mary-jane", ("mary-jane", {})),
-        # Not modelled; the comment on `_GMAIL_NEGATABLE` lists it.
-        ("NOT probe", ("NOT probe", {})),
+        # A capital `NOT` or a leading `-` in front of a word is `_GMAIL_NOT_WORD`.
+        ("NOT probe", ("", {"-w": ["probe"]})),
+        ("-probe", ("", {"-w": ["probe"]})),
+        ("--probe", ("", {"-w": ["probe"]})),
+        ('-"probe"', ("", {"-w": ["probe"]})),
+        ("-(probe)", ("", {"-w": ["probe"]})),
+        ("not probe", ("not probe", {})),
     ],
 )
 def test_gmail_negation_and_groups(q, want):

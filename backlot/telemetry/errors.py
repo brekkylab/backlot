@@ -10,18 +10,25 @@ a field name from the request, is never sent. A message this table does not know
 request it refuses before any resolver runs, and the refusals no row names are graphql-core's
 validation of the document and its variables, so they are ``graphql_validation``.
 
+The HTTP layer in front of Linear's and Fireflies' GraphQL refuses a body in an envelope of its own,
+with no ``errors``. Fireflies' HTTP layer names its code in ``code``. Linear's is Express, which
+names one in ``extensions.code`` when its envelope has ``extensions``; Express's ``code`` is the
+status as a number, which is not an identifier.
+
 The class is the cause a failed call is put down to, sent as ``backlot.error_class`` on every
 failure:
 
 | Class | The call failed because |
 |---|---|
 | ``unsupported`` | Backlot does not do this yet: the baseline records the operation as ``missing`` or ``refused``, or the GraphQL engine refused a filter |
-| ``internal`` | of a Backlot bug: an unhandled exception, or a 5xx other than 501 |
+| ``internal`` | of a Backlot bug: Backlot's own failure (see below), or a 5xx other than 501 |
 | ``rate_limit`` | the vendor's rate limit was reached: a 429, or a 403 with ``x-ratelimit-remaining: 0`` as GitHub sends |
 | ``auth`` | the credential was missing, wrong, or not allowed: a 401 or 403, or Slack's auth errors, which it sends with a 200 |
 | ``client`` | the request was wrong: any other failure |
 
-The rules read the status, the baseline's support state, the error code and the
+Backlot's own failure is an exception raised instead of an answer, or a field error the GraphQL
+engine answers at 200 and marks (``backlot.graphql.engine.Result.raised``). The rules read whether
+the failure is Backlot's own, the status, the baseline's support state, the error code and the
 ``x-ratelimit-remaining`` header, so a code no rule names is classed by its status. A 501 from an
 operation Backlot serves is the vendor's own answer (Google's ``notImplemented``), so it is
 ``client``.
@@ -137,6 +144,10 @@ def error_code(source: str, status: int, body: bytes) -> str:
         )
     if source in ("linear", "fireflies"):
         errors = doc.get("errors")
+        if errors is None and status >= 400:
+            extensions = doc.get("extensions")
+            code = extensions.get("code") if isinstance(extensions, dict) else doc.get("code")
+            return code if isinstance(code, str) else ""
         if not errors or not isinstance(errors, list) or not isinstance(errors[0], dict):
             return ""
         extensions = errors[0].get("extensions")
@@ -188,7 +199,7 @@ def error_class(
     source: str, support: str, status: int, code: str, spent: bool, raised: bool = False
 ) -> str:
     """The class of a failed call. ``spent`` is whether it answered ``x-ratelimit-remaining: 0``,
-    ``raised`` whether Backlot raised instead of answering."""
+    ``raised`` whether the failure is Backlot's own, as the module docstring has it."""
     if raised:
         return "internal"
     if support in ("missing", "refused") or code == "unsupported_filter":

@@ -4999,12 +4999,12 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
 
     rows = [
         *((path, admin_h) for path in _routes(keys)),
+        ("/atlassian/wiki/rest/api/space/NOPESUCH", admin_h),
+        ("/atlassian/rest/api/3/issue/NOPE-1", admin_h),
         # slashed spellings, answered as the slash-free ones
         # (``backlot.main.normalise_the_slashes_in_an_atlassian_path``)
         ("/atlassian/wiki/rest/api/search/?cql=type%3Dpage", admin_h),
         ("/atlassian//wiki/rest/api/space", admin_h),
-        ("/atlassian/wiki/rest/api/space/NOPESUCH", admin_h),
-        ("/atlassian/rest/api/3/issue/NOPE-1", admin_h),
         ("/atlassian/rest/api/3/serverInfo/", admin_h),
         # the gateway's Connect-token 403 (``backlot.main.refuse_a_bearer_jira_cannot_read``)
         ("/atlassian/rest/api/3/serverInfo", {"Authorization": "Bearer nope"}),
@@ -5029,7 +5029,7 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         TestClient(recording).head(path, headers=headers)
         bodies = [m.get("body", b"") for m in sent if m["type"] == "http.response.body"]
         assert b"".join(bodies) == b"", path
-    assert statuses[-5:] == [404, 404, 200, 403, 401]
+    assert statuses[-7:] == [404, 404, 200, 200, 200, 403, 401]
 
 
 @pytest.mark.parametrize(
@@ -7965,14 +7965,14 @@ _ACCEPT_ROWS = [
     ("GET", _SPACES, "admin", "application/json;Q=2;Charset=bogus", None, 400, None, b"", {}),
     ("GET", _SPACES, "admin", "application/json;q=0.5;Q=2;q=0.5", None, 400, None, b"", {}),
     ("OPTIONS", _SPACES, "admin", _Q2, None, 403, _TOMCAT, "page", {}),
+    ("GET", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE)
+    + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
+    ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "admin", _Q2, None, 500, None, b"", {}),
     # a run of slashes is one before the product is picked (``backlot.main._spring_failure``)
     ("GET", "/atlassian//wiki/rest/api/space", "admin", _Q2, None, 400, None, b"", {}),
     ("GET", "/atlassian//wiki/rest/api/content", "admin", _Q2, None, 400, None, b"", {}),
     ("OPTIONS", "/atlassian//wiki/rest/api/space", "admin", _Q2, None, 403, _TOMCAT, "page", {}),
     ("GET", "/atlassian//wiki/rest/api/space", "admin", _SORTED_33, None, 400, None, b"", {}),
-    ("GET", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE)
-    + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
-    ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "admin", _Q2, None, 500, None, b"", {}),
     # Jersey writes its own 404, an `OPTIONS` of it too, under a `Q` Spring would fail to copy
     (
         "OPTIONS",

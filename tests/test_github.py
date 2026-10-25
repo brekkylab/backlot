@@ -6554,7 +6554,8 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
     tmp_path, monkeypatch
 ):
     """Refusal is not token-only: a caller with no credential is refused the same as a token once
-    its own window is spent, with real's message for it (`_rate_limit_exceeded_message`).
+    its own window is spent, with the message real gives that caller
+    (`_rate_limit_exceeded_message`).
 
     The anonymous caller's 403 outranks a trailing slash's 404, where a token's spent window leaves
     it the 404.

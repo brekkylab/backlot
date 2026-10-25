@@ -929,9 +929,10 @@ def _spring_failure(scope: Scope):
     if not errors.atlassian.owns(path):
         return None
     # the product the gateway routes to, which reads each run of slashes as one
-    # (``errors.atlassian.front_door``): under an `Accept` Spring fails on, `GET` and `OPTIONS` on
-    # `//wiki/rest/api/space` and `GET //wiki/rest/api/content` drew what each draws with one
-    # slash (Confluence Cloud, 2026-10-23)
+    # (``errors.atlassian.front_door``): under an `Accept` Spring cannot sort and under one it
+    # cannot write its answer under, `GET` and `OPTIONS` on `//wiki/rest/api/space` and
+    # `GET //wiki/rest/api/content` drew what each draws with one slash (Confluence Cloud,
+    # 2026-10-25)
     product = re.sub("/{2,}", "/", path)
     reader = "spring" if errors.atlassian.is_confluence(product) else "jira"
     accept = Headers(scope=scope).get("accept")

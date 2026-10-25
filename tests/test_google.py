@@ -2062,6 +2062,52 @@ _MASKS_REFUSED = (
             ("zzz,id,aaa", "zzz"),
             ("aaa,owners(zzz)", "aaa"),
         ]
+        + [
+            ("owners(zzz)", "zzz"),
+            ("owners/zzz", "zzz"),
+            ("id/zzz", "zzz"),
+            ("kind/zzz", "zzz"),
+            ("kind/id", "id"),
+            ("*/id", "id"),
+            ("owners(owners(kind))", "owners"),
+            ("owners/kind/zzz", "zzz"),
+            ("owners(kind/zzz)", "zzz"),
+            ("capabilities/zzz", "zzz"),
+            ("exportLinks/zzz", "zzz"),
+            ("exportLinks(application)", "application"),
+            ("sharingUser/zzz", "zzz"),
+            ("permissions(zzz)", "zzz"),
+            ("parents/zzz", "zzz"),
+            ("permissions/permissionDetails/zzz", "zzz"),
+            ("contentHints/thumbnail/zzz", "zzz"),
+            ("imageMediaMetadata/location/zzz", "zzz"),
+            ("labelInfo/labels/fields/zzz", "zzz"),
+            ("downloadRestrictions/zzz", "zzz"),
+        ]
+    ]
+    + [
+        ("/drive/v3/files", mask, name)
+        for mask, name in [("kind/id", "id"), ("nextPageToken/zzz", "zzz")]
+        + [("files(id/zzz)", "zzz"), ("files(owners(zzz))", "zzz")]
+    ]
+    + [
+        (path, mask, "zzz")
+        for path, listed in ((_PERMS_OF_DOC, "permissions"), ("/drive/v3/drives", "drives"))
+        for mask in ["kind/zzz", "nextPageToken/zzz", f"{listed}(id/zzz)"]
+    ]
+    + [
+        (_PERMS_OF_DOC, "permissions(permissionDetails(zzz))", "zzz"),
+        ("/drive/v3/drives", "drives(capabilities/zzz)", "zzz"),
+    ]
+    + [
+        ("/drive/v3/about", mask, subject)
+        for mask, subject in [
+            ("user(zzz)", "zzz"),
+            ("user/kind/zzz", "zzz"),
+            ("user(kind/zzz)", "zzz"),
+            ("*/user", "user"),
+            ("exportFormats/zzz", "zzz"),
+        ]
     ]
     + [
         ("/drive/v3/files", mask, mask)
@@ -2080,7 +2126,12 @@ _MASKS_REFUSED = (
     ]
     + [
         ("/drive/v3/about", mask, subject)
-        for mask, subject in [("user,", "user,"), (",", ","), ("zzz,bogus", "zzz")]
+        for mask, subject in [
+            ("user,", "user,"),
+            (",", ","),
+            ("zzz,bogus", "zzz"),
+            ("user ,", "user ,"),  # a trailing comma is Invalid even after a space
+        ]
         + [("bogus,user", "bogus")]
     ]
 )
@@ -2108,10 +2159,8 @@ _MASKS_UNSERVED = [
     (_DOC, "copyRequiresWriterPermission,viewersCanCopyContent", "copyRequiresWriterPermission"),
     ("/drive/v3/files", "files(id,writersCanShare)", "writersCanShare"),
     ("/drive/v3/files", "files/linkShareMetadata", "linkShareMetadata"),
-    (_PERMS_OF_DOC, "permissions(deleted)", "deleted"),
-    (_PERMS_OF_DOC, "permissions(id,photoLink)", "photoLink"),
-    (_PERMS_OF_DOC, "permissions/permissionDetails", "permissionDetails"),
-    (_PERMS_OF_DOC, "permissions(pendingOwner)", "pendingOwner"),
+    # deleted, pendingOwner, permissionDetails and a user's photoLink are served on every
+    # permission now, as the field tables list them.
 ]
 _FULLTEXT = "q=" + quote("fullText contains 'a'")
 # Where real answered a mask ending in a comma among a route's other refusals, each sent beside it,
@@ -2176,7 +2225,26 @@ _MASK_ORDER = (
     + [(_DOC, "id", "fields=" + quote("id,"), _SERVED)]
 )
 # Masks `about` answered with the missing-mask 400 `_drive_about_field_keys` describes.
-_ABOUT_MASKS_REQUIRED = ["\n", chr(0x1C), chr(0x3000), "user()", "user( )", "kind()"]
+_ABOUT_MASKS_REQUIRED = [
+    "\n",
+    chr(0x1C),
+    chr(0x3000),
+    "user()",
+    "user( )",
+    "kind()",
+    "user)(",
+    "user(kind,)",
+    "user(,kind)",
+    "user//kind",
+    "user;kind",
+    "user*",
+    "*name",
+    "user *",
+    " ,user",
+    "user(kind) name",
+    "user name)",
+    "kind,user(kind name",
+]
 # What a member's `drives.list` answered each `q` with, as `_DRIVES_Q` records.
 _DRIVES_Q_TAKEN = [
     "",
@@ -2600,8 +2668,26 @@ _MASKS_SERVED = [
     (_DOC, "kind(),id", {"kind", "id"}, None),
     (_DOC, "createdTime()", set(), None),
     (_DOC, "trashed()", set(), None),
-    ("/drive/v3/files", "*", {"files"}, "default"),
-    ("/drive/v3/files", "*,files(id)", {"files"}, "default"),
+    (_DOC, "owners(kind)", {"owners"}, None),
+    (_DOC, "owners/*", {"owners"}, None),
+    (_DOC, "permissions(id)", set(), None),
+    (_DOC, "capabilities(canAcceptOwnership,canEdit)", {"capabilities"}, None),
+    (_DOC, "contentHints/thumbnail/image", set(), None),
+    (_DOC, "imageMediaMetadata/location/altitude", set(), None),
+    (_DOC, "labelInfo/labels/id", set(), None),
+    (_DOC, "shortcutDetails/targetId", set(), None),
+    (_DOC, "contentRestrictions(readOnly,restrictingUser/me)", set(), None),
+    (_DOC, "properties/zzz", set(), None),
+    (_DOC, "appProperties(zzz)", set(), None),
+    (_DOC, "exportLinks(*)", {"exportLinks"}, None),
+    ("/drive/v3/files", "*", None, None),
+    ("/drive/v3/files", "*,files(id)", None, None),
+    ("/drive/v3/files", "kind", {"kind"}, None),
+    ("/drive/v3/files", "nextPageToken", {"nextPageToken"}, None),
+    ("/drive/v3/files", "incompleteSearch,files(id)", {"incompleteSearch", "files"}, {"id"}),
+    ("/drive/v3/files", "files(owners(kind))", {"files"}, {"owners"}),
+    ("/drive/v3/files", "files(permissions(id))", {"files"}, set()),
+    ("/drive/v3/files", "files(capabilities(canAcceptOwnership))", {"files"}, {"capabilities"}),
     ("/drive/v3/files", "files(id,*)", {"files"}, "default"),
     ("/drive/v3/files", "files()", {"files"}, set()),
     ("/drive/v3/files", "files( )", {"files"}, set()),
@@ -2634,11 +2720,11 @@ _MASKS_SERVED = [
     (_PERMS_OF_DOC, "permissions(emailAddress())", {"permissions"}, set()),
     (_PERMS_OF_DOC, "permissions( )", {"permissions"}, set()),
     (_PERMS_OF_DOC, "permissions(teamDrivePermissionDetails)", {"permissions"}, set()),
-    (_PERMS_OF_DOC, "permissions", {"permissions"}, "default"),
-    (_PERMS_OF_DOC, "permissions(*)", {"permissions"}, "default"),
-    (_PERMS_OF_DOC, "*", {"kind", "permissions"}, "default"),
-    (_PERMS_OF_DOC, "*,permissions(id)", {"kind", "permissions"}, "default"),
-    (_PERMS_OF_DOC, "permissions(id,*)", {"permissions"}, "default"),
+    (_PERMS_OF_DOC, "permissions", {"permissions"}, "full"),
+    (_PERMS_OF_DOC, "permissions(*)", {"permissions"}, "full"),
+    (_PERMS_OF_DOC, "*", {"kind", "permissions"}, "full"),
+    (_PERMS_OF_DOC, "*,permissions(id)", {"kind", "permissions"}, "full"),
+    (_PERMS_OF_DOC, "permissions(id,*)", {"permissions"}, "full"),
     ("/drive/v3/drives", "", set(), None),
     ("/drive/v3/drives", " ", set(), None),
     ("/drive/v3/drives", "nextPageToken", set(), None),
@@ -2656,6 +2742,8 @@ _MASKS_SERVED = [
     ("/drive/v3/about", "user,storageQuota", {"user", "storageQuota"}, None),
     ("/drive/v3/about", "user(kind)", {"user"}, None),
     ("/drive/v3/about", "user(*)", {"user"}, None),
+    ("/drive/v3/about", "user/*", {"user"}, None),
+    ("/drive/v3/about", "driveThemes(id)", {"driveThemes"}, None),
 ]
 
 
@@ -2663,10 +2751,9 @@ _MASKS_SERVED = [
 def test_drive_answers_a_fields_mask_with_what_it_selects(
     client, admin_h, path, mask, top, entries
 ):
-    """The rows `_MASKS_SERVED` records. `files.list`'s own top-level keys are left whole, as
-    `_drive_file_field_keys` says, so only its `files` is compared; `"default"` is each entry as an
-    unmasked request gets it. A `drives.list` row compares the top-level keys alone: Backlot serves
-    no shared drive, where real listed the member's two."""
+    """The rows `_MASKS_SERVED` records; `"default"` is each entry as an unmasked request gets it.
+    A `drives.list` row compares the top-level keys alone: Backlot serves no shared drive, where
+    real listed the member's two."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     url, _, query = path.format(doc=doc).partition("?")
 
@@ -2675,8 +2762,7 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(
             url, headers=admin_h, params={"pageSize": 2, **dict(parse_qsl(query)), **params}
         )
         assert r.status_code == 200, r.text
-        body = r.json()
-        return {"files": body["files"]} if path == "/drive/v3/files" else body
+        return r.json()
 
     body = get(fields=mask)
     if top is None:
@@ -2686,6 +2772,11 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(
     listed = next((k for k in body if isinstance(body[k], list)), None)
     if entries == "default":
         assert body[listed] == get()[listed]
+    elif entries == "full":
+        # permissions.list has no unmasked full object: no mask answers only id/type/kind/role,
+        # while an explicit wrapper or `*` adds emailAddress/displayName and the rest. The `*`
+        # request is the unmasked-equivalent a mask naming the whole list must agree with.
+        assert body[listed] == get(fields="*")[listed]
     elif entries:
         assert body[listed] and all(set(e) == entries for e in body[listed])
     elif entries is not None:
@@ -5967,6 +6058,70 @@ def test_drive_native_docs_report_size(client, admin_h):
     assert "size" not in folder  # ...but not for folders or shortcuts
 
 
+@pytest.mark.parametrize(
+    "mime, export, link",
+    [
+        (
+            DOC_MIME,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "https://docs.google.com/feeds/download/documents/export/Export?id={id}&exportFormat=docx",
+        ),
+        (
+            "application/vnd.google-apps.spreadsheet",
+            "text/csv",
+            "https://docs.google.com/spreadsheets/export?id={id}&exportFormat=csv",
+        ),
+        (
+            "application/vnd.google-apps.presentation",
+            "text/plain",
+            "https://docs.google.com/feeds/download/presentations/Export?id={id}&exportFormat=txt",
+        ),
+    ],
+)
+def test_drive_native_files_carry_export_links_and_quota(client, admin_h, mime, export, link):
+    """A native file's `exportLinks` name each type `about.exportFormats` gives its own, in that
+    order, at the address real's do; its `quotaBytesUsed` is its `size`, and a folder's is `0`."""
+    files = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"q": f"mimeType='{mime}'", "fields": "files(id,size,quotaBytesUsed,exportLinks)"},
+    ).json()["files"]
+    formats = _about(client, admin_h, "exportFormats").json()["exportFormats"][mime]
+    assert files
+    for f in files:
+        assert list(f["exportLinks"]) == formats
+        assert f["exportLinks"][export] == link.format(id=f["id"])
+        assert f["quotaBytesUsed"] == f["size"]
+    folder = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"q": f"mimeType='{FOLDER_MIME}'", "fields": "files(quotaBytesUsed)"},
+    ).json()["files"]
+    assert folder and all(x == {"quotaBytesUsed": "0"} for x in folder)
+
+
+def test_drive_permissions_answer_each_kind_of_permission_as_real_does(client, admin_h):
+    """With no mask a permission is `id`, `type`, `kind` and `role`; under `permissions` it is the
+    whole object: an owner's `permissionDetails` leads with an inherited writer entry, an `anyone`
+    permission carries no deleted/pendingOwner, and only a user has a photoLink."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    url = f"/drive/v3/files/{doc}/permissions"
+    bare = client.get(url, headers=admin_h).json()["permissions"]
+    assert bare and all(set(x) == {"id", "type", "kind", "role"} for x in bare)
+    whole = client.get(url, headers=admin_h, params={"fields": "permissions"}).json()["permissions"]
+    assert [x["id"] for x in whole] == [x["id"] for x in bare]
+    for x in whole:
+        direct = {"permissionType": "file", "role": x["role"], "inherited": False}
+        inherited = [{"permissionType": "file", "role": "writer", "inherited": True}]
+        assert x["permissionDetails"] == (inherited if x["role"] == "owner" else []) + [direct]
+        if x["type"] == "anyone":
+            assert "allowFileDiscovery" in x
+            assert "deleted" not in x and "pendingOwner" not in x
+        else:
+            assert (x["deleted"], x["pendingOwner"]) == (False, False)
+            assert ("photoLink" in x) is (x["type"] == "user")
+
+
 # --- Drive about.get -----------------------------------------------------------------------
 #
 # `about` answers "who am I and how much space do I use" — the call a Drive client makes first,
@@ -6004,12 +6159,12 @@ def test_drive_about_needs_auth(client):
     assert client.get(ABOUT, headers=bad).status_code == 401
 
 
-def test_drive_about_nested_mask_selects_its_parent(client, admin_h):
-    """`storageQuota/limit` selects `storageQuota` whole, as `owners/kind` selects `owners` on
-    `files.get`."""
+def test_drive_about_nested_mask_trims_the_object_it_names(client, admin_h):
+    """`storageQuota/limit` answers `storageQuota` with `limit` alone: a name below an object field
+    trims the object to it, as `owners(kind)` does an owners entry."""
     j = _about(client, admin_h, "storageQuota/limit").json()
     assert set(j) == {"storageQuota"}
-    assert "usage" in j["storageQuota"]
+    assert set(j["storageQuota"]) == {"limit"}
 
 
 def test_drive_about_user_is_the_caller(client, tokens_yaml):

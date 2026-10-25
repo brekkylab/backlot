@@ -1620,13 +1620,23 @@ def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(client,
             400,
             rb"for value [\uD835\uDFD3]",
         ),
+        (
+            f"/atlassian/wiki/rest/api/search?cql=title~%22{emoji}x%22&limit=1",
+            200,
+            rb'\"\uD83D\uDE00x\""',
+        ),
+        (
+            f"/atlassian/wiki/rest/api/search?cql=label%3D%22{emoji}x%22",
+            200,
+            rb'\"\uD83D\uDE00x\""',
+        ),
     ):
-        refused = client.get(path, headers=admin_h)
-        assert refused.status_code == status, path
-        assert written in refused.content, path
+        answer = client.get(path, headers=admin_h)
+        assert answer.status_code == status, path
+        assert written in answer.content, path
         # and never the character's own UTF-8 bytes
-        assert "\U0001f600".encode() not in refused.content, path
-        assert "\U0001d7d3".encode() not in refused.content, path
+        assert "\U0001f600".encode() not in answer.content, path
+        assert "\U0001d7d3".encode() not in answer.content, path
     # A character inside the plane is written as its UTF-8 bytes, unescaped.
     inside = client.get("/atlassian/wiki/rest/api/space/%C3%A9", headers=admin_h)
     assert inside.status_code == 404

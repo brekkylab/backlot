@@ -2074,16 +2074,21 @@ async def confluence_cql_search(request: Request):
         sent_cursor=sent_cursor,
         reached=reached,
     )
-    return {
-        "results": results,
-        "start": start,
-        "limit": limit,
-        "size": len(results),
-        "totalSize": total,
-        "cqlQuery": cql,
-        "searchDuration": 5,
-        "_links": links,
-    }
+    return Response(
+        errors_atlassian._confluence_json(
+            {
+                "results": results,
+                "start": start,
+                "limit": limit,
+                "size": len(results),
+                "totalSize": total,
+                "cqlQuery": cql,
+                "searchDuration": 5,
+                "_links": links,
+            }
+        ),
+        media_type="application/json",
+    )
 
 
 @router.get("/wiki/rest/api/content", response_model=ConfluenceResults, openapi_extra=_P_CONTENT)

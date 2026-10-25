@@ -320,7 +320,7 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             "GET",
             f"{GITHUB}/commits",
             {},
-            ("github", "repos/list-commits", "missing", 307, None, None),
+            ("github", "repos/list-commits", "missing", 404, "not_found", "unsupported"),
         ),
         (
             "POST",

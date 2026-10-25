@@ -2704,9 +2704,7 @@ def _drive_folder_obj(conn, name: str, me: str | None = None) -> dict:
         "parents": ["root"],
         "createdTime": synth.rfc3339(ts),
         "modifiedTime": synth.rfc3339(ts),
-        # Real's folders answered quotaBytesUsed "0" on 2026-10-25. Backlot models no folder owner,
-        # so no owners/lastModifyingUser are invented: they stay the part of the issue not closed.
-        "quotaBytesUsed": "0",
+        "quotaBytesUsed": "0",  # as real's folders answered it, 2026-10-25
         **_shared_with_me_time(None, me, ts),
         "trashed": False,
         "explicitlyTrashed": False,
@@ -2897,9 +2895,9 @@ _DRIVE_FILE_DEFAULT = frozenset({"kind", "id", "name", "mimeType"})
 _DRIVE_PERMISSION_DEFAULT = frozenset({"id", "type", "kind", "role"})
 _DRIVE_DRIVE_DEFAULT = frozenset({"id", "name", "kind"})
 _DRIVE_LIST_DEFAULT = frozenset({"kind", "nextPageToken", "incompleteSearch"})
-# Documented fields real gave each of a Google Workspace member's 228 files, or each of 40 of their
-# permissions, measured 2026-10-20, that no file or permission here carries: a mask that names one
-# is refused, saying so, rather than answered without it.
+# Documented fields real gave each of a Google Workspace member's 228 files, measured 2026-10-20,
+# that no file here carries: a mask that names one is refused, saying so, rather than answered
+# without it.
 _DRIVE_FILE_UNSERVED = frozenset(
     """
     clientEncryptionDetails copyRequiresWriterPermission downloadRestrictions hasThumbnail
@@ -2907,7 +2905,6 @@ _DRIVE_FILE_UNSERVED = frozenset(
     viewersCanCopyContent writersCanShare
 """.split()
 )
-_DRIVE_PERMISSION_UNSERVED = frozenset()
 # What a name in a `fields` mask is made of, as real read each character between `id,b` and `x` on
 # 2026-10-20: the ASCII below, and past ASCII the name characters of XML 1.0's fourth edition
 # (Appendix B), whose table expat's is. None of the 1,345 code points past ASCII it was sent, every
@@ -3025,8 +3022,8 @@ def _check_mask(
     a top-level name outside ``top``, under the list ``under`` an entry's name outside ``entries``,
     and a name below a field that does not hold it, as ``subfields`` gives what the resource's
     object fields hold; a field it leaves out, and each name of a listing but ``under``, holds none.
-    Then refuse the first of the ``unserved`` names of a file or permission, the top level's on
-    `files.get` and an entry's on a listing, with a sentence saying Backlot does not carry it."""
+    Then refuse the first of the ``unserved`` names of a file, the top level's on `files.get` and
+    an entry's on `files.list`, with a sentence saying Backlot does not carry it."""
     subfields = subfields or {}
     served: list[str] = []
     for path in paths:
@@ -3057,14 +3054,12 @@ def _check_mask(
             )
 
 
-def _mask_keys(paths, under: str | None = None, defaults: frozenset = frozenset()):
-    """The names a mask selects at the top level, or of each entry of the list ``under``; ``None``
-    selects every one. A key an empty group names is selected only when it is one of the
+def _mask_keys(paths, defaults: frozenset = frozenset()) -> set[str] | None:
+    """The names a mask's paths select at their top level; ``None`` selects every one, as no mask
+    and a top-level ``*`` do. A key an empty group names is selected only when it is one of the
     ``defaults``, as the comment above ``_DRIVE_FILE_DEFAULT`` says."""
-    if under is not None:
-        paths = [p[1:] for p in paths if p[0] == under]
-        if any(not p for p in paths):
-            return None
+    if paths is None:
+        return None
     keys = {p[0] for p in paths if not (len(p) > 1 and p[1] == _MASK_EMPTY) or p[0] in defaults}
     return None if "*" in keys else keys
 
@@ -3083,55 +3078,10 @@ def _drive_refuse_a_trailing_comma(request: Request) -> None:
 
 def _drive_mask(fields: str | None) -> list[tuple[str, ...]] | None:
     """A mask's paths; ``None`` for an absent one, and no paths (``[]``) for one of spaces and tabs
-    alone, the blank mask `_drive_get_field_keys` describes."""
+    alone, the blank mask `_drive_project_one` describes."""
     if fields is None:
         return None
     return _mask_paths(fields) if fields.strip(" \t") else []
-
-
-def _drive_file_field_keys(fields: str | None) -> set[str] | None:
-    """File keys a ``files.list`` caller selected — so the response carries only those, not the
-    full ~30-field object. Google accepts both the group form (``files(id,name)``) and the path
-    form (``files/id``); both are honored. ``None`` = no projection (an absent mask, one that asks
-    for everything with ``*``, or one that names no ``files``).
-
-    Top-level names are validated but not projected: the route's typed response model
-    (``DriveFileList``, which the OpenAPI schema is built from) declares ``kind`` and ``files``."""
-    paths = _drive_mask(fields)
-    if not paths:
-        return None
-    _check_mask(
-        paths,
-        _DRIVE_LIST_FIELDS,
-        "files",
-        _DRIVE_FILE_FIELDS,
-        _DRIVE_FILE_UNSERVED,
-        _DRIVE_FILE_SUBFIELDS,
-    )
-    if _mask_keys(paths) is None or not any(p[0] == "files" for p in paths):
-        return None
-    return _mask_keys(paths, "files", _DRIVE_FILE_DEFAULT)
-
-
-def _drive_get_field_keys(fields: str | None) -> set[str] | None:
-    """The same projection for ``files.get``, whose mask names file fields directly
-    (``fields=id,name,size``). Applying it is what makes one file look the same whether a client
-    read it out of a listing or resolved it by id.
-
-    A mask that is empty or of spaces and tabs alone selects nothing, which is not the same as no
-    mask: measured 2026-09-23, `fields=` and `fields=%20` answer ``{}`` where an absent `fields`
-    answers the default object, and `fields=%09` did too on 2026-10-20. So an absent mask is
-    ``None`` and one of spaces and tabs the empty set."""
-    paths = _drive_mask(fields)
-    if paths is None:
-        return None
-    _check_mask(
-        paths,
-        _DRIVE_FILE_FIELDS,
-        unserved=_DRIVE_FILE_UNSERVED,
-        subfields=_DRIVE_FILE_SUBFIELDS,
-    )
-    return _mask_keys(paths, defaults=_DRIVE_FILE_DEFAULT)
 
 
 def _drive_project_listing(
@@ -3140,10 +3090,9 @@ def _drive_project_listing(
     under: str,
     entries: frozenset,
     defaults: frozenset,
-    unserved: frozenset = frozenset(),
 ):
     """``permissions.list`` or ``drives.list`` trimmed to its mask: the top-level keys it names,
-    and the entries of the list ``under`` trimmed to theirs by `_drive_project_entries`. The list
+    and the entries of the list ``under`` trimmed to theirs by `_drive_project_paths`. The list
     stays when only its entries are emptied. ``None`` for no mask."""
     paths = _drive_mask(fields)
     if paths is None:
@@ -3153,8 +3102,7 @@ def _drive_project_listing(
         frozenset({"kind", "nextPageToken", under}),
         under,
         entries,
-        unserved,
-        _DRIVE_PERMISSION_ENTRY if under == "permissions" else _DRIVE_DRIVE_SUBFIELDS,
+        subfields=_DRIVE_PERMISSION_ENTRY if under == "permissions" else _DRIVE_DRIVE_SUBFIELDS,
     )
     tops = _mask_keys(paths, defaults=_DRIVE_LIST_DEFAULT)
     if tops is None:
@@ -3163,8 +3111,7 @@ def _drive_project_listing(
         tops.add(under)
     out = {k: v for k, v in body.items() if k in tops}
     if under in out:
-        keys = _mask_keys(paths, under, defaults)
-        out[under] = _drive_project_entries(out[under], keys)
+        out[under] = _drive_project_paths(out[under], paths, under, defaults)
     return out
 
 
@@ -3177,15 +3124,6 @@ def _drive_project_entries(entries: list[dict], keys: set[str] | None) -> list[d
 
 def _drive_project(files: list[dict], keys: set[str] | None) -> list[dict]:
     return files if keys is None else [{k: v for k, v in f.items() if k in keys} for f in files]
-
-
-def _mask_top_keys(paths, defaults: frozenset) -> set[str] | None:
-    """The top-level names a mask selects for one resource (``under`` already stripped): ``None``
-    for every name, as a lone ``*`` gives; an empty path list (a blank mask) selects none."""
-    if paths is None:
-        return None
-    tops = {p[0] for p in paths if not (len(p) > 1 and p[1] == _MASK_EMPTY) or p[0] in defaults}
-    return None if "*" in tops else tops
 
 
 def _drive_entry_keys(paths, under: str, defaults: frozenset) -> set[str] | None:
@@ -3210,9 +3148,10 @@ def _drive_entry_keys(paths, under: str, defaults: frozenset) -> set[str] | None
 
 def _drive_trim_object(obj, paths, under: str | None, defaults: frozenset):
     """One resource object trimmed to a mask's paths. ``under`` strips a list wrapper's name
-    (`files`/`permissions`); for a single object it is None. Nested paths trim object-valued fields
-    (`owners(kind)`) instead of leaving the whole object. A path naming a key the object does not
-    carry omits it, the way real omits an absent key; name validity is `_check_mask`'s job."""
+    (`files`, `permissions` or `drives`); for a single object it is None. Nested paths trim
+    object-valued fields (`owners(kind)`) instead of leaving the whole object. A path naming a key
+    the object does not carry omits it, the way real omits an absent key; name validity is
+    `_check_mask`'s job."""
     chains = []
     bare = False
     entry_empty = False
@@ -3236,17 +3175,24 @@ def _drive_trim_object(obj, paths, under: str | None, defaults: frozenset):
         return []
     if bare:
         return obj
-    selected = _mask_top_keys(chains, defaults)
+    selected = _mask_keys(chains, defaults)
     if selected is None:
         return obj
-    nested: dict[str, set] = {field: set() for field in empty_groups}
+    nested: dict[str, set] = {}
+    whole: set[str] = set()
     for chain in chains:
-        if len(chain) < 2:
-            continue
-        if chain[1] == "*":
-            nested.pop(chain[0], None)  # `owners(*)` names the whole object
-            continue
-        nested.setdefault(chain[0], set()).add(chain[1])
+        if len(chain) > 1:
+            if chain[1] == "*":
+                whole.add(chain[0])
+            else:
+                nested.setdefault(chain[0], set()).add(chain[1])
+    # Measured 2026-10-25, in either order: `*` below a field keeps it whole beside a narrower group
+    # (`owners`, `capabilities`, `permissionDetails` and `about`'s `user`), an empty group drops it
+    # whatever else names it (`owners`, `capabilities`, `lastModifyingUser`, `permissionDetails`),
+    # and a narrower group trims it beside its bare name (`owners`, `capabilities`, `user`).
+    for field in whole:
+        nested.pop(field, None)
+    nested.update(dict.fromkeys(empty_groups, set()))
     out = {}
     for key, value in obj.items():
         if key not in selected:
@@ -3277,7 +3223,12 @@ def _drive_project_paths(entries: list[dict], paths, under: str, defaults: froze
 
 def _drive_project_one(obj: dict, fields: str | None) -> dict:
     """A single file resource trimmed to a ``files.get`` mask; the mask is validated (400 on a name
-    real refuses) before trimming, including nested object fields."""
+    real refuses) before trimming, including nested object fields. Trimming a file read by id as
+    a listing's entries are trimmed is what makes one file look the same either way.
+
+    A mask that is empty or of spaces and tabs alone selects nothing, which is not the same as no
+    mask: measured 2026-09-23, `fields=` and `fields=%20` answer ``{}`` where an absent `fields`
+    answers the default object, and `fields=%09` did too on 2026-10-20."""
     paths = _drive_mask(fields)
     if paths is None:
         return obj
@@ -3567,9 +3518,10 @@ def _drive_about_field_keys(fields: str | None) -> set[str] | None:
     """``about.get`` is the one Drive read whose ``fields`` mask is MANDATORY — the resource has no
     default projection, and real Drive 400s without one. ``None`` = serve everything (``*``).
 
-    A mask that selects nothing is that 400 too, the way `_drive_about_mask_is_required` measures —
-    white space alone, an empty group (`user()`, `kind()`), an empty entry beside a key
-    (`user,,kind`) and the rest that function takes."""
+    A mask that selects nothing is that 400 too: real answered it to white space alone, any one of
+    the 29 code points `str.isspace` takes, and to `user()`, `user( )` and `kind()`, measured
+    2026-10-20, and to an empty group beside another key, `user(),kind` and `kind,user()`, on
+    2026-10-25. So does each mask `_drive_about_mask_is_required` takes."""
     if fields is None:
         raise gerr.required("fields", "The 'fields' parameter is required for this method.")
     if _drive_about_mask_is_required(fields):
@@ -3819,11 +3771,19 @@ async def drive_files_list(request: Request):
         raise gerr.drive_internal_error()
     mask = gerr.first_repeat(params, "fields")
     if mask is not None and not mask.strip(" \t"):
-        # The blank mask `_drive_get_field_keys` describes; on a listing it drops `kind` and
+        # The blank mask `_drive_project_one` describes; on a listing it drops `kind` and
         # `files` too, so the typed response model is bypassed.
         return JSONResponse({})
-    _drive_file_field_keys(mask)  # 400 on an unknown field
     list_paths = _drive_mask(mask)
+    if list_paths is not None:  # 400 on a name the listing or its files do not have
+        _check_mask(
+            list_paths,
+            _DRIVE_LIST_FIELDS,
+            "files",
+            _DRIVE_FILE_FIELDS,
+            _DRIVE_FILE_UNSERVED,
+            _DRIVE_FILE_SUBFIELDS,
+        )
     conjuncts = _drive_q_conjuncts(query)
     hits = _drive_q_fulltext(conn, query, ids)
     # A parent every match has to be under; one under an `or` scopes nothing.
@@ -3918,7 +3878,7 @@ async def drive_files_list(request: Request):
         body["nextPageToken"] = token
     # Trim the listing's own top-level keys to the mask, the way real answers `fields=kind` with
     # only kind, `fields=nextPageToken` without files and `files(id)` without kind/incompleteSearch.
-    tops = _mask_top_keys(list_paths, _DRIVE_LIST_DEFAULT)
+    tops = _mask_keys(list_paths, _DRIVE_LIST_DEFAULT)
     if tops is not None:
         if any(p[0] == "files" for p in list_paths):
             tops.add("files")
@@ -4099,8 +4059,6 @@ async def drive_files_permissions(file_id: str, request: Request):
         permissions = _drive_permissions(conn, file_id, folder=name)
     else:
         permissions = _drive_permissions(conn, row["id"])
-    # No mask answers only id/type/kind/role, the default projection real gives; the full objects
-    # are built only for a request that names them.
     mask = gerr.first_repeat(request.query_params, "fields")
     if mask is None:
         permissions = [_drive_permission_view(p) for p in permissions]
@@ -4108,12 +4066,7 @@ async def drive_files_permissions(file_id: str, request: Request):
     # Real answered a name the list does not have after the `pageToken` refusals, the
     # domain-administrator 404 and the file lookup, each sent beside it, measured 2026-10-20.
     projected = _drive_project_listing(
-        body,
-        mask,
-        "permissions",
-        _DRIVE_PERMISSION_FIELDS,
-        _DRIVE_PERMISSION_DEFAULT,
-        _DRIVE_PERMISSION_UNSERVED,
+        body, mask, "permissions", _DRIVE_PERMISSION_FIELDS, _DRIVE_PERMISSION_DEFAULT
     )
     return body if projected is None else JSONResponse(projected)
 
@@ -6242,10 +6195,12 @@ def _drive_permissions(conn, file_id: str, *, folder: str | None = None) -> list
     ) -> dict:
         """A permission as real answers it under `permissions` or `*`: the four default keys and
         `permissionDetails`, a direct entry for its role and, on an owner's, an inherited `writer`
-        entry before it; an `anyone` permission adds `allowFileDiscovery`, any other `deleted` and
-        `pendingOwner`, both false, and a user's `photoLink`. Measured 2026-10-21 and 2026-10-25 on
-        48 owners', 22 writers' and one `anyone` permission; a reader's and a group's were not
-        measured, so they take the writer's shape."""
+        entry before it; an `anyone` permission adds `allowFileDiscovery`, any other `deleted`
+        (false), and a user's `pendingOwner` (false) and `photoLink`. Measured 2026-10-25 on the
+        permissions of a Workspace member's 193 files: 192 owners', 45 writers', a user commenter's,
+        two groups' and two `anyone` permissions, where one owner's and nine writers' carried a
+        single inherited entry instead. No user reader's was among them; a reader here takes the
+        commenter's shape."""
         details = [{"permissionType": "file", "role": role, "inherited": False}]
         if role == "owner":
             details.insert(0, {"permissionType": "file", "role": "writer", "inherited": True})
@@ -6259,7 +6214,9 @@ def _drive_permissions(conn, file_id: str, *, folder: str | None = None) -> list
         if anyone:
             p["allowFileDiscovery"] = True
         else:
-            p.update(deleted=False, pendingOwner=False)
+            p["deleted"] = False
+        if ptype == "user":
+            p["pendingOwner"] = False
         if email is not None:
             p["emailAddress"] = email
         if name is not None:

@@ -2126,13 +2126,13 @@ _MASKS_REFUSED = (
     ]
     + [
         ("/drive/v3/about", mask, subject)
-        for mask, subject in [
-            ("user,", "user,"),
-            (",", ","),
-            ("zzz,bogus", "zzz"),
-            ("user ,", "user ,"),  # a trailing comma is Invalid even after a space
+        for mask, subject in [("zzz,bogus", "zzz"), ("bogus,user", "bogus")]
+        + [
+            (mask, mask)
+            for mask in ["user,", ",", "user ,", "user,,", ",,", "user(,", "*,", "(,", "user/,"]
+            + ["user, ", "user,\t", "user(kind),", "user(kind,", "user name", "user\tname"]
+            + ["user name(kind)", "user(kind name)", "kind, user name"]
         ]
-        + [("bogus,user", "bogus")]
     ]
 )
 _FIELDS_REQUIRED = (
@@ -2159,8 +2159,6 @@ _MASKS_UNSERVED = [
     (_DOC, "copyRequiresWriterPermission,viewersCanCopyContent", "copyRequiresWriterPermission"),
     ("/drive/v3/files", "files(id,writersCanShare)", "writersCanShare"),
     ("/drive/v3/files", "files/linkShareMetadata", "linkShareMetadata"),
-    # deleted, pendingOwner, permissionDetails and a user's photoLink are served on every
-    # permission now, as the field tables list them.
 ]
 _FULLTEXT = "q=" + quote("fullText contains 'a'")
 # Where real answered a mask ending in a comma among a route's other refusals, each sent beside it,
@@ -2232,6 +2230,21 @@ _ABOUT_MASKS_REQUIRED = [
     "user()",
     "user( )",
     "kind()",
+    "user(),kind",
+    "kind,user()",
+    "user,,kind",
+    ",user",
+    "zzz,,user",
+    "user(",
+    "user)",
+    "(user)",
+    "user/",
+    "/user",
+    "*id",
+    chr(0x0000),
+    chr(0x0001),
+    chr(0x200B),
+    chr(0xFEFF),
     "user)(",
     "user(kind,)",
     "user(,kind)",
@@ -2626,7 +2639,7 @@ def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
 
 @pytest.mark.parametrize("mask", ["", " ", "\t"])
 def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
-    """The blank mask `_drive_get_field_keys` describes, on a listing, a file and a folder, and
+    """The blank mask `_drive_project_one` describes, on a listing, a file and a folder, and
     `about`'s missing-mask 400 for the same mask. An absent mask is the default object."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     folder = client.get(
@@ -2668,7 +2681,6 @@ _MASKS_SERVED = [
     (_DOC, "kind(),id", {"kind", "id"}, None),
     (_DOC, "createdTime()", set(), None),
     (_DOC, "trashed()", set(), None),
-    (_DOC, "owners(kind)", {"owners"}, None),
     (_DOC, "owners/*", {"owners"}, None),
     (_DOC, "permissions(id)", set(), None),
     (_DOC, "capabilities(canAcceptOwnership,canEdit)", {"capabilities"}, None),
@@ -2685,7 +2697,6 @@ _MASKS_SERVED = [
     ("/drive/v3/files", "kind", {"kind"}, None),
     ("/drive/v3/files", "nextPageToken", {"nextPageToken"}, None),
     ("/drive/v3/files", "incompleteSearch,files(id)", {"incompleteSearch", "files"}, {"id"}),
-    ("/drive/v3/files", "files(owners(kind))", {"files"}, {"owners"}),
     ("/drive/v3/files", "files(permissions(id))", {"files"}, set()),
     ("/drive/v3/files", "files(capabilities(canAcceptOwnership))", {"files"}, {"capabilities"}),
     ("/drive/v3/files", "files(id,*)", {"files"}, "default"),
@@ -2734,13 +2745,19 @@ _MASKS_SERVED = [
     ("/drive/v3/drives", "drives/id", {"drives"}, None),
     ("/drive/v3/drives", "drives()", {"drives"}, None),
     ("/drive/v3/drives", "drives(id,name)", {"drives"}, None),
+    ("/drive/v3/drives", "drives(capabilities(canEdit))", {"drives"}, None),
+    (
+        "/drive/v3/drives",
+        "drives(restrictions/downloadRestriction/restrictedForReaders)",
+        {"drives"},
+        None,
+    ),
     ("/drive/v3/drives", "*", {"kind", "drives"}, None),
     ("/drive/v3/drives", "kind()", {"kind"}, None),
     ("/drive/v3/about", "user, storageQuota", {"user", "storageQuota"}, None),
     ("/drive/v3/about", "user ,kind", {"user", "kind"}, None),
     ("/drive/v3/about", "user", {"user"}, None),
     ("/drive/v3/about", "user,storageQuota", {"user", "storageQuota"}, None),
-    ("/drive/v3/about", "user(kind)", {"user"}, None),
     ("/drive/v3/about", "user(*)", {"user"}, None),
     ("/drive/v3/about", "user/*", {"user"}, None),
     ("/drive/v3/about", "driveThemes(id)", {"driveThemes"}, None),
@@ -2781,6 +2798,121 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(
         assert body[listed] and all(set(e) == entries for e in body[listed])
     elif entries is not None:
         assert body[listed] == []
+
+
+_USER = {"kind", "displayName", "emailAddress", "me", "permissionId", "photoLink"}
+_DETAILS = {"permissionType", "role", "inherited"}
+# What real answered each mask naming a name below an object field with, as `_drive_trim_object`
+# trims it: the path to each value the answer holds, a list's entries together, and to each list
+# left empty.
+_MASKS_TRIMMED = [
+    (_DOC, "owners(kind)", {"owners/kind"}),
+    (_DOC, "owners/kind", {"owners/kind"}),
+    (_DOC, "owners(kind,me)", {"owners/kind", "owners/me"}),
+    (_DOC, "owners(kind),owners(me)", {"owners/kind", "owners/me"}),
+    (_DOC, "owners,owners(kind)", {"owners/kind"}),
+    (_DOC, "owners(kind),owners", {"owners/kind"}),
+    (_DOC, "owners(*),owners(kind)", {f"owners/{k}" for k in _USER}),
+    (_DOC, "owners(kind),owners(*)", {f"owners/{k}" for k in _USER}),
+    (_DOC, "owners(kind),owners()", set()),
+    (_DOC, "owners(),owners(kind)", set()),
+    (_DOC, "owners(*),owners()", set()),
+    (_DOC, "owners(),owners(*)", set()),
+    (_DOC, "owners,owners()", set()),
+    (_DOC, "lastModifyingUser(kind)", {"lastModifyingUser/kind"}),
+    (_DOC, "lastModifyingUser(),lastModifyingUser(kind)", set()),
+    (_DOC, "lastModifyingUser(kind),lastModifyingUser()", set()),
+    (_DOC, "capabilities(canEdit,canCopy)", {"capabilities/canEdit", "capabilities/canCopy"}),
+    (_DOC, "capabilities,capabilities(canEdit)", {"capabilities/canEdit"}),
+    (_DOC, "capabilities(canEdit),capabilities()", set()),
+    (_DOC, "capabilities(),capabilities(canEdit)", set()),
+    ("/drive/v3/files", "files(owners(kind))", {"files/owners/kind"}),
+    ("/drive/v3/files", "files/owners/kind", {"files/owners/kind"}),
+    ("/drive/v3/files", "files(owners/kind,id)", {"files/id", "files/owners/kind"}),
+    ("/drive/v3/files", "files(id),files(owners(kind))", {"files/id", "files/owners/kind"}),
+    ("/drive/v3/files", "files(kind,owners/kind)", {"files/kind", "files/owners/kind"}),
+    (
+        "/drive/v3/files",
+        "files(owners(kind)),nextPageToken",
+        {"files/owners/kind", "nextPageToken"},
+    ),
+    ("/drive/v3/files", "files(capabilities(canEdit))", {"files/capabilities/canEdit"}),
+    (
+        "/drive/v3/files",
+        "files(id,lastModifyingUser(kind))",
+        {"files/id", "files/lastModifyingUser/kind"},
+    ),
+    ("/drive/v3/files", "files(owners,owners(kind))", {"files/owners/kind"}),
+    ("/drive/v3/files", "files(owners(kind),owners(*))", {f"files/owners/{k}" for k in _USER}),
+    ("/drive/v3/files", "files(owners(*),owners(kind))", {f"files/owners/{k}" for k in _USER}),
+    ("/drive/v3/files", "files(owners(),owners(kind))", {"files"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(role))", {"permissions/permissionDetails/role"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails/role)", {"permissions/permissionDetails/role"}),
+    (_PERMS_OF_DOC, "permissions/permissionDetails/role", {"permissions/permissionDetails/role"}),
+    (
+        _PERMS_OF_DOC,
+        "permissions(id,permissionDetails(role))",
+        {"permissions/id", "permissions/permissionDetails/role"},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(id),permissions(permissionDetails(role))",
+        {"permissions/id", "permissions/permissionDetails/role"},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(role,inherited))",
+        {"permissions/permissionDetails/role", "permissions/permissionDetails/inherited"},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(role)),kind",
+        {"kind", "permissions/permissionDetails/role"},
+    ),
+    (_PERMS_OF_DOC, "kind,permissions(role)", {"kind", "permissions/role"}),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(*),permissionDetails(role))",
+        {f"permissions/permissionDetails/{k}" for k in _DETAILS},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(role),permissionDetails(*))",
+        {f"permissions/permissionDetails/{k}" for k in _DETAILS},
+    ),
+    (_PERMS_OF_DOC, "permissions(permissionDetails())", {"permissions"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(),permissionDetails(role))", {"permissions"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(role),permissionDetails())", {"permissions"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(*),permissionDetails())", {"permissions"}),
+    ("/drive/v3/about", "user(kind)", {"user/kind"}),
+    ("/drive/v3/about", "user/kind", {"user/kind"}),
+    ("/drive/v3/about", "user(kind,me)", {"user/kind", "user/me"}),
+    ("/drive/v3/about", "kind,user(me)", {"kind", "user/me"}),
+    ("/drive/v3/about", "storageQuota/limit", {"storageQuota/limit"}),
+    ("/drive/v3/about", "storageQuota(limit)", {"storageQuota/limit"}),
+    ("/drive/v3/about", "user(kind),storageQuota/limit", {"user/kind", "storageQuota/limit"}),
+    ("/drive/v3/about", "user,user(kind)", {"user/kind"}),
+    ("/drive/v3/about", "user(kind),user", {"user/kind"}),
+    ("/drive/v3/about", "user(*),user(kind)", {f"user/{k}" for k in _USER}),
+    ("/drive/v3/about", "user(kind),user(*)", {f"user/{k}" for k in _USER}),
+]
+
+
+def _leaves(value, at: str = "") -> set[str]:
+    if isinstance(value, list):
+        return set().union(*(_leaves(v, at) for v in value)) if value else {at}
+    if isinstance(value, dict) and value:
+        return set().union(*(_leaves(v, f"{at}/{k}" if at else k) for k, v in value.items()))
+    return {at} if at else set()
+
+
+@pytest.mark.parametrize("path, mask, leaves", _MASKS_TRIMMED)
+def test_drive_trims_an_object_field_to_the_names_below_it(client, admin_h, path, mask, leaves):
+    """The rows `_MASKS_TRIMMED` records; a listing's rows read its first two files."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    r = client.get(path.format(doc=doc), headers=admin_h, params={"pageSize": 2, "fields": mask})
+    assert r.status_code == 200, r.text
+    assert _leaves(r.json()) == leaves
 
 
 BAD_TOKEN = {"Authorization": "Bearer not-a-real-token"}
@@ -6079,8 +6211,8 @@ def test_drive_native_docs_report_size(client, admin_h):
     ],
 )
 def test_drive_native_files_carry_export_links_and_quota(client, admin_h, mime, export, link):
-    """A native file's `exportLinks` name each type `about.exportFormats` gives its own, in that
-    order, at the address real's do; its `quotaBytesUsed` is its `size`, and a folder's is `0`."""
+    """A native file's `exportLinks` as `_drive_export_links` gives them, and the `quotaBytesUsed`
+    of a native file and of a folder."""
     files = client.get(
         "/drive/v3/files",
         headers=admin_h,
@@ -6100,11 +6232,12 @@ def test_drive_native_files_carry_export_links_and_quota(client, admin_h, mime, 
     assert folder and all(x == {"quotaBytesUsed": "0"} for x in folder)
 
 
-def test_drive_permissions_answer_each_kind_of_permission_as_real_does(client, admin_h):
+@pytest.mark.parametrize("name", ["Brand", "Q1 Revenue"])
+def test_drive_permissions_answer_each_kind_of_permission_as_real_does(client, admin_h, name):
     """With no mask a permission is `id`, `type`, `kind` and `role`; under `permissions` it is the
-    whole object: an owner's `permissionDetails` leads with an inherited writer entry, an `anyone`
-    permission carries no deleted/pendingOwner, and only a user has a photoLink."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
+    whole object `_drive_permissions` describes, on a file shared with anyone and on one shared with
+    a group."""
+    doc = _drive_find(client, admin_h, name)["id"]
     url = f"/drive/v3/files/{doc}/permissions"
     bare = client.get(url, headers=admin_h).json()["permissions"]
     assert bare and all(set(x) == {"id", "type", "kind", "role"} for x in bare)
@@ -6114,12 +6247,17 @@ def test_drive_permissions_answer_each_kind_of_permission_as_real_does(client, a
         direct = {"permissionType": "file", "role": x["role"], "inherited": False}
         inherited = [{"permissionType": "file", "role": "writer", "inherited": True}]
         assert x["permissionDetails"] == (inherited if x["role"] == "owner" else []) + [direct]
-        if x["type"] == "anyone":
-            assert "allowFileDiscovery" in x
-            assert "deleted" not in x and "pendingOwner" not in x
-        else:
-            assert (x["deleted"], x["pendingOwner"]) == (False, False)
-            assert ("photoLink" in x) is (x["type"] == "user")
+        assert (
+            set(x)
+            == {"kind", "id", "type", "role", "permissionDetails"}
+            | {
+                "user": {"deleted", "pendingOwner", "emailAddress", "displayName", "photoLink"},
+                "group": {"deleted", "emailAddress", "displayName"},
+                "anyone": {"allowFileDiscovery"},
+            }[x["type"]]
+        )
+        assert x.get("deleted", False) is False and x.get("pendingOwner", False) is False
+    assert {x["type"] for x in whole} == {"user", "anyone" if name == "Brand" else "group"}
 
 
 # --- Drive about.get -----------------------------------------------------------------------
@@ -6157,14 +6295,6 @@ def test_drive_about_needs_auth(client):
     assert client.get(ABOUT, params={"fields": "user"}, headers=bad).status_code == 401
     # auth is resolved before the mask, as real Drive does — a missing mask on a bad token is 401
     assert client.get(ABOUT, headers=bad).status_code == 401
-
-
-def test_drive_about_nested_mask_trims_the_object_it_names(client, admin_h):
-    """`storageQuota/limit` answers `storageQuota` with `limit` alone: a name below an object field
-    trims the object to it, as `owners(kind)` does an owners entry."""
-    j = _about(client, admin_h, "storageQuota/limit").json()
-    assert set(j) == {"storageQuota"}
-    assert set(j["storageQuota"]) == {"limit"}
 
 
 def test_drive_about_user_is_the_caller(client, tokens_yaml):

@@ -11837,8 +11837,8 @@ def test_gmail_a_negated_word_leaves_out_the_messages_holding_it(
     tmp_path, surface, query, expected
 ):
     """A `-` or a capital `NOT` in front of a word, and `-(…)` around one word, leave out the
-    messages that word answers (`_gmail_take_negated_words`). `not` in small capitals stays a
-    word, so `not plan` searches for both."""
+    messages that word answers (`_gmail_take_negated_words`). `not` in lower case stays a word, so
+    `not plan` searches for both."""
     records = [
         {
             "doc_id": "plan",

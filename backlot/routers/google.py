@@ -1089,13 +1089,6 @@ def _gmail_groups(q: str) -> tuple[str, list[str]]:
     return " ".join(out), negated
 
 
-def _gmail_word_token(token: str) -> str | None:
-    """The search word ``token`` names, quotes aside, or None when it names none."""
-    if len(token) >= 2 and token[0] == token[-1] == '"':
-        token = token[1:-1]
-    return token.strip('"') or None
-
-
 def _gmail_take_negated_words(free: str) -> tuple[str, list[str]]:
     """``free`` without the words a leading `-` or a capital `NOT` leaves out, and those words.
 
@@ -1115,8 +1108,6 @@ def _gmail_take_negated_words(free: str) -> tuple[str, list[str]]:
     matched by the same search the word alone runs, and those messages are left out, so `-plan` on
     its own has no free text left and the listing path answers.
     """
-    if not free or (len(free) >= 2 and free[0] == free[-1] == '"'):
-        return free, []
     kept: list[str] = []
     negated: list[str] = []
     terms = _GMAIL_FREE_TERM.findall(free)
@@ -1129,7 +1120,7 @@ def _gmail_take_negated_words(free: str) -> tuple[str, list[str]]:
         if dashed:
             word = (dashed.group(1) if dashed.group(1) is not None else dashed.group(2)).strip('"')
         else:
-            word = _gmail_word_token(terms[j]) if i < j < len(terms) else None
+            word = terms[j].strip('"') if i < j < len(terms) else None
         if not word:
             kept += terms[i : j + 1]
         elif (j - i + bool(dashed)) % 2 == 0:

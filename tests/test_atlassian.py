@@ -365,6 +365,14 @@ def test_jira_project_search_filters_by_query_keys_type_and_category(tmp_path):
             and one["key"][i : i + 4].lower() not in other["key"].lower()
         )
         assert keys_of({"query": fragment}) == [one["key"]]
+        name_only = next(
+            one["name"][i : i + 3]
+            for i in range(len(one["name"]) - 2)
+            if one["name"][i : i + 3].lower() not in one["key"].lower()
+            and one["name"][i : i + 3].lower() not in other["name"].lower()
+            and one["name"][i : i + 3].lower() not in other["key"].lower()
+        )
+        assert keys_of({"query": name_only}) == [one["key"]]
         assert keys_of({"keys": one["key"]}) == [one["key"]]
         assert keys_of({"keys": one["key"].lower()}) == []
         assert keys_of({"keys": "NOPE"}) == []
@@ -378,6 +386,8 @@ def test_jira_project_search_filters_by_query_keys_type_and_category(tmp_path):
         assert keys_of([("keys", ""), ("keys", "")]) == []
         assert keys_of({"typeKey": "Software"}) == all_keys
         assert keys_of({"typeKey": " software"}) == all_keys
+        assert keys_of({"typeKey": "\u3000software\x85"}) == all_keys
+        assert keys_of({"typeKey": "\x1fsoftware"}) == []
         assert keys_of({"typeKey": "business,software"}) == all_keys
         assert keys_of([("typeKey", "software"), ("typeKey", "business")]) == all_keys
         assert keys_of([("typeKey", "business"), ("typeKey", "software")]) == all_keys

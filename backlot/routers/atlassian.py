@@ -521,6 +521,13 @@ def _jira_project_order(raw: str) -> None:
 
 # The `projectTypeKey` of every project served here.
 _JIRA_PROJECT_TYPE = "software"
+# What `typeKey` trims from each value: the 25 code points of Unicode's White_Space property, each
+# of which kept the project on 2026-10-25 in front of `software` and after it, where U+0001,
+# U+001C to U+001F, U+007F, U+00AD, U+180E, U+200B and U+FEFF kept none. `str.strip()` would take
+# U+001C to U+001F as well.
+_JIRA_TYPE_KEY_SPACE = "\t\n\x0b\x0c\r \x85\xa0\u1680\u2028\u2029\u202f\u205f\u3000" + "".join(
+    map(chr, range(0x2000, 0x200B))
+)
 
 
 def _jira_project_kept(request: Request, name: str, key: str, category: int | None) -> bool:
@@ -535,7 +542,8 @@ def _jira_project_kept(request: Request, name: str, key: str, category: int | No
     `keys` keeps a project whose key is one of the values as sent, so `keys=PA&keys=PB` keeps
     either: the key kept the project, and the key in lower case, with a space in front, `NOPE` and
     `<KEY>,NOPE` kept none. A lone empty `keys=` filters nothing, where `keys=&keys=` kept none.
-    `typeKey` is a list split at its commas over every value sent, each trimmed and lower-cased:
+    `typeKey` is a list split at its commas over every value sent, each trimmed of
+    :data:`_JIRA_TYPE_KEY_SPACE` and lower-cased:
     `software`, `Software`, `%20software`, `%C2%A0software`, `software,business` and
     `typeKey=business&typeKey=software` kept the project, `business`, `bogus`, `%01software` and
     `ſoftware` kept none, and an empty value or `,` filtered nothing, all at 200. A project here
@@ -551,7 +559,7 @@ def _jira_project_kept(request: Request, name: str, key: str, category: int | No
     if keys and keys != [""] and key not in keys:
         return False
     types = {
-        part.strip().lower()
+        part.strip(_JIRA_TYPE_KEY_SPACE).lower()
         for value in request.query_params.getlist("typeKey")
         for part in value.split(",")
     }
@@ -599,7 +607,7 @@ async def jira_project_search(request: Request):
                 "id": str(synth.github_user_id(r["name"])),
                 "key": key,
                 "name": r["name"],
-                "projectTypeKey": "software",
+                "projectTypeKey": _JIRA_PROJECT_TYPE,
                 "simplified": False,
                 "style": "classic",
                 "isPrivate": False,
@@ -1554,7 +1562,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
             "id": str(synth.github_user_id(row["project"])),
             "key": pkey,
             "name": row["project"],
-            "projectTypeKey": "software",
+            "projectTypeKey": _JIRA_PROJECT_TYPE,
             "simplified": False,
             "self": f"{site}/rest/api/3/project/{pkey}",
             "avatarUrls": synth.avatar_urls("proj:" + pkey),

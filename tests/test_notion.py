@@ -81,6 +81,19 @@ def test_notion_a_credential_it_cannot_use_names_the_format_or_the_token(
     r = client.get("/notion/v1/users/me", headers=headers)
     assert r.status_code == 401
     assert r.json()["message"] == message, label
+    if message == _NOT_A_BEARER:
+        assert "additional_data" not in r.json()
+        assert list(r.json()) == ["object", "status", "code", "message", "request_id"], label
+    else:
+        assert r.json()["additional_data"] == {"reason": "token_invalid"}
+        assert list(r.json()) == [
+            "object",
+            "status",
+            "code",
+            "message",
+            "additional_data",
+            "request_id",
+        ], label
 
 
 def test_notion_every_answer_names_itself_by_a_request_id(client, notion_h):
@@ -174,6 +187,7 @@ def test_notion_an_operation_notion_publishes_answers_the_credential(
     assert bare.status_code == 401 and bare.json()["message"] == _NOT_A_BEARER, path
     wrong = client.request(method, path, json=body, headers={"Authorization": "Bearer nope"})
     assert wrong.status_code == 401 and wrong.json()["message"] == "API token is invalid.", path
+    assert wrong.json()["additional_data"] == {"reason": "token_invalid"}, path
     cleared = client.request(method, path, json=body, headers=notion_h)
     assert cleared.status_code == 400 and cleared.json()["code"] == "invalid_request_url", path
 

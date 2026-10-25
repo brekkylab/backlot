@@ -109,6 +109,15 @@ def json_media_type(path: str, status_code: int) -> str | None:
     return None
 
 
+def has_json_media_type(path: str) -> bool:
+    """Whether the envelope that owns ``path`` has a ``json_media_type``, without which
+    :func:`json_media_type` answers ``None`` on that path whatever the status."""
+    for envelope in _ENVELOPES:
+        if envelope.owns(path):
+            return hasattr(envelope, "json_media_type")
+    return False
+
+
 def rendered(request: Request, status_code: int, body: dict, headers=None) -> Response | None:
     """The vendor's own rendering of an error on this request's path — the whole response rather
     than the body alone — or ``None`` to let the handler answer with a ``JSONResponse`` around

@@ -1,9 +1,9 @@
 """Example-runner plumbing shared by the mirage examples.
 
 The monkeypatchers for Google/GitHub (``point_google_at`` / ``point_github_at``) live in
-``backlot.integrations.mirage`` — import them from there. Slack/Notion/S3 need no helper: their
-config takes the URL, so the scripts build it inline. ``serve_or_connect`` lives in ``backlot``
-itself. What's left here is plumbing that isn't API at all: FUSE-unavailable
+``backlot.integrations.mirage`` — import them from there. Slack/Notion/S3/Linear need no helper:
+their config takes the URL, so the scripts build it inline. ``serve_or_connect`` lives in
+``backlot`` itself. What's left here is plumbing that isn't API at all: FUSE-unavailable
 guidance text and the shared-connector wrapper the scripts use for ``--url`` performance.
 """
 

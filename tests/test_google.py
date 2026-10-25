@@ -11805,6 +11805,97 @@ def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query
 @pytest.mark.parametrize(
     "query, expected",
     [
+        ("plan", ["plan", "reply"]),
+        ("-plan", ["lunch"]),
+        ("--plan", ["lunch"]),
+        ("-PLAN", ["lunch"]),
+        ('-"plan"', ["lunch"]),
+        ("NOT plan", ["lunch"]),
+        ("-(plan)", ["lunch"]),
+        ("-( plan )", ["lunch"]),
+        ("plan -plan", []),
+        ("not plan", []),
+        ("label:inbox", ["plan"]),
+        ("label:inbox -plan", []),
+        ("label:sent", ["lunch", "reply"]),
+        ("label:sent -plan", ["lunch"]),
+        ('-"rollout plan"', ["lunch"]),
+        ('NOT "rollout plan"', ["lunch"]),
+        ('-("rollout plan")', ["lunch"]),
+        ('-"plan rollout"', ["plan", "lunch", "reply"]),
+        ("NOT -plan", ["plan", "reply"]),
+        ("NOT NOT plan", ["plan", "reply"]),
+        ("NOT NOT NOT plan", ["lunch"]),
+        ('NOT -"rollout plan"', ["plan", "reply"]),
+        ("-plan+", ["plan", "lunch", "reply"]),
+        ("NOT plan+", ["plan", "lunch", "reply"]),
+        ("plan -plan+", ["plan", "reply"]),
+        ('-plan "', ["lunch"]),
+    ],
+)
+def test_gmail_a_negated_word_leaves_out_the_messages_holding_it(
+    tmp_path, surface, query, expected
+):
+    """A `-` or a capital `NOT` in front of a word, and `-(…)` around one word, leave out the
+    messages that word answers (`_gmail_take_negated_words`). `not` in lower case stays a word, so
+    `not plan` searches for both."""
+    records = [
+        {
+            "doc_id": "plan",
+            "title": "Rollout plan",
+            "content": "attached",
+            "label_ids": ["INBOX"],
+            "author_email": "bob@acme.com",
+            "created": "2026-03-01T09:00:00Z",
+        },
+        {
+            "doc_id": "lunch",
+            "title": "Lunch",
+            "content": "Friday?",
+            "label_ids": ["SENT"],
+            "author_email": "mia@acme.com",
+            "created": "2026-03-02T09:00:00Z",
+        },
+        {
+            "doc_id": "reply",
+            "title": "Re: Rollout plan",
+            "content": "ok",
+            "label_ids": ["SENT"],
+            "author_email": "ava@acme.com",
+            "created": "2026-03-03T09:00:00Z",
+        },
+    ]
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "mailbox": "ava",
+                "to": "ava@acme.com",
+                "readers": ["ava@acme.com"],
+                "visibility": "public",
+                **r,
+            }
+            for r in records
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+    with client_for(settings, reload=True) as c:
+        response = c.get(
+            f"/gmail/v1/users/me/{surface}",
+            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
+            params={"q": query},
+        )
+    assert response.status_code == 200, response.text
+    assert {r["id"] for r in response.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "query, expected",
+    [
         ("subject:", ["plan", "lunch", "after"]),
         ("subject: ", ["plan", "lunch", "after"]),
         ("subject:\t", ["plan", "lunch", "after"]),

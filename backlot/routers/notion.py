@@ -327,7 +327,10 @@ def _refusal(request: Request, caller) -> JSONResponse | None:
     if _bearer_credential(request) is None:
         return _error(request, 401, "unauthorized", _BEARER_REQUIRED)
     if caller is None:
-        return _error(request, 401, "unauthorized", _TOKEN_INVALID)
+        # api.notion.com on 2026-10-22 answered a bearer it could not resolve with
+        # `additional_data` `{"reason": "token_invalid"}` on users, users/me and search, under
+        # 2025-09-03, 2022-06-28 and no version; the format's 401 above carries none.
+        return _error(request, 401, "unauthorized", _TOKEN_INVALID, {"reason": "token_invalid"})
     version = request.headers.get("notion-version")
     if version is None:
         return _error(

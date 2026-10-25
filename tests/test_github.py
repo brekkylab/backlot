@@ -6561,7 +6561,7 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
     off, nothing is refused, but the reported `used` still never climbs past `limit`."""
     from backlot.routers import github as gh
 
-    with corpus_client(tmp_path, []) as (c, _):
+    with corpus_client(tmp_path, []) as (c, settings):
         monkeypatch.setitem(
             gh.RATE_LIMITS, "core", gh._ResourceLimit(2, 5000, gh.RATE_LIMIT_WINDOW)
         )
@@ -6656,6 +6656,14 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         search_refused = c.get("/github/search/issues", params={"q": "x"})
         assert search_refused.status_code == 403
         assert _ratelimit(search_refused)["resource"] == "search"
+
+        # a token's spent window does not outrank the trailing slash's 404 the way the anonymous
+        # one does above
+        monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._ResourceLimit(2, 1, gh.RATE_LIMIT_WINDOW))
+        token = {"Authorization": f"Bearer {settings.admin_token}"}
+        c.get("/github/user/repos", headers=token)
+        assert c.get("/github/user/repos", headers=token).status_code == 403
+        assert c.get("/github/search/issues/", headers=token).status_code == 404
 
         # the switch: no refusal, and `used` still capped in what is reported
         monkeypatch.setattr(gh.get_settings(), "github_enforce_rate_limits", False)

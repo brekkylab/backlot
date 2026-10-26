@@ -2385,7 +2385,7 @@ _FIREFLIES_HEADERS = [
             _J,
             b,
             "key",
-            200 if spends is not None or "Int!" not in b.decode() else 400,
+            400 if b"String!" in b else 200,
             _fastify("no-store", x_ratelimit_limit_api=spends),
             id=i,
         )
@@ -2408,9 +2408,14 @@ _FIREFLIES_HEADERS = [
             (b'{"query":"{ __schema { queryType { name } } }"}', None, "__schema"),
             (b'{"query":"mutation { __typename }"}', None, "a mutation of __typename"),
             (
-                b'{"query":"query($x: Int!) { user { user_id } }"}',
+                b'{"query":"query($x: String!) { user(id: $x) { user_id } }"}',
                 None,
                 "a variable not provided to a field",
+            ),
+            (
+                b'{"query":"query($v: Boolean = true) { user @include(if: $v) { user_id } }"}',
+                "500",
+                "@include of a default",
             ),
         )
     ),
@@ -2555,7 +2560,7 @@ def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monk
     assert (r.json(), _ratelimit(r)) == ({"data": {"__typename": "Query"}}, {})
     now[0] = 1_793_020_171.0
     aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(32))
-    document = "{ " + aliases + ' a32: transcript(id: "nosuch") { id } }'
+    document = "{ " + aliases + " a32: transcripts(limit: 0) { id } }"
     r = client.post("/fireflies/graphql", json={"query": document}, headers=_key(tokens_yaml))
     body = r.json()
     assert [(e["path"], e["code"]) for e in body["errors"]] == [

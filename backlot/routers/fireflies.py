@@ -42,6 +42,7 @@ from graphql import (
     get_location,
 )
 from graphql.execution.collect_fields import collect_fields
+from graphql.execution.values import get_variable_values
 
 from backlot import auth
 from backlot.config import get_settings
@@ -258,17 +259,21 @@ def _answer(seen: dict[str, str], result: engine.Result, spent: Spent | None = N
 
 def _resolver_fields(operation: engine.Operation) -> list[tuple[str, FieldNode]]:
     """The root fields ``operation`` selects whose resolvers run, in order: each response key, an
-    alias or a field's name, once, through fragments and as `@skip` and `@include` leave it, and
-    not `__typename`, `__schema` or `__type`."""
+    alias or a field's name, once, through fragments and as `@skip` and `@include` leave it with
+    the variables as the run reads them, and not `__typename`, `__schema` or `__type`. A root the
+    SDL leaves out has only `__typename` once validated."""
     root = ENGINE.schema.get_root_type(operation.operation.operation)
-    if root is None:
-        return []
     fragments = {
         d.name.value: d
         for d in operation.document.definitions
         if isinstance(d, FragmentDefinitionNode)
     }
-    variables = operation.variables if isinstance(operation.variables, dict) else {}
+    sent = operation.variables if isinstance(operation.variables, dict) else {}
+    variables = get_variable_values(
+        ENGINE.schema, list(operation.operation.variable_definitions), sent
+    )
+    if isinstance(variables, list):
+        return []
     try:
         fields = collect_fields(
             ENGINE.schema, fragments, variables, root, operation.operation.selection_set

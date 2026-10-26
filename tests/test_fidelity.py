@@ -1954,10 +1954,28 @@ def test_the_human_form_groups_by_severity_and_says_what_to_do(_vendor, tmp_path
     assert "\x1b[" not in out.out + out.err
 
 
-def test_a_clean_run_says_so(_vendor, tmp_path, capsys):
+def test_a_clean_run_says_so_and_a_stale_baseline_fails(_vendor, tmp_path, capsys):
+    """An entry for a divergence the vendor no longer has fails the run as a new one does, in both
+    forms, or a scheduled run stays green and files nothing about it."""
     _vendor()
-    assert cli.main(["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path)]) == 0
+    args = ["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path)]
+    assert cli.main(args) == 0
     assert "nothing new" in capsys.readouterr().out
+    assert cli.main([*args, "--json"]) == 0
+    capsys.readouterr()
+
+    _vendor(VENDOR.replace("status: Status", "status: Status, summary: String"))
+    assert cli.main([*args, "--update-baseline"]) == 0
+    _vendor()
+    capsys.readouterr()
+    assert cli.main(args) == 1
+    out = capsys.readouterr().out
+    assert "no longer diverging (1)" in out and "Transcript.summary" in out
+    assert "nothing new" not in out
+    assert cli.main([*args, "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["new"] == []
+    assert [f["path"] for f in payload["resolved"]] == ["Transcript.summary"]
 
 
 def test_a_long_detail_is_wrapped(monkeypatch, capsys):

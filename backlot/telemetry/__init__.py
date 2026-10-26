@@ -11,6 +11,9 @@ from __future__ import annotations
 from backlot.config import Settings
 
 DOCS = "https://github.com/brekkylab/backlot/blob/main/docs/telemetry.md"
+# The middleware does not count a request carrying this header, on any route and with any value.
+# `backlot mcp` sends it on the introspection it reads to build its Linear and Fireflies tools.
+INTERNAL = "X-Backlot-Internal"
 
 
 def notice(endpoint: str) -> str:

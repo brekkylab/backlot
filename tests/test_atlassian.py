@@ -5558,9 +5558,13 @@ def test_jira_unserved_agrees_with_the_baseline_and_the_script(monkeypatch):
     table = Path(backlot.__file__).resolve().parent / "data" / "jira_unserved.json"
     content = json.loads(table.read_text(encoding="utf-8"))
     assert sorted([*content["refused"], *content["run"]]) == sorted(unserved)
-    # And the script reads the same operations off the baseline: given documents declaring
-    # nothing, it refuses every one of them.
-    monkeypatch.setattr("backlot.fidelity.fetch.fetch_json", lambda url, **kw: {"paths": {}})
+    # And the script reads the same operations off the baseline: given documents publishing each
+    # with no `security`, it refuses every one of them.
+    published: dict = {"paths": {}}
+    for operation in unserved:
+        method, path = operation.split(" ", 1)
+        published["paths"].setdefault(path, {})[method.lower()] = {}
+    monkeypatch.setattr("backlot.fidelity.fetch.fetch_json", lambda url, **kw: published)
     script = runpy.run_path(str(table.parents[2] / "scripts" / "gen_jira_unserved.py"))
     built = script["build"]()["refused"]
     assert sorted(built) == sorted(unserved)
@@ -5568,6 +5572,12 @@ def test_jira_unserved_agrees_with_the_baseline_and_the_script(monkeypatch):
     for field in ("accept", "produces", "charset"):
         written = {op: entry[field] for op, entry in built.items() if field in entry}
         assert written == {op: entry[field] for op, entry in held.items() if field in entry}, field
+    # One the documents stop publishing is a stale baseline row, not one published with no
+    # `security`: the script stops rather than write it back under `refused`.
+    method, path = unserved[0].split(" ", 1)
+    del published["paths"][path][method.lower()]
+    with pytest.raises(SystemExit, match=re.escape(repr([unserved[0]]))):
+        script["build"]()
 
 
 @pytest.mark.parametrize(

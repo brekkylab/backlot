@@ -9,7 +9,8 @@ The file sorts every operation the Jira baseline acknowledges as ``missing_opera
 ``backlot.routers.atlassian.unmatched_path`` needs to know what real answers before the operation
 runs. Regenerate after the baseline gains or loses one; ``tests/test_atlassian.py`` fails until
 then, and `.github/workflows/fidelity.yml` runs ``--check`` on its schedule, which is where a change
-to the documents shows.
+to the documents shows. A ``missing_operation`` the documents no longer publish stops the script
+with exit 1 and nothing written, rather than being sorted as one they publish with no ``security``.
 
 ``refused`` are the operations that refuse a caller with no credential they resolve with Jira's 401
 (``backlot.errors.atlassian.JIRA_UNAUTHENTICATED``), and ``run`` the rest, which run for that
@@ -211,9 +212,14 @@ def build() -> dict:
                     content[key] = None if body is None else list(body.get("content", {}))
     baseline = json.loads(baseline_path("jira").read_text(encoding="utf-8"))["operations"]
     unserved = sorted(e["operation"] for e in baseline if e["status"] == "missing")
+    if dropped := [key for key in unserved if key not in security]:
+        raise SystemExit(
+            f"the baseline records `missing` operations the documents no longer publish: {dropped}; "
+            "rerun `backlot diff --source jira --update-baseline` first"
+        )
     refused, run = {}, {}
     for key in unserved:
-        requirements = security.get(key)
+        requirements = security[key]
         sort = refused if requirements is None or {} not in requirements else run
         sort[key] = _entry(key, content.get(key))
     named = (

@@ -49,7 +49,8 @@ _FASTAPI_DOCS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi
 # The shape the collector keeps an operation name in; a template outside it (Sheets'
 # `values:batchGet`) is left `unmatched` rather than replaced there with `invalid`.
 _OPERATION = re.compile(r"^[A-Za-z_][A-Za-z0-9_.,/+{}-]{0,127}$")
-# Introspection is answered by the GraphQL engine for every schema; no baseline lists it.
+# Introspection is answered by the GraphQL engine for every schema; no baseline lists it, so a
+# document of introspection alone is `extra` and is not one of the vendor's operations called.
 _INTROSPECTION = {"__schema", "__type", "__typename"}
 _S3_ROW = re.compile(
     r"^(?P<name>\w+): (?P<method>[A-Z]+) /\{(?P<target>\w+)\}(?:\?(?P<query>.*))?$"
@@ -312,8 +313,11 @@ class Namer:
         roots = sorted(set(_root_fields(chosen.selection_set.selections, fragments)))
         if not roots or any(r not in fields and r not in _INTROSPECTION for r in roots):
             return Named(source, "query.unmatched", UNKNOWN)
-        states = {fields.get(r, IMPLEMENTED) for r in roots}
-        support = IMPLEMENTED if states <= {IMPLEMENTED} else MISSING
+        states = {fields[r] for r in roots if r not in _INTROSPECTION}
+        if not states:
+            support = EXTRA
+        else:
+            support = IMPLEMENTED if states <= {IMPLEMENTED} else MISSING
         return Named(source, "query." + ",".join(roots), support)
 
 

@@ -22,6 +22,10 @@ permissions:
   contents: read
   issues: write
 
+# The servers these comparisons start answer probes, not anyone's use of Backlot.
+env:
+  BACKLOT_TELEMETRY: "0"
+
 jobs:
   # The registry is the list, so adding a source does not also mean editing this file.
   sources:
@@ -112,19 +116,22 @@ jobs:
           export PREFIX
           # Only the open issue. A closed one is the finished account of the divergences that were
           # triaged on it, and a later run writing its own report over that body would leave the
-          # comments answering a report nobody can read any more. `is_bot` leaves a person's own
-          # issue alone. Listed under the label rather than searched, because GitHub indexes issue
-          # search asynchronously and an issue opened this morning may not be found by tonight.
-          number=$(gh issue list --state open --label fidelity --limit 100 \
-            --json number,title,author \
-            --jq 'first(.[] | select(.author.is_bot and (.title | startswith(env.PREFIX))) | .number) // empty')
+          # comments answering a report nobody can read any more. `creator` leaves a person's own
+          # issue alone. Listed through REST rather than searched, because GitHub indexes issue
+          # search asynchronously and an issue opened this morning may not be found by tonight;
+          # `gh issue list --label` is a search too, and returns only the newest `--limit` of every
+          # open `fidelity` issue (132 on 2026-10-26). The listing holds at most one open issue per
+          # source, so one page has them all. It includes pull requests, which `pull_request` drops.
+          number=$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=fidelity&creator=github-actions%5Bbot%5D&per_page=100" \
+            --jq 'first(.[] | select(.pull_request == null and (.title | startswith(env.PREFIX))) | .number) // empty')
           # The body is rewritten on every run, so this has to answer the same way on every run or
-          # each run would rewrite the last one's body and comment about the rewrite. Searching this
-          # source's own titles keeps the set to the issues this step has opened for it, which grows
-          # only when the open one is closed.
-          previous=$(gh issue list --state closed --search "$PREFIX in:title" --limit 50 \
-            --json number,title,author \
-            --jq '[.[] | select(.author.is_bot and (.title | startswith(env.PREFIX))) | .number] | max // empty')
+          # each run would rewrite the last one's body and comment about the rewrite. Listed through
+          # REST like the open one, every page of it: a search returns at most `--limit` issues, by
+          # relevance rather than by number, so past that the largest it returns need not be the
+          # latest. Two assignments rather than a pipe, so a failing `gh api` still stops the step.
+          closed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=closed&labels=fidelity&creator=github-actions%5Bbot%5D&per_page=100" \
+            --jq '.[] | select(.pull_request == null and (.title | startswith(env.PREFIX))) | .number')
+          previous=$(printf '%s\n' "$closed" | sort -n | tail -n 1)
           # The API refuses a body over 65536 characters, and this step runs under `bash -e`, so
           # that refusal takes the step down: the job would go red with no issue filed and the
           # report only in the run log. A vendor restructuring its document turns a whole baseline
@@ -137,7 +144,7 @@ jobs:
             report="$(printf '%s\n… truncated at 55000 of %d characters. The whole report is in the run log: %s' \
               "${report:0:55000}" "${#report}" "$RUN_URL")"
           fi
-          intro="\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge. Each is either a bug in Backlot or a deliberate gap; \`backlot diff --source $SOURCE --update-baseline\` writes the entry for a gap, and a note saying why it is deliberate is added by hand in the review that follows. This body is the latest scheduled run's report, rewritten in place. Closing this issue keeps it as the account of what was triaged; a run that still diverges opens a new one."
+          intro="\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge, or entries in it for divergences the vendor no longer has. Each new one is either a bug in Backlot or a deliberate gap; \`backlot diff --source $SOURCE --update-baseline\` writes the entry for a gap and drops a stale one, and a note saying why a gap is deliberate is added by hand in the review that follows. This body is the latest scheduled run's report, rewritten in place. Closing this issue keeps it as the account of what was triaged; a run that still diverges opens a new one."
           if [ -n "$previous" ]; then
             intro="$intro Previously reported in #$previous."
           fi

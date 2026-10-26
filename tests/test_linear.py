@@ -488,6 +488,145 @@ def test_linear_search_ranks_by_relevance_unless_order_by(client, admin_h):
     assert search(term="ENG-102") == [("ENG-102", 1)]
 
 
+def test_linear_search_finds_an_issue_by_the_spellings_real_reads(tmp_path):
+    """The identifier spellings `_linear_search_identifier` records, over one team and a second
+    issue numbered the same. A bare number names every visible issue with it; `teamId` still
+    narrows that set."""
+    titles = {
+        2: "Connect your tools",
+        19: "Probe children order (parent)",
+        21: "Probe children order (child 2)",
+    }
+    records = [
+        {
+            "source_type": "linear",
+            "doc_id": f"lin-{number}",
+            "team": "engineering",
+            "group": "engineering",
+            "title": title,
+            "content": "probe candidate",
+            "author_email": "amaya.chen@acme.com",
+            "author_groups": ["engineering"],
+            "visibility": "public",
+            "identifier": f"ENG-{number}",
+            "state": "Todo",
+            "created": f"2026-09-{number:02d}T00:00:00Z",
+        }
+        for number, title in titles.items()
+    ]
+    records.append(
+        {
+            "source_type": "linear",
+            "doc_id": "lin-des-19",
+            "team": "design",
+            "group": "design",
+            "title": "Other nineteen",
+            "content": "unrelated",
+            "author_email": "mia@acme.com",
+            "author_groups": ["design"],
+            "visibility": "public",
+            "identifier": "DES-19",
+            "state": "Todo",
+            "created": "2026-09-01T00:00:00Z",
+        }
+    )
+    with corpus_client(tmp_path, records) as (client, settings):
+        headers = {"Authorization": settings.admin_token}
+
+        def search(term, **extra):
+            body = gql(client, _SEARCH, headers, term=term, **extra).json()
+            assert "errors" not in body, body.get("errors")
+            return [
+                (node["identifier"], node["metadata"]["score"])
+                for node in body["data"]["searchIssues"]["nodes"]
+            ]
+
+        for term in (
+            "ENG-19",
+            "eng-19",
+            "Eng-19",
+            "ENG19",
+            "eng19",
+            "ENG 19",
+            "eng 19",
+            "ENG-19.",
+            "ENG-19,",
+            "ENG-19;",
+            "ENG-19!",
+            "ENG-19-",
+            "ENG-19_",
+            "ENG-19\u00e9",
+            "ENG-19\u0663",
+            "ENG 19.",
+            "ENG 19;",
+            "   ENG-19",
+            "ENG-19   ",
+            "  ENG19",
+            "ENG 19  ",
+            '"ENG-19"',
+            "'ENG-19'",
+            "\tENG-19",
+            "ENG19\t",
+            "\xa0ENG19",
+            "\ufeffENG-19",
+            '"ENG19"',
+            '"ENG 19"',
+        ):
+            assert search(term) == [("ENG-19", 1)], term
+        both = [("ENG-19", 1), ("DES-19", 1)]
+        for term in ("19", " 19", "19 "):
+            assert search(term) == both, term
+        assert search("19", teamId=synth.linear_team_id("design")) == [("DES-19", 1)]
+        for term in (
+            "019",
+            "ENG-019",
+            "ENG  19",
+            "ENG\t19",
+            "ENG-19x",
+            "ENG 19x",
+            "XYZ-19",
+            "#19",
+            "ENG19.",
+            "ENG19;",
+            "19.",
+            "19,",
+            " 19 ",
+            "  19",
+            "19  ",
+            '"19"',
+            "\t19",
+            "19\xa0",
+            "\x85ENG-19",
+            "\x1fENG19",
+            ".ENG-19",
+            "(ENG-19)",
+            "`ENG-19`",
+            '"ENG-19',
+            "'ENG-19\"",
+            '" ENG-19"',
+            "ENG\u201019",
+        ):
+            assert search(term) == [], term
+
+        opened = search("ENG-19 probe")
+        assert opened[0] == ("ENG-19", 1)
+        assert {identifier for identifier, _ in opened} == {"ENG-19", "ENG-2", "ENG-21"}
+        assert all(score < 1 for _, score in opened[1:])
+        spaced = search("ENG 19 probe")
+        assert spaced[0] == ("ENG-19", 1)
+        assert {identifier for identifier, _ in spaced} == {"ENG-19", "ENG-2", "ENG-21"}
+        assert all(score < 1 for _, score in spaced[1:])
+
+        for term in ("ENG19 probe", "probe ENG-19", "19 probe"):
+            found = search(term)
+            assert found and all(score < 1 for _, score in found), term
+            assert any(identifier == "ENG-19" for identifier, _ in found)
+
+        numbered = search("2")
+        assert numbered[0] == ("ENG-2", 1)
+        assert numbered[1][0] == "ENG-21" and numbered[1][1] < 1
+
+
 # The read documents mirage 0.0.7's `LinearVFS` sends (`mirage.core.linear.queries`), trimmed to
 # what each selects past what other tests cover.
 _MIRAGE_DOCUMENTS = {

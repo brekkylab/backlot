@@ -6294,8 +6294,11 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     # Doc/Sheet/Slides carries it too. Checksums, a download link and the file-extension pair stay
     # binary-only, which is also what real Drive does for the Docs-editors types. A non-folder file
     # always answers `quotaBytesUsed` (its own `size`), and a native file answers `exportLinks`,
-    # both measured 2026-10-21/25.
+    # both measured 2026-10-21/25. A native file's `size` is never under 1024 bytes, measured
+    # 2026-10-26, so the stored text length only counts above that floor.
     if not is_folder:
+        if native is not None:
+            nbytes = max(nbytes, store.DRIVE_NATIVE_MIN_BYTES)
         f["size"] = str(nbytes)
         f["quotaBytesUsed"] = str(nbytes)
     if native is not None and not is_folder:

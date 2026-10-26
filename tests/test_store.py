@@ -748,7 +748,9 @@ def _drive_usage_db(tmp_path):
             # `id` is the primary key; nothing here reads it back, so the fixture's own
             # label serves as one rather than the real synth.gdrive_file_id — this DB is
             # hand-built to bypass the importer.
-            (doc_id, "f", "a@x.com", doc_id, content, "document", trashed),
+            # a binary subtype: a native file's size has a floor, which would hide the byte counts
+            # these tests pin (the floor has its own test below)
+            (doc_id, "f", "a@x.com", doc_id, content, "pdf", trashed),
         )
     # Every doc gets a grant, as the importers write one: a `visible_ids` filter passes only rows
     # that HAVE a matching google_drive_acl row, so a doc with no grant is invisible to any scoped
@@ -777,6 +779,35 @@ def test_drive_usage_bytes_is_acl_scoped(tmp_path):
     assert store.drive_usage_bytes(conn, visible_ids={"acme"}) == (3 + 5, 5)  # g2 invisible
     assert store.drive_usage_bytes(conn, visible_ids={"eng"}) == (6, 0)  # g2 only, untrashed
     assert store.drive_usage_bytes(conn, visible_ids=set()) == (0, 0)  # sees nothing
+
+
+def test_drive_usage_bytes_floors_each_native_file_at_one_kibibyte(tmp_path):
+    """A native file's `size` is never under 1024, so the quota is the sum of those sizes: a Doc, a
+    Sheet and a Slide deck count 1024 each (a missing subtype is a Doc), a native file above the
+    floor counts its UTF-8 bytes, and a binary file, whose floor is not measured, counts its
+    length. A trashed native file counts toward the trash at the same floor."""
+    conn = store.connect_rw(tmp_path / "gdrive-native.sqlite")
+    rows = [
+        # (doc_id, content, subtype, trashed)
+        ("n1", "abc", "document", 0),  # 3 bytes -> 1024
+        ("n2", "a,b", "spreadsheet", 0),  # 3 bytes -> 1024
+        ("n3", "one", "presentation", 0),  # 3 bytes -> 1024
+        ("n4", "tiny", None, 0),  # no subtype is a Doc -> 1024
+        ("n5", "안" * 400, "document", 0),  # 400 characters, 1200 bytes -> 1200
+        ("n6", "gone", "document", 1),  # trashed -> 1024 in both totals
+        ("b1", "%PDF-1.7", "pdf", 0),  # binary -> 8
+    ]
+    for doc_id, content, subtype, trashed in rows:
+        conn.execute(
+            "INSERT INTO gdrive_files(id, folder, author_email, title, content, subtype, "
+            "created_ts, trashed) VALUES (?,?,?,?,?,?,1,?)",
+            (doc_id, "f", "a@x.com", doc_id, content, subtype, trashed),
+        )
+        conn.execute("INSERT INTO google_drive_acl VALUES (?,?,?)", (doc_id, "group", "acme"))
+    conn.commit()
+    total, trashed = store.drive_usage_bytes(conn)
+    assert total == 1024 * 4 + 1200 + 1024 + 8
+    assert trashed == 1024
 
 
 # --- Drive: a spreadsheet's stored grid ------------------------------------------

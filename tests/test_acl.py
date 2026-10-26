@@ -8,16 +8,13 @@ import yaml
 from backlot import store
 from tests._helpers import client_for, gql
 
-# The ways but a POST of JSON to `/graphql` a document reaches each GraphQL server's resolvers: a
-# GET with it in the query string, and on Fireflies a POST of a form, each sent with Apollo Server's
-# preflight header (`backlot.graphql.apollo_http.csrf_refusal`); and on Linear a POST to another
-# path Express hands Apollo Server (`backlot.routers.linear.routes_to_apollo`).
 _ADMIN = "admin-service-token"
 
 
 def _sent(client, path, query, authorization, via, **variables):
     """``query`` sent to ``path`` as ``via`` names: ``POST`` as JSON (:func:`gql`), ``GET`` in the
-    query string and ``form`` as a form, the last two beside the preflight header."""
+    query string and, on Fireflies, ``form`` as a form, the last two beside the preflight header
+    (`backlot.graphql.apollo_http.csrf_refusal`)."""
     if via == "POST":
         return gql(client, path, query, authorization, **variables)
     fields = {"query": query, **({"variables": json.dumps(variables)} if variables else {})}
@@ -188,7 +185,8 @@ def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
 
 def _gql(client, query, token, via="POST"):
     """``query`` sent as ``via`` names it, a method and a path after `/linear` where not
-    `/graphql`."""
+    `/graphql`: another path Express hands Apollo Server (`backlot.routers.linear.routes_to_apollo`)
+    reaches the resolvers too."""
     method, _, path = via.partition(" ")
     return _sent(client, f"/linear{path or '/graphql'}", query, token, method).json()
 

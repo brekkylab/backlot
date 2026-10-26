@@ -110,8 +110,9 @@ _MAX_VALIDATION_ERRORS = 100
 class Refusal:
     """One request error as Apollo Server answers it: ``message`` in graphql-js's words, the
     ``locations`` graphql-js gives it, Apollo Server's ``code``, the status of the answer and the
-    ``headers`` it sets on it. ``thrown`` marks a refusal Apollo Server throws before its request
-    pipeline, which ``Accept`` cannot turn into its 406 (:mod:`backlot.graphql.apollo_http`), and
+    ``headers`` it sets on it. ``thrown`` marks a refusal Apollo Server throws, each but
+    :data:`~backlot.graphql.apollo_http.NOT_ACCEPTABLE` before its request pipeline, which
+    ``Accept`` cannot turn into its 406 (:mod:`backlot.graphql.apollo_http`), and
     ``http_headers`` whether the ``http`` extension it carries names its ``headers``, as all but
     the 406's do."""
 

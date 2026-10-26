@@ -41,7 +41,7 @@ from graphql import (
     OperationDefinitionNode,
 )
 from graphql.execution.collect_fields import collect_fields
-from graphql.execution.values import get_variable_values
+from graphql.execution.values import get_argument_values, get_variable_values
 
 from backlot import auth
 from backlot.config import get_settings
@@ -246,7 +246,7 @@ def _answer(seen: dict[str, str], result: engine.Result, spent: Spent | None = N
     if not thrown and result.status != 500:
         headers.setdefault("cache-control", "no-store")
     if spent is not None:
-        body = spent.refuse(body)
+        body = spent.refuse(body, result.assigned)
         headers.update(spent.headers)
     return Response(
         request_body.node_json(body) + b"\n",
@@ -259,7 +259,9 @@ def _answer(seen: dict[str, str], result: engine.Result, spent: Spent | None = N
 def _resolver_fields(operation: engine.Operation) -> list[tuple[str, FieldNode]]:
     """The root fields ``operation`` selects whose resolvers run, in order: each response key, an
     alias or a field's name, once, through fragments and as `@skip` and `@include` leave it with
-    the variables as the run reads them, and not `__typename`, `__schema` or `__type`."""
+    the variables as the run reads them, and not `__typename`, `__schema` or `__type`, nor a field
+    whose arguments graphql-js refuses as it starts the field, which api.fireflies.ai answered with
+    that refusal and not the budget's, its minute spent, on 2026-10-26 (UTC)."""
     root = ENGINE.schema.get_root_type(operation.operation.operation)
     fragments = {
         d.name.value: d
@@ -278,9 +280,16 @@ def _resolver_fields(operation: engine.Operation) -> list[tuple[str, FieldNode]]
     except GraphQLError:
         # A root directive refusing its argument: the operation ran no field, its data null.
         return []
-    return [
-        (key, nodes[0]) for key, nodes in fields.items() if not nodes[0].name.value.startswith("__")
-    ]
+    taken = []
+    for key, nodes in fields.items():
+        if nodes[0].name.value.startswith("__"):
+            continue
+        try:
+            get_argument_values(root.fields[nodes[0].name.value], nodes[0], variables)
+        except GraphQLError:
+            continue
+        taken.append((key, nodes[0]))
+    return taken
 
 
 # --- the budget --------------------------------------------------------------------------------
@@ -308,20 +317,35 @@ class Spent:
     headers: dict[str, str]
     retry_at: float
 
-    def refuse(self, body: dict) -> dict:
-        """``body`` with each refused field's data null and its error after the others, as
-        api.fireflies.ai answered the refused fields of :class:`Budget`'s run: `"friendly": true`,
-        the moment in the message to the second and in `metadata.retryAfter` to the millisecond. The
-        refused fields are the last the document runs, as a budget once spent stays spent for the
-        rest of it, and an error the run made at one of them is left out, the refusal standing for
-        the field's whole answer."""
+    def refuse(self, body: dict, assigned: frozenset[int] = frozenset()) -> dict:
+        """``body`` with each refused field's data null and its error, as api.fireflies.ai answered
+        the refused fields of :class:`Budget`'s run: `"friendly": true`, the moment in the message
+        to the second and in `metadata.retryAfter` to the millisecond. The refused fields are the
+        last the document runs, as a budget once spent stays spent for the rest of it, and an error
+        the run made at one of them is left out, the refusal standing for the field's whole answer.
+
+        graphql-js's refusals of a root field's arguments, those of ``assigned`` at a root field,
+        come first, as it makes them before Fireflies counts a field; then the refusals; then every
+        other error, which a resolver makes once Fireflies has counted its field. api.fireflies.ai
+        answered so a `null` refused at a non-null argument before and after a refused field, and a
+        refusal ahead of an earlier root field's `not_in_team`, `transcripts(limit: 0)` and
+        `transcripts(date: 1e20)`, on 2026-10-26 (UTC); it answered an earlier
+        `transcripts(limit: 0)` ahead of refusals 29 fields after it the same day, which this does
+        not follow."""
         if not self.refused:
             return body
         when = email.utils.formatdate(self.retry_at, usegmt=True)
         keys = {key for key, _ in self.refused}
-        errors = [e for e in body.get("errors", []) if (e.get("path") or [None])[0] not in keys]
+        started: list[dict] = []
+        refusals: list[dict] = []
+        errors: list[dict] = []
+        for i, error in enumerate(body.get("errors", [])):
+            path = error.get("path") or [None]
+            if path[0] in keys:
+                continue
+            (started if len(path) == 1 and i in assigned else errors).append(error)
         for key, node in self.refused:
-            errors.append(
+            refusals.append(
                 {
                     "friendly": True,
                     "message": f"Too many requests. Please retry after {when} (UTC)",
@@ -339,7 +363,7 @@ class Spent:
         data = dict(body["data"])
         for key in keys:
             data[key] = None
-        return {"errors": errors, "data": data}
+        return {"errors": started + refusals + errors, "data": data}
 
 
 class Budget:
@@ -349,13 +373,22 @@ class Budget:
     (UTC): thirty `{ user { user_id } }` in 11 seconds were served with
     `x-ratelimit-remaining-api_burst` falling from 29 to 0 and `x-ratelimit-reset-api_burst` from
     60 to 50, the next three refused, `{ __typename }` beside them served, and a document of 33
-    aliases sent 65 seconds on served 30 and refused 3. ``clock`` is `time.time` unless a test
-    hands in another."""
+    aliases sent 65 seconds on served 30 and refused 3.
+
+    A key the minute refuses is held from its first refused field to 60 seconds on, past its
+    minute's own close: each field it sends meanwhile is refused, counted in the minute it falls in
+    and not in the day, with the seconds left in `retry-after` and that moment in the message.
+    api.fireflies.ai refused one 51 seconds into a hold opened 10 seconds into a minute, with 9,
+    then served one 11 seconds later as the second of a new minute, the day down only by that one;
+    and refused fields 32 and 34 seconds into a hold opened 30 seconds into a minute with 28 and 26,
+    and one 5 seconds in with 56, a second over what the hold gives, on 2026-10-26 (UTC). ``clock``
+    is `time.time` unless a test hands in another."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock
         self._minutes: dict[str, list[float]] = {}
         self._days: dict[str, list[int]] = {}
+        self._held: dict[str | None, float] = {}
 
     @staticmethod
     def of(app) -> "Budget":
@@ -378,11 +411,13 @@ class Budget:
         if today is None or today[0] != int(now // 86400):
             today = self._days[key] = [int(now // 86400), 0]
         enforce = get_settings().fireflies_enforce_rate_limits
+        held = enforce and now < self._held.get(key, now)
         refused: list[tuple[str, FieldNode]] = []
         by_day = False
         for field in fields:
-            if enforce and minute[1] >= _PER_MINUTE:
+            if held or (enforce and minute[1] >= _PER_MINUTE):
                 refused.append(field)
+                minute[1] += 1
             elif enforce and today[1] >= _PER_DAY:
                 refused.append(field)
                 by_day = True
@@ -402,17 +437,21 @@ class Budget:
             wait = str(math.ceil(midnight - now))
             headers = burst | day | {"retry-after-api": wait} | plain | {"retry-after": wait}
             return Spent(refused, headers, midnight)
+        if not held:
+            self._held[key] = now + 60
+        until = self._held[key]
+        wait = str(math.ceil(until - now))
         if len(refused) < len(fields):
-            headers = burst | {"retry-after-api_burst": "60"} | day | plain | {"retry-after": "60"}
+            headers = burst | {"retry-after-api_burst": wait} | day | plain | {"retry-after": wait}
         else:
             headers = {
-                "retry-after-api_burst": "60",
-                "retry-after": "60",
+                "retry-after-api_burst": wait,
+                "retry-after": wait,
                 "x-ratelimit-limit": str(_PER_MINUTE),
                 "x-ratelimit-remaining": "0",
-                "x-ratelimit-reset": "60",
+                "x-ratelimit-reset": wait,
             }
-        return Spent(refused, headers, now + 60)
+        return Spent(refused, headers, until)
 
 
 def _window(name: str, limit: int, used: int, reset: int) -> dict[str, str]:

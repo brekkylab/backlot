@@ -2827,13 +2827,10 @@ def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monk
     ]
     now[0] = 1_793_020_171.0
     aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(1, 32))
-    document = (
-        "{ a0: transcripts(limit: 0) { id } " + aliases + " a32: transcripts(limit: 0) { id } }"
-    )
+    document = "{ a0: user { user_id } " + aliases + " a32: transcripts(limit: 0) { id } }"
     r = client.post("/fireflies/graphql", json={"query": document}, headers=_key(tokens_yaml))
     body = r.json()
     assert [(e["path"], e["code"]) for e in body["errors"]] == [
-        (["a0"], "invalid_arguments"),
         (["a30"], "too_many_requests"),
         (["a31"], "too_many_requests"),
         (["a32"], "too_many_requests"),
@@ -2858,6 +2855,90 @@ def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monk
     now[0] = 1_793_020_231.0
     r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
     assert r.headers["x-ratelimit-remaining-api_burst"] == "29"
+
+
+# A run api.fireflies.ai answered on 2026-10-26 (UTC), as `Budget`'s docstring records it: the
+# moment of each request, the root fields it sent, and the refusal's `retry-after`, or None where
+# every field was served.
+_HELD = [
+    (1_793_039_210.300, 1, None),
+    (1_793_039_211.243, 29, None),
+    (1_793_039_220.192, 1, "60"),
+    (1_793_039_271.562, 1, "9"),
+    (1_793_039_282.148, 1, None),
+]
+
+
+def test_fireflies_holds_a_refused_key_for_a_minute_from_its_first_refusal(
+    client, tokens_yaml, monkeypatch
+):
+    now = _budget(client, monkeypatch)
+    for moment, fields, wait in _HELD:
+        now[0] = moment
+        document = "{ " + " ".join(f"a{i}: user {{ user_id }}" for i in range(fields)) + " }"
+        r = client.post("/fireflies/graphql", json={"query": document}, headers=_key(tokens_yaml))
+        assert r.headers.get("retry-after") == wait
+        if wait is not None:
+            assert r.json()["errors"][0]["extensions"]["metadata"] == {"retryAfter": 1793039280192}
+    assert _ratelimit(r) == {
+        "x-ratelimit-limit-api_burst": "30",
+        "x-ratelimit-remaining-api_burst": "28",
+        "x-ratelimit-reset-api_burst": "50",
+        "x-ratelimit-limit-api": "500",
+        "x-ratelimit-remaining-api": "469",
+        "x-ratelimit-reset-api": "19918",
+        "x-ratelimit-limit": "500",
+        "x-ratelimit-remaining": "469",
+        "x-ratelimit-reset": "19918",
+    }
+
+
+@pytest.mark.parametrize(
+    "spent, document, variables, order",
+    [
+        (
+            29,
+            'query($x: String = "a") { a0: transcripts(limit: 0) { id } a1: transcript(id: $x) { id }'
+            " a2: user { user_id } }",
+            {"x": None},
+            [(["a1"], False), (["a2"], True), (["a0"], False)],
+        ),
+        (
+            30,
+            'query($x: String = "a") { a0: transcript(id: $x) { id } a1: user { user_id } }',
+            {"x": None},
+            [(["a0"], False), (["a1"], True)],
+        ),
+        (
+            30,
+            'query($x: String = "a") { a1: user { user_id } a0: transcript(id: $x) { id } }',
+            {"x": None},
+            [(["a0"], False), (["a1"], True)],
+        ),
+    ],
+    ids=[
+        "graphql-js's refusal, then the budget's, then the resolver's",
+        "a refused argument ahead of the refusal, not counted",
+        "a refused argument ahead of the refusal, after a refused field",
+    ],
+)
+def test_fireflies_orders_the_budgets_refusals_among_a_runs_errors(
+    client, tokens_yaml, monkeypatch, spent, document, variables, order
+):
+    """With ``spent`` of the minute's fields spent, as `Spent.refuse` orders them: each error's
+    path, and whether it is the budget's."""
+    now = _budget(client, monkeypatch)
+    now[0] = 1_793_020_105.0
+    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(spent))
+    client.post(
+        "/fireflies/graphql", json={"query": "{ " + aliases + " }"}, headers=_key(tokens_yaml)
+    )
+    r = client.post(
+        "/fireflies/graphql",
+        json={"query": document, "variables": variables},
+        headers=_key(tokens_yaml),
+    )
+    assert [(e["path"], e["code"] == "too_many_requests") for e in r.json()["errors"]] == order
 
 
 def test_fireflies_serves_past_the_budget_with_the_refusal_off(client, tokens_yaml, monkeypatch):

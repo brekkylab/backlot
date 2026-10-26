@@ -6905,6 +6905,18 @@ _LINEAR_HEADERS = [
                 "its ETag, no-cache",
             ),
             ("POST", (("If-None-Match", _ETAG_OF_TYPENAME),), 200, "its ETag"),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "\x85no-cache")),
+                304,
+                "its ETag, U+0085 before no-cache",
+            ),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "\xa0no-cache")),
+                200,
+                "its ETag, U+00A0 before no-cache",
+            ),
         )
     ),
     pytest.param(

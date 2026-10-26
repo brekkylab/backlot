@@ -165,7 +165,8 @@ def _express_sent(
 
 
 #: ``fresh``'s test for `no-cache` in a request's `Cache-Control`, its `\s` written out as the
-#: characters JavaScript's `\s` holds in latin-1, which a header value is read as.
+#: characters JavaScript's `\s` holds in latin-1, which a header value is read as: api.linear.app
+#: answered `\xa0no-cache` with the 200 and `\x85no-cache` with the 304 on 2026-10-26 (UTC).
 _NO_CACHE = re.compile(r"(?:^|,)[\t\n\v\f\r \xa0]*?no-cache[\t\n\v\f\r \xa0]*?(?:,|$)")
 
 
@@ -182,8 +183,6 @@ def _fresh(request: Request, etag: str | None) -> bool:
         return False
     if none_match == "*":
         return True
-    if etag is None:
-        return False
     return any(
         match in (etag, f"W/{etag}") or f"W/{match}" == etag
         for match in (part.strip() for part in none_match.split(","))

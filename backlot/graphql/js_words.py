@@ -107,10 +107,11 @@ _LINE_BREAK = re.compile(r"\r\n|[\n\r]")
 
 
 def locations(error: GraphQLError) -> tuple:
-    """The ``locations`` graphql-js gives ``error``: each position's line and column, counting the
-    lines as graphql-js's ``getLocation`` does, where graphql-core's count misses a line that
-    starts at the position and adds one at each character Python's ``splitlines`` reads as a
-    break."""
+    """The ``locations`` graphql-js gives ``error``: each position's line and column as
+    graphql-js's ``getLocation`` counts them, the lines broken only at :data:`_LINE_BREAK` and the
+    column in UTF-16 code units, where graphql-core's count misses a line that starts at the
+    position, adds one at each character Python's ``splitlines`` reads as a break and counts a
+    character past U+FFFF once."""
     if not error.positions:
         return ()
     body = error.source.body
@@ -121,7 +122,8 @@ def locations(error: GraphQLError) -> tuple:
             if m.start() >= position:
                 break
             line, start = line + 1, m.end()
-        out.append({"line": line, "column": position + 1 - start})
+        units = len(body[start:position].encode("utf-16-le", "surrogatepass")) // 2
+        out.append({"line": line, "column": units + 1})
     return tuple(out)
 
 

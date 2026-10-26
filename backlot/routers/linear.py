@@ -240,8 +240,8 @@ def _envelope(result: engine.Result, payload: Any) -> dict:
     body with no query under Linear's ``INVALID_INPUT``, a persisted query refused for its version
     or its hash as Linear's ``Internal server error``, an operation that cannot be chosen as
     :func:`_operation_missing`, and the request error after fifty refused variables, to which
-    Apollo Server gives no code of its own, as :func:`_internal`, as api.linear.app answered it
-    on 2026-10-26 (UTC); and each error in ``result.assigned`` as :func:`_internal`."""
+    Apollo Server gives no code of its own, as :func:`_internal` (api.linear.app, 2026-10-26
+    UTC); and each error in ``result.assigned`` as :func:`_internal`."""
     if result.refusals:
         errors = []
         for refusal in result.refusals:

@@ -125,12 +125,13 @@ jobs:
           number=$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=fidelity&creator=github-actions%5Bbot%5D&per_page=100" \
             --jq 'first(.[] | select(.pull_request == null and (.title | startswith(env.PREFIX))) | .number) // empty')
           # The body is rewritten on every run, so this has to answer the same way on every run or
-          # each run would rewrite the last one's body and comment about the rewrite. Searching this
-          # source's own titles keeps the set to the issues this step has opened for it, which grows
-          # only when the open one is closed.
-          previous=$(gh issue list --state closed --search "$PREFIX in:title" --limit 50 \
-            --json number,title,author \
-            --jq '[.[] | select(.author.is_bot and (.title | startswith(env.PREFIX))) | .number] | max // empty')
+          # each run would rewrite the last one's body and comment about the rewrite. Listed through
+          # REST like the open one, every page of it: a search returns at most `--limit` issues, by
+          # relevance rather than by number, so past that the largest it returns need not be the
+          # latest. Two assignments rather than a pipe, so a failing `gh api` still stops the step.
+          closed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=closed&labels=fidelity&creator=github-actions%5Bbot%5D&per_page=100" \
+            --jq '.[] | select(.pull_request == null and (.title | startswith(env.PREFIX))) | .number')
+          previous=$(printf '%s\n' "$closed" | sort -n | tail -n 1)
           # The API refuses a body over 65536 characters, and this step runs under `bash -e`, so
           # that refusal takes the step down: the job would go red with no issue filed and the
           # report only in the run log. A vendor restructuring its document turns a whole baseline

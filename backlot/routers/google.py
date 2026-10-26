@@ -680,6 +680,9 @@ async def gmail_label_get(user_id: str, label_id: str, request: Request):
 _GMAIL_SPACED = (
     r"(?<=\bfrom:)|(?<=\bto:)|(?<=\bcc:)|(?<=\bbcc:)|(?<=\bsubject:)|(?<=\blabel:)|(?<=\bin:)"
 )
+# In the whitespace `_GMAIL_SPACED` reads after an operator, a no-break space counts only after
+# `subject:`: measured on 2026-10-22, `subject:<no-break space>probe` answered the ids of
+# `subject:probe`, where `from:<no-break space>me` answered nothing — after the other operators
 # a value holding a no-break space matches nothing. On 2026-10-25 `from:me<no-break space>`,
 # `label:inbox<no-break space>`, `has:<no-break space>attachment` and
 # `has:attachment<no-break space>` answered nothing too, and with a `-` or a `NOT` in front
@@ -795,11 +798,14 @@ _GMAIL_LONE_QUOTE_UNCLOSED = re.compile(
 # answers; `-"(from:me)"` and `NOT "from:me"` the negation, `probe "(from:me)"` the ids both `probe`
 # and the operator answer, `"(from:)"` every message and `"!from:me"` and `"from:me+"` nothing. Two
 # terms in the quotes are no operator: `"(from:me to:me)"` and `"(from:me)(to:me)"` answered
-# nothing.
+# nothing. The operator's name is read in any case: on 2026-10-26 `"(FROM:me)"`, `"(From:me)"` and
+# `"FROM:me"` answered what `from:me` answers, `"IN:sent"` and `"HAS:attachment"` what their
+# operators answer, and `-"(FROM:me)"` and `NOT "FROM:me"` the negation.
 _GMAIL_QUOTED_OPERATOR = re.compile(
     r'(?<![^\s(])(-*)"[\s(\[{#-]*'
     r"((?:from|to|cc|bcc|subject|label|in|has|after|before|newer|older|newer_than|older_than):"
     r'[ \t]*[^\s"()\[\]{}]*?)[\s)\]}.,;/-]*"',
+    re.IGNORECASE,
 )
 # An empty operator `_GMAIL_OP` drops, so that the operator after it applies. Measured on a
 # Workspace mailbox of 625 messages on 2026-10-19, comparing `messages.list` id sets
@@ -1163,17 +1169,6 @@ def _gmail_flatten(items: list, out: list, negated: list) -> None:
         is_negated, inner = item
         sub = _gmail_group_items(inner)
         if not is_negated:
-            # A `NOT` in front of a group falls on its first term (the comment at
-            # `_GMAIL_GROUP_PIECE`), so the `NOT`s in front of this one flip a `-` on that
-            # term here; a `-` touching an operator with no group around it is read alone
-            # instead (the comment at `_GMAIL_NOT`).
-            if sub and isinstance(sub[0], str) and sub[0].startswith("-") and sub[0].strip("-"):
-                nots = 0
-                while out and out[-1] == "NOT":
-                    out.pop()
-                    nots += 1
-                if nots and not (nots + 1) % 2:
-                    sub[0] = sub[0].lstrip("-")
             _gmail_flatten(sub, out, negated)
             continue
         # Inside `-(…)` a run of `NOT`s with no term after it is left out: `-(NOT NOT)` answered
@@ -1228,33 +1223,17 @@ def _gmail_take_negated_words(free: str) -> tuple[str, list[str]]:
     `probe+` answers nothing. A `-(…)` of one word arrives here as that word with a `-` in front
     (:func:`_gmail_flatten`); one of several terms is :data:`_GMAIL_NOT_ALL`. The word is then
     matched by the same search the word alone runs, and those messages are left out, so `-plan` on
-    its own has no free text left and the listing path answers. Measured on 2026-10-22, a `NOT`
-    with no term after it is left out rather than read as a term, and a search of `NOT`s alone is
-    left out whole; a `-(…)` of the one word `NOT` arrives here as `-NOT` and counts as one.
+    its own has no free text left and the listing path answers.
     """
     kept: list[str] = []
     negated: list[str] = []
     terms = _GMAIL_FREE_TERM.findall(free)
-
-    def _bare_not(term: str) -> bool:
-        dashed = _GMAIL_DASHED_WORD.fullmatch(term)
-        word = (
-            (dashed.group(1) if dashed.group(1) is not None else dashed.group(2)).strip('"')
-            if dashed
-            else term
-        )
-        return word == "NOT"
-
-    if terms and all(_bare_not(t) for t in terms):
-        return "", []
     i = 0
     while i < len(terms):
         j = i
         while j < len(terms) and terms[j] == "NOT":
             j += 1
-        if j == len(terms):
-            break  # a `NOT` with no term after it is left out
-        dashed = _GMAIL_DASHED_WORD.fullmatch(terms[j])
+        dashed = _GMAIL_DASHED_WORD.fullmatch(terms[j]) if j < len(terms) else None
         if dashed:
             word = (dashed.group(1) if dashed.group(1) is not None else dashed.group(2)).strip('"')
         else:

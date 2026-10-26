@@ -276,7 +276,6 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
         any non-empty token that fails              -> invalid_auth
         a non-empty `token` query param             -> invalid_auth
         an empty `token` query param + a credential -> invalid_auth
-        repeated `Authorization` headers            -> invalid_auth
 
     "any other header scheme" is the whole of the rest, not just the obvious `Basic`: the scheme is
     case-SENSITIVE live, so `bearer` and `BEARER` land here too, as does GitHub's legacy `token <t>`
@@ -296,8 +295,6 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
     """
     if auth.slack_query_token_refused(request):
         return None, _err("invalid_auth")
-    if auth.repeated_authorization(request):
-        return None, _err("invalid_auth")
     token = auth.slack_token(request)
     caller = auth.acl(request).resolve(token)
     if caller is None:
@@ -309,13 +306,8 @@ def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
 
 def _credential_sent(request: Request) -> bool:
     """Whether the request sends a credential ``_caller_or_error`` resolves or refuses: a token it
-    reads (``auth.slack_token``), a `token` query parameter it refuses, or repeated
-    ``Authorization`` headers."""
-    return (
-        auth.slack_query_token_refused(request)
-        or auth.repeated_authorization(request)
-        or auth.slack_token(request) is not None
-    )
+    reads (``auth.slack_token``), or a `token` query parameter it refuses."""
+    return auth.slack_query_token_refused(request) or auth.slack_token(request) is not None
 
 
 def _missing_argument(request: Request, *names: str) -> JSONResponse | None:

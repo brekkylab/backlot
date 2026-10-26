@@ -287,37 +287,57 @@ def test_slack_refuses_a_valid_token_under_an_unrecognised_scheme(client, tokens
     assert ok["ok"] is True
 
 
-@pytest.mark.parametrize(
-    "header, ok, error",
-    [
-        ("Bearer  {token}", False, "invalid_auth"),  # two spaces
-        ("Bearer   {token}", False, "invalid_auth"),  # three spaces
-        (" Bearer {token}", True, None),  # leading space on header value
-        ("Bearer {token} ", True, None),  # trailing space on header value
-        (" Bearer {token} ", True, None),
-    ],
-)
-def test_slack_bearer_token_spaces_with_valid_token(client, tokens_yaml, header, ok, error):
-    hdr = header.format(token=tokens_yaml["admin_token"])
-    r = client.post("/slack/api/auth.test", headers={"Authorization": hdr}).json()
-    assert r["ok"] is ok
-    if not ok:
-        assert r["error"] == error
+# What real answered `auth.test` with a user token that resolves in `{t}`, sent in each row's
+# `Authorization` headers and, where the row has one, its `token` form field, on the dates
+# `auth.slack_bearer_token` gives.
+_SLACK_AUTHORIZATION_ROWS = [
+    (["Bearer {t}"], None, "ok"),
+    (["Bearer  {t}"], None, "invalid_auth"),
+    (["Bearer   {t}"], None, "invalid_auth"),
+    ([" Bearer {t}"], None, "ok"),
+    (["Bearer {t} "], None, "ok"),
+    (["\tBearer {t}"], None, "ok"),
+    (["Bearer {t}\t"], None, "ok"),
+    (["Bearer \t{t}"], None, "invalid_auth"),
+    (["Bearer \xa0{t}"], None, "invalid_auth"),
+    (["Bearer {t}\xa0"], None, "invalid_auth"),
+    (["Bearer {t}\x85"], None, "invalid_auth"),
+    (["Bearer {t} x"], None, "invalid_auth"),
+    (["Bearer  "], None, "not_authed"),
+    (["Bearer {t}", "Bearer {t}"], None, "invalid_auth"),
+    (["Bearer {t}", "Basic eDp5"], None, "invalid_auth"),
+    (["Bearer {t}", "bearer {t}"], None, "invalid_auth"),
+    (["Basic eDp5", "Bearer {t}"], None, "not_authed"),
+    (["Bearer", "{t}"], None, "not_authed"),
+    (["Basic eDp5", "Basic eDp5"], None, "not_authed"),
+    (["", ""], None, "not_authed"),
+    (["Bearer {t}", ""], None, "ok"),
+    (["", "Bearer {t}"], None, "ok"),
+    (["Bearer {t}", " "], None, "ok"),
+    ([" ", "Bearer {t}"], None, "ok"),
+    (["\t", "Bearer {t}"], None, "ok"),
+    (["Bearer {t}", "", ""], None, "ok"),
+    (["", "Bearer {t}", " "], None, "ok"),
+    (["Bearer {t}", "Bearer {t}", "Bearer {t}"], None, "invalid_auth"),
+    (["Bearer {t}", "Bearer {t}"], "{t}", "ok"),
+    (["Bearer xoxp-bogus", "Bearer xoxp-bogus"], "{t}", "ok"),
+    (["Bearer {t}", "Basic eDp5"], "{t}", "ok"),
+]
 
 
-def test_slack_repeated_authorization_header(client, tokens_yaml):
-    token = tokens_yaml["admin_token"]
-    for path in ("auth.test", "conversations.list"):
-        r = client.post(
-            f"/slack/api/{path}",
-            headers=[("Authorization", f"Bearer {token}"), ("Authorization", f"Bearer {token}")],
-        ).json()
-        assert r == {"ok": False, "error": "invalid_auth"}
-    r = client.get(
-        "/slack/api/api.test",
-        headers=[("Authorization", f"Bearer {token}"), ("Authorization", f"Bearer {token}")],
-    ).json()
-    assert r["ok"] is False and r["error"] == "invalid_auth"
+@pytest.mark.parametrize("values, form, answer", _SLACK_AUTHORIZATION_ROWS)
+def test_slack_reads_the_authorization_headers_as_real_does(
+    client, tokens_yaml, values, form, answer
+):
+    """The rows `_SLACK_AUTHORIZATION_ROWS` records, each header sent as its latin-1 bytes."""
+    t = tokens_yaml["admin_token"]
+    headers = [("Authorization", value.format(t=t)) for value in values]
+    content = None
+    if form is not None:
+        headers.append(("Content-Type", _FORM))
+        content = f"token={form.format(t=t)}".encode()
+    j = sent_as(client, "POST", "/slack/api/auth.test", headers, content=content).json()
+    assert ("ok" if j["ok"] else j["error"]) == answer, j
 
 
 def test_slack_auth_error_split_is_uniform_across_methods(client, tokens_yaml):

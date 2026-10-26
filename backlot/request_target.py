@@ -194,6 +194,18 @@ def _google(path_kinds: list[str], query_kinds: list[str]) -> Response | None:
     return None
 
 
+#: A `%` with fewer than two hex digits after it.
+_BROKEN_ESCAPE = re.compile(rb"%(?![0-9A-Fa-f]{2})")
+
+
+def broken_escape(path: bytes) -> bool:
+    """Whether ``backlot.main.refuse_a_broken_escape_on_linear_and_fireflies`` refuses ``path``.
+    Cloudflare's page for it comes ahead of its answer to a raw byte: on 2026-10-26 (UTC) both hosts
+    drew :data:`CLOUDFLARE_PAGE` for `/a%zz` with a raw `é` before or after it or `\\x01` before
+    it, and for `/a%00` after a raw `é`, where a raw `é` alone drew the empty 400."""
+    return b"%00" in path or _BROKEN_ESCAPE.search(path) is not None
+
+
 def _cloudflare(scope: Scope, path_kinds: list[str], query_kinds: list[str]) -> Response | None:
     """:data:`CLOUDFLARE_PAGE` where a `nul` or a `cr` is anywhere, and where `Authorization` comes
     more than once (``auth.repeated_authorization``); then an empty 400 with no `Content-Type` for
@@ -313,6 +325,8 @@ def answer(scope: Scope) -> Response | None:
         return _google(in_path, in_query)
     if errors.atlassian.owns(path):
         return _atlassian(scope, in_path, in_query)
+    if any(_under(path, p) for p in ("/linear", "/fireflies")) and broken_escape(sent_path):
+        return _page(CLOUDFLARE_PAGE, "text/html")
     if any(_under(path, p) for p in ("/notion", "/hubspot", "/linear", "/fireflies")):
         return _cloudflare(scope, in_path, in_query)
     if errors.s3.owns(path):

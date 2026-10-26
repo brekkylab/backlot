@@ -31,7 +31,8 @@ the failure is Backlot's own, the status, the baseline's support state, the erro
 operation Backlot serves is the vendor's own answer (Google's ``notImplemented``), so it is
 ``client``, and so is a 505, S3's front door's answer to a target holding a space
 (``backlot.request_target._s3``), and each 5xx in ``_ANSWERED_5XX``, a vendor's answer to a wrong
-request.
+request. Fireflies' ``too_many_requests``, which it sends at 200 once a key's budget is spent, is
+``rate_limit``.
 """
 
 from __future__ import annotations
@@ -188,6 +189,9 @@ _AUTH = frozenset(
     {("slack", "account_inactive"), ("slack", "invalid_auth"), ("slack", "not_authed")}
     | {("fireflies", "auth_failed")}
 )
+# Fireflies refuses a field past its key's budget with this at 200
+# (``backlot.routers.fireflies.Budget``).
+_FIREFLIES_SPENT = ("fireflies", "too_many_requests")
 # Each 5xx a vendor answers a wrong request with, by source and error code, and Backlot answers too:
 # Fireflies' 500 for a document that reaches a fragment it does not define
 # (`backlot.routers.fireflies._fragments_unreached`).
@@ -203,7 +207,7 @@ def error_class(
         return "internal"
     if support in ("missing", "refused") or code == "unsupported_filter":
         return "unsupported"
-    if status == 429 or (status == 403 and spent):
+    if status == 429 or (status == 403 and spent) or (source, code) == _FIREFLIES_SPENT:
         return "rate_limit"
     if status in (401, 403) or (source, code) in _AUTH:
         return "auth"

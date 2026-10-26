@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     # has what the switch does and when to flip it.
     github_enforce_rate_limits: bool = True
 
+    # --- fireflies ---
+    # On by default: a mock more permissive than the vendor hides the refusal a client meets in
+    # production (see ``backlot.routers.fireflies.Budget``). docs/configuration.md's Fireflies row
+    # has what the switch does and when to flip it.
+    fireflies_enforce_rate_limits: bool = True
+
     # --- usage telemetry (backlot.telemetry; docs/telemetry.md says what is sent) ---
     telemetry: bool = True
     # The `DO_NOT_TRACK` convention many developer tools honour, read without the prefix, from the

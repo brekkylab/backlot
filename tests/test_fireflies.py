@@ -48,12 +48,12 @@ def ff_gql(client, query, headers, **variables):
 _NO_PREFIX = (
     b'{"errors":[{"friendly":true,"code":"auth_failed","message":"Authorization header is missing'
     b" the 'Bearer' prefix. Please use the format: 'Authorization: Bearer <api_key>'. If this"
-    b' persists, please contact Fireflies support.","extensions":{"code":"auth_failed"}}]}'
+    b' persists, please contact Fireflies support.","extensions":{"code":"auth_failed"}}]}\n'
 )
 _BAD_KEY = (
     b'{"errors":[{"friendly":true,"code":"auth_failed","message":"An error occurred while'
     b" authenticating your request. Please recheck your API key and try again. If this persists,"
-    b' please contact Fireflies support.","extensions":{"code":"auth_failed"}}]}'
+    b' please contact Fireflies support.","extensions":{"code":"auth_failed"}}]}\n'
 )
 # Values of the header, None for none and `{t}` for a key that resolves, with the 500 Fireflies
 # refused each with or None where it served the query.
@@ -124,14 +124,13 @@ def test_fireflies_reads_a_credential_as_fireflies_does(client, tokens_yaml, val
 # answer to it with the key: `_EMPTY`, `_NOT_JSON` or `_TOO_LARGE`, its HTTP layer's refusals
 # `backlot.routers.fireflies._body_refusal` sends at the status their `statusCode` names, or None
 # where it served the query. A `WithTheKey` row is a body that layer passes, which draws one of
-# `_auth_failed`'s 500s without the key; its bytes are api.fireflies.ai's without the newline real
-# ends them with.
+# `_auth_failed`'s 500s without the key; its bytes are api.fireflies.ai's.
 def _apollo(
     message: bytes, code: bytes = b"BAD_REQUEST", locations: bytes = b"", status: int = 400
 ) -> WithTheKey:
     """Apollo Server's refusal as Fireflies writes it around ``message``, already JSON-escaped."""
     return WithTheKey(
-        b'{"errors":[{"friendly":false,"message":"%s",%s"code":"%s","extensions":{}}]}'
+        b'{"errors":[{"friendly":false,"message":"%s",%s"code":"%s","extensions":{}}]}\n'
         % (message, locations, code),
         status,
     )
@@ -400,54 +399,54 @@ _FIREFLIES_BODIES = [
     pytest.param(
         b'{"query":"{ __typename }","operationName":"Z"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Unknown operation named \\"Z\\".","code":"OPERATION_RESOLUTION_FAILURE","extensions":{}}]}'
+            b'{"errors":[{"friendly":false,"message":"Unknown operation named \\"Z\\".","code":"OPERATION_RESOLUTION_FAILURE","extensions":{}}]}\n'
         ),
         id="an operationName no operation has",
     ),
     pytest.param(
         b'{"query":"query A { __typename }","operationName":""}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Unknown operation named \\"\\".","code":"OPERATION_RESOLUTION_FAILURE","extensions":{}}]}'
+            b'{"errors":[{"friendly":false,"message":"Unknown operation named \\"\\".","code":"OPERATION_RESOLUTION_FAILURE","extensions":{}}]}\n'
         ),
         id="an empty operationName",
     ),
     pytest.param(
         b'{"query":{"kind":"Document"}}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"GraphQL queries must be strings. It looks like you\'re sending the internal graphql-js representation of a parsed query in your request instead of a request in the GraphQL query language. You can convert an AST to a string using the `print` function from `graphql`, or use a client like `apollo-client` which converts the internal representation to a string for you.","code":"BAD_REQUEST","extensions":{}}]}'
+            b'{"errors":[{"friendly":false,"message":"GraphQL queries must be strings. It looks like you\'re sending the internal graphql-js representation of a parsed query in your request instead of a request in the GraphQL query language. You can convert an AST to a string using the `print` function from `graphql`, or use a client like `apollo-client` which converts the internal representation to a string for you.","code":"BAD_REQUEST","extensions":{}}]}\n'
         ),
         id="a parsed document",
     ),
     pytest.param(
         b'{"query":false}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"GraphQL operations must contain a non-empty `query` or a `persistedQuery` extension.","code":"BAD_REQUEST","extensions":{}}]}'
+            b'{"errors":[{"friendly":false,"message":"GraphQL operations must contain a non-empty `query` or a `persistedQuery` extension.","code":"BAD_REQUEST","extensions":{}}]}\n'
         ),
         id="a query of false",
     ),
     pytest.param(
         b'{"query":"{ __typename }","variables":"null"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"`variables` in a POST body should be provided as an object, not a recursively JSON-encoded string.","code":"BAD_REQUEST","extensions":{}}]}'
+            b'{"errors":[{"friendly":false,"message":"`variables` in a POST body should be provided as an object, not a recursively JSON-encoded string.","code":"BAD_REQUEST","extensions":{}}]}\n'
         ),
         id="variables of 'null'",
     ),
     pytest.param(
         b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }","variables":"{\\"b\\":true}"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"`variables` in a POST body should be provided as an object, not a recursively JSON-encoded string.","code":"BAD_REQUEST","extensions":{}}]}'
+            b'{"errors":[{"friendly":false,"message":"`variables` in a POST body should be provided as an object, not a recursively JSON-encoded string.","code":"BAD_REQUEST","extensions":{}}]}\n'
         ),
         id="variables of a string its operation takes",
     ),
     pytest.param(
         b'{"query":"mutation { __typename }"}',
-        WithTheKey(b'{"data":{"__typename":"Mutation"}}', 200),
+        WithTheKey(b'{"data":{"__typename":"Mutation"}}\n', 200),
         id="a mutation of __typename",
     ),
     pytest.param(
         b'{"query":"subscription S { __typename }"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Schema is not configured to execute subscription operation.","locations":[{"line":1,"column":1}],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":null}',
+            b'{"errors":[{"friendly":false,"message":"Schema is not configured to execute subscription operation.","locations":[{"line":1,"column":1}],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":null}\n',
             200,
         ),
         id="a subscription of __typename",
@@ -455,7 +454,7 @@ _FIREFLIES_BODIES = [
     pytest.param(
         b'{"query":"query($x: String = \\"a\\") { transcript(id: $x) { id } }","variables":{"x":null}}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Argument \\"id\\" of non-null type \\"String!\\" must not be null.","locations":[{"line":1,"column":42}],"path":["transcript"],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":{"transcript":null}}',
+            b'{"errors":[{"friendly":false,"message":"Argument \\"id\\" of non-null type \\"String!\\" must not be null.","locations":[{"line":1,"column":42}],"path":["transcript"],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":{"transcript":null}}\n',
             200,
         ),
         id="null for a non-null argument",
@@ -463,7 +462,7 @@ _FIREFLIES_BODIES = [
     pytest.param(
         b'{"query":"query($v: Boolean = true) { __typename @include(if: $v) }","variables":{"v":null}}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Argument \\"if\\" of non-null type \\"Boolean!\\" must not be null.","locations":[{"line":1,"column":53}],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":null}',
+            b'{"errors":[{"friendly":false,"message":"Argument \\"if\\" of non-null type \\"Boolean!\\" must not be null.","locations":[{"line":1,"column":53}],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":null}\n',
             200,
         ),
         id="null for a directive's argument at the root",
@@ -471,7 +470,7 @@ _FIREFLIES_BODIES = [
     pytest.param(
         b'{"query":"query($x: String = \\"a\\") # a\xc2\x85b\\n{ transcript(id: $x) { id } }","variables":{"x":null}}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Argument \\"id\\" of non-null type \\"String!\\" must not be null.","locations":[{"line":2,"column":18}],"path":["transcript"],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":{"transcript":null}}',
+            b'{"errors":[{"friendly":false,"message":"Argument \\"id\\" of non-null type \\"String!\\" must not be null.","locations":[{"line":2,"column":18}],"path":["transcript"],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":{"transcript":null}}\n',
             200,
         ),
         id="null for a non-null argument after U+0085 in a comment",
@@ -479,7 +478,7 @@ _FIREFLIES_BODIES = [
     pytest.param(
         b'{"query":"{ ...F }"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}',
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
             500,
         ),
         id="a fragment not defined",
@@ -487,7 +486,7 @@ _FIREFLIES_BODIES = [
     pytest.param(
         b'{"query":"fragment F on Query { ...F } { ...F }"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}',
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
             500,
         ),
         id="a fragment that spreads itself",
@@ -495,21 +494,21 @@ _FIREFLIES_BODIES = [
     pytest.param(
         b'{"query":"fragment G on Query { ...X } { __typename }"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":26}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"G\\" is never used.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}'
+            b'{"errors":[{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":26}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"G\\" is never used.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
         ),
         id="an undefined spread in a fragment no operation uses",
     ),
     pytest.param(
         b'{"query":"fragment A on Query { ...B } fragment B on Query { ...A } { __typename }"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Cannot spread fragment \\"A\\" within itself via \\"B\\".","locations":[{"line":1,"column":23},{"line":1,"column":52}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"A\\" is never used.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"B\\" is never used.","locations":[{"line":1,"column":30}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}'
+            b'{"errors":[{"friendly":false,"message":"Cannot spread fragment \\"A\\" within itself via \\"B\\".","locations":[{"line":1,"column":23},{"line":1,"column":52}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"A\\" is never used.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"B\\" is never used.","locations":[{"line":1,"column":30}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
         ),
         id="a cycle among fragments no operation uses",
     ),
     pytest.param(
         b'{"query":"{ ... on Query { ...X } }"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}',
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
             500,
         ),
         id="an undefined spread in an inline fragment",
@@ -517,7 +516,7 @@ _FIREFLIES_BODIES = [
     pytest.param(
         b'{"query":"query A { __typename } query B { ...X }","operationName":"A"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}',
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
             500,
         ),
         id="an undefined spread in an operation not chosen",
@@ -525,7 +524,7 @@ _FIREFLIES_BODIES = [
     pytest.param(
         b'{"query":"fragment F on Query { ...X } { ...F }"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}',
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
             500,
         ),
         id="an undefined spread in a fragment an operation uses",
@@ -533,14 +532,14 @@ _FIREFLIES_BODIES = [
     pytest.param(
         b'{"query":"fragment F on Query { ...F } { __typename }"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Cannot spread fragment \\"F\\" within itself.","locations":[{"line":1,"column":23}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"F\\" is never used.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}'
+            b'{"errors":[{"friendly":false,"message":"Cannot spread fragment \\"F\\" within itself.","locations":[{"line":1,"column":23}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"F\\" is never used.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
         ),
         id="a fragment spreading itself that no operation uses",
     ),
     pytest.param(
         b'{"query":"{ ...X"}',
         WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Syntax Error: Expected Name, found <EOF>.","locations":[{"line":1,"column":7}],"code":"GRAPHQL_PARSE_FAILED","extensions":{}}]}'
+            b'{"errors":[{"friendly":false,"message":"Syntax Error: Expected Name, found <EOF>.","locations":[{"line":1,"column":7}],"code":"GRAPHQL_PARSE_FAILED","extensions":{}}]}\n'
         ),
         id="an undefined spread beside a document that cannot parse",
     ),
@@ -1350,7 +1349,7 @@ _UNSUPPORTED = (
     b'{"statusCode":415,"status":false,"code":"http","message":"Unsupported Media Type",'
     b'"errorMessage":"Unsupported Media Type"}'
 )
-_TYPENAME_DATA = b'{"data":{"__typename":"Query"}}'
+_TYPENAME_DATA = b'{"data":{"__typename":"Query"}}\n'
 _JSON_UTF8 = "application/json; charset=utf-8"
 _GRAPHQL_RESPONSE = "application/graphql-response+json; charset=utf-8"
 _CLOUDFLARE_PAGE = (
@@ -2321,3 +2320,255 @@ def test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does(
     else:
         assert r.content == answer
     assert {name: r.headers.get(name) for name in expected_headers} == expected_headers
+
+
+# The headers on each kind of answer, as `backlot.routers.fireflies._from_fastify`, `_answer` and
+# `Budget` record what api.fireflies.ai sent: the request, the credential
+# (`_FIREFLIES_CREDENTIALS`), the status, and each header named, None for one it did not send.
+_HSTS = "max-age=31536000; includeSubDomains"
+_RESOLVER = b'{"query":"{ user { user_id } }"}'
+
+
+def _fastify(cache_control=None, **more):
+    """What each answer of Fastify's carries, ``cache_control`` and ``more`` beside it."""
+    return {
+        "access-control-allow-origin": "*",
+        "strict-transport-security": _HSTS,
+        "cache-control": cache_control,
+        "x-ratelimit-limit-api": None,
+    } | {name.replace("_", "-"): value for name, value in more.items()}
+
+
+_FIREFLIES_HEADERS = [
+    pytest.param("POST", "", _J, _TYPENAME, "key", 200, _fastify("no-store"), id="served"),
+    pytest.param(
+        "POST",
+        "",
+        _J,
+        _RESOLVER,
+        "key",
+        200,
+        _fastify("no-store")
+        | {
+            "x-ratelimit-limit-api_burst": "30",
+            "x-ratelimit-limit-api": "500",
+            "x-ratelimit-limit": "500",
+            "retry-after": None,
+        },
+        id="a resolver ran",
+    ),
+    *(
+        pytest.param("POST", "", _J, b, "key", 400, _fastify("no-store"), id=i)
+        for b, i in (
+            (b'{"query":"{ nosuch }"}', "not valid"),
+            (b'{"query":"{"}', "does not parse"),
+            (b'{"query":""}', "no query"),
+            (b'{"query":"query($x: Int!) { __typename }"}', "a variable not provided"),
+        )
+    ),
+    pytest.param(
+        "GET",
+        "?query=mutation%20%7B%20__typename%20%7D",
+        _P,
+        None,
+        "key",
+        405,
+        _fastify("no-store"),
+        id="GET of a mutation",
+    ),
+    pytest.param(
+        "POST",
+        "",
+        _J,
+        b'{"extensions":{"persistedQuery":{"version":1,"sha256Hash":"' + b"1" * 64 + b'"}}}',
+        "key",
+        200,
+        _fastify("private, no-cache, must-revalidate"),
+        id="a persisted query's hash alone",
+    ),
+    pytest.param(
+        "POST", "", (("Content-Type", "text/plain"),), _TYPENAME, "key", 400, _fastify(), id="CSRF"
+    ),
+    pytest.param("POST", "", _J, b"[]", "key", 400, _fastify(), id="a batch"),
+    pytest.param(
+        "POST", "", (*_J, ("Accept", "text/html")), _TYPENAME, "key", 406, _fastify(), id="406"
+    ),
+    pytest.param("HEAD", _Q, _P, None, "key", 405, _fastify(), id="HEAD"),
+    pytest.param("POST", "", _J, _RESOLVER, "none", 500, _fastify(), id="no credential"),
+    pytest.param("GET", "", (("Accept", "text/html"),), None, "none", 200, _fastify(), id="page"),
+    pytest.param("POST", "", _J, b"x", "key", 400, _fastify(), id="not JSON"),
+    pytest.param("POST", "", (("Content-Type", "a/b/c"),), b"x", "key", 415, _fastify(), id="415"),
+    pytest.param("PUT", "", _J, _TYPENAME, "key", 404, _fastify(), id="Fastify's 404"),
+    pytest.param("POST", "/graphql/", _J, _TYPENAME, "key", 404, _fastify(), id="/graphql/"),
+    pytest.param("OPTIONS", "", _PREFLIGHT_ASKED, None, "none", 204, _fastify(), id="preflight"),
+    pytest.param(
+        "POST",
+        "/nosuch",
+        _J,
+        _TYPENAME,
+        "key",
+        404,
+        {"access-control-allow-origin": None, "strict-transport-security": _HSTS},
+        id="nginx's 404",
+    ),
+    pytest.param(
+        "POST",
+        "",
+        (*_J, ("Origin", "https://example.com")),
+        _TYPENAME,
+        "key",
+        200,
+        _fastify("no-store"),
+        id="Origin",
+    ),
+    pytest.param(
+        "TRACE",
+        "",
+        (),
+        None,
+        "key",
+        405,
+        {"access-control-allow-origin": None, "strict-transport-security": None},
+        id="Cloudflare's TRACE",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "method,target,headers,body,credential,status,expected", _FIREFLIES_HEADERS
+)
+def test_fireflies_answers_carry_the_headers_fireflies_sends(
+    client, tokens_yaml, method, target, headers, body, credential, status, expected
+):
+    """Each row of `_FIREFLIES_HEADERS`. A function of its own beside
+    `test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does`, whose rows hold
+    the status, the type and the body: these hold the headers each kind of answer carries."""
+    sent = list(headers)
+    if _FIREFLIES_CREDENTIALS[credential] is not None:
+        value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
+        sent.append(("Authorization", value))
+    path = target if target.startswith("/") else f"/graphql{target}"
+    r = sent_as(client, method, f"/fireflies{path}", sent, content=body, bare=True)
+    assert r.status_code == status
+    assert {name: r.headers.get(name) for name in expected} == expected
+
+
+def _budget(client, monkeypatch, start=1_793_020_105.0):
+    """A budget on a clock the test moves, with the refusal on, and the clock."""
+    from backlot.routers import fireflies
+
+    now = [start]
+    client.app.state.fireflies_budget = fireflies.Budget(clock=lambda: now[0])
+    monkeypatch.setattr(fireflies.get_settings(), "fireflies_enforce_rate_limits", True)
+    return now
+
+
+def _ratelimit(r) -> dict:
+    return {k: v for k, v in r.headers.items() if k.startswith(("x-ratelimit", "retry-after"))}
+
+
+def _key(tokens_yaml) -> dict:
+    return {
+        "Authorization": f"Bearer {tokens_yaml['admin_token']}",
+        "Content-Type": "application/json",
+    }
+
+
+def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monkeypatch):
+    """Thirty `{ user { user_id } }` in 11 seconds are served, the 30th leaving none of the
+    minute; the 31st is refused, `{ __typename }` beside it is served with no budget's headers, and
+    a document of 33 aliases a minute on is served 30 and refused 3. The answers are shaped as
+    api.fireflies.ai's of 2026-10-26 (UTC), the counts starting from a key that has spent
+    nothing."""
+    now = _budget(client, monkeypatch)
+    for i in range(30):
+        now[0] = 1_793_020_105.0 + i * 11 / 29
+        r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
+    assert r.json().get("errors") is None
+    assert _ratelimit(r) == {
+        "x-ratelimit-limit-api_burst": "30",
+        "x-ratelimit-remaining-api_burst": "0",
+        "x-ratelimit-reset-api_burst": "49",
+        "x-ratelimit-limit-api": "500",
+        "x-ratelimit-remaining-api": "470",
+        "x-ratelimit-reset-api": "39084",
+        "x-ratelimit-limit": "500",
+        "x-ratelimit-remaining": "470",
+        "x-ratelimit-reset": "39084",
+    }
+    now[0] = 1_793_020_105.653
+    r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
+    assert r.content == (
+        b'{"errors":[{"friendly":true,"message":"Too many requests. Please retry after Mon, 26 Oct'
+        b' 2026 13:09:25 GMT (UTC)","locations":[{"line":1,"column":3}],"path":["user"],"code":"to'
+        b'o_many_requests","extensions":{"code":"too_many_requests","status":429,"metadata":{"retr'
+        b'yAfter":1793020165653},"helpUrls":["https://docs.fireflies.ai/miscellaneous/error-codes#'
+        b'too_many_requests"]}}],"data":{"user":null}}\n'
+    )
+    assert _ratelimit(r) == {
+        "retry-after-api_burst": "60",
+        "retry-after": "60",
+        "x-ratelimit-limit": "30",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "60",
+    }
+    r = client.post("/fireflies/graphql", content=_TYPENAME, headers=_key(tokens_yaml))
+    assert (r.json(), _ratelimit(r)) == ({"data": {"__typename": "Query"}}, {})
+    now[0] = 1_793_020_171.0
+    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(33))
+    r = client.post(
+        "/fireflies/graphql", json={"query": "{ " + aliases + " }"}, headers=_key(tokens_yaml)
+    )
+    body = r.json()
+    assert [e["path"] for e in body["errors"]] == [["a30"], ["a31"], ["a32"]]
+    assert list(body["data"]) == [f"a{i}" for i in range(33)]
+    assert [body["data"][f"a{i}"] for i in (30, 31, 32)] == [None, None, None]
+    assert list(body) == ["errors", "data"]
+    assert _ratelimit(r) == {
+        "x-ratelimit-limit-api_burst": "30",
+        "x-ratelimit-remaining-api_burst": "0",
+        "x-ratelimit-reset-api_burst": "60",
+        "retry-after-api_burst": "60",
+        "x-ratelimit-limit-api": "500",
+        "x-ratelimit-remaining-api": "440",
+        "x-ratelimit-reset-api": "39029",
+        "x-ratelimit-limit": "500",
+        "x-ratelimit-remaining": "440",
+        "x-ratelimit-reset": "39029",
+        "retry-after": "60",
+    }
+
+
+def test_fireflies_serves_past_the_budget_with_the_refusal_off(client, tokens_yaml, monkeypatch):
+    """With `fireflies_enforce_rate_limits` off the 31st field is served, the minute's count
+    stopping at 0."""
+    from backlot.routers import fireflies
+
+    _budget(client, monkeypatch)
+    monkeypatch.setattr(fireflies.get_settings(), "fireflies_enforce_rate_limits", False)
+    for _ in range(31):
+        r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
+    assert r.json().get("errors") is None
+    assert r.headers["x-ratelimit-remaining-api_burst"] == "0"
+
+
+def test_fireflies_refuses_a_field_past_the_days_500(client, tokens_yaml, monkeypatch):
+    """Once the day's 500 are spent a field is refused until midnight UTC, and the next day serves
+    it again."""
+    now = _budget(client, monkeypatch)
+    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(30))
+    for minute in range(17):
+        now[0] = 1_793_020_105.0 + minute * 61
+        r = client.post(
+            "/fireflies/graphql", json={"query": "{ " + aliases + " }"}, headers=_key(tokens_yaml)
+        )
+    body = r.json()
+    assert len(body["errors"]) == 10
+    message = body["errors"][0]["message"]
+    assert message == "Too many requests. Please retry after Tue, 27 Oct 2026 00:00:00 GMT (UTC)"
+    assert body["errors"][0]["extensions"]["metadata"] == {"retryAfter": 1793059200000}
+    assert r.headers["x-ratelimit-remaining-api"] == "0"
+    now[0] = 1_793_059_200.0
+    r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
+    assert r.json().get("errors") is None
+    assert r.headers["x-ratelimit-remaining-api"] == "499"

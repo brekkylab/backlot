@@ -22,13 +22,14 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from functools import lru_cache
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, published, store, synth
+from backlot import ascii_folding, auth, published, store, synth
 from backlot.acl import Caller
 from backlot.errors.atlassian import _java_double as _parse_java_double
 from backlot.openapi import qp
@@ -1041,6 +1042,27 @@ def _refuse_a_batch_read_shape(
     return None
 
 
+def _hubspot_fold(value: str) -> str:
+    """A string property as a search filter compares it: in NFKC, folded as Lucene's
+    `ASCIIFoldingFilter` folds it (:mod:`backlot.ascii_folding`), then in lower case. Read off
+    real's answers; the vendor does not say which analyzer its search runs.
+
+    Measured against api.hubapi.com on 2026-10-16 and 2026-10-25, ``firstname EQ`` against
+    contacts stored as ``Maria``, ``Brian``, ``bob`` and ``cara``. Each letter the table folds that
+    was sent matched the letter it folds to: ``MARÍA``, ``MARİA``, ``marıa``, ``maʀia``, ``BØB``,
+    ``bᴏb``, ``ƀob``, ``ʙob``, ``Mɐria``, ``Məria``, ``bɔb``, ``Briaŋ``, ``ɯaria``, ``ᴄara``,
+    ``ȼara``, ``MarƗa`` and ``Maɍia`` among them. So did each that NFKC takes to one, fullwidth
+    ``ＭＡＲＩＡ``, ``Mªria``, ``bºb``, ``bⓞb``, ``Marⅰa``, ``Marℹa`` and ``ℳaria``, and an acute or a
+    diaeresis NFKC composes with the letter before it, ``maria`` + U+0301 and ``bo`` + U+0308 +
+    ``b``. ``Mɑria`` (U+0251), ``Marɩa`` (U+0269) and ``bᴑb`` (U+1D11), which the table leaves, did
+    not, nor did a Greek capital iota, a Cyrillic ``о`` or ``і``, a mark NFKC leaves on its own
+    (``b`` + U+0302 + ``ob``, ``bob`` + U+0308) or a value whose spaces differ. ``IN`` and ``NEQ``
+    compare the same way; an enumeration property does not fold at all, which its caller decides.
+    """
+    text = unicodedata.normalize("NFKC", str(value))
+    return text.translate(ascii_folding.TABLE).lower()
+
+
 def _match_one(prop, f: dict) -> bool:
     op = _operator(f)
     present = prop is not None
@@ -1063,10 +1085,10 @@ def _match_one(prop, f: dict) -> bool:
     # `name` and `domain` matched in any case on 2026-10-09 and 2026-10-16, and on 2026-10-16
     # `lifecyclestage EQ LEAD`, `dealstage EQ APPOINTMENTSCHEDULED` and `pipeline EQ DEFAULT`
     # answered nothing where the lower-case values matched. The four below are the enumerations
-    # (`/crm/v3/properties`, 2026-10-16) among the properties the bundled records carry. Real also
-    # folds accents (`MARÍA` and `marıa` match `Maria`), which `str.lower` does not.
+    # (`/crm/v3/properties`, 2026-10-16) among the properties the bundled records carry. A string
+    # property is compared through :func:`_hubspot_fold`.
     exact = f.get("propertyName") in {"lifecyclestage", "dealstage", "pipeline", "industry"}
-    fold = str if exact else str.lower
+    fold = str if exact else _hubspot_fold
     if op in ("EQ", "NEQ"):
         hit = any(fold(c) == fold(str(target)) for c in cands)
         return hit if op == "EQ" else not hit
@@ -1168,21 +1190,23 @@ def _sql_prefilter(body: dict):
             frags.append("json_extract(properties, ?) IS NOT NULL")
             params.append(path)
         elif op in ("EQ", "IN", "CONTAINS_TOKEN"):
-            # The value (or every needle token) must appear somewhere in the properties text. True
-            # whether the property holds a scalar or a list, which is why this is a substring test
-            # rather than an equality one.
+            # A substring of the properties text, whether the value is a scalar or a list. An
+            # ascii needle also keeps a row whose JSON holds a `\u` escape: accent folding matches
+            # that stored value, and the escape does not contain the needle. `_match_one` decides
+            # those rows. A row with neither the needle nor an escape cannot match.
             needles = [f.get("value")] if op != "IN" else list(f.get("values") or [])
             if op == "CONTAINS_TOKEN":
                 needles = list(_tokens(str(f.get("value") or "")))
             vals = [_ascii_scalar(v) for v in needles]
             if not vals or any(v is None for v in vals):
                 return None
+            needle = (
+                "(instr(lower(properties), lower(?)) > 0 OR instr(properties, char(92) || 'u') > 0)"
+            )
             if op == "IN":
-                frags.append(
-                    "(" + " OR ".join(["instr(lower(properties), lower(?)) > 0"] * len(vals)) + ")"
-                )
+                frags.append("(" + " OR ".join([needle] * len(vals)) + ")")
             else:
-                frags += ["instr(lower(properties), lower(?)) > 0"] * len(vals)
+                frags += [needle] * len(vals)
             params += vals
         # every other operator (NEQ/NOT_*/comparisons/BETWEEN) has no safe necessary condition here
     return (" AND ".join(frags), params) if frags else None

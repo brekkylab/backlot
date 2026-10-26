@@ -87,6 +87,11 @@ _CONFLUENCE = [
     (r"No content found with id", "content_not_found"),
     (r"No space (found )?with key", "space_not_found"),
     (r"cql query parameter is required", "cql_required"),
+    (
+        r"Could not parse cql : |Expecting a value for operator |Missing closing parenthesis near "
+        r"|Unrecognised clause at : ",
+        "invalid_cql",
+    ),
     (r"^Unauthorized$", "unauthenticated"),
     (r"^null for uri: ", "no_endpoint"),
     (r"FORBIDDEN|^Current user not permitted to use Confluence", "forbidden"),

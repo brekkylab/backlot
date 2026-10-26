@@ -714,6 +714,10 @@ OLD_VERSION = {"X-GitHub-Api-Version": "1999-01-01"}
         ("GET", f"{W}/content?spaceKey=NOPE", {}, "space_not_found"),
         ("GET", f"{W}/space/NOPE", {}, "space_not_found"),
         ("GET", f"{W}/search", {}, "cql_required"),
+        ("GET", f"{W}/search?cql=%22", {}, "invalid_cql"),
+        ("GET", f"{W}/search?cql=type%3D", {}, "invalid_cql"),
+        ("GET", f"{W}/search?cql=%28type%3Dpage", {}, "invalid_cql"),
+        ("GET", f"{W}/search?cql=type%3Dpage+b", {}, "invalid_cql"),
         (
             "GET",
             f"{W}/space",

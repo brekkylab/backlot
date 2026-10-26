@@ -1237,7 +1237,7 @@ async def merge_slashes_before_a_slack_method_name(request: Request, call_next):
 
     The run is read off the bytes sent (``scope["raw_path"]``), because a `/` or `\\` sent escaped
     is no part of it: real's front end refused `%2Fapi.test` and `%5Capi.test` with an empty 400
-    on 2026-10-25, so a path like those is left as it came.
+    on 2026-10-25, so the rewrite does not touch such a path.
 
     Registered after the other Slack middlewares, which makes it the outermost of them: the path
     is rewritten before the body is read, before an unserved name is answered and before any route

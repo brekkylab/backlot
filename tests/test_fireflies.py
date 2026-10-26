@@ -2559,17 +2559,20 @@ def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monk
     r = client.post("/fireflies/graphql", content=_TYPENAME, headers=_key(tokens_yaml))
     assert (r.json(), _ratelimit(r)) == ({"data": {"__typename": "Query"}}, {})
     now[0] = 1_793_020_171.0
-    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(32))
-    document = "{ " + aliases + " a32: transcripts(limit: 0) { id } }"
+    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(1, 32))
+    document = (
+        "{ a0: transcripts(limit: 0) { id } " + aliases + " a32: transcripts(limit: 0) { id } }"
+    )
     r = client.post("/fireflies/graphql", json={"query": document}, headers=_key(tokens_yaml))
     body = r.json()
     assert [(e["path"], e["code"]) for e in body["errors"]] == [
+        (["a0"], "invalid_arguments"),
         (["a30"], "too_many_requests"),
         (["a31"], "too_many_requests"),
         (["a32"], "too_many_requests"),
     ]
     assert list(body["data"]) == [f"a{i}" for i in range(33)]
-    assert all(body["data"][f"a{i}"]["user_id"] for i in range(30))
+    assert all(body["data"][f"a{i}"]["user_id"] for i in range(1, 30))
     assert [body["data"][f"a{i}"] for i in (30, 31, 32)] == [None, None, None]
     assert list(body) == ["errors", "data"]
     assert _ratelimit(r) == {

@@ -1225,6 +1225,38 @@ async def warn_slack_post_charset(request: Request, call_next):
 
 
 @_middleware(
+    lambda scope: (scope.get("raw_path") or b"").startswith((b"/slack/api//", b"/slack/api/\\"))
+)
+async def merge_slashes_before_a_slack_method_name(request: Request, call_next):
+    """Serve a `/slack/api/` path whose method name follows a run of `/`s and `\\`s as the method
+    it names, because real does: measured against slack.com/api on 2026-10-20 and 2026-10-25,
+    `api.test` (no token, a bogus one, a form `POST`) and `conversations.list` (no token, a bogus
+    one, a user token by `GET` and `POST`) after `/api/` and a run of `/`, `//`, `\\`, `\\\\`, `\\/`
+    or `/\\` answered as on their own spelling, and so did `emoji.list` and `nonexistent.method`
+    after `/api//`.
+
+    The run is read off the bytes sent (``scope["raw_path"]``), because a `/` or `\\` sent escaped
+    is no part of it: real's front end refused `%2Fapi.test` and `%5Capi.test` with an empty 400
+    on 2026-10-25, so the rewrite does not touch such a path.
+
+    Registered after the other Slack middlewares, which makes it the outermost of them: the path
+    is rewritten before the body is read, before an unserved name is answered and before any route
+    is matched, so every served method gains the second spelling with its own credential, body and
+    charset rules intact, rather than each layer learning the run for itself. Only a path whose
+    name after the run ``slack.method_name`` reads as a method's is rewritten: a run anywhere else
+    names no method (`/api/a//b.c` is real's 404 page, which the unserved layer answers), and a name
+    it cannot read (`/api//a-b`) is left for that layer's page too."""
+    raw = request.scope["raw_path"]
+    name = raw.removeprefix(b"/slack/api/").lstrip(b"/\\")
+    run = len(raw) - len(b"/slack/api/") - len(name)
+    merged = "/slack/api/" + request.scope["path"].removeprefix("/slack/api/")[run:]
+    if slack.method_name(merged) is not None:
+        request.scope["path"] = merged
+        request.scope["raw_path"] = b"/slack/api/" + name
+    return await call_next(request)
+
+
+@_middleware(
     lambda scope: (
         _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
         and auth.repeated_authorization(Request(scope))

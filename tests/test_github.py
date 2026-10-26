@@ -4579,43 +4579,160 @@ def _sent_raw(client, path: str, headers: dict[str, bytes]):
     return asyncio.run(send())
 
 
-#: Each version sent, as bytes, and the quoted value real's backend wrote in its `message`, as the
-#: bytes of its JSON (``backlot.routers.github._go_quoted`` has the measurement).
-_GO_QUOTED_VERSIONS = [
-    (b'<a>&"b"\\c', b'\\"\\u003ca\\u003e\\u0026\\\\\\"b\\\\\\"\\\\\\\\c\\"'),
-    (b"a\tb", b'\\"a\\\\tb\\"'),
-    (b"a\x80b", b'\\"a\\\\x80b\\"'),
-    (b"a\xffb", b'\\"a\\\\xffb\\"'),
-    (b"a\xc3b", b'\\"a\\\\xc3b\\"'),
-    (b"a\xc0\xafb", b'\\"a\\\\xc0\\\\xafb\\"'),
-    (b"a\xed\xa0\x80b", b'\\"a\\\\xed\\\\xa0\\\\x80b\\"'),
-    (b"a\xc3\xa9b", b'\\"a\xc3\xa9b\\"'),
-    (b"a\xef\xbf\xbdb", b'\\"a\xef\xbf\xbdb\\"'),
-    (b"a\xf0\x9f\x98\x80b", b'\\"a\xf0\x9f\x98\x80b\\"'),
-    (b"a\xcc\x81b", b'\\"a\xcc\x81b\\"'),
-    (b"a\xc2\xa0b", b'\\"a\\\\u00a0b\\"'),
-    (b"a\xe2\x80\xa8b", b'\\"a\\\\u2028b\\"'),
-    (b"a\xe2\x80\x8bb", b'\\"a\\\\u200bb\\"'),
-    (b"a\xee\x80\x80b", b'\\"a\\\\ue000b\\"'),
-    (b"a\xef\xbf\xbfb", b'\\"a\\\\uffffb\\"'),
-    (b"a\xf4\x8f\xbf\xbfb", b'\\"a\\\\U0010ffffb\\"'),
+#: The characters past ASCII that Go's `unicode.IsSpace` holds, each of which real's backend trims
+#: from a version and its gateway does not (``backlot.routers.github._read_api_version`` has the
+#: measurement).
+_GO_SPACE_PAST_ASCII = (
+    "\x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029"
+    "\u202f\u205f\u3000"
+)
+
+#: Each version sent, as bytes, and the value real's gateway and backend named in their 400s, as
+#: the bytes of each JSON (``backlot.routers.github._read_api_version`` and ``_go_quoted`` have the
+#: measurements).
+_VERSIONS_NAMED = [
+    (
+        b'<a>&"b"\\c',
+        b'\\"<a>&\\"b\\"\\\\c\\"',
+        b'\\"\\u003ca\\u003e\\u0026\\\\\\"b\\\\\\"\\\\\\\\c\\"',
+    ),
+    (b"a\tb", b'\\"a\\tb\\"', b'\\"a\\\\tb\\"'),
+    (b"a\x80b", b'\\"a\xef\xbf\xbdb\\"', b'\\"a\\\\x80b\\"'),
+    (b"a\xffb", b'\\"a\xef\xbf\xbdb\\"', b'\\"a\\\\xffb\\"'),
+    (b"a\xc3b", b'\\"a\xef\xbf\xbdb\\"', b'\\"a\\\\xc3b\\"'),
+    (b"a\xc0\xafb", b'\\"a\xef\xbf\xbd\xef\xbf\xbdb\\"', b'\\"a\\\\xc0\\\\xafb\\"'),
+    (
+        b"a\xed\xa0\x80b",
+        b'\\"a\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbdb\\"',
+        b'\\"a\\\\xed\\\\xa0\\\\x80b\\"',
+    ),
+    (b"a\xc3\xa9b", b'\\"a\xc3\xa9b\\"', b'\\"a\xc3\xa9b\\"'),
+    (b"a\xef\xbf\xbdb", b'\\"a\xef\xbf\xbdb\\"', b'\\"a\xef\xbf\xbdb\\"'),
+    (b"a\xf0\x9f\x98\x80b", b'\\"a\xf0\x9f\x98\x80b\\"', b'\\"a\xf0\x9f\x98\x80b\\"'),
+    (b"a\xcc\x81b", b'\\"a\xcc\x81b\\"', b'\\"a\xcc\x81b\\"'),
+    (b"a\xc2\xa0b", b'\\"a\xc2\xa0b\\"', b'\\"a\\\\u00a0b\\"'),
+    (b"a\xe2\x80\xa8b", b'\\"a\xe2\x80\xa8b\\"', b'\\"a\\\\u2028b\\"'),
+    (b"a\xe2\x80\x8bb", b'\\"a\xe2\x80\x8bb\\"', b'\\"a\\\\u200bb\\"'),
+    (b"a\xee\x80\x80b", b'\\"a\xee\x80\x80b\\"', b'\\"a\\\\ue000b\\"'),
+    (b"a\xef\xbf\xbfb", b'\\"a\xef\xbf\xbfb\\"', b'\\"a\\\\uffffb\\"'),
+    (b"a\xf4\x8f\xbf\xbfb", b'\\"a\xf4\x8f\xbf\xbfb\\"', b'\\"a\\\\U0010ffffb\\"'),
+    (b"a\x80\x80b", b'\\"a\xef\xbf\xbd\xef\xbf\xbdb\\"', b'\\"a\\\\x80\\\\x80b\\"'),
+    (b"a\xe2\x82b", b'\\"a\xef\xbf\xbdb\\"', b'\\"a\\\\xe2\\\\x82b\\"'),
+    (
+        b"a\xf4\x90\x80\x80b",
+        b'\\"a\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbdb\\"',
+        b'\\"a\\\\xf4\\\\x90\\\\x80\\\\x80b\\"',
+    ),
+    (b"a\xe2\x82\x80\x80b", b'\\"a\xe2\x82\x80\xef\xbf\xbdb\\"', b'\\"a\xe2\x82\x80\\\\x80b\\"'),
+    (b"a\xf0\x9f\x9b\x9cb", b'\\"a\xf0\x9f\x9b\x9cb\\"', b'\\"a\xf0\x9f\x9b\x9cb\\"'),
+    (b"a\xf0\xb1\x8d\x90b", b'\\"a\xf0\xb1\x8d\x90b\\"', b'\\"a\xf0\xb1\x8d\x90b\\"'),
+    (b"a\xf0\xae\xaf\xb0b", b'\\"a\xf0\xae\xaf\xb0b\\"', b'\\"a\\\\U0002ebf0b\\"'),
+    (b"a\xe3\x87\xafb", b'\\"a\xe3\x87\xafb\\"', b'\\"a\\\\u31efb\\"'),
+    (b"a\xe2\xbf\xbcb", b'\\"a\xe2\xbf\xbcb\\"', b'\\"a\\\\u2ffcb\\"'),
+    (b"a\xf0\x9c\xb0\x80b", b'\\"a\xf0\x9c\xb0\x80b\\"', b'\\"a\\\\U0001cc00b\\"'),
+    (b"a\xe0\xa2\x97b", b'\\"a\xe0\xa2\x97b\\"', b'\\"a\\\\u0897b\\"'),
+    (b"a\xf0\x9e\x97\x90b", b'\\"a\xf0\x9e\x97\x90b\\"', b'\\"a\\\\U0001e5d0b\\"'),
+    (b"a\xe0\xb1\x9cb", b'\\"a\xe0\xb1\x9cb\\"', b'\\"a\\\\u0c5cb\\"'),
+    (b"a\xf0\x9e\x9b\x80b", b'\\"a\xf0\x9e\x9b\x80b\\"', b'\\"a\\\\U0001e6c0b\\"'),
+    (b" a", b'\\"a\\"', b'\\"a\\"'),
+    (b"\ta", b'\\"a\\"', b'\\"a\\"'),
+    (b"a ", b'\\"a\\"', b'\\"a\\"'),
+    (b"a\t", b'\\"a\\"', b'\\"a\\"'),
+    (b"a \t ", b'\\"a\\"', b'\\"a\\"'),
+    (b"a\xa0", b'\\"a\xef\xbf\xbd\\"', b'\\"a\\\\xa0\\"'),
+    (b"a\x80 ", b'\\"a\xef\xbf\xbd\\"', b'\\"a\\\\x80\\"'),
+    (b"a \x80", b'\\"a \xef\xbf\xbd\\"', b'\\"a \\\\x80\\"'),
+    *[
+        (f"a{ch}".encode(), b'\\"a' + ch.encode() + b'\\"', b'\\"a\\"')
+        for ch in _GO_SPACE_PAST_ASCII
+    ],
+    (b"a\xe2\x80\x8b", b'\\"a\xe2\x80\x8b\\"', b'\\"a\\\\u200b\\"'),
+    (b"a\xe1\xa0\x8e", b'\\"a\xe1\xa0\x8e\\"', b'\\"a\\\\u180e\\"'),
+    (b"a\xef\xbb\xbf", b'\\"a\xef\xbb\xbf\\"', b'\\"a\\\\ufeff\\"'),
+    (b"\xc2\xa0a", b'\\"\xc2\xa0a\\"', b'\\"a\\"'),
+    (b"\xe3\x80\x80a", b'\\"\xe3\x80\x80a\\"', b'\\"a\\"'),
+    (b"\xe2\x80\x8ba", b'\\"\xe2\x80\x8ba\\"', b'\\"\\\\u200ba\\"'),
 ]
 
 
-@pytest.mark.parametrize("sent, quoted", _GO_QUOTED_VERSIONS)
-def test_github_backend_version_error_quotes_the_value_as_go_does(
-    gh_client, gh_admin_h, gh_org, sent, quoted
+@pytest.mark.parametrize("sent, gateway, backend", _VERSIONS_NAMED)
+def test_github_version_errors_name_the_value_as_real_does(
+    gh_client, gh_admin_h, gh_org, sent, gateway, backend
 ):
-    """The backend's 400 bytes for a value its quoting and escaping change
-    (``backlot.routers.github._go_quoted``, ``backlot.errors.github.rendered``)."""
+    """The gateway's and the backend's 400 bytes for a value their reading, quoting and escaping
+    change (``backlot.routers.github._read_api_version``, ``_go_quoted``,
+    ``backlot.errors.github.rendered``)."""
     c, _ = gh_client
     headers = {"Authorization": gh_admin_h["Authorization"].encode(), "X-GitHub-Api-Version": sent}
+    response = _sent_raw(c, f"/github/repos/{gh_org}/gateway/issues/1", headers)
+    assert response.status_code == 400
+    assert response.content == (
+        b'{"message":"Bad Request","errors":"The version you specified in the '
+        b'\\"X-GitHub-API-Version\\" request header, ' + gateway + b", is not a supported version. "
+        b'The following versions are currently supported: \\"2026-03-10\\" (most recent) and '
+        b'\\"2022-11-28\\".","documentation_url":"https://docs.github.com/rest","status":"400"}'
+    )
     response = _sent_raw(c, f"/github/repos/{gh_org}/gateway/contents/README.md", headers)
     assert response.status_code == 400
     assert response.content == (
         b'{"message":"The version you specified in the \\"X-GitHub-Api-Version\\" request '
-        b"header, " + quoted + b", is not a supported version. The following versions are "
+        b"header, " + backend + b", is not a supported version. The following versions are "
         b'currently supported: \\"2026-03-10\\" (most recent), and \\"2022-11-28\\"."}\n'
+    )
+
+
+@pytest.mark.parametrize(
+    "sent, by_gateway, by_backend",
+    [
+        (b"2022-11-28 ", "2022-11-28", "2022-11-28"),
+        (b" 2022-11-28", "2022-11-28", "2022-11-28"),
+        (b"\t2026-03-10", "2026-03-10", "2026-03-10"),
+        (b"2022-11-28\t", "2022-11-28", "2022-11-28"),
+        (b"2026-03-10  ", "2026-03-10", "2026-03-10"),
+        *[(f"2022-11-28{ch}".encode(), None, "2022-11-28") for ch in _GO_SPACE_PAST_ASCII],
+        ("\xa02022-11-28".encode(), None, "2022-11-28"),
+        ("2026-03-10\u2028".encode(), None, "2026-03-10"),
+        ("\xa0".encode(), None, "2022-11-28"),
+        ("\u3000".encode(), None, "2022-11-28"),
+        *[(f"2022-11-28{ch}".encode(), None, None) for ch in "\u200b\u180e\ufeff"],
+    ],
+)
+def test_github_api_version_is_read_with_the_whitespace_its_reader_trims(
+    gh_client, gh_admin_h, gh_org, sent, by_gateway, by_backend
+):
+    """The version a value with whitespace around it selects, ``None`` for the version's 400, on
+    each route as ``backlot.routers.github._read_api_version`` reads it: a pull's diff on the
+    gateway's side and its JSON on the backend's."""
+    from backlot import synth
+
+    c, _ = gh_client
+    pull = f"/github/repos/{gh_org}/gateway/pulls/{synth.github_number('gh-pr-1')}"
+    for path, accept, selects in (
+        (f"/github/repos/{gh_org}/gateway", b"*/*", by_gateway),
+        (pull, b"application/vnd.github.diff", by_gateway),
+        (f"/github/repos/{gh_org}/codebase/contents/README.md", b"*/*", by_backend),
+        (pull, b"*/*", by_backend),
+    ):
+        headers = {
+            "Authorization": gh_admin_h["Authorization"].encode(),
+            "Accept": accept,
+            "X-GitHub-Api-Version": sent,
+        }
+        response = _sent_raw(c, path, headers)
+        assert response.status_code == (200 if selects else 400), (path, accept, response.content)
+        assert response.headers.get("X-GitHub-Api-Version-Selected", "") == (selects or "")
+
+
+def test_github_go_printable_is_unicode_15_on_this_python():
+    """``_go_printable`` keeps Unicode 15.0's printable set whichever database this Python carries:
+    the digest is of Python 3.12's `str.isprintable` over every code point, 3.12 carrying 15.0, so
+    a Python whose database the tables beside ``_go_printable`` do not correct fails here."""
+    from backlot.routers.github import _go_printable
+
+    printed = bytes(_go_printable(chr(cp)) for cp in range(0x110000))
+    assert (
+        hashlib.sha256(printed).hexdigest()
+        == "a24a109bc8e347f9490466c59e4160d0dc9dd1006a5be9a4c91af71cd2e7fa99"
     )
 
 

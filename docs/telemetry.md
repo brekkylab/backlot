@@ -35,7 +35,7 @@ Two OTLP metrics, as delta counts over each interval:
 - `backlot.http.requests`: calls.
 - `backlot.http.duration`: how long Backlot took to answer, as a histogram in milliseconds.
 
-Backlot's own routes (`/health`, `/_meta`, `/oauth2/token`, the API docs) are not counted, and neither is the GraphQL schema `backlot mcp` reads from Linear and Fireflies when it starts, which carries an `X-Backlot-Internal` header. A server keeps at most 4096 combinations of attributes per interval. Calls past that are not counted under their attributes, and a third count, `backlot.http.dropped`, says how many there were.
+Backlot's own routes (`/health`, `/_meta`, `/oauth2/token`, the API docs) are not counted, and neither is any request carrying an `X-Backlot-Internal` header, which `backlot mcp` sends on the GraphQL schema it reads from Linear and Fireflies when it starts. The servers `backlot diff` starts to compare Backlot with the vendors send nothing. A server keeps at most 4096 combinations of attributes per interval. Calls past that are not counted under their attributes, and a third count, `backlot.http.dropped`, says how many there were.
 
 With them goes one gauge, `backlot.surface.operations`: for each source and support state, how many of the vendor's operations this version of Backlot's baselines records. It is the same for every server running that version, and it is what coverage is measured against.
 

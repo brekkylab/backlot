@@ -11,8 +11,8 @@ from __future__ import annotations
 from backlot.config import Settings
 
 DOCS = "https://github.com/brekkylab/backlot/blob/main/docs/telemetry.md"
-# A request Backlot sends to a Backlot server on its own account, such as the schema `backlot mcp`
-# reads to build its tools, carries this header and is not counted.
+# The middleware does not count a request carrying this header, on any route and with any value.
+# `backlot mcp` sends it on the introspection it reads to build its Linear and Fireflies tools.
 INTERNAL = "X-Backlot-Internal"
 
 

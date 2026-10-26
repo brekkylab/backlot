@@ -351,7 +351,7 @@ def cql_required() -> AtlassianError:
     `?limit=-1` with no `cql` is this 400. The body carries the `data` object
     :func:`start_too_large` describes. A whitespace-only `cql` (`%20`, `%09`) is not this refusal:
     real answers it after the negative one with `Could not parse cql : `, its message for a CQL it
-    cannot parse, and this server does not check CQL syntax.
+    cannot parse, which is :func:`cql_not_parsed`.
     """
     return AtlassianError(
         400,
@@ -376,6 +376,44 @@ def _service_refusal(status: int, exception: str, message: str) -> AtlassianErro
             "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
             "message": f"com.atlassian.confluence.api.service.exceptions.{exception}: {message}",
         },
+    )
+
+
+def cql_not_parsed() -> AtlassianError:
+    """The CQL search's refusal of a `cql` it cannot parse (``routers.atlassian._cql_refusal``).
+    Measured on Confluence Cloud on 2026-10-22 and 2026-10-25: `"`, `type=page and`, `type=page)`
+    and U+1F600 alone each answered this 400 after the caller check, as did `order by created`,
+    `not type=page`, `type=page OR NOT type=blogpost`, `type in ()` and `type=page 5`, and a
+    character ``routers.atlassian._CQL_TOKEN`` makes a token no clause takes, between two
+    letters."""
+    return _service_refusal(400, "api.BadRequestException", "Could not parse cql : ")
+
+
+def cql_expecting_value(operator: str, field: str, got: str | None = None) -> AtlassianError:
+    """The CQL search's refusal of an operator with no value after it: `type=` answered
+    `Expecting a value for operator '=' after field 'type'`, and `type==page` the same with
+    ` but got '='` (Confluence Cloud, 2026-10-22). `title~*` named `~` and `title`, `type in page`
+    `in` and ` but got 'page'`, `type not in page` the operator as `notin`, and `type in (page`
+    ` but got '('` (2026-10-25)."""
+    message = f"Expecting a value for operator '{operator}' after field '{field}'"
+    if got is not None:
+        message += f" but got '{got}'"
+    return _service_refusal(400, "api.BadRequestException", message)
+
+
+def cql_unrecognised_clause(text: str) -> AtlassianError:
+    """The CQL search's refusal of words or quoted values after a whole query, named run together:
+    `type=page b` answered `Unrecognised clause at : b`, `title~a b c` `… at : bc` and
+    `title~a "b"` `… at : "b"` (Confluence Cloud, 2026-10-25)."""
+    return _service_refusal(400, "api.BadRequestException", f"Unrecognised clause at : {text}")
+
+
+def cql_missing_closing_parenthesis() -> AtlassianError:
+    """The CQL search's refusal of a `(` that is never closed: `(type=page` answered
+    `Missing closing parenthesis near field (()` (Confluence Cloud, 2026-10-22). Only that one
+    query was measured, so its text is answered for every unclosed `(`."""
+    return _service_refusal(
+        400, "api.BadRequestException", "Missing closing parenthesis near field (()"
     )
 
 

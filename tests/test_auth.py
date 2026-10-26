@@ -141,10 +141,42 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
     implements neither, and sharing the permissive parser would authenticate five spellings the
     real site serves anonymously — so a client sending ``Authorization: bearer <t>`` would pass
     every test here and read nothing in production. Slack is strict in its own way (see
-    :func:`auth.slack_bearer_token`); it accepts the double space Atlassian refuses, which is why
-    that parser is not shared either.
+    :func:`auth.slack_bearer_token`), which is why that parser is not shared either.
     """
     assert auth.atlassian_bearer_token(_request(header)) == token
+
+
+@pytest.mark.parametrize(
+    "header, token",
+    [
+        ("Bearer usr-abc123", "usr-abc123"),
+        (" Bearer usr-abc123", "usr-abc123"),
+        ("Bearer usr-abc123 ", "usr-abc123"),
+        ("\tBearer usr-abc123", "usr-abc123"),
+        ("Bearer usr-abc123\t", "usr-abc123"),
+        ("Bearer  usr-abc123", " usr-abc123"),
+        ("Bearer   usr-abc123", "  usr-abc123"),
+        ("Bearer \tusr-abc123", "\tusr-abc123"),
+        ("Bearer \xa0usr-abc123", "\xa0usr-abc123"),
+        ("Bearer usr-abc123\xa0", "usr-abc123\xa0"),
+        ("Bearer usr-abc123\x85", "usr-abc123\x85"),
+        ("Bearer usr-abc123 x", "usr-abc123 x"),
+        ("bearer usr-abc123", None),
+        ("BEARER usr-abc123", None),
+        ("token usr-abc123", None),
+        ("Bearer\tusr-abc123", None),
+        ("Bearerusr-abc123", None),
+        ("Bearer", None),
+        ("Bearer ", None),
+        ("Bearer  ", None),
+        (None, None),
+    ],
+)
+def test_slack_bearer_token_reads_one_header_as_real_does(header, token):
+    """The token :func:`auth.slack_bearer_token` reads from one `Authorization` header, whose rows
+    its docstring records; two headers are `test_slack_reads_the_authorization_headers_as_real_does`
+    in tests/test_slack.py."""
+    assert auth.slack_bearer_token(_request(header)) == token
 
 
 # --- github_credential: which headers api.github.com reads as a credential -------

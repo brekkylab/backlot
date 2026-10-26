@@ -1234,6 +1234,85 @@ def test_hubspot_search_string_filters_ignore_value_case(client, admin_h):
     assert f(propertyName="name", operator="NOT_IN", values=["ACME HEALTH"]) == others
 
 
+def test_hubspot_search_folds_a_string_value_as_real_does(tmp_path):
+    """Each row is what `_hubspot_fold` takes a ``firstname EQ`` value to, as the total over a
+    ``Maria``, a ``Mar\u00eda``, a ``Bob`` and a ``Cara``. An enumeration stays exact."""
+    from tests._helpers import client_for
+
+    records = [
+        {
+            "source_type": "hubspot",
+            "doc_id": doc_id,
+            "object_type": "contacts",
+            "title": first,
+            "properties": {"firstname": first, "lifecyclestage": stage},
+        }
+        for doc_id, first, stage in (
+            ("hs-maria", "Maria", "lead"),
+            ("hs-accent", "Mar\u00eda", "lead"),
+            ("hs-bob", "Bob", "customer"),
+            ("hs-cara", "Cara", "customer"),
+        )
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as client:
+        headers = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def total(prop, op, **value):
+            body = {
+                "filterGroups": [{"filters": [{"propertyName": prop, "operator": op, **value}]}]
+            }
+            return client.post(
+                "/hubspot/crm/v3/objects/contacts/search", headers=headers, json=body
+            ).json()["total"]
+
+        for value, want in (
+            ("Maria", 2),
+            ("maria", 2),
+            ("MAR\u00cdA", 2),
+            ("m\u00e1ria", 2),
+            ("M\u00c4RIA", 2),
+            ("Mar\u00efa", 2),
+            ("maria\u0301", 2),
+            ("MAR\u0130A", 2),
+            ("mar\u0131a", 2),
+            ("ma\u0280ia", 2),
+            ("\uff2d\uff21\uff32\uff29\uff21", 2),
+            ("M\u0250ria", 2),
+            ("M\u0259ria", 2),
+            ("\u026faria", 2),
+            ("Mar\u0197a", 2),
+            ("M\u00aaria", 2),
+            ("Mar\u2170a", 2),
+            ("\u2133aria", 2),
+            ("B\u00d8B", 1),
+            ("b\u1d0fb", 1),
+            ("\u0180ob", 1),
+            ("\u0299ob", 1),
+            ("b\u0254b", 1),
+            ("b\u00bab", 1),
+            ("bo\u0308b", 1),
+            ("\u1d04ara", 1),
+            ("\u023cara", 1),
+            ("M\u0251ria", 0),
+            ("Mar\u0269a", 0),
+            ("b\u1d11b", 0),
+            ("MAR\u0399A", 0),
+            ("b\u043eb", 0),
+            ("b\u0302ob", 0),
+            ("bob\u0308", 0),
+            ("MARIA ", 0),
+            (" maria", 0),
+            ("mar ia", 0),
+        ):
+            assert total("firstname", "EQ", value=value) == want, ascii(value)
+        assert total("firstname", "IN", values=["m\u00e1ria"]) == 2
+        assert total("firstname", "NEQ", value="M\u00c1RIA") == 2
+        assert total("lifecyclestage", "EQ", value="lead") == 2
+        assert total("lifecyclestage", "EQ", value="LEAD") == 0
+        assert total("lifecyclestage", "EQ", value="l\u00e9ad") == 0
+
+
 @pytest.mark.parametrize(
     "object_type, prop, stored",
     [

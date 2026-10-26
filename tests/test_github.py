@@ -4587,9 +4587,9 @@ _GO_SPACE_PAST_ASCII = (
     "\u202f\u205f\u3000"
 )
 
-#: Each version sent, as bytes, and the value real's gateway (`issues/1`) and backend
-#: (`contents/README.md`) named in their 400s, as the bytes of each JSON
-#: (``backlot.routers.github._read_api_version`` and ``_go_quoted`` have the measurements).
+#: Each version sent, as bytes, and the value real's gateway and backend named in their 400s, as
+#: the bytes of each JSON (``backlot.routers.github._read_api_version`` and ``_go_quoted`` have the
+#: measurements).
 _VERSIONS_NAMED = [
     (
         b'<a>&"b"\\c',
@@ -4700,9 +4700,9 @@ def test_github_version_errors_name_the_value_as_real_does(
 def test_github_api_version_is_read_with_the_whitespace_its_reader_trims(
     gh_client, gh_admin_h, gh_org, sent, by_gateway, by_backend
 ):
-    """The version a value with whitespace around it selects, ``None`` for the version's 400: the
-    gateway trims spaces and tabs and the pull and contents backend Go's whitespace, a pull's diff
-    and its JSON falling on either side (``backlot.routers.github._read_api_version``)."""
+    """The version a value with whitespace around it selects, ``None`` for the version's 400, on
+    each route as ``backlot.routers.github._read_api_version`` reads it: a pull's diff on the
+    gateway's side and its JSON on the backend's."""
     from backlot import synth
 
     c, _ = gh_client

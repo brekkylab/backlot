@@ -870,9 +870,7 @@ def diff(
             raise typer.Exit(1)
         return
 
-    # A stale entry fails the run as a new finding does. A stale gap goes on acknowledging, by what
-    # it names alone, whatever the vendor publishes there next, and the routers answer the path of a
-    # `missing` operation's entry as one the vendor publishes.
+    # A stale entry fails the run as a new finding does; docs/fidelity.md says why one is not inert.
     if as_json:
         _emit_json(source, spec.endpoints, findings, new=fresh, resolved=stale)
         if fresh or stale:
@@ -884,8 +882,10 @@ def diff(
         + typer.style(source, bold=True)
         + typer.style(" · " + ", ".join(spec.endpoints), dim=True)
     )
-    # The count that decides whether this run passed is the one worth colouring.
-    new_count = typer.style(f"{len(fresh)} new", fg="red" if fresh else "green", bold=True)
+    # Green only for a run that passes: a stale entry fails it with nothing new.
+    new_count = typer.style(
+        f"{len(fresh)} new", fg="red" if fresh else "yellow" if stale else "green", bold=True
+    )
     typer.echo(
         typer.style(
             f"   {len(findings)} divergence(s) · {len(findings) - len(fresh)} acknowledged · ",

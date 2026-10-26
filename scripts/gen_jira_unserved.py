@@ -219,7 +219,7 @@ def build() -> dict:
         )
     refused, run = {}, {}
     for key in unserved:
-        requirements = security.get(key)
+        requirements = security[key]
         sort = refused if requirements is None or {} not in requirements else run
         sort[key] = _entry(key, content.get(key))
     named = (

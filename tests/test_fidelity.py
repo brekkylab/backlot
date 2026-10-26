@@ -1961,6 +1961,8 @@ def test_a_clean_run_says_so_and_a_stale_baseline_fails(_vendor, tmp_path, capsy
     args = ["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path)]
     assert cli.main(args) == 0
     assert "nothing new" in capsys.readouterr().out
+    assert cli.main([*args, "--json"]) == 0
+    capsys.readouterr()
 
     _vendor(VENDOR.replace("status: Status", "status: Status, summary: String"))
     assert cli.main([*args, "--update-baseline"]) == 0

@@ -2376,6 +2376,44 @@ _FIREFLIES_HEADERS = [
         _fastify("no-store"),
         id="GET of a mutation",
     ),
+    # Which documents spend the budget: a root field a resolver runs for, through a fragment and
+    # as `@include` leaves it, and not `__schema`, a root the SDL leaves out or a refused variable.
+    *(
+        pytest.param(
+            "POST",
+            "",
+            _J,
+            b,
+            "key",
+            200 if spends is not None or "Int!" not in b.decode() else 400,
+            _fastify("no-store", x_ratelimit_limit_api=spends),
+            id=i,
+        )
+        for b, spends, i in (
+            (
+                b'{"query":"query { ...F } fragment F on Query { user { user_id } }"}',
+                "500",
+                "a fragment",
+            ),
+            (
+                b'{"query":"query($v: Boolean!) { user @include(if: $v) { user_id } }","variables":{"v":true}}',
+                "500",
+                "@include true",
+            ),
+            (
+                b'{"query":"query($v: Boolean!) { user @include(if: $v) { user_id } }","variables":{"v":false}}',
+                None,
+                "@include false",
+            ),
+            (b'{"query":"{ __schema { queryType { name } } }"}', None, "__schema"),
+            (b'{"query":"mutation { __typename }"}', None, "a mutation of __typename"),
+            (
+                b'{"query":"query($x: Int!) { user { user_id } }"}',
+                None,
+                "a variable not provided to a field",
+            ),
+        )
+    ),
     pytest.param(
         "POST",
         "",
@@ -2468,8 +2506,9 @@ def _ratelimit(r) -> dict:
 
 
 def _key(tokens_yaml) -> dict:
+    """A person's key, whose `user` is that person, as a Fireflies key's is."""
     return {
-        "Authorization": f"Bearer {tokens_yaml['admin_token']}",
+        "Authorization": f"Bearer {tokens_yaml['users'][0]['token']}",
         "Content-Type": "application/json",
     }
 
@@ -2482,19 +2521,19 @@ def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monk
     nothing."""
     now = _budget(client, monkeypatch)
     for i in range(30):
-        now[0] = 1_793_020_105.0 + i * 11 / 29
+        now[0] = 1_793_020_105.0 + i * 10.6 / 29
         r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
-    assert r.json().get("errors") is None
+    assert r.json()["data"]["user"]["user_id"] and r.json().get("errors") is None
     assert _ratelimit(r) == {
         "x-ratelimit-limit-api_burst": "30",
         "x-ratelimit-remaining-api_burst": "0",
-        "x-ratelimit-reset-api_burst": "49",
+        "x-ratelimit-reset-api_burst": "50",
         "x-ratelimit-limit-api": "500",
         "x-ratelimit-remaining-api": "470",
-        "x-ratelimit-reset-api": "39084",
+        "x-ratelimit-reset-api": "39085",
         "x-ratelimit-limit": "500",
         "x-ratelimit-remaining": "470",
-        "x-ratelimit-reset": "39084",
+        "x-ratelimit-reset": "39085",
     }
     now[0] = 1_793_020_105.653
     r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
@@ -2515,13 +2554,17 @@ def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monk
     r = client.post("/fireflies/graphql", content=_TYPENAME, headers=_key(tokens_yaml))
     assert (r.json(), _ratelimit(r)) == ({"data": {"__typename": "Query"}}, {})
     now[0] = 1_793_020_171.0
-    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(33))
-    r = client.post(
-        "/fireflies/graphql", json={"query": "{ " + aliases + " }"}, headers=_key(tokens_yaml)
-    )
+    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(32))
+    document = "{ " + aliases + ' a32: transcript(id: "nosuch") { id } }'
+    r = client.post("/fireflies/graphql", json={"query": document}, headers=_key(tokens_yaml))
     body = r.json()
-    assert [e["path"] for e in body["errors"]] == [["a30"], ["a31"], ["a32"]]
+    assert [(e["path"], e["code"]) for e in body["errors"]] == [
+        (["a30"], "too_many_requests"),
+        (["a31"], "too_many_requests"),
+        (["a32"], "too_many_requests"),
+    ]
     assert list(body["data"]) == [f"a{i}" for i in range(33)]
+    assert all(body["data"][f"a{i}"]["user_id"] for i in range(30))
     assert [body["data"][f"a{i}"] for i in (30, 31, 32)] == [None, None, None]
     assert list(body) == ["errors", "data"]
     assert _ratelimit(r) == {
@@ -2537,19 +2580,30 @@ def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monk
         "x-ratelimit-reset": "39029",
         "retry-after": "60",
     }
+    now[0] = 1_793_020_231.0
+    r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
+    assert r.headers["x-ratelimit-remaining-api_burst"] == "29"
 
 
 def test_fireflies_serves_past_the_budget_with_the_refusal_off(client, tokens_yaml, monkeypatch):
-    """With `fireflies_enforce_rate_limits` off the 31st field is served, the minute's count
-    stopping at 0."""
+    """With `fireflies_enforce_rate_limits` off the 31st field of a minute and the 501st of a day
+    are served, each count stopping at 0."""
     from backlot.routers import fireflies
 
-    _budget(client, monkeypatch)
+    now = _budget(client, monkeypatch)
     monkeypatch.setattr(fireflies.get_settings(), "fireflies_enforce_rate_limits", False)
     for _ in range(31):
         r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
     assert r.json().get("errors") is None
     assert r.headers["x-ratelimit-remaining-api_burst"] == "0"
+    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(30))
+    for minute in range(1, 18):
+        now[0] = 1_793_020_105.0 + minute * 61
+        r = client.post(
+            "/fireflies/graphql", json={"query": "{ " + aliases + " }"}, headers=_key(tokens_yaml)
+        )
+    assert r.json().get("errors") is None
+    assert r.headers["x-ratelimit-remaining-api"] == "0"
 
 
 def test_fireflies_refuses_a_field_past_the_days_500(client, tokens_yaml, monkeypatch):

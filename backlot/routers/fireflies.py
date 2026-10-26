@@ -307,14 +307,17 @@ class Spent:
     retry_at: float
 
     def refuse(self, body: dict) -> dict:
-        """``body`` with each refused field's data null and its error among the others, in the
-        order of the fields, as api.fireflies.ai answered three of 33 aliases of `user` past the
-        minute's 30 on 2026-10-26 (UTC): `"friendly": true`, the moment in the message to the
-        second and in `metadata.retryAfter` to the millisecond."""
+        """``body`` with each refused field's data null and its error after the others, as
+        api.fireflies.ai answered three of 33 aliases of `user` past the minute's 30 on 2026-10-26
+        (UTC): `"friendly": true`, the moment in the message to the second and in
+        `metadata.retryAfter` to the millisecond. The refused fields are the last the document
+        runs, as a budget once spent stays spent for the rest of it, and an error the run made at
+        one of them is left out, since Fireflies runs no resolver for it."""
         if not self.refused:
             return body
         when = email.utils.formatdate(self.retry_at, usegmt=True)
-        errors = list(body.get("errors", []))
+        keys = {key for key, _ in self.refused}
+        errors = [e for e in body.get("errors", []) if (e.get("path") or [None])[0] not in keys]
         for key, node in self.refused:
             where = get_location(node.loc.source, node.loc.start)
             errors.append(
@@ -332,11 +335,9 @@ class Spent:
                     },
                 }
             )
-        data = dict(body.get("data") or {})
-        for key, _ in self.refused:
+        data = dict(body["data"])
+        for key in keys:
             data[key] = None
-        order = {key: i for i, key in enumerate(data)}
-        errors.sort(key=lambda e: order.get((e.get("path") or [None])[0], -1))
         return {"errors": errors, "data": data}
 
 

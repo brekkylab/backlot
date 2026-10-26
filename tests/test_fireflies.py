@@ -2827,13 +2827,10 @@ def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monk
     ]
     now[0] = 1_793_020_171.0
     aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(1, 32))
-    document = (
-        "{ a0: transcripts(limit: 0) { id } " + aliases + " a32: transcripts(limit: 0) { id } }"
-    )
+    document = "{ a0: user { user_id } " + aliases + " a32: transcripts(limit: 0) { id } }"
     r = client.post("/fireflies/graphql", json={"query": document}, headers=_key(tokens_yaml))
     body = r.json()
     assert [(e["path"], e["code"]) for e in body["errors"]] == [
-        (["a0"], "invalid_arguments"),
         (["a30"], "too_many_requests"),
         (["a31"], "too_many_requests"),
         (["a32"], "too_many_requests"),
@@ -2901,9 +2898,10 @@ def test_fireflies_holds_a_refused_key_for_a_minute_from_its_first_refusal(
     [
         (
             29,
-            "{ a0: transcripts(date: 3e14) { id } a1: user { user_id } a2: user { user_id } }",
-            None,
-            [(["a1"], True), (["a2"], True), (["a0"], False)],
+            'query($x: String = "a") { a0: transcripts(limit: 0) { id } a1: transcript(id: $x) { id }'
+            " a2: user { user_id } }",
+            {"x": None},
+            [(["a1"], False), (["a2"], True), (["a0"], False)],
         ),
         (
             30,
@@ -2917,20 +2915,11 @@ def test_fireflies_holds_a_refused_key_for_a_minute_from_its_first_refusal(
             {"x": None},
             [(["a0"], False), (["a1"], True)],
         ),
-        (
-            0,
-            "{ a0: transcripts(limit: 0) { id } "
-            + " ".join(f"a{i}: user {{ user_id }}" for i in range(1, 30))
-            + " a30: user { user_id } a31: transcripts(limit: 0) { id } }",
-            None,
-            [(["a0"], False), (["a30"], True), (["a31"], True)],
-        ),
     ],
     ids=[
-        "a resolver's error after the refusals",
-        "a refused argument ahead of them, not counted",
-        "a refused argument ahead of them, after a refused field",
-        "invalid_arguments among them in document order",
+        "graphql-js's refusal, then the budget's, then the resolver's",
+        "a refused argument ahead of the refusal, not counted",
+        "a refused argument ahead of the refusal, after a refused field",
     ],
 )
 def test_fireflies_orders_the_budgets_refusals_among_a_runs_errors(

@@ -325,33 +325,27 @@ class Spent:
         the run made at one of them is left out, the refusal standing for the field's whole answer.
 
         graphql-js's refusals of a root field's arguments, those of ``assigned`` at a root field,
-        come first, as it makes them before Fireflies counts a field; then Fireflies' own
-        `invalid_arguments`, which it makes once a field is counted, and the refusals, which come
-        after every field counted; then every other error, which a resolver makes once a lookup
-        answers. api.fireflies.ai answered so a `null` refused at a non-null argument before and
-        after a refused field, an earlier `transcripts(limit: 0)` and a refusal ahead of an earlier
-        root field's `not_in_team`, on 2026-10-26 (UTC). It answered an earlier
-        `transcripts(date: 1e20)`'s `invalid_arguments` after the refusals the same day, which this
-        does not follow."""
+        come first, as it makes them before Fireflies counts a field; then the refusals; then every
+        other error, which a resolver makes once Fireflies has counted its field. api.fireflies.ai
+        answered so a `null` refused at a non-null argument before and after a refused field, and a
+        refusal ahead of an earlier root field's `not_in_team`, `transcripts(limit: 0)` and
+        `transcripts(date: 1e20)`, on 2026-10-26 (UTC); it answered an earlier
+        `transcripts(limit: 0)` ahead of refusals 29 fields after it the same day, which this does
+        not follow."""
         if not self.refused:
             return body
         when = email.utils.formatdate(self.retry_at, usegmt=True)
         keys = {key for key, _ in self.refused}
-        refused: list[dict] = []
-        counted: list[dict] = []
+        started: list[dict] = []
+        refusals: list[dict] = []
         errors: list[dict] = []
         for i, error in enumerate(body.get("errors", [])):
             path = error.get("path") or [None]
             if path[0] in keys:
                 continue
-            if len(path) == 1 and i in assigned:
-                refused.append(error)
-            elif len(path) == 1 and error.get("code") == "invalid_arguments":
-                counted.append(error)
-            else:
-                errors.append(error)
+            (started if len(path) == 1 and i in assigned else errors).append(error)
         for key, node in self.refused:
-            counted.append(
+            refusals.append(
                 {
                     "friendly": True,
                     "message": f"Too many requests. Please retry after {when} (UTC)",
@@ -369,7 +363,7 @@ class Spent:
         data = dict(body["data"])
         for key in keys:
             data[key] = None
-        return {"errors": refused + counted + errors, "data": data}
+        return {"errors": started + refusals + errors, "data": data}
 
 
 class Budget:

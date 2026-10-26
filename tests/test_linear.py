@@ -6820,8 +6820,8 @@ def test_linear_answers_each_method_path_type_and_accept_as_linear_does(
     ],
 )
 def test_linears_front_routes_a_path_once_its_dot_segments_are_resolved(path, served):
-    """httpx resolves a dot segment before it sends a path, so `_LINEAR_HTTP` cannot send these:
-    whether Express hands each to Apollo Server, as `routes_to_apollo` has it."""
+    """`routes_to_apollo` on paths holding dot segments, which httpx would resolve were
+    `_LINEAR_HTTP` to send them."""
     from backlot.routers import linear
 
     assert linear.routes_to_apollo(linear.express_path(path)) is served

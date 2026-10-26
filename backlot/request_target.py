@@ -194,17 +194,15 @@ def _google(path_kinds: list[str], query_kinds: list[str]) -> Response | None:
     return None
 
 
-#: A `%` two hex digits do not follow.
+#: A `%` with fewer than two hex digits after it.
 _BROKEN_ESCAPE = re.compile(rb"%(?![0-9A-Fa-f]{2})")
 
 
 def broken_escape(path: bytes) -> bool:
-    """Whether ``path`` holds `%00` or a `%` two hex digits do not follow, which Cloudflare
-    refuses in front of Linear and Fireflies with :data:`CLOUDFLARE_PAGE`
-    (``backlot.main.refuse_a_broken_escape_on_linear_and_fireflies``), ahead of its answer to a raw
-    byte: api.linear.app and api.fireflies.ai answered `/a%zz` with a raw `é` before or after it,
-    with `\\x01` before it, and `/a%00` after a raw `é`, so on 2026-10-26 (UTC), where a raw `é`
-    alone drew the empty 400."""
+    """Whether ``backlot.main.refuse_a_broken_escape_on_linear_and_fireflies`` refuses ``path``.
+    Cloudflare's page for it comes ahead of its answer to a raw byte: on 2026-10-26 (UTC) both hosts
+    drew :data:`CLOUDFLARE_PAGE` for `/a%zz` with a raw `é` before or after it or `\\x01` before
+    it, and for `/a%00` after a raw `é`, where a raw `é` alone drew the empty 400."""
     return b"%00" in path or _BROKEN_ESCAPE.search(path) is not None
 
 

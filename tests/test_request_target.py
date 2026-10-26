@@ -118,8 +118,8 @@ _TARGETS = [
     ("/notion/v1/", b"nope x?b=\x80x", "cloudflare empty"),
     ("/notion/v1/", b"nope\x01x?b= x", "cloudflare empty"),
     ("/notion/v1/", b"nope\x80y\x0dx", "cloudflare page"),
-    # Cloudflare's refusal of a broken escape in the path in front of Linear and Fireflies, ahead of
-    # its answer to a raw byte (`request_target.broken_escape`), and none for one in the query
+    # Linear and Fireflies: a broken escape in the path beside a raw byte, Cloudflare's page
+    # (`request_target.broken_escape`), and one in the query, the empty 400
     *(
         (base, rest, "cloudflare page")
         for base in ("/linear/", "/fireflies/")

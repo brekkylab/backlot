@@ -7162,6 +7162,7 @@ _LINEAR_HEADERS = [
         )
         for m, t, status, n in (
             ("CONNECT", "/", 400, "nosniff"),
+            ("CONNECT", "//", 400, "nosniff"),
             ("CONNECT", "/nosuch", 400, None),
             ("PURGE", "/", 400, None),
             ("TRACE", "/", 405, None),

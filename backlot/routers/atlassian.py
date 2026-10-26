@@ -1993,14 +1993,19 @@ async def confluence_space_get(key: str, request: Request):
 
 @router.get("/wiki/rest/api/search", response_model=ConfluenceResults, openapi_extra=_P_CQL)
 async def confluence_cql_search(request: Request):
-    """CQL search used by Confluence clients (e.g. mcp-atlassian). Four clauses are read: a `~`
-    operand is a keyword search over the ACL-visible corpus, and `space`, `type` and `label` filter
-    its matches, or the whole ACL-visible corpus when there is no `~`. Measured 2026-10-05 with no
-    `~`: real's `type=page` is every page on the site and `space=<KEY> and type=page` that space's
-    pages; its `space=<KEY>` also holds the space's attachments, comments and the space itself,
-    where this server answers the space's pages and blogposts. A CQL holding none of the four names
-    only fields this route does not read, and answers no row. A `Content-Type` it will not read is
-    refused before this runs (:func:`_refuse_the_search_media_type`)."""
+    """CQL search used by Confluence clients (e.g. mcp-atlassian). Seven clauses are read: a `~`
+    operand is a keyword search over the ACL-visible corpus, and `space`, `type`, `label`, `id`,
+    `ancestor` and `parent` filter its matches, or the whole ACL-visible corpus when there is no
+    `~`. `id`, `ancestor` and `parent` take `=` or `in (...)` and name the content id the content
+    reads serve; `parent` selects the direct children and `ancestor` every descendant, grandchildren
+    included (Confluence Cloud, 2026-10-26, over a chain of three pages). Real answers
+    `parent in (...)` with a 500, where this server answers the children of each id it names.
+    Measured 2026-10-05 with no `~`: real's `type=page` is every page on the site and
+    `space=<KEY> and type=page` that space's pages; its `space=<KEY>` also holds the space's
+    attachments, comments and the space itself, where this server answers the space's pages and
+    blogposts. A CQL holding none of the seven names only fields this route does not read, and
+    answers no row. A `Content-Type` it will not read is refused before this runs
+    (:func:`_refuse_the_search_media_type`)."""
     conn = auth.conn(request)
     caller = _confluence_caller(request, not_permitted=True)
     ids = auth.visible_ids(request, caller)
@@ -2016,7 +2021,7 @@ async def confluence_cql_search(request: Request):
     cql = cqls[0]
     m = re.search(r'(?:text|title)\s*~\s*"?([^"~]+)"?', cql) or re.search(r'~\s*"?([^"~]+)"?', cql)
     term = m.group(1).strip() if m else ""
-    # honor the common structured CQL clauses: space / type / label
+    # honor the common structured CQL clauses: space / type / label / id / ancestor / parent
     ms = re.search(r'space(?:\.key)?\s*=\s*"?([A-Za-z0-9_-]+)"?', cql)
     space_key = ms.group(1) if ms else None
     space_unresolvable = False
@@ -2030,6 +2035,23 @@ async def confluence_cql_search(request: Request):
     want_type = mt.group(1) if mt else None
     ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
     want_label = ml.group(1) if ml else None
+
+    def _content_ids(field: str) -> list[set[str]]:
+        # the ids each `<field> = <id>` and `<field> in (<id>, ...)` clause names, bare or quoted,
+        # the first of each spelling read, as for the clauses above; a list that is empty or ends
+        # in a comma is `_cql_refusal`'s 400 below.
+        clauses = []
+        m = re.search(rf'\b{field}\s*=\s*"?([A-Za-z0-9_-]+)"?', cql, re.IGNORECASE)
+        if m:
+            clauses.append({m.group(1)})
+        m = re.search(rf"\b{field}\s+in\s*\(([^)]*)\)", cql, re.IGNORECASE)
+        if m:
+            clauses.append({v.strip().strip("\"'") for v in m.group(1).split(",")})
+        return clauses
+
+    want_ids = _content_ids("id")
+    want_ancestors = _content_ids("ancestor")
+    want_parents = _content_ids("parent")
     _refuse_negative_page_params(limit, start)
     tokens = _cql_tokens(cql)
     refusal = _cql_refusal(tokens)
@@ -2043,12 +2065,29 @@ async def confluence_cql_search(request: Request):
     # totalSize reflects the true match count (not just the returned page).
     if term:
         everything = store.search_documents(conn, term, "confluence", ids, limit=100_000, offset=0)
-    elif space_key or want_type or want_label:
+    elif space_key or want_type or want_label or want_ids or want_ancestors or want_parents:
         everything = store.list_documents(
             conn, "confluence", container=None, visible_ids=ids, limit=100_000, offset=0
         )
     else:
         everything = []
+
+    # the parent of every row fetched, and of every page read since, so each link of a chain is
+    # read once; a link outside the fetched rows (a page the `~` term missed, or one the caller
+    # cannot see) is read from the store, as the content read's `ancestors` expansion does.
+    parents = {str(r["id"]): r["parent_id"] for r in everything} if want_ancestors else {}
+
+    def _ancestor_ids(row) -> set[str]:
+        chain: set[str] = set()
+        pid = row["parent_id"]
+        while pid is not None and str(pid) not in chain:  # a chain that loops stops here
+            key = str(pid)
+            chain.add(key)
+            if key not in parents:
+                prow = store.get_document(conn, "confluence", pid)
+                parents[key] = prow["parent_id"] if prow is not None else None
+            pid = parents[key]
+        return chain
 
     def _match(r) -> bool:
         if space_unresolvable:
@@ -2059,6 +2098,17 @@ async def confluence_cql_search(request: Request):
             return False
         if want_label and want_label not in store.jcol(r, "labels"):
             return False
+        if any(str(r["id"]) not in named for named in want_ids):
+            return False
+        if want_parents and (
+            r["parent_id"] is None
+            or any(str(r["parent_id"]) not in named for named in want_parents)
+        ):
+            return False
+        if want_ancestors:
+            chain = _ancestor_ids(r)
+            if any(named.isdisjoint(chain) for named in want_ancestors):
+                return False
         return True
 
     matched = [r for r in everything if _match(r)]

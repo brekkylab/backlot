@@ -940,12 +940,6 @@ def test_linear_malformed_document_is_a_400_with_a_graphql_envelope(client, admi
 
 
 # --- the body, and where the credential is read against it ---------------------------------------
-# The headers a body was sent with beyond `Content-Type: application/json`, the body, and the bytes
-# Linear answered it with for the key, no credential and `nope` alike, at the status their `code` or
-# `extensions.http.status` names (`_status`), or None where Linear served the query with the key and
-# answered 401 without one, as `backlot.graphql.body` and `backlot.graphql.v8_json` read them. A
-# `WithTheKey` row draws the 401 without the key. Apollo Server's envelopes are api.linear.app's,
-# but for the newline that ends each there.
 def _apollo(message: bytes) -> bytes:
     """Apollo Server's refusal of a body as Linear writes it around ``message``, already
     JSON-escaped."""
@@ -966,6 +960,12 @@ def _status(answer: bytes) -> int:
 
 _NO_KEYS = _apollo(b"POST body missing, invalid Content-Type, or JSON object has no keys.")
 _BATCHING = _apollo(b"Operation batching disabled.")
+# The headers a body was sent with beyond `Content-Type: application/json`, the body, and the bytes
+# Linear answered it with for the key, no credential and `nope` alike, at the status their `code` or
+# `extensions.http.status` names (`_status`), or None where Linear served the query with the key and
+# answered 401 without one, as `backlot.graphql.body` and `backlot.graphql.v8_json` read them. A
+# `WithTheKey` row draws the 401 without the key. Apollo Server's envelopes are api.linear.app's,
+# but for the newline that ends each there.
 _LINEAR_BODIES = [
     pytest.param(
         b"{",
@@ -1848,6 +1848,21 @@ _LINEAR_BODIES = [
         b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }","variables":"{\\"b\\":true}"}',
         None,
         id="variables of a string its operation takes",
+    ),
+    pytest.param(
+        b'{"query":"query($v: [ID!]) { issues(first: 1, filter: {id: {in: $v}}) { nodes { id } } }",'
+        b'"variables":{"v":[%s]}}' % b",".join([b"true"] * 60),
+        WithTheKey(
+            b'{"errors":[%s,{"message":"Internal server error","extensions":{"code":'
+            b'"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}]}'
+            % b",".join(
+                b'{"message":"Variable \\"$v\\" got invalid value true at \\"v[%d]\\"; ID cannot '
+                b'represent value: true","locations":[{"line":1,"column":7}],"extensions":{"code":'
+                b'"BAD_USER_INPUT","type":"graphql error","userError":true}}' % n
+                for n in range(50)
+            )
+        ),
+        id="sixty variables refused",
     ),
     pytest.param(
         b'{"query":"mutation { __typename }"}',

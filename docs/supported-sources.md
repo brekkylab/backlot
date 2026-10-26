@@ -87,13 +87,13 @@ what `search` answers a `GET` or `HEAD`, but for a 401 and a refusal of its `Acc
 
 ### Fireflies — `/fireflies/graphql`
 
-**GraphQL only**, one endpoint: a `POST` with a JSON body, or a `GET` with the query in its query
-string and a JSON `Content-Type` or none. Apollo Server serves a `GET` with none only beside an
-`apollo-require-preflight` or `x-apollo-operation-name` header, its check that a browser
-preflighted the request. Fastify serves `/graphql` alone, an escaped letter in it decoded. Any
-other path nginx passes on to Fastify, `/graphql` in any case, alone or with a slash and more after
-it, once each escape is decoded and each run of slashes is one, gets Fastify's 404, and any other
-path nginx's 404 page. Root `Query` fields:
+**GraphQL only**, one endpoint: a `POST` with a JSON or form body, or a `GET` with the query in its
+query string and a JSON `Content-Type` or none. Apollo Server serves a form, or a `GET` with no
+`Content-Type`, only beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its
+check that a browser preflighted the request. Fastify serves `/graphql` alone, an escaped letter in
+it decoded. Any other path nginx passes on to Fastify, `/graphql` in any case, alone, before a
+newline that ends it, or with a slash and more after it, once each escape is decoded and each run of
+slashes is one, gets Fastify's 404, and any other path nginx's 404 page. Root `Query` fields:
 
 | Query field | Notes |
 |---|---|

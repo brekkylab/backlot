@@ -3,14 +3,14 @@ what it answers before it reads a document, and the media type of what it answer
 
 Both vendors run it. :func:`csrf_refusal` is its check that a request was preflighted,
 :func:`search_payload` its reading of a GET's query string, :func:`method_refusal` its 405 for a
-method it does not serve, :func:`get_content_type_refusal` the 415 Apollo Server 5.5 added for a
-GET carrying a content type, :func:`response_type` its choice of media type from ``Accept`` and
+method it does not serve, :func:`get_content_type_refusal` its 415 for a GET carrying a content
+type other than JSON, :func:`response_type` its choice of media type from ``Accept`` and
 :data:`NOT_ACCEPTABLE` its 406 when there is none, and :func:`prefers_html` and
-:func:`landing_page` its page for a browser. Each refusal is thrown before the request pipeline, so
-it takes whichever media type ``Accept`` allows and ``application/json`` where it allows none: a
-:class:`~backlot.graphql.engine.Refusal` that is ``thrown``. A refusal the pipeline makes, from a
-persisted query's to a variable's, is refused for the ``Accept`` in turn, with
-:data:`NOT_ACCEPTABLE`.
+:func:`landing_page` its page for a browser. Each refusal but :data:`NOT_ACCEPTABLE` is thrown
+before the request pipeline, so it takes whichever media type ``Accept`` allows and
+``application/json`` where it allows none: a :class:`~backlot.graphql.engine.Refusal` that is
+``thrown``. A refusal the pipeline makes, from a persisted query's to a variable's, is refused for
+the ``Accept`` in turn, with :data:`NOT_ACCEPTABLE`.
 
 The code is read off Apollo Server 5.5.1's ``runHttpQuery.ts``, ``preventCsrf.ts`` and
 ``ApolloServer.ts``, and the libraries they call: ``whatwg-mimetype`` 4.0.0 (:func:`mime_essence`)

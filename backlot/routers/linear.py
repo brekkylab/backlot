@@ -3,8 +3,8 @@
 Linear is **GraphQL only** — there is no REST surface to emulate — so this router is one
 endpoint, and what answers at any other path (:func:`express`). The schema and the resolvers live in
 ``backlot/graphql/`` (``linear.graphql`` + ``linear_resolvers.py``); everything here is HTTP: a
-request and credentials in, a GraphQL envelope out, or Express's for the bodies :func:`_express`
-answers.
+request and credentials in, a GraphQL envelope out, or the answer of a layer in front of Apollo
+Server's run, in the order :func:`graphql` lists them.
 
 Auth is the one place Linear differs from every other source in this repo. A personal API key
 travels as the **bare** header value (``Authorization: lin_api_…``, no scheme), read by
@@ -22,12 +22,13 @@ credential and with ``nope``, an empty body, ``{}``, an array, a ``query`` of ``
 string ``variables``, an ``extensions`` or ``operationName`` of ``5``, a persisted query's hash
 alone or one that does not match, a document that does not parse or validate and one of two
 operations with no ``operationName`` drew what the key drew on 2026-10-25 (UTC), and a document
-missing a variable the 401. An API key under ``Bearer`` is refused ahead of the body on any method
-but ``OPTIONS``: with ``Bearer <key>``, ``{``, an empty body and a body holding
-``NaN`` drew :func:`_api_key_as_bearer`'s 400 on 2026-10-18, and ``charset=latin1``,
-``Content-Encoding: bogus`` and a body past the size limit did on 2026-10-19, when a key in an API
-key's shape that Linear never issued drew it under ``Bearer`` with ``{``, ``NaN``, ``5``,
-``charset=latin1`` and an empty body.
+missing a variable the 401, but for one that selects only ``__schema`` and ``__type``
+(:func:`_introspection_only`), which drew the variable's refusal as with the key. An API key under
+``Bearer`` is refused ahead of the body on any method but ``OPTIONS``: with ``Bearer <key>``,
+``{``, an empty body and a body holding ``NaN`` drew :func:`_api_key_as_bearer`'s 400 on
+2026-10-18, and ``charset=latin1``, ``Content-Encoding: bogus`` and a body past the size limit
+did on 2026-10-19, when a key in an API key's shape that Linear never issued drew it under
+``Bearer`` with ``{``, ``NaN``, ``5``, ``charset=latin1`` and an empty body.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ from backlot.routers import sent_path
 
 router = APIRouter(prefix="/linear", tags=["linear"])
 
-# The media type of Express's `res.json`, which writes each answer made ahead of Apollo Server.
+# The media type of Express's `res.json`, in which `_api_key_as_bearer` and `_express` answer.
 _JSON = "application/json; charset=utf-8"
 
 # Linear's code for a body with no query, where Apollo Server's is `BAD_REQUEST`.
@@ -110,7 +111,8 @@ def _express(message: str, status: int = 400, length: int | None = None) -> Resp
 
 #: The methods Linear's load balancer answers with an empty 501 before Linear sees them, as
 #: api.linear.app answered each on 2026-10-25 (UTC). Of the rest of :data:`apollo_http.METHODS`,
-#: Cloudflare answers those ``backlot.main._CLOUDFLARE_METHOD`` holds and Apollo Server the others.
+#: Cloudflare answers those ``backlot.main._CLOUDFLARE_METHOD`` holds and the layers :func:`graphql`
+#: lists the others.
 _LOAD_BALANCER_501 = frozenset(
     {"BIND", "LINK", "M-SEARCH", "MKCALENDAR", "REBIND", "SOURCE", "UNBIND", "UNLINK"}
 )
@@ -123,7 +125,7 @@ def _front(request: Request) -> Response | None:
     method = request.method
     if method in _LOAD_BALANCER_501:
         return Response(status_code=501)
-    if method == "OPTIONS" and "origin" in request.headers:
+    if method == "OPTIONS" and "origin" in apollo_http.headers_seen(request.headers.raw):
         return _preflight(request)
     if method != "OPTIONS" and auth.linear_api_key_under_bearer(request):
         return _api_key_as_bearer(sent_path(request.scope))
@@ -483,7 +485,8 @@ def _envelope(result: engine.Result, payload: Any) -> dict:
     or its hash as Linear's ``Internal server error``, an operation that cannot be chosen as
     :func:`_operation_missing`, and the request error after fifty refused variables, to which
     Apollo Server gives no code of its own, as :func:`_internal` (api.linear.app, 2026-10-26
-    UTC); and each error in ``result.assigned`` as :func:`_internal`."""
+    UTC); each error in ``result.assigned`` as :func:`_internal`, and each other field error in
+    Linear's member order (:func:`_in_linears_order`)."""
     if result.refusals:
         errors = []
         for refusal in result.refusals:

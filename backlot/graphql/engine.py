@@ -101,6 +101,10 @@ BAD_USER_INPUT = "BAD_USER_INPUT"
 PERSISTED_QUERY_NOT_FOUND = "PERSISTED_QUERY_NOT_FOUND"
 INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
 
+#: The errors graphql-js's ``validate`` takes, and graphql-core's: the next one is
+#: ``Too many validation errors, error limit reached. Validation aborted.``, and the last.
+_MAX_VALIDATION_ERRORS = 100
+
 
 @dataclass(frozen=True)
 class Refusal:
@@ -326,7 +330,8 @@ def _with_roots(schema: GraphQLSchema, roots: tuple[str, ...]) -> GraphQLSchema:
     serves none of their fields. A document validated against it is refused a field of one as a
     field the type does not have, and ``__typename`` on one is answered with the type's name.
     graphql-core refuses a schema with an object type of no field, so this one is marked as
-    checked; it is only validated against and run for ``__typename``."""
+    checked; it is only validated against, and run for an operation on a root type the SDL leaves
+    out."""
     shadow = GraphQLSchema(
         query=schema.query_type,
         mutation=GraphQLObjectType("Mutation", {}) if "Mutation" in roots else None,
@@ -391,31 +396,35 @@ class Engine:
         *,
         variables: Any = None,
         operation_name: str | None = None,
-        on_document: Callable[[DocumentNode], Result | None] | None = None,
+        on_document: Callable[[DocumentNode], Result | list[GraphQLError]] | None = None,
         get: bool = False,
     ) -> Result | Operation:
         """``document`` read as graphql-js reads it under Apollo Server, up to the choice of the
-        operation to run: parse, then ``on_document``, a vendor's look at the parsed document
-        before it is validated, then validation and the choice of operation, each refused with
+        operation to run: parse, then validation, then the choice of operation, each refused with
         Apollo Server's code; :meth:`run` takes the operation it chose. Sent by ``get``, an
-        operation that is not a query is Apollo Server's 405."""
+        operation that is not a query is Apollo Server's 405.
+
+        ``on_document`` is a validation rule of the vendor's that reports as graphql-js creates
+        it: the :class:`Result` to answer with where it throws, or the errors it reports, which
+        come ahead of graphql-js's own and count toward the :data:`_MAX_VALIDATION_ERRORS` it
+        takes."""
         try:
             doc = parse(document)
         except GraphQLSyntaxError as error:
             return refused(
                 Refusal(js_words.requote(error.message), PARSE_FAILED, js_words.locations(error))
             )
-        if on_document is not None:
-            answer = on_document(doc)
-            if answer is not None:
-                return answer
-        errors = validate(self._checked, doc)
-        if errors:
+        reported = [] if on_document is None else on_document(doc)
+        if isinstance(reported, Result):
+            return reported
+        errors = validate(self._checked, doc, max_errors=_MAX_VALIDATION_ERRORS - len(reported))
+        if reported or errors:
             return refused(
+                *(Refusal(e.message, VALIDATION_FAILED, js_words.locations(e)) for e in reported),
                 *(
                     Refusal(js_words.requote(e.message), VALIDATION_FAILED, js_words.locations(e))
                     for e in errors
-                )
+                ),
             )
         operation = get_operation_ast(doc, operation_name)
         if operation is None:
@@ -441,7 +450,7 @@ class Engine:
         self,
         payload: Any,
         *,
-        on_document: Callable[[DocumentNode], Result | None] | None = None,
+        on_document: Callable[[DocumentNode], Result | list[GraphQLError]] | None = None,
         get: bool = False,
     ) -> Result | Operation:
         """A GraphQL-over-HTTP POST body (``{query, variables, operationName}``) its router has
@@ -472,9 +481,18 @@ class Engine:
         coercion = js_words.coerce_variable_values(
             self.schema, list(operation.operation.variable_definitions), variables
         )
+        # Apollo Server gives BAD_USER_INPUT to the refusal of a variable; the one saying there
+        # were too many has no variable and keeps the code of an error with none.
         if coercion:
             return refused(
-                *(Refusal(e.message, BAD_USER_INPUT, js_words.locations(e)) for e in coercion)
+                *(
+                    Refusal(
+                        e.message,
+                        BAD_USER_INPUT if e.nodes else INTERNAL_SERVER_ERROR,
+                        js_words.locations(e),
+                    )
+                    for e in coercion
+                )
             )
         if variables:
             types = {
@@ -485,7 +503,9 @@ class Engine:
                 name: _ids_as_graphql_js_reads_them(value, types.get(name))
                 for name, value in variables.items()
             }
-        # An operation on a root the SDL leaves out has only `__typename` once it is validated.
+        # An operation on a root type the SDL leaves out runs against the schema `_with_roots`
+        # made, where its validated selection can only be `__typename`, or where graphql-core
+        # refuses it when the vendor has no such root type either.
         on_a_root = getattr(self.schema, f"{operation.operation.operation.value}_type") is None
         result = execute_sync(
             self._checked if on_a_root else self.schema,
@@ -496,19 +516,20 @@ class Engine:
         )
         # graphql-core's ExecutionResult.formatted writes "data" first; api.fireflies.ai and
         # api.linear.app open a response carrying a field error with "errors" (2026-10-21), so the
-        # errors come first here. An error graphql-core made itself is in graphql-js's words and
-        # carries the code Apollo Server gives an error with none, which a router writes in its
-        # vendor's envelope; one a resolver raised is the vendor's own.
+        # errors come first here. Each error's locations are graphql-js's. An error graphql-core
+        # made itself is in graphql-js's words and carries the code Apollo Server gives an error
+        # with none, which a router writes in its vendor's envelope; one a resolver raised is the
+        # vendor's own.
         payload: dict = {}
         assigned = []
         if result.errors:
             payload["errors"] = []
             for error in result.errors:
                 entry = error.formatted
+                if "locations" in entry:
+                    entry["locations"] = list(js_words.locations(error))
                 if _made_by_graphql(error):
                     entry["message"] = js_words.requote(entry["message"])
-                    if "locations" in entry:
-                        entry["locations"] = list(js_words.locations(error))
                     entry.setdefault("extensions", {})["code"] = INTERNAL_SERVER_ERROR
                     assigned.append(len(payload["errors"]))
                 payload["errors"].append(entry)
@@ -536,7 +557,7 @@ class Engine:
         payload: Any,
         *,
         context: Any = None,
-        on_document: Callable[[DocumentNode], Result | None] | None = None,
+        on_document: Callable[[DocumentNode], Result | list[GraphQLError]] | None = None,
         get: bool = False,
     ) -> Result:
         """:meth:`resolve_payload`, then :meth:`run` the operation it chose."""

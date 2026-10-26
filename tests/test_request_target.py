@@ -118,6 +118,19 @@ _TARGETS = [
     ("/notion/v1/", b"nope x?b=\x80x", "cloudflare empty"),
     ("/notion/v1/", b"nope\x01x?b= x", "cloudflare empty"),
     ("/notion/v1/", b"nope\x80y\x0dx", "cloudflare page"),
+    # Cloudflare's refusal of a broken escape in front of Linear and Fireflies, ahead of its answer
+    # to a raw byte (`request_target.broken_escape`)
+    *(
+        (base, rest, "cloudflare page")
+        for base in ("/linear/", "/fireflies/")
+        for rest in (
+            b"a\xc3\xa9%zz",
+            b"a%zz\xc3\xa9",
+            b"a\x01%zz",
+            b"a\xc3\xa9%00",
+            b"a%zz?b=\xc3\xa9",
+        )
+    ),
     ("/s3/no-such-bucket/", b"nope\x0dy x", "s3 empty"),
     ("/s3/no-such-bucket/", b"nope\x09y x", "s3 505"),
     ("/s3/no-such-bucket/", b"nope y\x09x", "s3 505"),

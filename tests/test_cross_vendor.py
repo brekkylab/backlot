@@ -339,8 +339,9 @@ def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
 
 
 # A request to Linear or Fireflies with `Authorization` sent more than once, `{key}` standing for
-# the vendor's own spelling of the admin token, or with a path that breaks an escape, each answered
-# with the 400 page `backlot.main.refuse_a_repeated_authorization_on_linear_and_fireflies` and
+# the vendor's own spelling of the admin token, or with a path holding `%00` or a broken escape,
+# each answered with the 400 page
+# `backlot.main.refuse_a_repeated_authorization_on_linear_and_fireflies` and
 # `refuse_a_broken_escape_on_linear_and_fireflies` record. The last four rows are the control: one
 # header reaches the vendor, a path that only starts with the vendor's name is not the vendor's,
 # with a broken escape in it or without, and a broken escape in the query string is not one in the

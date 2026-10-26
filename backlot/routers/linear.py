@@ -229,8 +229,8 @@ def express_path(path: str) -> str:
     that character, a run of slashes is one, each character of :data:`_BARE` sent bare is escaped in
     upper case, and any other escape is kept as sent. Express's 404 quoted `/%6Eosuch` as `/nosuch`,
     `//nosuch` and `/nosuch//x` as `/nosuch` and `/nosuch/x`, `/a\\b` as `/a/b`, `/a%2fb` and
-    `/a%3cb` as sent, and each other printable ASCII character but `%`, `?` and `#` as sent, on
-    2026-10-25 (UTC)."""
+    `/a%3cb` as sent, each character of :data:`_BARE` escaped in upper case (`|` as `%7C`), and
+    each other printable ASCII character but `%`, `?` and `#` as sent, on 2026-10-25 (UTC)."""
 
     def one(match: re.Match[str]) -> str:
         char = chr(int(match[1], 16))
@@ -242,11 +242,36 @@ def express_path(path: str) -> str:
 
 def routes_to_apollo(path: str) -> bool:
     """Whether Express hands ``path`` (:func:`express_path`) to Apollo Server: `/graphql` in any
-    case, alone or with a slash after it and anything after that. api.linear.app served
-    `/GRAPHQL`, `/GraphQL/`, `/graphql/`, `/graphql/x` and `/Graphql/X/Y` and answered
-    `/graphqlx`, `/graphql.json`, `/graphql;x`, `/graphql%20` and `/graphql%2F` with Express's 404
-    on 2026-10-25 (UTC)."""
-    return re.fullmatch(r"/graphql(?:/.*)?", path, re.ASCII | re.IGNORECASE) is not None
+    case, alone or with a slash after it and anything after that, once its dot segments are
+    resolved (:func:`_dots_resolved`). api.linear.app served `/GRAPHQL`, `/GraphQL/`, `/graphql/`,
+    `/graphql/x` and `/Graphql/X/Y` and answered `/graphqlx`, `/graphql.json`, `/graphql;x`,
+    `/graphql%20` and `/graphql%2F` with Express's 404 on 2026-10-25 (UTC). On 2026-10-26 it served
+    `/./graphql`, `/x/../graphql`, `/graphql/.`, `/graphql/x/..` and `/graphql/x/%2E%2E`, and
+    answered `/graphql/..`, `/graphql/../x`, `/graphql/%2e%2E/x` and `/graphql/x/../..` with
+    Express's 404 and `/../graphql` with Cloudflare's 400."""
+    resolved = _dots_resolved(path)
+    return (
+        resolved is not None
+        and re.fullmatch(r"/graphql(?:/.*)?", resolved, re.ASCII | re.IGNORECASE) is not None
+    )
+
+
+def _dots_resolved(path: str) -> str | None:
+    """``path`` with each `.` segment dropped and each `..` segment taking the one before it away,
+    as RFC 3986 removes dot segments, or None where a `..` has no segment before it to take."""
+    out: list[str] = []
+    segments = path.split("/")[1:]
+    for i, segment in enumerate(segments):
+        if segment in (".", ".."):
+            if segment == "..":
+                if not out:
+                    return None
+                out.pop()
+            if i == len(segments) - 1:
+                out.append("")
+        else:
+            out.append(segment)
+    return "/" + "/".join(out)
 
 
 _GREETING = b"Hello from the Linear GraphQL API."

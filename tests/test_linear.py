@@ -6810,6 +6810,23 @@ def test_linear_answers_each_method_path_type_and_accept_as_linear_does(
     assert {name: r.headers.get(name) for name in expected_headers} == expected_headers
 
 
+@pytest.mark.parametrize(
+    "path, served",
+    [
+        *((p, True) for p in ("/./graphql", "/x/../graphql", "/graphql/.", "/graphql/x/..")),
+        ("/graphql/x/%2E%2E", True),
+        *((p, False) for p in ("/graphql/..", "/graphql/../x", "/graphql/%2e%2E/x")),
+        *((p, False) for p in ("/graphql/x/../..", "/../graphql")),
+    ],
+)
+def test_linears_front_routes_a_path_once_its_dot_segments_are_resolved(path, served):
+    """httpx resolves a dot segment before it sends a path, so `_LINEAR_HTTP` cannot send these:
+    whether Express hands each to Apollo Server, as `routes_to_apollo` has it."""
+    from backlot.routers import linear
+
+    assert linear.routes_to_apollo(linear.express_path(path)) is served
+
+
 @pytest.mark.parametrize("char", '"<>`{}')
 def test_linears_front_escapes_a_character_httpx_escapes_first(char):
     """The characters :func:`backlot.routers.linear.express_path` escapes that httpx escapes

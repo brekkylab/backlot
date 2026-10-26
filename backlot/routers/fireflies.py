@@ -262,10 +262,9 @@ def nginx_passes(path: str) -> bool:
     """Whether nginx in front of Fastify passes on ``path``, as a client sent it
     (:func:`~backlot.routers.sent_path`): once each escape is decoded and each run of slashes is
     one, it starts with `/graphql`, in any case, followed by a slash, by nothing or by a newline
-    that ends it. api.fireflies.ai answered with Fastify's 404 at `/GRAPHQL`, `/graphql/x`,
-    `//graphql`, `/%2Fgraphql`, `/graphql%2F` and `/graphql%0A`, and with nginx's
-    (:data:`_NGINX_404`) at `/graphqlx`, `/graphql.json`, `/graphql;x`, `/graphql%20`,
-    `/graphql%7E`, `/x/graphql` and `/`, on 2026-10-25 (UTC)."""
+    that ends it. api.fireflies.ai answered with Fastify's 404 at each path :func:`_not_found`
+    names, and with nginx's (:data:`_NGINX_404`) at `/graphqlx`, `/graphql.json`, `/graphql;x`,
+    `/graphql%20`, `/graphql%7E`, `/x/graphql` and `/`, on 2026-10-25 (UTC)."""
     decoded = re.sub(rb"/{2,}", b"/", urllib.parse.unquote_to_bytes(path))
     return _NGINX_LOCATION.match(decoded) is not None
 

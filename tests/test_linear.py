@@ -5919,7 +5919,8 @@ def _search_refusal(message: bytes) -> bytes:
 
 
 _LINEAR_HTTP = [
-    # Cloudflare, then Linear's load balancer, ahead of everything.
+    # Cloudflare, then Linear's load balancer, ahead of everything; then Apollo Server's 405 for
+    # each other method.
     http_row(
         "TRACE",
         "",
@@ -6069,6 +6070,32 @@ _LINEAR_HTTP = [
         )
     ),
     http_row("OPTIONS", "", (), None, "key", 400, _JSON_UTF8, _CSRF, id="OPTIONS"),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            (("Origin", origin), ("Access-Control-Request-Method", "POST")),
+            None,
+            c,
+            400,
+            _JSON_UTF8,
+            _CSRF,
+            id=f"Origin {origin!r}, {c}",
+        )
+        for origin in ("", "   ")
+        for c in ("key", "none")
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Origin", ""), *_J),
+        None,
+        "key",
+        405,
+        _JSON_UTF8,
+        _ONLY_GET_POST,
+        id="Origin '', JSON",
+    ),
     http_row(
         "OPTIONS", "", (), None, "Bearer key", 400, _JSON_UTF8, _CSRF, id="OPTIONS, Bearer key"
     ),

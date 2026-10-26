@@ -8,15 +8,13 @@ import yaml
 from backlot import store
 from tests._helpers import client_for, gql
 
-# The two ways but a POST of JSON a document reaches each GraphQL server's resolvers: a GET with it
-# in the query string, and on Fireflies a POST of a form, each sent with Apollo Server's preflight
-# header (`backlot.graphql.apollo_http.csrf_refusal`).
 _ADMIN = "admin-service-token"
 
 
 def _sent(client, path, query, authorization, via, **variables):
     """``query`` sent to ``path`` as ``via`` names: ``POST`` as JSON (:func:`gql`), ``GET`` in the
-    query string and ``form`` as a form, the last two beside the preflight header."""
+    query string and, on Fireflies, ``form`` as a form, the last two beside the preflight header
+    (`backlot.graphql.apollo_http.csrf_refusal`)."""
     if via == "POST":
         return gql(client, path, query, authorization, **variables)
     fields = {"query": query, **({"variables": json.dumps(variables)} if variables else {})}

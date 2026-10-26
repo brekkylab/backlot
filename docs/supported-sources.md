@@ -87,10 +87,10 @@ what `search` answers a `GET` or `HEAD`, but for a 401 and a refusal of its `Acc
 
 ### Fireflies — `/fireflies/graphql`
 
-**GraphQL only**, one endpoint: a `POST` with a JSON body, or a `GET` with the query in its query
-string and a JSON `Content-Type` or none. Apollo Server serves a `GET` with none only beside an
-`apollo-require-preflight` or `x-apollo-operation-name` header, its check that a browser
-preflighted the request. Root `Query` fields:
+**GraphQL only**, one endpoint: a `POST` with a JSON or form body, or a `GET` with the query in its
+query string and a JSON `Content-Type` or none. Apollo Server serves a form, or a `GET` with no
+`Content-Type`, only beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its
+check that a browser preflighted the request. Root `Query` fields:
 
 | Query field | Notes |
 |---|---|

@@ -731,32 +731,30 @@ def test_s3_by_bucket_key(tmp_path):
 # --- Drive: storage usage -------------------------------------------------------
 
 
-def _drive_usage_db(tmp_path):
+def _drive_usage_db(tmp_path, rows=None):
     """A hand-built Drive corpus whose byte count differs from its character count — the ASCII
     SAMPLE cannot tell the two apart, and that difference is the whole point of the helper."""
     conn = store.connect_rw(tmp_path / "gdrive.sqlite")
-    rows = [
-        # (doc_id, content, trashed) — "안녕" is 2 characters but 6 UTF-8 bytes
-        ("g1", "abc", 0),  # 3 bytes
-        ("g2", "안녕", 0),  # 6 bytes
-        ("g3", "trash", 1),  # 5 bytes, in the trash
+    rows = rows or [
+        # (doc_id, content, subtype, trashed, group) — "안녕" is 2 characters but 6 UTF-8 bytes. A
+        # binary subtype, since a native file's size floor would hide these byte counts.
+        ("g1", "abc", "pdf", 0, "acme"),  # 3 bytes
+        ("g2", "안녕", "pdf", 0, "eng"),  # 6 bytes
+        ("g3", "trash", "pdf", 1, "acme"),  # 5 bytes, in the trash
     ]
-    for doc_id, content, trashed in rows:
+    for doc_id, content, subtype, trashed, group in rows:
         conn.execute(
             "INSERT INTO gdrive_files(id, folder, author_email, title, content, subtype, "
             "created_ts, trashed) VALUES (?,?,?,?,?,?,1,?)",
             # `id` is the primary key; nothing here reads it back, so the fixture's own
             # label serves as one rather than the real synth.gdrive_file_id — this DB is
             # hand-built to bypass the importer.
-            # a binary subtype: a native file's size has a floor, which would hide the byte counts
-            # these tests pin (the floor has its own test below)
-            (doc_id, "f", "a@x.com", doc_id, content, "pdf", trashed),
+            (doc_id, "f", "a@x.com", doc_id, content, subtype, trashed),
         )
-    # Every doc gets a grant, as the importers write one: a `visible_ids` filter passes only rows
-    # that HAVE a matching google_drive_acl row, so a doc with no grant is invisible to any scoped
-    # caller.
-    for doc_id, pid in [("g1", "acme"), ("g2", "eng"), ("g3", "acme")]:
-        conn.execute("INSERT INTO google_drive_acl VALUES (?,?,?)", (doc_id, "group", pid))
+        # Every doc gets a grant, as the importers write one: a `visible_ids` filter passes only
+        # rows that HAVE a matching google_drive_acl row, so a doc with no grant is invisible to
+        # any scoped caller.
+        conn.execute("INSERT INTO google_drive_acl VALUES (?,?,?)", (doc_id, "group", group))
     conn.commit()
     return conn
 
@@ -784,30 +782,21 @@ def test_drive_usage_bytes_is_acl_scoped(tmp_path):
 def test_drive_usage_bytes_floors_each_native_file_at_one_kibibyte(tmp_path):
     """A native file's `size` is never under 1024, so the quota is the sum of those sizes: a Doc, a
     Sheet and a Slide deck count 1024 each (a missing subtype is a Doc), a native file above the
-    floor counts its UTF-8 bytes, and a binary file, whose floor is not measured, counts its
-    length. A trashed native file counts toward the trash at the same floor."""
-    conn = store.connect_rw(tmp_path / "gdrive-native.sqlite")
-    rows = [
-        # (doc_id, content, subtype, trashed)
-        ("n1", "abc", "document", 0),  # 3 bytes -> 1024
-        ("n2", "a,b", "spreadsheet", 0),  # 3 bytes -> 1024
-        ("n3", "one", "presentation", 0),  # 3 bytes -> 1024
-        ("n4", "tiny", None, 0),  # no subtype is a Doc -> 1024
-        ("n5", "안" * 400, "document", 0),  # 400 characters, 1200 bytes -> 1200
-        ("n6", "gone", "document", 1),  # trashed -> 1024 in both totals
-        ("b1", "%PDF-1.7", "pdf", 0),  # binary -> 8
-    ]
-    for doc_id, content, subtype, trashed in rows:
-        conn.execute(
-            "INSERT INTO gdrive_files(id, folder, author_email, title, content, subtype, "
-            "created_ts, trashed) VALUES (?,?,?,?,?,?,1,?)",
-            (doc_id, "f", "a@x.com", doc_id, content, subtype, trashed),
-        )
-        conn.execute("INSERT INTO google_drive_acl VALUES (?,?,?)", (doc_id, "group", "acme"))
-    conn.commit()
-    total, trashed = store.drive_usage_bytes(conn)
-    assert total == 1024 * 4 + 1200 + 1024 + 8
-    assert trashed == 1024
+    floor counts its bytes, and a binary file, whose floor is not measured, counts its length. A
+    trashed native file counts toward the trash at the same floor."""
+    conn = _drive_usage_db(
+        tmp_path,
+        [
+            ("n1", "abc", "document", 0, "acme"),  # 3 bytes -> 1024
+            ("n2", "a,b", "spreadsheet", 0, "acme"),  # 3 bytes -> 1024
+            ("n3", "one", "presentation", 0, "acme"),  # 3 bytes -> 1024
+            ("n4", "tiny", None, 0, "acme"),  # no subtype is a Doc -> 1024
+            ("n5", "x" * 1500, "document", 0, "acme"),  # above the floor -> 1500
+            ("n6", "gone", "document", 1, "acme"),  # trashed -> 1024 in both totals
+            ("b1", "%PDF-1.7", "pdf", 0, "acme"),  # binary -> 8
+        ],
+    )
+    assert store.drive_usage_bytes(conn) == (1024 * 5 + 1500 + 8, 1024)
 
 
 # --- Drive: a spreadsheet's stored grid ------------------------------------------

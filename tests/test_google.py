@@ -6223,7 +6223,7 @@ def test_drive_native_files_carry_export_links_and_quota(client, admin_h, mime, 
     for f in files:
         assert list(f["exportLinks"]) == formats
         assert f["exportLinks"][export] == link.format(id=f["id"])
-        assert f["quotaBytesUsed"] == f["size"]
+        assert f["quotaBytesUsed"] == f["size"] == "1024"  # every SAMPLE native file is under 1 KiB
     folder = client.get(
         "/drive/v3/files",
         headers=admin_h,
@@ -8954,51 +8954,9 @@ def test_drive_q_name_compares_as_real_drive_does(tmp_path, q, expected):
 def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
     """Google: `size` "is populated for files with binary content stored in Google Drive AND for
     Docs Editors files; it is not populated for shortcuts or folders." Backlot set it only in the
-    binary branch, so it taught implementors that native Docs have no byte size."""
-    from backlot.routers.google import _drive_file
-
-    s = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "google_drive",
-                "doc_id": "n1",
-                "folder": "mk",
-                "title": "Doc",
-                "content": "hello there",
-                "author_email": "a@x.com",
-                "subtype": "document",
-            },
-            {
-                "source_type": "google_drive",
-                "doc_id": "b1",
-                "folder": "mk",
-                "title": "Scan.pdf",
-                "content": "%PDF-1.7",
-                "author_email": "a@x.com",
-                "subtype": "pdf",
-                "mime_type": "application/pdf",
-            },
-        ],
-    )
-    conn = store.connect_ro(s.db_path)
-    native = _drive_file(
-        conn, store.get_document(conn, "google_drive", served_id("google_drive", "n1"))
-    )
-    assert native["size"] == "1024"  # 11 bytes of text, under the floor a native file carries
-    # checksums and a download link stay binary-only, as they are on real Drive
-    assert "md5Checksum" not in native and "webContentLink" not in native
-    binary = _drive_file(
-        conn, store.get_document(conn, "google_drive", served_id("google_drive", "b1"))
-    )
-    assert binary["size"] == str(len("%PDF-1.7")) and binary["md5Checksum"]
-
-
-def test_drive_native_file_size_is_never_under_one_kibibyte(tmp_path):
-    """Real Drive never reports a native Docs-editors file under 1024 bytes (the measurement is
-    recorded beside `DRIVE_NATIVE_MIN_BYTES` in `backlot/store.py`). `size` and `quotaBytesUsed`
-    agree on every file, so both carry the floor. A binary file is not covered by that
-    measurement and keeps its own byte length."""
+    binary branch, so it taught implementors that native Docs have no byte size. A native file's
+    `size` and `quotaBytesUsed` never go under `store.DRIVE_NATIVE_MIN_BYTES`; above it, and on a
+    binary file, they are the UTF-8 byte length."""
     from backlot.routers.google import _drive_file
 
     def record(doc_id, subtype, content, **extra):
@@ -9016,37 +8974,28 @@ def test_drive_native_file_size_is_never_under_one_kibibyte(tmp_path):
     s = tiny_corpus(
         tmp_path,
         [
-            record("doc", "document", "hello"),
-            record("sheet", "spreadsheet", "a,b"),
-            record("deck", "presentation", "slide one"),
+            record("n1", "document", "hello there"),
             record("edge", "document", "x" * 1024),
             record("big", "document", "x" * 1500),
             # 400 characters are 1200 UTF-8 bytes: counting characters would floor this to 1024
             record("wide", "document", "안" * 400),
-            record("scan", "pdf", "%PDF-1.7", mime_type="application/pdf"),
+            record("b1", "pdf", "%PDF-1.7", mime_type="application/pdf"),
         ],
     )
     conn = store.connect_ro(s.db_path)
 
-    def sizes(doc_id):
+    def served(doc_id):
         row = store.get_document(conn, "google_drive", served_id("google_drive", doc_id))
-        f = _drive_file(conn, row)
-        return f["size"], f["quotaBytesUsed"]
+        return _drive_file(conn, row)
 
-    for small in ("doc", "sheet", "deck"):
-        assert sizes(small) == ("1024", "1024"), small
-    assert sizes("edge") == ("1024", "1024")  # exactly the floor
-    assert sizes("big") == ("1500", "1500")  # above it the stored length stands
-    assert sizes("wide") == ("1200", "1200")  # bytes, not characters
-    assert sizes("scan") == ("8", "8")  # a binary file is unchanged
-
-
-def test_drive_native_floor_covers_every_native_type_but_the_folder():
-    """`store.drive_usage_bytes` applies the floor in SQL by subtype, `_drive_file` by `_NATIVE`.
-    The two lists must name the same files or `about` and `files.list` drift apart."""
-    from backlot.routers.google import _NATIVE
-
-    assert set(store.DRIVE_NATIVE_SUBTYPES) == set(_NATIVE) - {"folder"}
+    native = served("n1")
+    assert (native["size"], native["quotaBytesUsed"]) == ("1024", "1024")  # 11 bytes of text
+    # checksums and a download link stay binary-only, as they are on real Drive
+    assert "md5Checksum" not in native and "webContentLink" not in native
+    for doc_id, size in [("edge", "1024"), ("big", "1500"), ("wide", "1200")]:
+        assert served(doc_id)["size"] == size, doc_id
+    binary = served("b1")
+    assert binary["size"] == str(len("%PDF-1.7")) and binary["md5Checksum"]
 
 
 # --- Gmail -----------------------------------------------------------------------

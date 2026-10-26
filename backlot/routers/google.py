@@ -6154,7 +6154,7 @@ _NATIVE = {
 
 def _native(row):
     """Return the _NATIVE tuple for this doc, or None if it's a binary (non-native) file."""
-    return _NATIVE.get(row["subtype"] or "document")
+    return _NATIVE.get(row["subtype"] or store.DRIVE_DEFAULT_SUBTYPE)
 
 
 def _drive_user(email: str) -> dict:
@@ -6264,7 +6264,6 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     if shared is None:
         shared = bool(store.doc_grants(conn, "google_drive", row["id"]))
     ext = row["title"].rsplit(".", 1)[-1] if (native is None and "." in row["title"]) else None
-    nbytes = len((row["content"] or "").encode("utf-8"))
     f = {
         "kind": "drive#file",
         "id": row["id"],
@@ -6294,11 +6293,10 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     # Doc/Sheet/Slides carries it too. Checksums, a download link and the file-extension pair stay
     # binary-only, which is also what real Drive does for the Docs-editors types. A non-folder file
     # always answers `quotaBytesUsed` (its own `size`), and a native file answers `exportLinks`,
-    # both measured 2026-10-21/25. A native file's `size` is never under 1024 bytes, measured
-    # 2026-10-26, so the stored text length only counts above that floor.
+    # both measured 2026-10-21/25. A native file's `size` never goes under
+    # `store.DRIVE_NATIVE_MIN_BYTES`, where the measurement is recorded.
     if not is_folder:
-        if native is not None:
-            nbytes = max(nbytes, store.DRIVE_NATIVE_MIN_BYTES)
+        nbytes = store.drive_file_bytes(row["subtype"], row["content"])
         f["size"] = str(nbytes)
         f["quotaBytesUsed"] = str(nbytes)
     if native is not None and not is_folder:

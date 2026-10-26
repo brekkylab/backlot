@@ -2602,11 +2602,21 @@ def _drive_trash(sql: str, params: list, trash) -> str:
 
 # Real Drive never reports a native Docs-editors file (a Doc, Sheet or Slide deck) under 1024 bytes:
 # measured 2026-10-26 against Drive v3 across 80 native files, the smallest `size` was 1024 and an
-# empty spreadsheet reported 1024 too. Only that floor is measured; above it the vendor's own
-# storage size has nothing in a corpus to derive from, so the stored text length stands.
+# empty spreadsheet reported 1024 too.
 DRIVE_NATIVE_MIN_BYTES = 1024
-# The subtypes `files.get` serves as a native file with a `size`; a folder is native but has none.
+# The subtypes that floor applies to, and the subtype a Drive row stored without one is served as.
 DRIVE_NATIVE_SUBTYPES = ("document", "spreadsheet", "presentation")
+DRIVE_DEFAULT_SUBTYPE = "document"
+
+
+def drive_file_bytes(subtype: str | None, content: str | None) -> int:
+    """The ``size`` and ``quotaBytesUsed`` a non-folder Drive file serves: its UTF-8 byte length,
+    floored at :data:`DRIVE_NATIVE_MIN_BYTES` for a native file. :func:`drive_usage_bytes` sums the
+    same in SQL."""
+    nbytes = len((content or "").encode("utf-8"))
+    if (subtype or DRIVE_DEFAULT_SUBTYPE) in DRIVE_NATIVE_SUBTYPES:
+        return max(nbytes, DRIVE_NATIVE_MIN_BYTES)
+    return nbytes
 
 
 def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
@@ -2623,7 +2633,7 @@ def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
     raw = "COALESCE(length(CAST(content AS BLOB)), 0)"
     native = ", ".join(f"'{s}'" for s in DRIVE_NATIVE_SUBTYPES)
     nbytes = (
-        f"(CASE WHEN COALESCE(NULLIF(subtype, ''), 'document') IN ({native}) "
+        f"(CASE WHEN COALESCE(NULLIF(subtype, ''), '{DRIVE_DEFAULT_SUBTYPE}') IN ({native}) "
         f"THEN MAX({raw}, {DRIVE_NATIVE_MIN_BYTES}) ELSE {raw} END)"
     )
     sql = (

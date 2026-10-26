@@ -1884,6 +1884,15 @@ _FIREFLIES_HTTP = [
             ("application/json ,", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
             ("text/plain", (), _PAST_THE_LIMIT, "key", 413, _TOO_LARGE, ", past the limit"),
             (
+                "text/plain",
+                _P,
+                b"\xe9" * 2**20 + b"\xe9",
+                "key",
+                413,
+                _TOO_LARGE,
+                ", past the limit, 0xE9",
+            ),
+            (
                 "application/x-www-form-urlencoded",
                 (),
                 _PAST_THE_LIMIT,

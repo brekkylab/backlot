@@ -285,7 +285,7 @@ async def _fastify_read(request: Request, routed: bool) -> Any:
         return request_body.form_fields(text)
     # Fastify reads plain text as UTF-8 and counts the text's own UTF-8 bytes against the body's:
     # `text/plain` holding the byte 0xE9, with a charset or none, by POST and by PUT, was the 400 on
-    # 2026-10-26 (UTC), where a form holding it was served.
+    # 2026-10-26 (UTC), where a form holding it was served and 0xE9 past the limit was the 413.
     return text if len(text.encode("utf-8")) == len(raw) else _body_refusal(_SIZE_MISMATCH)
 
 

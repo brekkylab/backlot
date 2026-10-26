@@ -627,10 +627,17 @@ def test_a_call_is_named_by_the_baseline(client, method, path, kwargs, expected)
             ("mutation", "unknown", 400, "graphql_validation", "client"),
         ),
         ("{ issues {", None, ("unparsed", "unknown", 400, "graphql_parse", "client")),
+        # Introspection is no vendor operation, so it is `extra` alone and leaves a field it
+        # rides with to name the support.
         (
             "{ __schema { queryType { name } } }",
             None,
-            ("query.__schema", "implemented", 200, None, None),
+            ("query.__schema", "extra", 200, None, None),
+        ),
+        (
+            "{ __typename issues(first: 1) { nodes { id } } }",
+            None,
+            ("query.__typename,issues", "implemented", 200, None, None),
         ),
     ],
 )

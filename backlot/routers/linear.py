@@ -126,11 +126,9 @@ def _express_sent(
     ``etag`` is True, or ``etag`` itself where it is one, `Vary: Accept-Encoding`, an
     `x-request-id` (:func:`request_id`), and where the request carries an `Origin`
     (:func:`_origin`), ``cors``'s answer to it: ``allow_origin`` where given, else that origin, with
-    :data:`_EXPOSED`, and `Origin` in `Vary`. A `GET` or `HEAD` whose 2xx answer is fresh to the
-    request (:func:`_fresh`) is Express's 304 instead, with no body, `Content-Type` or
-    `Accept-Encoding` in `Vary`, as api.linear.app answered `GET /graphql` and the greeting given
-    their `ETag` in `If-None-Match` on 2026-10-26 (UTC), the request taken from the budget, where a
-    `POST` given it was the 200."""
+    :data:`_EXPOSED`, and `Origin` in `Vary`. A `GET` or `HEAD` whose 2xx answer :func:`_fresh`
+    finds fresh is Express's 304 instead, with no body, `Content-Type` or `Accept-Encoding` in
+    `Vary`."""
     headers: MutableHeaders = response.headers
     headers.setdefault("cache-control", _NO_STORE)
     if etag is True:
@@ -166,7 +164,9 @@ def _express_sent(
 def _fresh(request: Request, etag: str | None) -> bool:
     """Whether ``fresh`` 0.5.2, which Express asks, finds the answer carrying ``etag`` fresh to
     ``request``: an `If-None-Match` of `*`, or one naming ``etag``, weakly or not, and no
-    `no-cache` in the request's `Cache-Control`."""
+    `no-cache` in the request's `Cache-Control`. api.linear.app answered `GET /graphql` and the
+    greeting so on 2026-10-26 (UTC), with the 304 counted against the budget, and a `POST` naming
+    the `ETag` with the 200."""
     none_match = request.headers.get("if-none-match")
     if not none_match:
         return False

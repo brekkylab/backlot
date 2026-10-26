@@ -21,12 +21,13 @@ credential and with ``nope``, an empty body, ``{}``, an array, a ``query`` of ``
 string ``variables``, an ``extensions`` or ``operationName`` of ``5``, a persisted query's hash
 alone or one that does not match, a document that does not parse or validate and one of two
 operations with no ``operationName`` drew what the key drew on 2026-10-25 (UTC), and a document
-missing a variable the 401. An API key under ``Bearer`` is refused ahead of the body on any method
-but ``OPTIONS``: with ``Bearer <key>``, ``{``, an empty body and a body holding
-``NaN`` drew :func:`_api_key_as_bearer`'s 400 on 2026-10-18, and ``charset=latin1``,
-``Content-Encoding: bogus`` and a body past the size limit did on 2026-10-19, when a key in an API
-key's shape that Linear never issued drew it under ``Bearer`` with ``{``, ``NaN``, ``5``,
-``charset=latin1`` and an empty body.
+missing a variable the 401, but for one that selects only ``__schema`` and ``__type``
+(:func:`_introspection_only`), which drew the variable's refusal as with the key. An API key under
+``Bearer`` is refused ahead of the body on any method but ``OPTIONS``: with ``Bearer <key>``,
+``{``, an empty body and a body holding ``NaN`` drew :func:`_api_key_as_bearer`'s 400 on
+2026-10-18, and ``charset=latin1``, ``Content-Encoding: bogus`` and a body past the size limit
+did on 2026-10-19, when a key in an API key's shape that Linear never issued drew it under
+``Bearer`` with ``{``, ``NaN``, ``5``, ``charset=latin1`` and an empty body.
 """
 
 from __future__ import annotations
@@ -402,7 +403,8 @@ def _envelope(result: engine.Result, payload: Any) -> dict:
     or its hash as Linear's ``Internal server error``, an operation that cannot be chosen as
     :func:`_operation_missing`, and the request error after fifty refused variables, to which
     Apollo Server gives no code of its own, as :func:`_internal` (api.linear.app, 2026-10-26
-    UTC); and each error in ``result.assigned`` as :func:`_internal`."""
+    UTC); each error in ``result.assigned`` as :func:`_internal`, and each other field error in
+    Linear's member order (:func:`_in_linears_order`)."""
     if result.refusals:
         errors = []
         for refusal in result.refusals:

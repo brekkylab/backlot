@@ -722,98 +722,11 @@ def test_linear_by_id_relation_roots_answer(client, admin_h):
     assert label["groupType"] is None
 
 
-# Each by-id root, an id it holds nothing for, and the message and presentable text of Linear's
-# error for it (`linear_resolvers._not_found`, `linear_resolvers._ATTACHMENT`).
-_UNKNOWN_IDS = [
-    pytest.param(
-        "issue",
-        "00000000-0000-0000-0000-000000000000",
-        "Entity not found: Issue",
-        "Could not find referenced Issue.",
-        id="issue 00000000",
-    ),
-    pytest.param(
-        "issue",
-        "NOPE-1",
-        "Entity not found: Issue",
-        "Could not find referenced Issue.",
-        id="issue NOPE-1",
-    ),
-    pytest.param(
-        "team", "nope", "Entity not found: Team", "Could not find referenced Team.", id="team nope"
-    ),
-    pytest.param(
-        "user",
-        "00000000-0000-0000-0000-000000000000",
-        "Entity not found: User",
-        "Could not find referenced User.",
-        id="user 00000000",
-    ),
-    pytest.param(
-        "workflowState",
-        "nope",
-        "Entity not found: WorkflowState",
-        "Could not find referenced WorkflowState.",
-        id="workflowState nope",
-    ),
-    pytest.param(
-        "project",
-        "00000000-0000-0000-0000-000000000000",
-        "Entity not found: Project",
-        "Could not find referenced Project.",
-        id="project 00000000",
-    ),
-    pytest.param(
-        "issueLabel",
-        "nope",
-        "Entity not found: IssueLabel",
-        "Could not find referenced IssueLabel.",
-        id="issueLabel nope",
-    ),
-    pytest.param(
-        "cycle",
-        "00000000-0000-0000-0000-000000000000",
-        "Entity not found: Cycle",
-        "Could not find referenced Cycle.",
-        id="cycle 00000000",
-    ),
-    pytest.param(
-        "release",
-        "nope",
-        "Entity not found: Release",
-        "Could not find referenced Release.",
-        id="release nope",
-    ),
-    pytest.param(
-        "issueRelation",
-        "nope",
-        "Entity not found: IssueRelation",
-        "Could not find referenced IssueRelation.",
-        id="issueRelation nope",
-    ),
-    pytest.param(
-        "teamMembership",
-        "00000000-0000-0000-0000-000000000000",
-        "Entity not found: TeamMembership",
-        "Could not find referenced TeamMembership.",
-        id="teamMembership 00000000",
-    ),
-    pytest.param(
-        "attachment",
-        "00000000-0000-0000-0000-000000000000",
-        "Entity not found: Attachment: could not find by url.",
-        "Could not find referenced attachment with this url.",
-        id="attachment 00000000",
-    ),
-]
-
-
-@pytest.mark.parametrize("root, id_, message, presentable", _UNKNOWN_IDS)
-def test_linear_answers_an_id_it_does_not_hold_as_linear_does(
-    client, admin_h, root, id_, message, presentable
-):
+def _unknown_id(root: str, id_: str, message: str, presentable: str, row: str):
+    """A `_LINEAR_BODIES` row: the by-id root ``root`` sent an id it holds nothing for, and Linear's
+    error for it with ``message`` and ``presentable`` (`linear_resolvers._not_found`,
+    `linear_resolvers._ATTACHMENT`)."""
     body = {"query": "query($x: String!) { %s(id: $x) { id } }" % root, "variables": {"x": id_}}
-    r = client.post("/linear/graphql", json=body, headers=admin_h)
     error = {
         "message": message,
         "path": [root],
@@ -826,7 +739,92 @@ def test_linear_answers_an_id_it_does_not_hold_as_linear_does(
             "userPresentableMessage": presentable,
         },
     }
-    assert (r.status_code, r.content) == (200, node_json({"errors": [error], "data": None}))
+    answer = node_json({"errors": [error], "data": None})
+    return pytest.param(json.dumps(body).encode(), WithTheKey(answer, 200), id=row)
+
+
+_UNKNOWN_IDS = [
+    _unknown_id(
+        "issue",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Issue",
+        "Could not find referenced Issue.",
+        "issue 00000000",
+    ),
+    _unknown_id(
+        "issue",
+        "NOPE-1",
+        "Entity not found: Issue",
+        "Could not find referenced Issue.",
+        "issue NOPE-1",
+    ),
+    _unknown_id(
+        "team", "nope", "Entity not found: Team", "Could not find referenced Team.", "team nope"
+    ),
+    _unknown_id(
+        "user",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: User",
+        "Could not find referenced User.",
+        "user 00000000",
+    ),
+    _unknown_id(
+        "workflowState",
+        "nope",
+        "Entity not found: WorkflowState",
+        "Could not find referenced WorkflowState.",
+        "workflowState nope",
+    ),
+    _unknown_id(
+        "project",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Project",
+        "Could not find referenced Project.",
+        "project 00000000",
+    ),
+    _unknown_id(
+        "issueLabel",
+        "nope",
+        "Entity not found: IssueLabel",
+        "Could not find referenced IssueLabel.",
+        "issueLabel nope",
+    ),
+    _unknown_id(
+        "cycle",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Cycle",
+        "Could not find referenced Cycle.",
+        "cycle 00000000",
+    ),
+    _unknown_id(
+        "release",
+        "nope",
+        "Entity not found: Release",
+        "Could not find referenced Release.",
+        "release nope",
+    ),
+    _unknown_id(
+        "issueRelation",
+        "nope",
+        "Entity not found: IssueRelation",
+        "Could not find referenced IssueRelation.",
+        "issueRelation nope",
+    ),
+    _unknown_id(
+        "teamMembership",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: TeamMembership",
+        "Could not find referenced TeamMembership.",
+        "teamMembership 00000000",
+    ),
+    _unknown_id(
+        "attachment",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Attachment: could not find by url.",
+        "Could not find referenced attachment with this url.",
+        "attachment 00000000",
+    ),
+]
 
 
 def test_linear_workflow_states_are_per_team(client, admin_h):
@@ -962,10 +960,11 @@ _NO_KEYS = _apollo(b"POST body missing, invalid Content-Type, or JSON object has
 _BATCHING = _apollo(b"Operation batching disabled.")
 # The headers a body was sent with beyond `Content-Type: application/json`, the body, and the bytes
 # Linear answered it with for the key, no credential and `nope` alike, at the status their `code` or
-# `extensions.http.status` names (`_status`), or None where Linear served the query with the key and
-# answered 401 without one, as `backlot.graphql.body` and `backlot.graphql.v8_json` read them. A
-# `WithTheKey` row draws the 401 without the key. Apollo Server's envelopes are api.linear.app's,
-# but for the newline that ends each there.
+# `extensions.http.status` names, 400 for an error naming neither and 200 for an answer with no
+# `errors` (`_status`), or None where Linear served the query with the key and answered 401 without
+# one, as `backlot.graphql.body` and `backlot.graphql.v8_json` read them. A `WithTheKey` row draws
+# the 401 without the key. Apollo Server's envelopes are api.linear.app's, but for the newline that
+# ends each there.
 _LINEAR_BODIES = [
     pytest.param(
         b"{",
@@ -2023,6 +2022,7 @@ _LINEAR_BODIES = [
         b'{"errors":[{"message":"Cannot spread fragment \\"F\\" within itself.","locations":[{"line":1,"column":23}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}',
         id="a fragment that spreads itself",
     ),
+    *_UNKNOWN_IDS,
 ]
 
 

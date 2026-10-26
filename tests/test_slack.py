@@ -242,8 +242,8 @@ def test_slack_users_info_resolves_author(client, admin_h, ro_conn):
         # GitHub's legacy `token <t>` header is not a Slack scheme at all, in either casing.
         ({"headers": {"Authorization": "token xoxb-not-a-real-token"}}, "not_authed"),
         ({"headers": {"Authorization": "Token xoxb-not-a-real-token"}}, "not_authed"),
-        # A tab does not separate scheme from token, but repeated spaces do, and either end of the
-        # header value may carry slack.
+        # A tab does not separate scheme from token, neither end of the header value counts extra
+        # spaces, and extra spaces after the first are kept as part of the token.
         ({"headers": {"Authorization": "Bearer\txoxb-not-a-real-token"}}, "not_authed"),
         ({"headers": {"Authorization": "Bearerxoxb-not-a-real-token"}}, "not_authed"),
         ({"headers": {"Authorization": "Bearer  xoxb-not-a-real-token"}}, "invalid_auth"),
@@ -285,6 +285,59 @@ def test_slack_refuses_a_valid_token_under_an_unrecognised_scheme(client, tokens
         headers={"Authorization": f"Bearer {tokens_yaml['admin_token']}"},
     ).json()
     assert ok["ok"] is True
+
+
+# What real answered `auth.test` with a user token that resolves in `{t}`, sent in each row's
+# `Authorization` headers and, where the row has one, its `token` form field, on the dates
+# `auth.slack_bearer_token` gives.
+_SLACK_AUTHORIZATION_ROWS = [
+    (["Bearer {t}"], None, "ok"),
+    (["Bearer  {t}"], None, "invalid_auth"),
+    (["Bearer   {t}"], None, "invalid_auth"),
+    ([" Bearer {t}"], None, "ok"),
+    (["Bearer {t} "], None, "ok"),
+    (["\tBearer {t}"], None, "ok"),
+    (["Bearer {t}\t"], None, "ok"),
+    (["Bearer \t{t}"], None, "invalid_auth"),
+    (["Bearer \xa0{t}"], None, "invalid_auth"),
+    (["Bearer {t}\xa0"], None, "invalid_auth"),
+    (["Bearer {t}\x85"], None, "invalid_auth"),
+    (["Bearer {t} x"], None, "invalid_auth"),
+    (["Bearer  "], None, "not_authed"),
+    (["Bearer {t}", "Bearer {t}"], None, "invalid_auth"),
+    (["Bearer {t}", "Basic eDp5"], None, "invalid_auth"),
+    (["Bearer {t}", "bearer {t}"], None, "invalid_auth"),
+    (["Basic eDp5", "Bearer {t}"], None, "not_authed"),
+    (["Bearer", "{t}"], None, "not_authed"),
+    (["Basic eDp5", "Basic eDp5"], None, "not_authed"),
+    (["", ""], None, "not_authed"),
+    (["Bearer {t}", ""], None, "ok"),
+    (["", "Bearer {t}"], None, "ok"),
+    (["Bearer {t}", " "], None, "ok"),
+    ([" ", "Bearer {t}"], None, "ok"),
+    (["\t", "Bearer {t}"], None, "ok"),
+    (["Bearer {t}", "", ""], None, "ok"),
+    (["", "Bearer {t}", " "], None, "ok"),
+    (["Bearer {t}", "Bearer {t}", "Bearer {t}"], None, "invalid_auth"),
+    (["Bearer {t}", "Bearer {t}"], "{t}", "ok"),
+    (["Bearer xoxp-bogus", "Bearer xoxp-bogus"], "{t}", "ok"),
+    (["Bearer {t}", "Basic eDp5"], "{t}", "ok"),
+]
+
+
+@pytest.mark.parametrize("values, form, answer", _SLACK_AUTHORIZATION_ROWS)
+def test_slack_reads_the_authorization_headers_as_real_does(
+    client, tokens_yaml, values, form, answer
+):
+    """The rows `_SLACK_AUTHORIZATION_ROWS` records, each header sent as its latin-1 bytes."""
+    t = tokens_yaml["admin_token"]
+    headers = [("Authorization", value.format(t=t)) for value in values]
+    content = None
+    if form is not None:
+        headers.append(("Content-Type", _FORM))
+        content = f"token={form.format(t=t)}".encode()
+    j = sent_as(client, "POST", "/slack/api/auth.test", headers, content=content).json()
+    assert ("ok" if j["ok"] else j["error"]) == answer, j
 
 
 def test_slack_auth_error_split_is_uniform_across_methods(client, tokens_yaml):
@@ -3828,6 +3881,7 @@ _RETIRED = (
                 "a/b.c",
                 "/a/b.c",
                 "/a-b",
+                "a//b.c",
                 "a\\b.c",
             )
         ),
@@ -3887,9 +3941,17 @@ _RETIRED = (
         ("GET", "im.open", "bogus", None, None, ("unknown_method", "im.open")),
         # a method a route serves, for another HTTP method, is the route's to answer
         *((verb, m, None, None, None, _ROUTED) for verb, m in _ROUTED_ROWS),
+        # a name after two `/`s or a `\\` is the method it names (the dedicated test below pins
+        # the served ones; these are the ones this layer answers)
+        ("GET", "/nonexistent.method", None, None, None, ("unknown_method", "nonexistent.method")),
+        ("GET", "//emoji.list", "bogus", None, None, "invalid_auth"),
+        ("GET", "//emoji.list", None, None, None, "not_authed"),
+        ("GET", "/oauth.access", "admin", None, None, "invalid_code"),
+        ("GET", "\\nonexistent.method", None, None, None, ("unknown_method", "nonexistent.method")),
+        ("POST", "/nonexistent.method", None, _FORM, b"{}", "invalid_form_data"),
         # left to the router: a token that resolves, a method of `slack._ANSWERED_BY_ARGUMENTS`, a
-        # path ending in `/`, the dot segments, a name after two `/`s or a `\\`, and a method
-        # outside `slack.UNSERVED_METHODS`, its body unread
+        # path ending in `/`, the dot segments, a name after a `/` or `\\` sent escaped, and a
+        # method outside `slack.UNSERVED_METHODS`, its body unread
         ("GET", "emoji.list", "admin", None, None, _LEFT),
         ("GET", "files.getUploadURLExternal", "admin", None, None, _LEFT),
         ("POST", "blocks.validate", None, _FORM, b"", _LEFT),
@@ -3902,9 +3964,9 @@ _RETIRED = (
         ("GET", "emoji.list/", None, None, None, _LEFT),
         ("GET", "%2E", None, None, None, _LEFT),
         ("GET", "%2E%2E", None, None, None, _LEFT),
-        ("GET", "/api.test", None, None, None, _LEFT),
-        ("GET", "//emoji.list", "bogus", None, None, _LEFT),
-        ("GET", "\\api.test", None, None, None, _LEFT),
+        ("GET", "%2Fapi.test", None, None, None, _LEFT),
+        ("GET", "%5Capi.test", None, None, None, _LEFT),
+        ("GET", "/%2Fapi.test", None, None, None, _LEFT),
         ("POST", "%2E", None, None, b"{}", _LEFT),
         ("POST", "%2E%2E", None, None, b"{}", _LEFT),
         ("OPTIONS", "nonexistent.method", None, None, None, _LEFT),
@@ -3956,6 +4018,39 @@ def test_slack_answers_a_path_no_route_serves_as_real_does(
         }
     assert r.status_code == 200
     assert r.content == JSONResponse(expected).body
+
+
+@pytest.mark.parametrize("run", ["/", "//", "\\", "\\\\", "\\/", "/\\"])
+@pytest.mark.parametrize(
+    "verb, name, credential, body",
+    [
+        ("GET", "api.test", None, None),
+        ("GET", "api.test", "bogus", None),
+        ("POST", "api.test", None, b"a=b"),
+        ("GET", "conversations.list", None, None),
+        ("GET", "conversations.list", "bogus", None),
+        ("GET", "conversations.list", "admin", None),
+        ("GET", "conversations.list", "ava", None),
+        ("POST", "conversations.list", "ava", b""),
+    ],
+)
+def test_slack_a_method_after_a_run_of_slashes_is_the_method(
+    client, admin_h, tokens, run, verb, name, credential, body
+):
+    """A served method's name after a run of `/`s and `\\`s, in any mix, is answered as the name on
+    its own spelling, with its credential pair, and with what the admin token and a scoped one each
+    see (``backlot.main.merge_slashes_before_a_slack_method_name`` has the measurement)."""
+    headers = {"Content-Type": _FORM} if body is not None else {}
+    if credential == "bogus":
+        headers["Authorization"] = "Bearer xoxb-not-a-real-token"
+    elif credential == "admin":
+        headers.update(admin_h)
+    elif credential == "ava":
+        headers["Authorization"] = f"Bearer {tokens['ava@acme.com']}"
+    plain = client.request(verb, f"/slack/api/{name}", headers=headers, content=body)
+    merged = client.request(verb, f"/slack/api/{run}{name}", headers=headers, content=body)
+    assert plain.status_code == 200
+    assert (merged.status_code, merged.content) == (plain.status_code, plain.content)
 
 
 # The two answers here where they are not `not_authed` and `invalid_auth`: real's, or `_LEFT` for

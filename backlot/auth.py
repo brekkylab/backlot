@@ -52,6 +52,13 @@ _GITHUB_SCHEME = re.compile(r"([^ \t,]*)(.*)", re.DOTALL)
 # whose `validate=True` reads `abcd=` as base64 on Python 3.11 and refuses it from 3.12 on.
 _GITHUB_BASE64 = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
 
+# A token `github_credential` reads out of a `Basic` value and hands on even when it resolves to no
+# one, so that it is "Bad credentials": real's own shapes, `ghp_`, `gho_`, `ghu_` or `ghs_` and
+# exactly 36 ASCII letters or digits, and Backlot's, `usr-` and the 20 hexadecimal digits the
+# importers give each user, which stands for a real token here though real serves it as no
+# credential.
+_GITHUB_TOKEN_SHAPE = re.compile(r"gh[pous]_[A-Za-z0-9]{36}|usr-[0-9a-f]{20}")
+
 
 def github_credential(request: Request) -> str | None:
     """The credential a GitHub request carries, read the way api.github.com reads ``Authorization``:
@@ -87,10 +94,19 @@ def github_credential(request: Request) -> str | None:
     is served as anonymous, and so is ``Basic`` with the base64 of ``<t>:x``, ``<t>:nope``,
     ``<t>:X-OAUTH-BASIC``, ``<t>:x-oauth-basic:`` or ``<t>: ``.
 
+    A `Basic` value naming a token that does not resolve is the 401, with none of the five
+    `x-ratelimit-*`, when the token is shaped like one of real's: the base64 of ``x:ghp_<36 A>``,
+    of ``x:gho_``, ``x:ghu_`` and ``x:ghs_`` the same, of ``x:ghp_<36 a>``, ``x:ghp_<36 0>``,
+    ``gho_<36 A>:``, ``gho_<36 A>:x-oauth-basic`` and ``ghp_<36 A>``. The base64 of
+    ``x:gh<c>_<36 A>`` for each other lower-case letter ``<c>``, of ``x:ghp_<35 A>``,
+    ``x:ghp_<37 A>``, ``x:ghp_<35 A>_``, ``x:github_pat_<82 A>`` and ``ghp_<36 A>:x`` was the 200
+    (2026-10-24 and 2026-10-25).
+
     So real splits the scheme off at the first space, tab or comma, reads the password of a `Basic`
     value that decodes, or its user when there is no colon or the password is empty or
-    `x-oauth-basic`, and serves one that names no token as no credential at all, as it does an
-    unknown scheme. A `Basic` value that does not decode is no credential either where
+    `x-oauth-basic`, and serves one whose token does not resolve as no credential at all, as it does
+    an unknown scheme, unless that token is shaped like one of real's (:data:`_GITHUB_TOKEN_SHAPE`,
+    which takes Backlot's too). A `Basic` value that does not decode is no credential either where
     :func:`github_scheme_then_a_tab` holds. A space and a tab are the only whitespace it trims:
     ``Bearer <NBSP>``, ``Bearer <t><NBSP>``, ``Bearer <NBSP><t>``, ``Bearer <t><NEL>``,
     ``Bearer <t><0x1F>``, ``Basic <NBSP>`` and base64, and the base64 of ``x:<t>`` followed by a
@@ -117,7 +133,9 @@ def github_credential(request: Request) -> str | None:
             return None if github_scheme_then_a_tab(request) else ""
         user, _, password = base64.b64decode(value).decode("utf-8", "replace").partition(":")
         token = user if password in ("", "x-oauth-basic") else password
-        return token if acl(request).resolve(token) is not None else None
+        if acl(request).resolve(token) is not None or _GITHUB_TOKEN_SHAPE.fullmatch(token):
+            return token
+        return None
     return None
 
 
@@ -286,18 +304,25 @@ def basic_names_a_user(request: Request) -> bool:
 
 def slack_bearer_token(request: Request) -> str | None:
     """Parse the ``Authorization`` header the way Slack does, which is stricter than
-    :func:`bearer_token`: the scheme must be exactly ``Bearer``, separated from the token by one or
-    more SPACES.
+    :func:`bearer_token`: the scheme must be exactly ``Bearer``, followed by one space and the
+    token, which keeps whatever follows that space. Spaces and tabs around a header's value are no
+    part of it, and two headers are read as one, their values joined by a comma once the blank ones
+    are left out, so `Bearer <t>` sent twice is the token `<t>, Bearer <t>`.
 
     Measured against slack.com (a bogus token is enough — the presented/absent split needs no
     account). ``invalid_auth`` means the header counted as a credential, ``not_authed`` means it
     did not::
 
         Bearer <t>      invalid_auth      bearer <t>      not_authed
-        Bearer  <t>     invalid_auth      BEARER <t>      not_authed
-        ' Bearer <t>'   invalid_auth      token <t>       not_authed
-        Bearer <t>' '   invalid_auth      Bearer<TAB><t>  not_authed
+                                          BEARER <t>      not_authed
+                                          token <t>       not_authed
+                                          Bearer<TAB><t>  not_authed
                                           Bearer<t>       not_authed
+
+    With a user token that resolves, real's `auth.test` answered each row of
+    ``tests/test_slack.py::_SLACK_AUTHORIZATION_ROWS`` as that table gives it, the headers sent
+    over a raw socket on 2026-10-26 (one header first on 2026-10-20). U+00A0 and U+0085 after the
+    token were ``invalid_auth`` there, where ``str.strip()`` takes them off.
 
     A tab is not a space to Slack, so the generic whitespace split in :func:`bearer_token` is
     wrong here, and so is its case-insensitive scheme match. That function stays permissive because
@@ -307,10 +332,11 @@ def slack_bearer_token(request: Request) -> str | None:
     either — so a client sending ``Authorization: token <xoxb>`` would pass every test here and
     reach nothing in production.
     """
-    hdr = (_authorization(request) or "").strip()
+    values = (value.strip(" \t") for value in request.headers.getlist("authorization"))
+    hdr = ", ".join(value for value in values if value)
     if not hdr.startswith("Bearer "):
         return None
-    return hdr[len("Bearer ") :].strip() or None
+    return hdr[len("Bearer ") :] or None
 
 
 def msgraph_token(request: Request) -> tuple[str, str | None]:
@@ -433,8 +459,8 @@ def atlassian_bearer_token(request: Request) -> str | None:
     answering them with a 400 on real and here. Sharing :func:`bearer_token` would authenticate six
     of those spellings — every "not read" row above but ``OAuth <t>``, ``Bearer<t>`` and the bare
     ``Bearer`` — so a client sending ``Authorization: token <t>`` would pass every test here and
-    read nothing in production. Slack refuses a different set: it takes the double space this
-    refuses.
+    read nothing in production. Slack reads the double space this refuses as a credential, the
+    second space part of a token that then resolves to nobody.
     """
     hdr = (_authorization(request) or "").strip(" \t")
     if not hdr.startswith("Bearer "):

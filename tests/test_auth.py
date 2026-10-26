@@ -141,13 +141,47 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
     implements neither, and sharing the permissive parser would authenticate five spellings the
     real site serves anonymously — so a client sending ``Authorization: bearer <t>`` would pass
     every test here and read nothing in production. Slack is strict in its own way (see
-    :func:`auth.slack_bearer_token`); it accepts the double space Atlassian refuses, which is why
-    that parser is not shared either.
+    :func:`auth.slack_bearer_token`), which is why that parser is not shared either.
     """
     assert auth.atlassian_bearer_token(_request(header)) == token
 
 
+@pytest.mark.parametrize(
+    "header, token",
+    [
+        ("Bearer usr-abc123", "usr-abc123"),
+        (" Bearer usr-abc123", "usr-abc123"),
+        ("Bearer usr-abc123 ", "usr-abc123"),
+        ("\tBearer usr-abc123", "usr-abc123"),
+        ("Bearer usr-abc123\t", "usr-abc123"),
+        ("Bearer  usr-abc123", " usr-abc123"),
+        ("Bearer   usr-abc123", "  usr-abc123"),
+        ("Bearer \tusr-abc123", "\tusr-abc123"),
+        ("Bearer \xa0usr-abc123", "\xa0usr-abc123"),
+        ("Bearer usr-abc123\xa0", "usr-abc123\xa0"),
+        ("Bearer usr-abc123\x85", "usr-abc123\x85"),
+        ("Bearer usr-abc123 x", "usr-abc123 x"),
+        ("bearer usr-abc123", None),
+        ("BEARER usr-abc123", None),
+        ("token usr-abc123", None),
+        ("Bearer\tusr-abc123", None),
+        ("Bearerusr-abc123", None),
+        ("Bearer", None),
+        ("Bearer ", None),
+        ("Bearer  ", None),
+        (None, None),
+    ],
+)
+def test_slack_bearer_token_reads_one_header_as_real_does(header, token):
+    """The token :func:`auth.slack_bearer_token` reads from one `Authorization` header, whose rows
+    its docstring records; two headers are `test_slack_reads_the_authorization_headers_as_real_does`
+    in tests/test_slack.py."""
+    assert auth.slack_bearer_token(_request(header)) == token
+
+
 # --- github_credential: which headers api.github.com reads as a credential -------
+
+_A36 = "A" * 36
 
 
 @pytest.mark.parametrize(
@@ -205,6 +239,17 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic\tb64(x:{t})", "{t}"),
         ("Basic\t b64(x:{t})", "{t}"),
         ("Basic\tb64({t}:x-oauth-basic)", "{t}"),
+        # a token that does not resolve, shaped like one of real's or like a Backlot one
+        (f"Basic b64(x:ghp_{_A36})", f"ghp_{_A36}"),
+        (f"Basic b64(x:gho_{_A36})", f"gho_{_A36}"),
+        (f"Basic b64(x:ghu_{_A36})", f"ghu_{_A36}"),
+        (f"Basic b64(x:ghs_{_A36})", f"ghs_{_A36}"),
+        (f"Basic b64(x:ghp_{'a' * 36})", f"ghp_{'a' * 36}"),
+        (f"Basic b64(x:ghp_{'0' * 36})", f"ghp_{'0' * 36}"),
+        (f"Basic b64(gho_{_A36}:)", f"gho_{_A36}"),
+        (f"Basic b64(gho_{_A36}:x-oauth-basic)", f"gho_{_A36}"),
+        (f"Basic b64(ghp_{_A36})", f"ghp_{_A36}"),
+        (f"Basic b64(x:usr-{'0' * 20})", f"usr-{'0' * 20}"),
         # served as no credential at all
         ("Basic abcd", None),
         ("Basic Zm9vOmJhcg==", None),
@@ -221,6 +266,14 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic b64({t}:x-oauth-basic:)", None),
         ("Basic b64({t}: )", None),
         ("Basic\tb64({t}:x)", None),
+        (f"Basic b64(x:ghr_{_A36})", None),
+        ("Basic b64(x:ghp_)", None),
+        (f"Basic b64(x:ghp_{'A' * 35})", None),
+        (f"Basic b64(x:ghp_{'A' * 37})", None),
+        (f"Basic b64(x:ghp_{'A' * 35}_)", None),
+        (f"Basic b64(x:github_pat_{'A' * 82})", None),
+        (f"Basic b64(ghp_{_A36}:x)", None),
+        (f"Basic b64(x:usr-{'0' * 19}g)", None),
         # no base64 after a tab, and no comma anywhere
         ("Basic\t!!!!", None),
         ("Basic\ta", None),
@@ -247,8 +300,9 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
 def test_github_credential_reads_the_header_as_real_does(acl, tokens, header, token):
     """The rows of :func:`auth.github_credential`'s table, `{t}` a token that resolves and
     `b64(…)` the base64 of what it holds: real served each `{t}` row as that token's caller,
-    refused each other row with a token, and served each `None` row as anonymous. The token is
-    what the router resolves, so one that is empty or holds a comma never names a caller."""
+    refused each other row with a token but the `usr-` one, a Backlot token's shape, and served
+    each `None` row as anonymous. The token is what the router resolves, so one that is empty or
+    holds a comma never names a caller."""
     t = tokens["ava@acme.com"]
     if header is not None:
         header = re.sub(

@@ -1212,7 +1212,7 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
     other_space = client.get(
         "/atlassian/wiki/rest/api/search",
         headers=admin_h,
-        params={"cql": 'text~"software" and space=people-ops'},
+        params={"cql": 'text~"software" and space="people-ops"'},
     ).json()
     assert other_space["results"] == [] and other_space["totalSize"] == 0
 
@@ -1395,6 +1395,58 @@ def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
     text = xhtml.replace("</p><p>", "\n\n")
     text = re.sub(r"</?p>", "", text)
     assert unescape(text).strip() == doc["content"].strip()
+
+
+_ENTITY_TEXT = "'\"\u00e9\u2014\u0160\u0161\u00a0\u2603\u2329&<>"
+_ENTITY_STORAGE = "'&quot;&eacute;&mdash;\u0160\u0161&nbsp;\u2603&lang;&amp;&lt;&gt;"
+_ENTITY_RENDERED = "'&quot;\u00e9\u2014\u0160\u0161\u00a0\u2603\u2329&amp;&lt;&gt;"
+_LAYOUT = '<div class="contentLayout2"><div class="columnLayout single">{}</div></div>'
+
+
+@pytest.mark.parametrize(
+    "route, representation, value",
+    [
+        ("", "storage", f"<p>{_ENTITY_STORAGE}</p>"),
+        ("", "view", _LAYOUT.format(f'<p class="auto-cursor-target">{_ENTITY_RENDERED}</p>')),
+        ("", "export_view", _LAYOUT.format(f"<p>{_ENTITY_RENDERED}</p>")),
+        ("/child/comment", "storage", f"<p>{_ENTITY_STORAGE}</p>"),
+        (
+            "/child/comment",
+            "view",
+            _LAYOUT.format(f'<p class="auto-cursor-target">{_ENTITY_RENDERED}</p>'),
+        ),
+    ],
+)
+def test_confluence_a_body_is_written_with_each_representations_entities(
+    tmp_path, route, representation, value
+):
+    """A page's body and its comment's, holding characters
+    `backlot.routers.atlassian._CONFLUENCE_STORAGE_ENTITIES` records real writing."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "doc_id": "entities",
+                "space": "eng",
+                "title": "P",
+                "content": _ENTITY_TEXT,
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "comments": [{"content": _ENTITY_TEXT, "author_email": "b@x.com"}],
+            }
+        ],
+    )
+    page = served_id("confluence", "entities")
+    with client_for(s, reload=True) as c:
+        r = c.get(
+            f"/atlassian/wiki/rest/api/content/{page}{route}",
+            headers={"Authorization": f"Bearer {s.admin_token}"},
+            params={"expand": f"body.{representation}"},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()["results"][0]["body"] if route else r.json()["body"]
+    assert body[representation]["value"] == value
 
 
 def test_atlassian_errors_use_atlassian_envelope(client, admin_h):
@@ -8496,3 +8548,129 @@ def test_jira_operations_that_answer_an_accept_with_no_406(client, operation):
     if operation in routers_atlassian._JIRA_UNSERVED["refused"]:
         assert r.status_code == 401
         assert r.headers["content-type"] == "text/html;charset=UTF-8"
+
+
+_CQL_PREFIX = "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
+_CQL_NOT_PARSED = "Could not parse cql : "
+# What real answered each `cql` with on Confluence Cloud, as `_CQL_TOKEN`, `_cql_written_back`
+# and `_cql_refusal` in `backlot.routers.atlassian` record it: the `cqlQuery` of a 200, or the
+# message of a 400 after `_CQL_PREFIX`.
+_CQL_PARSE_ROWS = [
+    *[
+        (cql, 200, written)
+        for cql, written in [
+            ("type=page", "type = page"),
+            ("type=page  and  space=handbook", "type = page and space = handbook"),
+            ("TYPE=page", "TYPE = page"),
+            ("type=page AND space=handbook", "type = page AND space = handbook"),
+            ("type in (page,blogpost)", "type in ( page , blogpost )"),
+            ("type NOT IN (page,blogpost)", "type NOT IN ( page , blogpost )"),
+            ("type=page and (space=A or space=B)", "type = page and ( space = A or space = B )"),
+            ("((type=page))", "( ( type = page ) )"),
+            ("type!=page", "type != page"),
+            ("title!~x", "title !~ x"),
+            ("text~probe", "text ~ probe"),
+            ('title~"a b"', 'title ~ "a b"'),
+            ("title='x'", "title = 'x'"),
+            ('title~"a\\"b"', 'title ~ "a\\"b"'),
+            ("title~'a\\'b'", "title ~ 'a\\'b'"),
+            ('title~"日本"', 'title ~ "日本"'),
+            ("space.key=handbook", "space.key = 'handbook'"),
+            ('space.key="handbook"', "space.key = 'handbook'"),
+            ("SPACE.KEY=handbook", "SPACE.KEY = 'handbook'"),
+            ('space.key != "handbook"', "space.key != 'handbook'"),
+            ('space.key in ("handbook", handbook)', "space.key in ( 'handbook' , 'handbook' )"),
+            ('space = "handbook"', 'space = "handbook"'),
+            ('created>now("-1d")', 'created > now ( "-1d" )'),
+            ("created>startOfDay()", "created > startOfDay ( )"),
+            ("created >= 2026-01-01 and type=page", "created >= 2026-01-01 and type = page"),
+            ("id in (1,2)", "id in ( 1 , 2 )"),
+            ("label=a.b", "label = a.b"),
+            ("label=x order by created desc", "label = x order by created desc"),
+            (
+                "type=page ORDER BY title asc, created desc",
+                "type = page ORDER BY title asc , created desc",
+            ),
+            ("type=page and not space=A", "type = page and not space = A"),
+            ("type=page\tand\nspace=A", "type = page and space = A"),
+            ("title ~ probe*", "title ~ probe"),
+            ("title ~ *probe", "title ~ probe"),
+            *[(f"title~a{c}", "title ~ a") for c in "#$%&*+;?@^`{|}"],
+        ]
+    ],
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            ('"', _CQL_NOT_PARSED),
+            ("   ", _CQL_NOT_PARSED),
+            ("\U0001f600", _CQL_NOT_PARSED),
+            ("type=page and", _CQL_NOT_PARSED),
+            ("type=page or", _CQL_NOT_PARSED),
+            ("type=page)", _CQL_NOT_PARSED),
+            ("order by created", _CQL_NOT_PARSED),
+            ("not type=page", _CQL_NOT_PARSED),
+            ("type=page OR NOT type=blogpost", _CQL_NOT_PARSED),
+            ("type=page and (not space=A)", _CQL_NOT_PARSED),
+            ("type in ()", _CQL_NOT_PARSED),
+            ("type in (page,)", _CQL_NOT_PARSED),
+            ("label in (a b)", _CQL_NOT_PARSED),
+            ("type=page order by", _CQL_NOT_PARSED),
+            ("type=page order by created b", _CQL_NOT_PARSED),
+            ("type=page b and type=page", _CQL_NOT_PARSED),
+            ("type=page 5", _CQL_NOT_PARSED),
+            ("id = -1", _CQL_NOT_PARSED),
+            ("created > -1d", _CQL_NOT_PARSED),
+            ("title~a..b", _CQL_NOT_PARSED),
+            ("title~a.", _CQL_NOT_PARSED),
+            ("created>\u0662\u0660\u0662\u0666-01-01", _CQL_NOT_PARSED),
+            *[(f"title~a{c}b", _CQL_NOT_PARSED) for c in "!\"'(),-/:<=>[\\]~"],
+            *[
+                (f"title~a{c}b", "Unrecognised clause at : b")
+                for c in "#$%&*+;?@^`{|}\x01\x7f" + "é\u0663\U0001f600"
+            ],
+            ("title~a b c", "Unrecognised clause at : bc"),
+            ('title~a "b"', 'Unrecognised clause at : "b"'),
+            ("title ~ 'it''s'", "Unrecognised clause at : 's'"),
+            ("type in (page) b", "Unrecognised clause at : b"),
+            ("type=", "Expecting a value for operator '=' after field 'type'"),
+            ("title~", "Expecting a value for operator '~' after field 'title'"),
+            ("text~*", "Expecting a value for operator '~' after field 'text'"),
+            ("title~é", "Expecting a value for operator '~' after field 'title'"),
+            ("title~\u0663", "Expecting a value for operator '~' after field 'title'"),
+            ("title~\uff11", "Expecting a value for operator '~' after field 'title'"),
+            ("type==page", "Expecting a value for operator '=' after field 'type' but got '='"),
+            ("space=~abc", "Expecting a value for operator '=' after field 'space' but got '~'"),
+            ("label=.a", "Expecting a value for operator '=' after field 'label' but got '.'"),
+            ("label=-x", "Expecting a value for operator '=' after field 'label' but got '-'"),
+            (
+                "type in page",
+                "Expecting a value for operator 'in' after field 'type' but got 'page'",
+            ),
+            (
+                "type not in page",
+                "Expecting a value for operator 'notin' after field 'type' but got 'page'",
+            ),
+            (
+                "type NOT IN (page",
+                "Expecting a value for operator 'NOTIN' after field 'type' but got '('",
+            ),
+            ("(type=page", "Missing closing parenthesis near field (()"),
+        ]
+    ],
+]
+
+
+@pytest.mark.parametrize("cql, status, answer", _CQL_PARSE_ROWS)
+def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h, cql, status, answer):
+    """The rows `_CQL_PARSE_ROWS` records, each refusal with the `data` object of a service
+    refusal."""
+    r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": cql})
+    assert r.status_code == status, r.text
+    if status == 200:
+        assert r.json()["cqlQuery"] == answer
+    else:
+        assert r.json() == {
+            "statusCode": 400,
+            "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
+            "message": _CQL_PREFIX + answer,
+        }

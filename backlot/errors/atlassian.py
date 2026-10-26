@@ -351,7 +351,7 @@ def cql_required() -> AtlassianError:
     `?limit=-1` with no `cql` is this 400. The body carries the `data` object
     :func:`start_too_large` describes. A whitespace-only `cql` (`%20`, `%09`) is not this refusal:
     real answers it after the negative one with `Could not parse cql : `, its message for a CQL it
-    cannot parse, and this server does not check CQL syntax.
+    cannot parse, which is :func:`cql_not_parsed`.
     """
     return AtlassianError(
         400,
@@ -376,6 +376,44 @@ def _service_refusal(status: int, exception: str, message: str) -> AtlassianErro
             "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
             "message": f"com.atlassian.confluence.api.service.exceptions.{exception}: {message}",
         },
+    )
+
+
+def cql_not_parsed() -> AtlassianError:
+    """The CQL search's refusal of a `cql` it cannot parse (``routers.atlassian._cql_refusal``).
+    Measured on Confluence Cloud on 2026-10-22 and 2026-10-25: `"`, `type=page and`, `type=page)`
+    and U+1F600 alone each answered this 400 after the caller check, as did `order by created`,
+    `not type=page`, `type=page OR NOT type=blogpost`, `type in ()` and `type=page 5`, and a
+    character ``routers.atlassian._CQL_TOKEN`` makes a token no clause takes, between two
+    letters."""
+    return _service_refusal(400, "api.BadRequestException", "Could not parse cql : ")
+
+
+def cql_expecting_value(operator: str, field: str, got: str | None = None) -> AtlassianError:
+    """The CQL search's refusal of an operator with no value after it: `type=` answered
+    `Expecting a value for operator '=' after field 'type'`, and `type==page` the same with
+    ` but got '='` (Confluence Cloud, 2026-10-22). `title~*` named `~` and `title`, `type in page`
+    `in` and ` but got 'page'`, `type not in page` the operator as `notin`, and `type in (page`
+    ` but got '('` (2026-10-25)."""
+    message = f"Expecting a value for operator '{operator}' after field '{field}'"
+    if got is not None:
+        message += f" but got '{got}'"
+    return _service_refusal(400, "api.BadRequestException", message)
+
+
+def cql_unrecognised_clause(text: str) -> AtlassianError:
+    """The CQL search's refusal of words or quoted values after a whole query, named run together:
+    `type=page b` answered `Unrecognised clause at : b`, `title~a b c` `… at : bc` and
+    `title~a "b"` `… at : "b"` (Confluence Cloud, 2026-10-25)."""
+    return _service_refusal(400, "api.BadRequestException", f"Unrecognised clause at : {text}")
+
+
+def cql_missing_closing_parenthesis() -> AtlassianError:
+    """The CQL search's refusal of a `(` that is never closed: `(type=page` answered
+    `Missing closing parenthesis near field (()` (Confluence Cloud, 2026-10-22). Only that one
+    query was measured, so its text is answered for every unclosed `(`."""
+    return _service_refusal(
+        400, "api.BadRequestException", "Missing closing parenthesis near field (()"
     )
 
 
@@ -2475,6 +2513,11 @@ def _cloudfront(status: int, reason: str, method: str, raw_path: str) -> str:
     return _CLOUDFRONT_PAGE.format(status=status, reason=reason, request_id=request_id)
 
 
+def cdn_bad_request(method: str, raw_path: str) -> str:
+    """The CDN's 400 page, which :func:`front_door` answers a `%00` in the path with."""
+    return _cloudfront(400, CDN_BAD_REQUEST, method, raw_path)
+
+
 #: What the edge answers a `;` in a path with, JSON or a page as `Accept` picks
 #: (:func:`front_door`). The JSON is this body, 28 bytes with its newline, on `application/json`;
 #: real's page is 18,943 bytes on `text/html` with no charset,
@@ -2489,6 +2532,34 @@ _EDGE_PAGE_400 = (
     '<!DOCTYPE html><html><head><meta name="details" content="lua_response">'
     "<title>400</title></head><body><p>400</p></body></html>"
 )
+
+
+def edge_page(details: str) -> str:
+    """:data:`_EDGE_PAGE_400` naming ``details`` in its tag, the part of the edge's 400 page that
+    tells one of its refusals from another (``backlot.request_target`` answers two more of them)."""
+    return _EDGE_PAGE_400.replace('content="lua_response"', f'content="{details}"')
+
+
+def cdn_refusal(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
+    """The CDN's own page for the first three of :func:`front_door`'s checks: `%00` or a broken
+    escape in the path, a method it does not pass on and its firewall; or None."""
+    if "%00" in raw_path or _BROKEN_ESCAPE.search(raw_path):
+        return FrontDoor(
+            400, "cdn", "text/html", _cloudfront(400, CDN_BAD_REQUEST, method, raw_path), {}
+        )
+    if method not in SERVED_METHODS and method not in GATEWAY_REFUSED:
+        if method in CDN_405:
+            status, layer, reason = 405, "cdn", CDN_BAD_REQUEST
+        elif cdn_forbids(method):
+            status, layer, reason = 403, "cdn edge", CDN_METHOD_FORBIDDEN
+        else:
+            status, layer, reason = 400, "cdn", CDN_BAD_REQUEST
+        page = _cloudfront(status, reason, method, raw_path)
+        return FrontDoor(status, layer, "text/html", page, {})
+    if waf_blocks(raw_path, raw_query):
+        page = _cloudfront(403, CDN_BLOCKED, method, raw_path)
+        return FrontDoor(403, "cdn edge", "text/html", page, {})
+    return None
 
 
 def front_door(
@@ -2525,22 +2596,9 @@ def front_door(
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
     where an encoded slash and `%00` can still be told from a decoded one.
     """
-    if "%00" in raw_path or _BROKEN_ESCAPE.search(raw_path):
-        return FrontDoor(
-            400, "cdn", "text/html", _cloudfront(400, CDN_BAD_REQUEST, method, raw_path), {}
-        )
-    if method not in SERVED_METHODS and method not in GATEWAY_REFUSED:
-        if method in CDN_405:
-            status, layer, reason = 405, "cdn", CDN_BAD_REQUEST
-        elif cdn_forbids(method):
-            status, layer, reason = 403, "cdn edge", CDN_METHOD_FORBIDDEN
-        else:
-            status, layer, reason = 400, "cdn", CDN_BAD_REQUEST
-        page = _cloudfront(status, reason, method, raw_path)
-        return FrontDoor(status, layer, "text/html", page, {})
-    if waf_blocks(raw_path, raw_query):
-        page = _cloudfront(403, CDN_BLOCKED, method, raw_path)
-        return FrontDoor(403, "cdn edge", "text/html", page, {})
+    door = cdn_refusal(method, raw_path, raw_query)
+    if door is not None:
+        return door
     collapsed = re.sub(r"/{2,}", "/", raw_path)
     confluence = collapsed == WIKI or collapsed.startswith(f"{WIKI}/")
     encoded = collapsed.lower()

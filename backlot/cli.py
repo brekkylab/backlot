@@ -1,6 +1,6 @@
 """The ``backlot`` console script — every command and every option it accepts, declared here.
 
-    backlot serve                       # uvicorn backlot.main:app, with uvicorn's own defaults
+    backlot serve                       # uvicorn backlot.main:app, on backlot.protocol
     backlot import <corpus.jsonl>       # backlot.importer.byo   (--type byo, the default)
     backlot import --type enterpriserag-bench   # backlot.importer.erb, no options
     backlot export out/                 # the bench as a BYO artifact instead of a database
@@ -323,7 +323,7 @@ def serve(
 ) -> None:
     """Serve Backlot APIs over the corpus in the data dir.
 
-    Every default here is uvicorn's own, so this is a shorter spelling of `python -m uvicorn backlot.main:app` rather than a second set of behaviour to keep in step with it.
+    Every default here is uvicorn's own but the HTTP protocol, which is backlot.protocol's.
     """  # noqa: E501 — one source line per paragraph: typer renders a docstring newline as a line break, so a wrapped paragraph reaches the help screen broken mid-sentence.
     _use_data_dir(data_dir)
     if disable_telemetry:
@@ -353,6 +353,8 @@ def serve(
         _stop_at_stdin_eof()
     import uvicorn
 
+    from backlot.protocol import Protocol
+
     # The app is passed as an import STRING because that is what --reload requires.
     uvicorn.run(
         "backlot.main:app",
@@ -364,6 +366,9 @@ def serve(
         log_level=log_level.value if log_level else None,
         proxy_headers=proxy_headers,
         forwarded_allow_ips=forwarded_allow_ips,
+        # the class, not its import string, which uvicorn resolves only from 0.36 on; --reload
+        # pickles it by reference
+        http=Protocol,
     )
 
 

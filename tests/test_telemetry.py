@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 import backlot
-from backlot import store
+from backlot import store, telemetry
 from backlot.config import get_settings
 from backlot.server import HELLO_CORPUS
 from backlot.telemetry import clients, enabled, errors, naming, notice, recorder
@@ -919,6 +919,32 @@ def test_a_403_with_a_window_left_is_auth(client):
 )
 def test_backlots_own_routes_are_not_counted(client, path, counted):
     assert len(_calls(lambda: client.get(path, headers=ADMIN))) == counted
+
+
+def test_the_schema_backlot_mcp_reads_at_start_is_not_counted(client, monkeypatch):
+    import backlot.mcp
+    from backlot.graphql.mcp_tools import INTROSPECTION_QUERY
+
+    schema = {"query": INTROSPECTION_QUERY}
+    marked = LINEAR | {telemetry.INTERNAL: "mcp"}
+    assert _calls(lambda: client.post("/linear/graphql", headers=marked, json=schema)) == []
+    # The same document from any other client is a call like any other.
+    (call,) = _calls(lambda: client.post("/linear/graphql", headers=LINEAR, json=schema))
+    assert call["backlot.operation"] == "query.__schema"
+
+    sent = []
+
+    def read(url, *, headers=None, body=None):
+        sent.append(headers)
+        raise _Started
+
+    monkeypatch.setattr(backlot.mcp, "_fetch_json", read)
+    creds = backlot.mcp.Credentials(
+        token="t", email=None, s3_access_key_id="k", s3_secret_access_key="s"
+    )
+    with pytest.raises(_Started):
+        backlot.mcp.graphql_server("http://127.0.0.1:9", creds, "linear")
+    assert sent[0][telemetry.INTERNAL] == "mcp"
 
 
 def test_each_part_of_a_google_batch_is_a_call_of_its_own(client):

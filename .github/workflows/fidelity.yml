@@ -116,12 +116,14 @@ jobs:
           export PREFIX
           # Only the open issue. A closed one is the finished account of the divergences that were
           # triaged on it, and a later run writing its own report over that body would leave the
-          # comments answering a report nobody can read any more. `is_bot` leaves a person's own
-          # issue alone. Listed under the label rather than searched, because GitHub indexes issue
-          # search asynchronously and an issue opened this morning may not be found by tonight.
-          number=$(gh issue list --state open --label fidelity --limit 100 \
-            --json number,title,author \
-            --jq 'first(.[] | select(.author.is_bot and (.title | startswith(env.PREFIX))) | .number) // empty')
+          # comments answering a report nobody can read any more. `creator` leaves a person's own
+          # issue alone. Listed through REST rather than searched, because GitHub indexes issue
+          # search asynchronously and an issue opened this morning may not be found by tonight;
+          # `gh issue list --label` is a search too, and returns only the newest `--limit` of every
+          # open `fidelity` issue (132 on 2026-10-26). The listing holds at most one open issue per
+          # source, so one page has them all. It includes pull requests, which `pull_request` drops.
+          number=$(gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=fidelity&creator=github-actions%5Bbot%5D&per_page=100" \
+            --jq 'first(.[] | select(.pull_request == null and (.title | startswith(env.PREFIX))) | .number) // empty')
           # The body is rewritten on every run, so this has to answer the same way on every run or
           # each run would rewrite the last one's body and comment about the rewrite. Searching this
           # source's own titles keeps the set to the issues this step has opened for it, which grows

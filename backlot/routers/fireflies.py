@@ -39,14 +39,13 @@ from graphql import (
     FragmentSpreadNode,
     GraphQLError,
     OperationDefinitionNode,
-    get_location,
 )
 from graphql.execution.collect_fields import collect_fields
 from graphql.execution.values import get_variable_values
 
 from backlot import auth
 from backlot.config import get_settings
-from backlot.graphql import apollo_http, engine
+from backlot.graphql import apollo_http, engine, js_words
 from backlot.graphql import body as request_body
 from backlot.graphql.fireflies_resolvers import build_engine
 from backlot.routers import sent_path
@@ -235,7 +234,7 @@ def _answer(seen: dict[str, str], result: engine.Result, spent: Spent | None = N
     and 2026-10-26 (UTC): `no-store` on each run, a document that does not parse or validate, one
     with no query, an operation it cannot choose, a variable it refuses and a `GET` of a mutation,
     and none on the CSRF refusal, a body it cannot read, a `GET`'s query string it refuses, a
-    `HEAD` and the 406."""
+    `HEAD`, the 406 and the 500 graphql-depth-limit throws (:func:`_depth_limit`)."""
     media_type = apollo_http.response_type(seen.get("accept"))
     thrown = bool(result.refusals) and result.refusals[0].thrown
     if media_type is None and not thrown:
@@ -243,7 +242,7 @@ def _answer(seen: dict[str, str], result: engine.Result, spent: Spent | None = N
         thrown = True
     body = _envelope(result)
     headers = dict(result.headers)
-    if not thrown:
+    if not thrown and result.status != 500:
         headers.setdefault("cache-control", "no-store")
     if spent is not None:
         body = spent.refuse(body)
@@ -321,12 +320,11 @@ class Spent:
         keys = {key for key, _ in self.refused}
         errors = [e for e in body.get("errors", []) if (e.get("path") or [None])[0] not in keys]
         for key, node in self.refused:
-            where = get_location(node.loc.source, node.loc.start)
             errors.append(
                 {
                     "friendly": True,
                     "message": f"Too many requests. Please retry after {when} (UTC)",
-                    "locations": [{"line": where.line, "column": where.column}],
+                    "locations": list(js_words.locations(GraphQLError("", node))),
                     "path": [key],
                     "code": "too_many_requests",
                     "extensions": {

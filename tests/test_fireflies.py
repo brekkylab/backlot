@@ -2629,6 +2629,9 @@ _FIREFLIES_HEADERS = [
         )
     ),
     pytest.param(
+        "POST", "", _J, b'{"query":"{ ...F }"}', "key", 500, _fastify(None), id="depth-limit's 500"
+    ),
+    pytest.param(
         "GET",
         "?query=mutation%20%7B%20__typename%20%7D",
         _P,
@@ -2817,6 +2820,13 @@ def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monk
     }
     r = client.post("/fireflies/graphql", content=_TYPENAME, headers=_key(tokens_yaml))
     assert (r.json(), _ratelimit(r)) == ({"data": {"__typename": "Query"}}, {})
+    # A refused field is located in UTF-16 units, as api.fireflies.ai located one after U+1F600.
+    document = '{ a: user(id: "\U0001f600") { user_id } b: user { user_id } }'
+    r = client.post("/fireflies/graphql", json={"query": document}, headers=_key(tokens_yaml))
+    assert [e["locations"] for e in r.json()["errors"]] == [
+        [{"line": 1, "column": 3}],
+        [{"line": 1, "column": 33}],
+    ]
     now[0] = 1_793_020_171.0
     aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(1, 32))
     document = (

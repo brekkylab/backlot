@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-25",
+  "measured": "2026-10-26",
   "root": {
     "query": "Query"
   },
@@ -5997,6 +5997,13 @@
           "type": "EmailIntakeAddress!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "emailIntakeAddresses": {
+          "status": "missing",
+          "type": "EmailIntakeAddressConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`EmailIntakeAddress` is not declared: an address is workspace configuration, no corpus record is one, and `emailIntakeAddress` is a gap for the same reason. Measured 2026-10-26: the workspace answered `nodes: []`, so the populated shape is unmeasured."
         },
         "emoji": {
           "status": "missing",

@@ -608,7 +608,7 @@ def _deletes_the_installation_token(request: Request) -> bool:
 
 # --- rate limits ----------------------------------------------------------------
 #
-# Real puts five `x-ratelimit-*` headers on every response it gives, 200 and error alike, and
+# Real puts five `x-ratelimit-*` headers on every response its API gives, 200 and error alike, and
 # serves `GET /rate_limit`. Measured against api.github.com on 2026-09-09 and 2026-09-10,
 # unauthenticated with curl and authenticated with `gh api`: an anonymous caller has `limit: 60`
 # on `core` and `10` on `search`, a token `5000`, `30` and `10` on `core`, `search` and

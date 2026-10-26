@@ -253,6 +253,7 @@ def test_each_client_rule_names_the_headers_it_was_measured_from():
         ("slack", "implemented", 200, "internal_error", False, "client"),
         ("linear", "implemented", 200, "unsupported_filter", False, "unsupported"),
         ("gmail", "implemented", 501, "notImplemented", False, "client"),
+        ("s3", "implemented", 505, "HttpVersionNotSupported", False, "client"),
         ("gmail", "implemented", 503, "backendError", False, "internal"),
     ],
 )

@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-23",
+  "measured": "2026-10-25",
   "root": {
     "query": "Query"
   },
@@ -6142,6 +6142,13 @@
           "type": "JiraProjectStatusesPayload!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "integrationJiraSyncHealthCheck": {
+          "status": "missing",
+          "type": "JiraSyncHealthCheckPayload!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description marks it internal: \"[INTERNAL] Checks a Jira project for settings that will make Jira reject the changes Linear sends during sync. Reads Jira on every call.\" It checks a Jira project through one of the workspace's Jira integrations, and Backlot serves no integration: every other `Query` root with `integration` or `Integration` in its name is a gap in this file, `integration`, `integrations`, `integrationJiraProjectStatuses` and `integrationSyncResourceIds` among them. `@linear/sdk` 98.0.0, which the example's lockfile pins, and 99.0.0, npm's latest on 2026-10-25, neither declare nor select it. Measured against api.linear.app on 2026-10-25: it takes four arguments, `bidirectional: Boolean!`, `teamId: String!`, `jiraProjectId: String!` and `integrationId: String!` (\"The id of the Jira integration.\"), and answers `JiraSyncHealthCheckPayload!` (\"[INTERNAL] Jira project settings that will make Jira reject the changes Linear sends during sync.\"), an object of four fields, `findings: [JiraSyncHealthFindingPayload!]!`, `transitionCoverage: String!`, `failedSteps: [String!]!` and `blockedReason: String`. Asked with a personal API key whose owner is a workspace admin, for four `integrationId` values no integration carries (`not-a-real-integration`, the nil UUID, a made-up UUID and the empty string), it answered each with a 200 whose body is `data: null` and an `errors` member, `The Jira sync health check is not available` with `INPUT_ERROR`. The workspace measured answered `integrations` with no nodes, so what the check answers for a Jira integration that exists was not observed. `backlot/graphql/linear.graphql` declares no `JiraSyncHealthCheckPayload`."
         },
         "integrationSyncResourceIds": {
           "status": "missing",

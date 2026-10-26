@@ -340,6 +340,39 @@ def _a_github_route_serves(scope: Scope) -> bool:
     return any(route.matches(scope)[0] is Match.FULL for route in github.router.routes)
 
 
+def _would_redirect_to_the_slashed_path(scope: Scope) -> bool:
+    """Whether the router's `redirect_slashes` would answer this path with a 307 to its
+    slash-terminated spelling."""
+    if _some_github_route_matches(scope):
+        return False
+    slashed = {**scope, "path": f"{scope['path']}/"}
+    return _some_github_route_matches(slashed)
+
+
+@_middleware(
+    lambda scope: (
+        _url_path(scope).startswith("/github/")
+        and not _url_path(scope).endswith("/")
+        and _would_redirect_to_the_slashed_path(scope)
+    )
+)
+async def refuse_a_missing_slash_on_github(request: Request, call_next):
+    """A `/github` path no route matches, whose slash-terminated spelling one does, is a 404, not
+    the 307 to that spelling Starlette's router answers.
+
+    Real routes the path as sent, with no redirect: a `GET` of `.../statuses`, `.../git/ref` or
+    `.../git/trees` was the 404 a path with no route gets, and `GET .../commits` the commit listing,
+    which the baseline records as `repos/list-commits` `missing` (measured against api.github.com
+    on 2026-10-19 and 2026-10-25). Registered first, which makes it the innermost of the GitHub
+    middlewares, so its 404 leaves through them as the router's would: `GET .../commits` and
+    `POST .../git/trees` are operations real refuses a credential on first ("Bad credentials" for
+    `Bearer nope`, 2026-10-25), which ``backlot.routers.github.refuse_an_unserved_operation``
+    answers, and of the paths this answers, only those two carry the version echo and the five
+    `x-ratelimit-*` for a token (``_github_routes``).
+    """
+    return await _http_exception_handler(request, StarletteHTTPException(status_code=404))
+
+
 @_middleware(
     lambda scope: (
         scope["path"].startswith("/github/")
@@ -352,10 +385,10 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
     refused as a served route refuses before it runs, ahead of the router's 404 or 405
     (``backlot.routers.github.refuse_an_unserved_operation``).
 
-    Registered before the other GitHub middlewares, which makes it the innermost of them: it reads
-    the path ``resolve_github_id_paths`` rewrote and a `HEAD` as the GET it is rewritten to, and
-    its refusal leaves through the version echo and the rate-limit headers as a served route's 401
-    does.
+    Registered second, after `refuse_a_missing_slash_on_github` and before the other GitHub
+    middlewares: it reads the path ``resolve_github_id_paths`` rewrote and a `HEAD` as the GET it is
+    rewritten to, and its refusal leaves through the version echo and the rate-limit headers as a
+    served route's 401 does.
     """
     try:
         await github.refuse_an_unserved_operation(request)

@@ -171,9 +171,10 @@ the five `x-ratelimit-*`. The operations are those the GitHub baseline marks `mi
 and a tab the only whitespace in it, and a tab right after the scheme sets the header apart unless a
 comma follows anywhere in it: `Bearer` or `token` with nothing after it, and a `Basic` value that is
 not base64, are credentials that do not resolve, though that `Basic` value is no credential in a
-header a tab sets apart; a `Basic` value whose base64 holds a token as its password, or as its user
-beside an empty password or `x-oauth-basic`, is that token; and one that holds none is no credential
-at all.
+header a tab sets apart; a `Basic` value whose base64 holds, as its password or as its user beside
+an empty password or `x-oauth-basic`, a token that resolves or one shaped like real's (`ghp_`,
+`gho_`, `ghu_` or `ghs_` and 36 ASCII letters or digits) or like Backlot's (`usr-` and 20
+hexadecimal digits) is that token; and one that holds anything else is no credential at all.
 
 **Every response carries the five `x-ratelimit-*` headers** real puts on every answer its API gives,
 the errors included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for

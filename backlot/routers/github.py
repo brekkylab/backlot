@@ -466,6 +466,11 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     401 "You must be logged in to do that.". Pinned to `1999-01-01`, `GET /user/packages`,
     `DELETE /user/keys/1`, `POST /user/gpg_keys` and `GET /gists/starred` were the version's 400,
     counted. Here it is :func:`_require`'s 401 after the version, carrying both.
+
+    A `Basic` value holding a token in one of real's shapes (``backlot.auth._GITHUB_TOKEN_SHAPE``)
+    that resolves to no one is "Bad credentials" with neither the echo nor the five, ahead of the
+    version: on 2026-10-25 the base64 of `x:ghp_<36 A>`, with and without `1999-01-01`, was that 401
+    on ten operations, `DELETE /installation/token` and `PATCH /repos/{owner}/{repo}` among them.
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return
@@ -523,10 +528,11 @@ async def _refuse_an_anonymous_caller(request: Request) -> None:
     `2022-11-28` too and ahead of an organization, a repository and a branch that do not exist.
     `Foo bar` with or without `1999-01-01`, and `Digest x` and `Bearer<TAB>nope` pinned to it, were
     that 401 without the five on each, where `token` with no value was `Bad credentials` without the
-    five (:func:`_validate_bad_credential`). A `Basic` value naming no token (`Basic eDp5`) was the
-    version's 400 pinned to `1999-01-01` on the first four, and otherwise each route's own answer
-    with the echo and the five: the 401 on the first two, and the 404 on a repository's teams and a
-    branch's protection (:data:`_NOT_FOUND_FOR_A_BASIC_VALUE_WITHOUT_A_TOKEN`).
+    five (:func:`_validate_bad_credential`), and so was `Basic` and the base64 of `x:ghp_<36 A>` on
+    each, with or without `1999-01-01` (2026-10-25). A `Basic` value naming no token (`Basic eDp5`)
+    was the version's 400 pinned to `1999-01-01` on the first four, and otherwise each route's own
+    answer with the echo and the five: the 401 on the first two, and the 404 on a repository's teams
+    and a branch's protection (:data:`_NOT_FOUND_FOR_A_BASIC_VALUE_WITHOUT_A_TOKEN`).
     """
     route = getattr(request.scope.get("route"), "path", None)
     if route not in _REFUSE_AN_ANONYMOUS_CALLER_FIRST:

@@ -753,6 +753,54 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
         ('-"probe"', ("", {"-w": ["probe"]})),
         ("-(probe)", ("", {"-w": ["probe"]})),
         ("not probe", ("not probe", {})),
+        # The runs of `NOT`s `_gmail_not_words` reads.
+        ("NOT", ("", {"": ["NOT"]})),
+        ("NOT NOT", ("", {})),
+        ("NOT NOT NOT", ("", {"": ["NOT NOT NOT"]})),
+        ("NOT ()", ("", {"": ["NOT"]})),
+        ("(NOT)", ("", {"": ["NOT"]})),
+        ("-(NOT)", ("", {})),
+        ("-(NOT NOT)", ("", {})),
+        ("NOT -", ("", {"": ["NOT -"]})),
+        ('NOT ""', ("", {"": ['NOT ""']})),
+        ('NOT NOT ""', ("", {})),
+        ("probe NOT", ("probe", {"": ["probe NOT"]})),
+        ("NOT NOT probe", ("probe", {})),
+        ("-NOT probe", ("probe", {})),
+        ('NOT subject:"', ("", {"": ["NOT"]})),
+        ("-NOT subject:", ("", {})),
+        ('-NOT subject:"', ("", {})),
+        ("NOT -NOT label:", ("", {"": ["NOT -NOT"]})),
+        ("probe NOT -from:bob", ("probe", {"from": ["bob"]})),
+        # The no-break spaces the comments at `_GMAIL_SPACED_NBSP` and `_GMAIL_GROUP_PIECE` measure.
+        ("probe\u00a0from:bob", ("probe\u00a0from:bob", {})),
+        ("from:bob\u00a0to:ava", ("", {"": ["bob\u00a0to:ava"]})),
+        ("from:\u00a0bob", ("", {"": ["\u00a0bob"]})),
+        ("from:bob\u00a0", ("", {"": ["bob\u00a0"]})),
+        ("from:bob \u00a0", ("", {"from": ["bob"]})),
+        ("has:\u00a0attachment", ("", {"": ["\u00a0attachment"]})),
+        ("-from:bob\u00a0to:ava", ("", {})),
+        ("-label:inbox\u00a0", ("", {})),
+        ("subject:plan\u00a0", ("", {"subject": ["plan"]})),
+        ("NOT\u00a0", ("NOT\u00a0", {})),
+        ("NOT\u00a0from:bob", ("NOT\u00a0from:bob", {})),
+        ("NOT\u00a0NOT from:bob", ("not", {"from": ["bob"]})),
+        # A quoted operator (`_GMAIL_QUOTED_OPERATOR`) and a lone quote before an unclosed group
+        # (`_GMAIL_LONE_QUOTE_UNCLOSED`).
+        ('"(from:bob)"', ("", {"from": ["bob"]})),
+        ('"(-from:bob)"', ("", {"from": ["bob"]})),
+        ('-"(from:bob)"', ("", {"-from": ["bob"]})),
+        ('probe "(from:bob)"', ("probe", {"from": ["bob"]})),
+        ('"(FROM:bob)"', ("", {"from": ["bob"]})),
+        ('-"(FROM:bob)"', ("", {"-from": ["bob"]})),
+        ('NOT "FROM:bob"', ("", {"-from": ["bob"]})),
+        ('"IN:sent"', ("", {"in": ["sent"]})),
+        ('subject:" (from:bob', ("", {"": ['subject:" (from:bob']})),
+        ('probe subject:" (from:bob', ("", {"": ['subject:" (from:bob']})),
+        ('-subject:" (from:bob', ("", {})),
+        ("-(probe NOT)", ("", {"-w": ["probe"]})),
+        ('NOT "" probe', ("", {"-w": ["probe"]})),
+        ("-\u00a0probe", ("", {"-w": ["\u00a0probe"]})),
     ],
 )
 def test_gmail_negation_and_groups(q, want):
@@ -809,6 +857,67 @@ def test_gmail_negation_and_groups_over_the_wire(tmp_path):
         assert ids("NOT (from:bob label:sent)") == ids("-from:bob label:sent")
         assert ids("-(from:bob)-(label:inbox)") == every
         assert ids("(from:bob)-(label:inbox)") == set()
+
+
+def test_gmail_bare_not_and_no_break_space_over_the_wire(tmp_path):
+    """The issue's searches on its three messages, as the comments at `_gmail_not_words`,
+    `_GMAIL_QUOTED_OPERATOR`, `_GMAIL_LONE_QUOTE_UNCLOSED` and `_GMAIL_GROUP_PIECE` measure them."""
+    from tests._helpers import client_for, tiny_corpus
+
+    base = {
+        "source_type": "gmail",
+        "mailbox": "ava",
+        "readers": ["ava@acme.com"],
+        "visibility": "public",
+    }
+    records = [
+        {**base, "doc_id": "plan", "title": "Rollout plan", "content": "probe final",
+         "author_email": "bob@acme.com", "to": "ava@acme.com", "label_ids": ["INBOX"],
+         "created": "2026-03-01T09:00:00Z"},
+        {**base, "doc_id": "deck", "title": "Q4 deck", "content": "not final",
+         "author_email": "bob@acme.com", "to": "ava@acme.com", "label_ids": ["INBOX"],
+         "created": "2026-03-02T09:00:00Z"},
+        {**base, "doc_id": "lunch", "title": "Lunch", "content": "probe Friday?",
+         "author_email": "ava@acme.com", "to": "bob@acme.com", "label_ids": ["SENT"],
+         "created": "2026-10-15T09:00:00Z"},
+    ]  # fmt: skip
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def ids(q):
+            r = c.get("/gmail/v1/users/ava@acme.com/messages", headers=h, params={"q": q})
+            return {m["id"] for m in r.json().get("messages", [])}
+
+        every = ids("")
+        from_bob = ids("from:bob")
+        probe = ids("probe")
+        assert from_bob and probe and from_bob != every and probe != every
+        not_from_bob = every - from_bob
+        for q in ("NOT", "NOT ()", "NOT -", "(NOT)", "probe NOT", 'NOT subject:"'):
+            assert ids(q) == set(), q
+        for q in ("NOT NOT", "-(NOT)", '-NOT subject:"'):
+            assert ids(q) == every, q
+        assert ids("NOT NOT probe") == ids("-NOT probe") == probe
+        assert ids("NOT -from:bob") == from_bob
+        assert ids("probe NOT -from:bob") == probe & from_bob
+        assert ids("NOT -label:inbox") == ids("label:inbox")
+        nbsp = "\u00a0"
+        for q in (
+            f"probe{nbsp}from:bob",
+            f"from:bob{nbsp}to:ava",
+            f"NOT{nbsp}from:bob",
+            f"from:{nbsp}bob",
+        ):
+            assert ids(q) == set(), q
+        assert ids(f"-(from:bob{nbsp}to:ava)") == every
+        assert ids(f"NOT{nbsp}NOT from:bob") == ids("not from:bob")
+        assert ids('"(from:bob)"') == ids('"(-from:bob)"') == from_bob
+        assert ids('subject:" (from:bob') == set()
+        assert ids('subject:" (from:bob)') == from_bob
+        assert ids('-"(from:bob)"') == not_from_bob
+        assert ids('"(from:bob to:ava)"') == set()
+        assert ids('-subject:" (from:bob') == every
 
 
 def test_github_search_q_parse():

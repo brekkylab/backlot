@@ -10,6 +10,7 @@ import gzip
 import json
 import sqlite3
 import time
+import tracemalloc
 
 import pytest
 from graphql import build_client_schema, parse, validate
@@ -725,9 +726,9 @@ _FIREFLIES_BODIES = [
         id="50 fields twelve deep in each of two operations",
     ),
     pytest.param(
-        _query("query A %s query B %s" % (_twelve_deep(60), _twelve_deep(60, "m"))),
+        _query("query A %s query B %s" % (_twelve_deep(50), _twelve_deep(51, "m"))),
         WithTheKey(_INTERNAL, 500),
-        id="60 fields twelve deep in each of two operations",
+        id="50 and 51 fields twelve deep in two operations",
     ),
     pytest.param(
         _query("query A %s" % _twelve_deep(1)),
@@ -792,15 +793,20 @@ def test_fireflies_orders_the_body_and_the_credential(
 def test_fireflies_reads_a_fragment_once_however_many_spreads_reach_it(last, answer):
     """A document whose first twenty-five fragments each spread the next one twice reaches the
     twenty-sixth by 2**25 paths, and `_depth_limit` reads each fragment once a depth rather than
-    once a path, and stops at the 101st error the paths report."""
+    once a path, and holds no more than the 101 errors the paths report before it throws."""
     from backlot.routers import fireflies
 
     document = " ".join(f"fragment F{i} on Query {{ ...F{i + 1} ...F{i + 1} }}" for i in range(25))
-    document += f" fragment F25 on Query {{ {last} }} {{ ...F0 }}"
+    document = parse(document + f" fragment F25 on Query {{ {last} }} {{ ...F0 }}")
     started = time.perf_counter()
-    reported = fireflies._depth_limit(parse(document))
+    tracemalloc.start()
+    try:
+        reported = fireflies._depth_limit(document)
+        held = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
     assert (reported if isinstance(reported, list) else reported.status) == answer
-    assert time.perf_counter() - started < 1
+    assert (time.perf_counter() - started < 1, held < 2**20) == (True, True)
 
 
 def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_conn):

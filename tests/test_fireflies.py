@@ -2857,9 +2857,8 @@ def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monk
     assert r.headers["x-ratelimit-remaining-api_burst"] == "29"
 
 
-# A run api.fireflies.ai answered on 2026-10-26 (UTC), as `Budget`'s docstring records it: the
-# moment of each request, the root fields it sent, and the refusal's `retry-after`, or None where
-# every field was served.
+# The run `Budget`'s docstring records: the moment of each request, the root fields it sent, and
+# the refusal's `retry-after`, or None where every field was served.
 _HELD = [
     (1_793_039_210.300, 1, None),
     (1_793_039_211.243, 29, None),

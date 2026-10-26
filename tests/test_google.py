@@ -4555,10 +4555,11 @@ def test_drive_files_has_typed_response_schema(client):
     assert schema != {}
 
 
-def _drive_find(client, admin_h, name_substr):
-    j = client.get(
-        "/drive/v3/files", params={"q": f"name contains '{name_substr}'"}, headers=admin_h
-    ).json()
+def _drive_find(client, admin_h, name_substr, fields=None):
+    params = {"q": f"name contains '{name_substr}'"}
+    if fields is not None:
+        params["fields"] = fields
+    j = client.get("/drive/v3/files", params=params, headers=admin_h).json()
     return j["files"][0] if j.get("files") else None
 
 
@@ -4567,7 +4568,9 @@ def test_drive_responses_unchanged_by_enrichment(client, admin_h):
     assert lst["kind"] == "drive#fileList" and "files" in lst
     doc = _drive_find(client, admin_h, "Brand")
     assert doc is not None
-    full = client.get(f"/drive/v3/files/{doc['id']}", headers=admin_h).json()
+    full = client.get(
+        f"/drive/v3/files/{doc['id']}", headers=admin_h, params={"fields": "*"}
+    ).json()
     for k in (
         "kind",
         "id",
@@ -4951,12 +4954,12 @@ def test_drive_shared_items_carry_shared_with_me_time(client, tokens_yaml):
     shared = client.get(
         "/drive/v3/files",
         headers=mia,
-        params={"q": "sharedWithMe=true and trashed=false", "pageSize": 100},
+        params={"q": "sharedWithMe=true and trashed=false", "pageSize": 100, "fields": "*"},
     ).json()["files"]
     own = client.get(
         "/drive/v3/files",
         headers=mia,
-        params={"q": "'me' in owners and trashed=false", "pageSize": 100},
+        params={"q": "'me' in owners and trashed=false", "pageSize": 100, "fields": "*"},
     ).json()["files"]
     assert shared and own
     assert all(f["sharedWithMeTime"] for f in shared), "every shared item needs the timestamp"
@@ -4967,7 +4970,10 @@ def test_drive_shared_items_carry_shared_with_me_time(client, tokens_yaml):
     assert any(f["mimeType"] == FOLDER_MIME for f in shared)
     # and files.get agrees with the listing
     one = shared[0]
-    assert client.get(f"/drive/v3/files/{one['id']}", headers=mia).json() == one
+    assert (
+        client.get(f"/drive/v3/files/{one['id']}", headers=mia, params={"fields": "*"}).json()
+        == one
+    )
 
 
 def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
@@ -5217,16 +5223,16 @@ def test_drive_order_by_does_not_change_the_rows_themselves(client, admin_h):
     so the served objects must still be identical to the unsorted ones, field for field."""
     plain = {
         f["id"]: f
-        for f in client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 100}).json()[
-            "files"
-        ]
+        for f in client.get(
+            "/drive/v3/files", headers=admin_h, params={"pageSize": 100, "fields": "*"}
+        ).json()["files"]
     }
     sorted_ = {
         f["id"]: f
         for f in client.get(
             "/drive/v3/files",
             headers=admin_h,
-            params={"pageSize": 100, "orderBy": "modifiedTime desc"},
+            params={"pageSize": 100, "orderBy": "modifiedTime desc", "fields": "*"},
         ).json()["files"]
     }
     assert plain and plain == sorted_
@@ -6194,7 +6200,7 @@ def test_drive_folder_permissions_resolve(client, admin_h):
 def test_drive_native_docs_report_size(client, admin_h):
     """Google populates `size` for binary content *and for Docs Editors files*; Backlot omitted
     it on native rows, which taught implementors something false about the API."""
-    doc = _drive_find(client, admin_h, "Brand")
+    doc = _drive_find(client, admin_h, "Brand", fields="files(*)")
     assert doc["mimeType"] == DOC_MIME
     assert int(doc["size"]) > 0
     assert "md5Checksum" not in doc  # real Drive omits checksums on native files
@@ -6320,7 +6326,7 @@ def test_drive_about_user_is_the_caller(client, tokens_yaml):
     assert u["emailAddress"] == "mia@acme.com"
     assert u["me"] is True
     # the file resource keeps its own answer: mia as an owner is not "me" to the object itself
-    assert _drive_find(client, mia, "Brand")["owners"][0]["me"] is False
+    assert _drive_find(client, mia, "Brand", fields="files(*)")["owners"][0]["me"] is False
 
 
 def test_drive_about_admin_token_reports_a_concrete_address(client, admin_h):
@@ -6492,7 +6498,7 @@ def test_root_lists_folders_with_matching_ids(base, admin_h):
     kids = httpx.get(
         f"{base}/drive/v3/files",
         headers=admin_h,
-        params={"q": f"'{finance['id']}' in parents and trashed=false"},
+        params={"q": f"'{finance['id']}' in parents and trashed=false", "fields": "files(*)"},
     ).json()["files"]
     assert kids and all(finance["id"] in k["parents"] for k in kids)
     # and GET on the folder id resolves to the folder object

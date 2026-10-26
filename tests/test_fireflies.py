@@ -2521,9 +2521,8 @@ def _key(tokens_yaml) -> dict:
 def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monkeypatch):
     """Thirty `{ user { user_id } }` in 11 seconds are served, the 30th leaving none of the
     minute; the 31st is refused, `{ __typename }` beside it is served with no budget's headers, and
-    a document of 33 aliases a minute on is served 30 and refused 3. The answers are shaped as
-    api.fireflies.ai's of 2026-10-26 (UTC), the counts starting from a key that has spent
-    nothing."""
+    a document of 33 aliases a minute on is served 30 and refused 3, the run of `Budget`'s
+    docstring, the counts starting from a key that has spent nothing."""
     now = _budget(client, monkeypatch)
     for i in range(30):
         now[0] = 1_793_020_105.0 + i * 10.6 / 29

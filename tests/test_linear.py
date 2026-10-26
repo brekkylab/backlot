@@ -1930,7 +1930,7 @@ _LINEAR_BODIES = [
                 % column,
                 200,
             ),
-            id=f"null for a later root field's argument, {label}",
+            id=f"null for a root field's argument, {label}",
         )
         for fields, column, label in (
             (
@@ -1952,7 +1952,7 @@ _LINEAR_BODIES = [
             b'{"errors":[{"message":"Internal server error","path":["b"],"locations":[{"line":1,"column":129}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
             200,
         ),
-        id="null for a later root field's argument, in a fragment",
+        id="null for a root field's argument, in a fragment after an issue",
     ),
     pytest.param(
         b'{"query":"query($x: String = \\"00000000-0000-0000-0000-000000000000\\") { b: issue(id: $x) { id } }"}',
@@ -1961,6 +1961,30 @@ _LINEAR_BODIES = [
             200,
         ),
         id="a root field's argument from a variable's default",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } b: issue(id: $x) { id } c: team(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["b"],"locations":[{"line":1,"column":100}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for two root fields' arguments",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\", $y: String = \\"Issue\\") { t: __type(name: $y) { name } b: issue(id: $x) { id } }","variables":{"x":null,"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":65}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Internal server error","path":["b"],"locations":[{"line":1,"column":91}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for __type's argument, then for issue's",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\", $y: String = \\"Issue\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } t: __type(name: $y) { name } b: issue(id: $x) { id } }","variables":{"x":null,"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":125}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Internal server error","path":["b"],"locations":[{"line":1,"column":151}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for __type's and issue's arguments, after an issue Linear does not hold",
     ),
     pytest.param(
         b'{"query":"{ __schema { queryType { name } } }"}',

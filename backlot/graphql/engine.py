@@ -51,6 +51,7 @@ from graphql import (
 )
 from graphql.execution.collect_fields import collect_fields
 from graphql.execution.values import get_argument_values, get_variable_values
+from graphql.type.introspection import TypeMetaFieldDef
 
 from backlot.graphql import body as request_body
 from backlot.graphql import js_words
@@ -554,11 +555,13 @@ class Engine:
         None to run it. graphql-js reads each root field's arguments as it starts the field, in
         the order the fields come, before any resolver's answer arrives, as Linear's resolvers
         answer asynchronously: the first non-null root field whose argument it refuses nulls the
-        data, its error answered alone, ahead of whatever an earlier root field's resolver would
-        answer. api.linear.app answered `Internal server error` at a later `issue(id: $x)` sent
-        `null`, ahead of an earlier `issue` it does not hold and of an earlier `viewer`, on
-        2026-10-21 and 2026-10-26 (UTC), and so through a fragment. A refusal at a nullable root
-        field, every one of Fireflies', and a refused directive are the run's to answer."""
+        data, its error answered after those of the nullable root fields refused before it and
+        ahead of whatever an earlier root field's resolver would answer. api.linear.app answered
+        `Internal server error` at a later `issue(id: $x)` sent `null`, ahead of an earlier `issue`
+        it does not hold and of an earlier `viewer`, and through a fragment, on 2026-10-21 and
+        2026-10-26 (UTC), and after the same error at a `__type(name: $y)` sent `null` before it on
+        2026-10-26. Where no non-null root field is refused, as on Fireflies, whose root fields are
+        each nullable, the run answers, and so it does a refused directive."""
         root = self.schema.get_root_type(operation.operation.operation)
         fragments = {
             d.name.value: d
@@ -574,14 +577,22 @@ class Engine:
             )
         except GraphQLError:
             return None
+        refused: list[GraphQLError] = []
         for key, nodes in fields.items():
-            field = root.fields.get(nodes[0].name.value)
-            if field is None or not isinstance(field.type, GraphQLNonNull):
+            name = nodes[0].name.value
+            field = (
+                TypeMetaFieldDef
+                if name == "__type" and root is self.schema.query_type
+                else root.fields.get(name)
+            )
+            if field is None:
                 continue
             try:
                 get_argument_values(field, nodes[0], coerced)
             except GraphQLError as error:
-                return ExecutionResult(None, [located_error(error, nodes, [key])])
+                refused.append(located_error(error, nodes, [key]))
+                if isinstance(field.type, GraphQLNonNull):
+                    return ExecutionResult(None, refused)
         return None
 
     def execute(

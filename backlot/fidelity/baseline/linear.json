@@ -6003,7 +6003,7 @@
           "type": "EmailIntakeAddressConnection!",
           "kind": "missing_field",
           "severity": "gap",
-          "note": "`EmailIntakeAddress` is not declared: an address is workspace configuration, no corpus record is one, and `emailIntakeAddress` is a gap for the same reason. Measured 2026-10-26: the workspace answered `nodes: []`, so the populated shape is unmeasured."
+          "note": "Linear's own description of `EmailIntakeAddress`: \"An email address that creates Linear issues when emails are sent to it.\" An address is workspace configuration (its team or template, auto-replies, a forwarding address and an SES domain identity); Backlot's Linear schema has no `EmailIntakeAddress` type, no corpus record is one, and the single-address root `emailIntakeAddress` is a gap in this file too. Measured against api.linear.app on 2026-10-26, `emailIntakeAddresses{nodes{id address enabled} pageInfo{hasNextPage}}` answers `{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false}}` in the workspace measured, and the same with `includeArchived: true`, so the populated shape is unmeasured."
         },
         "emoji": {
           "status": "missing",

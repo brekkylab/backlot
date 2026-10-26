@@ -120,11 +120,6 @@ def test_fireflies_reads_a_credential_as_fireflies_does(client, tokens_yaml, val
 
 
 # --- the body and the credential, in the order Fireflies reads them -------------------------------
-# The headers a body was sent with beyond `Content-Type: application/json`, the body, and Fireflies'
-# answer to it with the key: `_EMPTY`, `_NOT_JSON` or `_TOO_LARGE`, its HTTP layer's refusals
-# `backlot.routers.fireflies._body_refusal` sends at the status their `statusCode` names, or None
-# where it served the query. A `WithTheKey` row is a body that layer passes, which draws one of
-# `_auth_failed`'s 500s without the key; its bytes are api.fireflies.ai's.
 def _apollo(
     message: bytes, code: bytes = b"BAD_REQUEST", locations: bytes = b"", status: int = 400
 ) -> WithTheKey:
@@ -137,6 +132,32 @@ def _apollo(
 
 
 _NO_KEYS = _apollo(b"POST body missing, invalid Content-Type, or JSON object has no keys.")
+
+
+def _deeper(fields: int) -> bytes:
+    """A body whose query selects ``fields`` fields twelve deep in fields Fireflies does not
+    have."""
+    selection = " ".join(f"l{n}" for n in range(fields))
+    return b'{"query":"{ a{b{c{d{e{f{g{h{i{j{k{ %s }}}}}}}}}}} }"}' % selection.encode()
+
+
+def _columns(fields: int) -> list[int]:
+    """The column of each field twelve deep in :func:`_deeper`'s query."""
+    query = json.loads(_deeper(fields))["query"]
+    return [query.index(f" l{n} ") + 2 for n in range(fields)]
+
+
+def _too_deep(column: int) -> bytes:
+    return (
+        b'{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":'
+        b'[{"line":1,"column":%d}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}' % column
+    )
+
+
+def _validation(*errors: bytes) -> bytes:
+    return b'{"errors":[%s]}\n' % b",".join(errors)
+
+
 _BATCHING = _apollo(b"Operation batching disabled.")
 _EMPTY = (
     b'{"statusCode":400,"status":false,"code":"http","message":"Body cannot be empty when'
@@ -175,6 +196,11 @@ _FIREFLIES_READS = [
         id="utf-16",
     ),
 ]
+# The headers a body was sent with beyond `Content-Type: application/json`, the body, and Fireflies'
+# answer to it with the key: `_EMPTY`, `_NOT_JSON` or `_TOO_LARGE`, its HTTP layer's refusals
+# `backlot.routers.fireflies._body_refusal` sends at the status their `statusCode` names, or None
+# where it served the query. A `WithTheKey` row is a body that layer passes, which draws one of
+# `_auth_failed`'s 500s without the key; its bytes are api.fireflies.ai's.
 _FIREFLIES_BODIES = [
     pytest.param(b'{"query":"{ __typename }"}', None, id="a query"),
     pytest.param(b"{", _NOT_JSON, id="{"),
@@ -397,6 +423,23 @@ _FIREFLIES_BODIES = [
         id="a variable not provided",
     ),
     pytest.param(
+        b'{"query":"query($v: [String!]) { transcripts(participants: $v) { id } }",'
+        b'"variables":{"v":[%s]}}' % b",".join([b"true"] * 60),
+        WithTheKey(
+            _validation(
+                *(
+                    b'{"friendly":false,"message":"Variable \\"$v\\" got invalid value true at '
+                    b'\\"v[%d]\\"; String cannot represent a non string value: true","locations":'
+                    b'[{"line":1,"column":7}],"code":"BAD_USER_INPUT","extensions":{}}' % n
+                    for n in range(50)
+                ),
+                b'{"friendly":false,"message":"Too many errors processing variables, error limit '
+                b'reached. Execution aborted.","code":"INTERNAL_SERVER_ERROR","extensions":{}}',
+            )
+        ),
+        id="sixty variables refused",
+    ),
+    pytest.param(
         b'{"query":"{ __typename }","operationName":"Z"}',
         WithTheKey(
             b'{"errors":[{"friendly":false,"message":"Unknown operation named \\"Z\\".","code":"OPERATION_RESOLUTION_FAILURE","extensions":{}}]}\n'
@@ -543,6 +586,127 @@ _FIREFLIES_BODIES = [
         ),
         id="an undefined spread beside a document that cannot parse",
     ),
+    pytest.param(
+        b'{"query":"{ __schema { ...X } }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":17}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread under __schema",
+    ),
+    pytest.param(
+        b'{"query":"{ __type(name: \\"Query\\") { ...X } }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":30}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread under __type",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename { ...X } }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Field \\"__typename\\" must not have a selection since type \\"String!\\" has no subfields.","locations":[{"line":1,"column":14}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":19}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread under __typename",
+    ),
+    pytest.param(
+        b'{"query":"{ ...X } { __typename }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"This anonymous operation must be the only defined operation.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":6}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"This anonymous operation must be the only defined operation.","locations":[{"line":1,"column":10}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread in an unnamed operation a later one replaces",
+    ),
+    pytest.param(
+        b'{"query":"query A { ...X } query A { __typename }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":14}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"There can be only one operation named \\"A\\".","locations":[{"line":1,"column":7},{"line":1,"column":24}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread in an operation a later one of its name replaces",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { transcripts { ...F } } { ...F }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":37}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Cannot spread fragment \\"F\\" within itself.","locations":[{"line":1,"column":37}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"F\\" cannot be spread here as objects of type \\"Transcript\\" can never be of type \\"Query\\".","locations":[{"line":1,"column":37}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="a fragment that spreads itself under a field",
+    ),
+    pytest.param(
+        b'{"query":"{ a{b{c{d{e{f{g{h{i{j{ ...X }}}}}}}}}} }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
+            500,
+        ),
+        id="an undefined spread ten fields deep",
+    ),
+    pytest.param(
+        b'{"query":"{ a{b{c{d{e{f{g{h{i{j{k{ ...X }}}}}}}}}}} }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":26}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":29}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread eleven fields deep",
+    ),
+    pytest.param(
+        b'{"query":"{ a{b{c{d{e{f{g{h{i{j{k{ l m }}}}}}}}}}} }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":26}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":28}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="two fields twelve deep",
+    ),
+    pytest.param(
+        b'{"query":"{ a{b{c{d{e{f{g{h{i{j{k{ l {m} }}}}}}}}}}} }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":26}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="a field twelve deep with a selection",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { ...X } fragment F on Query { __typename } { ...F }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":26}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"There can be only one fragment named \\"F\\".","locations":[{"line":1,"column":10},{"line":1,"column":39}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread in the earlier of two fragments of a name",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { __typename } fragment F on Query { ...X } { ...F }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
+            500,
+        ),
+        id="an undefined spread in the later of two fragments of a name",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { a{b{c{d{e{f{g{h{i{j{k{ l }}}}}}}}}}} } { ...F ...F }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":46}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":46}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":[{"line":1,"column":23}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="a fragment too deep spread twice",
+    ),
+    pytest.param(
+        _deeper(99),
+        WithTheKey(
+            _validation(
+                *(_too_deep(column) for column in _columns(99)),
+                b'{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}',
+            )
+        ),
+        id="99 fields twelve deep",
+    ),
+    pytest.param(
+        _deeper(100),
+        WithTheKey(
+            _validation(
+                *(_too_deep(column) for column in _columns(100)),
+                b'{"friendly":false,"message":"Too many validation errors, error limit reached. Validation aborted.","code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}',
+            )
+        ),
+        id="100 fields twelve deep",
+    ),
+    pytest.param(
+        _deeper(101),
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
+            500,
+        ),
+        id="101 fields twelve deep",
+    ),
 ]
 
 
@@ -578,14 +742,14 @@ def test_fireflies_orders_the_body_and_the_credential(
 
 def test_fireflies_reads_a_fragment_once_however_many_spreads_reach_it():
     """A document whose first twenty-five fragments each spread the next one twice reaches the
-    twenty-sixth by 2**25 paths, and `_fragments_unreached` reads each fragment once rather than
+    twenty-sixth by 2**25 paths, and `_depth_limit` reads each fragment once a depth rather than
     once a path."""
     from backlot.routers import fireflies
 
     document = " ".join(f"fragment F{i} on Query {{ ...F{i + 1} ...F{i + 1} }}" for i in range(25))
     document += " fragment F25 on Query { __typename } { ...F0 }"
     started = time.perf_counter()
-    assert fireflies._fragments_unreached(parse(document)) is None
+    assert fireflies._depth_limit(parse(document)) == []
     assert time.perf_counter() - started < 1
 
 

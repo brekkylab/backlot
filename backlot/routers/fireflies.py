@@ -199,9 +199,7 @@ async def _fastify(request: Request) -> Response:
         # scale measured) and almost none of them have a Fireflies account. See resolve_users.
         "roster": frozenset(state.acl.email_to_token()) if getattr(state, "acl", None) else None,
     }
-    resolved = ENGINE.resolve_payload(
-        payload, on_document=_fragments_unreached, get=method == "GET"
-    )
+    resolved = ENGINE.resolve_payload(payload, on_document=_depth_limit, get=method == "GET")
     if isinstance(resolved, engine.Result):
         return _answer(seen, resolved)
     result = ENGINE.run(resolved, context=context)
@@ -590,41 +588,80 @@ def _envelope(result: engine.Result) -> dict:
     return {**result.payload, "errors": shaped}
 
 
-def _fragments_unreached(doc: DocumentNode) -> engine.Result | None:
-    """Fireflies' 500 for a document whose operations reach a fragment it does not define, or a
-    fragment that reaches itself, ahead of validation: api.fireflies.ai answered ``{ ...F }``, a
-    spread of an undefined fragment inside an inline fragment, inside a fragment an operation uses
-    and inside an operation ``operationName`` did not choose, and ``fragment F on Query { ...F }
-    { ...F }``, with it on 2026-10-25 (UTC), beside another validation error too. The same spread
-    in a fragment no operation uses was the validation's ``Unknown fragment`` and the same cycle
-    its ``Cannot spread fragment``."""
-    fragments = {d.name.value: d for d in doc.definitions if isinstance(d, FragmentDefinitionNode)}
+#: graphql-depth-limit's ``maxDepth`` on api.fireflies.ai, which on 2026-10-26 (UTC) refused a
+#: selection eleven fields deep and crawled one ten deep.
+_MAX_DEPTH = 10
+#: The errors graphql-js's ``validate`` takes before it stops, which a 101st report from a rule
+#: throws past.
+_MAX_ERRORS = 100
 
-    # Each fragment found to reach no fault, so that a fragment many spreads reach is read once.
-    done: set[str] = set()
 
-    def reaches_a_fault(selections, path: tuple[str, ...]) -> bool:
-        for selection in selections:
-            if isinstance(selection, FragmentSpreadNode):
-                name = selection.name.value
-                if name not in fragments or name in path:
-                    return True
-                if name not in done:
-                    if reaches_a_fault(fragments[name].selection_set.selections, (*path, name)):
-                        return True
-                    done.add(name)
-            elif selection.selection_set is not None and reaches_a_fault(
-                selection.selection_set.selections, path
-            ):
-                return True
-        return False
+class _Thrown(Exception):
+    """graphql-depth-limit throwing out of graphql-js's validation, which Apollo Server answers with
+    its 500."""
 
-    operations = [d for d in doc.definitions if isinstance(d, OperationDefinitionNode)]
-    if any(reaches_a_fault(operation.selection_set.selections, ()) for operation in operations):
+
+def _depth_limit(doc: DocumentNode) -> engine.Result | list[GraphQLError]:
+    """graphql-depth-limit's rule with a ``maxDepth`` of :data:`_MAX_DEPTH`, which Fireflies runs
+    as graphql-js starts validating ``doc``: the errors it reports, which come ahead of graphql-js's
+    own, or Fireflies' 500 where it throws.
+
+    It crawls each operation, the last of each name and the unnamed ones as the last one named
+    ``''``: a field's selections one deeper, but none of a field whose name starts ``__``, and a
+    spread's fragment, the last of its name, at the spread's depth. A selection deeper than
+    :data:`_MAX_DEPTH` is reported and not crawled. A spread of a fragment the document does not
+    define, a spread back to a fragment with no field between, and a report past
+    :data:`_MAX_ERRORS` throw. api.fireflies.ai answered so on 2026-10-26 (UTC), and answered
+    ``{ ...F }`` with ``F`` undefined inside a field ten deep with the 500 and eleven deep with the
+    depth error."""
+    fragments: dict[str, FragmentDefinitionNode] = {}
+    operations: dict[str, OperationDefinitionNode] = {}
+    for definition in doc.definitions:
+        if isinstance(definition, FragmentDefinitionNode):
+            fragments[definition.name.value] = definition
+        elif isinstance(definition, OperationDefinitionNode):
+            operations[definition.name.value if definition.name else ""] = definition
+    # The selections a fragment's crawl from a depth reports, which each of its spreads at that
+    # depth reports again; None while it is being crawled.
+    crawled: dict[tuple[str, int], list | None] = {}
+
+    def crawl(selections, depth: int) -> list:
+        reported: list = []
+        for node in selections:
+            if depth > _MAX_DEPTH:
+                reported.append(node)
+            elif isinstance(node, FieldNode):
+                if not node.name.value.startswith("__") and node.selection_set is not None:
+                    reported += crawl(node.selection_set.selections, depth + 1)
+            elif isinstance(node, FragmentSpreadNode):
+                reported += spread(node.name.value, depth)
+            else:
+                reported += crawl(node.selection_set.selections, depth)
+            if len(reported) > _MAX_ERRORS:
+                raise _Thrown
+        return reported
+
+    def spread(name: str, depth: int) -> list:
+        if name not in fragments or crawled.get((name, depth), []) is None:
+            raise _Thrown
+        if (name, depth) not in crawled:
+            crawled[name, depth] = None
+            crawled[name, depth] = crawl(fragments[name].selection_set.selections, depth)
+        return crawled[name, depth]
+
+    errors: list[GraphQLError] = []
+    try:
+        for name, operation in operations.items():
+            for node in crawl(operation.selection_set.selections, 0):
+                if len(errors) == _MAX_ERRORS:
+                    raise _Thrown
+                message = f"'{name}' exceeds maximum operation depth of {_MAX_DEPTH}"
+                errors.append(GraphQLError(message, node))
+    except _Thrown:
         return engine.refused(
             engine.Refusal("Internal server error", engine.INTERNAL_SERVER_ERROR, status=500)
         )
-    return None
+    return errors
 
 
 def _read(raw: bytes) -> Any:

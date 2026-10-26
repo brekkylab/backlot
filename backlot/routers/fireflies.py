@@ -260,8 +260,7 @@ def _answer(seen: dict[str, str], result: engine.Result, spent: Spent | None = N
 def _resolver_fields(operation: engine.Operation) -> list[tuple[str, FieldNode]]:
     """The root fields ``operation`` selects whose resolvers run, in order: each response key, an
     alias or a field's name, once, through fragments and as `@skip` and `@include` leave it with
-    the variables as the run reads them, and not `__typename`, `__schema` or `__type`. A root the
-    SDL leaves out has only `__typename` once validated."""
+    the variables as the run reads them, and not `__typename`, `__schema` or `__type`."""
     root = ENGINE.schema.get_root_type(operation.operation.operation)
     fragments = {
         d.name.value: d
@@ -312,11 +311,11 @@ class Spent:
 
     def refuse(self, body: dict) -> dict:
         """``body`` with each refused field's data null and its error after the others, as
-        api.fireflies.ai answered three of 33 aliases of `user` past the minute's 30 on 2026-10-26
-        (UTC): `"friendly": true`, the moment in the message to the second and in
-        `metadata.retryAfter` to the millisecond. The refused fields are the last the document
-        runs, as a budget once spent stays spent for the rest of it, and an error the run made at
-        one of them is left out, since Fireflies runs no resolver for it."""
+        api.fireflies.ai answered the refused fields of :class:`Budget`'s run: `"friendly": true`,
+        the moment in the message to the second and in `metadata.retryAfter` to the millisecond. The
+        refused fields are the last the document runs, as a budget once spent stays spent for the
+        rest of it, and an error the run made at one of them is left out, the refusal standing for
+        the field's whole answer."""
         if not self.refused:
             return body
         when = email.utils.formatdate(self.retry_at, usegmt=True)
@@ -399,7 +398,8 @@ class Budget:
         if not refused:
             return Spent([], burst | day | plain, now)
         if by_day:
-            # Not measured: the minute's answer to a spent day, which the day's two numbers keep.
+            # Not measured, as measuring it spends a day of the key's budget: the minute's refusal
+            # with the day's numbers.
             wait = str(math.ceil(midnight - now))
             headers = burst | day | {"retry-after-api": wait} | plain | {"retry-after": wait}
             return Spent(refused, headers, midnight)

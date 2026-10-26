@@ -2,18 +2,18 @@
 
 Knows nothing about any vendor and nothing about :mod:`backlot.store`. A vendor builds one
 :class:`Engine` at import time from its SDL and resolver map; its router reads the request body
-with :mod:`backlot.graphql.body` and hands it to :meth:`Engine.execute_payload`, along with a
-context dict (connection, caller, ``visible_ids``) that every resolver receives as
-``info.context``.
+with :mod:`backlot.graphql.body`, hands it to :meth:`Engine.resolve_payload`, and runs the
+operation it chooses with :meth:`Engine.run`, along with a context dict (connection, caller,
+``visible_ids``) that every resolver receives as ``info.context``.
 
 Both vendors serve GraphQL through Apollo Server over graphql-js, so the engine answers as that pair
 does: Apollo Server's checks of the body and of a persisted query come first, then graphql-js's
 parse, validation and choice of operation (:meth:`Engine.resolve_payload`), then the coercion of
 variables and the run itself (:meth:`Engine.run`), each refusal a :class:`Refusal` carrying Apollo
 Server's ``code`` and the message in graphql-js's words (:mod:`backlot.graphql.js_words`). A router
-that reads the credential between the two stages calls them apart. A refusal made before execution
-carries no ``data`` entry; an error made as the operation runs comes back beside ``data``, at 200.
-Each router turns the refusals into its vendor's envelope.
+that reads the credential, or counts the fields a run spends, between the two stages calls them
+apart. A refusal made before execution carries no ``data`` entry; an error made as the operation
+runs comes back beside ``data``, at 200. Each router turns the refusals into its vendor's envelope.
 """
 
 from __future__ import annotations
@@ -536,11 +536,9 @@ class Engine:
         payload: Any,
         *,
         context: Any = None,
-        on_document: Callable[[DocumentNode], Result | None] | None = None,
-        get: bool = False,
     ) -> Result:
         """:meth:`resolve_payload`, then :meth:`run` the operation it chose."""
-        resolved = self.resolve_payload(payload, on_document=on_document, get=get)
+        resolved = self.resolve_payload(payload)
         return resolved if isinstance(resolved, Result) else self.run(resolved, context=context)
 
 

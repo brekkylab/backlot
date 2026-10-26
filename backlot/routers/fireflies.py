@@ -269,11 +269,10 @@ def _resolver_fields(operation: engine.Operation) -> list[tuple[str, FieldNode]]
         if isinstance(d, FragmentDefinitionNode)
     }
     sent = operation.variables if isinstance(operation.variables, dict) else {}
+    # The run this follows coerced the same variables, so they coerce here too.
     variables = get_variable_values(
         ENGINE.schema, list(operation.operation.variable_definitions), sent
     )
-    if isinstance(variables, list):
-        return []
     try:
         fields = collect_fields(
             ENGINE.schema, fragments, variables, root, operation.operation.selection_set

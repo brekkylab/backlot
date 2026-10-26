@@ -1224,6 +1224,77 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
     assert bogus["results"] == [] and bogus["totalSize"] == 0
 
 
+def test_confluence_cql_search_filtered_by_id_ancestor_parent(tmp_path):
+    """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` answers an `id`, `ancestor`
+    or `parent` clause, alone and beside `type`, `space`, a `~` term and each other.
+
+    Not SAMPLE: its one child sits directly under its parent, so an `ancestor` clause would select
+    the same rows as `parent`, and a `~` term that misses a chain's middle could not be sent."""
+    from backlot import synth
+
+    page = {
+        "source_type": "confluence",
+        "space": "eng",
+        "content": "Body.",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+    }
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {**page, "doc_id": "q-gp", "title": "Guide"},
+            {**page, "doc_id": "q-c", "title": "Child", "parent": "q-gp"},
+            {**page, "doc_id": "q-gc", "title": "Grand", "parent": "q-c", "content": "Deep."},
+            {**page, "doc_id": "q-o", "title": "Other", "space": "ops"},
+        ],
+    )
+    eng = synth.confluence_space_key("eng")
+    rows = [
+        # cql, each title standing for its served id, and the titles real answered over the chain
+        # of three pages :func:`confluence_cql_search`'s docstring records.
+        ("id={Child}", {"Child"}),
+        ('id="{Child}"', {"Child"}),
+        ("id in ({Child},{Grand})", {"Child", "Grand"}),
+        ("ID={Child}", {"Child"}),
+        ("Id in ({Child})", {"Child"}),
+        ("type=page and id={Child}", {"Child"}),
+        (f"space={eng} and id={{Child}}", {"Child"}),
+        ("ancestor={Guide}", {"Child", "Grand"}),
+        ("ancestor in ({Guide})", {"Child", "Grand"}),
+        ("ancestor={Child}", {"Grand"}),
+        ("ancestor={Grand}", set()),
+        ("ancestor in ({Guide},{Child})", {"Child", "Grand"}),
+        ("parent={Guide}", {"Child"}),
+        ("parent={Child}", {"Grand"}),
+        ("parent={Grand}", set()),
+        ("type=page and ancestor={Guide}", {"Child", "Grand"}),
+        ('text ~ "Deep" and ancestor={Guide}', {"Grand"}),
+        ('text ~ "Deep" and parent={Guide}', set()),
+        ("ancestor={Guide} and parent={Guide}", {"Child"}),
+        ("ancestor={Guide} and id in ({Grand},{Child})", {"Child", "Grand"}),
+        ("id in ({Child}) and ancestor={Guide}", {"Child"}),
+        ("id={Grand} and parent={Child}", {"Grand"}),
+        ("id in ({Child},{Grand}) and parent={Guide}", {"Child"}),
+        ("id={Child} and id in ({Grand})", set()),
+        ("id={Child} and id in ({Child},{Grand})", {"Child"}),
+        ("ancestor={Guide} and ancestor in ({Child})", {"Grand"}),
+        ("id={Guide} and ancestor={Guide}", set()),
+        ("id=999999999", set()),
+        ("ancestor=999999999", set()),
+        ("parent=999999999", set()),
+    ]
+    with client_for(settings, reload=True) as c:
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        h = {"Authorization": f"Bearer {written['admin_token']}"}
+        content = c.get("/atlassian/wiki/rest/api/content", headers=h).json()["results"]
+        ids = {r["title"]: r["id"] for r in content}
+        for template, want in rows:
+            cql = template.format(**ids)
+            r = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": cql}).json()
+            assert {x["title"] for x in r["results"]} == want, cql
+            assert r["totalSize"] == len(want), cql
+
+
 _CQL_REQUIRED = {
     "statusCode": 400,
     "data": {"authorized": True, "valid": True, "errors": [], "successful": True},

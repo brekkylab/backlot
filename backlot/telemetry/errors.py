@@ -189,8 +189,8 @@ _AUTH = frozenset(
     | {("fireflies", "auth_failed")}
 )
 # Each 5xx a vendor answers a wrong request with, by source and error code, and Backlot answers too:
-# Fireflies' 500 for a document that reaches a fragment it does not define
-# (`backlot.routers.fireflies._fragments_unreached`).
+# Fireflies' 500 for a document graphql-depth-limit throws on
+# (`backlot.routers.fireflies._depth_limit`).
 _ANSWERED_5XX = frozenset({("fireflies", "INTERNAL_SERVER_ERROR")})
 
 

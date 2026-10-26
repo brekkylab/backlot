@@ -195,6 +195,19 @@ def test_resolver_error_nulls_the_field_and_reports_its_path(gql):
     assert err["path"] == ["boom"]
 
 
+@pytest.mark.parametrize(
+    "query, location",
+    [
+        ('{ widget(id: "\U0001f600") { name } boom }', {"line": 1, "column": 29}),
+        ("# a\u2028b\n{ boom }", {"line": 2, "column": 3}),
+    ],
+)
+def test_a_resolver_error_is_located_as_graphql_js_locates_it(gql, query, location):
+    """A column counts UTF-16 code units and a line breaks at a line feed or a carriage return
+    alone, as api.linear.app located its ``Entity not found`` on 2026-10-26 (UTC)."""
+    assert gql.execute(query).payload["errors"][0]["locations"] == [location]
+
+
 def test_partial_data_survives_alongside_an_error(gql):
     r = gql.execute('{ boom widget(id: "w1") { name } }')
     assert r.payload["data"] == {"boom": None, "widget": {"name": "Gateway"}}
@@ -1077,8 +1090,35 @@ _STAGES = {
 
 # A document over `_WORDS`, its variables as the body sent them, and graphql-js 16.14.2's answer
 # under Node: the stage that refused it and each error's message and locations, or "ok" where it
-# coerced every variable.
+# coerced every variable. An error's code is the stage's, or the third member where Apollo Server
+# gives it another.
 _GRAPHQL_JS_WORDS = [
+    pytest.param(
+        '{ string(v: "\U0001f600\U0001f600") nosuch }',
+        None,
+        "validate",
+        [('Cannot query field "nosuch" on type "Query".', [(1, 21)])],
+        id="two characters past U+FFFF before a validation error",
+    ),
+    pytest.param(
+        '{ string(v: "\U0001f600") } !',
+        None,
+        "parse",
+        [('Syntax Error: Unexpected "!".', [(1, 21)])],
+        id="a character past U+FFFF before a syntax error",
+    ),
+    pytest.param(
+        'query($w: String = "\U0001f600", $v: Int) { int(v: $v) string(v: $w) }',
+        '{"v": "a"}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value "a"; Int cannot represent non-integer value: "a"',
+                [(1, 26)],
+            )
+        ],
+        id="a character past U+FFFF before a refused variable",
+    ),
     pytest.param(
         "# a\r{ nosuch }",
         None,
@@ -1417,7 +1457,7 @@ _GRAPHQL_JS_WORDS = [
             )
             for n in range(50)
         ]
-        + [(_TOO_MANY, [])],
+        + [(_TOO_MANY, [], engine.INTERNAL_SERVER_ERROR)],
         id="the fifty-first refusal",
     ),
     pytest.param(
@@ -1488,8 +1528,10 @@ def test_a_refusal_is_in_graphql_js_words(document, variables, stage, errors):
         (refusal.message, [(at["line"], at["column"]) for at in refusal.locations])
         for refusal in r.refusals
     ]
-    assert got == errors
-    assert {refusal.code for refusal in r.refusals} == ({_STAGES[stage]} if errors else set())
+    assert got == [error[:2] for error in errors]
+    assert [refusal.code for refusal in r.refusals] == [
+        error[2] if len(error) > 2 else _STAGES[stage] for error in errors
+    ]
 
 
 # --- resolver binding -----------------------------------------------------------

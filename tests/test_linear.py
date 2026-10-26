@@ -1933,6 +1933,22 @@ _LINEAR_BODIES = [
         )
     ),
     pytest.param(
+        b'{"query":"query($x: String = \\"a\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } ...F } fragment F on Query { b: issue(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["b"],"locations":[{"line":1,"column":129}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for a later root field's argument, in a fragment",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"00000000-0000-0000-0000-000000000000\\") { b: issue(id: $x) { id } }"}',
+        WithTheKey(
+            b'{"errors":[{"message":"Entity not found: Issue","path":["b"],"locations":[{"line":1,"column":62}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Could not find referenced Issue."}}],"data":null}\n',
+            200,
+        ),
+        id="a root field's argument from a variable's default",
+    ),
+    pytest.param(
         b'{"query":"{ __schema { queryType { name } } }"}',
         b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
         id="introspection",

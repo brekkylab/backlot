@@ -229,12 +229,13 @@ def _answer(seen: dict[str, str], result: engine.Result, spent: Spent | None = N
     """Apollo Server's answer to ``result`` in Fireflies' envelope (:func:`_envelope`), in the
     media type :func:`~backlot.graphql.apollo_http.response_type` picks, or Apollo Server's 406,
     the JSON ending in a newline, and ``spent``'s refusals and headers where a run spent the budget
-    (:class:`Budget`). An answer of the request pipeline carries `Cache-Control: no-store`, where a
-    refusal thrown ahead of it and the 406 carry none, as api.fireflies.ai answered on 2026-10-25
-    and 2026-10-26 (UTC): `no-store` on each run, a document that does not parse or validate, one
-    with no query, an operation it cannot choose, a variable it refuses and a `GET` of a mutation,
-    and none on the CSRF refusal, a body it cannot read, a `GET`'s query string it refuses, a
-    `HEAD`, the 406 and the 500 graphql-depth-limit throws (:func:`_depth_limit`)."""
+    (:class:`Budget`). An answer of the request pipeline carries `Cache-Control: no-store` unless it
+    sets its own, as a persisted query's hash alone does, where a refusal thrown ahead of it and the
+    406 carry none, as api.fireflies.ai answered on 2026-10-25 and 2026-10-26 (UTC): `no-store` on
+    each run, a document that does not parse or validate, one with no query, an operation it cannot
+    choose, a variable it refuses and a `GET` of a mutation, and none on the CSRF refusal, a body it
+    cannot read, a `GET`'s query string it refuses, a `HEAD`, the 406 and the 500
+    graphql-depth-limit throws (:func:`_depth_limit`)."""
     media_type = apollo_http.response_type(seen.get("accept"))
     thrown = bool(result.refusals) and result.refusals[0].thrown
     if media_type is None and not thrown:
@@ -289,7 +290,7 @@ def _resolver_fields(operation: engine.Operation) -> list[tuple[str, FieldNode]]
 # same field under two aliases, and 1 for a `transcript` it did not find, and none for
 # `{ __typename }`, a document it refused or a credential it did not take, on 2026-10-26 (UTC).
 
-#: The requests a Free plan's key may make a minute and a calendar day in UTC: the
+#: The root fields a Free plan's key may run a minute and a calendar day in UTC: the
 #: `x-ratelimit-limit-api_burst` and `x-ratelimit-limit-api` api.fireflies.ai sent on 2026-10-26
 #: (UTC), which its limits page gives for the plan: "30 requests" and "500 requests".
 _PER_MINUTE = 30
@@ -395,8 +396,9 @@ class Budget:
         if not refused:
             return Spent([], burst | day | plain, now)
         if by_day:
-            # Not measured, as measuring it spends a day of the key's budget: the minute's refusal
-            # with the day's numbers.
+            # Not measured, as measuring it spends a day of the key's budget: the shape of the
+            # minute's refusal of a document it partly serves, with the day's numbers, whether or
+            # not any field is served.
             wait = str(math.ceil(midnight - now))
             headers = burst | day | {"retry-after-api": wait} | plain | {"retry-after": wait}
             return Spent(refused, headers, midnight)

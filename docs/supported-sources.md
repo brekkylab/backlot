@@ -97,11 +97,11 @@ slashes is one, gets Fastify's 404, and any other path nginx's 404 page.
 
 Every answer past Cloudflare carries `Strict-Transport-Security`, and Fastify's add
 `Access-Control-Allow-Origin: *`; an answer of Apollo Server's request pipeline carries
-`Cache-Control: no-store`, and the JSON Apollo Server writes ends in a newline. Each root field a
-document runs, an alias of one as one more, spends a key's budget, which is a Free plan's: 30 a
-minute, from the first of them, and 500 a calendar day in UTC. An answer that spent it carries
-`x-ratelimit-{limit,remaining,reset}` for `-api_burst`, for `-api` and bare, and a field past either
-budget is `null` beside a `too_many_requests` error, with `retry-after`;
+`Cache-Control: no-store` unless it sets its own, and the JSON Apollo Server writes ends in a
+newline. Each root field a document runs, an alias of one as one more, spends a key's budget, which
+is a Free plan's: 30 a minute, from the first of them, and 500 a calendar day in UTC. An answer that
+spent it carries `x-ratelimit-{limit,remaining,reset}` for `-api_burst`, for `-api` and bare, and a
+field past either budget is `null` beside a `too_many_requests` error, with `retry-after`;
 `BACKLOT_FIREFLIES_ENFORCE_RATE_LIMITS` turns the refusal off.
 
 Root `Query` fields:

@@ -2748,9 +2748,7 @@ _FIREFLIES_HEADERS = [
 def test_fireflies_answers_carry_the_headers_fireflies_sends(
     client, tokens_yaml, method, target, headers, body, credential, status, expected
 ):
-    """Each row of `_FIREFLIES_HEADERS`. A function of its own beside
-    `test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does`, whose rows hold
-    the status, the type and the body: these hold the headers each kind of answer carries."""
+    """Each row of `_FIREFLIES_HEADERS`."""
     sent = list(headers)
     if _FIREFLIES_CREDENTIALS[credential] is not None:
         value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])

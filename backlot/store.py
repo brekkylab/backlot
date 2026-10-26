@@ -1907,55 +1907,55 @@ def linear_visible_labels(conn, visible_ids=None) -> list[str]:
     ]
 
 
-# A team key starts with a letter; the number has no leading zero. `KEY-019` and `019` are not
-# the issue numbered 19. Measured on api.linear.app 2026-10-22.
+# A team key starts with a letter, and the number has no leading zero: `KEY-019` and `019` named
+# no issue on api.linear.app on 2026-10-22. The key and the number are ASCII, as real reads them:
+# `KEY-19` followed by U+0663 (an Arabic-Indic three) named KEY-19 on 2026-10-25, where `\d` would
+# read it as a digit.
 _LINEAR_SEARCH_KEY = r"[A-Za-z][A-Za-z0-9]*"
-_LINEAR_SEARCH_NUM = r"[1-9]\d*"
-
-
-def _linear_exact_identifier(text: str) -> tuple[str | None, str] | None:
-    """``(key, number)`` when ``text`` is the whole of an identifier spelling, or None.
-
-    ``key`` is None for the number alone. The hyphen form and the one-space form split on the
-    separator. With no separator the number is the trailing digits, so ``KEY19`` is key ``KEY``
-    and number ``19`` rather than key ``KEY1`` and number ``9``."""
-    bare = re.fullmatch(_LINEAR_SEARCH_NUM, text)
-    if bare:
-        return None, bare.group(0)
-    for pattern in (
-        rf"({_LINEAR_SEARCH_KEY})-({_LINEAR_SEARCH_NUM})",
-        rf"({_LINEAR_SEARCH_KEY}) ({_LINEAR_SEARCH_NUM})",
-        rf"([A-Za-z][A-Za-z0-9]*?)({_LINEAR_SEARCH_NUM})",
-    ):
-        found = re.fullmatch(pattern, text)
-        if found:
-            return found.group(1), found.group(2)
-    return None
+_LINEAR_SEARCH_NUM = r"[1-9][0-9]*"
+# The identifier with its hyphen or one space at the start of the term, and then the term's end or
+# a character outside A-Z, a-z and 0-9.
+_LINEAR_SEARCH_OPENING = re.compile(
+    rf"({_LINEAR_SEARCH_KEY})[- ]({_LINEAR_SEARCH_NUM})(?![A-Za-z0-9])"
+)
+# The identifier with no separator, the number being the trailing digits, so `KEY19` is key `KEY`
+# and number `19` rather than key `KEY1` and number `9`.
+_LINEAR_SEARCH_JOINED = re.compile(rf"([A-Za-z][A-Za-z0-9]*?)({_LINEAR_SEARCH_NUM})")
+# What a term with a key loses from each end: what JavaScript's `String.prototype.trim` takes. On
+# 2026-10-25 api.linear.app read `KEY19` after a tab, U+00A0, U+2028, U+3000 or U+FEFF as KEY-19,
+# and after U+001C, U+001F, U+0085, U+180E or U+200B as no issue; `str.strip()` takes U+001C to
+# U+001F and U+0085 and leaves U+FEFF.
+_LINEAR_SEARCH_TRIMMED = "\t\n\x0b\x0c\r \xa0\u1680\u2028\u2029\u202f\u205f\u3000\ufeff" + "".join(
+    map(chr, range(0x2000, 0x200B))
+)
+# The number alone, with at most one space and that on one side.
+_LINEAR_SEARCH_BARE = re.compile(rf" ?({_LINEAR_SEARCH_NUM})|({_LINEAR_SEARCH_NUM}) ")
 
 
 def _linear_search_identifier(term: str) -> tuple[str | None, str] | None:
-    """The issue a ``searchIssues`` term names, as api.linear.app read it on 2026-10-22.
+    """The issue a ``searchIssues`` term names, as ``(key, number)`` with ``key`` None for a number
+    alone, or None when it names none.
 
-    The whole term, trimmed, may be the identifier in any case, the number alone, ``KEYN``,
-    ``KEY N`` with one space, or ``KEY-N`` with one trailing full stop or comma. Failing that,
-    ``KEY-N`` or ``KEY N`` at the start of a longer term names that issue and the rest stays a
-    word search. ``KEYN`` opening a longer term, a bare number doing so, two spaces, a leading
-    zero and a trailing letter do not name one."""
-    text = term.strip()
-    exact = _linear_exact_identifier(text)
-    if exact:
-        return exact
-    if len(text) > 1 and text[-1] in ".,":
-        hyphen = re.fullmatch(rf"({_LINEAR_SEARCH_KEY})-({_LINEAR_SEARCH_NUM})", text[:-1])
-        if hyphen:
-            return hyphen.group(1), hyphen.group(2)
-    for pattern in (
-        rf"({_LINEAR_SEARCH_KEY})-({_LINEAR_SEARCH_NUM})(?=\s+\S)",
-        rf"({_LINEAR_SEARCH_KEY}) ({_LINEAR_SEARCH_NUM})(?=\s+\S)",
-    ):
-        opened = re.match(pattern, text)
-        if opened:
-            return opened.group(1), opened.group(2)
+    Measured on api.linear.app on 2026-10-22 and 2026-10-25, over one team's issues. For a term with
+    a key, what :data:`_LINEAR_SEARCH_TRIMMED` holds goes from either end (`   KEY-19`, `KEY 19  `,
+    a tab or a no-break space before `KEY19`), and so does one pair of `"` or of `'` around the
+    whole of it (`"KEY-19"`, `'KEY-19'`, `"KEY19"`), where one quote alone, two pairs, brackets or
+    backticks around it named no issue. `KEY-N` or `KEY N` names that issue when the term ends there
+    or goes on with a character outside A-Z, a-z and 0-9: `KEY-19.`, `KEY-19;`, `KEY-19!`,
+    `KEY-19-`, `KEY-19_`, `KEY-19é`, `KEY 19,`, `KEY-19 probe` and `KEY-19.probe` named KEY-19, and
+    `KEY-19x`, `KEY 19x`, `KEY  19` and `KEY<TAB>19` none. `KEYN` names it only as the whole term
+    (`KEY19.` and `KEY19 probe` named none). The number alone names it with at most one space, on
+    one side: `19`, ` 19` and `19 ` named KEY-19, and ` 19 `, `  19`, `19.`, `"19"` and `19` after a
+    tab none."""
+    text = term.strip(_LINEAR_SEARCH_TRIMMED)
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1]
+    named = _LINEAR_SEARCH_OPENING.match(text) or _LINEAR_SEARCH_JOINED.fullmatch(text)
+    if named:
+        return named.group(1), named.group(2)
+    bare = _LINEAR_SEARCH_BARE.fullmatch(term)
+    if bare:
+        return None, bare.group(1) or bare.group(2)
     return None
 
 

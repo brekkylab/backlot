@@ -523,23 +523,71 @@ def test_linear_search_finds_an_issue_by_the_spellings_real_reads(tmp_path):
                 for node in body["data"]["searchIssues"]["nodes"]
             ]
 
-        alone = [("ENG-19", 1)]
         for term in (
             "ENG-19",
             "eng-19",
+            "Eng-19",
             "ENG19",
             "eng19",
             "ENG 19",
             "eng 19",
             "ENG-19.",
             "ENG-19,",
+            "ENG-19;",
+            "ENG-19!",
+            "ENG-19-",
+            "ENG-19_",
+            "ENG-19\u00e9",
+            "ENG-19\u0663",
+            "ENG 19.",
+            "ENG 19;",
+            "   ENG-19",
+            "ENG-19   ",
+            "  ENG19",
+            "ENG 19  ",
+            '"ENG-19"',
+            "'ENG-19'",
+            "\tENG-19",
+            "ENG19\t",
+            "\xa0ENG19",
+            "\ufeffENG-19",
+            '"ENG19"',
+            '"ENG 19"',
         ):
-            assert search(term) == alone, term
+            assert search(term) == [("ENG-19", 1)], term
         both = [("ENG-19", 1), ("DES-19", 1)]
-        assert search("19") == both
-        assert search("19 ") == both
+        for term in ("19", " 19", "19 "):
+            assert search(term) == both, term
         assert search("19", teamId=synth.linear_team_id("design")) == [("DES-19", 1)]
-        for term in ("019", "ENG-019", "ENG  19", "ENG-19x", "XYZ-19", "#19"):
+        for term in (
+            "019",
+            "ENG-019",
+            "ENG  19",
+            "ENG\t19",
+            "ENG-19x",
+            "ENG 19x",
+            "XYZ-19",
+            "#19",
+            "ENG19.",
+            "ENG19;",
+            "19.",
+            "19,",
+            " 19 ",
+            "  19",
+            "19  ",
+            '"19"',
+            "\t19",
+            "19\xa0",
+            "\x85ENG-19",
+            "\x1fENG19",
+            ".ENG-19",
+            "(ENG-19)",
+            "`ENG-19`",
+            '"ENG-19',
+            "'ENG-19\"",
+            '" ENG-19"',
+            "ENG\u201019",
+        ):
             assert search(term) == [], term
 
         opened = search("ENG-19 probe")

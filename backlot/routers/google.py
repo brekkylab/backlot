@@ -3365,10 +3365,12 @@ def _drive_project_one(obj: dict, fields: str | None) -> dict:
 
     A mask that is empty or of spaces and tabs alone selects nothing, which is not the same as no
     mask: measured 2026-09-23, `fields=` and `fields=%20` answer ``{}`` where an absent `fields`
-    answers the default object, and `fields=%09` did too on 2026-10-20."""
+    answers the default keys (`kind`, `id`, `name`, `mimeType`), and `fields=%09` did too on
+    2026-10-20. Measured 2026-10-25, a read with no mask answers those four keys alone, where
+    this used to answer the whole stored file."""
     paths = _drive_mask(fields)
     if paths is None:
-        return obj
+        return {k: v for k, v in obj.items() if k in _DRIVE_FILE_DEFAULT}
     _check_mask(
         paths,
         _DRIVE_FILE_FIELDS,
@@ -3994,7 +3996,13 @@ async def drive_files_list(request: Request):
     else:
         files = _drive_newest_first(objects, folders, offset, limit)
         _drive_fill_shared(conn, files, stored)
-    entry_keys = _drive_entry_keys(list_paths, "files", _DRIVE_FILE_DEFAULT)
+    # No mask answers each entry with the default keys alone, as a read by id does; a mask
+    # projects as before. Measured 2026-10-25, real answers no-mask listings that way.
+    entry_keys = (
+        set(_DRIVE_FILE_DEFAULT)
+        if list_paths is None
+        else _drive_entry_keys(list_paths, "files", _DRIVE_FILE_DEFAULT)
+    )
     body = {
         "kind": "drive#fileList",
         "incompleteSearch": False,
@@ -4003,7 +4011,8 @@ async def drive_files_list(request: Request):
     # Nested object sub-selection (`files(owners(kind))`) the flat `_drive_project` pass cannot
     # express, but only when entries are projected and no top-level `*` names the whole entry.
     if (
-        entry_keys is not None
+        list_paths is not None
+        and entry_keys is not None
         and not any(p == ("*",) for p in list_paths)
         and any(len(p) > 1 and p[0] == "files" and p[1] != "*" for p in list_paths)
     ):

@@ -2699,7 +2699,7 @@ _MASKS_SERVED = [
     ("/drive/v3/files", "incompleteSearch,files(id)", {"incompleteSearch", "files"}, {"id"}),
     ("/drive/v3/files", "files(permissions(id))", {"files"}, set()),
     ("/drive/v3/files", "files(capabilities(canAcceptOwnership))", {"files"}, {"capabilities"}),
-    ("/drive/v3/files", "files(id,*)", {"files"}, "default"),
+    ("/drive/v3/files", "files(id,*)", {"files"}, "full"),
     ("/drive/v3/files", "files()", {"files"}, set()),
     ("/drive/v3/files", "files( )", {"files"}, set()),
     ("/drive/v3/files", "files(trashingUser)", {"files"}, set()),
@@ -2770,7 +2770,8 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(
 ):
     """The rows `_MASKS_SERVED` records; `"default"` is each entry as an unmasked request gets it.
     A `drives.list` row compares the top-level keys alone: Backlot serves no shared drive, where
-    real listed the member's two."""
+    real listed the member's two. A file row with no mask is the default keys, where a mask naming
+    the whole file is the whole object, so whole-selecting file rows compare against `*`."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     url, _, query = path.format(doc=doc).partition("?")
 
@@ -2783,7 +2784,9 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(
 
     body = get(fields=mask)
     if top is None:
-        assert body == get()
+        # A file with no mask is the default keys, not the whole object, so a mask naming the
+        # whole file agrees with `*` instead of with an unmasked request.
+        assert body == (get(fields="*") if path in (_DOC, "/drive/v3/files") else get())
         return
     assert set(body) == top
     listed = next((k for k in body if isinstance(body[k], list)), None)
@@ -6123,6 +6126,17 @@ def test_drive_get_honors_the_fields_mask(client, admin_h):
         f"/drive/v3/files/{row['id']}", headers=admin_h, params={"fields": "totallyBogusField"}
     )
     assert r.status_code == 400
+
+
+def test_drive_files_answer_the_default_keys_with_no_mask(client, admin_h):
+    """With no mask a file is `kind`, `id`, `name` and `mimeType`, on a read by id and in a
+    listing; the whole stored file used to come back either way."""
+    listing = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 2}).json()
+    assert listing["files"] and all(
+        set(x) == {"kind", "id", "name", "mimeType"} for x in listing["files"]
+    )
+    got = client.get(f"/drive/v3/files/{listing['files'][0]['id']}", headers=admin_h).json()
+    assert got == listing["files"][0]
 
 
 def test_drive_folders_are_found_by_mime_type(client, admin_h):

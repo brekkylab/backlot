@@ -601,8 +601,8 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             {"headers": LINEAR | JSON, "content": b"{"},
             ("linear", "unparsed", "unknown", 400, None, "client"),
         ),
-        # The HTTP layer in front of each GraphQL server answers methods but POST, a GET's query
-        # among them, and Fireflies' credential's 500 is a refusal of the credential.
+        # The HTTP layer in front of each GraphQL server answers each method and `Accept`, a GET's
+        # query among them, and Fireflies' credential's 500 is a refusal of the credential.
         (
             "GET",
             "/fireflies/graphql" + _TYPENAME_SEARCH,

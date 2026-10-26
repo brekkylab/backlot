@@ -195,6 +195,10 @@ _TOO_LARGE = (
     b'{"statusCode":413,"status":false,"code":"http","message":"Request body is too large",'
     b'"errorMessage":"Request body is too large"}'
 )
+_SIZE_MISMATCH = (
+    b'{"statusCode":400,"status":false,"code":"http","message":"Request body size did not match'
+    b' Content-Length","errorMessage":"Request body size did not match Content-Length"}'
+)
 _TYPENAME = b'{"query":"{ __typename }"}'
 
 
@@ -1762,6 +1766,19 @@ _FIREFLIES_HTTP = [
             ((), None, "Bearer nope", ""),
             ((("Origin", "https://example.com"),), None, "key", "Origin alone"),
             ((("Access-Control-Request-Method", "POST"),), None, "key", "no Origin"),
+            ((("Origin", ""), ("Access-Control-Request-Method", "POST")), None, "key", "Origin ''"),
+            (
+                (("Origin", "  "), ("Access-Control-Request-Method", "POST")),
+                None,
+                "key",
+                "Origin '  '",
+            ),
+            (
+                (("Origin", "https://example.com"), ("Access-Control-Request-Method", "")),
+                None,
+                "key",
+                "Access-Control-Request-Method ''",
+            ),
             ((*_J, *_P), b"{", "key", "{"),
         )
     ),
@@ -1846,6 +1863,7 @@ _FIREFLIES_HTTP = [
             ("PATCH", (*_J, *_P), None, "key", 400, _EMPTY, "empty"),
             ("PUT", (("Content-Type", "a/b/c"),), _TYPENAME, "key", 415, _UNSUPPORTED, "a/b/c"),
             ("PUT", (("Content-Type", ""),), _TYPENAME, "key", 415, _UNSUPPORTED, "an empty type"),
+            ("PUT", (("Content-Type", "text/plain"),), b"\xe9", "key", 400, _SIZE_MISMATCH, "0xE9"),
             (
                 "PUT",
                 (("Content-Type", "text/plain"),),
@@ -1865,6 +1883,19 @@ _FIREFLIES_HTTP = [
             ("text/plain", (), _TYPENAME, "key", 400, _CSRF, ""),
             ("text/plain", (), _TYPENAME, "none", 400, _CSRF, ", none"),
             ("text/plain", _P, _TYPENAME, "key", 400, _NO_KEYS, ", preflight"),
+            ("text/plain", _P, b"\xe9", "key", 400, _SIZE_MISMATCH, ", preflight, 0xE9"),
+            ("text/plain", (), b"\xe9", "key", 400, _SIZE_MISMATCH, ", 0xE9"),
+            ("text/plain; charset=latin1", _P, b"\xe9", "key", 400, _SIZE_MISMATCH, ", 0xE9"),
+            ("text/plain", _P, "\u00e9".encode(), "key", 400, _NO_KEYS, ", preflight, U+00E9"),
+            (
+                "application/x-www-form-urlencoded",
+                _P,
+                b"query=%7B__typename%7D&x=\xe9",
+                "key",
+                200,
+                b'{"data":{"__typename":"Query"}}\n',
+                ", preflight, 0xE9",
+            ),
             ("TEXT/PLAIN;X=Y", (), _TYPENAME, "key", 400, _CSRF, ""),
             ("application/x-www-form-urlencoded", (), _TYPENAME, "key", 400, _CSRF, ""),
             ("", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
@@ -1883,6 +1914,15 @@ _FIREFLIES_HTTP = [
             ),
             ("application/json ,", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
             ("text/plain", (), _PAST_THE_LIMIT, "key", 413, _TOO_LARGE, ", past the limit"),
+            (
+                "text/plain",
+                _P,
+                b"\xe9" * 2**20 + b"\xe9",
+                "key",
+                413,
+                _TOO_LARGE,
+                ", past the limit, 0xE9",
+            ),
             (
                 "application/x-www-form-urlencoded",
                 (),

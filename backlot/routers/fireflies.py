@@ -3,8 +3,8 @@
 Fireflies is **GraphQL only** — there is no REST surface to emulate — so this router is one
 endpoint, and what answers at any other path (:func:`unrouted`). The schema and the resolvers live
 in ``backlot/graphql/`` (``fireflies.graphql`` + ``fireflies_resolvers.py``); everything here is
-HTTP: a request and credentials in, a GraphQL envelope out, or its HTTP layer's for a body it cannot
-read (:func:`_body_refusal`).
+HTTP: a request and credentials in, a GraphQL envelope out, or the answer of a layer in front of
+Apollo Server's run, in the order :func:`graphql` lists them.
 
 Auth is the bearer path (``Authorization: Bearer <api_key>``), which is what the vendor's own
 quickstart shows for all four of its raw-HTTP examples, read by
@@ -63,6 +63,7 @@ _EMPTY = "Body cannot be empty when content-type is set to 'application/json'"
 _UNSUPPORTED = "Unsupported Media Type"
 _NOT_JSON = "Body is not valid JSON but content-type is set to 'application/json'"
 _TOO_LARGE = "Request body is too large"
+_SIZE_MISMATCH = "Request body size did not match Content-Length"
 #: The most bytes Fireflies reads: api.fireflies.ai served a body of 1048576 bytes and answered one
 #: of 1048577 with :data:`_TOO_LARGE`'s 413 on 2026-10-19, with a credential, with none and with
 #: ``Authorization: nope``.
@@ -434,18 +435,20 @@ _PREFLIGHT = (
 def _preflight(request: Request) -> Response:
     """``@fastify/cors``'s answer to an `OPTIONS`, ahead of the body and the credential: its 204,
     with :data:`_PREFLIGHT` and `Access-Control-Request-Headers` echoed back as Node reads it, to
-    one carrying both `Origin` and `Access-Control-Request-Method`, and its 400 to any other.
-    api.fireflies.ai answered so with no credential and `Bearer nope`, with
-    `Access-Control-Request-Method` naming `POST` or `PUT`, with `Origin: null`, and with a JSON
-    body or `{`; it echoed ` a , b ` as `a , b`, `a` and `b` in two copies as `a, b`, and a value
-    with a space, a tab, U+0085 or U+00A0 inside it, U+00A0 at either end or U+0085 after it, as
-    sent."""
-    if "origin" not in request.headers or "access-control-request-method" not in request.headers:
+    one carrying both `Origin` and `Access-Control-Request-Method` with more than spaces and tabs in
+    them, and its 400 to any other. api.fireflies.ai answered so with no credential and
+    `Bearer nope`, with `Access-Control-Request-Method` naming `POST` or `PUT`, with `Origin: null`,
+    and with a JSON body or `{`; it echoed ` a , b ` as `a , b`, `a` and `b` in two copies as
+    `a, b`, and a value with a space, a tab, U+0085 or U+00A0 inside it, U+00A0 at either end or
+    U+0085 after it, as sent. It answered an empty or blank `Origin` and an empty
+    `Access-Control-Request-Method` with the 400 on 2026-10-26 (UTC)."""
+    seen = apollo_http.headers_seen(request.headers.raw)
+    if "origin" not in seen or "access-control-request-method" not in seen:
         return Response(
             b"Invalid Preflight Request", status_code=400, headers={"content-type": "text/plain"}
         )
     response = Response(status_code=204)
-    asked = apollo_http.headers_seen(request.headers.raw).get("access-control-request-headers")
+    asked = seen.get("access-control-request-headers")
     echoed = () if asked is None else (("access-control-allow-headers", asked),)
     response.raw_headers += [(k.encode(), v.encode("latin-1")) for k, v in (*_PREFLIGHT, *echoed)]
     return response
@@ -476,10 +479,9 @@ def nginx_passes(path: str) -> bool:
     """Whether nginx in front of Fastify passes on ``path``, as a client sent it
     (:func:`~backlot.routers.sent_path`): once each escape is decoded and each run of slashes is
     one, it starts with `/graphql`, in any case, followed by a slash, by nothing or by a newline
-    that ends it. api.fireflies.ai answered with Fastify's 404 at `/GRAPHQL`, `/graphql/x`,
-    `//graphql`, `/%2Fgraphql`, `/graphql%2F` and `/graphql%0A`, and with nginx's
-    (:data:`_NGINX_404`) at `/graphqlx`, `/graphql.json`, `/graphql;x`, `/graphql%20`,
-    `/graphql%7E`, `/x/graphql` and `/`, on 2026-10-25 (UTC)."""
+    that ends it. api.fireflies.ai answered with Fastify's 404 at each path :func:`_not_found`
+    names, and with nginx's (:data:`_NGINX_404`) at `/graphqlx`, `/graphql.json`, `/graphql;x`,
+    `/graphql%20`, `/graphql%7E`, `/x/graphql` and `/`, on 2026-10-25 (UTC)."""
     decoded = re.sub(rb"/{2,}", b"/", urllib.parse.unquote_to_bytes(path))
     return _NGINX_LOCATION.match(decoded) is not None
 
@@ -544,7 +546,12 @@ async def _fastify_read(request: Request, routed: bool) -> Any:
     if len(raw) > _LIMIT:
         return _body_refusal(_TOO_LARGE, 413)
     text = raw.decode("utf-8", "replace")
-    return text if media_type == "text/plain" else request_body.form_fields(text)
+    if media_type != "text/plain":
+        return request_body.form_fields(text)
+    # Fastify reads plain text as UTF-8 and counts the text's own UTF-8 bytes against the body's:
+    # `text/plain` holding the byte 0xE9, with a charset or none, by POST and by PUT, was the 400 on
+    # 2026-10-26 (UTC), where a form holding it was served and 0xE9 past the limit was the 413.
+    return text if len(text.encode("utf-8")) == len(raw) else _body_refusal(_SIZE_MISMATCH)
 
 
 def _entry(error: dict, code: str, friendly: bool, extensions: dict) -> dict:

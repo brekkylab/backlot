@@ -87,13 +87,13 @@ what `search` answers a `GET` or `HEAD`, but for a 401 and a refusal of its `Acc
 
 ### Fireflies — `/fireflies/graphql`
 
-**GraphQL only**, one endpoint: a `POST` with a JSON body, or a `GET` with the query in its query
-string and a JSON `Content-Type` or none. Apollo Server serves a `GET` with none only beside an
-`apollo-require-preflight` or `x-apollo-operation-name` header, its check that a browser
-preflighted the request. Fastify serves `/graphql` alone, an escaped letter in it decoded. Any
-other path nginx passes on to Fastify, `/graphql` in any case, alone or with a slash and more after
-it, once each escape is decoded and each run of slashes is one, gets Fastify's 404, and any other
-path nginx's 404 page.
+**GraphQL only**, one endpoint: a `POST` with a JSON or form body, or a `GET` with the query in its
+query string and a JSON `Content-Type` or none. Apollo Server serves a form, or a `GET` with no
+`Content-Type`, only beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its
+check that a browser preflighted the request. Fastify serves `/graphql` alone, an escaped letter in
+it decoded. Any other path nginx passes on to Fastify, `/graphql` in any case, alone, before a
+newline that ends it, or with a slash and more after it, once each escape is decoded and each run of
+slashes is one, gets Fastify's 404, and any other path nginx's 404 page.
 
 Every answer past Cloudflare carries `Strict-Transport-Security`, and Fastify's add
 `Access-Control-Allow-Origin: *`; an answer of Apollo Server's request pipeline carries
@@ -582,8 +582,10 @@ string. Apollo Server serves a `GET` with no `Content-Type`, or a form or `text/
 beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its check that a
 browser preflighted the request. Express hands Apollo Server `/graphql` in any case, alone or with
 a slash and more after it, once Linear's front has turned a backslash into a slash, folded a run of
-slashes into one and decoded an escape of a letter, a digit or one of `-._~`, so each of those
-paths is the endpoint too; `/` answers a greeting, and any other path Express's 404 page.
+slashes into one and decoded an escape of a letter, a digit or one of `-._~`, and once its dot
+segments are resolved, so each of those paths is the endpoint too, but for one whose `..` climbs
+past the root; `/` answers a `GET` or `HEAD` with a greeting, and any other method there, or any
+other path, Express's 404 page.
 
 Every answer past the load balancer carries `x-request-id` and, to a request with an `Origin`,
 `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers`. Express's answers add

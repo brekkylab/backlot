@@ -770,8 +770,7 @@ async def route_a_linear_or_fireflies_path_as_its_front_does(request: Request, c
     (``linear.express``, ``fireflies.unrouted``), each of which reads the path as sent off the raw
     path, which is left alone. Starlette's own routing is not asked: its pattern for the endpoint
     takes a path with a newline after it (`/graphql%0A`), and its `path` convertor none with a
-    newline inside it, where each vendor's front reads both as another path. The path the
-    telemetry names a call by is then the endpoint's where the endpoint answers."""
+    newline inside it, where each vendor's front reads both as another path."""
     vendor = request.scope["path"].split("/")[1]
     served = vendor == "linear" and linear.routes_to_apollo(
         linear.express_path(sent_path(request.scope))
@@ -1368,13 +1367,8 @@ async def refuse_a_repeated_authorization_on_linear_and_fireflies(request: Reque
     )
 
 
-#: A `%` two hex digits do not follow.
-_BROKEN_ESCAPE = re.compile(rb"%(?![0-9A-Fa-f]{2})")
-
-
 def _a_broken_escape(scope: Scope) -> bool:
-    raw = scope.get("raw_path") or scope["path"].encode()
-    return b"%00" in raw or _BROKEN_ESCAPE.search(raw) is not None
+    return request_target.broken_escape(scope.get("raw_path") or scope["path"].encode())
 
 
 @_middleware(

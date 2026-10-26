@@ -3,8 +3,8 @@
 Linear is **GraphQL only** — there is no REST surface to emulate — so this router is one
 endpoint, and what answers at any other path (:func:`express`). The schema and the resolvers live in
 ``backlot/graphql/`` (``linear.graphql`` + ``linear_resolvers.py``); everything here is HTTP: a
-request and credentials in, a GraphQL envelope out, or Express's for the bodies :func:`_express`
-answers.
+request and credentials in, a GraphQL envelope out, or the answer of a layer in front of Apollo
+Server's run, in the order :func:`graphql` lists them.
 
 Auth is the one place Linear differs from every other source in this repo. A personal API key
 travels as the **bare** header value (``Authorization: lin_api_…``, no scheme), read by
@@ -22,12 +22,13 @@ credential and with ``nope``, an empty body, ``{}``, an array, a ``query`` of ``
 string ``variables``, an ``extensions`` or ``operationName`` of ``5``, a persisted query's hash
 alone or one that does not match, a document that does not parse or validate and one of two
 operations with no ``operationName`` drew what the key drew on 2026-10-25 (UTC), and a document
-missing a variable the 401. An API key under ``Bearer`` is refused ahead of the body on any method
-but ``OPTIONS``: with ``Bearer <key>``, ``{``, an empty body and a body holding
-``NaN`` drew :func:`_api_key_as_bearer`'s 400 on 2026-10-18, and ``charset=latin1``,
-``Content-Encoding: bogus`` and a body past the size limit did on 2026-10-19, when a key in an API
-key's shape that Linear never issued drew it under ``Bearer`` with ``{``, ``NaN``, ``5``,
-``charset=latin1`` and an empty body.
+missing a variable the 401, but for one that selects only ``__schema`` and ``__type``
+(:func:`_introspection_only`), which drew the variable's refusal as with the key. An API key under
+``Bearer`` is refused ahead of the body on any method but ``OPTIONS``: with ``Bearer <key>``,
+``{``, an empty body and a body holding ``NaN`` drew :func:`_api_key_as_bearer`'s 400 on
+2026-10-18, and ``charset=latin1``, ``Content-Encoding: bogus`` and a body past the size limit
+did on 2026-10-19, when a key in an API key's shape that Linear never issued drew it under
+``Bearer`` with ``{``, ``NaN``, ``5``, ``charset=latin1`` and an empty body.
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ from backlot.routers import sent_path
 
 router = APIRouter(prefix="/linear", tags=["linear"])
 
-# The media type of Express's `res.json`, which writes each answer made ahead of Apollo Server.
+# The media type of Express's `res.json`, in which `_api_key_as_bearer` and `_express` answer.
 _JSON = "application/json; charset=utf-8"
 
 # Linear's code for a body with no query, where Apollo Server's is `BAD_REQUEST`.
@@ -206,7 +207,8 @@ def _express(message: str, status: int = 400, length: int | None = None) -> Resp
 
 #: The methods Linear's load balancer answers with an empty 501 before Linear sees them, as
 #: api.linear.app answered each on 2026-10-25 (UTC). Of the rest of :data:`apollo_http.METHODS`,
-#: Cloudflare answers those ``backlot.main._CLOUDFLARE_METHOD`` holds and Apollo Server the others.
+#: Cloudflare answers those ``backlot.main._CLOUDFLARE_METHOD`` holds and the layers :func:`graphql`
+#: lists the others.
 _LOAD_BALANCER_501 = frozenset(
     {"BIND", "LINK", "M-SEARCH", "MKCALENDAR", "REBIND", "SOURCE", "UNBIND", "UNLINK"}
 )
@@ -219,7 +221,7 @@ def _front(request: Request) -> Response | None:
     method = request.method
     if method in _LOAD_BALANCER_501:
         return Response(status_code=501)
-    if method == "OPTIONS" and "origin" in request.headers:
+    if method == "OPTIONS" and "origin" in apollo_http.headers_seen(request.headers.raw):
         return _preflight(request)
     if method != "OPTIONS" and auth.linear_api_key_under_bearer(request):
         return _api_key_as_bearer(request)
@@ -329,8 +331,8 @@ def express_path(path: str) -> str:
     that character, a run of slashes is one, each character of :data:`_BARE` sent bare is escaped in
     upper case, and any other escape is kept as sent. Express's 404 quoted `/%6Eosuch` as `/nosuch`,
     `//nosuch` and `/nosuch//x` as `/nosuch` and `/nosuch/x`, `/a\\b` as `/a/b`, `/a%2fb` and
-    `/a%3cb` as sent, and each other printable ASCII character but `%`, `?` and `#` as sent, on
-    2026-10-25 (UTC)."""
+    `/a%3cb` as sent, each character of :data:`_BARE` escaped in upper case (`|` as `%7C`), and
+    each other printable ASCII character but `%`, `?` and `#` as sent, on 2026-10-25 (UTC)."""
 
     def one(match: re.Match[str]) -> str:
         char = chr(int(match[1], 16))
@@ -342,11 +344,32 @@ def express_path(path: str) -> str:
 
 def routes_to_apollo(path: str) -> bool:
     """Whether Express hands ``path`` (:func:`express_path`) to Apollo Server: `/graphql` in any
-    case, alone or with a slash after it and anything after that. api.linear.app served
-    `/GRAPHQL`, `/GraphQL/`, `/graphql/`, `/graphql/x` and `/Graphql/X/Y` and answered
-    `/graphqlx`, `/graphql.json`, `/graphql;x`, `/graphql%20` and `/graphql%2F` with Express's 404
-    on 2026-10-25 (UTC)."""
-    return re.fullmatch(r"/graphql(?:/.*)?", path, re.ASCII | re.IGNORECASE) is not None
+    case, alone or with a slash after it and anything after that, once its dot segments are
+    resolved (:func:`_dots_resolved`). api.linear.app served `/GRAPHQL`, `/GraphQL/`, `/graphql/`,
+    `/graphql/x` and `/Graphql/X/Y` and answered `/graphqlx`, `/graphql.json`, `/graphql;x`,
+    `/graphql%20` and `/graphql%2F` with Express's 404 on 2026-10-25 (UTC). On 2026-10-26 it served
+    `/./graphql`, `/x/../graphql`, `/graphql/.`, `/graphql/x/..` and `/graphql/x/%2E%2E`, and
+    answered `/graphql/..`, `/graphql/../x`, `/graphql/%2e%2E/x` and `/graphql/x/../..` with
+    Express's 404 and `/../graphql` with Cloudflare's 400."""
+    resolved = _dots_resolved(path)
+    return (
+        resolved is not None
+        and re.fullmatch(r"/graphql(?:/.*)?", resolved, re.ASCII | re.IGNORECASE) is not None
+    )
+
+
+def _dots_resolved(path: str) -> str | None:
+    """``path`` with each `.` segment dropped and each `..` segment taking the one before it away,
+    or None where a `..` has no segment before it to take."""
+    out: list[str] = []
+    for segment in path.split("/")[1:]:
+        if segment == "..":
+            if not out:
+                return None
+            out.pop()
+        elif segment != ".":
+            out.append(segment)
+    return "/" + "/".join(out)
 
 
 _GREETING = b"Hello from the Linear GraphQL API."
@@ -669,7 +692,8 @@ def _envelope(result: engine.Result, payload: Any) -> dict:
     or its hash as Linear's ``Internal server error``, an operation that cannot be chosen as
     :func:`_operation_missing`, and the request error after fifty refused variables, to which
     Apollo Server gives no code of its own, as :func:`_internal` (api.linear.app, 2026-10-26
-    UTC); and each error in ``result.assigned`` as :func:`_internal`."""
+    UTC); each error in ``result.assigned`` as :func:`_internal`, and each other field error in
+    Linear's member order (:func:`_in_linears_order`)."""
     if result.refusals:
         errors = []
         for refusal in result.refusals:

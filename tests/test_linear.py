@@ -6813,7 +6813,7 @@ def test_linear_answers_each_method_path_type_and_accept_as_linear_does(
 # The headers on each kind of answer, as `backlot.routers.linear._express_sent`, `express`,
 # `_preflight` and `RequestBudget` record what api.linear.app sent: the request, the credential
 # (`_LINEAR_CREDENTIALS`), the status, and each header named, None for one it did not send. The
-# `ETag`s are the ones real sent, so a row holds the body to its last byte.
+# `ETag`s are the ones real sent, so a row with an `ETag` holds the body to its last byte.
 _NO_STORE = "private, no-cache, no-store, must-revalidate"
 _EXPOSED = (
     "Cache-Control,Content-Language,Content-Length,Content-Type,Expires,Last-Modified,Pragma,"
@@ -6825,7 +6825,7 @@ _NOT_COUNTED = {"x-ratelimit-requests-limit": None, "x-ratelimit-requests-remain
 
 def _sent(etag, **more):
     """What Express's answers carry: ``etag``, the rest of `_express_sent`'s, none of `cors`'s
-    for a request without `Origin`, and ``more``, `_` in a name standing for `-`."""
+    for a request without `Origin`, no `nosniff`, and ``more``, `_` in a name standing for `-`."""
     return {
         "cache-control": _NO_STORE,
         "etag": etag,
@@ -6876,6 +6876,36 @@ _LINEAR_HEADERS = [
         200,
         _sent(_ETAG_OF_TYPENAME) | _counted(2500),
         id="served by GET",
+    ),
+    # Express's 304 to a GET its `ETag` is fresh to (`linear._fresh`), and its 200 where not.
+    *(
+        pytest.param(
+            m,
+            _Q if m == "GET" else "",
+            (*_P, *sent) if m == "GET" else (*_J, *sent),
+            None if m == "GET" else _TYPENAME,
+            "key",
+            status,
+            (
+                _sent(_ETAG_OF_TYPENAME, vary=None, content_type=None)
+                if status == 304
+                else _sent(_ETAG_OF_TYPENAME)
+            )
+            | _counted(2500),
+            id=f"{m}, {label}",
+        )
+        for m, sent, status, label in (
+            ("GET", (("If-None-Match", _ETAG_OF_TYPENAME),), 304, "its ETag"),
+            ("GET", (("If-None-Match", "*"),), 304, "*"),
+            ("GET", (("If-None-Match", '"x", "20-/8NdYwgmGsmmlrq5Nh8mH1T+tAs"'),), 304, "a list"),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "no-cache")),
+                200,
+                "its ETag, no-cache",
+            ),
+            ("POST", (("If-None-Match", _ETAG_OF_TYPENAME),), 200, "its ETag"),
+        )
     ),
     pytest.param(
         "POST",
@@ -7030,6 +7060,21 @@ _LINEAR_HEADERS = [
         id="greeting",
     ),
     pytest.param(
+        "GET",
+        "/",
+        (("If-None-Match", 'W/"22-p50xJmghTUzB/yxthmCh2AutfIs"'),),
+        None,
+        "none",
+        304,
+        _sent(
+            'W/"22-p50xJmghTUzB/yxthmCh2AutfIs"',
+            x_content_type_options="nosniff",
+            vary=None,
+            content_type=None,
+        ),
+        id="greeting, its ETag",
+    ),
+    pytest.param(
         "HEAD",
         "/",
         (),
@@ -7101,7 +7146,7 @@ _LINEAR_HEADERS = [
             },
             id=f"BIND at {t or '/graphql'}",
         )
-        for t, n in (("", None), ("/", "nosniff"))
+        for t, n in (("", None), ("/", "nosniff"), ("//", "nosniff"), ("/%2F", None))
     ),
     # Cloudflare's `CONNECT` at `/`, and its `CONNECT` elsewhere and `PURGE` at `/`.
     *(
@@ -7117,6 +7162,7 @@ _LINEAR_HEADERS = [
         )
         for m, t, status, n in (
             ("CONNECT", "/", 400, "nosniff"),
+            ("CONNECT", "//", 400, "nosniff"),
             ("CONNECT", "/nosuch", 400, None),
             ("PURGE", "/", 400, None),
             ("TRACE", "/", 405, None),
@@ -7229,10 +7275,9 @@ _LINEAR_HEADERS = [
 def test_linear_answers_carry_the_headers_linear_sends(
     client, tokens_yaml, method, target, headers, body, credential, status, expected
 ):
-    """Each row of `_LINEAR_HEADERS`. A function of its own beside
-    `test_linear_answers_each_method_path_type_and_accept_as_linear_does`, whose rows hold the
-    status, the type and the body: these hold the headers each kind of answer carries, the bodies
-    pinned by their `ETag`s."""
+    """Each row of `_LINEAR_HEADERS`: the status and the headers named, with no type or body,
+    which the rows of `test_linear_answers_each_method_path_type_and_accept_as_linear_does`
+    hold."""
     sent = list(headers)
     if _LINEAR_CREDENTIALS[credential] is not None:
         value = _LINEAR_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
@@ -7310,7 +7355,7 @@ def test_linears_request_budget_takes_one_for_a_run_and_none_for_a_refusal(clien
                 r.headers.get("x-ratelimit-requests-reset"),
             )
         )
-    reset = "1793022495115"
+    reset = "1793026095115"
     assert remaining == [
         ("2500", "2499", reset),
         (None, None, None),

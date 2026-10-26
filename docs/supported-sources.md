@@ -589,12 +589,13 @@ other path, Express's 404 page.
 
 Every answer past the load balancer carries `x-request-id` and, to a request with an `Origin`,
 `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers`. Express's answers add
-`Cache-Control: private, no-cache, no-store, must-revalidate` and `Vary`, and all but its 404 page
-and its answers at `/` to `HEAD` and `OPTIONS` an `ETag`; Apollo Server's JSON ends in a newline.
-An answer to a document Linear ran carries `x-ratelimit-requests-limit` (2,500 an hour under an API
-key, 1,200 with no credential), `x-ratelimit-requests-remaining` and `x-ratelimit-requests-reset`.
-`x-complexity` and the four `x-ratelimit-complexity-*` headers are not sent, and a spent budget is
-not refused.
+`Cache-Control: private, no-cache, no-store, must-revalidate` where they carry none of their own,
+and `Vary`, and all but its 404 page and its answers at `/` to `HEAD` and `OPTIONS` an `ETag`,
+which a `GET` naming it in `If-None-Match` draws Express's 304 with; Apollo Server's JSON ends in a
+newline. An answer to a document Linear ran carries `x-ratelimit-requests-limit` (2,500 an hour
+under an API key, 1,200 with no credential), `x-ratelimit-requests-remaining` and
+`x-ratelimit-requests-reset`, an hour past the answer. `x-complexity` and the four
+`x-ratelimit-complexity-*` headers are not sent, and a spent budget is not refused.
 
 Root `Query` fields:
 

@@ -72,9 +72,9 @@ ENGINE = build_engine()
 # --- the headers on an answer ----------------------------------------------------------------
 #
 # Read off the 1,058 answers api.linear.app gave on 2026-10-25 and 2026-10-26 (UTC) to the requests
-# the tests' tables hold and to each kind of answer with and without `Origin`. Cloudflare's,
-# Google's and the edge's own headers (`server`, `via`, `cf-ray`, `cf-cache-status`, `alt-svc`,
-# `age`) are not sent.
+# the tests' tables hold and to each kind of answer with and without `Origin`. Of the headers
+# Cloudflare, Google and the edge add, `server`, `via`, `cf-ray`, `cf-cache-status`, `alt-svc` and
+# `age` are not sent.
 
 #: The `Cache-Control` on each answer Express sends.
 _NO_STORE = "private, no-cache, no-store, must-revalidate"
@@ -125,8 +125,12 @@ def _express_sent(
     where it has no `Cache-Control` of its own, Express's `ETag` (:func:`express_etag`) where
     ``etag`` is True, or ``etag`` itself where it is one, `Vary: Accept-Encoding`, an
     `x-request-id` (:func:`request_id`), and where the request carries an `Origin`
-    (:func:`_origin`), ``cors``'s answer to it: that origin, or ``allow_origin``, with
-    :data:`_EXPOSED`, and `Origin` in `Vary`."""
+    (:func:`_origin`), ``cors``'s answer to it: ``allow_origin`` where given, else that origin, with
+    :data:`_EXPOSED`, and `Origin` in `Vary`. A `GET` or `HEAD` whose 2xx answer is fresh to the
+    request (:func:`_fresh`) is Express's 304 instead, with no body, `Content-Type` or
+    `Accept-Encoding` in `Vary`, as api.linear.app answered `GET /graphql` and the greeting given
+    their `ETag` in `If-None-Match` on 2026-10-26 (UTC), the request taken from the budget, where a
+    `POST` given it was the 200."""
     headers: MutableHeaders = response.headers
     headers.setdefault("cache-control", _NO_STORE)
     if etag is True:
@@ -141,7 +145,41 @@ def _express_sent(
         headers["access-control-expose-headers"] = _EXPOSED
         headers["vary"] = "Origin, Accept-Encoding"
     headers["x-request-id"] = request_id()
+    if (
+        request.method in ("GET", "HEAD")
+        and 200 <= response.status_code < 300
+        and _fresh(request, headers.get("etag"))
+    ):
+        response.status_code = 304
+        response.body = b""
+        for name in ("content-type", "content-length"):
+            if name in headers:
+                del headers[name]
+        vary = [name for name in headers["vary"].split(", ") if name != "Accept-Encoding"]
+        if vary:
+            headers["vary"] = ", ".join(vary)
+        else:
+            del headers["vary"]
     return response
+
+
+def _fresh(request: Request, etag: str | None) -> bool:
+    """Whether ``fresh`` 0.5.2, which Express asks, finds the answer carrying ``etag`` fresh to
+    ``request``: an `If-None-Match` of `*`, or one naming ``etag``, weakly or not, and no
+    `no-cache` in the request's `Cache-Control`."""
+    none_match = request.headers.get("if-none-match")
+    if not none_match:
+        return False
+    if re.search(r"(?:^|,)\s*?no-cache\s*?(?:,|$)", request.headers.get("cache-control", "")):
+        return False
+    if none_match == "*":
+        return True
+    if etag is None:
+        return False
+    return any(
+        match in (etag, f"W/{etag}") or f"W/{match}" == etag
+        for match in (part.strip() for part in none_match.split(","))
+    )
 
 
 _API_KEY_AS_BEARER = (
@@ -163,9 +201,9 @@ def _api_key_as_bearer(request: Request) -> Response:
     as api.linear.app sent it on 2026-10-18; at any other it is the members of :func:`_express`'s
     envelope, as api.linear.app sent it at `/GRAPHQL`, `//graphql`, `/graph%71l`, `/nosuch` and `/`
     on 2026-10-25 (UTC), the first three of which it serves as `/graphql`, where `/graphqlx`,
-    `/graphql;x` and `/graphql%2F` drew the GraphQL error. Its `Origin` is Linear's own, whatever
-    the request's: api.linear.app answered `Origin: https://example.com` with `https://linear.app`
-    on 2026-10-26."""
+    `/graphql;x` and `/graphql%2F` drew the GraphQL error. Its `Access-Control-Allow-Origin` is
+    `https://linear.app`, whatever the request's `Origin`: api.linear.app answered
+    `Origin: https://example.com` with `https://linear.app` on 2026-10-26."""
     path = sent_path(request.scope)
     extensions = {
         "type": "invalid input",
@@ -389,12 +427,21 @@ async def express(request: Request):
     `X-Content-Type-Options: nosniff`, as api.linear.app sent them on 2026-10-25 and 2026-10-26:
     the greeting with an `ETag` to a `GET` and none to a `HEAD`, the methods with none, `Allow` and
     the edge's `Cache-Control` and `Cache-Tag` for an `OPTIONS`, and the 404 page with none and with
-    `Content-Security-Policy: default-src 'none'`. Every answer at `/` itself, the load balancer's
-    501 and a preflight among them, carries `nosniff` too."""
+    `Content-Security-Policy: default-src 'none'`. Every answer this route gives at a path Linear's
+    front reads as `/` (:func:`reads_as_root`), the load balancer's 501 and a preflight among
+    them, carries `nosniff` too."""
     response = _front(request) or _express_route(request)
-    if sent_path(request.scope) == "/":
+    if reads_as_root(request.scope):
         response.headers["x-content-type-options"] = "nosniff"
     return response
+
+
+def reads_as_root(scope) -> bool:
+    """Whether Linear's front reads the path sent (:func:`backlot.routers.sent_path`) as `/`, once
+    :func:`express_path` has read it and its dot segments are resolved: api.linear.app put
+    `X-Content-Type-Options: nosniff` on the load balancer's 501 at `//`, `///`, `/\\`, `/%2E` and
+    `/x/..`, and not at `/%2F`, on 2026-10-26 (UTC)."""
+    return _dots_resolved(express_path(sent_path(scope))) == "/"
 
 
 def _express_route(request: Request) -> Response:
@@ -436,8 +483,7 @@ def _not_found(method: str, path: str) -> bytes:
 
 
 #: The headers ``cors`` writes on each preflight, as api.linear.app answered every one sent with
-#: `Origin` on 2026-10-25 (UTC), and the edge's ``Cache-Control`` and ``Cache-Tag`` beside them;
-#: :func:`_preflight` adds an `x-request-id`.
+#: `Origin` on 2026-10-25 (UTC), and the edge's ``Cache-Control`` and ``Cache-Tag`` beside them.
 _PREFLIGHT = (
     ("cache-control", "s-maxage=43200"),
     ("vary", "Origin, Access-Control-Request-Headers"),
@@ -543,8 +589,8 @@ def _answer(
     them did from api.linear.app on 2026-10-25 and 2026-10-26 (UTC). ``request``, passed where
     ``result`` is a run, is given ``result.raised`` as ``graphql_raised``, and the answer takes one
     from the :class:`RequestBudget` of ``key``, the API key that resolved, or of the address with
-    none, and reports it, but for the 406, which carried none of the three on any of the 29
-    api.linear.app answered on 2026-10-25 and 2026-10-26 (UTC)."""
+    none, and reports it, but for the 406, which carried no `x-ratelimit-requests-*` header on any
+    of the 29 api.linear.app answered on 2026-10-25 and 2026-10-26 (UTC)."""
     if request is not None:
         request.state.graphql_raised = result.raised
     media_type = apollo_http.response_type(seen.get("accept"))
@@ -580,10 +626,10 @@ class RequestBudget:
     (UTC): thirty `{ __typename }` sent over 13 seconds took `x-ratelimit-requests-remaining` from
     2499 to 2478, and the bucket gives each of the 42 answers in that run within 2 of real's, 30
     of them exactly, where rounding to the nearest gives 12; twelve documents refused as they
-    validated, sent between two that ran, took none; and `x-ratelimit-requests-reset` was the
-    moment of the answer, in epoch milliseconds, on each. A caller with no credential is counted
-    by its address, which the measurement did not vary. ``clock`` is `time.time` unless a test
-    hands in another."""
+    validated, sent between two that ran, took none; and `x-ratelimit-requests-reset` was an hour
+    past the answer, in epoch milliseconds, 3599.9 to 3600.9 seconds after its `Date`, on each. A
+    caller with no credential is counted by its address, which the measurement did not vary.
+    ``clock`` is `time.time` unless a test hands in another."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock
@@ -610,7 +656,7 @@ class RequestBudget:
         return {
             "x-ratelimit-requests-limit": str(limit),
             "x-ratelimit-requests-remaining": str(max(math.floor(level), 0)),
-            "x-ratelimit-requests-reset": str(int(now * 1000)),
+            "x-ratelimit-requests-reset": str(int((now + 3600) * 1000)),
         }
 
 

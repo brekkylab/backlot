@@ -97,11 +97,11 @@ slashes is one, gets Fastify's 404, and any other path nginx's 404 page.
 
 Every answer past Cloudflare carries `Strict-Transport-Security`, and Fastify's add
 `Access-Control-Allow-Origin: *`; an answer of Apollo Server's request pipeline carries
-`Cache-Control: no-store`, and the JSON Apollo Server writes ends in a newline. Each root field a
-document runs, an alias of one as one more, spends a key's budget, which is a Free plan's: 30 a
-minute, from the first of them, and 500 a calendar day in UTC. An answer that spent it carries
-`x-ratelimit-{limit,remaining,reset}` for `-api_burst`, for `-api` and bare, and a field past either
-budget is `null` beside a `too_many_requests` error, with `retry-after`;
+`Cache-Control: no-store` unless it sets its own, and the JSON Apollo Server writes ends in a
+newline. Each root field a document runs, an alias of one as one more, spends a key's budget, which
+is a Free plan's: 30 a minute, from the first of them, and 500 a calendar day in UTC. An answer that
+spent it carries `x-ratelimit-{limit,remaining,reset}` for `-api_burst`, for `-api` and bare, and a
+field past either budget is `null` beside a `too_many_requests` error, with `retry-after`;
 `BACKLOT_FIREFLIES_ENFORCE_RATE_LIMITS` turns the refusal off.
 
 Root `Query` fields:
@@ -589,12 +589,13 @@ other path, Express's 404 page.
 
 Every answer past the load balancer carries `x-request-id` and, to a request with an `Origin`,
 `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers`. Express's answers add
-`Cache-Control: private, no-cache, no-store, must-revalidate` and `Vary`, and all but its 404 page
-and its answers at `/` to `HEAD` and `OPTIONS` an `ETag`; Apollo Server's JSON ends in a newline.
-An answer to a document Linear ran carries `x-ratelimit-requests-limit` (2,500 an hour under an API
-key, 1,200 with no credential), `x-ratelimit-requests-remaining` and `x-ratelimit-requests-reset`.
-`x-complexity` and the four `x-ratelimit-complexity-*` headers are not sent, and a spent budget is
-not refused.
+`Cache-Control: private, no-cache, no-store, must-revalidate` where they carry none of their own,
+and `Vary`, and all but its 404 page and its answers at `/` to `HEAD` and `OPTIONS` an `ETag`,
+which a `GET` naming it in `If-None-Match` draws Express's 304 with; Apollo Server's JSON ends in a
+newline. An answer to a document Linear ran carries `x-ratelimit-requests-limit` (2,500 an hour
+under an API key, 1,200 with no credential), `x-ratelimit-requests-remaining` and
+`x-ratelimit-requests-reset`, an hour past the answer. `x-complexity` and the four
+`x-ratelimit-complexity-*` headers are not sent, and a spent budget is not refused.
 
 Root `Query` fields:
 

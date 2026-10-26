@@ -237,9 +237,11 @@ def _operation_missing(name: Any) -> dict:
 
 def _envelope(result: engine.Result, payload: Any) -> dict:
     """``result`` as Linear writes it: a request error in Linear's members (:func:`_apollo`), but a
-    body with no query under Linear's ``INVALID_INPUT``, a refused persisted query as Linear's
-    ``Internal server error`` and an operation that cannot be chosen as :func:`_operation_missing`;
-    and each error in ``result.assigned`` as :func:`_internal`."""
+    body with no query under Linear's ``INVALID_INPUT``, a persisted query refused for its version
+    or its hash as Linear's ``Internal server error``, an operation that cannot be chosen as
+    :func:`_operation_missing`, and the request error after fifty refused variables, to which
+    Apollo Server gives no code of its own, as :func:`_internal`, as api.linear.app answered it
+    on 2026-10-26 (UTC); and each error in ``result.assigned`` as :func:`_internal`."""
     if result.refusals:
         errors = []
         for refusal in result.refusals:
@@ -254,6 +256,8 @@ def _envelope(result: engine.Result, payload: Any) -> dict:
                 )
             elif refusal.message == engine.NO_QUERY:
                 errors.append(_apollo(refusal.message, _INVALID_INPUT, refusal.status))
+            elif refusal.code == engine.INTERNAL_SERVER_ERROR:
+                errors.append(_internal({}))
             else:
                 errors.append(
                     _apollo(refusal.message, refusal.code, refusal.status, refusal.locations)

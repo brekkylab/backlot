@@ -11,6 +11,7 @@ import json
 import re
 import sqlite3
 import time
+import tracemalloc
 
 import pytest
 from graphql import build_client_schema, parse, validate
@@ -134,28 +135,49 @@ def _apollo(
 _NO_KEYS = _apollo(b"POST body missing, invalid Content-Type, or JSON object has no keys.")
 
 
-def _deeper(fields: int) -> bytes:
-    """A body whose query selects ``fields`` fields twelve deep in fields Fireflies does not
-    have."""
-    selection = " ".join(f"l{n}" for n in range(fields))
-    return b'{"query":"{ a{b{c{d{e{f{g{h{i{j{k{ %s }}}}}}}}}}} }"}' % selection.encode()
+def _twelve_deep(fields: int, name: str = "l") -> str:
+    """A selection of ``fields`` fields twelve deep, ``l0`` on with ``name`` as ``l``, in fields
+    Fireflies does not have."""
+    selection = " ".join(f"{name}{n}" for n in range(fields))
+    return "{ a{b{c{d{e{f{g{h{i{j{k{ %s }}}}}}}}}}} }" % selection
 
 
-def _columns(fields: int) -> list[int]:
-    """The column of each field twelve deep in :func:`_deeper`'s query."""
-    query = json.loads(_deeper(fields))["query"]
-    return [query.index(f" l{n} ") + 2 for n in range(fields)]
+def _query(query: str) -> bytes:
+    return json.dumps({"query": query}, separators=(",", ":")).encode()
 
 
-def _too_deep(column: int) -> bytes:
-    return (
-        b'{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":'
-        b'[{"line":1,"column":%d}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}' % column
-    )
+def _too_deep(query: str, fields: int, name: str = "l", operation: str = "") -> list[bytes]:
+    """graphql-depth-limit's error at each field :func:`_twelve_deep` put in ``query``."""
+    return [
+        b'{"friendly":false,"message":"\'%s\' exceeds maximum operation depth of 10","locations":'
+        b'[{"line":1,"column":%d}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}'
+        % (operation.encode(), query.index(f" {name}{n} ") + 2)
+        for n in range(fields)
+    ]
 
 
 def _validation(*errors: bytes) -> bytes:
     return b'{"errors":[%s]}\n' % b",".join(errors)
+
+
+_INTERNAL = (
+    b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR",'
+    b'"extensions":{}}]}\n'
+)
+
+
+def _no_field_a(column: int) -> bytes:
+    return (
+        b'{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":'
+        b'[{"line":1,"column":%d}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}' % column
+    )
+
+
+_TOO_MANY_ERRORS = (
+    b'{"friendly":false,"message":"Too many validation errors, error limit reached. Validation'
+    b' aborted.","code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}'
+)
+_TWO_FIFTIES = "query A %s query B %s" % (_twelve_deep(50), _twelve_deep(50, "m"))
 
 
 _BATCHING = _apollo(b"Operation batching disabled.")
@@ -680,32 +702,57 @@ _FIREFLIES_BODIES = [
         id="a fragment too deep spread twice",
     ),
     pytest.param(
-        _deeper(99),
-        WithTheKey(
-            _validation(
-                *(_too_deep(column) for column in _columns(99)),
-                b'{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}',
-            )
-        ),
+        _query(_twelve_deep(99)),
+        WithTheKey(_validation(*_too_deep(_twelve_deep(99), 99), _no_field_a(3))),
         id="99 fields twelve deep",
     ),
     pytest.param(
-        _deeper(100),
-        WithTheKey(
-            _validation(
-                *(_too_deep(column) for column in _columns(100)),
-                b'{"friendly":false,"message":"Too many validation errors, error limit reached. Validation aborted.","code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}',
-            )
-        ),
+        _query(_twelve_deep(100)),
+        WithTheKey(_validation(*_too_deep(_twelve_deep(100), 100), _TOO_MANY_ERRORS)),
         id="100 fields twelve deep",
     ),
     pytest.param(
-        _deeper(101),
-        WithTheKey(
-            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
-            500,
-        ),
+        _query(_twelve_deep(101)),
+        WithTheKey(_INTERNAL, 500),
         id="101 fields twelve deep",
+    ),
+    pytest.param(
+        _query(_TWO_FIFTIES),
+        WithTheKey(
+            _validation(
+                *_too_deep(_TWO_FIFTIES, 50, operation="A"),
+                *_too_deep(_TWO_FIFTIES, 50, "m", "B"),
+                _TOO_MANY_ERRORS,
+            )
+        ),
+        id="50 fields twelve deep in each of two operations",
+    ),
+    pytest.param(
+        _query("query A %s query B %s" % (_twelve_deep(50), _twelve_deep(51, "m"))),
+        WithTheKey(_INTERNAL, 500),
+        id="50 and 51 fields twelve deep in two operations",
+    ),
+    pytest.param(
+        _query("query A %s" % _twelve_deep(1)),
+        WithTheKey(
+            _validation(
+                *_too_deep("query A %s" % _twelve_deep(1), 1, operation="A"),
+                _no_field_a(11),
+            )
+        ),
+        id="a named operation twelve deep",
+    ),
+    pytest.param(
+        b'{"query":"query B { ...X } query A { __typename }"}',
+        WithTheKey(_INTERNAL, 500),
+        id="an undefined spread in an operation of another name",
+    ),
+    pytest.param(
+        b'{"query":"type Foo { a: Int } { __typename }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"The \\"Foo\\" definition is not executable.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="a type definition beside an operation",
     ),
 ]
 
@@ -740,17 +787,28 @@ def test_fireflies_orders_the_body_and_the_credential(
         assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
 
 
-def test_fireflies_reads_a_fragment_once_however_many_spreads_reach_it():
+@pytest.mark.parametrize(
+    "last, answer",
+    [("__typename", []), ("a{b{c{d{e{f{g{h{i{j{k{ l }}}}}}}}}}}", 500)],
+    ids=["served", "an error on each path"],
+)
+def test_fireflies_reads_a_fragment_once_however_many_spreads_reach_it(last, answer):
     """A document whose first twenty-five fragments each spread the next one twice reaches the
     twenty-sixth by 2**25 paths, and `_depth_limit` reads each fragment once a depth rather than
-    once a path."""
+    once a path, and holds no more than the 101 errors the paths report before it throws."""
     from backlot.routers import fireflies
 
     document = " ".join(f"fragment F{i} on Query {{ ...F{i + 1} ...F{i + 1} }}" for i in range(25))
-    document += " fragment F25 on Query { __typename } { ...F0 }"
+    document = parse(document + f" fragment F25 on Query {{ {last} }} {{ ...F0 }}")
     started = time.perf_counter()
-    assert fireflies._depth_limit(parse(document)) == []
-    assert time.perf_counter() - started < 1
+    tracemalloc.start()
+    try:
+        reported = fireflies._depth_limit(document)
+        held = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert (reported if isinstance(reported, list) else reported.status) == answer
+    assert (time.perf_counter() - started < 1, held < 2**20) == (True, True)
 
 
 def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_conn):

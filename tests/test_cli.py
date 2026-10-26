@@ -388,12 +388,15 @@ def test_serve_passes_its_arguments_through_to_uvicorn(monkeypatch, a_data_dir_w
     argv = ["serve", "--host", "0.0.0.0", "--port", "9999", "--log-level", "warning"]
     assert cli.main(argv) == 0
     assert seen["app"] == "backlot.main:app"  # an import STRING, which --reload requires
+    from backlot.protocol import Protocol
+
+    assert seen["http"] is Protocol
     assert (seen["host"], seen["port"], seen["log_level"]) == ("0.0.0.0", 9999, "warning")
 
 
 def test_serve_defaults_match_uvicorns_own(monkeypatch, a_data_dir_with_a_corpus):
-    """The point of `backlot serve` is being a shorter spelling of `python -m uvicorn`, not a second
-    set of defaults to keep in step with it."""
+    """`backlot serve` keeps uvicorn's own defaults rather than a second set to keep in step with
+    them; the HTTP protocol is the one thing it picks (``backlot.protocol``)."""
     defaults = _uvicorn_defaults()  # before the spy, or this inspects the spy
     seen = _spy_uvicorn(monkeypatch)
     assert cli.main(["serve"]) == 0

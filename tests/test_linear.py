@@ -161,6 +161,24 @@ def test_linear_issue_url_is_the_real_vendor_domain(client, admin_h):
     assert "backlot" not in host
 
 
+def test_linear_comment_url_is_the_issue_url_with_the_ids_first_eight(client, admin_h):
+    """A comment's url is its ISSUE's url with `#comment-` and the first eight characters of
+    the comment's id. The measurement is recorded beside `Comment.url`'s construction in
+    `linear_resolvers.py`."""
+    query = (
+        '{ issue(id: "ENG-101") { url comments { nodes { id url } } } '
+        "comments(first: 100) { nodes { id url } } }"
+    )
+    data = gql(client, query, admin_h).json()["data"]
+    issue = data["issue"]
+    for node in issue["comments"]["nodes"]:
+        assert node["url"] == issue["url"] + "#comment-" + node["id"][:8]
+    from_comment = issue["comments"]["nodes"][0]
+    same = [c for c in data["comments"]["nodes"] if c["id"] == from_comment["id"]]
+    assert same, "the issue's comment must also answer from the comments root"
+    assert same[0]["url"] == from_comment["url"]
+
+
 def test_linear_missing_issue_is_a_field_error_not_a_400(client, admin_h):
     """Linear declares `issue` non-null, so a miss nulls `data` and reports an error — but the
     request itself was fine, so the status stays 200."""

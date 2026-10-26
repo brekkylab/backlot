@@ -145,6 +145,7 @@ async def graphql(request: Request):
         # (store.linear_entity_by_id, called by the resolvers' own `_by_id`).
     }
     result = ENGINE.execute_payload(payload, context=context)
+    request.state.graphql_raised = result.raised
     return Response(
         request_body.node_json(result.payload),
         status_code=400 if result.request_error else 200,

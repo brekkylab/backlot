@@ -677,8 +677,9 @@ def _head(status: int, headers: dict | None = None) -> Response:
     `s3.us-east-1.amazonaws.com`, twenty-two `HEAD`s, signed and unsigned). Starlette writes a
     `Content-Length` on each of these, `0` for the empty body, so it is taken off here and the
     framing named instead: uvicorn's httptools protocol writes no body for a `HEAD` whatever its
-    framing header says, and its h11 protocol keeps a chunked framing it is given, so
-    `backlot serve` sends what real sends on either.
+    framing header says, which ``backlot.protocol`` keeps, and uvicorn's h11 protocol keeps a
+    chunked framing it is given, so `backlot serve` sends what real sends, and so does uvicorn run
+    on h11.
     """
     response = Response(status_code=status, media_type="application/xml", headers=headers)
     del response.headers["content-length"]

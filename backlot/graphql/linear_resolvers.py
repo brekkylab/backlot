@@ -942,12 +942,22 @@ def _issue(row, info) -> dict:
 
 def _comment(row, info) -> dict:
     ts = synth.rfc3339(row["created_ts"])
+    comment_id = synth.linear_comment_id(row["id"])
+    # Real answers the comment's ISSUE url with the id's first eight characters as
+    # the fragment (measured against api.linear.app on 2026-10-22, through `comment(id:)`,
+    # the `comments` root and `issue.comments`, all three the same):
+    # linear.app/<org>/issue/<ID>/<slug>#comment-<8>
+    url = (
+        synth.linear_url(row["issue_identifier"], row["issue_title"], _org(info))
+        + "#comment-"
+        + comment_id[:8]
+    )
     return {
-        "id": synth.linear_comment_id(row["id"]),
+        "id": comment_id,
         "body": row["body"],
         "createdAt": ts,
         "updatedAt": ts,
-        "url": f"https://linear.app/{_org(info)}/issue/#comment-{synth.linear_comment_id(row['id'])}",
+        "url": url,
         "reactionData": {},
         "reactions": [],
         "user": _user(row["author_email"], None, info),

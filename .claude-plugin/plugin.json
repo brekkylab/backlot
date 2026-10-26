@@ -8,6 +8,6 @@
   },
   "homepage": "https://github.com/brekkylab/backlot",
   "repository": "https://github.com/brekkylab/backlot",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": ["emulator", "rag", "connector", "acl", "slack", "gmail", "github", "jira", "s3"]
 }

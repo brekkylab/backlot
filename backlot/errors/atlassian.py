@@ -1668,6 +1668,34 @@ def confluence_refusal(
     )
 
 
+#: A character past the Basic Multilingual Plane, which Confluence's JSON writer reaches only
+#: as a pair of UTF-16 surrogates (:func:`_confluence_json`).
+_PAST_BMP = re.compile(r"[\U00010000-\U0010FFFF]")
+
+
+def _confluence_json(body: dict) -> bytes:
+    """The JSON bytes of a Confluence refusal or of the CQL search's answer, written the way real
+    writes them: compact and unescaped, as ``JSONResponse`` writes them, but for a character past
+    U+FFFF, which goes out as two ``\\u`` escapes, its UTF-16 surrogates in upper-case hex, where
+    ``JSONResponse`` writes its UTF-8 bytes. Decoded, the two writings are one string, so the
+    escapes are made in the dumped text, where such a character can only stand inside a string.
+
+    Measured on Confluence Cloud 2026-10-21: `é` (U+00E9) named in a refused space key went out as
+    its UTF-8 bytes on `space/{key}`, `content` and the label and conversion refusals, and U+1F600
+    and U+1D7D3 as escapes, `No space found with key : \\uD83D\\uDE00` and
+    `for value [\\uD835\\uDFD3]`; on 2026-10-22 `content?type=` with U+1F600 answered
+    `Cannot find custom content type : \\uD83D\\uDE00`, and the CQL search's 200 wrote it in
+    `cqlQuery` as `\\uD83D\\uDE00` for a `title~` and a `label=` query alike.
+    """
+
+    def escapes(match: re.Match[str]) -> str:
+        past = ord(match.group()) - 0x10000
+        return f"\\u{0xD800 + (past >> 10):04X}\\u{0xDC00 + (past & 0x3FF):04X}"
+
+    written = json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    return _PAST_BMP.sub(escapes, written).encode()
+
+
 def rendered(request, status_code: int, body, headers=None) -> Response | None:
     """The response for a refusal whose bytes are not its JSON, or None for the ``JSONResponse``
     around ``body`` every other one gets (``backlot.errors.rendered`` asks).
@@ -1676,7 +1704,8 @@ def rendered(request, status_code: int, body, headers=None) -> Response | None:
     `text/html;charset=UTF-8` answer, its `Allow` or `Accept` kept, where `Accept` holds a member
     Jira cannot read (:func:`accepts`): `foo` on a 405, the search's 415, the no-endpoint 404 and
     the 406, measured 2026-10-13, which are the ones such a header reaches. Confluence's `errors`
-    list, on its 405, 406 and 415, is :func:`confluence_refusal`'s.
+    list, on its 405, 406 and 415, is :func:`confluence_refusal`'s, and its other refusals are
+    written by :func:`_confluence_json`, whose escapes past U+FFFF are real's own.
     """
     if isinstance(body, bytes):
         return Response(body, status_code=status_code, headers=headers)
@@ -1686,7 +1715,12 @@ def rendered(request, status_code: int, body, headers=None) -> Response | None:
         if status_code in (405, 406, 415) and isinstance(body.get("errors"), list):
             encoded = json.dumps(body, separators=(",", ":")).encode()
             return confluence_refusal(status_code, encoded, accept, headers)
-        return None
+        return Response(
+            _confluence_json(body),
+            status_code=status_code,
+            headers=headers,
+            media_type="application/json",
+        )
     if body.get("type") == "about:blank" and accepts(accept, reader="jira") is None:
         return Response(
             b"",
@@ -2441,6 +2475,11 @@ def _cloudfront(status: int, reason: str, method: str, raw_path: str) -> str:
     return _CLOUDFRONT_PAGE.format(status=status, reason=reason, request_id=request_id)
 
 
+def cdn_bad_request(method: str, raw_path: str) -> str:
+    """The CDN's 400 page, which :func:`front_door` answers a `%00` in the path with."""
+    return _cloudfront(400, CDN_BAD_REQUEST, method, raw_path)
+
+
 #: What the edge answers a `;` in a path with, JSON or a page as `Accept` picks
 #: (:func:`front_door`). The JSON is this body, 28 bytes with its newline, on `application/json`;
 #: real's page is 18,943 bytes on `text/html` with no charset,
@@ -2455,6 +2494,34 @@ _EDGE_PAGE_400 = (
     '<!DOCTYPE html><html><head><meta name="details" content="lua_response">'
     "<title>400</title></head><body><p>400</p></body></html>"
 )
+
+
+def edge_page(details: str) -> str:
+    """:data:`_EDGE_PAGE_400` naming ``details`` in its tag, the part of the edge's 400 page that
+    tells one of its refusals from another (``backlot.request_target`` answers two more of them)."""
+    return _EDGE_PAGE_400.replace('content="lua_response"', f'content="{details}"')
+
+
+def cdn_refusal(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
+    """The CDN's own page for the first three of :func:`front_door`'s checks: `%00` or a broken
+    escape in the path, a method it does not pass on and its firewall; or None."""
+    if "%00" in raw_path or _BROKEN_ESCAPE.search(raw_path):
+        return FrontDoor(
+            400, "cdn", "text/html", _cloudfront(400, CDN_BAD_REQUEST, method, raw_path), {}
+        )
+    if method not in SERVED_METHODS and method not in GATEWAY_REFUSED:
+        if method in CDN_405:
+            status, layer, reason = 405, "cdn", CDN_BAD_REQUEST
+        elif cdn_forbids(method):
+            status, layer, reason = 403, "cdn edge", CDN_METHOD_FORBIDDEN
+        else:
+            status, layer, reason = 400, "cdn", CDN_BAD_REQUEST
+        page = _cloudfront(status, reason, method, raw_path)
+        return FrontDoor(status, layer, "text/html", page, {})
+    if waf_blocks(raw_path, raw_query):
+        page = _cloudfront(403, CDN_BLOCKED, method, raw_path)
+        return FrontDoor(403, "cdn edge", "text/html", page, {})
+    return None
 
 
 def front_door(
@@ -2491,22 +2558,9 @@ def front_door(
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
     where an encoded slash and `%00` can still be told from a decoded one.
     """
-    if "%00" in raw_path or _BROKEN_ESCAPE.search(raw_path):
-        return FrontDoor(
-            400, "cdn", "text/html", _cloudfront(400, CDN_BAD_REQUEST, method, raw_path), {}
-        )
-    if method not in SERVED_METHODS and method not in GATEWAY_REFUSED:
-        if method in CDN_405:
-            status, layer, reason = 405, "cdn", CDN_BAD_REQUEST
-        elif cdn_forbids(method):
-            status, layer, reason = 403, "cdn edge", CDN_METHOD_FORBIDDEN
-        else:
-            status, layer, reason = 400, "cdn", CDN_BAD_REQUEST
-        page = _cloudfront(status, reason, method, raw_path)
-        return FrontDoor(status, layer, "text/html", page, {})
-    if waf_blocks(raw_path, raw_query):
-        page = _cloudfront(403, CDN_BLOCKED, method, raw_path)
-        return FrontDoor(403, "cdn edge", "text/html", page, {})
+    door = cdn_refusal(method, raw_path, raw_query)
+    if door is not None:
+        return door
     collapsed = re.sub(r"/{2,}", "/", raw_path)
     confluence = collapsed == WIKI or collapsed.startswith(f"{WIKI}/")
     encoded = collapsed.lower()

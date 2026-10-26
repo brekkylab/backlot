@@ -466,6 +466,11 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     401 "You must be logged in to do that.". Pinned to `1999-01-01`, `GET /user/packages`,
     `DELETE /user/keys/1`, `POST /user/gpg_keys` and `GET /gists/starred` were the version's 400,
     counted. Here it is :func:`_require`'s 401 after the version, carrying both.
+
+    A `Basic` value holding a token in one of real's shapes (``backlot.auth._GITHUB_TOKEN_SHAPE``)
+    that resolves to no one is "Bad credentials" with neither the echo nor the five, ahead of the
+    version: on 2026-10-25 the base64 of `x:ghp_<36 A>`, with and without `1999-01-01`, was that 401
+    on ten operations, `DELETE /installation/token` and `PATCH /repos/{owner}/{repo}` among them.
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return
@@ -523,10 +528,11 @@ async def _refuse_an_anonymous_caller(request: Request) -> None:
     `2022-11-28` too and ahead of an organization, a repository and a branch that do not exist.
     `Foo bar` with or without `1999-01-01`, and `Digest x` and `Bearer<TAB>nope` pinned to it, were
     that 401 without the five on each, where `token` with no value was `Bad credentials` without the
-    five (:func:`_validate_bad_credential`). A `Basic` value naming no token (`Basic eDp5`) was the
-    version's 400 pinned to `1999-01-01` on the first four, and otherwise each route's own answer
-    with the echo and the five: the 401 on the first two, and the 404 on a repository's teams and a
-    branch's protection (:data:`_NOT_FOUND_FOR_A_BASIC_VALUE_WITHOUT_A_TOKEN`).
+    five (:func:`_validate_bad_credential`), and so was `Basic` and the base64 of `x:ghp_<36 A>` on
+    each, with or without `1999-01-01` (2026-10-25). A `Basic` value naming no token (`Basic eDp5`)
+    was the version's 400 pinned to `1999-01-01` on the first four, and otherwise each route's own
+    answer with the echo and the five: the 401 on the first two, and the 404 on a repository's teams
+    and a branch's protection (:data:`_NOT_FOUND_FOR_A_BASIC_VALUE_WITHOUT_A_TOKEN`).
     """
     route = getattr(request.scope.get("route"), "path", None)
     if route not in _REFUSE_AN_ANONYMOUS_CALLER_FIRST:
@@ -565,9 +571,9 @@ def _a_header_without_a_credential(request: Request) -> bool:
 
 def is_an_unserved_operation(method: str, path: str) -> bool:
     """Whether ``method`` on the `/github` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`. The path is
-    the scope's, decoded but whole: ``request.url.path`` ends at a decoded `#` or `?`, which would
-    take `/zen%23` for `/zen`, where real answered `GET /zen%23` and `POST …/forks%23` with the 404
-    on 2026-10-14."""
+    the scope's, decoded but whole, not ``request.url.path`` (``backlot.main._REPARSED``), which
+    would take `/zen%23` for `/zen`, where real answered `GET /zen%23` and `POST …/forks%23` with
+    the 404 on 2026-10-14."""
     return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/github"))
 
 
@@ -602,7 +608,7 @@ def _deletes_the_installation_token(request: Request) -> bool:
 
 # --- rate limits ----------------------------------------------------------------
 #
-# Real puts five `x-ratelimit-*` headers on every response it gives, 200 and error alike, and
+# Real puts five `x-ratelimit-*` headers on every response its API gives, 200 and error alike, and
 # serves `GET /rate_limit`. Measured against api.github.com on 2026-09-09 and 2026-09-10,
 # unauthenticated with curl and authenticated with `gh api`: an anonymous caller has `limit: 60`
 # on `core` and `10` on `search`, a token `5000`, `30` and `10` on `core`, `search` and
@@ -963,27 +969,32 @@ def _accept_types(request: Request) -> list[str]:
     case: a pull answers `…github.DIFF` with its JSON and `Application/vnd.github.diff`,
     `…vnd.GitHub.diff`, `…github.V3.diff` and `…diff+JSON` each with the diff, and `raw` on
     contents, readme and blobs and `text-match` on code search read those spellings the same way.
-    A ``diff`` whose first parameter is a ``q`` of zero is left out, and no other name is:
-    `patch;q=0`, `raw;q=0` and `text-match+json;q=0` are served as asked, and so is a diff under
-    `Q=0`, `q = 0` or a `q` after `charset`."""
+    A ``diff`` whose ``q`` weight reads as zero (:func:`_zero_q`) is left out, and no other name
+    is: `patch;q=0`, `raw;q=0` and `text-match+json;q=0` are served as asked, and so is a diff
+    under `Q=0`, `q = 0` or a `q` after `charset=utf-8`."""
     types: list[str] = []
     for member in request.headers.get("accept", "").split(","):
         media_type, _, params = member.partition(";")
         media_type = media_type.strip()
         m = _GITHUB_MEDIA.fullmatch(media_type)
         if m is not None:
-            if m[2] == "diff" and _zero_q(params.partition(";")[0].strip()):
+            if m[2] == "diff" and _zero_q(params):
                 continue
             media_type = m[1].lower() + m[2] + (m[3] or "").lower()
         types.append(media_type)
     return types
 
 
-def _zero_q(param: str) -> bool:
-    """Whether ``param`` is a ``q`` weight that reads as zero."""
-    name, _, value = param.partition("=")
+def _zero_q(params: str) -> bool:
+    """Whether the `q` a member's parameters give it (:func:`_accept_q`) is a zero ``float()``
+    reads. Measured against api.github.com on 2026-10-21: `q=0;q=1` kept the diff and `q=1;q=0`
+    left it out; a sign or a space ahead of the digits leaves the `q` with no value (`q=-0`,
+    `q=+0`, `q=-0.0` and `q= 0` kept the diff), and a quote after the zero ends the parameters once
+    the zero is read (`q=0"` left the diff out, as `q="0"` did, and `q="0`, which no quote closes,
+    kept it)."""
+    value = _accept_q(params)
     try:
-        return name == "q" and float(value) == 0
+        return value is not None and float(value) == 0
     except ValueError:
         return False
 

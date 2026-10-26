@@ -20,6 +20,7 @@ omit it. :func:`_page` is the single place that decides this.
 from __future__ import annotations
 
 import json
+import math
 import re
 from functools import lru_cache
 
@@ -29,6 +30,7 @@ from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, published, store, synth
 from backlot.acl import Caller
+from backlot.errors.atlassian import _java_double as _parse_java_double
 from backlot.openapi import qp
 from backlot.routers import json_body
 
@@ -146,6 +148,34 @@ def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSO
     )
 
 
+# batch/read refuses more than this many ids, each counted once as `_batch_read_id` reads it.
+# Measured against api.hubapi.com on 2026-10-01 and 2026-10-22: 101 ids is 400 with this message
+# on contacts, companies, deals and `0-1`, sent as strings or as `{"id": …}`, under `idProperty`
+# and `archived=true` alike; 100 is still read, and so are 101 copies of one id, 200 inputs naming
+# 100 ids twice, and the ids `1` to `100` with `{"id": 5}` among them. Beside those 100, `" 1"`,
+# `"01"`, `5.0`, `1e0`, `true` and `{"id": 101}` each made a 101st, and so did an email differing
+# from another only in case under `idProperty=email`. A `null` input, and a body
+# `_refuse_a_batch_read_shape` refuses, are refused first at any count. An empty `inputs`, and a
+# body without one, stay 200.
+_HUBSPOT_BATCH_MAX = 100
+_HUBSPOT_BATCH_TOO_MANY = (
+    "The maximum number of inputs supported in a batch is 100. "
+    "Please reduce the number of items and try again"
+)
+
+
+def _batch_read_id(raw: bytes, i: int, item) -> str:
+    """The id `batch_read` looks ``inputs[i]`` up by. A string in `inputs` is answered as
+    ``{"id": <that string>}`` is (measured 2026-10-11), and a number or boolean id is echoed as the
+    body ``raw`` spells it (`1e3`, `1E3`, `1.0`, `-0.0`, `true`), measured 2026-10-11 and
+    2026-10-18; an integer naming a record finds it."""
+    rid = item if isinstance(item, str) else item["id"]
+    if isinstance(rid, str):
+        return rid
+    text, start, end = _token_span(raw, ("inputs", i, "id"))
+    return text[start:end]
+
+
 # Real's answer on the record route for an id that parses but names nothing visible: this page,
 # 197 bytes, under a Latin-1 content type although its own `<meta>` says utf-8. `contacts/1`,
 # `contacts/9223372036854775807` and `deals/{a contact's id}` answered it byte for byte the same
@@ -161,6 +191,73 @@ _MISSING_RECORD_PAGE = (
 def _missing_record() -> Response:
     return Response(
         _MISSING_RECORD_PAGE, status_code=404, media_type="text/html;charset=iso-8859-1"
+    )
+
+
+def _reason_page(status: int, reason: str) -> bytes:
+    """Real's page for a 405 and a 406, which names its reason where the 404's page has a sentence.
+    Measured against api.hubapi.com on 2026-10-19: 229 bytes for the 405 and 221 for the 406, the
+    same on every request."""
+    return (
+        b"<html>\n<head>\n"
+        b'<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>\n'
+        b"<title>Error %d %s</title>\n</head>\n"
+        b"<body><h2>HTTP ERROR %d</h2>\n<p>Reason:\n<pre>    %s</pre></p>\n</body>\n</html>\n"
+    ) % (status, reason.encode(), status, reason.encode())
+
+
+# The `Cache-Control` real's 405 and 406 carry on a `GET`, `POST` or `HEAD` (api.hubapi.com,
+# 2026-10-19 and 2026-10-22).
+_NO_STORE = {"Cache-Control": "must-revalidate,no-cache,no-store"}
+
+
+def _asks_for_the_page(accept: str | None) -> bool:
+    """Whether an `Accept` gets real's 405 and 406 page: absent, or listing `text/html`, `text/*` or
+    `*/*` exactly as written, with no parameter but a `q` that is not zero, and no member's `q`
+    negative, `-0` included. A member's `q` is its last `q=` (lower-case), read the way Java's
+    `Double.parseDouble` reads one, and zero where that throws; real's answers below match that
+    reading, which HubSpot does not document.
+
+    Measured against api.hubapi.com on 2026-10-22, on `GET …/search` and the contacts listing: no
+    `Accept`, `*/*`, `text/*`, `application/json, text/html`, ` text/html`, `text/html;q=0.5` and
+    `text/html ; q=0.5` got the page, and `application/json`, `application/xml`, `text/plain`,
+    `TEXT/HTML`, `text/html;level=1` and `text/html; q=0` got the status with no body. On
+    2026-10-23, on `GET …/search`: `text/html` with `q=NaN`, `q=-NaN`, `q=Infinity`, `q=1e0`,
+    `q=0x1p0`, `q=1d`, `q=.5` or `q=0;q=0.5` got the page, and with `q=abc`, `q=`, `q=inf`, `q=1_0`,
+    `q=-1`, `q=-0`, `q=-Infinity`, `q=0.5;q=0` or `Q=0.5` did not, nor did `application/*`,
+    `text/html, application/json;q=-1` or `application/json;q=-1, text/html`.
+    """
+    if accept is None:
+        return True
+    page = False
+    for entry in accept.split(","):
+        media, *params = (part.strip() for part in entry.split(";"))
+        weights = [p[2:] for p in params if p.startswith("q=")]
+        weight = _parse_java_double(weights[-1]) if weights else 1.0
+        if weight is None:
+            weight = 0.0
+        if weight == weight and math.copysign(1.0, weight) < 0:
+            return False
+        if media in ("text/html", "text/*", "*/*") and len(weights) == len(params) and weight != 0:
+            page = True
+    return page
+
+
+def _error_page(request: Request, status: int, reason: str, headers: dict) -> Response:
+    """Real's 405 or 406, which its server writes for itself: a `GET`, `POST` or `HEAD` carries
+    :data:`_NO_STORE`, and the page when :func:`_asks_for_the_page`; a `PUT`, `PATCH` or `DELETE`
+    carries neither (measured 2026-10-22: `PATCH` and `DELETE` on a record with `Accept: text/html`
+    got a bare 406, and `PUT` on a record a bare 405)."""
+    if request.method not in ("GET", "POST", "HEAD"):
+        return Response(status_code=status, headers=headers)
+    headers = {**headers, **_NO_STORE}
+    if not _asks_for_the_page(request.headers.get("accept")):
+        return Response(status_code=status, headers=headers)
+    return Response(
+        _reason_page(status, reason),
+        status_code=status,
+        headers=headers,
+        media_type="text/html;charset=iso-8859-1",
     )
 
 
@@ -1190,6 +1287,12 @@ def _missing_scopes(object_type: str) -> JSONResponse:
     )
 
 
+def is_an_unserved_operation(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/hubspot` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`, the path
+    read as ``backlot.routers.github.is_an_unserved_operation`` reads one."""
+    return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/hubspot"))
+
+
 def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
     """The INVALID_AUTHENTICATION 401 for an operation of :data:`_PUBLISHED_NOT_SERVED` sent with no
     key or one that does not resolve, as a served route refuses it before running. With a key that
@@ -1209,12 +1312,11 @@ def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
     publish, was a 404 with no key, so only the baseline's operations are refused. On 2026-10-19
     every other operation the baseline lists answered the same 401 both ways, the v4 association
     writes and `batch/read` among them, and so did `PATCH` on `zzz/1` and `DELETE` on `2-999/1`,
-    whose types real can't resolve. The path is the scope's, decoded but whole, as
-    ``backlot.routers.github.is_an_unserved_operation`` reads it.
+    whose types real can't resolve.
     """
-    path = request.scope["path"].removeprefix("/hubspot")
-    if not published.includes(_PUBLISHED_NOT_SERVED, request.method, path):
+    if not is_an_unserved_operation(request.method, request.scope["path"]):
         return None
+    path = request.scope["path"].removeprefix("/hubspot")
     if _caller(request) is None:
         return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
     record = _RECORD_PATH.fullmatch(path)
@@ -1224,6 +1326,92 @@ def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
             return _unknown_type(object_type)
         if _canonical(object_type) in _WRITE_SCOPES:
             return _missing_scopes(_canonical(object_type))
+    return None
+
+
+#: The body of real's 401 for `OPTIONS`, which is not the INVALID_AUTHENTICATION one a route
+#: answers. Real's also carries a `correlationId`, after `message`, which this one leaves out.
+_OPTIONS_REFUSAL = {
+    "status": "error",
+    "message": "Any of the listed authentication credentials are missing",
+    "engagement": {
+        "service-to-service": "service-to-service not engaged. Metadata for service-to-service "
+        "request not found.",
+        "internal-cookie": "internal-cookie not engaged. You can get a new internal auth cookie "
+        "for host 'api.hubapi.com' by visiting following link from your current browser window: "
+        "https://tools.hubteam.com/login/host/api.hubapi.com .",
+        "app-cookie": "app-cookie not engaged. App cookie is not present on the request.",
+    },
+}
+
+# The paths a route here serves, each with the methods real takes on it in the order its 405's
+# `Allow` lists them (api.hubapi.com, 2026-10-19 and 2026-10-22).
+_ALLOWED_METHODS = (
+    (re.compile(r"/crm/v3/objects/[^/]+/(?:search|batch/read)"), "POST,OPTIONS"),
+    (re.compile(r"/crm/v3/objects/[^/]+/[^/]+"), "DELETE,GET,OPTIONS,PATCH"),
+    (re.compile(r"/crm/v3/objects/[^/]+"), "POST,GET,OPTIONS"),
+    (re.compile(r"/crm/v4/objects/[^/]+/[^/]+/associations/[^/]+"), "GET,OPTIONS"),
+)
+
+
+def _admits_json(accept: str) -> bool:
+    """Whether an `Accept` names `application/json`, `application/*` or `*/*`, in any case and
+    whatever its `q`: `Application/JSON`, `APPLICATION/*`, `application/json;q=0` and `*/*;q=0` were
+    served on 2026-10-22, and `application/hal+json` was the 406."""
+    ranges = {entry.partition(";")[0].strip().lower() for entry in accept.split(",")}
+    return bool(ranges & {"application/json", "application/*", "*/*"})
+
+
+def answer_ahead_of_the_routes(request: Request) -> Response | None:
+    """Real's answer to a method or an `Accept` that no route here takes on a path one serves, or
+    None to go on to the routes. Measured against api.hubapi.com on 2026-09-30, 2026-10-19 and
+    2026-10-22 with a service key.
+
+    `OPTIONS` is :data:`_OPTIONS_REFUSAL` at 401, the key sent or not: on the listing, a record,
+    `search`, the listing of a type real cannot infer and the v4 associations path, and as a CORS
+    preflight, with no `Allow` and no CORS headers. A `GET`, `POST`, `PUT`, `PATCH` or `DELETE` the
+    path's `Allow` (:data:`_ALLOWED_METHODS`) does not list is the 405 :func:`_error_page` writes,
+    with no key as with one and ahead of the type: `GET`, `PUT`, `PATCH` and `DELETE` on `search`
+    and `batch/read`, `PUT`, `PATCH` and `DELETE` on the listing, `PUT` and `POST` on a record and
+    `PUT` on the v4 associations path were each that 405. Every answer on `search` carries
+    `nosniff`, its `OPTIONS` and its 200 among them. Then an `Accept` that does not
+    :func:`_admits_json` is the 406 it writes, ahead of the credential, on each of those paths. A
+    path no route serves goes on to the router: real's `OPTIONS` on `/crm/v3/nonexistent-xyz` is
+    not this 401, and its `GET` with `Accept: text/html` is the 404 that path gets, not the 406. A
+    `HEAD` arrives here as its `GET` (``backlot.main.answer_head_as_the_get_without_its_body``).
+    """
+    path = request.scope["path"]
+    answered = _answered_ahead(request.method, path, request.headers.get("accept"))
+    if answered is None:
+        return None
+    status, allowed = answered
+    sniff = {"X-Content-Type-Options": "nosniff"} if path.endswith("/search") else {}
+    if status == 401:
+        return JSONResponse(status_code=401, content=_OPTIONS_REFUSAL, headers=sniff)
+    if status == 405:
+        return _error_page(request, 405, "Method Not Allowed", {"Allow": allowed, **sniff})
+    return _error_page(request, 406, "Not Acceptable", sniff)
+
+
+def answers_ahead_of_the_routes(method: str, path: str, accept: str | None) -> bool:
+    """Whether :func:`answer_ahead_of_the_routes` answers a request with this method, path and
+    `Accept` rather than going on to the routes."""
+    return _answered_ahead(method, path, accept) is not None
+
+
+def _answered_ahead(method: str, path: str, accept: str | None) -> tuple[int, str] | None:
+    """The status :func:`answer_ahead_of_the_routes` answers with and the path's `Allow`, or None
+    to go on to the routes."""
+    path = path.removeprefix("/hubspot")
+    allowed = next((methods for route, methods in _ALLOWED_METHODS if route.fullmatch(path)), None)
+    if allowed is None:
+        return None
+    if method == "OPTIONS":
+        return 401, allowed
+    if method in ("GET", "POST", "PUT", "PATCH", "DELETE") and method not in allowed.split(","):
+        return 405, allowed
+    if not _admits_json(accept or "*/*"):
+        return 406, allowed
     return None
 
 
@@ -1376,17 +1564,15 @@ async def batch_read(object_type: str, request: Request):
     refused = _refuse_a_batch_read_shape(await request.body(), body, before) or refused
     if refused is not None:
         return refused
+    inputs = body.get("inputs") or []
+    raw = await request.body()
+    if len({_batch_read_id(raw, i, item) for i, item in enumerate(inputs)}) > _HUBSPOT_BATCH_MAX:
+        return _error(400, _HUBSPOT_BATCH_TOO_MANY)
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     keep = _keep(body.get("properties"))
     results, errors = [], []
-    for i, item in enumerate(body.get("inputs") or []):
-        # A string in `inputs` is answered as `{"id": <that string>}` is (measured 2026-10-11).
-        rid = item if isinstance(item, str) else item["id"]
-        if not isinstance(rid, str):
-            # A number or boolean id is echoed as the body spells it (`1e3`, `1E3`, `1.0`, `-0.0`,
-            # `true`), measured 2026-10-11 and 2026-10-18; an integer naming a record finds it.
-            text, start, end = _token_span(await request.body(), ("inputs", i, "id"))
-            rid = text[start:end]
+    for i, item in enumerate(inputs):
+        rid = _batch_read_id(raw, i, item)
         # One ACL-scoped query, not a resolve followed by a get_document refetch of the same
         # row -- see get_object's comment for why the collapse is safe.
         row = store.hubspot_by_id(conn, rid, visible)

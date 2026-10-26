@@ -2911,8 +2911,27 @@ def test_fireflies_holds_a_refused_key_for_a_minute_from_its_first_refusal(
             {"x": None},
             [(["a0"], False), (["a1"], True)],
         ),
+        (
+            30,
+            'query($x: String = "a") { a1: user { user_id } a0: transcript(id: $x) { id } }',
+            {"x": None},
+            [(["a0"], False), (["a1"], True)],
+        ),
+        (
+            0,
+            "{ a0: transcripts(limit: 0) { id } "
+            + " ".join(f"a{i}: user {{ user_id }}" for i in range(1, 30))
+            + " a30: user { user_id } a31: transcripts(limit: 0) { id } }",
+            None,
+            [(["a0"], False), (["a30"], True), (["a31"], True)],
+        ),
     ],
-    ids=["a resolver's error after the refusals", "a refused argument ahead of them, not counted"],
+    ids=[
+        "a resolver's error after the refusals",
+        "a refused argument ahead of them, not counted",
+        "a refused argument ahead of them, after a refused field",
+        "invalid_arguments among them in document order",
+    ],
 )
 def test_fireflies_orders_the_budgets_refusals_among_a_runs_errors(
     client, tokens_yaml, monkeypatch, spent, document, variables, order

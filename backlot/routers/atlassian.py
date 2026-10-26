@@ -20,7 +20,7 @@ import re
 import time
 import unicodedata
 from collections.abc import Callable
-from html import escape
+from html.entities import codepoint2name
 from pathlib import Path
 from urllib.parse import quote
 
@@ -1642,18 +1642,34 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
 # ============================== Confluence ======================================
 
 
+#: How a body's characters are written: storage writes each character HTML 4 names
+#: (`codepoint2name`) as that entity but `Š` and `š`, view and export_view write only `"`, `&`, `<`
+#: and `>` as entities, and every other character measured is itself in all three, `'` among them.
+#: Measured against Confluence Cloud on pages on 2026-10-23, and with twelve of those characters on
+#: a comment and a blog post on 2026-10-25.
+_CONFLUENCE_STORAGE_ENTITIES = {
+    cp: f"&{name};" for cp, name in codepoint2name.items() if cp not in (0x160, 0x161)
+}
+_CONFLUENCE_RENDERED_ENTITIES = str.maketrans(
+    {'"': "&quot;", "&": "&amp;", "<": "&lt;", ">": "&gt;"}
+)
+
+
 def _storage(content: str) -> str:
     """Confluence storage format — XHTML with a leading structured macro, as the real
     editor emits (distinct from the rendered view below)."""
     paras = [p for p in content.split("\n\n") if p.strip()] or [content]
-    return "".join(f"<p>{escape(p)}</p>" for p in paras)
+    return "".join(f"<p>{p.translate(_CONFLUENCE_STORAGE_ENTITIES)}</p>" for p in paras)
 
 
 def _view(content: str) -> str:
     """Rendered ``view`` HTML — differs from storage (wrapped, ids, no ac: macros), as the
     real API returns a rendered representation, not the storage source."""
     paras = [p for p in content.split("\n\n") if p.strip()] or [content]
-    body = "".join(f'<p class="auto-cursor-target">{escape(p)}</p>' for p in paras)
+    body = "".join(
+        f'<p class="auto-cursor-target">{p.translate(_CONFLUENCE_RENDERED_ENTITIES)}</p>'
+        for p in paras
+    )
     return f'<div class="contentLayout2"><div class="columnLayout single">{body}</div></div>'
 
 
@@ -1661,7 +1677,7 @@ def _export_view(content: str) -> str:
     """Rendered ``export_view`` HTML — the real API's export-oriented rendering (same content
     as ``view``, without editor-only attributes like ``auto-cursor-target``)."""
     paras = [p for p in content.split("\n\n") if p.strip()] or [content]
-    body = "".join(f"<p>{escape(p)}</p>" for p in paras)
+    body = "".join(f"<p>{p.translate(_CONFLUENCE_RENDERED_ENTITIES)}</p>" for p in paras)
     return f'<div class="contentLayout2"><div class="columnLayout single">{body}</div></div>'
 
 
@@ -2015,6 +2031,10 @@ async def confluence_cql_search(request: Request):
     ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
     want_label = ml.group(1) if ml else None
     _refuse_negative_page_params(limit, start)
+    tokens = _cql_tokens(cql)
+    refusal = _cql_refusal(tokens)
+    if refusal is not None:
+        raise refusal
     # An empty `cursor` is none, and of a repeated one the first is read, measured 2026-10-04.
     sent_cursor = (request.query_params.getlist("cursor") or [None])[0]
     after = _cql_search_after(sent_cursor) if sent_cursor else None
@@ -2082,7 +2102,7 @@ async def confluence_cql_search(request: Request):
                 "limit": limit,
                 "size": len(results),
                 "totalSize": total,
-                "cqlQuery": cql,
+                "cqlQuery": _cql_written_back(tokens),
                 "searchDuration": 5,
                 "_links": links,
             }
@@ -2924,6 +2944,184 @@ def _confluence_page_params(
 
 # What Java's `String.trim()` removes: every character up to and including the space.
 _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
+
+
+# CQL as real's reader splits it, measured on Confluence Cloud on 2026-10-22 and 2026-10-25, the
+# second time with `title~a<c>b` and `title~a<c>` for each ASCII punctuation character `<c>`: a
+# quoted value in either quotes, in which a backslash keeps the next character; an operator, a
+# bracket or a comma; a date such as `2026-01-01` and a number, both in ASCII digits; and a word of
+# ASCII letters, digits and `_`, dotted as `space.key` is. A control character, one past ASCII and
+# those in `DROPPED` are left out as a space is: `title ~ probe*` is `title ~ probe`, `title~a#b`
+# reads `a` and then `b`, and on 2026-10-26 `title~` and U+0663 (an Arabic-Indic three) or U+FF11 (a
+# fullwidth one) had no value. Each other character is a token no clause takes, so `label=a-b` and
+# `title~a:b` cannot be parsed.
+_CQL_TOKEN = re.compile(
+    r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
+    r"|(?P<OP>!=|!~|>=|<=|=|~|>|<)"
+    r"|(?P<PUNCT>[(),])"
+    r"|(?P<DATE>[0-9]{4}-[0-9]{2}-[0-9]{2})"
+    r"|(?P<NUMBER>-[0-9]+|[0-9]+(?![A-Za-z_.]))"
+    r"|(?P<WORD>[A-Za-z0-9_]+(?:[.][A-Za-z0-9_]+)*)"
+    r"|(?P<DROPPED>[\s#$%&*+;?@^`{|}\x00-\x1f\x7f]|[^\x00-\x7f])"
+    r"|(?P<OTHER>.)",
+    re.DOTALL,
+)
+_CQL_OPERATORS = frozenset(("!=", "!~", ">=", "<=", "=", "~", ">", "<"))
+_CQL_KEYWORDS = frozenset(("and", "or", "not", "in", "order", "by", "asc", "desc"))
+_CQL_VALUES = frozenset(("WORD", "QUOTED", "NUMBER", "DATE"))
+
+
+def _cql_tokens(cql: str) -> list[tuple[str, str]]:
+    """The tokens of ``cql`` as ``(kind, text)``, those `_CQL_TOKEN` leaves out dropped."""
+    return [(m.lastgroup, m.group()) for m in _CQL_TOKEN.finditer(cql) if m.lastgroup != "DROPPED"]
+
+
+def _cql_written_back(tokens: list[tuple[str, str]]) -> str:
+    """``cqlQuery`` as real writes the query back: its tokens one space apart, in the case and the
+    quotes they were sent in, and each value of `space.key` in single quotes, in place of its own
+    (Confluence Cloud, 2026-10-22 and 2026-10-25)."""
+    out, key = [], False
+    for i, (kind, text) in enumerate(tokens):
+        before = tokens[i - 1] if i else (None, None)
+        if kind == "OP" or kind == "WORD" and text.lower() == "in":
+            field = i - 1 - (kind == "WORD" and i > 1 and before[1].lower() == "not")
+            key = field >= 0 and tokens[field][1].lower() == "space.key"
+        elif kind in ("WORD", "QUOTED") and key and (before[0] == "OP" or before[1] in "(,"):
+            text = f"'{text[1:-1]}'" if kind == "QUOTED" else f"'{text}'"
+        elif before[1] == ")" or kind == "WORD" and text.lower() in ("and", "or"):
+            key = False
+        out.append(text)
+    return " ".join(out)
+
+
+def _cql_refusal(tokens: list[tuple[str, str]]):
+    """The 400 real answers a CQL it cannot read with, or None for one this server reads, by where
+    the reading stops: ``errors.atlassian.cql_not_parsed`` at no clause at all, a token no clause
+    takes, a `not` anywhere but straight after `and`, `order by` with no clause before it, a list
+    that is empty or ends in a comma, and anything left after `order by`; ``cql_expecting_value`` at
+    an operator followed by nothing or by a token that is no value, and at an `in` list never
+    closed; ``cql_missing_closing_parenthesis`` at a `(` never closed; and
+    ``cql_unrecognised_clause`` at words or quoted values left after a whole query. Each one's
+    docstring gives the queries that answered it. A field CQL does not have, a field with no
+    operator, and an operator or a value the field does not take (`foo`, `type`, `type<page`,
+    `type=PAGE`) are refused on real with messages of their own, and answered at 200 here."""
+    at = 0
+
+    def peek(offset=0):
+        return tokens[at + offset] if at + offset < len(tokens) else (None, None)
+
+    def keyword(word, offset=0):
+        kind, text = peek(offset)
+        return kind == "WORD" and text.lower() == word
+
+    class _Stop(Exception):
+        def __init__(self, refusal):
+            self.refusal = refusal
+
+    def not_parsed():
+        return _Stop(errors_atlassian.cql_not_parsed())
+
+    def value(operator, field):
+        nonlocal at
+        kind, text = peek()
+        if kind is None:
+            raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
+        if kind == "NUMBER" and text.startswith("-"):  # `id = -1`, `created > -1d`
+            raise not_parsed()
+        if kind not in _CQL_VALUES or text.lower() in _CQL_KEYWORDS:
+            raise _Stop(errors_atlassian.cql_expecting_value(operator, field, text))
+        at += 1
+        if peek() == ("PUNCT", "("):  # a function: now("-1d"), currentUser()
+            at += 1
+            while peek() != ("PUNCT", ")"):
+                if peek()[0] is None:
+                    raise not_parsed()
+                at += 1
+            at += 1
+
+    def clause():
+        nonlocal at
+        if peek() == ("PUNCT", "("):
+            at += 1
+            sequence()
+            if peek() != ("PUNCT", ")"):
+                raise _Stop(errors_atlassian.cql_missing_closing_parenthesis())
+            at += 1
+            return
+        kind, field = peek()
+        if kind != "WORD" or field.lower() in _CQL_KEYWORDS:
+            raise not_parsed()
+        at += 1
+        negated = keyword("not") and keyword("in", 1)
+        if negated or keyword("in"):
+            operator = "".join(text for _, text in tokens[at : at + 1 + negated])
+            at += 1 + negated
+            if peek() != ("PUNCT", "("):
+                raise _Stop(errors_atlassian.cql_expecting_value(operator, field, peek()[1]))
+            at += 1
+            while True:
+                if peek()[0] is None:
+                    raise _Stop(errors_atlassian.cql_expecting_value(operator, field, "("))
+                if peek()[0] not in _CQL_VALUES:
+                    raise not_parsed()
+                value(operator, field)
+                if peek() != ("PUNCT", ","):
+                    break
+                at += 1
+            if peek()[0] is None:
+                raise _Stop(errors_atlassian.cql_expecting_value(operator, field, "("))
+            if peek() != ("PUNCT", ")"):
+                raise not_parsed()
+            at += 1
+            return
+        if peek()[0] != "OP":
+            raise _Stop(None)  # a field and no operator: refused on real with a message of its own
+        operator = peek()[1]
+        at += 1
+        value(operator, field)
+
+    def sequence():
+        nonlocal at
+        clause()
+        while keyword("and") or keyword("or"):
+            conjunction = peek()[1].lower()
+            at += 1
+            if conjunction == "and" and keyword("not"):
+                at += 1
+            if peek()[0] is None:
+                raise not_parsed()
+            clause()
+
+    try:
+        if not tokens:
+            raise not_parsed()
+        sequence()
+        rest = tokens[at:]
+        if rest and not (keyword("order") and keyword("by", 1)):
+            if all(kind in ("WORD", "QUOTED") for kind, _ in rest) and not any(
+                text.lower() in _CQL_KEYWORDS for _, text in rest
+            ):
+                raise _Stop(
+                    errors_atlassian.cql_unrecognised_clause("".join(text for _, text in rest))
+                )
+            raise not_parsed()
+        if rest:
+            at += 2
+            while True:
+                kind, text = peek()
+                if kind != "WORD" or text.lower() in _CQL_KEYWORDS:
+                    raise not_parsed()
+                at += 1
+                if keyword("asc") or keyword("desc"):
+                    at += 1
+                if peek() != ("PUNCT", ","):
+                    break
+                at += 1
+            if at < len(tokens):
+                raise not_parsed()
+    except _Stop as stop:
+        return stop.refusal
+    return None
 
 
 def _cql_page_param(request: Request, name: str, default: int) -> int | None:

@@ -174,7 +174,7 @@ async function serveOrConnect(url: string | undefined): Promise<Server> {
   const port = await freePort();
   const proc: ChildProcess = spawn(
     python,
-    ["-m", "uvicorn", "backlot.main:app", "--port", String(port), "--log-level", "warning"],
+    ["-m", "backlot", "serve", "--port", String(port), "--log-level", "warning"],
     { cwd: REPO_ROOT, env, stdio: ["ignore", "ignore", "inherit"] },
   );
   const baseUrl = `http://127.0.0.1:${port}`;

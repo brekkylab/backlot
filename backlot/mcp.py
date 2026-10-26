@@ -300,6 +300,7 @@ def graphql_server(base_url: str, creds: Credentials, source: str, *, depth: int
     from fastmcp import FastMCP
     from fastmcp.tools import Tool, ToolResult
 
+    from backlot import telemetry
     from backlot.graphql import mcp_tools
 
     endpoint = f"{base_url}/{source}/graphql"
@@ -307,7 +308,9 @@ def graphql_server(base_url: str, creds: Credentials, source: str, *, depth: int
     # The introspection request carries the credential, so a bad token fails here, before a single
     # tool exists, with the endpoint's own error body.
     introspection = _fetch_json(
-        endpoint, headers=headers, body={"query": mcp_tools.INTROSPECTION_QUERY}
+        endpoint,
+        headers={**headers, telemetry.INTERNAL: "mcp"},
+        body={"query": mcp_tools.INTROSPECTION_QUERY},
     )
     if depth is None:
         depth = DEPTH.get(source, mcp_tools.DEFAULT_DEPTH)

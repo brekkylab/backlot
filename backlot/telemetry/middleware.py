@@ -18,12 +18,13 @@ from urllib.parse import parse_qsl
 
 from backlot import synth
 from backlot.config import get_settings
-from backlot.telemetry import clients, enabled, errors
+from backlot.telemetry import INTERNAL, clients, enabled, errors
 from backlot.telemetry.naming import Namer, own_route
 from backlot.telemetry.recorder import RECORDER, Recorder
 
 _ERROR_BODY_CAP = 256 * 1024
 _GRAPHQL_BODY_CAP = 4 * 1024 * 1024
+_INTERNAL = INTERNAL.lower().encode("latin-1")
 _SIGV4_KEY = re.compile(r"Credential=([^/,\s]{1,128})/")
 # The client label of the request being answered. A Google batch re-sends each part through this
 # app with Backlot's own HTTP client, so a part takes the label of the batch that carried it.
@@ -42,7 +43,12 @@ class TelemetryMiddleware:
         self._admin = {settings.admin_token, synth.s3_access_key_id(settings.admin_token)}
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
-        if not self.on or scope["type"] != "http" or own_route(scope["path"]):
+        if (
+            not self.on
+            or scope["type"] != "http"
+            or own_route(scope["path"])
+            or any(k.lower() == _INTERNAL for k, _ in scope.get("headers", []))
+        ):
             await self.app(scope, receive, send)
             return
         began = time.perf_counter()

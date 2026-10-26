@@ -22,6 +22,10 @@ permissions:
   contents: read
   issues: write
 
+# The servers these comparisons start answer probes, not anyone's use of Backlot.
+env:
+  BACKLOT_TELEMETRY: "0"
+
 jobs:
   # The registry is the list, so adding a source does not also mean editing this file.
   sources:

@@ -571,9 +571,10 @@ string. Apollo Server serves a `GET` with no `Content-Type`, or a form or `text/
 beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its check that a
 browser preflighted the request. Express hands Apollo Server `/graphql` in any case, alone or with
 a slash and more after it, once Linear's front has turned a backslash into a slash, folded a run of
-slashes into one and decoded an escape of a letter, a digit or one of `-._~`, so each of those
-paths is the endpoint too; `/` answers a `GET` or `HEAD` with a greeting, and any other method
-there, or any other path, Express's 404 page. Root `Query` fields:
+slashes into one and decoded an escape of a letter, a digit or one of `-._~`, and once its dot
+segments are resolved, so each of those paths is the endpoint too, but for one whose `..` climbs
+past the root; `/` answers a `GET` or `HEAD` with a greeting, and any other method there, or any
+other path, Express's 404 page. Root `Query` fields:
 
 | Query field | Notes |
 |---|---|

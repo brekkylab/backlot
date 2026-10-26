@@ -292,7 +292,7 @@ def measure(source: CSDLTarget, *, timeout: float = 120.0) -> Measurement:
     import backlot
 
     declared = schema(fetch_text(source.spec_url, timeout=timeout))
-    with backlot.serve() as server:
+    with backlot.serve(telemetry=False) as server:
         types = source.walk(server.base_url, server.token, declared, timeout)
     if not source.operations_url:
         return types

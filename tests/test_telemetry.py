@@ -4,6 +4,7 @@ test starts one."""
 
 from __future__ import annotations
 
+import ast
 import base64
 import gzip
 import json
@@ -14,9 +15,11 @@ import threading
 import time
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
+import backlot
 from backlot import store
 from backlot.config import get_settings
 from backlot.server import HELLO_CORPUS
@@ -187,6 +190,22 @@ def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys):
             seen.append(notice(recorder.ENDPOINT) in capsys.readouterr().err)
     get_settings.cache_clear()
     assert seen == [True, False, True, False, None, True, "0", False]
+
+
+def test_the_fidelity_probes_start_their_servers_with_telemetry_off():
+    # `backlot diff` starts a server to probe; its calls are not anyone's use of Backlot.
+    probes = Path(backlot.__file__).parent / "fidelity"
+    calls = [
+        (path.name, node)
+        for path in sorted(probes.glob("*.py"))
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "attr", getattr(node.func, "id", None)) == "serve"
+    ]
+    assert calls
+    for name, call in calls:
+        off = [k for k in call.keywords if k.arg == "telemetry"]
+        assert off and isinstance(off[0].value, ast.Constant) and off[0].value.value is False, name
 
 
 def test_each_client_rule_names_the_headers_it_was_measured_from():

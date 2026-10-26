@@ -128,7 +128,8 @@ def _express_sent(
     (:func:`_origin`), ``cors``'s answer to it: ``allow_origin`` where given, else that origin, with
     :data:`_EXPOSED`, and `Origin` in `Vary`. A `GET` or `HEAD` whose 2xx answer :func:`_fresh`
     finds fresh is Express's 304 instead, with no body, `Content-Type` or `Accept-Encoding` in
-    `Vary`."""
+    `Vary`; a `HEAD`'s other 2xx answer carries no `ETag`, as api.linear.app answered `HEAD /`
+    with and without the greeting's `ETag` in `If-None-Match` on 2026-10-26 (UTC)."""
     headers: MutableHeaders = response.headers
     headers.setdefault("cache-control", _NO_STORE)
     if etag is True:
@@ -158,7 +159,14 @@ def _express_sent(
             headers["vary"] = ", ".join(vary)
         else:
             del headers["vary"]
+    elif request.method == "HEAD" and 200 <= response.status_code < 300 and "etag" in headers:
+        del headers["etag"]
     return response
+
+
+#: ``fresh``'s test for `no-cache` in a request's `Cache-Control`, its `\s` written out as the
+#: characters JavaScript's `\s` holds in latin-1, which a header value is read as.
+_NO_CACHE = re.compile(r"(?:^|,)[\t\n\v\f\r \xa0]*?no-cache[\t\n\v\f\r \xa0]*?(?:,|$)")
 
 
 def _fresh(request: Request, etag: str | None) -> bool:
@@ -170,7 +178,7 @@ def _fresh(request: Request, etag: str | None) -> bool:
     none_match = request.headers.get("if-none-match")
     if not none_match:
         return False
-    if re.search(r"(?:^|,)\s*?no-cache\s*?(?:,|$)", request.headers.get("cache-control", "")):
+    if re.search(_NO_CACHE, request.headers.get("cache-control", "")):
         return False
     if none_match == "*":
         return True
@@ -448,7 +456,7 @@ def _express_route(request: Request) -> Response:
     path = express_path(sent_path(request.scope))
     if path == "/" and request.method in ("GET", "HEAD"):
         response = Response(_GREETING, media_type=_HTML)
-        _express_sent(request, response, etag=request.method == "GET")
+        _express_sent(request, response)
     elif path == "/" and request.method == "OPTIONS":
         response = _express_sent(
             request,

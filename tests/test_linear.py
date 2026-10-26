@@ -7074,6 +7074,34 @@ _LINEAR_HEADERS = [
         ),
         id="greeting, its ETag",
     ),
+    *(
+        pytest.param(
+            "HEAD",
+            "/",
+            (("If-None-Match", sent),),
+            None,
+            "none",
+            304,
+            _sent(
+                'W/"22-p50xJmghTUzB/yxthmCh2AutfIs"',
+                x_content_type_options="nosniff",
+                vary=None,
+                content_type=None,
+            ),
+            id=f"HEAD /, {label}",
+        )
+        for sent, label in (('W/"22-p50xJmghTUzB/yxthmCh2AutfIs"', "its ETag"), ("*", "*"))
+    ),
+    pytest.param(
+        "GET",
+        _Q,
+        (*_P, *_ORIGIN, ("If-None-Match", _ETAG_OF_TYPENAME)),
+        None,
+        "key",
+        304,
+        _sent(_ETAG_OF_TYPENAME, content_type=None) | _cors() | {"vary": "Origin"} | _counted(2500),
+        id="GET, its ETag, Origin",
+    ),
     pytest.param(
         "HEAD",
         "/",

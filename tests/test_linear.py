@@ -964,7 +964,8 @@ _BATCHING = _apollo(b"Operation batching disabled.")
 # `extensions.http.status` names, 400 for an error naming neither and 200 for an answer with no
 # `errors` (`_status`), or None where Linear served the query with the key and answered 401 without
 # one, as `backlot.graphql.body` and `backlot.graphql.v8_json` read them. A `WithTheKey` row draws
-# the 401 without the key. Apollo Server's envelopes, each ending in a newline, are api.linear.app's.
+# the 401 without the key. Apollo Server's envelopes, each ending in a newline, are
+# api.linear.app's.
 _LINEAR_BODIES = [
     pytest.param(
         b"{",

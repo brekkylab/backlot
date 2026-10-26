@@ -1908,6 +1908,30 @@ _LINEAR_BODIES = [
         ),
         id="null for a non-null argument after U+2028 in a comment",
     ),
+    *(
+        pytest.param(
+            b'{"query":"query($x: String = \\"a\\") { %s }","variables":{"x":null}}' % fields,
+            WithTheKey(
+                b'{"errors":[{"message":"Internal server error","path":["b"],"locations":[{"line":1,"column":%d}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n'
+                % column,
+                200,
+            ),
+            id=f"null for a later root field's argument, {label}",
+        )
+        for fields, column, label in (
+            (
+                b'a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } b: issue(id: $x) { id }',
+                100,
+                "after an issue Linear does not hold",
+            ),
+            (
+                b'b: issue(id: $x) { id } a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id }',
+                40,
+                "before such an issue",
+            ),
+            (b"v: viewer { id } b: issue(id: $x) { id }", 57, "after viewer"),
+        )
+    ),
     pytest.param(
         b'{"query":"{ __schema { queryType { name } } }"}',
         b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',

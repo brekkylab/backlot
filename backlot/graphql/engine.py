@@ -26,6 +26,8 @@ from typing import Any, Callable, Mapping
 
 from graphql import (
     DocumentNode,
+    ExecutionResult,
+    FragmentDefinitionNode,
     GraphQLError,
     GraphQLID,
     GraphQLInputObjectType,
@@ -41,10 +43,13 @@ from graphql import (
     build_schema,
     execute_sync,
     get_operation_ast,
+    located_error,
     parse,
     type_from_ast,
     validate,
 )
+from graphql.execution.collect_fields import collect_fields
+from graphql.execution.values import get_argument_values, get_variable_values
 
 from backlot.graphql import body as request_body
 from backlot.graphql import js_words
@@ -487,7 +492,8 @@ class Engine:
             }
         # An operation on a root the SDL leaves out has only `__typename` once it is validated.
         on_a_root = getattr(self.schema, f"{operation.operation.operation.value}_type") is None
-        result = execute_sync(
+        refusal = None if on_a_root else self._refused_root_argument(operation, variables)
+        result = refusal or execute_sync(
             self._checked if on_a_root else self.schema,
             operation.document,
             context_value=context,
@@ -518,6 +524,46 @@ class Engine:
             raised=any(_raised(e) for e in result.errors or ()),
             assigned=frozenset(assigned),
         )
+
+    def _refused_root_argument(
+        self, operation: Operation, variables: Any
+    ) -> ExecutionResult | None:
+        """The answer to ``operation`` where a non-null root field's arguments are refused, or None
+        to run it. graphql-js reads each root field's arguments as it starts the field, in the order
+        the fields come, before any resolver's answer arrives, as Linear's resolvers answer
+        asynchronously: a non-null root field whose argument it refuses nulls the data, and its
+        error is answered after the refusals at the nullable root fields before it and ahead of
+        whatever an earlier root field's resolver would answer. api.linear.app answered
+        `Internal server error` at a later `issue(id: $x)` sent `null`, ahead of an earlier `issue`
+        it does not hold and of an earlier `viewer`, on 2026-10-21 and 2026-10-26 (UTC). A refused
+        directive is the run's to answer, as it is read first."""
+        root = self.schema.get_root_type(operation.operation.operation)
+        fragments = {
+            d.name.value: d
+            for d in operation.document.definitions
+            if isinstance(d, FragmentDefinitionNode)
+        }
+        coerced = get_variable_values(
+            self.schema, list(operation.operation.variable_definitions), variables or {}
+        )
+        try:
+            fields = collect_fields(
+                self.schema, fragments, coerced, root, operation.operation.selection_set
+            )
+        except GraphQLError:
+            return None
+        errors = []
+        for key, nodes in fields.items():
+            field = root.fields.get(nodes[0].name.value)
+            if field is None:
+                continue
+            try:
+                get_argument_values(field, nodes[0], coerced)
+            except GraphQLError as error:
+                errors.append(located_error(error, nodes, [key]))
+                if isinstance(field.type, GraphQLNonNull):
+                    return ExecutionResult(None, errors)
+        return None
 
     def execute(
         self,

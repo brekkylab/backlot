@@ -28,7 +28,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, published, store, synth
+from backlot import ascii_folding, auth, published, store, synth
 from backlot.acl import Caller
 from backlot.openapi import qp
 from backlot.routers import json_body
@@ -945,25 +945,25 @@ def _refuse_a_batch_read_shape(
     return None
 
 
-# Letters NFKC leaves in place that the measured comparison still folds: dotless i, and the
-# small-capital r. A Greek iota is not among them, so it stays a different letter.
-_HUBSPOT_FOLDS = str.maketrans({"\u0131": "i", "\u0280": "r"})
-
-
 def _hubspot_fold(value: str) -> str:
-    """A string property as a search filter compares it.
+    """A string property as a search filter compares it: in NFKC, folded as Lucene's
+    `ASCIIFoldingFilter` folds it (:mod:`backlot.ascii_folding`), then in lower case. Read off
+    real's answers; the vendor does not say which analyzer its search runs.
 
-    Measured against api.hubapi.com on 2026-10-16, ``firstname EQ`` against a contact stored as
-    ``Maria``: ``MARÍA``, ``mária``, ``MÄRIA``, ``Marïa``, a combining acute, ``MARİA`` (U+0130),
-    ``marıa`` (U+0131), ``maʀia`` (U+0280) and fullwidth ``ＭＡＲＩＡ`` matched, and a Greek capital
-    iota or a value whose spaces differ did not. ``IN`` and ``NEQ`` use the same comparison.
-    An enumeration property does not: it is compared exactly, by the caller.
-
-    NFKC folds the fullwidth letters. ``ı`` and ``ʀ`` are translated, then case, then combining
-    marks are removed, which is what turns ``İ`` into ``i``."""
-    text = unicodedata.normalize("NFKC", str(value)).translate(_HUBSPOT_FOLDS).lower()
-    decomposed = unicodedata.normalize("NFD", text)
-    return "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
+    Measured against api.hubapi.com on 2026-10-16 and 2026-10-25, ``firstname EQ`` against
+    contacts stored as ``Maria``, ``Brian``, ``bob`` and ``cara``. Each letter the table folds that
+    was sent matched the letter it folds to: ``MARÍA``, ``MARİA``, ``marıa``, ``maʀia``, ``BØB``,
+    ``bᴏb``, ``ƀob``, ``ʙob``, ``Mɐria``, ``Məria``, ``bɔb``, ``Briaŋ``, ``ɯaria``, ``ᴄara``,
+    ``ȼara``, ``MarƗa`` and ``Maɍia`` among them. So did each that NFKC takes to one, fullwidth
+    ``ＭＡＲＩＡ``, ``Mªria``, ``bºb``, ``bⓞb``, ``Marⅰa``, ``Marℹa`` and ``ℳaria``, and an acute or a
+    diaeresis NFKC composes with the letter before it, ``maria`` + U+0301 and ``bo`` + U+0308 +
+    ``b``. ``Mɑria`` (U+0251), ``Marɩa`` (U+0269) and ``bᴑb`` (U+1D11), which the table leaves, did
+    not, nor did a Greek capital iota, a Cyrillic ``о`` or ``і``, a mark NFKC leaves on its own
+    (``b`` + U+0302 + ``ob``, ``bob`` + U+0308) or a value whose spaces differ. ``IN`` and ``NEQ``
+    compare the same way; an enumeration property does not fold at all, which its caller decides.
+    """
+    text = unicodedata.normalize("NFKC", str(value))
+    return text.translate(ascii_folding.TABLE).lower()
 
 
 def _match_one(prop, f: dict) -> bool:
@@ -989,7 +989,7 @@ def _match_one(prop, f: dict) -> bool:
     # `lifecyclestage EQ LEAD`, `dealstage EQ APPOINTMENTSCHEDULED` and `pipeline EQ DEFAULT`
     # answered nothing where the lower-case values matched. The four below are the enumerations
     # (`/crm/v3/properties`, 2026-10-16) among the properties the bundled records carry. A string
-    # property also folds accents and the letter forms :func:`_hubspot_fold` names.
+    # property is compared through :func:`_hubspot_fold`.
     exact = f.get("propertyName") in {"lifecyclestage", "dealstage", "pipeline", "industry"}
     fold = str if exact else _hubspot_fold
     if op in ("EQ", "NEQ"):

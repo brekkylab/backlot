@@ -519,15 +519,75 @@ def _jira_project_order(raw: str) -> None:
     )
 
 
+# The `projectTypeKey` of every project served here.
+_JIRA_PROJECT_TYPE = "software"
+# What `typeKey` trims from each value: the 25 code points of Unicode's White_Space property, each
+# of which kept the project on 2026-10-25 in front of `software` and after it, where U+0001,
+# U+001C to U+001F, U+007F, U+00AD, U+180E, U+200B and U+FEFF kept none. `str.strip()` would take
+# U+001C to U+001F as well.
+_JIRA_TYPE_KEY_SPACE = "\t\n\x0b\x0c\r \x85\xa0\u1680\u2028\u2029\u202f\u205f\u3000" + "".join(
+    map(chr, range(0x2000, 0x200B))
+)
+
+
+def _jira_project_kept(request: Request, name: str, key: str, category: int | None) -> bool:
+    """Whether ``project/search`` keeps this project under `query`, `keys`, `typeKey` and the
+    ``category`` its `categoryId` converted to.
+
+    Measured against Jira Cloud on 2026-10-09 and 2026-10-22, on a site of one project. `query`
+    keeps a project whose name or key holds the text, both lower-cased and nothing trimmed: the
+    first three letters of the name, a fragment of the key in either case and the name with a
+    KELVIN SIGN (U+212A) for its `k` kept that project, where `zzqq`, a space or a tab in front of
+    the name's first letters, `bre*` and the key with a LONG S (U+017F) for its `s` kept none.
+    `keys` keeps a project whose key is one of the values as sent, so `keys=PA&keys=PB` keeps
+    either: the key kept the project, and the key in lower case, with a space in front, `NOPE` and
+    `<KEY>,NOPE` kept none. A lone empty `keys=` filters nothing, where `keys=&keys=` kept none.
+    `typeKey` is a list split at its commas over every value sent, each trimmed of
+    :data:`_JIRA_TYPE_KEY_SPACE` and lower-cased:
+    `software`, `Software`, `%20software`, `%C2%A0software`, `software,business` and
+    `typeKey=business&typeKey=software` kept the project, `business`, `bogus`, `%01software` and
+    `ſoftware` kept none, and an empty value or `,` filtered nothing, all at 200. A project here
+    is software and carries no category, so any `categoryId` that converts keeps none
+    (`categoryId=99`, `0` and `-1` kept none).
+    """
+    query = request.query_params.get("query")
+    if query:
+        lowered = query.lower()
+        if lowered not in name.lower() and lowered not in key.lower():
+            return False
+    keys = request.query_params.getlist("keys")
+    if keys and keys != [""] and key not in keys:
+        return False
+    types = {
+        part.strip(_JIRA_TYPE_KEY_SPACE).lower()
+        for value in request.query_params.getlist("typeKey")
+        for part in value.split(",")
+    }
+    if types - {""} and _JIRA_PROJECT_TYPE not in types:
+        return False
+    return category is None
+
+
 @router.get(
     "/rest/api/3/project/search",
-    openapi_extra={"parameters": [qp("startAt", "integer"), qp("maxResults", "integer")]},
+    openapi_extra={
+        "parameters": [
+            qp("startAt", "integer"),
+            qp("maxResults", "integer"),
+            qp("query"),
+            qp("keys"),
+            qp("typeKey"),
+            qp("categoryId", "integer"),
+        ]
+    },
 )
 async def jira_project_search(request: Request):
     # Jira Cloud, measured 2026-10-16: integer conversion precedes orderBy;
     # startAt is a long floored at zero, and maxResults is clamped to 1..100.
     start = max(0, _int_param(request, "startAt", 0, width=JAVA_LONG))
     limit = min(100, max(1, _int_param(request, "maxResults", 50)))
+    # Converted after `startAt` and `maxResults` and before `orderBy` is read, as real converts it.
+    category = _int_param(request, "categoryId", None, width=JAVA_LONG)
     # Read for the refusal above. The sort itself is not served, so `orderBy` stays undeclared:
     # `qp` is for a parameter Backlot honours, and advertising this one would offer a client an
     # order the listing never applies. `backlot diff --source jira` keeps the gap.
@@ -540,12 +600,14 @@ async def jira_project_search(request: Request):
     values = []
     for r in _reachable_projects(conn, ids):
         key = _project_key(conn, r["name"])
+        if not _jira_project_kept(request, r["name"], key, category):
+            continue
         values.append(
             {
                 "id": str(synth.github_user_id(r["name"])),
                 "key": key,
                 "name": r["name"],
-                "projectTypeKey": "software",
+                "projectTypeKey": _JIRA_PROJECT_TYPE,
                 "simplified": False,
                 "style": "classic",
                 "isPrivate": False,
@@ -1500,7 +1562,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
             "id": str(synth.github_user_id(row["project"])),
             "key": pkey,
             "name": row["project"],
-            "projectTypeKey": "software",
+            "projectTypeKey": _JIRA_PROJECT_TYPE,
             "simplified": False,
             "self": f"{site}/rest/api/3/project/{pkey}",
             "avatarUrls": synth.avatar_urls("proj:" + pkey),
@@ -1953,6 +2015,10 @@ async def confluence_cql_search(request: Request):
     ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
     want_label = ml.group(1) if ml else None
     _refuse_negative_page_params(limit, start)
+    tokens = _cql_tokens(cql)
+    refusal = _cql_refusal(tokens)
+    if refusal is not None:
+        raise refusal
     # An empty `cursor` is none, and of a repeated one the first is read, measured 2026-10-04.
     sent_cursor = (request.query_params.getlist("cursor") or [None])[0]
     after = _cql_search_after(sent_cursor) if sent_cursor else None
@@ -2012,16 +2078,21 @@ async def confluence_cql_search(request: Request):
         sent_cursor=sent_cursor,
         reached=reached,
     )
-    return {
-        "results": results,
-        "start": start,
-        "limit": limit,
-        "size": len(results),
-        "totalSize": total,
-        "cqlQuery": cql,
-        "searchDuration": 5,
-        "_links": links,
-    }
+    return Response(
+        errors_atlassian._confluence_json(
+            {
+                "results": results,
+                "start": start,
+                "limit": limit,
+                "size": len(results),
+                "totalSize": total,
+                "cqlQuery": _cql_written_back(tokens),
+                "searchDuration": 5,
+                "_links": links,
+            }
+        ),
+        media_type="application/json",
+    )
 
 
 @router.get("/wiki/rest/api/content", response_model=ConfluenceResults, openapi_extra=_P_CONTENT)
@@ -2857,6 +2928,184 @@ def _confluence_page_params(
 
 # What Java's `String.trim()` removes: every character up to and including the space.
 _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
+
+
+# CQL as real's reader splits it, measured on Confluence Cloud on 2026-10-22 and 2026-10-25, the
+# second time with `title~a<c>b` and `title~a<c>` for each ASCII punctuation character `<c>`: a
+# quoted value in either quotes, in which a backslash keeps the next character; an operator, a
+# bracket or a comma; a date such as `2026-01-01` and a number, both in ASCII digits; and a word of
+# ASCII letters, digits and `_`, dotted as `space.key` is. A control character, one past ASCII and
+# those in `DROPPED` are left out as a space is: `title ~ probe*` is `title ~ probe`, `title~a#b`
+# reads `a` and then `b`, and on 2026-10-26 `title~` and U+0663 (an Arabic-Indic three) or U+FF11 (a
+# fullwidth one) had no value. Each other character is a token no clause takes, so `label=a-b` and
+# `title~a:b` cannot be parsed.
+_CQL_TOKEN = re.compile(
+    r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
+    r"|(?P<OP>!=|!~|>=|<=|=|~|>|<)"
+    r"|(?P<PUNCT>[(),])"
+    r"|(?P<DATE>[0-9]{4}-[0-9]{2}-[0-9]{2})"
+    r"|(?P<NUMBER>-[0-9]+|[0-9]+(?![A-Za-z_.]))"
+    r"|(?P<WORD>[A-Za-z0-9_]+(?:[.][A-Za-z0-9_]+)*)"
+    r"|(?P<DROPPED>[\s#$%&*+;?@^`{|}\x00-\x1f\x7f]|[^\x00-\x7f])"
+    r"|(?P<OTHER>.)",
+    re.DOTALL,
+)
+_CQL_OPERATORS = frozenset(("!=", "!~", ">=", "<=", "=", "~", ">", "<"))
+_CQL_KEYWORDS = frozenset(("and", "or", "not", "in", "order", "by", "asc", "desc"))
+_CQL_VALUES = frozenset(("WORD", "QUOTED", "NUMBER", "DATE"))
+
+
+def _cql_tokens(cql: str) -> list[tuple[str, str]]:
+    """The tokens of ``cql`` as ``(kind, text)``, those `_CQL_TOKEN` leaves out dropped."""
+    return [(m.lastgroup, m.group()) for m in _CQL_TOKEN.finditer(cql) if m.lastgroup != "DROPPED"]
+
+
+def _cql_written_back(tokens: list[tuple[str, str]]) -> str:
+    """``cqlQuery`` as real writes the query back: its tokens one space apart, in the case and the
+    quotes they were sent in, and each value of `space.key` in single quotes, in place of its own
+    (Confluence Cloud, 2026-10-22 and 2026-10-25)."""
+    out, key = [], False
+    for i, (kind, text) in enumerate(tokens):
+        before = tokens[i - 1] if i else (None, None)
+        if kind == "OP" or kind == "WORD" and text.lower() == "in":
+            field = i - 1 - (kind == "WORD" and i > 1 and before[1].lower() == "not")
+            key = field >= 0 and tokens[field][1].lower() == "space.key"
+        elif kind in ("WORD", "QUOTED") and key and (before[0] == "OP" or before[1] in "(,"):
+            text = f"'{text[1:-1]}'" if kind == "QUOTED" else f"'{text}'"
+        elif before[1] == ")" or kind == "WORD" and text.lower() in ("and", "or"):
+            key = False
+        out.append(text)
+    return " ".join(out)
+
+
+def _cql_refusal(tokens: list[tuple[str, str]]):
+    """The 400 real answers a CQL it cannot read with, or None for one this server reads, by where
+    the reading stops: ``errors.atlassian.cql_not_parsed`` at no clause at all, a token no clause
+    takes, a `not` anywhere but straight after `and`, `order by` with no clause before it, a list
+    that is empty or ends in a comma, and anything left after `order by`; ``cql_expecting_value`` at
+    an operator followed by nothing or by a token that is no value, and at an `in` list never
+    closed; ``cql_missing_closing_parenthesis`` at a `(` never closed; and
+    ``cql_unrecognised_clause`` at words or quoted values left after a whole query. Each one's
+    docstring gives the queries that answered it. A field CQL does not have, a field with no
+    operator, and an operator or a value the field does not take (`foo`, `type`, `type<page`,
+    `type=PAGE`) are refused on real with messages of their own, and answered at 200 here."""
+    at = 0
+
+    def peek(offset=0):
+        return tokens[at + offset] if at + offset < len(tokens) else (None, None)
+
+    def keyword(word, offset=0):
+        kind, text = peek(offset)
+        return kind == "WORD" and text.lower() == word
+
+    class _Stop(Exception):
+        def __init__(self, refusal):
+            self.refusal = refusal
+
+    def not_parsed():
+        return _Stop(errors_atlassian.cql_not_parsed())
+
+    def value(operator, field):
+        nonlocal at
+        kind, text = peek()
+        if kind is None:
+            raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
+        if kind == "NUMBER" and text.startswith("-"):  # `id = -1`, `created > -1d`
+            raise not_parsed()
+        if kind not in _CQL_VALUES or text.lower() in _CQL_KEYWORDS:
+            raise _Stop(errors_atlassian.cql_expecting_value(operator, field, text))
+        at += 1
+        if peek() == ("PUNCT", "("):  # a function: now("-1d"), currentUser()
+            at += 1
+            while peek() != ("PUNCT", ")"):
+                if peek()[0] is None:
+                    raise not_parsed()
+                at += 1
+            at += 1
+
+    def clause():
+        nonlocal at
+        if peek() == ("PUNCT", "("):
+            at += 1
+            sequence()
+            if peek() != ("PUNCT", ")"):
+                raise _Stop(errors_atlassian.cql_missing_closing_parenthesis())
+            at += 1
+            return
+        kind, field = peek()
+        if kind != "WORD" or field.lower() in _CQL_KEYWORDS:
+            raise not_parsed()
+        at += 1
+        negated = keyword("not") and keyword("in", 1)
+        if negated or keyword("in"):
+            operator = "".join(text for _, text in tokens[at : at + 1 + negated])
+            at += 1 + negated
+            if peek() != ("PUNCT", "("):
+                raise _Stop(errors_atlassian.cql_expecting_value(operator, field, peek()[1]))
+            at += 1
+            while True:
+                if peek()[0] is None:
+                    raise _Stop(errors_atlassian.cql_expecting_value(operator, field, "("))
+                if peek()[0] not in _CQL_VALUES:
+                    raise not_parsed()
+                value(operator, field)
+                if peek() != ("PUNCT", ","):
+                    break
+                at += 1
+            if peek()[0] is None:
+                raise _Stop(errors_atlassian.cql_expecting_value(operator, field, "("))
+            if peek() != ("PUNCT", ")"):
+                raise not_parsed()
+            at += 1
+            return
+        if peek()[0] != "OP":
+            raise _Stop(None)  # a field and no operator: refused on real with a message of its own
+        operator = peek()[1]
+        at += 1
+        value(operator, field)
+
+    def sequence():
+        nonlocal at
+        clause()
+        while keyword("and") or keyword("or"):
+            conjunction = peek()[1].lower()
+            at += 1
+            if conjunction == "and" and keyword("not"):
+                at += 1
+            if peek()[0] is None:
+                raise not_parsed()
+            clause()
+
+    try:
+        if not tokens:
+            raise not_parsed()
+        sequence()
+        rest = tokens[at:]
+        if rest and not (keyword("order") and keyword("by", 1)):
+            if all(kind in ("WORD", "QUOTED") for kind, _ in rest) and not any(
+                text.lower() in _CQL_KEYWORDS for _, text in rest
+            ):
+                raise _Stop(
+                    errors_atlassian.cql_unrecognised_clause("".join(text for _, text in rest))
+                )
+            raise not_parsed()
+        if rest:
+            at += 2
+            while True:
+                kind, text = peek()
+                if kind != "WORD" or text.lower() in _CQL_KEYWORDS:
+                    raise not_parsed()
+                at += 1
+                if keyword("asc") or keyword("desc"):
+                    at += 1
+                if peek() != ("PUNCT", ","):
+                    break
+                at += 1
+            if at < len(tokens):
+                raise not_parsed()
+    except _Stop as stop:
+        return stop.refusal
+    return None
 
 
 def _cql_page_param(request: Request, name: str, default: int) -> int | None:

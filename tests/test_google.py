@@ -28,6 +28,7 @@ from tests._helpers import (
     crawl_drive,
     crawl_gmail,
     db_count,
+    sent_as,
     served_id,
     tiny_corpus,
     tok,
@@ -2061,6 +2062,52 @@ _MASKS_REFUSED = (
             ("zzz,id,aaa", "zzz"),
             ("aaa,owners(zzz)", "aaa"),
         ]
+        + [
+            ("owners(zzz)", "zzz"),
+            ("owners/zzz", "zzz"),
+            ("id/zzz", "zzz"),
+            ("kind/zzz", "zzz"),
+            ("kind/id", "id"),
+            ("*/id", "id"),
+            ("owners(owners(kind))", "owners"),
+            ("owners/kind/zzz", "zzz"),
+            ("owners(kind/zzz)", "zzz"),
+            ("capabilities/zzz", "zzz"),
+            ("exportLinks/zzz", "zzz"),
+            ("exportLinks(application)", "application"),
+            ("sharingUser/zzz", "zzz"),
+            ("permissions(zzz)", "zzz"),
+            ("parents/zzz", "zzz"),
+            ("permissions/permissionDetails/zzz", "zzz"),
+            ("contentHints/thumbnail/zzz", "zzz"),
+            ("imageMediaMetadata/location/zzz", "zzz"),
+            ("labelInfo/labels/fields/zzz", "zzz"),
+            ("downloadRestrictions/zzz", "zzz"),
+        ]
+    ]
+    + [
+        ("/drive/v3/files", mask, name)
+        for mask, name in [("kind/id", "id"), ("nextPageToken/zzz", "zzz")]
+        + [("files(id/zzz)", "zzz"), ("files(owners(zzz))", "zzz")]
+    ]
+    + [
+        (path, mask, "zzz")
+        for path, listed in ((_PERMS_OF_DOC, "permissions"), ("/drive/v3/drives", "drives"))
+        for mask in ["kind/zzz", "nextPageToken/zzz", f"{listed}(id/zzz)"]
+    ]
+    + [
+        (_PERMS_OF_DOC, "permissions(permissionDetails(zzz))", "zzz"),
+        ("/drive/v3/drives", "drives(capabilities/zzz)", "zzz"),
+    ]
+    + [
+        ("/drive/v3/about", mask, subject)
+        for mask, subject in [
+            ("user(zzz)", "zzz"),
+            ("user/kind/zzz", "zzz"),
+            ("user(kind/zzz)", "zzz"),
+            ("*/user", "user"),
+            ("exportFormats/zzz", "zzz"),
+        ]
     ]
     + [
         ("/drive/v3/files", mask, mask)
@@ -2079,8 +2126,13 @@ _MASKS_REFUSED = (
     ]
     + [
         ("/drive/v3/about", mask, subject)
-        for mask, subject in [("user,", "user,"), (",", ","), ("zzz,bogus", "zzz")]
-        + [("bogus,user", "bogus")]
+        for mask, subject in [("zzz,bogus", "zzz"), ("bogus,user", "bogus")]
+        + [
+            (mask, mask)
+            for mask in ["user,", ",", "user ,", "user,,", ",,", "user(,", "*,", "(,", "user/,"]
+            + ["user, ", "user,\t", "user(kind),", "user(kind,", "user name", "user\tname"]
+            + ["user name(kind)", "user(kind name)", "kind, user name"]
+        ]
     ]
 )
 _FIELDS_REQUIRED = (
@@ -2107,10 +2159,6 @@ _MASKS_UNSERVED = [
     (_DOC, "copyRequiresWriterPermission,viewersCanCopyContent", "copyRequiresWriterPermission"),
     ("/drive/v3/files", "files(id,writersCanShare)", "writersCanShare"),
     ("/drive/v3/files", "files/linkShareMetadata", "linkShareMetadata"),
-    (_PERMS_OF_DOC, "permissions(deleted)", "deleted"),
-    (_PERMS_OF_DOC, "permissions(id,photoLink)", "photoLink"),
-    (_PERMS_OF_DOC, "permissions/permissionDetails", "permissionDetails"),
-    (_PERMS_OF_DOC, "permissions(pendingOwner)", "pendingOwner"),
 ]
 _FULLTEXT = "q=" + quote("fullText contains 'a'")
 # Where real answered a mask ending in a comma among a route's other refusals, each sent beside it,
@@ -2175,7 +2223,41 @@ _MASK_ORDER = (
     + [(_DOC, "id", "fields=" + quote("id,"), _SERVED)]
 )
 # Masks `about` answered with the missing-mask 400 `_drive_about_field_keys` describes.
-_ABOUT_MASKS_REQUIRED = ["\n", chr(0x1C), chr(0x3000), "user()", "user( )", "kind()"]
+_ABOUT_MASKS_REQUIRED = [
+    "\n",
+    chr(0x1C),
+    chr(0x3000),
+    "user()",
+    "user( )",
+    "kind()",
+    "user(),kind",
+    "kind,user()",
+    "user,,kind",
+    ",user",
+    "zzz,,user",
+    "user(",
+    "user)",
+    "(user)",
+    "user/",
+    "/user",
+    "*id",
+    chr(0x0000),
+    chr(0x0001),
+    chr(0x200B),
+    chr(0xFEFF),
+    "user)(",
+    "user(kind,)",
+    "user(,kind)",
+    "user//kind",
+    "user;kind",
+    "user*",
+    "*name",
+    "user *",
+    " ,user",
+    "user(kind) name",
+    "user name)",
+    "kind,user(kind name",
+]
 # What a member's `drives.list` answered each `q` with, as `_DRIVES_Q` records.
 _DRIVES_Q_TAKEN = [
     "",
@@ -2557,7 +2639,7 @@ def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
 
 @pytest.mark.parametrize("mask", ["", " ", "\t"])
 def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
-    """The blank mask `_drive_get_field_keys` describes, on a listing, a file and a folder, and
+    """The blank mask `_drive_project_one` describes, on a listing, a file and a folder, and
     `about`'s missing-mask 400 for the same mask. An absent mask is the default object."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     folder = client.get(
@@ -2599,8 +2681,24 @@ _MASKS_SERVED = [
     (_DOC, "kind(),id", {"kind", "id"}, None),
     (_DOC, "createdTime()", set(), None),
     (_DOC, "trashed()", set(), None),
-    ("/drive/v3/files", "*", {"files"}, "default"),
-    ("/drive/v3/files", "*,files(id)", {"files"}, "default"),
+    (_DOC, "owners/*", {"owners"}, None),
+    (_DOC, "permissions(id)", set(), None),
+    (_DOC, "capabilities(canAcceptOwnership,canEdit)", {"capabilities"}, None),
+    (_DOC, "contentHints/thumbnail/image", set(), None),
+    (_DOC, "imageMediaMetadata/location/altitude", set(), None),
+    (_DOC, "labelInfo/labels/id", set(), None),
+    (_DOC, "shortcutDetails/targetId", set(), None),
+    (_DOC, "contentRestrictions(readOnly,restrictingUser/me)", set(), None),
+    (_DOC, "properties/zzz", set(), None),
+    (_DOC, "appProperties(zzz)", set(), None),
+    (_DOC, "exportLinks(*)", {"exportLinks"}, None),
+    ("/drive/v3/files", "*", None, None),
+    ("/drive/v3/files", "*,files(id)", None, None),
+    ("/drive/v3/files", "kind", {"kind"}, None),
+    ("/drive/v3/files", "nextPageToken", {"nextPageToken"}, None),
+    ("/drive/v3/files", "incompleteSearch,files(id)", {"incompleteSearch", "files"}, {"id"}),
+    ("/drive/v3/files", "files(permissions(id))", {"files"}, set()),
+    ("/drive/v3/files", "files(capabilities(canAcceptOwnership))", {"files"}, {"capabilities"}),
     ("/drive/v3/files", "files(id,*)", {"files"}, "default"),
     ("/drive/v3/files", "files()", {"files"}, set()),
     ("/drive/v3/files", "files( )", {"files"}, set()),
@@ -2633,11 +2731,11 @@ _MASKS_SERVED = [
     (_PERMS_OF_DOC, "permissions(emailAddress())", {"permissions"}, set()),
     (_PERMS_OF_DOC, "permissions( )", {"permissions"}, set()),
     (_PERMS_OF_DOC, "permissions(teamDrivePermissionDetails)", {"permissions"}, set()),
-    (_PERMS_OF_DOC, "permissions", {"permissions"}, "default"),
-    (_PERMS_OF_DOC, "permissions(*)", {"permissions"}, "default"),
-    (_PERMS_OF_DOC, "*", {"kind", "permissions"}, "default"),
-    (_PERMS_OF_DOC, "*,permissions(id)", {"kind", "permissions"}, "default"),
-    (_PERMS_OF_DOC, "permissions(id,*)", {"permissions"}, "default"),
+    (_PERMS_OF_DOC, "permissions", {"permissions"}, "full"),
+    (_PERMS_OF_DOC, "permissions(*)", {"permissions"}, "full"),
+    (_PERMS_OF_DOC, "*", {"kind", "permissions"}, "full"),
+    (_PERMS_OF_DOC, "*,permissions(id)", {"kind", "permissions"}, "full"),
+    (_PERMS_OF_DOC, "permissions(id,*)", {"permissions"}, "full"),
     ("/drive/v3/drives", "", set(), None),
     ("/drive/v3/drives", " ", set(), None),
     ("/drive/v3/drives", "nextPageToken", set(), None),
@@ -2647,14 +2745,22 @@ _MASKS_SERVED = [
     ("/drive/v3/drives", "drives/id", {"drives"}, None),
     ("/drive/v3/drives", "drives()", {"drives"}, None),
     ("/drive/v3/drives", "drives(id,name)", {"drives"}, None),
+    ("/drive/v3/drives", "drives(capabilities(canEdit))", {"drives"}, None),
+    (
+        "/drive/v3/drives",
+        "drives(restrictions/downloadRestriction/restrictedForReaders)",
+        {"drives"},
+        None,
+    ),
     ("/drive/v3/drives", "*", {"kind", "drives"}, None),
     ("/drive/v3/drives", "kind()", {"kind"}, None),
     ("/drive/v3/about", "user, storageQuota", {"user", "storageQuota"}, None),
     ("/drive/v3/about", "user ,kind", {"user", "kind"}, None),
     ("/drive/v3/about", "user", {"user"}, None),
     ("/drive/v3/about", "user,storageQuota", {"user", "storageQuota"}, None),
-    ("/drive/v3/about", "user(kind)", {"user"}, None),
     ("/drive/v3/about", "user(*)", {"user"}, None),
+    ("/drive/v3/about", "user/*", {"user"}, None),
+    ("/drive/v3/about", "driveThemes(id)", {"driveThemes"}, None),
 ]
 
 
@@ -2662,10 +2768,9 @@ _MASKS_SERVED = [
 def test_drive_answers_a_fields_mask_with_what_it_selects(
     client, admin_h, path, mask, top, entries
 ):
-    """The rows `_MASKS_SERVED` records. `files.list`'s own top-level keys are left whole, as
-    `_drive_file_field_keys` says, so only its `files` is compared; `"default"` is each entry as an
-    unmasked request gets it. A `drives.list` row compares the top-level keys alone: Backlot serves
-    no shared drive, where real listed the member's two."""
+    """The rows `_MASKS_SERVED` records; `"default"` is each entry as an unmasked request gets it.
+    A `drives.list` row compares the top-level keys alone: Backlot serves no shared drive, where
+    real listed the member's two."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     url, _, query = path.format(doc=doc).partition("?")
 
@@ -2674,8 +2779,7 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(
             url, headers=admin_h, params={"pageSize": 2, **dict(parse_qsl(query)), **params}
         )
         assert r.status_code == 200, r.text
-        body = r.json()
-        return {"files": body["files"]} if path == "/drive/v3/files" else body
+        return r.json()
 
     body = get(fields=mask)
     if top is None:
@@ -2685,10 +2789,130 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(
     listed = next((k for k in body if isinstance(body[k], list)), None)
     if entries == "default":
         assert body[listed] == get()[listed]
+    elif entries == "full":
+        # permissions.list has no unmasked full object: no mask answers only id/type/kind/role,
+        # while an explicit wrapper or `*` adds emailAddress/displayName and the rest. The `*`
+        # request is the unmasked-equivalent a mask naming the whole list must agree with.
+        assert body[listed] == get(fields="*")[listed]
     elif entries:
         assert body[listed] and all(set(e) == entries for e in body[listed])
     elif entries is not None:
         assert body[listed] == []
+
+
+_USER = {"kind", "displayName", "emailAddress", "me", "permissionId", "photoLink"}
+_DETAILS = {"permissionType", "role", "inherited"}
+# What real answered each mask naming a name below an object field with, as `_drive_trim_object`
+# trims it: the path to each value the answer holds, a list's entries together, and to each list
+# left empty.
+_MASKS_TRIMMED = [
+    (_DOC, "owners(kind)", {"owners/kind"}),
+    (_DOC, "owners/kind", {"owners/kind"}),
+    (_DOC, "owners(kind,me)", {"owners/kind", "owners/me"}),
+    (_DOC, "owners(kind),owners(me)", {"owners/kind", "owners/me"}),
+    (_DOC, "owners,owners(kind)", {"owners/kind"}),
+    (_DOC, "owners(kind),owners", {"owners/kind"}),
+    (_DOC, "owners(*),owners(kind)", {f"owners/{k}" for k in _USER}),
+    (_DOC, "owners(kind),owners(*)", {f"owners/{k}" for k in _USER}),
+    (_DOC, "owners(kind),owners()", set()),
+    (_DOC, "owners(),owners(kind)", set()),
+    (_DOC, "owners(*),owners()", set()),
+    (_DOC, "owners(),owners(*)", set()),
+    (_DOC, "owners,owners()", set()),
+    (_DOC, "lastModifyingUser(kind)", {"lastModifyingUser/kind"}),
+    (_DOC, "lastModifyingUser(),lastModifyingUser(kind)", set()),
+    (_DOC, "lastModifyingUser(kind),lastModifyingUser()", set()),
+    (_DOC, "capabilities(canEdit,canCopy)", {"capabilities/canEdit", "capabilities/canCopy"}),
+    (_DOC, "capabilities,capabilities(canEdit)", {"capabilities/canEdit"}),
+    (_DOC, "capabilities(canEdit),capabilities()", set()),
+    (_DOC, "capabilities(),capabilities(canEdit)", set()),
+    ("/drive/v3/files", "files(owners(kind))", {"files/owners/kind"}),
+    ("/drive/v3/files", "files/owners/kind", {"files/owners/kind"}),
+    ("/drive/v3/files", "files(owners/kind,id)", {"files/id", "files/owners/kind"}),
+    ("/drive/v3/files", "files(id),files(owners(kind))", {"files/id", "files/owners/kind"}),
+    ("/drive/v3/files", "files(kind,owners/kind)", {"files/kind", "files/owners/kind"}),
+    (
+        "/drive/v3/files",
+        "files(owners(kind)),nextPageToken",
+        {"files/owners/kind", "nextPageToken"},
+    ),
+    ("/drive/v3/files", "files(capabilities(canEdit))", {"files/capabilities/canEdit"}),
+    (
+        "/drive/v3/files",
+        "files(id,lastModifyingUser(kind))",
+        {"files/id", "files/lastModifyingUser/kind"},
+    ),
+    ("/drive/v3/files", "files(owners,owners(kind))", {"files/owners/kind"}),
+    ("/drive/v3/files", "files(owners(kind),owners(*))", {f"files/owners/{k}" for k in _USER}),
+    ("/drive/v3/files", "files(owners(*),owners(kind))", {f"files/owners/{k}" for k in _USER}),
+    ("/drive/v3/files", "files(owners(),owners(kind))", {"files"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(role))", {"permissions/permissionDetails/role"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails/role)", {"permissions/permissionDetails/role"}),
+    (_PERMS_OF_DOC, "permissions/permissionDetails/role", {"permissions/permissionDetails/role"}),
+    (
+        _PERMS_OF_DOC,
+        "permissions(id,permissionDetails(role))",
+        {"permissions/id", "permissions/permissionDetails/role"},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(id),permissions(permissionDetails(role))",
+        {"permissions/id", "permissions/permissionDetails/role"},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(role,inherited))",
+        {"permissions/permissionDetails/role", "permissions/permissionDetails/inherited"},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(role)),kind",
+        {"kind", "permissions/permissionDetails/role"},
+    ),
+    (_PERMS_OF_DOC, "kind,permissions(role)", {"kind", "permissions/role"}),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(*),permissionDetails(role))",
+        {f"permissions/permissionDetails/{k}" for k in _DETAILS},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(role),permissionDetails(*))",
+        {f"permissions/permissionDetails/{k}" for k in _DETAILS},
+    ),
+    (_PERMS_OF_DOC, "permissions(permissionDetails())", {"permissions"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(),permissionDetails(role))", {"permissions"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(role),permissionDetails())", {"permissions"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(*),permissionDetails())", {"permissions"}),
+    ("/drive/v3/about", "user(kind)", {"user/kind"}),
+    ("/drive/v3/about", "user/kind", {"user/kind"}),
+    ("/drive/v3/about", "user(kind,me)", {"user/kind", "user/me"}),
+    ("/drive/v3/about", "kind,user(me)", {"kind", "user/me"}),
+    ("/drive/v3/about", "storageQuota/limit", {"storageQuota/limit"}),
+    ("/drive/v3/about", "storageQuota(limit)", {"storageQuota/limit"}),
+    ("/drive/v3/about", "user(kind),storageQuota/limit", {"user/kind", "storageQuota/limit"}),
+    ("/drive/v3/about", "user,user(kind)", {"user/kind"}),
+    ("/drive/v3/about", "user(kind),user", {"user/kind"}),
+    ("/drive/v3/about", "user(*),user(kind)", {f"user/{k}" for k in _USER}),
+    ("/drive/v3/about", "user(kind),user(*)", {f"user/{k}" for k in _USER}),
+]
+
+
+def _leaves(value, at: str = "") -> set[str]:
+    if isinstance(value, list):
+        return set().union(*(_leaves(v, at) for v in value)) if value else {at}
+    if isinstance(value, dict) and value:
+        return set().union(*(_leaves(v, f"{at}/{k}" if at else k) for k, v in value.items()))
+    return {at} if at else set()
+
+
+@pytest.mark.parametrize("path, mask, leaves", _MASKS_TRIMMED)
+def test_drive_trims_an_object_field_to_the_names_below_it(client, admin_h, path, mask, leaves):
+    """The rows `_MASKS_TRIMMED` records; a listing's rows read its first two files."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    r = client.get(path.format(doc=doc), headers=admin_h, params={"pageSize": 2, "fields": mask})
+    assert r.status_code == 200, r.text
+    assert _leaves(r.json()) == leaves
 
 
 BAD_TOKEN = {"Authorization": "Bearer not-a-real-token"}
@@ -5966,6 +6190,76 @@ def test_drive_native_docs_report_size(client, admin_h):
     assert "size" not in folder  # ...but not for folders or shortcuts
 
 
+@pytest.mark.parametrize(
+    "mime, export, link",
+    [
+        (
+            DOC_MIME,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "https://docs.google.com/feeds/download/documents/export/Export?id={id}&exportFormat=docx",
+        ),
+        (
+            "application/vnd.google-apps.spreadsheet",
+            "text/csv",
+            "https://docs.google.com/spreadsheets/export?id={id}&exportFormat=csv",
+        ),
+        (
+            "application/vnd.google-apps.presentation",
+            "text/plain",
+            "https://docs.google.com/feeds/download/presentations/Export?id={id}&exportFormat=txt",
+        ),
+    ],
+)
+def test_drive_native_files_carry_export_links_and_quota(client, admin_h, mime, export, link):
+    """A native file's `exportLinks` as `_drive_export_links` gives them, and the `quotaBytesUsed`
+    of a native file and of a folder."""
+    files = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"q": f"mimeType='{mime}'", "fields": "files(id,size,quotaBytesUsed,exportLinks)"},
+    ).json()["files"]
+    formats = _about(client, admin_h, "exportFormats").json()["exportFormats"][mime]
+    assert files
+    for f in files:
+        assert list(f["exportLinks"]) == formats
+        assert f["exportLinks"][export] == link.format(id=f["id"])
+        assert f["quotaBytesUsed"] == f["size"]
+    folder = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"q": f"mimeType='{FOLDER_MIME}'", "fields": "files(quotaBytesUsed)"},
+    ).json()["files"]
+    assert folder and all(x == {"quotaBytesUsed": "0"} for x in folder)
+
+
+@pytest.mark.parametrize("name", ["Brand", "Q1 Revenue"])
+def test_drive_permissions_answer_each_kind_of_permission_as_real_does(client, admin_h, name):
+    """With no mask a permission is `id`, `type`, `kind` and `role`; under `permissions` it is the
+    whole object `_drive_permissions` describes, on a file shared with anyone and on one shared with
+    a group."""
+    doc = _drive_find(client, admin_h, name)["id"]
+    url = f"/drive/v3/files/{doc}/permissions"
+    bare = client.get(url, headers=admin_h).json()["permissions"]
+    assert bare and all(set(x) == {"id", "type", "kind", "role"} for x in bare)
+    whole = client.get(url, headers=admin_h, params={"fields": "permissions"}).json()["permissions"]
+    assert [x["id"] for x in whole] == [x["id"] for x in bare]
+    for x in whole:
+        direct = {"permissionType": "file", "role": x["role"], "inherited": False}
+        inherited = [{"permissionType": "file", "role": "writer", "inherited": True}]
+        assert x["permissionDetails"] == (inherited if x["role"] == "owner" else []) + [direct]
+        assert (
+            set(x)
+            == {"kind", "id", "type", "role", "permissionDetails"}
+            | {
+                "user": {"deleted", "pendingOwner", "emailAddress", "displayName", "photoLink"},
+                "group": {"deleted", "emailAddress", "displayName"},
+                "anyone": {"allowFileDiscovery"},
+            }[x["type"]]
+        )
+        assert x.get("deleted", False) is False and x.get("pendingOwner", False) is False
+    assert {x["type"] for x in whole} == {"user", "anyone" if name == "Brand" else "group"}
+
+
 # --- Drive about.get -----------------------------------------------------------------------
 #
 # `about` answers "who am I and how much space do I use" — the call a Drive client makes first,
@@ -6001,14 +6295,6 @@ def test_drive_about_needs_auth(client):
     assert client.get(ABOUT, params={"fields": "user"}, headers=bad).status_code == 401
     # auth is resolved before the mask, as real Drive does — a missing mask on a bad token is 401
     assert client.get(ABOUT, headers=bad).status_code == 401
-
-
-def test_drive_about_nested_mask_selects_its_parent(client, admin_h):
-    """`storageQuota/limit` selects `storageQuota` whole, as `owners/kind` selects `owners` on
-    `files.get`."""
-    j = _about(client, admin_h, "storageQuota/limit").json()
-    assert set(j) == {"storageQuota"}
-    assert "usage" in j["storageQuota"]
 
 
 def test_drive_about_user_is_the_caller(client, tokens_yaml):
@@ -11805,6 +12091,97 @@ def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query
 @pytest.mark.parametrize(
     "query, expected",
     [
+        ("plan", ["plan", "reply"]),
+        ("-plan", ["lunch"]),
+        ("--plan", ["lunch"]),
+        ("-PLAN", ["lunch"]),
+        ('-"plan"', ["lunch"]),
+        ("NOT plan", ["lunch"]),
+        ("-(plan)", ["lunch"]),
+        ("-( plan )", ["lunch"]),
+        ("plan -plan", []),
+        ("not plan", []),
+        ("label:inbox", ["plan"]),
+        ("label:inbox -plan", []),
+        ("label:sent", ["lunch", "reply"]),
+        ("label:sent -plan", ["lunch"]),
+        ('-"rollout plan"', ["lunch"]),
+        ('NOT "rollout plan"', ["lunch"]),
+        ('-("rollout plan")', ["lunch"]),
+        ('-"plan rollout"', ["plan", "lunch", "reply"]),
+        ("NOT -plan", ["plan", "reply"]),
+        ("NOT NOT plan", ["plan", "reply"]),
+        ("NOT NOT NOT plan", ["lunch"]),
+        ('NOT -"rollout plan"', ["plan", "reply"]),
+        ("-plan+", ["plan", "lunch", "reply"]),
+        ("NOT plan+", ["plan", "lunch", "reply"]),
+        ("plan -plan+", ["plan", "reply"]),
+        ('-plan "', ["lunch"]),
+    ],
+)
+def test_gmail_a_negated_word_leaves_out_the_messages_holding_it(
+    tmp_path, surface, query, expected
+):
+    """A `-` or a capital `NOT` in front of a word, and `-(…)` around one word, leave out the
+    messages that word answers (`_gmail_take_negated_words`). `not` in lower case stays a word, so
+    `not plan` searches for both."""
+    records = [
+        {
+            "doc_id": "plan",
+            "title": "Rollout plan",
+            "content": "attached",
+            "label_ids": ["INBOX"],
+            "author_email": "bob@acme.com",
+            "created": "2026-03-01T09:00:00Z",
+        },
+        {
+            "doc_id": "lunch",
+            "title": "Lunch",
+            "content": "Friday?",
+            "label_ids": ["SENT"],
+            "author_email": "mia@acme.com",
+            "created": "2026-03-02T09:00:00Z",
+        },
+        {
+            "doc_id": "reply",
+            "title": "Re: Rollout plan",
+            "content": "ok",
+            "label_ids": ["SENT"],
+            "author_email": "ava@acme.com",
+            "created": "2026-03-03T09:00:00Z",
+        },
+    ]
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "gmail",
+                "mailbox": "ava",
+                "to": "ava@acme.com",
+                "readers": ["ava@acme.com"],
+                "visibility": "public",
+                **r,
+            }
+            for r in records
+        ],
+    )
+    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+    with client_for(settings, reload=True) as c:
+        response = c.get(
+            f"/gmail/v1/users/me/{surface}",
+            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
+            params={"q": query},
+        )
+    assert response.status_code == 200, response.text
+    assert {r["id"] for r in response.json().get(surface, [])} == {
+        served_id("gmail", doc_id) for doc_id in expected
+    }
+
+
+@pytest.mark.parametrize("surface", ["messages", "threads"])
+@pytest.mark.parametrize(
+    "query, expected",
+    [
         ("subject:", ["plan", "lunch", "after"]),
         ("subject: ", ["plan", "lunch", "after"]),
         ("subject:\t", ["plan", "lunch", "after"]),
@@ -12104,3 +12481,142 @@ def test_gmail_hyphenated_address_search(tmp_path, surface, query, expected):
     assert {x["id"] for x in r.json().get(surface, [])} == {
         served_id("gmail", doc_id) for doc_id in expected
     }
+
+
+_LONG_Q = " or ".join(f"name contains 'Brand{i}'" for i in range(80)) + " or name contains 'Brand'"
+_FORM = "application/x-www-form-urlencoded"
+_OVERRIDE_ROWS = [
+    # path, the query the GET sends, the URL query and the body the POST sends, `Content-Type`,
+    # `X-HTTP-Method-Override`
+    ("/drive/v3/files", f"q={_LONG_Q}&pageSize=2", "", f"q={_LONG_Q}&pageSize=2", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, "GET"),
+    ("/drive/v3/files/{file}", "fields=kind,mimeType", "", "fields=kind,mimeType", _FORM, "GET"),
+    ("/drive/v3/drives", "pageSize=1", "", "pageSize=1", _FORM, "GET"),
+    ("/gmail/v1/users/me/labels", "", "", "", _FORM, "GET"),
+    ("/gmail/v1/users/me/labels", "", "", "", _FORM, "HEAD"),
+    ("/docs/v1/documents/{doc}", "", "", "", _FORM, "GET"),
+    (
+        "/sheets/v4/spreadsheets/{sheet}",
+        "fields=spreadsheetId",
+        "",
+        "fields=spreadsheetId",
+        _FORM,
+        "GET",
+    ),
+    ("/sheets/v4/spreadsheets/{sheet}", "", "", "", _FORM, "\tGET "),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, "get"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, " GET "),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, "HEAD"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, "hEAD"),
+    ("/drive/v3/about", "", "", "fields=kind", None, "GET"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", f"{_FORM}; charset=UTF-8", "GET"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM.upper(), "GET"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", f"text/plain;{_FORM}", "GET"),
+    ("/drive/v3/about", "", "", "fields=kind", _FORM[:-1], "GET"),
+    ("/drive/v3/about", "", "", "fields=kind", "text/plain", "GET"),
+    ("/drive/v3/about", "", "", '{"fields": "kind"}', "application/json", "GET"),
+    ("/drive/v3/about", "fields=user", "fields=user", "fields=kind", _FORM, "GET"),
+]
+
+
+@pytest.mark.parametrize(
+    "path, get, query, body, content_type, override",
+    _OVERRIDE_ROWS,
+    ids=[
+        "files-list",
+        "about",
+        "files-get",
+        "drives",
+        "gmail-labels",
+        "gmail-head",
+        "docs",
+        "sheets",
+        "sheets-tab-get",
+        "lower-case-get",
+        "spaced-get",
+        "head",
+        "mixed-case-head",
+        "no-content-type",
+        "form-with-charset",
+        "form-in-capitals",
+        "form-after-another-type",
+        "form-less-a-letter",
+        "text-plain",
+        "json",
+        "url-query-first",
+    ],
+)
+def test_google_read_sent_as_a_post_with_a_get_override_is_the_get(
+    client, admin_h, path, get, query, body, content_type, override
+):
+    """Each row is how `answer_a_google_read_sent_as_a_post` reads its POST: as the GET of the
+    query in the second column."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": "100"}).json()
+    sheet = next(f["id"] for f in files["files"] if f["mimeType"].endswith("spreadsheet"))
+    doc = next(f["id"] for f in files["files"] if f["mimeType"].endswith("document"))
+    url = path.format(file=files["files"][0]["id"], sheet=sheet, doc=doc)
+    headers = {**admin_h, "X-HTTP-Method-Override": override}
+    if content_type is not None:
+        headers["Content-Type"] = content_type
+    got = client.get(f"{url}?{get}", headers=admin_h)
+    posted = client.post(f"{url}?{query}", headers=headers, content=body)
+    assert (posted.status_code, posted.content) == (got.status_code, got.content)
+
+
+@pytest.mark.parametrize(
+    "method, path, overrides",
+    [
+        ("POST", "/drive/v3/about", []),
+        ("POST", "/drive/v3/about", ["PUT"]),
+        ("POST", "/drive/v3/about", ["GET, PUT"]),
+        ("POST", "/drive/v3/about", ["GET", "GET"]),
+        ("POST", "/drive/v3/about", ["NBSPGET"]),
+        ("POST", "/drive/v3/about", ["NELGET"]),
+        ("POST", "/gmail/v1/users/me/labels", ["get"]),
+        ("POST", "/gmail/v1/users/me/labels", ["Head"]),
+        ("POST", "/docs/v1/documents/{doc}", ["HEAD"]),
+        ("POST", "/docs/v1/documents/{doc}", ["get"]),
+        ("POST", "/sheets/v4/spreadsheets/{sheet}", ["HEAD"]),
+        ("POST", "/sheets/v4/spreadsheets/{sheet}", ["Get"]),
+        ("PUT", "/drive/v3/about", ["GET"]),
+        ("DELETE", "/drive/v3/about", ["GET"]),
+    ],
+    ids=[
+        "none",
+        "put",
+        "get-and-put",
+        "get-twice",
+        "nbsp-get",
+        "nel-get",
+        "gmail-lower-case-get",
+        "gmail-mixed-case-head",
+        "docs-head",
+        "docs-lower-case-get",
+        "sheets-head",
+        "sheets-mixed-case-get",
+        "drive-put",
+        "drive-delete",
+    ],
+)
+def test_google_request_whose_override_is_not_read_goes_on_as_sent(
+    client, admin_h, method, path, overrides
+):
+    """A request whose `X-HTTP-Method-Override` :data:`backlot.main._GOOGLE_READ_OVERRIDES` does not
+    read for its path, or that is not a POST, is answered as the same request with no override is.
+    The headers go out as their latin-1 bytes (`sent_as`), so `NBSP` and `NEL` stand for 0xA0 and
+    0x85."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": "100"}).json()
+    sheet = next(f["id"] for f in files["files"] if f["mimeType"].endswith("spreadsheet"))
+    doc = next(f["id"] for f in files["files"] if f["mimeType"].endswith("document"))
+    url = path.format(sheet=sheet, doc=doc)
+    plain = [*admin_h.items(), ("Content-Type", _FORM)]
+    named = [
+        *plain,
+        *(
+            ("X-HTTP-Method-Override", o.replace("NBSP", chr(0xA0)).replace("NEL", chr(0x85)))
+            for o in overrides
+        ),
+    ]
+    posted = sent_as(client, method, url, named, content=b"fields=kind")
+    control = sent_as(client, method, url, plain, content=b"fields=kind")
+    assert (posted.status_code, posted.content) == (control.status_code, control.content)

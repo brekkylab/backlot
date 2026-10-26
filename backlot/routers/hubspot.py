@@ -22,13 +22,14 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from functools import lru_cache
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, published, store, synth
+from backlot import ascii_folding, auth, published, store, synth
 from backlot.acl import Caller
 from backlot.errors.atlassian import _java_double as _parse_java_double
 from backlot.openapi import qp
@@ -146,6 +147,34 @@ def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSO
     return JSONResponse(
         status_code=status, content={"status": "error", "message": message, "category": category}
     )
+
+
+# batch/read refuses more than this many ids, each counted once as `_batch_read_id` reads it.
+# Measured against api.hubapi.com on 2026-10-01 and 2026-10-22: 101 ids is 400 with this message
+# on contacts, companies, deals and `0-1`, sent as strings or as `{"id": …}`, under `idProperty`
+# and `archived=true` alike; 100 is still read, and so are 101 copies of one id, 200 inputs naming
+# 100 ids twice, and the ids `1` to `100` with `{"id": 5}` among them. Beside those 100, `" 1"`,
+# `"01"`, `5.0`, `1e0`, `true` and `{"id": 101}` each made a 101st, and so did an email differing
+# from another only in case under `idProperty=email`. A `null` input, and a body
+# `_refuse_a_batch_read_shape` refuses, are refused first at any count. An empty `inputs`, and a
+# body without one, stay 200.
+_HUBSPOT_BATCH_MAX = 100
+_HUBSPOT_BATCH_TOO_MANY = (
+    "The maximum number of inputs supported in a batch is 100. "
+    "Please reduce the number of items and try again"
+)
+
+
+def _batch_read_id(raw: bytes, i: int, item) -> str:
+    """The id `batch_read` looks ``inputs[i]`` up by. A string in `inputs` is answered as
+    ``{"id": <that string>}`` is (measured 2026-10-11), and a number or boolean id is echoed as the
+    body ``raw`` spells it (`1e3`, `1E3`, `1.0`, `-0.0`, `true`), measured 2026-10-11 and
+    2026-10-18; an integer naming a record finds it."""
+    rid = item if isinstance(item, str) else item["id"]
+    if isinstance(rid, str):
+        return rid
+    text, start, end = _token_span(raw, ("inputs", i, "id"))
+    return text[start:end]
 
 
 # Real's answer on the record route for an id that parses but names nothing visible: this page,
@@ -1013,6 +1042,27 @@ def _refuse_a_batch_read_shape(
     return None
 
 
+def _hubspot_fold(value: str) -> str:
+    """A string property as a search filter compares it: in NFKC, folded as Lucene's
+    `ASCIIFoldingFilter` folds it (:mod:`backlot.ascii_folding`), then in lower case. Read off
+    real's answers; the vendor does not say which analyzer its search runs.
+
+    Measured against api.hubapi.com on 2026-10-16 and 2026-10-25, ``firstname EQ`` against
+    contacts stored as ``Maria``, ``Brian``, ``bob`` and ``cara``. Each letter the table folds that
+    was sent matched the letter it folds to: ``MARÍA``, ``MARİA``, ``marıa``, ``maʀia``, ``BØB``,
+    ``bᴏb``, ``ƀob``, ``ʙob``, ``Mɐria``, ``Məria``, ``bɔb``, ``Briaŋ``, ``ɯaria``, ``ᴄara``,
+    ``ȼara``, ``MarƗa`` and ``Maɍia`` among them. So did each that NFKC takes to one, fullwidth
+    ``ＭＡＲＩＡ``, ``Mªria``, ``bºb``, ``bⓞb``, ``Marⅰa``, ``Marℹa`` and ``ℳaria``, and an acute or a
+    diaeresis NFKC composes with the letter before it, ``maria`` + U+0301 and ``bo`` + U+0308 +
+    ``b``. ``Mɑria`` (U+0251), ``Marɩa`` (U+0269) and ``bᴑb`` (U+1D11), which the table leaves, did
+    not, nor did a Greek capital iota, a Cyrillic ``о`` or ``і``, a mark NFKC leaves on its own
+    (``b`` + U+0302 + ``ob``, ``bob`` + U+0308) or a value whose spaces differ. ``IN`` and ``NEQ``
+    compare the same way; an enumeration property does not fold at all, which its caller decides.
+    """
+    text = unicodedata.normalize("NFKC", str(value))
+    return text.translate(ascii_folding.TABLE).lower()
+
+
 def _match_one(prop, f: dict) -> bool:
     op = _operator(f)
     present = prop is not None
@@ -1035,10 +1085,10 @@ def _match_one(prop, f: dict) -> bool:
     # `name` and `domain` matched in any case on 2026-10-09 and 2026-10-16, and on 2026-10-16
     # `lifecyclestage EQ LEAD`, `dealstage EQ APPOINTMENTSCHEDULED` and `pipeline EQ DEFAULT`
     # answered nothing where the lower-case values matched. The four below are the enumerations
-    # (`/crm/v3/properties`, 2026-10-16) among the properties the bundled records carry. Real also
-    # folds accents (`MARÍA` and `marıa` match `Maria`), which `str.lower` does not.
+    # (`/crm/v3/properties`, 2026-10-16) among the properties the bundled records carry. A string
+    # property is compared through :func:`_hubspot_fold`.
     exact = f.get("propertyName") in {"lifecyclestage", "dealstage", "pipeline", "industry"}
-    fold = str if exact else str.lower
+    fold = str if exact else _hubspot_fold
     if op in ("EQ", "NEQ"):
         hit = any(fold(c) == fold(str(target)) for c in cands)
         return hit if op == "EQ" else not hit
@@ -1140,21 +1190,23 @@ def _sql_prefilter(body: dict):
             frags.append("json_extract(properties, ?) IS NOT NULL")
             params.append(path)
         elif op in ("EQ", "IN", "CONTAINS_TOKEN"):
-            # The value (or every needle token) must appear somewhere in the properties text. True
-            # whether the property holds a scalar or a list, which is why this is a substring test
-            # rather than an equality one.
+            # A substring of the properties text, whether the value is a scalar or a list. An
+            # ascii needle also keeps a row whose JSON holds a `\u` escape: accent folding matches
+            # that stored value, and the escape does not contain the needle. `_match_one` decides
+            # those rows. A row with neither the needle nor an escape cannot match.
             needles = [f.get("value")] if op != "IN" else list(f.get("values") or [])
             if op == "CONTAINS_TOKEN":
                 needles = list(_tokens(str(f.get("value") or "")))
             vals = [_ascii_scalar(v) for v in needles]
             if not vals or any(v is None for v in vals):
                 return None
+            needle = (
+                "(instr(lower(properties), lower(?)) > 0 OR instr(properties, char(92) || 'u') > 0)"
+            )
             if op == "IN":
-                frags.append(
-                    "(" + " OR ".join(["instr(lower(properties), lower(?)) > 0"] * len(vals)) + ")"
-                )
+                frags.append("(" + " OR ".join([needle] * len(vals)) + ")")
             else:
-                frags += ["instr(lower(properties), lower(?)) > 0"] * len(vals)
+                frags += [needle] * len(vals)
             params += vals
         # every other operator (NEQ/NOT_*/comparisons/BETWEEN) has no safe necessary condition here
     return (" AND ".join(frags), params) if frags else None
@@ -1536,17 +1588,15 @@ async def batch_read(object_type: str, request: Request):
     refused = _refuse_a_batch_read_shape(await request.body(), body, before) or refused
     if refused is not None:
         return refused
+    inputs = body.get("inputs") or []
+    raw = await request.body()
+    if len({_batch_read_id(raw, i, item) for i, item in enumerate(inputs)}) > _HUBSPOT_BATCH_MAX:
+        return _error(400, _HUBSPOT_BATCH_TOO_MANY)
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     keep = _keep(body.get("properties"))
     results, errors = [], []
-    for i, item in enumerate(body.get("inputs") or []):
-        # A string in `inputs` is answered as `{"id": <that string>}` is (measured 2026-10-11).
-        rid = item if isinstance(item, str) else item["id"]
-        if not isinstance(rid, str):
-            # A number or boolean id is echoed as the body spells it (`1e3`, `1E3`, `1.0`, `-0.0`,
-            # `true`), measured 2026-10-11 and 2026-10-18; an integer naming a record finds it.
-            text, start, end = _token_span(await request.body(), ("inputs", i, "id"))
-            rid = text[start:end]
+    for i, item in enumerate(inputs):
+        rid = _batch_read_id(raw, i, item)
         # One ACL-scoped query, not a resolve followed by a get_document refetch of the same
         # row -- see get_object's comment for why the collapse is safe.
         row = store.hubspot_by_id(conn, rid, visible)

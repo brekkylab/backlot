@@ -171,24 +171,25 @@ the five `x-ratelimit-*`. The operations are those the GitHub baseline marks `mi
 and a tab the only whitespace in it, and a tab right after the scheme sets the header apart unless a
 comma follows anywhere in it: `Bearer` or `token` with nothing after it, and a `Basic` value that is
 not base64, are credentials that do not resolve, though that `Basic` value is no credential in a
-header a tab sets apart; a `Basic` value whose base64 holds a token as its password, or as its user
-beside an empty password or `x-oauth-basic`, is that token; and one that holds none is no credential
-at all.
+header a tab sets apart; a `Basic` value whose base64 holds, as its password or as its user beside
+an empty password or `x-oauth-basic`, a token that resolves or one shaped like real's (`ghp_`,
+`gho_`, `ghu_` or `ghs_` and 36 ASCII letters or digits) or like Backlot's (`usr-` and 20
+hexadecimal digits) is that token; and one that holds anything else is no credential at all.
 
-**Every response carries the five `x-ratelimit-*` headers** real puts on every answer, the errors
-included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,
-30 and 10 for `search` and `code_search`), `remaining` and `used` counted per credential and per
-resource, `reset` the second that window closes, `resource` the one the request counted against.
-`core` measures an hour and the two search resources measure a minute, as real's do. A window that
-runs out is refused, 403, with `used` pinned at `limit` across the five headers, ahead of the API
-version check, the 401 a route that needs a credential answers a caller without one, and routing
-alike, for a caller with no credential (measured against api.github.com 2026-09-17 and 2026-09-22)
-and for a token (2026-09-23) alike; a bearer that does not resolve still gets its own 401, window
-spent or not (2026-09-23), when a space follows its scheme: in a header a tab sets apart (see the
-paragraph above) it is counted in the window real shares among the `Authorization` values it cannot
-parse, and refused once that window is spent (2026-10-14). The refused request is not itself
-counted, which is why `used` holds at `limit` rather than climbing past it. The body differs by
-caller: two members (`message`, `documentation_url`) for a caller with no credential, three
+**Every response carries the five `x-ratelimit-*` headers** real puts on every answer its API gives,
+the errors included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for
+a token, 30 and 10 for `search` and `code_search`), `remaining` and `used` counted per credential
+and per resource, `reset` the second that window closes, `resource` the one the request counted
+against. `core` measures an hour and the two search resources measure a minute, as real's do. A
+window that runs out is refused, 403, with `used` pinned at `limit` across the five headers, ahead
+of the API version check, the 401 a route that needs a credential answers a caller without one, and
+routing alike, for a caller with no credential (measured against api.github.com 2026-09-17 and
+2026-09-22) and for a token (2026-09-23) alike; a bearer that does not resolve still gets its own
+401, window spent or not (2026-09-23), when a space follows its scheme: in a header a tab sets apart
+(see the paragraph above) it is counted in the window real shares among the `Authorization` values
+it cannot parse, and refused once that window is spent (2026-10-14). The refused request is not
+itself counted, which is why `used` holds at `limit` rather than climbing past it. The body differs
+by caller: two members (`message`, `documentation_url`) for a caller with no credential, three
 (`status` besides) for a token, each with its own `documentation_url`.
 `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
 [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
@@ -204,9 +205,10 @@ none at all on a `PATCH`, `PUT` or `DELETE` (measured 2026-09-10, 2026-09-21, 20
 **Every response carries an `x-github-request-id`**, as real's do, code search's and the refusals
 answered before a route runs included: five uppercase hex fields joined by colons, the last being
 the second the request arrived (measured 2026-09-22, 2026-09-23 and 2026-10-18), and a token's
-spent-window 403 quotes it and that second in its `message`. Real's `Date` is the second its answer
-left, the id's or one past it; under `backlot serve` it is uvicorn's, which reads the clock once a
-second, so it can be one behind the id's.
+spent-window 403 quotes it and that second in its `message`. The front door's 400 for a raw byte in
+the request target carries neither it nor the five `x-ratelimit-*`, on real (2026-10-23) as here.
+Real's `Date` is the second its answer left, the id's or one past it; under `backlot serve` it is
+uvicorn's, which reads the clock once a second, so it can be one behind the id's.
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository
@@ -724,7 +726,8 @@ the body left off. A path in another case is the 400 here, where real routes it 
 path, and `PROPFIND` or `QUERY` is the framework's 405 here, where real answers the URL's 400. A
 credential that is not `Bearer <token>` (no header, no scheme, `Basic`, GitHub's legacy
 `token <t>`, or a bearer with a second word after its token) is refused by naming the format, where
-a bearer whose token does not resolve is `API token is invalid.`. Each refusal named here but the
+a bearer whose token does not resolve is `API token is invalid.`, with `additional_data`
+`{"reason":"token_invalid"}` ahead of the `request_id`. Each refusal named here but the
 framework's 405 carries a `request_id` in the body and `x-notion-request-id` on the response, one
 value; real's differs per response and this one is derived from the request, so a corpus served
 twice answers the same id.

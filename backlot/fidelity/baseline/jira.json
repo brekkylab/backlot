@@ -4333,19 +4333,11 @@
           "kind": "missing_param",
           "severity": "gap"
         },
-        "categoryId": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "expand": {
           "kind": "missing_param",
           "severity": "gap"
         },
         "id": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "keys": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -4361,15 +4353,7 @@
           "kind": "missing_param",
           "severity": "gap"
         },
-        "query": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "status": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "typeKey": {
           "kind": "missing_param",
           "severity": "gap"
         }

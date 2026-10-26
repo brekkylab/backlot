@@ -27,7 +27,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, DispatchFunction
 from starlette.routing import BaseRoute, Match
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from backlot import auth, errors, openapi, overlay, store, synth, telemetry
+from backlot import auth, errors, openapi, overlay, request_target, store, synth, telemetry
 from backlot.acl import Acl
 from backlot.config import get_settings
 from backlot.errors import msgraph as msgraph_errors
@@ -248,7 +248,7 @@ class _Layer:
     add 2.2 to 4.4 ms to an answer that goes through all of them. So ``runs_on(scope)`` is asked
     first, ahead of the ``BaseHTTPMiddleware``, and a request it does not pick is one the function
     would have handed straight on: it holds the function's own test for whether it has anything to
-    do, or the part of that test that reads neither the answer nor the body. It is asked where the
+    do, or a part of that test that reads neither the answer nor the body. It is asked where the
     function stands in the order, so it sees the path and the method the middlewares outside it
     leave. Where the function reads ``request.url.path``, ``runs_on`` reads :func:`_url_path`.
     """
@@ -340,6 +340,39 @@ def _a_github_route_serves(scope: Scope) -> bool:
     return any(route.matches(scope)[0] is Match.FULL for route in github.router.routes)
 
 
+def _would_redirect_to_the_slashed_path(scope: Scope) -> bool:
+    """Whether the router's `redirect_slashes` would answer this path with a 307 to its
+    slash-terminated spelling."""
+    if _some_github_route_matches(scope):
+        return False
+    slashed = {**scope, "path": f"{scope['path']}/"}
+    return _some_github_route_matches(slashed)
+
+
+@_middleware(
+    lambda scope: (
+        _url_path(scope).startswith("/github/")
+        and not _url_path(scope).endswith("/")
+        and _would_redirect_to_the_slashed_path(scope)
+    )
+)
+async def refuse_a_missing_slash_on_github(request: Request, call_next):
+    """A `/github` path no route matches, whose slash-terminated spelling one does, is a 404, not
+    the 307 to that spelling Starlette's router answers.
+
+    Real routes the path as sent, with no redirect: a `GET` of `.../statuses`, `.../git/ref` or
+    `.../git/trees` was the 404 a path with no route gets, and `GET .../commits` the commit listing,
+    which the baseline records as `repos/list-commits` `missing` (measured against api.github.com
+    on 2026-10-19 and 2026-10-25). Registered first, which makes it the innermost of the GitHub
+    middlewares, so its 404 leaves through them as the router's would: `GET .../commits` and
+    `POST .../git/trees` are operations real refuses a credential on first ("Bad credentials" for
+    `Bearer nope`, 2026-10-25), which ``backlot.routers.github.refuse_an_unserved_operation``
+    answers, and of the paths this answers, only those two carry the version echo and the five
+    `x-ratelimit-*` for a token (``_github_routes``).
+    """
+    return await _http_exception_handler(request, StarletteHTTPException(status_code=404))
+
+
 @_middleware(
     lambda scope: (
         scope["path"].startswith("/github/")
@@ -352,10 +385,10 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
     refused as a served route refuses before it runs, ahead of the router's 404 or 405
     (``backlot.routers.github.refuse_an_unserved_operation``).
 
-    Registered before the other GitHub middlewares, which makes it the innermost of them: it reads
-    the path ``resolve_github_id_paths`` rewrote and a `HEAD` as the GET it is rewritten to, and
-    its refusal leaves through the version echo and the rate-limit headers as a served route's 401
-    does.
+    Registered second, after `refuse_a_missing_slash_on_github` and before the other GitHub
+    middlewares: it reads the path ``resolve_github_id_paths`` rewrote and a `HEAD` as the GET it is
+    rewritten to, and its refusal leaves through the version echo and the rate-limit headers as a
+    served route's 401 does.
     """
     try:
         await github.refuse_an_unserved_operation(request)
@@ -929,7 +962,10 @@ def _spring_failure(scope: Scope):
     if not errors.atlassian.owns(path):
         return None
     # the product the gateway routes to, which reads each run of slashes as one
-    # (``errors.atlassian.front_door``)
+    # (``errors.atlassian.front_door``): under an `Accept` Spring cannot sort and under one it
+    # cannot write its answer under, `GET` and `OPTIONS` on `//wiki/rest/api/space` and
+    # `GET //wiki/rest/api/content` drew what each draws with one slash (Confluence Cloud,
+    # 2026-10-25)
     product = re.sub("/{2,}", "/", path)
     reader = "spring" if errors.atlassian.is_confluence(product) else "jira"
     accept = Headers(scope=scope).get("accept")
@@ -1188,15 +1224,6 @@ async def warn_slack_post_charset(request: Request, call_next):
     )
 
 
-#: The page Cloudflare, in front of Linear and Fireflies, answers a request carrying `Authorization`
-#: more than once with: `text/html` with no charset, CRLF line ends, 155 bytes.
-_CLOUDFLARE_REPEATED_AUTHORIZATION = (
-    "<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n"
-    "<center><h1>400 Bad Request</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
-    "</body>\r\n</html>\r\n"
-)
-
-
 @_middleware(
     lambda scope: (
         _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
@@ -1205,22 +1232,26 @@ _CLOUDFLARE_REPEATED_AUTHORIZATION = (
 )
 async def refuse_a_repeated_authorization_on_linear_and_fireflies(request: Request, call_next):
     """Answer a `/linear` or `/fireflies` request that carries `Authorization` more than once with
-    :data:`_CLOUDFLARE_REPEATED_AUTHORIZATION`'s 400, ahead of the route, the body and the
+    :data:`backlot.request_target.CLOUDFLARE_PAGE`'s 400, ahead of the route, the body and the
     credential. api.linear.app and api.fireflies.ai answered it on 2026-10-19 (UTC) to two copies of
     a key, a key and `nope` in either order, a key and an empty value, two empty values, three
     copies and a second header named in lower case; on `POST /graphql` with a query, with no bytes,
     with `{` and with a body past each vendor's size limit, on `GET /graphql`, on `HEAD /graphql`,
-    which declared the 155 bytes and sent none, and on `POST /nosuch` and `POST /`."""
+    which declared the 155 bytes and sent none, and on `POST /nosuch` and `POST /`. Both closed the
+    connection after it (`GET /graphql`, 2026-10-23)."""
     return Response(
-        _CLOUDFLARE_REPEATED_AUTHORIZATION.encode(),
+        request_target.CLOUDFLARE_PAGE,
         status_code=400,
-        headers={"Content-Type": "text/html"},
+        headers={"Content-Type": "text/html", "Connection": "close"},
     )
 
 
 @_middleware(lambda scope: _url_path(scope).startswith("/github"))
 async def put_a_request_id_on_github_answers(request: Request, call_next):
-    """Put an `x-github-request-id` on every `/github` answer, as real does on each one measured.
+    """Put an `x-github-request-id` on every `/github` answer the API gives, as real does on each
+    one measured. The front door's 400 for a raw byte in the target
+    (:func:`answer_a_raw_byte_in_the_request_target`) is outside it and carries none, as on real
+    (api.github.com, 2026-10-23).
 
     Registered after the other `/github` middlewares so it wraps them, and the refusals they answer
     early carry it too. Made before the route runs (``backlot.routers.github.request_id`` has why)
@@ -1230,6 +1261,91 @@ async def put_a_request_id_on_github_answers(request: Request, call_next):
     request.state.github_request_id = rid
     response = await call_next(request)
     response.headers.setdefault(github.REQUEST_ID_HEADER, rid)
+    return response
+
+
+# The Google paths whose reads real answers when they arrive as a POST that names one in
+# `X-HTTP-Method-Override` (`answer_a_google_read_sent_as_a_post`), each with the overrides it reads
+# as the GET once the spaces and tabs around one are gone. Measured on 2026-10-25: Drive's `about`
+# and `files.list` read `GET` and `HEAD` in any case (`get`, `gET`, `hEAD`); Gmail's `labels.list`
+# and `messages.list` read the two as spelt and not `get`, `Get` or `head`; and Docs'
+# `documents.get` and Sheets' `spreadsheets.get` and `values.get` read `GET` as spelt and not `get`,
+# `Get`, `HEAD` or `head`. On Drive's `about`, Gmail's `labels.list` and Sheets' `values.get`,
+# `\xa0GET`, `\x85GET` and two `X-HTTP-Method-Override` headers, `GET` both times among them, were
+# not read.
+_GOOGLE_READ_OVERRIDES = {
+    "/drive/v3": ("GET", "HEAD"),
+    "/gmail/v1": ("GET", "HEAD"),
+    "/docs/v1": ("GET",),
+    "/sheets/v4": ("GET",),
+}
+_GOOGLE_OVERRIDE_IN_ANY_CASE = "/drive/v3"
+_FORM_MEDIA_TYPE = "application/x-www-form-urlencoded"
+
+
+@_middleware(
+    lambda scope: (
+        scope["method"] == "POST"
+        and any(scope["path"].startswith(f"{prefix}/") for prefix in _GOOGLE_READ_OVERRIDES)
+    )
+)
+async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
+    """A Google read sent as a POST that names it in `X-HTTP-Method-Override` is answered as the
+    GET it stands for, its form body read as the query string after the URL's own. Which overrides
+    each family reads is :data:`_GOOGLE_READ_OVERRIDES`.
+
+    The Google API Python client sends a read this way on its own: `HttpRequest.execute`
+    (google-api-python-client 2.201.0) turns a GET whose URI passes 2048 characters into a POST with
+    `x-http-method-override: GET`, `content-type: application/x-www-form-urlencoded` and the query
+    string as the body. Measured with a Workspace member's token: on www.googleapis.com/drive/v3 on
+    2026-10-21, `files.list` with a 2,058-byte form body and `about` with `fields=kind` each
+    answered 200 and what the same parameters get on a GET. On 2026-10-23 so did `files.get`,
+    `drives.list` and `changes/startPageToken`, Docs' `documents.get` and Sheets' `values.get`, and
+    on 2026-10-25, with a `gmail.readonly` token, Gmail's `labels.list`, `messages.list` and
+    `getProfile`. A `HEAD` read there was answered as the GET, body and all. On 2026-10-25 the body
+    was read on each of the four when its `Content-Type`, the first where two were sent, held
+    `application/x-www-form-urlencoded` anywhere and in any case, as in
+    `text/plain;application/x-www-form-urlencoded`, where `application/x-www-form-urlencode` was not
+    read. It was not read under no `Content-Type` or `text/plain` on any of the four, nor under
+    `application/json` or `multipart/form-data` on `about`, where `about` was the 400 a GET with no
+    `fields` gets. A `fields` in the URL was read over one in the body, as the first of two in a
+    GET's query is. A POST naming `PUT`, `PATCH`, `DELETE` or `GET, PUT` goes on as a POST: real
+    answered each on `about` as it answers a `PUT` there, with its 404 page, and on 2026-10-25 so it
+    answered a `PUT`, `PATCH` or `DELETE` naming `GET` there.
+
+    Registered just inside ``answer_a_raw_byte_in_the_request_target``, whose refusals real gave
+    such a POST on Drive's `about` on 2026-10-25 as it gives a GET, and outside every other
+    middleware that reads the method or the query, so they and the router see the GET.
+    """
+    path = request.scope["path"]
+    prefix = next(p for p in _GOOGLE_READ_OVERRIDES if path.startswith(f"{p}/"))
+    sent = request.headers.getlist("x-http-method-override")
+    override = sent[0].strip(" \t") if len(sent) == 1 else ""
+    if prefix == _GOOGLE_OVERRIDE_IN_ANY_CASE:
+        override = override.upper()
+    if override in _GOOGLE_READ_OVERRIDES[prefix]:
+        form = _FORM_MEDIA_TYPE in request.headers.get("content-type", "").lower()
+        body = await request.body() if form else b""
+        query = request.scope.get("query_string", b"")
+        request.scope["method"] = "GET"
+        request.scope["query_string"] = b"&".join(part for part in (query, body) if part)
+    return await call_next(request)
+
+
+@_middleware(lambda scope: request_target.SENT in scope)
+async def answer_a_raw_byte_in_the_request_target(request: Request, call_next):
+    """Answer a request whose target held a raw byte as the vendor's front door answers it
+    (``backlot.request_target.answer``), or hand it on as the request the front door reads it as.
+
+    Registered after every vendor's middleware but the JSON media type's, so it answers ahead of
+    each of them, as a front door answers ahead of the API behind it.
+    """
+    answer = request_target.answer(request.scope)
+    if answer is not None:
+        return answer
+    response = await call_next(request)
+    if request.scope.get(request_target.CLOSE):
+        response.headers["Connection"] = "close"
     return response
 
 

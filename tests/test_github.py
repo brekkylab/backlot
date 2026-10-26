@@ -59,6 +59,12 @@ _REF_SLASH_ROWS = [
     # the protection route does not match the slash, so the branch route answers it, as on real;
     # without the slash it is the protection route's own 404
     ("branches/main/protection/", 404, "Branch not found", 404),
+    # a ref naming nothing: each route answers its own refusal for the slash, as on real. Without
+    # the slash no route matches, and `backlot.main.refuse_a_missing_slash_on_github` answers 404
+    ("git/trees/", 404, "Not Found", 404),
+    ("git/ref/", 404, "Not Found", 404),
+    ("statuses/", 404, "Not Found", 404),
+    ("commits/", 422, "No commit found for SHA: ", 404),
 ]
 
 
@@ -76,7 +82,8 @@ def test_github_a_ref_ending_in_a_slash_is_refused(
     assert r.status_code == status, r.text
     assert r.json()["message"] == message
     # the control: the same URL without the slash
-    assert c.get(url.removesuffix("/"), headers=gh_admin_h).status_code == slash_free
+    control = c.get(url.removesuffix("/"), headers=gh_admin_h, follow_redirects=False)
+    assert control.status_code == slash_free
 
 
 _CONTENTS_REDIRECT_ROWS = [
@@ -2615,13 +2622,17 @@ def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh
     assert r.json() == {"detail": "Method Not Allowed"}
 
 
+_TOKEN_SHAPED = {"Authorization": "Basic " + base64.b64encode(b"x:ghp_" + b"A" * 36).decode()}
+
+
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
-#: eight are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the eighth as the `/orgs/{}` path
-#: `/organizations/{id}` is rewritten to; the next two are baseline rows that `_ROUTED_AS` and
-#: `_NOT_ROUTED` keep out of it; the two after them are no operation, though a parsed URL ends the
-#: first at its decoded `#` and a `missing_param` row of the baseline spells the second's path; the
-#: next is a method GitHub does not publish on a path whose `PATCH` it does, which real answered a
-#: bad bearer with its 404; and the last is no GitHub request at all.
+#: nine are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the eighth as the `/orgs/{}` path
+#: `/organizations/{id}` is rewritten to and the ninth on a path whose slash-terminated spelling a
+#: route matches; the next two are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep out of it;
+#: the two after them are no operation, though a parsed URL ends the first at its decoded `#` and a
+#: `missing_param` row of the baseline spells the second's path; the next is a method GitHub does
+#: not publish on a path whose `PATCH` it does, which real answered a bad bearer with its 404; and
+#: the last is no GitHub request at all.
 _UNSERVED_ROWS = [
     ("PATCH", "/github/repos/{org}/codebase", True, 405),
     ("DELETE", "/github/repos/{org}/codebase", True, 405),
@@ -2631,6 +2642,7 @@ _UNSERVED_ROWS = [
     ("PUT", "/github/teams/1/repos/{org}/codebase", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/zip", True, 404),
     ("GET", "/github/organizations/1/settings/billing/usage", True, 404),
+    ("POST", "/github/repos/{org}/codebase/git/trees", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
     ("POST", "/github/repos/{org}/codebase/releases/1/assets", False, 404),
     ("GET", "/github/zen%23", False, 404),
@@ -2679,8 +2691,15 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert (r.status_code, r.json()["message"]) == (401, "Requires authentication"), headers
         assert "x-github-api-version-selected" not in r.headers, headers
         assert any(name.startswith("x-ratelimit-") for name in r.headers) == counted, headers
-    bad = c.request(method, url, headers={"Authorization": "Bearer nope", **bad_version})
-    assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials")
+    for headers in (
+        {"Authorization": "Bearer nope", **bad_version},
+        _TOKEN_SHAPED,
+        {**_TOKEN_SHAPED, **bad_version},
+    ):
+        bad = c.request(method, url, headers=headers)
+        assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials"), headers
+        assert "x-github-api-version-selected" not in bad.headers, headers
+        assert not any(name.startswith("x-ratelimit-") for name in bad.headers), headers
     basic = {"Authorization": "Basic Zm9vOmJhcg=="}
     for headers, answered in ((gh_admin_h, status), (basic, 401)):
         r = c.request(method, url, headers=headers)
@@ -2710,6 +2729,9 @@ _NO_CREDENTIAL = "Requires authentication"
         ({"Authorization": "Bearer nope"}, 401, "Bad credentials", None, False),
         ({"Authorization": "Bearer nope", "X-GitHub-Api-Version": "1999-01-01"}, 401,
          "Bad credentials", None, False),
+        (_TOKEN_SHAPED, 401, "Bad credentials", None, False),
+        ({**_TOKEN_SHAPED, "X-GitHub-Api-Version": "1999-01-01"}, 401, "Bad credentials", None,
+         False),
     ],
 )  # fmt: skip
 def test_github_deleting_the_installation_token_is_answered_as_a_served_route(
@@ -2750,6 +2772,8 @@ _NO_CREDENTIAL_ROWS = [
             ({"Authorization": "Digest x", **_V1999}, _REFUSED_UNCOUNTED),
             ({"Authorization": "Bearer\tnope", **_V1999}, _REFUSED_UNCOUNTED),
             ({"Authorization": "token"}, (401, "Bad credentials", None, False)),
+            (_TOKEN_SHAPED, (401, "Bad credentials", None, False)),
+            ({**_TOKEN_SHAPED, **_V1999}, (401, "Bad credentials", None, False)),
         ]
     ),
     *(
@@ -6554,8 +6578,11 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
     tmp_path, monkeypatch
 ):
     """Refusal is not token-only: a caller with no credential is refused the same as a token once
-    its own window is spent, with real's message naming the caller's own address (measured against
-    api.github.com 2026-09-17, see `_rate_limit_exceeded_message`).
+    its own window is spent, with the message real gives that caller
+    (`_rate_limit_exceeded_message`).
+
+    The anonymous caller's 403 outranks a trailing slash's 404, where a token's spent window leaves
+    it the 404.
 
     `Settings.github_enforce_rate_limits` is the escape hatch instead of a non-refusing default:
     off, nothing is refused, but the reported `used` still never climbs past `limit`."""
@@ -6615,6 +6642,14 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         assert trailing_slash.status_code == 403
         assert _ratelimit(trailing_slash) == _ratelimit(second)  # pinned, not counted
 
+        # a token's spent window leaves a trailing slash its 404
+        # (`refuse_a_trailing_slash_on_github`)
+        monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._ResourceLimit(2, 1, gh.RATE_LIMIT_WINDOW))
+        token = {"Authorization": f"Bearer {settings.admin_token}"}
+        c.get("/github/user/repos", headers=token)
+        assert c.get("/github/user/repos", headers=token).status_code == 403
+        assert c.get("/github/search/issues/", headers=token).status_code == 404
+
         # `RATE_LIMIT_PATH` stays the one escape hatch — real keeps answering it through
         # exhaustion — and its trailing-slash spelling is not refused either: the front that
         # answers `/rate_limit` answers it, a plain-text 404 with none of the five
@@ -6656,14 +6691,6 @@ def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_
         search_refused = c.get("/github/search/issues", params={"q": "x"})
         assert search_refused.status_code == 403
         assert _ratelimit(search_refused)["resource"] == "search"
-
-        # a token's spent window does not outrank the trailing slash's 404 the way the anonymous
-        # one does above
-        monkeypatch.setitem(gh.RATE_LIMITS, "core", gh._ResourceLimit(2, 1, gh.RATE_LIMIT_WINDOW))
-        token = {"Authorization": f"Bearer {settings.admin_token}"}
-        c.get("/github/user/repos", headers=token)
-        assert c.get("/github/user/repos", headers=token).status_code == 403
-        assert c.get("/github/search/issues/", headers=token).status_code == 404
 
         # the switch: no refusal, and `used` still capped in what is reported
         monkeypatch.setattr(gh.get_settings(), "github_enforce_rate_limits", False)

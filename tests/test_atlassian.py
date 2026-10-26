@@ -316,6 +316,87 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
     }
 
 
+def test_jira_project_search_filters_by_query_keys_type_and_category(tmp_path):
+    """`project/search` applies `query`, `keys`, `typeKey` and `categoryId`, so a value that
+    matches no project is an empty page (`_jira_project_kept`)."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": f"issue-{name}",
+                "project": name,
+                "title": name,
+                "content": "Issue",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            }
+            for name in ("scrum", "orders")
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
+        listing = client.get("/atlassian/rest/api/3/project/search", headers=admin_h)
+        assert listing.status_code == 200, listing.text
+        projects = listing.json()["values"]
+        assert len(projects) == 2
+        one, other = projects[0], projects[1]
+
+        def keys_of(params):
+            response = client.get(
+                "/atlassian/rest/api/3/project/search", params=params, headers=admin_h
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            found = [project["key"] for project in body["values"]]
+            assert body["total"] == len(found)
+            return found
+
+        all_keys = [project["key"] for project in projects]
+        assert keys_of({}) == all_keys
+        assert keys_of({"query": "zzqq"}) == []
+        assert keys_of({"query": one["name"][:3].lower()}) == [one["key"]]
+        assert keys_of({"query": one["name"][:3].upper()}) == [one["key"]]
+        fragment = next(
+            one["key"][i : i + 4]
+            for i in range(len(one["key"]) - 3)
+            if one["key"][i : i + 4].lower() not in one["name"].lower()
+            and one["key"][i : i + 4].lower() not in other["name"].lower()
+            and one["key"][i : i + 4].lower() not in other["key"].lower()
+        )
+        assert keys_of({"query": fragment}) == [one["key"]]
+        name_only = next(
+            one["name"][i : i + 3]
+            for i in range(len(one["name"]) - 2)
+            if one["name"][i : i + 3].lower() not in one["key"].lower()
+            and one["name"][i : i + 3].lower() not in other["name"].lower()
+            and one["name"][i : i + 3].lower() not in other["key"].lower()
+        )
+        assert keys_of({"query": name_only}) == [one["key"]]
+        assert keys_of({"keys": one["key"]}) == [one["key"]]
+        assert keys_of({"keys": one["key"].lower()}) == []
+        assert keys_of({"keys": "NOPE"}) == []
+        assert keys_of([("keys", one["key"]), ("keys", other["key"])]) == all_keys
+        assert keys_of({"typeKey": "software"}) == all_keys
+        assert keys_of({"typeKey": "bogus"}) == []
+        assert keys_of({"categoryId": "99"}) == []
+        with_s = next(project for project in projects if "s" in project["name"].lower())
+        assert keys_of({"query": with_s["name"].replace("s", "\u017f")}) == []
+        assert keys_of({"keys": ""}) == all_keys
+        assert keys_of([("keys", ""), ("keys", "")]) == []
+        assert keys_of({"typeKey": "Software"}) == all_keys
+        assert keys_of({"typeKey": " software"}) == all_keys
+        assert keys_of({"typeKey": "\u3000software\x85"}) == all_keys
+        assert keys_of({"typeKey": "\x1fsoftware"}) == []
+        assert keys_of({"typeKey": "business,software"}) == all_keys
+        assert keys_of([("typeKey", "software"), ("typeKey", "business")]) == all_keys
+        assert keys_of([("typeKey", "business"), ("typeKey", "software")]) == all_keys
+        assert keys_of({"typeKey": "business"}) == []
+        assert keys_of({"typeKey": ","}) == all_keys
+        assert keys_of({"categoryId": " "}) == all_keys
+        assert keys_of({"categoryId": "-1"}) == []
+
+
 @pytest.mark.parametrize(
     "query, start, limit",
     [
@@ -420,6 +501,11 @@ def test_jira_project_search_links_itself_with_what_it_was_sent(client, admin_h,
         ([("orderBy", "bogus"), ("maxResults", "abc")], "maxResults", "abc"),
         ([("startAt", "abc"), ("maxResults", "xyz")], "startAt", "abc"),
         ([("maxResults", "xyz"), ("startAt", "abc")], "startAt", "abc"),
+        ([("categoryId", "abc")], "categoryId", "abc"),
+        ([("categoryId", "1.5")], "categoryId", "1.5"),
+        ([("orderBy", "bogus"), ("categoryId", "abc")], "categoryId", "abc"),
+        ([("categoryId", "abc"), ("startAt", "x")], "startAt", "x"),
+        ([("categoryId", "abc"), ("maxResults", "x")], "maxResults", "x"),
     ],
 )
 def test_jira_project_search_integer_conversion_precedes_order(client, admin_h, query, name, value):
@@ -1126,7 +1212,7 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
     other_space = client.get(
         "/atlassian/wiki/rest/api/search",
         headers=admin_h,
-        params={"cql": 'text~"software" and space=people-ops'},
+        params={"cql": 'text~"software" and space="people-ops"'},
     ).json()
     assert other_space["results"] == [] and other_space["totalSize"] == 0
 
@@ -1534,13 +1620,23 @@ def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(client,
             400,
             rb"for value [\uD835\uDFD3]",
         ),
+        (
+            f"/atlassian/wiki/rest/api/search?cql=title~%22{emoji}x%22&limit=1",
+            200,
+            rb'\"\uD83D\uDE00x\""',
+        ),
+        (
+            f"/atlassian/wiki/rest/api/search?cql=label%3D%22{emoji}x%22",
+            200,
+            rb'\"\uD83D\uDE00x\""',
+        ),
     ):
-        refused = client.get(path, headers=admin_h)
-        assert refused.status_code == status, path
-        assert written in refused.content, path
+        answer = client.get(path, headers=admin_h)
+        assert answer.status_code == status, path
+        assert written in answer.content, path
         # and never the character's own UTF-8 bytes
-        assert "\U0001f600".encode() not in refused.content, path
-        assert "\U0001d7d3".encode() not in refused.content, path
+        assert "\U0001f600".encode() not in answer.content, path
+        assert "\U0001d7d3".encode() not in answer.content, path
     # A character inside the plane is written as its UTF-8 bytes, unescaped.
     inside = client.get("/atlassian/wiki/rest/api/space/%C3%A9", headers=admin_h)
     assert inside.status_code == 404
@@ -4903,11 +4999,12 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
 
     rows = [
         *((path, admin_h) for path in _routes(keys)),
-        # slashed spellings Confluence answers as the slash-free ones (2026-10-23)
-        ("/atlassian/wiki/rest/api/search/?cql=type%3Dpage", admin_h),
-        ("/atlassian//wiki/rest/api/space", admin_h),
         ("/atlassian/wiki/rest/api/space/NOPESUCH", admin_h),
         ("/atlassian/rest/api/3/issue/NOPE-1", admin_h),
+        # slashed spellings, answered as the slash-free ones
+        # (``backlot.main.normalise_the_slashes_in_an_atlassian_path``)
+        ("/atlassian/wiki/rest/api/search/?cql=type%3Dpage", admin_h),
+        ("/atlassian//wiki/rest/api/space", admin_h),
         ("/atlassian/rest/api/3/serverInfo/", admin_h),
         # the gateway's Connect-token 403 (``backlot.main.refuse_a_bearer_jira_cannot_read``)
         ("/atlassian/rest/api/3/serverInfo", {"Authorization": "Bearer nope"}),
@@ -4932,7 +5029,7 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         TestClient(recording).head(path, headers=headers)
         bodies = [m.get("body", b"") for m in sent if m["type"] == "http.response.body"]
         assert b"".join(bodies) == b"", path
-    assert statuses[-5:] == [404, 404, 200, 403, 401]
+    assert statuses[-7:] == [404, 404, 200, 200, 200, 403, 401]
 
 
 @pytest.mark.parametrize(
@@ -7868,14 +7965,14 @@ _ACCEPT_ROWS = [
     ("GET", _SPACES, "admin", "application/json;Q=2;Charset=bogus", None, 400, None, b"", {}),
     ("GET", _SPACES, "admin", "application/json;q=0.5;Q=2;q=0.5", None, 400, None, b"", {}),
     ("OPTIONS", _SPACES, "admin", _Q2, None, 403, _TOMCAT, "page", {}),
-    # a run of slashes is one before the product is picked (2026-10-23)
+    ("GET", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE)
+    + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
+    ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "admin", _Q2, None, 500, None, b"", {}),
+    # a run of slashes is one before the product is picked (``backlot.main._spring_failure``)
     ("GET", "/atlassian//wiki/rest/api/space", "admin", _Q2, None, 400, None, b"", {}),
     ("GET", "/atlassian//wiki/rest/api/content", "admin", _Q2, None, 400, None, b"", {}),
     ("OPTIONS", "/atlassian//wiki/rest/api/space", "admin", _Q2, None, 403, _TOMCAT, "page", {}),
     ("GET", "/atlassian//wiki/rest/api/space", "admin", _SORTED_33, None, 400, None, b"", {}),
-    ("GET", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE)
-    + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
-    ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "admin", _Q2, None, 500, None, b"", {}),
     # Jersey writes its own 404, an `OPTIONS` of it too, under a `Q` Spring would fail to copy
     (
         "OPTIONS",
@@ -8399,3 +8496,129 @@ def test_jira_operations_that_answer_an_accept_with_no_406(client, operation):
     if operation in routers_atlassian._JIRA_UNSERVED["refused"]:
         assert r.status_code == 401
         assert r.headers["content-type"] == "text/html;charset=UTF-8"
+
+
+_CQL_PREFIX = "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
+_CQL_NOT_PARSED = "Could not parse cql : "
+# What real answered each `cql` with on Confluence Cloud, as `_CQL_TOKEN`, `_cql_written_back`
+# and `_cql_refusal` in `backlot.routers.atlassian` record it: the `cqlQuery` of a 200, or the
+# message of a 400 after `_CQL_PREFIX`.
+_CQL_PARSE_ROWS = [
+    *[
+        (cql, 200, written)
+        for cql, written in [
+            ("type=page", "type = page"),
+            ("type=page  and  space=handbook", "type = page and space = handbook"),
+            ("TYPE=page", "TYPE = page"),
+            ("type=page AND space=handbook", "type = page AND space = handbook"),
+            ("type in (page,blogpost)", "type in ( page , blogpost )"),
+            ("type NOT IN (page,blogpost)", "type NOT IN ( page , blogpost )"),
+            ("type=page and (space=A or space=B)", "type = page and ( space = A or space = B )"),
+            ("((type=page))", "( ( type = page ) )"),
+            ("type!=page", "type != page"),
+            ("title!~x", "title !~ x"),
+            ("text~probe", "text ~ probe"),
+            ('title~"a b"', 'title ~ "a b"'),
+            ("title='x'", "title = 'x'"),
+            ('title~"a\\"b"', 'title ~ "a\\"b"'),
+            ("title~'a\\'b'", "title ~ 'a\\'b'"),
+            ('title~"日本"', 'title ~ "日本"'),
+            ("space.key=handbook", "space.key = 'handbook'"),
+            ('space.key="handbook"', "space.key = 'handbook'"),
+            ("SPACE.KEY=handbook", "SPACE.KEY = 'handbook'"),
+            ('space.key != "handbook"', "space.key != 'handbook'"),
+            ('space.key in ("handbook", handbook)', "space.key in ( 'handbook' , 'handbook' )"),
+            ('space = "handbook"', 'space = "handbook"'),
+            ('created>now("-1d")', 'created > now ( "-1d" )'),
+            ("created>startOfDay()", "created > startOfDay ( )"),
+            ("created >= 2026-01-01 and type=page", "created >= 2026-01-01 and type = page"),
+            ("id in (1,2)", "id in ( 1 , 2 )"),
+            ("label=a.b", "label = a.b"),
+            ("label=x order by created desc", "label = x order by created desc"),
+            (
+                "type=page ORDER BY title asc, created desc",
+                "type = page ORDER BY title asc , created desc",
+            ),
+            ("type=page and not space=A", "type = page and not space = A"),
+            ("type=page\tand\nspace=A", "type = page and space = A"),
+            ("title ~ probe*", "title ~ probe"),
+            ("title ~ *probe", "title ~ probe"),
+            *[(f"title~a{c}", "title ~ a") for c in "#$%&*+;?@^`{|}"],
+        ]
+    ],
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            ('"', _CQL_NOT_PARSED),
+            ("   ", _CQL_NOT_PARSED),
+            ("\U0001f600", _CQL_NOT_PARSED),
+            ("type=page and", _CQL_NOT_PARSED),
+            ("type=page or", _CQL_NOT_PARSED),
+            ("type=page)", _CQL_NOT_PARSED),
+            ("order by created", _CQL_NOT_PARSED),
+            ("not type=page", _CQL_NOT_PARSED),
+            ("type=page OR NOT type=blogpost", _CQL_NOT_PARSED),
+            ("type=page and (not space=A)", _CQL_NOT_PARSED),
+            ("type in ()", _CQL_NOT_PARSED),
+            ("type in (page,)", _CQL_NOT_PARSED),
+            ("label in (a b)", _CQL_NOT_PARSED),
+            ("type=page order by", _CQL_NOT_PARSED),
+            ("type=page order by created b", _CQL_NOT_PARSED),
+            ("type=page b and type=page", _CQL_NOT_PARSED),
+            ("type=page 5", _CQL_NOT_PARSED),
+            ("id = -1", _CQL_NOT_PARSED),
+            ("created > -1d", _CQL_NOT_PARSED),
+            ("title~a..b", _CQL_NOT_PARSED),
+            ("title~a.", _CQL_NOT_PARSED),
+            ("created>\u0662\u0660\u0662\u0666-01-01", _CQL_NOT_PARSED),
+            *[(f"title~a{c}b", _CQL_NOT_PARSED) for c in "!\"'(),-/:<=>[\\]~"],
+            *[
+                (f"title~a{c}b", "Unrecognised clause at : b")
+                for c in "#$%&*+;?@^`{|}\x01\x7f" + "é\u0663\U0001f600"
+            ],
+            ("title~a b c", "Unrecognised clause at : bc"),
+            ('title~a "b"', 'Unrecognised clause at : "b"'),
+            ("title ~ 'it''s'", "Unrecognised clause at : 's'"),
+            ("type in (page) b", "Unrecognised clause at : b"),
+            ("type=", "Expecting a value for operator '=' after field 'type'"),
+            ("title~", "Expecting a value for operator '~' after field 'title'"),
+            ("text~*", "Expecting a value for operator '~' after field 'text'"),
+            ("title~é", "Expecting a value for operator '~' after field 'title'"),
+            ("title~\u0663", "Expecting a value for operator '~' after field 'title'"),
+            ("title~\uff11", "Expecting a value for operator '~' after field 'title'"),
+            ("type==page", "Expecting a value for operator '=' after field 'type' but got '='"),
+            ("space=~abc", "Expecting a value for operator '=' after field 'space' but got '~'"),
+            ("label=.a", "Expecting a value for operator '=' after field 'label' but got '.'"),
+            ("label=-x", "Expecting a value for operator '=' after field 'label' but got '-'"),
+            (
+                "type in page",
+                "Expecting a value for operator 'in' after field 'type' but got 'page'",
+            ),
+            (
+                "type not in page",
+                "Expecting a value for operator 'notin' after field 'type' but got 'page'",
+            ),
+            (
+                "type NOT IN (page",
+                "Expecting a value for operator 'NOTIN' after field 'type' but got '('",
+            ),
+            ("(type=page", "Missing closing parenthesis near field (()"),
+        ]
+    ],
+]
+
+
+@pytest.mark.parametrize("cql, status, answer", _CQL_PARSE_ROWS)
+def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h, cql, status, answer):
+    """The rows `_CQL_PARSE_ROWS` records, each refusal with the `data` object of a service
+    refusal."""
+    r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": cql})
+    assert r.status_code == status, r.text
+    if status == 200:
+        assert r.json()["cqlQuery"] == answer
+    else:
+        assert r.json() == {
+            "statusCode": 400,
+            "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
+            "message": _CQL_PREFIX + answer,
+        }

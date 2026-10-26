@@ -3,10 +3,11 @@
 Mirage (https://github.com/strukto-ai/mirage) is a virtual filesystem for AI agents: you mount a
 SaaS backend and read it with bash-style commands (``ls``, ``cat``, ``grep``, ``find``).
 
-Slack, Notion and S3 take the host as a config field, so they need nothing from here — pass
-Backlot's URL for the resource in (``f"{base_url}/slack/api"``, ``…/notion/v1``, ``…/s3``).
+Slack, Notion, S3 and Linear take the host as a config field, so they need nothing from here —
+pass Backlot's URL for the VFS in (``f"{base_url}/slack/api"``, ``…/notion/v1``, ``…/s3``,
+``…/linear/graphql``).
 Google offers only a single-host override, and Backlot needs a distinct prefix per API; GitHub's
-own ``base_url`` reaches a resource but not one constructed without it. ``point_google_at`` /
+own ``base_url`` reaches a VFS but not one constructed without it. ``point_google_at`` /
 ``point_github_at`` therefore rebind the corresponding constants in ``mirage.core.*.constants``.
 """
 
@@ -33,33 +34,41 @@ __all__ = [
 ]
 
 
-def _rebind_mirage_constants(source_module: str, overrides: dict[str, str]) -> None:
+def _rebind_mirage_constants(
+    source_module: str, overrides: dict[str, str], keep: frozenset[str] = frozenset()
+) -> None:
     """Rebind mirage's hardcoded API-host constants.
 
     Patches the source module — imported first so it exists — AND every already-imported
-    ``mirage.core.*`` that copied a same-named constant by value, which is what makes the redirect
+    ``mirage.*`` module that copied the constant by value, which is what makes the redirect
     order-independent. Idempotent.
 
-    Raises if any name in ``overrides`` matched nothing. A renamed constant is the one failure this
-    sweep cannot notice on its own: a moved MODULE already raises ``ImportError`` on the line below,
-    but ``hasattr`` on a renamed constant is simply False everywhere, and the caller would go on to
-    talk to the real vendor with whatever credentials it loaded.
+    A copy is a same-named attribute holding the source's own value. The value is what tells it
+    apart: copies sit outside ``mirage.core`` too (``mirage.accessor.github`` imports ``API_BASE``),
+    while ``mirage.core.hf_hub.constants.API_BASE`` is a different vendor's host under the same name
+    and is left alone. A module named in ``keep`` holds a copy it compares against rather than sends
+    to, and is left alone too.
+
+    Raises, before patching anything, if a name in ``overrides`` is missing from the source. A
+    renamed constant is the one failure this sweep cannot notice on its own: a moved MODULE already
+    raises ``ImportError`` on the line below, but a renamed constant is simply absent, and the
+    caller would go on to talk to the real vendor with whatever credentials it loaded.
     """
-    importlib.import_module(source_module)
-    patched: set[str] = set()
+    source = importlib.import_module(source_module)
+    if missing := sorted(const for const in overrides if not hasattr(source, const)):
+        raise RuntimeError(
+            f"{', '.join(missing)} not found in {source_module} — mirage's constants moved in an "
+            f"upgrade. Update this shim before the run silently reaches the real vendor instead of "
+            f"Backlot."
+        )
+    current = {const: getattr(source, const) for const in overrides}
     for mod in list(sys.modules.values()):
-        if not getattr(mod, "__name__", "").startswith("mirage.core."):
+        name = getattr(mod, "__name__", "")
+        if not name.startswith("mirage.") or name in keep:
             continue
         for const, value in overrides.items():
-            if hasattr(mod, const):
+            if getattr(mod, const, None) == current[const]:
                 setattr(mod, const, value)
-                patched.add(const)
-    if missing := sorted(set(overrides) - patched):
-        raise RuntimeError(
-            f"{', '.join(missing)} not found in {source_module} or any imported mirage.core.* "
-            f"module — mirage's constants moved in an upgrade. Update this shim before the run "
-            f"silently reaches the real vendor instead of Backlot."
-        )
 
 
 def point_google_at(base_url: str) -> None:
@@ -77,7 +86,7 @@ def point_google_at(base_url: str) -> None:
 
     The consuming submodules import them BY VALUE (``from ...constants import GMAIL_API_BASE``), so
     both the source and every already-imported copy are rebound — that is what makes this
-    order-independent. Idempotent; call once, before constructing the Google resources.
+    order-independent. Idempotent; call once, before constructing a Google VFS.
     """
     base = base_url.rstrip("/")
     _rebind_mirage_constants(
@@ -110,9 +119,18 @@ def point_github_at(base_url: str) -> None:
     would leave every request pointed at api.github.com.
 
     Unlike Google's, this rebind is not forced — ``GitHubConfig.base_url`` is a real seam, threaded
-    to every call site in ``mirage.core.github`` — but it is what redirects a resource built without
-    that field set. Call once, before constructing ``GitHubResource``: its constructor already makes
-    HTTP calls (default branch, tree).
+    to every call site in ``mirage.core.github`` — but it is what redirects a VFS built without
+    that field set. Call once, before the VFS's first command: that command fetches the tree at the
+    mount's ref, and the repository's default branch first when the mount names no ref.
+
+    The ``gh`` CLI's accessor keeps its copy. Its requests go through ``github/client.py``, and
+    ``web_origin`` reads ``API_BASE`` only to tell GitHub's own API from another host, so a rebound
+    copy would read a ``base_url`` of Backlot's ``/github`` as github.com, and ``gh repo clone``
+    would build a github.com url from it.
     """
     base = base_url.rstrip("/")
-    _rebind_mirage_constants("mirage.core.github.constants", {"API_BASE": f"{base}/github"})
+    _rebind_mirage_constants(
+        "mirage.core.github.constants",
+        {"API_BASE": f"{base}/github"},
+        keep=frozenset({"mirage.commands.cli.builtin.gh.accessor"}),
+    )

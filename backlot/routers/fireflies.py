@@ -98,6 +98,9 @@ def _auth_failed(message: str) -> JSONResponse:
     )
 
 
+_FRIENDLY = {"invalid_arguments": True, "INTERNAL_SERVER_ERROR": False}
+
+
 @router.post("/graphql", include_in_schema=False)
 async def graphql(request: Request):
     """The single Fireflies endpoint. Not in the OpenAPI document on purpose: this is a GraphQL
@@ -129,15 +132,18 @@ async def graphql(request: Request):
         "roster": frozenset(state.acl.email_to_token()) if getattr(state, "acl", None) else None,
     }
     result = ENGINE.execute_payload(payload, context=context)
-    # Fireflies' refusal of an argument carries two more members than a field error, in this order
-    # (api.fireflies.ai, 2026-10-21).
+    request.state.graphql_raised = result.raised
+    # Fireflies' invalid_arguments and INTERNAL_SERVER_ERROR errors carry two more members than a
+    # field error, in this order (api.fireflies.ai: the refusal on 2026-10-21, the
+    # INTERNAL_SERVER_ERROR on 2026-10-22).
     errors = result.payload.get("errors", [])
     for i, error in enumerate(errors):
-        if error.get("extensions", {}).get("code") == "invalid_arguments":
+        code = error.get("extensions", {}).get("code")
+        if code in _FRIENDLY:
             errors[i] = {
-                "friendly": True,
+                "friendly": _FRIENDLY[code],
                 **{key: value for key, value in error.items() if key != "extensions"},
-                "code": "invalid_arguments",
+                "code": code,
                 "extensions": error["extensions"],
             }
     return Response(

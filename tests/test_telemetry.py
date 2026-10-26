@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from backlot import store
 from backlot.config import get_settings
 from backlot.server import HELLO_CORPUS
 from backlot.telemetry import clients, enabled, errors, naming, notice, recorder
@@ -27,6 +28,7 @@ from tests._helpers import build_corpus, client_for
 
 ADMIN = {"Authorization": "Bearer admin-service-token"}
 LINEAR = {"Authorization": "admin-service-token"}
+JSON = {"Content-Type": "application/json"}
 UNREACHABLE = "http://127.0.0.1:9/v1/metrics"
 # The values an export may carry. The collector replaces a value outside its own shape checks with
 # `invalid`, and every pattern here is narrower than those.
@@ -232,6 +234,7 @@ def test_each_client_rule_names_the_headers_it_was_measured_from():
         ("slack", "implemented", 200, "internal_error", False, "client"),
         ("linear", "implemented", 200, "unsupported_filter", False, "unsupported"),
         ("gmail", "implemented", 501, "notImplemented", False, "client"),
+        ("s3", "implemented", 505, "HttpVersionNotSupported", False, "client"),
         ("gmail", "implemented", 503, "backendError", False, "internal"),
     ],
 )
@@ -281,7 +284,12 @@ def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent
             "invalid_argument",
         ),
         ("linear", 200, b'{"errors":[{"message":"Entity not found: Issue"}]}', "entity_not_found"),
-        ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
+        ("linear", 200, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
+        ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "graphql_validation"),
+        ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":5}}]}', "unrecognized"),
+        ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":""}}]}', "unrecognized"),
+        ("fireflies", 200, b'{"data":{},"extensions":{"code":"X"}}', ""),
+        ("fireflies", 400, b'{"data":{},"extensions":{"code":"X"}}', "X"),
         ("jira", 401, b"Client must be authenticated to access this resource.", "unauthenticated"),
         ("jira", 400, b"<!DOCTYPE html><html><head><title>(null)</title></head></html>", ""),
         ("msteams", 404, b'{"error":{"code":"NotFound","message":"x"}}', "NotFound"),
@@ -313,7 +321,7 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             "GET",
             f"{GITHUB}/commits",
             {},
-            ("github", "repos/list-commits", "missing", 307, None, None),
+            ("github", "repos/list-commits", "missing", 404, "not_found", "unsupported"),
         ),
         (
             "POST",
@@ -342,9 +350,9 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
         ),
         (
             "POST",
-            "/slack/api/chat.postMessage",
+            "/slack/api/chat.scheduleMessage",
             {},
-            ("slack", "chat.postMessage", "missing", 404, None, "unsupported"),
+            ("slack", "chat.scheduleMessage", "missing", 404, None, "unsupported"),
         ),
         (
             "POST",
@@ -406,6 +414,68 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             {},
             ("confluence", "wiki/rest/api/content/{}", "extra", 404, "content_not_found", "client"),
         ),
+        # A path a route serves under other methods is named by the route's template; one whose
+        # template the collector would not keep (`values:batchGet`) stays unmatched.
+        ("OPTIONS", GITHUB, {}, ("github", "repos/{}/{}", "unknown", 405, None, "client")),
+        (
+            "PUT",
+            "/hubspot/crm/v3/objects/contacts/1",
+            {},
+            ("hubspot", "crm/v3/objects/{}/{}", "unknown", 405, None, "client"),
+        ),
+        (
+            "PUT",
+            f"{GITHUB}/contents",
+            {},
+            ("github", "repos/{}/{}/contents", "unknown", 405, None, "client"),
+        ),
+        (
+            "POST",
+            "/sheets/v4/spreadsheets/x/values:batchGet",
+            {},
+            ("google_drive", "unmatched", "unknown", 405, None, "client"),
+        ),
+        # The first route whose `{param}` takes the path is the matched one; a vendor template with
+        # more literal segments, under any method, names the call.
+        (
+            "OPTIONS",
+            "/hubspot/crm/v3/objects/contacts/search",
+            {},
+            ("hubspot", "crm/v3/objects/{}/search", "unknown", 401, None, "auth"),
+        ),
+        # An `Accept` refused on an operation a route serves is a call of that operation.
+        (
+            "POST",
+            "/hubspot/crm/v3/objects/contacts/batch/read",
+            {"headers": {"Accept": "text/html"}},
+            (
+                "hubspot",
+                "post-/crm/v3/objects/{objectType}/batch/read_read",
+                "implemented",
+                406,
+                None,
+                "client",
+            ),
+        ),
+        (
+            "PUT",
+            f"{GITHUB}/issues/comments",
+            {},
+            ("github", "repos/{}/{}/issues/comments", "unknown", 405, None, "client"),
+        ),
+        # Teams answers both from its catch-all or before routing: no route names them.
+        (
+            "OPTIONS",
+            "/msgraph/v1.0/me",
+            {},
+            ("msteams", "unmatched", "unknown", 405, None, "client"),
+        ),
+        (
+            "POST",
+            "/msgraph/v1.0/me",
+            {},
+            ("msteams", "unmatched", "unknown", 400, "BadRequest", "client"),
+        ),
         # Google Docs is mounted at /docs/v1, beside FastAPI's own /docs page.
         (
             "GET",
@@ -443,6 +513,30 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             "/msgraph/v1.0/ME/chats",
             {},
             ("msteams", "me.ListChats", "missing", 404, "Request_ResourceNotFound", "unsupported"),
+        ),
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"headers": JSON, "content": b""},
+            ("fireflies", "unparsed", "unknown", 400, "http", "client"),
+        ),
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"headers": JSON, "content": b"x" * (1024 * 1024 + 1)},
+            ("fireflies", "unparsed", "unknown", 413, "http", "client"),
+        ),
+        (
+            "POST",
+            "/linear/graphql",
+            {"headers": LINEAR | JSON, "content": b"x" * (10 * 1024 * 1024 + 1)},
+            ("linear", "unparsed", "unknown", 413, "PAYLOAD_TOO_LARGE", "client"),
+        ),
+        (
+            "POST",
+            "/linear/graphql",
+            {"headers": LINEAR | JSON, "content": b"{"},
+            ("linear", "unparsed", "unknown", 400, None, "client"),
         ),
         (
             "GET",
@@ -555,7 +649,6 @@ def test_a_fragment_that_spreads_others_is_named_in_bounded_time():
 J = "/atlassian/rest/api/3"
 W = "/atlassian/wiki/rest/api"
 ISSUE = "PLAD294FC-1825"
-JSON = {"Content-Type": "application/json"}
 OLD_VERSION = {"X-GitHub-Api-Version": "1999-01-01"}
 
 
@@ -643,48 +736,73 @@ def test_each_message_slug_is_one_backlot_sends(client, method, path, kwargs, ex
     assert [c.get("backlot.error_code") for c in calls] == [expected], calls
 
 
+# Linear's rows; Fireflies runs the same engine, so a few of them are sent there as well. The
+# `transcripts` rows there are Fireflies' own.
+_GRAPHQL_MESSAGES = [
+    ({"query": "{"}, LINEAR, "graphql_parse"),
+    ({"query": '{ issue(id: "nope") { id } }'}, LINEAR, "entity_not_found"),
+    ({"query": "{ __typename }"}, {}, "authentication_required"),
+    ({"query": "{ nosuch }"}, LINEAR, "graphql_validation"),
+    ({"query": '{ issue(id: "x", bogus: 1) { id } }'}, LINEAR, "graphql_validation"),
+    ({"query": 'query($x: Nope) { issue(id: "x") { id } }'}, LINEAR, "graphql_validation"),
+    ({"query": "{ issue { id } }"}, LINEAR, "graphql_validation"),
+    ({"query": "query($x: String!) { issue(id: $x) { id } }"}, LINEAR, "graphql_validation"),
+    (
+        {
+            "query": 'query($x: String = "a") { issue(id: $x) { id } }',
+            "variables": {"x": None},
+        },
+        LINEAR,
+        "graphql_validation",
+    ),
+    ({"query": "mutation { x }"}, LINEAR, "graphql_validation"),
+    ({"query": "{ ...F }"}, LINEAR, "graphql_validation"),
+    ({"query": "{ issues @nope { nodes { id } } }"}, LINEAR, "graphql_validation"),
+    (
+        {"query": "query A { viewer { id } } query A { viewer { id } }"},
+        LINEAR,
+        "graphql_validation",
+    ),
+    ({"query": "{ issue(id: 5) { id } }"}, LINEAR, "graphql_validation"),
+    ({"query": "{ issue(id: null) { id } }"}, LINEAR, "graphql_validation"),
+    ({"query": '{ issues(first: "x") { nodes { id } } }'}, LINEAR, "graphql_validation"),
+    ({"query": "{ issues(orderBy: createdat) { nodes { id } } }"}, LINEAR, "graphql_validation"),
+    ({"query": "fragment F on User { id } { viewer { id } }"}, LINEAR, "graphql_validation"),
+    ({}, LINEAR, "graphql_request"),
+    ([], LINEAR, "graphql_request"),
+    ({"query": "{ viewer { id } }", "variables": "{"}, LINEAR, "graphql_request"),
+    ({"query": "query A { viewer { id } }", "operationName": "B"}, LINEAR, "graphql_request"),
+    (
+        {"query": "query A { viewer { id } } query B { viewer { id } }"},
+        LINEAR,
+        "graphql_request",
+    ),
+]
+
+
 @pytest.mark.parametrize(
-    "payload, headers, expected",
-    [
-        ({"query": "{"}, LINEAR, "graphql_parse"),
-        ({"query": '{ issue(id: "nope") { id } }'}, LINEAR, "entity_not_found"),
-        ({"query": "{ __typename }"}, {}, "authentication_required"),
-        ({"query": "{ nosuch }"}, LINEAR, "graphql_validation"),
-        ({"query": '{ issue(id: "x", bogus: 1) { id } }'}, LINEAR, "graphql_validation"),
-        ({"query": 'query($x: Nope) { issue(id: "x") { id } }'}, LINEAR, "graphql_validation"),
-        ({"query": "{ issue { id } }"}, LINEAR, "graphql_validation"),
-        ({"query": "query($x: String!) { issue(id: $x) { id } }"}, LINEAR, "graphql_validation"),
+    "path, payload, headers, expected",
+    [("/linear/graphql", *row) for row in _GRAPHQL_MESSAGES]
+    + [
+        ("/fireflies/graphql", {"query": "{"}, ADMIN, "graphql_parse"),
+        ("/fireflies/graphql", {"query": "{ nosuch }"}, ADMIN, "graphql_validation"),
         (
-            {
-                "query": 'query($x: String = "a") { issue(id: $x) { id } }',
-                "variables": {"x": None},
-            },
-            LINEAR,
+            "/fireflies/graphql",
+            {"query": '{ transcripts(limit: "x") { id } }'},
+            ADMIN,
             "graphql_validation",
         ),
-        ({"query": "mutation { x }"}, LINEAR, "graphql_validation"),
-        ({"query": "{ ...F }"}, LINEAR, "graphql_validation"),
-        ({"query": "{ issues @nope { nodes { id } } }"}, LINEAR, "graphql_validation"),
         (
-            {"query": "query A { viewer { id } } query A { viewer { id } }"},
-            LINEAR,
+            "/fireflies/graphql",
+            {"query": '{ transcripts(date: "x") { id } }'},
+            ADMIN,
             "graphql_validation",
         ),
-        ({"query": "{ issue(id: 5) { id } }"}, LINEAR, "graphql_validation"),
-        ({"query": "{ issue(id: null) { id } }"}, LINEAR, "graphql_validation"),
-        ({}, LINEAR, "graphql_request"),
-        ([], LINEAR, "graphql_request"),
-        ({"query": "{ viewer { id } }", "variables": "{"}, LINEAR, "graphql_request"),
-        ({"query": "query A { viewer { id } }", "operationName": "B"}, LINEAR, "graphql_request"),
-        (
-            {"query": "query A { viewer { id } } query B { viewer { id } }"},
-            LINEAR,
-            "graphql_request",
-        ),
+        ("/fireflies/graphql", {}, ADMIN, "graphql_request"),
     ],
 )
-def test_each_graphql_message_slug_is_one_backlot_sends(client, payload, headers, expected):
-    calls = _calls(lambda: client.post("/linear/graphql", headers=headers, json=payload))
+def test_each_graphql_message_slug_is_one_backlot_sends(client, path, payload, headers, expected):
+    calls = _calls(lambda: client.post(path, headers=headers, json=payload))
     assert [c.get("backlot.error_code") for c in calls] == [expected], calls
 
 
@@ -830,6 +948,46 @@ def test_an_unhandled_exception_is_an_internal_error(client):
         c["backlot.error_class"],
         c["backlot.support"],
     ) == (500, "internal_error", "internal", "extra")
+    assert "corpus-secret" not in json.dumps(c)
+
+
+# A resolver made to raise by replacing the store read it makes, beside a refusal the same field
+# raises on purpose.
+@pytest.mark.parametrize(
+    "path, headers, broken, query, expected",
+    [
+        ("/linear/graphql", LINEAR, "linear_by_id", '{ issue(id: "x") { id } }', "internal_error"),
+        ("/linear/graphql", LINEAR, None, '{ issue(id: "nope") { id } }', "entity_not_found"),
+        (
+            "/fireflies/graphql",
+            ADMIN,
+            "list_fireflies_transcripts",
+            "{ transcripts { id } }",
+            "internal_error",
+        ),
+        (
+            "/fireflies/graphql",
+            ADMIN,
+            None,
+            "{ transcripts(limit: 0) { id } }",
+            "invalid_arguments",
+        ),
+    ],
+)
+def test_an_exception_a_graphql_resolver_raises_is_an_internal_error(
+    client, monkeypatch, path, headers, broken, query, expected
+):
+    def boom(*args, **kwargs):
+        raise RuntimeError("corpus-secret")
+
+    if broken:
+        monkeypatch.setattr(store, broken, boom)
+    (c,) = _calls(lambda: client.post(path, headers=headers, json={"query": query}))
+    assert (
+        c["http.response.status_code"],
+        c["backlot.error_code"],
+        c["backlot.error_class"],
+    ) == (200, expected, "internal" if broken else "client")
     assert "corpus-secret" not in json.dumps(c)
 
 

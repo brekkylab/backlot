@@ -3,7 +3,7 @@
 [![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/)
 [![PyPI](https://img.shields.io/pypi/v/backlot)](https://pypi.org/project/backlot/)
 [![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/brekkylab/backlot/blob/main/LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/brekkylab/backlot/blob/main/LICENSE)
 
 [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R)
 [![X](https://img.shields.io/badge/Tweet-000000?logo=x&logoColor=white)](https://x.com/brekkylab)
@@ -97,7 +97,7 @@ The roadmap lives in [the tracking issue](https://github.com/brekkylab/backlot/i
 
 - 🔌 **Building or upgrading an integration**. The cursors, page shapes and error bodies the real API returns, without an account to get them from.
 - 🧪 **Testing it, and keeping it tested**. One fixture on your laptop and in CI, with no secrets and nothing to flake. Every user in the corpus gets a token, so you can also assert that one caller's documents never reach another.
-- 🤖 **Evaluating a RAG pipeline or an agent**. The same corpus, the same ids and the same answers on every run, so a score that moves means your code moved.
+- 🤖 **Evaluating a RAG pipeline or an agent**. The same corpus, the same ids and the same answers on every run, so a score that moves means your code moved. Slack also takes writes, so an agent that posts, edits or reacts can be run here and graded on what it actually did — one endpoint reports it, another puts the corpus back for the next run ([docs/write-overlay.md](https://github.com/brekkylab/backlot/blob/main/docs/write-overlay.md)).
 - 🐛 **Reproducing a bug in data you can't see**. A document inside someone else's workspace breaks your parser. Write one shaped like it, serve it, and keep the failing test.
 
 ## Bring your own corpus
@@ -134,9 +134,10 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 | Building a corpus, and public datasets | [docs/corpus.md](https://github.com/brekkylab/backlot/blob/main/docs/corpus.md) |
 | Auth schemes and tokens | [docs/auth.md](https://github.com/brekkylab/backlot/blob/main/docs/auth.md) |
 | Measuring Backlot against the real APIs | [docs/fidelity.md](https://github.com/brekkylab/backlot/blob/main/docs/fidelity.md) |
+| Writes, and where they go | [docs/write-overlay.md](https://github.com/brekkylab/backlot/blob/main/docs/write-overlay.md) |
 | Every `BACKLOT_*` setting, and Docker | [docs/configuration.md](https://github.com/brekkylab/backlot/blob/main/docs/configuration.md) |
 | Usage telemetry: why it is collected, what is sent, and how to turn it off | [docs/telemetry.md](https://github.com/brekkylab/backlot/blob/main/docs/telemetry.md) |
-| Vendor names and trademarks | [NOTICE.md](https://github.com/brekkylab/backlot/blob/main/NOTICE.md) |
+| Notices and trademarks | [NOTICE.md](https://github.com/brekkylab/backlot/blob/main/NOTICE.md) |
 
 ## Contributing
 
@@ -148,4 +149,6 @@ Backlot exists thanks to all the people who contribute.
 
 ## License
 
-[MIT](https://github.com/brekkylab/backlot/blob/main/LICENSE)
+[Apache-2.0](https://github.com/brekkylab/backlot/blob/main/LICENSE). [NOTICE.md](https://github.com/brekkylab/backlot/blob/main/NOTICE.md) has the MIT License earlier releases were under.
+
+<!-- mcp-name: io.github.brekkylab/backlot -->

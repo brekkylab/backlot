@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -157,16 +158,20 @@ def test_claude_plugin_manifest_names_the_plugin():
     assert plugin["name"] in {p["name"] for p in catalog["plugins"]}
 
 
-def test_the_two_plugin_manifests_agree_on_version():
+def test_the_two_plugin_manifests_agree_on_version_and_license():
     """One plugin, two harnesses: a bump that lands in one manifest and not the other is a lie.
 
     Neither can be derived from the package — setuptools-scm reports a dev version off the commit
     count in a checkout, which is not a version a plugin catalog can show — so they are written by
-    hand, and the realistic failure is bumping one and forgetting the other.
+    hand, and the realistic failure is bumping one and forgetting the other. The license is written
+    by hand in both manifests and in `pyproject.toml`, so the three are held to each other.
     """
     claude = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     codex = json.loads((REPO / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    with open(REPO / "pyproject.toml", "rb") as f:
+        pyproject = tomllib.load(f)
     assert claude["version"] == codex["version"]
+    assert claude["license"] == codex["license"] == pyproject["project"]["license"]
 
 
 # Backlot's own endpoints, as opposed to the vendor prefixes gen_docs.py already checks. Matched by

@@ -81,6 +81,19 @@ def test_notion_a_credential_it_cannot_use_names_the_format_or_the_token(
     r = client.get("/notion/v1/users/me", headers=headers)
     assert r.status_code == 401
     assert r.json()["message"] == message, label
+    if message == _NOT_A_BEARER:
+        assert "additional_data" not in r.json()
+        assert list(r.json()) == ["object", "status", "code", "message", "request_id"], label
+    else:
+        assert r.json()["additional_data"] == {"reason": "token_invalid"}
+        assert list(r.json()) == [
+            "object",
+            "status",
+            "code",
+            "message",
+            "additional_data",
+            "request_id",
+        ], label
 
 
 def test_notion_every_answer_names_itself_by_a_request_id(client, notion_h):
@@ -174,6 +187,7 @@ def test_notion_an_operation_notion_publishes_answers_the_credential(
     assert bare.status_code == 401 and bare.json()["message"] == _NOT_A_BEARER, path
     wrong = client.request(method, path, json=body, headers={"Authorization": "Bearer nope"})
     assert wrong.status_code == 401 and wrong.json()["message"] == "API token is invalid.", path
+    assert wrong.json()["additional_data"] == {"reason": "token_invalid"}, path
     cleared = client.request(method, path, json=body, headers=notion_h)
     assert cleared.status_code == 400 and cleared.json()["code"] == "invalid_request_url", path
 
@@ -299,6 +313,51 @@ def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
         bodies = [m.get("body", b"") for m in sent if m["type"] == "http.response.body"]
         assert b"".join(bodies) == b"", path
     assert statuses == [401, 400, 200, 401, 200]
+
+
+def test_notion_json_carries_the_charset_real_sends(client, notion_h):
+    """Pins ``backlot.errors.notion.json_media_type`` on 200s and refusals, a `HEAD` among them,
+    beside the OpenAPI document and the app's own routes, which keep `application/json`."""
+    utf8 = "application/json; charset=utf-8"
+    rows = [
+        ("GET", "/notion/v1/users/me", notion_h, None, 200),
+        ("POST", "/notion/v1/search", notion_h, {}, 200),
+        (
+            "GET",
+            f"/notion/v1/pages/{synth.notion_id('nt-runbook')}",
+            notion_h,
+            None,
+            200,
+        ),
+        ("GET", "/notion/v1/users/me", {"Notion-Version": DATA_SOURCES_VERSION}, None, 401),
+        ("POST", "/notion/v1/search", {"Notion-Version": DATA_SOURCES_VERSION}, {}, 401),
+        (
+            "GET",
+            "/notion/v1/users/me",
+            {"Authorization": notion_h["Authorization"]},
+            None,
+            400,
+        ),
+        ("GET", "/notion/v1/nonexistent_thing/xyz", notion_h, None, 400),
+        (
+            "GET",
+            "/notion/v1/pages/00000000000000000000000000000000",
+            notion_h,
+            None,
+            404,
+        ),
+    ]
+    for method, path, headers, payload, status in rows:
+        r = client.request(method, path, headers=headers, json=payload)
+        assert (r.status_code, r.headers["content-type"]) == (status, utf8), path
+    head = client.head("/notion/v1/users/me", headers={"Notion-Version": DATA_SOURCES_VERSION})
+    assert (head.status_code, head.headers["content-type"]) == (401, utf8)
+    # the contract keeps the bare type, and so do the app's own routes
+    op = client.get("/openapi.json").json()["paths"]["/notion/v1/users/me"]["get"]
+    assert list(op["responses"]["200"]["content"]) == ["application/json"]
+    assert client.get("/openapi.json").headers["content-type"] == "application/json"
+    assert client.get("/health").headers["content-type"] == "application/json"
+    assert client.get("/notionx/v1/users/me").headers["content-type"] == "application/json"
 
 
 def test_notion_page_retrieve_and_blocks(client, notion_h):

@@ -258,18 +258,14 @@ def routes_to_apollo(path: str) -> bool:
 
 def _dots_resolved(path: str) -> str | None:
     """``path`` with each `.` segment dropped and each `..` segment taking the one before it away,
-    as RFC 3986 removes dot segments, or None where a `..` has no segment before it to take."""
+    or None where a `..` has no segment before it to take."""
     out: list[str] = []
-    segments = path.split("/")[1:]
-    for i, segment in enumerate(segments):
-        if segment in (".", ".."):
-            if segment == "..":
-                if not out:
-                    return None
-                out.pop()
-            if i == len(segments) - 1:
-                out.append("")
-        else:
+    for segment in path.split("/")[1:]:
+        if segment == "..":
+            if not out:
+                return None
+            out.pop()
+        elif segment != ".":
             out.append(segment)
     return "/" + "/".join(out)
 

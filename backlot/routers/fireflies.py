@@ -336,8 +336,8 @@ class _Thrown(Exception):
 
 def _depth_limit(doc: DocumentNode) -> engine.Result | list[GraphQLError]:
     """graphql-depth-limit's rule with a ``maxDepth`` of :data:`_MAX_DEPTH`, which Fireflies runs
-    as graphql-js starts validating ``doc``: the errors it reports, which come ahead of graphql-js's
-    own, or Fireflies' 500 where it throws.
+    as graphql-js starts validating ``doc``, for :meth:`backlot.graphql.engine.Engine.resolve` to
+    take as ``on_document``: the depth errors, or Fireflies' 500 where the rule throws.
 
     It crawls each operation, the last of each name and the unnamed ones as the last one named
     ``''``: a field's selections one deeper, but none of a field whose name starts ``__``, and a

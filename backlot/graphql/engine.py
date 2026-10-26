@@ -491,9 +491,8 @@ class Engine:
                 name: _ids_as_graphql_js_reads_them(value, types.get(name))
                 for name, value in variables.items()
             }
-        # An operation on a root type the SDL leaves out runs against the schema `_with_roots`
-        # made, where its validated selection can only be `__typename`, or where graphql-core
-        # refuses it when the vendor has no such root type either.
+        # A root type only `self._checked` has runs there, and one neither schema has is
+        # graphql-core's refusal.
         on_a_root = getattr(self.schema, f"{operation.operation.operation.value}_type") is None
         result = execute_sync(
             self._checked if on_a_root else self.schema,

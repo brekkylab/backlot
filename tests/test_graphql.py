@@ -203,8 +203,7 @@ def test_resolver_error_nulls_the_field_and_reports_its_path(gql):
     ],
 )
 def test_a_resolver_error_is_located_as_graphql_js_locates_it(gql, query, location):
-    """A column counts UTF-16 code units and a line breaks at a line feed or a carriage return
-    alone, as api.linear.app located its ``Entity not found`` on 2026-10-26 (UTC)."""
+    """A resolver's error carries the locations `js_words.locations` gives it."""
     assert gql.execute(query).payload["errors"][0]["locations"] == [location]
 
 

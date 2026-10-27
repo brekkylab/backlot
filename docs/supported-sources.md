@@ -735,7 +735,11 @@ a bearer whose token does not resolve is `API token is invalid.`, with `addition
 `{"reason":"token_invalid"}` ahead of the `request_id`. Each refusal named here but the
 framework's 405 carries a `request_id` in the body and `x-notion-request-id` on the response, one
 value; real's differs per response and this one is derived from the request, so a corpus served
-twice answers the same id.
+twice answers the same id. Past the front door, an answer to a `GET`, `HEAD`, `POST`, `PATCH`,
+`PUT`, `DELETE` or `OPTIONS` carries the eight headers real's application sets
+(`x-frame-options: SAMEORIGIN`, `content-security-policy: default-src 'none'` and the rest of
+`backlot.routers.notion.APPLICATION_HEADERS`), and the body reader's refusals below carry none, as
+on real.
 
 A request is read as the real API reads it before anything is looked up. A JSON body is read first,
 ahead of the credential and the version, as Express reads one: a body that does not parse is

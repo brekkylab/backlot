@@ -128,8 +128,10 @@ def _express_sent(
     (:func:`_origin`), ``cors``'s answer to it: ``allow_origin`` where given, else that origin, with
     :data:`_EXPOSED`, and `Origin` in `Vary`. A `GET` or `HEAD` whose 2xx answer :func:`_fresh`
     finds fresh is Express's 304 instead, with no body, `Content-Type` or `Accept-Encoding` in
-    `Vary`; a `HEAD`'s other 2xx answer carries no `ETag`, as api.linear.app answered `HEAD /`
-    with and without the greeting's `ETag` in `If-None-Match` on 2026-10-26 (UTC)."""
+    `Vary`, and no other answer is: api.linear.app answered `If-None-Match: *` on a `GET` of a
+    mutation with its 405 and on `OPTIONS /` with its 200 on 2026-10-27 (UTC). A `HEAD`'s other
+    2xx answer carries no `ETag`, as api.linear.app answered `HEAD /` with and without the
+    greeting's `ETag` in `If-None-Match` on 2026-10-26 (UTC)."""
     headers: MutableHeaders = response.headers
     headers.setdefault("cache-control", _NO_STORE)
     if etag is True:

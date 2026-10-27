@@ -316,6 +316,7 @@ _BODY_CREDENTIALS = {"key": None, "none": _BAD_KEY, "Bearer nope": _BAD_KEY, "no
 # a body that does not parse and for a poisoned one, `_EMPTY`, `_TOO_LARGE`), one it serves, and a
 # `_REQUEST_ERROR` row.
 _EACH_WAY_READ = ("{", "__proto__ key", "empty", "past the limit", "a query", "an array")
+assert set(_EACH_WAY_READ) <= {row.id for row in (*_FIREFLIES_BODIES, *_FIREFLIES_READS)}
 
 
 def _fireflies_body_cases() -> list:

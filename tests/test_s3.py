@@ -2568,7 +2568,8 @@ def test_annotation_writes_keep_a_malformed_v2_credentials_refusal(live_server, 
 
 
 # A query on a write, and the names its conflict names: a lone `annotationName` names only itself,
-# and None is the Signature Version 4 refusal.
+# and None is the credential's own refusal: Signature Version 4 for an unsigned or V2 request,
+# `Unsupported Authorization Type` for a bearer.
 _ANNOTATION_PART_ROWS = [
     ("annotation&acl", "acl, annotation"),
     ("annotation&website=x", "annotation, website"),

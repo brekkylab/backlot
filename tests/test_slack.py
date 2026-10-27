@@ -547,12 +547,14 @@ def test_slack_conversations_list_honours_types(client, admin_h):
         j = client.get(
             "/slack/api/conversations.list", headers=admin_h, params={"types": types, "limit": 5}
         ).json()
-        assert j["ok"] is True, types
-        assert all(c["is_im"] is False and c["is_mpim"] is False for c in j["channels"]), types
-        # the field the filter selects on, so a channel in the wrong bucket fails here too
-        assert all(c["is_private"] is (c["name"] in _PRIVATE_CHANNELS) for c in j["channels"])
-        got[types] = {c["name"] for c in j["channels"]}
-    assert got == expected
+        got[types] = (
+            j["ok"],
+            all(c["is_im"] is False and c["is_mpim"] is False for c in j["channels"]),
+            # the field the filter selects on, so a channel in the wrong bucket fails here too
+            all(c["is_private"] is (c["name"] in _PRIVATE_CHANNELS) for c in j["channels"]),
+            {c["name"] for c in j["channels"]},
+        )
+    assert got == {types: (True, True, True, names) for types, names in expected.items()}
 
 
 def test_slack_conversations_list_defaults_to_public_channels(client, admin_h):
@@ -4117,10 +4119,10 @@ def wclient(sample_settings):
 
     Not the module-scoped `client`, for two reasons. The overlay lives for the life of a server, so
     sharing one would carry every test's writes into the next and make an assertion about a message
-    count depend on file order. And `client_for` without `reload` starts a second lifespan on the
-    module-level `app` object, so a `corpus_client` anywhere earlier in this file leaves the shared
-    client's connection closed -- `reload=True` gives this one its own app and leaves that one
-    alone.
+    count depend on file order. And `client_for` without `reload` starts another lifespan on the
+    module-level `app` object, and whichever lifespan on that object ends first closes the
+    connection every other client of it reads -- `reload=True` gives this one its own app and
+    leaves that one alone.
     """
     from tests._helpers import client_for
 
@@ -4756,16 +4758,15 @@ def test_each_write_method_declares_the_arguments_it_reads(client):
     # baseline acknowledges every documented argument it does not. Dropping one here would take
     # it out of the MCP tool's signature with nothing else noticing.
     spec = client.get("/_meta/openapi/slack").json()
-    declared = {
-        method: {
+    declared = {}
+    for method in _DECLARED:
+        declared[method] = {
             q["name"]
             for verb in spec["paths"][f"/slack/api/{method}"].values()
             if isinstance(verb, dict)
             for q in verb.get("parameters", [])
             if q.get("in") == "query"
         }
-        for method in _DECLARED
-    }
     assert declared == _DECLARED
 
 

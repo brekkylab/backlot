@@ -1952,18 +1952,20 @@ _LINEAR_READS = [
 # `Bearer` and a value in a Linear API key's shape that no account holds.
 _KEY_SHAPED = "Bearer lin_api_" + "0" * 40
 # The rows every credential but the key is sent with: one for each way `_read` refuses a body (V8's
-# words, `strict`'s, graphql-js's, a body it cannot decode, an unsupported charset, past the limit),
-# one it reads and serves, and a `_REQUEST_ERROR` row.
+# words, `strict`'s, graphql-js's, a body it cannot decode, an unsupported encoding, an unsupported
+# charset, past the limit), one it reads and serves, and a `_REQUEST_ERROR` row.
 _EACH_WAY_READ = (
     "{",
     "top-level 5",
     "empty",
     "gzip over a plain body",
+    "bogus",
     "latin1",
     "past the limit",
     "__proto__ key",
     "an array",
 )
+assert set(_EACH_WAY_READ) <= {row.id for row in (*_LINEAR_BODIES, *_LINEAR_READS)}
 
 
 def _linear_body_cases() -> list:

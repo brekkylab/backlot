@@ -114,11 +114,15 @@ def test_github_a_contents_path_ending_in_a_slash_redirects(gh_client, gh_org, g
         r = c.get(
             f"/github/repos/{gh_org}/codebase/{path}", headers=gh_admin_h, follow_redirects=False
         )
-        # the row is what went on the wire, not a spelling the client normalised first
-        assert r.request.url.raw_path.decode().endswith(f"/codebase/{path}")
-        answered[path] = (r.status_code, r.headers["location"].split("/github/", 1)[1])
+        answered[path] = (
+            # the row is what went on the wire, not a spelling the client normalised first
+            r.request.url.raw_path.decode().endswith(f"/codebase/{path}"),
+            r.status_code,
+            r.headers["location"].split("/github/", 1)[1],
+        )
     assert answered == {
-        path: (302, f"repositories/{rid}/{target}") for path, target in _CONTENTS_REDIRECT_ROWS
+        path: (True, 302, f"repositories/{rid}/{target}")
+        for path, target in _CONTENTS_REDIRECT_ROWS
     }
 
 
@@ -611,13 +615,17 @@ def test_github_the_issue_listing_serves_the_issues_carrying_every_named_label(g
     and by a token that cannot see the private issue. The pull is served like the issues, and the
     source file never is."""
     c, url, admin, scoped = gh_labelled
-    for headers, hidden in ((admin, set()), (scoped, {"Private bug"})):
-        answered = {}
+    callers = {"admin": (admin, set()), "scoped": (scoped, {"Private bug"})}
+    answered = {}
+    for who, (headers, _) in callers.items():
         for query in _LABEL_FILTER:
             r = c.get(f"{url}?{query}", headers=headers)
-            answered[query] = (r.status_code, {row["title"] for row in r.json()})
-        expected = {query: (200, titles - hidden) for query, titles in _LABEL_FILTER.items()}
-        assert answered == expected, headers is admin
+            answered[who, query] = (r.status_code, {row["title"] for row in r.json()})
+    assert answered == {
+        (who, query): (200, titles - hidden)
+        for who, (_, hidden) in callers.items()
+        for query, titles in _LABEL_FILTER.items()
+    }
 
 
 @pytest.mark.parametrize(
@@ -1195,11 +1203,11 @@ def gh_admin_h(gh_user_tokens):
 def _fresh_github_rate_limits(gh_client):
     """A window per test, not per module.
 
-    `gh_client` is module-scoped — one `app.state`, shared by every test in this file — so with the
-    refusal `rate_limit_refusal` answers, a shared window carries one test's requests into the next
-    and trips it on volume no single test drove itself: `code_search`'s 10-a-minute cap is the one
-    this file's own tests cross first, well under real's cap, purely from running in the same
-    window as their neighbours."""
+    `gh_client` is module-scoped — one `app.state`, shared by every test of this file that runs in
+    the same worker process — so with the refusal `rate_limit_refusal` answers, a shared window
+    carries one test's requests into the next and trips it on volume no single test drove itself:
+    `code_search`'s 10-a-minute cap is the one this file's own tests cross first, well under real's
+    cap, purely from running in the same window as their neighbours."""
     from backlot.routers.github import RateLimitWindows
 
     c, _ = gh_client
@@ -3220,16 +3228,24 @@ def test_github_code_search_page_links_write_page_before_per_page(gh_client, gh_
     """Each order the request sends its parameters in links the same url, in the order
     :func:`backlot.pagination.github_code_search_link_header` records."""
     c, _ = gh_client
-    for qs in (
+    orders = (
         "q=extension:md&per_page=2&page=1",
         "q=extension:md&page=1&per_page=2",
         "per_page=2&q=extension:md",
-    ):
+    )
+    answered = {}
+    for qs in orders:
         r = c.get(f"/github/search/code?{qs}", headers=gh_admin_h)
-        assert r.status_code == 200, qs
-        rels = _link_rels(r.headers["Link"])
-        assert rels["next"].split("?", 1)[1] == "q=extension%3Amd&page=2&per_page=2", qs
-        assert rels["first"].split("?", 1)[1] == "q=extension%3Amd&page=1&per_page=2", qs
+        rels = _link_rels(r.headers.get("Link", ""))
+        answered[qs] = (
+            r.status_code,
+            rels.get("next", "").partition("?")[2],
+            rels.get("first", "").partition("?")[2],
+        )
+    assert answered == {
+        qs: (200, "q=extension%3Amd&page=2&per_page=2", "q=extension%3Amd&page=1&per_page=2")
+        for qs in orders
+    }
 
 
 @pytest.mark.parametrize(
@@ -3440,10 +3456,13 @@ def test_github_code_search_refuses_a_page_reaching_past_the_first_1000_results(
     for qs in _CODE_SEARCH_DEPTH:
         r = c.get(f"/github/search/code?q=extension:md&{qs}", headers=gh_admin_h)
         body = r.json()
-        answered[qs] = (r.status_code, body if r.status_code == 422 else body["total_count"])
-        assert r.status_code == 422 or body["items"] == [], qs
+        answered[qs] = (
+            (r.status_code, body)
+            if r.status_code == 422
+            else (r.status_code, body["total_count"], body["items"])
+        )
     assert answered == {
-        qs: (200, 4) if ok else (422, _CODE_CAP) for qs, ok in _CODE_SEARCH_DEPTH.items()
+        qs: (200, 4, []) if ok else (422, _CODE_CAP) for qs, ok in _CODE_SEARCH_DEPTH.items()
     }
 
 
@@ -3883,25 +3902,32 @@ def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org):
     """
     c, _ = gh_client
     sha = hashlib.sha1(_MAIN_PY.encode()).hexdigest()
+    endpoints = {
+        f"/github/repos/{gh_org}/codebase/git/blobs/{sha}": ("text/plain", _MAIN_PY),
+        f"/github/repos/{gh_org}/codebase/contents/src/main.py": (None, _MAIN_PY),
+        f"/github/repos/{gh_org}/codebase/readme": (None, _CODEBASE_README),
+    }
+    answered = {}
     for accept in _RAW_ACCEPT:
-        for url, ctype, body in [
-            (f"/github/repos/{gh_org}/codebase/git/blobs/{sha}", "text/plain", _MAIN_PY),
-            (
-                f"/github/repos/{gh_org}/codebase/contents/src/main.py",
-                "application/vnd.github.raw",
-                _MAIN_PY,
-            ),
-            (
-                f"/github/repos/{gh_org}/codebase/readme",
-                "application/vnd.github.raw",
-                _CODEBASE_README,
-            ),
-        ]:
+        for url in endpoints:
             r = c.get(url, headers={**gh_admin_h, "Accept": accept})
-            assert r.status_code == 200, (accept, url)
-            expected_type = ctype if ctype == "text/plain" else accept.partition(";")[0]
-            assert r.headers["content-type"] == expected_type + "; charset=utf-8", (accept, url)
-            assert r.text == body and len(r.content) == len(body.encode()), (accept, url)
+            answered[accept, url] = (
+                r.status_code,
+                r.headers["content-type"],
+                r.text,
+                len(r.content),
+            )
+    # `None` is the raw type as the header spells it
+    assert answered == {
+        (accept, url): (
+            200,
+            (ctype or accept.partition(";")[0]) + "; charset=utf-8",
+            body,
+            len(body.encode()),
+        )
+        for accept in _RAW_ACCEPT
+        for url, (ctype, body) in endpoints.items()
+    }
 
 
 def test_github_raw_accept_leaves_the_json_envelope_alone(gh_client, gh_admin_h, gh_org):
@@ -5927,10 +5953,14 @@ def test_github_responses_unchanged_by_enrichment(client, admin_h):
 
 def test_github_search_has_typed_response_schema(client):
     paths = client.get("/openapi.json").json()["paths"]
-    for path in ("/github/search/issues", "/github/search/code"):
+    searches = ("/github/search/issues", "/github/search/code")
+    typed = {}
+    for path in searches:
         schema = paths[path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
-        assert schema != {}, path
-        assert "$ref" in schema or schema.get("type") in ("object", "array"), path
+        typed[path] = schema != {} and (
+            "$ref" in schema or schema.get("type") in ("object", "array")
+        )
+    assert typed == dict.fromkeys(searches, True)
 
 
 def test_github_operation_ids_unique(client):

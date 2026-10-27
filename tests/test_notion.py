@@ -1075,6 +1075,7 @@ _SEARCHED_DATABASES = [
 def test_notion_search_lists_the_databases_in_the_versions_shape(client, admin_h):
     """Each search lists the databases as the comment in `search` records, each in the shape its
     own `GET` answers, and beside the pages when it sends neither a filter nor a query."""
+    answered, expected = {}, {}
     for version, query, value, kind in _SEARCHED_DATABASES:
         h = {**admin_h, "Notion-Version": version}
         body = {"query": query} | (
@@ -1082,17 +1083,18 @@ def test_notion_search_lists_the_databases_in_the_versions_shape(client, admin_h
         )
         s = client.post("/notion/v1/search", json=body, headers=h).json()
         listed = [r for r in s["results"] if r["object"] != "page"]
-        assert {r["object"] for r in listed} == {kind}, (version, query, value)
-        assert (len(listed) < len(s["results"])) is (body == {"query": ""}), (version, query, value)
         as_kind = synth.notion_data_source_id if kind == "data_source" else synth.notion_id
         served_id = as_kind("nt-tasks-db")
-        got = next(r for r in listed if r["id"] == served_id)
+        got = next((r for r in listed if r["id"] == served_id), None)
         fetched = client.get(f"/notion/v1/{kind}s/{served_id}", headers=h).json()
         # `request_id` names the response, not the object: it rides the list body in a search and
         # the object's own body in the `GET`, so it is dropped from the latter before comparing
         # shapes.
         fetched.pop("request_id", None)
-        assert got == fetched, (version, query, value)
+        row = (version, query, value)
+        answered[row] = ({r["object"] for r in listed}, len(listed) < len(s["results"]), got)
+        expected[row] = ({kind}, body == {"query": ""}, fetched)
+    assert answered == expected
 
 
 @pytest.mark.parametrize(
@@ -1410,10 +1412,13 @@ _BODY_ROUTE_MEMBERS = [
 
 def test_notion_a_body_route_declares_the_members_it_reads(client):
     paths = client.get("/openapi.json").json()["paths"]
-    for path, members in _BODY_ROUTE_MEMBERS:
+    declared = {}
+    for path, _ in _BODY_ROUTE_MEMBERS:
         op = paths[path]["post"]
-        props = op["requestBody"]["content"]["application/json"]["schema"]["properties"]
-        assert list(props) == members, path
+        declared[path] = list(
+            op["requestBody"]["content"]["application/json"]["schema"]["properties"]
+        )
+    assert declared == dict(_BODY_ROUTE_MEMBERS)
 
 
 def test_notion_every_route_declares_the_version_header_it_enforces(client):
@@ -4468,7 +4473,8 @@ def test_notion_search_trims_its_query_as_javascript_does(client, notion_h):
     """A `query` of nothing but what JavaScript trims (``notion_request.JS_SPACE``) is no query
     at all, and anything else is searched for, which finds nothing here."""
     everything = client.post("/notion/v1/search", json={}, headers=notion_h).json()["results"]
-    for text, every in _JS_TRIMMED:
+    answered = {}
+    for text, _ in _JS_TRIMMED:
         r = client.post("/notion/v1/search", json={"query": text}, headers=notion_h)
-        assert r.status_code == 200, r.text
-        assert r.json()["results"] == (everything if every else []), repr(text)
+        answered[text] = (r.status_code, r.json().get("results"))
+    assert answered == {text: (200, everything if every else []) for text, every in _JS_TRIMMED}

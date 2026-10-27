@@ -564,16 +564,19 @@ _ROLE_SEGMENTS = [
 
 
 # every segment with no credential and as the admin; the other credentials that resolve to no
-# caller with the corpus's own project, the one segment whose answer anonymity decides
-@pytest.mark.parametrize(
-    "headers,segment,kind,found",
-    [
-        pytest.param(headers.values[0], *segment.values, id=f"{segment.id}-{headers.id}")
-        for headers in (*UNRESOLVABLE, pytest.param("admin", id="admin"))
-        for segment in _ROLE_SEGMENTS
-        if headers.id in ("no-credential", "admin") or segment.values[2]
-    ],
-)
+# caller with the corpus's own project, by its key and by its id, the two segments whose answer
+# anonymity decides
+_ROLE_CASES = [
+    pytest.param(headers.values[0], *segment.values, id=f"{segment.id}-{headers.id}")
+    for headers in (*UNRESOLVABLE, pytest.param("admin", id="admin"))
+    for segment in _ROLE_SEGMENTS
+    if headers.id in ("no-credential", "admin") or segment.values[2]
+]
+assert "no-credential" in {headers.id for headers in UNRESOLVABLE}
+assert sum(segment.values[2] for segment in _ROLE_SEGMENTS) == 2
+
+
+@pytest.mark.parametrize("headers,segment,kind,found", _ROLE_CASES)
 def test_jira_role_routes_find_a_project_by_its_key_as_written_or_its_id(
     client, admin_h, headers, segment, kind, found
 ):
@@ -588,19 +591,16 @@ def test_jira_role_routes_find_a_project_by_its_key_as_written_or_its_id(
         headers = admin_h
     else:
         found = False
-    for path in (
-        f"/rest/api/3/project/{segment}/role",
-        f"/rest/api/3/project/{segment}/role/10002",
-    ):
+    paths = (f"/rest/api/3/project/{segment}/role", f"/rest/api/3/project/{segment}/role/10002")
+    answered = {}
+    for path in paths:
         r = client.get(f"/atlassian{path}", headers=headers)
-        if found:
-            assert r.status_code == 200, path
-            continue
-        assert r.status_code == 404, path
-        assert r.json() == {
-            "errorMessages": [f"No project could be found with {kind} '{segment}'."],
-            "errors": {},
-        }, path
+        answered[path] = (r.status_code, None if r.status_code == 200 else r.json())
+    refusal = {
+        "errorMessages": [f"No project could be found with {kind} '{segment}'."],
+        "errors": {},
+    }
+    assert answered == dict.fromkeys(paths, (200, None) if found else (404, refusal))
 
 
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
@@ -2736,32 +2736,33 @@ def test_jira_role_list_links_the_role_its_read_answers(client, admin_h):
 
 # the path a refusal echoes, as `_echoed_path` gives it: each value with no trailing slash, and
 # each spelling of the key with one too
-@pytest.mark.parametrize(
-    "param,value,key,slash",
-    [
-        (*row, slash)
-        for row in [
-            ("maxResults", "abc", "PAY-7"),
-            ("startAt", "abc", "PAY-7"),
-            ("maxResults", "1.5", "PAY-7"),
-            # where Python's own int() reads 10
-            ("maxResults", "1_0", "PAY-7"),
-            # the width is per PARAMETER: `maxResults` is a Java int, `startAt` a Java long, and each
-            # is refused just past its own boundary and answered 200 just inside it (below)
-            ("maxResults", "2147483648", "PAY-7"),
-            ("maxResults", "-2147483649", "PAY-7"),
-            ("maxResults", "9223372036854775807", "PAY-7"),
-            ("startAt", "9223372036854775808", "PAY-7"),
-            ("startAt", "-9223372036854775809", "PAY-7"),
-            # escapes in the key ``errors.atlassian.echoed_spelling`` keeps as sent
-            ("maxResults", "abc", "A%20B"),
-            ("maxResults", "abc", "A%3FB"),
-            ("maxResults", "abc", "A%23B"),
-        ]
-        for slash in ("", "/")
-        if not slash or row[:2] == ("maxResults", "abc")
-    ],
-)
+_INTEGER_REFUSALS = [
+    (*row, slash)
+    for row in [
+        ("maxResults", "abc", "PAY-7"),
+        ("startAt", "abc", "PAY-7"),
+        ("maxResults", "1.5", "PAY-7"),
+        # where Python's own int() reads 10
+        ("maxResults", "1_0", "PAY-7"),
+        # the width is per PARAMETER: `maxResults` is a Java int, `startAt` a Java long, and each
+        # is refused just past its own boundary and answered 200 just inside it (below)
+        ("maxResults", "2147483648", "PAY-7"),
+        ("maxResults", "-2147483649", "PAY-7"),
+        ("maxResults", "9223372036854775807", "PAY-7"),
+        ("startAt", "9223372036854775808", "PAY-7"),
+        ("startAt", "-9223372036854775809", "PAY-7"),
+        # escapes in the key ``errors.atlassian.echoed_spelling`` keeps as sent
+        ("maxResults", "abc", "A%20B"),
+        ("maxResults", "abc", "A%3FB"),
+        ("maxResults", "abc", "A%23B"),
+    ]
+    for slash in ("", "/")
+    if not slash or row[:2] == ("maxResults", "abc")
+]
+assert sum(slash == "/" for *_, slash in _INTEGER_REFUSALS) == 4
+
+
+@pytest.mark.parametrize("param,value,key,slash", _INTEGER_REFUSALS)
 def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value, key, slash):
     client, h = paged
     r = client.get(f"/atlassian/rest/api/3/issue/{key}/comment{slash}?{param}={value}", headers=h)
@@ -4193,10 +4194,11 @@ def _properties_null(index: int) -> dict:
     return {"message": f"at index {index}", "status-code": 500, "stack-trace": ""}
 
 
-# What real answers for a value of each of the five bean members other than `fields` that Backlot
-# does not act on, alone and beside a second refusal: the rules are `_jira_bean_boolean_ok`,
-# `_jira_reconcile_issue_ok`, the cap on `reconcileIssues` and where `jira_search` raises the two
-# 500s. `None` is a 200.
+# What real answers for a search body's bean members: a value of each of the five other than
+# `fields` that Backlot does not act on, alone and beside a second refusal (the rules are
+# `_jira_bean_boolean_ok`, `_jira_reconcile_issue_ok`, the cap on `reconcileIssues` and where
+# `jira_search` raises the two 500s); then each member, `fields` too, at a value the bean takes; and
+# bytes after a complete body. `None` is a 200.
 _BEAN_MEMBER_ROWS = [
     *[(_bean(f'"expand": {v}'), None) for v in ('"bogus"', '""', "1", "1.5", "true", "null")],
     *[(_bean(f'"expand": {v}'), _BEAN_REFUSED) for v in ("[]", '["names"]', "[1]", "{}")],
@@ -4688,32 +4690,33 @@ def test_confluence_refuses_a_wrong_method_with_springs_errors_list_and_no_allow
     }
 
 
-@pytest.mark.parametrize(
-    "method,path,allow,slash",
-    [
-        (*row, slash)
-        for row in [
-            # every row measured on brekkylab.atlassian.net, 2026-09-16, by sending a method the
-            # vendor defines on no route of that path; real's ORDER varies per response, so only
-            # the set is real's and the order below is `_JIRA_ALLOW`'s
-            ("post", "/rest/api/3/serverInfo", "GET"),
-            ("put", "/rest/api/3/field", "GET, POST"),
-            ("post", "/rest/api/3/issue/PAY-1", "GET, PUT, DELETE"),
-            ("put", "/rest/api/3/issue/PAY-1/comment", "GET, POST"),
-            ("put", "/rest/api/2/search/jql", "GET, POST"),
-            # the row the vendor's own document disagrees with: it declares GET alone on
-            # `project/search`
-            ("post", "/rest/api/3/project/search", "GET, PUT, DELETE"),
-            # an escape in the path, echoed as ``errors.atlassian.echoed_spelling`` spells it
-            ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),
-            ("post", "/rest/api/3/issue/A%23B", "GET, PUT, DELETE"),
-            ("post", "/rest/api/3/issue/A%3FB", "GET, PUT, DELETE"),
-        ]
-        # a trailing slash on the plain path and on each escape
-        for slash in ("", "/")
-        if not slash or row[1] == "/rest/api/3/serverInfo" or "%" in row[1]
-    ],
-)
+_WRONG_METHODS = [
+    (*row, slash)
+    for row in [
+        # every row measured on brekkylab.atlassian.net, 2026-09-16, by sending a method the
+        # vendor defines on no route of that path; real's ORDER varies per response, so only
+        # the set is real's and the order below is `_JIRA_ALLOW`'s
+        ("post", "/rest/api/3/serverInfo", "GET"),
+        ("put", "/rest/api/3/field", "GET, POST"),
+        ("post", "/rest/api/3/issue/PAY-1", "GET, PUT, DELETE"),
+        ("put", "/rest/api/3/issue/PAY-1/comment", "GET, POST"),
+        ("put", "/rest/api/2/search/jql", "GET, POST"),
+        # the row the vendor's own document disagrees with: it declares GET alone on
+        # `project/search`
+        ("post", "/rest/api/3/project/search", "GET, PUT, DELETE"),
+        # an escape in the path, echoed as ``errors.atlassian.echoed_spelling`` spells it
+        ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),
+        ("post", "/rest/api/3/issue/A%23B", "GET, PUT, DELETE"),
+        ("post", "/rest/api/3/issue/A%3FB", "GET, PUT, DELETE"),
+    ]
+    # a trailing slash on the plain path and on each escape
+    for slash in ("", "/")
+    if not slash or row[1] == "/rest/api/3/serverInfo" or "%" in row[1]
+]
+assert sum(slash == "/" for *_, slash in _WRONG_METHODS) == 4
+
+
+@pytest.mark.parametrize("method,path,allow,slash", _WRONG_METHODS)
 def test_jira_refuses_a_wrong_method_as_rfc_7807_naming_the_methods_it_takes(
     client, admin_h, method, path, allow, slash
 ):
@@ -5253,29 +5256,30 @@ _JIRA_NULL_PAGE = (
 )
 
 
-@pytest.mark.parametrize(
-    "vendor_path,status,page,accept",
-    [
-        (*row, accept)
-        for row in [
-            # the dead-link page, the one the site answers `/foo` with
-            ("/rest/api/3/nope%5Bx", 404, "/foo"),
-            ("/rest/api/3/nope%5Dx", 404, "/foo"),
-            ("/rest/api/3/issue/A%5BB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
-            ("/rest/api/3/issue/A%5DB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
-            # in lower case, and bare
-            ("/rest/api/3/nope%5bx", 404, "/foo"),
-            ("/rest/api/3/nope[x", 404, "/foo"),
-            ("/rest/api/3/issue/A[B/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
-            # the issue's own 404 is not one of the two
-            ("/rest/api/3/issue/A%5BB", 404, None),
-            ("/rest/api/3/issue/A%5DB", 404, None),
-        ]
-        # `*/*` beside every row the dead-link page does not answer, and one it does
-        for accept in ("application/json", "*/*")
-        if accept == "application/json" or row[2] != "/foo" or row[0].endswith("%5Bx")
-    ],
-)
+_BRACKET_ROWS = [
+    (*row, accept)
+    for row in [
+        # the dead-link page, the one the site answers `/foo` with
+        ("/rest/api/3/nope%5Bx", 404, "/foo"),
+        ("/rest/api/3/nope%5Dx", 404, "/foo"),
+        ("/rest/api/3/issue/A%5BB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
+        ("/rest/api/3/issue/A%5DB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
+        # in lower case, and bare
+        ("/rest/api/3/nope%5bx", 404, "/foo"),
+        ("/rest/api/3/nope[x", 404, "/foo"),
+        ("/rest/api/3/issue/A[B/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
+        # the issue's own 404 is not one of the two
+        ("/rest/api/3/issue/A%5BB", 404, None),
+        ("/rest/api/3/issue/A%5DB", 404, None),
+    ]
+    # `*/*` beside every row the dead-link page does not answer, and one it does
+    for accept in ("application/json", "*/*")
+    if accept == "application/json" or row[2] != "/foo" or row[0].endswith("%5Bx")
+]
+assert [row[2] for row in _BRACKET_ROWS if row[3] == "*/*"].count("/foo") == 1
+
+
+@pytest.mark.parametrize("vendor_path,status,page,accept", _BRACKET_ROWS)
 def test_jira_answers_a_bracket_with_a_page_of_its_web_app(
     client, admin_h, vendor_path, status, page, accept
 ):
@@ -6564,29 +6568,30 @@ _EDGE_STUB = (
 )
 
 
-@pytest.mark.parametrize(
-    "accept,media_type,body,vendor_path",
-    [
-        (*row, vendor_path)
-        for vendor_path in (
-            "/rest/api/3/issue/A;B",
-            "/rest/api/3/nope%3Bx",
-            "/wiki/rest/api/space/NO;SUCH",
-        )
-        for row in [
-            ("application/json", "application/json", _EDGE_JSON),
-            ("application/json, text/html", "application/json", _EDGE_JSON),
-            ("text/html, application/json", "application/json", _EDGE_JSON),
-            ("application/json;q=0, text/html", "application/json", _EDGE_JSON),
-            ("APPLICATION/JSON", "text/html", _EDGE_STUB),
-            ("application/*, application/xml", "text/html", _EDGE_STUB),
-            ("text/html", "text/html", _EDGE_STUB),
-            ("*/*", "text/html", _EDGE_STUB),
-        ]
-        # every `Accept` on the issue's path, and each shape on the other two
-        if vendor_path.endswith("A;B") or row[0] in ("application/json", "APPLICATION/JSON")
-    ],
-)
+_SEMICOLON_ROWS = [
+    (*row, vendor_path)
+    for vendor_path in (
+        "/rest/api/3/issue/A;B",
+        "/rest/api/3/nope%3Bx",
+        "/wiki/rest/api/space/NO;SUCH",
+    )
+    for row in [
+        ("application/json", "application/json", _EDGE_JSON),
+        ("application/json, text/html", "application/json", _EDGE_JSON),
+        ("text/html, application/json", "application/json", _EDGE_JSON),
+        ("application/json;q=0, text/html", "application/json", _EDGE_JSON),
+        ("APPLICATION/JSON", "text/html", _EDGE_STUB),
+        ("application/*, application/xml", "text/html", _EDGE_STUB),
+        ("text/html", "text/html", _EDGE_STUB),
+        ("*/*", "text/html", _EDGE_STUB),
+    ]
+    # every `Accept` on the issue's path, and each shape on the other two
+    if vendor_path.endswith("A;B") or row[0] in ("application/json", "APPLICATION/JSON")
+]
+assert len(_SEMICOLON_ROWS) == 8 + 2 * 2
+
+
+@pytest.mark.parametrize("accept,media_type,body,vendor_path", _SEMICOLON_ROWS)
 def test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks(
     client, admin_h, vendor_path, accept, media_type, body
 ):

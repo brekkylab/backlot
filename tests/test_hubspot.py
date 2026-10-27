@@ -81,34 +81,49 @@ def test_hubspot_archived_parameter_reads_its_first_value_and_only_true_as_true(
     gone_batch = client.post(
         f"{url}/batch/read", headers=admin_h, json={"inputs": [{"id": missing}]}
     )
+    answered, expected = {}, {}
     for value, archived in _ARCHIVED_VALUES:
         params = {} if value is None else {"archived": value}
         r = client.get(url, headers=admin_h, params=params)
-        assert r.status_code == 200, value
-        if archived:
-            names = [x["properties"]["name"] for x in r.json()["results"]]
-            assert names == ["Defunct Labs"], value
-        else:
-            assert r.json() == unflagged, value
+        page = r.json()
+        reads, wanted = [], []
         for rid, served in ((defunct["id"], archived), (active, True)):
             got = client.get(f"{url}/{rid}", headers=admin_h, params=params)
             batch = client.post(
                 f"{url}/batch/read", headers=admin_h, params=params, json={"inputs": [{"id": rid}]}
             )
-            if served:
-                assert (got.status_code, got.json()["id"]) == (200, rid), value
-                listed = [x["id"] for x in batch.json()["results"]]
-                assert (batch.status_code, listed) == (200, [rid]), value
-            else:
-                assert (got.status_code, got.headers["content-type"], got.content) == (
-                    404,
-                    gone.headers["content-type"],
-                    gone.content,
-                ), value
-                assert (batch.status_code, json.loads(batch.text.replace(rid, missing))) == (
-                    207,
-                    gone_batch.json(),
-                ), value
+            reads.append(
+                (
+                    got.status_code,
+                    got.json()["id"]
+                    if got.status_code == 200
+                    else (got.headers["content-type"], got.content),
+                    batch.status_code,
+                    [x["id"] for x in batch.json()["results"]]
+                    if batch.status_code == 200
+                    else json.loads(batch.text.replace(rid, missing)),
+                )
+            )
+            wanted.append(
+                (200, rid, 200, [rid])
+                if served
+                else (404, (gone.headers["content-type"], gone.content), 207, gone_batch.json())
+            )
+        answered[repr(value)] = (
+            r.status_code,
+            [x["properties"]["name"] for x in page["results"]],
+            page == unflagged,
+            reads,
+        )
+        expected[repr(value)] = (
+            200,
+            ["Defunct Labs"]
+            if archived
+            else [x["properties"]["name"] for x in unflagged["results"]],
+            not archived,
+            wanted,
+        )
+    assert answered == expected
 
 
 _UNSUPPORTED_ARCHIVED_TYPES = [
@@ -171,10 +186,14 @@ def test_hubspot_meetings_refuses_or_lists_by_the_parsed_flag(client, admin_h):
         refused: client.get(url, headers=admin_h, params={"archived": "true"} if refused else None)
         for refused in (True, False)
     }
-    for params, refused in _MEETINGS_FLAGS:
+    answered = {}
+    for params, _ in _MEETINGS_FLAGS:
         r = client.get(url, headers=admin_h, params=params)
-        assert r.status_code == (400 if refused else 200), params
-        assert r.json() == answers[refused].json(), params
+        answered[str(params)] = (r.status_code, r.json())
+    assert answered == {
+        str(params): (400 if refused else 200, answers[refused].json())
+        for params, refused in _MEETINGS_FLAGS
+    }
 
 
 @pytest.mark.parametrize("headers", [None, "admin"])
@@ -270,12 +289,17 @@ def test_hubspot_reads_the_bearer_scheme_spelled_exactly(client, admin_h, tokens
     """Each of the five routes serves what `_bearer_credential` in `backlot.routers.hubspot`
     records as served, and answers the other spellings with the INVALID_AUTHENTICATION 401."""
     company = client.get("/hubspot/crm/v3/objects/companies", headers=admin_h).json()["results"][0]
+    answered, expected = {}, {}
     for authorization, status in _BEARER_SPELLINGS:
         headers = {"Authorization": authorization.format(key=tokens_yaml["admin_token"])}
         for r in _each_route(client, company["id"], headers):
-            assert r.status_code == status, (authorization, r.request.url)
-            if status == 401:
-                assert r.json()["category"] == "INVALID_AUTHENTICATION", authorization
+            row = (authorization, r.request.method, r.request.url.path)
+            answered[row] = (
+                r.status_code,
+                r.json()["category"] if r.status_code == 401 else None,
+            )
+            expected[row] = (status, "INVALID_AUTHENTICATION" if status == 401 else None)
+    assert answered == expected
 
 
 def test_hubspot_unknown_object_type_is_400(client, admin_h):
@@ -509,32 +533,33 @@ def test_hubspot_a_standard_type_answers_to_either_spelling(client, admin_h):
     a scope-less key, where an unrecognized word answers 400. A corpus states one spelling or the
     other, and neither may hide its records from the vendor's own path. Either is read in upper
     case on each route, as `_canonical` records."""
-    plural_listing = client.get(
-        "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"limit": 100}
-    ).json()["results"]
+    plural_ids = [
+        r["id"]
+        for r in client.get(
+            "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"limit": 100}
+        ).json()["results"]
+    ]
+    bodies = {"search": {"limit": 100}, "batch/read": {"inputs": [{"id": i} for i in plural_ids]}}
+    answered, expected = {}, {}
     for asked in _COMPANY_SPELLINGS:
         listed = client.get(
             f"/hubspot/crm/v3/objects/{asked}", headers=admin_h, params={"limit": 100}
         ).json()["results"]
-        assert [r["id"] for r in listed] == [r["id"] for r in plural_listing], asked
         # and a record of that type resolves under both spellings, while another type's does not
-        one = listed[0]["id"]
-        got = client.get(f"/hubspot/crm/v3/objects/{asked}/{one}", headers=admin_h)
-        assert got.status_code == 200, asked
-        other = client.get(f"/hubspot/crm/v3/objects/tickets/{one}", headers=admin_h)
-        assert other.status_code == 404, asked
-        for route, body in (
-            ("search", {"limit": 100}),
-            ("batch/read", {"inputs": [{"id": r["id"]} for r in listed]}),
-        ):
+        got = client.get(f"/hubspot/crm/v3/objects/{asked}/{plural_ids[0]}", headers=admin_h)
+        other = client.get(f"/hubspot/crm/v3/objects/tickets/{plural_ids[0]}", headers=admin_h)
+        answered[asked] = [[r["id"] for r in listed], got.status_code, other.status_code]
+        expected[asked] = [plural_ids, 200, 404]
+        for route, body in bodies.items():
             spelt = client.post(
                 f"/hubspot/crm/v3/objects/{asked}/{route}", headers=admin_h, json=body
             )
             plural = client.post(
                 f"/hubspot/crm/v3/objects/companies/{route}", headers=admin_h, json=body
             )
-            assert spelt.status_code == plural.status_code == 200, (asked, route)
-            assert spelt.json() == plural.json(), (asked, route)
+            answered[asked].append((spelt.status_code, plural.status_code, spelt.json()))
+            expected[asked].append((200, 200, plural.json()))
+    assert answered == expected
 
 
 def test_hubspot_standard_type_with_no_records_is_an_empty_page(client, admin_h):
@@ -582,7 +607,7 @@ def test_hubspot_refuses_an_unserved_operation_for_its_credential(client, author
     can't resolve, as `refuse_an_unserved_operation` in `backlot.routers.hubspot` records, not
     FastAPI's 404 or 405."""
     headers = {"Authorization": authorization} if authorization else {}
-    for method, path in (
+    operations = (
         ("POST", "/hubspot/crm/v3/objects/contacts"),
         ("PATCH", "/hubspot/crm/v3/objects/contacts/abc123"),
         ("DELETE", "/hubspot/crm/v3/objects/contacts/abc123"),
@@ -591,16 +616,17 @@ def test_hubspot_refuses_an_unserved_operation_for_its_credential(client, author
         ("POST", "/hubspot/crm/v4/associations/contacts/companies/batch/read"),
         ("PATCH", "/hubspot/crm/v3/objects/zzz/1"),
         ("DELETE", "/hubspot/crm/v3/objects/2-999/1"),
-    ):
+    )
+    answered = {}
+    for method, path in operations:
         r = client.request(method, path, headers=headers, json={})
-        assert (r.status_code, r.json()) == (
-            401,
-            {
-                "status": "error",
-                "message": "Authentication credentials not found.",
-                "category": "INVALID_AUTHENTICATION",
-            },
-        ), (method, path)
+        answered[(method, path)] = (r.status_code, r.json())
+    refusal = {
+        "status": "error",
+        "message": "Authentication credentials not found.",
+        "category": "INVALID_AUTHENTICATION",
+    }
+    assert answered == {operation: (401, refusal) for operation in operations}
 
 
 _CONTACT_SCOPES = [
@@ -1092,19 +1118,21 @@ def test_hubspot_object_types_resolve_as_real_resolves_them(client, admin_h, ava
     since the cursor is refused before a missing or mismatched record is an empty page; and Ava
     herself, or her associations, for her id with a leading zero. Where `want` is bytes, it is the
     HTML page, under real's Latin-1 content type. A JSON answer's members come in real's order."""
+    answered, expected = {}, {}
     for path, status, want in _OBJECT_TYPE_ROWS:
         r = client.get("/hubspot" + path.format(ava=ava), headers=admin_h)
-        assert r.status_code == status, path
         if isinstance(want, bytes):
-            assert (r.headers["content-type"], r.content) == (
-                "text/html;charset=iso-8859-1",
-                want,
-            ), path
+            answered[path] = (r.status_code, r.headers["content-type"], r.content)
+            expected[path] = (status, "text/html;charset=iso-8859-1", want)
             continue
         if isinstance(want, str):
-            want = client.get("/hubspot" + want.format(ava=ava), headers=admin_h).json()
-            assert want != _EMPTY, path
-        assert list(r.json().items()) == list(want.items()), path
+            control = client.get("/hubspot" + want.format(ava=ava), headers=admin_h).json()
+            answered[path] = (r.status_code, list(r.json().items()), control != _EMPTY)
+            expected[path] = (status, list(control.items()), True)
+        else:
+            answered[path] = (r.status_code, list(r.json().items()))
+            expected[path] = (status, list(want.items()))
+    assert answered == expected
 
 
 def test_hubspot_search_filter_groups(client, admin_h):
@@ -1396,15 +1424,16 @@ _WILDCARD_ROWS = [
 def test_hubspot_contains_token_reads_star_as_a_wildcard(client, admin_h):
     """The wildcard rule `_NEEDLE_RE`'s comment records; `NOT_CONTAINS_TOKEN` finds none of what
     `CONTAINS_TOKEN` finds."""
+    answered = {}
     for prop, value, want in _WILDCARD_ROWS:
         found = _hs_filter(
             client, admin_h, propertyName=prop, operator="CONTAINS_TOKEN", value=value
         )
-        assert found == want, (prop, value)
         others = _hs_filter(
             client, admin_h, propertyName=prop, operator="NOT_CONTAINS_TOKEN", value=value
         )
-        assert not want & others, (prop, value)
+        answered[(prop, value)] = (found, want & others)
+    assert answered == {(prop, value): (want, set()) for prop, value, want in _WILDCARD_ROWS}
 
 
 def test_hubspot_wildcard_needle_with_many_stars_stays_fast():
@@ -1529,10 +1558,9 @@ def test_hubspot_search_reads_a_filter_operator_as_real_does(client, admin_h):
             answered[row.id], expected[row.id] = (r.status_code, r.json()), (400, want)
         elif isinstance(want, tuple):
             control = client.post(url, headers=headers, content=want[1].encode()).json()["results"]
-            assert control != [], row.id
             answered[row.id], expected[row.id] = (
-                (r.status_code, r.json()["results"]),
-                (200, control),
+                (r.status_code, r.json()["results"], control != []),
+                (200, control, True),
             )
         else:
             answered[row.id], expected[row.id] = r.status_code, want
@@ -1932,17 +1960,25 @@ def test_hubspot_batch_read_names_a_missing_id_as_the_body_spells_it(client, adm
     """An input naming no record is the 207's one error, its id a number or boolean as the body
     spells it and a string as it decodes. Backlot names the member `context.id` where real's is
     `context.ids`."""
-    for raw_id, echoed in _MISSING_ID_SPELLINGS:
+    answered = {}
+    for raw_id, _ in _MISSING_ID_SPELLINGS:
         r = client.post(
             "/hubspot/crm/v3/objects/contacts/batch/read",
             headers={**admin_h, "Content-Type": "application/json"},
             content=('{"inputs":[{"id":' + raw_id + "}]}").encode(),
         )
-        assert r.status_code == 207, raw_id
         j = r.json()
-        assert (j["status"], j["results"], j["numErrors"]) == ("COMPLETE", [], 1), raw_id
-        assert j["errors"][0]["category"] == "OBJECT_NOT_FOUND", raw_id
-        assert j["errors"][0]["context"] == {"id": [echoed]}, raw_id
+        error = (j.get("errors") or [{}])[0]
+        answered[raw_id] = (
+            r.status_code,
+            (j.get("status"), j.get("results"), j.get("numErrors")),
+            error.get("category"),
+            error.get("context"),
+        )
+    assert answered == {
+        raw_id: (207, ("COMPLETE", [], 1), "OBJECT_NOT_FOUND", {"id": [echoed]})
+        for raw_id, echoed in _MISSING_ID_SPELLINGS
+    }
 
 
 _FOUND_ID_SPELLINGS = [
@@ -1961,6 +1997,7 @@ def test_hubspot_batch_read_finds_a_record_by_an_integer_or_an_escaped_id(client
     listed = client.get("/hubspot/crm/v3/objects/contacts", headers=admin_h).json()["results"]
     rid = listed[0]["id"]
     assert rid.isascii() and rid.isdigit()
+    answered = {}
     for spelling, field, literal in _FOUND_ID_SPELLINGS:
         raw_id = (
             rid if spelling == "integer" else '"' + "".join(f"\\u{ord(c):04x}" for c in rid) + '"'
@@ -1974,8 +2011,11 @@ def test_hubspot_batch_read_finds_a_record_by_an_integer_or_an_escaped_id(client
             headers={**admin_h, "Content-Type": "application/json"},
             content=raw.encode(),
         )
-        found = (r.status_code, [record["id"] for record in r.json()["results"]])
-        assert found == (200, [rid]), (spelling, field, literal)
+        answered[(spelling, field, literal)] = (
+            r.status_code,
+            [record["id"] for record in r.json().get("results", [])],
+        )
+    assert answered == {row: (200, [rid]) for row in _FOUND_ID_SPELLINGS}
 
 
 def _token_refusal(column: int, token: str, line: int = 1) -> dict:

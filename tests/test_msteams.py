@@ -127,12 +127,15 @@ _BEARER_SPELLINGS = [
 
 def test_a_token_that_resolves_is_read_only_where_graph_reads_one(client, tokens_yaml):
     token = tok(tokens_yaml, "bob@acme.com")
-    for header, served in _BEARER_SPELLINGS:
+    answered = {}
+    for header, _ in _BEARER_SPELLINGS:
         r = client.get(f"{V1}/me", headers={"Authorization": header.replace("{T}", token)})
-        if served:
-            assert r.status_code == 200, (header, r.text)
-        else:
-            assert _error(r, 401)["message"] == _UNREADABLE, header
+        error = r.json().get("error") or {}
+        answered[header] = (r.status_code, error.get("message"))
+    assert answered == {
+        header: (200, None) if served else (401, _UNREADABLE)
+        for header, served in _BEARER_SPELLINGS
+    }
 
 
 def test_two_authorization_headers_are_refused_before_either_is_read(client, tokens_yaml):
@@ -1197,7 +1200,7 @@ _CHANNEL_FILTERS = {
     "membershipType eq 'private'": ["People Confidential"],
     "membershipType eq 'shared'": [],
     "displayName eq 'Platform'": ["Platform"],
-    "displayName eq 'PLATFORM'": [],
+    "displayName eq 'PLATFORM'": [],  # case-sensitive here, unlike the directory
     "startswith(displayName,'Pl')": ["Platform"],
     "contains(displayName,'cid')": ["Incidents"],
     "displayName ne 'Platform' and membershipType eq 'standard'": ["Incidents"],
@@ -2502,11 +2505,6 @@ def test_a_crawl_reaches_every_stored_message(client, admin_h, team_id, ro_conn)
                 found.update(r["id"] for r in replies["value"])
             url = body.get("@odata.nextLink")
     assert len(found) == db_count(ro_conn, "msteams")
-
-
-# Placed after every `client`-fixture test in this module: each opens a SECOND app over a different
-# DB via `corpus_client`, which overwrites the module-scoped fixture's shared `app.state` (see
-# `tests._helpers.client_for`'s docstring).
 
 
 @pytest.mark.parametrize(

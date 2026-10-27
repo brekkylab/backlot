@@ -715,7 +715,8 @@ def _max_results_refusal(shape, named):
 
 @pytest.mark.parametrize("kind", ["messages", "threads"])
 def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind):
-    """The refusals `_gmail_page` records, on both listings: a served row as its page's length."""
+    """The refusals `_gmail_page` records, on both listings: a served row as its page's length and
+    whether `resultSizeEstimate` is at least that."""
     answered = {}
     for values, *_ in _GMAIL_MAX_RESULTS:
         r = client.get(
@@ -725,12 +726,14 @@ def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind):
         )
         if r.status_code == 200:
             body = r.json()
-            assert body["resultSizeEstimate"] >= len(body[kind]), values
-            answered[tuple(values)] = len(body[kind])
+            listed = len(body[kind])
+            answered[tuple(values)] = (listed, body["resultSizeEstimate"] >= listed)
         else:
             answered[tuple(values)] = (r.status_code, r.json()["error"])
     assert answered == {
-        tuple(values): named if shape == "size" else (400, _max_results_refusal(shape, named))
+        tuple(values): (named, True)
+        if shape == "size"
+        else (400, _max_results_refusal(shape, named))
         for values, shape, named in _GMAIL_MAX_RESULTS
     }
 
@@ -1448,12 +1451,17 @@ def test_drive_not_found_names_the_file_id(client, admin_h):
 @pytest.mark.parametrize(
     "name, caller, answers",
     [
-        # no `mimeType`: a document, a PDF, a file that does not exist, and a spreadsheet the scoped
-        # token cannot see, which with a `mimeType` is its 404
+        # `None` is no `mimeType`, sent on a document, a PDF, a file that does not exist, and a
+        # spreadsheet the scoped token cannot see, which with a `mimeType` is its 404
         (
             "Brand",
             None,
-            {None: "required", "text/markdown": "text/markdown", "TEXT/MARKDOWN": "text/markdown"},
+            {
+                None: "required",
+                # a format the document exports to, in any case, and the one it answers as
+                "text/markdown": "text/markdown",
+                "TEXT/MARKDOWN": "text/markdown",
+            },
         ),
         ("Whitepaper", None, {None: "required"}),
         (None, None, {None: "required"}),
@@ -1810,6 +1818,8 @@ def test_drive_permissions_list_pages_in_the_unpaged_order(client, admin_h, driv
     assert len(whole) == 2
 
     def paged(first, follow, expected):
+        """The page lengths, whether the last page offers another, and whether the pages joined
+        are the unpaged list; a refused page as its number, status and error."""
         r = client.get(url, headers=admin_h, params=first)
         if r.status_code != 200:
             return (r.status_code, _gerr(r))
@@ -1817,18 +1827,21 @@ def test_drive_permissions_list_pages_in_the_unpaged_order(client, admin_h, driv
         while "nextPageToken" in pages[-1] and len(pages) < len(expected):
             params = [*follow, ("pageToken", pages[-1]["nextPageToken"])]
             r = client.get(url, headers=admin_h, params=params)
-            assert r.status_code == 200, r.text
+            if r.status_code != 200:
+                return (len(pages) + 1, r.status_code, r.text)
             pages.append(r.json())
-        assert "nextPageToken" not in pages[-1]
-        assert [x for p in pages for x in p["permissions"]] == whole
-        return [len(p["permissions"]) for p in pages]
+        return (
+            [len(p["permissions"]) for p in pages],
+            "nextPageToken" in pages[-1],
+            [x for p in pages for x in p["permissions"]] == whole,
+        )
 
     assert {
         (urlencode(first), urlencode(follow)): paged(first, follow, expected)
         for first, follow, expected in _PERMISSION_PAGES
     } == {
         (urlencode(first), urlencode(follow)): (
-            expected if isinstance(expected, list) else (expected["code"], expected)
+            (expected, False, True) if isinstance(expected, list) else (expected["code"], expected)
         )
         for first, follow, expected in _PERMISSION_PAGES
     }
@@ -2718,8 +2731,9 @@ def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h):
         params={"q": "mimeType='application/vnd.google-apps.folder'"},
     ).json()["files"][0]["id"]
     paths = ("/drive/v3/files", f"/drive/v3/files/{doc}", f"/drive/v3/files/{folder}")
-    for path in paths:
-        assert client.get(path, headers=admin_h).json(), path
+    assert {
+        path: bool(client.get(path, headers=admin_h).json()) for path in paths
+    } == dict.fromkeys(paths, True)
     masks = ["", " ", "\t"]
     assert {
         (path, mask): client.get(path, headers=admin_h, params={"fields": mask}).json()
@@ -2843,10 +2857,11 @@ _MASKS_SERVED = [
 
 
 def test_drive_answers_a_fields_mask_with_what_it_selects(client, admin_h, drive_check_ids):
-    """The rows `_MASKS_SERVED` records. `files.list`'s own top-level keys are left whole, as
-    `_drive_file_field_keys` says, so only its `files` is compared; `"default"` is each entry as an
-    unmasked request gets it. A `drives.list` row compares the top-level keys alone: Backlot serves
-    no shared drive, where real listed the member's two."""
+    """The rows `_MASKS_SERVED` records. A row with top-level keys compares them on every route,
+    `files.list` included, and the listed entries as its fourth column says; a row without compares
+    the whole answer with the unmasked one. `"default"` is each entry as an unmasked request gets
+    it. A `drives.list` row compares the top-level keys alone: Backlot serves no shared drive,
+    where real listed the member's two."""
 
     def get(path, **params):
         url, _, query = path.format(doc=drive_check_ids["doc"]).partition("?")
@@ -3552,14 +3567,22 @@ _QUERY_CREDENTIAL_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
+_ALL_CREDENTIAL_ROWS = [
+    (value, "", answer) for value, answer in _CREDENTIAL_ROWS
+] + _QUERY_CREDENTIAL_ROWS
+_CREDENTIAL_PATHS = pytest.mark.parametrize(
     "path, anonymous", [("/gmail/v1/users/me/labels/INBOX", 401), ("/drive/v3/files", 403)]
 )
-def test_a_credential_is_read_as_google_reads_it(client, tokens_yaml, tokens, path, anonymous):
-    """The rows `_CREDENTIAL_ROWS` and `_QUERY_CREDENTIAL_ROWS` record, on an operation whose caller
-    with no credential is a missing one and on one whose is an unregistered one. A served row is
-    answered as its token is under `Authorization: Bearer`, the scoped token's as the scoped user's
-    rather than the admin's."""
+
+
+def _as_scoped(value, query):
+    """Whether a row sends the scoped token."""
+    return "{m}" in f"{value}{query}"
+
+
+def _credential_reader(client, tokens_yaml, tokens, path, anonymous):
+    """What ``path`` answers a row's `Authorization` value and query with: `_SERVED` and whose read
+    it is, `_NONE`, the bad token's challenge, or the status and body where it is none of those."""
     admin, scoped = tokens_yaml["admin_token"], tokens["mia@acme.com"]
     served = {
         "admin": client.get(path, headers={"Authorization": f"Bearer {admin}"}).json(),
@@ -3567,27 +3590,52 @@ def test_a_credential_is_read_as_google_reads_it(client, tokens_yaml, tokens, pa
     }
     assert served["admin"] != served["scoped"]
     nothing = client.get(path).json()
-    rows = [(value, "", answer) for value, answer in _CREDENTIAL_ROWS] + _QUERY_CREDENTIAL_ROWS
-    answered = {}
-    for value, query, _ in rows:
+
+    def read(value, query):
         headers = {} if value is None else {"Authorization": value.format(t=admin, m=scoped)}
         sent = query.format(t=admin, m=scoped)
         r = client.get(f"{path}?{sent}" if sent else path, headers=headers)
         if r.status_code == 200:
-            as_whom = [whom for whom, body in served.items() if body == r.json()]
-            answered[value, query] = (_SERVED, *as_whom)
-        elif (r.status_code, r.json()) == (anonymous, nothing):
-            answered[value, query] = _NONE
-        elif r.status_code == 401 and _gerr(r)["message"] == gerr.BAD_TOKEN_MESSAGE:
-            answered[value, query] = r.headers["www-authenticate"]
-        else:
-            answered[value, query] = (r.status_code, r.text)
-    assert answered == {
-        (value, query): (_SERVED, "scoped" if "{m}" in f"{value}{query}" else "admin")
-        if answer == _SERVED
-        else answer
-        for value, query, answer in rows
+            return (_SERVED, *(whom for whom, body in served.items() if body == r.json()))
+        if (r.status_code, r.json()) == (anonymous, nothing):
+            return _NONE
+        if r.status_code == 401 and _gerr(r)["message"] == gerr.BAD_TOKEN_MESSAGE:
+            return r.headers["www-authenticate"]
+        return (r.status_code, r.text)
+
+    return read
+
+
+def _credential_expected(value, query, answer):
+    if answer != _SERVED:
+        return answer
+    return (_SERVED, "scoped" if _as_scoped(value, query) else "admin")
+
+
+@_CREDENTIAL_PATHS
+def test_a_credential_is_read_as_google_reads_it(client, tokens_yaml, tokens, path, anonymous):
+    """The rows `_CREDENTIAL_ROWS` and `_QUERY_CREDENTIAL_ROWS` record that send the admin token
+    or none, on an operation whose caller with no credential is a missing one and on one whose is
+    an unregistered one. A served row is answered as the admin token is under
+    `Authorization: Bearer`."""
+    read = _credential_reader(client, tokens_yaml, tokens, path, anonymous)
+    rows = [row for row in _ALL_CREDENTIAL_ROWS if not _as_scoped(*row[:2])]
+    assert {(value, query): read(value, query) for value, query, _ in rows} == {
+        (value, query): _credential_expected(value, query, answer) for value, query, answer in rows
     }
+
+
+@pytest.mark.parametrize(
+    "value, query, answer", [row for row in _ALL_CREDENTIAL_ROWS if _as_scoped(*row[:2])]
+)
+@_CREDENTIAL_PATHS
+def test_a_scoped_credential_is_read_as_its_user(
+    client, tokens_yaml, tokens, value, query, answer, path, anonymous
+):
+    """The rows of the same tables that send the scoped token, each a case of its own: a served row
+    is answered as the scoped user's read, not the admin's."""
+    read = _credential_reader(client, tokens_yaml, tokens, path, anonymous)
+    assert read(value, query) == _credential_expected(value, query, answer)
 
 
 _DENIED = "Delegation denied for mia@acme.com"
@@ -5140,9 +5188,9 @@ def test_drive_order_by_a_per_caller_time(tmp_path):
                     "q": "mimeType != 'application/vnd.google-apps.folder'",
                 },
             )
-            assert r.status_code == 200, r.text
-            answered[order_by] = " ".join(f["name"] for f in r.json()["files"])
-    assert answered == dict(_PER_CALLER_ORDER)
+            names = " ".join(f["name"] for f in r.json().get("files", []))
+            answered[order_by] = (r.status_code, names if r.status_code == 200 else r.text)
+    assert answered == {order_by: (200, listed) for order_by, listed in _PER_CALLER_ORDER}
 
 
 # Each set of `capabilities` true for a file or a folder, as its owner and as a reader read it
@@ -8400,10 +8448,14 @@ def test_drive_files_list_lists_the_trash_unless_q_leaves_it_out(tmp_path):
                 headers={"Authorization": f"Bearer {settings.admin_token}"},
                 params={k: v for k, v in params.items() if v},
             )
-            assert r.status_code == 200, r.text
-            assert "nextPageToken" not in r.json()
-            answered[q] = {served[f["id"]] for f in r.json()["files"] if f["id"] in served}
-    assert answered == dict(_TRASH_LISTED)
+            body = r.json()
+            listed = {served[f["id"]] for f in body.get("files", []) if f["id"] in served}
+            answered[q] = (
+                r.status_code,
+                "nextPageToken" in body,
+                listed if r.status_code == 200 else r.text,
+            )
+    assert answered == {q: (200, False, listed) for q, listed in _TRASH_LISTED}
 
 
 @pytest.mark.parametrize(
@@ -8941,9 +8993,9 @@ def test_drive_q_reads_what_real_reads_past_the_reference(q_corpus):
                 headers=h,
                 params={"q": q, "fields": "files(name,mimeType)", "pageSize": 100},
             )
-            assert r.status_code == 200, r.text
-            answered[q] = {f["name"] for f in r.json()["files"] if f["mimeType"] != _FOLDER}
-    assert answered == dict(_Q_PAST_THE_REFERENCE)
+            names = {f["name"] for f in r.json().get("files", []) if f["mimeType"] != _FOLDER}
+            answered[q] = (r.status_code, names if r.status_code == 200 else r.text)
+    assert answered == {q: (200, names) for q, names in _Q_PAST_THE_REFERENCE}
 
 
 def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(q_corpus):
@@ -9975,9 +10027,8 @@ def test_an_a1_range_resolves_and_echoes_the_way_the_real_api_does(gc, gh, book)
     answered = {}
     for spec, _ in _A1_ECHOES:
         r = _gvalues(gc, gh, book, spec)
-        assert r.status_code == 200, r.text
-        answered[spec] = r.json()["range"]
-    assert answered == dict(_A1_ECHOES)
+        answered[spec] = (r.status_code, r.json()["range"] if r.status_code == 200 else r.text)
+    assert answered == {spec: (200, echo) for spec, echo in _A1_ECHOES}
 
 
 @pytest.mark.parametrize("spec", ["Nope!A1:B2", "Nope", "!!!", "Summary!"])
@@ -10473,9 +10524,9 @@ def test_fields_narrows_a_spreadsheet(gc, gh, book):
     for mask, want in _SPREADSHEET_MASKS:
         params = {"fields": mask} | ({"ranges": "Ragged!A1:C4"} if isinstance(want, dict) else {})
         r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params=params)
-        assert r.status_code == 200, r.text
-        answered[mask] = r.json() if isinstance(want, dict) else list(r.json())
-    assert answered == dict(_SPREADSHEET_MASKS)
+        body = r.json()
+        answered[mask] = (r.status_code, body if isinstance(want, dict) else list(body))
+    assert answered == {mask: (200, want) for mask, want in _SPREADSHEET_MASKS}
 
 
 def test_fields_reaches_through_the_sheets_list(gc, gh, book):
@@ -11711,9 +11762,8 @@ def test_a_values_level_mask_may_name_what_a_filter_declares(gc, gh, book):
             params={"fields": fields},
             json=body,
         )
-        assert r.status_code == 200, r.text
-        answered[fields] = r.json()
-    assert answered == {fields: {"valueRanges": want} for fields, want in _FILTER_MASKS}
+        answered[fields] = (r.status_code, r.json())
+    assert answered == {fields: (200, {"valueRanges": want}) for fields, want in _FILTER_MASKS}
 
 
 @pytest.mark.parametrize(
@@ -12005,9 +12055,9 @@ def test_include_grid_data_in_the_body_is_read_as_a_proto_bool(gc, gh, book):
             headers=gh,
             json={"dataFilters": [{"a1Range": "Summary!A1"}], "includeGridData": value},
         )
-        assert r.status_code == 200, r.text
-        answered[json.dumps(value)] = "data" in r.json()["sheets"][0]
-    assert answered == {json.dumps(value): grid for value, grid in grids}
+        sheets = r.json().get("sheets") or [{}]
+        answered[json.dumps(value)] = (r.status_code, "data" in sheets[0])
+    assert answered == {json.dumps(value): (200, grid) for value, grid in grids}
 
 
 @pytest.mark.parametrize(
@@ -12055,7 +12105,8 @@ def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, 
 
 
 def _gmail_searched(settings, token, records, rows):
-    """Each row's query sent on both listings, as ``{(listing, query): the doc_ids it listed}``."""
+    """Each row's query sent on both listings, as ``{(listing, query): (status, the doc_ids it
+    listed)}``."""
     doc_id = {served_id("gmail", r["doc_id"]): r["doc_id"] for r in records}
     answered = {}
     with client_for(settings, reload=True) as c:
@@ -12066,15 +12117,19 @@ def _gmail_searched(settings, token, records, rows):
                     headers={"Authorization": f"Bearer {token}"},
                     params={"q": query},
                 )
-                assert r.status_code == 200, (query, r.text)
-                answered[listing, query] = {doc_id[m["id"]] for m in r.json().get(listing, [])}
+                listed = {doc_id[m["id"]] for m in r.json().get(listing, [])}
+                answered[listing, query] = (
+                    r.status_code,
+                    listed if r.status_code == 200 else r.text,
+                )
     return answered
 
 
 def _gmail_listed(rows):
-    """What `_gmail_searched` should answer for ``rows``: each row's doc_ids on both listings."""
+    """What `_gmail_searched` should answer for ``rows``: a 200 and each row's doc_ids on both
+    listings."""
     return {
-        (listing, query): set(expected)
+        (listing, query): (200, set(expected))
         for listing in ("messages", "threads")
         for query, expected in rows
     }

@@ -28,7 +28,8 @@ from backlot.telemetry import clients, enabled, errors, naming, notice, recorder
 from backlot.telemetry.errors import error_class
 from backlot.telemetry.middleware import _credential
 from backlot.telemetry.recorder import MAX_SERIES, RECORDER, Exporter, Recorder, encode
-from tests._helpers import build_corpus, client_for
+from backlot.version import version
+from tests._helpers import build_corpus, client_for, settings_put_back
 
 ADMIN = {"Authorization": "Bearer admin-service-token"}
 LINEAR = {"Authorization": "admin-service-token"}
@@ -107,8 +108,16 @@ def _calls(send) -> list[dict]:
     return [dict(key) | {"count": n} for key, n in counts.items()]
 
 
+@pytest.fixture
+def settings_kept():
+    """The module's `client` stays open across a test that clears the settings `get_settings`
+    holds, so they are put back once it is done (`settings_put_back`)."""
+    with settings_put_back():
+        yield
+
+
 def test_it_is_on_unless_backlot_telemetry_or_do_not_track_says_off(
-    hello, capsys, tmp_path, monkeypatch
+    hello, capsys, tmp_path, monkeypatch, settings_kept
 ):
     for on in (None, "0", ""):
         with _env(BACKLOT_TELEMETRY=None, DO_NOT_TRACK=on):
@@ -137,14 +146,13 @@ def test_it_is_on_unless_backlot_telemetry_or_do_not_track_says_off(
             with client_for(hello) as c:
                 assert _calls(lambda: c.get("/github/repos/acme/docs-site", headers=ADMIN)) == []
             assert "usage counts" not in capsys.readouterr().err
-    get_settings.cache_clear()
 
 
 class _Started(Exception):
     pass
 
 
-def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys):
+def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys, settings_kept):
     import uvicorn
     from typer.testing import CliRunner
 
@@ -189,7 +197,6 @@ def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys):
                     pass
             # The child's own notice goes to its log, so serve() says it where its caller sees it.
             seen.append(notice(recorder.ENDPOINT) in capsys.readouterr().err)
-    get_settings.cache_clear()
     assert seen == [True, False, True, False, None, True, "0", False]
 
 
@@ -1110,15 +1117,24 @@ def test_nothing_the_request_spelled_reaches_an_export(client):
             value = attr["value"].get("stringValue")
             if pattern and value is not None:
                 assert re.match(pattern, value), (attr["key"], value)
-    keys = {a["key"] for a in body["resourceMetrics"][0]["resource"]["attributes"]}
-    assert keys == {"service.name", "service.version", "os.type", "process.runtime.version"}
+    (export,) = body["resourceMetrics"]
+    resource = {a["key"]: a["value"]["stringValue"] for a in export["resource"]["attributes"]}
+    assert resource.keys() == {
+        "service.name",
+        "service.version",
+        "os.type",
+        "process.runtime.version",
+    }
+    assert resource["service.version"] == export["scopeMetrics"][0]["scope"]["version"] == version()
 
 
 class _Collector(BaseHTTPRequestHandler):
     bodies: list = []
+    user_agents: list = []
 
     def do_POST(self):
         self.bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+        self.user_agents.append(self.headers["User-Agent"])
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -1131,6 +1147,7 @@ class _Collector(BaseHTTPRequestHandler):
 @pytest.fixture
 def collector():
     _Collector.bodies = []
+    _Collector.user_agents = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}/v1/metrics", _Collector.bodies
@@ -1153,6 +1170,7 @@ def test_the_exporter_posts_each_interval_and_survives_a_dead_endpoint(collector
     live.flush()
     live.flush()  # an empty interval sends nothing
     assert (live.sent, live.failed, len(bodies)) == (1, 0, 1)
+    assert _Collector.user_agents == [f"backlot/{version()}"]
     (sums, hists, gauge) = bodies[0]["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
     assert gauge["name"] == "backlot.surface.operations"
     assert gauge["gauge"]["dataPoints"][0]["asInt"] == "32"

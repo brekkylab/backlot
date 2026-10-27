@@ -19,7 +19,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one `POST`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
 | `github` | GitHub | `/github` | 34 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
-| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 13 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
+| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 21 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
@@ -275,10 +275,22 @@ One `source_type` (`google_drive`) across four prefixes.
 | `/sheets/v4/spreadsheets/{id}/values:batchGet` | As above; one unparseable range fails the whole call |
 | `/sheets/v4/spreadsheets/{id}:getByDataFilter` | The same read addressed by `DataFilter` (an `a1Range`, a `gridRange` or a `developerMetadataLookup`) instead of `ranges`. A read, over POST because the filters do not fit in a query string; no filter means every sheet, and so do lookups alone, since a corpus states no developer metadata for one to match. Two filters covering the same cells get a single `data` block |
 | `/sheets/v4/spreadsheets/{id}/values:batchGetByDataFilter` | Likewise for values. Each entry carries the filters that selected it, echoed as the proto real read, filters whose answers name the same range sharing one entry, and the entries come back ordered by where each range starts rather than as sent. A `gridRange` with no cells answers `#REF!`, and a lookup no entry |
+| `PUT /sheets/v4/spreadsheets/{id}/values/{range}` | `values.update`: `valueInputOption` `RAW` or `USER_ENTERED`, the latter read the way the Sheets UI reads typing, with the number format it infers. `includeValuesInResponse` and its two render options |
+| `POST /sheets/v4/spreadsheets/{id}/values/{range}:append` | `values.append`: below the table the range finds, `insertDataOption` `OVERWRITE` or `INSERT_ROWS` |
+| `POST /sheets/v4/spreadsheets/{id}/values/{range}:clear` | `values.clear`: values go, formats stay |
+| `POST /sheets/v4/spreadsheets/{id}/values:batchUpdate`, `values:batchClear` | Every entry checked before any is written; an option the body leaves unset is read from the query |
+| `POST /sheets/v4/spreadsheets/{id}/values:batchUpdateByDataFilter`, `values:batchClearByDataFilter` | The same, each range named by a `DataFilter`, and what a filter matches is a bound on what is written |
+| `POST /sheets/v4/spreadsheets` | `spreadsheets.create`: a workbook at the creator's My Drive root, visible to them alone, with the sheets, cells, number formats, `locale`, `timeZone` and `autoRecalc` the request states |
+| `POST /sheets/v4/spreadsheets/{id}/sheets/{sheetId}:copyTo` | Into a workbook the caller may write, titled in that workbook's language |
 | `/slides/v1/presentations/{id}` | |
 
 The three editor APIs serve native-doc content for editor-aware clients, read structurally instead
 of via Google Drive export.
+
+Only a spreadsheet's owner may write it: every grant a corpus states makes a reader, and a
+reader's write is real's 403. A write lands in a per-server overlay and the corpus file is never
+written; [Writes, and where they go](write-overlay.md) covers what a read then sees, what is not
+modelled, and how to read the overlay back and reset it.
 
 Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like
 stored rows. A trashed file is listed to its owner with the rest unless `q` leaves it out with

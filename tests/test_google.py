@@ -10738,6 +10738,26 @@ _SPREADSHEET_MASKS = [
 ]
 
 
+_SPREADSHEET_MASKS += [
+    # a narrower path wins, in a format too, but not under a message `_GMASK_WHOLE` keeps whole
+    ("properties(defaultFormat,defaultFormat.numberFormat)", {"properties": {"defaultFormat": {}}}),
+    (
+        "properties.defaultFormat(backgroundColorStyle,backgroundColorStyle.themeColor)",
+        {
+            "properties": {
+                "defaultFormat": {
+                    "backgroundColorStyle": {"rgbColor": {"red": 1, "green": 1, "blue": 1}}
+                }
+            }
+        },
+    ),
+    (
+        "sheets.data.rowData.values(userEnteredValue,userEnteredValue.formulaValue)",
+        dict(_SPREADSHEET_MASKS)["sheets.data.rowData.values.userEnteredValue"],
+    ),
+]
+
+
 def test_fields_narrows_a_spreadsheet(gc, gh, book):
     """Each row as real answered it, as `_gmask_select` records: its keys, or for a row whose
     `want` is a body, the whole answer over `Ragged`, whose rows hold a gap, nothing at all, one
@@ -10958,6 +10978,20 @@ def test_batch_get_by_data_filter_answers_each_filter_with_the_filter_beside_it(
             }
         ],
     }
+    # a request field may come in the query, which wins over the body, and both are read
+    url = f"/sheets/v4/spreadsheets/{book}/values:batchGetByDataFilter"
+    body = {"dataFilters": [{"a1Range": "Summary!A1:B2"}], "majorDimension": "ROWS"}
+    r = gc.post(url, headers=gh, params={"majorDimension": "columns"}, json=body)
+    assert r.json()["valueRanges"][0]["valueRange"]["values"] == [
+        ["Region", "EMEA"],
+        ["Deals", "12"],
+    ]
+    r = gc.post(url, headers=gh, params={"majorDimension": "NOPE"}, json={"dataFilters": "x"})
+    assert r.json()["error"]["message"] == (
+        "Invalid value at 'data_filters' (type.googleapis.com/google.apps.sheets.v4.DataFilter), "
+        "\"x\"\nInvalid value at 'major_dimension' "
+        '(type.googleapis.com/google.apps.sheets.v4.Dimension), "NOPE"'
+    )
 
 
 def test_a_data_filter_may_name_a_grid_range_instead_of_an_a1_string(gc, gh, book):
@@ -11736,6 +11770,14 @@ def test_get_by_data_filter_scopes_the_sheets_array_like_ranges_does(gc, gh, boo
     sheets = r.json()["sheets"]
     assert [s["properties"]["title"] for s in sheets] == ["Summary"]
     assert len(sheets[0]["data"]) == 1
+    # `includeGridData` in the query wins over the body's
+    r = gc.post(
+        f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+        headers=gh,
+        params={"includeGridData": "false"},
+        json={"dataFilters": [{"a1Range": "Summary!A1:B2"}], "includeGridData": True},
+    )
+    assert "data" not in r.json()["sheets"][0]
 
 
 def test_get_by_data_filter_takes_no_filters_to_mean_every_sheet(gc, gh, book):
@@ -13605,6 +13647,19 @@ def test_a_batch_update_writes_every_entry_or_none(wc, wh, wbook):
     assert wc.post(path, headers=h, json={"valueInputOption": "RAW"}).json() == {
         "spreadsheetId": sid
     }
+    # the query's option wins over the body's
+    r = wc.post(
+        path,
+        headers=h,
+        params={**_ENTERED, "includeValuesInResponse": "false"},
+        json={
+            "valueInputOption": "RAW",
+            "includeValuesInResponse": True,
+            "data": [{"range": "Data!A10", "values": [["5%"]]}],
+        },
+    )
+    assert "updatedData" not in r.json()["responses"][0]
+    assert _read_back(wc, h, wbook, "Data!A10", valueRenderOption="UNFORMATTED_VALUE") == [[0.05]]
     r = wc.post(path, headers=h, params={"includeValuesInResponse": "on"}, json={"bogus": 1})
     assert r.json()["error"]["message"] == (
         'Invalid JSON payload received. Unknown name "bogus": Cannot find field.\n'

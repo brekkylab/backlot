@@ -105,7 +105,12 @@ def _auth_failed(message: str) -> JSONResponse:
     )
 
 
-_FRIENDLY = {"invalid_arguments": True, "INTERNAL_SERVER_ERROR": False}
+_FRIENDLY = {
+    "invalid_arguments": True,
+    "INTERNAL_SERVER_ERROR": False,
+    "not_in_team": True,
+    "object_not_found": True,
+}
 
 
 @router.post("/graphql", include_in_schema=False)

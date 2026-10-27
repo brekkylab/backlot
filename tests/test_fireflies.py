@@ -1630,6 +1630,16 @@ _PAST_THE_LIMIT = b"x" * (2**20 + 10)
 _LANDING_PAGE = object()  # Apollo Server's page for a browser, `landing_page`'s
 
 
+def _sent(headers, body) -> str:
+    """What a row of `_FIREFLIES_HTTP` sends besides a JSON type and `{ __typename }`, for its id."""
+    types = [
+        value for name, value in headers if name == "Content-Type" and value != "application/json"
+    ]
+    return "".join(f", {value}" for value in types) + (
+        "" if body in (_TYPENAME, None) else f", {body!r}"
+    )
+
+
 def _not_found(method: str, target: str) -> bytes:
     """Fastify's 404, quoting ``target`` as the test sends it (:func:`tests._helpers.http_row`)."""
     path = target if target.startswith("/") else f"/graphql{target}"
@@ -2554,7 +2564,7 @@ _FIREFLIES_HTTP = [
         answered=_fastify(),
     ),
     *(
-        http_row(m, p, h, b, c, 404, _JSON_UTF8, _not_found(m, p), id=f"{m} {p}, {c}")
+        http_row(m, p, h, b, c, 404, _JSON_UTF8, _not_found(m, p), id=f"{m} {p}, {c}{_sent(h, b)}")
         for m, p, h, b, c in (
             ("POST", "/graphql/", _J, _TYPENAME, "Bearer nope"),
             ("POST", "/GRAPHQL", _J, _TYPENAME, "key"),
@@ -2661,41 +2671,38 @@ _FIREFLIES_CREDENTIALS = {
 }
 
 
-@pytest.mark.parametrize(
-    "method,target,headers,body,credential,status,media_type,answer,expected_headers",
-    _FIREFLIES_HTTP,
-)
-def test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does(
-    client,
-    tokens_yaml,
-    method,
-    target,
-    headers,
-    body,
-    credential,
-    status,
-    media_type,
-    answer,
-    expected_headers,
-):
+def _fireflies_body(r, answer):
+    """``r``'s body, or `_LANDING_PAGE` where ``answer`` is and ``r`` is Apollo Server's page: one
+    nonce of 64 hex digits, 3,522 bytes and its title."""
+    if answer is not _LANDING_PAGE:
+        return r.content
+    page = r.text
+    nonces = set(re.findall(r"nonce-([0-9a-f]+)", page))
+    whole = len(page.encode()) == 3522 and "<title>Apollo Server</title>" in page
+    return _LANDING_PAGE if len(nonces) == 1 and len(nonces.pop()) == 64 and whole else r.content
+
+
+def test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does(client, tokens_yaml):
     """Each row of `_FIREFLIES_HTTP` is answered as api.fireflies.ai answered it."""
-    sent = list(headers)
-    if _FIREFLIES_CREDENTIALS[credential] is not None:
-        value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
-        sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
-    content = body.chunks() if isinstance(body, Chunked) else body
-    path = target if target.startswith("/") else f"/graphql{target}"
-    r = sent_as(client, method, f"/fireflies{path}", sent, content=content, bare=True)
-    assert r.status_code == status
-    assert r.headers.get("content-type") == media_type
-    if answer is _LANDING_PAGE:
-        page = r.text
-        nonces = set(re.findall(r"nonce-([0-9a-f]+)", page))
-        assert len(nonces) == 1 and len(nonces.pop()) == 64
-        assert len(page.encode()) == 3522 and "<title>Apollo Server</title>" in page
-    else:
-        assert r.content == answer
-    assert {name: r.headers.get(name) for name in expected_headers} == expected_headers
+    answered, expected = {}, {}
+    for row in _FIREFLIES_HTTP:
+        method, target, headers, body, credential, status, media_type, answer, named = row.values
+        sent = list(headers)
+        if _FIREFLIES_CREDENTIALS[credential] is not None:
+            value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
+            sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
+        content = body.chunks() if isinstance(body, Chunked) else body
+        path = target if target.startswith("/") else f"/graphql{target}"
+        r = sent_as(client, method, f"/fireflies{path}", sent, content=content, bare=True)
+        answered[row.id] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            _fireflies_body(r, answer),
+            {name: r.headers.get(name) for name in named},
+        )
+        expected[row.id] = (status, media_type, answer, named)
+    assert len(expected) == len(_FIREFLIES_HTTP)
+    assert answered == expected
 
 
 # The headers on the answer to each request `_FIREFLIES_HTTP` has no row for: the request, the
@@ -2782,23 +2789,23 @@ _FIREFLIES_HEADERS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "method,target,headers,body,credential,status,expected", _FIREFLIES_HEADERS
-)
-def test_fireflies_answers_carry_the_headers_fireflies_sends(
-    client, tokens_yaml, method, target, headers, body, credential, status, expected
-):
+def test_fireflies_answers_carry_the_headers_fireflies_sends(client, tokens_yaml):
     """Each row of `_FIREFLIES_HEADERS`: the status and the headers named, with no type or body,
     which the rows of `test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does`
     hold."""
-    sent = list(headers)
-    if _FIREFLIES_CREDENTIALS[credential] is not None:
-        value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
-        sent.append(("Authorization", value))
-    path = target if target.startswith("/") else f"/graphql{target}"
-    r = sent_as(client, method, f"/fireflies{path}", sent, content=body, bare=True)
-    assert r.status_code == status
-    assert {name: r.headers.get(name) for name in expected} == expected
+    answered, expected = {}, {}
+    for row in _FIREFLIES_HEADERS:
+        method, target, headers, body, credential, status, named = row.values
+        sent = list(headers)
+        if _FIREFLIES_CREDENTIALS[credential] is not None:
+            value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
+            sent.append(("Authorization", value))
+        path = target if target.startswith("/") else f"/graphql{target}"
+        r = sent_as(client, method, f"/fireflies{path}", sent, content=body, bare=True)
+        answered[row.id] = (r.status_code, {name: r.headers.get(name) for name in named})
+        expected[row.id] = (status, named)
+    assert len(expected) == len(_FIREFLIES_HEADERS)
+    assert answered == expected
 
 
 def _budget(client, monkeypatch, start=1_793_020_105.0):
@@ -2934,49 +2941,54 @@ def test_fireflies_holds_a_refused_key_for_a_minute_from_its_first_refusal(
     }
 
 
-@pytest.mark.parametrize(
-    "spent, document, order",
-    [
-        (
-            29,
-            'query($x: String = "a") { a0: transcripts(limit: 0) { id } a1: transcript(id: $x) { id }'
-            " a2: user { user_id } }",
-            [(["a1"], False), (["a2"], True), (["a0"], False)],
-        ),
-        (
-            30,
-            'query($x: String = "a") { a0: transcript(id: $x) { id } a1: user { user_id } }',
-            [(["a0"], False), (["a1"], True)],
-        ),
-        (
-            30,
-            'query($x: String = "a") { a1: user { user_id } a0: transcript(id: $x) { id } }',
-            [(["a0"], False), (["a1"], True)],
-        ),
-    ],
-    ids=[
-        "graphql-js's refusal, then the budget's, then the resolver's",
-        "a refused argument ahead of the refusal, not counted",
-        "a refused argument ahead of the refusal, after a refused field",
-    ],
-)
+# The minute's fields spent before a document, the document, and each error's path in the order
+# `Spent.refuse` puts them, with whether it is the budget's.
+_REFUSAL_ORDERS = [
+    pytest.param(
+        29,
+        'query($x: String = "a") { a0: transcripts(limit: 0) { id } a1: transcript(id: $x) { id }'
+        " a2: user { user_id } }",
+        [(["a1"], False), (["a2"], True), (["a0"], False)],
+        id="graphql-js's refusal, then the budget's, then the resolver's",
+    ),
+    pytest.param(
+        30,
+        'query($x: String = "a") { a0: transcript(id: $x) { id } a1: user { user_id } }',
+        [(["a0"], False), (["a1"], True)],
+        id="a refused argument ahead of the refusal, not counted",
+    ),
+    pytest.param(
+        30,
+        'query($x: String = "a") { a1: user { user_id } a0: transcript(id: $x) { id } }',
+        [(["a0"], False), (["a1"], True)],
+        id="a refused argument ahead of the refusal, after a refused field",
+    ),
+]
+
+
 def test_fireflies_orders_the_budgets_refusals_among_a_runs_errors(
-    client, tokens_yaml, monkeypatch, spent, document, order
+    client, tokens_yaml, monkeypatch
 ):
-    """With ``spent`` of the minute's fields spent, as `Spent.refuse` orders them: each error's
-    path, and whether it is the budget's."""
-    now = _budget(client, monkeypatch)
-    now[0] = 1_793_020_105.0
-    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(spent))
-    client.post(
-        "/fireflies/graphql", json={"query": "{ " + aliases + " }"}, headers=_key(tokens_yaml)
-    )
-    r = client.post(
-        "/fireflies/graphql",
-        json={"query": document, "variables": {"x": None}},
-        headers=_key(tokens_yaml),
-    )
-    assert [(e["path"], e["code"] == "too_many_requests") for e in r.json()["errors"]] == order
+    """Each row of `_REFUSAL_ORDERS`, on a budget of its own."""
+    answered, expected = {}, {}
+    for row in _REFUSAL_ORDERS:
+        spent, document, order = row.values
+        now = _budget(client, monkeypatch)
+        now[0] = 1_793_020_105.0
+        aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(spent))
+        client.post(
+            "/fireflies/graphql", json={"query": "{ " + aliases + " }"}, headers=_key(tokens_yaml)
+        )
+        r = client.post(
+            "/fireflies/graphql",
+            json={"query": document, "variables": {"x": None}},
+            headers=_key(tokens_yaml),
+        )
+        answered[row.id] = [
+            (e["path"], e["code"] == "too_many_requests") for e in r.json()["errors"]
+        ]
+        expected[row.id] = order
+    assert answered == expected
 
 
 def test_fireflies_serves_past_the_budget_with_the_refusal_off(client, tokens_yaml, monkeypatch):

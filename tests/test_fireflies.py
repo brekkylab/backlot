@@ -1613,6 +1613,21 @@ def _not_found(method: str, target: str) -> bytes:
     )
 
 
+# The headers an answer carries, as `backlot.routers.fireflies._from_fastify`, `_answer` and
+# `Budget` record what api.fireflies.ai sent, None for one it did not send.
+_HSTS = "max-age=31536000; includeSubDomains"
+
+
+def _fastify(cache_control=None, **more):
+    """What each answer of Fastify's carries, ``cache_control`` and ``more`` beside it."""
+    return {
+        "access-control-allow-origin": "*",
+        "strict-transport-security": _HSTS,
+        "cache-control": cache_control,
+        "x-ratelimit-limit-api": None,
+    } | {name.replace("_", "-"): value for name, value in more.items()}
+
+
 _FIREFLIES_HTTP = [
     # Apollo Server's `Cache-Control` on its answer to a persisted query's hash alone.
     http_row(
@@ -1625,7 +1640,7 @@ _FIREFLIES_HTTP = [
         _JSON_UTF8,
         _apollo(b"PersistedQueryNotFound", b"PERSISTED_QUERY_NOT_FOUND", status=200),
         id="a persisted query's hash alone",
-        answered={"cache-control": "private, no-cache, must-revalidate"},
+        answered=_fastify("private, no-cache, must-revalidate"),
     ),
     # Cloudflare, ahead of everything. Its `CONNECT` at `/` carries no `nosniff`; Linear's carries
     # one.
@@ -1651,7 +1666,11 @@ _FIREFLIES_HTTP = [
         "text/html",
         _CLOUDFLARE_PAGE % ((b"405 Not Allowed",) * 2),
         id="TRACE",
-        answered={"connection": "close"},
+        answered={
+            "connection": "close",
+            "access-control-allow-origin": None,
+            "strict-transport-security": None,
+        },
     ),
     http_row(
         "CONNECT",
@@ -1701,9 +1720,9 @@ _FIREFLIES_HTTP = [
             None,
             b"",
             id=f"preflight, {c}",
-            answered=_FIREFLIES_PREFLIGHT,
+            answered=_FIREFLIES_PREFLIGHT | e,
         )
-        for c in ("key", "none", "Bearer nope")
+        for c, e in (("key", {}), ("none", _fastify()), ("Bearer nope", {}))
     ),
     http_row(
         "OPTIONS",
@@ -1877,10 +1896,21 @@ _FIREFLIES_HTTP = [
     ),
     # A POST's content type: a 415 for one Fastify does not read; CSRF for one a browser sends
     # unpreflighted; the CSRF check ahead of the credential.
+    http_row(
+        "POST",
+        "",
+        (("Content-Type", "text/plain"),),
+        _TYPENAME,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="'text/plain'",
+        answered=_fastify(),
+    ),
     *(
         http_row("POST", "", (("Content-Type", t), *h), b, c, s, _JSON_UTF8, a, id=f"{t!r}{i}")
         for t, h, b, c, s, a, i in (
-            ("text/plain", (), _TYPENAME, "key", 400, _CSRF, ""),
             ("text/plain", (), _TYPENAME, "none", 400, _CSRF, ", none"),
             ("text/plain", _P, _TYPENAME, "key", 400, _NO_KEYS, ", preflight"),
             ("text/plain", _P, b"\xe9", "key", 400, _SIZE_MISMATCH, ", preflight, 0xE9"),
@@ -1975,10 +2005,21 @@ _FIREFLIES_HTTP = [
     http_row("POST", "", (), b"", "key", 400, _JSON_UTF8, _CSRF, id="no type, empty"),
     http_row("POST", "", _P, b"", "key", 400, _JSON_UTF8, _NO_KEYS, id="no type, empty, preflight"),
     # Apollo Server's page for a browser, ahead of the CSRF check and the credential.
+    http_row(
+        "GET",
+        "",
+        (("Accept", "text/html"),),
+        None,
+        "none",
+        200,
+        "text/html",
+        _LANDING_PAGE,
+        id="GET, Accept 'text/html', none",
+        answered=_fastify(),
+    ),
     *(
         http_row("GET", t, (*h, ("Accept", a)), None, c, s, ty, e, id=f"GET, Accept {a!r}{i}")
         for t, h, a, c, s, ty, e, i in (
-            ("", (), "text/html", "none", 200, "text/html", _LANDING_PAGE, ", none"),
             (_Q, _P, "text/html,application/json", "key", 200, "text/html", _LANDING_PAGE, ""),
             (_Q, _P, "text/*", "key", 200, "text/html", _LANDING_PAGE, ""),
             (_Q, _P, "text/html;q=0.5;charset=utf-8", "key", 200, "text/html", _LANDING_PAGE, ""),
@@ -2091,7 +2132,7 @@ _FIREFLIES_HTTP = [
                     b"GET requests only support query operations, not mutation operations",
                     status=405,
                 ),
-                {"answered": {"allow": "POST"}},
+                {"answered": _fastify("no-store", allow="POST")},
             ),
             (
                 "subscription",
@@ -2116,7 +2157,7 @@ _FIREFLIES_HTTP = [
         _JSON_UTF8,
         b"",
         id="HEAD",
-        answered={"allow": "GET, POST"},
+        answered=_fastify(allow="GET, POST"),
     ),
     http_row(
         "HEAD",
@@ -2142,10 +2183,21 @@ _FIREFLIES_HTTP = [
         id="HEAD, text/plain",
     ),
     # `apollo_http.response_type` and its 406, the credential's 500 among the thrown refusals.
+    http_row(
+        "POST",
+        "",
+        (*_J, ("Accept", "text/html")),
+        _TYPENAME,
+        "key",
+        406,
+        _JSON_UTF8,
+        _NOT_ACCEPTABLE,
+        id="Accept 'text/html'",
+        answered=_fastify(),
+    ),
     *(
         http_row("POST", "", (*_J, ("Accept", a)), b, c, s, t, e, id=f"Accept {a!r}{i}")
         for a, b, c, s, t, e, i in (
-            ("text/html", _TYPENAME, "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
             ("application/json;q=0", _TYPENAME, "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
             ("application/json;q", _TYPENAME, "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
             (
@@ -2397,6 +2449,18 @@ _FIREFLIES_HTTP = [
         _apollo(b'Unknown operation named \\"\\".', b"OPERATION_RESOLUTION_FAILURE"),
         id="GET, variables {}, operationName empty",
     ),
+    http_row(
+        "POST",
+        "",
+        (*_J, ("Origin", "https://example.com")),
+        _TYPENAME,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="POST, Origin",
+        answered=_fastify("no-store"),
+    ),
     *(
         http_row(
             m,
@@ -2410,7 +2474,6 @@ _FIREFLIES_HTTP = [
             id=f"{m}, Origin",
         )
         for m, t, h, b, s, a in (
-            ("POST", "", _J, _TYPENAME, 200, _TYPENAME_DATA),
             ("GET", _Q, _P, None, 200, _TYPENAME_DATA),
             ("HEAD", _Q, _P, None, 405, b""),
             ("PUT", "", _J, _TYPENAME, 404, _not_found("PUT", "")),
@@ -2426,7 +2489,6 @@ _FIREFLIES_HTTP = [
             ("POST", "/graphql;x", _J, _TYPENAME, "key"),
             ("POST", "/graphql%20", _J, _TYPENAME, "key"),
             ("POST", "/x/graphql", _J, _TYPENAME, "key"),
-            ("POST", "/nosuch", _J, _TYPENAME, "key"),
             ("POST", "/", _J, _TYPENAME, "key"),
             ("POST", "/a%3Cb%3E", _J, _TYPENAME, "key"),
             ("POST", "/%C3%A9", _J, _TYPENAME, "key"),
@@ -2439,11 +2501,34 @@ _FIREFLIES_HTTP = [
             ("OPTIONS", "/nosuch", _PREFLIGHT_ASKED, None, "none"),
         )
     ),
+    http_row(
+        "POST",
+        "/nosuch",
+        _J,
+        _TYPENAME,
+        "key",
+        404,
+        "text/html",
+        _NGINX_404,
+        id="POST /nosuch, key",
+        answered={"access-control-allow-origin": None, "strict-transport-security": _HSTS},
+    ),
     http_row("HEAD", "/nosuch" + _Q, _P, None, "key", 404, "text/html", b"", id="HEAD /nosuch"),
+    http_row(
+        "POST",
+        "/graphql/",
+        _J,
+        _TYPENAME,
+        "key",
+        404,
+        _JSON_UTF8,
+        _not_found("POST", "/graphql/"),
+        id="POST /graphql/, key",
+        answered=_fastify(),
+    ),
     *(
         http_row(m, p, h, b, c, 404, _JSON_UTF8, _not_found(m, p), id=f"{m} {p}, {c}")
         for m, p, h, b, c in (
-            ("POST", "/graphql/", _J, _TYPENAME, "key"),
             ("POST", "/graphql/", _J, _TYPENAME, "Bearer nope"),
             ("POST", "/GRAPHQL", _J, _TYPENAME, "key"),
             ("POST", "/GraphQL", _J, _TYPENAME, "key"),
@@ -2584,23 +2669,9 @@ def test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does(
     assert {name: r.headers.get(name) for name in expected_headers} == expected_headers
 
 
-# The headers on each kind of answer, as `backlot.routers.fireflies._from_fastify`, `_answer` and
-# `Budget` record what api.fireflies.ai sent: the request, the credential
-# (`_FIREFLIES_CREDENTIALS`), the status, and each header named, None for one it did not send.
-_HSTS = "max-age=31536000; includeSubDomains"
+# The headers on the answer to each request `_FIREFLIES_HTTP` has no row for: the request, the
+# credential (`_FIREFLIES_CREDENTIALS`), the status, and each header named.
 _RESOLVER = b'{"query":"{ user { user_id } }"}'
-
-
-def _fastify(cache_control=None, **more):
-    """What each answer of Fastify's carries, ``cache_control`` and ``more`` beside it."""
-    return {
-        "access-control-allow-origin": "*",
-        "strict-transport-security": _HSTS,
-        "cache-control": cache_control,
-        "x-ratelimit-limit-api": None,
-    } | {name.replace("_", "-"): value for name, value in more.items()}
-
-
 _FIREFLIES_HEADERS = [
     pytest.param("POST", "", _J, _TYPENAME, "key", 200, _fastify("no-store"), id="served"),
     pytest.param(
@@ -2630,16 +2701,6 @@ _FIREFLIES_HEADERS = [
     ),
     pytest.param(
         "POST", "", _J, b'{"query":"{ ...F }"}', "key", 500, _fastify(None), id="depth-limit's 500"
-    ),
-    pytest.param(
-        "GET",
-        "?query=mutation%20%7B%20__typename%20%7D",
-        _P,
-        None,
-        "key",
-        405,
-        _fastify("no-store"),
-        id="GET of a mutation",
     ),
     # Which documents spend the budget: a root field a resolver runs for, through a fragment and
     # as `@include` leaves it, and not `__schema`, a root the SDL leaves out or a refused variable.
@@ -2684,61 +2745,11 @@ _FIREFLIES_HEADERS = [
             ),
         )
     ),
-    pytest.param(
-        "POST",
-        "",
-        _J,
-        b'{"extensions":{"persistedQuery":{"version":1,"sha256Hash":"' + b"1" * 64 + b'"}}}',
-        "key",
-        200,
-        _fastify("private, no-cache, must-revalidate"),
-        id="a persisted query's hash alone",
-    ),
-    pytest.param(
-        "POST", "", (("Content-Type", "text/plain"),), _TYPENAME, "key", 400, _fastify(), id="CSRF"
-    ),
     pytest.param("POST", "", _J, b"[]", "key", 400, _fastify(), id="a batch"),
-    pytest.param(
-        "POST", "", (*_J, ("Accept", "text/html")), _TYPENAME, "key", 406, _fastify(), id="406"
-    ),
-    pytest.param("HEAD", _Q, _P, None, "key", 405, _fastify(), id="HEAD"),
     pytest.param("POST", "", _J, _RESOLVER, "none", 500, _fastify(), id="no credential"),
-    pytest.param("GET", "", (("Accept", "text/html"),), None, "none", 200, _fastify(), id="page"),
     pytest.param("POST", "", _J, b"x", "key", 400, _fastify(), id="not JSON"),
     pytest.param("POST", "", (("Content-Type", "a/b/c"),), b"x", "key", 415, _fastify(), id="415"),
     pytest.param("PUT", "", _J, _TYPENAME, "key", 404, _fastify(), id="Fastify's 404"),
-    pytest.param("POST", "/graphql/", _J, _TYPENAME, "key", 404, _fastify(), id="/graphql/"),
-    pytest.param("OPTIONS", "", _PREFLIGHT_ASKED, None, "none", 204, _fastify(), id="preflight"),
-    pytest.param(
-        "POST",
-        "/nosuch",
-        _J,
-        _TYPENAME,
-        "key",
-        404,
-        {"access-control-allow-origin": None, "strict-transport-security": _HSTS},
-        id="nginx's 404",
-    ),
-    pytest.param(
-        "POST",
-        "",
-        (*_J, ("Origin", "https://example.com")),
-        _TYPENAME,
-        "key",
-        200,
-        _fastify("no-store"),
-        id="Origin",
-    ),
-    pytest.param(
-        "TRACE",
-        "",
-        (),
-        None,
-        "key",
-        405,
-        {"access-control-allow-origin": None, "strict-transport-security": None},
-        id="Cloudflare's TRACE",
-    ),
 ]
 
 
@@ -2748,7 +2759,9 @@ _FIREFLIES_HEADERS = [
 def test_fireflies_answers_carry_the_headers_fireflies_sends(
     client, tokens_yaml, method, target, headers, body, credential, status, expected
 ):
-    """Each row of `_FIREFLIES_HEADERS`."""
+    """Each row of `_FIREFLIES_HEADERS`: the status and the headers named, with no type or body,
+    which the rows of `test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does`
+    hold."""
     sent = list(headers)
     if _FIREFLIES_CREDENTIALS[credential] is not None:
         value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])

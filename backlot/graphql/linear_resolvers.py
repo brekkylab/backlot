@@ -1123,7 +1123,10 @@ def resolve_search_issues(
     and for a ``teamId`` that is not a UUID (a team key included), an empty page for an unknown
     UUID, and with ``includeComments`` absent matched a word found only in a comment, as with
     ``true``, where ``false`` did not (measured 2026-10-22). ``orderBy`` replaces the relevance
-    order with the newest first."""
+    order with the newest first. On 2026-10-27 a term holding a lone surrogate drew
+    :func:`_search_backend_failed` only once the arguments passed: beside one, a ``teamId`` or
+    filter ``id`` that is not a UUID, a ``first`` of 0, ``first`` with ``last`` and an ``after``
+    that is no cursor were each `Argument Validation Error`, so the term is read last here."""
     ctx = _ctx(info)
     conn = ctx["conn"]
     if not term:
@@ -1179,12 +1182,9 @@ def resolve_documents(_root, info, first=None, after=None, last=None, before=Non
 
 
 def _search_backend_failed() -> GraphQLError:
-    """Linear's error for a ``searchIssues`` term holding a lone surrogate, where it reads the other
-    string arguments :mod:`backlot.graphql.node_utf8` lists as that module has it: api.linear.app
-    answered ``a\\ud800b`` so, and ``a\\ufffdb`` with the page of issues, on 2026-10-27 (UTC). An
-    argument it refuses is answered first: beside ``a\\ud800b``, a ``teamId`` or filter ``id`` that
-    is not a UUID, a ``first`` of 0, ``first`` with ``last`` and an ``after`` that is no cursor were
-    each its `Argument Validation Error`, and an unknown ``teamId`` this error."""
+    """Linear's error for a ``searchIssues`` term holding a lone surrogate: api.linear.app answered
+    ``a\\ud800b`` and ``a\\udc00b`` so, and ``a\\ufffdb`` with a page of issues, on 2026-10-27
+    (UTC)."""
     return GraphQLError(
         "Failed to query search backend",
         extensions={

@@ -382,9 +382,9 @@ def test_linear_team_lists_its_states_labels_projects_and_cycles(client, admin_h
 
 
 _SEARCH = """query($term: String!, $filter: IssueFilter, $teamId: String, $c: Boolean,
-                  $orderBy: PaginationOrderBy) {
+                  $orderBy: PaginationOrderBy, $first: Int, $last: Int) {
   searchIssues(term: $term, filter: $filter, teamId: $teamId, includeComments: $c,
-               orderBy: $orderBy) {
+               orderBy: $orderBy, first: $first, last: $last) {
     totalCount
     nodes { identifier metadata state { name } }
     archivePayload { archive totalCount databaseVersion includesDependencies }
@@ -448,25 +448,34 @@ def test_linear_search_issues(client, admin_h, tokens_yaml, variables, caller, i
     }
 
 
+_VALIDATION = "Argument Validation Error"
+
+
 @pytest.mark.parametrize(
-    "variables",
+    "variables,message",
     [
-        {"term": ""},
-        {"term": "x", "teamId": "ENG"},
-        {"term": "x", "teamId": "11111111-1111-0111-8111-111111111111"},
-        {"term": "a\ud800b", "teamId": "ENG"},
-        {"term": "a\ud800b", "filter": {"id": {"eq": "not-a-uuid"}}},
+        ({"term": ""}, _VALIDATION),
+        ({"term": "x", "teamId": "ENG"}, _VALIDATION),
+        ({"term": "x", "teamId": "11111111-1111-0111-8111-111111111111"}, _VALIDATION),
+        ({"term": "a\ud800b", "teamId": "ENG"}, _VALIDATION),
+        ({"term": "a\ud800b", "filter": {"id": {"eq": "not-a-uuid"}}}, _VALIDATION),
+        (
+            {"term": "a\ud800b", "first": 1, "last": 1},
+            "passing both `first` and `last` is not supported",
+        ),
     ],
 )
-def test_linear_search_issues_refuses_what_real_refuses(client, admin_h, variables):
-    """An empty term and a team key for `teamId`, each refused as `resolve_search_issues`
-    records, and a refused argument beside a term `_search_backend_failed` answers. The body is
-    `json.dumps`'s, which writes a lone surrogate as its escape."""
+def test_linear_search_issues_refuses_what_real_refuses(client, admin_h, variables, message):
+    """An empty term and a `teamId` that is not a UUID (a team key or a version-0 one), each
+    refused as `resolve_search_issues` records, and a refused argument beside a term
+    `_search_backend_failed` answers; `first` with `last` is refused in `_slice`'s words, where
+    Linear's are its `Argument Validation Error`. The body is `json.dumps`'s, which writes a lone
+    surrogate as its escape."""
     body = json.dumps({"query": _SEARCH, "variables": variables}).encode()
     headers = {**admin_h, "Content-Type": "application/json"}
     r = client.post("/linear/graphql", content=body, headers=headers).json()
     assert r["data"] is None
-    assert r["errors"][0]["message"] == "Argument Validation Error"
+    assert r["errors"][0]["message"] == message
 
 
 def test_linear_search_ranks_by_relevance_unless_order_by(client, admin_h):

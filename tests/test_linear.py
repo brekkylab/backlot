@@ -7077,7 +7077,8 @@ _LINEAR_HEADERS = [
         _sent(_ETAG_OF_TYPENAME) | _counted(2500),
         id="served",
     ),
-    # Express's 304 to a GET its `ETag` is fresh to (`linear._fresh`), and its 200 where not.
+    # Express's 304 to a GET its `ETag` is fresh to (`linear._fresh`), and its answer where not, as
+    # to a 405 or `OPTIONS /` with `If-None-Match: *`.
     *(
         pytest.param(
             m,
@@ -7105,6 +7106,7 @@ _LINEAR_HEADERS = [
                 "its ETag, no-cache",
             ),
             ("POST", (("If-None-Match", _ETAG_OF_TYPENAME),), 200, "its ETag"),
+            ("GET", (("If-None-Match", 'W/"20-x"'),), 200, "another ETag"),
             (
                 "GET",
                 (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "\x85no-cache")),
@@ -7118,6 +7120,32 @@ _LINEAR_HEADERS = [
                 "its ETag, U+00A0 before no-cache",
             ),
         )
+    ),
+    pytest.param(
+        "GET",
+        "?query=mutation%20%7B%20__typename%20%7D",
+        (*_P, ("If-None-Match", "*")),
+        None,
+        "key",
+        405,
+        _sent('W/"ce-z0YB89QJgWlJGjEG4cmlKGgjXcg"', allow="POST"),
+        id="GET of a mutation, *",
+    ),
+    pytest.param(
+        "OPTIONS",
+        "/",
+        (("If-None-Match", "*"),),
+        None,
+        "none",
+        200,
+        _sent(
+            None,
+            allow="GET, HEAD",
+            cache_control=f"{_NO_STORE}, s-maxage=43200",
+            cache_tag="preflight",
+            x_content_type_options="nosniff",
+        ),
+        id="OPTIONS /, *",
     ),
     pytest.param(
         "POST",

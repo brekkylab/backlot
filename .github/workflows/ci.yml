@@ -70,6 +70,11 @@ jobs:
       - name: Install the Linear example's dependencies
         working-directory: examples/using-official-sdk/linear
         run: npm install
+      - name: Check the SDK's fragments against the schema Backlot serves
+        # Every fragment @linear/sdk can send, where the example run below sends a few of them.
+        run: >-
+          uv run --no-sync python scripts/linear_sdk_fragments.py
+          examples/using-official-sdk/linear/node_modules/@linear/sdk/dist/index.mjs
       - name: Typecheck the Linear example
         working-directory: examples/using-official-sdk/linear
         run: npx tsc --noEmit

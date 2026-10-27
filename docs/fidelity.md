@@ -450,6 +450,11 @@ Closing it closes the record. The body and the comments stay as the account of w
 and a source still diverging the next morning gets a new issue that links back to the last one — a
 closed issue is never reopened and never written over.
 
+The Linear run also checks each fragment of the newest `@linear/sdk` against the schema Backlot
+serves (`scripts/linear_sdk_fragments.py`): a fragment on a type Backlot declares beyond `id` that
+selects a field the type does not declare turns the run red, and opens no issue. CI checks the
+version the Linear example pins the same way on every pull request.
+
 ## Coverage
 
 Sources are named the way the rest of Backlot names them — the `source_type` a BYO record carries,

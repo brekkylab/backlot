@@ -164,6 +164,15 @@ jobs:
         if: steps.diff.outputs.status == '1'
         run: exit 1
 
+      # The newest @linear/sdk's fragments against the schema Backlot serves, which the version the
+      # Linear example pins reaches only once someone moves the pin. Run whatever the comparison
+      # found; exit 2 is a bundle the script could not read, which is red like a fragment it names.
+      - name: Check the newest @linear/sdk's fragments
+        if: ${{ !cancelled() && matrix.source == 'linear' }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/linear-sdk" --no-save --ignore-scripts --no-audit --no-fund @linear/sdk@latest
+          python scripts/linear_sdk_fragments.py "$RUNNER_TEMP/linear-sdk/node_modules/@linear/sdk/dist/index.mjs"
+
       # backlot/data/jira_unserved.json is written from Jira's documents, so a change to them makes
       # it stale, and that is this schedule's to find rather than a pull request's. The tests catch
       # a baseline the file was not rewritten after, which needs no network. Run whatever the

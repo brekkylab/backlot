@@ -1631,6 +1631,16 @@ _PAST_THE_LIMIT = b"x" * (2**20 + 10)
 _LANDING_PAGE = object()  # Apollo Server's page for a browser, `landing_page`'s
 
 
+def _sent(headers, body) -> str:
+    """What a row of `_FIREFLIES_HTTP` sends besides a JSON type and `{ __typename }`, for its id."""
+    types = [
+        value for name, value in headers if name == "Content-Type" and value != "application/json"
+    ]
+    return "".join(f", {value}" for value in types) + (
+        "" if body in (_TYPENAME, None) else f", {body!r}"
+    )
+
+
 def _not_found(method: str, target: str) -> bytes:
     """Fastify's 404, quoting ``target`` as the test sends it (:func:`tests._helpers.http_row`)."""
     path = target if target.startswith("/") else f"/graphql{target}"
@@ -2469,7 +2479,7 @@ _FIREFLIES_HTTP = [
     ),
     http_row("HEAD", "/nosuch" + _Q, _P, None, "key", 404, "text/html", b"", id="HEAD /nosuch"),
     *(
-        http_row(m, p, h, b, c, 404, _JSON_UTF8, _not_found(m, p), id=f"{m} {p}, {c}")
+        http_row(m, p, h, b, c, 404, _JSON_UTF8, _not_found(m, p), id=f"{m} {p}, {c}{_sent(h, b)}")
         for m, p, h, b, c in (
             ("POST", "/graphql/", _J, _TYPENAME, "key"),
             ("POST", "/graphql/", _J, _TYPENAME, "Bearer nope"),
@@ -2575,38 +2585,35 @@ _FIREFLIES_CREDENTIALS = {
 }
 
 
-@pytest.mark.parametrize(
-    "method,target,headers,body,credential,status,media_type,answer,expected_headers",
-    _FIREFLIES_HTTP,
-)
-def test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does(
-    client,
-    tokens_yaml,
-    method,
-    target,
-    headers,
-    body,
-    credential,
-    status,
-    media_type,
-    answer,
-    expected_headers,
-):
+def _fireflies_body(r, answer):
+    """``r``'s body, or `_LANDING_PAGE` where ``answer`` is and ``r`` is Apollo Server's page: one
+    nonce of 64 hex digits, 3,522 bytes and its title."""
+    if answer is not _LANDING_PAGE:
+        return r.content
+    page = r.text
+    nonces = set(re.findall(r"nonce-([0-9a-f]+)", page))
+    whole = len(page.encode()) == 3522 and "<title>Apollo Server</title>" in page
+    return _LANDING_PAGE if len(nonces) == 1 and len(nonces.pop()) == 64 and whole else r.content
+
+
+def test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does(client, tokens_yaml):
     """Each row of `_FIREFLIES_HTTP` is answered as api.fireflies.ai answered it."""
-    sent = list(headers)
-    if _FIREFLIES_CREDENTIALS[credential] is not None:
-        value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
-        sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
-    content = body.chunks() if isinstance(body, Chunked) else body
-    path = target if target.startswith("/") else f"/graphql{target}"
-    r = sent_as(client, method, f"/fireflies{path}", sent, content=content, bare=True)
-    assert r.status_code == status
-    assert r.headers.get("content-type") == media_type
-    if answer is _LANDING_PAGE:
-        page = r.text
-        nonces = set(re.findall(r"nonce-([0-9a-f]+)", page))
-        assert len(nonces) == 1 and len(nonces.pop()) == 64
-        assert len(page.encode()) == 3522 and "<title>Apollo Server</title>" in page
-    else:
-        assert r.content == answer
-    assert {name: r.headers.get(name) for name in expected_headers} == expected_headers
+    answered, expected = {}, {}
+    for row in _FIREFLIES_HTTP:
+        method, target, headers, body, credential, status, media_type, answer, named = row.values
+        sent = list(headers)
+        if _FIREFLIES_CREDENTIALS[credential] is not None:
+            value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
+            sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
+        content = body.chunks() if isinstance(body, Chunked) else body
+        path = target if target.startswith("/") else f"/graphql{target}"
+        r = sent_as(client, method, f"/fireflies{path}", sent, content=content, bare=True)
+        answered[row.id] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            _fireflies_body(r, answer),
+            {name: r.headers.get(name) for name in named},
+        )
+        expected[row.id] = (status, media_type, answer, named)
+    assert len(expected) == len(_FIREFLIES_HTTP)
+    assert answered == expected

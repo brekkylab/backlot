@@ -218,8 +218,8 @@ _HSTS = "max-age=31536000; includeSubDomains"
 def _from_fastify(response: Response) -> Response:
     """``response`` with the headers on each answer Fastify sends: ``@fastify/cors``'s
     `Access-Control-Allow-Origin: *`, whatever the `Origin`, and :data:`_HSTS`. api.fireflies.ai
-    sent both on each such answer on 2026-10-25 and 2026-10-26 (UTC), its 404, its 415 and its 500
-    for a credential among them, with `Origin: https://example.com` and without one."""
+    sent the first on each such answer on 2026-10-25 and 2026-10-26 (UTC), its 404, its 415 and
+    its 500 for a credential among them, with `Origin: https://example.com` and without one."""
     response.headers.setdefault("access-control-allow-origin", "*")
     response.headers["strict-transport-security"] = _HSTS
     return response

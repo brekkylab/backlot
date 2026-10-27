@@ -1,12 +1,12 @@
-"""Settings defaults must not depend on the package living inside a source checkout, and a test
-client hands back on exit the settings `get_settings` holds on entry."""
+"""Settings defaults must not depend on the package living inside a source checkout, and
+`settings_put_back` hands back on exit the settings `get_settings` holds on entry."""
 
 from __future__ import annotations
 
 import pytest
 
 from backlot.config import Settings, get_settings
-from tests._helpers import client_for
+from tests._helpers import settings_put_back
 
 
 def test_data_dir_defaults_to_cwd_relative(tmp_path, monkeypatch):
@@ -30,8 +30,8 @@ def test_env_var_still_wins(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "read_on_entry,expected", [(False, ("exit", 100)), (True, ("entry", 7))], ids=["unread", "read"]
 )
-def test_client_for_hands_back_the_settings_get_settings_holds_on_entry(
-    monkeypatch, sample_settings, read_on_entry, expected
+def test_settings_put_back_hands_back_what_get_settings_held_on_entry(
+    monkeypatch, read_on_entry, expected
 ):
     monkeypatch.setenv("BACKLOT_ORG_NAME", "entry")
     monkeypatch.setenv("BACKLOT_DEFAULT_PAGE_SIZE", "7")
@@ -39,8 +39,9 @@ def test_client_for_hands_back_the_settings_get_settings_holds_on_entry(
     try:
         if read_on_entry:
             get_settings()
-        with client_for(sample_settings):
-            pass
+        with settings_put_back():
+            get_settings.cache_clear()
+            get_settings().org_name = "inside"
         monkeypatch.setenv("BACKLOT_ORG_NAME", "exit")
         monkeypatch.delenv("BACKLOT_DEFAULT_PAGE_SIZE")
         settings = get_settings()

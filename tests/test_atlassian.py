@@ -1343,11 +1343,12 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         h = {"Authorization": f"Bearer {written['admin_token']}"}
         content = c.get("/atlassian/wiki/rest/api/content", headers=h).json()["results"]
         ids = {r["title"]: r["id"] for r in content}
-        for template, want in rows:
+        answered = {}
+        for template, _ in rows:
             cql = template.format(**ids)
             r = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": cql}).json()
-            assert {x["title"] for x in r["results"]} == want, cql
-            assert r["totalSize"] == len(want), cql
+            answered[template] = ({x["title"] for x in r["results"]}, r["totalSize"])
+    assert answered == {template: (want, len(want)) for template, want in rows}
 
 
 _CQL_REQUIRED = {
@@ -1488,6 +1489,8 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
         ("label=runbook", {"Guide"}, {"Guide"}),
         ("space=NOPE", set(), set()),
         ('title="Guide"', set(), set()),
+        ("type != blogpost", {"Guide", "Shut"}, {"Guide"}),
+        (f'space != "{eng}"', {"Shut"}, set()),
         (["type=page", f"space={eng}"], {"Guide", "Shut"}, {"Guide"}),
     ]
     with client_for(settings, reload=True) as c:

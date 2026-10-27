@@ -2005,6 +2005,7 @@ async def confluence_cql_search(request: Request):
     label passes `label != …` (measured over the same chain on 2026-10-26 and 2026-10-27). Real
     answers `parent in (...)` and `parent not in (...)` with a 500, where this server selects, or
     leaves out, the children of each id the list names.
+
     Measured 2026-10-05 with no `~`: real's `type=page` is every page on the site and
     `space=<KEY> and type=page` that space's pages; its `space=<KEY>` also holds the space's
     attachments, comments and the space itself, where this server answers the space's pages and
@@ -2120,7 +2121,6 @@ async def confluence_cql_search(request: Request):
         or not_parents
         or not_types
         or not_labels
-        or not_containers
         or not_spaces
     ):
         everything = store.list_documents(

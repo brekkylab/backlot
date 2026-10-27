@@ -467,9 +467,8 @@ _VALIDATION = "Argument Validation Error"
 )
 def test_linear_search_issues_refuses_what_real_refuses(client, admin_h, variables, message):
     """Each row refused as `resolve_search_issues` records, a lone-surrogate term beside three of
-    them; `first` with `last` in `_slice`'s words, where Linear's are its
-    `Argument Validation Error`. The body is `json.dumps`'s, which writes a lone surrogate as its
-    escape."""
+    them; `first` with `last` in `_slice`'s words. The body is `json.dumps`'s, which writes a lone
+    surrogate as its escape."""
     body = json.dumps({"query": _SEARCH, "variables": variables}).encode()
     headers = {**admin_h, "Content-Type": "application/json"}
     r = client.post("/linear/graphql", content=body, headers=headers).json()

@@ -1272,19 +1272,27 @@ async def merge_slashes_before_a_slack_method_name(request: Request, call_next):
 
 @_middleware(
     lambda scope: (
-        _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
-        and auth.repeated_authorization(Request(scope))
+        _at_or_under(_url_path(scope), ("/notion", "/linear", "/fireflies", "/hubspot"))
+        and auth.repeated_cloudflare_refused_header(Request(scope))
     )
 )
-async def refuse_a_repeated_authorization_on_linear_and_fireflies(request: Request, call_next):
-    """Answer a `/linear` or `/fireflies` request that carries `Authorization` more than once with
+async def refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot(
+    request: Request, call_next
+):
+    """Answer a `/notion`, `/linear`, `/fireflies` or `/hubspot` request that carries
+    `Authorization` or one of the five conditional headers more than once with
     :data:`backlot.request_target.CLOUDFLARE_PAGE`'s 400, ahead of the route, the body and the
-    credential. api.linear.app and api.fireflies.ai answered it on 2026-10-19 (UTC) to two copies of
-    a key, a key and `nope` in either order, a key and an empty value, two empty values, three
-    copies and a second header named in lower case; on `POST /graphql` with a query, with no bytes,
-    with `{` and with a body past each vendor's size limit, on `GET /graphql`, on `HEAD /graphql`,
-    which declared the 155 bytes and sent none, and on `POST /nosuch` and `POST /`. Both closed the
-    connection after it (`GET /graphql`, 2026-10-23)."""
+    credential. api.linear.app and api.fireflies.ai answered a repeated `Authorization` on
+    2026-10-19 (UTC) to two copies of a key, a key and `nope` in either order, a key and an empty
+    value, two empty values, three copies and a second header named in lower case; on
+    `POST /graphql` with a query, with no bytes, with `{` and with a body past each vendor's size
+    limit, on `GET /graphql`, on `HEAD /graphql`, which declared the 155 bytes and sent none, and
+    on `POST /nosuch` and `POST /`. Both closed the connection after it (`GET /graphql`,
+    2026-10-23). api.notion.com, api.linear.app, api.fireflies.ai and api.hubapi.com answered each
+    of `If-None-Match`, `If-Match`, `If-Modified-Since`, `If-Unmodified-Since` and `If-Range`
+    sent twice with the same value with the same page on 2026-10-27 (UTC), on `GET /v1/users/me`,
+    `POST /graphql` with `{ __typename }` and `GET /crm/v3/objects/contacts?limit=1`, where one
+    copy, and `Cache-Control` or `Range` twice, were served."""
     return Response(
         request_target.CLOUDFLARE_PAGE,
         status_code=400,

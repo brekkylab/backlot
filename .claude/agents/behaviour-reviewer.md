@@ -34,8 +34,10 @@ the body with `gh pr view <n> --json body` or from the prompt, and the files the
    sentence from vendor documentation.
 4. **Tests did not sprawl.** A new test function is a finding when an existing test already sets up
    the same state and could carry the assertion, or when two new functions differ only by input and
-   should be one parametrized test. A test sits in the file for the layer under test
-   (`tests/test_<source>.py` for a route, `tests/test_store.py` for the store).
+   should be one test: a new input to a measured table is a row of that table, sent inside the test
+   that records every row's answer and compares them at once. A case that proves which principal
+   may read something stays a parametrized case of its own. A test sits in the file for the layer
+   under test (`tests/test_<source>.py` for a route, `tests/test_store.py` for the store).
 5. **ACL is proved.** A new or changed read of corpus content has a test for the admin token and a
    test for a scoped token that must not see the document.
 

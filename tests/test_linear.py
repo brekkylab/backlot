@@ -829,13 +829,10 @@ _UNKNOWN_IDS = [
 
 
 # A string argument holding a lone surrogate, which `backlot.graphql.node_utf8` writes as U+FFFD:
-# an id that names nothing, a filter that matches nothing, and the search term Linear's backend
-# refuses (`linear_resolvers._search_backend_failed`).
-_LONE_SURROGATE = "a\ud800b"
-
-
-def _with_the_key(query: str, answer: dict, row: str):
-    body = {"query": query, "variables": {"x": _LONE_SURROGATE}}
+# beside an id the corpus holds, alone in a filter, and in the search term Linear's backend refuses
+# (`linear_resolvers._search_backend_failed`).
+def _with_the_key(query: str, value: str, answer: dict, row: str):
+    body = {"query": query, "variables": {"x": value}}
     return pytest.param(
         json.dumps(body).encode(), WithTheKey(node_json(answer) + b"\n", 200), id=row
     )
@@ -844,25 +841,28 @@ def _with_the_key(query: str, answer: dict, row: str):
 _LONE_SURROGATES = [
     _unknown_id(
         "issue",
-        _LONE_SURROGATE,
+        "ENG-101\ud800",
         "Entity not found: Issue",
         "Could not find referenced Issue.",
-        "issue, a lone surrogate",
+        "issue ENG-101, a lone surrogate",
     ),
     _unknown_id(
         "team",
-        _LONE_SURROGATE,
+        "ENG\ud800",
         "Entity not found: Team",
         "Could not find referenced Team.",
-        "team, a lone surrogate",
+        "team ENG, a lone surrogate",
     ),
     _with_the_key(
-        "query($x: String) { issues(first: 3, filter: {title: {eq: $x}}) { nodes { id } } }",
+        "query($x: String) { issues(first: 3, filter: {title: {containsIgnoreCase: $x}}) "
+        "{ nodes { id } } }",
+        "\ud800",
         {"data": {"issues": {"nodes": []}}},
-        "an issues filter, a lone surrogate",
+        "an issues title filter, a lone surrogate",
     ),
     _with_the_key(
         "query($x: String!) { searchIssues(term: $x, first: 3) { nodes { id } } }",
+        "a\ud800b",
         {
             "errors": [
                 {

@@ -1244,13 +1244,18 @@ def fireflies_corpus(tmp_path_factory):
     return tiny_corpus(tmp_path_factory.mktemp("fireflies_corpus"), FIREFLIES_CORPUS)
 
 
-# String arguments a document sends holding a lone surrogate, which `backlot.graphql.node_utf8` writes
-# as U+FFFD: api.fireflies.ai answered each with `a\ud800b` as with `a\ufffdb` on 2026-10-27 (UTC).
+# A lone surrogate beside a value the corpus holds, or alone, which `backlot.graphql.node_utf8`
+# writes as U+FFFD: api.fireflies.ai answered each so with `\ud800` as with `\ufffd` on 2026-10-27
+# (UTC), and the held value alone with what it names.
 _LONE_SURROGATE_DOCUMENTS = [
-    pytest.param("query($x: String!) { transcript(id: $x) { id } }", id="transcript"),
-    pytest.param("query($x: String) { user(id: $x) { user_id } }", id="user"),
     pytest.param(
-        "query($x: String) { transcripts(keyword: $x, limit: 2) { id } }", id="transcripts keyword"
+        "query($x: String!) { transcript(id: $x) { id } }", "{transcript}", id="transcript"
+    ),
+    pytest.param("query($x: String) { user(id: $x) { user_id } }", "{user}", id="user"),
+    pytest.param(
+        "query($x: String) { transcripts(keyword: $x, limit: 2) { id } }",
+        "",
+        id="transcripts keyword",
     ),
 ]
 
@@ -1262,11 +1267,19 @@ def test_fireflies_answers_a_lone_surrogate_as_it_answers_u_fffd(client, admin_h
         r = client.post("/fireflies/graphql", content=body, headers=headers)
         return r.status_code, r.content
 
+    held = {
+        "transcript": ff_gql(client, "{ transcripts(limit: 1) { id } }", admin_h).json()["data"][
+            "transcripts"
+        ][0]["id"],
+        "user": ff_gql(client, "{ users { user_id } }", admin_h).json()["data"]["users"][0][
+            "user_id"
+        ],
+    }
     answered, expected = {}, {}
     for row in _LONE_SURROGATE_DOCUMENTS:
-        (query,) = row.values
-        answered[row.id] = sent(query, "a\ud800b")
-        expected[row.id] = sent(query, "a\ufffdb")
+        query, value = row.values
+        answered[row.id] = sent(query, value.format(**held) + "\ud800")
+        expected[row.id] = sent(query, value.format(**held) + "\ufffd")
     assert answered == expected
 
 

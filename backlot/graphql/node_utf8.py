@@ -1,10 +1,13 @@
-"""A JavaScript string as a vendor's Node server writes it to its database: as UTF-8, a lone
-surrogate, which a JavaScript string can hold and UTF-8 cannot, written as U+FFFD, as
-``Buffer.from`` writes it. Both vendors' GraphQL servers run on Node, and on 2026-10-27 (UTC)
-api.linear.app answered ``issue(id:)``, ``team(id:)`` and an ``issues`` filter, and api.fireflies.ai
-``transcript(id:)``, ``user(id:)`` and ``transcripts(keyword:)``, with ``a\\ud800b`` as with
-``a\\ufffdb``. :class:`Written` binds a statement's strings so, as Python's ``sqlite3`` encodes
-no lone surrogate.
+"""A string argument as the vendors' Node servers look it up: a lone surrogate, which a JavaScript
+string can hold and UTF-8 cannot, as U+FFFD, the character ``Buffer.from`` writes for one.
+
+On 2026-10-27 (UTC) api.linear.app and api.fireflies.ai answered each string argument sent with
+``\\ud800`` in it as with ``\\ufffd`` in its place: ``issue(id:)``, ``team(id:)`` and ``issues``
+title filters on Linear, ``transcript(id:)``, ``user(id:)`` and ``transcripts(keyword:)`` and
+``(title:)`` on Fireflies, each with the surrogate after a value the workspace holds, and Linear's
+``containsIgnoreCase`` title filter and Fireflies' keyword with it alone. Neither drops it: an id it
+follows names nothing, and alone it matches nothing where an empty string matches each.
+:class:`Written` binds a statement's strings so, as Python's ``sqlite3`` encodes no lone surrogate.
 """
 
 from __future__ import annotations

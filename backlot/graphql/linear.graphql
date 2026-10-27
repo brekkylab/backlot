@@ -459,13 +459,11 @@ here so a client switching on the enum sees the same member set."""
 enum IntegrationService {
   airbyte datadog discord figma figmaPlugin front github gong githubEnterpriseServer githubCommit
   githubImport githubPersonal githubCodeAccessPersonal gitlab gitlabPersonal origin
-  googleCalendarPersonal
-  googleSheets
-  intercom jira jiraPersonal launchDarkly launchDarklyPersonal loom notion opsgenie pagerDuty
-  salesforce slack slackAsks asksWeb slackCustomViewNotifications slackOrgProjectUpdatesPost
-  slackOrgInitiativeUpdatesPost slackPersonal slackPost slackProjectPost slackProjectUpdatesPost
-  slackInitiativePost sentry zendesk email mcpServerPersonal mcpServer microsoftTeams
-  microsoftPersonal microsoftTeamsProjectPost
+  googleCalendarPersonal googleSheets intercom jira jiraPersonal launchDarkly launchDarklyPersonal
+  loom notion opsgenie pagerDuty salesforce slack slackAsks asksWeb slackCustomViewNotifications
+  slackOrgProjectUpdatesPost slackOrgInitiativeUpdatesPost slackPersonal slackPost slackProjectPost
+  slackProjectUpdatesPost slackInitiativePost sentry zendesk email mcpServerPersonal mcpServer
+  microsoftTeams microsoftPersonal microsoftTeamsProjectPost
 }
 
 """Issue update fields that are disallowed for users with only shared access."""

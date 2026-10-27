@@ -21,6 +21,7 @@
     "s3"
   ],
   "skills": "./skills/",
+  "requires_local_executor": true,
   "interface": {
     "displayName": "Backlot",
     "shortDescription": "Emulate an enterprise SaaS source over your own corpus",

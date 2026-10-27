@@ -219,6 +219,20 @@ def test_every_icon_a_manifest_names_is_a_square_image_this_repo_holds():
     assert server["icons"] == list(ICONS)
 
 
+def test_every_skills_sh_command_names_the_published_skill():
+    """`npx skills add brekkylab/backlot --list` (skills CLI, 2026-10-27) finds three skills: this
+    one and `.claude/skills/backlot-loop` and `backlot-debloat`, which drive this repo's own
+    routines. A command without `--skill` offers all three to whoever runs it."""
+    for readme in ("README.md", "README.pypi.md"):
+        commands = re.findall(
+            r"npx skills add brekkylab/backlot\b(.*)", (REPO / readme).read_text(encoding="utf-8")
+        )
+        assert commands, f"{readme} gives no skills.sh install command"
+        for rest in commands:
+            named = re.search(r"--skill (\S+)", rest)
+            assert named and (REPO / "skills" / named[1] / "SKILL.md").exists(), (readme, rest)
+
+
 # Backlot's own endpoints, as opposed to the vendor prefixes gen_docs.py already checks. Matched by
 # the whole underscore namespace rather than by one literal prefix: a pattern that recognises only
 # the prefix in use stops matching the moment that prefix is renamed, which is the moment it has to

@@ -659,6 +659,31 @@ async def read_a_notion_body_as_express_does(request: Request, call_next):
     return refusal if refusal is not None else await call_next(request)
 
 
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def report_notion_etag(request: Request, call_next):
+    """Put the `ETag` real puts on a Notion answer (``notion.weak_etag``) on each JSON one,
+    computed over its body.
+
+    Registered after ``read_a_notion_body_as_express_does``, which makes it the outer of the
+    two, so a refusal that reader answers carries the tag too, as real's 413 and 415 do; and
+    long before the `HEAD` rewrite below, which makes it the inner of those two, so a `HEAD` is
+    tagged over the body of the `GET` it is rewritten to, as real's is. A method outside
+    ``notion.ROUTED_METHODS`` is left out, as ``report_notion_headers`` leaves it: its 405 is
+    the framework's, where real's front door answers with a page of its own. An answer that is
+    not a JSON body carries none either.
+    """
+    response = await call_next(request)
+    if not response.headers.get("content-type", "").startswith("application/json"):
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    tagged = Response(body, status_code=response.status_code)
+    tagged.raw_headers = response.raw_headers
+    tagged.headers["etag"] = notion.weak_etag(body)
+    return tagged
+
+
 def _is_guid(value: str) -> bool:
     try:
         uuid.UUID(value)

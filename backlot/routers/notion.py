@@ -39,6 +39,7 @@ Object mapping: a Notion *page* is one doc (``subtype='page'``); a *database* is
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -94,6 +95,23 @@ APPLICATION_HEADERS = {
     "x-permitted-cross-domain-policies": "none",
     "x-xss-protection": "0",
 }
+
+
+def weak_etag(body: bytes) -> str:
+    """The `ETag` real puts on a Notion answer: a weak tag holding the body's length in hex and
+    the first 27 characters of the base64 SHA-1 of the body, the form Express's `etag` writes.
+
+    Measured against api.notion.com on 2026-10-27: the 200s of `users/me`, `pages/{id}` and
+    `search`, the 401s (the OAuth client endpoints' among them), the 400s, a 404 and a 503, and
+    the body reader's 413 and 415 each carried one over its own body, a `HEAD` the tag of the
+    body its `GET` answers; the root's 302 and a CORS preflight's 204 carried none. The
+    computation was checked against the bodies kept whole. No `If-None-Match` drew a 304: real
+    mints a `request_id` per response, so no tag repeats there, where this server derives its id
+    from the request (:func:`_request_id`) and a repeated request repeats its tag — no
+    conditional handling is added for a match real was never seen to make.
+    """
+    digest = base64.b64encode(hashlib.sha1(body).digest()).decode("ascii")[:27]
+    return f'W/"{len(body):x}-{digest}"'
 
 
 # --- OpenAPI enrichment --------------------------------------------------

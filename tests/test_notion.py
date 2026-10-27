@@ -6,7 +6,9 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import base64
 import gzip
+import hashlib
 import json
 import re
 import zlib
@@ -380,6 +382,54 @@ def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, noti
         r = client.get(path)
         got = {name: r.headers.get(name) for name in real}
         assert (r.headers["content-type"], got) == ("application/json", none), path
+
+
+def test_notion_answers_carry_a_weak_etag_computed_over_the_body(client, notion_h):
+    """Each JSON answer carries an `ETag` of `W/"<body length in hex>-<first 27 characters of
+    the base64 SHA-1 of the body>"` — ``backlot.routers.notion.weak_etag``, where the
+    measurement against api.notion.com is recorded — the body reader's own 400, 413 and 415
+    among them, and a `HEAD` carries the tag of the body its `GET` answers. A `TRACE` — a
+    method no Notion route takes — is the framework's 405 and carries none."""
+
+    def tag(body: bytes) -> str:
+        digest = base64.b64encode(hashlib.sha1(body).digest()).decode("ascii")[:27]
+        return f'W/"{len(body):x}-{digest}"'
+
+    versioned = {"Notion-Version": DATA_SOURCES_VERSION}
+    rows = [
+        ("GET", "/notion/v1/users/me", notion_h, None, 200),
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{}", 200),
+        ("GET", f"/notion/v1/pages/{synth.notion_id('nt-runbook')}", notion_h, None, 200),
+        ("GET", "/notion/v1/users/me", versioned, None, 401),
+        ("POST", "/notion/v1/oauth/token", {**versioned, **_JSON}, b"{}", 401),
+        ("GET", "/notion/v1/nonexistent_thing/xyz", notion_h, None, 400),
+        ("GET", "/notion/v1/pages/00000000000000000000000000000000", notion_h, None, 404),
+        # the body reader's refusals, which carry none of APPLICATION_HEADERS
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{", 400),
+        (
+            "POST",
+            "/notion/v1/search",
+            {**notion_h, "Content-Type": "application/json; charset=latin1"},
+            b"{}",
+            415,
+        ),
+        (
+            "POST",
+            "/notion/v1/search",
+            {**notion_h, **_JSON},
+            b'{"x":"' + b"a" * 600_000 + b'"}',
+            413,
+        ),
+    ]
+    for method, path, headers, body, status in rows:
+        r = client.request(method, path, headers=headers, content=body)
+        assert r.status_code == status, (method, path)
+        assert r.headers.get("etag") == tag(r.content), (method, path)
+    trace = client.request("TRACE", "/notion/v1/users/me", headers=notion_h)
+    assert trace.status_code == 405 and "etag" not in trace.headers
+    got = client.get("/notion/v1/users/me", headers=notion_h)
+    head = client.head("/notion/v1/users/me", headers=notion_h)
+    assert head.headers["etag"] == got.headers["etag"] == tag(got.content)
 
 
 def test_notion_page_retrieve_and_blocks(client, notion_h):

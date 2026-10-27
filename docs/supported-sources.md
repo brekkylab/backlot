@@ -751,7 +751,10 @@ twice answers the same id. Past the front door, an answer to a `GET`, `HEAD`, `P
 `PUT`, `DELETE` or `OPTIONS` carries the eight headers real's application sets
 (`x-frame-options: SAMEORIGIN`, `content-security-policy: default-src 'none'` and the rest of
 `backlot.routers.notion.APPLICATION_HEADERS`), and the body reader's refusals below carry none, as
-on real.
+on real. Each JSON answer to those methods carries Express's weak `ETag` over its body, the body
+reader's refusals included, and a `GET` or `HEAD` sent `If-None-Match: *` whose answer would be a
+2xx gets a 304 instead, as real answers one; the tag of a repeated request repeats here, where
+real's `request_id` makes each of its tags new.
 
 A request is read as the real API reads it before anything is looked up. A JSON body is read first,
 ahead of the credential and the version, as Express reads one: a body that does not parse is

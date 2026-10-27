@@ -29,7 +29,7 @@ from backlot.telemetry.errors import error_class
 from backlot.telemetry.middleware import _credential
 from backlot.telemetry.recorder import MAX_SERIES, RECORDER, Exporter, Recorder, encode
 from backlot.version import version
-from tests._helpers import build_corpus, client_for
+from tests._helpers import build_corpus, client_for, settings_put_back
 
 ADMIN = {"Authorization": "Bearer admin-service-token"}
 LINEAR = {"Authorization": "admin-service-token"}
@@ -108,8 +108,16 @@ def _calls(send) -> list[dict]:
     return [dict(key) | {"count": n} for key, n in counts.items()]
 
 
+@pytest.fixture
+def settings_kept():
+    """The module's `client` stays open across a test that clears the settings `get_settings`
+    holds, so they are put back once it is done (`settings_put_back`)."""
+    with settings_put_back():
+        yield
+
+
 def test_it_is_on_unless_backlot_telemetry_or_do_not_track_says_off(
-    hello, capsys, tmp_path, monkeypatch
+    hello, capsys, tmp_path, monkeypatch, settings_kept
 ):
     for on in (None, "0", ""):
         with _env(BACKLOT_TELEMETRY=None, DO_NOT_TRACK=on):
@@ -138,14 +146,13 @@ def test_it_is_on_unless_backlot_telemetry_or_do_not_track_says_off(
             with client_for(hello) as c:
                 assert _calls(lambda: c.get("/github/repos/acme/docs-site", headers=ADMIN)) == []
             assert "usage counts" not in capsys.readouterr().err
-    get_settings.cache_clear()
 
 
 class _Started(Exception):
     pass
 
 
-def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys):
+def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys, settings_kept):
     import uvicorn
     from typer.testing import CliRunner
 
@@ -190,7 +197,6 @@ def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys):
                     pass
             # The child's own notice goes to its log, so serve() says it where its caller sees it.
             seen.append(notice(recorder.ENDPOINT) in capsys.readouterr().err)
-    get_settings.cache_clear()
     assert seen == [True, False, True, False, None, True, "0", False]
 
 

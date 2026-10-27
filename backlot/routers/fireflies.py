@@ -98,7 +98,12 @@ def _auth_failed(message: str) -> JSONResponse:
     )
 
 
-_FRIENDLY = {"invalid_arguments": True, "INTERNAL_SERVER_ERROR": False}
+_FRIENDLY = {
+    "invalid_arguments": True,
+    "INTERNAL_SERVER_ERROR": False,
+    "not_in_team": True,
+    "object_not_found": True,
+}
 
 
 @router.post("/graphql", include_in_schema=False)
@@ -133,9 +138,9 @@ async def graphql(request: Request):
     }
     result = ENGINE.execute_payload(payload, context=context)
     request.state.graphql_raised = result.raised
-    # Fireflies' invalid_arguments and INTERNAL_SERVER_ERROR errors carry two more members than a
-    # field error, in this order (api.fireflies.ai: the refusal on 2026-10-21, the
-    # INTERNAL_SERVER_ERROR on 2026-10-22).
+    # Fireflies' errors of the codes in `_FRIENDLY` carry two more members than a field error,
+    # in this order (api.fireflies.ai: invalid_arguments on 2026-10-21, INTERNAL_SERVER_ERROR on
+    # 2026-10-22, not_in_team and object_not_found on 2026-10-27).
     errors = result.payload.get("errors", [])
     for i, error in enumerate(errors):
         code = error.get("extensions", {}).get("code")

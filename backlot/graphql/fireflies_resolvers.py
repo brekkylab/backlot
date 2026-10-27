@@ -354,9 +354,9 @@ def _internal_error(context) -> GraphQLError:
 
 
 def _not_in_team(context) -> GraphQLError:
-    """Real's answer to a `user` id that names nobody: the null stands and a ``not_in_team``
-    field error goes beside it, the id read as naming someone outside the caller's team
-    (api.fireflies.ai, 2026-10-27)."""
+    """Real's answer to a `user` id that names nobody, an email address among them, the caller's
+    own too: the null stands and a ``not_in_team`` field error goes beside it, the id read as
+    naming someone outside the caller's team (api.fireflies.ai, 2026-10-27)."""
     return GraphQLError(
         "You do not have permissions for this team",
         extensions={
@@ -691,12 +691,13 @@ def resolve_channel_members(channel, info, **_ignored):
 
 def resolve_user(_root, info, id=None):
     ctx = _ctx(info)
-    if id is None:
-        # No id -> the authenticated user, Fireflies' `user` default. An admin/service token is
-        # not a person, so it has no user to return.
+    if not id:
+        # No id, or an empty one (api.fireflies.ai, 2026-10-27) -> the authenticated user,
+        # Fireflies' `user` default. An admin/service token is not a person, so it has no user to
+        # return.
         email = ctx.get("caller_email")
         return _user(email) if email else None
-    email = _email_for_user_id(ctx, id) or (id if "@" in str(id) else None)
+    email = _email_for_user_id(ctx, id)
     if not email:
         raise _not_in_team(ctx)
     row = store.get_user(ctx["conn"], email)

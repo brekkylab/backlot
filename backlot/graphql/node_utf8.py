@@ -1,10 +1,10 @@
 """A string argument as the vendors' Node servers look it up: a lone surrogate, which a JavaScript
 string can hold and UTF-8 cannot, as U+FFFD, the character ``Buffer.from`` writes for one.
 
-Measured on 2026-10-27 (UTC), both vendors answered each string argument sent with ``\\ud800`` in it
-as with ``\\ufffd`` in its place: ``issue(id:)``, ``team(id:)`` and ``issues`` title filters on
-Linear, ``transcript(id:)``, ``user(id:)`` and ``transcripts(keyword:)`` and ``(title:)`` on
-Fireflies, each with the surrogate after a value the workspace holds, and Linear's
+Measured on 2026-10-27 (UTC), both vendors answered each of these string arguments, sent with
+``\\ud800`` in it, as with ``\\ufffd`` in its place: ``issue(id:)``, ``team(id:)`` and ``issues``
+title filters on Linear, ``transcript(id:)``, ``user(id:)`` and ``transcripts(keyword:)`` and
+``(title:)`` on Fireflies, each with the surrogate after a value the workspace holds, and Linear's
 ``containsIgnoreCase`` title filter and Fireflies' keyword with it alone. Neither drops it: an id it
 follows names nothing, and alone it matches nothing where an empty string matches each.
 :class:`Written` binds a statement's strings so, as Python's ``sqlite3`` encodes no lone surrogate.

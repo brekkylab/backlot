@@ -833,15 +833,34 @@ _UNKNOWN_IDS = [
 ]
 
 
-# Linear's rows for `backlot.graphql.node_utf8`: a lone surrogate after an id the corpus holds,
-# alone in a title filter, and in a search term (`linear_resolvers._search_backend_failed`).
 def _with_the_key(query: str, value: str, answer: dict, row: str):
+    """A `_LINEAR_BODIES` row: ``query`` sent with ``value`` for ``$x``, and Linear's ``answer`` to it
+    with the key."""
     body = {"query": query, "variables": {"x": value}}
     return pytest.param(
         json.dumps(body).encode(), WithTheKey(node_json(answer) + b"\n", 200), id=row
     )
 
 
+_SEARCH_BACKEND_FAILED = {
+    "errors": [
+        {
+            "message": "Failed to query search backend",
+            "path": ["searchIssues"],
+            "locations": [{"line": 1, "column": 22}],
+            "extensions": {
+                "type": "internal error",
+                "code": "EXTERNAL_SERVICE_ERROR",
+                "statusCode": 500,
+                "userError": False,
+            },
+        }
+    ],
+    "data": None,
+}
+_SEARCH_A_TERM = "query($x: String!) { searchIssues(term: $x, first: 3) { nodes { id } } }"
+# Linear's rows for `backlot.graphql.node_utf8`: a lone surrogate after an id the corpus holds,
+# alone in a title filter, and in a search term, high or low (`_search_backend_failed`).
 _LONE_SURROGATES = [
     _unknown_id(
         "issue",
@@ -865,25 +884,10 @@ _LONE_SURROGATES = [
         "an issues title filter, a lone surrogate",
     ),
     _with_the_key(
-        "query($x: String!) { searchIssues(term: $x, first: 3) { nodes { id } } }",
-        "a\ud800b",
-        {
-            "errors": [
-                {
-                    "message": "Failed to query search backend",
-                    "path": ["searchIssues"],
-                    "locations": [{"line": 1, "column": 22}],
-                    "extensions": {
-                        "type": "internal error",
-                        "code": "EXTERNAL_SERVICE_ERROR",
-                        "statusCode": 500,
-                        "userError": False,
-                    },
-                }
-            ],
-            "data": None,
-        },
-        "searchIssues, a lone surrogate",
+        _SEARCH_A_TERM, "a\ud800b", _SEARCH_BACKEND_FAILED, "searchIssues, a lone surrogate"
+    ),
+    _with_the_key(
+        _SEARCH_A_TERM, "a\udc00b", _SEARCH_BACKEND_FAILED, "searchIssues, a lone low surrogate"
     ),
 ]
 

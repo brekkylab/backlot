@@ -760,6 +760,12 @@ _FIREFLIES_BODIES = [
         ),
         id="a type definition beside an operation",
     ),
+    pytest.param(
+        b'{"query":"query($x: String) { transcripts(keyword: $x, limit: 2) { id } }",'
+        b'"variables":{"x":"\\ud800"}}',
+        WithTheKey(b'{"data":{"transcripts":[]}}\n', 200),
+        id="a keyword of a lone surrogate",
+    ),
 ]
 
 
@@ -1244,17 +1250,13 @@ def fireflies_corpus(tmp_path_factory):
     return tiny_corpus(tmp_path_factory.mktemp("fireflies_corpus"), FIREFLIES_CORPUS)
 
 
-# Each document with a held id, or nothing, before the surrogate (`backlot.graphql.node_utf8`).
+# Each document with a held id before the surrogate (`backlot.graphql.node_utf8`), compared with
+# U+FFFD in its place: the answer to an id that names nothing is Backlot's own here.
 _LONE_SURROGATE_DOCUMENTS = [
     pytest.param(
         "query($x: String!) { transcript(id: $x) { id } }", "{transcript}", id="transcript"
     ),
     pytest.param("query($x: String) { user(id: $x) { user_id } }", "{user}", id="user"),
-    pytest.param(
-        "query($x: String) { transcripts(keyword: $x, limit: 2) { id } }",
-        "",
-        id="transcripts keyword",
-    ),
 ]
 
 

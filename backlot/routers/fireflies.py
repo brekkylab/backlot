@@ -330,9 +330,10 @@ class Spent:
         answered so a `null` refused at a non-null argument before and after a refused field, a
         refusal ahead of a `not_in_team` 30 fields before it, and refusals ahead of
         `transcripts(limit: 0)` and `transcripts(date: 1e20)` at the last field the minute had room
-        for, on 2026-10-26 (UTC). Which comes first is a race: with either of those two 30 fields
-        before the refusals, it answered the error first in five of six, on 2026-10-26 and
-        2026-10-27, and between two refusals in the sixth; this does not follow those six."""
+        for, on 2026-10-26 (UTC). Which comes first is a race: with `transcripts(limit: 0)` or
+        `transcripts(date: 1e20)` 30 fields before the refusals, it answered the error first in
+        five of six, on 2026-10-26 and 2026-10-27, and between two refusals in the sixth; this does
+        not follow those six."""
         if not self.refused:
             return body
         when = email.utils.formatdate(self.retry_at, usegmt=True)

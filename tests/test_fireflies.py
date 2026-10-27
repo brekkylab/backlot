@@ -2906,25 +2906,22 @@ def test_fireflies_holds_a_refused_key_for_a_minute_from_its_first_refusal(
 
 
 @pytest.mark.parametrize(
-    "spent, document, variables, order",
+    "spent, document, order",
     [
         (
             29,
             'query($x: String = "a") { a0: transcripts(limit: 0) { id } a1: transcript(id: $x) { id }'
             " a2: user { user_id } }",
-            {"x": None},
             [(["a1"], False), (["a2"], True), (["a0"], False)],
         ),
         (
             30,
             'query($x: String = "a") { a0: transcript(id: $x) { id } a1: user { user_id } }',
-            {"x": None},
             [(["a0"], False), (["a1"], True)],
         ),
         (
             30,
             'query($x: String = "a") { a1: user { user_id } a0: transcript(id: $x) { id } }',
-            {"x": None},
             [(["a0"], False), (["a1"], True)],
         ),
     ],
@@ -2935,7 +2932,7 @@ def test_fireflies_holds_a_refused_key_for_a_minute_from_its_first_refusal(
     ],
 )
 def test_fireflies_orders_the_budgets_refusals_among_a_runs_errors(
-    client, tokens_yaml, monkeypatch, spent, document, variables, order
+    client, tokens_yaml, monkeypatch, spent, document, order
 ):
     """With ``spent`` of the minute's fields spent, as `Spent.refuse` orders them: each error's
     path, and whether it is the budget's."""
@@ -2947,7 +2944,7 @@ def test_fireflies_orders_the_budgets_refusals_among_a_runs_errors(
     )
     r = client.post(
         "/fireflies/graphql",
-        json={"query": document, "variables": variables},
+        json={"query": document, "variables": {"x": None}},
         headers=_key(tokens_yaml),
     )
     assert [(e["path"], e["code"] == "too_many_requests") for e in r.json()["errors"]] == order

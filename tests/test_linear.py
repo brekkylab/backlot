@@ -2178,8 +2178,10 @@ _LINEAR_READS = [
 _KEY_SHAPED = "Bearer lin_api_" + "0" * 40
 # The rows every credential but the key is sent with: one for each way `_read` refuses a body (V8's
 # words, `strict`'s, graphql-js's, a body it cannot decode, an unsupported encoding, an unsupported
-# charset, past the limit), one it reads and serves, Apollo Server's refusal of a batch, and a
-# `WithTheKey` row.
+# charset, past the limit), one it reads and serves, one for each stage of Apollo Server's that
+# refuses a document ahead of the credential (a batch, a query that is not a string, a persisted
+# query's hash alone and one that does not match, a parse, a validation, the choice of operation),
+# and a `WithTheKey` row.
 _EACH_WAY_READ = (
     "{",
     "top-level 5",
@@ -2190,6 +2192,12 @@ _EACH_WAY_READ = (
     "past the limit",
     "__proto__ key",
     "an array",
+    "a query of null",
+    "a persisted query's hash alone",
+    "a persisted query's hash that does not match",
+    "a document that does not parse",
+    "a document that does not validate",
+    "two operations and no operationName",
     "a variable not provided",
 )
 assert set(_EACH_WAY_READ) <= {row.id for row in (*_LINEAR_BODIES, *_LINEAR_READS)}

@@ -9,5 +9,6 @@
   "homepage": "https://github.com/brekkylab/backlot",
   "repository": "https://github.com/brekkylab/backlot",
   "license": "Apache-2.0",
-  "keywords": ["emulator", "rag", "connector", "acl", "slack", "gmail", "github", "jira", "s3"]
+  "keywords": ["emulator", "rag", "connector", "acl", "slack", "gmail", "github", "jira", "s3"],
+  "icon": "./assets/icon/backlot-icon-dark.png"
 }

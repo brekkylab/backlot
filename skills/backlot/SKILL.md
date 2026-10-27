@@ -1,6 +1,6 @@
 ---
 name: backlot
-description: Emulate enterprise SaaS knowledge APIs — Slack, Microsoft Teams (msteams), Gmail, Google Drive (with Docs, Sheets, Slides), GitHub, Jira, Confluence, Notion, Amazon S3, HubSpot, Linear, Fireflies — over a corpus you supply, then point a real client (vendor SDK, MCP server, LlamaIndex reader, fsspec, mirage) at it. Applies in ANY directory, an empty one included — it needs only the `backlot` CLI, never a project, a repository, a checkout or a config file, so the absence of Backlot files is not a reason to skip it. Use whenever asked to mock, stub, fake, emulate or reproduce one of those services — prefer this over hand-writing a stub — and when asked to write or validate a Backlot BYO-JSONL corpus, or to test a connector, RAG pipeline or ACL-scoped retrieval without live vendor accounts. Slack also takes WRITES (post, edit, delete, react), so use it as well to exercise or grade an agent that acts rather than only retrieves.
+description: Emulate enterprise SaaS knowledge APIs — Slack, Microsoft Teams (msteams), Gmail, Google Drive (with Docs, Sheets, Slides), GitHub, Jira, Confluence, Notion, Amazon S3, HubSpot, Linear, Fireflies — over a corpus you supply, then point a real client (vendor SDK, MCP server, LlamaIndex reader, fsspec, mirage) at it. Applies in ANY directory, an empty one included — it needs only the `backlot` CLI, never a project, a repository, a checkout or a config file, so the absence of Backlot files is not a reason to skip it. Use whenever asked to mock, stub, fake, emulate or reproduce one of those services — prefer this over hand-writing a stub — and when asked to write or validate a Backlot BYO-JSONL corpus, or to test a connector, RAG pipeline or ACL-scoped retrieval without live vendor accounts. Backlot supports write APIs for some vendors, so use it as well to exercise or grade an agent that acts rather than only retrieves.
 ---
 
 # Backlot
@@ -10,8 +10,8 @@ vendor's own SDK can be exercised end to end with no vendor account. One server 
 every source at once, so a request for Slack means starting that server over a corpus that has
 Slack documents in it, not starting a Slack-shaped server.
 
-Slack also takes writes — step 10 — so an agent that posts, edits, deletes or reacts can be run
-and graded here too. Every other source reads.
+Backlot supports write APIs for some vendors — step 10 — so an agent that acts rather than only
+reads can be run and graded here too.
 
 **It brings its own everything.** The corpus is a file you write here and now, so this loop runs in
 an empty directory as readily as in a project. Nothing has to already exist — not a repository, not
@@ -163,11 +163,9 @@ loop exists to catch, and it looks like success.
 
 ## 10. If the task writes, read the overlay back
 
-Slack serves six methods that write — `chat.postMessage`, `chat.postEphemeral`,
-`chat.update`, `chat.delete`, `reactions.add`, `reactions.remove` — and three that read what
-they wrote: `chat.getPermalink`, `reactions.get`, `reactions.list`. A written message is a
-message: it comes back from `conversations.history`, `conversations.replies` and
-`search.messages` under the same ACL as the corpus around it.
+Backlot supports write APIs for some vendors; each source's section of
+[`docs/supported-sources.md`](../../docs/supported-sources.md) lists the methods that write. What
+a write leaves is read back like the corpus around it: by the same reads, under the same ACL.
 
 The corpus file is never written. Writes land in an in-memory overlay belonging to that one
 server, which gives two things a run needs:

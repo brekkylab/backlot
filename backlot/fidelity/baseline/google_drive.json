@@ -6,7 +6,7 @@
     "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
     "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest"
   ],
-  "measured": "2026-10-22",
+  "measured": "2026-10-26",
   "operations": [
     {
       "operation": "DELETE /drive/v3/drives/{}",
@@ -564,7 +564,7 @@
         "commentsViewMode": {
           "kind": "missing_param",
           "severity": "gap",
-          "note": "One family with `GET /v1/presentations/{}?commentsViewMode` and `GET /v4/spreadsheets/{}?commentsViewMode`, all three marked Developer Preview. Google's own description (Docs): \"The comments view mode to apply to the document. This allows viewing the document with comments omitted or included. If one is not specified, COMMENTS_VIEW_MODE_OMITTED is used.\" Backlot declares it on Sheets alone (`routers.google._sheets_comments_view`). Measured against the three hosts on 2026-09-29 with a user token: Sheets and Slides answer each of the four enum values 200, and `comments_view_mode_omitted` in lower case as well, and refuse `BOGUS` and the empty value with 400 `Invalid value at 'comments_view_mode' (type.googleapis.com/google.apps.sheets.v4.CommentsViewMode), \"BOGUS\"` (`google.apps.slides.v1` on Slides). Docs refuses those two the same way under `google.apps.docs.v1` and answers `COMMENTS_VIEW_MODE_UNSPECIFIED` 200, but refuses the other three with 400 `Comments view mode may only be specified if tabs content is also requested.` unless `includeTabsContent=true` or a `fields` mask naming `tabs` comes with them. With tabs requested, `COMMENTS_VIEW_MODE_INCLUDED` is refused with `Comments may only be explicitly included if inline suggestions are also explicitly requested.` until `suggestionsViewMode=SUGGESTIONS_INLINE` joins it, and `COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS` beside `suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS` with `Comments may not be requested when previewing suggestions.` Those two Docs parameters are gaps in this file as well: this server reads neither, so the rules that tie them to this one have nothing to act on."
+          "note": "One family with `GET /v1/presentations/{}?commentsViewMode` and `GET /v4/spreadsheets/{}?commentsViewMode`, all three marked Developer Preview. Google's own description (Docs): \"The comments view mode to apply to the document. This allows viewing the document with comments omitted or included. If one is not specified, COMMENTS_VIEW_MODE_OMITTED is used.\" Backlot declares it on Sheets alone (`routers.google_sheets._sheets_comments_view`). Measured against the three hosts on 2026-09-29 with a user token: Sheets and Slides answer each of the four enum values 200, and `comments_view_mode_omitted` in lower case as well, and refuse `BOGUS` and the empty value with 400 `Invalid value at 'comments_view_mode' (type.googleapis.com/google.apps.sheets.v4.CommentsViewMode), \"BOGUS\"` (`google.apps.slides.v1` on Slides). Docs refuses those two the same way under `google.apps.docs.v1` and answers `COMMENTS_VIEW_MODE_UNSPECIFIED` 200, but refuses the other three with 400 `Comments view mode may only be specified if tabs content is also requested.` unless `includeTabsContent=true` or a `fields` mask naming `tabs` comes with them. With tabs requested, `COMMENTS_VIEW_MODE_INCLUDED` is refused with `Comments may only be explicitly included if inline suggestions are also explicitly requested.` until `suggestionsViewMode=SUGGESTIONS_INLINE` joins it, and `COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS` beside `suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS` with `Comments may not be requested when previewing suggestions.` Those two Docs parameters are gaps in this file as well: this server reads neither, so the rules that tie them to this one have nothing to act on."
         },
         "fields": {
           "kind": "missing_param",
@@ -975,9 +975,17 @@
       "operation": "POST /v4/spreadsheets",
       "id": "sheets.spreadsheets.create",
       "response": "sheets.Spreadsheet",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "POST /v4/spreadsheets/{}/developerMetadata:search",
@@ -991,41 +999,81 @@
       "operation": "POST /v4/spreadsheets/{}/sheets/{}:copyTo",
       "id": "sheets.spreadsheets.sheets.copyTo",
       "response": "sheets.SheetProperties",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "POST /v4/spreadsheets/{}/values/{}:append",
       "id": "sheets.spreadsheets.values.append",
       "response": "sheets.AppendValuesResponse",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "POST /v4/spreadsheets/{}/values/{}:clear",
       "id": "sheets.spreadsheets.values.clear",
       "response": "sheets.ClearValuesResponse",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "POST /v4/spreadsheets/{}/values:batchClear",
       "id": "sheets.spreadsheets.values.batchClear",
       "response": "sheets.BatchClearValuesResponse",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "POST /v4/spreadsheets/{}/values:batchClearByDataFilter",
       "id": "sheets.spreadsheets.values.batchClearByDataFilter",
       "response": "sheets.BatchClearValuesByDataFilterResponse",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter",
@@ -1047,17 +1095,33 @@
       "operation": "POST /v4/spreadsheets/{}/values:batchUpdate",
       "id": "sheets.spreadsheets.values.batchUpdate",
       "response": "sheets.BatchUpdateValuesResponse",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "POST /v4/spreadsheets/{}/values:batchUpdateByDataFilter",
       "id": "sheets.spreadsheets.values.batchUpdateByDataFilter",
       "response": "sheets.BatchUpdateValuesByDataFilterResponse",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "POST /v4/spreadsheets/{}:batchUpdate",
@@ -1087,9 +1151,17 @@
       "operation": "PUT /v4/spreadsheets/{}/values/{}",
       "id": "sheets.spreadsheets.values.update",
       "response": "sheets.UpdateValuesResponse",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     }
   ],
   "batch": {
@@ -1127,6 +1199,24 @@
     ]
   },
   "types": {
+    "sheets.AppendValuesResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "spreadsheetId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "tableRange": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "updates": {
+          "status": "implemented",
+          "type": "sheets.UpdateValuesResponse"
+        }
+      }
+    },
     "sheets.BandedRange": {
       "type_kind": "object",
       "status": "missing",
@@ -1413,6 +1503,34 @@
         }
       }
     },
+    "sheets.BatchClearValuesByDataFilterResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "clearedRanges": {
+          "status": "implemented",
+          "type": "[string]"
+        },
+        "spreadsheetId": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
+    "sheets.BatchClearValuesResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "clearedRanges": {
+          "status": "implemented",
+          "type": "[string]"
+        },
+        "spreadsheetId": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
     "sheets.BatchGetValuesByDataFilterResponse": {
       "type_kind": "object",
       "status": "implemented",
@@ -1438,6 +1556,66 @@
         "valueRanges": {
           "status": "implemented",
           "type": "[sheets.ValueRange]"
+        }
+      }
+    },
+    "sheets.BatchUpdateValuesByDataFilterResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "responses": {
+          "status": "implemented",
+          "type": "[sheets.UpdateValuesByDataFilterResponse]"
+        },
+        "spreadsheetId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "totalUpdatedCells": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "totalUpdatedColumns": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "totalUpdatedRows": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "totalUpdatedSheets": {
+          "status": "implemented",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.BatchUpdateValuesResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "responses": {
+          "status": "implemented",
+          "type": "[sheets.UpdateValuesResponse]"
+        },
+        "spreadsheetId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "totalUpdatedCells": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "totalUpdatedColumns": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "totalUpdatedRows": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "totalUpdatedSheets": {
+          "status": "implemented",
+          "type": "integer"
         }
       }
     },
@@ -2044,6 +2222,20 @@
         "startIndex": {
           "status": "missing",
           "type": "integer"
+        }
+      }
+    },
+    "sheets.ClearValuesResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "clearedRange": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "spreadsheetId": {
+          "status": "implemented",
+          "type": "string"
         }
       }
     },
@@ -2930,16 +3122,12 @@
           "severity": "gap"
         },
         "frozenRowCount": {
-          "status": "missing",
-          "type": "integer",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "integer"
         },
         "hideGridlines": {
-          "status": "missing",
-          "type": "boolean",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "boolean"
         },
         "rowCount": {
           "status": "implemented",
@@ -3854,20 +4042,16 @@
           "type": "sheets.GridProperties"
         },
         "hidden": {
-          "status": "missing",
-          "type": "boolean",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "boolean"
         },
         "index": {
           "status": "implemented",
           "type": "integer"
         },
         "rightToLeft": {
-          "status": "missing",
-          "type": "boolean",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "boolean"
         },
         "sheetId": {
           "status": "implemented",
@@ -3878,16 +4062,12 @@
           "type": "string"
         },
         "tabColor": {
-          "status": "missing",
-          "type": "sheets.Color",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "sheets.Color"
         },
         "tabColorStyle": {
-          "status": "missing",
-          "type": "sheets.ColorStyle",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "sheets.ColorStyle"
         },
         "title": {
           "status": "implemented",
@@ -4392,6 +4572,66 @@
         "textFormat": {
           "status": "missing",
           "type": "sheets.TextFormat"
+        }
+      }
+    },
+    "sheets.UpdateValuesByDataFilterResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "dataFilter": {
+          "status": "implemented",
+          "type": "sheets.DataFilter"
+        },
+        "updatedCells": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "updatedColumns": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "updatedData": {
+          "status": "implemented",
+          "type": "sheets.ValueRange"
+        },
+        "updatedRange": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "updatedRows": {
+          "status": "implemented",
+          "type": "integer"
+        }
+      }
+    },
+    "sheets.UpdateValuesResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "spreadsheetId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "updatedCells": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "updatedColumns": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "updatedData": {
+          "status": "implemented",
+          "type": "sheets.ValueRange"
+        },
+        "updatedRange": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "updatedRows": {
+          "status": "implemented",
+          "type": "integer"
         }
       }
     },

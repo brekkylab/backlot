@@ -703,13 +703,14 @@ def _graphql_bridge_call(base, source, creds, *, tool_name, args, ok_pred, depth
     server ``backlot mcp`` runs over stdio, driven through fastmcp's in-memory client. The
     derivation it serves is unit-tested in ``tests/test_graphql.py``; what is proved here is that
     the tool posts its document with the caller's credential, and that the server reports Backlot's
-    version in ``serverInfo``. Returns ``ok_pred`` over the tool's response text."""
+    version and icons in ``serverInfo``. Returns ``ok_pred`` over the tool's response text."""
     from fastmcp import Client
 
     async def _go():
         server = backlot_mcp.graphql_server(base, creds, source, depth=depth)
         async with Client(server) as c:
             version = c.server_info.version
+            assert _icons(c.server_info) == list(backlot_mcp.ICONS)
             try:
                 res = await c.call_tool(tool_name, args)
             except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
@@ -865,10 +866,15 @@ def _mcp_params(*args, env=None):
     )
 
 
+def _icons(server_info) -> list[dict]:
+    """``serverInfo.icons`` in the wire spelling server.json uses."""
+    return [i.model_dump(mode="json", by_alias=True, exclude_none=True) for i in server_info.icons]
+
+
 async def _tools_and_instructions(params, errlog=None) -> tuple[list[str], str | None]:
     """The tool names a session lists, and the ``instructions`` it advertised alongside them — a
     client feeds the latter to the model, so the two have to agree about which sources exist. Also
-    asserts that ``initialize`` reported Backlot's version."""
+    asserts that ``initialize`` reported Backlot's version and icons."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
@@ -876,6 +882,7 @@ async def _tools_and_instructions(params, errlog=None) -> tuple[list[str], str |
         async with ClientSession(r, w) as sess:
             init = await sess.initialize()
             assert init.server_info.version == metadata.version("backlot")
+            assert _icons(init.server_info) == list(backlot_mcp.ICONS)
             names = [t.name for t in (await sess.list_tools()).tools]
             return names, init.instructions
 

@@ -9,6 +9,7 @@ open with an object or an array, :mod:`backlot.graphql.v8_json` for the rest, an
 
 from __future__ import annotations
 
+import base64
 import json
 import json.decoder
 import math
@@ -94,7 +95,7 @@ def body_parser_text(
     then an uncompressed body past ``limit`` the 413, which ``raw-body`` answers from
     ``Content-Length`` before it reads, then a ``utf-`` charset iconv-lite does not know the 415;
     then :func:`_inflate` reads a compressed body, and the bytes are decoded in the charset's byte
-    order (:func:`_byte_order`).
+    order (:func:`_byte_order`), or as UTF-7 (:func:`_utf7`).
 
     api.linear.app answered each step on 2026-10-19 (UTC): ``latin1``, ``iso-8859-1``, ``utf8`` and
     ``utf_16le`` were the charset 415, ``x-gzip``, ``bogus`` and ``gzip, gzip`` the encoding's, a
@@ -103,8 +104,8 @@ def body_parser_text(
     and ``utf-16le``, ``utf-16-le``, ``utf-16be``, ``utf-16`` and ``utf-32`` with and without a
     byte-order mark, ``utf-32le``, ``GZIP``, ``deflate`` and an empty encoding were served. It
     decompressed a ``br`` body, which body-parser 1.x refuses with the encoding's 415, so it runs a
-    2.x; such a body is read here as it arrives, and a ``utf-7`` or ``utf-7-imap`` one as UTF-8.
-    Without ``brotli``, ``br`` is the encoding's 415 as on a 1.x."""
+    2.x; such a body is read here as it arrives. Without ``brotli``, ``br`` is the encoding's 415
+    as on a 1.x."""
     charset = _charset(content_type)
     if not charset.startswith("utf-"):
         raise Unread(415, f'unsupported charset "{charset.upper()}"')
@@ -118,8 +119,11 @@ def body_parser_text(
         raise Unread(415, f'unsupported charset "{charset.upper()}"')
     if encoding in ("gzip", "deflate"):
         raw = _inflate(raw, gzip=encoding == "gzip", limit=limit)
-    if name in ("utf8", *_ICONV_UTF7):
+    if name == "utf8":
         return decode(raw)
+    if name in _ICONV_UTF7:
+        text = _utf7(raw, imap=name == "utf7imap")
+        return text[1:] if text.startswith("\ufeff") else text
     width = 2 if name.startswith("utf16") else 4
     order = name[5:] or _byte_order(raw, width)  # past `utf16` or `utf32`
     raw = raw[: len(raw) - len(raw) % width]
@@ -273,6 +277,63 @@ def _byte_order(raw: bytes, width: int) -> str:
             score += (b0 == 0 and b1 == 0 and (b2 != 0 or b3 != 0)) - (b0 != 0 or b1 > 0x10)
             score -= ((b0 != 0 or b1 != 0) and b2 == 0 and b3 == 0) - (b3 != 0 or b2 > 0x10)
     return "be" if score > 0 else "le"
+
+
+_BASE64 = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+
+
+def _utf7(raw: bytes, *, imap: bool) -> str:
+    """``raw`` as iconv-lite 0.7's ``utf-7`` or ``utf-7-imap`` decoder reads it in one ``write``
+    and its ``end``, from ``encodings/utf7.js``. A ``+`` (``&`` for IMAP) opens a run of base64
+    characters, IMAP's also taking ``,`` as ``/``, that the first other byte ends; a ``-`` ending it
+    is dropped, and one right after the opening byte stands for that byte. Each run is decoded
+    apart, and a run the body ends in is decoded in two, its characters up to a multiple of eight
+    and the rest: see :func:`_base64_units`. A byte outside a run is a character when below 0x80
+    and U+FFFD otherwise. api.linear.app read bodies so on 2026-10-27 (UTC): a run that opens with
+    a byte-order mark lost it, and a run the body ends in lost one its ninth character starts.
+    ``raw-body`` hands the decoder each chunk as it arrives, so this is a body read in one chunk;
+    one that arrives in pieces reads otherwise where a piece ends inside a run."""
+    shift, alphabet = (0x26, _BASE64 | {0x2C}) if imap else (0x2B, _BASE64)
+    units: list[int] = []
+    in_run, start, i = False, 0, 0
+    while i < len(raw):
+        byte = raw[i]
+        if not in_run:
+            if byte == shift:
+                units += (b if b < 0x80 else 0xFFFD for b in raw[start:i])
+                in_run, start = True, i + 1
+        elif byte not in alphabet:
+            if i == start and byte == 0x2D:
+                units.append(shift)
+            else:
+                units += _base64_units(raw[start:i], imap)
+            in_run = False
+            if byte != 0x2D:
+                start = i
+                continue  # the byte is read again outside the run
+            start = i + 1
+        i += 1
+    if not in_run:
+        units += (b if b < 0x80 else 0xFFFD for b in raw[start:])
+    else:
+        rest = raw[start:]
+        whole = len(rest) - len(rest) % 8
+        units += _base64_units(rest[:whole], imap) + _base64_units(rest[whole:], imap)
+    text = "".join(map(chr, units))
+    # The units join into a JavaScript string, where a high surrogate then a low one is a pair.
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+
+
+def _base64_units(chars: bytes, imap: bool) -> list[int]:
+    """The UTF-16 units a run of base64 ``chars`` gives: Node's ``Buffer.from(…, "base64")``, which
+    drops a last character that makes no byte, then iconv-lite's ``utf16-be`` decoder, which drops a
+    last odd byte and a byte-order mark at the start of the run."""
+    if imap:
+        chars = chars.replace(b",", b"/")
+    chars = chars[: len(chars) - (len(chars) % 4 == 1)]
+    data = base64.b64decode(chars + b"=" * (-len(chars) % 4))
+    units = [data[i] << 8 | data[i + 1] for i in range(0, len(data) - 1, 2)]
+    return units[1:] if units[:1] == [0xFEFF] else units
 
 
 def _inflate(raw: bytes, gzip: bool, limit: int = LINEAR_LIMIT) -> bytes:

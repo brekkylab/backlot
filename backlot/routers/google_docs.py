@@ -22,9 +22,9 @@ from backlot.routers.google import (
     _editor_doc,
     _gmask_apply,
     _gmask_select,
+    _query_bool,
+    _query_enum,
     _require,
-    _sheets_bool_value,
-    _sheets_enum_value,
     _typed_query,
     router,
 )
@@ -33,7 +33,7 @@ from backlot.routers.google import (
 # reads `0` through `3`, `+1` and `01` (the value numbered 1) and a name in any ASCII case, and
 # refuses `4`, `-1`, `1.0`, a padded `" 1"`, empty and `NOPE`. `commentsViewMode` reads the same
 # way (2026-10-14: `3`, `+1` and `comments_view_mode_omitted` read, `4` and `-1` refused).
-# `includeTabsContent` is the boolean `_sheets_bool_value` reads (2026-10-14: `no`, `n`, `y`, `T`
+# `includeTabsContent` is the boolean `_query_bool` reads (2026-10-14: `no`, `n`, `y`, `T`
 # and `F` read, `on`, `off`, `2` and `tru` refused). A value that cannot be read is a 400 before
 # the document is looked up.
 _DOCS_VIEW = "type.googleapis.com/google.apps.docs.v1"
@@ -114,11 +114,11 @@ async def docs_get(document_id: str, request: Request):
     flags = _typed_query(
         request,
         {
-            "suggestionsViewMode": lambda raw: _sheets_enum_value(
+            "suggestionsViewMode": lambda raw: _query_enum(
                 raw, "suggestions_view_mode", _DOCS_SUGGESTIONS_VIEW
             ),
-            "includeTabsContent": lambda raw: _sheets_bool_value(raw, "include_tabs_content"),
-            "commentsViewMode": lambda raw: _sheets_enum_value(
+            "includeTabsContent": lambda raw: _query_bool(raw, "include_tabs_content"),
+            "commentsViewMode": lambda raw: _query_enum(
                 raw, "comments_view_mode", _DOCS_COMMENTS_VIEW
             ),
         },

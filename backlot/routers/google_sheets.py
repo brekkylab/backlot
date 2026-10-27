@@ -36,10 +36,10 @@ from backlot.routers.google import (
     _editor_doc,
     _gmask_apply,
     _gmask_select,
+    _query_bool,
+    _query_enum,
     _require,
     _service_email,
-    _sheets_bool_value,
-    _sheets_enum_value,
     _typed_query,
     router,
 )
@@ -189,16 +189,12 @@ _P_SHEETS_GET = [
 
 # The typed query values `spreadsheets.get` and `:getByDataFilter` read.
 _SHEETS_GET_FLAGS = {
-    "includeGridData": lambda raw: _sheets_bool_value(raw, "include_grid_data"),
-    "excludeTablesInBandedRanges": lambda raw: _sheets_bool_value(
-        raw, "exclude_tables_in_banded_ranges"
-    ),
+    "includeGridData": lambda raw: _query_bool(raw, "include_grid_data"),
+    "excludeTablesInBandedRanges": lambda raw: _query_bool(raw, "exclude_tables_in_banded_ranges"),
     # Read as `documents.get` reads its own (`_DOCS_COMMENTS_VIEW`), measured 2026-10-22: `03`,
     # `+1` and `comments_view_mode_included` read, `4`, `-1`, `BOGUS` and empty refused, and of
     # several the last decides.
-    "commentsViewMode": lambda raw: _sheets_enum_value(
-        raw, "comments_view_mode", _PJ_COMMENTS_VIEW
-    ),
+    "commentsViewMode": lambda raw: _query_enum(raw, "comments_view_mode", _PJ_COMMENTS_VIEW),
 }
 
 
@@ -1043,18 +1039,16 @@ def _sheets_options(request: Request) -> tuple[str, str, str]:
     enums = _typed_query(
         request,
         {
-            "majorDimension": lambda raw: _sheets_enum_value(raw, "major_dimension", _PJ_DIMENSION),
+            "majorDimension": lambda raw: _query_enum(raw, "major_dimension", _PJ_DIMENSION),
             # Measured over typed cells: FORMATTED_VALUE gives the display string "12",
             # UNFORMATTED_VALUE the JSON number 12, and FORMULA the same raw value as
             # UNFORMATTED_VALUE for every cell that is not a formula. A spreadsheet whose cells are
             # lines of stored text has only strings, so all three agree on one; a spreadsheet that
             # STATES its grid does not.
-            "valueRenderOption": lambda raw: _sheets_enum_value(
-                raw, "value_render_option", _PJ_RENDER
-            ),
+            "valueRenderOption": lambda raw: _query_enum(raw, "value_render_option", _PJ_RENDER),
             # A date, time or date-time cell's serial number or its display string. Only a written
             # cell can be one: a corpus states no number formats.
-            "dateTimeRenderOption": lambda raw: _sheets_enum_value(
+            "dateTimeRenderOption": lambda raw: _query_enum(
                 raw, "date_time_render_option", _PJ_DATETIME
             ),
         },
@@ -1560,11 +1554,9 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     query, body = await _sheets_query_and_body(
         request,
         {
-            "majorDimension": lambda raw: _sheets_enum_value(raw, "major_dimension", _PJ_DIMENSION),
-            "valueRenderOption": lambda raw: _sheets_enum_value(
-                raw, "value_render_option", _PJ_RENDER
-            ),
-            "dateTimeRenderOption": lambda raw: _sheets_enum_value(
+            "majorDimension": lambda raw: _query_enum(raw, "major_dimension", _PJ_DIMENSION),
+            "valueRenderOption": lambda raw: _query_enum(raw, "value_render_option", _PJ_RENDER),
+            "dateTimeRenderOption": lambda raw: _query_enum(
                 raw, "date_time_render_option", _PJ_DATETIME
             ),
         },
@@ -1755,26 +1747,18 @@ def _sheets_write_readers(*, append: bool = False) -> dict:
     gets it rather than its 403. ``append`` adds the `insertDataOption` only `values.append`
     declares."""
     extra = (
-        {
-            "insertDataOption": lambda raw: _sheets_enum_value(
-                raw, "insert_data_option", _PJ_INSERT_DATA
-            )
-        }
+        {"insertDataOption": lambda raw: _query_enum(raw, "insert_data_option", _PJ_INSERT_DATA)}
         if append
         else {}
     )
     return {
         **extra,
-        "valueInputOption": lambda raw: _sheets_enum_value(
-            raw, "value_input_option", _PJ_VALUE_INPUT
-        ),
-        "includeValuesInResponse": lambda raw: _sheets_bool_value(
-            raw, "include_values_in_response"
-        ),
-        "responseValueRenderOption": lambda raw: _sheets_enum_value(
+        "valueInputOption": lambda raw: _query_enum(raw, "value_input_option", _PJ_VALUE_INPUT),
+        "includeValuesInResponse": lambda raw: _query_bool(raw, "include_values_in_response"),
+        "responseValueRenderOption": lambda raw: _query_enum(
             raw, "response_value_render_option", _PJ_RENDER
         ),
-        "responseDateTimeRenderOption": lambda raw: _sheets_enum_value(
+        "responseDateTimeRenderOption": lambda raw: _query_enum(
             raw, "response_date_time_render_option", _PJ_DATETIME
         ),
     }

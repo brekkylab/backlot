@@ -4335,14 +4335,14 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     raise gerr.invalid_argument(EDITOR_INVALID_ARG)
 
 
-def _a1_enum_error(field: str, enum: protojson.Enum, value: str) -> str:
+def _enum_error(field: str, enum: protojson.Enum, value: str) -> str:
     """Google's own wording for a bad read enum — it names the proto field and message type, e.g.
     ``Invalid value at 'major_dimension' (…sheets.v4.Dimension), "DIAGONAL"``. Measured, because a
     client that matches on the message needs the real one."""
     return f"Invalid value at '{field}' ({enum.type_url}), \"{value}\""
 
 
-def _sheets_bool_value(raw: str | None, field: str) -> bool:
+def _query_bool(raw: str | None, field: str) -> bool:
     """One of the boolean query parameters, read as a JSON body's string is (``protojson.to_bool``).
     Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, whatever the
     case of their ASCII letters, while `on`/`off`, a padded `" true"`, `2`, `01` and `1.0` are
@@ -4358,7 +4358,7 @@ def _sheets_bool_value(raw: str | None, field: str) -> bool:
         ) from None
 
 
-def _sheets_enum_value(raw: str, field: str, enum: protojson.Enum) -> str:
+def _query_enum(raw: str, field: str, enum: protojson.Enum) -> str:
     """One of the read enums from the query string, as its canonical name.
 
     Read the way a JSON body's string is (``protojson.enum_from_string``), measured on the query
@@ -4371,7 +4371,7 @@ def _sheets_enum_value(raw: str, field: str, enum: protojson.Enum) -> str:
     try:
         return enum.names[protojson.enum_from_string(raw, enum)]
     except protojson.ConversionError:
-        raise gerr.invalid_field_value(field, _a1_enum_error(field, enum, raw)) from None
+        raise gerr.invalid_field_value(field, _enum_error(field, enum, raw)) from None
 
 
 # --- the `fields` mask the Sheets and Docs reads apply --------------------------------------------
@@ -4956,11 +4956,11 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
 
 # The typed booleans each Drive method Backlot serves declares, as the proto field its refusal
 # names. Each is parsed and the parsed value never read. Measured 2026-09-23 on each of them: the
-# Sheets boolean spellings (`_sheets_bool_value`), 30 of them swept on `supportsAllDrives`; and on
-# 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since only ASCII letters are folded
-# (`protojson.to_bool`). Spelled `true`, four of them run a check of their own and two lift one --
-# see `_drive_true`. `files.export` and `about.get` declare none, and real ignores
-# `supportsAllDrives=NOPE` on both.
+# spellings `_query_bool` reads, first measured on Sheets, 30 of them swept on
+# `supportsAllDrives`; and on 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since
+# only ASCII letters are folded (`protojson.to_bool`). Spelled `true`, four of them run a check of
+# their own and two lift one -- see `_drive_true`. `files.export` and `about.get` declare none, and
+# real ignores `supportsAllDrives=NOPE` on both.
 _DRIVE_BOOLS = {
     "supportsAllDrives": "supports_all_drives",
     "supportsTeamDrives": "supports_team_drives",
@@ -4975,8 +4975,7 @@ def _drive_typed(request: Request, *bools: str, page_size: bool = False) -> dict
     """`_typed_query` over the booleans a Drive method declares, and its `pageSize` if it has
     one."""
     readers = {
-        name: (lambda raw, field=_DRIVE_BOOLS[name]: _sheets_bool_value(raw, field))
-        for name in bools
+        name: (lambda raw, field=_DRIVE_BOOLS[name]: _query_bool(raw, field)) for name in bools
     }
     if page_size:
         readers["pageSize"] = _drive_int32

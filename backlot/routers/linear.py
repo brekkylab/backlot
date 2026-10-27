@@ -640,7 +640,10 @@ class RequestBudget:
     validated, sent between two that ran, took none; and `x-ratelimit-requests-reset` was an hour
     past the answer, in epoch milliseconds, 3599.9 to 3600.9 seconds after its `Date`, on each. A
     caller with no credential is counted by its address, which the measurement did not vary.
-    ``clock`` is `time.time` unless a test hands in another."""
+    Past the limit api.linear.app answers a 429 that takes nothing: once the bucket of a caller with
+    no credential was spent, ten more requests drew it, and one sent 13.8 seconds after the last
+    served was served with `x-ratelimit-requests-remaining` 3, on 2026-10-27 (UTC). This serves past
+    the limit, so the level stops at 0. ``clock`` is `time.time` unless a test hands in another."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock

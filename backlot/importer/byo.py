@@ -77,7 +77,7 @@ from pathlib import Path
 
 import yaml
 
-from backlot import sheets_grid, store, synth
+from backlot import gsheets, store, synth
 from backlot.config import Settings, get_settings, infer_org
 from backlot.validation import record_errors
 
@@ -1056,13 +1056,14 @@ def _sheets_pairing_errors(rec: dict) -> list[str]:
                         f"sheets[{i}].grid[{r}][{c}]: {cell} is not a number JSON can carry "
                         "(RFC 8259 has no Infinity or NaN literal)"
                     )
-    first: dict[str, int] = {}
+    seen: list[tuple[int, str]] = []
     for i, sheet in enumerate(sheets):
         if not isinstance(sheet, dict):
             continue
         title = _sheet_title(sheet, i)
-        prior = first.setdefault(title.casefold(), i)
-        if prior != i:
+        prior = next((j for j, t in seen if gsheets.same_title(t, title)), None)
+        seen.append((i, title))
+        if prior is not None:
             msgs.append(
                 f"sheets[{i}]: duplicate sheet title {title!r} (sheets[{prior}] has it too, and "
                 "the real API compares them case-insensitively)"
@@ -1100,7 +1101,7 @@ def _sheet_rows(file_id: str, sheets: list[dict]) -> list[tuple]:
             while (sid := synth.sheet_id(file_id, title, salt)) in taken:
                 salt += "!"
         taken.add(sid)
-        out.append((i, sid, title, _j(sheets_grid.normalise_grid(sheet["grid"]))))
+        out.append((i, sid, title, _j(gsheets.normalise_grid(sheet["grid"]))))
     return out
 
 
@@ -1993,7 +1994,7 @@ class _Loader:
             drive_sheets = rec["sheets"]
             rec = {
                 **rec,
-                "content": sheets_grid.to_csv(sheets_grid.normalise_grid(drive_sheets[0]["grid"])),
+                "content": gsheets.to_csv(gsheets.normalise_grid(drive_sheets[0]["grid"])),
             }
 
         doc_id = _doc_id(rec)

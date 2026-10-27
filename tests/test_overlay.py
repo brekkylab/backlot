@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -141,8 +142,89 @@ def test_a_run_of_writes_leaves_the_corpus_file_identical(sample_settings):
     )
     store.patch_document(conn, "slack", ("incidents", ts), "content", "edited")
     store.tombstone_document(conn, "slack", ("incidents", ts))
+    (sheet,) = _drive_files(conn, "Q1 Revenue Model")
+    store.replace_parts(
+        conn,
+        "google_drive",
+        (sheet["id"],),
+        {
+            "gdrive_sheets": [
+                {"sheet_index": 0, "sheet_id": 0, "title": "Sheet1", "grid": '[["w"]]'}
+            ]
+        },
+        {"content": "written", "updated_ts": 4000000000},
+    )
     conn.close()
     assert hashlib.sha256(sample_settings.db_path.read_bytes()).hexdigest() == digest
+
+
+def _drive_files(conn, *titles):
+    return [
+        conn.execute("SELECT * FROM main.gdrive_files WHERE title = ?", (t,)).fetchone()
+        for t in titles
+    ]
+
+
+def _write_sheet(conn, file_id, grid, content, updated_ts):
+    store.replace_parts(
+        conn,
+        "google_drive",
+        (file_id,),
+        {
+            "gdrive_sheets": [
+                {"sheet_index": 0, "sheet_id": 0, "title": "Sheet1", "grid": json.dumps(grid)}
+            ]
+        },
+        {"content": content, "updated_ts": updated_ts},
+    )
+
+
+def test_written_sheets_are_read_for_their_file_alone_until_reset(sample_settings):
+    # A prose spreadsheet has no stored sheets; once written it has the overlay's, and the file
+    # beside it in the same folder still has none.
+    conn = store.connect_ro(sample_settings.db_path)
+    name = overlay.name_for(object())
+    overlay.attach(conn, name)
+    model, ledger = _drive_files(conn, "Q1 Revenue Model", "Ledger With Gaps")
+    _write_sheet(
+        conn, model["id"], [["month", "revenue", "note"]], "month,revenue,note", 4000000000
+    )
+    got = [
+        (s["sheet_id"], s["title"], s["grid"]) for s in store.gdrive_sheets_for(conn, model["id"])
+    ]
+    assert got == [(0, "Sheet1", '[["month", "revenue", "note"]]')]
+    assert store.gdrive_sheets_for(conn, ledger["id"]) == []
+    overlay.reset(conn, name)
+    assert store.gdrive_sheets_for(conn, model["id"]) == []
+    conn.close()
+
+
+def test_a_drive_patch_reaches_every_drive_reader(sample_settings):
+    # `content` and `updated_ts` are read by files.get, the folder listing's newest-first order,
+    # the storage quota and search. The ledger is the oldest file in its folder, so leading the
+    # listing afterwards also shows the patched `updated_ts` comparing as an integer. The written
+    # text is past the floor a native file's size carries (`store.DRIVE_NATIVE_MIN_BYTES`), so the
+    # quota moves with it.
+    conn = store.connect_ro(sample_settings.db_path)
+    overlay.attach(conn, overlay.name_for(object()))
+    (ledger,) = _drive_files(conn, "Ledger With Gaps")
+    assert store.list_drive_folder(conn, "finance")[0]["id"] != ledger["id"]
+    used, _ = store.drive_usage_bytes(conn)
+    text = "zebra " * 200
+    assert len(text) > store.DRIVE_NATIVE_MIN_BYTES
+    _write_sheet(conn, ledger["id"], [[text]], text, 4000000000)
+    row = store.gdrive_by_id(conn, ledger["id"])
+    assert (row["content"], row["updated_ts"]) == (text, 4000000000)
+    assert store.list_drive_folder(conn, "finance")[0]["id"] == ledger["id"]
+    before = store.drive_file_bytes(ledger["subtype"], ledger["content"])
+    assert store.drive_usage_bytes(conn)[0] == used - before + len(text)
+    assert [h["id"] for h in store.search_documents(conn, "zebra", "google_drive")] == [
+        ledger["id"]
+    ]
+    assert ledger["id"] not in [
+        h["id"] for h in store.search_documents(conn, "header", "google_drive")
+    ]
+    conn.close()
 
 
 # --- the overlay's own control surface --------------------------------------------------------
@@ -198,6 +280,7 @@ def test_meta_overlay_names_every_table_but_the_index(oclient):
     expected = set()
     for src in store.WRITABLE:
         expected |= {n for n in overlay.table_names(src).values() if not n.endswith("_fts_ov")}
+        expected |= set(store.SATELLITES.get(src, {}))
     assert set(j) == expected
 
 

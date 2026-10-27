@@ -411,6 +411,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "pyyaml" },
     { name = "typer" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "xxhash" },
 ]
@@ -562,6 +563,7 @@ requires-dist = [
     { name = "slack-sdk", marker = "extra == 'llamaindex'", specifier = ">=3.43" },
     { name = "slack-sdk", marker = "extra == 'official-sdk'", specifier = ">=3.43" },
     { name = "typer", specifier = ">=0.27" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
     { name = "xxhash", specifier = ">=3.0" },
 ]

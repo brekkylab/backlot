@@ -105,7 +105,12 @@ def _auth_failed(message: str) -> JSONResponse:
     )
 
 
-_FRIENDLY = {"invalid_arguments": True, "INTERNAL_SERVER_ERROR": False}
+_FRIENDLY = {
+    "invalid_arguments": True,
+    "INTERNAL_SERVER_ERROR": False,
+    "not_in_team": True,
+    "object_not_found": True,
+}
 
 
 @router.post("/graphql", include_in_schema=False)
@@ -161,10 +166,10 @@ def _entry(error: dict, code: str, friendly: bool, extensions: dict) -> dict:
 def _envelope(result: engine.Result) -> dict:
     """``result`` as Fireflies writes it, as api.fireflies.ai answered on 2026-10-25 (UTC): each
     request error, and each error in ``result.assigned``, with ``friendly: false``, Apollo Server's
-    code beside the message and ``extensions`` empty. The ``invalid_arguments`` and
-    ``INTERNAL_SERVER_ERROR`` errors a resolver raises keep the extensions it gave them,
-    ``friendly`` as ``_FRIENDLY`` has it, as api.fireflies.ai answered the refusal on 2026-10-21
-    and the INTERNAL_SERVER_ERROR on 2026-10-22."""
+    code beside the message and ``extensions`` empty. The errors a resolver raises with a code in
+    ``_FRIENDLY`` keep the extensions it gave them, ``friendly`` as ``_FRIENDLY`` has it, as
+    api.fireflies.ai answered ``invalid_arguments`` on 2026-10-21, ``INTERNAL_SERVER_ERROR`` on
+    2026-10-22, and ``not_in_team`` and ``object_not_found`` on 2026-10-27."""
     if result.refusals:
         errors = []
         for refusal in result.refusals:

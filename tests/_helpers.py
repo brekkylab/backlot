@@ -219,9 +219,9 @@ def settings_put_back():
     """Puts back on exit the settings `get_settings` held on entry, as they were then; with none
     held on entry it holds none on exit, so the next read takes the environment as it is then.
 
-    A client's lifespan sets the org a corpus recorded on those settings, and routers read the org
-    off them as they answer (Teams builds its team id from it), so a client still open keeps
-    answering for its own org across anything inside this that clears the cache.
+    A client's lifespan sets the org its corpus recorded on the settings `get_settings` holds, and
+    routers read the org off them as they answer (Teams builds its team id from it), so a client
+    still open keeps answering for its own org across anything inside this that clears the cache.
     """
     outer = get_settings() if get_settings.cache_info().currsize else None
     try:

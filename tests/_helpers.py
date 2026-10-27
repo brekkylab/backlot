@@ -223,8 +223,13 @@ def client_for(settings: Settings, *, reload: bool = True):
     one app would both read the second one's database, and once the second exits the first reads a
     closed one; the Slack router's caches on ``app.state`` also outlive the client that built them.
     ``reload=False`` serves the app ``backlot.main`` holds without re-importing it.
+
+    The lifespan sets the org a corpus recorded on the settings `get_settings` holds, which the
+    routers read at each request, so on exit those settings are put back as they were on entry:
+    a client still open around this one keeps answering for its own org.
     """
     prev = os.environ.get("BACKLOT_DATA_DIR")
+    outer = get_settings()
     os.environ["BACKLOT_DATA_DIR"] = str(settings.data_dir)
     get_settings.cache_clear()
     try:
@@ -240,6 +245,9 @@ def client_for(settings: Settings, *, reload: bool = True):
             os.environ.pop("BACKLOT_DATA_DIR", None)
         else:
             os.environ["BACKLOT_DATA_DIR"] = prev
+        restored = get_settings()
+        for name in type(outer).model_fields:
+            setattr(restored, name, getattr(outer, name))
 
 
 def python_child_env(**extra: str) -> dict[str, str]:

@@ -15,7 +15,7 @@ import pytest
 from backlot import store, synth
 from backlot.errors.msgraph import WWW_AUTHENTICATE
 from backlot.pagination import encode_cursor
-from tests._helpers import complete, corpus_client, db_count, tok
+from tests._helpers import client_for, complete, corpus_client, db_count, tok
 
 V1 = "/msgraph/v1.0"
 
@@ -2574,6 +2574,17 @@ def test_a_reaction_without_its_own_time_takes_the_messages(tmp_path):
     reaction = m["reactions"][0]
     assert reaction["createdDateTime"] == m["createdDateTime"] == m["lastModifiedDateTime"]
     assert (reaction["reactionType"], reaction["displayName"]) == ("🎉", "Party popper")
+
+
+def test_a_client_open_around_another_still_names_its_team(sample_settings, tmp_path):
+    """The team id is read off the settings the app's lifespan set its org on, and a client opened
+    and closed inside this one, as `corpus_client` is, leaves them as they were."""
+    h = {"Authorization": f"Bearer {sample_settings.admin_token}"}
+    with client_for(sample_settings) as outer:
+        team = outer.get(f"{V1}/me/joinedTeams", headers=h).json()["value"][0]["id"]
+        with corpus_client(tmp_path, [complete("msteams", author_email="bob@x.com")]):
+            pass
+        assert outer.get(f"{V1}/teams/{team}/channels", headers=h).status_code == 200
 
 
 @pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])

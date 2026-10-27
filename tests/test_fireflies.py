@@ -1244,9 +1244,8 @@ def fireflies_corpus(tmp_path_factory):
     return tiny_corpus(tmp_path_factory.mktemp("fireflies_corpus"), FIREFLIES_CORPUS)
 
 
-# A lone surrogate beside a value the corpus holds, or alone, which `backlot.graphql.node_utf8`
-# writes as U+FFFD: api.fireflies.ai answered each so with `\ud800` as with `\ufffd` on 2026-10-27
-# (UTC), and the held value alone with what it names.
+# Fireflies' rows for `backlot.graphql.node_utf8`: a lone surrogate after an id the corpus holds,
+# and alone in a keyword.
 _LONE_SURROGATE_DOCUMENTS = [
     pytest.param(
         "query($x: String!) { transcript(id: $x) { id } }", "{transcript}", id="transcript"

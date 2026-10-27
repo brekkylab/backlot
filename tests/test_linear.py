@@ -833,9 +833,8 @@ _UNKNOWN_IDS = [
 ]
 
 
-# A string argument holding a lone surrogate, which `backlot.graphql.node_utf8` writes as U+FFFD:
-# beside an id the corpus holds, alone in a filter, and in the search term Linear's backend refuses
-# (`linear_resolvers._search_backend_failed`).
+# Linear's rows for `backlot.graphql.node_utf8`: a lone surrogate after an id the corpus holds,
+# alone in a title filter, and in a search term (`linear_resolvers._search_backend_failed`).
 def _with_the_key(query: str, value: str, answer: dict, row: str):
     body = {"query": query, "variables": {"x": value}}
     return pytest.param(

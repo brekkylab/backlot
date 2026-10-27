@@ -43,6 +43,7 @@ import sys
 import threading
 import time
 import urllib.request
+from importlib import metadata
 
 import pytest
 import yaml
@@ -704,13 +705,16 @@ def _graphql_bridge_call(base, source, creds, *, tool_name, args, ok_pred, depth
     async def _go():
         server = backlot_mcp.graphql_server(base, creds, source, depth=depth)
         async with Client(server) as c:
-            res = await c.call_tool(tool_name, args)
-            return ok_pred("".join(getattr(b, "text", "") for b in res.content))
+            version = c.server_info.version
+            try:
+                res = await c.call_tool(tool_name, args)
+                return version, ok_pred("".join(getattr(b, "text", "") for b in res.content))
+            except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
+                return version, False
 
-    try:
-        return asyncio.run(_go())
-    except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
-        return False
+    version, ok = asyncio.run(_go())
+    assert version == metadata.version("backlot")
+    return ok
 
 
 @pytest.mark.parametrize(
@@ -866,6 +870,8 @@ async def _tools_and_instructions(params, errlog=None) -> tuple[list[str], str |
     async with stdio_client(params, errlog=errlog or sys.stderr) as (r, w):
         async with ClientSession(r, w) as sess:
             init = await sess.initialize()
+            # Backlot's version, not the FastMCP one a server reports when it is not given one
+            assert init.server_info.version == metadata.version("backlot")
             names = [t.name for t in (await sess.list_tools()).tools]
             return names, init.instructions
 

@@ -1288,11 +1288,8 @@ async def refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot(
     `POST /graphql` with a query, with no bytes, with `{` and with a body past each vendor's size
     limit, on `GET /graphql`, on `HEAD /graphql`, which declared the 155 bytes and sent none, and
     on `POST /nosuch` and `POST /`. Both closed the connection after it (`GET /graphql`,
-    2026-10-23). api.notion.com, api.linear.app, api.fireflies.ai and api.hubapi.com answered each
-    of `If-None-Match`, `If-Match`, `If-Modified-Since`, `If-Unmodified-Since` and `If-Range`
-    sent twice with the same value with the same page on 2026-10-27 (UTC), on `GET /v1/users/me`,
-    `POST /graphql` with `{ __typename }` and `GET /crm/v3/objects/contacts?limit=1`, where one
-    copy, and `Cache-Control` or `Range` twice, were served."""
+    2026-10-23). Which headers, on all four vendors, is
+    :func:`backlot.auth.repeated_cloudflare_refused_header`'s."""
     return Response(
         request_target.CLOUDFLARE_PAGE,
         status_code=400,

@@ -213,9 +213,9 @@ _CLOUDFLARE_REFUSED_HEADERS = (
 def repeated_cloudflare_refused_header(request: Request) -> bool:
     """Whether the request carries more than once `Authorization` or one of the conditional
     headers Cloudflare refuses (:data:`_CLOUDFLARE_REFUSED_HEADERS`): api.notion.com,
-    api.linear.app, api.fireflies.ai and api.hubapi.com answered each of the five, sent twice
-    with the same value, with the 155-byte `400 Bad Request` page on 2026-10-27 (UTC), where
-    one copy, and `Cache-Control` or `Range` twice, were served."""
+    api.linear.app, api.fireflies.ai and api.hubapi.com answered `Authorization` and each of the
+    five, sent twice with the same value, with the 155-byte `400 Bad Request` page on 2026-10-27
+    (UTC), where one copy, and `Cache-Control` or `Range` twice, were served."""
     return repeated_authorization(request) or any(
         len(request.headers.getlist(name)) > 1 for name in _CLOUDFLARE_REFUSED_HEADERS
     )

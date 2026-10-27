@@ -346,8 +346,8 @@ def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
 
 # A request to Linear or Fireflies with `Authorization` sent more than once, `{key}` standing for
 # the vendor's own spelling of the admin token, each answered with the 400 page
-# `backlot.main.refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot` records. The last three
-# rows are the control: one header reaches the vendor, and a path that only starts with the
+# `backlot.main.refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot` records. The last
+# three rows are the control: one header reaches the vendor, and a path that only starts with the
 # vendor's name is not the vendor's.
 _TYPENAME = b'{"query":"{ __typename }"}'
 _CLOUDFLARE = 400
@@ -414,11 +414,10 @@ def test_cloudflare_refuses_a_repeated_authorization(client, tokens_yaml, vendor
 
 # A request to each vendor Cloudflare fronts, `{key}` standing for the vendor's own spelling of
 # the admin token, with a header Cloudflare refuses sent more than once, each answered with the
-# 400 page `backlot.main.refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot`
-# records. The controls: one copy reaches the vendor, and `Cache-Control` or `Range` twice
-# reaches it too. The one-copy `If-None-Match` sends a tag, not `*`: api.notion.com answers a
-# single `*` on `GET /v1/users/me` with a 304, so a control asserting the 200 must not depend on
-# whether that 304 has landed yet.
+# The same page on each vendor Cloudflare fronts, `{key}` as above, for each header it refuses
+# sent more than once. The controls: one copy reaches the vendor, and `Cache-Control` or `Range`
+# twice reaches it too. The one-copy `If-None-Match` sends a tag, not `*`: api.notion.com answers
+# a single `*` on `GET /v1/users/me` with a 304, where these controls assert the 200.
 _CLOUDFLARE_REQUESTS = [
     ("notion", "GET", "/v1/users/me", None, (("Notion-Version", "2025-09-03"),)),
     ("linear", "POST", "/graphql", _TYPENAME, (("Content-Type", "application/json"),)),

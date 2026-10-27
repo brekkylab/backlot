@@ -235,20 +235,7 @@ def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     assert upper["id"] == m["id"]
 
 
-@pytest.mark.parametrize(
-    "spelling, same_as",
-    [
-        ("{ROOT}", "{root}"),
-        ("0{root}", "{root}"),
-        ("00{root}", "{root}"),
-        ("0000000000{root}", "{root}"),
-        ("0{ROOT}", "{root}"),
-        ("0{reply}", "1"),
-    ],
-)
-def test_gmail_threads_get_reads_an_id_as_a_hex_integer(
-    client, admin_h, ro_conn, spelling, same_as
-):
+def test_gmail_threads_get_reads_an_id_as_a_hex_integer(client, admin_h, ro_conn):
     """`threads.get` on a thread's id in uppercase, or with one, two or ten zeros in front and its
     hex in either case, serves the thread as the lowercase id without them does; on a reply's id
     with a zero in front it serves the 404 of an id the mailbox does not hold (`1`). The measurement
@@ -267,8 +254,15 @@ def test_gmail_threads_get_reads_an_id_as_a_hex_integer(
             params={"format": "minimal"},
         )
 
-    got, want = threads_get(spelling), threads_get(same_as)
-    assert (got.status_code, got.json()) == (want.status_code, want.json())
+    def answer(thread_id):
+        r = threads_get(thread_id)
+        return (r.status_code, r.json())
+
+    same_as = {"{ROOT}": "{root}", "0{root}": "{root}", "00{root}": "{root}"}
+    same_as |= {"0000000000{root}": "{root}", "0{ROOT}": "{root}", "0{reply}": "1"}
+    assert {spelling: answer(spelling) for spelling in same_as} == {
+        spelling: answer(want) for spelling, want in same_as.items()
+    }
 
 
 def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin_h, ro_conn):
@@ -338,15 +332,7 @@ def test_gmail_threads_list_is_the_mailbox_searched_or_not(client, tokens):
     )
 
 
-@pytest.mark.parametrize(
-    "msg_key",
-    ["owner", "other", "missing", "non_hex"],
-)
-@pytest.mark.parametrize(
-    "att_key, expect_status",
-    [("valid", 200), ("bogus", 400), ("altered", 400)],
-)
-def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, expect_status):
+def test_gmail_attachment_errors(client, admin_h, ro_conn):
     """Under each of the four message ids, an attachment id gets the answer it gets under its own
     message: 200 with its bytes when a message holds it, 400 when none does, as the comment in
     `gmail_attachment` records."""
@@ -364,47 +350,43 @@ def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, exp
     ).json()
     valid_att = next(p for p in m["payload"]["parts"] if p.get("filename"))["body"]["attachmentId"]
 
-    msg_id = {
+    msg_ids = {
         "owner": hexid,
         "other": other_row["id"],
         "missing": "0000000000000001",
         "non_hex": "zzz",
-    }[msg_key]
-    att_id = (
-        valid_att
-        if att_key == "valid"
-        else "bogus"
-        if att_key == "bogus"
-        else valid_att[:-4] + "abcd"
-    )
-
-    r = client.get(
-        f"/gmail/v1/users/me/messages/{msg_id}/attachments/{att_id}",
-        headers=admin_h,
-    )
-
-    assert r.status_code == expect_status
-    if expect_status == 400:
-        assert r.json() == {
-            "error": {
-                "code": 400,
-                "message": "Invalid attachment token",
-                "errors": [
-                    {
-                        "message": "Invalid attachment token",
-                        "domain": "global",
-                        "reason": "invalidArgument",
-                    }
-                ],
-                "status": "INVALID_ARGUMENT",
-            }
+    }
+    att_ids = {"valid": valid_att, "bogus": "bogus", "altered": valid_att[:-4] + "abcd"}
+    owned = client.get(
+        f"/gmail/v1/users/me/messages/{hexid}/attachments/{valid_att}", headers=admin_h
+    ).json()
+    assert owned["size"] > 0
+    refused = {
+        "error": {
+            "code": 400,
+            "message": "Invalid attachment token",
+            "errors": [
+                {
+                    "message": "Invalid attachment token",
+                    "domain": "global",
+                    "reason": "invalidArgument",
+                }
+            ],
+            "status": "INVALID_ARGUMENT",
         }
-    else:
-        owned = client.get(
-            f"/gmail/v1/users/me/messages/{hexid}/attachments/{valid_att}", headers=admin_h
-        ).json()
-        assert owned["size"] > 0
-        assert r.json() == owned
+    }
+    answered = {}
+    for msg_key, msg_id in msg_ids.items():
+        for att_key, att_id in att_ids.items():
+            r = client.get(
+                f"/gmail/v1/users/me/messages/{msg_id}/attachments/{att_id}", headers=admin_h
+            )
+            answered[msg_key, att_key] = (r.status_code, r.json())
+    assert answered == {
+        (msg_key, att_key): (200, owned) if att_key == "valid" else (400, refused)
+        for msg_key in msg_ids
+        for att_key in att_ids
+    }
 
 
 _ATTACHMENT_ACL = [
@@ -443,11 +425,16 @@ _ATTACHMENT_ACL = [
 ]
 
 
+@pytest.fixture(scope="module")
+def attachment_acl_settings(tmp_path_factory):
+    return tiny_corpus(tmp_path_factory.mktemp("attachment_acl"), _ATTACHMENT_ACL)
+
+
 @pytest.fixture
-def attachment_acl(tmp_path):
+def attachment_acl(attachment_acl_settings):
     """Two of ava's messages with one attachment each, and a message of mia's with none. Yields the
     client, a header per caller, and each attachment id by the doc it belongs to."""
-    settings = tiny_corpus(tmp_path, _ATTACHMENT_ACL)
+    settings = attachment_acl_settings
     tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     h = {"admin": {"Authorization": f"Bearer {settings.admin_token}"}}
     for name in ("ava", "mia"):
@@ -501,40 +488,43 @@ def test_gmail_attachment_is_found_by_its_id_within_the_acl(
         assert scanned == ([] if under == doc and caller != "mia" else [reads]), doc
 
 
-@pytest.mark.parametrize(
-    "mid",
-    ["0", "1", "abc123", "DEADBEEF", "7fffffffffffffff", "0000000000000001", "18c9a1b2c3d4e5f6"],
-)
-def test_gmail_a_valid_but_unknown_id_is_not_found(client, admin_h, mid):
+def test_gmail_a_valid_but_unknown_id_is_not_found(client, admin_h):
     """A well-formed id the mailbox does not hold is 404, uppercase included — measured."""
+    mids = ["0", "1", "abc123", "DEADBEEF", "7fffffffffffffff", "0000000000000001"]
+    mids.append("18c9a1b2c3d4e5f6")
+    answered = {}
     for kind in ("messages", "threads"):
-        r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
-        assert r.status_code == 404, f"{kind}/{mid}: {r.status_code}"
-        assert r.json()["error"]["message"] == "Requested entity was not found."
+        for mid in mids:
+            r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
+            answered[kind, mid] = (r.status_code, r.json()["error"]["message"])
+    assert answered == {
+        (kind, mid): (404, "Requested entity was not found.")
+        for kind in ("messages", "threads")
+        for mid in mids
+    }
 
 
-@pytest.mark.parametrize(
-    "mid",
-    [
-        "8000000000000000",
-        "ffffffffffffffff",
-        "18c9a1b2c3d4e5f6a",
-        "-1",
-        "1g",
-        "nosuchmessageid",
-        "dsid_00908a2dda4b4d359194a09101",
-    ],
-)
-def test_gmail_an_unparsable_id_is_an_invalid_argument(client, admin_h, mid):
+def test_gmail_an_unparsable_id_is_an_invalid_argument(client, admin_h):
     """An id that is not a parsable in-range hex integer is 400 INVALID_ARGUMENT "Invalid id
     value", not 404. The last row is a `dsid_…`, which real would refuse the same way."""
+    mids = ["8000000000000000", "ffffffffffffffff", "18c9a1b2c3d4e5f6a", "-1", "1g"]
+    mids += ["nosuchmessageid", "dsid_00908a2dda4b4d359194a09101"]
+    answered = {}
     for kind in ("messages", "threads"):
-        r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
-        assert r.status_code == 400, f"{kind}/{mid}: {r.status_code}"
-        e = r.json()["error"]
-        assert e["message"] == "Invalid id value"
-        assert e["status"] == "INVALID_ARGUMENT"
-        assert e["errors"][0]["reason"] == "invalidArgument"
+        for mid in mids:
+            r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
+            e = r.json()["error"]
+            answered[kind, mid] = (
+                r.status_code,
+                e["message"],
+                e["status"],
+                e["errors"][0]["reason"],
+            )
+    assert answered == {
+        (kind, mid): (400, "Invalid id value", "INVALID_ARGUMENT", "invalidArgument")
+        for kind in ("messages", "threads")
+        for mid in mids
+    }
 
 
 def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_conn):
@@ -694,40 +684,20 @@ _GMAIL_MAX_RESULTS = [
 ]
 
 
-@pytest.mark.parametrize("kind", ["messages", "threads"])
-@pytest.mark.parametrize("values, shape, named", _GMAIL_MAX_RESULTS)
-def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind, values, shape, named):
-    """The refusals `_gmail_page` records, on both listings."""
-    r = client.get(
-        f"/gmail/v1/users/me/{kind}",
-        headers=admin_h,
-        params=[("maxResults", value) for value in values],
-    )
-    if shape == "size":
-        assert r.status_code == 200, (kind, values, r.text)
-        body = r.json()
-        assert body["resultSizeEstimate"] >= named, (kind, values)
-        assert len(body[kind]) == named, (kind, values)
-        return
-    assert r.status_code == 400, (kind, values, r.text)
-    err = r.json()["error"]
+def _max_results_refusal(shape, named):
+    """The 400 error object a `_GMAIL_MAX_RESULTS` row of ``shape`` records."""
     if shape == "maxResults":
-        assert err == {
+        return {
             "code": 400,
             "message": "Invalid maxResults",
             "errors": [
-                {
-                    "message": "Invalid maxResults",
-                    "domain": "global",
-                    "reason": "invalidArgument",
-                }
+                {"message": "Invalid maxResults", "domain": "global", "reason": "invalidArgument"}
             ],
             "status": "INVALID_ARGUMENT",
-        }, (kind, values)
-        return
+        }
     messages = [f"Invalid value at 'max_results' (TYPE_UINT32), \"{raw}\"" for raw in named]
     message = "\n".join(messages)
-    assert err == {
+    return {
         "code": 400,
         "message": message,
         "errors": [{"message": message, "reason": "invalid"}],
@@ -740,7 +710,32 @@ def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind, value
                 ],
             }
         ],
-    }, (kind, values)
+    }
+
+
+@pytest.mark.parametrize("kind", ["messages", "threads"])
+def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind):
+    """The refusals `_gmail_page` records, on both listings: a served row as its page's length and
+    whether `resultSizeEstimate` is at least that."""
+    answered = {}
+    for values, *_ in _GMAIL_MAX_RESULTS:
+        r = client.get(
+            f"/gmail/v1/users/me/{kind}",
+            headers=admin_h,
+            params=[("maxResults", value) for value in values],
+        )
+        if r.status_code == 200:
+            body = r.json()
+            listed = len(body[kind])
+            answered[tuple(values)] = (listed, body["resultSizeEstimate"] >= listed)
+        else:
+            answered[tuple(values)] = (r.status_code, r.json()["error"])
+    assert answered == {
+        tuple(values): (named, True)
+        if shape == "size"
+        else (400, _max_results_refusal(shape, named))
+        for values, shape, named in _GMAIL_MAX_RESULTS
+    }
 
 
 _GMAIL_TOKEN = {
@@ -793,28 +788,30 @@ _GMAIL_PAGE_TOKEN_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("query, on_messages, on_threads", _GMAIL_PAGE_TOKEN_ROWS)
 @pytest.mark.parametrize("kind", ["messages", "threads"])
-def test_gmail_lists_read_a_page_token_as_real_does(
-    client, admin_h, kind, query, on_messages, on_threads
-):
+def test_gmail_lists_read_a_page_token_as_real_does(client, admin_h, kind):
     """The rules `_gmail_page` and `gerr.invalid_page_token` record, one request per row and
     listing. `None` is the answer the request gets without a `pageToken`, `"second"` the page after
     the first at `maxResults=1`, and `{token}` the `nextPageToken` of that first page."""
     path = f"/gmail/v1/users/me/{kind}"
-    first = client.get(path, headers=admin_h, params={"maxResults": 1}).json()
-    query = [(k, v.format(token=first["nextPageToken"])) for k, v in query]
-    r = client.get(path, headers=admin_h, params=query)
-    want = on_messages if kind == "messages" else on_threads
-    if want is None:
-        without = [(k, v) for k, v in query if k != "pageToken"]
-        assert r.content == client.get(path, headers=admin_h, params=without).content
-    elif want == "second":
-        both = client.get(path, headers=admin_h, params={"maxResults": 2}).json()[kind]
-        assert r.status_code == 200, r.text
-        assert r.json()[kind] == both[1:]
-    else:
-        assert (r.status_code, _gerr(r)) == (400, want)
+    token = client.get(path, headers=admin_h, params={"maxResults": 1}).json()["nextPageToken"]
+    second = client.get(path, headers=admin_h, params={"maxResults": 2}).json()[kind][1:]
+
+    def answer(query, want):
+        query = [(k, v.format(token=token)) for k, v in query]
+        r = client.get(path, headers=admin_h, params=query)
+        if want is None:
+            without = [(k, v) for k, v in query if k != "pageToken"]
+            same = r.content == client.get(path, headers=admin_h, params=without).content
+            return None if same else r.text
+        if want == "second":
+            return "second" if (r.status_code, r.json()[kind]) == (200, second) else r.text
+        return (r.status_code, _gerr(r))
+
+    rows = [(query, m if kind == "messages" else t) for query, m, t in _GMAIL_PAGE_TOKEN_ROWS]
+    assert {urlencode(query): answer(query, want) for query, want in rows} == {
+        urlencode(query): want if want in (None, "second") else (400, want) for query, want in rows
+    }
 
 
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
@@ -1452,75 +1449,112 @@ def test_drive_not_found_names_the_file_id(client, admin_h):
 
 
 @pytest.mark.parametrize(
-    "name, caller, mime, answer",
+    "name, caller, answers",
     [
-        # no `mimeType`: a document, a PDF, a file that does not exist, and a spreadsheet the scoped
-        # token cannot see, which with a `mimeType` is its 404
-        ("Brand", None, None, "required"),
-        ("Whitepaper", None, None, "required"),
-        (None, None, None, "required"),
-        ("Q1 Revenue Model", "mia@acme.com", None, "required"),
-        # a format the spreadsheet does not export to
-        ("Q1 Revenue Model", None, "text/plain", "unsupported"),
-        ("Q1 Revenue Model", None, "bogus/type", "unsupported"),
-        ("Q1 Revenue Model", None, "application/vnd.google-apps.document", "unsupported"),
-        ("Q1 Revenue Model", None, "", "unsupported"),
-        ("Q1 Revenue Model", None, "text/csv ", "unsupported"),
-        ("Q1 Revenue Model", None, "text/csv;charset=utf-8", "unsupported"),
-        # a format its type exports to, in any case, and the one it answers as
-        ("Q1 Revenue Model", None, "text/csv", "text/csv"),
-        ("Q1 Revenue Model", None, "TEXT/CSV", "text/csv"),
-        ("Q1 Revenue Model", None, "Text/Csv", "text/csv"),
-        ("Brand", None, "text/markdown", "text/markdown"),
-        ("Brand", None, "TEXT/MARKDOWN", "text/markdown"),
+        # `None` is no `mimeType`, sent on a document, a PDF, a file that does not exist, and a
+        # spreadsheet the scoped token cannot see, which with a `mimeType` is its 404
+        (
+            "Brand",
+            None,
+            {
+                None: "required",
+                # a format the document exports to, in any case, and the one it answers as
+                "text/markdown": "text/markdown",
+                "TEXT/MARKDOWN": "text/markdown",
+            },
+        ),
+        ("Whitepaper", None, {None: "required"}),
+        (None, None, {None: "required"}),
+        ("Q1 Revenue Model", "mia@acme.com", {None: "required"}),
+        (
+            "Q1 Revenue Model",
+            None,
+            {
+                # a format the spreadsheet does not export to
+                "text/plain": "unsupported",
+                "bogus/type": "unsupported",
+                "application/vnd.google-apps.document": "unsupported",
+                "": "unsupported",
+                "text/csv ": "unsupported",
+                "text/csv;charset=utf-8": "unsupported",
+                # a format its type exports to, in any case, and the one it answers as
+                "text/csv": "text/csv",
+                "TEXT/CSV": "text/csv",
+                "Text/Csv": "text/csv",
+            },
+        ),
     ],
 )
 def test_drive_export_answers_a_mime_type_the_way_real_does(
-    client, admin_h, tokens, name, caller, mime, answer
+    client, admin_h, tokens, name, caller, answers
 ):
-    """The order and the matching `drive_files_export`'s docstring records. `required` is the
-    absent-`mimeType` refusal, `unsupported` the one `gerr.unsupported_conversion` records, and a
-    format the export that format answers, served under the `mimeType` exactly as sent. With a
-    `mimeType`, a file that does not exist is its 404. The TSV spelling is
-    `test_tsv_export_reserialises_the_grid_rather_than_serving_content`'s, over a grid."""
+    """The order and the matching `drive_files_export`'s docstring records, each `mimeType` sent on
+    its row's file. `required` is the absent-`mimeType` refusal, `unsupported` the one
+    `gerr.unsupported_conversion` records, and a format the export that format answers, served under
+    the `mimeType` exactly as sent. With a `mimeType`, a file that does not exist is its 404. The
+    TSV spelling is `test_tsv_export_reserialises_the_grid_rather_than_serving_content`'s, over a
+    grid."""
     fid = _drive_find(client, admin_h, name)["id"] if name else "nosuchfileid123"
     headers = {"Authorization": f"Bearer {tokens[caller]}"} if caller else admin_h
     url = f"/drive/v3/files/{fid}/export"
-    r = client.get(url, headers=headers, params={} if mime is None else {"mimeType": mime})
-    if answer == "required":
+
+    def answer(mime):
+        r = client.get(url, headers=headers, params={} if mime is None else {"mimeType": mime})
+        if r.status_code == 200:
+            return (200, r.headers["content-type"], r.text)
         e = _gerr(r)
-        assert e["code"] == 400 and e["message"] == "Required parameter: mimeType"
-        assert e["errors"][0] == {
-            "message": "Required parameter: mimeType",
-            "domain": "global",
-            "reason": "required",
-            "location": "mimeType",
-            "locationType": "parameter",
-        }
-        if caller:
-            ok = client.get(url, headers=headers, params={"mimeType": "text/csv"})
-            assert ok.status_code == 404
-        return
-    if answer == "unsupported":
-        e = _gerr(r)
-        assert e["code"] == 400
-        assert e["errors"] == [
-            {
-                "message": "The requested conversion is not supported.",
-                "domain": "global",
-                "reason": "badRequest",
-                "location": "convertTo",
-                "locationType": "parameter",
-            }
-        ]
-    else:
-        assert r.status_code == 200, r.text
-        assert r.headers["content-type"] == mime
-        assert r.text == client.get(url, headers=admin_h, params={"mimeType": answer}).text
-    missing = client.get(
-        "/drive/v3/files/nosuchfileid123/export", headers=admin_h, params={"mimeType": mime}
-    )
-    assert missing.status_code == 404
+        return (e["code"], e["message"], e["errors"])
+
+    def expected(mime, answer):
+        if answer == "required":
+            message = "Required parameter: mimeType"
+            error = {"message": message, "domain": "global", "reason": "required"}
+            error |= {"location": "mimeType", "locationType": "parameter"}
+            return (400, message, [error])
+        if answer == "unsupported":
+            message = "The requested conversion is not supported."
+            error = {"message": message, "domain": "global", "reason": "badRequest"}
+            error |= {"location": "convertTo", "locationType": "parameter"}
+            return (400, message, [error])
+        exported = client.get(url, headers=admin_h, params={"mimeType": answer}).text
+        return (200, mime, exported)
+
+    assert {mime: answer(mime) for mime in answers} == {
+        mime: expected(mime, answer) for mime, answer in answers.items()
+    }
+    sent = [mime for mime in answers if mime is not None]
+    missing = "/drive/v3/files/nosuchfileid123/export"
+    assert {
+        mime: client.get(missing, headers=admin_h, params={"mimeType": mime}).status_code
+        for mime in sent
+    } == dict.fromkeys(sent, 404)
+    if caller:
+        ok = client.get(url, headers=headers, params={"mimeType": "text/csv"})
+        assert ok.status_code == 404
+
+
+_PAGE_SIZES = [
+    (["0"], "range", "0"),
+    (["-1"], "range", "-1"),
+    (["-0"], "range", "0"),
+    (["{above}"], "range", "{above}"),
+    (["2147483647"], "range", "2147483647"),
+    (["2147483648"], "int32", "2147483648"),
+    ([" 2"], "int32", " 2"),
+    (["2 "], "int32", "2 "),
+    (["1_0"], "int32", "1_0"),
+    (["2.0"], "int32", "2.0"),
+    (["0x10"], "int32", "0x10"),
+    (["1e2"], "int32", "1e2"),
+    ([""], "int32", ""),
+    (["NOPE"], "int32", "NOPE"),
+    (["2", "NOPE"], "int32", "NOPE"),
+    (["NOPE", "2"], "int32", "NOPE"),
+    (["+2"], "size", "2"),
+    (["02"], "size", "2"),
+    (["1"], "size", "1"),
+    (["{top}"], "size", "{top}"),
+]
 
 
 @pytest.mark.parametrize(
@@ -1531,33 +1565,8 @@ def test_drive_export_answers_a_mime_type_the_way_real_does(
         ("/drive/v3/drives", 100),
     ],
 )
-@pytest.mark.parametrize(
-    "values, kind, named",
-    [
-        (["0"], "range", "0"),
-        (["-1"], "range", "-1"),
-        (["-0"], "range", "0"),
-        (["{above}"], "range", "{above}"),
-        (["2147483647"], "range", "2147483647"),
-        (["2147483648"], "int32", "2147483648"),
-        ([" 2"], "int32", " 2"),
-        (["2 "], "int32", "2 "),
-        (["1_0"], "int32", "1_0"),
-        (["2.0"], "int32", "2.0"),
-        (["0x10"], "int32", "0x10"),
-        (["1e2"], "int32", "1e2"),
-        ([""], "int32", ""),
-        (["NOPE"], "int32", "NOPE"),
-        (["2", "NOPE"], "int32", "NOPE"),
-        (["NOPE", "2"], "int32", "NOPE"),
-        (["+2"], "size", "2"),
-        (["02"], "size", "2"),
-        (["1"], "size", "1"),
-        (["{top}"], "size", "{top}"),
-    ],
-)
 def test_drive_a_listing_takes_an_int32_page_size_from_1_to_its_top(
-    client, admin_h, path, top, values, kind, named
+    client, admin_h, drive_check_ids, path, top
 ):
     """The rules `_INT32` and `_drive_page_size_in_range` record, on each route, each value alone
     unless the row lists two. `range` is the range refusal naming the value as an int, `int32` the
@@ -1565,39 +1574,44 @@ def test_drive_a_listing_takes_an_int32_page_size_from_1_to_its_top(
     `files.list` and that many permissions on `permissions.list`, or all there are, and none on
     `drives.list`."""
     fill = {"top": top, "above": top + 1}
-    named = named.format(**fill)
-    url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
-    r = client.get(url, headers=admin_h, params=[("pageSize", v.format(**fill)) for v in values])
-    if kind == "size":
-        assert r.status_code == 200, r.text
-        listed = {"/drive/v3/files": "files", _PERMS: "permissions"}.get(path)
-        if listed:
-            total = len(client.get(url, headers=admin_h, params={"pageSize": top}).json()[listed])
-            assert len(r.json()[listed]) == min(int(named), total)
-        return
-    e = _gerr(r)
-    assert e["code"] == 400
-    if kind == "range":
-        assert e["errors"] == [
-            {
-                "message": (
-                    f"Invalid value '{named}'. Values must be within the range: [value: 1\n, "
-                    f"value: {top}\n]"
-                ),
-                "domain": "global",
-                "reason": "invalidParameter",
-                "location": "page_size",
-                "locationType": "parameter",
-            }
-        ]
-        assert "status" not in e and "details" not in e
-    else:
+    url = path.format(doc=drive_check_ids["doc"])
+    listed = {"/drive/v3/files": "files", _PERMS: "permissions"}.get(path)
+    total = listed and len(
+        client.get(url, headers=admin_h, params={"pageSize": top}).json()[listed]
+    )
+
+    def answer(values):
+        params = [("pageSize", v.format(**fill)) for v in values]
+        r = client.get(url, headers=admin_h, params=params)
+        if r.status_code == 200:
+            return listed and len(r.json()[listed])
+        e = _gerr(r)
+        violations = e["details"][0]["fieldViolations"] if "details" in e else None
+        return (e["code"], e["errors"], e.get("status"), violations)
+
+    def expected(kind, named):
+        named = named.format(**fill)
+        if kind == "size":
+            return listed and min(int(named), total)
+        if kind == "range":
+            message = (
+                f"Invalid value '{named}'. Values must be within the range: [value: 1\n, "
+                f"value: {top}\n]"
+            )
+            entry = {"message": message, "domain": "global", "reason": "invalidParameter"}
+            return (
+                400,
+                [entry | {"location": "page_size", "locationType": "parameter"}],
+                None,
+                None,
+            )
         message = f"Invalid value at 'page_size' (TYPE_INT32), \"{named}\""
-        assert e["errors"] == [{"message": message, "reason": "invalid"}]
-        assert e["status"] == "INVALID_ARGUMENT"
-        assert e["details"][0]["fieldViolations"] == [
-            {"field": "page_size", "description": message}
-        ]
+        violations = [{"field": "page_size", "description": message}]
+        return (400, [{"message": message, "reason": "invalid"}], "INVALID_ARGUMENT", violations)
+
+    assert {tuple(values): answer(values) for values, *_ in _PAGE_SIZES} == {
+        tuple(values): expected(kind, named) for values, kind, named in _PAGE_SIZES
+    }
 
 
 @pytest.mark.parametrize(
@@ -1693,34 +1707,33 @@ _TOKEN_EXPIRED = {
 _UNKNOWN_ERROR = {"code": 500, "message": "Unknown Error.", "errors": [{}], "status": "UNKNOWN"}
 
 
-@pytest.mark.parametrize(
-    "path, query, error",
-    [
-        *[
-            (path, query, error)
-            for path in (_PERMS, "/drive/v3/drives")
-            for query, error in [
-                ([("pageToken", "bad")], _TOKEN_INVALID),
-                ([("pageToken", "bzow")], _TOKEN_INVALID),
-                ([("pageToken", "{token}")], _TOKEN_INVALID),
-                ([("useDomainAdminAccess", "true"), ("pageToken", "bad")], _TOKEN_INVALID),
-                ([("pageToken", "bad"), ("useDomainAdminAccess", "true")], _TOKEN_INVALID),
-                ([("pageToken", "bad"), ("pageSize", "0")], None),
-                ([("pageToken", "bad"), ("useDomainAdminAccess", "NOPE")], None),
-            ]
-        ],
-        (_PERMS, [("pageToken", "")], _TOKEN_EXPIRED),
-        (_PERMS, [("useDomainAdminAccess", "true"), ("pageToken", "")], _TOKEN_EXPIRED),
-        ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "")], _TOKEN_EXPIRED),
-        ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "bzow")], _TOKEN_INVALID),
-        (_PERMS, [("pageSize", "1"), ("pageToken", "{issued}.")], _TOKEN_INVALID),
-        (_PERMS, [("pageSize", "1"), ("pageToken", "{at_zero}")], _TOKEN_INVALID),
-        ("/drive/v3/drives", [("pageToken", "")], None),
-        ("/drive/v3/drives", [("useDomainAdminAccess", "true"), ("pageToken", "")], None),
+_FOREIGN_PAGE_TOKENS = [
+    *[
+        (path, query, error)
+        for path in (_PERMS, "/drive/v3/drives")
+        for query, error in [
+            ([("pageToken", "bad")], _TOKEN_INVALID),
+            ([("pageToken", "bzow")], _TOKEN_INVALID),
+            ([("pageToken", "{token}")], _TOKEN_INVALID),
+            ([("useDomainAdminAccess", "true"), ("pageToken", "bad")], _TOKEN_INVALID),
+            ([("pageToken", "bad"), ("useDomainAdminAccess", "true")], _TOKEN_INVALID),
+            ([("pageToken", "bad"), ("pageSize", "0")], None),
+            ([("pageToken", "bad"), ("useDomainAdminAccess", "NOPE")], None),
+        ]
     ],
-)
+    (_PERMS, [("pageToken", "")], _TOKEN_EXPIRED),
+    (_PERMS, [("useDomainAdminAccess", "true"), ("pageToken", "")], _TOKEN_EXPIRED),
+    ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "")], _TOKEN_EXPIRED),
+    ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "bzow")], _TOKEN_INVALID),
+    (_PERMS, [("pageSize", "1"), ("pageToken", "{issued}.")], _TOKEN_INVALID),
+    (_PERMS, [("pageSize", "1"), ("pageToken", "{at_zero}")], _TOKEN_INVALID),
+    ("/drive/v3/drives", [("pageToken", "")], None),
+    ("/drive/v3/drives", [("useDomainAdminAccess", "true"), ("pageToken", "")], None),
+]
+
+
 def test_drive_permissions_and_drives_refuse_a_page_token_they_did_not_issue(
-    client, admin_h, path, query, error
+    client, admin_h, drive_check_ids
 ):
     """The rules `_drive_permissions_page_token` and `_drive_listing_page_token` record, one request
     per row. `None` is a token that changes nothing: the answer is the one the request gets without
@@ -1730,22 +1743,34 @@ def test_drive_permissions_and_drives_refuse_a_page_token_they_did_not_issue(
     issues."""
     from backlot.routers import google
 
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    url = path.format(doc=doc)
+    doc = drive_check_ids["doc"]
     files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1}).json()
-    issued = client.get(_PERMS.format(doc=doc), headers=admin_h, params={"pageSize": 1}).json()
     fill = {
         "token": files["nextPageToken"],
-        "issued": issued["nextPageToken"],
+        "issued": drive_check_ids["issued"],
         "at_zero": google._drive_permissions_token(doc, 0),
     }
-    query = [(k, v.format(**fill)) for k, v in query]
-    r = client.get(url, headers=admin_h, params=query)
-    if error is None:
-        without = [(k, v) for k, v in query if k != "pageToken"]
-        assert r.content == client.get(url, headers=admin_h, params=without).content
-    else:
-        assert (r.status_code, _gerr(r)) == (error["code"], error)
+
+    def answer(path, query, error):
+        url = path.format(doc=doc)
+        query = [(k, v.format(**fill)) for k, v in query]
+        r = client.get(url, headers=admin_h, params=query)
+        if error is None:
+            without = [(k, v) for k, v in query if k != "pageToken"]
+            return (
+                None
+                if r.content == client.get(url, headers=admin_h, params=without).content
+                else r.text
+            )
+        return (r.status_code, _gerr(r))
+
+    assert {
+        (path, urlencode(query)): answer(path, query, error)
+        for path, query, error in _FOREIGN_PAGE_TOKENS
+    } == {
+        (path, urlencode(query)): error and (error["code"], error)
+        for path, query, error in _FOREIGN_PAGE_TOKENS
+    }
 
 
 # fmt: off
@@ -1784,48 +1809,71 @@ _PERMISSION_PAGES = [
 # fmt: on
 
 
-@pytest.mark.parametrize("first, follow, expected", _PERMISSION_PAGES)
-def test_drive_permissions_list_pages_in_the_unpaged_order(
-    client, admin_h, first, follow, expected
-):
+def test_drive_permissions_list_pages_in_the_unpaged_order(client, admin_h, drive_check_ids):
     """The rules `_drive_permission_page` and `_drive_permissions_page_size` record, on a file with
     two permissions. A row of page lengths also checks that the pages, joined, are the unpaged
     list."""
-    url = _PERMS.format(doc=_drive_find(client, admin_h, "Brand")["id"])
+    url = _PERMS.format(doc=drive_check_ids["doc"])
     whole = client.get(url, headers=admin_h).json()["permissions"]
     assert len(whole) == 2
-    r = client.get(url, headers=admin_h, params=first)
-    if isinstance(expected, dict):
-        assert (r.status_code, _gerr(r)) == (expected["code"], expected)
-        return
-    pages = [r]
-    while "nextPageToken" in pages[-1].json() and len(pages) < len(expected):
-        token = pages[-1].json()["nextPageToken"]
-        pages.append(client.get(url, headers=admin_h, params=[*follow, ("pageToken", token)]))
-    assert [p.status_code for p in pages] == [200] * len(pages)
-    assert [len(p.json()["permissions"]) for p in pages] == expected
-    assert "nextPageToken" not in pages[-1].json()
-    assert [x for p in pages for x in p.json()["permissions"]] == whole
+
+    def paged(first, follow, expected):
+        """The page lengths, whether the last page offers another, and whether the pages joined
+        are the unpaged list; a refused page as its number, status and error."""
+        r = client.get(url, headers=admin_h, params=first)
+        if r.status_code != 200:
+            return (r.status_code, _gerr(r))
+        pages = [r.json()]
+        while "nextPageToken" in pages[-1] and len(pages) < len(expected):
+            params = [*follow, ("pageToken", pages[-1]["nextPageToken"])]
+            r = client.get(url, headers=admin_h, params=params)
+            if r.status_code != 200:
+                return (len(pages) + 1, r.status_code, r.text)
+            pages.append(r.json())
+        return (
+            [len(p["permissions"]) for p in pages],
+            "nextPageToken" in pages[-1],
+            [x for p in pages for x in p["permissions"]] == whole,
+        )
+
+    assert {
+        (urlencode(first), urlencode(follow)): paged(first, follow, expected)
+        for first, follow, expected in _PERMISSION_PAGES
+    } == {
+        (urlencode(first), urlencode(follow)): (
+            (expected, False, True) if isinstance(expected, list) else (expected["code"], expected)
+        )
+        for first, follow, expected in _PERMISSION_PAGES
+    }
+
+
+@pytest.fixture(scope="module")
+def three_readers(tmp_path_factory):
+    """One Drive file with its author and two readers."""
+    return tiny_corpus(
+        tmp_path_factory.mktemp("three_readers"),
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": "three",
+                "folder": "mk",
+                "title": "Three readers",
+                "content": "x",
+                "author_email": "a@x.com",
+                "readers": ["b@x.com", "c@x.com"],
+            }
+        ],
+    )
 
 
 @pytest.mark.parametrize("size, lengths", [(1, [1, 1, 1]), (2, [2, 1])])
-def test_drive_permissions_list_pages_a_file_with_three_permissions(tmp_path, size, lengths):
+def test_drive_permissions_list_pages_a_file_with_three_permissions(three_readers, size, lengths):
     """`_drive_permission_page` past the second page: at `pageSize=1` the page a token serves
     carries the token for the third, at `pageSize=2` the second page starts after the two the first
     served, and the pages joined are the unpaged list. The files measured had two permissions
     each, so neither was measured."""
-    from tests._helpers import corpus_client
-
-    record = {
-        "source_type": "google_drive",
-        "doc_id": "three",
-        "folder": "mk",
-        "title": "Three readers",
-        "content": "x",
-        "author_email": "a@x.com",
-        "readers": ["b@x.com", "c@x.com"],
-    }
-    with corpus_client(tmp_path, [record]) as (client, settings):
+    settings = three_readers
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         q = {"q": "name = 'Three readers'"}
         (doc,) = client.get("/drive/v3/files", headers=h, params=q).json()["files"]
@@ -1857,78 +1905,79 @@ def test_drive_listing_declares_the_parameters_it_reads(client, route, names):
     assert names <= {p["name"] for p in op["parameters"]}
 
 
-@pytest.mark.parametrize(
-    "query, code, location",
-    [
-        ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], 400, None),
-        ([("fields", "bogus"), ("pageSize", "0")], 400, "page_size"),
-        ([("fields", "bogus"), ("pageToken", "BOGUS")], 400, "pageToken"),
-        ([("pageToken", "BOGUS"), ("fields", "bogus")], 400, "pageToken"),
-        ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], 400, "q"),
-        ([("fields", "bogus"), ("q", "nosuchfield = 1")], 400, "q"),
-        ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], 400, "orderBy"),
-        ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], 400, "orderBy"),
-        ([("fields", "bogus"), ("orderBy", "bogus")], 400, "orderBy"),
-        ([("orderBy", "name,name"), ("pageSize", "0")], 400, "page_size"),
-        ([("orderBy", "name,name"), ("pageSize", "NOPE")], 400, None),
-        ([("q", "nosuchfield = 1"), ("orderBy", "name,name")], 403, "orderBy"),
-        ([("orderBy", "name,name"), ("q", "nosuchfield = 1")], 403, "orderBy"),
-        ([("pageToken", "BOGUS"), ("orderBy", "name,name")], 403, "orderBy"),
-        ([("fields", "bogus"), ("orderBy", "name,name")], 403, "orderBy"),
-        ([("orderBy", "name,starred"), ("pageSize", "0")], 400, "page_size"),
-        ([("orderBy", "name,starred"), ("q", "nosuchfield = 1")], 400, "q"),
-        ([("orderBy", "name,starred"), ("pageToken", "BOGUS")], 400, "pageToken"),
-        ([("fields", "bogus"), ("orderBy", "name,starred")], 500, None),
-        ([("fields", ""), ("orderBy", "name,starred")], 500, None),
-        ([("q", "name = 'no such file'"), ("orderBy", "name,starred")], 500, None),
-        (
-            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageSize", "0")],
-            400,
-            "page_size",
-        ),
-        (
-            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageSize", "NOPE")],
-            400,
-            None,
-        ),
-        ([("q", "fullText contains 'the'"), ("orderBy", "bogus")], 400, "orderBy"),
-        ([("q", "fullText contains 'the' and nosuchfield = 1"), ("orderBy", "name")], 400, "q"),
-        (
-            [("q", "fullText contains 'the' and nosuchfield = 1"), ("orderBy", "viewedByMeTime")],
-            400,
-            "q",
-        ),
-        (
-            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageToken", "BOGUS")],
-            403,
-            "orderBy",
-        ),
-        (
-            [("pageToken", "BOGUS"), ("q", "fullText contains 'the'"), ("orderBy", "name")],
-            403,
-            "orderBy",
-        ),
-        (
-            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("fields", "bogus")],
-            403,
-            "orderBy",
-        ),
-        (
-            [("fields", "bogus"), ("q", "fullText contains 'the'"), ("orderBy", "name")],
-            403,
-            "orderBy",
-        ),
-        ([("q", "fullText contains 'the'"), ("orderBy", "name"), ("fields", "")], 403, "orderBy"),
-        ([("fields", ""), ("q", "fullText contains 'the'"), ("orderBy", "name")], 403, "orderBy"),
-    ],
-)
-def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, code, location):
+_REFUSAL_ORDER = [
+    ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], 400, None),
+    ([("fields", "bogus"), ("pageSize", "0")], 400, "page_size"),
+    ([("fields", "bogus"), ("pageToken", "BOGUS")], 400, "pageToken"),
+    ([("pageToken", "BOGUS"), ("fields", "bogus")], 400, "pageToken"),
+    ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], 400, "q"),
+    ([("fields", "bogus"), ("q", "nosuchfield = 1")], 400, "q"),
+    ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], 400, "orderBy"),
+    ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], 400, "orderBy"),
+    ([("fields", "bogus"), ("orderBy", "bogus")], 400, "orderBy"),
+    ([("orderBy", "name,name"), ("pageSize", "0")], 400, "page_size"),
+    ([("orderBy", "name,name"), ("pageSize", "NOPE")], 400, None),
+    ([("q", "nosuchfield = 1"), ("orderBy", "name,name")], 403, "orderBy"),
+    ([("orderBy", "name,name"), ("q", "nosuchfield = 1")], 403, "orderBy"),
+    ([("pageToken", "BOGUS"), ("orderBy", "name,name")], 403, "orderBy"),
+    ([("fields", "bogus"), ("orderBy", "name,name")], 403, "orderBy"),
+    ([("orderBy", "name,starred"), ("pageSize", "0")], 400, "page_size"),
+    ([("orderBy", "name,starred"), ("q", "nosuchfield = 1")], 400, "q"),
+    ([("orderBy", "name,starred"), ("pageToken", "BOGUS")], 400, "pageToken"),
+    ([("fields", "bogus"), ("orderBy", "name,starred")], 500, None),
+    ([("fields", ""), ("orderBy", "name,starred")], 500, None),
+    ([("q", "name = 'no such file'"), ("orderBy", "name,starred")], 500, None),
+    (
+        [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageSize", "0")],
+        400,
+        "page_size",
+    ),
+    (
+        [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageSize", "NOPE")],
+        400,
+        None,
+    ),
+    ([("q", "fullText contains 'the'"), ("orderBy", "bogus")], 400, "orderBy"),
+    ([("q", "fullText contains 'the' and nosuchfield = 1"), ("orderBy", "name")], 400, "q"),
+    (
+        [("q", "fullText contains 'the' and nosuchfield = 1"), ("orderBy", "viewedByMeTime")],
+        400,
+        "q",
+    ),
+    (
+        [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageToken", "BOGUS")],
+        403,
+        "orderBy",
+    ),
+    (
+        [("pageToken", "BOGUS"), ("q", "fullText contains 'the'"), ("orderBy", "name")],
+        403,
+        "orderBy",
+    ),
+    (
+        [("q", "fullText contains 'the'"), ("orderBy", "name"), ("fields", "bogus")],
+        403,
+        "orderBy",
+    ),
+    (
+        [("fields", "bogus"), ("q", "fullText contains 'the'"), ("orderBy", "name")],
+        403,
+        "orderBy",
+    ),
+    ([("q", "fullText contains 'the'"), ("orderBy", "name"), ("fields", "")], 403, "orderBy"),
+    ([("fields", ""), ("q", "fullText contains 'the'"), ("orderBy", "name")], 403, "orderBy"),
+]
+
+
+def test_drive_files_list_refuses_in_reals_order(client, admin_h):
     """Two values at once, refused in the order `drive_files_list`'s comment records, where a `q`
     with a `fullText` term and an `orderBy` count as one, the 403. A `pageSize` the proto layer
     cannot read has no `location`."""
-    e = _gerr(client.get("/drive/v3/files", headers=admin_h, params=query))
-    assert e["code"] == code
-    assert e["errors"][0].get("location") == location
+    answered = {}
+    for query, *_ in _REFUSAL_ORDER:
+        e = _gerr(client.get("/drive/v3/files", headers=admin_h, params=query))
+        answered[urlencode(query)] = (e["code"], e["errors"][0].get("location"))
+    assert answered == {urlencode(query): tuple(answer) for query, *answer in _REFUSAL_ORDER}
 
 
 _DRIVE_BOOL_ROUTES = [
@@ -1980,26 +2029,40 @@ _DRIVE_BOOL_ROWS = (
 )
 
 
-@pytest.mark.parametrize("path, param, value, accepted", _DRIVE_BOOL_ROWS)
+def _bool_refused(param, value):
+    """The 400 `_DRIVE_BOOLS` records for a value of ``param`` that is not a boolean."""
+    field = re.sub(r"(?<!^)(?=[A-Z])", "_", param).lower()
+    message = f"Invalid value at '{field}' (TYPE_BOOL), \"{value}\""
+    return (400, message, [{"field": field, "description": message}])
+
+
 def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ignored(
-    client, admin_h, path, param, value, accepted
+    client, admin_h, drive_check_ids
 ):
     """The spellings `_DRIVE_BOOLS` records, one request per value on each route; the `files.list`
     `supportsAllDrives` rows are 24 of the 30 swept and two spellings outside ASCII. `true` is sent
     on those rows alone: four of the other flags answer a `true` with a check of their own, which
     `_DRIVE_CHECK_ROWS` holds."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    url = path.format(doc=doc)
-    # the query string is built here because httpx's `params` replaces the one the row's path has
-    r = client.get(f"{url}{'&' if '?' in url else '?'}{urlencode({param: value})}", headers=admin_h)
-    if accepted:
-        assert r.status_code == 200, r.text
-        return
-    field = re.sub(r"(?<!^)(?=[A-Z])", "_", param).lower()
-    message = f"Invalid value at '{field}' (TYPE_BOOL), \"{value}\""
-    e = _gerr(r)
-    assert (e["code"], e["message"]) == (400, message)
-    assert e["details"][0]["fieldViolations"] == [{"field": field, "description": message}]
+    answered = {}
+    for path, param, value, _ in _DRIVE_BOOL_ROWS:
+        url = path.format(doc=drive_check_ids["doc"])
+        # the query string is built here because httpx's `params` replaces the one the path has
+        r = client.get(
+            f"{url}{'&' if '?' in url else '?'}{urlencode({param: value})}", headers=admin_h
+        )
+        if r.status_code == 200:
+            answered[path, param, value] = True
+        else:
+            e = _gerr(r)
+            answered[path, param, value] = (
+                e["code"],
+                e["message"],
+                e["details"][0]["fieldViolations"],
+            )
+    assert answered == {
+        (path, param, value): True if accepted else _bool_refused(param, value)
+        for path, param, value, accepted in _DRIVE_BOOL_ROWS
+    }
 
 
 _SHARED_DRIVES = (
@@ -2449,19 +2512,14 @@ _DRIVE_CHECK_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("path, query, caller, expected", _DRIVE_CHECK_ROWS)
-def test_drive_answers_each_check_with_reals_status_and_reason(
-    client, admin_h, tokens, path, query, caller, expected
-):
-    """The rows `_DRIVE_CHECK_ROWS` records. The 403 for a file the scoped token cannot see is the
-    one for a file that does not exist, and both name no file, so the check tells the caller
-    nothing about what it cannot read; the permissions 404 names the file it was asked about, and
-    is the same 404 the scoped token gets for that file without the flag."""
+@pytest.fixture(scope="module")
+def drive_check_ids(client, admin_h):
+    """The files `_DRIVE_CHECK_ROWS` names, and a page token `permissions.list` issued for {doc}."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     issued = client.get(
         f"/drive/v3/files/{doc}/permissions", headers=admin_h, params={"pageSize": 1}
     )
-    ids = {
+    return {
         "doc": doc,
         "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
         "folder": _drive_ids(client, admin_h, q=f"mimeType='{FOLDER_MIME}'")[0],
@@ -2469,18 +2527,44 @@ def test_drive_answers_each_check_with_reals_status_and_reason(
         "nope": "nosuchfile000",
         "issued": issued.json()["nextPageToken"],
     }
+
+
+def _drive_check(client, headers, ids, path, query, expected):
+    """The answer to one `_DRIVE_CHECK_ROWS` request in its row's shape: the status, `errors[0]`'s
+    reason and location, and the message where the row names one, from an envelope with no
+    `status` member."""
+    r = client.get(f"{path.format(**ids)}?{query.format(**ids)}", headers=headers)
+    if r.status_code == 200:
+        return (200, None, None, None)
+    e = _gerr(r)
+    message = e["message"] if expected[3] is not None and "status" not in e else None
+    return (r.status_code, e["errors"][0].get("reason"), e["errors"][0].get("location"), message)
+
+
+@pytest.mark.parametrize(
+    "path, query, caller, expected", [row for row in _DRIVE_CHECK_ROWS if "{hidden}" in row[0]]
+)
+def test_drive_answers_each_check_with_reals_status_and_reason(
+    client, admin_h, tokens, drive_check_ids, path, query, caller, expected
+):
+    """The rows `_DRIVE_CHECK_ROWS` records on the file the scoped token cannot see. The 403 it gets
+    is the one for a file that does not exist, and both name no file, so the check tells the
+    caller nothing about what it cannot read; the permissions 404 names the file it was asked
+    about, and is the same 404 the scoped token gets for that file without the flag."""
     headers = (
         admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
     )
-    r = client.get(f"{path.format(**ids)}?{query.format(**ids)}", headers=headers)
-    status, reason, location, message = expected
-    assert r.status_code == status, r.text
-    if status == 200:
-        return
-    e = _gerr(r)
-    assert (e["errors"][0].get("reason"), e["errors"][0].get("location")) == (reason, location)
-    if message is not None:
-        assert (e["message"], "status" in e) == (message, False)
+    assert _drive_check(client, headers, drive_check_ids, path, query, expected) == expected
+
+
+def test_drive_answers_every_other_check_with_reals_status_and_reason(
+    client, admin_h, drive_check_ids
+):
+    """The rest of `_DRIVE_CHECK_ROWS`, each sent by the admin token, as ``{row: answer}``."""
+    rows = [row for row in _DRIVE_CHECK_ROWS if "{hidden}" not in row[0]]
+    assert {
+        row[:2]: _drive_check(client, admin_h, drive_check_ids, *row[:2], row[3]) for row in rows
+    } == {row[:2]: row[3] for row in rows}
 
 
 def test_reads_of_a_folder_the_caller_cannot_see(tmp_path):
@@ -2637,8 +2721,7 @@ def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
         assert send(missing, headers, bad=True).content == send(missing, headers).content
 
 
-@pytest.mark.parametrize("mask", ["", " ", "\t"])
-def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
+def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h):
     """The blank mask `_drive_project_one` describes, on a listing, a file and a folder, and
     `about`'s missing-mask 400 for the same mask. An absent mask is the default object."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
@@ -2647,11 +2730,20 @@ def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
         headers=admin_h,
         params={"q": "mimeType='application/vnd.google-apps.folder'"},
     ).json()["files"][0]["id"]
-    for path in ("/drive/v3/files", f"/drive/v3/files/{doc}", f"/drive/v3/files/{folder}"):
-        assert client.get(path, headers=admin_h, params={"fields": mask}).json() == {}, path
-        assert client.get(path, headers=admin_h).json(), path
-    about = _gerr(client.get(ABOUT, headers=admin_h, params={"fields": mask}))
-    assert about["message"] == "The 'fields' parameter is required for this method."
+    paths = ("/drive/v3/files", f"/drive/v3/files/{doc}", f"/drive/v3/files/{folder}")
+    assert {
+        path: bool(client.get(path, headers=admin_h).json()) for path in paths
+    } == dict.fromkeys(paths, True)
+    masks = ["", " ", "\t"]
+    assert {
+        (path, mask): client.get(path, headers=admin_h, params={"fields": mask}).json()
+        for path in paths
+        for mask in masks
+    } == {(path, mask): {} for path in paths for mask in masks}
+    assert {
+        mask: _gerr(client.get(ABOUT, headers=admin_h, params={"fields": mask}))["message"]
+        for mask in masks
+    } == dict.fromkeys(masks, "The 'fields' parameter is required for this method.")
 
 
 # What real answered each mask with. The third column is the top-level keys, `None` where the
@@ -2764,40 +2856,50 @@ _MASKS_SERVED = [
 ]
 
 
-@pytest.mark.parametrize("path, mask, top, entries", _MASKS_SERVED)
-def test_drive_answers_a_fields_mask_with_what_it_selects(
-    client, admin_h, path, mask, top, entries
-):
-    """The rows `_MASKS_SERVED` records; `"default"` is each entry as an unmasked request gets it.
-    A `drives.list` row compares the top-level keys alone: Backlot serves no shared drive, where
-    real listed the member's two."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    url, _, query = path.format(doc=doc).partition("?")
+def test_drive_answers_a_fields_mask_with_what_it_selects(client, admin_h, drive_check_ids):
+    """The rows `_MASKS_SERVED` records. A row with top-level keys compares them on every route,
+    `files.list` included, and the listed entries as its fourth column says; a row without compares
+    the whole answer with the unmasked one. `"default"` is each entry as an unmasked request gets
+    it. A `drives.list` row compares the top-level keys alone: Backlot serves no shared drive,
+    where real listed the member's two."""
 
-    def get(**params):
+    def get(path, **params):
+        url, _, query = path.format(doc=drive_check_ids["doc"]).partition("?")
         r = client.get(
             url, headers=admin_h, params={"pageSize": 2, **dict(parse_qsl(query)), **params}
         )
         assert r.status_code == 200, r.text
         return r.json()
 
-    body = get(fields=mask)
-    if top is None:
-        assert body == get()
-        return
-    assert set(body) == top
-    listed = next((k for k in body if isinstance(body[k], list)), None)
-    if entries == "default":
-        assert body[listed] == get()[listed]
-    elif entries == "full":
-        # permissions.list has no unmasked full object: no mask answers only id/type/kind/role,
-        # while an explicit wrapper or `*` adds emailAddress/displayName and the rest. The `*`
-        # request is the unmasked-equivalent a mask naming the whole list must agree with.
-        assert body[listed] == get(fields="*")[listed]
-    elif entries:
-        assert body[listed] and all(set(e) == entries for e in body[listed])
-    elif entries is not None:
-        assert body[listed] == []
+    def answer(path, mask, top, entries):
+        """The row's answer in its own shape: "default" where it is the unmasked one."""
+        body = get(path, fields=mask)
+        if top is None:
+            return "default" if body == get(path) else body
+        listed = next((k for k in body if isinstance(body[k], list)), None)
+        if entries == "default":
+            shown = "default" if body[listed] == get(path)[listed] else body[listed]
+        elif entries == "full":
+            # permissions.list has no unmasked full object: no mask answers only id/type/kind/role,
+            # while an explicit wrapper or `*` adds emailAddress/displayName and the rest. The `*`
+            # request is the unmasked-equivalent a mask naming the whole list must agree with.
+            shown = "full" if body[listed] == get(path, fields="*")[listed] else body[listed]
+        elif entries:
+            shown = {frozenset(e) for e in body[listed]}
+        else:
+            shown = None if entries is None else body[listed]
+        return (set(body), shown)
+
+    def expected(top, entries):
+        if top is None:
+            return "default"
+        if entries and entries not in ("default", "full"):
+            return (top, {frozenset(entries)})
+        return (top, None if entries is None else entries or [])
+
+    assert {row[:2]: answer(*row) for row in _MASKS_SERVED} == {
+        (path, mask): expected(top, entries) for path, mask, top, entries in _MASKS_SERVED
+    }
 
 
 _USER = {"kind", "displayName", "emailAddress", "me", "permissionId", "photoLink"}
@@ -3351,35 +3453,43 @@ _NO_CREDENTIAL_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("method, path, code, admin", _NO_CREDENTIAL_ROWS)
-def test_a_missing_credential_is_answered_by_operation(client, admin_h, method, path, code, admin):
+def test_a_missing_credential_is_answered_by_operation(client, admin_h, drive_check_ids):
     """The rows `_NO_CREDENTIAL_ROWS` records: no `Authorization` at all is answered per operation
     rather than per family, a published operation Backlot does not serve included. Every 401 carries
     real's challenge and no 403 does, `Bearer nope` is the 401 on each published operation, and the
     admin token is what the request gets once its credential is read."""
-    url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
-    body = _A1_FILTER if method in ("POST", "PATCH") else None
-    r = client.request(method, url, json=body)
-    if code in (404, 405):
-        for headers in (BAD_TOKEN, admin_h):
-            assert client.request(method, url, json=body, headers=headers).status_code == code
-        assert r.status_code == code, r.text
-        return
-    assert r.status_code == code, r.text
-    e = _gerr(r)
-    if code == 403:
-        assert (
-            e["message"] == gerr.UNREGISTERED_CALLER_MESSAGE and e["status"] == "PERMISSION_DENIED"
+
+    def answer(method, path, admin):
+        url = path.format(doc=drive_check_ids["doc"])
+        body = _A1_FILTER if method in ("POST", "PATCH") else None
+        r, bad, as_admin = (
+            client.request(method, url, json=body, headers=headers)
+            for headers in ({}, BAD_TOKEN, admin_h)
         )
-        assert "www-authenticate" not in r.headers
-    else:
-        assert e["message"] == gerr.MISSING_CREDENTIALS_MESSAGE and e["status"] == "UNAUTHENTICATED"
-        assert r.headers["www-authenticate"] == _CHALLENGE
-    bad = client.request(method, url, json=body, headers=BAD_TOKEN)
-    assert bad.status_code == 401, bad.text
-    assert bad.headers["www-authenticate"] == _CHALLENGED
-    if admin is not None:
-        assert client.request(method, url, json=body, headers=admin_h).status_code == admin
+        if r.status_code in (404, 405):
+            return (r.status_code, bad.status_code, as_admin.status_code)
+        e = _gerr(r)
+        return (
+            (r.status_code, e["message"], e["status"], r.headers.get("www-authenticate")),
+            (bad.status_code, bad.headers["www-authenticate"]),
+            None if admin is None else as_admin.status_code,
+        )
+
+    def expected(code, admin):
+        if code in (404, 405):
+            return (code, code, code)
+        if code == 403:
+            shown = (403, gerr.UNREGISTERED_CALLER_MESSAGE, "PERMISSION_DENIED", None)
+        else:
+            shown = (code, gerr.MISSING_CREDENTIALS_MESSAGE, "UNAUTHENTICATED", _CHALLENGE)
+        return (shown, (401, _CHALLENGED), admin)
+
+    assert {
+        (method, path): answer(method, path, admin)
+        for method, path, _, admin in _NO_CREDENTIAL_ROWS
+    } == {
+        (method, path): expected(code, admin) for method, path, code, admin in _NO_CREDENTIAL_ROWS
+    }
 
 
 _SERVED = "served"  # the read's own 200
@@ -3457,38 +3567,75 @@ _QUERY_CREDENTIAL_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "value, query, answer",
-    [(value, "", answer) for value, answer in _CREDENTIAL_ROWS] + _QUERY_CREDENTIAL_ROWS,
-)
-@pytest.mark.parametrize(
+_ALL_CREDENTIAL_ROWS = [
+    (value, "", answer) for value, answer in _CREDENTIAL_ROWS
+] + _QUERY_CREDENTIAL_ROWS
+_CREDENTIAL_PATHS = pytest.mark.parametrize(
     "path, anonymous", [("/gmail/v1/users/me/labels/INBOX", 401), ("/drive/v3/files", 403)]
 )
-def test_a_credential_is_read_as_google_reads_it(
+
+
+def _as_scoped(value, query):
+    """Whether a row sends the scoped token."""
+    return "{m}" in f"{value}{query}"
+
+
+def _credential_reader(client, tokens_yaml, tokens, path, anonymous):
+    """What ``path`` answers a row's `Authorization` value and query with: `_SERVED` and whose read
+    it is, `_NONE`, the bad token's challenge, or the status and body where it is none of those."""
+    admin, scoped = tokens_yaml["admin_token"], tokens["mia@acme.com"]
+    served = {
+        "admin": client.get(path, headers={"Authorization": f"Bearer {admin}"}).json(),
+        "scoped": client.get(path, headers={"Authorization": f"Bearer {scoped}"}).json(),
+    }
+    assert served["admin"] != served["scoped"]
+    nothing = client.get(path).json()
+
+    def read(value, query):
+        headers = {} if value is None else {"Authorization": value.format(t=admin, m=scoped)}
+        sent = query.format(t=admin, m=scoped)
+        r = client.get(f"{path}?{sent}" if sent else path, headers=headers)
+        if r.status_code == 200:
+            return (_SERVED, *(whom for whom, body in served.items() if body == r.json()))
+        if (r.status_code, r.json()) == (anonymous, nothing):
+            return _NONE
+        if r.status_code == 401 and _gerr(r)["message"] == gerr.BAD_TOKEN_MESSAGE:
+            return r.headers["www-authenticate"]
+        return (r.status_code, r.text)
+
+    return read
+
+
+def _credential_expected(value, query, answer):
+    if answer != _SERVED:
+        return answer
+    return (_SERVED, "scoped" if _as_scoped(value, query) else "admin")
+
+
+@_CREDENTIAL_PATHS
+def test_a_credential_is_read_as_google_reads_it(client, tokens_yaml, tokens, path, anonymous):
+    """The rows `_CREDENTIAL_ROWS` and `_QUERY_CREDENTIAL_ROWS` record that send the admin token
+    or none, on an operation whose caller with no credential is a missing one and on one whose is
+    an unregistered one. A served row is answered as the admin token is under
+    `Authorization: Bearer`."""
+    read = _credential_reader(client, tokens_yaml, tokens, path, anonymous)
+    rows = [row for row in _ALL_CREDENTIAL_ROWS if not _as_scoped(*row[:2])]
+    assert {(value, query): read(value, query) for value, query, _ in rows} == {
+        (value, query): _credential_expected(value, query, answer) for value, query, answer in rows
+    }
+
+
+@pytest.mark.parametrize(
+    "value, query, answer", [row for row in _ALL_CREDENTIAL_ROWS if _as_scoped(*row[:2])]
+)
+@_CREDENTIAL_PATHS
+def test_a_scoped_credential_is_read_as_its_user(
     client, tokens_yaml, tokens, value, query, answer, path, anonymous
 ):
-    """The rows `_CREDENTIAL_ROWS` and `_QUERY_CREDENTIAL_ROWS` record, on an operation whose caller
-    with no credential is a missing one and on one whose is an unregistered one. A served row is
-    answered as its token is under `Authorization: Bearer`, the scoped token's as the scoped user's
-    rather than the admin's."""
-    admin, scoped = tokens_yaml["admin_token"], tokens["mia@acme.com"]
-    headers = {} if value is None else {"Authorization": value.format(t=admin, m=scoped)}
-    sent = query.format(t=admin, m=scoped)
-    r = client.get(f"{path}?{sent}" if sent else path, headers=headers)
-    if answer == _SERVED:
-        assert r.status_code == 200, r.text
-        token = scoped if "{m}" in f"{value}{query}" else admin
-        assert r.json() == client.get(path, headers={"Authorization": f"Bearer {token}"}).json()
-        if token == scoped:
-            assert r.json() != client.get(path, headers={"Authorization": f"Bearer {admin}"}).json()
-        return
-    if answer == _NONE:
-        assert r.status_code == anonymous, r.text
-        assert r.json() == client.get(path).json()
-        return
-    assert r.status_code == 401, r.text
-    assert _gerr(r)["message"] == gerr.BAD_TOKEN_MESSAGE
-    assert r.headers["www-authenticate"] == answer
+    """The rows of the same tables that send the scoped token, each a case of its own: a served row
+    is answered as the scoped user's read, not the admin's."""
+    read = _credential_reader(client, tokens_yaml, tokens, path, anonymous)
+    assert read(value, query) == _credential_expected(value, query, answer)
 
 
 _DENIED = "Delegation denied for mia@acme.com"
@@ -4035,16 +4182,18 @@ def test_an_alt_the_api_cannot_render_takes_the_request_out_of_the_jsonp_path(
 
 
 @pytest.mark.parametrize("path, code", JSONP_FAMILY_ERRORS)
-@pytest.mark.parametrize("alt", ["json", "JSON", "Json", ""])
-def test_an_alt_that_still_means_json_keeps_the_callback(client, path, code, alt):
+def test_an_alt_that_still_means_json_keeps_the_callback(client, path, code):
     """`alt` is matched without regard to case, and an empty `alt=` names no format at all.
 
     Measured 2026-09-17, anonymous on all five families and authenticated on Sheets: `alt=JSON`,
     `alt=Json` and `alt=` each come back as the same 200 script `alt=json` does. Comparing the
     value literally answered all three at the error status with an unwrapped body, which is the one
     shape a page loading the answer through a `<script>` element cannot read."""
-    r = client.get(path, params={"callback": "cb", "alt": alt})
-    assert _jsonp(r, "cb")["error"]["code"] == code
+    alts = ["json", "JSON", "Json", ""]
+    assert {
+        alt: _jsonp(client.get(path, params={"callback": "cb", "alt": alt}), "cb")["error"]["code"]
+        for alt in alts
+    } == dict.fromkeys(alts, code)
 
 
 @pytest.mark.parametrize("alt", ["json", "JSON", "Json", ""])
@@ -4805,30 +4954,32 @@ _DOWNLOAD_QUERY_TOKEN_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("kind, query, value, status, answer", _DOWNLOAD_QUERY_TOKEN_ROWS)
-def test_a_download_refuses_a_token_in_its_query(
-    client, admin_h, tokens_yaml, kind, query, value, status, answer
-):
+def test_a_download_refuses_a_token_in_its_query(client, admin_h, tokens_yaml):
     """The rows `_DOWNLOAD_QUERY_TOKEN_ROWS` records. A function of its own beside
     `test_the_refusal_order_on_a_download_is_system_bearer_then_callback`, whose rows are
     `Authorization` values on a query that names no token."""
     requests = _download_requests(client, admin_h)
-    url, params = {
+    reads = {
         "media": requests["media"],
         "export": requests["export"],
         "bare": (requests["export"][0], {}),
         "missing": ("/drive/v3/files/nosuchfile000/export", requests["export"][1]),
         "json": (requests["export"][0], {**requests["export"][1], "alt": "json"}),
-    }[kind]
-    sent = "&".join(f"{k}={v}" for k, v in params.items())
-    token = tokens_yaml["admin_token"]
-    headers = {} if value is None else {"Authorization": value.format(t=token)}
-    r = client.get(f"{url}?{sent}&{query}" if sent else f"{url}?{query}", headers=headers)
-    assert r.status_code == status, r.text
-    if status == 401:
-        assert r.headers["www-authenticate"] == answer
-    else:
-        assert _gerr(r)["message"] == answer
+    }
+    answered = {}
+    for kind, query, value, *_ in _DOWNLOAD_QUERY_TOKEN_ROWS:
+        url, params = reads[kind]
+        sent = "&".join(f"{k}={v}" for k, v in params.items())
+        headers = (
+            {} if value is None else {"Authorization": value.format(t=tokens_yaml["admin_token"])}
+        )
+        r = client.get(f"{url}?{sent}&{query}" if sent else f"{url}?{query}", headers=headers)
+        shown = r.headers["www-authenticate"] if r.status_code == 401 else _gerr(r)["message"]
+        answered[kind, query, value] = (r.status_code, shown)
+    assert answered == {
+        (kind, query, value): (status, answer)
+        for kind, query, value, status, answer in _DOWNLOAD_QUERY_TOKEN_ROWS
+    }
 
 
 def test_a_download_is_the_route_not_the_path_shape(client, admin_h):
@@ -4982,24 +5133,23 @@ def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
     )
 
 
-@pytest.mark.parametrize(
-    "order_by, listed",
-    [
-        ("sharedWithMeTime", "a2 a1 m1 m2"),
-        ("sharedWithMeTime asc", "a2 a1 m1 m2"),
-        ("sharedWithMeTime desc", "m2 m1 a2 a1"),
-        ("modifiedByMeTime", "m2 m1 a1 a2"),
-        ("modifiedByMeTime asc", "m2 m1 a1 a2"),
-        ("modifiedByMeTime desc", "a2 a1 m2 m1"),
-        ("viewedByMeTime", "a2 a1 m2 m1"),
-        ("viewedByMeTime asc", "a2 a1 m2 m1"),
-        ("viewedByMeTime desc", "m2 m1 a2 a1"),
-        ("recency", "a2 a1 m2 m1"),
-        ("recency asc", "a2 a1 m2 m1"),
-        ("recency desc", "a2 a1 m2 m1"),
-    ],
-)
-def test_drive_order_by_a_per_caller_time(tmp_path, order_by, listed):
+_PER_CALLER_ORDER = [
+    ("sharedWithMeTime", "a2 a1 m1 m2"),
+    ("sharedWithMeTime asc", "a2 a1 m1 m2"),
+    ("sharedWithMeTime desc", "m2 m1 a2 a1"),
+    ("modifiedByMeTime", "m2 m1 a1 a2"),
+    ("modifiedByMeTime asc", "m2 m1 a1 a2"),
+    ("modifiedByMeTime desc", "a2 a1 m2 m1"),
+    ("viewedByMeTime", "a2 a1 m2 m1"),
+    ("viewedByMeTime asc", "a2 a1 m2 m1"),
+    ("viewedByMeTime desc", "m2 m1 a2 a1"),
+    ("recency", "a2 a1 m2 m1"),
+    ("recency asc", "a2 a1 m2 m1"),
+    ("recency desc", "a2 a1 m2 m1"),
+]
+
+
+def test_drive_order_by_a_per_caller_time(tmp_path):
     """Ava owns two of the files and the other two are Mia's, shared with her, modified in turn,
     so each block's order is its own and not the files' modification order. None is viewed, so
     under `viewedByMeTime` Mia's files sort after Ava's own, where `_DRIVE_ORDER_KEYS` says real
@@ -5026,18 +5176,21 @@ def test_drive_order_by_a_per_caller_time(tmp_path, order_by, listed):
     ]
     s = tiny_corpus(tmp_path, records)
     ava = tok(yaml.safe_load(s.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    answered = {}
     with client_for(s, reload=True) as c:
-        r = c.get(
-            "/drive/v3/files",
-            headers={"Authorization": f"Bearer {ava}"},
-            params={
-                "orderBy": order_by,
-                "fields": "files(name)",
-                "q": "mimeType != 'application/vnd.google-apps.folder'",
-            },
-        )
-    assert r.status_code == 200, r.text
-    assert [f["name"] for f in r.json()["files"]] == listed.split()
+        for order_by, _ in _PER_CALLER_ORDER:
+            r = c.get(
+                "/drive/v3/files",
+                headers={"Authorization": f"Bearer {ava}"},
+                params={
+                    "orderBy": order_by,
+                    "fields": "files(name)",
+                    "q": "mimeType != 'application/vnd.google-apps.folder'",
+                },
+            )
+            names = " ".join(f["name"] for f in r.json().get("files", []))
+            answered[order_by] = (r.status_code, names if r.status_code == 200 else r.text)
+    assert answered == {order_by: (200, listed) for order_by, listed in _PER_CALLER_ORDER}
 
 
 # Each set of `capabilities` true for a file or a folder, as its owner and as a reader read it
@@ -5072,26 +5225,9 @@ _CAPS_TRUE = {
 }
 
 
-@pytest.mark.parametrize(
-    "name, owned, kind",
-    [
-        ("Mine", True, "file"),
-        ("Theirs", False, "file"),
-        ("Plans", False, "folder"),
-        ("Figures", True, "folder"),
-        ("Drafts", False, "folder"),
-    ],
-)
-def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(
-    tmp_path, name, owned, kind
-):
-    """`ownedByMe` is per caller, and `canShare` and `modifiedByMe` with it: what the caller owns it
-    can share, and what it can only read it cannot; `_modified_by_me` says why the caller modified
-    exactly what it owns. Real answered `canShare: true` on 117 of the 118 items a Google Workspace
-    member's `files.list` named as its own on 2026-10-18 and on 2026-10-19, and `false` on each
-    folder and each file shared with it to read. `Plans` is a folder a record's `folder` names, and
-    `Figures` and `Drafts` are `subtype: folder` records. The rest of `capabilities` is
-    `_CAPS_TRUE`'s."""
+@pytest.fixture(scope="module")
+def owned_and_lent(tmp_path_factory):
+    """A file and a folder record of ava's and of mia's in folder `Plans`, each readable by both."""
     record = {
         "source_type": "google_drive",
         "folder": "Plans",
@@ -5101,8 +5237,8 @@ def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(
     }
     rows = [("mine", "Mine", "ava", None), ("theirs", "Theirs", "mia", None)]
     rows += [("figures", "Figures", "ava", "folder"), ("drafts", "Drafts", "mia", "folder")]
-    s = tiny_corpus(
-        tmp_path,
+    return tiny_corpus(
+        tmp_path_factory.mktemp("owned_and_lent"),
         [
             {
                 **record,
@@ -5114,6 +5250,29 @@ def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(
             for doc_id, title, author, subtype in rows
         ],
     )
+
+
+@pytest.mark.parametrize(
+    "name, owned, kind",
+    [
+        ("Mine", True, "file"),
+        ("Theirs", False, "file"),
+        ("Plans", False, "folder"),
+        ("Figures", True, "folder"),
+        ("Drafts", False, "folder"),
+    ],
+)
+def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(
+    owned_and_lent, name, owned, kind
+):
+    """`ownedByMe` is per caller, and `canShare` and `modifiedByMe` with it: what the caller owns it
+    can share, and what it can only read it cannot; `_modified_by_me` says why the caller modified
+    exactly what it owns. Real answered `canShare: true` on 117 of the 118 items a Google Workspace
+    member's `files.list` named as its own on 2026-10-18 and on 2026-10-19, and `false` on each
+    folder and each file shared with it to read. `Plans` is a folder a record's `folder` names, and
+    `Figures` and `Drafts` are `subtype: folder` records. The rest of `capabilities` is
+    `_CAPS_TRUE`'s."""
+    s = owned_and_lent
     tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
     ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
     with client_for(s, reload=True) as c:
@@ -5870,6 +6029,19 @@ _BY_NAME_NATURAL_DESC_12 = [_MADE_12[i] for i in (7, 10, 3, 9, 6, 8, 2, 5, 1, 4,
 _KEPT_12 = [n for n in _MADE_12 if "Cn" not in map(unicodedata.category, n)]
 
 
+@pytest.fixture(scope="module")
+def name_folders(tmp_path_factory):
+    """Each folder's corpus, built once for the rows that list it."""
+    built = {}
+
+    def build(made, records):
+        if tuple(made) not in built:
+            built[tuple(made)] = tiny_corpus(tmp_path_factory.mktemp("names"), records)
+        return built[tuple(made)]
+
+    return build
+
+
 @pytest.mark.parametrize(
     "made, order_by, listed",
     [
@@ -5903,11 +6075,11 @@ _KEPT_12 = [n for n in _MADE_12 if "Cn" not in map(unicodedata.category, n)]
         (_KEPT_12, "name_natural desc", [n for n in _BY_NAME_NATURAL_DESC_12 if n in _KEPT_12]),
     ],
 )
-def test_drive_order_by_a_name_lists_a_folder_as_real_did(tmp_path, made, order_by, listed):
+def test_drive_order_by_a_name_lists_a_folder_as_real_did(name_folders, made, order_by, listed):
     """Each file is modified after the one made before it, as the measured folder's were, so
     names a key ties come out newest first, as they did on real."""
-    s = tiny_corpus(
-        tmp_path,
+    s = name_folders(
+        made,
         [
             {
                 "source_type": "google_drive",
@@ -5962,125 +6134,127 @@ _ORDER_SPACE_ROWS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "q, order_by, status, error",
-    [
-        (None, "name", 200, None),
-        (None, "name,modifiedTime", 200, None),
-        (None, "name desc,modifiedTime", 200, None),
-        (None, "recency,modifiedTime", 200, None),
-        (None, "name,name", 403, _DUPLICATE_403),
-        (None, "name desc,name", 403, _DUPLICATE_403),
-        (None, "name,name desc", 403, _DUPLICATE_403),
-        (None, "name desc,name desc", 403, _DUPLICATE_403),
-        (None, "modifiedTime,name,modifiedTime", 403, _DUPLICATE_403),
-        (None, "name_natural,name", 403, _DUPLICATE_403),
-        (None, "name,name_natural", 403, _DUPLICATE_403),
-        (None, "name,name,bogus", 403, _DUPLICATE_403),
-        (None, "name,bogus,name", 400, _INVALID_400),
-        (None, "name,name sideways", 400, _INVALID_400),
-        (None, "bogus", 400, _INVALID_400),
-        (None, "name descending", 400, _INVALID_400),
-        (None, "NAME", 400, _INVALID_400),
-        (None, "name ASC", 400, _INVALID_400),
-        (None, "name Desc", 400, _INVALID_400),
-        (None, "name desc desc", 400, _INVALID_400),
-        (None, "name asc desc", 400, _INVALID_400),
-        (None, "asc", 400, _INVALID_400),
-        (None, "name,asc", 400, _INVALID_400),
-        (None, "name asc", 200, None),
-        (None, "name   asc", 200, None),
-        (None, "name asc,modifiedTime desc", 200, None),
-        (None, "folder,name desc", 200, None),
-        (None, ",name", 200, None),
-        (None, "name,", 200, None),
-        (None, "name asc,name", 403, _DUPLICATE_403),
-        (None, "name,name asc", 403, _DUPLICATE_403),
-        (None, "viewedByMeTime", 200, None),
-        (None, "viewedByMeTime desc", 200, None),
-        (None, "modifiedByMeTime asc", 200, None),
-        (None, "viewedByMeTime,modifiedByMeTime", 200, None),
-        (None, "viewedByMeTime,viewedByMeTime desc", 403, _DUPLICATE_403),
-        *_ORDER_SPACE_ROWS,
-        *[(None, f"{key} {way}", 200, None) for key in _ORDER_KEYS for way in ("asc", "desc")],
-        (None, "starred", 200, None),
-        (None, "starred desc", 200, None),
-        (None, "starred,name", 200, None),
-        (None, "starred desc,name", 200, None),
-        (None, "starred,name,folder", 200, None),
-        (None, ",starred", 200, None),
-        (None, "name,starred", 500, None),
-        (None, "name, starred", 500, None),
-        (None, "name desc,starred desc", 500, None),
-        (None, "folder,starred,name", 500, None),
-        (None, "name,folder,starred", 500, None),
-        (None, "createdTime,starred", 500, None),
-        (None, "quotaBytesUsed,starred", 500, None),
-        (None, "name,,starred", 500, None),
-        (None, "name,starred,name", 403, _DUPLICATE_403),
-        (None, "starred,starred", 403, _DUPLICATE_403),
-        (None, "name,starred,bogus", 400, _INVALID_400),
-        (None, "name asc,starred", 500, None),
-        ("fullText contains 'the'", "name", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "name desc", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "name,modifiedTime", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "name,starred", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "name,viewedByMeTime", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "viewedByMeTime", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "viewedByMeTime desc", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "modifiedByMeTime", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "name,name", 403, _DUPLICATE_403),
-        ("fullText contains 'the'", "viewedByMeTime,viewedByMeTime", 403, _DUPLICATE_403),
-        ("fullText contains 'zzqqxx'", "name", 403, _FULLTEXT_403),
-        ("fullText contains 'zzqqxx'", None, 200, None),
-        ("fullText contains 'zzqqxx'", "", 200, None),
-        ("fullText contains 'zzqqxx' and trashed = false", "name", 403, _FULLTEXT_403),
-        ("fullText contains 'zzqqxx' or name contains 'zzqqxx'", "name", 403, _FULLTEXT_403),
-        ("not fullText contains 'the'", "name", 403, _FULLTEXT_403),
-        ("(fullText contains 'the')", "name", 403, _FULLTEXT_403),
-        ("name contains 'the'", "name", 200, None),
-        ("name contains 'fullText'", "name", 200, None),
-    ],
-)
-def test_drive_order_by_is_refused_where_real_refuses_it(
-    client, admin_h, q, order_by, status, error
-):
-    """`orderBy` on its own and beside a `q`, answered with the 400 and the 403s
-    `_drive_order_specs` and `gerr.sorting_not_supported_fulltext` describe and the 500
-    `gerr.drive_internal_error` describes, each `error` object the one real sends. An unusable
-    token at or before a repeat is the 400, the parse is refused ahead of the 500 wherever
-    `starred` sits and the repeat ahead of the `fullText` 403, and an absent or empty `orderBy`, or
-    a `q` with no `fullText` term, is served."""
-    params = {"pageSize": 1, "q": q, "orderBy": order_by}
-    r = client.get(
-        "/drive/v3/files",
-        headers=admin_h,
-        params={k: v for k, v in params.items() if v is not None},
-    )
-    assert r.status_code == status, r.text
-    if error is not None:
-        reason, message = error
-        assert _gerr(r) == {
-            "code": status,
-            "message": message,
-            "errors": [
-                {
-                    "message": message,
-                    "domain": "global",
-                    "reason": reason,
-                    "location": "orderBy",
-                    "locationType": "parameter",
-                }
-            ],
-        }
+_ORDER_BY_ROWS = [
+    (None, "name", 200, None),
+    (None, "name,modifiedTime", 200, None),
+    (None, "name desc,modifiedTime", 200, None),
+    (None, "recency,modifiedTime", 200, None),
+    (None, "name,name", 403, _DUPLICATE_403),
+    (None, "name desc,name", 403, _DUPLICATE_403),
+    (None, "name,name desc", 403, _DUPLICATE_403),
+    (None, "name desc,name desc", 403, _DUPLICATE_403),
+    (None, "modifiedTime,name,modifiedTime", 403, _DUPLICATE_403),
+    (None, "name_natural,name", 403, _DUPLICATE_403),
+    (None, "name,name_natural", 403, _DUPLICATE_403),
+    (None, "name,name,bogus", 403, _DUPLICATE_403),
+    (None, "name,bogus,name", 400, _INVALID_400),
+    (None, "name,name sideways", 400, _INVALID_400),
+    (None, "bogus", 400, _INVALID_400),
+    (None, "name descending", 400, _INVALID_400),
+    (None, "NAME", 400, _INVALID_400),
+    (None, "name ASC", 400, _INVALID_400),
+    (None, "name Desc", 400, _INVALID_400),
+    (None, "name desc desc", 400, _INVALID_400),
+    (None, "name asc desc", 400, _INVALID_400),
+    (None, "asc", 400, _INVALID_400),
+    (None, "name,asc", 400, _INVALID_400),
+    (None, "name   asc", 200, None),
+    (None, "name asc,modifiedTime desc", 200, None),
+    (None, "folder,name desc", 200, None),
+    (None, ",name", 200, None),
+    (None, "name,", 200, None),
+    (None, "name asc,name", 403, _DUPLICATE_403),
+    (None, "name,name asc", 403, _DUPLICATE_403),
+    (None, "viewedByMeTime", 200, None),
+    (None, "viewedByMeTime,modifiedByMeTime", 200, None),
+    (None, "viewedByMeTime,viewedByMeTime desc", 403, _DUPLICATE_403),
+    *_ORDER_SPACE_ROWS,
+    *[(None, f"{key} {way}", 200, None) for key in _ORDER_KEYS for way in ("asc", "desc")],
+    (None, "starred", 200, None),
+    (None, "starred,name", 200, None),
+    (None, "starred desc,name", 200, None),
+    (None, "starred,name,folder", 200, None),
+    (None, ",starred", 200, None),
+    (None, "name,starred", 500, None),
+    (None, "name, starred", 500, None),
+    (None, "name desc,starred desc", 500, None),
+    (None, "folder,starred,name", 500, None),
+    (None, "name,folder,starred", 500, None),
+    (None, "createdTime,starred", 500, None),
+    (None, "quotaBytesUsed,starred", 500, None),
+    (None, "name,,starred", 500, None),
+    (None, "name,starred,name", 403, _DUPLICATE_403),
+    (None, "starred,starred", 403, _DUPLICATE_403),
+    (None, "name,starred,bogus", 400, _INVALID_400),
+    (None, "name asc,starred", 500, None),
+    ("fullText contains 'the'", "name", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "name desc", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "name,modifiedTime", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "name,starred", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "name,viewedByMeTime", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "viewedByMeTime", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "viewedByMeTime desc", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "modifiedByMeTime", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "name,name", 403, _DUPLICATE_403),
+    ("fullText contains 'the'", "viewedByMeTime,viewedByMeTime", 403, _DUPLICATE_403),
+    ("fullText contains 'zzqqxx'", "name", 403, _FULLTEXT_403),
+    ("fullText contains 'zzqqxx'", None, 200, None),
+    ("fullText contains 'zzqqxx'", "", 200, None),
+    ("fullText contains 'zzqqxx' and trashed = false", "name", 403, _FULLTEXT_403),
+    ("fullText contains 'zzqqxx' or name contains 'zzqqxx'", "name", 403, _FULLTEXT_403),
+    ("not fullText contains 'the'", "name", 403, _FULLTEXT_403),
+    ("(fullText contains 'the')", "name", 403, _FULLTEXT_403),
+    ("name contains 'the'", "name", 200, None),
+    ("name contains 'fullText'", "name", 200, None),
+]
+
+
+def _order_by_answer(status, error):
+    """The error object real sends for a refused `_ORDER_BY_ROWS` row."""
     if status == 500:
-        assert _gerr(r) == {
+        return {
             "code": 500,
             "message": "Internal Error",
             "errors": [
                 {"message": "Internal Error", "domain": "global", "reason": "internalError"}
             ],
         }
+    reason, message = error
+    return {
+        "code": status,
+        "message": message,
+        "errors": [
+            {
+                "message": message,
+                "domain": "global",
+                "reason": reason,
+                "location": "orderBy",
+                "locationType": "parameter",
+            }
+        ],
+    }
+
+
+def test_drive_order_by_is_refused_where_real_refuses_it(client, admin_h):
+    """`orderBy` on its own and beside a `q`, answered with the 400 and the 403s
+    `_drive_order_specs` and `gerr.sorting_not_supported_fulltext` describe and the 500
+    `gerr.drive_internal_error` describes, each `error` object the one real sends. An unusable
+    token at or before a repeat is the 400, the parse is refused ahead of the 500 wherever
+    `starred` sits and the repeat ahead of the `fullText` 403, and an absent or empty `orderBy`, or
+    a `q` with no `fullText` term, is served."""
+    answered = {}
+    for q, order_by, *_ in _ORDER_BY_ROWS:
+        params = {"pageSize": 1, "q": q, "orderBy": order_by}
+        r = client.get(
+            "/drive/v3/files",
+            headers=admin_h,
+            params={k: v for k, v in params.items() if v is not None},
+        )
+        answered[q, order_by] = (r.status_code, None if r.status_code == 200 else _gerr(r))
+    assert answered == {
+        (q, order_by): (status, None if status == 200 else _order_by_answer(status, error))
+        for q, order_by, status, error in _ORDER_BY_ROWS
+    }
 
 
 def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
@@ -6654,28 +6828,33 @@ def document_id(client, tokens_yaml):
     return next(f["id"] for f in files if f["mimeType"] == "application/vnd.google-apps.document")
 
 
-@pytest.mark.parametrize("query, refusal", _DOCS_GET_VALUES)
 def test_documents_get_reads_a_query_value_real_reads_and_refuses_one_it_cannot(
-    client, tokens_yaml, document_id, query, refusal
+    client, tokens_yaml, document_id
 ):
     """The spellings `docs_get` records. A repeat holding a refused value is that value's 400
     whichever end it is at; two values that are read are served. At `$.xgafv=1` the refusal's
     `errors` entry is the one `backlot.errors.google.invalid_field_value` records."""
     headers = {"Authorization": f"Bearer {tokens_yaml['admin_token']}"}
-    r = client.get(f"/docs/v1/documents/{document_id}?{urlencode(query)}", headers=headers)
-    if refusal is None:
-        assert r.status_code == 200, r.text
-        assert r.json()["documentId"] == document_id
-        return
-    assert r.status_code == 400, r.text
-    assert r.json()["error"] == refusal
-    verbose = client.get(
-        f"/docs/v1/documents/{document_id}?{urlencode([*query, ('$.xgafv', '1')])}",
-        headers=headers,
-    )
-    assert verbose.json()["error"] == {
-        **refusal,
-        "errors": [{"message": refusal["message"], "reason": "invalid"}],
+
+    def answer(query):
+        r = client.get(f"/docs/v1/documents/{document_id}?{urlencode(query)}", headers=headers)
+        if r.status_code == 200:
+            return r.json()["documentId"]
+        verbose = client.get(
+            f"/docs/v1/documents/{document_id}?{urlencode([*query, ('$.xgafv', '1')])}",
+            headers=headers,
+        )
+        return (r.status_code, r.json()["error"], verbose.json()["error"])
+
+    assert {urlencode(query): answer(query) for query, _ in _DOCS_GET_VALUES} == {
+        urlencode(query): document_id
+        if refusal is None
+        else (
+            400,
+            refusal,
+            {**refusal, "errors": [{"message": refusal["message"], "reason": "invalid"}]},
+        )
+        for query, refusal in _DOCS_GET_VALUES
     }
 
 
@@ -8225,21 +8404,20 @@ def test_drive_permissions_and_trashed(tmp_path):
 
 
 # A file and a trashed file its owner lists, as the no-`q` branch of `drive_files_list` records.
-@pytest.mark.parametrize(
-    "q, listed",
-    [
-        (None, {"live", "gone"}),
-        ("name contains 'Deck'", {"live", "gone"}),
-        ("'{folder}' in parents", {"live", "gone"}),
-        ("'{folder}' in parents and trashed = false", {"live"}),
-        ("'{folder}' in parents and trashed = true", {"gone"}),
-        ("name contains 'Deck' and not starred", {"live", "gone"}),
-        ("name contains 'Deck' and trashed = false", {"live"}),
-        ("name contains 'Deck' and not trashed", {"live"}),
-        ("name contains 'Deck' and trashed", {"gone"}),
-    ],
-)
-def test_drive_files_list_lists_the_trash_unless_q_leaves_it_out(tmp_path, q, listed):
+_TRASH_LISTED = [
+    (None, {"live", "gone"}),
+    ("name contains 'Deck'", {"live", "gone"}),
+    ("'{folder}' in parents", {"live", "gone"}),
+    ("'{folder}' in parents and trashed = false", {"live"}),
+    ("'{folder}' in parents and trashed = true", {"gone"}),
+    ("name contains 'Deck' and not starred", {"live", "gone"}),
+    ("name contains 'Deck' and trashed = false", {"live"}),
+    ("name contains 'Deck' and not trashed", {"live"}),
+    ("name contains 'Deck' and trashed", {"gone"}),
+]
+
+
+def test_drive_files_list_lists_the_trash_unless_q_leaves_it_out(tmp_path):
     """The total is the listing's, so `nextPageToken` promises no page there is not."""
     from backlot import synth
     from tests._helpers import corpus_client
@@ -8261,16 +8439,23 @@ def test_drive_files_list_lists_the_trash_unless_q_leaves_it_out(tmp_path, q, li
         )
     ]
     served = {synth.gdrive_file_id(doc_id): doc_id for doc_id in ("live", "gone")}
+    answered = {}
     with corpus_client(tmp_path, records) as (client, settings):
-        params = {"pageSize": 100, "q": (q or "").format(folder=synth.drive_folder_id("mk"))}
-        r = client.get(
-            "/drive/v3/files",
-            headers={"Authorization": f"Bearer {settings.admin_token}"},
-            params={k: v for k, v in params.items() if v},
-        )
-        assert r.status_code == 200, r.text
-        assert {served[f["id"]] for f in r.json()["files"] if f["id"] in served} == listed
-        assert "nextPageToken" not in r.json()
+        for q, _ in _TRASH_LISTED:
+            params = {"pageSize": 100, "q": (q or "").format(folder=synth.drive_folder_id("mk"))}
+            r = client.get(
+                "/drive/v3/files",
+                headers={"Authorization": f"Bearer {settings.admin_token}"},
+                params={k: v for k, v in params.items() if v},
+            )
+            body = r.json()
+            listed = {served[f["id"]] for f in body.get("files", []) if f["id"] in served}
+            answered[q] = (
+                r.status_code,
+                "nextPageToken" in body,
+                listed if r.status_code == 200 else r.text,
+            )
+    assert answered == {q: (200, False, listed) for q, listed in _TRASH_LISTED}
 
 
 @pytest.mark.parametrize(
@@ -8294,6 +8479,25 @@ def test_drive_q_plain_folder_reads_a_folder_scope(q, scope):
     assert google._drive_q_plain_folder(google._drive_q_parse(q)) == scope
 
 
+@pytest.fixture(scope="module")
+def live_and_gone(tmp_path_factory):
+    """Two private files of mia's in folder `mk`, `Gone` in her trash."""
+    record = {
+        "source_type": "google_drive",
+        "folder": "mk",
+        "content": "x",
+        "visibility": "private",
+    }
+    return tiny_corpus(
+        tmp_path_factory.mktemp("live_and_gone"),
+        [
+            {**record, "doc_id": "live", "title": "Live", "author_email": "mia@acme.com"},
+            {**record, "doc_id": "gone", "title": "Gone", "author_email": "mia@acme.com"}
+            | {"trashed": True},
+        ],
+    )
+
+
 @pytest.mark.parametrize(
     "q, scan, listed",
     [
@@ -8304,7 +8508,9 @@ def test_drive_q_plain_folder_reads_a_folder_scope(q, scope):
         ("name contains 'e' and not trashed", "backlot.store.list_documents", {"Live"}),
     ],
 )
-def test_drive_a_folder_scope_or_a_name_is_listed_from_sql(tmp_path, monkeypatch, q, scan, listed):
+def test_drive_a_folder_scope_or_a_name_is_listed_from_sql(
+    live_and_gone, monkeypatch, q, scan, listed
+):
     """`'<id>' in parents`, LlamaIndex's Google Drive reader's `q`, is served by
     `store.list_drive_folder`, and a `name` term, mirage's lookup, by `store.list_drive_by_name`,
     each with its owner's trash and whatever `trashed` term sits beside it: with ``scan`` patched
@@ -8315,20 +8521,7 @@ def test_drive_a_folder_scope_or_a_name_is_listed_from_sql(tmp_path, monkeypatch
         raise AssertionError(f"{q} reached {scan}")
 
     monkeypatch.setattr(scan, fail)
-    record = {
-        "source_type": "google_drive",
-        "folder": "mk",
-        "content": "x",
-        "visibility": "private",
-    }
-    s = tiny_corpus(
-        tmp_path,
-        [
-            {**record, "doc_id": "live", "title": "Live", "author_email": "mia@acme.com"},
-            {**record, "doc_id": "gone", "title": "Gone", "author_email": "mia@acme.com"}
-            | {"trashed": True},
-        ],
-    )
+    s = live_and_gone
     tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
     mia = {"Authorization": f"Bearer {tok(tokens, 'mia@acme.com')}"}
     params = {"q": q.format(folder=synth.drive_folder_id("mk")), "fields": "files(name)"}
@@ -8429,6 +8622,11 @@ _NEWEST_FIRST_RECORDS = [
 _NEWEST_FIRST = ["Twin B", "Twin A", "New", "ops", "Same", "Mid", "mk", "Old"]
 
 
+@pytest.fixture(scope="module")
+def newest_first(tmp_path_factory):
+    return tiny_corpus(tmp_path_factory.mktemp("newest_first"), _NEWEST_FIRST_RECORDS)
+
+
 @pytest.mark.parametrize(
     "params,caller,names",
     [
@@ -8448,15 +8646,17 @@ _NEWEST_FIRST = ["Twin B", "Twin A", "New", "ops", "Same", "Mid", "mk", "Old"]
         ({"q": "fullText contains 'beta'"}, "admin", ["Old", "New"]),
     ],
 )
-def test_drive_files_list_with_no_order_by_lists_the_newest_first(tmp_path, params, caller, names):
+def test_drive_files_list_with_no_order_by_lists_the_newest_first(
+    newest_first, params, caller, names
+):
     """Pins the order ``_drive_newest_first`` serves and the `fullText` listing it leaves alone, at
     every page size, so each folder falls inside a page's window and outside one."""
     from backlot import synth
-    from tests._helpers import corpus_client
 
     if "q" in params:
         params = {**params, "q": params["q"].format(mk=synth.drive_folder_id("mk"))}
-    with corpus_client(tmp_path, _NEWEST_FIRST_RECORDS) as (client, settings):
+    with client_for(newest_first) as client:
+        settings = newest_first
         token = settings.admin_token
         if caller != "admin":
             users = client.get("/_meta/users").json()["users"]
@@ -8541,16 +8741,21 @@ _Q_RECORDS = [
 _FOLDER = "application/vnd.google-apps.folder"
 
 
-def test_drive_q_evaluates_the_operators_the_reference_lists(tmp_path):
+@pytest.fixture(scope="module")
+def q_corpus(tmp_path_factory):
+    """`_Q_RECORDS` built."""
+    return tiny_corpus(tmp_path_factory.mktemp("q_corpus"), _Q_RECORDS)
+
+
+def test_drive_q_evaluates_the_operators_the_reference_lists(q_corpus):
     """Every operator the reference lists for `name`, `mimeType`, `modifiedTime`, `createdTime`,
     `viewedByMeTime`, `trashed` and `starred`, over a corpus small enough to name the answer;
     `sharedWithMe`, `fullText` and the two collections are in the client-shapes test that closes
     this group. Folders are dropped here (their `createdTime` is seeded, so a time clause's answer
     for them is not this test's to state); the test below is where they go through the same
     evaluator."""
-    from tests._helpers import corpus_client
-
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+    settings = q_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
 
         def files(q):
@@ -8659,14 +8864,13 @@ def test_drive_q_evaluates_the_operators_the_reference_lists(tmp_path):
             assert files(q) == expected, q
 
 
-def test_drive_q_or_spans_folders_and_files(tmp_path):
+def test_drive_q_or_spans_folders_and_files(q_corpus):
     """The synthesized folders go through the same evaluator as stored rows, so a disjunction that
     names a folder by its mimeType and a file by its name answers both. A `'root' in parents`
     under an `or` scopes nothing — the parent shortcut reads only the terms every match must
     satisfy — so the files still come back."""
-    from tests._helpers import corpus_client
-
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+    settings = q_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         r = client.get(
             "/drive/v3/files",
@@ -8686,12 +8890,11 @@ def test_drive_q_or_spans_folders_and_files(tmp_path):
         assert {f["name"] for f in r.json()["files"]} == {"mk", "fin", "Q1 Deck", "Q1 Revenue"}
 
 
-def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
+def test_drive_q_refuses_a_clause_it_cannot_parse(q_corpus):
     """A term `files.list` does not take, a clause that is not the grammar, or white space alone is
     the 400 `_drive_q_refused` raises."""
-    from tests._helpers import corpus_client
-
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+    settings = q_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for q in (
             "bogusField = 'x'",
@@ -8758,48 +8961,48 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
 _LIVE = {"Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"}
 
 
-@pytest.mark.parametrize(
-    "q,names",
-    [
-        ('name = "Q1 Deck"', {"Q1 Deck"}),
-        ("trashed < true", set()),
-        ("trashed < false", set()),
-        ("trashed <= true", {"Old Deck"}),
-        ("trashed <= false", set()),
-        ("trashed > true", set()),
-        ("trashed > false", _LIVE),
-        ("trashed >= true", {"Old Deck"}),
-        ("trashed >= false", _LIVE),
-        ("()", _LIVE | {"Old Deck"}),
-        ("name = 'Q1 Deck' and ()", {"Q1 Deck"}),
-        ("name = 'Q1 Deck' or", _LIVE | {"Old Deck"}),
-        ("(name = 'Q1 Deck' or) and name contains 'Q1'", {"Q1 Deck", "Q1 Revenue"}),
-        ("not (not name = 'Q1 Deck')", {"Q1 Deck"}),
-        ("(" * 64 + "name = 'Q1 Deck'" + ")" * 64, {"Q1 Deck"}),
-    ],
-)
-def test_drive_q_reads_what_real_reads_past_the_reference(tmp_path, q, names):
+_Q_PAST_THE_REFERENCE = [
+    ('name = "Q1 Deck"', {"Q1 Deck"}),
+    ("trashed < true", set()),
+    ("trashed < false", set()),
+    ("trashed <= true", {"Old Deck"}),
+    ("trashed <= false", set()),
+    ("trashed > true", set()),
+    ("trashed > false", _LIVE),
+    ("trashed >= true", {"Old Deck"}),
+    ("trashed >= false", _LIVE),
+    ("()", _LIVE | {"Old Deck"}),
+    ("name = 'Q1 Deck' and ()", {"Q1 Deck"}),
+    ("name = 'Q1 Deck' or", _LIVE | {"Old Deck"}),
+    ("(name = 'Q1 Deck' or) and name contains 'Q1'", {"Q1 Deck", "Q1 Revenue"}),
+    ("not (not name = 'Q1 Deck')", {"Q1 Deck"}),
+    ("(" * 64 + "name = 'Q1 Deck'" + ")" * 64, {"Q1 Deck"}),
+]
+
+
+def test_drive_q_reads_what_real_reads_past_the_reference(q_corpus):
     """Shapes the reference does not list and real answers with a 200, each with the files its
     answer names here, folders left out."""
-    from tests._helpers import corpus_client
-
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+    answered = {}
+    settings = q_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
-        r = client.get(
-            "/drive/v3/files",
-            headers=h,
-            params={"q": q, "fields": "files(name,mimeType)", "pageSize": 100},
-        )
-        assert r.status_code == 200, r.text
-        assert {f["name"] for f in r.json()["files"] if f["mimeType"] != _FOLDER} == names
+        for q, _ in _Q_PAST_THE_REFERENCE:
+            r = client.get(
+                "/drive/v3/files",
+                headers=h,
+                params={"q": q, "fields": "files(name,mimeType)", "pageSize": 100},
+            )
+            names = {f["name"] for f in r.json().get("files", []) if f["mimeType"] != _FOLDER}
+            answered[q] = (r.status_code, names if r.status_code == 200 else r.text)
+    assert answered == {q: (200, names) for q, names in _Q_PAST_THE_REFERENCE}
 
 
-def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(tmp_path):
+def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(q_corpus):
     """`writers`, `readers`, `visibility` and the two map-valued terms are the reference's, and a
     corpus record carries nothing to answer them from, so the refusal says so."""
-    from tests._helpers import corpus_client
-
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+    settings = q_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for q in (
             "'mia@x.com' in writers",
@@ -8817,13 +9020,12 @@ def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(tmp_path):
             assert err["errors"][0]["location"] == "q"
 
 
-def test_drive_q_shapes_clients_send_still_parse(tmp_path):
+def test_drive_q_shapes_clients_send_still_parse(q_corpus):
     """The shapes clients send, spaces and all — mirage's `'<id>' in parents and trashed=false` is
     the first — plus a bare `sharedWithMe`, keywords in either case, `in owners`, and a phrase and
     an `or` around `fullText`, whose index answer is a membership test rather than a pre-filter."""
-    from tests._helpers import corpus_client
-
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+    settings = q_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for q, expected in (
             ("'root' in parents and trashed=false", {"mk", "fin"}),
@@ -8862,14 +9064,13 @@ def test_drive_q_shapes_clients_send_still_parse(tmp_path):
             assert {f["name"] for f in r.json()["files"]} == expected, q
 
 
-def test_drive_q_me_is_the_caller(tmp_path):
+def test_drive_q_me_is_the_caller(q_corpus):
     """`'me' in owners` is the caller's own files and `not 'me' in owners` everyone else's, resolved
     through the identity `sharedWithMe` reads."""
     import yaml
 
-    from tests._helpers import corpus_client
-
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+    settings = q_corpus
+    with client_for(settings) as client:
         tokens = {
             u["email"]: u["token"]
             for u in yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"]
@@ -8912,8 +9113,7 @@ MEASURED_NAME = [
 ]
 
 
-@pytest.mark.parametrize(("q", "expected"), MEASURED_NAME, ids=[q for q, _ in MEASURED_NAME])
-def test_drive_q_name_compares_as_real_drive_does(tmp_path, q, expected):
+def test_drive_q_name_compares_as_real_drive_does(tmp_path):
     """Every measured row, through the handler — so through `list_drive_by_name`'s candidate set
     and `_drive_q_eval` both. `name !=` is the complement of `name =` and shares its fold."""
     from tests._helpers import corpus_client
@@ -8933,22 +9133,20 @@ def test_drive_q_name_compares_as_real_drive_does(tmp_path, q, expected):
         }
         for i, title in enumerate(_NAME_TITLES)
     ]
+    equal = [(q, expected) for q, expected in MEASURED_NAME if q.startswith("name = ")]
     with corpus_client(tmp_path, records) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
-        r = client.get("/drive/v3/files", headers=h, params={"q": q, "fields": "files(name)"})
-        assert r.status_code == 200, r.text
-        assert {f["name"] for f in r.json()["files"]} == expected
-        if q.startswith("name = "):
-            r = client.get(
-                "/drive/v3/files",
-                headers=h,
-                params={
-                    "q": q.replace("name = ", "name != ", 1)
-                    + " and mimeType != 'application/vnd.google-apps.folder'",
-                    "fields": "files(name)",
-                },
-            )
-            assert {f["name"] for f in r.json()["files"]} == set(_NAME_TITLES) - expected
+
+        def listed(q):
+            r = client.get("/drive/v3/files", headers=h, params={"q": q, "fields": "files(name)"})
+            assert r.status_code == 200, r.text
+            return {f["name"] for f in r.json()["files"]}
+
+        assert {q: listed(q) for q, _ in MEASURED_NAME} == dict(MEASURED_NAME)
+        files = " and mimeType != 'application/vnd.google-apps.folder'"
+        assert {q: listed(q.replace("name = ", "name != ", 1) + files) for q, _ in equal} == {
+            q: set(_NAME_TITLES) - expected for q, expected in equal
+        }
 
 
 def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
@@ -9222,9 +9420,14 @@ _GMAIL_SHAPES = [
 ]
 
 
+@pytest.fixture(scope="module")
+def gmail_shapes_settings(tmp_path_factory):
+    return tiny_corpus(tmp_path_factory.mktemp("gmail_shapes"), _GMAIL_SHAPES)
+
+
 @pytest.fixture
-def gmail_shapes(tmp_path):
-    settings = tiny_corpus(tmp_path, _GMAIL_SHAPES)
+def gmail_shapes(gmail_shapes_settings):
+    settings = gmail_shapes_settings
     with client_for(settings, reload=True) as client:
         yield client, {"Authorization": f"Bearer {settings.admin_token}"}
 
@@ -9802,29 +10005,30 @@ def _gvalues(gc, gh, book, rng, **params):
     )
 
 
-@pytest.mark.parametrize(
-    "spec,echo",
-    [
-        ("Summary!A1:B2", "Summary!A1:B2"),
-        ("summary!A1:B2", "Summary!A1:B2"),  # lookup is case-insensitive, the echo normalises
-        ("'Second Sheet'!A1", "'Second Sheet'!A1"),
-        ("Second Sheet!A1", "'Second Sheet'!A1"),  # an unquoted name with a space is accepted
-        ("has!bang!A1", "'has!bang'!A1"),  # the separator is the LAST bang
-        ("has!bang", "'has!bang'!A1:Z1000"),  # a bare sheet name is the whole declared grid
-        ("A1", "Summary!A1"),  # a cell reference beats a sheet named A1
-        ("'A1'!A1", "'A1'!A1"),
-        ("A1!A1", "'A1'!A1"),
-        ("Summary", "Summary!A1:Z1000"),
-        ("Summary!A:B", "Summary!A1:B1000"),  # an open range fills from gridProperties
-        ("Summary!1:2", "Summary!A1:Z2"),
-        ("Summary!B2:B1", "Summary!B1:B2"),  # reversed normalises ascending
-        ("Summary!A999:B1002", "Summary!A999:B1000"),  # the END clamps to the grid
-    ],
-)
-def test_an_a1_range_resolves_and_echoes_the_way_the_real_api_does(gc, gh, book, spec, echo):
-    r = _gvalues(gc, gh, book, spec)
-    assert r.status_code == 200, r.text
-    assert r.json()["range"] == echo
+_A1_ECHOES = [
+    ("Summary!A1:B2", "Summary!A1:B2"),
+    ("summary!A1:B2", "Summary!A1:B2"),  # lookup is case-insensitive, the echo normalises
+    ("'Second Sheet'!A1", "'Second Sheet'!A1"),
+    ("Second Sheet!A1", "'Second Sheet'!A1"),  # an unquoted name with a space is accepted
+    ("has!bang!A1", "'has!bang'!A1"),  # the separator is the LAST bang
+    ("has!bang", "'has!bang'!A1:Z1000"),  # a bare sheet name is the whole declared grid
+    ("A1", "Summary!A1"),  # a cell reference beats a sheet named A1
+    ("'A1'!A1", "'A1'!A1"),
+    ("A1!A1", "'A1'!A1"),
+    ("Summary", "Summary!A1:Z1000"),
+    ("Summary!A:B", "Summary!A1:B1000"),  # an open range fills from gridProperties
+    ("Summary!1:2", "Summary!A1:Z2"),
+    ("Summary!B2:B1", "Summary!B1:B2"),  # reversed normalises ascending
+    ("Summary!A999:B1002", "Summary!A999:B1000"),  # the END clamps to the grid
+]
+
+
+def test_an_a1_range_resolves_and_echoes_the_way_the_real_api_does(gc, gh, book):
+    answered = {}
+    for spec, _ in _A1_ECHOES:
+        r = _gvalues(gc, gh, book, spec)
+        answered[spec] = (r.status_code, r.json()["range"] if r.status_code == 200 else r.text)
+    assert answered == {spec: (200, echo) for spec, echo in _A1_ECHOES}
 
 
 @pytest.mark.parametrize("spec", ["Nope!A1:B2", "Nope", "!!!", "Summary!"])
@@ -9951,34 +10155,38 @@ def test_a_grid_data_block_serves_reals_keys_and_rows(gc, gh, book, read, rng, k
     assert got == rows
 
 
-@pytest.mark.parametrize(
-    "render,want",
-    [
-        ("FORMATTED_VALUE", [["EMEA", "12", "TRUE"]]),
-        # measured: UNFORMATTED_VALUE returns real JSON numbers and booleans, and FORMULA returns
-        # the identical raw value for every cell that is not a formula
-        ("UNFORMATTED_VALUE", [["EMEA", 12, True]]),
-        ("FORMULA", [["EMEA", 12, True]]),
-        # by number, in the order `_PJ_RENDER` lists them
-        ("0", [["EMEA", "12", "TRUE"]]),
-        ("1", [["EMEA", 12, True]]),
-        ("2", [["EMEA", 12, True]]),
-        # a repeated option is read from its LAST repeat (gerr.first_repeat)
-        (["FORMATTED_VALUE", "UNFORMATTED_VALUE"], [["EMEA", 12, True]]),
-        (["UNFORMATTED_VALUE", "FORMATTED_VALUE"], [["EMEA", "12", "TRUE"]]),
-    ],
-)
-def test_the_render_options_differ_over_typed_cells(gc, gh, book, render, want):
-    assert (
-        _gvalues(gc, gh, book, "Summary!A2:C2", valueRenderOption=render).json()["values"] == want
-    )
+_RENDERED = [
+    ("FORMATTED_VALUE", [["EMEA", "12", "TRUE"]]),
+    # measured: UNFORMATTED_VALUE returns real JSON numbers and booleans, and FORMULA returns
+    # the identical raw value for every cell that is not a formula
+    ("UNFORMATTED_VALUE", [["EMEA", 12, True]]),
+    ("FORMULA", [["EMEA", 12, True]]),
+    # by number, in the order `_PJ_RENDER` lists them
+    ("0", [["EMEA", "12", "TRUE"]]),
+    ("1", [["EMEA", 12, True]]),
+    ("2", [["EMEA", 12, True]]),
+    # a repeated option is read from its LAST repeat (gerr.first_repeat)
+    (["FORMATTED_VALUE", "UNFORMATTED_VALUE"], [["EMEA", 12, True]]),
+    (["UNFORMATTED_VALUE", "FORMATTED_VALUE"], [["EMEA", "12", "TRUE"]]),
+]
 
 
-@pytest.mark.parametrize("render", ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"])
-def test_an_empty_cell_is_the_empty_string_under_every_render_option(gc, gh, book, render):
+def test_the_render_options_differ_over_typed_cells(gc, gh, book):
+    assert {
+        str(render): _gvalues(gc, gh, book, "Summary!A2:C2", valueRenderOption=render).json()[
+            "values"
+        ]
+        for render, _ in _RENDERED
+    } == {str(render): want for render, want in _RENDERED}
+
+
+def test_an_empty_cell_is_the_empty_string_under_every_render_option(gc, gh, book):
     """Measured: a JSON string even under UNFORMATTED_VALUE, never null."""
-    got = _gvalues(gc, gh, book, "Ragged!A1:C1", valueRenderOption=render).json()["values"]
-    assert got == [["a", "", "c"]]
+    renders = ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"]
+    assert {
+        render: _gvalues(gc, gh, book, "Ragged!A1:C1", valueRenderOption=render).json()["values"]
+        for render in renders
+    } == dict.fromkeys(renders, [["a", "", "c"]])
 
 
 def test_columns_transposes_a_real_two_dimensional_block(gc, gh, book):
@@ -10123,14 +10331,15 @@ def test_csv_export_of_a_gridded_spreadsheet_serialises_its_first_sheet(gc, gh, 
     assert _export(gc, gh, book, "text/csv").text == "Region,Deals,\r\nEMEA,12,TRUE"
 
 
-@pytest.mark.parametrize("mime", ["text/tab-separated-values", "TEXT/TAB-SEPARATED-VALUES"])
-def test_tsv_export_reserialises_the_grid_rather_than_serving_content(gc, gh, hostile, mime):
+def test_tsv_export_reserialises_the_grid_rather_than_serving_content(gc, gh, hostile):
     """`content` is the first sheet's CSV, so serving it for TSV too would answer commas and
     quotes. The lossy space-substitution is `sheets_grid.to_tsv`'s own test; this is the route
     reaching it, spelled either way `drive_files_export` accepts."""
-    r = _export(gc, gh, hostile, mime)
-    assert r.text == 'with,comma\twith"quote\twith newline'
-    assert r.headers["content-type"] == mime
+    mimes = ["text/tab-separated-values", "TEXT/TAB-SEPARATED-VALUES"]
+    exported = {mime: _export(gc, gh, hostile, mime) for mime in mimes}
+    assert {mime: (r.text, r.headers["content-type"]) for mime, r in exported.items()} == {
+        mime: ('with,comma\twith"quote\twith newline', mime) for mime in mimes
+    }
 
 
 def test_a_prose_spreadsheet_still_exports_verbatim(gc, gh, prose):
@@ -10208,114 +10417,116 @@ def test_fields_narrows_a_value_range(gc, gh, book, mask, want):
 _BOOK_KEYS = ["spreadsheetId", "properties", "sheets", "spreadsheetUrl"]
 
 
-@pytest.mark.parametrize(
-    "mask, want",
-    [
-        ("spreadsheetId", ["spreadsheetId"]),
-        ("properties.title", ["properties"]),
-        # `.` and `/` both descend, and `a(b,c)` groups — measured, all three spellings work
-        ("properties/title", ["properties"]),
-        ("properties(title)", ["properties"]),
-        ("spreadsheetId,sheets.properties.index", ["spreadsheetId", "sheets"]),
-        # the response's order, not the mask's
-        ("sheets.properties.index,spreadsheetId", ["spreadsheetId", "sheets"]),
-        # declared, and held by no spreadsheet here
-        ("namedRanges", []),
-        ("developerMetadata,dataSources", []),
-        ("properties.iterativeCalculationSettings", ["properties"]),
-        ("commentsViewMode", ["commentsViewMode"]),
-        # `*` alone is no mask, and beside a name is dropped
-        ("*", _BOOK_KEYS),
-        ("(*)", _BOOK_KEYS),
-        (",", _BOOK_KEYS),
-        ("spreadsheetId,*", ["spreadsheetId"]),
-        ("*.*", [*_BOOK_KEYS, "commentsViewMode"]),
-        ("*.title", ["properties"]),
-        # a run of `*` under a field holding no message is all of it
-        ("*.*.*", [*_BOOK_KEYS, "commentsViewMode"]),
-        ("spreadsheetId.*.*", ["spreadsheetId"]),
-        # an empty group names nothing
-        ("a()", _BOOK_KEYS),
-        ("spreadsheetId,sheets()", ["spreadsheetId"]),
-        ("sheets(merges,conditionalFormats)", {"sheets": [{}]}),
-        ("sheets.properties.hidden", {"sheets": [{"properties": {}}]}),
-        ("sheets.*.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
-        # a narrower path wins over a wider one and over `*`
-        ("sheets,sheets.properties.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
-        ("sheets.*,sheets.properties.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
-        # a cell left empty by the mask is cut as an empty cell is
-        (
-            "sheets.data.rowData.values.userEnteredValue",
-            {
-                "sheets": [
-                    {
-                        "data": [
-                            {
-                                "rowData": [
-                                    {
-                                        "values": [
-                                            {"userEnteredValue": {"stringValue": "a"}},
-                                            {},
-                                            {"userEnteredValue": {"stringValue": "c"}},
-                                        ]
-                                    },
-                                    {},
-                                    {"values": [{"userEnteredValue": {"stringValue": "z"}}]},
-                                    {
-                                        "values": [
-                                            {},
-                                            {},
-                                            {"userEnteredValue": {"stringValue": "w"}},
-                                        ]
-                                    },
-                                ]
-                            }
-                        ]
-                    }
-                ]
-            },
-        ),
-        (
-            "sheets.data.rowData.values.effectiveValue.formulaValue",
-            {
-                "sheets": [
-                    {
-                        "data": [
-                            {
-                                "rowData": [
-                                    {
-                                        "values": [
-                                            {"effectiveValue": {}},
-                                            {},
-                                            {"effectiveValue": {}},
-                                        ]
-                                    },
-                                    {},
-                                    {"values": [{"effectiveValue": {}}]},
-                                    {"values": [{}, {}, {"effectiveValue": {}}]},
-                                ]
-                            }
-                        ]
-                    }
-                ]
-            },
-        ),
-        ("sheets.data.rowData.values.note", {"sheets": [{"data": [{}]}]}),
-        ("sheets.data.rowData.values.userEnteredFormat", {"sheets": [{"data": [{}]}]}),
-        (
-            "sheets.data.rowMetadata.hiddenByUser",
-            {"sheets": [{"data": [{"rowMetadata": [{}, {}, {}, {}]}]}]},
-        ),
-    ],
-)
-def test_fields_narrows_a_spreadsheet(gc, gh, book, mask, want):
+_SPREADSHEET_MASKS = [
+    ("spreadsheetId", ["spreadsheetId"]),
+    ("properties.title", ["properties"]),
+    # `.` and `/` both descend, and `a(b,c)` groups — measured, all three spellings work
+    ("properties/title", ["properties"]),
+    ("properties(title)", ["properties"]),
+    ("spreadsheetId,sheets.properties.index", ["spreadsheetId", "sheets"]),
+    # the response's order, not the mask's
+    ("sheets.properties.index,spreadsheetId", ["spreadsheetId", "sheets"]),
+    # declared, and held by no spreadsheet here
+    ("namedRanges", []),
+    ("developerMetadata,dataSources", []),
+    ("properties.iterativeCalculationSettings", ["properties"]),
+    ("commentsViewMode", ["commentsViewMode"]),
+    # `*` alone is no mask, and beside a name is dropped
+    ("*", _BOOK_KEYS),
+    ("(*)", _BOOK_KEYS),
+    (",", _BOOK_KEYS),
+    ("spreadsheetId,*", ["spreadsheetId"]),
+    ("*.*", [*_BOOK_KEYS, "commentsViewMode"]),
+    ("*.title", ["properties"]),
+    # a run of `*` under a field holding no message is all of it
+    ("*.*.*", [*_BOOK_KEYS, "commentsViewMode"]),
+    ("spreadsheetId.*.*", ["spreadsheetId"]),
+    # an empty group names nothing
+    ("a()", _BOOK_KEYS),
+    ("spreadsheetId,sheets()", ["spreadsheetId"]),
+    ("sheets(merges,conditionalFormats)", {"sheets": [{}]}),
+    ("sheets.properties.hidden", {"sheets": [{"properties": {}}]}),
+    ("sheets.*.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
+    # a narrower path wins over a wider one and over `*`
+    ("sheets,sheets.properties.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
+    ("sheets.*,sheets.properties.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
+    # a cell left empty by the mask is cut as an empty cell is
+    (
+        "sheets.data.rowData.values.userEnteredValue",
+        {
+            "sheets": [
+                {
+                    "data": [
+                        {
+                            "rowData": [
+                                {
+                                    "values": [
+                                        {"userEnteredValue": {"stringValue": "a"}},
+                                        {},
+                                        {"userEnteredValue": {"stringValue": "c"}},
+                                    ]
+                                },
+                                {},
+                                {"values": [{"userEnteredValue": {"stringValue": "z"}}]},
+                                {
+                                    "values": [
+                                        {},
+                                        {},
+                                        {"userEnteredValue": {"stringValue": "w"}},
+                                    ]
+                                },
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+    ),
+    (
+        "sheets.data.rowData.values.effectiveValue.formulaValue",
+        {
+            "sheets": [
+                {
+                    "data": [
+                        {
+                            "rowData": [
+                                {
+                                    "values": [
+                                        {"effectiveValue": {}},
+                                        {},
+                                        {"effectiveValue": {}},
+                                    ]
+                                },
+                                {},
+                                {"values": [{"effectiveValue": {}}]},
+                                {"values": [{}, {}, {"effectiveValue": {}}]},
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+    ),
+    ("sheets.data.rowData.values.note", {"sheets": [{"data": [{}]}]}),
+    ("sheets.data.rowData.values.userEnteredFormat", {"sheets": [{"data": [{}]}]}),
+    (
+        "sheets.data.rowMetadata.hiddenByUser",
+        {"sheets": [{"data": [{"rowMetadata": [{}, {}, {}, {}]}]}]},
+    ),
+]
+
+
+def test_fields_narrows_a_spreadsheet(gc, gh, book):
     """Each row as real answered it, as `_gmask_select` records: its keys, or for a row whose
     `want` is a body, the whole answer over `Ragged`, whose rows hold a gap, nothing at all, one
     cell and a cell after two gaps, as `_gmask_tree` and `_gmask_trim_rows` read it."""
-    params = {"fields": mask} | ({"ranges": "Ragged!A1:C4"} if isinstance(want, dict) else {})
-    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params=params)
-    assert r.status_code == 200, r.text
-    assert (r.json() if isinstance(want, dict) else list(r.json())) == want
+    answered = {}
+    for mask, want in _SPREADSHEET_MASKS:
+        params = {"fields": mask} | ({"ranges": "Ragged!A1:C4"} if isinstance(want, dict) else {})
+        r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params=params)
+        body = r.json()
+        answered[mask] = (r.status_code, body if isinstance(want, dict) else list(body))
+    assert answered == {mask: (200, want) for mask, want in _SPREADSHEET_MASKS}
 
 
 def test_fields_reaches_through_the_sheets_list(gc, gh, book):
@@ -10429,34 +10640,36 @@ _A1_INDENTED = (
 _A1_COMPACT = b'{"range":"Summary!A1","majorDimension":"ROWS","values":[["Region"]]}'
 
 
-@pytest.mark.parametrize(
-    "value, compact",
-    [
-        (None, False),
-        ("false", True),
-        ("0", True),
-        ("FALSE", False),
-        ("False", False),
-        ("f", False),
-        ("F", False),
-        ("no", False),
-        ("n", False),
-        ("00", False),
-        (" false", False),
-        ("", False),
-        ("NOPE", False),
-    ],
-)
-def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(
-    gc, gh, book, value, compact
-):
+_PRETTY_PRINT_COMPACT = [
+    (None, False),
+    ("false", True),
+    ("0", True),
+    ("FALSE", False),
+    ("False", False),
+    ("f", False),
+    ("F", False),
+    ("no", False),
+    ("n", False),
+    ("00", False),
+    (" false", False),
+    ("", False),
+    ("NOPE", False),
+]
+
+
+def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(gc, gh, book):
     """Pins `gerr.respond`'s two renderings to the byte: compact at the spellings
     `_sheets_respond` records, indented with no parameter and at every other value, and a 200
     whatever the value, `NOPE` included."""
     url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
-    r = gc.get(url, headers=gh, params={} if value is None else {"prettyPrint": value})
-    assert r.status_code == 200
-    assert r.content == (_A1_COMPACT if compact else _A1_INDENTED)
+    answered = {}
+    for value, _ in _PRETTY_PRINT_COMPACT:
+        r = gc.get(url, headers=gh, params={} if value is None else {"prettyPrint": value})
+        answered[value] = (r.status_code, r.content)
+    assert answered == {
+        value: (200, _A1_COMPACT if compact else _A1_INDENTED)
+        for value, compact in _PRETTY_PRINT_COMPACT
+    }
 
 
 @pytest.mark.parametrize(
@@ -10486,15 +10699,15 @@ def test_callback_wraps_the_body_as_jsonp(gc, gh, book):
     assert r.text.startswith("// API callback\ncb({") and r.text.endswith(");")
 
 
-@pytest.mark.parametrize("param", ["quotaUser", "upload_protocol"])
-@pytest.mark.parametrize("value", ["x", ""])
-def test_a_param_with_no_effect_here_is_still_accepted(gc, gh, book, param, value):
+def test_a_param_with_no_effect_here_is_still_accepted(gc, gh, book):
     """`quotaUser` picks a rate-limit bucket and `upload_protocol` belongs to uploads; neither
     changes a read's answer, and measured, the real API takes both without complaint."""
-    r = gc.get(
-        f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1", headers=gh, params={param: value}
-    )
-    assert r.status_code == 200
+    url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
+    sent = [(param, value) for param in ("quotaUser", "upload_protocol") for value in ("x", "")]
+    assert {
+        (param, value): gc.get(url, headers=gh, params={param: value}).status_code
+        for param, value in sent
+    } == dict.fromkeys(sent, 200)
 
 
 # --- the two reads issued over POST -------------------------------------------------------------
@@ -11248,40 +11461,47 @@ def test_the_data_filter_reads_answer_every_measured_request(tmp_path):
 _NOT_JSON = "Invalid JSON payload received. Unexpected token."
 
 
+_UNPARSED_BODIES = [
+    (b"abc", _NOT_JSON),
+    (b'{"dataFilters": "abc"', _NOT_JSON),
+    (b'{"a": NaN}', _NOT_JSON),
+    (b'{"a": Infinity}', _NOT_JSON),
+    (b'{"a": -Infinity}', _NOT_JSON),
+    (b'{"a": 1e400}', _NOT_JSON),
+    (b'{"a": -1e400}', _NOT_JSON),
+    # the largest double, which is read
+    (
+        b'{"a": 1.7976931348623157e308}',
+        'Invalid JSON payload received. Unknown name "a": Cannot find field.',
+    ),
+]
+
+
 @pytest.mark.parametrize("route", ["/values:batchGetByDataFilter", ":getByDataFilter"])
-@pytest.mark.parametrize(
-    "body, message",
-    [
-        (b"abc", _NOT_JSON),
-        (b'{"dataFilters": "abc"', _NOT_JSON),
-        (b'{"a": NaN}', _NOT_JSON),
-        (b'{"a": Infinity}', _NOT_JSON),
-        (b'{"a": -Infinity}', _NOT_JSON),
-        (b'{"a": 1e400}', _NOT_JSON),
-        (b'{"a": -1e400}', _NOT_JSON),
-        # the largest double, which is read
-        (
-            b'{"a": 1.7976931348623157e308}',
-            'Invalid JSON payload received. Unknown name "a": Cannot find field.',
-        ),
-    ],
-)
-def test_a_body_that_does_not_parse_is_refused_before_the_lookup(
-    gc, gh, book, route, body, message
-):
+def test_a_body_that_does_not_parse_is_refused_before_the_lookup(gc, gh, book, route):
     """The refusal `protojson.read` gives a body that does not parse, with a `parseError` entry at
     `$.xgafv=1` (`gerr.invalid_json`), the same for a spreadsheet that does not exist. These are not
     rows of `MEASURED_BY_FILTER`, since the sentence is not the one real gives."""
+    answered = {}
     for spreadsheet in (book, "nosuchspreadsheet"):
-        r = gc.post(
-            f"/sheets/v4/spreadsheets/{spreadsheet}{route}",
-            headers=gh,
-            params={"$.xgafv": "1"},
-            content=body,
-        )
-        err = _gerr(r)
-        assert (r.status_code, err["message"]) == (400, message)
-        assert err["errors"][0]["reason"] == ("parseError" if message == _NOT_JSON else "invalid")
+        for body, _ in _UNPARSED_BODIES:
+            r = gc.post(
+                f"/sheets/v4/spreadsheets/{spreadsheet}{route}",
+                headers=gh,
+                params={"$.xgafv": "1"},
+                content=body,
+            )
+            err = _gerr(r)
+            answered[spreadsheet, body] = (
+                r.status_code,
+                err["message"],
+                err["errors"][0]["reason"],
+            )
+    assert answered == {
+        (spreadsheet, body): (400, message, "parseError" if message == _NOT_JSON else "invalid")
+        for spreadsheet in (book, "nosuchspreadsheet")
+        for body, message in _UNPARSED_BODIES
+    }
 
 
 def test_get_by_data_filter_scopes_the_sheets_array_like_ranges_does(gc, gh, book):
@@ -11508,25 +11728,24 @@ def test_a_sheets_read_answers_its_refusals_in_reals_order(
     assert err["message"].startswith(message) or message in err["message"]
 
 
-@pytest.mark.parametrize(
-    "fields, want",
-    [
-        ("valueRanges.dataFilters.developerMetadataLookup", [{"dataFilters": [{}]}] * 2),
-        (
-            "valueRanges.dataFilters.gridRange.sheetId",
-            [{"dataFilters": [{"gridRange": {}}]}, {"dataFilters": [{}]}],
-        ),
-        (
-            "valueRanges.dataFilters.gridRange.endRowIndex",
-            [{"dataFilters": [{"gridRange": {"endRowIndex": 1}}]}, {"dataFilters": [{}]}],
-        ),
-        (
-            "valueRanges.dataFilters.developerMetadataLookup.metadataLocation.dimensionRange.sheetId",
-            [{"dataFilters": [{}]}] * 2,
-        ),
-    ],
-)
-def test_a_values_level_mask_may_name_what_a_filter_declares(gc, gh, book, fields, want):
+_FILTER_MASKS = [
+    ("valueRanges.dataFilters.developerMetadataLookup", [{"dataFilters": [{}]}] * 2),
+    (
+        "valueRanges.dataFilters.gridRange.sheetId",
+        [{"dataFilters": [{"gridRange": {}}]}, {"dataFilters": [{}]}],
+    ),
+    (
+        "valueRanges.dataFilters.gridRange.endRowIndex",
+        [{"dataFilters": [{"gridRange": {"endRowIndex": 1}}]}, {"dataFilters": [{}]}],
+    ),
+    (
+        "valueRanges.dataFilters.developerMetadataLookup.metadataLocation.dimensionRange.sheetId",
+        [{"dataFilters": [{}]}] * 2,
+    ),
+]
+
+
+def test_a_values_level_mask_may_name_what_a_filter_declares(gc, gh, book):
     """A `DataFilter`'s declared fields answer 200, the lookup no filter here holds absent, and
     `gridRange.sheetId` absent at its default of 0, as real answered."""
     body = {
@@ -11535,14 +11754,16 @@ def test_a_values_level_mask_may_name_what_a_filter_declares(gc, gh, book, field
             {"a1Range": "Summary!B1:B2"},
         ]
     }
-    r = gc.post(
-        f"/sheets/v4/spreadsheets/{book}/values:batchGetByDataFilter",
-        headers=gh,
-        params={"fields": fields},
-        json=body,
-    )
-    assert r.status_code == 200, r.text
-    assert r.json() == {"valueRanges": want}
+    answered = {}
+    for fields, _ in _FILTER_MASKS:
+        r = gc.post(
+            f"/sheets/v4/spreadsheets/{book}/values:batchGetByDataFilter",
+            headers=gh,
+            params={"fields": fields},
+            json=body,
+        )
+        answered[fields] = (r.status_code, r.json())
+    assert answered == {fields: (200, {"valueRanges": want}) for fields, want in _FILTER_MASKS}
 
 
 @pytest.mark.parametrize(
@@ -11822,20 +12043,21 @@ def test_a_field_mask_decides_the_grid_when_one_is_set(gc, gh, book, mask, inclu
     assert ("data" in sheets[0]) is wants_grid
 
 
-@pytest.mark.parametrize(
-    "value, grid",
-    [("false", False), ("no", False), ("0", False), (False, False), ("true", True), (1, True)],
-)
-def test_include_grid_data_in_the_body_is_read_as_a_proto_bool(gc, gh, book, value, grid):
+def test_include_grid_data_in_the_body_is_read_as_a_proto_bool(gc, gh, book):
     """`includeGridData` in the body, read by `protojson.to_bool`: a string by its words, a number
     when it is 0 or 1."""
-    r = gc.post(
-        f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
-        headers=gh,
-        json={"dataFilters": [{"a1Range": "Summary!A1"}], "includeGridData": value},
-    )
-    assert r.status_code == 200, r.text
-    assert ("data" in r.json()["sheets"][0]) is grid
+    grids = [("false", False), ("no", False), ("0", False), (False, False), ("true", True)]
+    grids.append((1, True))
+    answered = {}
+    for value, _ in grids:
+        r = gc.post(
+            f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+            headers=gh,
+            json={"dataFilters": [{"a1Range": "Summary!A1"}], "includeGridData": value},
+        )
+        sheets = r.json().get("sheets") or [{}]
+        answered[json.dumps(value)] = (r.status_code, "data" in sheets[0])
+    assert answered == {json.dumps(value): (200, grid) for value, grid in grids}
 
 
 @pytest.mark.parametrize(
@@ -11882,60 +12104,90 @@ def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, 
             assert thread.json()["messages"][0]["sizeEstimate"] == size
 
 
-@pytest.mark.parametrize("surface", ["messages", "threads"])
-@pytest.mark.parametrize(
-    "caller, query, expected",
-    [
-        ("ava", "cc:lena", ["plan"]),
-        ("ava", "cc:LENA", ["plan"]),
-        ("ava", "cc:LENA@ACME.COM", ["plan"]),
-        ("ava", 'cc:"lena@acme.com" rollout', ["plan"]),
-        ("ava", "bcc:ava", ["lunch"]),
-        ("ava", "cc:acme.com", ["plan"]),
-        ("ava", "cc:lena bcc:ava", []),
-        ("ava", "cc:nobody", []),
-        ("ava", "bcc:me", ["lunch"]),
-        ("ava", "cc:me", ["plan"]),
-        ("admin", "cc:me", []),
-        # a word, never part of one, and an address only whole
-        ("ava", "cc:len", []),
-        ("ava", "cc:ena", []),
-        ("ava", "cc:acme", ["plan"]),
-        ("ava", "cc:com", ["plan"]),
-        ("ava", "cc:com.acme", []),
-        ("ava", "cc:@acme.com", ["plan"]),
-        ("ava", "cc:lena@", ["plan"]),
-        ("ava", "cc:lena@acme", []),
-        ("ava", "cc:park", ["plan"]),
-        ("ava", "cc:par", []),
-        ("ava", 'cc:"lena park"', ["plan"]),
-        ("ava", "bcc:\uc5d0\ubc14", ["lunch"]),
-        ("ava", "cc:ops_team", ["standup"]),
-        ("ava", "cc:ops", []),
-        ("ava", "cc:_", []),
-        ("ava", "cc:&", []),
-        # no word at all: the operator is ignored
-        ("ava", "cc:.", ["plan", "lunch", "decoy", "standup"]),
-        ("ava", "cc:@", ["plan", "lunch", "decoy", "standup"]),
-        ("ava", 'bcc:""', ["plan", "lunch", "decoy", "standup"]),
-    ],
-)
-def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query, expected):
-    """The rule `_gmail_address_match` records, on both listings: a message whose body or subject
-    names the address is not a match. `me` is the caller's address, and for the admin token, which
-    has no mailbox of its own, the address `_service_email` gives."""
-    records = [
-        {
-            "doc_id": "plan",
-            "title": "rollout plan",
-            "cc": "Lena Park <lena@acme.com>, ava@acme.com",
-        },
-        {"doc_id": "lunch", "title": "lunch", "bcc": "\uc5d0\ubc14 <ava@acme.com>"},
-        {"doc_id": "decoy", "title": "cc lena bcc ava", "content": "lena ava"},
-        {"doc_id": "standup", "title": "standup", "cc": "ops_team@corp.example, me@corp.example"},
-    ]
-    settings = tiny_corpus(
-        tmp_path,
+def _gmail_searched(settings, token, records, rows):
+    """Each row's query sent on both listings, as ``{(listing, query): (status, the doc_ids it
+    listed)}``."""
+    doc_id = {served_id("gmail", r["doc_id"]): r["doc_id"] for r in records}
+    answered = {}
+    with client_for(settings, reload=True) as c:
+        for listing in ("messages", "threads"):
+            for query, _ in rows:
+                r = c.get(
+                    f"/gmail/v1/users/me/{listing}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"q": query},
+                )
+                listed = {doc_id[m["id"]] for m in r.json().get(listing, [])}
+                answered[listing, query] = (
+                    r.status_code,
+                    listed if r.status_code == 200 else r.text,
+                )
+    return answered
+
+
+def _gmail_listed(rows):
+    """What `_gmail_searched` should answer for ``rows``: a 200 and each row's doc_ids on both
+    listings."""
+    return {
+        (listing, query): (200, set(expected))
+        for listing in ("messages", "threads")
+        for query, expected in rows
+    }
+
+
+_GMAIL_CC_BCC_ROWS = [
+    ("ava", "cc:lena", ["plan"]),
+    ("ava", "cc:LENA", ["plan"]),
+    ("ava", "cc:LENA@ACME.COM", ["plan"]),
+    ("ava", 'cc:"lena@acme.com" rollout', ["plan"]),
+    ("ava", "bcc:ava", ["lunch"]),
+    ("ava", "cc:acme.com", ["plan"]),
+    ("ava", "cc:lena bcc:ava", []),
+    ("ava", "cc:nobody", []),
+    ("ava", "bcc:me", ["lunch"]),
+    ("ava", "cc:me", ["plan"]),
+    ("admin", "cc:me", []),
+    # a word, never part of one, and an address only whole
+    ("ava", "cc:len", []),
+    ("ava", "cc:ena", []),
+    ("ava", "cc:acme", ["plan"]),
+    ("ava", "cc:com", ["plan"]),
+    ("ava", "cc:com.acme", []),
+    ("ava", "cc:@acme.com", ["plan"]),
+    ("ava", "cc:lena@", ["plan"]),
+    ("ava", "cc:lena@acme", []),
+    ("ava", "cc:park", ["plan"]),
+    ("ava", "cc:par", []),
+    ("ava", 'cc:"lena park"', ["plan"]),
+    ("ava", "bcc:\uc5d0\ubc14", ["lunch"]),
+    ("ava", "cc:ops_team", ["standup"]),
+    ("ava", "cc:ops", []),
+    ("ava", "cc:_", []),
+    ("ava", "cc:&", []),
+    # no word at all: the operator is ignored
+    ("ava", "cc:.", ["plan", "lunch", "decoy", "standup"]),
+    ("ava", "cc:@", ["plan", "lunch", "decoy", "standup"]),
+    ("ava", 'bcc:""', ["plan", "lunch", "decoy", "standup"]),
+]
+
+
+_GMAIL_CC_BCC_RECORDS = [
+    {
+        "doc_id": "plan",
+        "title": "rollout plan",
+        "cc": "Lena Park <lena@acme.com>, ava@acme.com",
+    },
+    {"doc_id": "lunch", "title": "lunch", "bcc": "\uc5d0\ubc14 <ava@acme.com>"},
+    {"doc_id": "decoy", "title": "cc lena bcc ava", "content": "lena ava"},
+    {"doc_id": "standup", "title": "standup", "cc": "ops_team@corp.example, me@corp.example"},
+]
+
+
+@pytest.fixture(scope="module")
+def cc_bcc_mailbox(tmp_path_factory):
+    """`_GMAIL_CC_BCC_RECORDS` in ava's mailbox."""
+    return tiny_corpus(
+        tmp_path_factory.mktemp("cc_bcc_mailbox"),
         [
             {
                 "source_type": "gmail",
@@ -11948,509 +12200,453 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query,
                 "readers": ["ava@acme.com"],
                 **r,
             }
-            for r in records
+            for r in _GMAIL_CC_BCC_RECORDS
         ],
     )
+
+
+@pytest.mark.parametrize("caller", ["ava", "admin"])
+def test_gmail_cc_bcc_searches_address_headers(cc_bcc_mailbox, caller):
+    """The rule `_gmail_address_match` records, on both listings: a message whose body or subject
+    names the address is not a match. `me` is the caller's address, and for the admin token, which
+    has no mailbox of its own, the address `_service_email` gives."""
+    settings = cc_bcc_mailbox
     tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     token = tokens["admin_token"] if caller == "admin" else tok(tokens, "ava@acme.com")
-    with client_for(settings, reload=True) as c:
-        response = c.get(
-            f"/gmail/v1/users/me/{surface}",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"q": query},
-        )
-    assert response.status_code == 200
-    assert {r["id"] for r in response.json().get(surface, [])} == {
-        served_id("gmail", doc_id) for doc_id in expected
-    }
+    rows = [(query, expected) for who, query, expected in _GMAIL_CC_BCC_ROWS if who == caller]
+    assert _gmail_searched(settings, token, _GMAIL_CC_BCC_RECORDS, rows) == _gmail_listed(rows)
 
 
-@pytest.mark.parametrize("surface", ["messages", "threads"])
-@pytest.mark.parametrize(
-    "caller, query, expected",
-    [
-        ("ava", "to:ava@acme.com", ["plan", "lunch"]),
-        ("ava", "to:me", ["plan", "lunch"]),
-        ("ava", "to:av", []),
-        ("ava", "from:bo", []),
-        ("ava", "from:me", ["reply"]),
-        ("ava", 'from:"me"', ["reply"]),
-        ("ava", 'to:"me"', ["plan", "lunch"]),
-        ("ava", "from:", ["plan", "lunch", "reply"]),
-        ("ava", "to:dev@acme.com", ["reply"]),
-        ("ava", "to:dev", ["reply"]),
-        ("ava", "to:lena@acme.com", ["lunch"]),
-        ("ava", "to:lena", ["lunch"]),
-        ("ava", "to:bob@acme.com", ["reply"]),
-        ("ava", "to:bob", ["reply"]),
-        ("ava", "from:bob@acme.com", ["plan"]),
-        ("ava", "from:bob", ["plan"]),
-        ("ava", "from:acme.com", ["plan", "lunch", "reply"]),
-        ("ava", "from:acm", []),
-        ("ava", "to:acme.com", ["plan", "lunch", "reply"]),
-        ("ava", "to:acm", []),
-        ("ava", "to:le", []),
-        ("ava", "to:", ["plan", "lunch", "reply"]),
-        ("ava", "bcc:", ["plan", "lunch", "reply"]),
-        ("ava", "cc:", ["plan", "lunch", "reply"]),
-        ("ava", 'from:""', ["plan", "lunch", "reply"]),
-        ("ava", 'to:""', ["plan", "lunch", "reply"]),
-        ("ava", "to: from: bcc:", []),
-        ("ava", "from: bob", ["plan"]),
-        ("ava", 'from:"" bob', ["plan"]),
-        ("ava", 'to:" " lena', ["lunch"]),
-        ("ava", 'cc:""dev', ["reply"]),
-        ("ava", "From: bob", ["plan"]),
-        ("ava", "to:\tlena", ["lunch"]),
-        ("ava", "cc: dev", ["reply"]),
-        ("ava", "bcc: ava", ["lunch"]),
-        ("ava", "to:bob to:dev", ["reply"]),
-        ("ava", "from:bob from:mia", []),
-        ("ava", "from:bob from:", ["plan"]),
-        ("ava", 'to:ava to:""', ["plan", "lunch"]),
-        ("admin", "from:me", []),
-        ("admin", "to:me", []),
-        ("admin", "from:ava@acme.com", ["reply"]),
-        ("admin", "to:ava@acme.com", ["plan", "lunch"]),
-        ("admin", "from:", ["plan", "lunch", "reply"]),
-        # a `-` in front of the operator or its value negates it
-        ("ava", "-from:bob", ["lunch", "reply"]),
-        ("ava", "from:-bob", ["lunch", "reply"]),
-        ("ava", "-from: bob", ["lunch", "reply"]),
-        ("ava", 'from:"-bob"', ["plan"]),
-        ("ava", "-to:lena", ["plan", "reply"]),
-        ("ava", "-cc:dev", ["plan", "lunch"]),
-        ("ava", "bcc:-ava", ["plan", "reply"]),
-        ("ava", "-from:me", ["plan", "lunch"]),
-        ("ava", '-from:"me"', ["plan", "lunch"]),
-        ("ava", "-from:bob from:mia", ["lunch"]),
-        ("ava", '-from:""', ["plan", "lunch", "reply"]),
-        ("ava", "from:-", ["plan", "lunch", "reply"]),
-        ("admin", "-from:me", ["plan", "lunch", "reply"]),
-    ],
-)
-def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query, expected):
+_GMAIL_FROM_TO_ROWS = [
+    ("ava", "to:ava@acme.com", ["plan", "lunch"]),
+    ("ava", "to:me", ["plan", "lunch"]),
+    ("ava", "to:av", []),
+    ("ava", "from:bo", []),
+    ("ava", "from:me", ["reply"]),
+    ("ava", 'from:"me"', ["reply"]),
+    ("ava", 'to:"me"', ["plan", "lunch"]),
+    ("ava", "from:", ["plan", "lunch", "reply"]),
+    ("ava", "to:dev@acme.com", ["reply"]),
+    ("ava", "to:dev", ["reply"]),
+    ("ava", "to:lena@acme.com", ["lunch"]),
+    ("ava", "to:lena", ["lunch"]),
+    ("ava", "to:bob@acme.com", ["reply"]),
+    ("ava", "to:bob", ["reply"]),
+    ("ava", "from:bob@acme.com", ["plan"]),
+    ("ava", "from:bob", ["plan"]),
+    ("ava", "from:acme.com", ["plan", "lunch", "reply"]),
+    ("ava", "from:acm", []),
+    ("ava", "to:acme.com", ["plan", "lunch", "reply"]),
+    ("ava", "to:acm", []),
+    ("ava", "to:le", []),
+    ("ava", "to:", ["plan", "lunch", "reply"]),
+    ("ava", "bcc:", ["plan", "lunch", "reply"]),
+    ("ava", "cc:", ["plan", "lunch", "reply"]),
+    ("ava", 'from:""', ["plan", "lunch", "reply"]),
+    ("ava", 'to:""', ["plan", "lunch", "reply"]),
+    ("ava", "to: from: bcc:", []),
+    ("ava", "from: bob", ["plan"]),
+    ("ava", 'from:"" bob', ["plan"]),
+    ("ava", 'to:" " lena', ["lunch"]),
+    ("ava", 'cc:""dev', ["reply"]),
+    ("ava", "From: bob", ["plan"]),
+    ("ava", "to:\tlena", ["lunch"]),
+    ("ava", "cc: dev", ["reply"]),
+    ("ava", "bcc: ava", ["lunch"]),
+    ("ava", "to:bob to:dev", ["reply"]),
+    ("ava", "from:bob from:mia", []),
+    ("ava", "from:bob from:", ["plan"]),
+    ("ava", 'to:ava to:""', ["plan", "lunch"]),
+    ("admin", "from:me", []),
+    ("admin", "to:me", []),
+    ("admin", "from:ava@acme.com", ["reply"]),
+    ("admin", "to:ava@acme.com", ["plan", "lunch"]),
+    ("admin", "from:", ["plan", "lunch", "reply"]),
+    # a `-` in front of the operator or its value negates it
+    ("ava", "-from:bob", ["lunch", "reply"]),
+    ("ava", "from:-bob", ["lunch", "reply"]),
+    ("ava", "-from: bob", ["lunch", "reply"]),
+    ("ava", 'from:"-bob"', ["plan"]),
+    ("ava", "-to:lena", ["plan", "reply"]),
+    ("ava", "-cc:dev", ["plan", "lunch"]),
+    ("ava", "bcc:-ava", ["plan", "reply"]),
+    ("ava", "-from:me", ["plan", "lunch"]),
+    ("ava", '-from:"me"', ["plan", "lunch"]),
+    ("ava", "-from:bob from:mia", ["lunch"]),
+    ("ava", '-from:""', ["plan", "lunch", "reply"]),
+    ("ava", "from:-", ["plan", "lunch", "reply"]),
+    ("admin", "-from:me", ["plan", "lunch", "reply"]),
+]
+
+
+_GMAIL_FROM_TO_RECORDS = [
+    {
+        "doc_id": "plan",
+        "title": "Rollout plan",
+        "content": "attached",
+        "author_email": "bob@acme.com",
+        "to": "ava@acme.com",
+        "readers": ["ava@acme.com"],
+        "created": "2026-03-01T09:00:00Z",
+    },
+    {
+        "doc_id": "lunch",
+        "title": "Lunch",
+        "content": "Friday?",
+        "author_email": "mia@acme.com",
+        "to": "lena@acme.com",
+        "bcc": "ava@acme.com",
+        "readers": ["ava@acme.com"],
+        "created": "2026-03-02T09:00:00Z",
+    },
+    {
+        "doc_id": "reply",
+        "title": "Re: Rollout plan",
+        "content": "ok",
+        "author_email": "ava@acme.com",
+        "to": "bob@acme.com",
+        "cc": "dev@acme.com",
+        "readers": ["ava@acme.com"],
+        "created": "2026-03-03T09:00:00Z",
+    },
+]
+
+
+@pytest.fixture(scope="module")
+def from_to_mailbox(tmp_path_factory):
+    """`_GMAIL_FROM_TO_RECORDS` in ava's mailbox."""
+    return tiny_corpus(
+        tmp_path_factory.mktemp("from_to_mailbox"),
+        [
+            {
+                "source_type": "gmail",
+                "mailbox": "ava",
+                "visibility": "public",
+                **r,
+            }
+            for r in _GMAIL_FROM_TO_RECORDS
+        ],
+    )
+
+
+@pytest.mark.parametrize("caller", ["ava", "admin"])
+def test_gmail_from_to_searches_address_headers(from_to_mailbox, caller):
     """A `from:` search matches author email, and `to:` matches any recipient header (To, Cc, or
     Bcc) as whole words or address. `me` resolves to the caller's address, and for admin callers,
     the address `_service_email` gives. Empty address operators are ignored, and a `-` in front of
     an operator or its value negates it (`_GMAIL_NEGATED_ADDRESS`)."""
-    records = [
-        {
-            "doc_id": "plan",
-            "title": "Rollout plan",
-            "content": "attached",
-            "author_email": "bob@acme.com",
-            "to": "ava@acme.com",
-            "readers": ["ava@acme.com"],
-            "created": "2026-03-01T09:00:00Z",
-        },
-        {
-            "doc_id": "lunch",
-            "title": "Lunch",
-            "content": "Friday?",
-            "author_email": "mia@acme.com",
-            "to": "lena@acme.com",
-            "bcc": "ava@acme.com",
-            "readers": ["ava@acme.com"],
-            "created": "2026-03-02T09:00:00Z",
-        },
-        {
-            "doc_id": "reply",
-            "title": "Re: Rollout plan",
-            "content": "ok",
-            "author_email": "ava@acme.com",
-            "to": "bob@acme.com",
-            "cc": "dev@acme.com",
-            "readers": ["ava@acme.com"],
-            "created": "2026-03-03T09:00:00Z",
-        },
-    ]
-    settings = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "gmail",
-                "mailbox": "ava",
-                "visibility": "public",
-                **r,
-            }
-            for r in records
-        ],
-    )
+    settings = from_to_mailbox
     tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     token = tokens["admin_token"] if caller == "admin" else tok(tokens, f"{caller}@acme.com")
-    with client_for(settings, reload=True) as c:
-        response = c.get(
-            f"/gmail/v1/users/me/{surface}",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"q": query},
-        )
-    assert response.status_code == 200
-    assert {r["id"] for r in response.json().get(surface, [])} == {
-        served_id("gmail", doc_id) for doc_id in expected
-    }
+    rows = [(query, expected) for who, query, expected in _GMAIL_FROM_TO_ROWS if who == caller]
+    assert _gmail_searched(settings, token, _GMAIL_FROM_TO_RECORDS, rows) == _gmail_listed(rows)
 
 
-@pytest.mark.parametrize("surface", ["messages", "threads"])
-@pytest.mark.parametrize(
-    "query, expected",
-    [
-        ("plan", ["plan", "reply"]),
-        ("-plan", ["lunch"]),
-        ("--plan", ["lunch"]),
-        ("-PLAN", ["lunch"]),
-        ('-"plan"', ["lunch"]),
-        ("NOT plan", ["lunch"]),
-        ("-(plan)", ["lunch"]),
-        ("-( plan )", ["lunch"]),
-        ("plan -plan", []),
-        ("not plan", []),
-        ("label:inbox", ["plan"]),
-        ("label:inbox -plan", []),
-        ("label:sent", ["lunch", "reply"]),
-        ("label:sent -plan", ["lunch"]),
-        ('-"rollout plan"', ["lunch"]),
-        ('NOT "rollout plan"', ["lunch"]),
-        ('-("rollout plan")', ["lunch"]),
-        ('-"plan rollout"', ["plan", "lunch", "reply"]),
-        ("NOT -plan", ["plan", "reply"]),
-        ("NOT NOT plan", ["plan", "reply"]),
-        ("NOT NOT NOT plan", ["lunch"]),
-        ('NOT -"rollout plan"', ["plan", "reply"]),
-        ("-plan+", ["plan", "lunch", "reply"]),
-        ("NOT plan+", ["plan", "lunch", "reply"]),
-        ("plan -plan+", ["plan", "reply"]),
-        ('-plan "', ["lunch"]),
-    ],
-)
-def test_gmail_a_negated_word_leaves_out_the_messages_holding_it(
-    tmp_path, surface, query, expected
-):
+_GMAIL_NEGATED_WORD_ROWS = [
+    ("plan", ["plan", "reply"]),
+    ("-plan", ["lunch"]),
+    ("--plan", ["lunch"]),
+    ("-PLAN", ["lunch"]),
+    ('-"plan"', ["lunch"]),
+    ("NOT plan", ["lunch"]),
+    ("-(plan)", ["lunch"]),
+    ("-( plan )", ["lunch"]),
+    ("plan -plan", []),
+    ("not plan", []),
+    ("label:inbox", ["plan"]),
+    ("label:inbox -plan", []),
+    ("label:sent", ["lunch", "reply"]),
+    ("label:sent -plan", ["lunch"]),
+    ('-"rollout plan"', ["lunch"]),
+    ('NOT "rollout plan"', ["lunch"]),
+    ('-("rollout plan")', ["lunch"]),
+    ('-"plan rollout"', ["plan", "lunch", "reply"]),
+    ("NOT -plan", ["plan", "reply"]),
+    ("NOT NOT plan", ["plan", "reply"]),
+    ("NOT NOT NOT plan", ["lunch"]),
+    ('NOT -"rollout plan"', ["plan", "reply"]),
+    ("-plan+", ["plan", "lunch", "reply"]),
+    ("NOT plan+", ["plan", "lunch", "reply"]),
+    ("plan -plan+", ["plan", "reply"]),
+    ('-plan "', ["lunch"]),
+]
+
+
+def test_gmail_a_negated_word_leaves_out_the_messages_holding_it(tmp_path):
     """A `-` or a capital `NOT` in front of a word, and `-(…)` around one word, leave out the
-    messages that word answers (`_gmail_take_negated_words`). `not` in lower case stays a word, so
-    `not plan` searches for both."""
+    messages that word answers (`_gmail_take_negated_words`), over both listings. `not` in lower
+    case stays a word, so `not plan` searches for both."""
     records = [
         {
-            "doc_id": "plan",
-            "title": "Rollout plan",
-            "content": "attached",
-            "label_ids": ["INBOX"],
-            "author_email": "bob@acme.com",
-            "created": "2026-03-01T09:00:00Z",
-        },
-        {
-            "doc_id": "lunch",
-            "title": "Lunch",
-            "content": "Friday?",
-            "label_ids": ["SENT"],
-            "author_email": "mia@acme.com",
-            "created": "2026-03-02T09:00:00Z",
-        },
-        {
-            "doc_id": "reply",
-            "title": "Re: Rollout plan",
-            "content": "ok",
-            "label_ids": ["SENT"],
-            "author_email": "ava@acme.com",
-            "created": "2026-03-03T09:00:00Z",
-        },
-    ]
-    settings = tiny_corpus(
-        tmp_path,
-        [
+            "source_type": "gmail",
+            "mailbox": "ava",
+            "to": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "visibility": "public",
+            **r,
+        }
+        for r in [
             {
-                "source_type": "gmail",
-                "mailbox": "ava",
-                "to": "ava@acme.com",
-                "readers": ["ava@acme.com"],
-                "visibility": "public",
-                **r,
-            }
-            for r in records
-        ],
-    )
-    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
-    with client_for(settings, reload=True) as c:
-        response = c.get(
-            f"/gmail/v1/users/me/{surface}",
-            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
-            params={"q": query},
-        )
-    assert response.status_code == 200, response.text
-    assert {r["id"] for r in response.json().get(surface, [])} == {
-        served_id("gmail", doc_id) for doc_id in expected
-    }
+                "doc_id": "plan",
+                "title": "Rollout plan",
+                "content": "attached",
+                "label_ids": ["INBOX"],
+                "author_email": "bob@acme.com",
+                "created": "2026-03-01T09:00:00Z",
+            },
+            {
+                "doc_id": "lunch",
+                "title": "Lunch",
+                "content": "Friday?",
+                "label_ids": ["SENT"],
+                "author_email": "mia@acme.com",
+                "created": "2026-03-02T09:00:00Z",
+            },
+            {
+                "doc_id": "reply",
+                "title": "Re: Rollout plan",
+                "content": "ok",
+                "label_ids": ["SENT"],
+                "author_email": "ava@acme.com",
+                "created": "2026-03-03T09:00:00Z",
+            },
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_NEGATED_WORD_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 
-@pytest.mark.parametrize("surface", ["messages", "threads"])
-@pytest.mark.parametrize(
-    "query, expected",
-    [
-        ("subject:", ["plan", "lunch", "after"]),
-        ("subject: ", ["plan", "lunch", "after"]),
-        ("subject:\t", ["plan", "lunch", "after"]),
-        ("SUBJECT:", ["plan", "lunch", "after"]),
-        ("label:", ["plan", "lunch", "after"]),
-        ('label:""', ["plan", "lunch", "after"]),
-        ("in:", ["plan", "lunch", "after"]),
-        ('in:""', ["plan", "lunch", "after"]),
-        ("lunch label:", ["lunch"]),
-        ('subject:"" lunch', ["lunch"]),
-        ('subject:" " lunch', ["lunch"]),
-        ('label:"" lunch', []),
-        ("after:", ["after"]),
-        ('label:"', ["plan", "lunch", "after"]),
-        ('in:"', ["plan", "lunch", "after"]),
-        ('subject:"', ["plan", "lunch", "after"]),
-        ('lunch label:"', ["lunch"]),
-        ('label:" lunch', []),
-        ('label: " inbox', ["plan", "lunch", "after"]),
-        ('label:" -inbox', ["plan", "lunch", "after"]),
-        ('label:" inbox lunch', []),
-        ('subject:" lunch', ["lunch"]),
-        ('subject:" after', []),
-        ('subject:" rollout plan', ["plan"]),
-        ('subject:" plan rollout', []),
-        ('subject:" label:inbox', []),
-        ('subject:" after:2026/01/01', []),
-        ('LABEL:" inbox', ["plan", "lunch", "after"]),
-        ('subject:" from:me', ["plan", "lunch", "after"]),
-        ('subject:" FROM:me', ["plan", "lunch", "after"]),
-        ('subject:" from: me', ["plan", "lunch", "after"]),
-        ('subject:" -from:me', ["plan", "lunch", "after"]),
-        ('subject:" from:-me', ["plan", "lunch", "after"]),
-        ('subject:"from:me', []),
-        ('subject:" from:me+lunch', []),
-        ('-subject:" from:me', []),
-        ('-subject:" from:bob', ["plan", "lunch", "after"]),
-        ('in:" subject:lunch', ["lunch"]),
-    ],
-)
-def test_gmail_an_empty_or_lone_quoted_operator(tmp_path, surface, query, expected):
+_GMAIL_EMPTY_OPERATOR_ROWS = [
+    ("subject:", ["plan", "lunch", "after"]),
+    ("subject: ", ["plan", "lunch", "after"]),
+    ("subject:\t", ["plan", "lunch", "after"]),
+    ("SUBJECT:", ["plan", "lunch", "after"]),
+    ("label:", ["plan", "lunch", "after"]),
+    ('label:""', ["plan", "lunch", "after"]),
+    ("in:", ["plan", "lunch", "after"]),
+    ('in:""', ["plan", "lunch", "after"]),
+    ("lunch label:", ["lunch"]),
+    ('subject:"" lunch', ["lunch"]),
+    ('subject:" " lunch', ["lunch"]),
+    ('label:"" lunch', []),
+    ("after:", ["after"]),
+    ('label:"', ["plan", "lunch", "after"]),
+    ('in:"', ["plan", "lunch", "after"]),
+    ('subject:"', ["plan", "lunch", "after"]),
+    ('lunch label:"', ["lunch"]),
+    ('label:" lunch', []),
+    ('label: " inbox', ["plan", "lunch", "after"]),
+    ('label:" -inbox', ["plan", "lunch", "after"]),
+    ('label:" inbox lunch', []),
+    ('subject:" lunch', ["lunch"]),
+    ('subject:" after', []),
+    ('subject:" rollout plan', ["plan"]),
+    ('subject:" plan rollout', []),
+    ('subject:" label:inbox', []),
+    ('subject:" after:2026/01/01', []),
+    ('LABEL:" inbox', ["plan", "lunch", "after"]),
+    ('subject:" from:me', ["plan", "lunch", "after"]),
+    ('subject:" FROM:me', ["plan", "lunch", "after"]),
+    ('subject:" from: me', ["plan", "lunch", "after"]),
+    ('subject:" -from:me', ["plan", "lunch", "after"]),
+    ('subject:" from:-me', ["plan", "lunch", "after"]),
+    ('subject:"from:me', []),
+    ('subject:" from:me+lunch', []),
+    ('-subject:" from:me', []),
+    ('-subject:" from:bob', ["plan", "lunch", "after"]),
+    ('in:" subject:lunch', ["lunch"]),
+]
+
+
+def test_gmail_an_empty_or_lone_quoted_operator(tmp_path):
     """Each row is how the comments on `_GMAIL_DROPPED_WHEN_EMPTY`, `_GMAIL_SPACED` and
     `_GMAIL_LONE_QUOTE` read its query, over both listings; the corpus holds the word `after` so
     that a bare `after:` can be told from a dropped one, and `subject:" after` from a search
     term."""
-    settings = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "gmail",
-                "doc_id": doc_id,
-                "mailbox": "ava",
-                "title": title,
-                "content": content,
-                "author_email": "ava@acme.com",
-                "readers": ["ava@acme.com"],
-                "created": "2026-03-01T09:00:00Z",
-            }
-            for doc_id, title, content in [
-                ("plan", "Rollout plan", "attached"),
-                ("lunch", "Lunch", "Friday?"),
-                ("after", "Later", "see after the meeting"),
-            ]
-        ],
-    )
-    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
-    with client_for(settings, reload=True) as c:
-        r = c.get(
-            f"/gmail/v1/users/me/{surface}",
-            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
-            params={"q": query},
-        )
-    assert r.status_code == 200
-    assert {item["id"] for item in r.json().get(surface, [])} == {
-        served_id("gmail", doc_id) for doc_id in expected
-    }
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": content,
+            "author_email": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        }
+        for doc_id, title, content in [
+            ("plan", "Rollout plan", "attached"),
+            ("lunch", "Lunch", "Friday?"),
+            ("after", "Later", "see after the meeting"),
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_EMPTY_OPERATOR_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 
-@pytest.mark.parametrize("surface", ["messages", "threads"])
-@pytest.mark.parametrize(
-    "query, expected",
-    [
-        ('from:" me', ["lunch"]),
-        ('to:" me', ["plan"]),
-        ('from:" probe', []),
-        ('from:"me probe', []),
-        ('to:" probe', []),
-        ('from:" label:inbox', []),
-        ('subject:" from:me"', ["lunch"]),
-        ('subject:" from:"me"', ["lunch"]),
-        ('label:" inbox "', ["plan"]),
-        ('subject:" probe "', ["lunch"]),
-        ('subject:" probe\u00a0"', ["lunch"]),
-        ('subject:" from:" probe', []),
-        ('label:" inbox subject:"probe"', ["plan"]),
-        ('" label:inbox', ["plan"]),
-        ('" from:me', ["lunch"]),
-        ('newer_than:"', []),
-        ('label:"" "', ["plan", "lunch"]),
-        ('label:"""', ["plan", "lunch"]),
-        ("probe-label:inbox", []),
-        ('probe-subject:" from:me', []),
-        ("probe-(from:me)", []),
-        ('from:" from:me', ["lunch"]),
-        ('to:" from:me', ["lunch"]),
-        ('cc:" from:me', ["lunch"]),
-        ('to:" -from:me', ["lunch"]),
-        ('from:" to:me', ["plan"]),
-        ('from:" -to:me', ["plan"]),
-        ('-from:" to:me', ["lunch"]),
-        ('from:" subject:probe', ["lunch"]),
-        ('label:"" " inbox', ["plan"]),
-        ('subject:"" " from:me', ["lunch"]),
-        ('subject:"" " -from:me', ["lunch"]),
-        ('in:"" " to:me', ["plan"]),
-        ('subject:"" " label:inbox', []),
-        ('label:" inbox -subject:"probe"', ["plan"]),
-        ('-newer_than:"', ["plan", "lunch"]),
-        ('NOT older_than:"', ["plan", "lunch"]),
-        ('newer_than:""', []),
-        ('older_than:""', []),
-        ('newer_than:"" "', []),
-        ('older_than:30d"', ["plan", "lunch"]),
-        ('older_than:30d"" "', ["plan", "lunch"]),
-        ('newer_than:30"d', []),
-        ("2026-label:inbox", ["plan"]),
-        ("2026-from:me", []),
-        ("probe-(label:inbox)", ["plan"]),
-        ("probe-(label:inbox", ["plan"]),
-        ("probe-(label:inbox from:me)", []),
-        ("probe-(-from:me)", []),
-        ("probe-(label:inbox -subject:probe)", []),
-        ("-probe-label:inbox", ["plan", "lunch"]),
-        ("NOT probe-label:inbox", ["plan", "lunch"]),
-        ("NOT NOT probe-label:inbox", []),
-        ("-probe-(from:me)", ["plan", "lunch"]),
-        ("-probe-label:inbox from:me", ["lunch"]),
-        ('" -label:inbox', ["plan"]),
-        ('" -from:me', ["lunch"]),
-        ('label:inbox "', ["plan"]),
-        ('"label:inbox', ["plan"]),
-        ('" label:inbox -from:me', []),
-        ('label:inbox -from:me "', ["plan"]),
-        ('" label:', []),
-        ('" from:', []),
-        ("label:inbox me", []),
-        ('from:"', ["plan", "lunch"]),
-        ('probe from:"', ["plan", "lunch"]),
-        ('from:"me', ["lunch"]),
-        ('subject:"', ["plan", "lunch"]),
-        ('-subject:"', ["plan", "lunch"]),
-        ('probe-label:" inbox', []),
-        ('" probe', ["plan", "lunch"]),
-        ('probe "', ["plan", "lunch"]),
-        ('"probe', ["plan", "lunch"]),
-        ('"', []),
-    ],
-)
-def test_gmail_a_stray_quote_beside_an_operator(tmp_path, surface, query, expected):
+_GMAIL_STRAY_QUOTE_ROWS = [
+    ('from:" me', ["lunch"]),
+    ('to:" me', ["plan"]),
+    ('from:" probe', []),
+    ('from:"me probe', []),
+    ('to:" probe', []),
+    ('from:" label:inbox', []),
+    ('subject:" from:me"', ["lunch"]),
+    ('subject:" from:"me"', ["lunch"]),
+    ('label:" inbox "', ["plan"]),
+    ('subject:" probe "', ["lunch"]),
+    ('subject:" probe\u00a0"', ["lunch"]),
+    ('subject:" from:" probe', []),
+    ('label:" inbox subject:"probe"', ["plan"]),
+    ('" label:inbox', ["plan"]),
+    ('" from:me', ["lunch"]),
+    ('newer_than:"', []),
+    ('label:"" "', ["plan", "lunch"]),
+    ('label:"""', ["plan", "lunch"]),
+    ("probe-label:inbox", []),
+    ('probe-subject:" from:me', []),
+    ("probe-(from:me)", []),
+    ('from:" from:me', ["lunch"]),
+    ('to:" from:me', ["lunch"]),
+    ('cc:" from:me', ["lunch"]),
+    ('to:" -from:me', ["lunch"]),
+    ('from:" to:me', ["plan"]),
+    ('from:" -to:me', ["plan"]),
+    ('-from:" to:me', ["lunch"]),
+    ('from:" subject:probe', ["lunch"]),
+    ('label:"" " inbox', ["plan"]),
+    ('subject:"" " from:me', ["lunch"]),
+    ('subject:"" " -from:me', ["lunch"]),
+    ('in:"" " to:me', ["plan"]),
+    ('subject:"" " label:inbox', []),
+    ('label:" inbox -subject:"probe"', ["plan"]),
+    ('-newer_than:"', ["plan", "lunch"]),
+    ('NOT older_than:"', ["plan", "lunch"]),
+    ('newer_than:""', []),
+    ('older_than:""', []),
+    ('newer_than:"" "', []),
+    ('older_than:30d"', ["plan", "lunch"]),
+    ('older_than:30d"" "', ["plan", "lunch"]),
+    ('newer_than:30"d', []),
+    ("2026-label:inbox", ["plan"]),
+    ("2026-from:me", []),
+    ("probe-(label:inbox)", ["plan"]),
+    ("probe-(label:inbox", ["plan"]),
+    ("probe-(label:inbox from:me)", []),
+    ("probe-(-from:me)", []),
+    ("probe-(label:inbox -subject:probe)", []),
+    ("-probe-label:inbox", ["plan", "lunch"]),
+    ("NOT probe-label:inbox", ["plan", "lunch"]),
+    ("NOT NOT probe-label:inbox", []),
+    ("-probe-(from:me)", ["plan", "lunch"]),
+    ("-probe-label:inbox from:me", ["lunch"]),
+    ('" -label:inbox', ["plan"]),
+    ('" -from:me', ["lunch"]),
+    ('label:inbox "', ["plan"]),
+    ('"label:inbox', ["plan"]),
+    ('" label:inbox -from:me', []),
+    ('label:inbox -from:me "', ["plan"]),
+    ('" label:', []),
+    ('" from:', []),
+    ("label:inbox me", []),
+    ('from:"', ["plan", "lunch"]),
+    ('probe from:"', ["plan", "lunch"]),
+    ('from:"me', ["lunch"]),
+    ('subject:"', ["plan", "lunch"]),
+    ('-subject:"', ["plan", "lunch"]),
+    ('probe-label:" inbox', []),
+    ('" probe', ["plan", "lunch"]),
+    ('probe "', ["plan", "lunch"]),
+    ('"probe', ["plan", "lunch"]),
+    ('"', []),
+]
+
+
+def test_gmail_a_stray_quote_beside_an_operator(tmp_path):
     """Each row is how the comments on `_GMAIL_LONE_QUOTE`, `_GMAIL_CLOSED_QUOTE`,
     `_GMAIL_HYPHENED` and `_GMAIL_BARE_LONE_QUOTE`, and those in `_parse_gmail_q`, read its query,
     over both listings. `plan` is from bob to the caller in the inbox and `lunch` from the caller to
     bob in sent; both hold the word `probe` and the number 2026."""
-    settings = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "gmail",
-                "doc_id": doc_id,
-                "mailbox": "ava",
-                "title": title,
-                "content": content,
-                "author_email": author,
-                "to": to,
-                "label_ids": [label],
-                "readers": ["ava@acme.com"],
-                "created": "2026-03-01T09:00:00Z",
-            }
-            for doc_id, title, content, author, to, label in [
-                ("plan", "Rollout plan", "probe 2026", "bob@acme.com", "ava@acme.com", "INBOX"),
-                ("lunch", "Lunch probe", "Friday? 2026", "ava@acme.com", "bob@acme.com", "SENT"),
-            ]
-        ],
-    )
-    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
-    with client_for(settings, reload=True) as c:
-        r = c.get(
-            f"/gmail/v1/users/me/{surface}",
-            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
-            params={"q": query},
-        )
-    assert r.status_code == 200
-    assert {item["id"] for item in r.json().get(surface, [])} == {
-        served_id("gmail", doc_id) for doc_id in expected
-    }
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": content,
+            "author_email": author,
+            "to": to,
+            "label_ids": [label],
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        }
+        for doc_id, title, content, author, to, label in [
+            ("plan", "Rollout plan", "probe 2026", "bob@acme.com", "ava@acme.com", "INBOX"),
+            ("lunch", "Lunch probe", "Friday? 2026", "ava@acme.com", "bob@acme.com", "SENT"),
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_STRAY_QUOTE_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 
-@pytest.mark.parametrize("surface", ["messages", "threads"])
-@pytest.mark.parametrize(
-    "query, expected", [('subject:"from: foo"', ["literal"]), ('subject:""', ["literal", "other"])]
-)
-def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path, surface, query, expected):
+def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path):
     """Ignoring an empty address operator must not edit a quoted value or change empty subjects."""
-    settings = tiny_corpus(
-        tmp_path,
-        [
-            {
-                "source_type": "gmail",
-                "doc_id": doc_id,
-                "mailbox": "ava",
-                "title": title,
-                "content": "body",
-                "author_email": "ava@acme.com",
-                "readers": ["ava@acme.com"],
-                "created": "2026-03-01T09:00:00Z",
-            }
-            for doc_id, title in [("literal", "from: foo"), ("other", "foo")]
-        ],
-    )
-    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
-    with client_for(settings, reload=True) as c:
-        r = c.get(
-            f"/gmail/v1/users/me/{surface}",
-            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
-            params={"q": query},
-        )
-    assert r.status_code == 200
-    assert {item["id"] for item in r.json().get(surface, [])} == {
-        served_id("gmail", doc_id) for doc_id in expected
-    }
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": "body",
+            "author_email": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        }
+        for doc_id, title in [("literal", "from: foo"), ("other", "foo")]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = [('subject:"from: foo"', ["literal"]), ('subject:""', ["literal", "other"])]
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 
-@pytest.mark.parametrize("surface", ["messages", "threads"])
-@pytest.mark.parametrize(
-    "query, expected",
-    [
-        ("from:no-reply", {"joined", "hyphen"}),
-        ("from:noreply", {"joined"}),
-        ("from:jt-snowball", {"domain"}),
-        ("from:jtsnowball", {"domain"}),
-        ("from:no-repl", set()),
-        ("from:noreplyx", set()),
-        ("from:no-reply@bank.example", {"hyphen"}),
-        ("from:no-reply@shop.example", set()),
-        ("to:no-reply", {"joined", "hyphen"}),
-        ("to:noreply", {"joined"}),
-        ("cc:no-reply", {"joined", "hyphen"}),
-        ("bcc:no-reply", {"joined", "hyphen"}),
-        ("from:no--reply", {"hyphen"}),
-        ("from:jt-snowball.com", set()),
-        ("from:@jt-snowball", {"domain"}),
-        ('from:"no-reply"', {"hyphen"}),
-        ('to:"no-reply"', {"hyphen"}),
-        ('cc:"no-reply"', {"hyphen"}),
-        ('bcc:"no-reply"', {"hyphen"}),
-        ('from:"noreply"', {"joined"}),
-        ('from:"jt-snowball"', set()),
-        ('from:"@jt-snowball"', set()),
-        ('-from:"no-reply"', {"joined", "domain"}),
-        ('-to:"no-reply"', {"joined", "domain"}),
-        ('-cc:"no-reply"', {"joined", "domain"}),
-        ('-from:"jt-snowball"', {"joined", "hyphen", "domain"}),
-    ],
-)
-def test_gmail_hyphenated_address_search(tmp_path, surface, query, expected):
+_GMAIL_HYPHENATED_ROWS = [
+    ("from:no-reply", {"joined", "hyphen"}),
+    ("from:noreply", {"joined"}),
+    ("from:jt-snowball", {"domain"}),
+    ("from:jtsnowball", {"domain"}),
+    ("from:no-repl", set()),
+    ("from:noreplyx", set()),
+    ("from:no-reply@bank.example", {"hyphen"}),
+    ("from:no-reply@shop.example", set()),
+    ("to:no-reply", {"joined", "hyphen"}),
+    ("to:noreply", {"joined"}),
+    ("cc:no-reply", {"joined", "hyphen"}),
+    ("bcc:no-reply", {"joined", "hyphen"}),
+    ("from:no--reply", {"hyphen"}),
+    ("from:jt-snowball.com", set()),
+    ("from:@jt-snowball", {"domain"}),
+    ('from:"no-reply"', {"hyphen"}),
+    ('to:"no-reply"', {"hyphen"}),
+    ('cc:"no-reply"', {"hyphen"}),
+    ('bcc:"no-reply"', {"hyphen"}),
+    ('from:"noreply"', {"joined"}),
+    ('from:"jt-snowball"', set()),
+    ('from:"@jt-snowball"', set()),
+    ('-from:"no-reply"', {"joined", "domain"}),
+    ('-to:"no-reply"', {"joined", "domain"}),
+    ('-cc:"no-reply"', {"joined", "domain"}),
+    ('-from:"jt-snowball"', {"joined", "hyphen", "domain"}),
+]
+
+
+def test_gmail_hyphenated_address_search(tmp_path):
     """Each row is how `_gmail_address_match` reads a value with a hyphen or without one, quoted or
     not, and how a `-` in front negates it."""
     records = [
@@ -12477,14 +12673,9 @@ def test_gmail_hyphenated_address_search(tmp_path, surface, query, expected):
             for r in records
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
-    headers = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
-    with client_for(settings, reload=True) as c:
-        r = c.get(f"/gmail/v1/users/me/{surface}", headers=headers, params={"q": query})
-    assert r.status_code == 200
-    assert {x["id"] for x in r.json().get(surface, [])} == {
-        served_id("gmail", doc_id) for doc_id in expected
-    }
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_HYPHENATED_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 
 _LONG_Q = " or ".join(f"name contains 'Brand{i}'" for i in range(80)) + " or name contains 'Brand'"

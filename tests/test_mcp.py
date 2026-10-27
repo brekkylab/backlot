@@ -343,22 +343,26 @@ def test_mcp_atlassian_acl_enforced(live_server):
     visible = seen["key"]
 
     def reads(token, username, issue_key):
-        return asyncio.run(
-            _call(
-                _atlassian_params(base, token, username),
-                tool_pred=lambda n: n == "jira_get_issue",
-                args={"issue_key": issue_key},
-                ok_pred=lambda t: t.strip().startswith("{") and '"key"' in t,
-            )
+        return _call(
+            _atlassian_params(base, token, username),
+            tool_pred=lambda n: n == "jira_get_issue",
+            args={"issue_key": issue_key},
+            ok_pred=lambda t: t.strip().startswith("{") and '"key"' in t,
         )
 
-    assert reads(settings.admin_token, "svc@example.com", key), (
-        "admin should read the issue through mcp-atlassian"
-    )
-    assert reads(user["token"], email, visible), (
+    async def all_three():
+        return await asyncio.gather(
+            reads(settings.admin_token, "svc@example.com", key),
+            reads(user["token"], email, visible),
+            reads(user["token"], email, key),
+        )
+
+    admin_read, own_read, restricted_read = asyncio.run(all_three())
+    assert admin_read, "admin should read the issue through mcp-atlassian"
+    assert own_read, (
         f"{email} should read an issue they can see, or the miss below is an auth failure"
     )
-    assert not reads(user["token"], email, key), (
+    assert not restricted_read, (
         f"{email} should be blocked from the restricted issue via mcp-atlassian"
     )
 

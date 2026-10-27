@@ -551,7 +551,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.2" },
     { name = "pygithub", marker = "extra == 'official-sdk'", specifier = ">=2.3" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6" },
     { name = "python-multipart", specifier = ">=0.0.9" },

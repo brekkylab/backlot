@@ -828,6 +828,62 @@ _UNKNOWN_IDS = [
 ]
 
 
+# A string argument holding a lone surrogate, which `backlot.graphql.node_utf8` writes as U+FFFD:
+# an id that names nothing, a filter that matches nothing, and the search term Linear's backend
+# refuses (`linear_resolvers._search_backend_failed`).
+_LONE_SURROGATE = "a\ud800b"
+
+
+def _with_the_key(query: str, answer: dict, row: str):
+    body = {"query": query, "variables": {"x": _LONE_SURROGATE}}
+    return pytest.param(
+        json.dumps(body).encode(), WithTheKey(node_json(answer) + b"\n", 200), id=row
+    )
+
+
+_LONE_SURROGATES = [
+    _unknown_id(
+        "issue",
+        _LONE_SURROGATE,
+        "Entity not found: Issue",
+        "Could not find referenced Issue.",
+        "issue, a lone surrogate",
+    ),
+    _unknown_id(
+        "team",
+        _LONE_SURROGATE,
+        "Entity not found: Team",
+        "Could not find referenced Team.",
+        "team, a lone surrogate",
+    ),
+    _with_the_key(
+        "query($x: String) { issues(first: 3, filter: {title: {eq: $x}}) { nodes { id } } }",
+        {"data": {"issues": {"nodes": []}}},
+        "an issues filter, a lone surrogate",
+    ),
+    _with_the_key(
+        "query($x: String!) { searchIssues(term: $x, first: 3) { nodes { id } } }",
+        {
+            "errors": [
+                {
+                    "message": "Failed to query search backend",
+                    "path": ["searchIssues"],
+                    "locations": [{"line": 1, "column": 22}],
+                    "extensions": {
+                        "type": "internal error",
+                        "code": "EXTERNAL_SERVICE_ERROR",
+                        "statusCode": 500,
+                        "userError": False,
+                    },
+                }
+            ],
+            "data": None,
+        },
+        "searchIssues, a lone surrogate",
+    ),
+]
+
+
 def test_linear_workflow_states_are_per_team(client, admin_h):
     """Two teams' identically-named states are different objects in Linear, so their ids differ.
     The corpus has no shared state name, so assert the construction directly instead."""
@@ -2088,6 +2144,7 @@ _LINEAR_BODIES = [
         id="a fragment that spreads itself",
     ),
     *_UNKNOWN_IDS,
+    *_LONE_SURROGATES,
 ]
 
 

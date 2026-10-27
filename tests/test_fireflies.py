@@ -1244,6 +1244,32 @@ def fireflies_corpus(tmp_path_factory):
     return tiny_corpus(tmp_path_factory.mktemp("fireflies_corpus"), FIREFLIES_CORPUS)
 
 
+# String arguments a document sends holding a lone surrogate, which `backlot.graphql.node_utf8` writes
+# as U+FFFD: api.fireflies.ai answered each with `a\ud800b` as with `a\ufffdb` on 2026-10-27 (UTC).
+_LONE_SURROGATE_DOCUMENTS = [
+    pytest.param("query($x: String!) { transcript(id: $x) { id } }", id="transcript"),
+    pytest.param("query($x: String) { user(id: $x) { user_id } }", id="user"),
+    pytest.param(
+        "query($x: String) { transcripts(keyword: $x, limit: 2) { id } }", id="transcripts keyword"
+    ),
+]
+
+
+def test_fireflies_answers_a_lone_surrogate_as_it_answers_u_fffd(client, admin_h):
+    def sent(query, value):
+        body = json.dumps({"query": query, "variables": {"x": value}}).encode()
+        headers = {**admin_h, "Content-Type": "application/json"}
+        r = client.post("/fireflies/graphql", content=body, headers=headers)
+        return r.status_code, r.content
+
+    answered, expected = {}, {}
+    for row in _LONE_SURROGATE_DOCUMENTS:
+        (query,) = row.values
+        answered[row.id] = sent(query, "a\ud800b")
+        expected[row.id] = sent(query, "a\ufffdb")
+    assert answered == expected
+
+
 def _ff(client, settings, query, **variables):
     return gql(
         client, "/fireflies/graphql", query, f"Bearer {settings.admin_token}", **variables

@@ -20,6 +20,7 @@ import unicodedata
 from graphql import GraphQLError
 
 from backlot import pagination, store, synth
+from backlot.graphql import node_utf8
 from backlot.graphql.linear_filters import (
     SCALARS,
     UUID_SHAPE,
@@ -1139,6 +1140,8 @@ def resolve_search_issues(
         team = store.linear_team_by_served_id(conn, teamId.lower()) or "\x00none"
     _slice(first, after, last, before)
     prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
+    if node_utf8.holds_a_lone_surrogate(term):
+        raise _search_backend_failed()
     hits, total = store.search_linear_issues(
         conn,
         term,
@@ -1173,6 +1176,21 @@ def resolve_documents(_root, info, first=None, after=None, last=None, before=Non
     """Always empty: a corpus carries no Linear documents. A workspace without any answered this
     page, its cursors null (measured 2026-10-22)."""
     return _list_page([], first, after, last, before)
+
+
+def _search_backend_failed() -> GraphQLError:
+    """Linear's error for a ``searchIssues`` term holding a lone surrogate, where it reads any other
+    string argument as :mod:`backlot.graphql.node_utf8` has it: api.linear.app answered
+    ``a\\ud800b`` so, and ``a\\ufffdb`` with the page of issues, on 2026-10-27 (UTC)."""
+    return GraphQLError(
+        "Failed to query search backend",
+        extensions={
+            "type": "internal error",
+            "code": "EXTERNAL_SERVICE_ERROR",
+            "statusCode": 500,
+            "userError": False,
+        },
+    )
 
 
 def _not_found(entity: str) -> GraphQLError:

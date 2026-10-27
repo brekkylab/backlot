@@ -2788,6 +2788,11 @@ _NO_CREDENTIAL_ROWS = [
         id="an unknown scheme",
     ),
     pytest.param(
+        {"Authorization": "Digest x", **_V1999},
+        dict.fromkeys(_NO_CREDENTIAL_ROUTES, _REFUSED_UNCOUNTED),
+        id="digest",
+    ),
+    pytest.param(
         {"Authorization": "Bearer\tnope", **_V1999},
         dict.fromkeys(_NO_CREDENTIAL_ROUTES, _REFUSED_UNCOUNTED),
         id="a bearer after a tab",

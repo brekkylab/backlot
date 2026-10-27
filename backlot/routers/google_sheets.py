@@ -2030,13 +2030,20 @@ def _sheets_batch_options(query: dict, body: dict) -> tuple[str, bool, dict]:
     the query when it is there and from the body otherwise. Measured 2026-10-27 on batchUpdate:
     `valueInputOption=USER_ENTERED` in the query beside `RAW` in the body read `5%` as 0.05, `RAW`
     beside `USER_ENTERED` kept it as text, and `includeValuesInResponse=false` beside `true` left
-    `updatedData` out."""
+    `updatedData` out. A body's enum is read by its number, on both batch writes: `0` is the first
+    name, so a `valueInputOption` of `0` is the 400 an absent one gets, and a number outside the
+    enum (`3`, `99`) is ``Invalid '<name>'``, checked in the order `valueInputOption`,
+    `responseValueRenderOption`, `responseDateTimeRenderOption`."""
 
     def pick(name: str, field: str, enum: protojson.Enum | None = None):
         if query[name] is not None:
             return query[name]
         value = body.get(field)
-        return enum.names[value] if enum is not None and value else value
+        if enum is None or value is None:
+            return value
+        if not 0 <= value < len(enum.names):
+            raise gerr.invalid_argument(f"Invalid '{name}'")
+        return enum.names[value]
 
     option = _sheets_input_option(pick("valueInputOption", "value_input_option", _PJ_VALUE_INPUT))
     include = bool(pick("includeValuesInResponse", "include_values_in_response"))
@@ -2327,7 +2334,8 @@ async def sheets_values_batch_update(spreadsheet_id: str, request: Request):
     The entries are written in order, so where two overlap the later wins. The options may come in
     the body or the query (`_sheets_batch_options`). The totals count distinct rows, columns and
     cells per sheet across the whole batch (one cell written twice totals 1), and
-    ``totalUpdatedSheets`` every sheet an entry names, one that wrote nothing included. With no entries the answer is ``spreadsheetId`` alone."""
+    ``totalUpdatedSheets`` every sheet an entry names, one that wrote nothing included. With no
+    entries the answer is ``spreadsheetId`` alone."""
     _sheets_alt(request)
     _require(request)
     query, body = await _sheets_write_request(request, _PJ_BATCH_UPDATE)

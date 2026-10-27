@@ -13584,6 +13584,63 @@ def test_a_prose_spreadsheet_takes_a_write_as_the_grid_it_reads_as(wc, wh, write
     assert csv_.text == '"month,revenue",\r\n"Jan,1",new'
 
 
+_REQUIRED = "'valueInputOption' is required but not specified"
+# (route, body options, refusal): a body's enum read by its number (`_sheets_batch_options`)
+_BODY_ENUM_REFUSALS = [
+    ("values:batchUpdate", {"valueInputOption": "INPUT_VALUE_OPTION_UNSPECIFIED"}, _REQUIRED),
+    ("values:batchUpdate", {"valueInputOption": 0}, _REQUIRED),
+    ("values:batchUpdate", {"valueInputOption": 0, "responseValueRenderOption": 99}, _REQUIRED),
+    ("values:batchUpdate", {"valueInputOption": -1}, "Invalid 'valueInputOption'"),
+    ("values:batchUpdate", {"valueInputOption": 3}, "Invalid 'valueInputOption'"),
+    (
+        "values:batchUpdate",
+        {"valueInputOption": 99, "responseValueRenderOption": 99},
+        "Invalid 'valueInputOption'",
+    ),
+    (
+        "values:batchUpdate",
+        {"valueInputOption": "RAW", "responseValueRenderOption": -1},
+        "Invalid 'responseValueRenderOption'",
+    ),
+    (
+        "values:batchUpdate",
+        {
+            "valueInputOption": "RAW",
+            "responseValueRenderOption": 99,
+            "responseDateTimeRenderOption": 99,
+        },
+        "Invalid 'responseValueRenderOption'",
+    ),
+    (
+        "values:batchUpdate",
+        {"valueInputOption": "RAW", "responseDateTimeRenderOption": 99},
+        "Invalid 'responseDateTimeRenderOption'",
+    ),
+    (
+        "values:batchUpdateByDataFilter",
+        {"valueInputOption": "INPUT_VALUE_OPTION_UNSPECIFIED"},
+        _REQUIRED,
+    ),
+    ("values:batchUpdateByDataFilter", {"valueInputOption": 0}, _REQUIRED),
+    ("values:batchUpdateByDataFilter", {"valueInputOption": 3}, "Invalid 'valueInputOption'"),
+    (
+        "values:batchUpdateByDataFilter",
+        {"valueInputOption": 99, "responseValueRenderOption": 99},
+        "Invalid 'valueInputOption'",
+    ),
+    (
+        "values:batchUpdateByDataFilter",
+        {"valueInputOption": "RAW", "responseValueRenderOption": 99},
+        "Invalid 'responseValueRenderOption'",
+    ),
+    (
+        "values:batchUpdateByDataFilter",
+        {"valueInputOption": "RAW", "responseDateTimeRenderOption": 99},
+        "Invalid 'responseDateTimeRenderOption'",
+    ),
+]
+
+
 def test_a_batch_update_writes_every_entry_or_none(wc, wh, wbook):
     """Measured: one bad entry refuses the call by its index and writes nothing; the totals count
     distinct cells across the batch, and every sheet an entry names."""
@@ -13665,6 +13722,15 @@ def test_a_batch_update_writes_every_entry_or_none(wc, wh, wbook):
         'Invalid JSON payload received. Unknown name "bogus": Cannot find field.\n'
         "Invalid value at 'include_values_in_response' (TYPE_BOOL), \"on\""
     )
+    # a body's enum number zero is no value, and one outside the enum is refused; nothing is written
+    for route, options, message in _BODY_ENUM_REFUSALS:
+        if route == "values:batchUpdate":
+            entry = {"range": "Data!A12", "values": [["5%"]]}
+        else:
+            entry = {"dataFilter": {"a1Range": "Data!A12"}, "values": [["5%"]]}
+        r = wc.post(f"{wbook}/{route}", headers=h, json={**options, "data": [entry]})
+        assert (r.status_code, r.json()["error"]["message"]) == (400, message), (route, options)
+        assert _read_back(wc, h, wbook, "Data!A12") is None
 
 
 def test_a_clear_empties_the_values_and_keeps_the_formats(wc, wh, wbook):

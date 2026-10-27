@@ -454,12 +454,17 @@ def test_linear_search_issues(client, admin_h, tokens_yaml, variables, caller, i
         {"term": ""},
         {"term": "x", "teamId": "ENG"},
         {"term": "x", "teamId": "11111111-1111-0111-8111-111111111111"},
+        {"term": "a\ud800b", "teamId": "ENG"},
+        {"term": "a\ud800b", "filter": {"id": {"eq": "not-a-uuid"}}},
     ],
 )
 def test_linear_search_issues_refuses_what_real_refuses(client, admin_h, variables):
     """An empty term and a team key for `teamId`, each refused as `resolve_search_issues`
-    records."""
-    r = gql(client, _SEARCH, admin_h, **variables).json()
+    records, and a refused argument beside a term `_search_backend_failed` answers. The body is
+    `json.dumps`'s, which writes a lone surrogate as its escape."""
+    body = json.dumps({"query": _SEARCH, "variables": variables}).encode()
+    headers = {**admin_h, "Content-Type": "application/json"}
+    r = client.post("/linear/graphql", content=body, headers=headers).json()
     assert r["data"] is None
     assert r["errors"][0]["message"] == "Argument Validation Error"
 

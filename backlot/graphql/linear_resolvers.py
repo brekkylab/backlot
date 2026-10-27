@@ -1181,7 +1181,10 @@ def resolve_documents(_root, info, first=None, after=None, last=None, before=Non
 def _search_backend_failed() -> GraphQLError:
     """Linear's error for a ``searchIssues`` term holding a lone surrogate, where it reads any other
     string argument as :mod:`backlot.graphql.node_utf8` has it: api.linear.app answered
-    ``a\\ud800b`` so, and ``a\\ufffdb`` with the page of issues, on 2026-10-27 (UTC)."""
+    ``a\\ud800b`` so, and ``a\\ufffdb`` with the page of issues, on 2026-10-27 (UTC). An argument
+    it refuses is answered first: beside ``a\\ud800b``, a ``teamId`` or filter ``id`` that is not a
+    UUID, a ``first`` of 0, ``first`` with ``last`` and an ``after`` that is no cursor were each its
+    `Argument Validation Error`, and an unknown ``teamId`` this error."""
     return GraphQLError(
         "Failed to query search backend",
         extensions={

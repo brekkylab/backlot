@@ -28,6 +28,7 @@ from backlot.telemetry import clients, enabled, errors, naming, notice, recorder
 from backlot.telemetry.errors import error_class
 from backlot.telemetry.middleware import _credential
 from backlot.telemetry.recorder import MAX_SERIES, RECORDER, Exporter, Recorder, encode
+from backlot.version import version
 from tests._helpers import build_corpus, client_for
 
 ADMIN = {"Authorization": "Bearer admin-service-token"}
@@ -1110,15 +1111,24 @@ def test_nothing_the_request_spelled_reaches_an_export(client):
             value = attr["value"].get("stringValue")
             if pattern and value is not None:
                 assert re.match(pattern, value), (attr["key"], value)
-    keys = {a["key"] for a in body["resourceMetrics"][0]["resource"]["attributes"]}
-    assert keys == {"service.name", "service.version", "os.type", "process.runtime.version"}
+    (export,) = body["resourceMetrics"]
+    resource = {a["key"]: a["value"]["stringValue"] for a in export["resource"]["attributes"]}
+    assert resource.keys() == {
+        "service.name",
+        "service.version",
+        "os.type",
+        "process.runtime.version",
+    }
+    assert resource["service.version"] == export["scopeMetrics"][0]["scope"]["version"] == version()
 
 
 class _Collector(BaseHTTPRequestHandler):
     bodies: list = []
+    user_agents: list = []
 
     def do_POST(self):
         self.bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+        self.user_agents.append(self.headers["User-Agent"])
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -1131,6 +1141,7 @@ class _Collector(BaseHTTPRequestHandler):
 @pytest.fixture
 def collector():
     _Collector.bodies = []
+    _Collector.user_agents = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}/v1/metrics", _Collector.bodies
@@ -1153,6 +1164,7 @@ def test_the_exporter_posts_each_interval_and_survives_a_dead_endpoint(collector
     live.flush()
     live.flush()  # an empty interval sends nothing
     assert (live.sent, live.failed, len(bodies)) == (1, 0, 1)
+    assert _Collector.user_agents == [f"backlot/{version()}"]
     (sums, hists, gauge) = bodies[0]["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
     assert gauge["name"] == "backlot.surface.operations"
     assert gauge["gauge"]["dataPoints"][0]["asInt"] == "32"

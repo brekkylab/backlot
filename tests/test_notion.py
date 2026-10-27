@@ -417,9 +417,8 @@ def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, noti
 
 def test_notion_answers_an_if_none_match_of_a_star_as_real_does(client, notion_h):
     """Each request below is answered as ``backlot.routers.notion.not_modified`` records real
-    answering it: with a 304 that carries the headers of the answer it stands for but
-    `content-type` and `content-length`, the `ETag` among them, and no body; or with the status it
-    gets without `If-None-Match`."""
+    answering it: with the 304 ``backlot.main.report_notion_etag`` makes of the answer it stands
+    for, or with the status it gets without `If-None-Match`."""
     me, page = "/notion/v1/users/me", f"/notion/v1/pages/{synth.notion_id('nt-runbook')}"
     stands_for = {}
     for path in (me, page):
@@ -433,6 +432,7 @@ def test_notion_answers_an_if_none_match_of_a_star_as_real_does(client, notion_h
         ("GET", page, (star,)): stands_for[page],
         ("GET", me, (("If-None-Match", " \t* "),)): stands_for[me],
         ("GET", me, (star, ("If-Modified-Since", ""))): stands_for[me],
+        ("GET", me, (star, ("If-Modified-Since", "  "))): stands_for[me],
         ("GET", me, (star, ("Cache-Control", "NO-CACHE"))): stands_for[me],
         ("GET", me, (star, ("Cache-Control", "max-age=0"))): stands_for[me],
         ("GET", me, (star, ("If-Modified-Since", "Fri, 01 Jan 2100 00:00:00 GMT"))): 200,
@@ -440,6 +440,7 @@ def test_notion_answers_an_if_none_match_of_a_star_as_real_does(client, notion_h
         ("GET", me, (star, ("Cache-Control", "max-age=0, no-cache"))): 200,
         ("GET", me, (star, ("Cache-Control", "max-age=0"), ("Cache-Control", "no-cache"))): 200,
         ("GET", me, (star, ("Cache-Control", "xno-cache"))): stands_for[me],
+        ("GET", me, (star, ("Cache-Control", "\xa0no-cache"))): 200,
         ("GET", me, (star, ("Cache-Control", 'no-cache="set-cookie"'))): stands_for[me],
         ("GET", me, (("If-None-Match", '"*"'),)): 200,
         ("GET", me, (("If-None-Match", 'W/"0-x", *'),)): 200,

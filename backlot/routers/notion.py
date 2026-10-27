@@ -129,12 +129,13 @@ def not_modified(request: Request, status_code: int) -> bool:
     `pages/{id}` and `blocks/{id}/children`, carrying the `ETag` and every header the 200 carries
     but `content-type`. Beside `If-Modified-Since` of a past or a future date, or
     `Cache-Control: max-age=0, no-cache` sent as one header or as two, it drew the 200, and beside
-    an `If-Modified-Since` of U+00A0 alone too; beside an empty `If-Modified-Since`, or a
-    `Cache-Control` of `NO-CACHE`, `max-age=0`, `xno-cache` or `no-cache="set-cookie"`, the 304. A
-    400, a 404 and a `POST` were answered as without it, and so were `"*"`, `W/"0-x", *` and a
-    U+00A0 beside the `*`. No other `If-None-Match` can match there, because each body carries a
-    `request_id` minted for it; this server's comes from the request (:func:`_request_id`), so its
-    tag repeats, and matching one would answer a 304 where real answers the 200. Only `*` is read.
+    an `If-Modified-Since` of U+00A0 alone or a `Cache-Control` of `no-cache` after a U+00A0 too;
+    beside an empty `If-Modified-Since` or one of spaces, or a `Cache-Control` of `NO-CACHE`,
+    `max-age=0`, `xno-cache` or `no-cache="set-cookie"`, the 304. A 400, a 404 and a `POST` were
+    answered as without it, and so were `"*"`, `W/"0-x", *` and a U+00A0 beside the `*`. No other
+    `If-None-Match` can match there, because each body carries a `request_id` minted for it; this
+    server's comes from the request (:func:`_request_id`), so its tag repeats, and matching one
+    would answer a 304 where real answers the 200. Only `*` is read.
     """
     if request.method != "GET" or not 200 <= status_code < 300:
         return False

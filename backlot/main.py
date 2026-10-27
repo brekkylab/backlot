@@ -663,10 +663,9 @@ async def read_a_notion_body_as_express_does(request: Request, call_next):
     lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
 )
 async def report_notion_etag(request: Request, call_next):
-    """Put the `ETag` real puts on a Notion answer (``notion.weak_etag``) on each JSON one,
-    computed over its body, and answer a request ``notion.not_modified`` finds fresh with a 304
-    that carries the tag and the answer's headers but its body, `content-type` and
-    `content-length`.
+    """Put ``notion.weak_etag``, computed over its body, on each JSON Notion answer, and answer a
+    request ``notion.not_modified`` finds fresh with a 304 that carries the tag and the answer's
+    headers but its body, `content-type` and `content-length`.
 
     Registered after ``read_a_notion_body_as_express_does``, which makes it the outer of the
     two, so a refusal that reader answers carries the tag too, as real's 413 and 415 do; and

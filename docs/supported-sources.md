@@ -175,7 +175,10 @@ not base64, are credentials that do not resolve, though that `Basic` value is no
 header a tab sets apart; a `Basic` value whose base64 holds, as its password or as its user beside
 an empty password or `x-oauth-basic`, a token that resolves or one shaped like real's (`ghp_`,
 `gho_`, `ghu_` or `ghs_` and 36 ASCII letters or digits) or like Backlot's (`usr-` and 20
-hexadecimal digits) is that token; and one that holds anything else is no credential at all.
+hexadecimal digits) is that token; so is one of 40 lower-case hexadecimal digits, or one of those
+four prefixes in another case and 36 ASCII letters or digits, whose "Bad credentials" carries the
+five and is counted in the window a `Basic` value naming no token is counted in; and one that
+holds anything else is no credential at all.
 
 **Every response carries the five `x-ratelimit-*` headers** real puts on every answer its API gives,
 the errors included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for
@@ -188,20 +191,21 @@ routing alike, for a caller with no credential (measured against api.github.com 
 2026-09-22) and for a token (2026-09-23) alike; a bearer that does not resolve still gets its own
 401, window spent or not (2026-09-23), when a space follows its scheme: in a header a tab sets apart
 (see the paragraph above) it is counted in the window real shares among the `Authorization` values
-it cannot parse, and refused once that window is spent (2026-10-14). The refused request is not
-itself counted, which is why `used` holds at `limit` rather than climbing past it. The body differs
-by caller: two members (`message`, `documentation_url`) for a caller with no credential, three
-(`status` besides) for a token, each with its own `documentation_url`.
-`BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
-[configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
-count, and is never refused — the one route a client reads its way out of a spent window with;
+it cannot parse, and refused once that window is spent (2026-10-14); the two `Basic` shapes the
+paragraph above counts in that window get their own 401 once it is spent, as with it fresh, when a
+space follows the scheme (2026-10-26). The refused request is not itself counted, which is why
+`used` holds at `limit` rather than climbing past it. The body differs by caller: two members
+(`message`, `documentation_url`) for a caller with no credential, three (`status` besides) for a
+token, each with its own `documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal
+off (see [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does
+not count, and is never refused — the one route a client reads its way out of a spent window with;
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
 none of the five and counts nowhere, spent window or not (2026-09-23). Four answers carry none of
 the five and count nowhere, as real's do not: a credential that does not resolve, unless a tab sets
-its header apart, a path real does not route asked by a caller that sent one, and, on an operation
-Backlot does not serve, the 401 for an `Authorization` that carries no credential and the 401 for
-none at all on a `PATCH`, `PUT` or `DELETE` (measured 2026-09-10, 2026-09-21, 2026-10-14 and
-2026-10-16).
+its header apart or it is one of the two `Basic` shapes the paragraph above counts, a path real does
+not route asked by a caller that sent one, and, on an operation Backlot does not serve, the 401 for
+an `Authorization` that carries no credential and the 401 for none at all on a `PATCH`, `PUT` or
+`DELETE` (measured 2026-09-10, 2026-09-21, 2026-10-14 and 2026-10-16).
 
 **Every response carries an `x-github-request-id`**, as real's do, code search's and the refusals
 answered before a route runs included: five uppercase hex fields joined by colons, the last being

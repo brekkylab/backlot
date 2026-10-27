@@ -1244,8 +1244,7 @@ def fireflies_corpus(tmp_path_factory):
     return tiny_corpus(tmp_path_factory.mktemp("fireflies_corpus"), FIREFLIES_CORPUS)
 
 
-# Fireflies' rows for `backlot.graphql.node_utf8`: a lone surrogate after an id the corpus holds,
-# and alone in a keyword.
+# Each document with a held id, or nothing, before the surrogate (`backlot.graphql.node_utf8`).
 _LONE_SURROGATE_DOCUMENTS = [
     pytest.param(
         "query($x: String!) { transcript(id: $x) { id } }", "{transcript}", id="transcript"

@@ -15,7 +15,8 @@ from urllib.parse import quote
 import pytest
 
 from backlot import store, synth
-from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS, weak_etag
+from backlot.express_http import weak_etag
+from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS
 from backlot.routers.notion import router as notion_router
 from tests._helpers import client_for, sent_as, served_id, tiny_corpus, tok
 
@@ -308,7 +309,7 @@ def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
 
 
 def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, notion_h):
-    """Pins ``backlot.errors.notion.json_media_type``, ``backlot.routers.notion.weak_etag`` and
+    """Pins ``backlot.errors.notion.json_media_type``, ``backlot.express_http.weak_etag`` and
     ``backlot.routers.notion.APPLICATION_HEADERS`` on 200s and refusals, a `HEAD` among them: each
     carries the charset; each but the framework's 405 for `TRACE` the `ETag` over its body, a `HEAD`
     its `GET`'s; and each but that 405 and a refusal of the body reader

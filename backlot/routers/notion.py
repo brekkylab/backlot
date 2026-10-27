@@ -76,6 +76,24 @@ PUBLISHED_VERSIONS = (
     "2025-09-03",
     "2026-03-11",
 )
+#: The headers real puts on an answer past its body reader (:func:`front_door_body`), one value
+#: each wherever they were measured against api.notion.com on 2026-10-27: the answers of each route
+#: here (200s, 400s, 401s, 404s and a 503, `HEAD`s among them), the OAuth client endpoints' 401 and
+#: the root's 302. The refusals that body reader answers carried none of them, and neither did the
+#: front door's `405 Not Allowed` page for `TRACE`: a method outside :data:`ROUTED_METHODS` is the
+#: framework's 405 here (:func:`unmatched_path`), and carries none of them either.
+#: `strict-transport-security` came beside them and is left off, a promise of HTTPS that a server
+#: answering over plain HTTP cannot keep.
+APPLICATION_HEADERS = {
+    "content-security-policy": "default-src 'none'",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "x-content-type-options": "nosniff",
+    "x-dns-prefetch-control": "off",
+    "x-download-options": "noopen",
+    "x-frame-options": "SAMEORIGIN",
+    "x-permitted-cross-domain-policies": "none",
+    "x-xss-protection": "0",
+}
 
 
 # --- OpenAPI enrichment --------------------------------------------------
@@ -1403,9 +1421,11 @@ def _invalid_client(request: Request) -> JSONResponse:
     )
 
 
-@unmatched_router.api_route(
-    "/{rest:path}", methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"]
-)
+#: The methods the catch-all below takes; :func:`unmatched_path` has why these six.
+ROUTED_METHODS = ("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS")
+
+
+@unmatched_router.api_route("/{rest:path}", methods=list(ROUTED_METHODS))
 async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     """Notion's answer for a URL no route here serves: the credential's refusal where Notion
     publishes the operation, and otherwise the URL's 400, which it gives before it reads anything

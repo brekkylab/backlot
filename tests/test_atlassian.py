@@ -1224,9 +1224,10 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
     assert bogus["results"] == [] and bogus["totalSize"] == 0
 
 
-def test_confluence_cql_search_filtered_by_id_ancestor_parent(tmp_path):
+def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
     """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` answers an `id`, `ancestor`
-    or `parent` clause, alone and beside `type`, `space`, a `~` term and each other.
+    or `parent` clause, alone and beside `type`, `space`, a `~` term and each other, and each of
+    those five and `label` negated.
 
     Not SAMPLE: its one child sits directly under its parent, so an `ancestor` clause would select
     the same rows as `parent`, and a `~` term that misses a chain's middle could not be sent."""
@@ -1243,12 +1244,21 @@ def test_confluence_cql_search_filtered_by_id_ancestor_parent(tmp_path):
         tmp_path,
         [
             {**page, "doc_id": "q-gp", "title": "Guide"},
-            {**page, "doc_id": "q-c", "title": "Child", "parent": "q-gp"},
-            {**page, "doc_id": "q-gc", "title": "Grand", "parent": "q-c", "content": "Deep."},
+            {**page, "doc_id": "q-c", "title": "Child", "parent": "q-gp", "labels": ["pager"]},
+            {
+                **page,
+                "doc_id": "q-gc",
+                "title": "Grand",
+                "parent": "q-c",
+                "content": "Deep.",
+                "labels": ["oncall"],
+            },
             {**page, "doc_id": "q-o", "title": "Other", "space": "ops"},
+            {**page, "doc_id": "q-b", "title": "Post", "space": "ops", "subtype": "blogpost"},
         ],
     )
     eng = synth.confluence_space_key("eng")
+    three = "id in ({Guide},{Child},{Grand})"
     rows = [
         # cql, each title standing for its served id, and the titles real answered over the chain
         # of three pages :func:`confluence_cql_search`'s docstring records.
@@ -1282,74 +1292,51 @@ def test_confluence_cql_search_filtered_by_id_ancestor_parent(tmp_path):
         ("id=999999999", set()),
         ("ancestor=999999999", set()),
         ("parent=999999999", set()),
-    ]
-    with client_for(settings, reload=True) as c:
-        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
-        h = {"Authorization": f"Bearer {written['admin_token']}"}
-        content = c.get("/atlassian/wiki/rest/api/content", headers=h).json()["results"]
-        ids = {r["title"]: r["id"] for r in content}
-        for template, want in rows:
-            cql = template.format(**ids)
-            r = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": cql}).json()
-            assert {x["title"] for x in r["results"]} == want, cql
-            assert r["totalSize"] == len(want), cql
-
-
-def test_confluence_cql_search_negated_clauses(tmp_path):
-    """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` answers a negated
-    `space`, `type`, `label`, `id`, `ancestor` or `parent` clause: `!=`, `not in` and `not`
-    after `and` each leave out the rows the clause names, and a row the field is absent on —
-    a page with no parent, a page with no label — passes, as real's do.
-
-    The measurement is the one :func:`backlot.routers.atlassian.confluence_cql_search`'s
-    docstring records, over a chain of three pages in one space with the grandchild the only
-    one labelled: the rows below are that table, with `id in (...)` naming the chain where it
-    names the three."""
-    from backlot import synth
-
-    page = {
-        "source_type": "confluence",
-        "space": "eng",
-        "content": "Body.",
-        "author_email": "ava@acme.com",
-        "visibility": "public",
-    }
-    settings = tiny_corpus(
-        tmp_path,
-        [
-            {**page, "doc_id": "q-gp", "title": "Guide"},
-            {**page, "doc_id": "q-c", "title": "Child", "parent": "q-gp"},
-            {**page, "doc_id": "q-gc", "title": "Grand", "parent": "q-c", "labels": ["oncall"]},
-            {**page, "doc_id": "q-o", "title": "Other", "space": "ops"},
-        ],
-    )
-    eng = synth.confluence_space_key("eng")
-    three = "id in ({Guide},{Child},{Grand})"
-    rows = [
+        # each of those and `label` negated, `three` naming the chain, its grandchild labelled
+        # `oncall` and its child `pager`
         (three + " and id != {Child}", {"Guide", "Grand"}),
         (three + " and id not in ({Child})", {"Guide", "Grand"}),
         (three + " and not id={Child}", {"Guide", "Grand"}),
+        (three + " and not id in ({Child})", {"Guide", "Grand"}),
+        (three + " and not (id = {Child})", {"Guide", "Grand"}),
+        (three + " and not (id in ({Child}))", {"Guide", "Grand"}),
+        (three + " AND NOT id = {Child}", {"Guide", "Grand"}),
+        (three + " and id != {Child} and id != {Grand}", {"Guide"}),
+        (three + " and not id={Child} and not id={Grand}", {"Guide"}),
+        (three + " and id not in ({Child}) and id not in ({Grand})", {"Guide"}),
         (three + " and ancestor != {Guide}", {"Guide"}),
         (three + " and ancestor not in ({Guide})", {"Guide"}),
         (three + " and not ancestor={Guide}", {"Guide"}),
+        (three + " and not ancestor in ({Guide})", {"Guide"}),
         (three + " and parent != {Guide}", {"Guide", "Grand"}),
         (three + " and not parent={Guide}", {"Guide", "Grand"}),
         (three + " and type != page", set()),
         (three + " and type not in (page)", set()),
         (three + " and not type=page", set()),
+        (three + " and not type in (page)", set()),
+        (three + " and TYPE != page", set()),
         (three + f' and space != "{eng}"', set()),
         (three + f' and space not in ("{eng}")', set()),
         (three + f' and not space="{eng}"', set()),
+        (three + f' and not space in ("{eng}")', set()),
+        (three + ' and space != "NOSUCHKEY"', {"Guide", "Child", "Grand"}),
         (three + ' and label != "oncall"', {"Guide", "Child"}),
         (three + ' and label not in ("oncall")', {"Guide", "Child"}),
         (three + ' and not label="oncall"', {"Guide", "Child"}),
+        (three + ' and not label in ("oncall")', {"Guide", "Child"}),
+        (three + ' and not (label = "oncall")', {"Guide", "Child"}),
+        (three + ' and label != "oncall" and label != "pager"', {"Guide"}),
+        (three + ' and not label="oncall" and not label="pager"', {"Guide"}),
         ("ancestor={Guide} and id != {Child}", {"Grand"}),
         ("ancestor={Guide} and not id={Child}", {"Grand"}),
-        # a negated clause on its own searches the corpus and leaves its rows out
+        # a negated clause alone: real answered every row on the site the clause does not name
+        ("id != {Child}", {"Guide", "Grand", "Other", "Post"}),
         ("type != blogpost", {"Guide", "Child", "Grand", "Other"}),
-        (f'space != "{eng}"', {"Other"}),
-        ("parent != {Guide}", {"Guide", "Grand", "Other"}),
-        ('label != "oncall"', {"Guide", "Child", "Other"}),
+        (f'space != "{eng}"', {"Other", "Post"}),
+        ('space != "NOSUCHKEY"', {"Guide", "Child", "Grand", "Other", "Post"}),
+        ("parent != {Guide}", {"Guide", "Grand", "Other", "Post"}),
+        ("ancestor != {Guide}", {"Guide", "Other", "Post"}),
+        ('label != "oncall"', {"Guide", "Child", "Other", "Post"}),
     ]
     with client_for(settings, reload=True) as c:
         written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))

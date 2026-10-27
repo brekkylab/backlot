@@ -659,6 +659,39 @@ async def read_a_notion_body_as_express_does(request: Request, call_next):
     return refusal if refusal is not None else await call_next(request)
 
 
+@_middleware(
+    lambda scope: (
+        _url_path(scope).startswith(f"{errors.notion.PREFIX}/v1/")
+        and scope["method"] in notion.ROUTED_METHODS
+    )
+)
+async def report_notion_cors(request: Request, call_next):
+    """Reproduce Notion's application CORS layer and its route-independent preflight.
+
+    Measured 2026-10-27: `Origin` puts :data:`notion.CORS_HEADERS` on successes and refusals,
+    including body-reader and unknown-URL answers. An `OPTIONS` carrying both `Origin` and
+    `Access-Control-Request-Method` instead answers an empty 204 before URL routing. Registration
+    after :func:`read_a_notion_body_as_express_does` makes this the outer of those two layers.
+    """
+    has_origin = "origin" in request.headers
+    is_preflight = (
+        request.method == "OPTIONS"
+        and has_origin
+        and "access-control-request-method" in request.headers
+    )
+    response = Response(status_code=204) if is_preflight else await call_next(request)
+    if has_origin:
+        for name, value in notion.CORS_HEADERS.items():
+            response.headers[name] = value
+    if is_preflight:
+        response.headers["vary"] = "Origin"
+    elif has_origin or notion.cors_varies_on_origin(request.method, request.url.path):
+        response.headers["vary"] = "Origin, Accept-Encoding"
+    else:
+        response.headers["vary"] = "Accept-Encoding"
+    return response
+
+
 def _is_guid(value: str) -> bool:
     try:
         uuid.UUID(value)

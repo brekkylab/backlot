@@ -95,6 +95,20 @@ APPLICATION_HEADERS = {
     "x-xss-protection": "0",
 }
 
+#: The CORS headers real puts on every application answer to a request carrying `Origin`, measured
+#: against api.notion.com on 2026-10-27. A valid preflight carries these same values.
+CORS_HEADERS = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-headers": (
+        "Authorization, Content-Type, Accept, Notion-Version, Notion-Beta, Idempotency-Key, "
+        "User-Agent, X-Notion-Mcp-Redirect-Uri, X-Notion-Mcp-Client-Id, "
+        "X-Notion-Mcp-Client-Name, X-Notion-Mcp-Client-Version"
+    ),
+    "access-control-allow-methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
+    "access-control-expose-headers": "X-Notion-Request-Id, Retry-After",
+    "access-control-max-age": "0",
+}
+
 
 # --- OpenAPI enrichment --------------------------------------------------
 # GET query params are documented with openapi_extra (merges with path params, no signature
@@ -1403,6 +1417,15 @@ _PUBLISHED_NOT_SERVED = published.not_served("notion")
 _CLIENT_AUTH_OPERATIONS = frozenset(
     {("POST", "/v1/oauth/token"), ("POST", "/v1/oauth/introspect"), ("POST", "/v1/oauth/revoke")}
 )
+
+
+def cors_varies_on_origin(method: str, path: str) -> bool:
+    """Whether a no-`Origin` `/notion/v1/` answer still varies on `Origin`.
+
+    Measured 2026-10-27: ordinary application answers do; the three OAuth client operations,
+    which sit in front of that application surface, vary only on compression negotiation.
+    """
+    return (method, path.removeprefix("/notion")) not in _CLIENT_AUTH_OPERATIONS
 
 
 def _invalid_client(request: Request) -> JSONResponse:

@@ -292,10 +292,11 @@ def _utf7(raw: bytes, *, imap: bool) -> str:
     is dropped, and one right after the opening byte stands for that byte. Each run is decoded
     apart, and a run the body ends in is decoded in two, its characters up to a multiple of eight
     and the rest: see :func:`_base64_units`. A byte outside a run is a character when below 0x80
-    and U+FFFD otherwise. api.linear.app read bodies so on 2026-10-27 (UTC): a run that opens with
-    a byte-order mark lost it, and a run the body ends in lost one its ninth character starts.
-    ``raw-body`` hands the decoder each chunk as it arrives, so this is a body read in one chunk;
-    one that arrives in pieces reads otherwise where a piece ends inside a run."""
+    and U+FFFD otherwise. Measured on api.linear.app on 2026-10-27 (UTC), a byte-order mark that
+    opens a run is no character of the body, nor is one that starts at the ninth character of a run
+    the body ends in. ``raw-body`` hands the decoder each chunk as it arrives, so this is a body
+    read in one chunk; one that arrives in pieces reads otherwise where a piece ends inside a
+    run."""
     shift, alphabet = (0x26, _BASE64 | {0x2C}) if imap else (0x2B, _BASE64)
     units: list[int] = []
     in_run, start, i = False, 0, 0
@@ -366,10 +367,10 @@ def _unbrotli(raw: bytes, limit: int = LINEAR_LIMIT) -> bytes:
     body through, and :class:`Unread` where that stream fails or yields more than ``limit`` bytes.
     Node reads one stream and leaves what follows it unread; the messages are zlib's
     ``Decompression failed`` for bytes Brotli cannot read and ``unexpected end of file`` for a
-    stream cut short. api.linear.app answered each on 2026-10-27 (UTC): a stream then ``xx``, or
-    then a second stream, was served, no bytes and a stream short of its last three were the end of
-    file, the query sent plain was the decompression failure, and a stream of 10485761 bytes the
-    413 where one of 10485760 was served."""
+    stream cut short. Measured on api.linear.app on 2026-10-27 (UTC): a stream then ``xx``, or then
+    a second stream, was served, no bytes and a stream short of its last three were the end of
+    file, the query sent plain was the decompression failure, and a stream one byte past
+    :data:`LINEAR_LIMIT` the 413 where one of that many was served."""
     try:
         out, finished = _brotli_read(raw, limit)
     except brotli_codec.error:

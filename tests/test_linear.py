@@ -2397,6 +2397,54 @@ _LINEAR_READS = [
         id="utf-7-imap, + inside IMAP",
     ),
     pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+ }"}',
+        b'{"errors":[{"message":"Cannot query field \\"x\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, an empty run closed by a space",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+AGE}"}',
+        b'{"errors":[{"message":"Cannot query field \\"xa\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run closed by }",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x\xe9 }"}',
+        b'{"errors":[{"message":"Syntax Error: Unexpected character: U+FFFD.","locations":[{"line":1,"column":4}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a byte past 0x7f outside a run",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x\xe9+AGE- }"}',
+        b'{"errors":[{"message":"Syntax Error: Unexpected character: U+FFFD.","locations":[{"line":1,"column":4}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a byte past 0x7f before a run",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+AGEAY- }"}',
+        b'{"errors":[{"message":"Cannot query field \\"xa\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run of five characters",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'+/v7+/w-{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xef\xbb\xbe\', \\"\xef\xbb\xbe\xef\xbb\xbf{\\"query\\"\\"... is not valid JSON","details":{},"code":400}',
+        id="utf-7, two byte-order marks opening the body",
+    ),
+    pytest.param(
+        _charset("utf-7-imap"),
+        b'{"query":"{ x&AGEAY- }"}',
+        b'{"errors":[{"message":"Cannot query field \\"xa\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7-imap, an IMAP run of five characters",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'+/v/+/w-{"query":"{ __typename }"}',
+        None,
+        id="utf-7, a run of two byte-order marks opening the body",
+    ),
+    pytest.param(
         _charset("utf-16le"),
         "5".encode("utf-16-le"),
         _express(400, b"Unexpected token '5', \\\"5\\\" is not valid JSON"),
@@ -2493,6 +2541,12 @@ _LINEAR_READS = [
     pytest.param(_GZIP, gzip.compress(padded_query(_LIMIT + 1)), _TOO_LARGE, id="past it, gzipped"),
     pytest.param(_BR, brotli.compress(padded_query(_LIMIT)), None, id="the limit, br"),
     pytest.param(_BR, brotli.compress(padded_query(_LIMIT + 1)), _TOO_LARGE, id="past it, br"),
+    pytest.param(
+        _BR, brotli.compress(padded_query(2 * _LIMIT)), _TOO_LARGE, id="twice the limit, br"
+    ),
+    pytest.param(
+        _BR, brotli.compress(padded_query(_LIMIT + 1)) + b"xx", _TOO_LARGE, id="past it, br then xx"
+    ),
     pytest.param(
         _GZIP, gzip.compress(padded_query(_LIMIT + 2)), _TOO_LARGE, id="past it by two, gzipped"
     ),

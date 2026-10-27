@@ -399,13 +399,11 @@ def _unbrotli(raw: bytes, limit: int = LINEAR_LIMIT) -> bytes:
 
 
 def _brotli_read(raw: bytes, limit: int) -> tuple[bytes, bool]:
-    """What a Brotli decoder fed ``raw`` gives, up to a byte past ``limit``, and whether the stream
-    ended; ``brotli.error`` where the bytes are not Brotli's."""
+    """What a Brotli decoder fed ``raw`` gives, stopping once it holds more than ``limit`` bytes,
+    and whether the stream ended; ``brotli.error`` where the bytes are not Brotli's."""
     decoder = brotli_codec.Decompressor()
-    out = bytearray(decoder.process(raw, output_buffer_limit=limit + 1))
-    while len(out) <= limit and not decoder.is_finished() and not decoder.can_accept_more_data():
-        out += decoder.process(b"", output_buffer_limit=limit + 1 - len(out))
-    return bytes(out), decoder.is_finished()
+    out = decoder.process(raw, output_buffer_limit=limit + 1)
+    return out, decoder.is_finished()
 
 
 class Double(float):

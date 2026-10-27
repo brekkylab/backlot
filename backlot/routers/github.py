@@ -229,8 +229,9 @@ def _answered_by_backend(request: Request) -> bool:
     one-member body, newline and empty Selected header, ahead of a missing repository or path and
     of a missing credential, though a bad bearer is still `Bad credentials` first. A pull
     `_github_media` reads as a diff or a patch keeps the gateway's envelope, a diff after
-    `application/json` included, and so does a HEAD on the pull whatever `Accept` holds, where a
-    HEAD on contents is the backend's (measured 2026-10-19).
+    `application/json` included and one whose body a heavier `*/*` makes the JSON pull (measured
+    2026-10-27), and so does a HEAD on the pull whatever `Accept` holds, where a HEAD on contents
+    is the backend's (measured 2026-10-19).
     """
     route = getattr(request.scope.get("route"), "path", None)
     return route in {
@@ -664,7 +665,9 @@ async def _refuse_an_anonymous_caller(request: Request) -> None:
     each, with or without `1999-01-01` (2026-10-25). A `Basic` value naming no token (`Basic eDp5`)
     was the version's 400 pinned to `1999-01-01` on the first four, and otherwise each route's own
     answer with the echo and the five: the 401 on the first two, and the 404 on a repository's teams
-    and a branch's protection (:data:`_NOT_FOUND_FOR_A_BASIC_VALUE_WITHOUT_A_TOKEN`).
+    and a branch's protection (:data:`_NOT_FOUND_FOR_A_BASIC_VALUE_WITHOUT_A_TOKEN`). `Basic` and
+    the base64 of `x:<40 a>` or of `x:GHP_<36 A>` was `Bad credentials` with the five and no echo
+    on each of the five, with or without `1999-01-01` (2026-10-26).
     """
     route = getattr(request.scope.get("route"), "path", None)
     if route not in _REFUSE_AN_ANONYMOUS_CALLER_FIRST:
@@ -886,17 +889,21 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     Either bearer scheme followed by a tab rather than a space (``auth.github_scheme_then_a_tab``)
     is counted in that same window, though it is answered as Bad credentials: an unknown scheme and
     then a bad bearer after a tab, on `/repos/psf/requests`, read `used` 4 and 5, while the
-    address's anonymous window stayed at 8 (2026-10-14). Any other credential that does not resolve
-    is keyed with the address here but never counted — see :func:`refused_without_a_window`. Callers
-    that draw real's line themselves check `request.headers` for the presence of `Authorization`
-    directly instead of asking `auth.github_credential`, which is `None` for a header real serves as
-    anonymous — see `refuse_a_trailing_slash_on_github`."""
+    address's anonymous window stayed at 8 (2026-10-14). So is a `Basic` token
+    ``auth.github_basic_token_counted`` holds for: six such 401s in a row read `used` 3 through 8
+    (2026-10-25). Any other credential that does not resolve is keyed with the address here but
+    never counted — see :func:`refused_without_a_window`. Callers that draw real's line themselves
+    check `request.headers` for the presence of `Authorization` directly instead of asking
+    `auth.github_credential`, which is `None` for a header real serves as anonymous — see
+    `refuse_a_trailing_slash_on_github`."""
     token = auth.github_credential(request)
     if token is not None and auth.acl(request).resolve(token) is not None:
         return f"token:{token}", True
     host = request.client.host if request.client is not None else "anonymous"
     if "authorization" in request.headers and (
-        token is None or auth.github_scheme_then_a_tab(request)
+        token is None
+        or auth.github_scheme_then_a_tab(request)
+        or auth.github_basic_token_counted(request)
     ):
         return f"unparseable:{host}", False
     return f"host:{host}", False
@@ -924,21 +931,34 @@ def refused_a_credential(request: Request) -> bool:
 
 
 def refused_without_a_window(request: Request) -> bool:
-    """Whether :func:`refused_a_credential` holds and ``backlot.auth.github_scheme_then_a_tab``
-    does not: the 401 real counts in no window and answers with none of the five headers, as each
-    scheme with nothing after it and a value after `Basic` that does not decode were (2026-10-14),
-    and so were `Bearer<TAB>,nope`, `token<TAB>,nope`, `Bearer<TAB>no,pe` and `Bearer<TAB>nope,`
-    (2026-10-16), all on the rate-limit route.
+    """Whether :func:`refused_a_credential` holds and neither
+    ``backlot.auth.github_scheme_then_a_tab`` nor ``backlot.auth.github_basic_token_counted`` does:
+    the 401 real counts in no window and answers with none of the five headers, as each scheme with
+    nothing after it and a value after `Basic` that does not decode were (2026-10-14), and so were
+    `Bearer<TAB>,nope`, `token<TAB>,nope`, `Bearer<TAB>no,pe` and `Bearer<TAB>nope,` (2026-10-16),
+    all on the rate-limit route.
 
-    Where that helper holds, the same 401 carries the five of the window it is counted in, the
+    Where the first helper holds, the same 401 carries the five of the window it is counted in, the
     unparseable one: measured against api.github.com 2026-10-14 on `GET /rate_limit`,
     `Bearer<TAB>nope` and `token<TAB>nope` each answered 401 with `limit: 60`, `remaining: 60`,
     `used: 0`, `resource: core` and a `reset` an hour after `Date`, while the same two after a space
     answered the same 401 with none of the five. Once that window was spent, the two after a tab on
     a public repository, and the first on `/user/repos`, were its 403, as an unknown scheme was,
     where the bearer after a space was still the 401.
+
+    Where the second holds, the 401 carries the five and counts: in that same window on
+    `/user/repos`, a repository pinned to `1999-01-01` or not, its teams and `/zen` (2026-10-25),
+    and on `PATCH`, `PUT`, `DELETE` and `POST` to operations Backlot does not serve, an
+    organization's teams, a repository's collaborators, a branch's protection and `/search/issues`
+    pinned or not (2026-10-26). `DELETE /installation/token` carries the five and leaves `used`
+    where it was (:func:`refused_an_unserved_operation_reported`). After a space, unlike after a
+    tab, such a value stays the 401 once that window is spent — see :func:`rate_limit_refusal`.
     """
-    return refused_a_credential(request) and not auth.github_scheme_then_a_tab(request)
+    return (
+        refused_a_credential(request)
+        and not auth.github_scheme_then_a_tab(request)
+        and not auth.github_basic_token_counted(request)
+    )
 
 
 def rate_limit_headers(request: Request, status_code: int, *, count: bool = True) -> dict[str, str]:
@@ -1032,10 +1052,20 @@ def rate_limit_refusal(request: Request) -> Response | None:
     caller's mechanism: a tier in front of the one those dependencies run on. A token's own refusal
     answers from `server: github.com` instead, so the tier split explains the anonymous order
     rather than the order in general. The envelope differs by caller too (same doc section;
-    :data:`TOKEN_RATE_LIMIT_EXCEEDED_DOCS` is the token's own `documentation_url`)."""
+    :data:`TOKEN_RATE_LIMIT_EXCEEDED_DOCS` is the token's own `documentation_url`).
+
+    A `Basic` value ``auth.github_basic_token_counted`` holds for is not refused unless a tab
+    follows `Basic`: with the window it is counted in spent, the base64 of `x:<40 a>` after a space
+    was still the 401 "Bad credentials" at `used: 60` and `remaining: 0` on `/repos/psf/requests`
+    pinned to `1999-01-01` or not, `/user/repos`, `/user` and `/orgs/psf/teams`, and so was that of
+    `x:GHP_<36 A>` on the repository and the organization's teams, where `Basic eDp5` and the base64
+    of `x:<40 a>` after a tab were the 403 (2026-10-26).
+    """
     if not get_settings().github_enforce_rate_limits:
         return None
     if request.url.path == RATE_LIMIT_PATH:
+        return None
+    if auth.github_basic_token_counted(request) and not auth.github_scheme_then_a_tab(request):
         return None
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, 401 if not authenticated else 200)
@@ -1103,18 +1133,22 @@ def _accept_types(request: Request) -> list[str]:
     contents, readme and blobs and `text-match` on code search read those spellings the same way.
     A ``diff`` whose ``q`` weight reads as zero (:func:`_zero_q`) is left out, and no other name
     is: `patch;q=0`, `raw;q=0` and `text-match+json;q=0` are served as asked, and so is a diff
-    under `Q=0`, `q = 0` or a `q` after `charset=utf-8`."""
+    under `Q=0`, `q = 0` or a `q` after `charset=utf-8`. A zero-weight diff is kept beside a named
+    patch: `diff;q=0, patch` and `diff;q=0, patch;q=0` were the diff on 2026-10-27."""
     types: list[str] = []
+    zero_diffs: set[int] = set()
+    has_patch = False
     for member in request.headers.get("accept", "").split(","):
         media_type, _, params = member.partition(";")
         media_type = media_type.strip()
         m = _GITHUB_MEDIA.fullmatch(media_type)
         if m is not None:
             if m[2] == "diff" and _zero_q(params):
-                continue
+                zero_diffs.add(len(types))
+            has_patch |= m[2] == "patch"
             media_type = m[1].lower() + m[2] + (m[3] or "").lower()
         types.append(media_type)
-    return types
+    return [t for i, t in enumerate(types) if has_patch or i not in zero_diffs]
 
 
 def _zero_q(params: str) -> bool:
@@ -1132,9 +1166,9 @@ def _zero_q(params: str) -> bool:
 
 
 def _github_media(request: Request, name: str) -> bool:
-    """True if `Accept` asks for GitHub's ``<name>`` representation, in any of the spellings the
-    real API honours: ``application/vnd.github.<name>``, the legacy ``…github.v3.<name>``, and the
-    ``…github.<name>+json`` form."""
+    """True if `Accept` names GitHub's ``<name>`` representation, in any of the spellings the real
+    API honours: ``application/vnd.github.<name>``, the legacy ``…github.v3.<name>``, and the
+    ``…github.<name>+json`` form. A route that serves it asks :func:`_wildcard_leads` too."""
     wanted = {
         f"application/vnd.github.{v}{name}{suffix}"
         for v in ("", "v3.")  # the legacy version segment GitHub's own docs used
@@ -1192,6 +1226,35 @@ def _q_weight(params: str, unread: float | None = None) -> float:
     return float(lead[0]) if lead else 0.0
 
 
+def _ordered_accept(request: Request, unread: float | None = None) -> list[tuple[str, float]]:
+    """Members in the order `_representation_content_type` measures."""
+    members = []
+    for member in request.headers.get("accept", "").split(","):
+        media_type, _, params = member.partition(";")
+        media_type = media_type.strip()
+        if media_type:
+            members.append((media_type, _q_weight(params, unread)))
+    members.sort(key=lambda m: (-m[1], m[0].count("*")))
+    return members
+
+
+def _wildcard_leads(request: Request, unread: float | None = None) -> bool:
+    """Whether `*/*` comes first in the order :func:`_ordered_accept` gives `Accept`'s members,
+    which serves a pull, a file's contents, a readme or a blob as its JSON in place of the diff,
+    patch or raw `Accept` names.
+
+    Measured on api.github.com on 2026-10-26 and 2026-10-27 under 2022-11-28, on `pulls/7619` of
+    `psf/requests` and its `README.md` through `contents`, `readme` and `git/blobs`: a heavier `*/*`
+    serves the JSON on whichever side of the representation it is sent; at the same weight the
+    representation is served, and so it is behind a type heavier than `*/*` (`text/html`,
+    `application/json`, and on the pull `application/*`) or behind a bare `*`. A weight `float()`
+    cannot read ranks as :func:`_q_weight` reads it with ``unread``: `*/*;q=abc` leads on contents
+    (``unread`` 1) and not on the pull, the readme or the blob. Code search serves `text-match`
+    beside a heavier `*/*` too, and does not ask."""
+    members = _ordered_accept(request, unread)
+    return bool(members) and members[0][0] == "*/*"
+
+
 def _representation_content_type(request: Request, unread: float | None = None) -> str:
     """The `Content-Type` of a diff, a patch, or a raw file or readme: each `Accept` member with
     nothing after its `;`, spelt as sent, heaviest first (:func:`_q_weight`, with ``unread``), and
@@ -1219,14 +1282,7 @@ def _representation_content_type(request: Request, unread: float | None = None) 
     `q=nan` below a raw at `q=0.5` on the readme; on contents all of those seven but `q=nan` ranked
     above the raw (``unread`` 1). Not modelled: `q=nan` on contents, and `*/ *`, which the pull
     echoed as `*/`."""
-    members = []
-    for member in request.headers.get("accept", "").split(","):
-        media_type, _, params = member.partition(";")
-        media_type = media_type.strip()
-        if not media_type:
-            continue
-        members.append((media_type, _q_weight(params, unread)))
-    members.sort(key=lambda m: (-m[1], m[0].count("*")))
+    members = _ordered_accept(request, unread)
     return ",".join(media_type for media_type, _ in members) + "; charset=utf-8"
 
 
@@ -1236,7 +1292,7 @@ def _raw_response(
     """The raw body when the caller asked for it, else ``None`` so the handler falls through to its
     JSON envelope. A blob names ``media_type``; contents and readme name what they were sent
     (`_representation_content_type`)."""
-    if not _github_media(request, "raw"):
+    if not _github_media(request, "raw") or _wildcard_leads(request, unread):
         return None
     content_type = media_type or _representation_content_type(request, unread)
     return Response(content=content.encode(), headers={"Content-Type": content_type})
@@ -2747,12 +2803,13 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
     wants_diff, wants_patch = _github_media(request, "diff"), _github_media(request, "patch")
-    if not (wants_diff or wants_patch):
+    if not (wants_diff or wants_patch) or _wildcard_leads(request):
         return _pr_obj(conn, owner, repo, row, ab, ids=ids, version=_version(request))
     files = _pr_files(conn, owner, repo, row, ab, ids)
     obj = _pr_obj(conn, owner, repo, row, ab, ids=ids, files=files, version=_version(request))
     diff = _pr_diff(files, obj["base"]["sha"])
-    if wants_patch:
+    # A diff named beside a patch is served, at any weight of either (measured 2026-10-26).
+    if wants_patch and not wants_diff:
         return Response(
             content=_pr_mbox(row, obj, diff).encode(),
             headers={"Content-Type": _representation_content_type(request)},

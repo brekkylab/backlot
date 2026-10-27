@@ -64,8 +64,8 @@ cells. `sheets.copyTo` copies a sheet into a workbook the caller may write, titl
 workbook's language. `values:batchUpdateByDataFilter` and `values:batchClearByDataFilter` write and
 clear what DataFilters match.
 
-`values.append` finds the table it writes below the way real does: from the first cell in the range
-holding a value, column by column, grown through every cell in the row or column next to it, and
+`values.append` finds the table it writes below the way real does: from the last cell in the range
+holding a value, row by row, grown through every cell in the row or column next to it, and
 the values go on the row under it from its first column. `INSERT_ROWS` inserts whole rows there,
 and the sheet's row count grows with them.
 
@@ -105,7 +105,8 @@ gives an app-posted message.
 
 A spreadsheet is written by its owner alone. Every grant a corpus states makes a reader, and a
 reader's write is the 403 real gives one, `The caller does not have permission`; so is the
-admin/service token's, which owns nothing.
+admin/service token's, which owns only the spreadsheets its service account created, and is
+answered as their owner by Drive too.
 
 ## What is not modelled
 

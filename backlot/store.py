@@ -1244,6 +1244,11 @@ def merged_source(
     costs SQLite the primary-key lookup it would otherwise use — measured at +43% on an 800k-row
     channel of the 11 GB corpus, against +2% for the ACL view and +6% for the re-index filter.
     Overlay hits reach that path through :func:`_overlay_hits` instead.
+
+    Drive's readers pay more for the union once a write has landed. Measured 2026-10-27 on a
+    100,000-file Drive corpus, median of five, before and after one Sheets write: `files.list`
+    100 to 229 ms, `name contains` 21 to 112 ms, `fullText contains` 141 to 237 ms and `about` 55
+    to 79 ms; four other reads moved by 1.2x or less.
     """
     from backlot import overlay  # local: overlay imports store
 

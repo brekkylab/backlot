@@ -635,6 +635,20 @@ async def refuse_a_trailing_slash_on_github(request: Request, call_next):
     return response
 
 
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def report_notion_headers(request: Request, call_next):
+    """Put ``notion.APPLICATION_HEADERS`` on a `/notion` answer to one of ``notion.ROUTED_METHODS``,
+    a `HEAD` among them as the GET it is rewritten to outside this one. Registered before
+    ``read_a_notion_body_as_express_does``, which makes it the inner of the two, so a body that one
+    refuses is answered without them, as real answers it."""
+    response = await call_next(request)
+    for name, value in notion.APPLICATION_HEADERS.items():
+        response.headers[name] = value
+    return response
+
+
 @_middleware(lambda scope: errors.notion.owns(_url_path(scope)))
 async def read_a_notion_body_as_express_does(request: Request, call_next):
     """Read a `/notion` request's body the way Express reads one in front of every Notion route,

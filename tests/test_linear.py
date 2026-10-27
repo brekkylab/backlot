@@ -2360,8 +2360,10 @@ _LINEAR_READS = [
 _KEY_SHAPED = "Bearer lin_api_" + "0" * 40
 # The rows every credential but the key is sent with: one for each way `_read` refuses a body (V8's
 # words, `strict`'s, graphql-js's, a body it cannot decode, an unsupported encoding, an unsupported
-# charset, past the limit), one it reads and serves, Apollo Server's refusal of a batch, and a
-# `WithTheKey` row.
+# charset, past the limit), one it reads and serves, one for each stage of Apollo Server's that
+# refuses a document ahead of the credential (a batch, a query that is not a string, a persisted
+# query's hash alone and one that does not match, a parse, a validation, the choice of operation),
+# and a `WithTheKey` row.
 _EACH_WAY_READ = (
     "{",
     "top-level 5",
@@ -2372,6 +2374,12 @@ _EACH_WAY_READ = (
     "past the limit",
     "__proto__ key",
     "an array",
+    "a query of null",
+    "a persisted query's hash alone",
+    "a persisted query's hash that does not match",
+    "a document that does not parse",
+    "a document that does not validate",
+    "two operations and no operationName",
     "a variable not provided",
 )
 # The rows whose answer without a key turns on what the document selects
@@ -4389,8 +4397,8 @@ def _linear_client(tmp_path):
 # --- schema drift against api.linear.app (issue #101) --------------------------------------------
 # Every type below is what introspection of https://api.linear.app/graphql reported, the oldest on
 # 2026-09-03, copied here as literals so the suite runs offline; a literal moves when a later
-# measurement finds the vendor has moved. `IntegrationService` has gained two members that way
-# since that date, and the enum in `backlot/graphql/linear.graphql` carries their dates.
+# measurement finds the vendor has moved. `IntegrationService` is the 2026-10-27 introspection,
+# the date its description in `backlot/graphql/linear.graphql` carries.
 # `backlot diff --source linear` is the live re-measurement and
 # `backlot/fidelity/baseline/linear.json` the record of the gaps it accepts.
 # Most entries were a `breaking` finding in #101: Backlot declared the same name at a different
@@ -4474,6 +4482,7 @@ LINEAR_ENUMS = {
         "githubPersonal",
         "githubCodeAccessPersonal",
         "gitlab",
+        "gitlabPersonal",
         "origin",
         "googleCalendarPersonal",
         "googleSheets",

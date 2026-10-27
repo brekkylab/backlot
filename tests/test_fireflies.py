@@ -633,6 +633,47 @@ def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_y
     assert again["email"] == "ava@acme.com"
 
 
+def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h):
+    """``backlot.graphql.fireflies_resolvers._not_in_team`` and ``_object_not_found`` record
+    the measurement against api.fireflies.ai: `user(id:)` naming nobody keeps `data.user`
+    null and adds a `not_in_team` error, and `transcript(id:)` naming nothing keeps
+    `data.transcript` null and adds an `object_not_found` one — each `friendly`, with a
+    top-level `code` beside `extensions`, a `correlationId` and the code's `helpUrls` entry,
+    as the router writes the codes it knows."""
+    r = ff_gql(client, '{ user(id: "nope") { user_id } }', admin_h)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"] == {"user": None}
+    (error,) = body["errors"]
+    assert error["friendly"] is True
+    assert error["message"] == "You do not have permissions for this team"
+    assert error["locations"] == [{"line": 1, "column": 3}]
+    assert error["path"] == ["user"]
+    assert error["code"] == "not_in_team"
+    ext = error["extensions"]
+    assert ext["code"] == "not_in_team" and ext["status"] == 403
+    assert ext["helpUrls"] == ["https://docs.fireflies.ai/miscellaneous/error-codes#not_in_team"]
+    assert len(ext["correlationId"]) == 8
+
+    r = ff_gql(client, '{ transcript(id: "nope") { id } }', admin_h)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"] == {"transcript": None}
+    (error,) = body["errors"]
+    assert error["friendly"] is True
+    assert error["message"] == "Transcript not found"
+    assert error["locations"] == [{"line": 1, "column": 3}]
+    assert error["path"] == ["transcript"]
+    assert error["code"] == "object_not_found"
+    ext = error["extensions"]
+    assert ext["code"] == "object_not_found" and ext["status"] == 404
+    assert ext["metadata"] == {"objectType": "Transcript"}
+    assert ext["helpUrls"] == [
+        "https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"
+    ]
+    assert len(ext["correlationId"]) == 8
+
+
 def test_fireflies_introspection_describes_the_schema(client, admin_h):
     """There is no OpenAPI entry for this route on purpose, so introspection is how a client
     discovers the surface."""

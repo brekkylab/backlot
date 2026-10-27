@@ -834,8 +834,8 @@ _UNKNOWN_IDS = [
 
 
 def _with_the_key(query: str, value: str, answer: dict, row: str):
-    """A `_LINEAR_BODIES` row: ``query`` sent with ``value`` for ``$x``, and Linear's ``answer`` to it
-    with the key."""
+    """A `_LINEAR_BODIES` row: ``query`` sent with ``value`` for ``$x``, and Linear's ``answer``
+    to it with the key."""
     body = {"query": query, "variables": {"x": value}}
     return pytest.param(
         json.dumps(body).encode(), WithTheKey(node_json(answer) + b"\n", 200), id=row

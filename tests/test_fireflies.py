@@ -1632,7 +1632,8 @@ _LANDING_PAGE = object()  # Apollo Server's page for a browser, `landing_page`'s
 
 
 def _sent(headers, body) -> str:
-    """What a row of `_FIREFLIES_HTTP` sends besides a JSON type and `{ __typename }`, for its id."""
+    """What a row of `_FIREFLIES_HTTP` sends besides a JSON type and `{ __typename }`, for its
+    id."""
     types = [
         value for name, value in headers if name == "Content-Type" and value != "application/json"
     ]

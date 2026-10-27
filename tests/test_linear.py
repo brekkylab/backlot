@@ -6121,7 +6121,7 @@ _LINEAR_HTTP = [
             ("a,,b", "a,,b"),
         )
     ),
-    http_row("OPTIONS", "", (), None, "key", 400, _JSON_UTF8, _CSRF, id="OPTIONS"),
+    http_row("OPTIONS", "", (), None, "key", 400, _JSON_UTF8, _CSRF, id="OPTIONS, unpreflighted"),
     *(
         http_row(
             "OPTIONS",
@@ -6195,7 +6195,7 @@ _LINEAR_HTTP = [
         _CSRF,
         id="PUT, text/plain",
     ),
-    http_row("DELETE", "", (), None, "nope", 400, _JSON_UTF8, _CSRF, id="DELETE"),
+    http_row("DELETE", "", (), None, "nope", 400, _JSON_UTF8, _CSRF, id="DELETE, unpreflighted"),
     # A POST's content type: read as JSON, refused as a request a browser sends unpreflighted, or
     # passed with nothing read.
     *(
@@ -6817,58 +6817,49 @@ _LINEAR_CREDENTIALS = {
 }
 
 
-@pytest.mark.parametrize(
-    "method,target,headers,body,credential,status,media_type,answer,expected_headers", _LINEAR_HTTP
-)
-def test_linear_answers_each_method_path_type_and_accept_as_linear_does(
-    client,
-    tokens_yaml,
-    method,
-    target,
-    headers,
-    body,
-    credential,
-    status,
-    media_type,
-    answer,
-    expected_headers,
-):
+def test_linear_answers_each_method_path_type_and_accept_as_linear_does(client, tokens_yaml):
     """Each row of `_LINEAR_HTTP` is answered as api.linear.app answered it."""
-    sent = list(headers)
-    if _LINEAR_CREDENTIALS[credential] is not None:
-        value = _LINEAR_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
-        sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
-    content = body.chunks() if isinstance(body, Chunked) else body
-    path = target if target.startswith("/") else f"/graphql{target}"
-    r = sent_as(client, method, f"/linear{path}", sent, content=content, bare=True)
-    assert r.status_code == status
-    assert r.headers.get("content-type") == media_type
-    assert r.content == answer
-    assert {name: r.headers.get(name) for name in expected_headers} == expected_headers
+    answered, expected = {}, {}
+    for row in _LINEAR_HTTP:
+        method, target, headers, body, credential, status, media_type, answer, named = row.values
+        sent = list(headers)
+        if _LINEAR_CREDENTIALS[credential] is not None:
+            value = _LINEAR_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
+            sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
+        content = body.chunks() if isinstance(body, Chunked) else body
+        path = target if target.startswith("/") else f"/graphql{target}"
+        r = sent_as(client, method, f"/linear{path}", sent, content=content, bare=True)
+        answered[row.id] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            r.content,
+            {name: r.headers.get(name) for name in named},
+        )
+        expected[row.id] = (status, media_type, answer, named)
+    assert len(expected) == len(_LINEAR_HTTP)
+    assert answered == expected
 
 
-@pytest.mark.parametrize(
-    "path, served",
-    [
-        *((p, True) for p in ("/./graphql", "/x/../graphql", "/graphql/.", "/graphql/x/..")),
-        ("/graphql/x/%2E%2E", True),
-        *((p, False) for p in ("/graphql/..", "/graphql/../x", "/graphql/%2e%2E/x")),
-        *((p, False) for p in ("/graphql/x/../..", "/../graphql")),
-    ],
-)
-def test_linears_front_routes_a_path_once_its_dot_segments_are_resolved(path, served):
+def test_linears_front_routes_a_path_once_its_dot_segments_are_resolved():
     """`routes_to_apollo` on paths holding dot segments, which httpx would resolve were
     `_LINEAR_HTTP` to send them."""
     from backlot.routers import linear
 
-    assert linear.routes_to_apollo(linear.express_path(path)) is served
+    served = dict.fromkeys(
+        ("/./graphql", "/x/../graphql", "/graphql/.", "/graphql/x/..", "/graphql/x/%2E%2E"), True
+    )
+    served |= dict.fromkeys(
+        ("/graphql/..", "/graphql/../x", "/graphql/%2e%2E/x", "/graphql/x/../..", "/../graphql"),
+        False,
+    )
+    assert {p: linear.routes_to_apollo(linear.express_path(p)) for p in served} == served
 
 
-@pytest.mark.parametrize("char", '"<>`{}')
-def test_linears_front_escapes_a_character_httpx_escapes_first(char):
+def test_linears_front_escapes_a_character_httpx_escapes_first():
     """The characters :func:`backlot.routers.linear.express_path` escapes that httpx escapes
     before it sends a path, so `_LINEAR_HTTP` cannot send them bare; it sends the other two, `|`
     and `^`."""
     from backlot.routers import linear
 
-    assert linear.express_path(f"/nosucha{char}b") == f"/nosucha%{ord(char):02X}b"
+    escaped = {char: f"/nosucha%{ord(char):02X}b" for char in '"<>`{}'}
+    assert {char: linear.express_path(f"/nosucha{char}b") for char in escaped} == escaped

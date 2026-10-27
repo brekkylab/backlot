@@ -1295,6 +1295,74 @@ def test_confluence_cql_search_filtered_by_id_ancestor_parent(tmp_path):
             assert r["totalSize"] == len(want), cql
 
 
+def test_confluence_cql_search_negated_clauses(tmp_path):
+    """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` answers a negated
+    `space`, `type`, `label`, `id`, `ancestor` or `parent` clause: `!=`, `not in` and `not`
+    after `and` each leave out the rows the clause names, and a row the field is absent on —
+    a page with no parent, a page with no label — passes, as real's do.
+
+    The measurement is the one :func:`backlot.routers.atlassian.confluence_cql_search`'s
+    docstring records, over a chain of three pages in one space with the grandchild the only
+    one labelled: the rows below are that table, with `id in (...)` naming the chain where it
+    names the three."""
+    from backlot import synth
+
+    page = {
+        "source_type": "confluence",
+        "space": "eng",
+        "content": "Body.",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+    }
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {**page, "doc_id": "q-gp", "title": "Guide"},
+            {**page, "doc_id": "q-c", "title": "Child", "parent": "q-gp"},
+            {**page, "doc_id": "q-gc", "title": "Grand", "parent": "q-c", "labels": ["oncall"]},
+            {**page, "doc_id": "q-o", "title": "Other", "space": "ops"},
+        ],
+    )
+    eng = synth.confluence_space_key("eng")
+    three = "id in ({Guide},{Child},{Grand})"
+    rows = [
+        (three + " and id != {Child}", {"Guide", "Grand"}),
+        (three + " and id not in ({Child})", {"Guide", "Grand"}),
+        (three + " and not id={Child}", {"Guide", "Grand"}),
+        (three + " and ancestor != {Guide}", {"Guide"}),
+        (three + " and ancestor not in ({Guide})", {"Guide"}),
+        (three + " and not ancestor={Guide}", {"Guide"}),
+        (three + " and parent != {Guide}", {"Guide", "Grand"}),
+        (three + " and not parent={Guide}", {"Guide", "Grand"}),
+        (three + " and type != page", set()),
+        (three + " and type not in (page)", set()),
+        (three + " and not type=page", set()),
+        (three + f' and space != "{eng}"', set()),
+        (three + f' and space not in ("{eng}")', set()),
+        (three + f' and not space="{eng}"', set()),
+        (three + ' and label != "oncall"', {"Guide", "Child"}),
+        (three + ' and label not in ("oncall")', {"Guide", "Child"}),
+        (three + ' and not label="oncall"', {"Guide", "Child"}),
+        ("ancestor={Guide} and id != {Child}", {"Grand"}),
+        ("ancestor={Guide} and not id={Child}", {"Grand"}),
+        # a negated clause on its own searches the corpus and leaves its rows out
+        ("type != blogpost", {"Guide", "Child", "Grand", "Other"}),
+        (f'space != "{eng}"', {"Other"}),
+        ("parent != {Guide}", {"Guide", "Grand", "Other"}),
+        ('label != "oncall"', {"Guide", "Child", "Other"}),
+    ]
+    with client_for(settings, reload=True) as c:
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        h = {"Authorization": f"Bearer {written['admin_token']}"}
+        content = c.get("/atlassian/wiki/rest/api/content", headers=h).json()["results"]
+        ids = {r["title"]: r["id"] for r in content}
+        for template, want in rows:
+            cql = template.format(**ids)
+            r = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": cql}).json()
+            assert {x["title"] for x in r["results"]} == want, cql
+            assert r["totalSize"] == len(want), cql
+
+
 _CQL_REQUIRED = {
     "statusCode": 400,
     "data": {"authorized": True, "valid": True, "errors": [], "successful": True},

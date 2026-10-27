@@ -440,18 +440,21 @@ _CLOUDFLARE_METHODS = [
 
 
 @pytest.mark.parametrize("vendor", ["linear", "fireflies"])
-@pytest.mark.parametrize("method, path, copies, answer", _CLOUDFLARE_METHODS)
-def test_cloudflare_refuses_trace_connect_and_purge(
-    client, tokens_yaml, vendor, method, path, copies, answer
-):
+def test_cloudflare_refuses_trace_connect_and_purge(client, tokens_yaml, vendor):
     admin = tokens_yaml["admin_token"]
     key = admin if vendor == "linear" else f"Bearer {admin}"
-    r = client.request(method, f"/{vendor}{path}", headers=[("Authorization", key)] * copies)
-    if answer is None:
-        assert b"cloudflare" not in r.content and r.status_code == 404
-        return
-    got = (r.status_code, r.headers["content-type"], r.headers.get("connection"), r.content)
-    assert got == answer
+    answered, expected = {}, {}
+    for row in _CLOUDFLARE_METHODS:
+        method, path, copies, answer = row.values
+        r = client.request(method, f"/{vendor}{path}", headers=[("Authorization", key)] * copies)
+        if answer is None:
+            answered[row.id] = (r.status_code, b"cloudflare" in r.content)
+            expected[row.id] = (404, False)
+            continue
+        got = (r.status_code, r.headers["content-type"], r.headers.get("connection"), r.content)
+        answered[row.id], expected[row.id] = got, answer
+    assert len(expected) == len(_CLOUDFLARE_METHODS)
+    assert answered == expected
 
 
 @pytest.mark.parametrize(

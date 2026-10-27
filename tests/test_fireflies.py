@@ -2421,37 +2421,34 @@ _FIREFLIES_CREDENTIALS = {
 }
 
 
-@pytest.mark.parametrize(
-    "method,target,headers,body,credential,status,media_type,answer,expected_headers",
-    _FIREFLIES_HTTP,
-)
-def test_fireflies_answers_each_method_type_and_accept_as_fireflies_does(
-    client,
-    tokens_yaml,
-    method,
-    target,
-    headers,
-    body,
-    credential,
-    status,
-    media_type,
-    answer,
-    expected_headers,
-):
+def _fireflies_body(r, answer):
+    """``r``'s body, or `_LANDING_PAGE` where ``answer`` is and ``r`` is Apollo Server's page: one
+    nonce of 64 hex digits, 3,522 bytes and its title."""
+    if answer is not _LANDING_PAGE:
+        return r.content
+    page = r.text
+    nonces = set(re.findall(r"nonce-([0-9a-f]+)", page))
+    whole = len(page.encode()) == 3522 and "<title>Apollo Server</title>" in page
+    return _LANDING_PAGE if len(nonces) == 1 and len(nonces.pop()) == 64 and whole else r.content
+
+
+def test_fireflies_answers_each_method_type_and_accept_as_fireflies_does(client, tokens_yaml):
     """Each row of `_FIREFLIES_HTTP` is answered as api.fireflies.ai answered it."""
-    sent = list(headers)
-    if _FIREFLIES_CREDENTIALS[credential] is not None:
-        value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
-        sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
-    content = body.chunks() if isinstance(body, Chunked) else body
-    r = sent_as(client, method, f"/fireflies/graphql{target}", sent, content=content, bare=True)
-    assert r.status_code == status
-    assert r.headers.get("content-type") == media_type
-    if answer is _LANDING_PAGE:
-        page = r.text
-        nonces = set(re.findall(r"nonce-([0-9a-f]+)", page))
-        assert len(nonces) == 1 and len(nonces.pop()) == 64
-        assert len(page.encode()) == 3522 and "<title>Apollo Server</title>" in page
-    else:
-        assert r.content == answer
-    assert {name: r.headers.get(name) for name in expected_headers} == expected_headers
+    answered, expected = {}, {}
+    for row in _FIREFLIES_HTTP:
+        method, target, headers, body, credential, status, media_type, answer, named = row.values
+        sent = list(headers)
+        if _FIREFLIES_CREDENTIALS[credential] is not None:
+            value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
+            sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
+        content = body.chunks() if isinstance(body, Chunked) else body
+        r = sent_as(client, method, f"/fireflies/graphql{target}", sent, content=content, bare=True)
+        answered[row.id] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            _fireflies_body(r, answer),
+            {name: r.headers.get(name) for name in named},
+        )
+        expected[row.id] = (status, media_type, answer, named)
+    assert len(expected) == len(_FIREFLIES_HTTP)
+    assert answered == expected

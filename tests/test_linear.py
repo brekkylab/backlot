@@ -6106,7 +6106,7 @@ _LINEAR_HTTP = [
             ("a,,b", "a,,b"),
         )
     ),
-    http_row("OPTIONS", "", (), None, "key", 400, _JSON_UTF8, _CSRF, id="OPTIONS"),
+    http_row("OPTIONS", "", (), None, "key", 400, _JSON_UTF8, _CSRF, id="OPTIONS, unpreflighted"),
     *(
         http_row(
             "OPTIONS",
@@ -6180,7 +6180,7 @@ _LINEAR_HTTP = [
         _CSRF,
         id="PUT, text/plain",
     ),
-    http_row("DELETE", "", (), None, "nope", 400, _JSON_UTF8, _CSRF, id="DELETE"),
+    http_row("DELETE", "", (), None, "nope", 400, _JSON_UTF8, _CSRF, id="DELETE, unpreflighted"),
     # A POST's content type: read as JSON, refused as a request a browser sends unpreflighted, or
     # passed with nothing read.
     *(
@@ -6674,30 +6674,23 @@ _LINEAR_CREDENTIALS = {
 }
 
 
-@pytest.mark.parametrize(
-    "method,target,headers,body,credential,status,media_type,answer,expected_headers", _LINEAR_HTTP
-)
-def test_linear_answers_each_method_type_and_accept_as_linear_does(
-    client,
-    tokens_yaml,
-    method,
-    target,
-    headers,
-    body,
-    credential,
-    status,
-    media_type,
-    answer,
-    expected_headers,
-):
+def test_linear_answers_each_method_type_and_accept_as_linear_does(client, tokens_yaml):
     """Each row of `_LINEAR_HTTP` is answered as api.linear.app answered it."""
-    sent = list(headers)
-    if _LINEAR_CREDENTIALS[credential] is not None:
-        value = _LINEAR_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
-        sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
-    content = body.chunks() if isinstance(body, Chunked) else body
-    r = sent_as(client, method, f"/linear/graphql{target}", sent, content=content, bare=True)
-    assert r.status_code == status
-    assert r.headers.get("content-type") == media_type
-    assert r.content == answer
-    assert {name: r.headers.get(name) for name in expected_headers} == expected_headers
+    answered, expected = {}, {}
+    for row in _LINEAR_HTTP:
+        method, target, headers, body, credential, status, media_type, answer, named = row.values
+        sent = list(headers)
+        if _LINEAR_CREDENTIALS[credential] is not None:
+            value = _LINEAR_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
+            sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
+        content = body.chunks() if isinstance(body, Chunked) else body
+        r = sent_as(client, method, f"/linear/graphql{target}", sent, content=content, bare=True)
+        answered[row.id] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            r.content,
+            {name: r.headers.get(name) for name in named},
+        )
+        expected[row.id] = (status, media_type, answer, named)
+    assert len(expected) == len(_LINEAR_HTTP)
+    assert answered == expected

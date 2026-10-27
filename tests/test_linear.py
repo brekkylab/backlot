@@ -7077,8 +7077,8 @@ _LINEAR_HEADERS = [
         _sent(_ETAG_OF_TYPENAME) | _counted(2500),
         id="served",
     ),
-    # Express's 304 to a GET its `ETag` is fresh to (`linear._fresh`), and its answer where not, as
-    # to a 405 or `OPTIONS /` with `If-None-Match: *`.
+    # Express's 304 to a GET its `ETag` is fresh to, and its answer where not
+    # (`linear._express_sent`, `linear._fresh`).
     *(
         pytest.param(
             m,
@@ -7107,6 +7107,11 @@ _LINEAR_HEADERS = [
             ),
             ("POST", (("If-None-Match", _ETAG_OF_TYPENAME),), 200, "its ETag"),
             ("GET", (("If-None-Match", 'W/"20-x"'),), 200, "another ETag"),
+            ("GET", (("If-None-Match", '"x",   ' + _ETAG_OF_TYPENAME),), 304, "spaces in a list"),
+            ("GET", (("If-None-Match", '"x",\t' + _ETAG_OF_TYPENAME),), 200, "a tab in a list"),
+            ("GET", (("If-None-Match", '"x",\xa0' + _ETAG_OF_TYPENAME),), 200, "U+00A0 in a list"),
+            ("GET", (("If-None-Match", _ETAG_OF_TYPENAME + '\t, "x"'),), 200, "a tab after it"),
+            ("GET", (("If-None-Match", "*"), ("Cache-Control", "no-cache")), 200, "*, no-cache"),
             (
                 "GET",
                 (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "\x85no-cache")),

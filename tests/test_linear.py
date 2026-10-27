@@ -2374,7 +2374,30 @@ _EACH_WAY_READ = (
     "an array",
     "a variable not provided",
 )
-assert set(_EACH_WAY_READ) <= {row.id for row in (*_LINEAR_BODIES, *_LINEAR_READS)}
+# The rows whose answer without a key turns on what the document selects
+# (`backlot.routers.linear._introspection_only`), each sent with every credential too.
+_WHAT_IT_SELECTS = (
+    "introspection",
+    "__type",
+    "an alias of __schema",
+    "__schema and __type",
+    "__schema in a fragment",
+    "__schema in an inline fragment",
+    "__schema under @skip(if: false)",
+    "a named query of __schema",
+    "the introspection operationName chose",
+    "introspection with a variable not provided",
+    "__typename beside __schema",
+    "__schema beside a skipped field",
+    "a skipped field alone",
+    "__typename in a fragment",
+    "__typename in an inline fragment",
+    "__schema and __typename in a fragment",
+    "__typename in a fragment beside an inline __schema",
+)
+assert set(_EACH_WAY_READ + _WHAT_IT_SELECTS) <= {
+    row.id for row in (*_LINEAR_BODIES, *_LINEAR_READS)
+}
 
 
 def _linear_body_cases() -> list:
@@ -2383,7 +2406,7 @@ def _linear_body_cases() -> list:
         pytest.param(credential, *row.values, id=f"{row.id}-{credential}")
         for credential in ("key", "none", "nope", "Bearer key", "Bearer, key-shaped")
         for row in rows
-        if credential == "key" or row.id in _EACH_WAY_READ
+        if credential == "key" or row.id in _EACH_WAY_READ + _WHAT_IT_SELECTS
     ]
 
 
@@ -2392,8 +2415,9 @@ def test_linear_orders_the_body_and_the_credential(
     client, tokens_yaml, credential, headers, body, answer
 ):
     """Each row answers as the comment over `_LINEAR_BODIES` says with the key, and each row
-    `_EACH_WAY_READ` names answers so under no credential and `nope` too; an API key under `Bearer`,
-    and `_KEY_SHAPED`, are `_API_KEY_AS_BEARER` ahead of each of those bodies."""
+    `_EACH_WAY_READ` or `_WHAT_IT_SELECTS` names answers so under no credential and `nope` too; an
+    API key under `Bearer`, and `_KEY_SHAPED`, are `_API_KEY_AS_BEARER` ahead of each of those
+    bodies."""
     admin = tokens_yaml["admin_token"]
     if not any(name == "Content-Type" for name, _ in headers):
         headers = (("Content-Type", "application/json"), *headers)

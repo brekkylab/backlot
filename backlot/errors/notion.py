@@ -1,8 +1,9 @@
-"""Notion's JSON media type.
+"""Notion's JSON media type, and the `HEAD` answer that declares no length.
 
 Notion's refusals are built by its router (:func:`backlot.routers.notion._error`), not by an
 envelope here, so this module shapes no body; it names the charset real puts on a JSON body
-(:data:`JSON_MEDIA_TYPE`).
+(:data:`JSON_MEDIA_TYPE`) and the `HEAD` answer that declares no length
+(:func:`head_content_length`).
 
 Measured against api.notion.com on 2026-09-22 with no credential, each request with its own
 cache-buster: the 401 on `GET /v1/users/me` and on `POST /v1/search`, the 400 for
@@ -42,3 +43,10 @@ def json_media_type(path: str, status_code: int) -> str:
     """:data:`JSON_MEDIA_TYPE`, whatever ``path`` and ``status_code`` (the module docstring has the
     measurement)."""
     return JSON_MEDIA_TYPE
+
+
+def head_content_length(request, status_code: int) -> bool:
+    """Whether a `HEAD` declares the length of its `GET`'s body: each does but the 304
+    :func:`backlot.routers.notion.not_modified` answers, which declared none on api.notion.com on
+    2026-10-27."""
+    return status_code != 304

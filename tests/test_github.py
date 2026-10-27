@@ -2181,6 +2181,7 @@ def test_github_code_search_text_matches_only_under_the_media_type(gh_client, gh
     for accept, matched in (
         ("application/vnd.github.TEXT-MATCH+json", False),
         ("application/vnd.github.text-match+json;q=0", True),
+        ("*/*;q=0.9, application/vnd.github.text-match+json;q=0.5", True),
     ):
         h = {**gh_admin_h, "Accept": accept}
         hit = c.get("/github/search/code", headers=h, params={"q": "helper"}).json()["items"][0]
@@ -4564,6 +4565,8 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
         ("pulls/1", "Application/vnd.github.diff", False, False),
         ("pulls/1", "application/vnd.github.diff;q=0", True, False),
         ("pulls/1", "application/vnd.github.patch;q=0", False, False),
+        ("pulls/1", "*/*;q=0.9, application/vnd.github.diff;q=0.5", False, False),
+        ("pulls/1", "*/*;q=0.9, application/vnd.github.patch;q=0.5", False, False),
         ("pulls/1", "application/vnd.github.sha", True, False),
         *[
             (path, accept, True, True)
@@ -5065,7 +5068,8 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
     assert issue["number"] == issue_num
 
 
-# What api.github.com served a pull for each `Accept` at 2022-11-28 (see `_accept_types`).
+# What api.github.com served a pull for each `Accept` at 2022-11-28 (see `_accept_types` and
+# `_wildcard_leads`).
 _PULL_SERVED_AS = {
     "application/vnd.github.DIFF": "json",
     "APPLICATION/VND.GITHUB.DIFF": "json",
@@ -5135,6 +5139,26 @@ _PULL_SERVED_AS = {
     "application/vnd.github.patch;q=0.5, application/json;q=1": "patch",
     "application/vnd.github.diff;q=\xa00": "diff",
     "application/vnd.github.diff;q=0\xa0": "json",
+    "application/vnd.github.diff, application/vnd.github.patch": "diff",
+    "application/vnd.github.patch, application/vnd.github.diff": "diff",
+    "application/vnd.github.diff;q=0.1, application/vnd.github.patch;q=0.9": "diff",
+    "application/vnd.github.patch;q=0.1, application/vnd.github.diff;q=0.9": "diff",
+    "application/vnd.github.diff;q=0, application/vnd.github.patch": "diff",
+    "application/vnd.github.patch;q=0, application/vnd.github.diff": "diff",
+    "application/vnd.github.diff;q=0, application/vnd.github.patch;q=0": "diff",
+    "*/*;q=0.9, application/vnd.github.diff;q=0.5": "json",
+    "application/vnd.github.diff;q=0.5, */*;q=0.9": "json",
+    "*/*;q=0.9, application/vnd.github.patch;q=0.5": "json",
+    "*/*;q=0.9, application/vnd.github.diff;q=0, application/vnd.github.patch;q=0.5": "json",
+    "*/*;q=0.5, application/vnd.github.diff;q=0.5": "diff",
+    "*/*;q=1, application/vnd.github.diff": "diff",
+    "application/json;q=0.9, application/vnd.github.diff;q=0.5": "diff",
+    "application/*;q=0.9, application/vnd.github.diff;q=0.5": "diff",
+    "text/html, */*;q=0.9, application/vnd.github.diff;q=0.5": "diff",
+    "text/plain;q=0.95, */*;q=0.9, application/vnd.github.patch;q=0.5": "patch",
+    "*;q=0.9, application/vnd.github.diff;q=0.5": "diff",
+    "*/*;q=abc, application/vnd.github.diff;q=0.5": "diff",
+    "*/*;q=0.9, application/vnd.github.diff;q=0.5, application/vnd.github.patch": "diff",
 }
 
 
@@ -5379,6 +5403,47 @@ def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):
     assert r.text.startswith("From ")
     assert "Subject: [PATCH] Tighten the run() argv handling" in r.text
     assert "diff --git " in r.text
+
+
+# What api.github.com served for each `Accept` beside a raw at 2022-11-28: the raw bytes on the
+# routes each value names, the JSON envelope on the others (see `_wildcard_leads`).
+_RAW_BESIDE_A_WILDCARD = {
+    "*/*;q=0.9, application/vnd.github.raw;q=0.5": (),
+    "application/vnd.github.raw;q=0.5, */*;q=0.9": (),
+    "*/*;q=0.9x, application/vnd.github.raw;q=0.5": (),
+    "*/*;q=0.5, application/vnd.github.raw;q=0.5": ("contents", "readme", "blob"),
+    "application/json;q=0.9, application/vnd.github.raw;q=0.5": ("contents", "readme", "blob"),
+    "text/html, */*;q=0.9, application/vnd.github.raw;q=0.5": ("contents", "readme", "blob"),
+    "*;q=0.9, application/vnd.github.raw;q=0.5": ("contents", "readme", "blob"),
+    "*/*;q=abc, application/vnd.github.raw;q=0.5": ("readme", "blob"),
+}
+
+
+def test_github_raw_selection_respects_a_heavier_global_wildcard(gh_client, gh_admin_h, gh_org):
+    c, _ = gh_client
+    sha = hashlib.sha1(_MAIN_PY.encode()).hexdigest()
+    routes = {
+        "contents": ("contents/src/main.py", _MAIN_PY),
+        "readme": ("readme", _CODEBASE_README),
+        "blob": (f"git/blobs/{sha}", _MAIN_PY),
+    }
+    served = {}
+    for accept in _RAW_BESIDE_A_WILDCARD:
+        for route, (path, body) in routes.items():
+            h = {**gh_admin_h, "Accept": accept}
+            r = c.get(f"/github/repos/{gh_org}/codebase/{path}", headers=h)
+            if r.status_code != 200:
+                served[accept, route] = r.status_code
+            elif r.text == body:
+                served[accept, route] = "raw"
+            else:
+                envelope = base64.b64decode(r.json()["content"]).decode()
+                served[accept, route] = "json" if envelope == body else envelope[:20]
+    assert served == {
+        (accept, route): "raw" if route in raw_on else "json"
+        for accept, raw_on in _RAW_BESIDE_A_WILDCARD.items()
+        for route in routes
+    }
 
 
 def test_github_oversized_patch_is_omitted_from_json_but_kept_in_the_diff(diff_pr, monkeypatch):

@@ -327,11 +327,12 @@ class Spent:
         graphql-js's refusals of a root field's arguments, those of ``assigned`` at a root field,
         come first, as it makes them before Fireflies counts a field; then the refusals; then every
         other error, which a resolver makes once Fireflies has counted its field. api.fireflies.ai
-        answered so a `null` refused at a non-null argument before and after a refused field, and a
-        refusal ahead of an earlier root field's `not_in_team`, `transcripts(limit: 0)` and
-        `transcripts(date: 1e20)`, on 2026-10-26 (UTC); it answered an earlier
-        `transcripts(limit: 0)` ahead of refusals 29 fields after it the same day, which this does
-        not follow."""
+        answered so a `null` refused at a non-null argument before and after a refused field, a
+        refusal ahead of a `not_in_team` 30 fields before it, and refusals ahead of
+        `transcripts(limit: 0)` and `transcripts(date: 1e20)` at the last field the minute had room
+        for, on 2026-10-26 (UTC). Which comes first is a race: with either of those two 30 fields
+        before the refusals, it answered the error first in five of six, on 2026-10-26 and
+        2026-10-27, and between two refusals in the sixth; this does not follow those six."""
         if not self.refused:
             return body
         when = email.utils.formatdate(self.retry_at, usegmt=True)

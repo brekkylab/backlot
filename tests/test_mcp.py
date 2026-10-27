@@ -702,8 +702,8 @@ def _graphql_bridge_call(base, source, creds, *, tool_name, args, ok_pred, depth
     """Exercise one GraphQL source's bridge in-process: ``backlot.mcp.graphql_server``, the same
     server ``backlot mcp`` runs over stdio, driven through fastmcp's in-memory client. The
     derivation it serves is unit-tested in ``tests/test_graphql.py``; what is proved here is that
-    the tool posts its document with the caller's credential. Returns ``ok_pred`` over the tool's
-    response text."""
+    the tool posts its document with the caller's credential, and that the server reports Backlot's
+    version in ``serverInfo``. Returns ``ok_pred`` over the tool's response text."""
     from fastmcp import Client
 
     async def _go():
@@ -712,9 +712,9 @@ def _graphql_bridge_call(base, source, creds, *, tool_name, args, ok_pred, depth
             version = c.server_info.version
             try:
                 res = await c.call_tool(tool_name, args)
-                return version, ok_pred("".join(getattr(b, "text", "") for b in res.content))
             except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
                 return version, False
+            return version, ok_pred("".join(getattr(b, "text", "") for b in res.content))
 
     version, ok = asyncio.run(_go())
     assert version == metadata.version("backlot")
@@ -867,14 +867,14 @@ def _mcp_params(*args, env=None):
 
 async def _tools_and_instructions(params, errlog=None) -> tuple[list[str], str | None]:
     """The tool names a session lists, and the ``instructions`` it advertised alongside them — a
-    client feeds the latter to the model, so the two have to agree about which sources exist."""
+    client feeds the latter to the model, so the two have to agree about which sources exist. Also
+    asserts that ``initialize`` reported Backlot's version."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
     async with stdio_client(params, errlog=errlog or sys.stderr) as (r, w):
         async with ClientSession(r, w) as sess:
             init = await sess.initialize()
-            # Backlot's version, not the FastMCP one a server reports when it is not given one
             assert init.server_info.version == metadata.version("backlot")
             names = [t.name for t in (await sess.list_tools()).tools]
             return names, init.instructions

@@ -52,11 +52,11 @@ import urllib.request
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from importlib import metadata
 from typing import Any
 
 from backlot import sigv4
 from backlot.openapi import SOURCE_PREFIXES
+from backlot.version import version
 
 OPENAPI_SOURCES: tuple[str, ...] = tuple(SOURCE_PREFIXES)
 GRAPHQL_SOURCES: tuple[str, ...] = ("linear", "fireflies")
@@ -238,15 +238,6 @@ def is_backlot(url: str, timeout: float = PROBE_TIMEOUT) -> bool:
         return False
 
 
-def _version() -> str:
-    """Backlot's version, for the ``serverInfo`` every server here answers ``initialize`` with —
-    without it FastMCP reports its own."""
-    try:
-        return metadata.version("backlot")
-    except metadata.PackageNotFoundError:  # a source tree that was never installed
-        return "unknown"
-
-
 # --------------------------------------------------------------------------- one source
 
 
@@ -289,7 +280,7 @@ def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict
         openapi_spec=spec,
         client=client,
         name=f"{source}-bridge",
-        version=_version(),
+        version=version(),
         validate_output=False,
     )
 
@@ -350,7 +341,7 @@ def graphql_server(base_url: str, creds: Credentials, source: str, *, depth: int
             content, failed = graphql_outcome(r.json())
             return ToolResult(content=content, is_error=failed)
 
-    server = FastMCP(name=f"{source}-graphql-bridge", version=_version())
+    server = FastMCP(name=f"{source}-graphql-bridge", version=version())
     for tool in tools:
         server.add_tool(
             _Field(
@@ -408,7 +399,7 @@ def build_server(
     )
     if "atlassian" in servers:
         instructions += " atlassian_* covers both Jira and Confluence."
-    root = FastMCP(name="backlot", instructions=instructions, version=_version())
+    root = FastMCP(name="backlot", instructions=instructions, version=version())
     for source, server in servers.items():
         # `tool_names` renames a tool before the namespace is prefixed, so what goes in is the
         # tail `mounted_name` wants after `<source>_`. Only the tools whose default name would

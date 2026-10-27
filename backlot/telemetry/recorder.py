@@ -14,10 +14,11 @@ import platform
 import sys
 import threading
 import time
-from importlib import metadata
 from typing import Any, Callable, Mapping
 
 import httpx
+
+from backlot.version import version as _version
 
 ENDPOINT = "https://telemetry.brekkylab.com/v1/metrics"
 # Seconds between exports. What was counted since the last one is also sent at shutdown.
@@ -31,13 +32,6 @@ BOUNDS = (5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000)
 MAX_SERIES = 4096
 _POST_TIMEOUT = 5.0
 _log = logging.getLogger(__name__)
-
-
-def _version() -> str:
-    try:
-        return metadata.version("backlot")
-    except metadata.PackageNotFoundError:
-        return "unknown"
 
 
 def resource() -> dict[str, str]:

@@ -583,11 +583,19 @@ def test_no_arguments_prints_the_command_list(capsys):
         assert command in out
 
 
-def test_version_reports_the_installed_distribution(capsys):
-    from importlib.metadata import version
+def test_version_reports_the_installed_distribution(capsys, monkeypatch):
+    """...or ``unknown`` from a source tree that was never installed."""
+    from importlib import metadata
 
     assert cli.main(["--version"]) == 0
-    assert plain(capsys.readouterr().out) == f"backlot {version('backlot')}"
+    assert plain(capsys.readouterr().out) == f"backlot {metadata.version('backlot')}"
+
+    def never_installed(name):
+        raise metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(metadata, "version", never_installed)
+    assert cli.main(["--version"]) == 0
+    assert plain(capsys.readouterr().out) == "backlot unknown"
 
 
 def test_serve_help_leaves_out_the_option_only_serve_passes(capsys):

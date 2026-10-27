@@ -664,7 +664,9 @@ async def _refuse_an_anonymous_caller(request: Request) -> None:
     each, with or without `1999-01-01` (2026-10-25). A `Basic` value naming no token (`Basic eDp5`)
     was the version's 400 pinned to `1999-01-01` on the first four, and otherwise each route's own
     answer with the echo and the five: the 401 on the first two, and the 404 on a repository's teams
-    and a branch's protection (:data:`_NOT_FOUND_FOR_A_BASIC_VALUE_WITHOUT_A_TOKEN`).
+    and a branch's protection (:data:`_NOT_FOUND_FOR_A_BASIC_VALUE_WITHOUT_A_TOKEN`). `Basic` and
+    the base64 of `x:<40 a>` or of `x:GHP_<36 A>` was `Bad credentials` with the five and no echo
+    on each of the five, with or without `1999-01-01` (2026-10-26).
     """
     route = getattr(request.scope.get("route"), "path", None)
     if route not in _REFUSE_AN_ANONYMOUS_CALLER_FIRST:
@@ -886,17 +888,21 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     Either bearer scheme followed by a tab rather than a space (``auth.github_scheme_then_a_tab``)
     is counted in that same window, though it is answered as Bad credentials: an unknown scheme and
     then a bad bearer after a tab, on `/repos/psf/requests`, read `used` 4 and 5, while the
-    address's anonymous window stayed at 8 (2026-10-14). Any other credential that does not resolve
-    is keyed with the address here but never counted — see :func:`refused_without_a_window`. Callers
-    that draw real's line themselves check `request.headers` for the presence of `Authorization`
-    directly instead of asking `auth.github_credential`, which is `None` for a header real serves as
-    anonymous — see `refuse_a_trailing_slash_on_github`."""
+    address's anonymous window stayed at 8 (2026-10-14). So is a `Basic` token
+    ``auth.github_basic_token_counted`` holds for: six such 401s in a row read `used` 3 through 8
+    (2026-10-25). Any other credential that does not resolve is keyed with the address here but
+    never counted — see :func:`refused_without_a_window`. Callers that draw real's line themselves
+    check `request.headers` for the presence of `Authorization` directly instead of asking
+    `auth.github_credential`, which is `None` for a header real serves as anonymous — see
+    `refuse_a_trailing_slash_on_github`."""
     token = auth.github_credential(request)
     if token is not None and auth.acl(request).resolve(token) is not None:
         return f"token:{token}", True
     host = request.client.host if request.client is not None else "anonymous"
     if "authorization" in request.headers and (
-        token is None or auth.github_scheme_then_a_tab(request)
+        token is None
+        or auth.github_scheme_then_a_tab(request)
+        or auth.github_basic_token_counted(request)
     ):
         return f"unparseable:{host}", False
     return f"host:{host}", False
@@ -924,21 +930,34 @@ def refused_a_credential(request: Request) -> bool:
 
 
 def refused_without_a_window(request: Request) -> bool:
-    """Whether :func:`refused_a_credential` holds and ``backlot.auth.github_scheme_then_a_tab``
-    does not: the 401 real counts in no window and answers with none of the five headers, as each
-    scheme with nothing after it and a value after `Basic` that does not decode were (2026-10-14),
-    and so were `Bearer<TAB>,nope`, `token<TAB>,nope`, `Bearer<TAB>no,pe` and `Bearer<TAB>nope,`
-    (2026-10-16), all on the rate-limit route.
+    """Whether :func:`refused_a_credential` holds and neither
+    ``backlot.auth.github_scheme_then_a_tab`` nor ``backlot.auth.github_basic_token_counted`` does:
+    the 401 real counts in no window and answers with none of the five headers, as each scheme with
+    nothing after it and a value after `Basic` that does not decode were (2026-10-14), and so were
+    `Bearer<TAB>,nope`, `token<TAB>,nope`, `Bearer<TAB>no,pe` and `Bearer<TAB>nope,` (2026-10-16),
+    all on the rate-limit route.
 
-    Where that helper holds, the same 401 carries the five of the window it is counted in, the
+    Where the first helper holds, the same 401 carries the five of the window it is counted in, the
     unparseable one: measured against api.github.com 2026-10-14 on `GET /rate_limit`,
     `Bearer<TAB>nope` and `token<TAB>nope` each answered 401 with `limit: 60`, `remaining: 60`,
     `used: 0`, `resource: core` and a `reset` an hour after `Date`, while the same two after a space
     answered the same 401 with none of the five. Once that window was spent, the two after a tab on
     a public repository, and the first on `/user/repos`, were its 403, as an unknown scheme was,
     where the bearer after a space was still the 401.
+
+    Where the second holds, the 401 carries the five and counts: in that same window on
+    `/user/repos`, a repository pinned to `1999-01-01` or not, its teams and `/zen` (2026-10-25),
+    and on `PATCH`, `PUT`, `DELETE` and `POST` to operations Backlot does not serve, an
+    organization's teams, a repository's collaborators, a branch's protection and `/search/issues`
+    pinned or not (2026-10-26). `DELETE /installation/token` carries the five and leaves `used`
+    where it was (:func:`refused_an_unserved_operation_reported`). After a space, unlike after a
+    tab, such a value stays the 401 once that window is spent — see :func:`rate_limit_refusal`.
     """
-    return refused_a_credential(request) and not auth.github_scheme_then_a_tab(request)
+    return (
+        refused_a_credential(request)
+        and not auth.github_scheme_then_a_tab(request)
+        and not auth.github_basic_token_counted(request)
+    )
 
 
 def rate_limit_headers(request: Request, status_code: int, *, count: bool = True) -> dict[str, str]:
@@ -1032,10 +1051,20 @@ def rate_limit_refusal(request: Request) -> Response | None:
     caller's mechanism: a tier in front of the one those dependencies run on. A token's own refusal
     answers from `server: github.com` instead, so the tier split explains the anonymous order
     rather than the order in general. The envelope differs by caller too (same doc section;
-    :data:`TOKEN_RATE_LIMIT_EXCEEDED_DOCS` is the token's own `documentation_url`)."""
+    :data:`TOKEN_RATE_LIMIT_EXCEEDED_DOCS` is the token's own `documentation_url`).
+
+    A `Basic` value ``auth.github_basic_token_counted`` holds for is not refused unless a tab
+    follows `Basic`: with the window it is counted in spent, the base64 of `x:<40 a>` after a space
+    was still the 401 "Bad credentials" at `used: 60` and `remaining: 0` on `/repos/psf/requests`
+    pinned to `1999-01-01` or not, `/user/repos`, `/user` and `/orgs/psf/teams`, and so was that of
+    `x:GHP_<36 A>` on the repository and the organization's teams, where `Basic eDp5` and the base64
+    of `x:<40 a>` after a tab were the 403 (2026-10-26).
+    """
     if not get_settings().github_enforce_rate_limits:
         return None
     if request.url.path == RATE_LIMIT_PATH:
+        return None
+    if auth.github_basic_token_counted(request) and not auth.github_scheme_then_a_tab(request):
         return None
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, 401 if not authenticated else 200)

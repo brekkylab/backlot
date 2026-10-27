@@ -2029,6 +2029,58 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
     assert "body" in page and "storage" in page["body"]  # expand survives
 
 
+def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
+    """Measured on Confluence Cloud (the measurement `confluence_content_get` and
+    `_confluence_page` record): a bare `content/{id}` — and one sent
+    `expand=` empty — expands `space`, `history` and `version` and no body; a sent `expand`
+    expands exactly the properties it names, so `expand=version` carries no `history` and
+    `expand=bogus` nothing; and the rows of `content`, `content/{id}/child/page` and the CQL
+    search carry none of the four. Backlot expanded `body.storage` on the bare read, added
+    `space` to every read and `history` beside `version`."""
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": "eng",
+        "title": "probe",
+        "content": "body",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "created": "2026-10-01T09:00:00Z",
+    }
+    child = {**page, "doc_id": "c", "parent": "p", "title": "probe child"}
+    settings = tiny_corpus(tmp_path, [page, child])
+    four = ("space", "history", "version", "body")
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        pid = served_id("confluence", "p")
+        for expand, served, body_members in (
+            (None, ["space", "history", "version"], []),
+            ("", ["space", "history", "version"], []),
+            ("body.storage", ["body"], ["_expandable", "storage"]),
+            ("space", ["space"], []),
+            ("version", ["version"], []),
+            ("bogus", [], []),
+            ("body", ["body"], ["_expandable"]),
+            ("body.storage,space", ["space", "body"], ["_expandable", "storage"]),
+        ):
+            query = {} if expand is None else {"expand": expand}
+            j = c.get(f"{api}/content/{pid}", headers=h, params=query).json()
+            assert [k for k in four if k in j] == served, expand
+            assert sorted(j.get("body", {})) == body_members, expand
+        bare = c.get(f"{api}/content/{pid}", headers=h).json()
+        assert "body" in bare["_expandable"]
+        assert "history" not in bare["_expandable"]
+        assert "version" not in bare["_expandable"]
+        stored = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "body.storage"}).json()
+        assert "body" not in stored["_expandable"]
+        assert set(stored["body"]["_expandable"]) == {"view", "export_view", "atlas_doc_format"}
+        for path in ("/content", f"/content/{pid}/child/page", "/search?cql=title~probe"):
+            row = c.get(api + path, headers=h).json()["results"][0]
+            row = row.get("content", row)
+            assert [k for k in four if k in row] == [], path
+
+
 # --- Jira ------------------------------------------------------------------------
 
 

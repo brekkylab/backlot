@@ -645,6 +645,60 @@ def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_y
         "data"
     ]["user"]
     assert again["email"] == "ava@acme.com"
+    # an empty id is read as none, as `resolve_user` records
+    for headers, user in ((admin_h, None), (h, {"email": "ava@acme.com"})):
+        empty = ff_gql(client, '{ user(id: "") { email } }', headers).json()
+        assert empty == {"data": {"user": user}}
+
+
+def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h, tokens_yaml):
+    """Each query names nothing its caller can read and draws the bytes real answered it with, but
+    for the newline real ends them with: `data` null beside the error ``_not_in_team`` or
+    ``_object_not_found`` builds, its `correlationId` eight letters and digits. A transcript the
+    caller cannot see draws what one that does not exist draws, and `hana@acme.com`, who can see
+    it, reads it."""
+    import re
+
+    not_in_team = (
+        '{"errors":[{"friendly":true,"message":"You do not have permissions for this team",'
+        '"locations":[{"line":1,"column":3}],"path":["user"],"code":"not_in_team",'
+        '"extensions":{"code":"not_in_team","correlationId":"<8>","status":403,"helpUrls":'
+        '["https://docs.fireflies.ai/miscellaneous/error-codes#not_in_team"]}}],'
+        '"data":{"user":null}}'
+    )
+    object_not_found = (
+        '{"errors":[{"friendly":true,"message":"Transcript not found",'
+        '"locations":[{"line":1,"column":3}],"path":["transcript"],"code":"object_not_found",'
+        '"extensions":{"code":"object_not_found","correlationId":"<8>","status":404,'
+        '"metadata":{"objectType":"Transcript"},"helpUrls":'
+        '["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"]}}],'
+        '"data":{"transcript":null}}'
+    )
+    tokens = {u["email"]: u["token"] for u in tokens_yaml["users"]}
+    listing = "{ transcripts(limit: 50) { id } }"
+    every = ff_gql(client, listing, admin_h).json()["data"]["transcripts"]
+    ava_h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+    seen = ff_gql(client, listing, ava_h).json()["data"]["transcripts"]
+    (hidden,) = {t["id"] for t in every} - {t["id"] for t in seen}
+    wanted = {
+        ("ava@acme.com", '{ user(id: "nope") { user_id } }'): not_in_team,
+        ("ava@acme.com", '{ user(id: " ") { user_id } }'): not_in_team,
+        ("ava@acme.com", '{ user(id: "nobody@example.com") { user_id } }'): not_in_team,
+        ("ava@acme.com", '{ user(id: "ava@acme.com") { user_id } }'): not_in_team,
+        ("ava@acme.com", '{ transcript(id: "nope") { id } }'): object_not_found,
+        ("ava@acme.com", '{ transcript(id: "%s") { id } }' % hidden): object_not_found,
+        ("hana@acme.com", '{ transcript(id: "%s") { id } }' % hidden): (
+            '{"data":{"transcript":{"id":"%s"}}}' % hidden
+        ),
+    }
+    answered = {}
+    for caller, query in wanted:
+        r = ff_gql(client, query, {"Authorization": f"Bearer {tokens[caller]}"})
+        assert r.status_code == 200, query
+        answered[caller, query] = re.sub(
+            r'"correlationId":"[A-Za-z0-9]{8}"', '"correlationId":"<8>"', r.text
+        )
+    assert answered == wanted
 
 
 def test_fireflies_introspection_describes_the_schema(client, admin_h):

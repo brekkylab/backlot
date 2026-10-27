@@ -22,13 +22,13 @@ from __future__ import annotations
 import os
 import sys
 from enum import Enum
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, NoReturn, Optional
 
 import typer
 
 from backlot import mcp as _mcp
+from backlot.version import version
 
 # The importers and uvicorn are imported inside each command, not here: `serve` must not pay for
 # `backlot.importer.erb` (2,400 lines) and `import` must not pull in uvicorn. `backlot.mcp` is the
@@ -169,13 +169,6 @@ app = typer.Typer(
 )
 
 
-def _version() -> str:
-    try:
-        return version("backlot")
-    except PackageNotFoundError:  # a source tree that was never installed
-        return "unknown"
-
-
 def _use_data_dir(data_dir: Path | None) -> None:
     """Point this run's settings at ``data_dir``.
 
@@ -253,7 +246,7 @@ def _root(
     ] = False,
 ) -> None:
     if version_:
-        typer.echo(f"backlot {_version()}")
+        typer.echo(f"backlot {version()}")
         raise typer.Exit()
 
 

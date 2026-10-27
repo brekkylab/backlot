@@ -43,6 +43,7 @@ import sys
 import threading
 import time
 import urllib.request
+from importlib import metadata
 
 import pytest
 import yaml
@@ -343,22 +344,26 @@ def test_mcp_atlassian_acl_enforced(live_server):
     visible = seen["key"]
 
     def reads(token, username, issue_key):
-        return asyncio.run(
-            _call(
-                _atlassian_params(base, token, username),
-                tool_pred=lambda n: n == "jira_get_issue",
-                args={"issue_key": issue_key},
-                ok_pred=lambda t: t.strip().startswith("{") and '"key"' in t,
-            )
+        return _call(
+            _atlassian_params(base, token, username),
+            tool_pred=lambda n: n == "jira_get_issue",
+            args={"issue_key": issue_key},
+            ok_pred=lambda t: t.strip().startswith("{") and '"key"' in t,
         )
 
-    assert reads(settings.admin_token, "svc@example.com", key), (
-        "admin should read the issue through mcp-atlassian"
-    )
-    assert reads(user["token"], email, visible), (
+    async def all_three():
+        return await asyncio.gather(
+            reads(settings.admin_token, "svc@example.com", key),
+            reads(user["token"], email, visible),
+            reads(user["token"], email, key),
+        )
+
+    admin_read, own_read, restricted_read = asyncio.run(all_three())
+    assert admin_read, "admin should read the issue through mcp-atlassian"
+    assert own_read, (
         f"{email} should read an issue they can see, or the miss below is an auth failure"
     )
-    assert not reads(user["token"], email, key), (
+    assert not restricted_read, (
         f"{email} should be blocked from the restricted issue via mcp-atlassian"
     )
 
@@ -697,20 +702,24 @@ def _graphql_bridge_call(base, source, creds, *, tool_name, args, ok_pred, depth
     """Exercise one GraphQL source's bridge in-process: ``backlot.mcp.graphql_server``, the same
     server ``backlot mcp`` runs over stdio, driven through fastmcp's in-memory client. The
     derivation it serves is unit-tested in ``tests/test_graphql.py``; what is proved here is that
-    the tool posts its document with the caller's credential. Returns ``ok_pred`` over the tool's
-    response text."""
+    the tool posts its document with the caller's credential, and that the server reports Backlot's
+    version and icons in ``serverInfo``. Returns ``ok_pred`` over the tool's response text."""
     from fastmcp import Client
 
     async def _go():
         server = backlot_mcp.graphql_server(base, creds, source, depth=depth)
         async with Client(server) as c:
-            res = await c.call_tool(tool_name, args)
-            return ok_pred("".join(getattr(b, "text", "") for b in res.content))
+            version = c.server_info.version
+            assert _icons(c.server_info) == list(backlot_mcp.ICONS)
+            try:
+                res = await c.call_tool(tool_name, args)
+            except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
+                return version, False
+            return version, ok_pred("".join(getattr(b, "text", "") for b in res.content))
 
-    try:
-        return asyncio.run(_go())
-    except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
-        return False
+    version, ok = asyncio.run(_go())
+    assert version == metadata.version("backlot")
+    return ok
 
 
 @pytest.mark.parametrize(
@@ -857,15 +866,23 @@ def _mcp_params(*args, env=None):
     )
 
 
+def _icons(server_info) -> list[dict]:
+    """``serverInfo.icons`` in the wire spelling server.json uses."""
+    return [i.model_dump(mode="json", by_alias=True, exclude_none=True) for i in server_info.icons]
+
+
 async def _tools_and_instructions(params, errlog=None) -> tuple[list[str], str | None]:
     """The tool names a session lists, and the ``instructions`` it advertised alongside them — a
-    client feeds the latter to the model, so the two have to agree about which sources exist."""
+    client feeds the latter to the model, so the two have to agree about which sources exist. Also
+    asserts that ``initialize`` reported Backlot's version and icons."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
     async with stdio_client(params, errlog=errlog or sys.stderr) as (r, w):
         async with ClientSession(r, w) as sess:
             init = await sess.initialize()
+            assert init.server_info.version == metadata.version("backlot")
+            assert _icons(init.server_info) == list(backlot_mcp.ICONS)
             names = [t.name for t in (await sess.list_tools()).tools]
             return names, init.instructions
 

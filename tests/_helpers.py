@@ -215,8 +215,29 @@ def build_corpus(
 
 
 @contextlib.contextmanager
+def settings_put_back():
+    """Puts back on exit the settings `get_settings` held on entry, as they were then; with none
+    held on entry it holds none on exit, so the next read takes the environment as it is then.
+
+    A client's lifespan sets the org its corpus recorded on the settings `get_settings` holds, and
+    routers read the org off them as they answer (Teams builds its team id from it), so a client
+    still open keeps answering for its own org across anything inside this that clears the cache.
+    """
+    outer = get_settings() if get_settings.cache_info().currsize else None
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()
+        if outer is not None:
+            restored = get_settings()
+            for name in type(outer).model_fields:
+                setattr(restored, name, getattr(outer, name))
+
+
+@contextlib.contextmanager
 def client_for(settings: Settings, *, reload: bool = True):
-    """A TestClient whose app is pointed at ``settings``, with the env restored on exit.
+    """A TestClient whose app is pointed at ``settings``, with the env and the settings
+    `get_settings` holds put back on exit (`settings_put_back`).
 
     ``backlot.main`` is re-imported first, so each client starts its lifespan on an app of its own.
     The lifespan puts its connection on ``app.state`` and closes it on exit, so two clients open on
@@ -225,21 +246,21 @@ def client_for(settings: Settings, *, reload: bool = True):
     ``reload=False`` serves the app ``backlot.main`` holds without re-importing it.
     """
     prev = os.environ.get("BACKLOT_DATA_DIR")
-    os.environ["BACKLOT_DATA_DIR"] = str(settings.data_dir)
-    get_settings.cache_clear()
-    try:
-        import backlot.main as main_module
-
-        if reload:
-            main_module = importlib.reload(main_module)
-        with TestClient(main_module.app) as c:
-            yield c
-    finally:
+    with settings_put_back():
+        os.environ["BACKLOT_DATA_DIR"] = str(settings.data_dir)
         get_settings.cache_clear()
-        if prev is None:
-            os.environ.pop("BACKLOT_DATA_DIR", None)
-        else:
-            os.environ["BACKLOT_DATA_DIR"] = prev
+        try:
+            import backlot.main as main_module
+
+            if reload:
+                main_module = importlib.reload(main_module)
+            with TestClient(main_module.app) as c:
+                yield c
+        finally:
+            if prev is None:
+                os.environ.pop("BACKLOT_DATA_DIR", None)
+            else:
+                os.environ["BACKLOT_DATA_DIR"] = prev
 
 
 def python_child_env(**extra: str) -> dict[str, str]:

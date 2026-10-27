@@ -5410,8 +5410,8 @@ _LINEAR_BYTES = {
 
 
 def _linear_status(client, tokens_yaml, value: str) -> int:
-    """The status `Authorization: value` draws, `{t}` the admin key, a 200 serving the query, a 400
-    being `_API_KEY_AS_BEARER` and a 401 `_UNAUTHENTICATED`."""
+    """The status `Authorization: value` draws, read as the comment over `_LINEAR_SPELLINGS` reads
+    it."""
     header = value.replace("{t}", tokens_yaml["admin_token"])
     r = sent_as(
         client,

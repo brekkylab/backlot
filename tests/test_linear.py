@@ -7485,9 +7485,7 @@ _LINEAR_HEADERS = [
 
 
 def test_linear_answers_carry_the_headers_linear_sends(client, tokens_yaml):
-    """Each row of `_LINEAR_HEADERS`: the status and the headers named, with no type or body,
-    which the rows of `test_linear_answers_each_method_path_type_and_accept_as_linear_does`
-    hold."""
+    """Each row of `_LINEAR_HEADERS`, as the comment over it reads one."""
     answered, expected = {}, {}
     for row in _LINEAR_HEADERS:
         method, target, headers, body, credential, status, named = row.values

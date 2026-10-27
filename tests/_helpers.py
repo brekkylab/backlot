@@ -224,10 +224,11 @@ def client_for(settings: Settings, *, reload: bool = True):
     closed one; the Slack router's caches on ``app.state`` also outlive the client that built them.
     ``reload=False`` serves the app ``backlot.main`` holds without re-importing it.
 
-    The lifespan sets the org a corpus recorded on the settings `get_settings` holds, which the
-    routers read at each request, so on exit those settings are put back as they were on entry:
-    a client still open around this one keeps answering for its own org. Settings nothing had
-    read on entry are not read on exit, so the next read takes the environment as it is then.
+    The lifespan sets the org a corpus recorded on the settings `get_settings` holds, and routers
+    read the org off those settings as they answer (Teams builds its team id from it). Settings
+    something had read before entry are put back on exit as they were, so a client still open
+    around this one keeps answering for its own org; settings nothing had read are not read on
+    exit, so the next read takes the environment as it is then.
     """
     prev = os.environ.get("BACKLOT_DATA_DIR")
     outer = get_settings() if get_settings.cache_info().currsize else None

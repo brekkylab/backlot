@@ -1,5 +1,5 @@
 """Settings defaults must not depend on the package living inside a source checkout, and a test
-client leaves the settings `get_settings` holds as it found them."""
+client hands back on exit the settings `get_settings` holds on entry."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def test_env_var_still_wins(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "read_on_entry,expected", [(False, ("exit", 100)), (True, ("entry", 7))], ids=["unread", "read"]
 )
-def test_client_for_leaves_get_settings_as_it_found_it(
+def test_client_for_hands_back_the_settings_get_settings_holds_on_entry(
     monkeypatch, sample_settings, read_on_entry, expected
 ):
     monkeypatch.setenv("BACKLOT_ORG_NAME", "entry")

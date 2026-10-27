@@ -15,7 +15,7 @@ from urllib.parse import quote
 import pytest
 
 from backlot import store, synth
-from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS
+from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS, weak_etag
 from backlot.routers.notion import router as notion_router
 from tests._helpers import client_for, sent_as, served_id, tiny_corpus, tok
 
@@ -308,12 +308,29 @@ def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
 
 
 def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, notion_h):
-    """Pins ``backlot.errors.notion.json_media_type`` and
+    """Pins ``backlot.errors.notion.json_media_type``, ``backlot.routers.notion.weak_etag`` and
     ``backlot.routers.notion.APPLICATION_HEADERS`` on 200s and refusals, a `HEAD` among them: each
-    carries the charset, and each but the framework's 405 for `TRACE` and a refusal of the body
-    reader (``backlot.routers.notion.front_door_body``) the headers, which a body that reader leaves
-    unread gets too. The OpenAPI document and the app's own routes keep `application/json` and carry
-    none of the headers."""
+    carries the charset; each but the framework's 405 for `TRACE` the `ETag` over its body, a `HEAD`
+    its `GET`'s; and each but that 405 and a refusal of the body reader
+    (``backlot.routers.notion.front_door_body``) the headers, which a body that reader leaves unread
+    gets too. The OpenAPI document and the app's own routes keep `application/json` and carry none
+    of the headers."""
+    # two answers real sent, kept whole, the second's length counted in bytes, not characters
+    for body, etag in (
+        (
+            b'{"object":"error","status":401,"code":"unauthorized","message":"Authorization header'
+            b' must use the format \\"Bearer <token>\\".","request_id":"675f0ca5-96f1-43d8-bd09-'
+            b'ac2433e235e9"}',
+            'W/"b2-r883nfyX+MtL2hM795u3RMqBGaA"',
+        ),
+        (
+            '{"object":"error","status":400,"code":"validation_error","message":"body failed '
+            "validation: body.query should be a string or `undefined`, instead was "
+            '`[\\"é한\\"]`.","request_id":"d45596aa-6b18-4338-a9c3-32f8256e710c"}'.encode(),
+            'W/"da-AeKifXGEFVtPdfWp2X1QNdbc2FE"',
+        ),
+    ):
+        assert weak_etag(body) == etag
     utf8 = "application/json; charset=utf-8"
     real = {
         "content-security-policy": "default-src 'none'",
@@ -326,52 +343,114 @@ def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, noti
         "x-xss-protection": "0",
     }
     none = dict.fromkeys(real)
+    # each with `etag` True for the tag over the body, None for no tag
+    app, refused, bare = {**real, "etag": True}, {**none, "etag": True}, {**none, "etag": None}
     versioned = {"Notion-Version": DATA_SOURCES_VERSION}
     rows = [
-        ("GET", "/notion/v1/users/me", notion_h, None, 200, real),
-        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{}", 200, real),
-        ("GET", f"/notion/v1/pages/{synth.notion_id('nt-runbook')}", notion_h, None, 200, real),
-        ("GET", "/notion/v1/users/me", versioned, None, 401, real),
-        ("POST", "/notion/v1/search", {**versioned, **_JSON}, b"{}", 401, real),
+        ("GET", "/notion/v1/users/me", notion_h, None, 200, app),
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{}", 200, app),
+        ("GET", f"/notion/v1/pages/{synth.notion_id('nt-runbook')}", notion_h, None, 200, app),
+        ("GET", "/notion/v1/users/me", versioned, None, 401, app),
+        ("POST", "/notion/v1/search", {**versioned, **_JSON}, b"{}", 401, app),
         (
             "GET",
             "/notion/v1/users/me",
             {"Authorization": notion_h["Authorization"]},
             None,
             400,
-            real,
+            app,
         ),
-        ("GET", "/notion/v1/nonexistent_thing/xyz", notion_h, None, 400, real),
-        ("GET", "/notion/v1/pages/00000000000000000000000000000000", notion_h, None, 404, real),
-        ("POST", "/notion/v1/oauth/token", {**versioned, **_JSON}, b"{}", 401, real),
+        ("GET", "/notion/v1/nonexistent_thing/xyz", notion_h, None, 400, app),
+        ("GET", "/notion/v1/pages/00000000000000000000000000000000", notion_h, None, 404, app),
+        ("POST", "/notion/v1/oauth/token", {**versioned, **_JSON}, b"{}", 401, app),
         # the framework's 405 for a method no route takes, which real's front door answers itself
-        ("TRACE", "/notion/v1/users/me", notion_h, None, 405, none),
+        ("TRACE", "/notion/v1/users/me", notion_h, None, 405, bare),
         # the body reader's refusals, and a body it does not read
-        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{", 400, none),
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{", 400, refused),
         (
             "POST",
             "/notion/v1/search",
             {**notion_h, "Content-Type": "application/json; charset=latin1"},
             b"{}",
             415,
-            none,
+            refused,
         ),
-        ("POST", "/notion/v1/search", {**notion_h, "Content-Type": "text/plain"}, b"{", 200, real),
+        (
+            "POST",
+            "/notion/v1/search",
+            {**notion_h, **_JSON},
+            b'{"x":"' + b"a" * 600_000 + b'"}',
+            413,
+            refused,
+        ),
+        ("POST", "/notion/v1/search", {**notion_h, "Content-Type": "text/plain"}, b"{", 200, app),
     ]
     for method, path, headers, body, status, sent in rows:
         r = client.request(method, path, headers=headers, content=body)
         got = {name: r.headers.get(name) for name in real}
+        got["etag"] = r.headers.get("etag") and r.headers["etag"] == weak_etag(r.content)
         assert (r.status_code, r.headers["content-type"], got) == (status, utf8, sent), (path, body)
     head = client.head("/notion/v1/users/me", headers=versioned)
     got = {name: head.headers.get(name) for name in real}
-    assert (head.status_code, head.headers["content-type"], got) == (401, utf8, real)
+    get = client.get("/notion/v1/users/me", headers=versioned)
+    got["etag"] = head.headers.get("etag") and head.headers["etag"] == weak_etag(get.content)
+    assert (head.status_code, head.headers["content-type"], got) == (401, utf8, app)
     # the contract keeps the bare type, and so do the app's own routes, with none of the headers
     op = client.get("/openapi.json").json()["paths"]["/notion/v1/users/me"]["get"]
     assert list(op["responses"]["200"]["content"]) == ["application/json"]
     for path in ("/openapi.json", "/health", "/notionx/v1/users/me"):
         r = client.get(path)
-        got = {name: r.headers.get(name) for name in real}
-        assert (r.headers["content-type"], got) == ("application/json", none), path
+        got = {name: r.headers.get(name) for name in bare}
+        assert (r.headers["content-type"], got) == ("application/json", bare), path
+    # the vendor root is the framework's redirect, with no JSON body, and real's 302 has no tag
+    root = client.get("/notion", headers=notion_h, follow_redirects=False)
+    assert (root.status_code, root.headers.get("etag")) == (307, None)
+
+
+def test_notion_answers_an_if_none_match_of_a_star_as_real_does(client, notion_h):
+    """Each request below is answered as ``backlot.routers.notion.not_modified`` records real
+    answering it: with the 304 ``backlot.main.report_notion_etag`` makes of the answer it stands
+    for, or with the status it gets without `If-None-Match`."""
+    me, page = "/notion/v1/users/me", f"/notion/v1/pages/{synth.notion_id('nt-runbook')}"
+    stands_for = {}
+    for path in (me, page):
+        headers = dict(client.get(path, headers=notion_h).headers)
+        del headers["content-type"], headers["content-length"]
+        stands_for[path] = (304, b"", headers)
+    star = ("If-None-Match", "*")
+    wanted = {
+        ("GET", me, (star,)): stands_for[me],
+        ("HEAD", me, (star,)): stands_for[me],
+        ("GET", page, (star,)): stands_for[page],
+        ("GET", me, (("If-None-Match", " \t* "),)): stands_for[me],
+        ("GET", me, (star, ("If-Modified-Since", ""))): stands_for[me],
+        ("GET", me, (star, ("If-Modified-Since", "  "))): stands_for[me],
+        ("GET", me, (star, ("Cache-Control", "NO-CACHE"))): stands_for[me],
+        ("GET", me, (star, ("Cache-Control", "max-age=0"))): stands_for[me],
+        ("GET", me, (star, ("If-Modified-Since", "Fri, 01 Jan 2100 00:00:00 GMT"))): 200,
+        ("GET", me, (star, ("If-Modified-Since", "\xa0"))): 200,
+        ("GET", me, (star, ("Cache-Control", "max-age=0, no-cache"))): 200,
+        ("GET", me, (star, ("Cache-Control", "max-age=0"), ("Cache-Control", "no-cache"))): 200,
+        ("GET", me, (star, ("Cache-Control", "xno-cache"))): stands_for[me],
+        ("GET", me, (star, ("Cache-Control", "\xa0no-cache"))): 200,
+        ("GET", me, (star, ("Cache-Control", 'no-cache="set-cookie"'))): stands_for[me],
+        ("GET", me, (("If-None-Match", '"*"'),)): 200,
+        ("GET", me, (("If-None-Match", 'W/"0-x", *'),)): 200,
+        ("GET", me, (("If-None-Match", "\xa0*"),)): 200,
+        ("GET", me, (("If-None-Match", "*\xa0"),)): 200,
+        # real's tag is new on each answer, so the one an answer carried matches no later one
+        ("GET", me, (("If-None-Match", stands_for[me][2]["etag"]),)): 200,
+        ("GET", "/notion/v1/pages/00000000000000000000000000000000", (star,)): 404,
+        ("GET", "/notion/v1/nonexistent_thing/xyz", (star,)): 400,
+        ("POST", "/notion/v1/search", (star, *_JSON.items())): 200,
+    }
+    answered = {}
+    for method, path, sent in wanted:
+        body = b"{}" if method == "POST" else None
+        r = sent_as(client, method, path, [*notion_h.items(), *sent], content=body)
+        answer = (304, r.content, dict(r.headers)) if r.status_code == 304 else r.status_code
+        answered[method, path, sent] = answer
+    assert answered == wanted
 
 
 def test_notion_page_retrieve_and_blocks(client, notion_h):

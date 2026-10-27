@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read Google Drive through the official google-api-python-client — authenticating with a
+"""Read Google Drive and Sheets, and write Sheets, through the official google-api-python-client — authenticating with a
 Google **service-account** credential, the way a real connector does, rather than a raw token.
 Self-contained.
 
@@ -79,6 +79,19 @@ _p.add_argument(
 )
 args = _p.parse_args()
 
+
+def sheets_as(credentials, base_url):
+    return build(
+        "sheets",
+        "v4",
+        credentials=credentials,
+        static_discovery=True,
+        # No `/v4` here, unlike Drive below: the Sheets discovery document carries the version in
+        # its own servicePath, so the client appends it to whatever endpoint it is given.
+        client_options=ClientOptions(api_endpoint=f"{base_url}/sheets"),
+    )
+
+
 with serve_or_connect(CORPUS, url=args.url) as s:
     # Auth is an ordinary Google service-account credential; only the api_endpoint changes.
     # Backlot issues the key and honors the JWT exchange it triggers.
@@ -111,15 +124,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
     # The same credential drives Sheets v4. A spreadsheet whose corpus record states a grid serves
     # named sheets over typed cells, so UNFORMATTED_VALUE gives back 120000 and True rather than
     # "120000" and "TRUE".
-    sheets = build(
-        "sheets",
-        "v4",
-        credentials=creds,
-        static_discovery=True,
-        # No `/v4` here, unlike Drive above: the Sheets discovery document carries the version in
-        # its own servicePath, so the client appends it to whatever endpoint it is given.
-        client_options=ClientOptions(api_endpoint=f"{s.base_url}/sheets"),
-    )
+    sheets = sheets_as(creds, s.base_url)
     book = next((f for f in files if f["name"] == "Q1 Revenue Model"), None)
     if book:
         meta = sheets.spreadsheets().get(spreadsheetId=book["id"]).execute()
@@ -141,3 +146,28 @@ with serve_or_connect(CORPUS, url=args.url) as s:
         print("\nMonthly, unformatted:")
         for row in rows:
             print(f"  {row}")
+
+        # Writes go through the same client, as the spreadsheet's owner: anyone it is shared with
+        # may read it, and only its owner may write it. USER_ENTERED reads a string the way the
+        # Sheets UI reads typing, so "12.5%" is stored as the number 0.125 and shown as a percent.
+        owner = sheets_as(creds.with_subject("cfo@acme.com"), s.base_url)
+        update = (
+            owner.spreadsheets()
+            .values()
+            .update(
+                spreadsheetId=book["id"],
+                range="Monthly!A4:D4",
+                valueInputOption="USER_ENTERED",
+                body={"values": [["Mar", "150000", "12.5%", "TRUE"]]},
+            )
+            .execute()
+        )
+        print(f"\nWrote {update['updatedCells']} cells to {update['updatedRange']}:")
+        for render in ("FORMATTED_VALUE", "UNFORMATTED_VALUE"):
+            row = (
+                owner.spreadsheets()
+                .values()
+                .get(spreadsheetId=book["id"], range="Monthly!A4:D4", valueRenderOption=render)
+                .execute()["values"][0]
+            )
+            print(f"  {render}: {row}")

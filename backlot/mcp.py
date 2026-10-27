@@ -89,7 +89,7 @@ DEFAULT_URL = "http://127.0.0.1:8000"
 PROBE_TIMEOUT = 2
 NAMED_SERVER_TIMEOUT = 10
 
-# The prefix a source's route handlers carry to stay unique inside one module (`routers/google.py`
+# The prefix a source's route handlers carry to stay unique on one router (`routers.google.router`
 # holds all five Google surfaces), which under the `<source>_` namespace would be said twice:
 # `gmail_gmail_messages_list`, `gdrive_drive_files_list`. `mounted_name` folds it into the namespace.
 # Only the prefix that repeats the namespace is folded. `gdrive` bridges Docs, Sheets and Slides

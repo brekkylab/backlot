@@ -370,8 +370,8 @@ def invalid_json(message: str) -> GoogleError:
 def internal_error() -> GoogleError:
     """Real's 500 on the Sheets data-filter reads, measured 2026-10-04: an enum number the proto
     does not declare in some fields, and a `ROW`, `COLUMN` or `SHEET` lookup beside a `spreadsheet`
-    location. ``routers.google._sheets_check_lookup`` and ``sheets_values_batch_get_by_data_filter``
-    list which."""
+    location. ``routers.google_sheets._sheets_check_lookup`` and
+    ``sheets_values_batch_get_by_data_filter`` list which."""
     return GoogleError(500, "Internal error encountered.", reason="backendError", status="INTERNAL")
 
 
@@ -514,14 +514,28 @@ def bad_token(*, named: bool = True) -> GoogleError:
     )
 
 
-def missing_credentials() -> GoogleError:
+def missing_credentials(rpc: tuple[str, str] | None = None) -> GoogleError:
     """No credential, on an operation that does not take an API key (:func:`no_credentials`).
 
     One answer for all of them: measured 2026-09-14, Gmail, Docs and Slides send the same long
     top-level message and the same `errors[]` entry, the short ``Login Required.`` at ``location:
     Authorization``, and measured 2026-09-22 the two Sheets data-filter POSTs send both too. Which
     of them SHOWS that entry still differs — Gmail carries it unless `$.xgafv=2`, the editor
-    families only at `1` — but that is `has_errors_array`'s rule, not a difference in the error."""
+    families only at `1` — but that is `has_errors_array`'s rule, not a difference in the error.
+
+    ``rpc`` is ``(method, service)``, the operation the answer names in a ``CREDENTIALS_MISSING``
+    ErrorInfo: measured 2026-10-26, real carries one on every such 401, Gmail's and Docs' included,
+    and it is given here for the operations in `_RPC_METHODS`."""
+    details = None
+    if rpc is not None:
+        details = [
+            {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": "CREDENTIALS_MISSING",
+                "domain": "googleapis.com",
+                "metadata": {"method": rpc[0], "service": rpc[1]},
+            }
+        ]
     return GoogleError(
         401,
         MISSING_CREDENTIALS_MESSAGE,
@@ -530,6 +544,7 @@ def missing_credentials() -> GoogleError:
         location_type="header",
         status="UNAUTHENTICATED",
         short="Login Required.",
+        details=details,
         headers={"WWW-Authenticate": _CHALLENGE},
     )
 
@@ -569,6 +584,55 @@ _UNREGISTERED_CALLER_OPERATIONS = tuple(
 )
 
 
+# The RPC each operation's missing-credential 401 names, by its HTTP method and path, measured
+# 2026-10-26 on `sheets.googleapis.com`, and on 2026-10-27 for the last three, which are not served
+# and answer this 401 all the same.
+_SHEETS_RPC = "google.apps.sheets.v4.SpreadsheetsService"
+_RPC_METHODS = tuple(
+    (method, re.compile(pattern), (f"{_SHEETS_RPC}.{name}", "sheets.googleapis.com"))
+    for method, pattern, name in (
+        ("POST", r"/sheets/v4/spreadsheets", "CreateSpreadsheet"),
+        (
+            "POST",
+            r"/sheets/v4/spreadsheets/[^/]+/sheets/[^/]+:copyTo",
+            "CopySheetToAnotherSpreadsheet",
+        ),
+        (
+            "POST",
+            r"/sheets/v4/spreadsheets/[^/]+/values:batchUpdateByDataFilter",
+            "BatchUpdateValuesByDataFilter",
+        ),
+        (
+            "POST",
+            r"/sheets/v4/spreadsheets/[^/]+/values:batchClearByDataFilter",
+            "BatchClearValuesByDataFilter",
+        ),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+/values/.+:clear", "ClearValues"),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+/values/.+:append", "AppendValues"),
+        ("PUT", r"/sheets/v4/spreadsheets/[^/]+/values/.+", "UpdateValues"),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+/values:batchUpdate", "BatchUpdateValues"),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+/values:batchClear", "BatchClearValues"),
+        (
+            "POST",
+            r"/sheets/v4/spreadsheets/[^/]+/values:batchGetByDataFilter",
+            "BatchGetValuesByDataFilter",
+        ),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+:getByDataFilter", "GetSpreadsheetByDataFilter"),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+:batchUpdate", "BatchUpdateSpreadsheet"),
+        (
+            "POST",
+            r"/sheets/v4/spreadsheets/[^/]+/developerMetadata:search",
+            "SearchDeveloperMetadata",
+        ),
+        (
+            "GET",
+            r"/sheets/v4/spreadsheets/[^/]+/developerMetadata/[^/]+",
+            "GetDeveloperMetadata",
+        ),
+    )
+)
+
+
 def no_credentials(path: str, method: str) -> GoogleError:
     """What a request with no credential gets on this operation: :func:`unregistered_caller` on the
     ones in `_UNREGISTERED_CALLER_OPERATIONS`, :func:`missing_credentials` on the rest, Gmail, Docs
@@ -580,7 +644,8 @@ def no_credentials(path: str, method: str) -> GoogleError:
     """
     if any(m == method and p.fullmatch(path) for m, p in _UNREGISTERED_CALLER_OPERATIONS):
         return unregistered_caller()
-    return missing_credentials()
+    rpc = next((r for m, p, r in _RPC_METHODS if m == method and p.fullmatch(path)), None)
+    return missing_credentials(rpc)
 
 
 def delegation_denied(email: str) -> GoogleError:
@@ -910,9 +975,9 @@ def jsonp_callback(request: Request) -> str | None:
     request out of the JSONP path along with the JSON one.
     That suppression is not Sheets' own: measured 2026-09-16, `alt=media` and `alt=zzz` beside a
     `callback` answer unwrapped on Drive, Gmail, Docs and Slides too, which is why `alt` is read
-    for every family here rather than only where ``routers.google._sheets_respond`` refuses the
-    value. Refusing it is still Sheets-only, and the four families that accept a format they cannot
-    render where real answers a 400 are a gap of their own.
+    for every family here rather than only where ``routers.google_sheets._sheets_respond`` refuses
+    the value. Refusing it is still Sheets-only, and the four families that accept a format they
+    cannot render where real answers a 400 are a gap of their own.
 
     A Drive byte-stream read is out of the JSONP path for a third reason, and one this function is
     not asked to decide: a `callback` on a download is neither refused nor wrapped by the JSONP
@@ -1167,8 +1232,8 @@ def rendered(
     Indented whatever `prettyPrint` says -- measured on Sheets, Docs, Drive, Gmail and Slides, an
     error came back two-space indented with no parameter, with `prettyPrint=false` and with
     `prettyPrint=true` alike, where a success under `prettyPrint=false` is compact. So the
-    parameter reaches the success path only (``routers.google._sheets_respond``) and nothing here
-    reads it.
+    parameter reaches the success path only (``routers.google_sheets._sheets_respond``) and nothing
+    here reads it.
 
     Wrapped only where ``validate_system_parameters`` checked `callback`, which is where a route
     matched and did not exempt it. That is a ROUTER dependency, so a family path with NO route --

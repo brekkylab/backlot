@@ -185,11 +185,12 @@ def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys):
         for telemetry in (True, False):
             os.environ.pop("BACKLOT_TELEMETRY", None)
             capsys.readouterr()
-            with pytest.raises(_Started):
+            # The child's own notice goes to its log, so serve() says it where its caller sees it,
+            # naming the endpoint the child sends to however this process's exporter is pointed.
+            with _ExportTo(UNREACHABLE), pytest.raises(_Started):
                 with backlot.server.serve(data_dir=hello.data_dir, telemetry=telemetry):
                     pass
-            # The child's own notice goes to its log, so serve() says it where its caller sees it.
-            seen.append(notice(recorder.ENDPOINT) in capsys.readouterr().err)
+            seen.append(notice(backlot.server.ENDPOINT) in capsys.readouterr().err)
     get_settings.cache_clear()
     assert seen == [True, False, True, False, None, True, "0", False]
 

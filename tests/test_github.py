@@ -4502,14 +4502,39 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     "path, accept, backend, backend_on_head",
     [
         ("pulls/1", None, True, False),
-        ("pulls/1", "application/vnd.github.DIFF", True, False),
-        ("pulls/1", "application/vnd.github.diff", False, False),
-        ("pulls/1", "application/vnd.github.patch", False, False),
+        ("pulls/1", "*/*", True, False),
+        ("pulls/1", "application/json", True, False),
+        ("pulls/1", "application/vnd.github+json", True, False),
+        ("pulls/1", "application/vnd.github.v3+json", True, False),
+        ("pulls/1", "application/vnd.github.raw+json", True, False),
+        ("pulls/1", "application/vnd.github.full+json", True, False),
+        *[
+            ("pulls/1", f"application/vnd.github.{media}", False, False)
+            for media in ("diff", "v3.diff", "diff+json", "patch", "v3.patch", "patch+json")
+        ],
         ("pulls/1", "application/vnd.github.diff, application/json", False, False),
         ("pulls/1", "application/json, application/vnd.github.diff", False, False),
+        ("pulls/1", "application/vnd.github.v3.diff+json", False, False),
+        ("pulls/1", "application/vnd.github.DIFF", True, False),
+        ("pulls/1", "Application/vnd.github.diff", False, False),
         ("pulls/1", "application/vnd.github.diff;q=0", True, False),
-        ("contents", None, True, True),
-        ("contents/README.md?ref=main", None, True, True),
+        ("pulls/1", "application/vnd.github.patch;q=0", False, False),
+        ("pulls/1", "application/vnd.github.sha", True, False),
+        *[
+            (path, accept, True, True)
+            for path in ("contents", "contents/README.md?ref=main")
+            for accept in (
+                None,
+                "*/*",
+                "application/json",
+                "application/vnd.github+json",
+                "application/vnd.github.raw",
+                "application/vnd.github.v3.raw",
+                "application/vnd.github.html",
+                "application/vnd.github.object",
+                "application/vnd.github.diff",
+            )
+        ],
         ("readme", None, False, False),
         ("readme/docs", None, False, False),
         ("git/blobs/nope", None, False, False),
@@ -4548,7 +4573,7 @@ def test_github_version_error_depends_on_endpoint_and_representation(
             assert "X-GitHub-Api-Version-Selected" not in response.headers
 
 
-@pytest.mark.parametrize("path", ["pulls/1", "contents"])
+@pytest.mark.parametrize("path", ["pulls/1", "contents", "contents/no-such-path"])
 def test_github_backend_version_error_order(gh_client, path):
     """Where the backend's 400 falls against a repository that does not exist and against the
     credential (``backlot.routers.github._validate_api_version``)."""

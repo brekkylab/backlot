@@ -7404,7 +7404,7 @@ def _answers_its_conditions(base_url, token, values, sent, query, status, condit
     """One row of ``_CONDITION_ROWS`` on a GET and a HEAD, ``values`` filling in its placeholders."""
     import httpx
 
-    etag, lm = values["etag"], values["lm"].strftime("%a, %d %b %Y %H:%M:%S GMT")
+    etag, lm = values["etag"], values["last_modified"]
     sent = [(name, value.format(**values)) for name, value in sent]
     names = [name for name, _ in sent]
     signed_headers = {name: value for name, value in sent if names.count(name) == 1}
@@ -7462,6 +7462,7 @@ def test_an_objects_conditions_answer_as_real_s3_does(live_server):
         "bare": etag.strip('"'),
         "upper": etag.upper(),
         "lm": moment,
+        "last_modified": lm,
         "before": moment - timedelta(days=1),
         "after": moment + timedelta(seconds=1),
         "prev": moment.replace(day=1) - timedelta(days=1),

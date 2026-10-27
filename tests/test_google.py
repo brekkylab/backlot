@@ -6162,9 +6162,7 @@ _ORDER_BY_ROWS = [
 
 
 def _order_by_answer(status, error):
-    """The answer a `_ORDER_BY_ROWS` row records: its status, or the error object real sends."""
-    if status == 200:
-        return 200
+    """The error object real sends for a refused `_ORDER_BY_ROWS` row."""
     if status == 500:
         return {
             "code": 500,
@@ -6204,9 +6202,9 @@ def test_drive_order_by_is_refused_where_real_refuses_it(client, admin_h):
             headers=admin_h,
             params={k: v for k, v in params.items() if v is not None},
         )
-        answered[q, order_by] = r.status_code if r.status_code == 200 else _gerr(r)
+        answered[q, order_by] = (r.status_code, None if r.status_code == 200 else _gerr(r))
     assert answered == {
-        (q, order_by): _order_by_answer(status, error)
+        (q, order_by): (status, None if status == 200 else _order_by_answer(status, error))
         for q, order_by, status, error in _ORDER_BY_ROWS
     }
 
@@ -6818,6 +6816,7 @@ def test_documents_get_reads_a_query_value_real_reads_and_refuses_one_it_cannot(
         ("suggestionsViewMode=NOPE", "none", "doc", 401, "UNAUTHENTICATED"),
         ("suggestionsViewMode=NOPE", "bad", "doc", 401, "UNAUTHENTICATED"),
         ("suggestionsViewMode=NOPE&$.xgafv=3", "none", "doc", 400, "$.xgafv"),
+        ("suggestionsViewMode=NOPE&$.xgafv=3", "bad", "doc", 400, "$.xgafv"),
         ("suggestionsViewMode=NOPE&$.xgafv=3", "admin", "doc", 400, "$.xgafv"),
         ("suggestionsViewMode=NOPE", "admin", "missing", 400, "suggestions_view_mode"),
         ("includeTabsContent=NOPE", "admin", "missing", 400, "include_tabs_content"),

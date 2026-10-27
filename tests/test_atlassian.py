@@ -2623,6 +2623,7 @@ def _unconverted(role_id: str) -> str:
         ("DELETE", "abc", "none", None, 400, _unconverted("abc")),
         ("DELETE", "%20", "none", None, 400, _MISSING_ID),
         ("POST", "abc", "none", "{}", 400, _unconverted("abc")),
+        ("PUT", "abc", "none", "{}", 400, _unconverted("abc")),
         ("POST", "abc", "admin", "{}", 400, _unconverted("abc")),
         ("PUT", "abc", "none", None, 415, "Content-Type 'null' is not supported."),
         ("DELETE", "-0x1", "none", None, 404, None),
@@ -6625,6 +6626,7 @@ def test_atlassian_front_door_answers_under_atlassian_alone(client, admin_h, met
         # an issue write is the issue's 404, and with no body the 415 the operation's media-type
         # check gives first; a route here takes only GET, so the method reaches `unmatched_path`
         ("DELETE", "/rest/api/3/issue/NOPE-999999", "{}", 404),
+        ("DELETE", "/rest/api/2/issue/NOPE-999999", "{}", 404),
         ("PUT", "/rest/api/3/issue/NOPE-999999", "{}", 404),
         ("PUT", "/rest/api/3/issue/NOPE-999999", None, 415),
         ("POST", "/rest/api/3/issue/NOPE-999999/comment", "{}", 404),
@@ -6671,6 +6673,15 @@ _OPERATION_REFUSALS = [
     # then the caller's refusal for the type it takes
     ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, None, 415, "''"),
     ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "", 415, "''"),
+    *(
+        (method, f"/wiki/rest/api/{path}", None, "text/plain", 415, "'text/plain'")
+        for method, path in (
+            ("POST", "content/abc123/child/attachment"),
+            ("PUT", "content/abc123/state"),
+            ("PUT", "space/abc123/theme"),
+            ("POST", "space/abc123/permission"),
+        )
+    ),
     ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "APPLICATION/JSON", 415)
     + ("'application/json'",),
     (
@@ -7625,6 +7636,7 @@ _ACCEPT_ROWS = [
     + (None, {}),
     ("GET", f"{_SPACES}?limit=x", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
     ("GET", f"{_SPACES}?limit=x", "admin", _JSON, None, 400, _JSON, None, {}),
+    ("GET", f"{_LABELS}?prefix=bogus", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
     ("GET", f"{_LABELS}?prefix=bogus", "admin", _JSON, None, 400, _JSON, None, {}),
     ("GET", f"{_SPACES}/NOPESUCH", "admin", _HTML, None, 406, _TOMCAT, "page")
     + ({"deprecation": None},),

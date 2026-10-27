@@ -668,6 +668,7 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
     (hidden,) = {t["id"] for t in every} - {t["id"] for t in seen}
     wanted = {
         ("ava@acme.com", '{ user(id: "nope") { user_id } }'): not_in_team,
+        ("ava@acme.com", '{ user(id: " ") { user_id } }'): not_in_team,
         ("ava@acme.com", '{ user(id: "nobody@example.com") { user_id } }'): not_in_team,
         ("ava@acme.com", '{ user(id: "ava@acme.com") { user_id } }'): not_in_team,
         ("ava@acme.com", '{ transcript(id: "nope") { id } }'): object_not_found,

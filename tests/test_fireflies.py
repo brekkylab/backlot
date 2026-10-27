@@ -1134,11 +1134,10 @@ def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_y
 
 
 def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h, tokens_yaml):
-    """Each query names nothing its caller can read and draws the bytes real answered it with, but
-    for the newline real ends them with: `data` null beside the error ``_not_in_team`` or
-    ``_object_not_found`` builds, its `correlationId` eight letters and digits. A transcript the
-    caller cannot see draws what one that does not exist draws, and `hana@acme.com`, who can see
-    it, reads it."""
+    """Each query names nothing its caller can read and draws the bytes real answered it with:
+    `data` null beside the error ``_not_in_team`` or ``_object_not_found`` builds, its
+    `correlationId` eight letters and digits. A transcript the caller cannot see draws what one that
+    does not exist draws, and `hana@acme.com`, who can see it, reads it."""
     import re
 
     not_in_team = (
@@ -1146,7 +1145,7 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
         '"locations":[{"line":1,"column":3}],"path":["user"],"code":"not_in_team",'
         '"extensions":{"code":"not_in_team","correlationId":"<8>","status":403,"helpUrls":'
         '["https://docs.fireflies.ai/miscellaneous/error-codes#not_in_team"]}}],'
-        '"data":{"user":null}}'
+        '"data":{"user":null}}\n'
     )
     object_not_found = (
         '{"errors":[{"friendly":true,"message":"Transcript not found",'
@@ -1154,7 +1153,7 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
         '"extensions":{"code":"object_not_found","correlationId":"<8>","status":404,'
         '"metadata":{"objectType":"Transcript"},"helpUrls":'
         '["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"]}}],'
-        '"data":{"transcript":null}}'
+        '"data":{"transcript":null}}\n'
     )
     tokens = {u["email"]: u["token"] for u in tokens_yaml["users"]}
     listing = "{ transcripts(limit: 50) { id } }"
@@ -1170,7 +1169,7 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
         ("ava@acme.com", '{ transcript(id: "nope") { id } }'): object_not_found,
         ("ava@acme.com", '{ transcript(id: "%s") { id } }' % hidden): object_not_found,
         ("hana@acme.com", '{ transcript(id: "%s") { id } }' % hidden): (
-            '{"data":{"transcript":{"id":"%s"}}}' % hidden
+            '{"data":{"transcript":{"id":"%s"}}}\n' % hidden
         ),
     }
     answered = {}

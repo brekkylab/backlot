@@ -1998,8 +1998,14 @@ async def confluence_cql_search(request: Request):
     `ancestor` and `parent` filter its matches, or the whole ACL-visible corpus when there is no
     `~`. `id`, `ancestor` and `parent` take `=` or `in (...)` and name the content id the content
     reads serve; `parent` selects the direct children and `ancestor` every descendant, grandchildren
-    included (Confluence Cloud, 2026-10-26, over a chain of three pages). Real answers
-    `parent in (...)` with a 500, where this server answers the children of each id it names.
+    included (Confluence Cloud, 2026-10-26, over a chain of three pages). Each of the six clauses
+    also reads negated — `!=`, `not in (...)`, or a `not` after `and` before the clause, in
+    parentheses or not — and leaves out the rows the clause names, every negated clause read and a
+    row the field is absent on passing: a page with no parent passes `parent != …` and one with no
+    label passes `label != …` (measured over the same chain on 2026-10-26 and 2026-10-27). Real
+    answers `parent in (...)` and `parent not in (...)` with a 500, where this server selects, or
+    leaves out, the children of each id the list names.
+
     Measured 2026-10-05 with no `~`: real's `type=page` is every page on the site and
     `space=<KEY> and type=page` that space's pages; its `space=<KEY>` also holds the space's
     attachments, comments and the space itself, where this server answers the space's pages and
@@ -2021,8 +2027,18 @@ async def confluence_cql_search(request: Request):
     cql = cqls[0]
     m = re.search(r'(?:text|title)\s*~\s*"?([^"~]+)"?', cql) or re.search(r'~\s*"?([^"~]+)"?', cql)
     term = m.group(1).strip() if m else ""
+
     # honor the common structured CQL clauses: space / type / label / id / ancestor / parent
-    ms = re.search(r'space(?:\.key)?\s*=\s*"?([A-Za-z0-9_-]+)"?', cql)
+    def _first_unnegated(pattern: str, flags: int = 0):
+        # the first match of `pattern` no `not` straight before it negates, the clause in
+        # parentheses or not: a clause a `not` rides on is read by `_negated` below, not as the
+        # clause it negates.
+        for m in re.finditer(pattern, cql, flags):
+            if not re.search(r"\bnot\s*\(?\s*$", cql[: m.start()], re.IGNORECASE):
+                return m
+        return None
+
+    ms = _first_unnegated(r'space(?:\.key)?\s*=\s*"?([A-Za-z0-9_-]+)"?')
     space_key = ms.group(1) if ms else None
     space_unresolvable = False
     container = None
@@ -2031,9 +2047,9 @@ async def confluence_cql_search(request: Request):
         if container is None:
             # unresolvable space=/space.key= clause: strict 0 matches, not the unfiltered corpus.
             space_unresolvable = True
-    mt = re.search(r'type\s*=\s*"?(page|blogpost|comment)"?', cql)
+    mt = _first_unnegated(r'type\s*=\s*"?(page|blogpost|comment)"?')
     want_type = mt.group(1) if mt else None
-    ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
+    ml = _first_unnegated(r'label\s*(?:=|in)\s*"?([^")\s]+)"?')
     want_label = ml.group(1) if ml else None
 
     def _content_ids(field: str) -> list[set[str]]:
@@ -2041,10 +2057,10 @@ async def confluence_cql_search(request: Request):
         # the first of each spelling read, as for the clauses above; a list that is empty or ends
         # in a comma is `_cql_refusal`'s 400 below.
         clauses = []
-        m = re.search(rf'\b{field}\s*=\s*"?([A-Za-z0-9_-]+)"?', cql, re.IGNORECASE)
+        m = _first_unnegated(rf'\b{field}\s*=\s*"?([A-Za-z0-9_-]+)"?', re.IGNORECASE)
         if m:
             clauses.append({m.group(1)})
-        m = re.search(rf"\b{field}\s+in\s*\(([^)]*)\)", cql, re.IGNORECASE)
+        m = _first_unnegated(rf"\b{field}\s+in\s*\(([^)]*)\)", re.IGNORECASE)
         if m:
             clauses.append({v.strip().strip("\"'") for v in m.group(1).split(",")})
         return clauses
@@ -2052,6 +2068,34 @@ async def confluence_cql_search(request: Request):
     want_ids = _content_ids("id")
     want_ancestors = _content_ids("ancestor")
     want_parents = _content_ids("parent")
+
+    def _negated(field: str, value: str = r'"?([A-Za-z0-9_-]+)"?') -> list[set[str]]:
+        # the values each negated `<field>` clause names, every one of them, as `_content_ids`
+        # reads a value or a list: `<field> != <value>`, `<field> not in (...)`, and
+        # `<field> = <value>` or `<field> in (...)` after a `not`, in parentheses or not.
+        clauses = []
+        one = rf"\b{field}\s*!=\s*{value}|\bnot\s*\(?\s*\b{field}\s*=\s*{value}"
+        for m in re.finditer(one, cql, re.IGNORECASE):
+            clauses.append({m.group(1) or m.group(2)})
+        listed = rf"(?:\b{field}\s+not|\bnot\s*\(?\s*\b{field})\s+in\s*\(([^)]*)\)"
+        for m in re.finditer(listed, cql, re.IGNORECASE):
+            clauses.append({v.strip().strip("\"'") for v in m.group(1).split(",")})
+        return clauses
+
+    not_ids = _negated("id")
+    not_ancestors = _negated("ancestor")
+    not_parents = _negated("parent")
+    not_types = _negated("type")
+    not_labels = _negated("label", r'"?([^")\s]+)"?')
+    # a negated space clause names keys, as the positive one does; a key naming no space leaves
+    # nothing out, where the positive clause matches nothing (Confluence Cloud, 2026-10-27).
+    not_spaces = _negated(r"space(?:\.key)?")
+    not_containers: set[str] = set()
+    for named in not_spaces:
+        for key in named:
+            resolved = _space_container_for_key(conn, key)
+            if resolved is not None:
+                not_containers.add(resolved)
     _refuse_negative_page_params(limit, start)
     tokens = _cql_tokens(cql)
     refusal = _cql_refusal(tokens)
@@ -2065,7 +2109,20 @@ async def confluence_cql_search(request: Request):
     # totalSize reflects the true match count (not just the returned page).
     if term:
         everything = store.search_documents(conn, term, "confluence", ids, limit=100_000, offset=0)
-    elif space_key or want_type or want_label or want_ids or want_ancestors or want_parents:
+    elif (
+        space_key
+        or want_type
+        or want_label
+        or want_ids
+        or want_ancestors
+        or want_parents
+        or not_ids
+        or not_ancestors
+        or not_parents
+        or not_types
+        or not_labels
+        or not_spaces
+    ):
         everything = store.list_documents(
             conn, "confluence", container=None, visible_ids=ids, limit=100_000, offset=0
         )
@@ -2075,7 +2132,11 @@ async def confluence_cql_search(request: Request):
     # the parent of every row fetched, and of every page read since, so each link of a chain is
     # read once; a link outside the fetched rows (a page the `~` term missed, or one the caller
     # cannot see) is read from the store, as the content read's `ancestors` expansion does.
-    parents = {str(r["id"]): r["parent_id"] for r in everything} if want_ancestors else {}
+    parents = (
+        {str(r["id"]): r["parent_id"] for r in everything}
+        if want_ancestors or not_ancestors
+        else {}
+    )
 
     def _ancestor_ids(row) -> set[str]:
         chain: set[str] = set()
@@ -2108,6 +2169,24 @@ async def confluence_cql_search(request: Request):
         if want_ancestors:
             chain = _ancestor_ids(r)
             if any(named.isdisjoint(chain) for named in want_ancestors):
+                return False
+        # a negated clause leaves out the rows the clause it negates selects, so a row the
+        # field is absent on — no parent, no label, no ancestor — passes it
+        if r["space"] in not_containers:
+            return False
+        if any((r["subtype"] or "page") in named for named in not_types):
+            return False
+        if any(not named.isdisjoint(store.jcol(r, "labels")) for named in not_labels):
+            return False
+        if any(str(r["id"]) in named for named in not_ids):
+            return False
+        if r["parent_id"] is not None and any(
+            str(r["parent_id"]) in named for named in not_parents
+        ):
+            return False
+        if not_ancestors:
+            chain = _ancestor_ids(r)
+            if any(not named.isdisjoint(chain) for named in not_ancestors):
                 return False
         return True
 

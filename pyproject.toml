@@ -49,6 +49,9 @@ dependencies = [
     # SigV4a's ECDSA over P-256 (`backlot.sigv4a`), which the standard library has none of either;
     # `pyjwt[crypto]` above installs it already, and this names the import the S3 router makes.
     "cryptography>=3.4",
+    # The time-zone database `zoneinfo` reads a Sheets write's date in, which Windows does not
+    # ship; the platforms that have one need no package.
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

@@ -319,8 +319,8 @@ def types_measure(spec: TypesTarget, doc: Mapping[str, Any], *, timeout: float) 
 
     Every one of them is listed whether or not Backlot serves it, where a GraphQL source lists none
     of the vendor's types Backlot does not declare: a `fields` mask is read against the whole of
-    each (`backlot.routers.google._gmask_select`), so the baseline has to carry it offline. A field
-    the vendor does not declare is `extra`, and breaking."""
+    each (`backlot.routers.google_sheets._gmask_select`), so the baseline has to carry it offline.
+    A field the vendor does not declare is `extra`, and breaking."""
     types = declared_types(doc)
     answers = {o.id: o.response for o in from_google_discovery(doc).values() if o.response}
     walked: list[tuple[str, Any]] = spec.walk(timeout) if spec.walk else []

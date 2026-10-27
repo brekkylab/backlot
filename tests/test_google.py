@@ -2747,10 +2747,11 @@ def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h):
 
 
 # What real answered each mask with. The third column is the top-level keys, `None` where the
-# answer was the unmasked one. The fourth is each entry's keys on a listing: `"default"` where each
-# entry was the unmasked one, an empty set where the list came back empty because every entry was
-# left with no key, and `None` where the entries are not compared. A documented field the file has
-# no value for leaves it out of the answer here, where real answers it.
+# answer was the one `fields=*` gets. The fourth is each entry's keys on a listing: `"full"` where
+# each entry was whole, as `fields=*` answers it (no mask answers a file's or a permission's default
+# keys alone), an empty set where the list came back empty because every entry was left with no
+# key, and `None` where the entries are not compared. A documented field the file has no value for
+# leaves it out of the answer here, where real answers it.
 _MASKS_SERVED = [
     (_DOC, "id , name", {"id", "name"}, None),
     (_DOC, "id,\tname", {"id", "name"}, None),
@@ -2784,14 +2785,14 @@ _MASKS_SERVED = [
     (_DOC, "properties/zzz", set(), None),
     (_DOC, "appProperties(zzz)", set(), None),
     (_DOC, "exportLinks(*)", {"exportLinks"}, None),
-    ("/drive/v3/files", "*", None, None),
+    ("/drive/v3/files", "*", {"kind", "incompleteSearch", "nextPageToken", "files"}, None),
     ("/drive/v3/files", "*,files(id)", None, None),
     ("/drive/v3/files", "kind", {"kind"}, None),
     ("/drive/v3/files", "nextPageToken", {"nextPageToken"}, None),
     ("/drive/v3/files", "incompleteSearch,files(id)", {"incompleteSearch", "files"}, {"id"}),
     ("/drive/v3/files", "files(permissions(id))", {"files"}, set()),
     ("/drive/v3/files", "files(capabilities(canAcceptOwnership))", {"files"}, {"capabilities"}),
-    ("/drive/v3/files", "files(id,*)", {"files"}, "default"),
+    ("/drive/v3/files", "files(id,*)", {"files"}, "full"),
     ("/drive/v3/files", "files()", {"files"}, set()),
     ("/drive/v3/files", "files( )", {"files"}, set()),
     ("/drive/v3/files", "files(trashingUser)", {"files"}, set()),
@@ -2859,9 +2860,8 @@ _MASKS_SERVED = [
 def test_drive_answers_a_fields_mask_with_what_it_selects(client, admin_h, drive_check_ids):
     """The rows `_MASKS_SERVED` records. A row with top-level keys compares them on every route,
     `files.list` included, and the listed entries as its fourth column says; a row without compares
-    the whole answer with the unmasked one. `"default"` is each entry as an unmasked request gets
-    it. A `drives.list` row compares the top-level keys alone: Backlot serves no shared drive,
-    where real listed the member's two."""
+    the whole answer with the one `fields=*` gets. A `drives.list` row compares the top-level keys
+    alone: Backlot serves no shared drive, where real listed the member's two."""
 
     def get(path, **params):
         url, _, query = path.format(doc=drive_check_ids["doc"]).partition("?")
@@ -2872,17 +2872,12 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(client, admin_h, drive
         return r.json()
 
     def answer(path, mask, top, entries):
-        """The row's answer in its own shape: "default" where it is the unmasked one."""
+        """The row's answer in its own shape: "full" where it is the one `fields=*` gets."""
         body = get(path, fields=mask)
         if top is None:
-            return "default" if body == get(path) else body
+            return "full" if body == get(path, fields="*") else body
         listed = next((k for k in body if isinstance(body[k], list)), None)
-        if entries == "default":
-            shown = "default" if body[listed] == get(path)[listed] else body[listed]
-        elif entries == "full":
-            # permissions.list has no unmasked full object: no mask answers only id/type/kind/role,
-            # while an explicit wrapper or `*` adds emailAddress/displayName and the rest. The `*`
-            # request is the unmasked-equivalent a mask naming the whole list must agree with.
+        if entries == "full":
             shown = "full" if body[listed] == get(path, fields="*")[listed] else body[listed]
         elif entries:
             shown = {frozenset(e) for e in body[listed]}
@@ -2892,8 +2887,8 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(client, admin_h, drive
 
     def expected(top, entries):
         if top is None:
-            return "default"
-        if entries and entries not in ("default", "full"):
+            return "full"
+        if entries and entries != "full":
             return (top, {frozenset(entries)})
         return (top, None if entries is None else entries or [])
 
@@ -4701,10 +4696,11 @@ def test_drive_files_has_typed_response_schema(client):
     assert schema != {}
 
 
-def _drive_find(client, admin_h, name_substr):
-    j = client.get(
-        "/drive/v3/files", params={"q": f"name contains '{name_substr}'"}, headers=admin_h
-    ).json()
+def _drive_find(client, admin_h, name_substr, fields=None):
+    params = {"q": f"name contains '{name_substr}'"}
+    if fields is not None:
+        params["fields"] = fields
+    j = client.get("/drive/v3/files", params=params, headers=admin_h).json()
     return j["files"][0] if j.get("files") else None
 
 
@@ -4713,7 +4709,9 @@ def test_drive_responses_unchanged_by_enrichment(client, admin_h):
     assert lst["kind"] == "drive#fileList" and "files" in lst
     doc = _drive_find(client, admin_h, "Brand")
     assert doc is not None
-    full = client.get(f"/drive/v3/files/{doc['id']}", headers=admin_h).json()
+    full = client.get(
+        f"/drive/v3/files/{doc['id']}", headers=admin_h, params={"fields": "*"}
+    ).json()
     for k in (
         "kind",
         "id",
@@ -5099,12 +5097,12 @@ def test_drive_shared_items_carry_shared_with_me_time(client, tokens_yaml):
     shared = client.get(
         "/drive/v3/files",
         headers=mia,
-        params={"q": "sharedWithMe=true and trashed=false", "pageSize": 100},
+        params={"q": "sharedWithMe=true and trashed=false", "pageSize": 100, "fields": "*"},
     ).json()["files"]
     own = client.get(
         "/drive/v3/files",
         headers=mia,
-        params={"q": "'me' in owners and trashed=false", "pageSize": 100},
+        params={"q": "'me' in owners and trashed=false", "pageSize": 100, "fields": "*"},
     ).json()["files"]
     assert shared and own
     assert all(f["sharedWithMeTime"] for f in shared), "every shared item needs the timestamp"
@@ -5115,7 +5113,10 @@ def test_drive_shared_items_carry_shared_with_me_time(client, tokens_yaml):
     assert any(f["mimeType"] == FOLDER_MIME for f in shared)
     # and files.get agrees with the listing
     one = shared[0]
-    assert client.get(f"/drive/v3/files/{one['id']}", headers=mia).json() == one
+    assert (
+        client.get(f"/drive/v3/files/{one['id']}", headers=mia, params={"fields": "*"}).json()
+        == one
+    )
 
 
 def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
@@ -5373,16 +5374,16 @@ def test_drive_order_by_does_not_change_the_rows_themselves(client, admin_h):
     so the served objects must still be identical to the unsorted ones, field for field."""
     plain = {
         f["id"]: f
-        for f in client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 100}).json()[
-            "files"
-        ]
+        for f in client.get(
+            "/drive/v3/files", headers=admin_h, params={"pageSize": 100, "fields": "*"}
+        ).json()["files"]
     }
     sorted_ = {
         f["id"]: f
         for f in client.get(
             "/drive/v3/files",
             headers=admin_h,
-            params={"pageSize": 100, "orderBy": "modifiedTime desc"},
+            params={"pageSize": 100, "orderBy": "modifiedTime desc", "fields": "*"},
         ).json()["files"]
     }
     assert plain and plain == sorted_
@@ -6299,6 +6300,19 @@ def test_drive_get_honors_the_fields_mask(client, admin_h):
     assert r.status_code == 400
 
 
+def test_drive_files_answer_the_default_keys_with_no_mask(client, admin_h):
+    """With no mask a file is `kind`, `id`, `name` and `mimeType`, listed and read by id, a folder
+    as well as a stored file."""
+    listing = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 2}).json()
+    folders = client.get(
+        "/drive/v3/files", headers=admin_h, params={"q": f"mimeType='{FOLDER_MIME}'", "pageSize": 1}
+    ).json()
+    entries = listing["files"] + folders["files"]
+    assert len(entries) == 3 and all(set(x) == {"kind", "id", "name", "mimeType"} for x in entries)
+    for x in entries:
+        assert client.get(f"/drive/v3/files/{x['id']}", headers=admin_h).json() == x
+
+
 def test_drive_folders_are_found_by_mime_type(client, admin_h):
     """Folders were returned by `'root' in parents` but invisible to `mimeType='…folder'`, so a
     crawler indexing folders by type concluded the account had none."""
@@ -6354,7 +6368,7 @@ def test_drive_folder_permissions_resolve(client, admin_h):
 def test_drive_native_docs_report_size(client, admin_h):
     """Google populates `size` for binary content *and for Docs Editors files*; Backlot omitted
     it on native rows, which taught implementors something false about the API."""
-    doc = _drive_find(client, admin_h, "Brand")
+    doc = _drive_find(client, admin_h, "Brand", fields="files(*)")
     assert doc["mimeType"] == DOC_MIME
     assert int(doc["size"]) > 0
     assert "md5Checksum" not in doc  # real Drive omits checksums on native files
@@ -6480,7 +6494,7 @@ def test_drive_about_user_is_the_caller(client, tokens_yaml):
     assert u["emailAddress"] == "mia@acme.com"
     assert u["me"] is True
     # the file resource keeps its own answer: mia as an owner is not "me" to the object itself
-    assert _drive_find(client, mia, "Brand")["owners"][0]["me"] is False
+    assert _drive_find(client, mia, "Brand", fields="files(*)")["owners"][0]["me"] is False
 
 
 def test_drive_about_admin_token_reports_a_concrete_address(client, admin_h):
@@ -6652,7 +6666,7 @@ def test_root_lists_folders_with_matching_ids(base, admin_h):
     kids = httpx.get(
         f"{base}/drive/v3/files",
         headers=admin_h,
-        params={"q": f"'{finance['id']}' in parents and trashed=false"},
+        params={"q": f"'{finance['id']}' in parents and trashed=false", "fields": "files(*)"},
     ).json()["files"]
     assert kids and all(finance["id"] in k["parents"] for k in kids)
     # and GET on the folder id resolves to the folder object

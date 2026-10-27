@@ -5933,6 +5933,49 @@ def _search_refusal(message: bytes) -> bytes:
     )
 
 
+# The headers an answer carries, as `backlot.routers.linear._express_sent`, `express`,
+# `_preflight` and `RequestBudget` record what api.linear.app sent, None for one it did not send.
+_NO_STORE = "private, no-cache, no-store, must-revalidate"
+_EXPOSED = (
+    "Cache-Control,Content-Language,Content-Length,Content-Type,Expires,Last-Modified,Pragma,"
+    "x-request-id,cf-ray,cf-cache-status,Retry-After"
+)
+_REQUEST_ID = Matching(r"[0-9a-f]{16}-ICN")
+_NOT_COUNTED = {"x-ratelimit-requests-limit": None, "x-ratelimit-requests-remaining": None}
+
+
+def _sent(etag, **more):
+    """What Express's answers carry: ``etag``, the rest of `_express_sent`'s, none of `cors`'s
+    for a request without `Origin`, no `nosniff`, and ``more``, `_` in a name standing for `-`."""
+    return {
+        "cache-control": _NO_STORE,
+        "etag": etag,
+        "vary": "Accept-Encoding",
+        "x-request-id": _REQUEST_ID,
+        "access-control-allow-origin": None,
+        "access-control-expose-headers": None,
+        "x-content-type-options": None,
+    } | {name.replace("_", "-"): value for name, value in more.items()}
+
+
+def _counted(limit):
+    return {
+        "x-ratelimit-requests-limit": str(limit),
+        "x-ratelimit-requests-remaining": Matching(r"[0-9]+"),
+        "x-ratelimit-requests-reset": Matching(r"[0-9]{13}"),
+    }
+
+
+def _cors(origin="https://example.com"):
+    return {
+        "access-control-allow-origin": origin,
+        "access-control-expose-headers": _EXPOSED,
+        "vary": "Origin, Accept-Encoding",
+    }
+
+
+_ETAG_OF_TYPENAME = 'W/"20-/8NdYwgmGsmmlrq5Nh8mH1T+tAs"'
+_ETAG_OF_THE_BEARER_400 = 'W/"f9-BDIWTD84v19kyk2Xj/zxwnhRq74"'
 _LINEAR_HTTP = [
     # Cloudflare, then Linear's load balancer, ahead of everything; then Apollo Server's 405 for
     # each other method.
@@ -6025,9 +6068,13 @@ _LINEAR_HTTP = [
             None,
             b"",
             id=f"preflight, {c}",
-            answered=_LINEAR_PREFLIGHT,
+            answered=_LINEAR_PREFLIGHT | e,
         )
-        for c in ("key", "none", "Bearer key")
+        for c, e in (
+            ("key", {}),
+            ("none", {"x-request-id": _REQUEST_ID, "etag": None, "x-content-type-options": None}),
+            ("Bearer key", {}),
+        )
     ),
     http_row(
         "OPTIONS",
@@ -6161,6 +6208,18 @@ _LINEAR_HTTP = [
     http_row("DELETE", "", (), None, "nope", 400, _JSON_UTF8, _CSRF, id="DELETE"),
     # A POST's content type: read as JSON, refused as a request a browser sends unpreflighted, or
     # passed with nothing read.
+    http_row(
+        "POST",
+        "",
+        (("Content-Type", "text/plain"),),
+        _TYPENAME,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="'text/plain'",
+        answered=_sent('W/"1e1-Pj6jukFvCDT/ZBGD/LVdheKiTtk"'),
+    ),
     *(
         http_row(
             "POST",
@@ -6174,7 +6233,6 @@ _LINEAR_HTTP = [
             id=f"{t!r}{i}",
         )
         for t, h, s, a, i in (
-            ("text/plain", (), 400, _CSRF, ""),
             ("text/plain", _P, 400, _NO_KEYS, ", preflight"),
             ("TEXT/PLAIN;X=Y", (), 400, _CSRF, ""),
             ("application/x-www-form-urlencoded", (), 400, _CSRF, ""),
@@ -6193,10 +6251,32 @@ _LINEAR_HTTP = [
     ),
     http_row("POST", "", (), _TYPENAME, "key", 400, _JSON_UTF8, _CSRF, id="no type"),
     http_row("POST", "", _P, _TYPENAME, "key", 400, _JSON_UTF8, _NO_KEYS, id="no type, preflight"),
-    http_row("POST", "", _J, b"", "key", 400, _JSON_UTF8, _NO_KEYS, id="JSON, empty"),
+    http_row(
+        "POST",
+        "",
+        _J,
+        b"",
+        "key",
+        400,
+        _JSON_UTF8,
+        _NO_KEYS,
+        id="JSON, empty",
+        answered=_sent('W/"cf-hkw7NmLY8eURf0zpzWMxpTvnOjM"'),
+    ),
     # A GET: its query string, Apollo Server's 405 for one that is not a query, ahead of the
     # credential.
-    http_row("GET", _Q, _P, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id="GET"),
+    http_row(
+        "GET",
+        _Q,
+        _P,
+        None,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="GET",
+        answered=_sent(_ETAG_OF_TYPENAME) | _counted(2500),
+    ),
     http_row("GET", _Q, (), None, "key", 400, _JSON_UTF8, _CSRF, id="GET, unpreflighted"),
     http_row("GET", _Q, _J, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id="GET, JSON"),
     http_row(
@@ -6308,9 +6388,12 @@ _LINEAR_HTTP = [
             _JSON_UTF8,
             _GET_MUTATION,
             id=f"GET mutation, {c}",
-            answered={"allow": "POST"},
+            answered=e,
         )
-        for c in ("key", "none")
+        for c, e in (
+            ("key", _sent('W/"ce-z0YB89QJgWlJGjEG4cmlKGgjXcg"', allow="POST")),
+            ("none", {"allow": "POST"}),
+        )
     ),
     http_row(
         "GET",
@@ -6334,7 +6417,7 @@ _LINEAR_HTTP = [
         _JSON_UTF8,
         b"",
         id="HEAD",
-        answered={"allow": "GET, POST"},
+        answered=_sent('W/"b9-gq5kxI+usdfwWz5UDzUMGmXMbSE"', allow="GET, POST"),
     ),
     http_row(
         "HEAD",
@@ -6348,10 +6431,21 @@ _LINEAR_HTTP = [
         id="HEAD, text/plain",
     ),
     # `apollo_http.response_type` and its 406, the 401 among the answers it replaces.
+    http_row(
+        "POST",
+        "",
+        (*_J, ("Accept", "text/html")),
+        _TYPENAME,
+        "key",
+        406,
+        _JSON_UTF8,
+        _NOT_ACCEPTABLE,
+        id="Accept 'text/html'",
+        answered=_sent('W/"118-W8enG7eCxHkz3I26tylt6TX1rMM"') | _NOT_COUNTED,
+    ),
     *(
         http_row("POST", "", (*_J, ("Accept", a)), _TYPENAME, "key", s, t, b, id=f"Accept {a!r}")
         for a, s, t, b in (
-            ("text/html", 406, _JSON_UTF8, _NOT_ACCEPTABLE),
             ("application/json;q=0", 406, _JSON_UTF8, _NOT_ACCEPTABLE),
             ("application/json;q", 406, _JSON_UTF8, _NOT_ACCEPTABLE),
             ("application/json; charset=latin1", 406, _JSON_UTF8, _NOT_ACCEPTABLE),
@@ -6460,13 +6554,35 @@ _LINEAR_HTTP = [
         id="GET, Accept text/html then graphql-response",
     ),
     # `cors` lets any other method carrying `Origin` through; an API key under `Bearer` on DELETE.
+    http_row(
+        "POST",
+        "",
+        (*_J, *_ORIGIN),
+        _TYPENAME,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="POST, Origin",
+        answered=_sent(_ETAG_OF_TYPENAME) | _cors(),
+    ),
+    http_row(
+        "PUT",
+        "",
+        (*_J, *_ORIGIN),
+        _TYPENAME,
+        "key",
+        405,
+        _JSON_UTF8,
+        _ONLY_GET_POST,
+        id="PUT, Origin",
+        answered=_sent('W/"b9-gq5kxI+usdfwWz5UDzUMGmXMbSE"', allow="GET, POST") | _cors(),
+    ),
     *(
         http_row(m, t, (*h, *_ORIGIN), b, "key", s, _JSON_UTF8, a, id=f"{m}, Origin")
         for m, t, h, b, s, a in (
-            ("POST", "", _J, _TYPENAME, 200, _TYPENAME_DATA),
             ("GET", _Q, _P, None, 200, _TYPENAME_DATA),
             ("HEAD", _Q, _P, None, 405, b""),
-            ("PUT", "", _J, _TYPENAME, 405, _ONLY_GET_POST),
             ("PATCH", "", _J, _TYPENAME, 405, _ONLY_GET_POST),
             ("DELETE", "", _J, _TYPENAME, 405, _ONLY_GET_POST),
         )
@@ -6691,8 +6807,19 @@ _LINEAR_HTTP = [
             ("/GRAPHQL", _EXPRESS_API_KEY_AS_BEARER),
             ("//graphql", _EXPRESS_API_KEY_AS_BEARER),
             ("/graph%71l", _EXPRESS_API_KEY_AS_BEARER),
-            ("/nosuch", _EXPRESS_API_KEY_AS_BEARER),
         )
+    ),
+    http_row(
+        "POST",
+        "/nosuch",
+        _J,
+        _TYPENAME,
+        "Bearer key",
+        400,
+        _JSON_UTF8,
+        _EXPRESS_API_KEY_AS_BEARER,
+        id="POST /nosuch, Bearer key",
+        answered=_sent(_ETAG_OF_THE_BEARER_400),
     ),
     http_row(
         "GET",
@@ -6704,6 +6831,7 @@ _LINEAR_HTTP = [
         _JSON_UTF8,
         _EXPRESS_API_KEY_AS_BEARER,
         id="GET /, Bearer key",
+        answered=_sent(_ETAG_OF_THE_BEARER_400, x_content_type_options="nosniff"),
     ),
     *(
         http_row(m, p, h, b, c, 404, _HTML_UTF8, _express_404(m, echo), id=f"{m} {p}, {c}")
@@ -6716,7 +6844,6 @@ _LINEAR_HTTP = [
             ("POST", "/GRAPHQL%2F", _J, _TYPENAME, "none", "/GRAPHQL%2F"),
             ("POST", "/graphql%0A", _J, _TYPENAME, "none", "/graphql%0A"),
             ("POST", "/x/graphql", _J, _TYPENAME, "key", "/x/graphql"),
-            ("POST", "/nosuch", _J, _TYPENAME, "key", "/nosuch"),
             ("POST", "/nosuch", _J, b"{", "none", "/nosuch"),
             ("POST", "//nosuch", _J, _TYPENAME, "none", "/nosuch"),
             ("POST", "/nosuch//x", _J, _TYPENAME, "none", "/nosuch/x"),
@@ -6747,6 +6874,20 @@ _LINEAR_HTTP = [
             ("GET", "/index.html", (), None, "none", "/index.html"),
         )
     ),
+    http_row(
+        "POST",
+        "/nosuch",
+        _J,
+        _TYPENAME,
+        "key",
+        404,
+        _HTML_UTF8,
+        _express_404("POST", "/nosuch"),
+        id="POST /nosuch, key",
+        answered=_sent(
+            None, content_security_policy="default-src 'none'", x_content_type_options="nosniff"
+        ),
+    ),
     http_row("HEAD", "/nosuch", (), None, "none", 404, _HTML_UTF8, b"", id="HEAD /nosuch"),
     http_row("BIND", "/nosuch", (), None, "key", 501, None, b"", id="BIND /nosuch"),
     http_row(
@@ -6763,12 +6904,60 @@ _LINEAR_HTTP = [
     ),
     *(
         http_row("GET", p, (), None, c, 200, _HTML_UTF8, _GREETING, id=f"GET {p}, {c}")
-        for p, c in (("/", "none"), ("/" + _Q, "key"), ("//", "none"), ("/?x", "none"))
+        for p, c in (("/" + _Q, "key"), ("//", "none"), ("/?x", "none"))
     ),
-    http_row("HEAD", "/", (), None, "none", 200, _HTML_UTF8, b"", id="HEAD /"),
-    *(
-        http_row("OPTIONS", "/", (), None, c, 200, "text/plain", b"GET, HEAD", id=f"OPTIONS /, {c}")
-        for c in ("none", "Bearer key")
+    http_row(
+        "GET",
+        "/",
+        (),
+        None,
+        "none",
+        200,
+        _HTML_UTF8,
+        _GREETING,
+        id="GET /, none",
+        answered=_sent('W/"22-p50xJmghTUzB/yxthmCh2AutfIs"', x_content_type_options="nosniff"),
+    ),
+    http_row(
+        "HEAD",
+        "/",
+        (),
+        None,
+        "none",
+        200,
+        _HTML_UTF8,
+        b"",
+        id="HEAD /",
+        answered=_sent(None, x_content_type_options="nosniff"),
+    ),
+    http_row(
+        "OPTIONS",
+        "/",
+        (),
+        None,
+        "none",
+        200,
+        "text/plain",
+        b"GET, HEAD",
+        id="OPTIONS /, none",
+        answered=_sent(
+            None,
+            allow="GET, HEAD",
+            cache_control=f"{_NO_STORE}, s-maxage=43200",
+            cache_tag="preflight",
+            x_content_type_options="nosniff",
+        ),
+    ),
+    http_row(
+        "OPTIONS",
+        "/",
+        (),
+        None,
+        "Bearer key",
+        200,
+        "text/plain",
+        b"GET, HEAD",
+        id="OPTIONS /, Bearer key",
     ),
 ]
 _LINEAR_CREDENTIALS = {
@@ -6810,52 +6999,9 @@ def test_linear_answers_each_method_path_type_and_accept_as_linear_does(
     assert {name: r.headers.get(name) for name in expected_headers} == expected_headers
 
 
-# The headers on each kind of answer, as `backlot.routers.linear._express_sent`, `express`,
-# `_preflight` and `RequestBudget` record what api.linear.app sent: the request, the credential
-# (`_LINEAR_CREDENTIALS`), the status, and each header named, None for one it did not send. The
-# `ETag`s are the ones real sent, so a row with an `ETag` holds the body to its last byte.
-_NO_STORE = "private, no-cache, no-store, must-revalidate"
-_EXPOSED = (
-    "Cache-Control,Content-Language,Content-Length,Content-Type,Expires,Last-Modified,Pragma,"
-    "x-request-id,cf-ray,cf-cache-status,Retry-After"
-)
-_REQUEST_ID = Matching(r"[0-9a-f]{16}-ICN")
-_NOT_COUNTED = {"x-ratelimit-requests-limit": None, "x-ratelimit-requests-remaining": None}
-
-
-def _sent(etag, **more):
-    """What Express's answers carry: ``etag``, the rest of `_express_sent`'s, none of `cors`'s
-    for a request without `Origin`, no `nosniff`, and ``more``, `_` in a name standing for `-`."""
-    return {
-        "cache-control": _NO_STORE,
-        "etag": etag,
-        "vary": "Accept-Encoding",
-        "x-request-id": _REQUEST_ID,
-        "access-control-allow-origin": None,
-        "access-control-expose-headers": None,
-        "x-content-type-options": None,
-    } | {name.replace("_", "-"): value for name, value in more.items()}
-
-
-def _counted(limit):
-    return {
-        "x-ratelimit-requests-limit": str(limit),
-        "x-ratelimit-requests-remaining": Matching(r"[0-9]+"),
-        "x-ratelimit-requests-reset": Matching(r"[0-9]{13}"),
-    }
-
-
-def _cors(origin="https://example.com"):
-    return {
-        "access-control-allow-origin": origin,
-        "access-control-expose-headers": _EXPOSED,
-        "vary": "Origin, Accept-Encoding",
-    }
-
-
-_ETAG_OF_TYPENAME = 'W/"20-/8NdYwgmGsmmlrq5Nh8mH1T+tAs"'
-_TYPENAME = b'{"query":"{ __typename }"}'
-_ETAG_OF_THE_BEARER_400 = 'W/"f9-BDIWTD84v19kyk2Xj/zxwnhRq74"'
+# The headers on the answer to each request `_LINEAR_HTTP` has no row for: the request, the
+# credential (`_LINEAR_CREDENTIALS`), the status, and each header named. The `ETag`s are the ones
+# real sent, so a row with an `ETag` holds the body to its last byte.
 _LINEAR_HEADERS = [
     pytest.param(
         "POST",
@@ -6866,16 +7012,6 @@ _LINEAR_HEADERS = [
         200,
         _sent(_ETAG_OF_TYPENAME) | _counted(2500),
         id="served",
-    ),
-    pytest.param(
-        "GET",
-        _Q,
-        _P,
-        None,
-        "key",
-        200,
-        _sent(_ETAG_OF_TYPENAME) | _counted(2500),
-        id="served by GET",
     ),
     # Express's 304 to a GET its `ETag` is fresh to (`linear._fresh`), and its 200 where not.
     *(
@@ -6973,16 +7109,6 @@ _LINEAR_HEADERS = [
         id="a persisted query's hash alone",
     ),
     pytest.param(
-        "POST",
-        "",
-        _J,
-        b"",
-        "key",
-        400,
-        _sent('W/"cf-hkw7NmLY8eURf0zpzWMxpTvnOjM"'),
-        id="no body",
-    ),
-    pytest.param(
         "POST", "", _J, b"x", "key", 400, _sent('W/"51-Jb7vCM8EoSOeaR6XRpsgTQcPNkI"'), id="x"
     ),
     pytest.param(
@@ -6996,80 +7122,24 @@ _LINEAR_HEADERS = [
         id="latin1",
     ),
     pytest.param(
-        "POST",
+        "PUT",
         "",
-        (("Content-Type", "text/plain"),),
-        _TYPENAME,
-        "key",
-        400,
-        _sent('W/"1e1-Pj6jukFvCDT/ZBGD/LVdheKiTtk"'),
-        id="CSRF",
-    ),
-    *(
-        pytest.param(
-            m,
-            t,
-            h,
-            None,
-            "key",
-            405,
-            _sent('W/"b9-gq5kxI+usdfwWz5UDzUMGmXMbSE"', allow="GET, POST"),
-            id=m,
-        )
-        for m, t, h in (("PUT", "", _J), ("HEAD", _Q, _P))
-    ),
-    pytest.param(
-        "GET",
-        "?query=mutation%20%7B%20__typename%20%7D",
-        _P,
+        _J,
         None,
         "key",
         405,
-        _sent('W/"ce-z0YB89QJgWlJGjEG4cmlKGgjXcg"', allow="POST"),
-        id="GET of a mutation",
+        _sent('W/"b9-gq5kxI+usdfwWz5UDzUMGmXMbSE"', allow="GET, POST"),
+        id="PUT",
     ),
     pytest.param(
         "POST",
         "",
-        (*_J, ("Accept", "text/html")),
+        _J,
         _TYPENAME,
-        "key",
-        406,
-        _sent('W/"118-W8enG7eCxHkz3I26tylt6TX1rMM"') | _NOT_COUNTED,
-        id="406",
-    ),
-    *(
-        pytest.param(
-            "POST",
-            t,
-            _J,
-            _TYPENAME,
-            "Bearer key",
-            400,
-            _sent(_ETAG_OF_THE_BEARER_400),
-            id=f"Bearer at {t or '/graphql'}",
-        )
-        for t in ("", "/nosuch")
-    ),
-    pytest.param(
-        "GET",
-        "/",
-        (),
-        None,
         "Bearer key",
         400,
-        _sent(_ETAG_OF_THE_BEARER_400, x_content_type_options="nosniff"),
-        id="Bearer at /",
-    ),
-    pytest.param(
-        "GET",
-        "/",
-        (),
-        None,
-        "none",
-        200,
-        _sent('W/"22-p50xJmghTUzB/yxthmCh2AutfIs"', x_content_type_options="nosniff"),
-        id="greeting",
+        _sent(_ETAG_OF_THE_BEARER_400),
+        id="Bearer at /graphql",
     ),
     pytest.param(
         "GET",
@@ -7113,52 +7183,6 @@ _LINEAR_HEADERS = [
         304,
         _sent(_ETAG_OF_TYPENAME, content_type=None) | _cors() | {"vary": "Origin"} | _counted(2500),
         id="GET, its ETag, Origin",
-    ),
-    pytest.param(
-        "HEAD",
-        "/",
-        (),
-        None,
-        "none",
-        200,
-        _sent(None, x_content_type_options="nosniff"),
-        id="HEAD /",
-    ),
-    pytest.param(
-        "OPTIONS",
-        "/",
-        (),
-        None,
-        "none",
-        200,
-        _sent(
-            None,
-            allow="GET, HEAD",
-            cache_control=f"{_NO_STORE}, s-maxage=43200",
-            cache_tag="preflight",
-            x_content_type_options="nosniff",
-        ),
-        id="OPTIONS /",
-    ),
-    pytest.param(
-        "POST",
-        "/nosuch",
-        _J,
-        _TYPENAME,
-        "key",
-        404,
-        _sent(None, content_security_policy="default-src 'none'", x_content_type_options="nosniff"),
-        id="404",
-    ),
-    pytest.param(
-        "OPTIONS",
-        "",
-        _PREFLIGHT_ASKED,
-        None,
-        "none",
-        204,
-        {"x-request-id": _REQUEST_ID, "etag": None, "x-content-type-options": None},
-        id="preflight",
     ),
     pytest.param(
         "OPTIONS",
@@ -7223,7 +7247,6 @@ _LINEAR_HEADERS = [
             id=f"Origin {label}",
         )
         for label, origin, allowed in (
-            ("example.com", _ORIGIN, "https://example.com"),
             ("null", (("Origin", "null"),), "null"),
             ("spaced", (("Origin", " https://example.com "),), "https://example.com"),
             (
@@ -7266,16 +7289,6 @@ _LINEAR_HEADERS = [
         400,
         _sent('W/"51-Jb7vCM8EoSOeaR6XRpsgTQcPNkI"') | _cors(),
         id="Origin, x",
-    ),
-    pytest.param(
-        "PUT",
-        "",
-        (*_J, *_ORIGIN),
-        _TYPENAME,
-        "key",
-        405,
-        _sent('W/"b9-gq5kxI+usdfwWz5UDzUMGmXMbSE"', allow="GET, POST") | _cors(),
-        id="Origin, PUT",
     ),
     pytest.param(
         "POST",
@@ -7328,45 +7341,49 @@ def test_linear_answers_carry_the_headers_linear_sends(
     assert {name: r.headers.get(name) for name in expected} == expected
 
 
-# The seconds at which requests were taken from an API key's bucket, and
-# `x-ratelimit-requests-remaining` on the last: one; thirty over the 13.13 seconds of
-# `RequestBudget`'s measurement; 2,505 at once, past the limit; one an hour after 2,000; and two
-# a second apart, which leave the level at 2498.69.
+def _taken(times, host="203.0.113.7", key="lin_api_x"):
+    return [(seconds, host, key) for seconds in times]
+
+
+# The requests taken from `RequestBudget` (the second, the caller's address, its API key, None
+# for none), and the limit and `x-ratelimit-requests-remaining` on the last: one; thirty over the
+# 13.13 seconds of its measurement; 2,505 at once, past the limit; one an hour after 2,000; two a
+# second apart, which leave the level at 2498.69; two with no key from one address; and one from
+# another address after those.
 _REQUEST_BUDGET = [
-    pytest.param([0.0], "2499", id="one"),
-    pytest.param([i * 13.13 / 29 for i in range(30)], "2479", id="thirty over 13 seconds"),
-    pytest.param([0.0] * 2505, "0", id="past the limit"),
-    pytest.param([0.0] * 2000 + [3600.0], "2499", id="an hour on"),
-    pytest.param([0.0, 1.0], "2498", id="0.69 back, rounded down"),
+    pytest.param(_taken([0.0]), "2500", "2499", id="one"),
+    pytest.param(
+        _taken([i * 13.13 / 29 for i in range(30)]), "2500", "2479", id="thirty over 13 seconds"
+    ),
+    pytest.param(_taken([0.0] * 2505), "2500", "0", id="past the limit"),
+    pytest.param(_taken([0.0] * 2000 + [3600.0]), "2500", "2499", id="an hour on"),
+    pytest.param(_taken([0.0, 1.0]), "2500", "2498", id="0.69 back, rounded down"),
+    pytest.param(_taken([0.0, 0.0], key=None), "1200", "1198", id="no key, one address"),
+    pytest.param(
+        _taken([0.0, 0.0], key=None) + _taken([0.0], "198.51.100.2", None),
+        "1200",
+        "1199",
+        id="no key, another address",
+    ),
 ]
 
 
-@pytest.mark.parametrize("times, remaining", _REQUEST_BUDGET)
-def test_linears_request_budget_refills_at_its_limit_an_hour(times, remaining):
+@pytest.mark.parametrize("taken, limit, remaining", _REQUEST_BUDGET)
+def test_linears_request_budget_keeps_a_bucket_per_caller_refilled_at_its_limit_an_hour(
+    taken, limit, remaining
+):
     from types import SimpleNamespace
 
     from backlot.routers.linear import RequestBudget
 
     now = [0.0]
     budget = RequestBudget(clock=lambda: 1_793_022_495.115 + now[0])
-    request = SimpleNamespace(client=SimpleNamespace(host="203.0.113.7"))
-    for now[0] in times:
-        headers = budget.take(request, "lin_api_x")
-    assert headers["x-ratelimit-requests-remaining"] == remaining
-    assert headers["x-ratelimit-requests-limit"] == "2500"
-
-
-def test_linears_request_budget_counts_a_caller_with_no_credential_by_its_address():
-    from types import SimpleNamespace
-
-    from backlot.routers.linear import RequestBudget
-
-    budget = RequestBudget(clock=lambda: 1_793_022_495.115)
-    taken = [
-        budget.take(SimpleNamespace(client=SimpleNamespace(host=host)), None)
-        for host in ("203.0.113.7", "203.0.113.7", "198.51.100.2")
-    ]
-    assert [h["x-ratelimit-requests-remaining"] for h in taken] == ["1199", "1198", "1199"]
+    for now[0], host, key in taken:
+        headers = budget.take(SimpleNamespace(client=SimpleNamespace(host=host)), key)
+    assert (
+        headers["x-ratelimit-requests-limit"],
+        headers["x-ratelimit-requests-remaining"],
+    ) == (limit, remaining)
 
 
 def test_linears_request_budget_takes_one_for_a_run_and_none_for_a_refusal(client, tokens_yaml):

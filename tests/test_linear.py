@@ -7111,6 +7111,25 @@ _LINEAR_HEADERS = [
             ("GET", (("If-None-Match", '"x",\xa0' + _ETAG_OF_TYPENAME),), 200, "U+00A0 in a list"),
             ("GET", (("If-None-Match", _ETAG_OF_TYPENAME + '\t, "x"'),), 200, "a tab after it"),
             ("GET", (("If-None-Match", "*"), ("Cache-Control", "no-cache")), 200, "*, no-cache"),
+            ("GET", (("If-None-Match", "* "),), 304, "* then a space"),
+            ("GET", (("If-None-Match", "*\t"),), 304, "* then a tab"),
+            ("GET", (("If-None-Match", _ETAG_OF_TYPENAME + "\t"),), 304, "its ETag then a tab"),
+            (
+                "GET",
+                (("If-None-Match", "*"), ("If-Modified-Since", "Tue, 01 Jan 2019 00:00:00 GMT")),
+                304,
+                "*, If-Modified-Since",
+            ),
+            (
+                "GET",
+                (
+                    ("If-None-Match", "*"),
+                    ("Cache-Control", "max-age=0"),
+                    ("Cache-Control", "no-cache"),
+                ),
+                200,
+                "*, no-cache in a second Cache-Control",
+            ),
             (
                 "GET",
                 (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "\x85no-cache")),

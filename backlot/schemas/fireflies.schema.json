@@ -107,7 +107,7 @@
     },
     "transcript_id": {
       "type": "string",
-      "description": "The API-facing id `transcript(id:)` looks a meeting up by. Default: a 24-character hex id derived from the doc_id."
+      "description": "The API-facing id `transcript(id:)` looks a meeting up by. Default: a ULID (26 Crockford base32 characters) derived from the doc_id, its time zero."
     },
     "host_email": {
       "type": "string",

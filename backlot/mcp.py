@@ -275,7 +275,8 @@ def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict
         timeout=30,
     )
     # validate_output=False: Backlot's responses are the source of truth; a passthrough must never
-    # reject a real server response for not matching a loose schema.
+    # reject a real server response for not matching a loose schema. Every FastMCP built here takes
+    # ``version=``: one built without it reports FastMCP's own version in ``serverInfo``.
     return FastMCP.from_openapi(
         openapi_spec=spec,
         client=client,

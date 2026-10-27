@@ -1,5 +1,4 @@
-"""Backlot's own version, as ``backlot --version``, telemetry and the MCP ``serverInfo`` report it —
-a FastMCP server not given one reports FastMCP's."""
+"""Backlot's own version, as ``backlot --version``, telemetry and the MCP ``serverInfo`` report it."""
 
 from __future__ import annotations
 

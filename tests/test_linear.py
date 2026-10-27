@@ -3957,8 +3957,8 @@ def _linear_client(tmp_path):
 # --- schema drift against api.linear.app (issue #101) --------------------------------------------
 # Every type below is what introspection of https://api.linear.app/graphql reported, the oldest on
 # 2026-09-03, copied here as literals so the suite runs offline; a literal moves when a later
-# measurement finds the vendor has moved. `IntegrationService` has gained two members that way
-# since that date, and the enum in `backlot/graphql/linear.graphql` carries their dates.
+# measurement finds the vendor has moved. `IntegrationService` is the 2026-10-27 introspection,
+# the date its description in `backlot/graphql/linear.graphql` carries.
 # `backlot diff --source linear` is the live re-measurement and
 # `backlot/fidelity/baseline/linear.json` the record of the gaps it accepts.
 # Most entries were a `breaking` finding in #101: Backlot declared the same name at a different
@@ -4042,6 +4042,7 @@ LINEAR_ENUMS = {
         "githubPersonal",
         "githubCodeAccessPersonal",
         "gitlab",
+        "gitlabPersonal",
         "origin",
         "googleCalendarPersonal",
         "googleSheets",

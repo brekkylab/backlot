@@ -450,10 +450,8 @@ Closing it closes the record. The body and the comments stay as the account of w
 and a source still diverging the next morning gets a new issue that links back to the last one — a
 closed issue is never reopened and never written over.
 
-The Linear run also checks each fragment of the newest `@linear/sdk` against the schema Backlot
-serves (`scripts/linear_sdk_fragments.py`): a fragment on a type Backlot declares beyond `id` that
-selects a field the type does not declare turns the run red, and opens no issue. CI checks the
-version the Linear example pins the same way on every pull request.
+The Linear run also runs `scripts/linear_sdk_fragments.py` over the newest `@linear/sdk`: a fragment
+it names turns the run red, and opens no issue.
 
 ## Coverage
 

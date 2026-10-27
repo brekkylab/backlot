@@ -10,10 +10,6 @@ every field ``X`` selects at its top level has to be declared on ``T``: a field 
 fragment on a type the schema does not declare, or declares with ``id`` alone, is left out, since
 Backlot does not serve that type in full.
 
-`@linear/sdk` 95.1.0's `IssueLabel` fragment selects `groupType`, which 95.0.0's does not, and
-against a schema without it the Linear example fails with `Cannot query field 'groupType' on type
-'IssueLabel'`; an example pinned to 95.0.0 does not.
-
 Prints how many fragments the bundle holds and how many were checked, then one line per fragment
 selecting an undeclared field. Exit 0 when none does, 1 when one does, 2 when the bundle cannot be
 read or holds no fragment, which a moved bundle or a changed string format would look like.
@@ -30,7 +26,8 @@ from graphql import GraphQLInterfaceType, GraphQLObjectType, build_schema, parse
 from graphql.language import FieldNode
 
 SCHEMA = Path(__file__).resolve().parent.parent / "backlot" / "graphql" / "linear.graphql"
-_FRAGMENT = re.compile(r"fragment (\w+) on (\w+)\s*\{")
+_NAME = r"[_A-Za-z][_0-9A-Za-z]*"  # a GraphQL Name
+_FRAGMENT = re.compile(rf"fragment ({_NAME}) on ({_NAME})[ \t\n\r,]*\{{")
 
 
 def fragments(source: str) -> dict[str, tuple[str, list[str]]]:

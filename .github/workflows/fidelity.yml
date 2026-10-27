@@ -164,9 +164,8 @@ jobs:
         if: steps.diff.outputs.status == '1'
         run: exit 1
 
-      # The newest @linear/sdk's fragments against the schema Backlot serves, which the version the
-      # Linear example pins reaches only once someone moves the pin. Run whatever the comparison
-      # found; exit 2 is a bundle the script could not read, which is red like a fragment it names.
+      # The newest @linear/sdk, which the Linear example's pin reaches only once someone moves it.
+      # Run whatever the comparison found; exit 2, a bundle the script could not read, is red too.
       - name: Check the newest @linear/sdk's fragments
         if: ${{ !cancelled() && matrix.source == 'linear' }}
         run: |

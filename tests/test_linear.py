@@ -2363,8 +2363,10 @@ _LINEAR_READS = [
 _KEY_SHAPED = "Bearer lin_api_" + "0" * 40
 # The rows every credential but the key is sent with: one for each way `_read` refuses a body (V8's
 # words, `strict`'s, graphql-js's, a body it cannot decode, an unsupported encoding, an unsupported
-# charset, past the limit), one it reads and serves, Apollo Server's refusal of a batch, and a
-# `WithTheKey` row.
+# charset, past the limit), one it reads and serves, one for each stage of Apollo Server's that
+# refuses a document ahead of the credential (a batch, a query that is not a string, a persisted
+# query's hash alone and one that does not match, a parse, a validation, the choice of operation),
+# and a `WithTheKey` row.
 _EACH_WAY_READ = (
     "{",
     "top-level 5",
@@ -2375,9 +2377,38 @@ _EACH_WAY_READ = (
     "past the limit",
     "__proto__ key",
     "an array",
+    "a query of null",
+    "a persisted query's hash alone",
+    "a persisted query's hash that does not match",
+    "a document that does not parse",
+    "a document that does not validate",
+    "two operations and no operationName",
     "a variable not provided",
 )
-assert set(_EACH_WAY_READ) <= {row.id for row in (*_LINEAR_BODIES, *_LINEAR_READS)}
+# The rows whose answer without a key turns on what the document selects
+# (`backlot.routers.linear._introspection_only`), each sent with every credential too.
+_WHAT_IT_SELECTS = (
+    "introspection",
+    "__type",
+    "an alias of __schema",
+    "__schema and __type",
+    "__schema in a fragment",
+    "__schema in an inline fragment",
+    "__schema under @skip(if: false)",
+    "a named query of __schema",
+    "the introspection operationName chose",
+    "introspection with a variable not provided",
+    "__typename beside __schema",
+    "__schema beside a skipped field",
+    "a skipped field alone",
+    "__typename in a fragment",
+    "__typename in an inline fragment",
+    "__schema and __typename in a fragment",
+    "__typename in a fragment beside an inline __schema",
+)
+assert set(_EACH_WAY_READ + _WHAT_IT_SELECTS) <= {
+    row.id for row in (*_LINEAR_BODIES, *_LINEAR_READS)
+}
 
 
 def _linear_body_cases() -> list:
@@ -2386,7 +2417,7 @@ def _linear_body_cases() -> list:
         pytest.param(credential, *row.values, id=f"{row.id}-{credential}")
         for credential in ("key", "none", "nope", "Bearer key", "Bearer, key-shaped")
         for row in rows
-        if credential == "key" or row.id in _EACH_WAY_READ
+        if credential == "key" or row.id in _EACH_WAY_READ + _WHAT_IT_SELECTS
     ]
 
 
@@ -2395,8 +2426,9 @@ def test_linear_orders_the_body_and_the_credential(
     client, tokens_yaml, credential, headers, body, answer
 ):
     """Each row answers as the comment over `_LINEAR_BODIES` says with the key, and each row
-    `_EACH_WAY_READ` names answers so under no credential and `nope` too; an API key under `Bearer`,
-    and `_KEY_SHAPED`, are `_API_KEY_AS_BEARER` ahead of each of those bodies."""
+    `_EACH_WAY_READ` or `_WHAT_IT_SELECTS` names answers so under no credential and `nope` too; an
+    API key under `Bearer`, and `_KEY_SHAPED`, are `_API_KEY_AS_BEARER` ahead of each of those
+    bodies."""
     admin = tokens_yaml["admin_token"]
     if not any(name == "Content-Type" for name, _ in headers):
         headers = (("Content-Type", "application/json"), *headers)
@@ -4368,8 +4400,8 @@ def _linear_client(tmp_path):
 # --- schema drift against api.linear.app (issue #101) --------------------------------------------
 # Every type below is what introspection of https://api.linear.app/graphql reported, the oldest on
 # 2026-09-03, copied here as literals so the suite runs offline; a literal moves when a later
-# measurement finds the vendor has moved. `IntegrationService` has gained two members that way
-# since that date, and the enum in `backlot/graphql/linear.graphql` carries their dates.
+# measurement finds the vendor has moved. `IntegrationService` is the 2026-10-27 introspection,
+# the date its description in `backlot/graphql/linear.graphql` carries.
 # `backlot diff --source linear` is the live re-measurement and
 # `backlot/fidelity/baseline/linear.json` the record of the gaps it accepts.
 # Most entries were a `breaking` finding in #101: Backlot declared the same name at a different
@@ -4453,6 +4485,7 @@ LINEAR_ENUMS = {
         "githubPersonal",
         "githubCodeAccessPersonal",
         "gitlab",
+        "gitlabPersonal",
         "origin",
         "googleCalendarPersonal",
         "googleSheets",

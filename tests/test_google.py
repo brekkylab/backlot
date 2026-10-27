@@ -2769,8 +2769,9 @@ _MASKS_SERVED = [
 def test_drive_answers_a_fields_mask_with_what_it_selects(
     client, admin_h, path, mask, top, entries
 ):
-    """The rows `_MASKS_SERVED` records. A `drives.list` row compares the top-level keys alone:
-    Backlot serves no shared drive, where real listed the member's two."""
+    """The rows `_MASKS_SERVED` records; `"default"` is each entry as an unmasked request gets it.
+    A `drives.list` row compares the top-level keys alone: Backlot serves no shared drive, where
+    real listed the member's two."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     url, _, query = path.format(doc=doc).partition("?")
 
@@ -2783,11 +2784,16 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(
 
     body = get(fields=mask)
     if top is None:
-        assert body == get(fields="*")
+        assert body == get()
         return
     assert set(body) == top
     listed = next((k for k in body if isinstance(body[k], list)), None)
-    if entries == "full":
+    if entries == "default":
+        assert body[listed] == get()[listed]
+    elif entries == "full":
+        # permissions.list has no unmasked full object: no mask answers only id/type/kind/role,
+        # while an explicit wrapper or `*` adds emailAddress/displayName and the rest. The `*`
+        # request is the unmasked-equivalent a mask naming the whole list must agree with.
         assert body[listed] == get(fields="*")[listed]
     elif entries:
         assert body[listed] and all(set(e) == entries for e in body[listed])

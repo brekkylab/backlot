@@ -60,7 +60,7 @@ dependencies = [
 # of step with them.
 all = ["backlot[dev,official-sdk,mcp,llamaindex,mirage,fsspec]"]
 dev = [
-    "pytest>=8.0",
+    "pytest>=8.4",
     "pytest-xdist>=3.6",
     # scripts/invariance.py records coverage to hold a test-only change to the lines it executed.
     "pytest-cov>=6",
@@ -210,6 +210,10 @@ testpaths = ["tests"]
 # does not run alone after the rest have finished; each worker builds the module-scoped fixtures of
 # the modules it runs.
 addopts = "-q -n auto --dist worksteal"
+# A table-driven test compares every row's answer at once; untruncated, a failure lists each row
+# that broke rather than the first few.
+truncation_limit_lines = "0"
+truncation_limit_chars = "0"
 # Several routes serve more than one HTTP method for vendor fidelity (Slack GET+POST, Jira v2/v3,
 # S3 GET+HEAD), so FastAPI warns about duplicate operationIds — expected, and collapsed by
 # backlot.openapi. Silenced at import there too, but pytest resets filters per test.

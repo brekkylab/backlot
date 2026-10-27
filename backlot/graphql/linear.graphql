@@ -453,20 +453,17 @@ input IssueFilter {
 enum ExternalSyncService { jira github slack }
 
 """Linear's `IntegrationService`: every integration an issue can carry as its
-`integrationSourceType`. The full list as introspected on 2026-09-15, in the vendor's own order and
-two members past the 2026-09-03 introspection the comment above dates: `origin` arrived between
-2026-09-03 and 2026-09-04, `datadog` between the scheduled fidelity runs of 2026-09-14 and
-2026-09-15. Backlot serves null for the field (a corpus does not say which integration created an
-issue), the members are here so a client switching on the enum sees the same member set."""
+`integrationSourceType`, in the vendor's own order as introspected on 2026-10-27. Backlot serves
+null for the field (a corpus does not say which integration created an issue); the members are
+here so a client switching on the enum sees the same member set."""
 enum IntegrationService {
   airbyte datadog discord figma figmaPlugin front github gong githubEnterpriseServer githubCommit
-  githubImport githubPersonal githubCodeAccessPersonal gitlab origin googleCalendarPersonal
-  googleSheets
-  intercom jira jiraPersonal launchDarkly launchDarklyPersonal loom notion opsgenie pagerDuty
-  salesforce slack slackAsks asksWeb slackCustomViewNotifications slackOrgProjectUpdatesPost
-  slackOrgInitiativeUpdatesPost slackPersonal slackPost slackProjectPost slackProjectUpdatesPost
-  slackInitiativePost sentry zendesk email mcpServerPersonal mcpServer microsoftTeams
-  microsoftPersonal microsoftTeamsProjectPost
+  githubImport githubPersonal githubCodeAccessPersonal gitlab gitlabPersonal origin
+  googleCalendarPersonal googleSheets intercom jira jiraPersonal launchDarkly launchDarklyPersonal
+  loom notion opsgenie pagerDuty salesforce slack slackAsks asksWeb slackCustomViewNotifications
+  slackOrgProjectUpdatesPost slackOrgInitiativeUpdatesPost slackPersonal slackPost slackProjectPost
+  slackProjectUpdatesPost slackInitiativePost sentry zendesk email mcpServerPersonal mcpServer
+  microsoftTeams microsoftPersonal microsoftTeamsProjectPost
 }
 
 """Issue update fields that are disallowed for users with only shared access."""

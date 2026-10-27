@@ -17,7 +17,7 @@ import pytest
 from backlot import store, synth
 from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS
 from backlot.routers.notion import router as notion_router
-from tests._helpers import corpus_client, sent_as, served_id, tiny_corpus, tok
+from tests._helpers import client_for, sent_as, served_id, tiny_corpus, tok
 
 
 @pytest.fixture
@@ -65,35 +65,27 @@ _CREDENTIAL_ROWS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "label, header, message", _CREDENTIAL_ROWS, ids=[r[0] for r in _CREDENTIAL_ROWS]
-)
-def test_notion_a_credential_it_cannot_use_names_the_format_or_the_token(
-    client, admin_h, label, header, message
-):
+def test_notion_a_credential_it_cannot_use_names_the_format_or_the_token(client, admin_h):
     """Measured: real refuses a header that is not `Bearer <token>` by naming the format, where a
     bearer whose token does not resolve is `API token is invalid.`. The legacy `token <t>` scheme
     GitHub takes is refused here too, and so is a bearer with a second word after its token; the
     scheme is read without its case, and two spaces or a tab between the words count as one."""
-    headers = {"Notion-Version": DATA_SOURCES_VERSION}
-    if header is not None:
-        headers["Authorization"] = header.format(token=admin_h["Authorization"].split()[1])
-    r = client.get("/notion/v1/users/me", headers=headers)
-    assert r.status_code == 401
-    assert r.json()["message"] == message, label
-    if message == _NOT_A_BEARER:
-        assert "additional_data" not in r.json()
-        assert list(r.json()) == ["object", "status", "code", "message", "request_id"], label
-    else:
-        assert r.json()["additional_data"] == {"reason": "token_invalid"}
-        assert list(r.json()) == [
-            "object",
-            "status",
-            "code",
-            "message",
-            "additional_data",
-            "request_id",
-        ], label
+    answered = {}
+    for label, header, _ in _CREDENTIAL_ROWS:
+        headers = {"Notion-Version": DATA_SOURCES_VERSION}
+        if header is not None:
+            headers["Authorization"] = header.format(token=admin_h["Authorization"].split()[1])
+        r = client.get("/notion/v1/users/me", headers=headers)
+        body = r.json()
+        answered[label] = (r.status_code, body["message"], list(body), body.get("additional_data"))
+
+    def expected(message):
+        if message == _NOT_A_BEARER:
+            return (401, message, ["object", "status", "code", "message", "request_id"], None)
+        members = ["object", "status", "code", "message", "additional_data", "request_id"]
+        return (401, message, members, {"reason": "token_invalid"})
+
+    assert answered == {label: expected(message) for label, _, message in _CREDENTIAL_ROWS}
 
 
 def test_notion_every_answer_names_itself_by_a_request_id(client, notion_h):
@@ -315,49 +307,71 @@ def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
     assert statuses == [401, 400, 200, 401, 200]
 
 
-def test_notion_json_carries_the_charset_real_sends(client, notion_h):
-    """Pins ``backlot.errors.notion.json_media_type`` on 200s and refusals, a `HEAD` among them,
-    beside the OpenAPI document and the app's own routes, which keep `application/json`."""
+def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, notion_h):
+    """Pins ``backlot.errors.notion.json_media_type`` and
+    ``backlot.routers.notion.APPLICATION_HEADERS`` on 200s and refusals, a `HEAD` among them: each
+    carries the charset, and each but the framework's 405 for `TRACE` and a refusal of the body
+    reader (``backlot.routers.notion.front_door_body``) the headers, which a body that reader leaves
+    unread gets too. The OpenAPI document and the app's own routes keep `application/json` and carry
+    none of the headers."""
     utf8 = "application/json; charset=utf-8"
+    real = {
+        "content-security-policy": "default-src 'none'",
+        "referrer-policy": "strict-origin-when-cross-origin",
+        "x-content-type-options": "nosniff",
+        "x-dns-prefetch-control": "off",
+        "x-download-options": "noopen",
+        "x-frame-options": "SAMEORIGIN",
+        "x-permitted-cross-domain-policies": "none",
+        "x-xss-protection": "0",
+    }
+    none = dict.fromkeys(real)
+    versioned = {"Notion-Version": DATA_SOURCES_VERSION}
     rows = [
-        ("GET", "/notion/v1/users/me", notion_h, None, 200),
-        ("POST", "/notion/v1/search", notion_h, {}, 200),
-        (
-            "GET",
-            f"/notion/v1/pages/{synth.notion_id('nt-runbook')}",
-            notion_h,
-            None,
-            200,
-        ),
-        ("GET", "/notion/v1/users/me", {"Notion-Version": DATA_SOURCES_VERSION}, None, 401),
-        ("POST", "/notion/v1/search", {"Notion-Version": DATA_SOURCES_VERSION}, {}, 401),
+        ("GET", "/notion/v1/users/me", notion_h, None, 200, real),
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{}", 200, real),
+        ("GET", f"/notion/v1/pages/{synth.notion_id('nt-runbook')}", notion_h, None, 200, real),
+        ("GET", "/notion/v1/users/me", versioned, None, 401, real),
+        ("POST", "/notion/v1/search", {**versioned, **_JSON}, b"{}", 401, real),
         (
             "GET",
             "/notion/v1/users/me",
             {"Authorization": notion_h["Authorization"]},
             None,
             400,
+            real,
         ),
-        ("GET", "/notion/v1/nonexistent_thing/xyz", notion_h, None, 400),
+        ("GET", "/notion/v1/nonexistent_thing/xyz", notion_h, None, 400, real),
+        ("GET", "/notion/v1/pages/00000000000000000000000000000000", notion_h, None, 404, real),
+        ("POST", "/notion/v1/oauth/token", {**versioned, **_JSON}, b"{}", 401, real),
+        # the framework's 405 for a method no route takes, which real's front door answers itself
+        ("TRACE", "/notion/v1/users/me", notion_h, None, 405, none),
+        # the body reader's refusals, and a body it does not read
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{", 400, none),
         (
-            "GET",
-            "/notion/v1/pages/00000000000000000000000000000000",
-            notion_h,
-            None,
-            404,
+            "POST",
+            "/notion/v1/search",
+            {**notion_h, "Content-Type": "application/json; charset=latin1"},
+            b"{}",
+            415,
+            none,
         ),
+        ("POST", "/notion/v1/search", {**notion_h, "Content-Type": "text/plain"}, b"{", 200, real),
     ]
-    for method, path, headers, payload, status in rows:
-        r = client.request(method, path, headers=headers, json=payload)
-        assert (r.status_code, r.headers["content-type"]) == (status, utf8), path
-    head = client.head("/notion/v1/users/me", headers={"Notion-Version": DATA_SOURCES_VERSION})
-    assert (head.status_code, head.headers["content-type"]) == (401, utf8)
-    # the contract keeps the bare type, and so do the app's own routes
+    for method, path, headers, body, status, sent in rows:
+        r = client.request(method, path, headers=headers, content=body)
+        got = {name: r.headers.get(name) for name in real}
+        assert (r.status_code, r.headers["content-type"], got) == (status, utf8, sent), (path, body)
+    head = client.head("/notion/v1/users/me", headers=versioned)
+    got = {name: head.headers.get(name) for name in real}
+    assert (head.status_code, head.headers["content-type"], got) == (401, utf8, real)
+    # the contract keeps the bare type, and so do the app's own routes, with none of the headers
     op = client.get("/openapi.json").json()["paths"]["/notion/v1/users/me"]["get"]
     assert list(op["responses"]["200"]["content"]) == ["application/json"]
-    assert client.get("/openapi.json").headers["content-type"] == "application/json"
-    assert client.get("/health").headers["content-type"] == "application/json"
-    assert client.get("/notionx/v1/users/me").headers["content-type"] == "application/json"
+    for path in ("/openapi.json", "/health", "/notionx/v1/users/me"):
+        r = client.get(path)
+        got = {name: r.headers.get(name) for name in real}
+        assert (r.headers["content-type"], got) == ("application/json", none), path
 
 
 def test_notion_page_retrieve_and_blocks(client, notion_h):
@@ -1038,14 +1052,7 @@ _SEARCH_BODY_TYPE_ROWS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "label, body, version, status, code, message",
-    _SEARCH_BODY_TYPE_ROWS,
-    ids=[row[0] for row in _SEARCH_BODY_TYPE_ROWS],
-)
-def test_notion_search_reads_its_body_as_real_does(
-    client, admin_h, monkeypatch, label, body, version, status, code, message
-):
+def test_notion_search_reads_its_body_as_real_does(client, admin_h, monkeypatch):
     """Real's answer to each body, read by ``notion_request.search_body`` and then
     ``search_sort_refusal``, the version ahead of both. A refusal comes ahead of
     ``auth.visible_ids``, and a 200 runs it."""
@@ -1054,51 +1061,62 @@ def test_notion_search_reads_its_body_as_real_does(
     looked_up = []
     see = auth.visible_ids
     monkeypatch.setattr(auth, "visible_ids", lambda *a, **k: looked_up.append(a) or see(*a, **k))
-    headers = admin_h if version is None else {**admin_h, "Notion-Version": version}
-    r = client.post("/notion/v1/search", json=body, headers=headers)
-    assert r.status_code == status, (label, r.text)
-    assert bool(looked_up) is (code is None), label
-    payload = r.json()
-    if code is None:
-        assert payload["object"] == "list"
-    else:
-        assert (payload["object"], payload["status"], payload["code"]) == ("error", status, code)
-        assert payload["message"] == message
-        assert payload["request_id"] == r.headers["x-notion-request-id"]
+    answered, wanted = {}, {}
+    for label, body, version, status, code, message in _SEARCH_BODY_TYPE_ROWS:
+        looked_up.clear()
+        headers = admin_h if version is None else {**admin_h, "Notion-Version": version}
+        r = client.post("/notion/v1/search", json=body, headers=headers)
+        payload = r.json()
+        if code is None:
+            answered[label] = (r.status_code, bool(looked_up), payload["object"])
+            wanted[label] = (status, True, "list")
+        else:
+            echoed = payload.get("request_id") == r.headers["x-notion-request-id"]
+            answered[label] = (
+                r.status_code,
+                bool(looked_up),
+                [payload.get(k) for k in ("object", "status", "code", "message")],
+                echoed,
+            )
+            wanted[label] = (status, False, ["error", status, code, message], True)
+    assert answered == wanted
 
 
-@pytest.mark.parametrize(
-    "version, query, value, kind",
-    [
-        ("2025-09-03", "", "data_source", "data_source"),
-        ("2026-03-11", "", "data_source", "data_source"),
-        ("2022-06-28", "", "data_source", "database"),
-        ("2022-06-28", "", "database", "database"),
-        ("2025-09-03", "", None, "data_source"),
-        ("2026-03-11", "", None, "data_source"),
-        ("2022-06-28", "", None, "database"),
-        ("2025-09-03", "Eng Tasks", None, "data_source"),
-    ],
-)
-def test_notion_search_lists_the_databases_in_the_versions_shape(
-    client, admin_h, version, query, value, kind
-):
+_SEARCHED_DATABASES = [
+    ("2025-09-03", "", "data_source", "data_source"),
+    ("2026-03-11", "", "data_source", "data_source"),
+    ("2022-06-28", "", "data_source", "database"),
+    ("2022-06-28", "", "database", "database"),
+    ("2025-09-03", "", None, "data_source"),
+    ("2026-03-11", "", None, "data_source"),
+    ("2022-06-28", "", None, "database"),
+    ("2025-09-03", "Eng Tasks", None, "data_source"),
+]
+
+
+def test_notion_search_lists_the_databases_in_the_versions_shape(client, admin_h):
     """Each search lists the databases as the comment in `search` records, each in the shape its
     own `GET` answers, and beside the pages when it sends neither a filter nor a query."""
-    h = {**admin_h, "Notion-Version": version}
-    body = {"query": query} | ({"filter": {"property": "object", "value": value}} if value else {})
-    s = client.post("/notion/v1/search", json=body, headers=h).json()
-    listed = [r for r in s["results"] if r["object"] != "page"]
-    assert {r["object"] for r in listed} == {kind}
-    assert (len(listed) < len(s["results"])) is (body == {"query": ""})
-    as_kind = synth.notion_data_source_id if kind == "data_source" else synth.notion_id
-    served_id = as_kind("nt-tasks-db")
-    got = next(r for r in listed if r["id"] == served_id)
-    fetched = client.get(f"/notion/v1/{kind}s/{served_id}", headers=h).json()
-    # `request_id` names the response, not the object: it rides the list body in a search and the
-    # object's own body in the `GET`, so it is dropped from the latter before comparing shapes.
-    fetched.pop("request_id", None)
-    assert got == fetched
+    answered, expected = {}, {}
+    for version, query, value, kind in _SEARCHED_DATABASES:
+        h = {**admin_h, "Notion-Version": version}
+        body = {"query": query} | (
+            {"filter": {"property": "object", "value": value}} if value else {}
+        )
+        s = client.post("/notion/v1/search", json=body, headers=h).json()
+        listed = [r for r in s["results"] if r["object"] != "page"]
+        as_kind = synth.notion_data_source_id if kind == "data_source" else synth.notion_id
+        served_id = as_kind("nt-tasks-db")
+        got = next((r for r in listed if r["id"] == served_id), None)
+        fetched = client.get(f"/notion/v1/{kind}s/{served_id}", headers=h).json()
+        # `request_id` names the response, not the object: it rides the list body in a search and
+        # the object's own body in the `GET`, so it is dropped from the latter before comparing
+        # shapes.
+        fetched.pop("request_id", None)
+        row = (version, query, value)
+        answered[row] = ({r["object"] for r in listed}, len(listed) < len(s["results"]), got)
+        expected[row] = ({kind}, body == {"query": ""}, fetched)
+    assert answered == expected
 
 
 @pytest.mark.parametrize(
@@ -1407,18 +1425,22 @@ def test_notion_data_source_retrieve_is_mounted_only_above_the_cut(client, notio
 _QUERY_MEMBERS = ["sorts", "filter", "start_cursor", "page_size", "result_type"]
 
 
-@pytest.mark.parametrize(
-    "path, members",
-    [
-        ("/notion/v1/search", ["query", "filter", "sort", "start_cursor", "page_size"]),
-        ("/notion/v1/data_sources/{data_source_id}/query", _QUERY_MEMBERS),
-        ("/notion/v1/databases/{database_id}/query", _QUERY_MEMBERS),
-    ],
-)
-def test_notion_a_body_route_declares_the_members_it_reads(client, path, members):
-    op = client.get("/openapi.json").json()["paths"][path]["post"]
-    props = op["requestBody"]["content"]["application/json"]["schema"]["properties"]
-    assert list(props) == members
+_BODY_ROUTE_MEMBERS = [
+    ("/notion/v1/search", ["query", "filter", "sort", "start_cursor", "page_size"]),
+    ("/notion/v1/data_sources/{data_source_id}/query", _QUERY_MEMBERS),
+    ("/notion/v1/databases/{database_id}/query", _QUERY_MEMBERS),
+]
+
+
+def test_notion_a_body_route_declares_the_members_it_reads(client):
+    paths = client.get("/openapi.json").json()["paths"]
+    declared = {}
+    for path, _ in _BODY_ROUTE_MEMBERS:
+        op = paths[path]["post"]
+        declared[path] = list(
+            op["requestBody"]["content"]["application/json"]["schema"]["properties"]
+        )
+    assert declared == dict(_BODY_ROUTE_MEMBERS)
 
 
 def test_notion_every_route_declares_the_version_header_it_enforces(client):
@@ -1497,9 +1519,11 @@ def test_notion_responses_unchanged_by_enrichment(client, notion_h):
 # --- Notion ---------------------------------------------------------------------
 
 
-def _notion_conn(tmp_path):
+@pytest.fixture(scope="module")
+def notion_conn(tmp_path_factory):
+    """A read-only connection to a page with a comment, a database and one row of it."""
     s = tiny_corpus(
-        tmp_path,
+        tmp_path_factory.mktemp("notion_conn"),
         [
             {
                 "source_type": "notion",
@@ -1536,13 +1560,15 @@ def _notion_conn(tmp_path):
             },
         ],
     )
-    return store.connect_ro(s.db_path)
+    conn = store.connect_ro(s.db_path)
+    yield conn
+    conn.close()
 
 
-def test_notion_page_shape(tmp_path):
+def test_notion_page_shape(notion_conn):
     from backlot.routers.notion import _page_obj
 
-    conn = _notion_conn(tmp_path)
+    conn = notion_conn
     obj = _page_obj(conn, store.get_document(conn, "notion", served_id("notion", "nf-page")))
     assert obj["object"] == "page"
     assert obj["id"] == synth.notion_id("nf-page")
@@ -1562,10 +1588,10 @@ def test_notion_page_shape(tmp_path):
     assert row["properties"]["Status"]["select"]["name"] == "In Progress"
 
 
-def test_notion_database_and_data_source_shape(tmp_path):
+def test_notion_database_and_data_source_shape(notion_conn):
     from backlot.routers.notion import _data_source_obj, _database_obj
 
-    conn = _notion_conn(tmp_path)
+    conn = notion_conn
     dbrow = store.get_document(conn, "notion", served_id("notion", "nf-db"))
     new = _database_obj(conn, dbrow, "2025-09-03")
     assert new["object"] == "database"
@@ -1578,10 +1604,10 @@ def test_notion_database_and_data_source_shape(tmp_path):
     assert ds["object"] == "data_source" and ds["properties"]["title"]["type"] == "title"
 
 
-def test_notion_user_and_block_shape(tmp_path):
+def test_notion_user_and_block_shape(notion_conn):
     from backlot.routers.notion import _user_obj
 
-    conn = _notion_conn(tmp_path)
+    conn = notion_conn
     u = _user_obj(conn, "ava@acme.com")
     assert u["object"] == "user" and u["type"] == "person"
     assert list(u["person"]) == ["email", "email_verified"]
@@ -1832,6 +1858,13 @@ _PARENT_RECORDS = [
     },
 ]
 
+
+@pytest.fixture(scope="module")
+def parent_corpus(tmp_path_factory):
+    """`_PARENT_RECORDS` built."""
+    return tiny_corpus(tmp_path_factory.mktemp("parent_corpus"), _PARENT_RECORDS)
+
+
 _PARENT_ROWS = [
     # label, the record, version, its parent on the page and on its block alike
     ("page under a page", "nf-child", "2025-09-03", {"type": "page_id", "page_id": "nf-parent"}),
@@ -1852,13 +1885,14 @@ _PARENT_ROWS = [
 ]
 
 
-def test_notion_a_page_and_its_block_name_the_parent_the_version_reads(tmp_path):
+def test_notion_a_page_and_its_block_name_the_parent_the_version_reads(parent_corpus):
     def served(value):
         if value.startswith("ds:"):
             return synth.notion_data_source_id(value[3:])
         return served_id("notion", value)
 
-    with corpus_client(tmp_path, _PARENT_RECORDS) as (client, settings):
+    settings = parent_corpus
+    with client_for(settings) as client:
         for label, doc, version, parent in _PARENT_ROWS:
             h = {"Authorization": f"Bearer {settings.admin_token}", "Notion-Version": version}
             expected = {k: served(v) if k.endswith("_id") else v for k, v in parent.items()}
@@ -1904,8 +1938,9 @@ def test_notion_url_is_the_app_host_and_a_data_source_names_its_databases(client
     )
 
 
-def test_notion_a_page_its_blocks_and_a_data_source_answer_millisecond_timestamps(tmp_path):
-    with corpus_client(tmp_path, _PARENT_RECORDS) as (client, settings):
+def test_notion_a_page_its_blocks_and_a_data_source_answer_millisecond_timestamps(parent_corpus):
+    settings = parent_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}", "Notion-Version": "2025-09-03"}
         page = served_id("notion", "nf-parent")
         answers = [
@@ -4106,14 +4141,7 @@ _REQUEST_ROWS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "label, method, path, query, send, headers, status, expected",
-    _REQUEST_ROWS,
-    ids=[row[0] for row in _REQUEST_ROWS],
-)
-def test_notion_reads_a_request_as_real_does(
-    client, notion_h, label, method, path, query, send, headers, status, expected
-):
+def test_notion_reads_a_request_as_real_does(client, notion_h):
     """Real's answer to each request: the body Express reads first (``notion_request.read_body``),
     then the credential, the version and whether the version mounts the route, then the query
     string and the body against the route's schema, then what names a property or a row."""
@@ -4124,28 +4152,31 @@ def test_notion_reads_a_request_as_real_does(
         "user": client.get("/notion/v1/users", headers=notion_h).json()["results"][0]["id"],
         "rand": _RAND,
     }
-    if isinstance(headers, list):  # a header sent more than once
-        sent = [*notion_h.items(), *headers]
-    else:
-        sent = {**notion_h, **{k: v for k, v in headers.items() if v is not None}}
-        for k, v in headers.items():
-            if v is None:
-                sent.pop(k, None)
-    path = path if path == "/notion" else f"/notion/v1{path.format(**ids)}"
-    url = path + (f"?{query.format(**ids)}" if query else "")
-    content = json.dumps(send).encode() if isinstance(send, dict) else send
-    r = sent_as(client, method, url, sent, content)
-    assert r.status_code == status, r.text
-    body = r.json()
-    if isinstance(expected, dict):
-        assert list(body) == [
-            "isNotionError",
-            "errorId",
-            *(k for k in expected if k != "isNotionError"),
-        ]
-        assert {k: body[k] for k in expected} == expected
-    elif isinstance(expected, str):
-        assert body["message"] == expected.replace("{ds}", ids["ds"]), label
+    answered, wanted = {}, {}
+    for label, method, path, query, send, headers, status, expected in _REQUEST_ROWS:
+        if isinstance(headers, list):  # a header sent more than once
+            sent = [*notion_h.items(), *headers]
+        else:
+            sent = {**notion_h, **{k: v for k, v in headers.items() if v is not None}}
+            for k, v in headers.items():
+                if v is None:
+                    sent.pop(k, None)
+        full = path if path == "/notion" else f"/notion/v1{path.format(**ids)}"
+        url = full + (f"?{query.format(**ids)}" if query else "")
+        content = json.dumps(send).encode() if isinstance(send, dict) else send
+        r = sent_as(client, method, url, sent, content)
+        body = r.json()
+        row = (method, path, label)
+        if isinstance(expected, dict):
+            members = ["isNotionError", "errorId", *(k for k in expected if k != "isNotionError")]
+            answered[row] = (r.status_code, list(body), {k: body.get(k) for k in expected})
+            wanted[row] = (status, members, expected)
+        elif isinstance(expected, str):
+            answered[row] = (r.status_code, body.get("message"))
+            wanted[row] = (status, expected.replace("{ds}", ids["ds"]))
+        else:
+            answered[row], wanted[row] = r.status_code, status
+    assert answered == wanted
 
 
 # --- where a page starts, and how long it is ---------------------------------------------------
@@ -4190,6 +4221,12 @@ _PAGING_RECORDS = [
 ]
 
 
+@pytest.fixture(scope="module")
+def paging_corpus(tmp_path_factory):
+    """`_PAGING_RECORDS` built."""
+    return tiny_corpus(tmp_path_factory.mktemp("paging_corpus"), _PAGING_RECORDS)
+
+
 def _lister(route: str):
     """How to ask one list for a page: a function of the client, the headers and the paging members,
     answering the response."""
@@ -4209,12 +4246,13 @@ def _lister(route: str):
 
 
 @pytest.mark.parametrize("route", ["users", "children", "comments", "search", "query"])
-def test_notion_a_cursor_starts_the_page_at_the_item_it_names(tmp_path, route):
+def test_notion_a_cursor_starts_the_page_at_the_item_it_names(paging_corpus, route):
     """The page a cursor asks for starts with the item it names, and the cursor after a page is the
     next item's id (``routers.notion._start``). A cursor naming nothing is refused, `comments` with
     the three members real adds there."""
     ask = _lister(route)
-    with corpus_client(tmp_path, _PAGING_RECORDS) as (client, settings):
+    settings = paging_corpus
+    with client_for(settings) as client:
         h = {
             "Authorization": f"Bearer {settings.admin_token}",
             "Notion-Version": DATA_SOURCES_VERSION,
@@ -4272,11 +4310,12 @@ def test_notion_a_cursor_starts_the_page_at_the_item_it_names(tmp_path, route):
         ("search", {"query": "zzzqqq", "page_size": -1}, "nothing"),
     ],
 )
-def test_notion_a_page_is_as_long_as_real_reads_its_page_size(tmp_path, route, members, shown):
+def test_notion_a_page_is_as_long_as_real_reads_its_page_size(paging_corpus, route, members, shown):
     """Real's page for each `page_size`, as ``routers.notion._size`` reads it; the trash holds
     nothing here, and a data source holds no data source."""
     ask = _lister(route)
-    with corpus_client(tmp_path, _PAGING_RECORDS) as (client, settings):
+    settings = paging_corpus
+    with client_for(settings) as client:
         h = {
             "Authorization": f"Bearer {settings.admin_token}",
             "Notion-Version": DATA_SOURCES_VERSION,
@@ -4298,11 +4337,12 @@ def test_notion_a_page_is_as_long_as_real_reads_its_page_size(tmp_path, route, m
             ]
 
 
-def test_notion_data_source_query_reads_its_cursor_as_real_does(tmp_path):
+def test_notion_data_source_query_reads_its_cursor_as_real_does(paging_corpus):
     """Each spelling of a data source query's cursor, as ``routers.notion._row_start`` reads it:
     where the page starts, or what the refusal names, and the cursor after it."""
     ds = synth.notion_data_source_id("np-db")
-    with corpus_client(tmp_path, _PAGING_RECORDS) as (client, settings):
+    settings = paging_corpus
+    with client_for(settings) as client:
         h = {
             "Authorization": f"Bearer {settings.admin_token}",
             "Notion-Version": DATA_SOURCES_VERSION,
@@ -4373,7 +4413,9 @@ def test_notion_a_cursor_naming_a_page_the_caller_cannot_see_names_nothing(
 
 
 @pytest.mark.parametrize("value", ["page", "data_source", None])
-def test_notion_search_fills_a_page_of_the_object_type_it_filters_to(tmp_path, monkeypatch, value):
+def test_notion_search_fills_a_page_of_the_object_type_it_filters_to(
+    paging_corpus, monkeypatch, value
+):
     """A page of one object type, or of any with no filter, holds the next results and names the
     one after it, an empty page names the first, and a cursor starts at its result wherever that
     sits in the corpus. With the window ``routers.notion._OVERFETCH`` sizes cut to the page and one
@@ -4382,7 +4424,8 @@ def test_notion_search_fills_a_page_of_the_object_type_it_filters_to(tmp_path, m
     from backlot.routers import notion as notion_routes
 
     monkeypatch.setattr(notion_routes, "_OVERFETCH", 1)
-    with corpus_client(tmp_path, _PAGING_RECORDS) as (client, settings):
+    settings = paging_corpus
+    with client_for(settings) as client:
         h = {
             "Authorization": f"Bearer {settings.admin_token}",
             "Notion-Version": DATA_SOURCES_VERSION,
@@ -4415,13 +4458,14 @@ def test_notion_search_fills_a_page_of_the_object_type_it_filters_to(tmp_path, m
     ],
 )
 def test_notion_search_starts_at_a_database_by_the_ids_its_version_reads(
-    tmp_path, version, by, starts
+    paging_corpus, version, by, starts
 ):
     """Real's search starts at a database named by the id each version lists it under, and under
     2022-06-28 by its data source's too."""
     db, ds = synth.notion_id("np-db"), synth.notion_data_source_id("np-db")
     listed = ds if version == DATA_SOURCES_VERSION else db
-    with corpus_client(tmp_path, _PAGING_RECORDS) as (client, settings):
+    settings = paging_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}", "Notion-Version": version}
         body = {"start_cursor": db if by == "database" else ds, "page_size": 1}
         r = client.post("/notion/v1/search", json=body, headers=h)
@@ -4432,26 +4476,27 @@ def test_notion_search_starts_at_a_database_by_the_ids_its_version_reads(
             assert r.status_code == 400 and r.json()["message"].endswith(db)
 
 
-@pytest.mark.parametrize(
-    "text, every",
-    [
-        # a `query` of each, and whether real answered every result or none
-        ("\n", True),
-        ("\t", True),
-        (" ", True),
-        ("\u00a0", True),
-        ("\u3000", True),
-        ("\u2028", True),
-        ("\ufeff", True),
-        ("\x1c", False),
-        ("\x85", False),
-        ("\u200b", False),
-    ],
-)
-def test_notion_search_trims_its_query_as_javascript_does(client, notion_h, text, every):
+_JS_TRIMMED = [
+    # a `query` of each, and whether real answered every result or none
+    ("\n", True),
+    ("\t", True),
+    (" ", True),
+    ("\u00a0", True),
+    ("\u3000", True),
+    ("\u2028", True),
+    ("\ufeff", True),
+    ("\x1c", False),
+    ("\x85", False),
+    ("\u200b", False),
+]
+
+
+def test_notion_search_trims_its_query_as_javascript_does(client, notion_h):
     """A `query` of nothing but what JavaScript trims (``notion_request.JS_SPACE``) is no query
     at all, and anything else is searched for, which finds nothing here."""
     everything = client.post("/notion/v1/search", json={}, headers=notion_h).json()["results"]
-    r = client.post("/notion/v1/search", json={"query": text}, headers=notion_h)
-    assert r.status_code == 200, r.text
-    assert r.json()["results"] == (everything if every else [])
+    answered = {}
+    for text, _ in _JS_TRIMMED:
+        r = client.post("/notion/v1/search", json={"query": text}, headers=notion_h)
+        answered[text] = (r.status_code, r.json().get("results"))
+    assert answered == {text: (200, everything if every else []) for text, every in _JS_TRIMMED}

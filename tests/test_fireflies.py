@@ -1137,46 +1137,71 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
     """Each query names nothing its caller can read and draws the bytes real answered it with:
     `data` null beside the error ``_not_in_team`` or ``_object_not_found`` builds, its
     `correlationId` eight letters and digits. A transcript the caller cannot see draws what one that
-    does not exist draws, and `hana@acme.com`, who can see it, reads it."""
+    does not exist draws, and `hana@acme.com`, who can see it, reads it. An id the caller can read
+    with a lone surrogate after it, sent as a variable, names nothing too
+    (`backlot.graphql.node_utf8`)."""
     import re
 
-    not_in_team = (
-        '{"errors":[{"friendly":true,"message":"You do not have permissions for this team",'
-        '"locations":[{"line":1,"column":3}],"path":["user"],"code":"not_in_team",'
-        '"extensions":{"code":"not_in_team","correlationId":"<8>","status":403,"helpUrls":'
-        '["https://docs.fireflies.ai/miscellaneous/error-codes#not_in_team"]}}],'
-        '"data":{"user":null}}\n'
-    )
-    object_not_found = (
-        '{"errors":[{"friendly":true,"message":"Transcript not found",'
-        '"locations":[{"line":1,"column":3}],"path":["transcript"],"code":"object_not_found",'
-        '"extensions":{"code":"object_not_found","correlationId":"<8>","status":404,'
-        '"metadata":{"objectType":"Transcript"},"helpUrls":'
-        '["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"]}}],'
-        '"data":{"transcript":null}}\n'
-    )
+    def not_in_team(column=3):
+        return (
+            '{"errors":[{"friendly":true,"message":"You do not have permissions for this team",'
+            '"locations":[{"line":1,"column":%d}],"path":["user"],"code":"not_in_team",'
+            '"extensions":{"code":"not_in_team","correlationId":"<8>","status":403,"helpUrls":'
+            '["https://docs.fireflies.ai/miscellaneous/error-codes#not_in_team"]}}],'
+            '"data":{"user":null}}\n' % column
+        )
+
+    def object_not_found(column=3):
+        return (
+            '{"errors":[{"friendly":true,"message":"Transcript not found",'
+            '"locations":[{"line":1,"column":%d}],"path":["transcript"],"code":"object_not_found",'
+            '"extensions":{"code":"object_not_found","correlationId":"<8>","status":404,'
+            '"metadata":{"objectType":"Transcript"},"helpUrls":'
+            '["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"]}}],'
+            '"data":{"transcript":null}}\n' % column
+        )
+
     tokens = {u["email"]: u["token"] for u in tokens_yaml["users"]}
     listing = "{ transcripts(limit: 50) { id } }"
     every = ff_gql(client, listing, admin_h).json()["data"]["transcripts"]
     ava_h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
     seen = ff_gql(client, listing, ava_h).json()["data"]["transcripts"]
     (hidden,) = {t["id"] for t in every} - {t["id"] for t in seen}
+    me = ff_gql(client, "{ user { user_id } }", ava_h).json()["data"]["user"]["user_id"]
     wanted = {
-        ("ava@acme.com", '{ user(id: "nope") { user_id } }'): not_in_team,
-        ("ava@acme.com", '{ user(id: " ") { user_id } }'): not_in_team,
-        ("ava@acme.com", '{ user(id: "nobody@example.com") { user_id } }'): not_in_team,
-        ("ava@acme.com", '{ user(id: "ava@acme.com") { user_id } }'): not_in_team,
-        ("ava@acme.com", '{ transcript(id: "nope") { id } }'): object_not_found,
-        ("ava@acme.com", '{ transcript(id: "%s") { id } }' % hidden): object_not_found,
-        ("hana@acme.com", '{ transcript(id: "%s") { id } }' % hidden): (
+        ("ava@acme.com", '{ user(id: "nope") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: " ") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: "nobody@example.com") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: "ava@acme.com") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ transcript(id: "nope") { id } }', None): object_not_found(),
+        ("ava@acme.com", '{ transcript(id: "%s") { id } }' % hidden, None): object_not_found(),
+        ("hana@acme.com", '{ transcript(id: "%s") { id } }' % hidden, None): (
             '{"data":{"transcript":{"id":"%s"}}}\n' % hidden
         ),
+        (
+            "ava@acme.com",
+            "query($x: String) { user(id: $x) { user_id } }",
+            me + "\ud800",
+        ): not_in_team(21),
+        (
+            "ava@acme.com",
+            "query($x: String!) { transcript(id: $x) { id } }",
+            seen[0]["id"] + "\ud800",
+        ): object_not_found(22),
     }
     answered = {}
-    for caller, query in wanted:
-        r = ff_gql(client, query, {"Authorization": f"Bearer {tokens[caller]}"})
+    for caller, query, x in wanted:
+        body = {"query": query} if x is None else {"query": query, "variables": {"x": x}}
+        r = client.post(
+            "/fireflies/graphql",
+            content=json.dumps(body).encode(),
+            headers={
+                "Authorization": f"Bearer {tokens[caller]}",
+                "Content-Type": "application/json",
+            },
+        )
         assert r.status_code == 200, query
-        answered[caller, query] = re.sub(
+        answered[caller, query, x] = re.sub(
             r'"correlationId":"[A-Za-z0-9]{8}"', '"correlationId":"<8>"', r.text
         )
     assert answered == wanted
@@ -1301,39 +1326,6 @@ FIREFLIES_CORPUS = [
 def fireflies_corpus(tmp_path_factory):
     """FIREFLIES_CORPUS built."""
     return tiny_corpus(tmp_path_factory.mktemp("fireflies_corpus"), FIREFLIES_CORPUS)
-
-
-# Each document with a held id before the surrogate (`backlot.graphql.node_utf8`), compared with
-# U+FFFD in its place: the answer to an id that names nothing is Backlot's own here.
-_LONE_SURROGATE_DOCUMENTS = [
-    pytest.param(
-        "query($x: String!) { transcript(id: $x) { id } }", "{transcript}", id="transcript"
-    ),
-    pytest.param("query($x: String) { user(id: $x) { user_id } }", "{user}", id="user"),
-]
-
-
-def test_fireflies_answers_a_lone_surrogate_as_it_answers_u_fffd(client, admin_h):
-    def sent(query, value):
-        body = json.dumps({"query": query, "variables": {"x": value}}).encode()
-        headers = {**admin_h, "Content-Type": "application/json"}
-        r = client.post("/fireflies/graphql", content=body, headers=headers)
-        return r.status_code, r.content
-
-    held = {
-        "transcript": ff_gql(client, "{ transcripts(limit: 1) { id } }", admin_h).json()["data"][
-            "transcripts"
-        ][0]["id"],
-        "user": ff_gql(client, "{ users { user_id } }", admin_h).json()["data"]["users"][0][
-            "user_id"
-        ],
-    }
-    answered, expected = {}, {}
-    for row in _LONE_SURROGATE_DOCUMENTS:
-        query, value = row.values
-        answered[row.id] = sent(query, value.format(**held) + "\ud800")
-        expected[row.id] = sent(query, value.format(**held) + "\ufffd")
-    assert answered == expected
 
 
 def _ff(client, settings, query, **variables):

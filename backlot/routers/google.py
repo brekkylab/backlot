@@ -153,6 +153,9 @@ class _BatchOuter(NamedTuple):
 # ``httpx.ASGITransport`` runs the app in the task that `batch` dispatches from, so the routes a
 # part reaches see what `batch` set.
 _BATCH_OUTER: ContextVar[_BatchOuter | None] = ContextVar("google_batch_outer", default=None)
+# The service account an admin/service caller stands for, which `_require` sets: what it creates
+# is its own (`routers.google_sheets._sheets_creator`, `_drive_owned_by`).
+_ADMIN_OWNER: ContextVar[str | None] = ContextVar("google_admin_owner", default=None)
 
 
 def _batch_part_downloads(method: str, target: str) -> bool:
@@ -433,6 +436,8 @@ def _require(request: Request, *, download: bool = False) -> Caller:
     caller = auth.acl(request).resolve(token) if token is not None else None
     if caller is None:
         raise gerr.bad_token(named=token is not None)
+    if caller.email is None:
+        _ADMIN_OWNER.set(_service_email(request))
     return caller
 
 
@@ -2698,10 +2703,10 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
         return value in f["parents"]
     if field == "owners":
         # `me` is the reference's alias for the caller (`'me' in owners`), resolved through the
-        # identity `sharedWithMe` reads: the admin token is not a Drive user and owns nothing.
+        # identity `sharedWithMe` reads (`_drive_owned_by`).
         who = value.strip().lower()
         if who == "me":
-            return bool(me) and me.lower() in f["owners"]
+            return any(_drive_owned_by(owner, me) for owner in f["owners"])
         return who in f["owners"]
     raise AssertionError(f"unevaluated q term {field!r}")  # every field the parser admits is above
 
@@ -2760,10 +2765,12 @@ def _drive_roots(me: str | None) -> set[str]:
 
 def _drive_owned_by(owner_email: str | None, me: str | None) -> bool:
     """Whether the caller owns this file. The admin/service token is not a Drive user (its
-    ``caller.email`` is None), so it owns nothing — for it, everything reads as shared. ASCII
-    letters fold, as SQLite's ``lower()`` folds them in the trash rule `_drive_listed_trash`
-    hands the store, so a listing and ``ownedByMe`` agree on whose a file is."""
-    return bool(me) and _ascii_lower(owner_email or "") == _ascii_lower(me)
+    ``caller.email`` is None): it owns what the service account it stands for created
+    (`_ADMIN_OWNER`), and every other file reads as shared to it. ASCII letters fold, as SQLite's
+    ``lower()`` folds them in the trash rule `_drive_listed_trash` hands the store, so a listing
+    and ``ownedByMe`` agree on whose a file is."""
+    who = me or _ADMIN_OWNER.get()
+    return bool(who) and _ascii_lower(owner_email or "") == _ascii_lower(who)
 
 
 def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) -> dict:
@@ -3819,7 +3826,7 @@ async def drive_about(request: Request):
     used, trashed = store.drive_usage_bytes(conn, ids)
     about = {
         "kind": "drive#about",
-        "user": _drive_user(email) | {"me": True},  # `about.user` IS the caller
+        "user": _drive_user(email, True),  # `about.user` IS the caller
         "storageQuota": {
             "limit": str(_DRIVE_STORAGE_LIMIT),
             # `usage` spans every Google service; Backlot stores nothing outside Drive, so the two
@@ -4487,12 +4494,14 @@ def _native(row):
     return _NATIVE.get(row["subtype"] or store.DRIVE_DEFAULT_SUBTYPE)
 
 
-def _drive_user(email: str) -> dict:
+def _drive_user(email: str, me: bool = False) -> dict:
+    """A `User`, ``me`` when it is the caller: measured 2026-10-27, the owner reading its own file
+    gets ``me: true`` on ``owners[]`` and on ``lastModifyingUser``."""
     return {
         "kind": "drive#user",
         "displayName": email.split("@")[0].replace(".", " ").title(),
         "emailAddress": email,
-        "me": False,
+        "me": me,
         "permissionId": str(synth.github_user_id(email)),
         "photoLink": synth.github_avatar(synth.github_user_id(email)),
     }
@@ -4594,6 +4603,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     if shared is None:
         shared = bool(store.gdrive_shared(conn, [row["id"]]))
     ext = row["title"].rsplit(".", 1)[-1] if (native is None and "." in row["title"]) else None
+    owned = _drive_owned_by(author, me)
     f = {
         "kind": "drive#file",
         "id": row["id"],
@@ -4602,21 +4612,21 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
         "createdTime": synth.rfc3339(created),
         "modifiedTime": synth.rfc3339(modified),
-        "owners": [_drive_user(author)],
-        "lastModifyingUser": _drive_user(author),
+        "owners": [_drive_user(author, owned)],
+        "lastModifyingUser": _drive_user(author, owned),
         "trashed": bool(row["trashed"]),
         "explicitlyTrashed": bool(row["trashed"]),
         "starred": False,
         "shared": bool(shared),
         "viewedByMe": False,
-        "ownedByMe": _drive_owned_by(author, me),
+        "ownedByMe": owned,
         **_modified_by_me(author, me, modified),
         **_shared_with_me_time(author, me, created),
         "version": str(2 if row["updated_ts"] else 1),
         "spaces": ["drive"],
         "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
-        "capabilities": _drive_file_capabilities(is_folder, _drive_owned_by(author, me)),
+        "capabilities": _drive_file_capabilities(is_folder, owned),
     }
     # Per Google's reference, `size` "is populated for files with binary content stored in Google
     # Drive AND for Docs Editors files; it is not populated for shortcuts or folders" — so a native

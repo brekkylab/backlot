@@ -6474,15 +6474,22 @@ def test_drive_about_needs_auth(client):
 
 
 def test_drive_about_user_is_the_caller(client, tokens_yaml):
-    """`about.user` is the authenticated user, so `me` is true — the opposite of the same object
-    read as a file's `owners` entry, where it describes someone else."""
+    """`about.user` is the authenticated user, so `me` is true, and so is a file's `owners` entry
+    and `lastModifyingUser` when the caller owns it (`routers.google._drive_user`)."""
     mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
     u = _about(client, mia, "user").json()["user"]
     assert u["kind"] == "drive#user"
     assert u["emailAddress"] == "mia@acme.com"
     assert u["me"] is True
-    # the file resource keeps its own answer: mia as an owner is not "me" to the object itself
-    assert _drive_find(client, mia, "Brand")["owners"][0]["me"] is False
+    files = client.get(
+        "/drive/v3/files",
+        headers=mia,
+        params={"fields": "files(ownedByMe,owners(me),lastModifyingUser(me))", "pageSize": 100},
+    ).json()["files"]
+    files = [f for f in files if "owners" in f]  # a folder here has no owner
+    assert {f["ownedByMe"] for f in files} == {True, False}
+    for f in files:
+        assert f["owners"][0]["me"] is f["lastModifyingUser"]["me"] is f["ownedByMe"]
 
 
 def test_drive_about_admin_token_reports_a_concrete_address(client, admin_h):
@@ -9908,6 +9915,10 @@ _TODAY = datetime.date(2026, 10, 26)
         ("-1:00", -0.041666666666666664, "-1:00:00", "[h]:mm:ss"),
         ("2024-01-15T10:30", 45306.4375, "2024-01-15 10:30", "yyyy-mm-dd h:mm"),
         ("1/15/2024 10:30 PM", 45306.9375, "1/15/2024 10:30 PM", "m/d/yyyy h:mm am/pm"),
+        ("1/15/2024  10:30", 45306.4375, "1/15/2024 10:30", "m/d/yyyy h:mm"),
+        ("-\t5", -5, "-5", None),
+        ("$\n5", 5, "$5", '"$"#,##0'),
+        ("5\t$", 5, "5$", '#,##0"$"'),
         ("tRuE", True, "TRUE", None),
         ("'0123", "0123", "0123", None),
         ("''x", "'x", "'x", None),
@@ -9925,6 +9936,10 @@ _TODAY = datetime.date(2026, 10, 26)
         ("15/01/2024", "15/01/2024", "15/01/2024", None),
         ("2024.01.15", "2024.01.15", "2024.01.15", None),
         ("13:00 PM", "13:00 PM", "13:00 PM", None),
+        ("10:30\tPM", "10:30\tPM", "10:30\tPM", None),
+        ("1/15/2024\t10:30", "1/15/2024\t10:30", "1/15/2024\t10:30", None),
+        ("-\u00a05", "-\u00a05", "-\u00a05", None),
+        ("falſe", "falſe", "falſe", None),
         ("9:5", "9:5", "9:5", None),
         ("2024-01-15T10:30:15Z", "2024-01-15T10:30:15Z", "2024-01-15T10:30:15Z", None),
         (" =1+1", " =1+1", " =1+1", None),
@@ -12091,6 +12106,22 @@ def test_a_fields_mask_may_now_name_the_cell_format(gc, gh, book):
     assert r.json()["sheets"][0]["data"][0]["rowData"][0]["values"][0] == {
         "effectiveFormat": {"horizontalAlignment": "LEFT"}
     }
+    # a cell's format the mask leaves holding nothing is left out, an empty value kept
+    for mask, cell in [
+        (
+            "values(userEnteredValue,effectiveFormat.numberFormat,effectiveValue.boolValue)",
+            ["userEnteredValue", "effectiveValue"],
+        ),
+        ("values(userEnteredValue,effectiveFormat.textFormat.link)", ["userEnteredValue"]),
+        ("values(userEnteredFormat.numberFormat,effectiveFormat.numberFormat)", None),
+    ]:
+        r = gc.get(
+            f"/sheets/v4/spreadsheets/{book}",
+            headers=gh,
+            params={"ranges": "Summary!A1:A1", "fields": f"sheets.data.rowData.{mask}"},
+        )
+        block = r.json()["sheets"][0]["data"][0]
+        assert (list(block["rowData"][0]["values"][0]) if cell else block) == (cell or {}), mask
 
 
 def test_the_spreadsheet_carries_the_default_format_and_theme_a_fresh_one_has(gc, gh, book):
@@ -13185,7 +13216,7 @@ def test_a_write_of_nothing_answers_its_first_cell_and_changes_nothing(wc, wh, w
 
 def test_a_single_cell_is_an_anchor_that_grows_the_grid(wc, wh, wbook):
     """Measured: a block from `Y1` three wide writes `Y1:AA1` and the sheet becomes 27 columns
-    wide; only an anchor itself past the edge is refused."""
+    wide; only an anchor itself past the edge is refused. A bound past the edge grows it too."""
     h = wh[_OWNER]
     r = wc.put(
         f"{wbook}/values/Data!Y1", headers=h, params=_RAW, json={"values": [["x", "y", "z"]]}
@@ -13198,6 +13229,12 @@ def test_a_single_cell_is_an_anchor_that_grows_the_grid(wc, wh, wbook):
     assert r.json()["error"]["message"] == (
         "Range (Data!AC1) exceeds grid limits. Max rows: 1000, max columns: 27"
     )
+    r = wc.put(
+        f"{wbook}/values/Data!Y999:AB999", headers=h, params=_RAW, json={"values": [list("wxyz")]}
+    )
+    assert r.json()["updatedRange"] == "Data!Y999:AB999"
+    grid = wc.get(wbook, headers=h).json()["sheets"][0]["properties"]["gridProperties"]
+    assert grid == {"rowCount": 1000, "columnCount": 28}
 
 
 @pytest.mark.parametrize(
@@ -13212,6 +13249,17 @@ def test_a_single_cell_is_an_anchor_that_grows_the_grid(wc, wh, wbook):
             "Data!A7:A7",
             {"values": [["x", "y"]]},
             "Requested writing within range [Data!A7], but tried writing to column [B]",
+        ),
+        # a bound is the range as sent, past the grid's edge too; only its start must be inside
+        (
+            "Data!Z999:Z1001",
+            {"values": [["a"], ["b"], ["c"], ["d"]]},
+            "Requested writing within range [Data!Z999:Z1001], but tried writing to row [1002]",
+        ),
+        (
+            "Data!Z1001:Z1002",
+            {"values": [["x"]]},
+            "Range (Data!Z1001:Z1002) exceeds grid limits. Max rows: 1000, max columns: 26",
         ),
         ("Nope!A1", {"values": [["x"]]}, "Unable to parse range: Nope!A1"),
         (
@@ -13230,6 +13278,19 @@ def test_a_single_cell_is_an_anchor_that_grows_the_grid(wc, wh, wbook):
             {"values": [[[1, 2]]]},
             "Invalid values[2][0]: list_value \t {\n  values {\n    number_value: 1.0\n  }\n"
             "  values {\n    number_value: 2.0\n  }\n}\n",
+        ),
+        # under COLUMNS a list is a column, indexed from the range's start column
+        (
+            "Data!U950",
+            {"majorDimension": "COLUMNS", "values": [["a"], ["b"], [{"x": 1}]]},
+            'Invalid values[22][0]: struct_value \t {\n  fields {\n    key: "x"\n    value {\n'
+            "      number_value: 1.0\n    }\n  }\n}\n",
+        ),
+        (
+            "Data!Z950",
+            {"majorDimension": "COLUMNS", "values": [["a", {"x": 1}]]},
+            'Invalid values[25][1]: struct_value \t {\n  fields {\n    key: "x"\n    value {\n'
+            "      number_value: 1.0\n    }\n  }\n}\n",
         ),
         (
             "Data!A1",
@@ -13317,6 +13378,26 @@ def test_a_write_real_refuses_is_refused_with_reals_message(wc, wh, wbook, rng, 
             "Invalid value at 'value_input_option' "
             '(type.googleapis.com/google.apps.sheets.v4.ValueInputOption), "BOGUS"',
         ),
+        # a refused body and a refused query are one 400, the body's first
+        (
+            "reader@acme.com",
+            "wr-book",
+            {**_RAW, "includeValuesInResponse": "on"},
+            {"values": "x"},
+            400,
+            "Invalid value at 'data.values' (type.googleapis.com/google.protobuf.ListValue), "
+            '"x"\nInvalid value at \'include_values_in_response\' (TYPE_BOOL), "on"',
+        ),
+        (
+            _OWNER,
+            "wr-book",
+            {"valueInputOption": "BOGUS"},
+            {"bogus": 1},
+            400,
+            "Invalid JSON payload received. Unknown name \"bogus\" at 'data': Cannot find field.\n"
+            "Invalid value at 'value_input_option' "
+            '(type.googleapis.com/google.apps.sheets.v4.ValueInputOption), "BOGUS"',
+        ),
     ],
 )
 def test_who_may_write_and_in_what_order_a_write_is_refused(
@@ -13342,6 +13423,10 @@ def test_who_may_write_and_in_what_order_a_write_is_refused(
         ("POST", "/values:batchClear", "BatchClearValues"),
         ("POST", "/values:batchGetByDataFilter", "BatchGetValuesByDataFilter"),
         ("POST", ":getByDataFilter", "GetSpreadsheetByDataFilter"),
+        # not served, and the same 401
+        ("POST", ":batchUpdate", "BatchUpdateSpreadsheet"),
+        ("POST", "/developerMetadata:search", "SearchDeveloperMetadata"),
+        ("GET", "/developerMetadata/5", "GetDeveloperMetadata"),
     ],
 )
 def test_a_sheets_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method, suffix, rpc):
@@ -13388,9 +13473,10 @@ def test_columns_writes_each_inner_list_down_a_column(wc, wh, wbook):
     assert _read_back(wc, wh[_OWNER], wbook, "Data!D1:E3") == [["d1", "e1"], ["d2"], ["d3"]]
 
 
-def test_updated_data_reads_back_the_request_range_not_the_updated_one(wc, wh, wbook):
+def test_updated_data_reads_back_a_bound_whole_and_an_anchor_as_written(wc, wh, wbook):
     """Measured: `[[null, "x"]]` over `A1:C2` updates `B1` alone and answers the whole request
-    range read back, cells the write left alone included, under the response render options."""
+    range read back, cells the write left alone included, under the response render options. An
+    anchor reads back its `updatedRange`, in a batch too."""
     r = wc.put(
         f"{wbook}/values/Data!A1:C2",
         headers=wh[_OWNER],
@@ -13407,6 +13493,22 @@ def test_updated_data_reads_back_the_request_range_not_the_updated_one(wc, wh, w
         "majorDimension": "ROWS",
         "values": [["region", 0.12], ["EMEA", 12]],
     }
+    echo = {**_RAW, "includeValuesInResponse": "true"}
+    for at, values, read in [
+        ("Data!A6", [list("abc")], ("Data!A6:C6", [list("abc")])),
+        ("Data!A81", [[None, "b"]], ("Data!A81:B81", [["", "b"]])),
+        ("Data!A80", [["a", None]], ("Data!A80", [["a"]])),
+    ]:
+        r = wc.put(f"{wbook}/values/{at}", headers=wh[_OWNER], params=echo, json={"values": values})
+        data = r.json()["updatedData"]
+        assert (data["range"], data["values"]) == read
+    r = wc.post(
+        f"{wbook}/values:batchUpdate",
+        headers=wh[_OWNER],
+        params=echo,
+        json={"data": [{"range": "Data!A86", "values": [["e", "f"]]}]},
+    )
+    assert r.json()["responses"][0]["updatedData"]["range"] == "Data!A86:B86"
 
 
 def test_a_prose_spreadsheet_takes_a_write_as_the_grid_it_reads_as(wc, wh, write_settings):
@@ -13489,6 +13591,11 @@ def test_a_batch_update_writes_every_entry_or_none(wc, wh, wbook):
     assert wc.post(path, headers=h, json={"valueInputOption": "RAW"}).json() == {
         "spreadsheetId": sid
     }
+    r = wc.post(path, headers=h, params={"includeValuesInResponse": "on"}, json={"bogus": 1})
+    assert r.json()["error"]["message"] == (
+        'Invalid JSON payload received. Unknown name "bogus": Cannot find field.\n'
+        "Invalid value at 'include_values_in_response' (TYPE_BOOL), \"on\""
+    )
 
 
 def test_a_clear_empties_the_values_and_keeps_the_formats(wc, wh, wbook):
@@ -13542,6 +13649,8 @@ def test_a_written_cell_carries_its_format_and_an_error_its_type(wc, wh, wbook):
         "horizontalAlignment": "RIGHT",
     }
     assert list(values[0]["effectiveFormat"])[:2] == ["numberFormat", "backgroundColor"]
+    for fmt in ("userEnteredFormat", "effectiveFormat"):
+        assert list(values[0][fmt]["numberFormat"]) == ["type", "pattern"]
     assert values[1]["effectiveValue"] == {"errorValue": {"type": "N_A"}}
     assert values[1]["effectiveFormat"]["horizontalAlignment"] == "CENTER"
     trimmed = {k: v for k, v in _CELL_FORMAT.items() if k != "hyperlinkDisplayType"}
@@ -13564,9 +13673,20 @@ def _layout(wc, h, wbook, cells):
 @pytest.mark.parametrize(
     "cells,rng,table,written",
     [
-        # measured: the first cell holding a value, column by column, starts the table
+        # measured: the last cell holding a value, row by row, starts the table
         ({"E5": "t", "F5": "u", "G1": "m"}, "Data!F1:G10", "Data!E5:F5", "Data!E6"),
         ({"A5": "t", "B5": "u"}, "Data!A1:A10", "Data!A5:B5", "Data!A6"),
+        (
+            {"A1": "Weekly log", "A3": "h", "B3": "i", "A4": "a", "B4": "b", "A5": "c", "B5": "d"},
+            "Data!A1:B100",
+            "Data!A3:B5",
+            "Data!A6",
+        ),
+        ({"A40": "a", "A41": "b", "C45": "c"}, "Data!A40:E49", "Data!C45", "Data!C46"),
+        ({"G44": "g", "I44": "i"}, "Data!G40:K49", "Data!I44", "Data!I45"),
+        ({"W40": "w", "X44": "x", "W46": "y"}, "Data!W40:X49", "Data!W46", "Data!W47"),
+        # and grows past the range, up as well as down
+        ({f"O{n}": "o" for n in range(40, 44)}, "Data!O42:O49", "Data!O40:O43", "Data!O44"),
         # it grows through a cell in the row or column next to it, never a diagonal one
         ({"A1": "a", "A2": "b", "B2": "c", "C1": "d"}, "Data!A1", "Data!A1:C2", "Data!A3"),
         ({"A1": "a", "B1": "b", "C2": "c"}, "Data!A1", "Data!A1:B1", "Data!A2"),
@@ -13675,6 +13795,19 @@ def test_insert_rows_moves_what_is_below_and_grows_the_grid(wc, wh, wbook):
             {"bogus": 1},
             "Invalid JSON payload received. Unknown name \"bogus\" at 'data': Cannot find field.",
         ),
+        # indexed as an update's, from where the values land: row 2 of the table's first column
+        (
+            _RAW,
+            {"majorDimension": "COLUMNS", "values": [["a"], ["b", {"x": 1}]]},
+            'Invalid values[1][1]: struct_value \t {\n  fields {\n    key: "x"\n    value {\n'
+            "      number_value: 1.0\n    }\n  }\n}\n",
+        ),
+        (
+            {**_RAW, "includeValuesInResponse": "on"},
+            {"values": "x"},
+            "Invalid value at 'data.values' (type.googleapis.com/google.protobuf.ListValue), "
+            '"x"\nInvalid value at \'include_values_in_response\' (TYPE_BOOL), "on"',
+        ),
     ],
 )
 def test_an_append_real_refuses_is_refused_with_reals_message(wc, wh, wbook, params, body, message):
@@ -13727,11 +13860,31 @@ def test_a_created_spreadsheet_is_its_creators_alone_at_their_root(wc, wh):
     assert wc.get(f"/sheets/v4/spreadsheets/{sid}", headers=other).status_code == 403
     assert wc.get(f"/drive/v3/files/{sid}", headers=other).status_code == 404
     assert _create(wc, h, {})["properties"]["title"] == "Untitled spreadsheet"
+    # the admin token owns what its service account creates, in Drive as in Sheets, and only that
+    admin = wh["admin"]
+    mine = _create(wc, admin, {})["spreadsheetId"]
+    fields = {"fields": "ownedByMe,shared,owners(me),capabilities(canEdit)"}
+    assert wc.get(f"/drive/v3/files/{mine}", headers=admin, params=fields).json() == {
+        "ownedByMe": True,
+        "shared": False,
+        "owners": [{"me": True}],
+        "capabilities": {"canEdit": True},
+    }
+    theirs = wc.get(f"/drive/v3/files/{sid}", headers=admin, params=fields).json()
+    assert (theirs["ownedByMe"], theirs["owners"], theirs["capabilities"]) == (
+        False,
+        [{"me": False}],
+        {"canEdit": False},
+    )
+    owned = wc.get("/drive/v3/files", headers=admin, params={"q": "'me' in owners"}).json()
+    assert [f["id"] for f in owned["files"]] == [mine]
+    path = f"/sheets/v4/spreadsheets/{mine}/values/A1"
+    assert wc.put(path, headers=admin, params=_RAW, json={"values": [["x"]]}).status_code == 200
 
 
 def test_a_created_spreadsheet_keeps_what_its_sheets_state(wc, wh):
     """Measured: stated sheets each get an id of their own unless they state one; the grid size,
-    `hidden`, `tabColor` (served with a `tabColorStyle`), `rightToLeft`, frozen rows and
+    `hidden`, the tab colour (as `_sheets_tab_color` keeps it), `rightToLeft`, frozen rows and
     `hideGridlines` are kept; `data` is stored though the answer carries no grid; the settings
     a request states are served back, a time zone that names none replaced by GMT. A write then
     meets the stated grid's edge."""
@@ -13747,7 +13900,8 @@ def test_a_created_spreadsheet_keeps_what_its_sheets_state(wc, wh):
                         "title": "G",
                         "sheetId": 42,
                         "gridProperties": {"rowCount": 5, "columnCount": 3, "frozenRowCount": 1},
-                        "tabColor": {"red": 1},
+                        "tabColor": {"blue": 1, "alpha": 0.5},
+                        "tabColorStyle": {"rgbColor": {"blue": 0.5, "red": 1}},
                     },
                     "data": [
                         {
@@ -13772,7 +13926,7 @@ def test_a_created_spreadsheet_keeps_what_its_sheets_state(wc, wh):
                     ],
                 },
                 {"properties": {"title": "H", "hidden": True}},
-                {},
+                {"properties": {"tabColorStyle": {"themeColor": "LINK"}}},
             ],
         },
     )
@@ -13784,24 +13938,52 @@ def test_a_created_spreadsheet_keeps_what_its_sheets_state(wc, wh):
         "index": 0,
         "sheetType": "GRID",
         "gridProperties": {"rowCount": 5, "columnCount": 3, "frozenRowCount": 1},
-        "tabColor": {"red": 1},
-        "tabColorStyle": {"rgbColor": {"red": 1}},
+        "tabColor": {"red": 1, "blue": 0.49803922},
+        "tabColorStyle": {"rgbColor": {"red": 1, "blue": 0.49803922}},
     }
     assert sheets[1]["hidden"] is True and sheets[1]["sheetId"] not in (0, 42)
     assert sheets[2]["title"] == "Sheet1"
+    assert (sheets[2]["tabColor"], sheets[2]["tabColorStyle"]) == (
+        {"red": 0.06666667, "green": 0.33333334, "blue": 0.8},
+        {"themeColor": "LINK"},
+    )
     assert "data" not in book["sheets"][0]
     assert (book["properties"]["timeZone"], book["properties"]["autoRecalc"]) == (
         "Asia/Seoul",
         "HOUR",
     )
     path = f"/sheets/v4/spreadsheets/{sid}"
+    read = wc.get(path, headers=h, params={"fields": "sheets.properties.tabColor"}).json()
+    assert list(read["sheets"][0]["properties"]["tabColor"]) == ["red", "blue"]
     assert _read_back(wc, h, path, "G!A1:B2") == [[], ["hi", "12.50%"]]
     r = wc.put(f"{path}/values/G!D1", headers=h, params=_RAW, json={"values": [["x"]]})
     assert r.json()["error"]["message"] == (
         "Range (G!D1) exceeds grid limits. Max rows: 5, max columns: 3"
     )
-    bad_zone = _create(wc, h, {"properties": {"timeZone": "Mars/Base"}})
-    assert bad_zone["properties"]["timeZone"] == "Etc/GMT"
+    # a time zone is served by its CLDR name, an offset as Etc/Unknown, and the rest as Etc/GMT
+    for zone, served in [
+        ("UTC", "Etc/UTC"),
+        ("US/Pacific", "America/Los_Angeles"),
+        ("EST", "America/Panama"),
+        ("Asia/Kolkata", "Asia/Calcutta"),
+        ("Etc/GMT-9", "Etc/GMT-9"),
+        ("GMT+09:00", "Etc/Unknown"),
+        ("GMT+0900", "Etc/GMT"),
+        ("Factory", "Etc/GMT"),
+        ("asia/seoul", "Etc/GMT"),
+        ("Mars/Base", "Etc/GMT"),
+    ]:
+        made = _create(wc, h, {"properties": {"timeZone": zone}})
+        assert made["properties"]["timeZone"] == served, zone
+        # a typed date takes its year in the zone, `Etc/Unknown`'s too
+        at = f"/sheets/v4/spreadsheets/{made['spreadsheetId']}/values/A1"
+        assert (
+            wc.put(at, headers=h, params=_ENTERED, json={"values": [["1/15"]]}).status_code == 200
+        )
+    # titles whose case mapping changes their length do not collide
+    for pair in (("Straße", "STRASSE"), ("ﬁle", "FILE"), ("İ", "i̇")):
+        made = _create(wc, h, {"sheets": [{"properties": {"title": t}} for t in pair]})
+        assert [x["properties"]["title"] for x in made["sheets"]] == list(pair)
 
 
 @pytest.mark.parametrize(
@@ -13919,6 +14101,53 @@ def test_a_created_spreadsheet_keeps_what_its_sheets_state(wc, wh):
             },
             "Invalid sheets[0].data[0]: GridCoordinate.rowIndex[3] is after last row in grid[1]",
         ),
+        # a block starting inside the grid and running past it says what it attempted
+        (
+            {
+                "sheets": [
+                    {
+                        "properties": {"gridProperties": {"rowCount": 2}},
+                        "data": [
+                            {
+                                "rowData": [
+                                    {"values": [{"userEnteredValue": {"stringValue": "x"}}]}
+                                ]
+                                * 3
+                            }
+                        ],
+                    }
+                ]
+            },
+            "Invalid sheets[0].data[0]: Attempting to write row: 2, beyond the last requested row "
+            "of: 1",
+        ),
+        (
+            {
+                "sheets": [
+                    {
+                        "properties": {"gridProperties": {"columnCount": 2}},
+                        "data": [
+                            {
+                                "rowData": [
+                                    {"values": [{"userEnteredValue": {"stringValue": "x"}}] * 3}
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            },
+            "Invalid sheets[0].data[0]: Attempting to write column: 2, beyond the last requested "
+            "column of: 1",
+        ),
+        # titles collide as Java's equalsIgnoreCase compares them
+        (
+            {"sheets": [{"properties": {"title": "ſheet"}}, {"properties": {"title": "Sheet"}}]},
+            'Invalid sheets[1]: A sheet with the name "Sheet" already exists. Please enter another name.',
+        ),
+        (
+            {"sheets": [{"properties": {"title": "ς"}}, {"properties": {"title": "σ"}}]},
+            'Invalid sheets[1]: A sheet with the name "σ" already exists. Please enter another name.',
+        ),
     ],
 )
 def test_a_create_real_refuses_is_refused_with_reals_message(wc, wh, body, message):
@@ -13969,6 +14198,89 @@ def test_copy_to_adds_a_copy_named_in_the_destinations_language(wc, wh, wbook):
     assert missing.json()["error"]["message"] == "The sheet (9) does not exist."
 
 
+def _grid(r0, r1, c0, c1):
+    return {
+        "gridRange": {
+            "sheetId": 0,
+            "startRowIndex": r0,
+            "endRowIndex": r1,
+            "startColumnIndex": c0,
+            "endColumnIndex": c1,
+        }
+    }
+
+
+_FIT = "Invalid dataFilterValueRange[1]: dataFilterValueRange.dataFilter matched range"
+# (filter, majorDimension, values, refusal), as `routers.google_sheets._sheets_filter_fit` records
+# them
+_FIT_REFUSALS = [
+    # more lists than the match has rows, or a list wider than it, under ROWS
+    (
+        _grid(6, 7, 0, 2),
+        "ROWS",
+        [["x"], ["y"]],
+        f"{_FIT} Data!$A$7:$B$7 whose rows cannot fit the data described in data.values.",
+    ),
+    (
+        _grid(6, 7, 0, 2),
+        "ROWS",
+        [list("abc")],
+        f"{_FIT} Data!$A$7:$B$7 whose columns cannot fit the data described in data.values[0].",
+    ),
+    # the other way round under COLUMNS
+    (
+        _grid(6, 7, 0, 2),
+        "COLUMNS",
+        [["x"], ["y"], ["z"]],
+        f"{_FIT} Data!$A$7:$B$7 whose columns cannot fit the data described in data.values.",
+    ),
+    (
+        _grid(6, 7, 0, 2),
+        "COLUMNS",
+        [["x"], ["y", "z"]],
+        f"{_FIT} Data!$A$7:$B$7 whose rows cannot fit the data described in data.values[1].",
+    ),
+    # unspecified is checked as COLUMNS is, then written by rows against the match
+    (
+        {"a1Range": "Data!A7"},
+        None,
+        [["x"], ["y"]],
+        f"{_FIT} Data!$A$7 whose dimension_unspecified cannot fit the data described in data.values.",
+    ),
+    (
+        _grid(6, 7, 0, 2),
+        None,
+        [["x", "y"]],
+        f"{_FIT} Data!$A$7:$B$7 whose rows cannot fit the data described in data.values[0].",
+    ),
+    (
+        _grid(6, 7, 0, 2),
+        None,
+        [["x"], ["y"]],
+        "Invalid dataFilterValueRange[1]: Requested writing within range [Data!A7:B7], but tried writing to row [8]",
+    ),
+    # an empty grid range fits nothing, and with no values cannot be parsed
+    (
+        _grid(949, 949, 25, 26),
+        None,
+        [["x"]],
+        f"{_FIT} #REF! whose rows cannot fit the data described in data.values[0].",
+    ),
+    (
+        _grid(949, 950, 25, 25),
+        "COLUMNS",
+        [["x"]],
+        f"{_FIT} #REF! whose columns cannot fit the data described in data.values.",
+    ),
+    (
+        _grid(949, 949, 25, 26),
+        None,
+        None,
+        "Invalid dataFilterValueRange[1]: Unable to parse range: #REF!",
+    ),
+]
+
+
 def test_a_data_filter_write_is_bounded_by_what_the_filter_matches(wc, wh, wbook):
     """Measured: a matched range is a bound even when it is one cell, a developer metadata lookup
     leaves no entry, and each entry echoes its filter with no `spreadsheetId`."""
@@ -13980,7 +14292,7 @@ def test_a_data_filter_write_is_bounded_by_what_the_filter_matches(wc, wh, wbook
         json={
             "valueInputOption": "RAW",
             "data": [
-                {"dataFilter": {"a1Range": "Data!A3:B3"}, "values": [["x", "y"]]},
+                {"dataFilter": {"a1Range": "Data!A3:B4"}, "values": [["x", "y"]]},
                 {
                     "dataFilter": {"developerMetadataLookup": {"metadataKey": "k"}},
                     "values": [["m"]],
@@ -13994,7 +14306,7 @@ def test_a_data_filter_write_is_bounded_by_what_the_filter_matches(wc, wh, wbook
             "updatedRows": 1,
             "updatedColumns": 2,
             "updatedCells": 2,
-            "dataFilter": {"a1Range": "Data!A3:B3"},
+            "dataFilter": {"a1Range": "Data!A3:B4"},
         }
     ]
     over = {"gridRange": {"sheetId": 0, "startRowIndex": 6, "endRowIndex": 7, "endColumnIndex": 1}}
@@ -14018,12 +14330,31 @@ def test_a_data_filter_write_is_bounded_by_what_the_filter_matches(wc, wh, wbook
     assert r.json()["error"]["message"] == (
         "Invalid dataFilterValueRange[0]: dataFilterValueRange.filter is required but not specified."
     )
+    # a refused entry refuses the good one before it
+    good = {"dataFilter": {"a1Range": "Data!A5"}, "values": [["kept out"]]}
+    for data_filter, major, values, message in _FIT_REFUSALS:
+        entry = {"dataFilter": data_filter}
+        entry.update({"values": values} if values is not None else {})
+        entry.update({"majorDimension": major} if major else {})
+        body = {"valueInputOption": "RAW", "data": [good, entry]}
+        r = wc.post(path, headers=h, json=body)
+        assert r.json()["error"]["message"] == message, (data_filter, major, values)
+    assert _read_back(wc, h, wbook, "Data!A5") is None
+    clear = f"{wbook}/values:batchClearByDataFilter"
+    r = wc.post(clear, headers=h, json={"dataFilters": [_grid(949, 950, 25, 25)]})
+    assert r.json()["clearedRanges"] == ["(empty) Data!Z950:Y950"]
     r = wc.post(
-        f"{wbook}/values:batchClearByDataFilter",
+        clear,
         headers=h,
-        json={"dataFilters": [{"a1Range": "Data!A3"}, {"gridRange": {"sheetId": 0}}]},
+        json={
+            "dataFilters": [
+                {"a1Range": "Data!A3"},
+                _grid(949, 949, 25, 26),
+                {"gridRange": {"sheetId": 0}},
+            ]
+        },
     )
-    assert r.json()["clearedRanges"] == ["Data!A3", "Data!A1:Z1000"]
+    assert r.json()["clearedRanges"] == ["Data!A3", "(empty) Data!Z950:Z949", "Data!A1:Z1000"]
     assert _read_back(wc, h, wbook, "Data!A1:B3") is None
 
 

@@ -585,7 +585,8 @@ _UNREGISTERED_CALLER_OPERATIONS = tuple(
 
 
 # The RPC each operation's missing-credential 401 names, by its HTTP method and path, measured
-# 2026-10-26 on `sheets.googleapis.com`.
+# 2026-10-26 on `sheets.googleapis.com`, and on 2026-10-27 for the last three, which are not served
+# and answer this 401 all the same.
 _SHEETS_RPC = "google.apps.sheets.v4.SpreadsheetsService"
 _RPC_METHODS = tuple(
     (method, re.compile(pattern), (f"{_SHEETS_RPC}.{name}", "sheets.googleapis.com"))
@@ -617,6 +618,17 @@ _RPC_METHODS = tuple(
             "BatchGetValuesByDataFilter",
         ),
         ("POST", r"/sheets/v4/spreadsheets/[^/]+:getByDataFilter", "GetSpreadsheetByDataFilter"),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+:batchUpdate", "BatchUpdateSpreadsheet"),
+        (
+            "POST",
+            r"/sheets/v4/spreadsheets/[^/]+/developerMetadata:search",
+            "SearchDeveloperMetadata",
+        ),
+        (
+            "GET",
+            r"/sheets/v4/spreadsheets/[^/]+/developerMetadata/[^/]+",
+            "GetDeveloperMetadata",
+        ),
     )
 )
 

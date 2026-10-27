@@ -1056,13 +1056,14 @@ def _sheets_pairing_errors(rec: dict) -> list[str]:
                         f"sheets[{i}].grid[{r}][{c}]: {cell} is not a number JSON can carry "
                         "(RFC 8259 has no Infinity or NaN literal)"
                     )
-    first: dict[str, int] = {}
+    seen: list[tuple[int, str]] = []
     for i, sheet in enumerate(sheets):
         if not isinstance(sheet, dict):
             continue
         title = _sheet_title(sheet, i)
-        prior = first.setdefault(title.casefold(), i)
-        if prior != i:
+        prior = next((j for j, t in seen if gsheets.same_title(t, title)), None)
+        seen.append((i, title))
+        if prior is not None:
             msgs.append(
                 f"sheets[{i}]: duplicate sheet title {title!r} (sheets[{prior}] has it too, and "
                 "the real API compares them case-insensitively)"

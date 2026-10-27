@@ -177,7 +177,9 @@ def _fresh(request: Request, etag: str | None) -> bool:
     ``request``: an `If-None-Match` of `*`, or one naming ``etag``, weakly or not, and no
     `no-cache` in the request's `Cache-Control`. api.linear.app answered `GET /graphql` and the
     greeting so on 2026-10-26 (UTC), with the 304 counted against the budget, and a `POST` naming
-    the `ETag` with the 200."""
+    the `ETag` with the 200. A list is split at its commas and each tag stripped of spaces
+    alone, as ``fresh``'s ``parseTokenList`` reads it: api.linear.app answered the `ETag` after
+    `"x",` and a tab or U+00A0, or before a tab and `, "x"`, with the 200 on 2026-10-27 (UTC)."""
     none_match = request.headers.get("if-none-match")
     if not none_match:
         return False
@@ -187,7 +189,7 @@ def _fresh(request: Request, etag: str | None) -> bool:
         return True
     return any(
         match in (etag, f"W/{etag}") or f"W/{match}" == etag
-        for match in (part.strip() for part in none_match.split(","))
+        for match in (part.strip(" ") for part in none_match.split(","))
     )
 
 

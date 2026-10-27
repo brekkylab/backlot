@@ -1127,7 +1127,7 @@ def resolve_search_issues(
     :func:`_search_backend_failed` only once the arguments passed: beside one, a ``teamId`` or
     filter ``id`` that is not a UUID, a ``first`` of 0, ``first`` with ``last`` and an ``after``
     that is no cursor were each `Argument Validation Error`, so the term is checked for one after
-    :func:`_slice` and the filter here."""
+    ``teamId``, :func:`_slice` and the filter here."""
     ctx = _ctx(info)
     conn = ctx["conn"]
     if not term:

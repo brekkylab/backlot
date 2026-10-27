@@ -2238,8 +2238,6 @@ def test_a_form_is_read_as_fast_querystring_reads_it(text, fields):
 
 
 def test_a_statement_binds_a_lone_surrogate_as_u_fffd():
-    """`node_utf8.Written` binds a string as Node writes it, by position and by name, and a value
-    that is not a string as it is."""
     conn = node_utf8.Written(sqlite3.connect(":memory:"))
     bound = {
         "by position": conn.execute("SELECT ?, ?", ("a\ud800b", 1)).fetchone(),

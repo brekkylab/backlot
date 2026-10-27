@@ -4042,6 +4042,7 @@ LINEAR_ENUMS = {
         "githubPersonal",
         "githubCodeAccessPersonal",
         "gitlab",
+        "gitlabPersonal",
         "origin",
         "googleCalendarPersonal",
         "googleSheets",

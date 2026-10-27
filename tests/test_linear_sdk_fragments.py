@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -94,6 +96,13 @@ def _bundle(*documents: str) -> str:
             id="an escaped quote",
         ),
         pytest.param(
+            _SCHEMA,
+            _bundle("fragment Label on Label {\n  id\n  ...LabelParts\n}"),
+            0,
+            ["1 fragments, 1 on a type the schema serves beyond `id`"],
+            id="a spread is no field",
+        ),
+        pytest.param(
             None,
             _bundle("fragment IssueLabel on IssueLabel {\n  id\n  nosuch\n}"),
             1,
@@ -124,3 +133,12 @@ def test_linear_sdk_fragments_cannot_check_what_it_cannot_read(tmp_path, capsys,
     if bundle is not None:
         path.write_text(bundle, encoding="utf-8")
     assert script.main([str(path)]) == 2
+
+
+def test_linear_sdk_fragments_runs_as_ci_runs_it(tmp_path):
+    """The command line CI runs: the script by its path, its exit code the step's."""
+    path = tmp_path / "index.mjs"
+    path.write_text(_bundle("fragment IssueLabel on IssueLabel {\n  nosuch\n}"), encoding="utf-8")
+    script_path = REPO / "scripts" / "linear_sdk_fragments.py"
+    r = subprocess.run([sys.executable, str(script_path), str(path)], capture_output=True)
+    assert r.returncode == 1

@@ -659,6 +659,40 @@ async def read_a_notion_body_as_express_does(request: Request, call_next):
     return refusal if refusal is not None else await call_next(request)
 
 
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def report_notion_etag(request: Request, call_next):
+    """Put ``notion.weak_etag``, computed over its body, on each JSON Notion answer, and answer a
+    request ``notion.not_modified`` finds fresh with a 304 that carries the tag and the answer's
+    headers but its body, `content-type` and `content-length`.
+
+    Registered after ``read_a_notion_body_as_express_does``, which makes it the outer of the
+    two, so a refusal that reader answers carries the tag too, as real's 413 and 415 do; and
+    long before the `HEAD` rewrite below, which makes it the inner of those two, so a `HEAD` is
+    tagged over the body of the `GET` it is rewritten to, as real's is. A method outside
+    ``notion.ROUTED_METHODS`` is left out, as ``report_notion_headers`` leaves it: its 405 is
+    the framework's, where real's front door answers with a page of its own. An answer that is
+    not a JSON body carries none either.
+    """
+    response = await call_next(request)
+    if not response.headers.get("content-type", "").startswith("application/json"):
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    if notion.not_modified(request, response.status_code):
+        tagged = Response(status_code=304)
+        tagged.raw_headers = [
+            (name, value)
+            for name, value in response.raw_headers
+            if name not in (b"content-type", b"content-length")
+        ]
+    else:
+        tagged = Response(body, status_code=response.status_code)
+        tagged.raw_headers = response.raw_headers
+    tagged.headers["etag"] = notion.weak_etag(body)
+    return tagged
+
+
 def _is_guid(value: str) -> bool:
     try:
         uuid.UUID(value)
@@ -1044,10 +1078,10 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     `content-length` a client reads a `HEAD` for is the GET body's length and computing the body is
     the only way to have that number; a `HEAD` costs what its GET costs, here as on real.
 
-    What the vendors do NOT share is the `content-length`: GitHub, Notion and HubSpot declare the
-    length of the body the `GET` would have carried (HubSpot's `HEAD` on `search` declared the 229
-    of its `GET`'s 405 page, measured 2026-10-19), and Atlassian's and Google's answers split, so
-    that header is asked for rather than assumed, through ``errors.head_content_length``. The
+    What the vendors do NOT share is the `content-length`: GitHub and HubSpot declare the length
+    of the body the `GET` would have carried (HubSpot's `HEAD` on `search` declared the 229 of its
+    `GET`'s 405 page, measured 2026-10-19), and Atlassian's, Google's and Notion's answers split,
+    so that header is asked for rather than assumed, through ``errors.head_content_length``. The
     request is marked ``answering_head`` on its state for ``errors.google.jsonp_callback`` and
     ``routers.github._validate_api_version``, which read it.
 

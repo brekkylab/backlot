@@ -56,6 +56,7 @@ from typing import Any
 
 from backlot import sigv4
 from backlot.openapi import SOURCE_PREFIXES
+from backlot.version import version
 
 OPENAPI_SOURCES: tuple[str, ...] = tuple(SOURCE_PREFIXES)
 GRAPHQL_SOURCES: tuple[str, ...] = ("linear", "fireflies")
@@ -274,9 +275,14 @@ def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict
         timeout=30,
     )
     # validate_output=False: Backlot's responses are the source of truth; a passthrough must never
-    # reject a real server response for not matching a loose schema.
+    # reject a real server response for not matching a loose schema. Every FastMCP built here takes
+    # ``version=``: one built without it reports FastMCP's own version in ``serverInfo``.
     return FastMCP.from_openapi(
-        openapi_spec=spec, client=client, name=f"{source}-bridge", validate_output=False
+        openapi_spec=spec,
+        client=client,
+        name=f"{source}-bridge",
+        version=version(),
+        validate_output=False,
     )
 
 
@@ -336,7 +342,7 @@ def graphql_server(base_url: str, creds: Credentials, source: str, *, depth: int
             content, failed = graphql_outcome(r.json())
             return ToolResult(content=content, is_error=failed)
 
-    server = FastMCP(name=f"{source}-graphql-bridge")
+    server = FastMCP(name=f"{source}-graphql-bridge", version=version())
     for tool in tools:
         server.add_tool(
             _Field(
@@ -394,7 +400,7 @@ def build_server(
     )
     if "atlassian" in servers:
         instructions += " atlassian_* covers both Jira and Confluence."
-    root = FastMCP(name="backlot", instructions=instructions)
+    root = FastMCP(name="backlot", instructions=instructions, version=version())
     for source, server in servers.items():
         # `tool_names` renames a tool before the namespace is prefixed, so what goes in is the
         # tail `mounted_name` wants after `<source>_`. Only the tools whose default name would

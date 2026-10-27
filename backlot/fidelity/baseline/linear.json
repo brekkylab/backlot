@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-26",
+  "measured": "2026-10-27",
   "root": {
     "query": "Query"
   },
@@ -2169,6 +2169,9 @@
           "status": "implemented"
         },
         "gitlab": {
+          "status": "implemented"
+        },
+        "gitlabPersonal": {
           "status": "implemented"
         },
         "gong": {

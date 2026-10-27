@@ -607,16 +607,6 @@ class Engine:
         resolved = self.resolve(document, variables=variables, operation_name=operation_name)
         return resolved if isinstance(resolved, Result) else self.run(resolved, context=context)
 
-    def execute_payload(
-        self,
-        payload: Any,
-        *,
-        context: Any = None,
-    ) -> Result:
-        """:meth:`resolve_payload`, then :meth:`run` the operation it chose."""
-        resolved = self.resolve_payload(payload)
-        return resolved if isinstance(resolved, Result) else self.run(resolved, context=context)
-
 
 def _made_by_graphql(error: GraphQLError) -> bool:
     """Whether graphql-core made ``error`` itself as the operation ran, as graphql-js would have:

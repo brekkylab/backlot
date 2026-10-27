@@ -2556,11 +2556,13 @@ _FIREFLIES_HTTP = [
         )
     ),
     *(
-        http_row(m, "/graphql/", _J, b, "none", s, _JSON_UTF8, a, id=f"{m} /graphql/, {b!r}")
-        for m, b, s, a in (
-            ("POST", b"{", 400, _NOT_JSON),
-            ("POST", b"", 400, _EMPTY),
-            ("PUT", b"{", 400, _NOT_JSON),
+        http_row(
+            m, "/graphql/", _J, b, "none", s, _JSON_UTF8, a, id=f"{m} /graphql/, {b!r}", answered=e
+        )
+        for m, b, s, a, e in (
+            ("POST", b"{", 400, _NOT_JSON, {}),
+            ("POST", b"", 400, _EMPTY, _fastify()),
+            ("PUT", b"{", 400, _NOT_JSON, {}),
         )
     ),
     http_row(

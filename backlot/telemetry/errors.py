@@ -20,7 +20,7 @@ failure:
 |---|---|
 | ``unsupported`` | Backlot does not do this yet: the baseline records the operation as ``missing`` or ``refused``, or the GraphQL engine refused a filter |
 | ``internal`` | of a Backlot bug: its own failure, or a 5xx other than a vendor's answer (below) |
-| ``rate_limit`` | the vendor's rate limit was reached: a 429, or a 403 with ``x-ratelimit-remaining: 0`` as GitHub sends |
+| ``rate_limit`` | the vendor's rate limit was reached: a 429, a 403 with ``x-ratelimit-remaining: 0`` as GitHub sends, or ``_FIREFLIES_SPENT`` |
 | ``auth`` | the credential was missing, wrong, or not allowed: a 401 or 403, or one in ``_AUTH`` |
 | ``client`` | the request was wrong: any other failure |
 
@@ -31,8 +31,7 @@ the failure is Backlot's own, the status, the baseline's support state, the erro
 operation Backlot serves is the vendor's own answer (Google's ``notImplemented``), so it is
 ``client``, and so is a 505, S3's front door's answer to a target holding a space
 (``backlot.request_target._s3``), and each 5xx in ``_ANSWERED_5XX``, a vendor's answer to a wrong
-request. Fireflies' ``too_many_requests``, which it sends at 200 once a key's budget is spent, is
-``rate_limit``.
+request.
 """
 
 from __future__ import annotations

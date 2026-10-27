@@ -7445,8 +7445,8 @@ def _taken(times, host="203.0.113.7", key="lin_api_x"):
 # The requests taken from `RequestBudget` (the second, the caller's address, its API key, None
 # for none), and the limit and `x-ratelimit-requests-remaining` on the last: one; thirty over the
 # 13.13 seconds of its measurement; 2,505 at once, past the limit; one an hour after 2,000; two a
-# second apart, which leave the level at 2498.69; two with no key from one address; and one from
-# another address after those.
+# second apart, which leave the level at 2498.69; two with no key from one address; one from
+# another address after those; and 1,210 with no key at once and one 13.8 seconds on.
 _REQUEST_BUDGET = [
     pytest.param(_taken([0.0]), "2500", "2499", id="one"),
     pytest.param(
@@ -7461,6 +7461,9 @@ _REQUEST_BUDGET = [
         "1200",
         "1199",
         id="no key, another address",
+    ),
+    pytest.param(
+        _taken([0.0] * 1210 + [13.8], key=None), "1200", "3", id="past the limit, 13.8 s on"
     ),
 ]
 

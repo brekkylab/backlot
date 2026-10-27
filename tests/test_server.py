@@ -453,7 +453,7 @@ def test_serve_or_connect_reports_on_stderr_not_stdout(capsys):
     assert "using Backlot at" in err and "falling back to a local server" in err
 
 
-def test_backlots_own_routes_read_the_app_that_serves_them(tmp_path):
+def test_a_server_answers_for_its_corpus_after_one_opened_inside_it_ends(tmp_path):
     """`/health`, `/_meta/users`, `/_meta/credentials` and `/_meta/openapi/{source}` read the app
     off the request, not the module-level ``app``. The difference shows when ``backlot.main`` is
     re-imported while a first server is still up, which ``client_for`` does: a reload
@@ -461,7 +461,8 @@ def test_backlots_own_routes_read_the_app_that_serves_them(tmp_path):
     to the second one and read its state, and once the second lifespan had ended and closed its
     connection, the first server's `/_meta/users` was `sqlite3.ProgrammingError: Cannot operate on
     a closed database` while its vendor routes, which read ``request.app``, kept answering. In the
-    suite this bit a module-scoped client whose first `/_meta/users` call came after a reload."""
+    suite this bit a module-scoped client whose first `/_meta/users` call came after a reload.
+    Slack's `auth.test` reads the org off the settings `client_for` puts back on exit."""
     from tests._helpers import build_corpus, client_for
 
     def record(domain: str) -> dict:
@@ -487,6 +488,8 @@ def test_backlots_own_routes_read_the_app_that_serves_them(tmp_path):
         assert first.get("/_meta/users").json()["org"] == "acme"
         assert first.get("/_meta/credentials").json()["org"] == "acme"
         assert "/github/search/code" in first.get("/_meta/openapi/github").json()["paths"]
+        h = {"Authorization": f"Bearer {first_settings.admin_token}"}
+        assert first.post("/slack/api/auth.test", headers=h).json()["team"] == "acme"
 
 
 def test_backlots_own_routes_answer_head_as_the_get(client, admin_h):

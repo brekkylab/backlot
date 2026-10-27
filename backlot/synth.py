@@ -339,6 +339,20 @@ def drive_folder_id(container: str) -> str:
     return "0A" + base64.urlsafe_b64encode(digest)[:17].decode("ascii")
 
 
+def drive_root_id(email: str) -> str:
+    """The id of a user's My Drive root: ``0A`` plus 17 base64url characters, as a real root's is
+    (measured 2026-10-26), seeded apart from every folder's so a folder named after an address
+    cannot land on it."""
+    digest = hashlib.sha256(("root:" + email.lower()).encode("utf-8")).digest()
+    return "0A" + base64.urlsafe_b64encode(digest)[:17].decode("ascii")
+
+
+def google_user_id(email: str) -> str:
+    """A Google account's numeric id, 21 digits from ``1``: the shape of the `ouid` real puts on
+    every `spreadsheetUrl` (measured 2026-10-26)."""
+    return str(10**20 + hnum("google-user:" + email.lower(), length=32) % (9 * 10**19))
+
+
 def gdrive_file_id(seed: str) -> str:
     """A Drive file's served id: 33 characters, base64url alphabet
     (``[A-Za-z0-9_-]``), starting with ``1`` — the shape of a modern real Drive file id.

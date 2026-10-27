@@ -146,7 +146,6 @@ def test_it_is_on_unless_backlot_telemetry_or_do_not_track_says_off(
             with client_for(hello) as c:
                 assert _calls(lambda: c.get("/github/repos/acme/docs-site", headers=ADMIN)) == []
             assert "usage counts" not in capsys.readouterr().err
-    get_settings.cache_clear()
 
 
 class _Started(Exception):
@@ -198,7 +197,6 @@ def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys, 
                     pass
             # The child's own notice goes to its log, so serve() says it where its caller sees it.
             seen.append(notice(recorder.ENDPOINT) in capsys.readouterr().err)
-    get_settings.cache_clear()
     assert seen == [True, False, True, False, None, True, "0", False]
 
 

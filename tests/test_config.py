@@ -42,8 +42,8 @@ def test_settings_put_back_hands_back_what_get_settings_held_on_entry(
         with settings_put_back():
             get_settings.cache_clear()
             get_settings().org_name = "inside"
-        monkeypatch.setenv("BACKLOT_ORG_NAME", "exit")
-        monkeypatch.delenv("BACKLOT_DEFAULT_PAGE_SIZE")
+            monkeypatch.setenv("BACKLOT_ORG_NAME", "exit")
+            monkeypatch.delenv("BACKLOT_DEFAULT_PAGE_SIZE")
         settings = get_settings()
         assert (settings.org_name, settings.default_page_size) == expected
     finally:

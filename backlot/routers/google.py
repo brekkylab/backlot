@@ -3363,11 +3363,9 @@ def _drive_project_one(obj: dict, fields: str | None) -> dict:
     real refuses) before trimming, including nested object fields. Trimming a file read by id as
     a listing's entries are trimmed is what makes one file look the same either way.
 
-    A mask that is empty or of spaces and tabs alone selects nothing, which is not the same as no
-    mask: measured 2026-09-23, `fields=` and `fields=%20` answer ``{}`` where an absent `fields`
-    answers the default keys (`kind`, `id`, `name`, `mimeType`), and `fields=%09` did too on
-    2026-10-20. Measured 2026-10-25, a read with no mask answers those four keys alone, where
-    this used to answer the whole stored file."""
+    No mask answers the `_DRIVE_FILE_DEFAULT` keys alone, measured 2026-10-25. A mask that is empty
+    or of spaces and tabs alone selects nothing, which is not the same as no mask: measured
+    2026-09-23, `fields=` and `fields=%20` answer ``{}``, and `fields=%09` did too on 2026-10-20."""
     paths = _drive_mask(fields)
     if paths is None:
         return {k: v for k, v in obj.items() if k in _DRIVE_FILE_DEFAULT}
@@ -3996,8 +3994,7 @@ async def drive_files_list(request: Request):
     else:
         files = _drive_newest_first(objects, folders, offset, limit)
         _drive_fill_shared(conn, files, stored)
-    # No mask answers each entry with the default keys alone, as a read by id does; a mask
-    # projects as before. Measured 2026-10-25, real answers no-mask listings that way.
+    # No mask answers each entry with the `_DRIVE_FILE_DEFAULT` keys alone, measured 2026-10-25.
     entry_keys = (
         set(_DRIVE_FILE_DEFAULT)
         if list_paths is None

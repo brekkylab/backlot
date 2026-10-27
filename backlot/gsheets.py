@@ -448,8 +448,11 @@ def cell_error(c: Cell) -> str | None:
 
 
 def cell_format(c: Cell) -> dict | None:
-    """A cell's `numberFormat`, or None for one that has none."""
-    return (c.get("nf") or None) if isinstance(c, dict) else None
+    """A cell's `numberFormat` in real's member order, `type` and then `pattern` (measured
+    2026-10-27 on CURRENCY, PERCENT and TIME cells), or None for one that has none. A stored grid
+    is JSON with sorted keys, so the order is set here."""
+    nf = c.get("nf") if isinstance(c, dict) else None
+    return {k: nf[k] for k in ("type", "pattern") if k in nf} if nf else None
 
 
 def written(c: Cell) -> bool:
@@ -598,14 +601,15 @@ def _number(text: str):
     One negation at most -- parentheses or a minus, before or after a leading currency (`($5)`,
     `$(5)`, `-$5`, `$-5`); two are text (`-(5)`, `(-5)`, `$(-5)`, `-$(5)`). A currency trails a
     percent sign but does not precede one (`5%$` reads, `5$%` is text), and a percent sign may lead
-    (`%5`). All measured."""
+    (`%5`). A space, tab, newline or carriage return may follow a leading sign or currency and
+    precede a trailing one (`-\t5`, `5\t$`), where a no-break space may not. All measured."""
     s, negations, cur, cur_after, pct = text, 0, None, False, False
     if s[:1] == "(" and s[-1:] == ")":
         s, negations = s[1:-1].strip(_SPACE), 1
     elif s[:1] == "-":
-        s, negations = s[1:].lstrip(" "), 1
+        s, negations = s[1:].lstrip(_SPACE), 1
     if s and s[0] in _CURRENCIES:
-        cur, s = s[0], s[1:].lstrip(" ")
+        cur, s = s[0], s[1:].lstrip(_SPACE)
         if s[:1] == "-":
             s, negations = s[1:], negations + 1
         elif s[:1] == "(" and s[-1:] == ")":
@@ -613,7 +617,7 @@ def _number(text: str):
     elif s[:1] == "%":
         s, pct = s[1:], True
     if cur is None and s and s[-1] in _CURRENCIES:
-        cur, cur_after, s = s[-1], True, s[:-1].rstrip(" ")
+        cur, cur_after, s = s[-1], True, s[:-1].rstrip(_SPACE)
     if not pct and s[-1:] == "%":
         s, pct = s[:-1], True
     if negations > 1:
@@ -825,7 +829,7 @@ def _wordy_date(s: str, today: date):
 
 _TIME = re.compile(
     r"(?P<sign>-)?(?P<h>\d+)(?::(?P<m>\d{2})(?::(?P<s>\d{2})(?P<f>\.\d+)?)?)?"
-    r"(?:\s*(?P<ampm>[AaPp][Mm]))?\Z",
+    r"(?: *(?P<ampm>[AaPp][Mm]))?\Z",
     re.ASCII,
 )
 
@@ -834,8 +838,8 @@ def _time(s: str):
     """``(day_fraction, pattern)`` for a time of day or a duration, or None.
 
     Minutes and seconds are two digits and may overflow (`10:60` is 11:00); an hour alone needs
-    AM/PM (`10 PM`). A total of a day or more, or a negative one, is a duration shown as
-    `[h]:mm:ss`. With AM/PM the hour is 1 to 12."""
+    AM/PM (`10 PM`), which spaces alone may set apart (`10:30\tPM` is text). A total of a day or
+    more, or a negative one, is a duration shown as `[h]:mm:ss`. With AM/PM the hour is 1 to 12."""
     m = _TIME.match(s)
     if m is None or (m["m"] is None and m["ampm"] is None):
         return None
@@ -860,22 +864,22 @@ def _time(s: str):
 def _date_or_time(s: str, today: date):
     """``(value, number_format)`` for a date, a time or both, or None.
 
-    A date and a time are split at a space, tried from the right so `2024-01-15 10:30 PM` keeps
-    `10:30 PM` whole, or at the `T` of `2024-01-15T10:30`; the pattern joins the two with a space
-    either way."""
+    A date and a time are split at a run of spaces, tried from the right so `2024-01-15 10:30 PM`
+    keeps `10:30 PM` whole, or at the `T` of `2024-01-15T10:30`; the pattern joins the two with a
+    space either way. Measured: `1/15/2024  10:30` is a date-time, and a tab between them text."""
     t = _time(s)
     if t is not None:
         return t[0], _nf("TIME", t[1])
     d = _numeric_date(s, today) or _wordy_date(s, today)
     if d is not None:
         return d[0], _nf("DATE", d[1])
-    splits = [i for i in range(len(s) - 1, 0, -1) if s[i] == " "]
+    splits = [(m.start(), m.end()) for m in reversed(list(re.finditer(" +", s))) if m.start()]
     iso = s.find("T")
     if iso > 0 and re.fullmatch(r"[0-9]{4}-[0-9]+-[0-9]+", s[:iso]):
-        splits.append(iso)
-    for i in splits:
+        splits.append((iso, iso + 1))
+    for i, j in splits:
         d = _numeric_date(s[:i], today) or _wordy_date(s[:i], today)
-        t = _time(s[i + 1 :])
+        t = _time(s[j:])
         if d is not None and t is not None:
             # A duration after a date adds to it, and keeps its `[h]`: measured, `1/15/2024 25:00`
             # is 1/16 01:00 as `m/d/yyyy [h]:mm:ss`, shown with the hours since the epoch.
@@ -900,8 +904,9 @@ def read(text: str, today: date):
         return "apostrophe", (text[1:] or None), None
     if text[0] in "=+":
         return "formula", text, None
-    if text.casefold() in ("true", "false"):
-        return "bool", text.casefold() == "true", None
+    # ASCII letters alone fold, measured: `falſe` is a string
+    if text.isascii() and text.lower() in ("true", "false"):
+        return "bool", text.lower() == "true", None
     s = text.strip(_SPACE)
     if s.upper() in ERRORS:
         return "error", ERRORS[s.upper()], None
@@ -988,6 +993,26 @@ LOCALES: dict[str, tuple[str, str]] = {
     ).items()
 }
 
+# Every `timeZone` a spreadsheet keeps a name for, as the name it serves back. Measured 2026-10-27
+# by setting 640 spellings on one spreadsheet (every name Python's zone database and CLDR's alias
+# table know, and case, offset and padding variants) and reading each back, and 20 of them through
+# `spreadsheets.create` too, which agreed: a name is matched exactly and served under its CLDR
+# name (`US/Pacific` as `America/Los_Angeles`, `Asia/Kolkata` as `Asia/Calcutta`, `UTC` as
+# `Etc/UTC`). The rest are `Etc/GMT` -- `utc`, `asia/seoul`, `Factory`, `GMT+9`, `GMT+0900` --
+# but for an offset spelled `GMT+9:00` (:data:`_CUSTOM_ZONE`), which is `Etc/Unknown`.
+TIME_ZONES: dict[str, str] = json.loads(
+    (Path(__file__).parent / "data" / "sheets_time_zones.json").read_text(encoding="utf-8")
+)
+_CUSTOM_ZONE = re.compile(r"GMT[+-](?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?\Z")
+
+
+def time_zone(name: str) -> str:
+    """The `timeZone` a spreadsheet stated as ``name`` serves (:data:`TIME_ZONES`)."""
+    if name in TIME_ZONES:
+        return TIME_ZONES[name]
+    return "Etc/Unknown" if _CUSTOM_ZONE.match(name) else DEFAULT_PROPERTIES["timeZone"]
+
+
 # The `SheetProperties` and `GridProperties` fields a sheet keeps, in proto field order, which is
 # the order real serves them in.
 SHEET_FIELDS = ("gridProperties", "hidden", "tabColor", "rightToLeft", "tabColorStyle")
@@ -1000,6 +1025,10 @@ GRID_FIELDS = (
     "rowGroupControlAfter",
     "columnGroupControlAfter",
 )
+
+
+def _rgb_order(color: dict) -> dict:
+    return {k: color[k] for k in ("red", "green", "blue", "alpha") if k in color}
 
 
 class Sheet(NamedTuple):
@@ -1038,6 +1067,11 @@ class Sheet(NamedTuple):
             },
         }
         out.update({k: self.properties[k] for k in SHEET_FIELDS[1:] if self.properties.get(k)})
+        # a stored sheet's properties are JSON with sorted keys; a colour serves in field order
+        if "tabColor" in out:
+            out["tabColor"] = _rgb_order(out["tabColor"])
+        if "rgbColor" in out.get("tabColorStyle", {}):
+            out["tabColorStyle"] = {"rgbColor": _rgb_order(out["tabColorStyle"]["rgbColor"])}
         return out
 
     def stated(self) -> dict:
@@ -1046,6 +1080,26 @@ class Sheet(NamedTuple):
         grid = props.setdefault("gridProperties", {})
         grid["rowCount"], grid["columnCount"] = self.rows, self.cols
         return props
+
+
+def _one(mapped: str, c: str) -> str:
+    """A case mapping that stays one character, as Java's per-character one does: `ß` upper-cases
+    to itself there, not to `SS`."""
+    return mapped if len(mapped) == 1 else c
+
+
+def same_title(a: str, b: str) -> bool:
+    """Whether two sheet titles collide: of one length, and character by character equal, or
+    equal upper-cased, or equal lower-cased, as Java's `equalsIgnoreCase` compares. Measured
+    2026-10-27 on pairs of titles in one create: `Same`/`same`, `ſheet`/`Sheet` and `ς`/`σ`
+    collide, while `Straße`/`STRASSE`, `ﬁle`/`FILE` and `İ`/`i̇`, whose case mapping changes
+    their length, do not."""
+    return len(a) == len(b) and all(
+        x == y
+        or _one(x.upper(), x) == _one(y.upper(), y)
+        or _one(x.lower(), x) == _one(y.lower(), y)
+        for x, y in zip(a, b)
+    )
 
 
 class Workbook:
@@ -1064,10 +1118,8 @@ class Workbook:
         return next((s for s in self.sheets if s.sheet_id == sheet_id), None)
 
     def title_taken(self, title: str) -> bool:
-        """Whether a sheet already has this title. Measured: titles collide without regard to
-        case, `Same` against `same`."""
-        fold = title.casefold()
-        return any(s.title.casefold() == fold for s in self.sheets)
+        """Whether a sheet already has this title (:func:`same_title`)."""
+        return any(same_title(s.title, title) for s in self.sheets)
 
     def default_title(self) -> str:
         """The first `Sheet<n>` in the workbook's language (:data:`LOCALES`) no sheet has.

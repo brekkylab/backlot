@@ -111,30 +111,31 @@ def test_every_way_a_credential_fails_answers_the_message_live_graph_answers(
     assert again.json()["error"]["innerError"]["request-id"] != inner["request-id"]
 
 
-@pytest.mark.parametrize(
-    "header,served",
-    [
-        ("Bearer {T}", True),
-        ("bearer {T}", True),
-        ("BEARER {T}", True),
-        ("{T}", True),
-        ("Bearer  {T}", True),
-        ("Bearer\t{T}", True),
-        # A token that resolves is still read only after `Bearer` or with no scheme at all.
-        ("token {T}", False),
-        ("Basic {T}", False),
-        ("Bearer {T} extra", False),
-    ],
-)
-def test_a_token_that_resolves_is_read_only_where_graph_reads_one(
-    client, tokens_yaml, header, served
-):
+_BEARER_SPELLINGS = [
+    ("Bearer {T}", True),
+    ("bearer {T}", True),
+    ("BEARER {T}", True),
+    ("{T}", True),
+    ("Bearer  {T}", True),
+    ("Bearer\t{T}", True),
+    # A token that resolves is still read only after `Bearer` or with no scheme at all.
+    ("token {T}", False),
+    ("Basic {T}", False),
+    ("Bearer {T} extra", False),
+]
+
+
+def test_a_token_that_resolves_is_read_only_where_graph_reads_one(client, tokens_yaml):
     token = tok(tokens_yaml, "bob@acme.com")
-    r = client.get(f"{V1}/me", headers={"Authorization": header.replace("{T}", token)})
-    if served:
-        assert r.status_code == 200, r.text
-    else:
-        assert _error(r, 401)["message"] == _UNREADABLE
+    answered = {}
+    for header, _ in _BEARER_SPELLINGS:
+        r = client.get(f"{V1}/me", headers={"Authorization": header.replace("{T}", token)})
+        error = r.json().get("error") or {}
+        answered[header] = (r.status_code, error.get("message"))
+    assert answered == {
+        header: (200, None) if served else (401, _UNREADABLE)
+        for header, served in _BEARER_SPELLINGS
+    }
 
 
 def test_two_authorization_headers_are_refused_before_either_is_read(client, tokens_yaml):
@@ -311,32 +312,28 @@ def test_a_path_nothing_serves_is_refused_once_the_credential_holds(
         assert list(err["innerError"])[:3] == ["code", "message", "details"]
 
 
-@pytest.mark.parametrize(
-    "spelled,canonical",
-    [
-        ("/ME", "/me"),
-        ("/me/", "/me"),
-        ("/me/joinedteams", "/me/joinedTeams"),
-        ("/me/joinedTeams/", "/me/joinedTeams"),
-        ("/Teams/{team}/Channels", "/teams/{team}/channels"),
-        ("/teams('{team}')/channels", "/teams/{team}/channels"),
-        ("/teams/{TEAM}/channels", "/teams/{team}/channels"),
-        ("/users('{user}')", "/users/{user}"),
-        ("/users/{USER}", "/users/{user}"),
-        ("/users/{user}/", "/users/{user}"),
-        ("/teams/{team}/channels/{channel}/", "/teams/{team}/channels/{channel}"),
-        (
-            "/teams('{team}')/channels('{channel}')/messages",
-            "/teams/{team}/channels/{channel}/messages",
-        ),
-        ("/teams/{team}/channels/{channel}/MESSAGES/", "/teams/{team}/channels/{channel}/messages"),
-        ("/teams/{team}/channels/{channel}/members/", "/teams/{team}/channels/{channel}/members"),
-        ("/me//", "/me"),
-        ("/msgraph/V1.0/me", "/me"),
-        ("/teams('{team}')", "/teams/{team}"),
-    ],
-)
-def test_a_path_is_read_in_every_spelling_graph_reads(client, admin_h, team_id, spelled, canonical):
+_PATH_SPELLINGS = {
+    "/ME": "/me",
+    "/me/": "/me",
+    "/me/joinedteams": "/me/joinedTeams",
+    "/me/joinedTeams/": "/me/joinedTeams",
+    "/Teams/{team}/Channels": "/teams/{team}/channels",
+    "/teams('{team}')/channels": "/teams/{team}/channels",
+    "/teams/{TEAM}/channels": "/teams/{team}/channels",
+    "/users('{user}')": "/users/{user}",
+    "/users/{USER}": "/users/{user}",
+    "/users/{user}/": "/users/{user}",
+    "/teams/{team}/channels/{channel}/": "/teams/{team}/channels/{channel}",
+    "/teams('{team}')/channels('{channel}')/messages": "/teams/{team}/channels/{channel}/messages",
+    "/teams/{team}/channels/{channel}/MESSAGES/": "/teams/{team}/channels/{channel}/messages",
+    "/teams/{team}/channels/{channel}/members/": "/teams/{team}/channels/{channel}/members",
+    "/me//": "/me",
+    "/msgraph/V1.0/me": "/me",
+    "/teams('{team}')": "/teams/{team}",
+}
+
+
+def test_a_path_is_read_in_every_spelling_graph_reads(client, admin_h, team_id):
     """The version and a resource name in any case, an id as an OData key segment or a GUID
     upper-cased, and trailing slashes are each the same path live."""
     user = synth.msteams_user_id("ava@acme.com")
@@ -347,16 +344,16 @@ def test_a_path_is_read_in_every_spelling_graph_reads(client, admin_h, team_id, 
         user=user,
         USER=user.upper(),
     )
-    spelled = spelled.format(**ids)
-    got = client.get(
-        spelled if spelled.startswith("/msgraph") else f"{V1}{spelled}", headers=admin_h
-    )
-    want = client.get(f"{V1}{canonical.format(**ids)}", headers=admin_h)
-    assert got.status_code == want.status_code == 200, got.text
     strip = {"@odata.context", "@odata.nextLink"}
-    assert {k: v for k, v in got.json().items() if k not in strip} == {
-        k: v for k, v in want.json().items() if k not in strip
-    }
+
+    def answer(path):
+        r = client.get(path if path.startswith("/msgraph") else f"{V1}{path}", headers=admin_h)
+        return r.status_code, {k: v for k, v in r.json().items() if k not in strip}
+
+    answered = {spelled: answer(spelled.format(**ids)) for spelled in _PATH_SPELLINGS}
+    canonical = {spelled: answer(path.format(**ids)) for spelled, path in _PATH_SPELLINGS.items()}
+    assert all(status == 200 for status, _ in canonical.values())
+    assert answered == canonical
 
 
 # --- identity, the directory and the team ----------------------------------------
@@ -1199,77 +1196,76 @@ def test_a_filter_dotnet_fails_to_run_is_graphs_500(client, admin_h, team_id, ex
     assert (err["code"], err["message"]) == ("InternalServerError", "Failed to execute request.")
 
 
-@pytest.mark.parametrize(
-    "expr,names",
-    [
-        ("membershipType eq 'private'", ["People Confidential"]),
-        ("membershipType eq 'shared'", []),
-        ("displayName eq 'Platform'", ["Platform"]),
-        ("displayName eq 'PLATFORM'", []),  # case-sensitive here, unlike the directory
-        ("startswith(displayName,'Pl')", ["Platform"]),
-        ("contains(displayName,'cid')", ["Incidents"]),
-        ("displayName ne 'Platform' and membershipType eq 'standard'", ["Incidents"]),
-        # Property names and enum members match without regard to case.
-        ("MembershipType eq 'Private'", ["People Confidential"]),
-        ("displayName EQ 'Platform' OR displayName eq 'Incidents'", ["Incidents", "Platform"]),
-        ("startswith(DisplayName,'Pl')", ["Platform"]),
-        ("displayName in ('Platform','Incidents')", ["Incidents", "Platform"]),
-        ("displayName in ()", []),
-        ("", _ALL_CHANNELS),
-        (" ", _ALL_CHANNELS),
-        # `not` binds tighter than a comparison, and a boolean property is a predicate on its own.
-        ("not isArchived eq true", _ALL_CHANNELS),
-        ("not (displayName eq 'Platform')", ["Incidents", "People Confidential"]),
-        ("isArchived", []),
-        ("not isArchived and displayName eq 'Platform'", ["Platform"]),
-        ("isArchived in (false)", _ALL_CHANNELS),
-        # Typed literals: a date-time, a date, a qualified enum member and an enum's position.
-        ("createdDateTime gt 2026-02-06T00:00:00Z", ["Incidents", "People Confidential"]),
-        ("createdDateTime lt 2026-02-06T13:00+01:00", ["People Confidential", "Platform"]),
-        ("createdDateTime ge 2026-02-10", ["Incidents"]),
-        (
-            "membershipType eq microsoft.graph.channelMembershipType'private'",
-            ["People Confidential"],
-        ),
-        ("membershipType eq 1", ["People Confidential"]),
-        ("displayName eq 'it''s'", []),
-        ("tolower(displayName) eq 'platform'", ["Platform"]),
-        ("length(displayName) eq 8", ["Platform"]),
-        # Strings order with null below every one of them; literals compare with each other.
-        ("displayName gt null", _ALL_CHANNELS),
-        ("null eq displayName", []),
-        ("5 eq 5", _ALL_CHANNELS),
-        ("createdDateTime gt 2020-01-01T00:00:00z", _ALL_CHANNELS),
-        # .NET's arithmetic and `substring`: an integer division truncates, a remainder takes the
-        # dividend's sign, and a negative start or length is no characters skipped or taken.
-        ("length(displayName) div 2 eq 4", ["Incidents", "Platform"]),
-        ("length(displayName) mod 4 eq 1", ["Incidents"]),
-        ("substring(displayName,-1) eq displayName", _ALL_CHANNELS),
-        ("substring(displayName,1,-1) eq ''", _ALL_CHANNELS),
-        ("indexof(displayName,'zz') eq -1", _ALL_CHANNELS),
-        ("-7 div 2 eq -3", _ALL_CHANNELS),
-        ("-7 mod 3 eq -1", _ALL_CHANNELS),
-        # A floating division by zero is an infinity or NaN, compared as a number; a `Single` is
-        # computed as one, so 0.1 and 0.2 make 0.3.
-        ("length(displayName) div 0.0 eq 1", []),
-        ("length(displayName) div 0.0 gt 1", _ALL_CHANNELS),
-        ("length(displayName) div -0.0 lt 0", _ALL_CHANNELS),
-        ("length(displayName) mod 0.0 ne 1", _ALL_CHANNELS),
-        ("1.5 div 0 eq 1", []),
-        ("1.23456789 div 0 gt 1", _ALL_CHANNELS),
-        ("0.0 div 0.0 ne 0.0 div 0.0", _ALL_CHANNELS),
-        ("0.1 add 0.2 eq 0.3", _ALL_CHANNELS),
-        # The limits, at the edge: 99 parentheses, 16 terms and 98 `not`s fit.
-        ("(" * 99 + "displayName eq 'Platform'" + ")" * 99, ["Platform"]),
-        (" and ".join(["displayName ne 'x'"] * 16), _ALL_CHANNELS),
-        ("not " * 98 + "isArchived", []),
-    ],
-)
-def test_a_channel_filter_selects_what_graph_selects(client, admin_h, team_id, expr, names):
-    body = client.get(
-        f"{V1}/teams/{team_id}/channels", headers=admin_h, params={"$filter": expr}
-    ).json()
-    assert sorted(c["displayName"] for c in body["value"]) == names
+_CHANNEL_FILTERS = {
+    "membershipType eq 'private'": ["People Confidential"],
+    "membershipType eq 'shared'": [],
+    "displayName eq 'Platform'": ["Platform"],
+    "displayName eq 'PLATFORM'": [],  # case-sensitive here, unlike the directory
+    "startswith(displayName,'Pl')": ["Platform"],
+    "contains(displayName,'cid')": ["Incidents"],
+    "displayName ne 'Platform' and membershipType eq 'standard'": ["Incidents"],
+    # Property names and enum members match without regard to case.
+    "MembershipType eq 'Private'": ["People Confidential"],
+    "displayName EQ 'Platform' OR displayName eq 'Incidents'": ["Incidents", "Platform"],
+    "startswith(DisplayName,'Pl')": ["Platform"],
+    "displayName in ('Platform','Incidents')": ["Incidents", "Platform"],
+    "displayName in ()": [],
+    "": _ALL_CHANNELS,
+    " ": _ALL_CHANNELS,
+    # `not` binds tighter than a comparison, and a boolean property is a predicate on its own.
+    "not isArchived eq true": _ALL_CHANNELS,
+    "not (displayName eq 'Platform')": ["Incidents", "People Confidential"],
+    "isArchived": [],
+    "not isArchived and displayName eq 'Platform'": ["Platform"],
+    "isArchived in (false)": _ALL_CHANNELS,
+    # Typed literals: a date-time, a date, a qualified enum member and an enum's position.
+    "createdDateTime gt 2026-02-06T00:00:00Z": ["Incidents", "People Confidential"],
+    "createdDateTime lt 2026-02-06T13:00+01:00": ["People Confidential", "Platform"],
+    "createdDateTime ge 2026-02-10": ["Incidents"],
+    "membershipType eq microsoft.graph.channelMembershipType'private'": ["People Confidential"],
+    "membershipType eq 1": ["People Confidential"],
+    "displayName eq 'it''s'": [],
+    "tolower(displayName) eq 'platform'": ["Platform"],
+    "length(displayName) eq 8": ["Platform"],
+    # Strings order with null below every one of them; literals compare with each other.
+    "displayName gt null": _ALL_CHANNELS,
+    "null eq displayName": [],
+    "5 eq 5": _ALL_CHANNELS,
+    "createdDateTime gt 2020-01-01T00:00:00z": _ALL_CHANNELS,
+    # .NET's arithmetic and `substring`: an integer division truncates, a remainder takes the
+    # dividend's sign, and a negative start or length is no characters skipped or taken.
+    "length(displayName) div 2 eq 4": ["Incidents", "Platform"],
+    "length(displayName) mod 4 eq 1": ["Incidents"],
+    "substring(displayName,-1) eq displayName": _ALL_CHANNELS,
+    "substring(displayName,1,-1) eq ''": _ALL_CHANNELS,
+    "indexof(displayName,'zz') eq -1": _ALL_CHANNELS,
+    "-7 div 2 eq -3": _ALL_CHANNELS,
+    "-7 mod 3 eq -1": _ALL_CHANNELS,
+    # A floating division by zero is an infinity or NaN, compared as a number; a `Single` is
+    # computed as one, so 0.1 and 0.2 make 0.3.
+    "length(displayName) div 0.0 eq 1": [],
+    "length(displayName) div 0.0 gt 1": _ALL_CHANNELS,
+    "length(displayName) div -0.0 lt 0": _ALL_CHANNELS,
+    "length(displayName) mod 0.0 ne 1": _ALL_CHANNELS,
+    "1.5 div 0 eq 1": [],
+    "1.23456789 div 0 gt 1": _ALL_CHANNELS,
+    "0.0 div 0.0 ne 0.0 div 0.0": _ALL_CHANNELS,
+    "0.1 add 0.2 eq 0.3": _ALL_CHANNELS,
+    # The limits, at the edge: 99 parentheses, 16 terms and 98 `not`s fit.
+    "(" * 99 + "displayName eq 'Platform'" + ")" * 99: ["Platform"],
+    " and ".join(["displayName ne 'x'"] * 16): _ALL_CHANNELS,
+    "not " * 98 + "isArchived": [],
+}
+
+
+def test_a_channel_filter_selects_what_graph_selects(client, admin_h, team_id):
+    selected = {}
+    for expr in _CHANNEL_FILTERS:
+        body = client.get(
+            f"{V1}/teams/{team_id}/channels", headers=admin_h, params={"$filter": expr}
+        ).json()
+        selected[expr] = sorted(c["displayName"] for c in body["value"])
+    assert selected == _CHANNEL_FILTERS
 
 
 @pytest.mark.parametrize(
@@ -2509,11 +2505,6 @@ def test_a_crawl_reaches_every_stored_message(client, admin_h, team_id, ro_conn)
                 found.update(r["id"] for r in replies["value"])
             url = body.get("@odata.nextLink")
     assert len(found) == db_count(ro_conn, "msteams")
-
-
-# Placed after every `client`-fixture test in this module: each opens a SECOND app over a different
-# DB via `corpus_client`, which overwrites the module-scoped fixture's shared `app.state` (see
-# `tests._helpers.client_for`'s docstring).
 
 
 @pytest.mark.parametrize(

@@ -27,7 +27,17 @@ from starlette.middleware.base import BaseHTTPMiddleware, DispatchFunction
 from starlette.routing import BaseRoute, Match
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from backlot import auth, errors, openapi, overlay, request_target, store, synth, telemetry
+from backlot import (
+    auth,
+    errors,
+    express_http,
+    openapi,
+    overlay,
+    request_target,
+    store,
+    synth,
+    telemetry,
+)
 from backlot.acl import Acl
 from backlot.config import get_settings
 from backlot.errors import msgraph as msgraph_errors
@@ -664,9 +674,15 @@ async def read_a_notion_body_as_express_does(request: Request, call_next):
     lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
 )
 async def report_notion_etag(request: Request, call_next):
-    """Put ``notion.weak_etag``, computed over its body, on each JSON Notion answer, and answer a
-    request ``notion.not_modified`` finds fresh with a 304 that carries the tag and the answer's
-    headers but its body, `content-type` and `content-length`.
+    """Put ``express_http.weak_etag``, computed over its body, on each JSON Notion answer, and
+    answer a request ``notion.not_modified`` finds fresh with a 304 that carries the tag and the
+    answer's headers but its body, `content-type` and `content-length`.
+
+    Measured against api.notion.com on 2026-10-27: the 200s of `users/me`, `pages/{id}` and
+    `search`, the 401s (the OAuth client endpoints' among them), the 400s, a 404 and a 503, and
+    the body reader's 413 and 415 each carried the tag over its own body, a `HEAD` the tag of the
+    body its `GET` answers; the root's 302 and a CORS preflight's 204 carried none. The
+    computation was checked against the bodies kept whole.
 
     Registered after ``read_a_notion_body_as_express_does``, which makes it the outer of the
     two, so a refusal that reader answers carries the tag too, as real's 413 and 415 do; and
@@ -690,7 +706,7 @@ async def report_notion_etag(request: Request, call_next):
     else:
         tagged = Response(body, status_code=response.status_code)
         tagged.raw_headers = response.raw_headers
-    tagged.headers["etag"] = notion.weak_etag(body)
+    tagged.headers["etag"] = express_http.weak_etag(body)
     return tagged
 
 

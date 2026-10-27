@@ -33,8 +33,6 @@ did on 2026-10-19, when a key in an API key's shape that Linear never issued dre
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import math
 import re
 import secrets
@@ -49,7 +47,7 @@ from fastapi.responses import Response
 from graphql import FieldNode, FragmentDefinitionNode, FragmentSpreadNode
 from starlette.datastructures import MutableHeaders
 
-from backlot import auth
+from backlot import auth, express_http
 from backlot.config import get_settings
 from backlot.graphql import apollo_http, engine, v8_json
 from backlot.graphql import body as request_body
@@ -92,14 +90,6 @@ def request_id() -> str:
     return f"{secrets.token_hex(8)}-ICN"
 
 
-def express_etag(body: bytes) -> str:
-    """Express's weak `ETag` for ``body``: its length in hex and the first 27 characters of the
-    base64 of its SHA-1, as on 591 of the 618 answers that carried one with a body, the other 27
-    carrying :data:`_API_KEY_AS_BEARER_ETAG`."""
-    digest = base64.b64encode(hashlib.sha1(body).digest()).decode()[:27]
-    return f'W/"{len(body):x}-{digest}"'
-
-
 def _origin(request: Request) -> str | None:
     """The `Origin` ``cors`` echoes: each copy without the spaces and tabs around it, the empty ones
     ahead of the first that is not empty left off, the rest joined with `, ` and the join's trailing
@@ -122,20 +112,22 @@ def _express_sent(
     allow_origin: str | None = None,
 ) -> Response:
     """``response`` with the headers Linear sends on an answer Express writes: :data:`_NO_STORE`
-    where it has no `Cache-Control` of its own, Express's `ETag` (:func:`express_etag`) where
-    ``etag`` is True, or ``etag`` itself where it is one, `Vary: Accept-Encoding`, an
-    `x-request-id` (:func:`request_id`), and where the request carries an `Origin`
-    (:func:`_origin`), ``cors``'s answer to it: ``allow_origin`` where given, else that origin, with
-    :data:`_EXPOSED`, and `Origin` in `Vary`. A `GET` or `HEAD` whose 2xx answer :func:`_fresh`
-    finds fresh is Express's 304 instead, with no body, `Content-Type` or `Accept-Encoding` in
-    `Vary`, and no other answer is: api.linear.app answered `If-None-Match: *` on a `GET` of a
-    mutation with its 405 and on `OPTIONS /` with its 200 on 2026-10-27 (UTC). A `HEAD`'s other
-    2xx answer carries no `ETag`, as api.linear.app answered `HEAD /` with and without the
-    greeting's `ETag` in `If-None-Match` on 2026-10-26 (UTC)."""
+    where it has no `Cache-Control` of its own, Express's `ETag`
+    (:func:`backlot.express_http.weak_etag`, as on 591 of the 618 answers that carried one with a
+    body, the other 27 carrying :data:`_API_KEY_AS_BEARER_ETAG`) where ``etag`` is True, or ``etag``
+    itself where it is one, `Vary: Accept-Encoding`, an `x-request-id` (:func:`request_id`), and
+    where the request carries an `Origin` (:func:`_origin`), ``cors``'s answer to it:
+    ``allow_origin`` where given, else that origin, with :data:`_EXPOSED`, and `Origin` in `Vary`. A
+    `GET` or `HEAD` whose 2xx answer :func:`_fresh` finds fresh is Express's 304 instead, with no
+    body, `Content-Type` or `Accept-Encoding` in `Vary`, and no other answer is: api.linear.app
+    answered `If-None-Match: *` on a `GET` of a mutation with its 405 and on `OPTIONS /` with its
+    200 on 2026-10-27 (UTC). A `HEAD`'s other 2xx answer carries no `ETag`, as api.linear.app
+    answered `HEAD /` with and without the greeting's `ETag` in `If-None-Match` on 2026-10-26
+    (UTC)."""
     headers: MutableHeaders = response.headers
     headers.setdefault("cache-control", _NO_STORE)
     if etag is True:
-        headers["etag"] = express_etag(response.body)
+        headers["etag"] = express_http.weak_etag(response.body)
     elif etag:
         headers["etag"] = etag
     origin = _origin(request)
@@ -166,24 +158,29 @@ def _express_sent(
     return response
 
 
-#: ``fresh``'s test for `no-cache` in a request's `Cache-Control`, its `\s` written out as the
-#: characters JavaScript's `\s` holds in latin-1, which a header value is read as: api.linear.app
-#: answered `\xa0no-cache` with the 200 and `\x85no-cache` with the 304 on 2026-10-26 (UTC).
-_NO_CACHE = re.compile(r"(?:^|,)[\t\n\v\f\r \xa0]*?no-cache[\t\n\v\f\r \xa0]*?(?:,|$)")
-
-
 def _fresh(request: Request, etag: str | None) -> bool:
-    """Whether ``fresh`` 0.5.2, which Express asks, finds the answer carrying ``etag`` fresh to
-    ``request``: an `If-None-Match` of `*`, or one naming ``etag``, weakly or not, and no
-    `no-cache` in the request's `Cache-Control`. api.linear.app answered `GET /graphql` and the
-    greeting so on 2026-10-26 (UTC), with the 304 counted against the budget, and a `POST` naming
-    the `ETag` with the 200. A list is split at its commas and each tag stripped of spaces
-    alone, as ``fresh``'s ``parseTokenList`` reads it: api.linear.app answered the `ETag` after
-    `"x",` and a tab or U+00A0, or before a tab and `, "x"`, with the 200 on 2026-10-27 (UTC)."""
-    none_match = request.headers.get("if-none-match")
+    """Whether ``fresh`` 2.0.0, which Express 5 asks and api.linear.app's answers match (Linear does
+    not say what it runs), finds the answer carrying ``etag`` fresh to ``request``: an
+    `If-None-Match` of `*`, or one naming ``etag``, weakly or not, and no `no-cache`
+    (:data:`backlot.express_http.NO_CACHE`) in the request's `Cache-Control`, its copies joined with
+    `, `. The `If-None-Match` is read without the spaces and tabs around it, and an
+    `If-Modified-Since` is not read: 2.0.0 reads one only where no `If-None-Match` is sent, and
+    compares it with a `Last-Modified` no Linear answer carries.
+
+    api.linear.app answered `GET /graphql` and the greeting so on 2026-10-26 (UTC), with the 304
+    counted against the budget, and a `POST` naming the `ETag` with the 200; `no-cache` after a
+    U+00A0 drew the 200, and after a U+0085 the 304. On 2026-10-27 (UTC) `*` with a space or a tab
+    after it, or a space and a tab before it, and the `ETag` with either after it drew the 304. So
+    did `*` beside an `If-Modified-Since` of a past or a future date, of nothing, of spaces, of
+    U+00A0 or of `x`, and the `ETag` beside the past date, where either date alone drew the 200; `*`
+    beside `max-age=0` and `no-cache` sent as two `Cache-Control` headers, either way round, drew
+    the 200. A list is split at its commas and each tag stripped of spaces alone, as ``fresh``'s
+    ``parseTokenList`` reads it: api.linear.app answered the `ETag` after `"x",` and a tab or
+    U+00A0, or before a tab and `, "x"`, with the 200 on 2026-10-27 (UTC)."""
+    none_match = request.headers.get("if-none-match", "").strip(" \t")
     if not none_match:
         return False
-    if re.search(_NO_CACHE, request.headers.get("cache-control", "")):
+    if express_http.NO_CACHE.search(", ".join(request.headers.getlist("cache-control"))):
         return False
     if none_match == "*":
         return True

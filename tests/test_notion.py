@@ -315,49 +315,71 @@ def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
     assert statuses == [401, 400, 200, 401, 200]
 
 
-def test_notion_json_carries_the_charset_real_sends(client, notion_h):
-    """Pins ``backlot.errors.notion.json_media_type`` on 200s and refusals, a `HEAD` among them,
-    beside the OpenAPI document and the app's own routes, which keep `application/json`."""
+def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, notion_h):
+    """Pins ``backlot.errors.notion.json_media_type`` and
+    ``backlot.routers.notion.APPLICATION_HEADERS`` on 200s and refusals, a `HEAD` among them: each
+    carries the charset, and each but the framework's 405 for `TRACE` and a refusal of the body
+    reader (``backlot.routers.notion.front_door_body``) the headers, which a body that reader leaves
+    unread gets too. The OpenAPI document and the app's own routes keep `application/json` and carry
+    none of the headers."""
     utf8 = "application/json; charset=utf-8"
+    real = {
+        "content-security-policy": "default-src 'none'",
+        "referrer-policy": "strict-origin-when-cross-origin",
+        "x-content-type-options": "nosniff",
+        "x-dns-prefetch-control": "off",
+        "x-download-options": "noopen",
+        "x-frame-options": "SAMEORIGIN",
+        "x-permitted-cross-domain-policies": "none",
+        "x-xss-protection": "0",
+    }
+    none = dict.fromkeys(real)
+    versioned = {"Notion-Version": DATA_SOURCES_VERSION}
     rows = [
-        ("GET", "/notion/v1/users/me", notion_h, None, 200),
-        ("POST", "/notion/v1/search", notion_h, {}, 200),
-        (
-            "GET",
-            f"/notion/v1/pages/{synth.notion_id('nt-runbook')}",
-            notion_h,
-            None,
-            200,
-        ),
-        ("GET", "/notion/v1/users/me", {"Notion-Version": DATA_SOURCES_VERSION}, None, 401),
-        ("POST", "/notion/v1/search", {"Notion-Version": DATA_SOURCES_VERSION}, {}, 401),
+        ("GET", "/notion/v1/users/me", notion_h, None, 200, real),
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{}", 200, real),
+        ("GET", f"/notion/v1/pages/{synth.notion_id('nt-runbook')}", notion_h, None, 200, real),
+        ("GET", "/notion/v1/users/me", versioned, None, 401, real),
+        ("POST", "/notion/v1/search", {**versioned, **_JSON}, b"{}", 401, real),
         (
             "GET",
             "/notion/v1/users/me",
             {"Authorization": notion_h["Authorization"]},
             None,
             400,
+            real,
         ),
-        ("GET", "/notion/v1/nonexistent_thing/xyz", notion_h, None, 400),
+        ("GET", "/notion/v1/nonexistent_thing/xyz", notion_h, None, 400, real),
+        ("GET", "/notion/v1/pages/00000000000000000000000000000000", notion_h, None, 404, real),
+        ("POST", "/notion/v1/oauth/token", {**versioned, **_JSON}, b"{}", 401, real),
+        # the framework's 405 for a method no route takes, which real's front door answers itself
+        ("TRACE", "/notion/v1/users/me", notion_h, None, 405, none),
+        # the body reader's refusals, and a body it does not read
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{", 400, none),
         (
-            "GET",
-            "/notion/v1/pages/00000000000000000000000000000000",
-            notion_h,
-            None,
-            404,
+            "POST",
+            "/notion/v1/search",
+            {**notion_h, "Content-Type": "application/json; charset=latin1"},
+            b"{}",
+            415,
+            none,
         ),
+        ("POST", "/notion/v1/search", {**notion_h, "Content-Type": "text/plain"}, b"{", 200, real),
     ]
-    for method, path, headers, payload, status in rows:
-        r = client.request(method, path, headers=headers, json=payload)
-        assert (r.status_code, r.headers["content-type"]) == (status, utf8), path
-    head = client.head("/notion/v1/users/me", headers={"Notion-Version": DATA_SOURCES_VERSION})
-    assert (head.status_code, head.headers["content-type"]) == (401, utf8)
-    # the contract keeps the bare type, and so do the app's own routes
+    for method, path, headers, body, status, sent in rows:
+        r = client.request(method, path, headers=headers, content=body)
+        got = {name: r.headers.get(name) for name in real}
+        assert (r.status_code, r.headers["content-type"], got) == (status, utf8, sent), (path, body)
+    head = client.head("/notion/v1/users/me", headers=versioned)
+    got = {name: head.headers.get(name) for name in real}
+    assert (head.status_code, head.headers["content-type"], got) == (401, utf8, real)
+    # the contract keeps the bare type, and so do the app's own routes, with none of the headers
     op = client.get("/openapi.json").json()["paths"]["/notion/v1/users/me"]["get"]
     assert list(op["responses"]["200"]["content"]) == ["application/json"]
-    assert client.get("/openapi.json").headers["content-type"] == "application/json"
-    assert client.get("/health").headers["content-type"] == "application/json"
-    assert client.get("/notionx/v1/users/me").headers["content-type"] == "application/json"
+    for path in ("/openapi.json", "/health", "/notionx/v1/users/me"):
+        r = client.get(path)
+        got = {name: r.headers.get(name) for name in real}
+        assert (r.headers["content-type"], got) == ("application/json", none), path
 
 
 def test_notion_page_retrieve_and_blocks(client, notion_h):

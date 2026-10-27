@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 from backlot.fidelity.findings import BREAKING, GAP, Finding
+from backlot.fidelity.surface import EXTRA, IMPLEMENTED, MISSING, OperationEntry, OperationSurface
 
 _PLACEHOLDER = re.compile(r"\{[^}]*\}")
 _METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
@@ -32,6 +33,10 @@ class Operation:
     method: str
     path: str
     params: frozenset[str]
+    # What the vendor's document calls the operation; empty on Backlot's side.
+    id: str = ""
+    # The message it answers with, where the document names one: a discovery method's `response`.
+    response: str = ""
 
     @property
     def key(self) -> tuple[str, str]:
@@ -75,10 +80,10 @@ def from_backlot(
     """The operations Backlot serves for one source, taken from the app's own ``/openapi.json``.
 
     ``mount`` selects the paths belonging to this source; ``strip`` is the part of them the vendor's
-    own document does not repeat. The two differ per source and are not guessable: Slack is mounted
-    at ``/slack/api`` and its spec starts at ``/conversations.list``, so the whole mount comes off,
-    while Gmail is mounted at ``/gmail`` and Google's document already spells ``gmail/v1/...``, so
-    nothing does. Guessing here silently pairs the wrong operations.
+    own document does not repeat. The two differ per source and are not guessable: Jira is mounted
+    at ``/atlassian/rest/api/3`` and its document spells ``/rest/api/3/...``, so ``/atlassian``
+    comes off, while Gmail is mounted at ``/gmail`` and Google's document already spells
+    ``gmail/v1/...``, so nothing does. Guessing here silently pairs the wrong operations.
     """
     mount = tuple(mount)
     ops: dict[tuple[str, str], Operation] = {}
@@ -137,3 +142,25 @@ def diff_operations(
                 )
             )
     return sorted(out, key=lambda f: (f.severity != BREAKING, f.path, f.kind))
+
+
+def inventory(
+    backlot: Mapping[tuple[str, str], Operation],
+    real: Mapping[tuple[str, str], Operation],
+) -> OperationSurface:
+    """One entry per operation either side has: the vendor's id for it, and which side has it.
+
+    The id is only what the document declares, so a served route with no path item in the document
+    has none.
+    """
+    out = []
+    for key in sorted(set(backlot) | set(real)):
+        op = backlot.get(key) or real[key]
+        name = real[key].id if key in real else ""
+        if key not in backlot:
+            status = MISSING
+        else:
+            status = IMPLEMENTED if key in real else EXTRA
+        response = real[key].response if key in real else ""
+        out.append(OperationEntry(str(op), status, name, response))
+    return OperationSurface(tuple(out))

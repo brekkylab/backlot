@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+import ntpath
+import os
+import posixpath
+import signal
 import socket
 import subprocess
 import sys
+import time
 import urllib.request
 from types import SimpleNamespace
 
@@ -14,7 +19,7 @@ import pytest
 import backlot
 import backlot.server
 from backlot.server import _terminate
-from tests._helpers import complete
+from tests._helpers import POSIX_SIGNALS, complete, readline_within
 
 
 def _get(url: str) -> dict:
@@ -255,35 +260,159 @@ def test_teardown_reaps_a_process_that_ignores_sigterm():
     assert proc.poll() is not None
 
 
+# A process that holds `serve()` and nothing else, as a library caller does: it prints the server's
+# URL and pid, and with `FORK` set the pid of a child it forked that only sleeps, then waits for its
+# stdin to close.
+_HOLDS_A_SERVER = """
+import os, sys, time
+import backlot
+import backlot.server
+
+with backlot.serve() as s:
+    forked = ""
+    if os.environ.get("FORK"):
+        forked = os.fork()
+        if forked == 0:
+            time.sleep(60)
+            os._exit(0)
+    print(s.base_url, backlot.server._CHILDREN[-1].pid, forked, flush=True)
+    sys.stdin.read()
+"""
+
+_FORKS = pytest.mark.skipif(not hasattr(os, "fork"), reason="forks, which Windows cannot")
+
+
+@pytest.mark.windows
+@pytest.mark.parametrize(
+    "end, forks",
+    [
+        pytest.param("kill", False, id="kill"),
+        pytest.param("SIGTERM", False, marks=POSIX_SIGNALS, id="SIGTERM"),
+        pytest.param("SIGHUP", False, marks=POSIX_SIGNALS, id="SIGHUP"),
+        pytest.param("kill", True, marks=_FORKS, id="kill with a forked child alive"),
+    ],
+)
+def test_the_server_ends_with_the_process_that_started_it(end, forks):
+    """A process holding `serve()` that ends without unwinding it takes its server with it, through
+    the stdin pipe `serve()` starts the server on, and a child it forked that is still running does
+    not hold the server up. `kill()` is SIGKILL on POSIX and `TerminateProcess` on Windows; SIGTERM
+    and SIGHUP end a POSIX process by their default disposition."""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLDS_A_SERVER],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        env={**os.environ, "FORK": "1"} if forks else None,
+    )
+    forked = []
+    try:
+        line = readline_within(holder.stdout, 120)
+        assert line, "the process holding serve() printed no URL within 120s"
+        url, pid, *forked = line.decode().split()
+        if end == "kill":
+            holder.kill()
+        else:
+            holder.send_signal(getattr(signal, end))
+        holder.wait(timeout=30)
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+    port = int(url.rsplit(":", 1)[1])
+    deadline = time.monotonic() + 10
+    try:
+        while time.monotonic() < deadline:
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+            except OSError:
+                break
+            time.sleep(0.2)
+        else:
+            os.kill(int(pid), signal.SIGTERM)
+            pytest.fail(
+                f"the server on port {port} (pid {pid}) outlived the process that started it"
+            )
+    finally:
+        for child in forked:
+            os.kill(int(child), signal.SIGKILL)
+
+
 # --------------------------------------------------------------------------- data_dir
 
 
-def test_served_subprocesses_do_not_inherit_stdin(monkeypatch):
-    """Both children `serve` starts — the `import` that builds the corpus and the `serve` that
-    answers — get `stdin=DEVNULL`. Under `backlot mcp` the inherited handle would be the MCP
-    protocol pipe, and a child reading from it corrupts a live session while every test that only
-    watches the server's answers stays green. Asserted on the call, since that is the only place
-    the choice is visible from outside the child."""
+def test_serve_owns_its_childrens_stdin(monkeypatch):
+    """Neither child `serve` starts inherits the caller's stdin: the `import` that builds the corpus
+    gets `stdin=DEVNULL`, and the `serve` that answers a pipe of `serve()`'s own, closed once that
+    server has stopped. Under `backlot mcp` the inherited handle would be the MCP protocol pipe,
+    and a child reading from it corrupts a live session while every test that only watches the
+    server's answers stays green. Asserted on the call, since that is the only place the choice is
+    visible from outside the child; the `subprocess.run` that starts the `import` reaches `Popen`
+    too."""
     import backlot.server as server_mod
 
-    seen = []
-    real_popen, real_run = server_mod.subprocess.Popen, server_mod.subprocess.run
+    stdin_of, started = {}, {}
+    real_popen = server_mod.subprocess.Popen
 
     class Popen(real_popen):
-        def __init__(self, *args, **kwargs):
-            seen.append(("Popen", kwargs.get("stdin")))
-            super().__init__(*args, **kwargs)
-
-    def run(*args, **kwargs):
-        seen.append(("run", kwargs.get("stdin")))
-        return real_run(*args, **kwargs)
+        def __init__(self, args, *rest, **kwargs):
+            command = args[args.index("backlot") + 1]
+            stdin_of[command], started[command] = kwargs.get("stdin"), self
+            super().__init__(args, *rest, **kwargs)
 
     monkeypatch.setattr(server_mod.subprocess, "Popen", Popen)
-    monkeypatch.setattr(server_mod.subprocess, "run", run)
     with backlot.serve() as s:
         assert s.base_url
-    assert seen and all(stdin is subprocess.DEVNULL for _, stdin in seen), seen
-    assert {kind for kind, _ in seen} == {"Popen", "run"}, seen
+        assert not started["serve"].stdin.closed
+    assert stdin_of == {"import": subprocess.DEVNULL, "serve": subprocess.PIPE}, stdin_of
+    assert started["serve"].stdin.closed
+
+
+@pytest.mark.parametrize(
+    "platform, path, executable, base, starts_on_base",
+    [
+        # a venv on Windows: its python.exe is a launcher
+        ("win32", ntpath, r"C:\venv\Scripts\python.exe", r"C:\Python\python.exe", True),
+        # the venv's own python.exe by Windows' rules, in another case and with forward slashes
+        ("win32", ntpath, r"C:\venv\Scripts\python.exe", "c:/VENV/scripts/PYTHON.EXE", False),
+        # no venv: the base interpreter is sys.executable itself
+        ("win32", ntpath, r"C:\Python\python.exe", r"C:\Python\python.exe", False),
+        # a venv elsewhere: its python is no launcher
+        ("linux", posixpath, "/venv/bin/python", "/usr/bin/python3", False),
+    ],
+)
+def test_the_server_runs_on_the_interpreter_that_holds_its_files(
+    platform, path, executable, base, starts_on_base, monkeypatch
+):
+    """Per row, the interpreter the server starts on and the environment it gets: the base
+    interpreter, and the built environment plus the launcher variable, only in a venv on Windows
+    (`backlot.server._interpreter` says why). Asserted on the call that starts it, which is all a
+    run off Windows can see, with the platform, both paths and the path rules swapped on that
+    module's own view of `sys` and `os`."""
+    import backlot.server as server_mod
+
+    view = SimpleNamespace(platform=platform, executable=executable, _base_executable=base)
+    monkeypatch.setattr(server_mod, "sys", view)
+    monkeypatch.setattr(server_mod, "os", SimpleNamespace(path=path, environ=os.environ))
+    built, seen = [], []
+
+    class Started(Exception):
+        pass
+
+    def run(argv, **kwargs):
+        built.append(kwargs["env"])
+
+    def Popen(argv, **kwargs):
+        seen.append((argv[0], kwargs["env"]))
+        raise Started
+
+    # `subprocess.run` starts its process through `subprocess.Popen`, so the import is faked too: a
+    # real one would reach the `Popen` fake first.
+    monkeypatch.setattr(server_mod.subprocess, "run", run)
+    monkeypatch.setattr(server_mod.subprocess, "Popen", Popen)
+    with pytest.raises(Started), backlot.serve():
+        pass
+    if starts_on_base:
+        assert seen == [(base, {**built[0], "__PYVENV_LAUNCHER__": executable})]
+    else:
+        assert seen == [(executable, built[0])]
 
 
 def test_serve_data_dir_serves_an_existing_build_as_it_stands(tmp_path):
@@ -378,7 +507,9 @@ def test_backlots_own_routes_answer_head_as_the_get(client, admin_h):
 def test_serving_a_db_older_than_the_schema_says_so_and_says_to_re_import(tmp_path):
     """A table this build reads that the DB does not have, then a column one of its tables does
     not have -- rather than an OperationalError per read either way. There is no migration -- a
-    corpus is re-imported, not upgraded in place -- so naming the gap is the whole remedy."""
+    corpus is re-imported, not upgraded in place -- so naming the gap is the whole remedy. `serve()`
+    over that data dir reports the same refusal, with the code uvicorn exits with when the app does
+    not start (3) and nothing after it."""
     import sqlite3
 
     import pytest
@@ -411,6 +542,12 @@ def test_serving_a_db_older_than_the_schema_says_so_and_says_to_re_import(tmp_pa
             pass
     assert "gdrive_sheets" in str(e.value)
     assert "backlot import" in str(e.value)
+    with pytest.raises(RuntimeError) as e:
+        with backlot.serve(data_dir=settings.data_dir):
+            pass
+    assert "exited with code 3 " in str(e.value)
+    assert "gdrive_sheets" in str(e.value)
+    assert "Fatal Python error" not in str(e.value)
 
     # A column this build reads that the table predates is the same refusal, named as
     # `table.column` — before the check knew columns, `name contains` was a bare 500 per request

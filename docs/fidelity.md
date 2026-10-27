@@ -18,14 +18,33 @@ response, which needs a credential.
 For a source compared against a **document its vendor publishes**, the request surface — which
 operations exist, which query parameters each accepts, and, for Google, the batch endpoint its
 `batchPath` names. Backlot's side is the app's own `/openapi.json`. The vendor's side comes in two formats, read by two parsers, because Google does
-not publish OpenAPI: **OpenAPI** documents for GitHub, Slack, Jira, Confluence, Notion and
-HubSpot, and **Google API Discovery** documents for Gmail and the Drive family. A source is
+not publish OpenAPI: **OpenAPI** documents for GitHub, Jira, Confluence, Notion and HubSpot, and
+**Google API Discovery** documents for Gmail and the Drive family. A source is
 compared against as many documents as its vendor publishes for the surface Backlot serves — Jira's
 two REST versions, Drive alongside Docs, Sheets and Slides, HubSpot's CRM and associations. All
 are public, so these comparisons run with **no credential, no quota and no account**. Response
 bodies are out of scope here: a vendor spec describes them through deep `$ref` chains that
 Backlot's `response_model` set does not mirror shape-for-shape, so a body diff would report how two
 documents are written rather than how two servers answer.
+
+For **Slack**, which maintains no machine-readable description, its reference documentation:
+which methods exist, which arguments each takes and at which type, and which fields each answer
+carries and at which type, in both directions. Backlot's side is `/openapi.json` for the arguments
+and a local Backlot's own answers for the fields. See [Slack is read off its reference
+documentation](#slack-is-read-off-its-reference-documentation).
+
+For **Microsoft Teams**, the type system Microsoft Graph publishes as CSDL at
+`https://graph.microsoft.com/v1.0/$metadata`, anonymously and from the live service. A CSDL
+enumerates neither Backlot's paths nor the vendor's: it declares entity types, which of their
+properties may be null, whether a type accepts properties it does not name, and the members of
+every enum. So Backlot's side is not a document either — it is the responses a running server
+actually sends. See [Teams is asked against its type
+system](#teams-is-asked-against-its-type-system). Its operations come from the OpenAPI document
+Microsoft generates its Graph SDKs from (`openapi/v1.0/openapi.yaml` in
+`microsoftgraph/msgraph-metadata`), cut to the Teams surface — teams, chats, teamwork, and `/me`
+and `/users/{id}` with their joined teams, chats and teamwork — and compared by method and path
+alone: Graph's parameters are the OData system query options on every collection, which
+`tests/test_msteams.py` holds as measured.
 
 Path templates are compared with placeholders flattened. The vendor calling a segment `{userId}`
 and Backlot calling it `{user_id}` is not a divergence.
@@ -61,14 +80,15 @@ Each source **declares** the credentials it needs, by a logical name and the env
 it is read from, and `--credential NAME=VALUE` repeats for as many as a source declares. A single
 `--token` would not stretch: a vendor authenticated with SigV4 needs an access key *and* a secret,
 and a Google service account needs a client id, a client secret and a private key. Declaring them
-also means a name a source does not take is **refused** rather than ignored — nine of the eleven
+also means a name a source does not take is **refused** rather than ignored — ten of the twelve
 sources need no credential at all, and that is exactly where a silently accepted option goes
 unnoticed.
 
 Prefer the environment. A value passed on the command line is visible to any process that can run
 `ps`, and it lands in shell history.
 
-Exit codes are distinct on purpose: `1` is "the contracts disagree", `2` is "the vendor's contract
+Exit codes are distinct on purpose: `1` is "the measurement and the baseline disagree" — a new
+divergence, or a baseline entry for one the vendor no longer has — `2` is "the vendor's contract
 could not be read", and `3` is "a credential this source declares is not set anywhere". A vendor
 outage is not a fidelity finding, and a credential nobody set is this repository's problem rather
 than either — the scheduled run fails on `3` for that reason, because warned about and left green
@@ -81,20 +101,82 @@ document only *describes* the contract, and it lags, omits paid tiers, and docum
 the server accepts two. Every `extra_operation` this has reported so far was the spec being
 incomplete rather than Backlot being wrong:
 
-- Slack's spec documents one verb per method, and of the search methods only `search.messages`:
-  `search.all` and `search.files` are absent. Measured against slack.com, all fourteen answer
-  `200/ok` over **both** GET and POST.
-- GitHub's spec describes neither `contents` without a path nor the legacy per-sha statuses read.
-  Measured against api.github.com, both answer `200`.
+- GitHub's spec declares a `GET` for neither `contents` without a path nor the legacy per-sha
+  statuses read, and describes both in the prose of the operations they belong to. Measured
+  against api.github.com, both answer `200`.
 - Atlassian's published Confluence v1 document no longer describes the content and space reads
   Backlot serves: `content`, `content/{id}` with its `child/page`, `child/comment`,
   `child/attachment` and `label`, `space` and `space/{key}`. It still describes 65 reads —
   `content/search`, `content/{id}/descendant`, `group`, `label` and `user/current` among them — and
-  the writes. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2, not
-  documented as removed, so on that source this comparison currently covers almost nothing.
+  the writes. The v1 reads Backlot serves are deprecated in favour of Confluence REST v2, and
+  each 200 names a removal date already past, so on that source this comparison currently covers
+  almost nothing.
 
 So on a REST source, read `missing_*` as reliable and `extra_*` as *undocumented by the vendor —
 verify by hand*, never as proof of a bug. Those measurements are what the baseline notes carry.
+
+## Slack is read off its reference documentation
+
+Slack's OpenAPI document, `slackapi/slack-api-specs`, is archived, its last content change dated
+2020-10-06: it declares 174 methods where the reference lists 340, `canvases.*`, `bookmarks.*`
+and `assistant.threads.*` among those it lacks. The copy `api.slack.com/specs/openapi/v2/` still
+serves is the same version, 1.7.0, with 170. What Slack maintains is the reference at
+`docs.slack.dev`, which serves every page as markdown (`docs.slack.dev/llms.txt`). Markdown is
+prose, not a schema, so each part is read only where the page gives it one fixed spelling, and a
+page that stops spelling it that way is a contract that could not be read (exit 2), never a
+divergence. Measured 2026-10-21 over all 340 method pages and the nine object pages:
+
+- **Methods** are the index's table rows, each a method's name linked to its own page. Every row
+  but the header must read that way. A method's own page is read only where Backlot serves it,
+  and its `method_name` frontmatter must be the name the index linked.
+- **Arguments** are the lines of a page's `## Arguments` section: 1516 lines of one shape, a
+  bolded code name, an optional type (`string` 968, `boolean` 131, `array` 129, `integer` 72,
+  `object` 16, `number` 6, none 194) and `Required` or `Optional`. Every bolded code name anywhere
+  in a section is one of those lines, and every page but `admin.audit.anomaly.allow.getItem`, which
+  Backlot does not serve, reads at least one, so a served page that reads none is refused. An
+  argument with no type is compared by name only; `integer` and `number` are one JSON type.
+- **Fields** are read off the JSON examples in a page's `## Response` section, success examples
+  only (`"ok": true`). 608 fenced blocks there open as JSON: 596 are JSON as written and 3 more
+  once an elision (`...`, `// ...`) and a trailing comma outside every string are taken out. The
+  9 left, single-quoted strings, missing commas and one JSON Lines file, are all on methods
+  Backlot does not serve, whose pages are not read. A key that is not a field name (a profile's
+  custom-field ids, a file's per-channel `shares`, a huddle's per-person `participants_events`)
+  collapses to `{}`.
+- An example shows one sample, so where the section links an **object page**
+  (`reference/objects/user-object.md`), that page's Field/Type/Description tables add every field
+  the object may carry. The first table names the object's own fields, and the object goes where
+  an example carries the container sharing the most of them (`members[]` on `users.list`, `user`
+  on `users.info`); a later table goes under the container its rows share the most names with (the
+  user object's second table is its `profile`). A type cell reads as a JSON type by its first
+  word — `String`, `Boolean`, `Integer`, `Unix timestamp`, `Array of …`, a backticked id such as
+  `` `user_id` `` — which every one of the 513 typed rows' cells does but `last_read`'s
+  `Timestamp`, a string or a number as Slack's timestamps go, which types nothing. So do the 25
+  rows of the conversation object's booleans table, which has no Type column.
+
+Backlot's side of the fields is what a local Backlot answers on a corpus `slack_docs` supplies,
+over every channel, thread and person it holds and with the arguments the reference's examples
+were sent where an answer echoes them (`api.test`'s `foo`, `conversations.history`'s `latest`, a
+page with more to follow), so a finding reproduces with `backlot.serve(records=…)`.
+A field Backlot answers under a list the documentation never looks inside, or the documentation
+under one Backlot answered empty, is compared against nothing and not reported; an empty object
+Backlot answers is looked inside, and an example's empty object is not. `null` beside a type is not
+another type.
+
+The answer is not read off slack.com. Measured 2026-09-23, which fields a live workspace's answer
+carries depends on what it holds and who asks: one channel holding only join messages left out
+eleven `conversations.history` fields a threaded one carries, two threads differed by thirty-two
+`conversations.replies` fields, `has_2fa` comes back only to an admin and `profile.email` only to a
+token with `users:read.email`. A comparison against that would move with the workspace. Nor is a
+model asked to read the pages: every part compared reads deterministically as above, and a reader
+that answers differently run to run would rewrite the baseline with it.
+
+A method is one operation, named as Slack names it (`conversations.list`): a page names one
+`http_method`, and slack.com answers every method Backlot serves over GET and POST alike.
+
+The reference documents less than slack.com serves. A message's thread, reaction, edit and file
+fields are absent from `conversations.history`'s examples and documented only in prose elsewhere,
+so Backlot serving them reads as `extra_field`; each such entry in the baseline carries a note with
+the vendor evidence for it.
 
 ## Severities
 
@@ -120,11 +202,14 @@ at the same path. Backlot serves them from four catch-all routes that read the q
 themselves, so a path-and-parameter diff pairs every S3 operation with the same route and reports a
 clean match every time — a green check that means nothing.
 
-So S3 is compared by asking a running server instead. Backlot starts on a free port, every read
-operation botocore declares is sent to it signed, and the answer is classified:
+So S3 is compared by asking a running server instead. Backlot starts on a free port, every
+operation botocore declares for the S3 endpoint is sent to it signed, and the answer is classified.
+A write is `refused` when it is answered with any error, which is what it is owed where data enters
+only through `backlot import`, and `answered_write`, breaking, when it is not. An operation is
+`implemented` unless it is `refused` or a case below makes it `missing`. A read is:
 
 - **refused with `NotImplemented`** — the honest answer for an operation Backlot does not serve. A
-  `gap`.
+  `gap`, and the operation is `missing`.
 - **answered with the error real gives that operation** — the 404 `NoSuchCORSConfiguration` for a
   bucket nobody configured, for one; `REAL_ERRORS` in `backlot.fidelity.s3_probe` holds each, as
   measured. No finding.
@@ -133,7 +218,14 @@ operation botocore declares is sent to it signed, and the answer is classified:
 - **answered distinctly** — implemented. No finding.
 - **answered with the body the same path returns when nothing selects an operation** — Backlot
   neither implements the operation nor refuses it, so the caller parses another operation's body
-  under a 200, with no error and no log line. `silent_fallthrough`, and breaking.
+  under a 200, with no error and no log line. `silent_fallthrough`, and breaking, and the
+  operation is `missing`. Only an operation a query string selects is compared: a bare form such as
+  ListObjects is that body.
+
+Two operations are not asked, because the model sends each only to another endpoint, which Backlot
+does not serve: ListDirectoryBuckets to the S3 Express control endpoint, signed for `s3express`,
+where its `GET /` at the S3 endpoint is ListBuckets, and WriteGetObjectResponse to the S3 Object
+Lambda endpoint, signed for `s3-object-lambda`. Each is `missing`, and a `gap`.
 
 "The same body" is the status, the XML root element and the set of direct child elements. The
 children are what keep the two listings apart: `?list-type=2` and a bare bucket GET are both
@@ -186,27 +278,113 @@ What the batch endpoint *does* — the multipart envelope, the `Content-ID` pair
 credential applying to a sub-request that carries none — is behaviour, and is held by
 `tests/test_google.py` rather than by this comparison.
 
+## Teams is asked against its type system
+
+Graph publishes a machine-readable contract, richer than any other source's, and it is not a path
+map. So Backlot's side cannot be `/openapi.json`: the response models under `/msgraph` allow extra
+fields and name none of them, deliberately, because a Graph response carries thirty keys and
+mirroring that in a Pydantic model would be a second declaration to keep in step.
+
+What the vendor's declaration is compared against is a sample of a running server's answers.
+Backlot starts on a free port and samples the Teams read surface as the service account. The walk
+checks first pages only and expanded replies returned inline; it does not follow collection or
+reply continuation links. It is a shape sample, not an exhaustive corpus crawl or pagination check.
+Sampled messages and the nested objects the walk enumerates (`body`, `from`, `channelIdentity`,
+reactions, attachments and mentions) are checked against their declared types:
+
+- a property served on a **closed** type that the type does not declare
+- a property declared `Nullable="false"` served as **null**
+- an **enum-typed** property carrying a value the enum does not list
+
+All three are classified as **breaking by Backlot's schema-conformance gate**. That classification
+is not proof that every official SDK rejects the payload: the Python Graph SDK, for example, can
+retain an unknown property in `additional_data`. Null and enum handling also depends on the client.
+The gate reports a declaration mismatch, not a guaranteed deserialization failure.
+
+A property the document declares and the response **omits** is not reported. Every one of these
+APIs projects — Graph returns eleven of `user`'s eighty-one properties unless `$select` asks for
+more — so "declared, not served" is the normal case and reporting it would bury the three above.
+`Nullable="false"` is read as *not null when returned*, never as *always returned*.
+
+Two more things the document says are honoured rather than assumed. `team` and `user` are
+`OpenType="true"`, so a property they do not declare is something the vendor **permits**, and they
+are not held to the first check at all; `chatMessage`, `channel` and `chatMessageReaction` are
+closed, and they are. And a type name is keyed by its namespace: `user`, `identity` and `group` are
+each declared in more than one of Graph's schemas, and a bare-name lookup answers with whichever
+came last.
+
+This is not a probe. A [probe](#s3-is-asked-not-read) is for a contract that cannot be read off a
+document at all; here every finding names a property, a type or an enum member the vendor declared
+and quotes what it declared about it. What the two share is only that Backlot's side comes from a
+running server, which is a consequence of the vendor describing types rather than routes.
+
+Which request answers with which declared type is the one thing no document carries, so
+[`msgraph`](../backlot/fidelity/msgraph.py) states it and the source names that walk.
+Deriving it from the source's name would turn a rename into an `ImportError` on a nightly run.
+
 ## The baseline
 
-`backlot/fidelity/baseline/<source>.json` holds the divergences already read and accepted, so a run
-reports what is **new**. Without it the first Fireflies run lists fourteen root fields Backlot never
-claimed to serve, and the first Linear run lists seven hundred and eighty-two — by the third run
-nobody reads the output. The baselines ship inside the package, so an installed copy can be compared
-against its vendor without the repository.
+`backlot/fidelity/baseline/<source>.json` is the surface a source was last measured as, with the
+divergences already read and accepted written onto the elements they name, so a run reports what
+is **new**. Without it the first Fireflies run lists fourteen root fields Backlot never claimed to
+serve, and the first Linear run lists nearly eight hundred divergences — by the third run nobody
+reads the output. The baselines ship inside the package, so an installed copy can be compared
+against its vendor without the repository, and can name offline the operation, or root query
+field, a request asked for.
 
-Accepting a divergence is a file change, so it goes through review like any other.
-`--update-baseline` writes the entry; the note beside it is added by hand in that review. Most
-entries are plain — surface the vendor has and Backlot does not — and a note is what records a
-decision someone had to make: a family accepted as a whole, or a shape where a stand-in would break
-a client rather than merely be absent. Those notes are the written record of what Backlot does and
-does not claim about a vendor:
+The surface takes the shape of the contract:
+
+- **A published document or the S3 model** — `operations`, one entry per operation either side
+  has. `status` is `implemented` (both sides), `missing` (the vendor has it and Backlot does not
+  serve it), `extra` (Backlot's only) or, for S3, `refused` (a write answered with an error). `id`
+  is the vendor's own name for it: the `operationId` for an OpenAPI document, the method `id` for a
+  Discovery document, the botocore operation for S3, and for Slack the method name, which is also
+  the operation itself (`conversations.list`). A served route with no path item in its document,
+  or a Slack method the reference does not list, carries no `id`. A parameter appears only where
+  it diverges, under `params` of its operation, and so, for Slack, does a field of a method's
+  answer, under `fields`. A Google source adds `batch`: each
+  document's declared `batchPath` with whether a route answers it, and each of Backlot's batch
+  routes with whether a document selects it. Each Google operation carries its `response`, the
+  message the document says it answers with.
+- **A Discovery document a walk reads** — `types` beside `operations`, keyed by the document's
+  name and the message's (`sheets.Spreadsheet`): every message the responses of the methods the
+  walk reads reach, with every field and the `type` it holds, since a `fields` mask is read against
+  all of them and no served schema answers that offline. Which reads to make is the document's
+  `walk`, one of `backlot.fidelity.google_walks` (`sheets` for Sheets). A message one of its
+  answers was is `implemented`, each field they carried `implemented`, each they did not
+  `missing`, a gap, and each the message does not declare `extra`, breaking; a message none of
+  them was is `missing`, with no finding. There is no `root`: the operations are under
+  `operations`.
+- **A GraphQL schema** — `types`, every type Backlot declares with every field, enum value and
+  union member either side has under it, and every argument either side has on a field Backlot
+  serves, each with a `status`, and `type` where only the vendor has the member. A type the vendor
+  declares as another kind lists no members. The vendor's types Backlot does not declare are not
+  listed. `root.query` names the type whose fields are the operations.
+- **A CSDL** — the same `types` shape, built from what the walk was served. `root.query` is the
+  entity container (`GraphService`), and its fields are the entity sets and singletons the walk's
+  requests start from. Under it, each type the walk checked lists every property it was served:
+  `implemented` where the type declares it, `extra` where it does not. Beside `types` sit the
+  `operations` of Graph's OpenAPI document in the first bullet's shape, with Microsoft's
+  `operationId` as each one's `id`; telemetry names a Teams call by them.
 
 ```json
-{
+{ "operation": "GET /repos/{}/{}", "id": "repos/get", "status": "implemented" }
+```
+
+Accepting a divergence is a file change, so it goes through review like any other.
+`--update-baseline` writes `kind` and `severity` onto the element the finding names; the note beside
+them is added by hand in that review. Most are plain — surface the vendor has and Backlot does not —
+and a note is what records a decision someone had to make: a family accepted as a whole, or a shape
+where a stand-in would break a client rather than merely be absent. Those notes are the written
+record of what Backlot does and does not claim about a vendor. Under `types.Query.fields` in
+`fireflies.json`:
+
+```json
+"active_meetings": {
+  "status": "missing",
+  "type": "[ActiveMeeting!]",
   "kind": "missing_field",
   "severity": "gap",
-  "path": "Query.active_meetings",
-  "detail": "vendor serves active_meetings: [ActiveMeeting!]; Backlot does not",
   "note": "Meetings in progress right now. Backlot serves a fixed corpus, so there is no live state to report."
 }
 ```
@@ -214,33 +392,53 @@ does not claim about a vendor:
 `--update-baseline` acknowledges gaps freely and **never acknowledges a breaking finding**, which
 is a bug by this project's own rule rather than a gap. It still writes the gaps — leaving them out
 would bury the breaking ones under hundreds of repeats every run, which is the same silence by
-another route — and exits 1 naming what it left live.
+another route — and exits 1 naming what it left live. The element a breaking finding names is
+written all the same, bare.
 
 There is no flag that silences one. Acknowledging a breaking divergence is a hand edit to the
-baseline file, carrying a note that says why the vendor's shape is not being matched, so what a
-reviewer sees in the diff is the reasoning rather than a flag on a command nobody kept. An entry
-added that way survives later rewrites: `--update-baseline` rewrites the file, it does not
-re-litigate it.
+baseline file — `kind`, `severity`, the `detail` being accepted and a `note` saying why the vendor's
+shape is not being matched, added to the element — so what a reviewer sees in the diff is the
+reasoning rather than a flag on a command nobody kept. One added that way survives later rewrites:
+`--update-baseline` rewrites the file, it does not re-litigate it.
+
+The element is the one the finding's `path` names. `Transcript.duration` is
+`types.Transcript.fields.duration`; an argument, `Query.transcripts(limit)`, is under that field's
+`args`; an enum value or a union member is under its type's `values` or `members`. An operation is
+the `operations` entry whose `operation` is the path, and `GET /x?name` is `params.name` in it;
+`users.info user.profile.email` is `fields."user.profile.email"` in `users.info`'s entry.
+`severity` is `breaking` or `gap`, in lower case, and the command refuses a file carrying any other,
+or a `note` or `detail` on an element with no `kind`, rather than drop it. The `detail` is compared
+character for character, so copy it from `--json` (`.new[].detail`): the terminal form wraps a long
+one across lines.
 
 It stops covering a shape that moves, though. A `gap` is acknowledged by what it names — the vendor
 has surface Backlot does not, and the vendor restating it at a new type does not change what was
-accepted. A `breaking` entry is acknowledged by what it names **and** by its `detail`, because
-there the detail *is* the contradiction: an entry reading `vendor: Int, Backlot: Float` says
-nothing about a vendor now serving `String`, and going on silencing it is exactly the March drift
-this command exists to catch. Such an entry is reported again, and left in the file exactly as
-written — the note is the record of the reasoning, and a rewrite does not delete it — until someone
-reads the new shape and rewrites it by hand.
+accepted — so its `detail` is not kept. A `breaking` entry is acknowledged by what it names **and**
+by its `detail`, because there the detail *is* the contradiction: an entry reading
+`vendor: Int, Backlot: Float` says nothing about a vendor now serving `String`, and going on
+silencing it is exactly the March drift this command exists to catch. Such an entry is reported
+again, and left in the file as written — the note is the record of the reasoning, and a rewrite
+does not delete it — until someone reads the new shape and rewrites it by hand.
 
 A run also reports **resolved** entries: an acknowledged divergence the vendor no longer has. The
-baseline has gone stale, which is its own kind of drift.
+baseline has gone stale, which is its own kind of drift, and the run exits 1 for it as for a new
+finding. A stale `gap` entry is not inert: it is matched by what it names alone, so it would
+acknowledge, unreviewed, whatever the vendor later publishes at that name, and the GitHub, HubSpot,
+Notion, Slack, Atlassian and Google routers answer the path of a `missing` operation's entry as an
+operation the vendor publishes. Where Backlot is what changed — a route, a parameter or a field
+added while the file still records it `missing` — `tests/test_fidelity.py` reads the served surface
+off the app and the SDL, and S3's off a local Backlot, with no vendor network, and fails until the
+file is rewritten. Rewrite it with `--update-baseline`. By hand, delete the element's `kind`,
+`severity`, `detail` and `note`, and the element itself only where neither side has it any more: an
+element Backlot serves stays in the file, and deleting it fails that test.
 
 ## In CI
 
 [`.github/workflows/fidelity.yml`](../.github/workflows/fidelity.yml) runs every source daily,
 and on demand through `workflow_dispatch`. Never on a pull request: drift is this project's bug,
 but it is never the bug of whichever pull request happens to be open when a vendor ships a change,
-and a contributor fixing a typo must not be blocked by it. A new divergence opens an issue and
-turns the scheduled run red instead.
+and a contributor fixing a typo must not be blocked by it. A new divergence or a stale entry opens
+an issue and turns the scheduled run red instead.
 
 A source has one open issue at a time. It is opened under the `fidelity` label — the vendor API
 defines the right answer, so closing one needs a measurement against it — titled with the date the
@@ -262,7 +460,7 @@ each of those is compared, and a test fails if the two sets ever drift apart.
 |---|---|---|
 | Fireflies | GraphQL introspection | `api_key` — `FIREFLIES_API_KEY`, sent as `Bearer <key>` |
 | Linear | GraphQL introspection | `api_key` — `LINEAR_API_KEY`, sent **bare** |
-| Slack | published OpenAPI | none |
+| Slack | reference documentation — methods, arguments and answers, see [Slack is read off its reference documentation](#slack-is-read-off-its-reference-documentation) | none |
 | Gmail | Google Discovery, operations and `batchPath` | none |
 | Google Drive (`google_drive`) | Google Discovery — Drive, Docs, Sheets and Slides, operations and `batchPath` | none |
 | GitHub | published OpenAPI | none |
@@ -270,6 +468,7 @@ each of those is compared, and a test fails if the two sets ever drift apart.
 | Confluence | published OpenAPI (v1) | none |
 | HubSpot | published OpenAPI, CRM v3 and Associations v4, resolved through the API catalog | none |
 | Notion | published OpenAPI | none |
+| Microsoft Teams (`msteams`) | Graph's published OpenAPI for operations, and its CSDL against served responses — see [Teams is asked against its type system](#teams-is-asked-against-its-type-system) | none |
 | Amazon S3 | botocore service model, **probed** — see [S3 is asked, not read](#s3-is-asked-not-read) | none |
 
 The credential column is measured, not read off a page: Linear's personal API keys go in bare, and
@@ -313,16 +512,23 @@ such gap: which Atlassian and Google answers declare it is
 to say, and `tests/test_atlassian.py` and `tests/test_google.py` are the record.
 
 An `OPTIONS` is a third. Jira answers a caller it can name 200 with the methods that route takes,
-and Confluence answers a JSON, wildcard or absent `Accept` with a 404 on every route but `search`,
-which answers by `Accept` too. No document here declares any of it — real's own description has no
-`options` operation and neither does Backlot's — so the two `Allow` tables in
-`backlot.errors.atlassian` and the tests beside them are what hold them.
+and Confluence answers a 404 or a 403 page by `Accept` on every route but `search`, which answers
+its own way (`backlot.errors.atlassian.confluence_options`). No document here declares any of it —
+real's own description has no `options` operation and neither does Backlot's — so the two `Allow`
+tables in `backlot.errors.atlassian` and the tests beside them are what hold them.
 
-The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them
-(`backlot.main.report_github_rate_limit`), as every answer real gives does, but the comparison reads
-parameters and operations off the two documents and never a response header; real's description
-declares three of the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none.
-The tests are the record here (`tests/test_github.py`, the rate-limit test), not the baseline.
+What `Accept` does is a fourth. Both products refuse one that admits none of the types a route
+answers in with a 406 ahead of most of their other refusals, and send several refusals in the shape
+it asks for (`backlot.errors.atlassian.not_acceptable` and `rendered`). Neither description declares
+a 406, nor that a refusal's media type follows `Accept`, so `tests/test_atlassian.py` is the record.
+
+The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them but
+the ones `backlot.main.report_github_rate_limit` names, and the comparison reads parameters and
+operations off the two documents and never a response header; real's description declares three of
+the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none. The tests are the
+record here (`tests/test_github.py`, the rate-limit test), not the baseline. `x-github-request-id`
+is another: every `/github` answer carries it (`backlot.main.put_a_request_id_on_github_answers`),
+and `test_github_every_answer_carries_a_request_id` in the same file is its record.
 
 The `Allow` on S3's sub-resource 405s is another. A `HEAD` carrying a sub-resource selector is 405
 on both sides, and real names the methods that sub-resource takes where Backlot names only `GET`,

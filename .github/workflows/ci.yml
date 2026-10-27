@@ -11,10 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -22,7 +22,7 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: examples/using-official-sdk/linear/package-lock.json
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
 
@@ -36,7 +36,35 @@ jobs:
         # keeps the fetch off the clock the MCP client's `initialize` waits on, which a uv cache
         # that has not seen this version otherwise loses.
         run: uv tool install --with "mcp<2" "awslabs.aws-api-mcp-server@latest"
+      - name: Wait for the Docker daemon
+        # In this workflow's test-job logs from 2026-08-17 to 2026-10-22, `docker info` failed in 108
+        # of 8,366 jobs while pytest collected the suite. 94 of those logs time the check, and in 62
+        # it failed within ten seconds, before its timeout. So this step asks until the daemon
+        # answers, for two minutes at most, logging each attempt that fails. After that it warns and
+        # ends 0, so the suite still runs and the Atlassian MCP test fails with its own reason.
+        run: |
+          start=$SECONDS
+          failed=0
+          until out=$(timeout 10 docker info --format '{{.OSType}}' 2>&1); do
+            code=$?
+            failed=$((failed + 1))
+            echo "attempt $failed exited $code at $((SECONDS - start)) s: ${out%%$'\n'*}"
+            if (( SECONDS - start >= 120 )); then
+              echo "::warning::docker info did not answer in $failed attempts over two minutes"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "docker info answered $out at $((SECONDS - start)) s, after $failed failed attempts"
       - name: Unit tests
+        env:
+          # Makes a text file opened without encoding= an EncodingWarning, which pyproject.toml's
+          # filterwarnings turns into a failure of the test that opened it.
+          PYTHONWARNDEFAULTENCODING: "1"
+          # The `ubuntu-latest` runner image (ubuntu-24.04 on 2026-10-22) lists Docker Server among
+          # its tools, so a daemon that does not answer here is a fault to report in red
+          # (`_require_linux_docker`).
+          BACKLOT_TEST_REQUIRE_DOCKER: "1"
         run: uv run --no-sync pytest -rs
 
       - name: Install the Linear example's dependencies
@@ -49,6 +77,8 @@ jobs:
         working-directory: examples/using-official-sdk/linear
         env:
           PYTHON: ${{ github.workspace }}/.venv/bin/python
+          # The server the example starts is not anyone's use of Backlot.
+          BACKLOT_TELEMETRY: "0"
         run: npx tsx index.ts
 
   lint:
@@ -59,7 +89,7 @@ jobs:
           # A pull request is checked out as its merge into the base branch, whose first parent is
           # the base branch's head, so the prose checks below read the change from `HEAD^1`.
           fetch-depth: 2
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - name: Install ruff
@@ -70,6 +100,11 @@ jobs:
         run: ruff format --check .
       - name: ruff check
         run: ruff check .
+      - name: ruff check --preview --select PLW1514
+        # A text-mode open() or Path.read_text()/write_text() without encoding=. A preview rule, so
+        # it runs on its own here: `lint.preview` in pyproject.toml would also switch the rules
+        # above to their preview behaviour, which a minor ruff release can move.
+        run: ruff check --preview --select PLW1514 .
       - name: Prose checks on the comments and docstrings a pull request adds
         if: github.event_name == 'pull_request'
         run: python scripts/prose_check.py --github HEAD^1

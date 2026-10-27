@@ -170,19 +170,19 @@ def _gql(client, query, token):
 
 
 def test_linear_by_id_roots_do_not_leak_entities_off_hidden_issues(sample_settings, tokens):
-    """`lin-secret` is granted to hana only. Its state ("Backlog") is shared with nothing else in
-    the corpus, so resolving it by id must fail for ava exactly as an absent id would — and must
-    still work for hana, proving the id is real and the difference is the ACL."""
+    """`blackops` is granted to hana only, so its "Triage" state, in no other team, must fail for
+    ava exactly as an absent id would — and must still work for hana, proving the id is real and
+    the difference is the ACL."""
     from backlot import synth
 
     with client_for(sample_settings) as client:
-        state_id = synth.linear_state_id("Backlog", "engineering")
+        state_id = synth.linear_state_id("Triage", "blackops")
         q = '{ workflowState(id: "%s") { name } }' % state_id
         hidden = _gql(client, q, tokens["ava@acme.com"])
         granted = _gql(client, q, tokens["hana@acme.com"])
         assert "data" not in hidden or hidden["data"] is None
         assert "Entity not found" in hidden["errors"][0]["message"]
-        assert granted["data"]["workflowState"]["name"] == "Backlog"
+        assert granted["data"]["workflowState"]["name"] == "Triage"
 
         # ...and indistinguishable from an id that genuinely does not exist.
         absent = _gql(
@@ -235,6 +235,15 @@ def test_linear_by_id_roots_still_answer_for_visible_entities(sample_settings, t
             )["data"]["workflowState"]["name"]
             == "In Progress"
         )
+        # A state or cycle is visible with its team: "Backlog" and the cycle only the hidden
+        # lin-secret is in, and "Duplicate", a default no issue is in.
+        for kind, served_id, name in (
+            ("workflowState", synth.linear_state_id("Backlog", "engineering"), "Backlog"),
+            ("workflowState", synth.linear_state_id("Duplicate", "engineering"), "Duplicate"),
+            ("cycle", synth.linear_cycle_id("2026-W40-embargo", "engineering"), "2026-W40-embargo"),
+        ):
+            got = _gql(client, '{ %s(id: "%s") { name } }' % (kind, served_id), ava)
+            assert got["data"][kind]["name"] == name, got
         assert (
             _gql(
                 client, '{ user(id: "%s") { email } }' % synth.linear_user_id("bob@acme.com"), ava
@@ -279,9 +288,9 @@ def test_linear_team_by_id_agrees_with_the_teams_listing(sample_settings, tokens
 def test_linear_every_by_id_predicate_is_scoped_not_just_the_dispatch(sample_settings, tokens):
     """Each of the five entity predicates gets its own hidden entity.
 
-    `lin-secret` carries a project, cycle, label and assignee that exist on no other issue, so a
-    predicate that matches too broadly (or drops half its condition) is caught here. Previously
-    only `state` and `creator` were reachable, and the other four could be broken silently."""
+    `lin-secret` carries a project, label and assignee that exist on no other issue, and the
+    `blackops` team a state and a cycle, which are visible with their team rather than with an
+    issue; so a predicate that matches too broadly (or drops half its condition) is caught here."""
     from backlot import synth
 
     with client_for(sample_settings) as client:
@@ -294,7 +303,7 @@ def test_linear_every_by_id_predicate_is_scoped_not_just_the_dispatch(sample_set
             (
                 "cycle",
                 '{ cycle(id: "%s") { name } }'
-                % synth.linear_cycle_id("2026-W40-embargo", "engineering"),
+                % synth.linear_cycle_id("2026-W41-sealed", "blackops"),
             ),
             (
                 "label",
@@ -307,7 +316,7 @@ def test_linear_every_by_id_predicate_is_scoped_not_just_the_dispatch(sample_set
             (
                 "state",
                 '{ workflowState(id: "%s") { name } }'
-                % synth.linear_state_id("Backlog", "engineering"),
+                % synth.linear_state_id("Triage", "blackops"),
             ),
         ]
         for kind, query in cases:
@@ -487,7 +496,10 @@ def test_fireflies_channel_members_name_only_readable_meetings(tmp_path):
             },
         ],
     )
-    toks = {u["email"]: u["token"] for u in yaml.safe_load(s.tokens_path.read_text())["users"]}
+    toks = {
+        u["email"]: u["token"]
+        for u in yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))["users"]
+    }
     q = "{ transcripts(limit: 50) { title participants channels { members { email } } } }"
     with client_for(s) as client:
         ava = _ff_gql(client, q, toks["ava@acme.com"])["data"]["transcripts"]
@@ -639,7 +651,7 @@ def test_a_shared_doc_id_does_not_share_visibility(tmp_path):
     # ava is a member of the org the public confluence grant names but holds no grant of her own on
     # the drive file, and a scoping that read the two sources' grants together would let her
     # through on the strength of the confluence one alone.
-    toks = yaml.safe_load(s.tokens_path.read_text())
+    toks = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
     ava_token = next(u["token"] for u in toks["users"] if u["email"] == "ava@acme.com")
     hana_token = next(u["token"] for u in toks["users"] if u["email"] == "hana@acme.com")
     with client_for(s) as client:

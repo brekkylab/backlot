@@ -23,9 +23,10 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
+| `msteams` | Microsoft Teams | `/msgraph/v1.0` | 13 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
 | `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
 | `s3` | Amazon S3 | `/s3` | 5 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
-| `slack` | Slack | `/slack/api` | 12 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
+| `slack` | Slack | `/slack/api` | 21 | [`slack.schema.json`](../backlot/schemas/slack.schema.json) | A Slack message. |
 <!-- generated:sources end -->
 
 ## Per-service detail
@@ -55,20 +56,34 @@ A JSON body is the bare `application/json` on every Confluence route served. The
 is Jira's alone.
 
 A `HEAD` is the `GET` with the body left off, and declares the length that body would have had on
-every 200 but `search`'s. An `OPTIONS` is a 404 in the `errors` list the 405 uses, except on
-`search`, which answers by `Accept` as JAX-RS does: its WADL for `*/*`, `application/xml` or no
-`Accept` at all, and 204 for `application/json` or `text/html`, naming its three methods either way.
-A path no route serves is JAX-RS's own 404 — JSON when the caller asks for `application/json` by
-name, the `<status>` XML document otherwise — and a path below `space/` or `content/`, or anything
-under `/wiki` outside the API mount, is the product's HTML 404 page instead; a caller with no
-credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation Confluence publishes
-that no route here serves refuses a caller with no credential with a served route's 403, or from a
-few services with `Current user not permitted to use Confluence`, and a caller whose credential
-resolves gets the 404 an unserved path gets. Every answer Confluence itself gives carries
-`atl-request-id`, `atl-traceid` (the same value without its dashes), `x-confluence-request-time`,
-`x-content-type-options` and `x-xss-protection`, what the content and space services' routes answer
-adds the three headers that say the v1 REST API is deprecated, and what `search` answers a `GET` or
-`HEAD`, but for a 401, adds the `cache-control` and 1970 `expires` that say not to cache it.
+every 200 but `search`'s, and on the 406 but `search`'s. An `OPTIONS` is a 404 in the `errors` list
+the 405 uses where `Accept` admits JSON, under a `+json` type it names instead, and Tomcat's 403
+page where it names neither, except on `search`, which answers by `Accept` as JAX-RS does: its WADL
+for `*/*`, `application/xml` or no `Accept` at all, and 204 for `application/json` or `text/html`,
+naming its three methods either way. An `Accept` that admits no JSON is a 406, ahead of the
+anonymous 403 and of every route's own answer but `space/{key}/permission`'s 405 and
+`space/{key}/label`'s 403, which takes the 406's place in `Accept`'s shape: Tomcat's page, or
+the `errors` list under a `+json` type the header names, and no body at all on `search` and the
+other JAX-RS services; a 405 and a 415 take the same shapes, the page naming the methods or the
+types the route takes. Where any member of `Accept` cannot be read the 406 has no body, and the
+JAX-RS services, which pass a member with no `/` over, answer a header they cannot parse with a 400
+in its place. A `q` named in another case (`Q=2`) that is no quality fails an answer as it is
+written: a 200 is a 400 with no body, a refusal Spring raised is Tomcat's page and one the service
+raised its status with no body. A path no route serves is JAX-RS's own 404 — JSON where
+`application/json` is the first type `Accept` names that JSON or XML matches, ordered by `q` and
+then by how specific each is, the `<status>` XML document otherwise — and a path below `space/` or
+`content/`, or anything under `/wiki` outside the API mount, is the product's HTML 404 page instead;
+a caller with no credential is sent from `/wiki/…` outside `/wiki/rest` to log in. An operation
+Confluence publishes that no route here serves answers a `Content-Type` it does not take with its
+415 (or, from the JAX-RS services, with Tomcat's 400 for one they cannot read), whoever the caller
+is; past that it refuses a caller with no credential with a served route's 403, or from a few
+services with `Current user not permitted to use Confluence`, and a caller whose credential resolves
+gets the 404 an unserved path gets, or at a served route's path its 405. Every answer Confluence
+itself gives carries `atl-request-id`, `atl-traceid` (the same value without its dashes),
+`x-confluence-request-time`, `x-content-type-options` and `x-xss-protection`, what the content and
+space services' routes answer adds the three headers that say the v1 REST API is deprecated, and
+what `search` answers a `GET` or `HEAD`, but for a 401 and a refusal of its `Accept`, adds the
+`cache-control` and 1970 `expires` that say not to cache it.
 
 ### Fireflies — `/fireflies/graphql`
 
@@ -81,9 +96,10 @@ adds the three headers that say the v1 REST API is deprecated, and what `search`
 | `user[(id:)]` | |
 | `users` | |
 
-Offset pagination — `limit` (**max 50**, clamped) / `skip` — returning a **bare list**, not a Relay
-connection. The documented filters are `keyword` × `scope` (`title`\|`sentences`\|`all`),
-`fromDate`/`toDate`, `host_email`, `organizers`, `participants`, `user_id`, `mine` and `channel_id`.
+Offset pagination — `limit` (**1–50**) / `skip` (0–5000), refused outside those — returning a **bare
+list**, not a Relay connection. The documented filters are `keyword` × `scope`
+(`title`\|`sentences`\|`all`), `fromDate`/`toDate`, `host_email`, `organizers`, `participants`,
+`user_id`, `mine` and `channel_id`.
 
 Field names are snake_case, as Fireflies' own schema has them. Full introspection.
 
@@ -135,33 +151,69 @@ there is the gateway's answer rather than that backend's, and carries the charse
 
 **`X-GitHub-Api-Version` is honoured too**, in both values real currently supports: `2026-03-10`
 drops `assignee` (issues and pulls) and `merge_commit_sha` (pulls), `2022-11-28` keeps them, an
-unpinned request gets `2022-11-28`, anything else is the real API's 400, and every response reports
-its choice in `X-GitHub-Api-Version-Selected`. `search/code` is the one route that does neither:
-real's code search backend does not read the header, so a pinned version there is served whatever
-it says and no response from it carries the `Selected` header (measured 2026-09-06).
+unpinned request and one whose header is empty get `2022-11-28`, the spaces and tabs around a value
+are trimmed (on contents and a pull's JSON, every Unicode White_Space character), any other value is
+the real API's 400, and a response reports its choice in `X-GitHub-Api-Version-Selected` but on the
+answers `backlot.main.echo_github_api_version` names. `search/code` is the one route that does
+neither: real's code search backend does not read the header, so a pinned version there is served
+whatever it says and no response from it carries the `Selected` header (measured 2026-09-06).
 
-**Every response carries the five `x-ratelimit-*` headers** real puts on every answer, the errors
-included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for a token,
-30 and 10 for `search` and `code_search`), `remaining` and `used` counted per credential and per
-resource, `reset` the second that window closes, `resource` the one the request counted against.
-`core` measures an hour and the two search resources measure a minute, as real's do. A window that
-runs out is refused, 403, with `used` pinned at `limit` across the five headers, ahead of the API
-version check, the 401 a route that needs a credential answers a caller without one, and routing
-alike, for a caller with no credential (measured against api.github.com 2026-09-17 and 2026-09-22)
-and for a token (2026-09-23) alike; a bearer that does not resolve still gets its own 401, window
-spent or not (2026-09-23), when a space follows its scheme: after a tab it is counted in the window
-real shares among the `Authorization` values it cannot parse, and refused once that window is spent
-(2026-10-14). The refused request is not itself counted, which is why `used` holds at `limit` rather
-than climbing past it. The body differs by caller: two members (`message`, `documentation_url`) for
-a caller with no credential, three (`status` besides) for a token, each with its own
-`documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal off (see
-[configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does not
-count, and is never refused — the one route a client reads its way out of a spent window with;
+**An operation GitHub publishes and Backlot does not serve is refused for its credential first**: a
+token that does not resolve is "Bad credentials", as on a served route, and no
+`Authorization` header is the 401 "Requires authentication", as is one that carries no credential,
+which is a header a tab sets apart (below) and any scheme but `Bearer`, `token` and `Basic`, each
+ahead of an unsupported version's 400, where the served `/user/repos` checks the version before a
+missing credential. A token that resolves, and a `Basic` value that names no token, are checked for
+the version first; the token then reaches the 404 or 405 of an operation Backlot cannot run, and the
+`Basic` value is the 401 a served route gives a caller with no credential, with the version echo and
+the five `x-ratelimit-*`. The operations are those the GitHub baseline marks `missing`, but
+`POST …/releases/{id}/assets`, which api.github.com does not route, and with
+`artifacts/{id}/{archive_format}` taken as `zip`. `Authorization` is read as real reads it, a space
+and a tab the only whitespace in it, and a tab right after the scheme sets the header apart unless a
+comma follows anywhere in it: `Bearer` or `token` with nothing after it, and a `Basic` value that is
+not base64, are credentials that do not resolve, though that `Basic` value is no credential in a
+header a tab sets apart; a `Basic` value whose base64 holds, as its password or as its user beside
+an empty password or `x-oauth-basic`, a token that resolves or one shaped like real's (`ghp_`,
+`gho_`, `ghu_` or `ghs_` and 36 ASCII letters or digits) or like Backlot's (`usr-` and 20
+hexadecimal digits) is that token; so is one of 40 lower-case hexadecimal digits, or one of those
+four prefixes in another case and 36 ASCII letters or digits, whose "Bad credentials" carries the
+five and is counted in the window a `Basic` value naming no token is counted in; and one that
+holds anything else is no credential at all.
+
+**Every response carries the five `x-ratelimit-*` headers** real puts on every answer its API gives,
+the errors included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for
+a token, 30 and 10 for `search` and `code_search`), `remaining` and `used` counted per credential
+and per resource, `reset` the second that window closes, `resource` the one the request counted
+against. `core` measures an hour and the two search resources measure a minute, as real's do. A
+window that runs out is refused, 403, with `used` pinned at `limit` across the five headers, ahead
+of the API version check, the 401 a route that needs a credential answers a caller without one, and
+routing alike, for a caller with no credential (measured against api.github.com 2026-09-17 and
+2026-09-22) and for a token (2026-09-23) alike; a bearer that does not resolve still gets its own
+401, window spent or not (2026-09-23), when a space follows its scheme: in a header a tab sets apart
+(see the paragraph above) it is counted in the window real shares among the `Authorization` values
+it cannot parse, and refused once that window is spent (2026-10-14); the two `Basic` shapes the
+paragraph above counts in that window get their own 401 once it is spent, as with it fresh, when a
+space follows the scheme (2026-10-26). The refused request is not itself counted, which is why
+`used` holds at `limit` rather than climbing past it. The body differs by caller: two members
+(`message`, `documentation_url`) for a caller with no credential, three (`status` besides) for a
+token, each with its own `documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal
+off (see [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does
+not count, and is never refused — the one route a client reads its way out of a spent window with;
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
-none of the five and counts nowhere, spent window or not (2026-09-23). Two answers carry none of the
-five and count nowhere, as real's do not: a credential that does not resolve with a space after its
-scheme, and a path no route matches asked by a caller that sent one (measured 2026-09-10 and
-2026-09-21).
+none of the five and counts nowhere, spent window or not (2026-09-23). Four answers carry none of
+the five and count nowhere, as real's do not: a credential that does not resolve, unless a tab sets
+its header apart or it is one of the two `Basic` shapes the paragraph above counts, a path real does
+not route asked by a caller that sent one, and, on an operation Backlot does not serve, the 401 for
+an `Authorization` that carries no credential and the 401 for none at all on a `PATCH`, `PUT` or
+`DELETE` (measured 2026-09-10, 2026-09-21, 2026-10-14 and 2026-10-16).
+
+**Every response carries an `x-github-request-id`**, as real's do, code search's and the refusals
+answered before a route runs included: five uppercase hex fields joined by colons, the last being
+the second the request arrived (measured 2026-09-22, 2026-09-23 and 2026-10-18), and a token's
+spent-window 403 quotes it and that second in its `message`. The front door's 400 for a raw byte in
+the request target carries neither it nor the five `x-ratelimit-*`, on real (2026-10-23) as here.
+Real's `Date` is the second its answer left, the id's or one past it; under `backlot serve` it is
+uvicorn's, which reads the clock once a second, so it can be one behind the id's.
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository
@@ -211,11 +263,11 @@ One `source_type` (`google_drive`) across four prefixes.
 
 | Endpoint | Notes |
 |---|---|
-| `/drive/v3/files` | `q`, parsed as the reference's grammar (`and`, `or`, `not`, parentheses, `\'` inside a value): `name` and `mimeType` with `contains`/`=`/`!=`, `fullText contains`, `modifiedTime` and `createdTime` with `<`/`<=`/`=`/`!=`/`>`/`>=`, `trashed`, `sharedWithMe`, `… in parents` incl. `'root'`, `… in owners`. A term Backlot cannot evaluate is a 400 on `q`, never a silently unfiltered listing. `orderBy`: `name`/`name_natural`/`createdTime`/`modifiedTime`/`recency`/`folder`/`starred`/`quotaBytesUsed`/`sharedWithMeTime` (+` desc`). `fields` projection, validated |
+| `/drive/v3/files` | `q`, parsed as the reference's grammar (`and`, `or`, `not`, parentheses, `\'` inside a value): `name` and `mimeType` with `contains`/`=`/`!=`, `fullText contains`, `modifiedTime`, `createdTime` and `viewedByMeTime` with `<`/`<=`/`=`/`!=`/`>`/`>=`, `trashed` and `starred`, each alone meaning `= true`, `sharedWithMe` as `= true` alone and never under a `not`, `… in parents` incl. `'root'`, `… in owners`; nothing is viewed or starred. A term Backlot cannot evaluate is a 400 on `q`, never a silently unfiltered listing, and so are a `q` of white space alone and a `not` straight before another. `orderBy`: the eleven keys the reference lists, each with or without ` asc` or ` desc`; `name_natural` as an English-language account lists it, in ICU's root collation as Python's `unicodedata` and a few tables give it (`backlot.collation` says where they sort otherwise), `recency` newest first whichever way, and files a key ties newest modification first. `fields` projection, validated |
 | `/drive/v3/files/{id}` | `fields` |
 | `/drive/v3/files/{id}/export` | |
-| `/drive/v3/files/{id}/permissions` | |
-| `/drive/v3/drives` | |
+| `/drive/v3/files/{id}/permissions` | `fields`, validated and applied to the list and its entries |
+| `/drive/v3/drives` | `q`, as a member who is not the domain's administrator may send it: `name` with `contains`/`=`/`!=`/`<`/`<=`/`>`/`>=` and `hidden` with `=`/`!=` or alone; any other term is a 400. `fields`, validated and applied to the list and its entries |
 | `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
 | `/docs/v1/documents/{id}` | |
 | `/sheets/v4/spreadsheets/{id}` | One entry per sheet, with its own `sheetId`, `index`, `title` and `gridProperties`. Structure only — cells need `includeGridData=true`, as in real Sheets. `ranges` filters the `sheets` array itself, and gives a sheet one `data` block per range that touches it |
@@ -229,7 +281,8 @@ The three editor APIs serve native-doc content for editor-aware clients, read st
 of via Google Drive export.
 
 Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like
-stored rows. Trashed files are excluded unless `trashed = true` asks for them.
+stored rows. A trashed file is listed to its owner with the rest unless `q` leaves it out with
+`trashed = false`, and to no other user; the admin token lists them all.
 
 A spreadsheet has two shapes, and the corpus record picks which. A record that states `sheets` is a
 real workbook: named sheets over a 2D grid whose cells keep the type the corpus gave them, so
@@ -248,7 +301,7 @@ because that is where Google puts them.
 | Endpoint | Notes |
 |---|---|
 | `POST /oauth2/token` | Turns a Google-style client credential into a bearer token the rest of Backlot already understands. Two grants: `refresh_token`, where the refresh token *is* the user's token from `/_meta/users`, and a signed service-account JWT assertion, whose `sub` claim selects the impersonated user under domain-wide delegation. A bare service account with no `sub` resolves to the admin/service identity. Expiry is cosmetic — a re-refresh returns the same token, so a long crawl never breaks |
-| `POST /batch`, `POST /batch/{api}/{version}` | Google's `multipart/mixed` batch envelope: each part is an `application/http` sub-request, answered in order with its `Content-ID` preserved. The outer credential applies to any sub-request that does not carry its own, as real Google does. As in real's Drive batch, a Drive download (`files.export` with no `alt`, an empty one or `alt=media`, or `files.get` with `alt=media`) is a 302 to the same path under `/download`, which this server does not serve, after `$.xgafv` and after any credential on the part (a part with none, on it or on the batch, is redirected too), and ahead of `callback` and the typed, lookup, `fields` and `mimeType` refusals; as in real's Sheets batch, a Sheets read is 501 `UNIMPLEMENTED` |
+| `POST /batch`, `POST /batch/{api}/{version}` | Google's `multipart/mixed` batch envelope: each part is an `application/http` sub-request, answered in order with its `Content-ID` preserved. The outer credential applies to any sub-request that does not carry its own, as real Google does. As in real's Drive batch, a Drive download (`files.export` with no `alt`, an empty one or `alt=media`, or `files.get` with `alt=media`) is a 302 to the same path under `/download`, which this server does not serve, after `$.xgafv` and after any credential on the part (a part with none, on it or on the batch, is redirected too), unless its query or the batch's names a token, which is the 400 of a download sent on its own, and ahead of `callback` and the typed, lookup, `fields` and `mimeType` refusals; as in real's Sheets batch, a Sheets read is 501 `UNIMPLEMENTED` |
 
 `/batch` is Google-shaped but not Google-scoped — sub-requests are dispatched against the whole
 app, so a batch may target any endpoint this server serves, not only Google Drive's.
@@ -294,14 +347,15 @@ answer into 503 `Backend Error` under `text/javascript; charset=UTF-8` with a bo
 503 even where the download would have succeeded. A missing credential on one names the missing API
 key rather than the unregistered caller, and only after the download's `mimeType` and
 typed-parameter checks, so the order a byte-stream read answers in is `$.xgafv`, a credential that
-does not resolve, the `callback`, the parameters, then that 403, or a 401 of the download server's
-own for a header that is no credential. Inside a batch a download is a 302 instead (the `/batch` row
-above). A SUCCESS body is wrapped and indented on the `/sheets/v4` routes only; the other four
-families honour `callback` on their errors and not yet on their 200s. Measured against the live
-Sheets, Docs, Drive, Gmail and Slides APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the
-indent and the charset first, the suppression across the four non-Sheets families next, and the
-escape set and the case-insensitive `alt` last; the download refusals on 2026-10-04, 2026-10-05,
-2026-10-07 and 2026-10-08.
+does not resolve, a token named in the query, the `callback`, the parameters, then that 403, or a
+401 of the download server's own for a header that is no credential. Inside a batch a download is a
+302 instead where neither its query nor the batch's names a token (the `/batch` row above). A
+SUCCESS body is wrapped and indented on the `/sheets/v4` routes only; the other four families honour
+`callback` on their errors and not yet on their 200s. Measured against the live Sheets, Docs, Drive,
+Gmail and Slides APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset
+first, the suppression across the four non-Sheets families next, and the escape set and the
+case-insensitive `alt` last; the download refusals on 2026-10-04, 2026-10-05, 2026-10-07 and
+2026-10-08, and a token named in the query on 2026-10-13.
 
 **A repeated query parameter is read from the end real reads it from**, which is the first for some
 parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`
@@ -330,21 +384,23 @@ values carry the same `details`. A typed refusal comes after the credential chec
 file or spreadsheet is looked up. On Drive's `files.list`, one `pageSize` outside 1-1000 is refused
 with the range sentence (1-100 on `permissions.list` and `drives.list`), while a repeated one is
 read from the first and never range-checked; a `pageToken` it did not issue is 400 `Invalid Value`;
-and the refusals come in the order `pageSize`, `orderBy`, `q`, an `orderBy` beside a `fullText` term
-in `q` (403 `forbidden`), `pageToken`, `fields`, an `orderBy` naming `starred` after another key
-being real's 500 `Internal Error` between `pageToken` and `fields`. `drives.list` issues no
-`nextPageToken` and refuses every non-empty `pageToken` with that 400, after the typed and range
-refusals and ahead of the `useDomainAdminAccess=true` refusal. `permissions.list` pages in the order
-of its unpaged list and issues a `nextPageToken` that only the file it pages takes back. After its
-typed and range refusals, it refuses in the order an empty `pageToken` (403 `pageTokenExpired`) or
-one it did not issue (that 400), two or more `pageSize` values whose first is outside 1-100 (500
-`Unknown Error.`), `useDomainAdminAccess=true`, a file it cannot find, and a token issued for
-another file (403 `pageTokenExpired`). A blank `fields` on `files.list` or `files.get` answers `{}`.
-`files.export` refuses a format the file's type does not export to, the empty `mimeType=` among
-them, with `The requested conversion is not supported.`, matching the format without regard to case,
-refuses an absent `mimeType` ahead of looking the file up, and serves an export under the `mimeType`
-exactly as sent, with no `charset`. Measured against the live Drive and Sheets APIs on 2026-09-23,
-the `fullText` 403 on 2026-10-05 and 2026-10-07, the `starred` 500 on 2026-10-04 and 2026-10-07, the
+and the refusals come in the order `pageSize`, a `fields` ending in a comma, `orderBy`, `q`, an
+`orderBy` beside a `fullText` term in `q` (403 `forbidden`), `pageToken`, `fields`, an `orderBy`
+naming `starred` after another key being real's 500 `Internal Error` between `pageToken` and
+`fields`. `drives.list` issues no `nextPageToken` and refuses every non-empty `pageToken` with that
+400, after the typed and range refusals, a `fields` ending in a comma and a `q` it does not take,
+and ahead of the `useDomainAdminAccess=true` refusal. `permissions.list` pages in the order of its
+unpaged list and issues a `nextPageToken` that only the file it pages takes back. After its typed
+and range refusals and a `fields` ending in a comma, it refuses in the order an empty `pageToken`
+(403 `pageTokenExpired`) or one it did not issue (that 400), two or more `pageSize` values whose
+first is outside 1-100 (500 `Unknown Error.`), `useDomainAdminAccess=true`, a file it cannot find,
+and a token issued for another file (403 `pageTokenExpired`). A `fields` of spaces and tabs alone on
+`files.list`, `files.get`, `permissions.list` or `drives.list` answers `{}`. `files.export` refuses
+a format the file's type does not export to, the empty `mimeType=` among them, with
+`The requested conversion is not supported.`, matching the format without regard to case, refuses an
+absent `mimeType` ahead of looking the file up, and serves an export under the `mimeType` exactly as
+sent, with no `charset`. Measured against the live Drive and Sheets APIs on 2026-09-23, the
+`fullText` 403 on 2026-10-05 and 2026-10-07, the `starred` 500 on 2026-10-04 and 2026-10-07, the
 `pageToken` of `permissions.list` and `drives.list` on 2026-10-04, 2026-10-05 and 2026-10-07, the
 paging of `permissions.list` on 2026-10-05 and 2026-10-08, and the export's `Content-Type` on
 2026-09-30.
@@ -367,22 +423,41 @@ writes it: every value it cannot convert and every name the request message lack
 400, each named by its proto path where it has one. Measured against the live Sheets API on
 2026-10-04, and a non-ASCII letter's case on 2026-10-05.
 
-**A credential is `Bearer` or `OAuth`, spelt so, and a space before the token**, a token a space, a
-tab or a comma ends, or a closing `"` where it opens with one: `Bearer <t> x`, `Bearer <t>,x` and
-`Bearer "<t>"` are served, `Bearer<t>` is a bad token, and `bearer <t>`, `token <t>`, `Basic …` and
-a bare `Bearer` are no credential at all. With none, a request is answered by its operation rather
-than its family: an unregistered caller's 403 on an operation that takes API keys too (Drive's file
-and comment reads among them, and the three Sheets reads), a missing credential's 401 on the rest,
-and on a download the missing API key's 403 with no `Authorization` header, the download server's
-401 with one that is no credential. Each of the front end's 401s carries
-`WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with `error="invalid_token"` for a
-token that does not resolve, and the download server's names the realm without its trailing slash.
-An operation the two Google baselines acknowledge as `missing_operation` is refused the same way,
-after `$.xgafv` and `callback`, and a caller whose credential resolves gets the 404 or 405 its path
-gets. One of those operations, a revision read, is not answered as a download with `alt=media`:
-with no `Authorization`, an empty one or `Basic …` it is the missing credential's 401. Measured
-against the live Drive, Gmail, Sheets, Docs and Slides APIs on 2026-10-11, and the revision read on
-2026-10-14.
+**A credential in `Authorization` is `Bearer` or `OAuth`, spelt so, and a space before the token**,
+a token a space, a tab or a comma ends, or a closing `"` where it opens with one: `Bearer <t> x`,
+`Bearer <t>,x` and `Bearer "<t>"` are served, `Bearer<t>` names no token, so is a bad token unless
+the query names one, which is then the token (below), and `bearer <t>`, `token <t>`, `Basic …` and a
+bare `Bearer` are no credential in the header. With none in the header or the query, a request is
+answered by its operation rather than its family: an unregistered caller's 403 on an operation that
+takes API keys too (Drive's file and comment reads among them, and the three Sheets reads), a
+missing credential's 401 on the rest, and on a download the missing API key's 403 with no
+`Authorization` header, the download server's 401 with one that is no credential. Each of the front
+end's 401s carries `WWW-Authenticate: Bearer realm="https://accounts.google.com/"`, with
+`error="invalid_token"` for a token that does not resolve, and the download server's names the realm
+without its trailing slash. An operation the two Google baselines acknowledge as `missing_operation`
+is refused the same way, after `$.xgafv` and `callback`, and a caller whose credential resolves gets
+the 404 or 405 its path gets. One of those operations, a revision read, is not answered as a
+download with `alt=media`: with no `Authorization`, an empty one or `Basic …` it is the missing
+credential's 401. Measured against the live Drive, Gmail, Sheets, Docs and Slides APIs on
+2026-10-11, and the revision read on 2026-10-14.
+
+**A token in the query is read where the header leaves room for it**, under `access_token`,
+`bearer_token` or `oauth_token`: behind no header, behind one that is no credential, and behind a
+scheme run into its token (`Bearer<t>`), where a scheme with a space after it, whether or not it
+names a token, and a bare `Bearer` or `OAuth` keep the query out. Taken in that order, the first of
+those names the query carries is a gate whose first value has to start `ya29.` or `1/`, as Google's
+own tokens do, and the last carries the token; behind a run-in scheme there is no gate. So behind no
+header, or one that is no credential, a token Backlot issues (`usr-…`, or the default
+`admin-service-token`) alone in the query is no credential, on the real APIs as here
+(`backlot.routers.google._query_credential`). Inside a batch a part reads each of those names from
+its own query where it carries it and from the batch's where it does not. `access_token` and
+`oauth_token` are declared on every Drive, Gmail, Docs, Sheets and Slides operation, as real's
+discovery documents declare them; `bearer_token` is read but not declared, as they do not declare
+it. A byte-stream read refuses any of those names, in any case, with real's 400
+`OAuth token was passed in the query parameter…`, after the 401 a token read from the query answers
+when it does not resolve; the unserved revision read with `alt=media` and an empty `access_token` is
+the missing credential's 401 instead. Measured against the live Drive and Gmail APIs on 2026-10-13,
+and the batch's names beside a part's and the revision read on 2026-10-14.
 
 **A `HEAD` on Drive or Gmail is the `GET` with the body left off**, status for status, and declares
 a `content-length` only on a download's 200, where it is the length of the bytes the `GET` serves;
@@ -418,7 +493,7 @@ than there being a set per type.
 | `field` | |
 | `issueLinkType` | |
 | `project/search` | |
-| `project/{key}/role[/{id}]` | |
+| `project/{key}/role[/{id}]` | `{key}` is the key or the id `project/search` lists. Admin token only: any other caller who sees the project gets 401 `You cannot edit the configuration of this project.` |
 | `serverInfo` | |
 
 `search/jql`, `issue/{key}`, `issue/{key}/comment`, `field` and `serverInfo` are served under
@@ -429,11 +504,18 @@ responses. Numeric ids are assigned uniquely at import, including when keys hash
 stable across appended shards. Databases built before `jira_issues.numeric_id` was added must be
 re-imported; the startup schema check names the missing column.
 
-A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8`
-upper-case — as real's is on every route and status measured, except where real answers a
-different type altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
-`application/problem+json;charset=UTF-8`, and the gateway's 403 for a bearer it cannot read as a
-Connect token is the bare `application/json`.
+A JSON body is `application/json;charset=UTF-8` — no space after the semicolon, `UTF-8` upper-case —
+as real's is on every route and status measured, except where real answers a different type
+altogether: the RFC 7807 refusals (a type-conversion 400, the 405, the 415) are
+`application/problem+json;charset=UTF-8`, the gateway's 403 for a bearer it cannot read as a Connect
+token is the bare `application/json`, or XML for an `Accept` that names `application/xml` and
+nowhere names `application/json`, matched as text in any case, and the 400 for a `;` in a path is
+the bare `application/json` too where it is JSON. An `Accept` admitting no JSON draws a 406 in that
+RFC 7807 shape, behind a 405 and a 415 and ahead of the 401, a bad parameter's 400 and whatever the
+route answers, on every operation but the ones `backlot/data/jira_unserved.json` marks, and one with
+any member Jira cannot read draws it with no body; the 401 takes its media type from `Accept`. A `q`
+named in another case (`Q=2`) that is no quality fails an answer as it is written: a route's answer,
+the 401 and the `orderBy` refusal are Jira's 500 page, its other refusals as they were.
 
 A trailing slash is not part of a path on either product, and a run of slashes inside one is a
 single slash — both spellings answer what the canonical one answers, though a refusal echoes the
@@ -442,24 +524,39 @@ length but on Jira's 401 to an unauthenticated caller, which is where Jira parts
 `OPTIONS` is 200 for a caller whose credential resolves, with an empty `text/html` body, an empty
 `Accept-Patch`, an `Allow` naming the methods the vendor serves at that route — the `PUT` and
 `DELETE` on an issue among them, which Backlot does not serve — and a quota of its own; anyone else
-gets Jira's 401. A `PATCH` never reaches either product: the gateway answers 400 on Jira and 405 on
-Confluence. Nor does a method the CDN refuses itself: `TRACE` and `CONNECT` are its 405, and any
-other method it does not pass on is its 403 or 400 by how the method is spelled. A path no route
-serves is RFC 7807 at 404 with `No endpoint <METHOD> <path>.` where Jira publishes nothing at it; at
-an operation it publishes and no route here serves, a `Content-Type` the operation does not take is
-its 415 for any caller the gateway lets through, and after that a caller with no credential gets
-Jira's 401 `Client must be authenticated to access this resource.` where the operation will not run
-anonymously (`backlot/data/jira_unserved.json`), and otherwise that 404, the gap the baseline
-acknowledges. That is under `/atlassian/rest` only: outside the two API mounts the site is its web
-app, `/browse` at 200, the root a redirect to log in or to `/jira/for-you`, and Jira's own not-found
-page for the rest. Every answer past the CDN carries `atl-request-id`, `atl-traceid`,
-`x-content-type-options` and `x-xss-protection`, and Jira's own answers add `x-arequestid`,
+gets Jira's 401.
+
+A `PATCH` never reaches either product: the gateway answers 400 on Jira and 405 on Confluence. Nor
+does a method the CDN refuses itself: `TRACE` and `CONNECT` are its 405, and any other method it
+does not pass on is its 403 or 400 by how the method is spelled. Its firewall turns back a path that
+carries a script tag or a directory step with a 403, and the CDN one with a `%00` byte or a `%` that
+two hex digits do not follow with a 400, each its own page. Behind those, and ahead of the gateway's
+`PATCH`, a `;` anywhere in a path, bare or as `%3B`, is a 400 with `Access-Control-Allow-Origin: *`:
+`{"message":"","status":400}` where `Accept` holds `application/json` as written, a page otherwise.
+An encoded slash or backslash under `/wiki/` (but `/wiki/spaces/`) is Confluence's own 400, and an
+encoded backslash under `/atlassian/rest` the same page, where Jira takes an encoded slash apart and
+routes what it decodes to.
+
+A path no route serves is RFC 7807 at 404 with `No endpoint <METHOD> <path>.` where Jira publishes
+nothing at it, but a `[` or `]` in the path, escaped or bare, makes that 404 and a type-conversion
+400 pages of Jira's web app; at an operation it publishes and no route here serves — reached by a
+path with no route or by a method a served route does not take — a `Content-Type` the operation does
+not take is its 415 for any caller the gateway lets through, and after that a caller with no
+credential gets Jira's 401 where the operation will not run anonymously
+(`backlot/data/jira_unserved.json`); otherwise it is the operation's own answer, an issue's or a
+project's 404 for a key that names nothing, and the no-route 404, or on a served route's path its
+405, is the gap the baseline acknowledges. That is under `/atlassian/rest` only: outside the two API
+mounts the site is its web app, `/browse` at 200, the root a redirect to log in or to
+`/jira/for-you`, and Jira's own not-found page for the rest.
+
+Every answer past the CDN carries `atl-request-id`, `atl-traceid`, `x-content-type-options` and
+`x-xss-protection` (the 400 for a bare `;` neither id), and Jira's own answers add `x-arequestid`,
 `cache-control` and `timing-allow-origin`, which the gateway's refusals (the Connect-token 403, a
 `PATCH`) do not carry; a caller whose credential resolves also gets its own `x-aaccountid`, and the
 burst quota's four (`ratelimit`, `ratelimit-policy`, `x-ratelimit-limit`, `x-ratelimit-remaining`)
 where a route answers or an `OPTIONS` asks at one, counted per method and route. An anonymous
-request carries none of those five, and the no-endpoint 404, a 405 and an unserved operation's 415
-carry the account id alone.
+request carries none of those five, and the no-endpoint 404, a 405, a 406 and an unserved
+operation's 415 carry the account id alone.
 
 ### Linear — `/linear/graphql`
 
@@ -473,14 +570,145 @@ carry the account id alone.
 | `teams` | |
 | `comments` | |
 | `users` | |
+| `searchIssues(term:)` | identifier, a word of the title or description, or of a comment |
+| `documents` | always empty: a corpus carries no Linear documents |
+| `teamMemberships` | |
 | `viewer` | |
 
-Plus the `Team.issues` and `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}`
-connections, and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`,
-`release`, `attachment`, `issueRelation`) the official SDK's lazy relation accessors call.
+Plus the `Team.{issues,members,memberships,states,labels,projects,cycles}`,
+`User.{teamMemberships,teams}` and `Issue.{comments,labels,children,relations,inverseRelations,attachments,releases}`
+connections, `Team.membership(userId:)`, and the by-id roots (`user`, `workflowState`, `project`, `issueLabel`, `cycle`,
+`release`, `attachment`, `issueRelation`, `teamMembership`) the official SDK's lazy relation accessors
+call.
 
 Relay pagination (`first`/`after`, `last`/`before` → `{nodes, pageInfo}`), server-side `filter`
 compiled into SQL, and full introspection.
+
+### Microsoft Teams — `/msgraph/v1.0`
+
+Microsoft Graph's own base path, so a Graph client changes its base URL and nothing else.
+Responses are OData: `@odata.context`, `value`, and an absolute `@odata.nextLink` carrying a
+`$skiptoken` (`$skipToken` on an expanded thread's continuation). Errors are real status codes with
+an `{"error": {"code", "message"}}` body.
+Shapes, status codes and query-option answers below were measured against graph.microsoft.com in
+October 2026, with app-only and delegated tokens, on a tenant with a private channel.
+
+| Endpoint | Notes |
+|---|---|
+| `me` | `$select` |
+| `me/joinedTeams` | The one team this corpus models. `$select`, keeping a name the type does not declare |
+| `users` | `$top` (1–999, default 100), `$skiptoken`, `$select`, `$filter`, `$search`, `$orderby`; `@odata.count` only with `$count=true` and `ConsistencyLevel: eventual` |
+| `users/{id}` | Object id *or* userPrincipalName |
+| `users/{id}/joinedTeams` | The same answer as `me/joinedTeams`: a scoped token's own, and another person's a `403`; the admin token, anyone's |
+| `teams/{team-id}` | The team, with the settings a new team has. `$select`, keeping a name the type does not declare |
+| `teams/{team-id}/channels` | Every visible channel in one response: no paging. `$select`, `$filter` |
+| `teams/{team-id}/channels/{channel-id}` | `$select`; the method that reports `layoutType` and `summary` |
+| `teams/{team-id}/channels/{channel-id}/messages` | Root messages, newest reply chain first. `$top` (1–50, default 20), `$skip`, `$select`, `$expand=replies` |
+| `.../messages/{message-id}` | A root; a reply's id is a `404` here, and an id that names nothing a `403` |
+| `.../messages/{message-id}/replies` | Newest first, paged as messages are; `$skip` drops that many from the `$top` page |
+| `.../messages/{message-id}/replies/{reply-id}` | One reply; one of another root is a `404`, and an id that names nothing a `403` |
+| `teams/{team-id}/channels/{channel-id}/members` | `aadUserConversationMember` objects, all of them: `$top` is ignored. `$select`, `$filter` |
+
+On the Teams collections `@odata.count` is the number of items on the page; on `/users` it is the
+total, sent only for an advanced query. A credential that does not resolve is the 401 before
+anything else, on any path and any method, as it is live. Every answer carries `request-id` and
+`client-request-id` headers — the ids its `innerError` names, the second echoing a GUID the caller
+sent — and a 200 is served as `application/json;odata.metadata=minimal;…` under `OData-Version:
+4.0`.
+
+Query option names match in any case; the Teams routes read them with or without the `$`, the
+directory's (`/me`, `/users`) refuse one without it, and every route refuses one given twice. A
+`$select` without the `$` projects the same but leaves the list out of `@odata.context`. Property
+names and enum members in `$select`, `$filter` and `$orderby` match in any ASCII case and are
+answered in the declared spelling, and an `$expand` must name a navigation property. `$top` and
+`$skip` are 64-bit integers: ASCII digits with an optional sign and .NET's blanks around them
+(U+001C–U+001F are not among them); past Int64 a value is refused as not one, echoed cut to 1,024
+characters, and past Int32 each option has the validator's limit. An empty `$skiptoken` is refused
+on the Teams routes before anything else, and a blank one is the first page.
+
+A Teams route reads its query in Graph's order: the values of `$top` and `$skip`, then the property
+names a `$filter`, `$orderby`, `$select` or `$expand` uses, then the options the method allows none
+of and the validator's limits, then its own checks, and only then the team, channel or message, so a
+refused query is a `400` whatever it names. The options each method refuses: every Teams method
+`$format`; the channel listing `$skip`, `$search`, `$orderby`, `$expand` and `$count`, and then
+`$top` and `$skiptoken` in words of its own; get-channel every option but `$select`; get-team every
+option but `$select` and `$expand`, and then every `$expand` that binds; the message listing
+`$orderby`, `$count` and `$search`, and a `$filter` that binds in words of its own; replies
+`$orderby`, `$filter`, `$count` and `$search`; a single message or reply `$top`, `$skip`,
+`$skiptoken`, `$orderby`, `$filter` and `$count`, and `expand=replies`; members `$skip`, `$orderby`,
+`$count` and `$search`, with a `$skiptoken` a `502`; `joinedTeams` every option but `$select` and
+`$filter`, which it ignores. On `/me` and `/users/{id}`, `$filter`, `$search` and `$skiptoken` are
+refused and `$top`, `$orderby` and `$count` ignored; `/users` refuses `$skip`. A `$skiptoken` that
+does not decode is a `400`, and a `502` on replies, as live.
+
+`$filter` is read as Microsoft's OData library reads it (`backlot/odata.py`): `eq`, `ne`,
+`gt`/`ge`/`lt`/`le`, `has`, `in`, `add`/`sub`/`mul`/`div`/`mod`, `and`, `or`, `not` and `any`/`all`
+over a collection (`roles/any(r:r eq 'owner')`), with operators in any case and `not` binding
+tighter than a comparison; string, number, date, date-time and enum literals, and `true`, `false`
+and `null` in lower case only; the string functions `startswith`, `endswith`, `contains`, `indexof`,
+`concat`, `tolower`, `toupper`, `trim`, `length` and `substring`; and a boolean property as a
+predicate on its own. A number is typed as the library types it — an integer the narrowest integer
+type that holds it, a fraction the first of `Edm.Single`, `Edm.Double` and `Edm.Decimal` that holds
+it exactly — and computed as .NET computes that type: an integer division truncates, a `Single` is
+rounded as one, and a floating division by zero is an infinity or NaN. Each property is typed as
+Graph's CSDL types it, so a comparison of mismatched types, a collection where one value belongs, a
+function given the wrong arguments and a filter that is not a boolean are each refused in the
+library's words, and an empty filter is none. Parsing gives up past 800 levels of the library's
+recursion (99 parentheses fit), and the validator refuses a lambda inside a lambda and, on the
+channel and member listings, a filter of more than 100 nodes. A boolean ordered against another, and
+an integer or decimal divided by zero, bind and are refused once the team or channel is found, as
+.NET cannot run them; the division is Graph's `500`. Channels and members compare strings with
+regard to case, and every route orders them as .NET's culture comparison does.
+
+The directory reads a filter in its own terms after the library binds it, without regard to case,
+and refuses in the order the filter is written: first a comparison that is not a property against a
+constant (a function or arithmetic on its left is `Invalid expression caused by operator '…'`, two
+properties, two constants or a bare property `Unsupported Query.`), then a property it does not
+have, `gt` and `lt`, `contains`, `ne` without `$count=true` beside it, and, outside an advanced
+query (`ConsistencyLevel: eventual`), a comparison with null, `endswith`, `not` and a lambda; within
+one comparison, a plain query reads the property before the operator and an advanced one after. A
+constant before a property is read as the property before it, the operator unchanged. `$search`
+takes `"property:term"` clauses, matching words that start with the term, joined by `AND`, `OR` or a
+blank, and needs the header too. Outside an advanced query a filter joins at most 15 children with
+`or`, an `in` list's values among them, and 25 with `and`. `$orderby` takes `displayName` and
+`userPrincipalName`, refuses a constant, and is refused beside a `$filter` outside an advanced
+query. The directory reads `$count` (`true` or `false`, exactly) first, then `$top`, then
+`ConsistencyLevel` — which it refuses twice or naming anything but `eventual` — then `$search` and
+`$orderby` as written, then the filter, and answers a `$format` other than JSON with a `415`.
+
+A path is read as Graph reads it: the version and resource names in any case, an id as an OData key
+segment (`teams('{id}')`), a GUID in either case, and trailing slashes. An id that is not one is a
+`400` (`teamId needs to be a valid GUID.`, `channelId is not valid.`, and a message or root id that
+is not an unsigned 64-bit number), another version a `404`, and `OPTIONS` or `HEAD` an empty `405`
+before the credential is read. A write is not served: one with no `Content-Type` is a `400`, and a
+`POST` to `/me` a `405`.
+
+A private channel the caller is not in is left out of the listing, and every method that names it
+by id answers `403 Forbidden` — the status Graph gives, which does tell the caller the id exists.
+A channel id the team does not have is a `404` from get-channel and members and a `410 Gone` from
+the message methods; another team's id is a `404` worded per method.
+
+A standard channel's members are the whole team — everyone in the directory — and a private
+channel's are the people granted it. One team, and channels only: a Backlot corpus has one org and
+no DMs, so `chatId` is null on every message. A message `id` is its creation time in epoch
+milliseconds and its `etag` the last-modified time in the same units, which an edit or a reaction
+moves; a reply does not move its root's, but it does move the root up the listing. A system event
+is served as `messageType: unknownFutureValue` unless the request sends
+`Prefer: include-unknown-enum-members`.
+
+**Not modelled:** the order of an advanced directory query's results (live, an index order of its
+own; here, userPrincipalName order), a directory filter over a property the default answer leaves
+out (`accountEnabled`, `createdDateTime`; here null, as a corpus states neither), owners (every
+member's `roles` is empty, and `summary.ownersCount` 0), deleted messages (live keeps them in the
+listing with `deletedDateTime` set), a system event's typed `eventDetail`, the `post` channel
+layout, the `19:<base64url>@thread.tacv2` id a private or General channel has live (every channel id
+here takes the 32-hex form), paging of a standard channel's members (live pages them in pages
+shorter than `$top`; here all of the directory is one page), which unknown message ids live answers
+`403`, `404` or `400` (it depends on the number's range; here every unknown id is a `403`), the beta
+version and the service document at `/v1.0`, the request URI length past which the front end answers
+`414`, chats, writes, and real tenant authorization. Imported reply times must advance by a whole
+second, and at most 1,000 ids fit one channel-second, both because an id is a creation millisecond;
+an edit must not precede its message.
 
 ### Notion — `/notion/v1`
 
@@ -492,7 +720,7 @@ A URL Notion does not publish is `invalid_request_url` at 400, which the real AP
 reads the credential or the version. The method is part of that URL: a `GET` on a route that
 answers `POST` is the same 400 rather than a 405, with `TRACE` the exception real refuses at the
 front door with Cloudflare's own 405 page. An operation Notion publishes and Backlot does not serve
-(`PATCH pages/{id}`, `POST comments` and the other `missing_operation` rows in
+(`PATCH pages/{id}`, `POST comments` and the other `missing` operations in
 `backlot/fidelity/baseline/notion.json`) answers the credential's 401 as a served route does, and
 a request that clears the credential and the version gets the 400, as there is no operation to run.
 The three OAuth client endpoints among them, `POST oauth/token`, `oauth/introspect` and
@@ -503,21 +731,35 @@ the body left off. A path in another case is the 400 here, where real routes it 
 path, and `PROPFIND` or `QUERY` is the framework's 405 here, where real answers the URL's 400. A
 credential that is not `Bearer <token>` (no header, no scheme, `Basic`, GitHub's legacy
 `token <t>`, or a bearer with a second word after its token) is refused by naming the format, where
-a bearer whose token does not resolve is `API token is invalid.`. Each refusal named here but the
+a bearer whose token does not resolve is `API token is invalid.`, with `additional_data`
+`{"reason":"token_invalid"}` ahead of the `request_id`. Each refusal named here but the
 framework's 405 carries a `request_id` in the body and `x-notion-request-id` on the response, one
 value; real's differs per response and this one is derived from the request, so a corpus served
 twice answers the same id.
 
+A request is read as the real API reads it before anything is looked up. A JSON body is read first,
+ahead of the credential and the version, as Express reads one: a body that does not parse is
+`invalid_json`, a charset or a `Content-Encoding` it cannot read is its 415 and a body past 512000
+bytes its 413, and a body sent as anything but `application/json` is not read at all. The query
+string is parsed as Node's `qs` parses one, so a repeated key is `Conflicting values` and a
+bracketed one an object, each value is read as Notion's validator reads it (`01` is 1, `0x10` is 16,
+`TRUE` is `true`), and a member a route does not take is refused by name, on a `GET`'s body as on
+its query string; `pages/{id}` and `comments` serve an unknown query parameter, as on real. A
+refusal quotes a value back as JSON cut after 55 UTF-16 units. A list starts at the item a
+`start_cursor` names and hands back the next item's id as its cursor (a data source query's is
+`s:<session>:<row>`), and a `page_size` of 0, past 100 or below 0 is the whole page, the empty page
+or a refusal, route by route as real answers it.
+
 | Endpoint | Notes |
 |---|---|
-| `POST search` | |
+| `POST search` | `filter` narrows to an object type and to the trash, which is empty here; `sort` is refused where real refuses it and otherwise not applied |
 | `pages/{id}` | |
 | `blocks/{id}` | |
 | `blocks/{id}/children` | |
 | `databases/{id}` | Version-aware: `data_sources` from `2025-09-03`, inline `properties` before it |
 | `POST databases/{id}/query` | Versions before `2025-09-03` only |
 | `data_sources/{id}` | `2025-09-03` and later only |
-| `POST data_sources/{id}/query` | `2025-09-03` and later only |
+| `POST data_sources/{id}/query` | `2025-09-03` and later only. `filter` and `sorts` are refused where real refuses them, a property the data source does not have included, and are not applied; `filter_properties` narrows each row |
 | `users[/{id}]` | |
 | `users/me` | |
 | `comments` | |
@@ -619,6 +861,10 @@ exception to the unsigned answer and to Signature Version 2: they take SigV4 or 
 one sent unsigned or with Signature Version 2 is real's 400 `InvalidRequest` asking for Signature
 Version 4, after the conflict of two, the parameter refusals before the bucket and a V2 credential's
 own shape, and ahead of the bucket, of the 405 a signed HEAD gets and of a V2 key or signature.
+The same credential check applies to `PUT`, `POST`, `DELETE` and `PATCH` of `?annotation` at a
+key, with or without `annotationName`, after a selector conflict and before body or checksum
+checks. These methods read the first `annotation` value as a GET does: a nonempty value selects
+the ordinary object operation. They do not parse the listing's `max-annotation-results`.
 
 ### Slack — `/slack/api`
 
@@ -637,7 +883,23 @@ Each method answers on `GET` and `POST` alike, as the real Web API does.
 | `search.all` | |
 | `search.files` | |
 | `auth.test` | |
-| `api.test` | Auth-free connectivity check |
+| `api.test` | Auth-free connectivity check; a token it is sent meets the checks of the other methods' tokens, and `args` echoes it as `token` |
+| `chat.postMessage` | `thread_ts` posts a reply in that thread |
+| `chat.postEphemeral` | Stores nothing, as an ephemeral message is in no channel's history |
+| `chat.update` | The author's own message |
+| `chat.delete` | The author's own message, a corpus one included |
+| `chat.getPermalink` | |
+| `reactions.add` | |
+| `reactions.remove` | The caller's own |
+| `reactions.get` | |
+| `reactions.list` | The caller's own, from writes rather than the corpus |
+
+Of the nine below the reads, six write and three read what they wrote (`chat.getPermalink`,
+`reactions.get`, `reactions.list`). A write lands in a per-server overlay and the corpus file is
+never written; [Writes, and where they go](write-overlay.md) covers what a read then sees, how to read
+the overlay back and how to reset it. `chat.postMessage`, `chat.postEphemeral`, `chat.update`,
+`chat.delete`, `reactions.add` and `reactions.remove` accept a JSON body as well as a form, which
+is what their `consumes` declares and where `slack_sdk` puts three of them.
 
 A person the [roster](../backlot/schemas/README.md) marks `deactivated: true` is Slack's offboarded
 member: `users.list` and `users.info` answer them `deleted: true`, `conversations.members` and
@@ -651,9 +913,49 @@ answer an id that names nothing gets, so a private room's name, purpose and memb
 readable from its id alone. A required argument that was never sent is `invalid_arguments` rather
 than a `not_found` for something the caller never named.
 
-A POST with a body sent as `application/json` or `text/plain` with no charset is answered with
-real's `missing_charset` warning, and a form or multipart one that names a charset with
-`superfluous_charset`, each in `warning` and in `response_metadata.warnings`.
+A POST's body is read before the method runs, ahead of its credential and its arguments, as the real
+Web API reads it. A body with no Content-Type is `missing_post_type`, one under a media type other
+than `application/json`, `text/plain`, `application/x-www-form-urlencoded` and
+`multipart/form-data`, spelt so, is `invalid_post_type` unless it carries an argument read as a form
+(a Content-Type starting with the form type in any case is read as one) or as multipart (a media
+type that is a prefix of `multipart/form-data` in any case, with a boundary:
+`multipart/form; boundary=b` and `; boundary=b` are read, `multipart/form-datax; boundary=b` is
+not); a charset other than `utf-8`, `utf8` or `iso-8859-1` outside a form or multipart type is
+`invalid_charset`, and a form or multipart body real cannot read is `invalid_form_data`,
+`invalid_arg_name` or `invalid_array_arg`. A multipart body is read as HHVM reads one, which real's
+answers match: a part's name follows a urlencoded form's name rules but for the spaces, tabs and
+line breaks after a `[`, which are dropped (`a[ b` is `a_b`, where a form's is `invalid_arg_name`),
+its value is taken as sent, `+` and `%XX` included, and its `token` is read as a form's is; an
+argument the body sends is read ahead of the same name in the query string.
+
+A `GET`, `POST`, `PUT`, `PATCH` or `DELETE` to a path under `/slack/api` that is none of the methods
+above is answered as real answers it, but for the requests the next paragraph names. A method
+Slack's reference index (`docs.slack.dev/reference/methods.md`) lists is refused for its credential
+(`not_authed`, `invalid_auth`), but for `oauth.access`, which answers `invalid_code`, and
+`oauth.v2.access`, `oauth.v2.user.access` and `openid.connect.token`, which answer it too unless the
+credential sent is refused. `channels.mark`, `groups.mark`, `im.mark`, `mpim.mark`, `im.list` and
+`mpim.list`, which the index does not list, answer `method_deprecated` with real's message, and
+`invalid_auth` to a credential that does not resolve. Any other name is `unknown_method` with
+`req_method`, whatever the credential, `oauth.token` and the `apps.permissions` methods among them,
+and a path holding a byte other than an ASCII letter, a digit or `.` is real's HTML 404 page. A body
+real refuses is refused ahead of the credential and of `unknown_method`, and not read on a path that
+names no method. Under `PUT`, `PATCH` and `DELETE` a body is refused only for a name
+(`invalid_arg_name`, `invalid_array_arg`).
+
+Real answers these otherwise. A caller whose token resolves is left to the router's
+`{"detail": "Not Found"}` 404 on a method the index lists, where real checks the token's scopes, but
+for those that answer `invalid_code`. `blocks.validate`, `oauth.v2.exchange` and
+`tooling.tokens.rotate`, whose answer turns on the arguments sent, are left to the router, but for a
+credential sent that does not resolve, which the first and last refuse as any method does, and a
+`GET` of `blocks.validate`, which is `unsupported_http_method`; so are a path ending in `/`, the
+names `.` and `..`, and a name after two `/`s or a `\`, which real reads as that name. A name
+holding a byte real's front end answers itself, or ending in one real drops from a name's end, gets
+real's 404 page (`backlot.routers.slack._METHOD_NAME` lists those measured), but for a `%2F` or
+`%5C` before a method's name, and a `%2F` at its end, which leave the path to the router.
+
+A POST whose form or multipart type names a charset is answered with real's `superfluous_charset`
+warning, and one with a body under any other type that names none with `missing_charset`, each in
+`warning` and in `response_metadata.warnings`. A body refused as above carries neither.
 
 ## Backlot's own endpoints
 

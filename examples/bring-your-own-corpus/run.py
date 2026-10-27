@@ -31,7 +31,9 @@ if subprocess.run([sys.executable, "-m", "backlot", "import", str(CORPUS), "--dr
 # 2. Serve it with a real server and keep it running until Ctrl+C.
 # split on "\n" only, not splitlines(): JSON Lines separates records by \n, and
 # splitlines() also breaks on U+2028/U+2029 — ordinary characters inside a JSON string.
-records = [json.loads(line) for line in CORPUS.read_text().split("\n") if line.strip()]
+records = [
+    json.loads(line) for line in CORPUS.read_text(encoding="utf-8").split("\n") if line.strip()
+]
 with serve(records) as s:
     health = httpx.get(f"{s.base_url}/health").json()
     print(f"\nserving {health['documents']} docs at {s.base_url}")

@@ -6,8 +6,16 @@ what it read. The only change from talking to the real service is the base URL.
 
 ```bash
 pip install -e ".[official-sdk]"
-python examples/using-official-sdk/slack.py     # or gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py, hubspot.py, fireflies.py
+python examples/using-official-sdk/slack.py     # or msteams.py, gmail.py, gdrive.py, github.py, jira.py, confluence.py, notion.py, s3.py, hubspot.py, fireflies.py
 ```
+
+`slack.py` also **writes**, and one run covers the whole surface: it posts, replies in a thread,
+takes a permalink, searches for what it posted, reacts and un-reacts, edits, sends an ephemeral,
+reads `/_meta/overlay`, deletes, and resets. Slack is the only source with a write surface so
+far; the rest read. Writes never reach the corpus file — they land in an in-memory overlay that
+dies with the server, and the reset at the end puts the corpus back, which is what lets one
+evaluation run start where the last one did. [docs/write-overlay.md](../../docs/write-overlay.md) covers
+how the overlay is read back and reset.
 
 ## Fireflies has no SDK — and raw HTTP is the official path
 
@@ -46,7 +54,8 @@ Two things it has to work around, both explained inline in `index.ts`:
   here a `graphql-request` `GraphQLClient` aimed at `<base>/linear/graphql`. `GraphQLClient.request`
   already has `LinearRequest`'s signature, so the shim is a few lines.
 - **The `Authorization` header carries the BARE key**, with no `Bearer` prefix — that is how a
-  Linear personal API key travels. (Backlot accepts `Bearer <token>` too, Linear's OAuth shape.)
+  Linear personal API key travels. `Bearer <token>` is Linear's OAuth shape: Backlot, like
+  Linear, refuses a personal key under it with a `400`.
 
 `tests/test_sdk.py` stays Python-only and cannot exercise `@linear/sdk`; the CI job is what
 covers it.
@@ -77,7 +86,7 @@ uses — a token, Google `--user`, Atlassian Basic auth, or an S3 keypair:
 # Google: gmail.py (authorized_user) & gdrive.py (service account) both take --user <email>
 python examples/using-official-sdk/gmail.py --url http://localhost:8000 --user ava@acme.com
 
-# bearer-token services: slack.py, github.py, notion.py — grab a token from GET /_meta/users:
+# bearer-token services: slack.py, msteams.py, github.py, notion.py — grab a token from GET /_meta/users:
 python examples/using-official-sdk/github.py --url http://localhost:8000 --token <usr-token>
 
 # Linear (TypeScript): --token is sent as the bare Authorization value, no Bearer prefix
@@ -119,6 +128,7 @@ library's own token exchange runs against Backlot's `POST /oauth2/token` in both
 | Service | SDK | How to point it at Backlot |
 |---|---|---|
 | Slack | `slack_sdk` | `WebClient(token=T, base_url="http://localhost:8000/slack/api/")` |
+| Microsoft Teams | `msgraph-sdk` | `GraphRequestAdapter(auth).base_url = "http://localhost:8000/msgraph/v1.0"`, then `GraphServiceClient(request_adapter=…)` |
 | GitHub | `PyGithub` | `Github(auth=Auth.Token(T), base_url="http://localhost:8000/github")` |
 | Jira | `atlassian-python-api` | `Jira(url="http://localhost:8000/atlassian", username=EMAIL, password=T)` |
 | Confluence | `atlassian-python-api` | `Confluence(url="http://localhost:8000/atlassian/wiki", username=EMAIL, password=T)` |

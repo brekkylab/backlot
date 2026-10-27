@@ -24,17 +24,20 @@ it. JSON columns are TEXT — read with :func:`jcol`.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import unicodedata
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import NamedTuple
 
 from backlot import synth
 
 # source_type -> its dedicated table
 SOURCE_TABLE = {
     "slack": "slack_messages",
+    "msteams": "msteams_messages",
     "gmail": "gmail_messages",
     "google_drive": "gdrive_files",
     "github": "github_items",
@@ -118,6 +121,9 @@ def acl_table(source_type: str) -> str:
 # Confluence space) instead of a vague generic "container".
 GROUPING = {
     "slack": ("slack_channels", "channel"),
+    # Teams groups messages by channel too, and spells the container the same word Slack does —
+    # but the tables are separate like every other pair, because a served id is per source.
+    "msteams": ("msteams_channels", "channel"),
     "gmail": ("gmail_mailboxes", "mailbox"),
     "google_drive": ("gdrive_folders", "folder"),
     "github": ("github_repos", "repo"),
@@ -191,6 +197,10 @@ def mailbox_for(conn, email: str) -> str:
 # uniformly and no source needs a special case.
 ID_COLUMNS = {
     "slack": ("channel", "ts"),
+    # Graph says outright that a chatMessage id "is unique within a chat/channel/reply-to-message,
+    # but might be duplicated in other chats/channels" — so the channel is part of the key, exactly
+    # as it is for a Slack ts.
+    "msteams": ("channel", "id"),
     "gmail": ("id",),
     "google_drive": ("id",),
     "github": ("repo", "number"),
@@ -209,12 +219,34 @@ ID_COLUMNS = {
 # own API uses), so ordering by it compares digit by digit — `"9.5"` after `"10.5"`. Ordering by
 # the integer second first restores chronology, with the ts breaking ties so the order stays
 # total and an offset page still cannot skip or repeat a row.
-ORDER_COLUMNS = {"slack": ("created_ts", "ts")}
+# `msteams` is here for the same reason slack is: its `id` is epoch milliseconds stored as TEXT
+# (the spelling Graph serves), so ordering by it alone compares digit by digit.
+ORDER_COLUMNS = {"slack": ("created_ts", "ts"), "msteams": ("created_ts", "id")}
 
 
 def order_columns(source_type: str) -> tuple[str, ...]:
     """The columns a listing of this source is ordered by."""
     return ORDER_COLUMNS.get(source_type) or id_columns(source_type)
+
+
+# Sources whose writes are served. A source outside this set has no overlay tables and its read
+# path is byte-identical to a build without writes, which is what lets a new write surface ship
+# without re-validating every other vendor. Adding one is this entry, its PATCHABLE columns, and
+# its endpoints.
+WRITABLE = frozenset({"slack"})
+
+# Per source, the columns a served write may overwrite. Everything else is immutable once written:
+# a patch to an identifier column would move a row out from under its own ACL grant, since a grant
+# names its document by exactly `ID_COLUMNS`.
+PATCHABLE = {
+    # `thread_ts` is here because a reply promotes its parent: the corpus marks a root by storing
+    # the root's own ts there (`thread_ts == ts`), and a standalone message carries NULL, so the
+    # first reply has to stamp the message it answers. Not an identifier column — a slack document
+    # is keyed (channel, ts) — so patching it moves nothing out from under its ACL grant.
+    # `subtype` is here because a deleted thread root becomes a `tombstone` rather than
+    # disappearing (`chat_delete`), which is a change to the message real keeps serving.
+    "slack": frozenset({"content", "reactions", "edited", "thread_ts", "subtype"}),
+}
 
 
 def id_columns(source_type: str) -> tuple[str, ...]:
@@ -323,6 +355,44 @@ CREATE INDEX IF NOT EXISTS idx_slack_channel_ts ON slack_messages(channel, creat
 -- conversations.members pages a channel's distinct speakers; without this the DISTINCT
 -- is a per-channel row scan (768k rows in the biggest channel) on every request.
 CREATE INDEX IF NOT EXISTS idx_slack_channel_author ON slack_messages(channel, author_email);
+
+-- `id` IS a Graph channel message's id, and it is STORED for the reason slack's `ts` is: the
+-- value has to be unique within its channel and a per-request derivation cannot see the other
+-- messages it must avoid. Graph's own spelling is epoch MILLIseconds as a decimal string
+-- (`"1616965872395"`), quoted from the vendor's channel-list-messages example, so a second holds a
+-- thousand messages -- assigned once at import and probed within the channel (see
+-- `_Loader._message_id` in backlot.importer.byo).
+--
+-- `reply_to_id` is Graph's own `replyToId`: NULL on a root, the ROOT's id on a reply. That is the
+-- vendor's model rather than slack's `thread_ts` (which a root carries for itself), so a top-level
+-- listing is `reply_to_id IS NULL` -- the same question `channel-list-messages` answers by
+-- returning "the list of messages (without the replies)". `thread_seq` orders the replies below a
+-- root and is 0 on the root, so the two agree by construction.
+--
+-- `subject` is the chatMessage field of that name, null where the corpus states none;
+-- `content_type` is the `body.contentType` ("text" or "html") the corpus wrote its content as.
+CREATE TABLE IF NOT EXISTS msteams_messages (
+    channel TEXT NOT NULL, id TEXT NOT NULL, author_email TEXT NOT NULL,
+    content TEXT NOT NULL,
+    reply_to_id TEXT, thread_seq INTEGER NOT NULL DEFAULT 0,
+    subject TEXT, message_type TEXT, content_type TEXT, importance TEXT,
+    reactions TEXT, attachments TEXT, mentions TEXT,
+    last_edited_ts INTEGER, created_ts INTEGER NOT NULL,
+    PRIMARY KEY (channel, id)
+);
+-- No `idx_msteams_channel`: the PRIMARY KEY leads with `channel`, so a per-channel scan seeks.
+-- A thread is read within its channel, so the reply index carries it. It ends on `created_ts`
+-- rather than `thread_seq` because it answers two questions, not one: a root's replies in order,
+-- and the LAST of them -- which is what orders the channel listing (Graph sorts it "by the last
+-- modified date of the entire reply chain"), one index seek per root instead of a scan. The two
+-- orderings cannot disagree: the importer refuses a reply whose second is not after the message
+-- before it (see byo._thread_seconds), so `created_ts` and `thread_seq` rise together.
+CREATE INDEX IF NOT EXISTS idx_msteams_thread
+    ON msteams_messages(channel, reply_to_id, created_ts);
+-- Lets the import-time membership check seek a private channel's speakers rather than scan the
+-- channel.
+CREATE INDEX IF NOT EXISTS idx_msteams_channel_author
+    ON msteams_messages(channel, author_email);
 
 -- `id` is the id the API reports, assigned at import (see backlot.importer.byo) rather than hashed
 -- at serve time, so a get-by-id is a PRIMARY KEY lookup. Unlike confluence it is the raw seed,
@@ -687,9 +757,10 @@ CREATE INDEX IF NOT EXISTS idx_linear_state ON linear_issues(state);
 -- column; json_each cannot be indexed) — only a MISS pays a full scan, and a miss is exactly the
 -- enumeration attempt.
 CREATE INDEX IF NOT EXISTS idx_linear_project ON linear_issues(project);
-CREATE INDEX IF NOT EXISTS idx_linear_cycle ON linear_issues(cycle);
 CREATE INDEX IF NOT EXISTS idx_linear_assignee ON linear_issues(assignee_email);
 CREATE INDEX IF NOT EXISTS idx_linear_author ON linear_issues(author_email);
+-- A cycle is visible with its team, so no probe seeks by cycle.
+DROP INDEX IF EXISTS idx_linear_cycle;
 -- `Issue.children` is "every issue whose parent_id is me" — an indexed equality, not a join
 -- on the non-unique identifier text.
 CREATE INDEX IF NOT EXISTS idx_linear_parent_doc ON linear_issues(parent_id);
@@ -791,6 +862,7 @@ CREATE INDEX IF NOT EXISTS idx_fireflies_sentences_doc ON fireflies_sentences(tr
 -- ── appended below instead, since a served id is unique only within a source) ──
 -- ── per-service grouping tables (name of the grouping unit + its owning ACL group) ──
 CREATE TABLE IF NOT EXISTS slack_channels    (channel TEXT PRIMARY KEY, group_id TEXT);
+CREATE TABLE IF NOT EXISTS msteams_channels  (channel TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS gmail_mailboxes   (mailbox TEXT PRIMARY KEY, group_id TEXT);
 CREATE TABLE IF NOT EXISTS gdrive_folders    (folder  TEXT PRIMARY KEY, group_id TEXT);
 -- `default_branch`, `branches` and `tags` are the repo's own refs, stated by a
@@ -1102,6 +1174,383 @@ def _acl_clause(
     )
 
 
+def merged_source(
+    conn, source_type: str, alias: str | None = None, *, corpus_only: bool = False
+) -> str:
+    """What a query over this source's documents should read FROM.
+
+    For a source outside :data:`WRITABLE`, with no overlay attached, or with nothing yet written
+    to it, this is the table name and every reader is character-for-character what it was before
+    writes existed -- the emptiness is probed rather than assumed, by
+    :func:`_overlay_holds_anything`. Otherwise it is the corpus and the overlay unioned,
+    tombstoned documents subtracted and patches applied, **aliased to the corpus table's own
+    name**.
+
+    The alias is not cosmetic: :func:`_acl_clause` emits ``_acl.<col> = <table>.<col>``,
+    hard-referencing whatever name the caller gave it, so the alias is what lets thirteen readers
+    keep their ACL clause verbatim and makes the substitution one token per query. ``alias``
+    overrides it for the one caller that already knows the table by a short name — the FTS join in
+    :func:`search_documents`, which passes ``"t"`` and an ``_acl_clause`` scoped to the same.
+
+    One function rather than an inlined union per reader, and keyed on ``source_type`` rather than
+    written for Slack: the tombstone and patch correlations are over :func:`id_columns`, which is
+    already the registry saying how a document of any source is addressed, and ``SCHEMA`` already
+    generates the eleven ACL tables from it rather than writing eleven blocks that drift. Every
+    caller pastes the fragment in; none restates the rule.
+
+    Columns are projected explicitly. ``SELECT *`` over a ``UNION ALL`` is correct only while both
+    sides agree on column ORDER, and when that stops being true the failure is a value in the
+    wrong column rather than an error.
+
+    ``corpus_only`` drops the overlay half of the union, keeping the tombstone filter and the
+    patch projection. For the FTS join, where the union is not only wasted but expensive: a query
+    over the CORPUS index can only ever match a corpus row, and joining a ``UNION ALL`` subquery
+    costs SQLite the primary-key lookup it would otherwise use — measured at +43% on an 800k-row
+    channel of the 11 GB corpus, against +2% for the ACL view and +6% for the re-index filter.
+    Overlay hits reach that path through :func:`_overlay_hits` instead.
+    """
+    from backlot import overlay  # local: overlay imports store
+
+    tbl = table(source_type)
+    alias = alias or tbl
+    if source_type not in WRITABLE or not overlay.is_attached(conn):
+        return tbl if alias == tbl else f"{tbl} {alias}"
+    names = overlay.table_names(source_type)
+    if not _overlay_holds_anything(conn, names):
+        return tbl if alias == tbl else f"{tbl} {alias}"
+    patchable = PATCHABLE.get(source_type, frozenset())
+    on = " AND ".join(f"x.{c} = m.{c}" for c in id_columns(source_type))
+    cols = []
+    for c in (r[1] for r in conn.execute(f"PRAGMA main.table_info({tbl})")):
+        if c in patchable:
+            # A correlated subquery rather than a LEFT JOIN: the patch table is keyed
+            # (…id…, field), so a join needs one per patchable column, and three joins multiply
+            # rows for a document patched in two of them.
+            cols.append(
+                f"COALESCE((SELECT value FROM ov.{names['patch']} x "
+                f"WHERE {on} AND x.field = '{c}'), m.{c}) AS {c}"
+            )
+        else:
+            cols.append(f"m.{c} AS {c}")
+    projection = ", ".join(cols)
+    alive = f"NOT EXISTS (SELECT 1 FROM ov.{names['tombstone']} x WHERE {on})"
+    # `_written` says which side a row came from, which a reader cannot otherwise tell: the two
+    # sides carry the same columns by design. `_message` reads it to decide whether to mint a
+    # `client_msg_id`, which a client mints and this API therefore does not. It is absent from
+    # the bare-table shape above, where every row is the corpus's, so a reader asks for it by
+    # name rather than assuming it.
+    corpus = f"SELECT {projection}, 0 AS _written FROM main.{tbl} m WHERE {alive}"
+    if corpus_only:
+        return f"({corpus}) AS {alias}"
+    return (
+        f"({corpus} UNION ALL SELECT {projection}, 1 AS _written FROM ov.{tbl} m WHERE {alive})"
+        f" AS {alias}"
+    )
+
+
+# --- writes: the overlay -----------------------------------------------------------------
+#
+# Inserting a document, granting it what its container grants, subtracting it at read time and
+# indexing it are the same four operations for every source, so they are written once and keyed on
+# `source_type`. Minting an identifier is not: slack probes a free `ts` fraction within a
+# channel-second, gmail draws a 63-bit integer, github defers a number -- `importer.byo` already
+# carries one of these per source. So these take an ALREADY-MINTED key and the minting stays where
+# the vendor knowledge is (see `slack_next_ts`).
+
+
+def _require_writable(source_type: str) -> None:
+    """A write to a source outside :data:`WRITABLE` fails here, naming the registry, rather than
+    three frames down as an opaque ``no such table: ov.gmail_messages``."""
+    if source_type not in WRITABLE:
+        raise ValueError(
+            f"{source_type!r} is not writable — add it to store.WRITABLE and give it "
+            f"PATCHABLE columns before serving writes for it"
+        )
+
+
+def _require_patchable(source_type: str, field: str) -> None:
+    """A column outside :data:`PATCHABLE` is refused. An identifier column is never in it: a patch
+    to one would move the row out from under its own ACL grant."""
+    if field not in PATCHABLE.get(source_type, frozenset()):
+        raise ValueError(
+            f"{source_type}.{field} is not patchable — see store.PATCHABLE. An identifier column "
+            f"is never patchable: it would move the row out from under its own ACL grant"
+        )
+
+
+def insert_document(conn, source_type: str, values: dict) -> None:
+    """Write one document to the overlay, grant it what its container grants, and index it.
+
+    ``values`` maps column name to value, and its identifier columns must already be minted.
+
+    The grants copied are the container's own distinct set — the org for a public Slack channel,
+    the grantee list for a private one — so a written document is exactly as visible as the
+    container it landed in. Without them it is visible to nobody: a grant names its document by
+    :func:`id_columns`, so a row with no ACL rows fails every ``_acl_clause``.
+
+    The copy reads the corpus's grants directly, which is what the ACL view reads too, so the
+    two agree by reading the same rows. Revocation is what would part them, and nothing records
+    one yet.
+    """
+    from backlot import overlay
+
+    _require_writable(source_type)
+    tbl = table(source_type)
+    names = overlay.table_names(source_type)
+    key = id_columns(source_type)
+    container = grouping_col(source_type)
+    cols = list(values)
+    # Checked against the table rather than trusted: these are interpolated into the INSERT, and
+    # this is a generic primitive on a write path. Today's callers pass literals; the guard costs
+    # one pragma and stops that from being the only thing keeping it safe.
+    known = {r[1] for r in conn.execute(f"PRAGMA main.table_info({tbl})")}
+    if unknown := set(cols) - known:
+        raise ValueError(f"{source_type}: no such column(s) {sorted(unknown)} on {tbl}")
+    key_cols = ", ".join(key)
+    overlay.ensure_acl_view(conn, source_type)
+    with overlay.LOCK:
+        conn.execute(
+            f"INSERT INTO ov.{tbl} ({', '.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
+            [values[c] for c in cols],
+        )
+        conn.execute(
+            f"INSERT INTO ov.{names['acl']} ({key_cols}, principal_type, principal_id) "
+            f"SELECT {', '.join('?' for _ in key)}, principal_type, principal_id FROM ("
+            f"  SELECT DISTINCT principal_type, principal_id FROM main.{names['acl']} "
+            f"  WHERE {container} = ?"
+            f"  UNION SELECT DISTINCT principal_type, principal_id FROM ov.{names['acl']} "
+            f"  WHERE {container} = ?"
+            f")",
+            [*(values[c] for c in key), values[container], values[container]],
+        )
+        _fts_index_overlay(conn, source_type, tuple(values[c] for c in key), values)
+        conn.commit()
+
+
+def edit_document(conn, source_type: str, key: tuple, field: str, edit, visible_ids=None):
+    """Read one column, transform it, and write it back with the overlay lock held throughout.
+
+    `patch_document` alone is not enough for a field a caller MODIFIES rather than replaces. A
+    reaction is read, one user added to it, and written back, and `/_meta/overlay/reset` runs on
+    the threadpool (it is a plain `def` where every Slack handler is `async def`), so a reset can
+    land between those three steps over the single shared connection.
+
+    ``edit`` takes the current row and returns the new column value, or raises to abort. Returns
+    the row it read, or None if the document is gone.
+    """
+    from backlot import overlay
+
+    _require_writable(source_type)
+    _require_patchable(source_type, field)
+    with overlay.LOCK:
+        row = document_by_key(conn, source_type, key, visible_ids)
+        if row is None:
+            return None
+        _patch_locked(conn, source_type, key, field, edit(row))
+        conn.commit()
+        return row
+
+
+def patch_document(conn, source_type: str, key: tuple, field: str, value) -> None:
+    """Overwrite one column of a document that may live in either database.
+
+    For a field the caller REPLACES. A field it modifies in place needs :func:`edit_document`, so
+    the read and the write are one critical section.
+    """
+    from backlot import overlay
+
+    _require_writable(source_type)
+    _require_patchable(source_type, field)
+    with overlay.LOCK:
+        _patch_locked(conn, source_type, key, field, value)
+        conn.commit()
+
+
+def _patch_locked(conn, source_type: str, key: tuple, field: str, value) -> None:
+    """The body of a patch, with :data:`overlay.LOCK` already held and the commit left to the
+    caller — so a read-modify-write can hold the lock across all three steps.
+
+    ``field`` is checked by the two callers before they take the lock.
+    """
+    from backlot import overlay
+
+    names = overlay.table_names(source_type)
+    cols = id_columns(source_type)
+    conn.execute(
+        f"INSERT OR REPLACE INTO ov.{names['patch']} ({', '.join(cols)}, field, value) "
+        f"VALUES ({','.join('?' for _ in cols)},?,?)",
+        [*key, field, value],
+    )
+    if field in _fts_text_columns(source_type):
+        # Re-index from the MERGED row, not from `value` alone: an index entry carries every text
+        # column, and a source with both a title and a body would otherwise lose the one this
+        # patch did not touch.
+        row = conn.execute(
+            f"SELECT * FROM {merged_source(conn, source_type)} "
+            f"WHERE {' AND '.join(f'{c} = ?' for c in cols)}",
+            list(key),
+        ).fetchone()
+        if row is not None:
+            _fts_index_overlay(conn, source_type, key, dict(row))
+
+
+def tombstone_document(conn, source_type: str, key: tuple) -> None:
+    """Subtract a document from every read. A corpus row cannot be deleted, so it is subtracted."""
+    from backlot import overlay
+
+    _require_writable(source_type)
+    names = overlay.table_names(source_type)
+    cols = id_columns(source_type)
+    where = " AND ".join(f"{c} = ?" for c in cols)
+    overlay.ensure_acl_view(conn, source_type)
+    with overlay.LOCK:
+        conn.execute(
+            f"INSERT OR IGNORE INTO ov.{names['tombstone']} ({', '.join(cols)}) "
+            f"VALUES ({','.join('?' for _ in cols)})",
+            list(key),
+        )
+        conn.execute(f"DELETE FROM ov.{names['fts']} WHERE {where}", list(key))
+        conn.commit()
+
+
+def document_by_key(conn, source_type: str, key: tuple, visible_ids=None) -> sqlite3.Row | None:
+    """One document by its identifier, from whichever side holds it, or None if it is tombstoned
+    or not visible to this caller."""
+    cols = id_columns(source_type)
+    where = " AND ".join(f"{c} = ?" for c in cols)
+    sql = f"SELECT * FROM {merged_source(conn, source_type)} WHERE {where}"
+    clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
+    return conn.execute(sql + clause, [*key, *cparams]).fetchone()
+
+
+def blank_index(conn, source_type: str, key: tuple) -> None:
+    """Index this document as empty text, so no query matches it while it is still served.
+
+    Not the same as dropping its overlay index entry: `_corpus_not_reindexed` excludes a corpus
+    row the overlay has re-indexed, so dropping the entry would put the corpus's own text back in
+    the index. An empty entry keeps the exclusion and matches nothing — which is what real
+    answers for a deleted thread root, for the placeholder's words and for the message's own.
+    """
+    from backlot import overlay
+
+    _require_writable(source_type)
+    with overlay.LOCK:
+        _fts_index_overlay(
+            conn, source_type, key, dict.fromkeys(_fts_text_columns(source_type), "")
+        )
+        conn.commit()
+
+
+def _fts_index_overlay(conn, source_type: str, key: tuple, values: dict) -> None:
+    """Delete-then-insert one document in the overlay index — an upsert, the same shape
+    :func:`fts_add_docs` uses for an append import. Caller holds ``overlay.LOCK`` and commits."""
+    from backlot import overlay
+
+    names = overlay.table_names(source_type)
+    cols = id_columns(source_type)
+    text = _fts_text_columns(source_type)
+    where = " AND ".join(f"{c} = ?" for c in cols)
+    conn.execute(f"DELETE FROM ov.{names['fts']} WHERE {where}", list(key))
+    conn.execute(
+        f"INSERT INTO ov.{names['fts']} ({', '.join(cols)}, {', '.join(text)}) "
+        f"VALUES ({','.join('?' for _ in cols)},{','.join('?' for _ in text)})",
+        [*key, *(values.get(c) or "" for c in text)],
+    )
+
+
+def slack_next_thread_seq(conn, channel: str, thread_ts: str) -> int:
+    """The position a new reply takes in a thread — one past the last one.
+
+    Read through the merged source, so a reply posted through the API counts and a deleted one
+    does not. A root carries `thread_seq = 0`, so the first reply is 1.
+    """
+    row = conn.execute(
+        f"SELECT MAX(thread_seq) FROM {merged_source(conn, 'slack')} "
+        f"WHERE channel = ? AND thread_ts = ?",
+        (channel, thread_ts),
+    ).fetchone()
+    return (row[0] or 0) + 1
+
+
+def slack_next_ts(conn, channel: str, epoch_sec: int) -> str:
+    """A free ``ts`` for a new Slack message in this channel at this second, above every ts the
+    channel already holds in it.
+
+    Real orders two messages posted in one second by their fraction: eight posts in a row came
+    back strictly increasing, three of them inside one second and three inside the next (measured
+    against slack.com, 2026-10-21). An imported message takes its fraction from a hash
+    (``byo._Loader._slack_ts``), which is fine for a corpus whose order its timestamps already
+    state, but a posted message read back out of post order is a conversation replayed wrong. So
+    the first post of a second keeps the hashed fraction and each one after it takes the next
+    free fraction above the highest there.
+
+    The fractions are read off the PHYSICAL rows, not off `merged_source`, which subtracts
+    tombstones: a deleted message's row is still in `ov.slack_messages` holding its primary key,
+    so a merged read reports its ts free and the insert fails on it. Post, delete, post inside
+    one second is an ordinary sequence.
+
+    Slack's own, not a generic minter: what a served id looks like is a fact about a vendor, and
+    the sources that already synthesize one do it several different ways.
+    """
+    from backlot import overlay
+
+    sql = "SELECT ts FROM main.slack_messages WHERE channel = ? AND ts LIKE ?"
+    params = [channel, f"{int(epoch_sec)}.%"]
+    if overlay.is_attached(conn):
+        sql += " UNION ALL SELECT ts FROM ov.slack_messages WHERE channel = ? AND ts LIKE ?"
+        params += [channel, f"{int(epoch_sec)}.%"]
+    taken = {int(row["ts"].split(".")[1]) for row in conn.execute(sql, params)}
+
+    hashed = int(synth.slack_fmt_ts(epoch_sec, f"post:{channel}:{epoch_sec}").split(".")[1])
+    for fraction in range(max(taken) + 1 if taken else hashed, synth.SLACK_TS_FRACTIONS):
+        if fraction not in taken:
+            return f"{int(epoch_sec)}.{fraction:06d}"
+    raise RuntimeError(f"slack: channel {channel!r} has no free ts fraction in second {epoch_sec}")
+
+
+def merged_sides(conn, source_type: str) -> list[tuple[str, str]]:
+    """Each side of what :func:`merged_source` unions, as ``(FROM expression, extra WHERE)``.
+
+    For a reader that wants `ORDER BY … LIMIT`: a compound subquery cannot use either side's
+    index, so ordering over the union scans the channel where asking each side separately is a
+    seek — 158 ms against 3 ms on a 200,000-message channel. The caller asks each side and keeps
+    the better row.
+
+    The FROM is aliased to the corpus table's own name, as `merged_source`'s is, so
+    `_acl_clause` reads the same identifier. Patches are NOT applied: this is for the identifier
+    and ordering columns, which :data:`PATCHABLE` does not cover for any source.
+    """
+    from backlot import overlay
+
+    tbl = table(source_type)
+    if source_type not in WRITABLE or not overlay.is_attached(conn):
+        return [(f"main.{tbl} {tbl}", "")]
+    names = overlay.table_names(source_type)
+    on = " AND ".join(f"x.{c} = {tbl}.{c}" for c in id_columns(source_type))
+    alive = f" AND NOT EXISTS (SELECT 1 FROM ov.{names['tombstone']} x WHERE {on})"
+    sides = [(f"main.{tbl} {tbl}", alive)]
+    if _overlay_holds_anything(conn, names):
+        sides.append((f"ov.{tbl} {tbl}", alive))
+    return sides
+
+
+def _overlay_holds_anything(conn, names: dict[str, str]) -> bool:
+    """Whether the overlay holds a written row, a patch or a tombstone for this source.
+
+    Until it does, every reader gets the bare table back and runs character-for-character the
+    query it ran before writes existed. The union is not free on a corpus of any size: with the
+    overlay attached and empty, `slack_latest_ts` over a 200,000-message channel took 202 ms
+    against 1.4 ms on the table, because a compound subquery carrying two correlated lookups per
+    row is not something the (channel, ts) index can answer.
+
+    Three `LIMIT 1` probes, which stop at the first page of each table.
+    """
+    return any(
+        conn.execute(f"SELECT 1 FROM ov.{names[kind]} LIMIT 1").fetchone() is not None
+        for kind in ("doc", "patch", "tombstone")
+    )
+
+
 def _acl_join(source_type: str, acl_alias: str, doc_alias: str) -> str:
     """The ON clause tying a source's ACL table to its doc table — every identifier column, since
     a grant names its document by exactly the key the document is stored under."""
@@ -1139,6 +1588,11 @@ def _scope(
     return sql
 
 
+#: A Drive file's last-modified second as ``backlot.routers.google._drive_modified`` reads it, for
+#: an ORDER BY: its own, else an hour after its creation.
+DRIVE_MODIFIED = "COALESCE(updated_ts, created_ts + 3600)"
+
+
 def list_documents(
     conn,
     source_type,
@@ -1149,13 +1603,15 @@ def list_documents(
     author_email=None,
     state=None,
     not_author_email=None,
-    exclude_trashed=False,
     title=None,
     subtype=None,
+    trash=True,
+    newest_first=False,
 ) -> list[sqlite3.Row]:
     # state: only valid for source_type="github" — it's the only items table with a `state`
-    # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
-    # exclude_trashed, which only gdrive_files has a column for. title matches the whole title,
+    # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise trash
+    # other than True: `_drive_trash` reads a column only gdrive_files has. newest_first orders
+    # gdrive_files rows by DRIVE_MODIFIED, newest first, ties by id. title matches the whole title,
     # ignoring ASCII case. subtype is Confluence's content type, where a row with none is a page.
     tbl = table(source_type)
     sql = f"SELECT * FROM {tbl} WHERE 1=1"
@@ -1164,8 +1620,7 @@ def list_documents(
     if state is not None:
         sql += " AND COALESCE(state, 'open') = ?"
         params.append(state)
-    if exclude_trashed:
-        sql += " AND COALESCE(trashed, 0) = 0"
+    sql = _drive_trash(sql, params, trash)
     if title is not None:
         sql += " AND title = ? COLLATE NOCASE"
         params.append(title)
@@ -1173,7 +1628,8 @@ def list_documents(
         sql += " AND COALESCE(subtype, 'page') = ?"
         params.append(subtype)
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
-    sql += clause + f" ORDER BY {_order_by(source_type)} LIMIT ? OFFSET ?"
+    order = f"{DRIVE_MODIFIED} DESC, id" if newest_first else _order_by(source_type)
+    sql += clause + f" ORDER BY {order} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
@@ -1340,7 +1796,10 @@ def list_hubspot_objects(
 # newest first, measured against api.linear.app on 2026-10-05 over eight issues whose `updatedAt`
 # order differs from their `createdAt` order: `issues` and `Team.issues` with no `orderBy` and with
 # `orderBy: createdAt` came in descending `createdAt`, and with `orderBy: updatedAt` in descending
-# `updatedAt`. `id` breaks ties into a total order, which offset paging requires.
+# `updatedAt`. So did `Issue.children`, over a parent's three children whose two orders differ,
+# and `users`, over the workspace's three (2026-10-04 and 2026-10-18), where `children(first: 1)`
+# was the newest child and `children(last: 1)` the oldest. `id` breaks ties into a total order,
+# which offset paging requires.
 LINEAR_DEFAULT_ORDER_BY = "createdAt"
 
 # `Issue.updatedAt` is non-null in Linear; an issue with no recorded edit reports its creation
@@ -1359,6 +1818,12 @@ LINEAR_ORDER_COLUMNS = {"createdAt": "created_ts", "updatedAt": LINEAR_UPDATED_E
 # field is non-null there), so every comparison and sort over it has to see the same 0 -- a raw
 # `priority` put an unset issue outside `priority: {eq: 0}` and after every other row in a sort.
 LINEAR_PRIORITY_EXPR = "COALESCE(priority, 0)"
+
+# `Issue.number` is `synth.linear_issue_number` of the identifier, its trailing run of digits (0
+# when there is none). The same reading in SQL, so `IssueFilter.number` compares what is served.
+LINEAR_NUMBER_EXPR = (
+    "CAST(substr(rtrim(identifier), length(rtrim(rtrim(identifier), '0123456789')) + 1) AS INTEGER)"
+)
 
 LINEAR_SORT_COLUMNS = {
     "title": "title",
@@ -1488,11 +1953,17 @@ def list_linear_comments(
     """Comments on one issue, or across the corpus when ``issue_id`` is None (``Query.comments``).
 
     A comment row carries no ACL grant of its own; visibility is the parent issue's, so the ACL
-    is applied to ``linear_issues`` through a join rather than to the comment table."""
-    # The join exists ONLY to reach the parent issue's ACL, so an admin read (visible_ids None)
-    # skips it: measured over 165k comments, the join cost ~40ms per page for nothing.
+    is applied to ``linear_issues`` through a join rather than to the comment table. An admin read
+    (``visible_ids`` None) skips the join. ``Comment.url``'s identifier and title come from scalar
+    subqueries, which SQLite evaluates only for the rows a page returns, where a join runs for every
+    row OFFSET skips."""
     join = "" if visible_ids is None else " JOIN linear_issues i ON i.id = c.issue_id"
-    sql = f"SELECT c.* FROM linear_comments c{join} WHERE 1=1"
+    sql = (
+        "SELECT c.*,"
+        " (SELECT identifier FROM linear_issues WHERE id = c.issue_id) AS issue_identifier,"
+        " (SELECT title FROM linear_issues WHERE id = c.issue_id) AS issue_title"
+        f" FROM linear_comments c{join} WHERE 1=1"
+    )
     params: list = []
     if issue_id is not None:
         sql += " AND c.issue_id = ?"
@@ -1522,13 +1993,16 @@ def count_linear_comments(conn, *, issue_id=None, visible_ids=None, prefilter=No
 
 
 def linear_children(
-    conn, parent_id, *, visible_ids=None, limit=50, offset=0, prefilter=None
+    conn, parent_id, *, visible_ids=None, limit=50, offset=0, prefilter=None, order_by=None
 ) -> list[sqlite3.Row]:
     """Sub-issues of an issue — every row whose resolved ``parent_id`` is this one.
 
     An indexed equality on an issue id, NOT a join on ``identifier``: identifiers repeat, so a
     join would attach one issue's children to every issue sharing its key. Resolved once at import,
-    which is what makes this the exact inverse of ``Issue.parent``."""
+    which is what makes this the exact inverse of ``Issue.parent``.
+
+    In the order :func:`_linear_order` gives ``issues``, as :data:`LINEAR_DEFAULT_ORDER_BY`
+    records."""
     sql = "SELECT * FROM linear_issues WHERE parent_id = ?"
     params: list = [parent_id]
     if prefilter:
@@ -1536,7 +2010,7 @@ def linear_children(
         sql += f" AND {frag}"
         params += fparams
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
-    sql += clause + " ORDER BY created_ts, id LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {_linear_order(order_by)} LIMIT ? OFFSET ?"
     return conn.execute(sql, params + cparams + [limit, offset]).fetchall()
 
 
@@ -1702,15 +2176,14 @@ LINEAR_DEFAULT_STATE = "Todo"
 # of its own: it exists only as a column value on some issue. So "can the caller see it" means
 # "can the caller see any issue carrying it", and each kind names the predicate that asks.
 # Keyed exactly as `linear_entities` keys its rows.
+#
+# A workflow state and a cycle belong to their team, and `Team.states` / `Team.cycles` list every
+# one of a team's to whoever sees the team, so either is visible with its team rather than with
+# an issue carrying it.
 _LINEAR_ENTITY_PREDICATES = {
     "project": lambda v: ("project = ?", [v]),
-    "cycle": lambda v: ("cycle = ? AND team = ?", [v[1], v[0]]),  # v = (team, name)
-    # COALESCE, to match the synthesized default above: a caller reading an issue with no state
-    # must be able to resolve the state id that issue served them.
-    "state": lambda v: (
-        f"COALESCE(state, '{LINEAR_DEFAULT_STATE}') = ? AND team = ?",
-        [v[1], v[0]],
-    ),  # v = (team, name)
+    "cycle": lambda v: ("team = ?", [v[0]]),  # v = (team, name)
+    "state": lambda v: ("team = ?", [v[0]]),  # v = (team, name)
     # A person is reachable as either end of an issue.
     "user": lambda v: ("(author_email = ? OR assignee_email = ?)", [v[0], v[0]]),  # v = (email, _)
     "label": lambda v: (
@@ -1760,11 +2233,12 @@ def linear_entity_by_id(conn, kind: str, served_id):
 
 
 def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
-    """Whether the caller can see ANY issue carrying this project / cycle / state / person / label.
+    """Whether the caller can see ANY issue carrying this project / person / label, or any issue of
+    this state's or cycle's team.
 
     Without it the by-id roots are an existence oracle: `linear_entities` is an unfiltered DISTINCT
-    over every issue, so a caller denied an issue could still resolve that issue's project, label,
-    cycle, state and assignee. A ``LIMIT 1`` probe, so it stops at the first visible carrier."""
+    over every issue, so a caller denied an issue could still resolve that issue's project, label
+    and assignee. A ``LIMIT 1`` probe, so it stops at the first visible row."""
     build = _LINEAR_ENTITY_PREDICATES.get(kind)
     if build is None:
         raise ValueError(f"unknown linear entity kind {kind!r}")
@@ -1780,12 +2254,218 @@ def linear_entity_has_visible(conn, kind: str, value, visible_ids=None) -> bool:
 
 def linear_team_issue_counts(conn, visible_ids=None) -> dict[str, int]:
     """team -> visible issue count, in one grouped scan — ``Team.issueCount`` for a whole page of
-    teams without a COUNT(*) per team."""
+    teams without a COUNT(*) per team. An archived issue is left out, as the default `issues`
+    listing leaves it out (:func:`_linear_archived`): on api.linear.app a team's `issueCount` was 8
+    beside 8 listed issues and 9 under `includeArchived: true` (2026-10-09), and went from 9 to 8
+    when one of its issues was archived (2026-10-21)."""
     clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
     rows = conn.execute(
-        f"SELECT team, COUNT(*) FROM linear_issues WHERE 1=1{clause} GROUP BY team", cparams
+        f"SELECT team, COUNT(*) FROM linear_issues WHERE 1=1{_linear_archived(False)}{clause} "
+        "GROUP BY team",
+        cparams,
     )
     return {r[0]: r[1] for r in rows}
+
+
+def linear_team_entity_names(conn, kind: str, team) -> list[str]:
+    """The names of one team's workflow states or cycles in the corpus, read off
+    ``linear_entities``, which keys both on the team. Unscoped: a team's states and cycles are
+    visible with the team (see :data:`_LINEAR_ENTITY_PREDICATES`)."""
+    if kind not in ("state", "cycle"):
+        raise ValueError(f"not a team-scoped linear entity kind: {kind!r}")
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM linear_entities WHERE kind = ? AND team = ? ORDER BY name",
+            (kind, team),
+        )
+    ]
+
+
+def linear_team_projects(conn, team, visible_ids=None) -> list[str]:
+    """The projects the caller can see an issue of this team in. A Linear project belongs to the
+    teams whose issues it holds, and is visible as `project(id:)` sees it: with an issue."""
+    clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT project FROM linear_issues "
+            f"WHERE team = ? AND project IS NOT NULL AND project != ''{clause}",
+            [team, *cparams],
+        )
+    ]
+
+
+def linear_visible_labels(conn, visible_ids=None) -> list[str]:
+    """Every label the caller can see an issue carrying. Labels are workspace-wide, so this is
+    the same list for every team."""
+    if visible_ids is None:
+        return [r[0] for r in conn.execute("SELECT name FROM linear_entities WHERE kind = 'label'")]
+    clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT value FROM linear_issues, json_each(COALESCE(labels, '[]'))"
+            f" WHERE 1=1{clause}",
+            cparams,
+        )
+    ]
+
+
+# A team key starts with a letter, and the number has no leading zero: `KEY-019` and `019` named
+# no issue on api.linear.app on 2026-10-22. The key and the number are ASCII, as real reads them:
+# `KEY-19` followed by U+0663 (an Arabic-Indic three) named KEY-19 on 2026-10-25, where `\d` would
+# read it as a digit.
+_LINEAR_SEARCH_KEY = r"[A-Za-z][A-Za-z0-9]*"
+_LINEAR_SEARCH_NUM = r"[1-9][0-9]*"
+# The identifier with its hyphen or one space at the start of the term, and then the term's end or
+# a character outside A-Z, a-z and 0-9.
+_LINEAR_SEARCH_OPENING = re.compile(
+    rf"({_LINEAR_SEARCH_KEY})[- ]({_LINEAR_SEARCH_NUM})(?![A-Za-z0-9])"
+)
+# The identifier with no separator, the number being the trailing digits, so `KEY19` is key `KEY`
+# and number `19` rather than key `KEY1` and number `9`.
+_LINEAR_SEARCH_JOINED = re.compile(rf"([A-Za-z][A-Za-z0-9]*?)({_LINEAR_SEARCH_NUM})")
+# What a term with a key loses from each end: what JavaScript's `String.prototype.trim` takes. On
+# 2026-10-25 api.linear.app read `KEY19` after a tab, U+00A0, U+2028, U+3000 or U+FEFF as KEY-19,
+# and after U+001C, U+001F, U+0085, U+180E or U+200B as no issue; `str.strip()` takes U+001C to
+# U+001F and U+0085 and leaves U+FEFF.
+_LINEAR_SEARCH_TRIMMED = "\t\n\x0b\x0c\r \xa0\u1680\u2028\u2029\u202f\u205f\u3000\ufeff" + "".join(
+    map(chr, range(0x2000, 0x200B))
+)
+# The number alone, with at most one space and that on one side.
+_LINEAR_SEARCH_BARE = re.compile(rf" ?({_LINEAR_SEARCH_NUM})|({_LINEAR_SEARCH_NUM}) ")
+
+
+def _linear_search_identifier(term: str) -> tuple[str | None, str] | None:
+    """The issue a ``searchIssues`` term names, as ``(key, number)`` with ``key`` None for a number
+    alone, or None when it names none.
+
+    Measured on api.linear.app on 2026-10-22 and 2026-10-25, over one team's issues. For a term with
+    a key, what :data:`_LINEAR_SEARCH_TRIMMED` holds goes from either end (`   KEY-19`, `KEY 19  `,
+    a tab or a no-break space before `KEY19`), and so does one pair of `"` or of `'` around the
+    whole of it (`"KEY-19"`, `'KEY-19'`, `"KEY19"`), where one quote alone, two pairs, brackets or
+    backticks around it named no issue. `KEY-N` or `KEY N` names that issue when the term ends there
+    or goes on with a character outside A-Z, a-z and 0-9: `KEY-19.`, `KEY-19;`, `KEY-19!`,
+    `KEY-19-`, `KEY-19_`, `KEY-19é`, `KEY 19,`, `KEY-19 probe` and `KEY-19.probe` named KEY-19, and
+    `KEY-19x`, `KEY 19x`, `KEY  19` and `KEY<TAB>19` none. `KEYN` names it only as the whole term
+    (`KEY19.` and `KEY19 probe` named none). The number alone names it with at most one space, on
+    one side: `19`, ` 19` and `19 ` named KEY-19, and ` 19 `, `  19`, `19.`, `"19"` and `19` after a
+    tab none."""
+    text = term.strip(_LINEAR_SEARCH_TRIMMED)
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1]
+    named = _LINEAR_SEARCH_OPENING.match(text) or _LINEAR_SEARCH_JOINED.fullmatch(text)
+    if named:
+        return named.group(1), named.group(2)
+    bare = _LINEAR_SEARCH_BARE.fullmatch(term)
+    if bare:
+        return None, bare.group(1) or bare.group(2)
+    return None
+
+
+def _linear_identifier_ids(conn, key: str | None, number: str) -> list[str]:
+    """Ids whose identifier ends in ``-number``, and whose key is ``key`` when one is given.
+
+    A bare number is every issue the later ACL and ``team`` clauses still allow. The workspace
+    measured on 2026-10-22 had one team, so which team a bare number belongs to is unmeasured;
+    dropping one of two visible issues numbered the same would be the guess that hides a match
+    the caller can already see. ``teamId`` still narrows them, through the clause the search
+    applies after this."""
+    sql = (
+        "SELECT id FROM linear_issues "
+        "WHERE instr(identifier, '-') > 0 "
+        "AND substr(identifier, instr(identifier, '-') + 1) = ?"
+    )
+    params: list = [number]
+    if key is not None:
+        sql += " AND lower(substr(identifier, 1, instr(identifier, '-') - 1)) = lower(?)"
+        params.append(key)
+    return [row[0] for row in conn.execute(sql, params)]
+
+
+def search_linear_issues(
+    conn,
+    term: str,
+    *,
+    visible_ids=None,
+    team=None,
+    prefilter=None,
+    include_comments=True,
+    archived=False,
+    order_by=None,
+) -> tuple[list[tuple[str, float]], int]:
+    """``searchIssues``: every matching issue as ``(id, score)`` in the order served, and the count
+    ``totalCount`` reports.
+
+    An issue matches when the term names its identifier (see :func:`_linear_search_identifier`),
+    when a space-separated word of ``term`` starts a word of its title or description, read
+    through the porter-stemmed index with a hyphenated word as the phrase it spells (measured
+    2026-10-22: `prob`, `pro` and `chil` matched where `robe` did not, and `BRE-2` did not match
+    a title holding `(child 2)`), or, with ``include_comments``, when one of its comments
+    contains a word. That count leaves ``prefilter`` out, as api.linear.app's did on 2026-10-22:
+    a `filter` narrowed the nodes and left `totalCount` at the unfiltered total.
+
+    ``score`` is 1 for the identifier, as real's was, and ``|bm25| / (1 + |bm25|)`` for an index
+    match, so it falls between 0 and 1 and orders as the rank does; a comment-only match scores 0.
+    Real's own word scores are not reproducible."""
+    words = re.findall(r"\w+", term.lower())
+    # Each kind of match is collected on its own and the candidates are scoped afterwards: an FTS
+    # MATCH joined into a scan of the issues is re-run per issue.
+    ranks: dict[str, float | None] = {}
+    phrases = [w.replace('"', '""') for w in term.lower().split() if re.search(r"\w", w)]
+    if phrases and _has_fts(conn, "linear"):
+        match = " OR ".join(f'"{w}"*' for w in phrases)
+        for row in conn.execute(
+            "SELECT id, rank FROM linear_fts WHERE linear_fts MATCH ?", [match]
+        ):
+            ranks[row[0]] = row[1]
+    elif words:
+        found = " OR ".join("instr(lower(title || ' ' || content), ?) > 0" for _ in words)
+        for row in conn.execute(f"SELECT id FROM linear_issues WHERE {found}", words):
+            ranks[row[0]] = None
+    if include_comments and words:
+        found = " OR ".join("instr(lower(body), ?) > 0" for _ in words)
+        for row in conn.execute(
+            f"SELECT DISTINCT issue_id FROM linear_comments WHERE {found}", words
+        ):
+            ranks.setdefault(row[0], None)
+    named = _linear_search_identifier(term)
+    exact = set(_linear_identifier_ids(conn, *named)) if named is not None else set()
+    for issue_id in exact:
+        ranks.setdefault(issue_id, None)
+    where = " WHERE id IN (SELECT value FROM json_each(?))"
+    params: list = [json.dumps(list(ranks))]
+    if team is not None:
+        where += " AND team = ?"
+        params.append(team)
+    where += _linear_archived(archived)
+    clause, cparams = _acl_clause("linear", visible_ids=visible_ids)
+    where += clause
+    params += cparams
+    total = conn.execute(f"SELECT COUNT(*) FROM linear_issues{where}", params).fetchone()[0]
+    if prefilter:
+        frag, fparams = prefilter
+        where += f" AND {frag}"
+        params += fparams
+    sort = LINEAR_ORDER_COLUMNS[order_by] if order_by else "created_ts"
+    rows = conn.execute(f"SELECT id, {sort} AS at FROM linear_issues{where}", params).fetchall()
+    # Newest first and then by id, as `_linear_order` sorts; without `order_by`, relevance first.
+    rows.sort(key=lambda r: r["id"])
+    rows.sort(key=lambda r: r["at"], reverse=True)
+    if not order_by:
+        rows.sort(key=lambda r: (r["id"] not in exact, ranks[r["id"]] is None, ranks[r["id"]] or 0))
+    out = []
+    for row in rows:
+        rank = ranks[row["id"]]
+        if row["id"] in exact:
+            score = 1.0
+        elif rank is not None:
+            score = abs(rank) / (1 + abs(rank))
+        else:
+            score = 0.0
+        out.append((row["id"], score))
+    return out, total
 
 
 def hubspot_associations(
@@ -1816,15 +2496,17 @@ def hubspot_associations(
     return conn.execute(sql, params).fetchall()
 
 
-def list_drive_folder(conn, folder, visible_ids=None, limit=100, offset=0) -> list[sqlite3.Row]:
-    """Non-trashed files directly in a Drive folder — SQL-scoped + SQL-paginated, so listing a
-    big folder costs one page of rows per request, not a full-corpus scan on every page."""
-    sql = "SELECT * FROM gdrive_files WHERE folder = ? AND COALESCE(trashed, 0) = 0"
+def list_drive_folder(
+    conn, folder, visible_ids=None, limit=100, offset=0, trash=False
+) -> list[sqlite3.Row]:
+    """The files directly in a Drive folder, with the trashed ones ``trash`` keeps (see
+    `_drive_trash`), newest first by :data:`DRIVE_MODIFIED`, ties by id — SQL-scoped +
+    SQL-paginated, so listing a big folder costs one page of rows per request, not a full-corpus
+    scan on every page."""
     params: list = [folder]
+    sql = _drive_trash("SELECT * FROM gdrive_files WHERE folder = ?", params, trash)
     clause, cparams = _acl_clause("google_drive", visible_ids=visible_ids)
-    # No ORDER BY: the folder index already yields a stable order for pagination, and adding
-    # ORDER BY id forces a per-page sort of the whole folder (≈30x slower on a big folder).
-    sql += clause + " LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {DRIVE_MODIFIED} DESC, id LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
@@ -1846,11 +2528,20 @@ def drive_name_fold(title: str) -> str:
 
 
 def list_drive_by_name(
-    conn, name, container=None, visible_ids=None, limit=100_000, offset=0, *, exact=False
+    conn,
+    name,
+    container=None,
+    visible_ids=None,
+    limit=100_000,
+    offset=0,
+    *,
+    exact=False,
+    trash=False,
 ) -> list[sqlite3.Row]:
-    """Non-trashed Drive files whose title matches ``name``, optionally within a folder — the SQL
-    path for a name lookup, which otherwise listed the WHOLE corpus (~25k rows, ~1.6s) to compare
-    in Python. ``exact`` is Drive's ``name = 'X'``; without it, ``name contains 'X'``.
+    """Drive files whose title matches ``name``, optionally within a folder, less the trashed ones
+    `_drive_trash` drops for ``trash`` — the SQL path for a name lookup, which otherwise listed the
+    WHOLE corpus (~25k rows, ~1.6s) to compare in Python. ``exact`` is Drive's ``name = 'X'``;
+    without it, ``name contains 'X'``.
 
     Each is the comparison real Drive makes, measured 2026-09-14, so the rows this returns are the
     rows the evaluator accepts — not a superset it narrows. ``name =`` folds case for ASCII letters
@@ -1862,17 +2553,13 @@ def list_drive_by_name(
         needle = _like_escape(name)
         # SQLite LIKE is case-insensitive for ASCII and exact elsewhere — real's `name =` rule;
         # no lower() wrapper, which would force a per-row scan.
-        sql = (
-            "SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 AND title LIKE ? ESCAPE '\\'"
-        )
+        sql = "SELECT * FROM gdrive_files WHERE title LIKE ? ESCAPE '\\'"
         params: list = [needle]
     else:
         needle = _like_escape(drive_name_fold(name))
-        sql = (
-            "SELECT * FROM gdrive_files WHERE COALESCE(trashed, 0) = 0 "
-            "AND title_fold LIKE ? ESCAPE '\\'"
-        )
+        sql = "SELECT * FROM gdrive_files WHERE title_fold LIKE ? ESCAPE '\\'"
         params = [f"%{needle}%"]
+    sql = _drive_trash(sql, params, trash)
     if container is not None:
         sql += " AND folder = ?"
         params.append(container)
@@ -1882,9 +2569,10 @@ def list_drive_by_name(
     return conn.execute(sql, params).fetchall()
 
 
-def count_drive_folder(conn, folder, visible_ids=None) -> int:
-    sql = "SELECT COUNT(*) FROM gdrive_files WHERE folder = ? AND COALESCE(trashed, 0) = 0"
+def count_drive_folder(conn, folder, visible_ids=None, trash=False) -> int:
+    """How many files `list_drive_folder` lists for the same arguments."""
     params: list = [folder]
+    sql = _drive_trash("SELECT COUNT(*) FROM gdrive_files WHERE folder = ?", params, trash)
     clause, cparams = _acl_clause("google_drive", visible_ids=visible_ids)
     sql += clause
     params += cparams
@@ -1899,6 +2587,38 @@ def drive_folder_has_visible(conn, folder, visible_ids=None) -> bool:
     return conn.execute(sql, [folder, *params]).fetchone() is not None
 
 
+def _drive_trash(sql: str, params: list, trash) -> str:
+    """``sql`` keeping the trashed Drive files ``trash`` names: each of them when it is True, none
+    when it is False or empty, and when it is an address the ones whose ``author_email`` is that
+    address, ASCII letters folded as SQLite's ``lower()`` folds them. At most one bound value
+    whatever the corpus holds, so a listing never runs into SQLite's limit on bound variables."""
+    if trash is True:
+        return sql
+    if not trash:
+        return sql + " AND COALESCE(trashed, 0) = 0"
+    params.append(trash)
+    return sql + " AND (COALESCE(trashed, 0) = 0 OR lower(COALESCE(author_email, '')) = lower(?))"
+
+
+# Real Drive never reports a native Docs-editors file (a Doc, Sheet or Slide deck) under 1024 bytes:
+# measured 2026-10-26 against Drive v3 across 80 native files, the smallest `size` was 1024 and an
+# empty spreadsheet reported 1024 too.
+DRIVE_NATIVE_MIN_BYTES = 1024
+# The subtypes that floor applies to, and the subtype a Drive row stored without one is served as.
+DRIVE_NATIVE_SUBTYPES = ("document", "spreadsheet", "presentation")
+DRIVE_DEFAULT_SUBTYPE = "document"
+
+
+def drive_file_bytes(subtype: str | None, content: str | None) -> int:
+    """The ``size`` and ``quotaBytesUsed`` a non-folder Drive file serves: its UTF-8 byte length,
+    floored at :data:`DRIVE_NATIVE_MIN_BYTES` for a native file. :func:`drive_usage_bytes` sums the
+    same in SQL."""
+    nbytes = len((content or "").encode("utf-8"))
+    if (subtype or DRIVE_DEFAULT_SUBTYPE) in DRIVE_NATIVE_SUBTYPES:
+        return max(nbytes, DRIVE_NATIVE_MIN_BYTES)
+    return nbytes
+
+
 def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
     """``(bytes stored, bytes in the trash)`` over the Drive files this caller can see — what
     ``about.get`` serves as ``storageQuota``. One query, so the quota costs a single scan.
@@ -1906,8 +2626,16 @@ def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
     ``length(CAST(content AS BLOB))`` is deliberate: SQLite's ``length()`` on a TEXT column counts
     CHARACTERS, while the ``size`` every file resource carries is ``len(content.encode("utf-8"))``.
     Without the cast a corpus holding any non-ASCII text reports a quota smaller than the sum of
-    the sizes the same caller reads out of ``files.list`` — a divergence no client could explain."""
-    nbytes = "length(CAST(content AS BLOB))"
+    the sizes the same caller reads out of ``files.list`` — a divergence no client could explain.
+
+    A native file counts at least :data:`DRIVE_NATIVE_MIN_BYTES`, the floor its ``size`` carries,
+    so the quota stays the sum of the sizes ``files.list`` serves."""
+    raw = "COALESCE(length(CAST(content AS BLOB)), 0)"
+    native = ", ".join(f"'{s}'" for s in DRIVE_NATIVE_SUBTYPES)
+    nbytes = (
+        f"(CASE WHEN COALESCE(NULLIF(subtype, ''), '{DRIVE_DEFAULT_SUBTYPE}') IN ({native}) "
+        f"THEN MAX({raw}, {DRIVE_NATIVE_MIN_BYTES}) ELSE {raw} END)"
+    )
     sql = (
         f"SELECT COALESCE(SUM({nbytes}), 0), "
         f"COALESCE(SUM(CASE WHEN COALESCE(trashed, 0) = 1 THEN {nbytes} ELSE 0 END), 0) "
@@ -1987,16 +2715,15 @@ def count_documents(
     visible_ids=None,
     author_email=None,
     state=None,
-    exclude_trashed=False,
     roots_only=False,
     title=None,
     subtype=None,
+    trash=True,
 ) -> int:
     # state: only valid for source_type="github" — it's the only items table with a `state`
-    # column; passing it for any other source_type raises sqlite3.OperationalError. Likewise
-    # exclude_trashed, which only gdrive_files has a column for, and roots_only, which counts
-    # gmail THREADS rather than messages. It has to track list_documents': a count that includes
-    # rows the listing drops makes nextPageToken lie.
+    # column; passing it for any other source_type raises sqlite3.OperationalError. trash is
+    # list_documents', and roots_only counts gmail THREADS rather than messages. It has to track
+    # list_documents': a count that includes rows the listing drops makes nextPageToken lie.
     tbl = table(source_type)
     sql = f"SELECT COUNT(*) FROM {tbl} WHERE 1=1"
     params: list = []
@@ -2004,8 +2731,7 @@ def count_documents(
     if state is not None:
         sql += " AND COALESCE(state, 'open') = ?"
         params.append(state)
-    if exclude_trashed:
-        sql += " AND COALESCE(trashed, 0) = 0"
+    sql = _drive_trash(sql, params, trash)
     if roots_only:
         sql += _GMAIL_ROOT
     if title is not None:
@@ -2051,8 +2777,11 @@ _FF_SCOPE_COLS = {"title": ("title",), "sentences": ("content",), "all": ("title
 
 
 def fireflies_scope_columns(scope: str | None) -> tuple[str, ...] | None:
-    """The columns a `scope` searches, or None if the value isn't one Fireflies accepts."""
-    return _FF_SCOPE_COLS.get((scope or "all").lower())
+    """The columns a `scope` searches: its entry in ``_FF_SCOPE_COLS`` as spelled, the ``"all"``
+    entry when it is left out (None), or None when it has no entry."""
+    if scope is None:
+        return _FF_SCOPE_COLS["all"]
+    return _FF_SCOPE_COLS.get(scope)
 
 
 def _fireflies_where(
@@ -2301,7 +3030,10 @@ def _fts_table(source_type: str) -> str:
 
 # Sources with no `title` column. The FTS index keeps a `title` column for every source so its shape
 # and the queries over it stay uniform; for these it is fed a constant.
-TITLELESS = frozenset({"slack"})
+# A Teams message has a `subject`, null where the corpus states none, and a corpus is not asked for
+# a title it has no use for — so the column is a nullable service field, not the shared `title`,
+# and this source indexes `content` alone the way slack does.
+TITLELESS = frozenset({"slack", "msteams"})
 
 
 def title_expr(source_type: str, alias: str = "") -> str:
@@ -2373,10 +3105,10 @@ def fts_add_docs(conn, source_type: str, doc_keys: list) -> int:
         values = ",".join("(" + ",".join("?" for _ in cols) + ")" for _ in chunk)
         flat = [v for row in chunk for v in row]
         conn.execute(f"DELETE FROM {fts} WHERE ({key}) IN (VALUES {values})", flat)
-        cols = ", ".join(_fts_text_columns(source_type))
+        text_cols = ", ".join(_fts_text_columns(source_type))
         conn.execute(
-            f"INSERT INTO {fts}({key}, {cols}) "
-            f"SELECT {key}, {cols} FROM {tbl} WHERE ({key}) IN (VALUES {values})",
+            f"INSERT INTO {fts}({key}, {text_cols}) "
+            f"SELECT {key}, {text_cols} FROM {tbl} WHERE ({key}) IN (VALUES {values})",
             flat,
         )
         n += len(chunk)
@@ -2434,6 +3166,367 @@ def _fts_relevance_order(source_type: str, query, tbl: str = "t") -> tuple[str, 
     return f"{fts}.rank", []
 
 
+# FTS5's bm25 constants. Restated here because the Python scorer has to agree with the SQLite
+# implementation digit for digit; a difference shows up as a ranking that is subtly, untestably
+# wrong rather than as an error. Verified against sqlite 3.49.1 -- see
+# `test_python_bm25_agrees_with_sqlite_on_a_corpus_row`.
+_BM25_K1 = 1.2
+_BM25_B = 0.75
+# fts5_aux.c clamps a non-positive IDF to this rather than letting a term present in nearly every
+# document score zero or negative. It is also why an overlay index scores everything at ~-1e-06:
+# in a near-empty index every term is in every document, so every IDF clamps.
+_BM25_MIN_IDF = 1e-6
+
+
+def _vocab(conn, schema: str, fts: str, kind: str) -> str:
+    """An fts5vocab view over one index, created once per connection and reused.
+
+    `row` gives per-term document counts and total occurrences; `instance` gives one row per token
+    occurrence, which is how a document's length and a term's frequency in it are counted without
+    reimplementing the tokenizer in Python.
+    """
+    name = f"vocab_{schema}_{fts}_{kind}"
+    conn.execute(
+        f"CREATE VIRTUAL TABLE IF NOT EXISTS temp.{name} USING fts5vocab({schema}, {fts}, '{kind}')"
+    )
+    return f"temp.{name}"
+
+
+def _fts_query_terms(conn, source_type: str, query: str) -> list[str]:
+    """The query's terms as the index's own tokenizer stems them.
+
+    Tokenized by an FTS5 table declared with the same tokenizer rather than by a regex here: the
+    index stores `deploi`, not `deploy`, so a Python split would look up terms the vocabulary does
+    not contain and score every one of them zero.
+
+    `temp` is per CONNECTION and the serving connection is shared, so the drop/create/insert/read
+    sequence below is four statements something else on that connection can land between — the
+    `/_meta/overlay*` handlers, which run on the threadpool where every Slack handler is
+    `async def`. The lock is the overlay's, which is what those two take.
+    """
+    from backlot import overlay
+
+    with overlay.LOCK:
+        conn.execute("DROP TABLE IF EXISTS temp.bm25_q")
+        conn.execute("CREATE VIRTUAL TABLE temp.bm25_q USING fts5(t, tokenize='porter unicode61')")
+        conn.execute("INSERT INTO temp.bm25_q VALUES (?)", (query,))
+        vocab = _vocab(conn, "temp", "bm25_q", "row")
+        conn.execute(f"DROP TABLE IF EXISTS {vocab}")
+        conn.execute(f"CREATE VIRTUAL TABLE {vocab} USING fts5vocab(temp, bm25_q, 'row')")
+        # With MULTIPLICITY, not the distinct set. fts5 sums bm25 per PHRASE, so a query that says
+        # a term twice scores it twice — measured: `"the the"` scores exactly double `"the"`, and a
+        # de-duplicated term list came back at half of what `bm25()` returns.
+        return [
+            t for term, cnt in conn.execute(f"SELECT term, cnt FROM {vocab}") for t in [term] * cnt
+        ]
+
+
+def _corpus_bm25(
+    conn,
+    source_type: str,
+    query: str,
+    rowid: int,
+    *,
+    schema: str = "ov",
+    terms=None,
+    stats=None,
+    phrase: bool = False,
+) -> float:
+    """bm25 for one row of ``schema``'s index, computed from the CORPUS index's statistics.
+
+    Necessary because bm25's IDF is a property of the index a term is in — the argument
+    :func:`build_fts` already makes for giving each source its own index. An overlay holding a
+    handful of rows gives every term in it an IDF of zero, which fts5 clamps to
+    :data:`_BM25_MIN_IDF`, so `bm25()` there returns about -1e-06 where the corpus index returns
+    -2.70 for identical text. Lower is better-ranked, so an overlay hit would sort behind every
+    corpus hit however well it matched.
+
+    Document length and term frequency come from ``schema``'s own instance vocabulary, so the
+    tokenizer that indexed the row is the one that counts it. Only N, n and the average document
+    length come from the corpus — which is exactly the substitution this function exists to make.
+
+    ``terms`` is the already-tokenised query and ``stats`` the corpus's own counts, so a caller
+    scoring many rows for one query pays :func:`_fts_query_terms` and :func:`_corpus_stats` once
+    rather than per row.
+
+    Returns a negative number, matching fts5's sign convention. With ``schema="main"`` it
+    reproduces `bm25()` exactly, which is how it is tested.
+    """
+    fts = _fts_table(source_type)
+    ov_fts = fts if schema == "main" else f"{source_type}_fts_ov"
+    inst = _vocab(conn, schema, ov_fts, "instance")
+    terms = _fts_query_terms(conn, source_type, query) if terms is None else terms
+    stats = _corpus_stats(conn, source_type, terms) if stats is None else stats
+
+    if not stats.n_rows:
+        return 0.0
+    doclen = conn.execute(f"SELECT COUNT(*) FROM {inst} WHERE doc = ?", (rowid,)).fetchone()[0]
+
+    if phrase:
+        # One unit, matched once: fts5 scores a phrase as a single term, and how many times it
+        # repeats in the document is not something the instance vocabulary can say. A row only
+        # reaches here because the index matched it, so the occurrence it matched is the one
+        # counted.
+        (term,) = stats.n_docs
+        return -_bm25_term(1, stats.n_docs[term], stats.n_rows, doclen, stats.avgdl)
+
+    score = 0.0
+    for term in terms:
+        freq = conn.execute(
+            f"SELECT COUNT(*) FROM {inst} WHERE doc = ? AND term = ?", (rowid, term)
+        ).fetchone()[0]
+        if not freq:
+            continue
+        score += _bm25_term(freq, stats.n_docs.get(term, 0), stats.n_rows, doclen, stats.avgdl)
+    return -score
+
+
+def _bm25_term(freq: int, n_docs: int, n_rows: int, doclen: int, avgdl: float) -> float:
+    """One term's bm25 contribution, by the formula fts5 uses — the IDF clamped the way it
+    clamps a term common enough to make it non-positive."""
+    idf = math.log((n_rows - n_docs + 0.5) / (n_docs + 0.5))
+    if idf <= 0.0:
+        idf = _BM25_MIN_IDF
+    denom = freq + _BM25_K1 * (1 - _BM25_B + _BM25_B * doclen / avgdl)
+    return idf * (freq * (_BM25_K1 + 1)) / denom
+
+
+class _CorpusStats(NamedTuple):
+    n_rows: int
+    avgdl: float
+    n_docs: dict[str, int]
+
+
+def _corpus_stats(conn, source_type: str, terms, *, phrase: str | None = None) -> _CorpusStats:
+    """N, the average document length and each term's document count, off the CORPUS index.
+
+    Read once per query rather than once per scored row: they are properties of a database opened
+    `mode=ro`, and reading them per row is what a search pays for every overlay hit. On a
+    201,000-message corpus `COUNT(*)` over the index and `SUM(cnt)` over its vocabulary are about
+    55 ms and 66 ms each, so a search matching 50 written rows spent over two seconds recounting
+    one unchanging number.
+    """
+    fts = _fts_table(source_type)
+    stats_row = _vocab(conn, "main", fts, "row")
+    n_rows, avgdl = _corpus_size(conn, source_type)
+    if not n_rows:
+        return _CorpusStats(0, 1.0, {})
+    if phrase is not None:
+        # fts5 scores a quoted query as ONE unit, so its document frequency is the number of
+        # documents the PHRASE is in, which the per-token vocabulary cannot give. Summing the
+        # tokens' own IDFs instead scores a phrase far too low, because a phrase is rarer than
+        # any word in it: on a 201,000-message corpus `"gateway latency"` summed the two terms
+        # to 0.47 where the phrase's own IDF is 3.68.
+        #
+        # It does NOT reproduce fts5's own number, which for the same phrase implies a document
+        # count of about 1,273 against the 4,961 documents that actually contain it -- neither
+        # the phrase's nor either term's. So `bm25()` answers -5.05 for a corpus row where this
+        # answers -3.68, and a posted copy of a corpus message still sorts behind it on a quoted
+        # query. The agreement this function is tested for is for term queries.
+        hit = conn.execute(
+            f"SELECT COUNT(*) FROM main.{fts} WHERE {fts} MATCH ?", (phrase,)
+        ).fetchone()
+        return _CorpusStats(n_rows, avgdl, {phrase: hit[0] if hit else 0})
+    counts = {}
+    for term in terms:
+        hit = conn.execute(f"SELECT doc FROM {stats_row} WHERE term = ?", (term,)).fetchone()
+        counts[term] = hit[0] if hit else 0
+    return _CorpusStats(n_rows, avgdl, counts)
+
+
+#: ``(rows, average document length)`` per corpus file and source. Keyed on the file's path, size
+#: and mtime rather than on the connection: `sqlite3.Connection` has no `__dict__` to hang state
+#: on, and `id()` is reused by CPython once an object is collected. A corpus opened `mode=ro`
+#: cannot change under a running server, and an `--append` that changes one moves both the size
+#: and the mtime, so a stale entry cannot be read.
+_CORPUS_SIZE: dict[tuple, tuple[int, float]] = {}
+
+
+def _corpus_size(conn, source_type: str) -> tuple[int, float]:
+    """How many documents the corpus index holds, and their average length in tokens.
+
+    Both are full passes — on a 201,000-message corpus, about 55 ms and 66 ms — and both are the
+    same answer for every row of every query against that file, so they are read once per corpus
+    rather than once per query.
+    """
+    fts = _fts_table(source_type)
+    key: tuple = (source_type,)
+    for _, name, path in conn.execute("PRAGMA database_list"):
+        if name == "main":
+            stat = Path(path).stat() if path else None
+            key = (source_type, path, stat.st_size, stat.st_mtime_ns) if stat else (source_type,)
+            break
+    if key in _CORPUS_SIZE:
+        return _CORPUS_SIZE[key]
+    n_rows = conn.execute(f"SELECT COUNT(*) FROM main.{fts}").fetchone()[0]
+    if not n_rows:
+        return 0, 1.0
+    total = conn.execute(f"SELECT SUM(cnt) FROM {_vocab(conn, 'main', fts, 'row')}").fetchone()[0]
+    out = (n_rows, ((total or 0) / n_rows) or 1.0)
+    if len(key) > 1:  # an in-memory corpus has no file to key on, so it is not cached
+        _CORPUS_SIZE[key] = out
+    return out
+
+
+def _overlay_hits(conn, source_type, query, visible_ids, *, container, phrase):
+    """``(row, score)`` for every overlay document matching this query.
+
+    FTS5 does the MATCHING — phrases, prefixes, NEAR, the porter tokenizer — so none of
+    :func:`_fts_match`'s query semantics are reimplemented. Its own bm25 is discarded for
+    :func:`_corpus_bm25`, which puts both sides on one scale.
+
+    Empty for a source outside :data:`WRITABLE` or with no overlay attached — a source that takes
+    no writes has no overlay index to query, and searching it must cost nothing it did not cost
+    before.
+    """
+    matched = _overlay_matches(
+        conn, source_type, query, visible_ids, container=container, phrase=phrase
+    )
+    if not matched:
+        return []
+    terms = _fts_query_terms(conn, source_type, query)
+    match = _fts_match(query, phrase=phrase)
+    stats = _corpus_stats(conn, source_type, terms, phrase=match if phrase else None)
+    return [
+        (
+            row,
+            _corpus_bm25(conn, source_type, query, rowid, terms=terms, stats=stats, phrase=phrase),
+        )
+        for row, rowid in matched
+    ]
+
+
+def _overlay_matches(conn, source_type, query, visible_ids, *, container, phrase) -> list:
+    """The overlay documents this query matches, each with the index rowid that scores it.
+
+    One statement of the match, because a search asks it twice: once for the page it serves and
+    once for the total it reports. Two spellings of one condition is a page and a total that
+    disagree.
+
+    The index is asked FIRST and its keys then fetch the documents, rather than joining the index
+    to :func:`merged_source`. A compound subquery is not something SQLite can seek into, so the
+    join made it scan both sides of the union and build an automatic index over the result: on a
+    201,000-message corpus the count took 300 ms where the index lookup itself takes none. The
+    index holds only what the overlay wrote or re-indexed, so the keys are few whatever the
+    corpus's size.
+    """
+    from backlot import overlay
+
+    if source_type not in WRITABLE or not overlay.is_attached(conn):
+        return []
+    m = _fts_match(query, phrase=phrase)
+    if not m:
+        return []
+    names, key = overlay.table_names(source_type), id_columns(source_type)
+    hits = {
+        tuple(row[c] for c in key): row["rowid"]
+        for row in conn.execute(
+            f"SELECT f.rowid AS rowid, {', '.join(f'f.{c} AS {c}' for c in key)} "
+            f"FROM ov.{names['fts']} f WHERE f.{names['fts']} MATCH ?",
+            (m,),
+        )
+    }
+    if not hits:
+        return []
+    # The keys go in a temp table, not into one `OR` term per hit: an OR chain is an expression
+    # tree as deep as the hit count, and SQLite refuses one deeper than 1,000, so a search
+    # matching 990 written rows answered `Expression tree is too large`. A temp table does not
+    # grow the expression at all, so the ceiling is the overlay's own size.
+    #
+    # It is read as a row-value `IN`, not as a JOIN. `EXPLAIN QUERY PLAN` puts `SCAN m` on both
+    # arms of the union for the JOIN and a primary-key `SEARCH m` on both for the `IN`: driving
+    # from the temp table costs a read of every corpus row. On a 201,000-message corpus, with
+    # the search matching one written row, the page and its total took 37.1 ms as a JOIN and
+    # 1.0 ms as an `IN`; at 2,000 matching rows, 506 ms and 453 ms.
+    with overlay.LOCK:
+        conn.execute("DROP TABLE IF EXISTS temp.overlay_hits")
+        conn.execute(
+            f"CREATE TEMP TABLE overlay_hits ({', '.join(f'{c} TEXT' for c in key)}, "
+            f"PRIMARY KEY ({', '.join(key)}))"
+        )
+        conn.executemany(
+            f"INSERT OR IGNORE INTO temp.overlay_hits ({', '.join(key)}) "
+            f"VALUES ({','.join('?' for _ in key)})",
+            list(hits),
+        )
+        params: list = []
+        cont_sql = ""
+        if container is not None:
+            cont_sql = f" AND o.{grouping_col(source_type)} = ?"
+            params.append(container)
+        clause, cparams = _acl_clause(source_type, "o", visible_ids)
+        cols = ", ".join(f"o.{c}" for c in key)
+        rows = conn.execute(
+            f"SELECT o.* FROM ({merged_source(conn, source_type)}) o "
+            f"WHERE ({cols}) IN (SELECT {', '.join(key)} FROM temp.overlay_hits)"
+            f"{cont_sql}{clause}",
+            [*params, *cparams],
+        ).fetchall()
+        conn.execute("DROP TABLE IF EXISTS temp.overlay_hits")
+    return [(r, hits[tuple(r[c] for c in key)]) for r in rows]
+
+
+def _overlay_hit_count(conn, source_type, query, visible_ids, *, container, phrase) -> int:
+    """How many overlay documents match, for the caller that reports a total.
+
+    The same matches the page is built from, counted rather than scored: a total reads no score,
+    so none of the per-row :func:`_corpus_bm25` work is done for it.
+    """
+    return len(
+        _overlay_matches(conn, source_type, query, visible_ids, container=container, phrase=phrase)
+    )
+
+
+def _corpus_not_reindexed(conn, source_type: str, alias: str) -> str:
+    """SQL excluding documents the overlay has re-indexed from a corpus FTS query.
+
+    `patch_document` writes a patched row into the overlay index, and a CORPUS row's entry stays
+    in `main.<fts>` — nothing can delete it. Without this the same document is found by both
+    branches, which puts it twice in one page, twice in the total, and keeps it matching the text
+    it no longer says.
+
+    Empty for a source that is not writable or has no overlay, so those queries are unchanged.
+    """
+    from backlot import overlay
+
+    if source_type not in WRITABLE or not overlay.is_attached(conn):
+        return ""
+    names = overlay.table_names(source_type)
+    on = " AND ".join(f"_ovi.{c} = {alias}.{c}" for c in id_columns(source_type))
+    return f" AND NOT EXISTS (SELECT 1 FROM ov.{names['fts']} _ovi WHERE {on})"
+
+
+def _literal_tier(source_type: str, query):
+    """The Python twin of :func:`_fts_relevance_order`'s leading sort key: 0 for a row containing
+    the query as a literal substring, 1 otherwise, and 0 for every row when the query is not the
+    punctuated kind that tier applies to.
+
+    Two implementations of one rule is a thing to avoid, but the merge cannot use the SQL one: it
+    orders rows from two databases in Python. The rule is small and its condition is stated once,
+    here and in `_fts_relevance_order`, which is why both name the other.
+    """
+    lit = (query or "").strip().lower()
+    if not lit or not re.search(r"\w[^\w\s]\w", lit):
+        return lambda row: 0
+    cols = _fts_text_columns(source_type)
+
+    def tier(row) -> int:
+        return 0 if any(lit in str(row[c] or "").lower() for c in cols) else 1
+
+    return tier
+
+
+def _without(row: sqlite3.Row, *drop: str) -> sqlite3.Row:
+    """A row without the internal scoring columns the merge needs.
+
+    `search_documents` has always returned rows shaped like the document table, and its callers
+    index them by column name; leaking `_rank` into that would be a shape change nobody asked for.
+    Returns a plain mapping-compatible object rather than a `sqlite3.Row`, which cannot be built
+    outside the driver -- every caller reads it by key, which both support.
+    """
+    return {k: row[k] for k in row.keys() if k not in drop}
+
+
 def search_documents(
     conn,
     query,
@@ -2444,12 +3537,16 @@ def search_documents(
     container=None,
     phrase=False,
     order_by=None,
-) -> list[sqlite3.Row]:
+) -> list:
     """Keyword search over title + content within one source (FTS5-ranked; LIKE fallback), optionally
     scoped to one grouping unit. ``phrase=True`` matches the tokens adjacently and ranks a literal
     substring hit above a coincidental one. ``order_by``: ``None`` = relevance (bm25, Slack's
     ``sort=score``), ``"recency"``/``"recency_asc"`` = the doc's own timestamp
-    (``sort=timestamp``)."""
+    (``sort=timestamp``).
+
+    Rows come back from the FTS path as plain mappings rather than ``sqlite3.Row``: the query
+    carries an internal rank column that :func:`_without` strips, and a ``Row`` cannot be rebuilt
+    outside the driver. Every caller reads them by column name, which both support."""
     tbl = table(source_type)
     cont_sql, cont_p = "", []
     if container is not None:
@@ -2470,15 +3567,58 @@ def search_documents(
             order_sql, order_p = f"t.created_ts {direction}, {fts}.rank", []
         else:
             order_sql, order_p = _fts_relevance_order(source_type, query, "t")
-        sql = (
-            f"SELECT t.* FROM {fts} JOIN {tbl} t ON {on} "
-            f"WHERE {fts} MATCH ?{cont_sql.format(a='t')}{clause} "
-            f"ORDER BY {order_sql} LIMIT ? OFFSET ?"
+        # The merged source, not the bare table: a tombstoned document has to leave search the
+        # way it leaves history, and a patched one has to be found by its new text. The index
+        # still carries the corpus row either way -- `main.slack_fts` cannot be written -- so
+        # subtracting it here is the only place that can happen.
+        # corpus_only: this join is against the CORPUS index, which cannot match an overlay row.
+        src = merged_source(conn, source_type, alias="t", corpus_only=True)
+        fresh = _corpus_not_reindexed(conn, source_type, "t")
+        params = [m, *cont_p, *cparams, *order_p]
+        hits = _overlay_hits(
+            conn, source_type, query, visible_ids, container=container, phrase=phrase
         )
-        return conn.execute(sql, [m, *cont_p, *cparams, *order_p, limit, offset]).fetchall()
+
+        def _select(extra: str) -> str:
+            return (
+                f"SELECT t.*{extra} FROM {fts} JOIN {src} ON {on} "
+                f"WHERE {fts} MATCH ?{cont_sql.format(a='t')}{clause}{fresh} "
+                f"ORDER BY {order_sql} LIMIT ? OFFSET ?"
+            )
+
+        if not hits:
+            # The rank is only wanted to merge against, so with nothing to merge the query is
+            # the one every source ran before writes existed -- no extra column, and no dict
+            # copy per row to strip it again. Confluence asks for 100,000 rows at a time and
+            # GitHub for 10,000, and neither has an overlay at all.
+            return conn.execute(_select(""), [*params, limit, offset]).fetchall()
+        sql = _select(f", {fts}.rank AS _rank")
+        # Both sides on one scale. Corpus rows keep the rank SQLite computed -- re-scoring them
+        # would be a second implementation of a ranking that was already right -- and each overlay
+        # row carries the score `_corpus_bm25` gave it against the same statistics.
+        corpus = conn.execute(sql, [*params, limit + offset, 0]).fetchall()
+        merged = [(r["_rank"], r) for r in corpus] + [(score, r) for r, score in hits]
+        if order_by in ("recency", "recency_asc"):
+            order = order_columns(source_type)
+            merged.sort(
+                key=lambda pair: tuple(pair[1][c] or 0 for c in order),
+                reverse=(order_by != "recency_asc"),
+            )
+        else:
+            # The literal-substring tier `_fts_relevance_order` applies has to survive the merge.
+            # It exists so an exact `upload.csv` does not sink under coincidental "upload csv"
+            # hits, and sorting on bm25 alone would silently drop it the moment anything is
+            # written — a page that reorders itself because an unrelated message was posted.
+            tier = _literal_tier(source_type, query)
+            merged.sort(key=lambda pair: (tier(pair[1]), pair[0]))
+        return [_without(r, "_rank", "_ov_rowid") for _, r in merged[offset : offset + limit]]
+    # The LIKE fallback, for a corpus imported without FTS5. It reads the merged source too:
+    # without that a build with no index would serve a deleted message, an unpatched body and none
+    # of what was posted -- a silent hole rather than a slower path.
     like = f"%{query}%"
     ttl = title_expr(source_type)
-    sql = f"SELECT * FROM {tbl} WHERE ({ttl} LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
+    src = merged_source(conn, source_type)
+    sql = f"SELECT * FROM {src} WHERE ({ttl} LIKE ? OR content LIKE ?){cont_sql.format(a=tbl)}"
     params: list = [like, like, *cont_p]
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += (
@@ -2507,16 +3647,28 @@ def count_search(
         clause, cparams = _acl_clause(source_type, "t", visible_ids)
         fts = _fts_table(source_type)
         on = _fts_join(source_type, "t")
+        # The merged source, for the reason the search query itself uses it: a tombstoned document
+        # must not be counted. It drops out of this join on its own, so nothing is subtracted —
+        # only the overlay's own matches are added.
+        src = merged_source(conn, source_type, alias="t", corpus_only=True)
+        fresh = _corpus_not_reindexed(conn, source_type, "t")
         sql = (
-            f"SELECT COUNT(*) FROM (SELECT 1 FROM {fts} JOIN {tbl} t "
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM {fts} JOIN {src} "
             f"ON {on} WHERE {fts} MATCH ?"
-            f"{cont_sql.format(a='t')}{clause} LIMIT ?)"
+            f"{cont_sql.format(a='t')}{clause}{fresh} LIMIT ?)"
         )
-        return conn.execute(sql, [m, *cont_p, *cparams, cap]).fetchone()[0]
+        total = conn.execute(sql, [m, *cont_p, *cparams, cap]).fetchone()[0]
+        # A total the pages contradict is worse than no total: search.messages reports it verbatim
+        # as `total` and derives its page count from it. `_overlay_match` is what keeps the two
+        # agreeing, since the page and this count ask it the same question.
+        written = _overlay_hit_count(
+            conn, source_type, query, visible_ids, container=container, phrase=phrase
+        )
+        return min(total + written, cap)
     like = f"%{query}%"
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql = (
-        f"SELECT COUNT(*) FROM (SELECT 1 FROM {tbl} WHERE "
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM {merged_source(conn, source_type)} WHERE "
         f"({title_expr(source_type)} LIKE ? OR content LIKE ?)"
         f"{cont_sql.format(a=tbl)}{clause} LIMIT ?)"
     )
@@ -2539,25 +3691,38 @@ def children(
 # --- slack threading ------------------------------------------------------------
 
 
-def slack_created_bounds(conn, channel) -> sqlite3.Row:
-    """Cheap aggregate for a channel's ``created`` (see routers.slack._channel_created): the
+def conversation_created_bounds(conn, source_type, channel) -> sqlite3.Row:
+    """Cheap aggregate for a channel's creation time (see routers.slack._channel_created): the
     earliest explicit ``created_ts``, the row count, and how many rows carry a ``created_ts``.
     A single indexed aggregate — no per-row transfer — so it stays fast on huge channels."""
     return conn.execute(
         "SELECT MIN(created_ts) AS min_ts, COUNT(*) AS total, COUNT(created_ts) AS have "
-        "FROM slack_messages WHERE channel = ?",
+        f"FROM {table(source_type)} WHERE {grouping_col(source_type)} = ?",
         (channel,),
     ).fetchone()
 
 
+def slack_created_bounds(conn, channel) -> sqlite3.Row:
+    return conversation_created_bounds(conn, "slack", channel)
+
+
 def list_slack_top_level(
-    conn, channel, visible_ids=None, limit=100, offset=0, ts_lo=None, ts_hi=None
+    conn,
+    channel,
+    visible_ids=None,
+    limit=100,
+    offset=0,
+    ts_lo=None,
+    ts_hi=None,
+    *,
+    newest_first=False,
 ) -> list[sqlite3.Row]:
-    """Top-level (thread-root/standalone) messages in a channel. ``ts_lo``/``ts_hi`` bound
-    ``created_ts`` for a time-windowed conversations.history, so a day window is an indexed range
-    rather than the whole channel filtered in Python. Widen the bounds by ±1s — the public ts
-    carries a sub-second fraction — and re-check the exact float window in the caller."""
-    sql = "SELECT * FROM slack_messages WHERE channel = ? AND thread_seq = 0"
+    """Top-level (thread-root/standalone) messages in a channel, oldest first unless
+    ``newest_first``. ``ts_lo``/``ts_hi`` bound ``created_ts`` for a time-windowed
+    conversations.history, so a day window is an indexed range rather than the whole channel
+    filtered in Python. Widen the bounds by ±1s — the public ts carries a sub-second fraction — and
+    re-check the exact float window in the caller."""
+    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
     params: list = [channel]
     if ts_lo is not None or ts_hi is not None:
         lo = ts_lo if ts_lo is not None else -(1 << 62)
@@ -2565,13 +3730,15 @@ def list_slack_top_level(
         sql += " AND created_ts >= ? AND created_ts <= ?"
         params += [lo, hi]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
-    sql += clause + f" ORDER BY {_order_by('slack')} LIMIT ? OFFSET ?"
+    sql += clause + f" ORDER BY {_order_by('slack', desc=newest_first)} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]
     return conn.execute(sql, params).fetchall()
 
 
 def count_slack_top_level(conn, channel, visible_ids=None) -> int:
-    sql = "SELECT COUNT(*) FROM slack_messages WHERE channel = ? AND thread_seq = 0"
+    sql = (
+        f"SELECT COUNT(*) FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
+    )
     params: list = [channel]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause
@@ -2583,7 +3750,7 @@ def list_slack_channel_messages(conn, channel, visible_ids=None) -> list[sqlite3
     """Every visible message in a channel (roots AND replies). Used by conversations.replies to
     resolve a ts that may belong to a reply (e.g. a search hit landed on one), since ts is
     synthesized and can't be queried directly."""
-    sql = "SELECT * FROM slack_messages WHERE channel = ?"
+    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ?"
     params: list = [channel]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause + " ORDER BY thread_ts, thread_seq"
@@ -2626,7 +3793,7 @@ def slack_messages_at_created_ts(conn, channel, created_ts, visible_ids=None) ->
     conversations.replies resolving a ts, whose integer part IS ``created_ts`` (see the router's
     ``_msg_ts``). Narrows to the handful of rows at that second instead of the whole channel. A row
     with a NULL ``created_ts`` misses this; the caller falls back to a full scan for those."""
-    sql = "SELECT * FROM slack_messages WHERE channel = ? AND created_ts = ?"
+    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND created_ts = ?"
     params: list = [channel, created_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause + " ORDER BY thread_ts, thread_seq"
@@ -2639,7 +3806,8 @@ def slack_reply_count(conn, channel, thread_ts, visible_ids=None) -> int:
     is unique only within its channel (see store.ID_COLUMNS) — a bare `thread_ts = ?` would count
     another channel's thread too."""
     sql = (
-        "SELECT COUNT(*) FROM slack_messages WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
+        f"SELECT COUNT(*) FROM {merged_source(conn, 'slack')} "
+        f"WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
     )
     params: list = [channel, thread_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
@@ -2648,22 +3816,29 @@ def slack_reply_count(conn, channel, thread_ts, visible_ids=None) -> int:
     return conn.execute(sql, params).fetchone()[0]
 
 
-def slack_channels_for_principals(conn, principals) -> set[str]:
+def conversation_channels_for_principals(conn, source_type, principals) -> set[str]:
     """Channels with at least one doc granted to any of ``principals``. Reads the
-    principal-indexed ``slack_acl`` (idx_slack_acl_pid) and nothing else, so it's cheap even at
+    principal-indexed ACL table (idx_<source>_acl_pid) and nothing else, so it's cheap even at
     millions of rows — used to list a non-admin caller's visible channels.
 
-    No join to ``slack_messages``: a Slack message is identified by (channel, ts), so the grant
-    row carries the channel itself and the answer is a DISTINCT over the ACL table alone."""
+    No join to the message table: a message of either conversation source is identified by
+    (channel, <its id>), so the grant row carries the channel itself and the answer is a DISTINCT
+    over the ACL table alone."""
     principals = list(principals)
     if not principals:
         return set()
     marks = ",".join("?" for _ in principals)
+    gcol = grouping_col(source_type)
     rows = conn.execute(
-        f"SELECT DISTINCT a.channel FROM {acl_table('slack')} a WHERE a.principal_id IN ({marks})",
+        f"SELECT DISTINCT a.{gcol} FROM {acl_table(source_type)} a "
+        f"WHERE a.principal_id IN ({marks})",
         principals,
     )
     return {r[0] for r in rows}
+
+
+def slack_channels_for_principals(conn, principals) -> set[str]:
+    return conversation_channels_for_principals(conn, "slack", principals)
 
 
 def slack_latest_ts(conn, channel, visible_ids=None) -> str | None:
@@ -2672,14 +3847,22 @@ def slack_latest_ts(conn, channel, visible_ids=None) -> str | None:
 
     Ordered by ``created_ts`` rather than ``MAX(ts)`` for the reason slack_latest_reply_ts gives:
     ts is TEXT, so a max over it is lexicographic and picks the wrong row when a channel straddles
-    a digit-count change in the epoch second."""
-    sql = "SELECT ts FROM slack_messages WHERE channel = ?"
-    params: list = [channel]
+    a digit-count change in the epoch second.
+
+    Asked of each side separately (:func:`merged_sides`) and the newer kept, because an
+    `ORDER BY … LIMIT 1` over the union cannot use either side's index.
+    """
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
-    row = conn.execute(
-        sql + clause + " ORDER BY created_ts DESC, ts DESC LIMIT 1", params + cparams
-    ).fetchone()
-    return row[0] if row else None
+    best: tuple | None = None
+    for src, alive in merged_sides(conn, "slack"):
+        row = conn.execute(
+            f"SELECT ts, created_ts FROM {src} WHERE channel = ?{alive}{clause} "
+            "ORDER BY created_ts DESC, ts DESC LIMIT 1",
+            [channel, *cparams],
+        ).fetchone()
+        if row is not None and (best is None or (row[1], row[0]) > best):
+            best = (row[1], row[0])
+    return best[1] if best else None
 
 
 def slack_latest_reply_ts(conn, channel, thread_ts, visible_ids=None) -> str | None:
@@ -2690,7 +3873,10 @@ def slack_latest_reply_ts(conn, channel, thread_ts, visible_ids=None) -> str | N
 
     Ordered rather than ``MAX(ts)``: ts is TEXT, so a max over it is lexicographic and a thread
     whose replies straddle a digit-count change (second 9 to second 10) names the wrong reply."""
-    sql = "SELECT ts FROM slack_messages WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
+    sql = (
+        f"SELECT ts FROM {merged_source(conn, 'slack')} "
+        f"WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
+    )
     params: list = [channel, thread_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     row = conn.execute(
@@ -2702,7 +3888,7 @@ def slack_latest_reply_ts(conn, channel, thread_ts, visible_ids=None) -> str | N
 def slack_reply_authors(conn, channel, thread_ts, visible_ids=None) -> list[str]:
     """Distinct reply-author emails in a thread, in reply order (for reply_users)."""
     sql = (
-        "SELECT author_email FROM slack_messages "
+        f"SELECT author_email FROM {merged_source(conn, 'slack')} "
         "WHERE channel = ? AND thread_ts = ? AND thread_seq > 0"
     )
     params: list = [channel, thread_ts]
@@ -2719,12 +3905,92 @@ def slack_reply_authors(conn, channel, thread_ts, visible_ids=None) -> list[str]
 def slack_thread(conn, channel, thread_ts, visible_ids=None) -> list[sqlite3.Row]:
     """A thread's root and replies in order. Scoped to the channel: a ts identifies a message only
     within one (see store.ID_COLUMNS)."""
-    sql = "SELECT * FROM slack_messages WHERE channel = ? AND thread_ts = ?"
+    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_ts = ?"
     params: list = [channel, thread_ts]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause + " ORDER BY thread_seq"
     params += cparams
     return conn.execute(sql, params).fetchall()
+
+
+# --- Microsoft Teams (Graph) ----------------------------------------------------
+# A thread is expressed the way Graph expresses it: `reply_to_id` is NULL on a root and holds the
+# ROOT's id on a reply, so "the messages without the replies" — which is what
+# `channel-list-messages` returns — is a NULL test rather than the `thread_seq = 0` slack uses.
+
+
+def _msteams_modified(alias: str) -> str:
+    """A message's last-modified time in epoch milliseconds, as SQL: its creation (the id), its last
+    edit, and its newest reaction, each of which moves ``lastModifiedDateTime`` live. A reaction
+    with no time of its own is the message's, which the id already counts."""
+    return (
+        f"MAX(CAST({alias}.id AS INTEGER), COALESCE({alias}.last_edited_ts * 1000, 0), "
+        "COALESCE((SELECT MAX(CAST(json_extract(j.value, '$.createdDateTime') AS INTEGER)) * 1000 "
+        f"FROM json_each(COALESCE({alias}.reactions, '[]')) j), 0))"
+    )
+
+
+# What a channel listing is ordered by: the newest last-modified time across the root and every
+# reply. Measured: a new reply to the oldest root moved it to the top, while the root's own
+# `lastModifiedDateTime` stayed where it was. The correlated MAX uses idx_msteams_thread.
+_MSTEAMS_CHAIN_TS = (
+    f"MAX({_msteams_modified('m')}, COALESCE((SELECT MAX({_msteams_modified('r')}) "
+    "FROM msteams_messages r WHERE r.channel = m.channel AND r.reply_to_id = m.id), 0))"
+)
+
+
+def list_msteams_top_level(
+    conn, channel, visible_ids=None, limit=100, offset=0
+) -> list[sqlite3.Row]:
+    """Root messages in a channel — what ``GET /channels/{id}/messages`` lists, newest chain first.
+
+    The reply chain needs no ACL clause of its own: a reply inherits its root's grants (they are
+    one thread, granted together at import), so a caller who can see the root can see every reply
+    whose time this orders by.
+    """
+    sql = f"SELECT m.* FROM {table('msteams')} m WHERE m.channel = ? AND m.reply_to_id IS NULL"
+    params: list = [channel]
+    clause, cparams = _acl_clause("msteams", "m", visible_ids)
+    sql += clause + f" ORDER BY {_MSTEAMS_CHAIN_TS} DESC, m.id DESC LIMIT ? OFFSET ?"
+    params += cparams + [limit, offset]
+    return conn.execute(sql, params).fetchall()
+
+
+def count_msteams_top_level(conn, channel, visible_ids=None) -> int:
+    sql = f"SELECT COUNT(*) FROM {table('msteams')} WHERE channel = ? AND reply_to_id IS NULL"
+    params: list = [channel]
+    clause, cparams = _acl_clause("msteams", visible_ids=visible_ids)
+    return conn.execute(sql + clause, params + cparams).fetchone()[0]
+
+
+def msteams_by_id(conn, channel, message_id, visible_ids=None) -> sqlite3.Row | None:
+    """One message by its (channel, id), a root or a reply alike; each route decides which of the
+    two it serves."""
+    sql = f"SELECT * FROM {table('msteams')} WHERE channel = ? AND id = ?"
+    params: list = [channel, message_id]
+    clause, cparams = _acl_clause("msteams", visible_ids=visible_ids)
+    return conn.execute(sql + clause, params + cparams).fetchone()
+
+
+def list_msteams_replies(
+    conn, channel, root_id, visible_ids=None, limit=1000, offset=0
+) -> list[sqlite3.Row]:
+    """A root's replies, newest first — the order ``chatmessage-list-replies`` returns them in
+    (its own example lists Reply3, Reply2, Reply1). Scoped to the channel because a message id is
+    unique only within one."""
+    sql = f"SELECT * FROM {table('msteams')} WHERE channel = ? AND reply_to_id = ?"
+    params: list = [channel, root_id]
+    clause, cparams = _acl_clause("msteams", visible_ids=visible_ids)
+    sql += clause + " ORDER BY created_ts DESC, thread_seq DESC LIMIT ? OFFSET ?"
+    params += cparams + [limit, offset]
+    return conn.execute(sql, params).fetchall()
+
+
+def count_msteams_replies(conn, channel, root_id, visible_ids=None) -> int:
+    sql = f"SELECT COUNT(*) FROM {table('msteams')} WHERE channel = ? AND reply_to_id = ?"
+    params: list = [channel, root_id]
+    clause, cparams = _acl_clause("msteams", visible_ids=visible_ids)
+    return conn.execute(sql + clause, params + cparams).fetchone()[0]
 
 
 def gmail_thread(conn, thread_id, visible_ids=None) -> list[sqlite3.Row]:
@@ -3278,26 +4544,47 @@ def group_members(conn, group_id) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def slack_private_channel_members(conn, channel) -> list[str] | None:
+# --- channel membership, for the sources whose documents are conversations -------
+#
+# A private channel's members are the people granted it, for Slack and Teams alike, and a speaker
+# outside them is refused at import for both; that SQL is written once and parameterized by
+# source. A PUBLIC channel's members differ by vendor: Slack's are its speakers (below), while a
+# standard Teams channel's are the whole team, which `routers.msteams` answers from the directory.
+# Both are keyed `(channel, <message id>)` with the channel FIRST (see ID_COLUMNS), which is what
+# lets a grant row name its container without joining the document table; a source whose grouping
+# column is not part of its key has no membership in this sense and must not be passed here.
+#
+# The `slack_*` wrappers below are the names the Slack router and the importer call.
+
+
+def _conversation_active_author(source_type: str, qualifier: str = "") -> str:
+    """Slack's deactivated roster is source-specific, not a Teams membership signal."""
+    if source_type == "slack":
+        return f"{qualifier}author_email NOT IN (SELECT email FROM slack_deactivated_users)"
+    return "1"
+
+
+def conversation_members_by_grant(conn, source_type, channel) -> list[str] | None:
     """The user principals who may read a private channel — its membership — in email order.
     ``None`` for a public channel, which has no such list.
 
-    A private channel and a public one derive membership from different facts, because Slack shows
-    them differently. Slack lists a private channel to its members ONLY, so being able to read one
-    IS being in it: the grants ARE the membership, and a group grant is expanded to the people in
-    it because the membership a client walks is a list of people. A public channel is shown to
-    everyone in the org, so its org grant says nothing about who is in it — see
-    :func:`slack_channel_member_emails` for what answers there.
+    A private channel and a public one derive membership from different facts, because Slack and
+    Teams both show them differently. A private channel is listed to its members ONLY, so being
+    able to read one IS being in it: the grants ARE the membership, and a group grant is expanded
+    to the people in it because the membership a client walks is a list of people. A public channel
+    is shown to everyone in the org, so its org grant says nothing about who is in it — see
+    :func:`conversation_member_emails` for what answers there.
 
     An empty list is a private channel nobody may read (``"readers": []``, a grant to a group with
     no members, or every grantee deactivated): it has no membership rather than a membership of
     everyone.
     """
-    if container_has_public(conn, "slack", channel):
+    if container_has_public(conn, source_type, channel):
         return None
     members: set[str] = set()
     for ptype, pid in conn.execute(
-        "SELECT DISTINCT principal_type, principal_id FROM slack_acl WHERE channel = ?",
+        f"SELECT DISTINCT principal_type, principal_id FROM {acl_table(source_type)} "
+        f"WHERE {grouping_col(source_type)} = ?",
         (channel,),
     ):
         if ptype == "user":
@@ -3313,63 +4600,72 @@ def slack_private_channel_members(conn, channel) -> list[str] | None:
     # for somebody who was never in the channel. Private channels are outside that token's scopes
     # as well (types=private_channel answers missing_scope without groups:read), so no live
     # observation reaches this path at all.
-    deactivated = {r[0] for r in conn.execute("SELECT email FROM slack_deactivated_users")}
+    deactivated = (
+        {r[0] for r in conn.execute("SELECT email FROM slack_deactivated_users")}
+        if source_type == "slack"
+        else set()
+    )
     return sorted(members - deactivated)
 
 
-def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]:
+def conversation_member_emails(conn, source_type, channel, limit=100, offset=0) -> list[str]:
     """One page of a channel's members, in email order.
 
     A private channel's members are the people who may read it
-    (:func:`slack_private_channel_members`). A public channel's are the people who have spoken in
-    it — everyone in the org may read a public channel, and real Slack lists public channels to
-    people who are not in them, so readership cannot be the membership there. Speaking is the only
-    other per-channel signal a corpus carries, and answering with the whole roster instead would
-    give every public channel the same members, which real Slack cannot produce.
+    (:func:`conversation_members_by_grant`). A public Slack channel's are the people who have spoken
+    in it — everyone in the org may read a public channel, and Slack lists public channels to people
+    who are not in them, so readership cannot be the membership there. Speaking is the only other
+    per-channel signal a corpus carries, and answering with the whole roster instead would give
+    every public channel the same members, which real Slack cannot produce. (A standard Teams
+    channel's members ARE the whole team; the Teams router does not ask this.)
 
-    The public path is index-only on idx_slack_channel_author, so a page costs a seek rather than a
-    scan of the channel; the private path pages a set small enough to hold (a channel's grantees).
+    The public path is index-only on the source's (channel, author_email) index, so a page costs a
+    seek rather than a scan of the channel; the private path pages a set small enough to hold (a
+    channel's grantees).
     """
-    members = slack_private_channel_members(conn, channel)
+    members = conversation_members_by_grant(conn, source_type, channel)
     if members is not None:
         return members[offset : offset + limit]
     return [
         r[0]
         for r in conn.execute(
-            "SELECT DISTINCT author_email FROM slack_messages WHERE channel = ? "
-            "AND author_email NOT IN (SELECT email FROM slack_deactivated_users) "
-            "ORDER BY author_email LIMIT ? OFFSET ?",
+            f"SELECT DISTINCT author_email FROM {table(source_type)} "
+            f"WHERE {grouping_col(source_type)} = ? "
+            f"AND {_conversation_active_author(source_type)} ORDER BY author_email LIMIT ? OFFSET ?",
             (channel, limit, offset),
         )
     ]
 
 
-def slack_membership_violations(conn) -> list[tuple[str, str]]:
+def conversation_membership_violations(conn, source_type) -> list[tuple[str, str]]:
     """``(channel, email)`` for every speaker who cannot read the private channel they spoke in.
 
     Speaking in a channel means being in it, and a member of a private channel can read it — so a
-    speaker outside that channel's grantees is two facts that cannot both hold: the same person is
-    served by :func:`slack_channel_member_emails` and told `channel_not_found` by
-    conversations.info. The corpus has no way to say "left the channel", which is the one state
-    real Slack reaches this from, so within this model it is a corpus that cannot be true.
+    speaker outside that channel's grantees is two facts that cannot both hold: the same person
+    posted in the channel and is refused it by the router (Slack's `channel_not_found`, Teams'
+    403). The corpus has no way to say "left the channel", which is the one state the real APIs
+    reach this from, so within this model it is a corpus that cannot be true.
+
+    An explicit ``out`` records that state directly, so a speaker removed from a channel is not
+    reported as a violation.
 
     Only PRIVATE channels can produce it — a public channel's org grant covers every principal —
     and only speakers who are principals: a display-only speaker has no identity to authenticate
     with, so there is nobody for the two answers to disagree about.
     """
+    tbl, gcol = table(source_type), grouping_col(source_type)
     out: list[tuple[str, str]] = []
-    for row in list_containers(conn, "slack"):
+    for row in list_containers(conn, source_type):
         channel = row["name"]
         # `None` is a public channel, whose org grant admits every principal, and an empty list is
         # a channel nobody may read — neither has a membership a speaker can fall outside of.
-        allowed = slack_private_channel_members(conn, channel)
+        allowed = conversation_members_by_grant(conn, source_type, channel)
         if not allowed:
             continue
         for (email,) in conn.execute(
-            "SELECT DISTINCT m.author_email FROM slack_messages m "
+            f"SELECT DISTINCT m.author_email FROM {tbl} m "
             "JOIN principals p ON p.id = m.author_email AND p.type = 'user' "
-            "WHERE m.channel = ? "
-            "AND m.author_email NOT IN (SELECT email FROM slack_deactivated_users) "
+            f"WHERE m.{gcol} = ? AND {_conversation_active_author(source_type, 'm.')} "
             "ORDER BY m.author_email",
             (channel,),
         ):
@@ -3378,24 +4674,25 @@ def slack_membership_violations(conn) -> list[tuple[str, str]]:
     return out
 
 
-def slack_channel_has_author(conn, channel, email) -> bool:
+def conversation_has_author(conn, source_type, channel, email) -> bool:
     """Whether ``email`` has spoken in a channel — which is being a member of a PUBLIC one, the
-    same set :func:`slack_channel_member_emails` pages there, asked about one person. Deactivation
+    same set :func:`conversation_member_emails` pages there, asked about one person. Slack deactivation
     is excluded here for the same reason it is there: a channel's membership and one person's
     place in it are one fact, and the two cannot be allowed to disagree. Index-only on
-    idx_slack_channel_author with equality on both columns, so it is a seek rather than the DISTINCT
+    the (channel, author_email) index with equality on both columns, so it is a seek rather than the DISTINCT
     scan that counting the members is."""
     return (
         conn.execute(
-            "SELECT 1 FROM slack_messages WHERE channel = ? AND author_email = ? "
-            "AND author_email NOT IN (SELECT email FROM slack_deactivated_users) LIMIT 1",
+            f"SELECT 1 FROM {table(source_type)} "
+            f"WHERE {grouping_col(source_type)} = ? AND author_email = ? "
+            f"AND {_conversation_active_author(source_type)} LIMIT 1",
             (channel, email),
         ).fetchone()
         is not None
     )
 
 
-def slack_channel_member_counts(conn) -> dict[str, int]:
+def conversation_member_counts(conn, source_type) -> dict[str, int]:
     """Every channel's member count in one pass, paid once at startup instead of per request.
     conversations.list shapes every channel in the page and a member count is a DISTINCT over that
     channel's messages, so a page costs that work however it is spread: measured 2026-09-17 on a
@@ -3404,39 +4701,64 @@ def slack_channel_member_counts(conn) -> dict[str, int]:
     idx_slack_channel_author, with the deactivated set entering the plan as USING INDEX
     sqlite_autoindex_slack_deactivated_users_1 FOR IN-OPERATOR.
 
-    Counted from whatever membership that channel has, so `num_members` and walking
-    :func:`slack_channel_member_emails` cannot disagree — the speakers for a public channel, the
+
+    Counted from whatever membership that channel has, so a reported count and walking
+    :func:`conversation_member_emails` cannot disagree — the speakers for a public channel, the
     grantees for a private one. Every channel is keyed, including one with no messages at all,
     which the GROUP BY alone cannot reach.
     """
+    gcol = grouping_col(source_type)
     counts = {
         r[0]: r[1]
         for r in conn.execute(
-            "SELECT channel, COUNT(DISTINCT author_email) FROM slack_messages "
-            "WHERE author_email NOT IN (SELECT email FROM slack_deactivated_users) "
-            "GROUP BY channel"
+            f"SELECT {gcol}, COUNT(DISTINCT author_email) FROM {table(source_type)} "
+            f"WHERE {_conversation_active_author(source_type)} GROUP BY {gcol}"
         )
     }
     return {
         channel: (len(members) if members is not None else counts.get(channel, 0))
         for channel, members in (
-            (row["name"], slack_private_channel_members(conn, row["name"]))
-            for row in list_containers(conn, "slack")
+            (row["name"], conversation_members_by_grant(conn, source_type, row["name"]))
+            for row in list_containers(conn, source_type)
         )
     }
 
 
-def count_slack_channel_members(conn, channel) -> int:
-    """One channel's member count — :func:`slack_channel_member_counts` for a single channel, for
+def count_conversation_members(conn, source_type, channel) -> int:
+    """One channel's member count — :func:`conversation_member_counts` for a single channel, for
     the window before that cache is warm."""
-    members = slack_private_channel_members(conn, channel)
+    members = conversation_members_by_grant(conn, source_type, channel)
     if members is not None:
         return len(members)
     return conn.execute(
-        "SELECT COUNT(DISTINCT author_email) FROM slack_messages WHERE channel = ? "
-        "AND author_email NOT IN (SELECT email FROM slack_deactivated_users)",
+        f"SELECT COUNT(DISTINCT author_email) FROM {table(source_type)} "
+        f"WHERE {grouping_col(source_type)} = ? AND {_conversation_active_author(source_type)}",
         (channel,),
     ).fetchone()[0]
+
+
+def slack_private_channel_members(conn, channel) -> list[str] | None:
+    return conversation_members_by_grant(conn, "slack", channel)
+
+
+def slack_channel_member_emails(conn, channel, limit=100, offset=0) -> list[str]:
+    return conversation_member_emails(conn, "slack", channel, limit=limit, offset=offset)
+
+
+def slack_membership_violations(conn) -> list[tuple[str, str]]:
+    return conversation_membership_violations(conn, "slack")
+
+
+def slack_channel_has_author(conn, channel, email) -> bool:
+    return conversation_has_author(conn, "slack", channel, email)
+
+
+def slack_channel_member_counts(conn) -> dict[str, int]:
+    return conversation_member_counts(conn, "slack")
+
+
+def count_slack_channel_members(conn, channel) -> int:
+    return count_conversation_members(conn, "slack", channel)
 
 
 def all_user_emails(conn) -> list[str]:
@@ -3452,11 +4774,15 @@ def slack_is_deactivated(conn, email) -> bool:
     )
 
 
+def distinct_conversation_author_emails(conn, source_type) -> list[str]:
+    """Every author on a message of this source — the display-only speakers/bots (deploybot@…)
+    that aren't org principals but still need to resolve by their served user id. Scanned once and
+    cached by the caller (a full-table DISTINCT)."""
+    return [r[0] for r in conn.execute(f"SELECT DISTINCT author_email FROM {table(source_type)}")]
+
+
 def distinct_slack_author_emails(conn) -> list[str]:
-    """Every author on a Slack message — the display-only speakers/bots (e.g. deploybot@…) that
-    aren't org principals but still need to resolve via users.info. Scanned once and cached by
-    the caller (a full-table DISTINCT)."""
-    return [r[0] for r in conn.execute("SELECT DISTINCT author_email FROM slack_messages")]
+    return distinct_conversation_author_emails(conn, "slack")
 
 
 # --- ACL grants (container/doc scoped) ------------------------------------------

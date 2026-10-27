@@ -64,11 +64,11 @@ sees least. Nothing about the request changes but the identity.
 
 | Service | Header |
 |---|---|
-| Slack, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
+| Slack, Microsoft Teams, Notion, HubSpot, Fireflies | `Authorization: Bearer <token>` |
 | Gmail, Google Drive/Docs/Sheets/Slides | `Authorization: Bearer <token>`, or `OAuth <token>` |
 | GitHub | `Authorization: Bearer <token>`, or the legacy `token <token>` |
 | Jira, Confluence | HTTP Basic with the token as the **password**, or a plain `Bearer` |
-| Linear | A **bare** `Authorization: <token>`, or `Bearer` |
+| Linear | A **bare** `Authorization: <token>`; `Bearer <token>` is a `400` |
 | Amazon S3 | AWS SigV4, SigV4a or Signature Version 2, signed with the identity's key pair |
 | A Google client with a config | Exchange it at `POST /oauth2/token` — see the Google section |
 
@@ -85,7 +85,9 @@ is **HTTP 200 with `ok: false`** — `not_authed` when the header is missing or 
 field, which is where Slack's own clients put it and which real reads ahead of the header. A
 `token` query parameter is refused, since Slack stopped taking one from apps created after February
 24, 2021, the kind of app Backlot answers as: `invalid_auth` for a non-empty value, and for an empty
-one beside a token in the header or the form.
+one beside a token in the header or the form. A `token` form field, even an empty one, takes the
+parameter's place, so beside one the parameter is refused only when a token is read from the header
+or the form.
 
 **It is a user token, not a bot token.** Slack has two kinds and they are not interchangeable; a
 Backlot token behaves as the first:
@@ -103,6 +105,9 @@ Two consequences worth knowing before you trust a passing test here:
 - **There is no "invite the bot to the channel" step.** Backlot scopes by per-document readers — the
   user model — so a caller reaches every channel their ACL allows. A bot in production starts with
   access to nothing until it is invited, which is a failure mode Backlot cannot reproduce.
+- **A write needs no scope.** Slack gates posting and reacting on `chat:write` and
+  `reactions:write`, and refuses a token without them before it reads an argument. A Backlot token
+  writes wherever its ACL lets it read ([docs/write-overlay.md](write-overlay.md)).
 
 So if the connector under test uses a bot token in production, Backlot is the more permissive of the
 two on both counts. `auth.test` reflects the user shape it emulates: `user`, `user_id`, `team`,
@@ -118,10 +123,11 @@ curl -s "localhost:8000/drive/v3/files?fields=files(id,name)" \
   -H "Authorization: Bearer usr-29b84da5703116c2a832"
 ```
 
-How the header is read, spelling by spelling, is in
-[supported-sources.md](supported-sources.md#google-drive-docs-sheets-slides--drivev3-docsv1-sheetsv4-slidesv1).
-`me` works as the mailbox id, in any case, resolving to whoever the token is; a user's token reads
-no other mailbox, and the admin token reads any.
+How the header is read, spelling by spelling, and where a token in the query string is read instead,
+is in
+[supported-sources.md](supported-sources.md#google-drive-docs-sheets-slides--drivev3-docsv1-sheetsv4-slidesv1);
+send the token in the header. `me` works as the mailbox id, in any case, resolving to whoever the
+token is; a user's token reads no other mailbox, and the admin token reads any.
 
 #### A client carrying a config, not a token — `POST /oauth2/token`
 
@@ -202,6 +208,31 @@ not one username and one password (an empty password included). Measured against
 Atlassian Cloud site and a private one on 2026-09-04, with a wrong password, an empty one, a value
 that is not base64, an unknown scheme, and no header at all.
 
+### Microsoft Teams — `Bearer`
+
+```bash
+curl -s "localhost:8000/msgraph/v1.0/me/joinedTeams" \
+  -H "Authorization: Bearer usr-29b84da5703116c2a832"
+```
+
+Graph reads the token after `Bearer` in any case, or with no scheme at all, with any run of spaces
+or tabs between; Backlot reads it the same way. Measured against graph.microsoft.com in October
+2026, every refusal is a 401 with `error.code` `InvalidAuthenticationToken`, the same
+`WWW-Authenticate: Bearer realm="", authorization_uri="https://login.microsoftonline.com/common/oauth2/authorize", client_id="00000003-0000-0000-c000-000000000000"`
+header, and an `innerError` of `date`, `request-id` and `client-request-id`:
+
+| What was sent | `error.message` |
+|---|---|
+| No `Authorization` header | `Access token is empty.` |
+| `Authorization: Bearer` with nothing after it | `UnableToParseTokens` |
+| A JWT (three base64url segments) that names no application | `NoAppIdInToken` |
+| A token that resolves to nobody, or any token under another scheme (`token …`, `Basic …`) or with a word after it | `Protocol 'Bearer' failed to validate because The token could not be read.` |
+
+Two `Authorization` headers are a `400` HTML page from the front Graph sits behind, before either is
+read. The credential is read before the path and the method: an unknown path, or `POST`/`DELETE` on
+`/me`, with no valid token is the same 401. `error.code` is the stable contract; human-readable
+messages can change.
+
 ### Notion — `Bearer`
 
 ```bash
@@ -230,10 +261,9 @@ it, so `bearer <token>`, `BEARER <token>`, `token <token>` and `Bearer  <token>`
 `401` of category `INVALID_AUTHENTICATION`, there and here. Space or tab around the whole header
 value is ignored by both.
 
-### Linear — bare, or `Bearer`
+### Linear — bare
 
-Linear's personal API keys go in the header with **no scheme**, and Backlot accepts that spelling
-as well as `Bearer`, exactly as the real API does:
+Linear's personal API keys go in the header with **no scheme**, and a Backlot token is one:
 
 ```bash
 curl -s localhost:8000/linear/graphql \
@@ -241,6 +271,15 @@ curl -s localhost:8000/linear/graphql \
   -H "Content-Type: application/json" \
   -d '{"query":"{ viewer { id name } }"}'
 ```
+
+`Bearer` is how Linear carries an OAuth access token. An API key sent as `Bearer <token>` or
+`bearer <token>` is refused with a `400` that says to drop the prefix, there and here, before the
+body is read. Linear tells an API key there by its shape, `lin_api_` and forty ASCII letters and
+digits, so a value in that shape draws the `400` whether or not Linear issued it; Backlot gives the
+same `400` to its own tokens, which stand for API keys. Any other value is the key itself, so
+`Token <token>` or `BEARER <token>` is a key that does not resolve: a `401`. Space or tab around the
+whole header value is ignored by both. A request carrying `Authorization` twice is a `400` HTML page
+from Cloudflare, in front of Linear and Fireflies alike, there and here.
 
 ### Fireflies — `Bearer`
 
@@ -250,6 +289,11 @@ curl -s localhost:8000/fireflies/graphql \
   -H "Content-Type: application/json" \
   -d '{"query":"{ users { name } }"}'
 ```
+
+The scheme is read in any case and followed by spaces, and space, tab or U+00A0 around the token is
+ignored. A credential that is refused is a `500` with an `auth_failed` entry, there and here, in one
+of two messages: the `Bearer` prefix is missing, or the key did not authenticate. No
+`Authorization`, or an empty one, is the second.
 
 ### Amazon S3 — SigV4
 

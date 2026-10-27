@@ -1,4 +1,4 @@
-"""Tests for the read-only SQLite store layer (`backlot.store`).
+"""Tests for the SQLite store layer (`backlot.store`).
 
 The store is shared by every router, search, and the importers, so it gets its own file rather
 than being verified incidentally through a load/route test. Registry wiring is checked across
@@ -7,6 +7,10 @@ tuning uses hand-built / SAMPLE DBs.
 
 ACL-filtered reads live in test_acl.py (the ACL is the subject there) and FTS search in
 test_search.py (search is its own sub-domain); this file covers the plain store surface.
+
+The corpus connection is read-only and stays that way. Writes go to the attached overlay, and the
+merge that reads corpus and overlay as one is `store.merged_source`; the overlay module itself is
+covered by test_overlay.py.
 """
 
 import json
@@ -14,11 +18,13 @@ import sqlite3
 
 import pytest
 
-from backlot import store, synth
+from backlot import overlay, store, synth
+from backlot.acl import Caller
 from tests._helpers import complete
 
 ALL_SOURCES = [
     "slack",
+    "msteams",
     "gmail",
     "google_drive",
     "github",
@@ -314,16 +320,17 @@ def test_acl_table_registry_covers_every_source(tmp_path):
 def test_id_seed_registry_covers_every_source_whose_id_is_a_1_arity_hash():
     """`ID_SEED` holds the sources whose served id is a pure function of ONE value — the incoming
     record's own dataset identifier — so a single assignment method can seed and probe all of them.
-    It is deliberately NOT total over `SOURCE_TABLE`; three sources cannot honour that contract and
+    It is deliberately NOT total over `SOURCE_TABLE`; four sources cannot honour that contract and
     get their own assignment pass instead:
 
     - `jira`'s key is COMPOSED from its project's prefix, so its seed is (project, dataset id).
-    - `slack`'s ts is a function of the row's `created_ts` and its thread root as well.
+    - `slack`'s ts and `msteams`' message id are functions of the row's `created_ts` and of what
+      the channel has already issued in that second, not of the dataset id alone.
     - `s3`'s (bucket, key) is stated outright by the corpus; nothing synthesizes it at all.
 
     Widening the tuple to fit those would make every other source pay for their shape — the same
     call `fireflies_users` and `linear_teams` made when they were converted."""
-    assert set(store.ID_SEED) == set(store.SOURCE_TABLE) - {"jira", "slack", "s3"}
+    assert set(store.ID_SEED) == set(store.SOURCE_TABLE) - {"jira", "slack", "msteams", "s3"}
     # Confluence's own entry -- seed function, then the columns its probe holds fixed (none:
     # confluence resolves an id corpus-wide). The column the seed FILLS is not in this registry:
     # it is the table's primary key, which `id_columns` already names.
@@ -402,7 +409,7 @@ def test_no_blanket_replace_writes_a_table_with_a_non_pk_unique_index(tmp_path):
     assert "fireflies_users" in standalone_guarded  # sanity: the guard reaches this table at all
 
     backlot_src = "\n".join(
-        p.read_text() for p in Path(store.__file__).resolve().parent.rglob("*.py")
+        p.read_text(encoding="utf-8") for p in Path(store.__file__).resolve().parent.rglob("*.py")
     )
     for t in sorted(standalone_guarded):
         assert f"INSERT OR REPLACE INTO {t}" not in backlot_src, (
@@ -724,30 +731,30 @@ def test_s3_by_bucket_key(tmp_path):
 # --- Drive: storage usage -------------------------------------------------------
 
 
-def _drive_usage_db(tmp_path):
+def _drive_usage_db(tmp_path, rows=None):
     """A hand-built Drive corpus whose byte count differs from its character count — the ASCII
     SAMPLE cannot tell the two apart, and that difference is the whole point of the helper."""
     conn = store.connect_rw(tmp_path / "gdrive.sqlite")
-    rows = [
-        # (doc_id, content, trashed) — "안녕" is 2 characters but 6 UTF-8 bytes
-        ("g1", "abc", 0),  # 3 bytes
-        ("g2", "안녕", 0),  # 6 bytes
-        ("g3", "trash", 1),  # 5 bytes, in the trash
+    rows = rows or [
+        # (doc_id, content, subtype, trashed, group) — "안녕" is 2 characters but 6 UTF-8 bytes. A
+        # binary subtype, since a native file's size floor would hide these byte counts.
+        ("g1", "abc", "pdf", 0, "acme"),  # 3 bytes
+        ("g2", "안녕", "pdf", 0, "eng"),  # 6 bytes
+        ("g3", "trash", "pdf", 1, "acme"),  # 5 bytes, in the trash
     ]
-    for doc_id, content, trashed in rows:
+    for doc_id, content, subtype, trashed, group in rows:
         conn.execute(
             "INSERT INTO gdrive_files(id, folder, author_email, title, content, subtype, "
             "created_ts, trashed) VALUES (?,?,?,?,?,?,1,?)",
             # `id` is the primary key; nothing here reads it back, so the fixture's own
             # label serves as one rather than the real synth.gdrive_file_id — this DB is
             # hand-built to bypass the importer.
-            (doc_id, "f", "a@x.com", doc_id, content, "document", trashed),
+            (doc_id, "f", "a@x.com", doc_id, content, subtype, trashed),
         )
-    # Every doc gets a grant, as the importers write one: a `visible_ids` filter passes only rows
-    # that HAVE a matching google_drive_acl row, so a doc with no grant is invisible to any scoped
-    # caller.
-    for doc_id, pid in [("g1", "acme"), ("g2", "eng"), ("g3", "acme")]:
-        conn.execute("INSERT INTO google_drive_acl VALUES (?,?,?)", (doc_id, "group", pid))
+        # Every doc gets a grant, as the importers write one: a `visible_ids` filter passes only
+        # rows that HAVE a matching google_drive_acl row, so a doc with no grant is invisible to
+        # any scoped caller.
+        conn.execute("INSERT INTO google_drive_acl VALUES (?,?,?)", (doc_id, "group", group))
     conn.commit()
     return conn
 
@@ -770,6 +777,26 @@ def test_drive_usage_bytes_is_acl_scoped(tmp_path):
     assert store.drive_usage_bytes(conn, visible_ids={"acme"}) == (3 + 5, 5)  # g2 invisible
     assert store.drive_usage_bytes(conn, visible_ids={"eng"}) == (6, 0)  # g2 only, untrashed
     assert store.drive_usage_bytes(conn, visible_ids=set()) == (0, 0)  # sees nothing
+
+
+def test_drive_usage_bytes_floors_each_native_file_at_one_kibibyte(tmp_path):
+    """A native file's `size` is never under 1024, so the quota is the sum of those sizes: a Doc, a
+    Sheet and a Slide deck count 1024 each (a missing subtype is a Doc), a native file above the
+    floor counts its bytes, and a binary file, whose floor is not measured, counts its length. A
+    trashed native file counts toward the trash at the same floor."""
+    conn = _drive_usage_db(
+        tmp_path,
+        [
+            ("n1", "abc", "document", 0, "acme"),  # 3 bytes -> 1024
+            ("n2", "a,b", "spreadsheet", 0, "acme"),  # 3 bytes -> 1024
+            ("n3", "one", "presentation", 0, "acme"),  # 3 bytes -> 1024
+            ("n4", "tiny", None, 0, "acme"),  # no subtype is a Doc -> 1024
+            ("n5", "x" * 1500, "document", 0, "acme"),  # above the floor -> 1500
+            ("n6", "gone", "document", 1, "acme"),  # trashed -> 1024 in both totals
+            ("b1", "%PDF-1.7", "pdf", 0, "acme"),  # binary -> 8
+        ],
+    )
+    assert store.drive_usage_bytes(conn) == (1024 * 5 + 1500 + 8, 1024)
 
 
 # --- Drive: a spreadsheet's stored grid ------------------------------------------
@@ -1683,6 +1710,48 @@ def test_fts_add_docs_is_idempotent(tmp_path):
     assert len(store.search_documents(conn, "alpha", "notion")) == 1  # no duplicate row
 
 
+@pytest.mark.parametrize("source_type", ["notion", "slack"])
+def test_fts_add_docs_reindexes_multiple_chunks(tmp_path, source_type):
+    conn = store.connect_rw(tmp_path / "chunks.sqlite")
+    try:
+        assert store.build_fts(conn)
+        # Cross the chunk boundary for both a single-column and a composite document key.
+        count = 900 // len(store.id_columns(source_type)) + 1
+        if source_type == "notion":
+            keys = [f"page-{i}" for i in range(count)]
+            conn.executemany(
+                "INSERT INTO notion_pages(id,teamspace,author_email,title,content,created_ts) "
+                "VALUES(?,'eng','a@x.com','Chunk guide','chunkmarker',1)",
+                [(key,) for key in keys],
+            )
+        else:
+            keys = [("eng", str(i)) for i in range(count)]
+            conn.executemany(
+                "INSERT INTO slack_messages(channel,ts,author_email,content,created_ts) "
+                "VALUES(?,?,'a@x.com','chunkmarker',1)",
+                keys,
+            )
+        conn.commit()
+        assert store.search_documents(conn, "chunkmarker", source_type) == []
+        assert store.fts_add_docs(conn, source_type, keys) == count
+        columns = store.id_columns(source_type)
+        found = store.search_documents(conn, "chunkmarker", source_type, limit=count + 1)
+        assert {tuple(row[col] for col in columns) for row in found} == {
+            key if isinstance(key, tuple) else (key,) for key in keys
+        }
+        # Re-index updated content through both chunks: stale terms disappear without duplicates.
+        conn.execute(f"UPDATE {store.table(source_type)} SET content='replacementmarker'")
+        conn.commit()
+        assert store.fts_add_docs(conn, source_type, keys) == count
+        assert store.search_documents(conn, "chunkmarker", source_type) == []
+        assert (
+            len(store.search_documents(conn, "replacementmarker", source_type, limit=count + 1))
+            == count
+        )
+    finally:
+        conn.close()
+
+
 def test_fts_add_docs_noop_without_index(tmp_path):
     conn = store.connect_rw(tmp_path / "n.sqlite")  # no build_fts called
     assert store.fts_add_docs(conn, "notion", ["x"]) == 0
@@ -2123,10 +2192,10 @@ def test_linear_entities_are_rebuilt_whole_so_an_append_is_resolvable(tmp_path):
 
     settings = Settings(data_dir=tmp_path)
     first = tmp_path / "a.jsonl"
-    first.write_text(json.dumps(issue("l1", "alpha")) + "\n")
+    first.write_text(json.dumps(issue("l1", "alpha")) + "\n", encoding="utf-8")
     load(first, settings, reset=True)
     second = tmp_path / "b.jsonl"
-    second.write_text(json.dumps(issue("l2", "beta")) + "\n")
+    second.write_text(json.dumps(issue("l2", "beta")) + "\n", encoding="utf-8")
     load(second, settings, reset=False)
 
     conn = store.connect_ro(settings.db_path)
@@ -2151,7 +2220,7 @@ def test_linear_entities_are_rebuilt_whole_so_an_append_is_resolvable(tmp_path):
     # which refuses one) and nothing is left carrying `alpha`. Appending to the table instead of
     # rebuilding it would leave `alpha` answering for an entity that exists nowhere.
     third = tmp_path / "c.jsonl"
-    third.write_text(json.dumps(issue("l1", "gamma")) + "\n")
+    third.write_text(json.dumps(issue("l1", "gamma")) + "\n", encoding="utf-8")
     load(third, settings, reset=False)
     conn = store.connect_ro(settings.db_path)
     try:
@@ -2223,8 +2292,10 @@ def test_fireflies_scope_columns_are_the_api_vocabulary():
     assert store.fireflies_scope_columns("title") == ("title",)
     assert store.fireflies_scope_columns("sentences") == ("content",)
     assert store.fireflies_scope_columns("all") == ("title", "content")
-    assert store.fireflies_scope_columns(None) == ("title", "content")  # default
-    assert store.fireflies_scope_columns("ALL") == ("title", "content")  # case-insensitive
+    assert store.fireflies_scope_columns(None) == ("title", "content")  # default when absent
+    assert store.fireflies_scope_columns("ALL") is None
+    assert store.fireflies_scope_columns("TITLE") is None
+    assert store.fireflies_scope_columns("") is None
     assert store.fireflies_scope_columns("body") is None  # not an API value
 
 
@@ -2512,3 +2583,511 @@ def test_jira_numeric_ids_are_order_independent_and_preserved_across_append(tmp_
     with pytest.raises(SystemExit, match="already claimed"):
         byo.load_records(lambda: enumerate(records, 1), shard, reset=False)
     assert ids(shard) == after
+
+
+@pytest.mark.parametrize("visibility", ["public", "private"])
+def test_slacks_deactivated_roster_removes_no_teams_member(tmp_path, visibility):
+    """The channel-membership SQL is shared by both conversation sources, and Slack's deactivated
+    roster is Slack's: a person on it still speaks in, and belongs to, a Teams channel."""
+    from tests._helpers import build_corpus
+
+    email = "ava@acme.com"
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": source,
+                "channel": "shared-name",
+                "author_email": email,
+                "visibility": visibility,
+            }
+            for source in ("slack", "msteams")
+        ],
+    )
+    conn = store.connect_rw(settings.db_path)
+    try:
+        conn.execute("INSERT INTO slack_deactivated_users(email) VALUES (?)", (email,))
+        for source, expected in (("slack", []), ("msteams", [email])):
+            assert store.conversation_member_emails(conn, source, "shared-name") == expected
+            assert store.count_conversation_members(conn, source, "shared-name") == len(expected)
+            assert store.conversation_member_counts(conn, source)["shared-name"] == len(expected)
+            assert store.conversation_has_author(conn, source, "shared-name", email) == bool(
+                expected
+            )
+            assert store.conversation_membership_violations(conn, source) == []
+    finally:
+        conn.close()
+
+
+# --- the mutation overlay's merge -----------------------------------------------------------
+#
+# `merged_source` is the one place corpus and overlay are joined. Everything below is about that
+# fragment being correct, because fifteen readers depend on it, none of them restates it, and
+# every source that takes writes later will depend on the same one.
+
+
+@pytest.fixture
+def ov_db(sample_settings):
+    """A read-only corpus connection with an empty overlay attached."""
+    conn = store.connect_ro(sample_settings.db_path)
+    overlay.attach(conn, overlay.name_for(object()))
+    yield conn
+    conn.close()
+
+
+def _post(conn, channel, ts, author, content, created_ts):
+    conn.execute(
+        "INSERT INTO ov.slack_messages (channel, ts, author_email, content, created_ts) "
+        "VALUES (?,?,?,?,?)",
+        (channel, ts, author, content, created_ts),
+    )
+    for ptype, pid in conn.execute(
+        "SELECT DISTINCT principal_type, principal_id FROM main.slack_acl WHERE channel = ?",
+        (channel,),
+    ).fetchall():
+        conn.execute(
+            "INSERT INTO ov.slack_acl (channel, ts, principal_type, principal_id) VALUES (?,?,?,?)",
+            (channel, ts, ptype, pid),
+        )
+    conn.commit()
+
+
+def test_merged_source_is_the_bare_table_for_a_source_that_takes_no_writes(ov_db):
+    # The property that lets this ship without re-validating ten other vendors: a non-writable
+    # source's SQL is character-for-character what it was before the overlay existed.
+    for src in store.SOURCE_TABLE:
+        if src in store.WRITABLE:
+            continue
+        assert store.merged_source(ov_db, src) == store.table(src)
+
+
+def test_merged_source_is_the_bare_table_with_no_overlay_attached(db):
+    assert store.merged_source(db, "slack") == "slack_messages"
+
+
+def test_merged_source_is_the_bare_table_until_something_is_written(ov_db):
+    # An attached overlay is not a written one, and the union is not free: `merged_source`
+    # records what it costs. Until a row, a patch or a tombstone exists, every reader gets the
+    # query it ran before writes existed.
+    assert store.merged_source(ov_db, "slack") == "slack_messages"
+    _post(ov_db, "incidents", "4000000000.000009", "ava@acme.com", "now there is one", 4000000000)
+    # `_acl_clause` emits `_acl.channel = slack_messages.channel`, hard-referencing the table
+    # name. If the alias ever stops matching, every merged read silently loses its ACL join.
+    assert store.merged_source(ov_db, "slack").rstrip().endswith("AS slack_messages")
+
+
+def test_overlay_message_appears_in_history(ov_db):
+    before = store.count_slack_top_level(ov_db, "incidents", None)
+    _post(ov_db, "incidents", "4000000000.000001", "ava@acme.com", "posted now", 4000000000)
+    assert store.count_slack_top_level(ov_db, "incidents", None) == before + 1
+    rows = store.list_slack_top_level(ov_db, "incidents", None, limit=100)
+    assert "posted now" in [r["content"] for r in rows]
+
+
+def test_a_tombstoned_corpus_message_leaves_history(ov_db):
+    row = store.list_slack_top_level(ov_db, "incidents", None, limit=1)[0]
+    before = store.count_slack_top_level(ov_db, "incidents", None)
+    ov_db.execute("INSERT INTO ov.slack_tombstone VALUES (?,?)", (row["channel"], row["ts"]))
+    ov_db.commit()
+    assert store.count_slack_top_level(ov_db, "incidents", None) == before - 1
+    assert row["ts"] not in [
+        r["ts"] for r in store.list_slack_top_level(ov_db, "incidents", None, limit=100)
+    ]
+
+
+def test_a_patch_overrides_a_corpus_column(ov_db):
+    row = store.list_slack_top_level(ov_db, "incidents", None, limit=1)[0]
+    ov_db.execute(
+        "INSERT INTO ov.slack_patch VALUES (?,?,?,?)",
+        (row["channel"], row["ts"], "content", "edited text"),
+    )
+    ov_db.commit()
+    got = [
+        r
+        for r in store.list_slack_top_level(ov_db, "incidents", None, limit=100)
+        if r["ts"] == row["ts"]
+    ][0]
+    assert got["content"] == "edited text"
+
+
+def test_a_merged_row_keeps_the_corpus_column_order(ov_db):
+    # The merge selects columns explicitly rather than `SELECT *` over a UNION ALL, whose
+    # correctness depends on both sides agreeing on column ORDER — a silent wrong-column bug
+    # rather than an error. This asserts the projection did not reorder anything.
+    _post(ov_db, "incidents", "4000000000.000009", "ava@acme.com", "ordered", 4000000000)
+    corpus_cols = [r[1] for r in ov_db.execute("PRAGMA main.table_info(slack_messages)")]
+    row = store.list_slack_top_level(ov_db, "incidents", None, limit=100)[0]
+    # `_written` is the merge's own column, appended after the corpus's; the order under test is
+    # the corpus's own.
+    assert list(row.keys()) == [*corpus_cols, "_written"]
+
+
+def test_paging_across_the_boundary_neither_repeats_nor_drops(ov_db):
+    # An overlay row sorts after every corpus row (its created_ts is now), so a page boundary
+    # drawn anywhere must still see each row exactly once.
+    _post(ov_db, "incidents", "4000000000.000002", "ava@acme.com", "boundary a", 4000000000)
+    _post(ov_db, "incidents", "4000000000.000003", "ava@acme.com", "boundary b", 4000000001)
+    total = store.count_slack_top_level(ov_db, "incidents", None)
+    seen = []
+    for offset in range(0, total, 2):
+        seen += [
+            (r["channel"], r["ts"])
+            for r in store.list_slack_top_level(ov_db, "incidents", None, limit=2, offset=offset)
+        ]
+    assert len(seen) == total
+    assert len(set(seen)) == total
+
+
+def test_an_overlay_message_is_acl_scoped_like_any_other(ov_db, acl):
+    # The overlay grants what the channel grants, so a caller who cannot read the channel cannot
+    # read what was posted into it.
+    _post(
+        ov_db,
+        "people-confidential",
+        "4000000000.000004",
+        "hana@acme.com",
+        "secret add",
+        4000000000,
+    )
+    outsider = acl.visible_ids(ov_db, Caller(email="bob@acme.com", is_admin=False))
+    rows = store.list_slack_top_level(ov_db, "people-confidential", outsider, limit=100)
+    assert "secret add" not in [r["content"] for r in rows]
+
+
+def test_a_written_document_gets_its_container_grants(ov_db):
+    # `slack_acl` is keyed (channel, ts) — a grant is per DOCUMENT — so a row written without
+    # grants is visible to nobody, including its own author. Generic: the container column comes
+    # from `grouping_col`, which is `channel` for slack and `mailbox`/`repo`/`project` elsewhere.
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "grants copied",
+            "created_ts": 4000000000,
+        },
+    )
+    channel_grants = {
+        tuple(r)
+        for r in ov_db.execute(
+            "SELECT DISTINCT principal_type, principal_id FROM main.slack_acl WHERE channel = ?",
+            ("incidents",),
+        )
+    }
+    written_grants = {
+        tuple(r)
+        for r in ov_db.execute(
+            "SELECT principal_type, principal_id FROM ov.slack_acl WHERE channel = ? AND ts = ?",
+            ("incidents", ts),
+        )
+    }
+    assert written_grants == channel_grants and written_grants
+
+
+def test_next_ts_does_not_collide_within_a_channel_second(ov_db):
+    a = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": a,
+            "author_email": "ava@acme.com",
+            "content": "first",
+            "created_ts": 4000000000,
+        },
+    )
+    b = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    assert a != b
+    assert a.split(".")[0] == b.split(".")[0] == "4000000000"
+    assert len(a.split(".")[1]) == 6
+
+
+def test_document_by_key_finds_both_sides_and_honours_the_tombstone(ov_db):
+    corpus = store.list_slack_top_level(ov_db, "incidents", None, limit=1)[0]
+    key = (corpus["channel"], corpus["ts"])
+    assert store.document_by_key(ov_db, "slack", key) is not None
+    store.tombstone_document(ov_db, "slack", key)
+    assert store.document_by_key(ov_db, "slack", key) is None
+
+
+def test_patching_an_unpatchable_column_is_refused(ov_db):
+    # A patch to an identifier column would move a row out from under its own ACL grant, since a
+    # grant names its document by exactly ID_COLUMNS.
+    corpus = store.list_slack_top_level(ov_db, "incidents", None, limit=1)[0]
+    with pytest.raises(ValueError, match="not patchable"):
+        store.patch_document(
+            ov_db, "slack", (corpus["channel"], corpus["ts"]), "channel", "elsewhere"
+        )
+
+
+def test_writing_to_a_non_writable_source_is_refused(ov_db):
+    # A source outside WRITABLE has no overlay tables at all, so this must fail loudly rather
+    # than raise an opaque "no such table" from three frames down.
+    with pytest.raises(ValueError, match="not writable"):
+        store.insert_document(ov_db, "gmail", {"id": "x", "mailbox": "m"})
+
+
+@pytest.mark.parametrize("terms", ["deploy", "gateway", "from the gateway", "the", "the the"])
+def test_python_bm25_agrees_with_sqlite_on_corpus_rows(ov_db, terms):
+    # The scorer is only worth anything if it reproduces SQLite's number on rows SQLite scored.
+    # A fixture asserting hand-picked constants would pass while being wrong.
+    #
+    # Pointed at `main`, `_corpus_bm25` is scoring a row of the same index it draws its statistics
+    # from, so it must equal `bm25()` exactly. Pointed at `ov` it does the one thing that differs:
+    # the row comes from the overlay, the statistics still from the corpus.
+    #
+    # "the the" is there because fts5 sums bm25 per PHRASE, so a repeated term counts twice; a
+    # scorer that de-duplicates the query into a set would diverge only here. The CLAMP is not
+    # reachable in this corpus — it needs a term in at least half the index's rows, and the
+    # sample's commonest is in two of five — so it has a corpus of its own below.
+    rows = ov_db.execute(
+        "SELECT slack_fts.rowid AS rid, bm25(slack_fts) AS r FROM slack_fts "
+        "WHERE slack_fts MATCH ? LIMIT 5",
+        (terms,),
+    ).fetchall()
+    if not rows:
+        pytest.skip(f"the sample corpus has no slack message matching {terms!r}")
+    for row in rows:
+        mine = store._corpus_bm25(ov_db, "slack", terms, row["rid"], schema="main")
+        assert mine == pytest.approx(row["r"], rel=1e-9), f"{terms!r} rowid={row['rid']}"
+
+
+def test_python_bm25_agrees_with_sqlite_where_the_idf_clamp_fires(tmp_path):
+    # A term in at least half the rows drives the IDF non-positive, and fts5 clamps it rather
+    # than letting a score go the wrong way. The sample corpus cannot reach that — its commonest
+    # term is in two rows of five — so a parametrize over it passes against a scorer with no
+    # clamp at all.
+    from tests._helpers import build_corpus
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "clamp",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "content": f"common word number {i}",
+            }
+            for i in range(4)
+        ],
+    )
+    conn = store.connect_ro(settings.db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT slack_fts.rowid AS rid, bm25(slack_fts) AS r FROM slack_fts "
+        "WHERE slack_fts MATCH ?",
+        ("common",),
+    ).fetchall()
+    assert len(rows) == 4, "the term has to be in every row for the clamp to fire"
+    vocab = store._vocab(conn, "main", "slack_fts", "row")
+    n_docs = conn.execute(f"SELECT doc FROM {vocab} WHERE term = ?", ("common",)).fetchone()[0]
+    n_rows = conn.execute("SELECT COUNT(*) FROM main.slack_fts").fetchone()[0]
+    assert 2 * n_docs >= n_rows, (n_docs, n_rows)
+    for row in rows:
+        mine = store._corpus_bm25(conn, "slack", "common", row["rid"], schema="main")
+        assert mine == pytest.approx(row["r"], rel=1e-9), row["rid"]
+    conn.close()
+
+
+def test_a_phrase_is_scored_as_one_unit_not_as_its_tokens(ov_db):
+    # `_corpus_stats` records what the phrase path does: the document frequency is the phrase's,
+    # read off the corpus index, not the sum of its tokens' IDFs. Turning the branch off leaves
+    # a score built from terms that are each far commoner than the phrase.
+    terms = store._fts_query_terms(ov_db, "slack", "from the gateway")
+    match = store._fts_match("from the gateway", phrase=True)
+    as_phrase = store._corpus_stats(ov_db, "slack", terms, phrase=match)
+    as_terms = store._corpus_stats(ov_db, "slack", terms)
+    assert list(as_phrase.n_docs) == [match]
+    assert set(as_terms.n_docs) == set(terms)
+    row = ov_db.execute(
+        "SELECT slack_fts.rowid AS rid FROM slack_fts WHERE slack_fts MATCH ? LIMIT 1", (match,)
+    ).fetchone()
+    assert row is not None, "the sample corpus has no row holding the phrase"
+    phrased = store._corpus_bm25(
+        ov_db,
+        "slack",
+        "from the gateway",
+        row["rid"],
+        schema="main",
+        terms=terms,
+        stats=as_phrase,
+        phrase=True,
+    )
+    summed = store._corpus_bm25(
+        ov_db,
+        "slack",
+        "from the gateway",
+        row["rid"],
+        schema="main",
+        terms=terms,
+        stats=as_terms,
+    )
+    assert phrased != summed
+    # And it is ONE term's score with the phrase's own document count, not a sum over however
+    # many tokens the phrase has.
+    inst = store._vocab(ov_db, "main", "slack_fts", "instance")
+    doclen = ov_db.execute(f"SELECT COUNT(*) FROM {inst} WHERE doc = ?", (row["rid"],)).fetchone()[
+        0
+    ]
+    assert phrased == pytest.approx(
+        -store._bm25_term(1, as_phrase.n_docs[match], as_phrase.n_rows, doclen, as_phrase.avgdl),
+        rel=1e-9,
+    )
+    # An UNQUOTED multi-term query is scored by its terms, so `_overlay_hits` reads the phrase
+    # statistics only when the caller asked for a phrase. Passing the match through
+    # unconditionally scores `from the gateway` as though it were quoted, and the suite stayed
+    # green: an overlay row is what reaches that line.
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": "4000000000.000001",
+            "author_email": "ava@acme.com",
+            "content": "a note from the gateway",
+            "created_ts": 4000000000,
+        },
+    )
+    ((_row, scored),) = store._overlay_hits(
+        ov_db, "slack", "from the gateway", None, container=None, phrase=False
+    )
+    ((_same, written),) = store._overlay_matches(
+        ov_db, "slack", "from the gateway", None, container=None, phrase=False
+    )
+    assert scored == pytest.approx(
+        store._corpus_bm25(
+            ov_db, "slack", "from the gateway", written, terms=terms, stats=as_terms
+        ),
+        rel=1e-9,
+    )
+
+
+def test_the_corpus_size_cache_is_keyed_on_the_corpus_file(tmp_path):
+    # Two corpora in one process must not share one `(rows, average length)`: the key carries
+    # the file's path, size and mtime, and dropping any of that answers the second corpus with
+    # the first's numbers.
+    from tests._helpers import build_corpus
+
+    sizes = []
+    for n in (2, 9):
+        settings = build_corpus(
+            tmp_path / f"c{n}",
+            [
+                {
+                    "source_type": "slack",
+                    "channel": "sized",
+                    "author_email": "ava@acme.com",
+                    "visibility": "public",
+                    "content": f"word {i}",
+                }
+                for i in range(n)
+            ],
+        )
+        conn = store.connect_ro(settings.db_path)
+        sizes.append(store._corpus_size(conn, "slack"))
+        conn.close()
+    assert sizes[0][0] == 2 and sizes[1][0] == 9, sizes
+
+
+def test_a_posted_message_is_findable_by_search(ov_db):
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "zarquon telemetry rollout",
+            "created_ts": 4000000000,
+        },
+    )
+    hits = store.search_documents(ov_db, "zarquon", "slack", None, limit=10)
+    assert ts in [h["ts"] for h in hits]
+
+
+def test_a_posted_message_can_outrank_a_corpus_hit(ov_db):
+    # The whole point of scoring on the corpus's scale. With the overlay index's own bm25 an
+    # overlay row sorts last however well it matches (measured: -1e-06 against -2.70).
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "gateway gateway gateway",
+            "created_ts": 4000000000,
+        },
+    )
+    hits = store.search_documents(ov_db, "gateway", "slack", None, limit=10)
+    assert hits and hits[0]["ts"] == ts
+
+
+def test_a_tombstoned_message_leaves_search(ov_db):
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "zarquon telemetry rollout",
+            "created_ts": 4000000000,
+        },
+    )
+    store.tombstone_document(ov_db, "slack", ("incidents", ts))
+    assert store.search_documents(ov_db, "zarquon", "slack", None, limit=10) == []
+
+
+def test_count_search_agrees_with_what_search_pages(ov_db):
+    # A total the pages contradict is worse than no total: search.messages reports it verbatim.
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "zarquon telemetry rollout",
+            "created_ts": 4000000000,
+        },
+    )
+    total = store.count_search(ov_db, "zarquon", "slack", None)
+    assert total == len(store.search_documents(ov_db, "zarquon", "slack", None, limit=1000))
+
+
+def test_next_ts_does_not_reuse_a_tombstoned_ts(ov_db):
+    # The physical row is still in the overlay, so handing its ts out again fails the primary key.
+    ts = store.slack_next_ts(ov_db, "incidents", 4000000000)
+    store.insert_document(
+        ov_db,
+        "slack",
+        {
+            "channel": "incidents",
+            "ts": ts,
+            "author_email": "ava@acme.com",
+            "content": "doomed",
+            "created_ts": 4000000000,
+        },
+    )
+    store.tombstone_document(ov_db, "slack", ("incidents", ts))
+    assert store.slack_next_ts(ov_db, "incidents", 4000000000) != ts
+
+
+def test_a_patched_corpus_row_is_not_counted_twice_by_search(ov_db):
+    row = store.list_slack_top_level(ov_db, "incidents", None, limit=1)[0]
+    store.patch_document(
+        ov_db, "slack", (row["channel"], row["ts"]), "content", "zarquon replaced the body"
+    )
+    hits = store.search_documents(ov_db, "zarquon", "slack", None, limit=50)
+    assert [h["ts"] for h in hits].count(row["ts"]) == 1
+    assert store.count_search(ov_db, "zarquon", "slack", None) == len(hits)

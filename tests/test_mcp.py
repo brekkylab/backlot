@@ -4,7 +4,9 @@ Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corp
 real MCP server against it: a document the admin can read is blocked for an ACL-restricted user —
 same tool, same object, different identity.
 
-- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless Docker is available.
+- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless ``docker`` runs Linux containers here,
+  and failed in its place where ``BACKLOT_TEST_REQUIRE_DOCKER`` is ``1``
+  (``_require_linux_docker``).
 - **Notion** (`@notionhq/notion-mcp-server`, npx) — skipped unless ``npx`` (Node) is on PATH; the
   first run downloads the npm package.
 - **S3** (`awslabs.aws-api-mcp-server`, uvx) — skipped unless ``uvx`` is on PATH; the first run
@@ -31,8 +33,8 @@ import dataclasses
 import http.server
 import json
 import os
+import pathlib
 import re
-import select
 import shutil
 import signal
 import socket
@@ -50,15 +52,53 @@ pytest.importorskip("mcp")
 from backlot import mcp as backlot_mcp  # noqa: E402
 from backlot import store, synth  # noqa: E402
 from backlot.acl import Acl  # noqa: E402
+from tests._helpers import POSIX_SIGNALS, python_child_env, readline_within  # noqa: E402
 
 
-def _docker_available() -> bool:
+def _why_docker_runs_no_linux_containers() -> str | None:
+    """Why ``docker`` cannot run Linux containers here, or None where it can. The index of
+    ``ghcr.io/sooperset/mcp-atlassian:latest`` lists ``linux/amd64`` and ``linux/arm64`` images only
+    (fetched 2026-10-20), and Docker on ``windows-latest`` answers but runs Windows containers, so
+    the pull there finds no image and the server never starts. Podman 6.1.4 called as ``docker``
+    has no ``.OSType``, exits 125 on that template and names the OS at ``.Host.OS`` instead.
+
+    The reason names what ``docker info`` did, or that there was no ``docker`` to ask, since a CI
+    job keeps no other record of it.
+    """
     if not shutil.which("docker"):
-        return False
-    try:
-        return subprocess.run(["docker", "info"], capture_output=True, timeout=10).returncode == 0
-    except Exception:  # noqa: BLE001
-        return False
+        return "no `docker` on PATH"
+    exits = []
+    for template in ("{{.OSType}}", "{{.Host.OS}}"):
+        try:
+            info = subprocess.run(
+                ["docker", "info", "--format", template],
+                capture_output=True,
+                encoding="utf-8",
+                timeout=10,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return "`docker info` " + "; ".join([*exits, f"raised {type(exc).__name__}: {exc}"])
+        if info.returncode == 0:
+            break
+        first = next(iter(info.stderr.strip().splitlines()), "nothing on stderr")
+        exits.append(f"exited {info.returncode} on `{template}`: {first}")
+    else:
+        return "`docker info` " + "; ".join(exits)
+    os_name = info.stdout.strip()
+    return None if os_name == "linux" else f"`docker info` names {os_name!r} as its OS"
+
+
+def _require_linux_docker() -> None:
+    """Skip the calling test where ``docker`` runs no Linux containers, naming why, or fail it with
+    that reason where ``BACKLOT_TEST_REQUIRE_DOCKER`` is ``1``; any other value, ``0`` among them,
+    leaves the skip."""
+    why = _why_docker_runs_no_linux_containers()
+    if why is None:
+        return
+    why = f"mcp-atlassian needs Docker's Linux containers: {why}"
+    if os.environ.get("BACKLOT_TEST_REQUIRE_DOCKER") == "1":
+        pytest.fail(f"BACKLOT_TEST_REQUIRE_DOCKER is 1, and {why}")
+    pytest.skip(why)
 
 
 def _atlassian_params(base: str, token: str, username: str = "svc@example.com"):
@@ -101,6 +141,10 @@ def _atlassian_params(base: str, token: str, username: str = "svc@example.com"):
             "--transport",
             "stdio",
         ],
+        # `_why_docker_runs_no_linux_containers` asked the daemon this environment names; mcp
+        # 2.3.0's `stdio_client` would otherwise hand `docker run` a fixed list of variables,
+        # DOCKER_HOST and DOCKER_CONTEXT not among them.
+        env=dict(os.environ),
     )
 
 
@@ -151,7 +195,135 @@ async def _call(params, tool_pred, args, ok_pred) -> bool:
 # --------------------------------------------------------------------------- Atlassian
 
 
-@pytest.mark.skipif(not _docker_available(), reason="Docker not available")
+# What `docker info` wrote to stderr with no daemon (Docker 29.7.2 on macOS, 2026-10-22):
+# `_NO_DAEMON` on each template, exiting 1, and `_NO_HOST_FIELD` after it on `{{.Host.OS}}`.
+_NO_DAEMON = (
+    "failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is"
+    " correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file"
+    " or directory"
+)
+_NO_HOST_FIELD = (
+    'template: :1:7: executing "" at <.Host.OS>: can\'t evaluate field Host in type'
+    " system.dockerInfo\n"
+)
+
+
+_NO_DAEMON_ANSWERS = [(1, "\n", _NO_DAEMON + "\n"), (1, "\n", _NO_DAEMON + "\n" + _NO_HOST_FIELD)]
+_NO_DAEMON_WHY = (
+    f"`docker info` exited 1 on `{{{{.OSType}}}}`: {_NO_DAEMON}; exited 1 on"
+    f" `{{{{.Host.OS}}}}`: {_NO_DAEMON}"
+)
+
+
+@pytest.mark.parametrize(
+    ("docker", "answers", "required", "why"),
+    [
+        pytest.param(None, [], None, "no `docker` on PATH", id="no-docker"),
+        pytest.param("docker", [(0, "linux\n", "")], None, None, id="linux-containers"),
+        pytest.param("docker", [(0, "linux\n", "")], "1", None, id="linux-containers-required-1"),
+        pytest.param(
+            "docker",
+            [(0, "windows\n", "")],
+            None,
+            "`docker info` names 'windows' as its OS",
+            id="windows-containers",
+        ),
+        pytest.param("docker", _NO_DAEMON_ANSWERS, None, _NO_DAEMON_WHY, id="no-daemon"),
+        pytest.param(
+            "docker", _NO_DAEMON_ANSWERS, "", _NO_DAEMON_WHY, id="no-daemon-required-empty"
+        ),
+        pytest.param("docker", _NO_DAEMON_ANSWERS, "0", _NO_DAEMON_WHY, id="no-daemon-required-0"),
+        pytest.param("docker", _NO_DAEMON_ANSWERS, "1", _NO_DAEMON_WHY, id="no-daemon-required-1"),
+        pytest.param(
+            "docker",
+            [(1, "", "\n"), (2, "", "")],
+            None,
+            "`docker info` exited 1 on `{{.OSType}}`: nothing on stderr; exited 2 on"
+            " `{{.Host.OS}}`: nothing on stderr",
+            id="no-daemon-silent",
+        ),
+        pytest.param("docker", [(125, "", ""), (0, "linux\n", "")], None, None, id="podman"),
+        pytest.param(
+            "docker",
+            [subprocess.TimeoutExpired],
+            None,
+            "`docker info` raised TimeoutExpired: Command '['docker', 'info', '--format',"
+            " '{{.OSType}}']' timed out after 10 seconds",
+            id="timeout",
+        ),
+        pytest.param(
+            "docker",
+            [(125, "", ""), subprocess.TimeoutExpired],
+            None,
+            "`docker info` exited 125 on `{{.OSType}}`: nothing on stderr; raised TimeoutExpired:"
+            " Command '['docker', 'info', '--format', '{{.Host.OS}}']' timed out after 10 seconds",
+            id="exit-then-timeout",
+        ),
+        pytest.param(
+            "docker",
+            [OSError(8, "Exec format error", "docker")],
+            None,
+            "`docker info` raised OSError: [Errno 8] Exec format error: 'docker'",
+            id="not-executable",
+        ),
+    ],
+)
+def test_the_atlassian_test_runs_only_where_docker_runs_linux_containers(
+    monkeypatch, docker, answers, required, why
+):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        answer = answers[len(calls) - 1]
+        if answer is subprocess.TimeoutExpired:
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        if isinstance(answer, Exception):
+            raise answer
+        return subprocess.CompletedProcess(args, answer[0], stdout=answer[1], stderr=answer[2])
+
+    monkeypatch.setattr(shutil, "which", lambda name: docker)
+    monkeypatch.setattr(subprocess, "run", run)
+    if required is None:
+        monkeypatch.delenv("BACKLOT_TEST_REQUIRE_DOCKER", raising=False)
+    else:
+        monkeypatch.setenv("BACKLOT_TEST_REQUIRE_DOCKER", required)
+    if why is None:
+        _require_linux_docker()
+    else:
+        outcome = pytest.fail.Exception if required == "1" else pytest.skip.Exception
+        with pytest.raises((pytest.skip.Exception, pytest.fail.Exception)) as raised:
+            _require_linux_docker()
+        assert type(raised.value) is outcome
+        prefix = "BACKLOT_TEST_REQUIRE_DOCKER is 1, and " if required == "1" else ""
+        assert raised.value.msg == f"{prefix}mcp-atlassian needs Docker's Linux containers: {why}"
+    asked = [["docker", "info", "--format", t] for t in ("{{.OSType}}", "{{.Host.OS}}")]
+    assert calls == asked[: len(answers)]
+
+
+def test_ci_requires_docker_for_the_atlassian_test_on_linux_alone():
+    """The wait step and the variable, for the reasons the comments in `ci.yml` give, and neither in
+    `windows.yml`, whose Docker runs Windows containers."""
+    workflows = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    ci = yaml.safe_load((workflows / "ci.yml").read_text(encoding="utf-8"))
+    test = ci["jobs"]["test"]
+    from_matrix = re.fullmatch(r"\$\{\{ *matrix\.([\w-]+) *\}\}", test["runs-on"])
+    images = test["strategy"]["matrix"][from_matrix[1]] if from_matrix else [test["runs-on"]]
+    assert all(image.startswith("ubuntu-") for image in images), images
+    names = [s.get("name") for s in test["steps"]]
+    assert names.index("Wait for the Docker daemon") < names.index("Unit tests")
+    assert test["steps"][names.index("Unit tests")]["env"]["BACKLOT_TEST_REQUIRE_DOCKER"] == "1"
+    windows = (workflows / "windows.yml").read_text(encoding="utf-8")
+    assert "BACKLOT_TEST_REQUIRE_DOCKER" not in windows
+    assert "Wait for the Docker daemon" not in windows
+
+
+@pytest.mark.parametrize("name", ["DOCKER_HOST", "DOCKER_CONTEXT"])
+def test_docker_run_keeps_the_variables_that_pick_its_daemon(monkeypatch, name):
+    monkeypatch.setenv(name, "elsewhere")
+    assert _atlassian_params("http://127.0.0.1:1", "token").env[name] == "elsewhere"
+
+
 def test_mcp_atlassian_acl_enforced(live_server):
     """A Jira issue the admin reads through mcp-atlassian is not-found for a scoped user.
 
@@ -160,8 +332,9 @@ def test_mcp_atlassian_acl_enforced(live_server):
     ACL's. Without the matching username the read would fail on auth instead, which reaches this
     test the same way and would leave it green with the ACL doing nothing; the third read is the
     control that rules that out."""
+    _require_linux_docker()
     base, settings = live_server
-    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    user = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"][0]
     row, email = _restricted_doc(settings, user["token"], "jira")
     assert row is not None, f"no Jira issue is ACL-restricted from {email} in the sample corpus"
     key = row["key"]  # the stored column: jira is probed, so a re-derived hash can disagree
@@ -196,7 +369,7 @@ def test_mcp_atlassian_acl_enforced(live_server):
 @pytest.mark.skipif(shutil.which("npx") is None, reason="npx (Node) not available")
 def test_mcp_notion_acl_enforced(live_server):
     base, settings = live_server
-    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    user = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"][0]
     row, email = _restricted_doc(settings, user["token"], "notion", "subtype IS NOT 'database'")
     assert row is not None, f"no Notion page is ACL-restricted from {email} in the sample corpus"
     # The row's own `id`, not a fresh `synth.notion_id(row["doc_id"])`: notion never
@@ -337,7 +510,7 @@ _BRIDGE_CASES = [
         # the org the CORPUS produced, which tokens.yaml records — not `settings.org_name`, still
         # the unloaded default here. The GitHub surface 404s any other owner.
         lambda row, st: {
-            "owner": yaml.safe_load(st.tokens_path.read_text())["org"],
+            "owner": yaml.safe_load(st.tokens_path.read_text(encoding="utf-8"))["org"],
             "repo": row["repo"],
             "number": row["number"],
         },
@@ -417,7 +590,7 @@ def test_mcp_bridge_enforces_the_acl(live_server, source, where, tool_pred, buil
     including S3, whose calls are signed rather than bearer-authenticated."""
     pytest.importorskip("fastmcp")
     base, settings = live_server
-    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    user = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"][0]
     doc_source = {"gdrive": "google_drive", "atlassian": "jira"}.get(source, source)
     row, email = _restricted_doc(settings, user["token"], doc_source, where)
     assert row is not None, f"no {doc_source} document is ACL-restricted from {email} in SAMPLE"
@@ -449,8 +622,10 @@ def test_auth_header_spells_each_source_the_way_its_client_speaks():
     scheme, _, payload = header.partition(" ")
     assert scheme == "Basic"
     assert base64.b64decode(payload).decode() == "ava@acme.com:usr-abc"
-    for source in ("slack", "github", "notion", "linear"):
+    for source in ("slack", "github", "notion", "fireflies"):
         assert backlot_mcp._auth_header(creds, source) == {"Authorization": "Bearer usr-abc"}
+    # no scheme for Linear, which refuses a key under Bearer
+    assert backlot_mcp._auth_header(creds, "linear") == {"Authorization": "usr-abc"}
     # the admin has no email to put in a username, so Atlassian falls back to Bearer for them
     admin = dataclasses.replace(creds, email=None)
     assert backlot_mcp._auth_header(admin, "atlassian") == {"Authorization": "Bearer usr-abc"}
@@ -469,7 +644,7 @@ def test_mcp_atlassian_bridge_authenticates_basic_for_the_resolved_user(live_ser
     apart."""
     pytest.importorskip("fastmcp")
     base, settings = live_server
-    email = yaml.safe_load(settings.tokens_path.read_text())["users"][0]["email"]
+    email = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"][0]["email"]
     creds = backlot_mcp.resolve(base, email)
     row, _ = _visible_doc(settings, creds.token, "jira")
     assert row is not None, f"no Jira issue is readable by {email} in the sample corpus"
@@ -490,7 +665,7 @@ def test_mcp_s3_bridge_signs_for_the_resolved_user(live_server):
     user's own keys sign a readable object successfully, so the refusal above is the ACL's."""
     pytest.importorskip("fastmcp")
     base, settings = live_server
-    email = yaml.safe_load(settings.tokens_path.read_text())["users"][0]["email"]
+    email = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"][0]["email"]
     creds = backlot_mcp.resolve(base, email)
     conn = store.connect_ro(settings.db_path)
     acl = Acl.load(settings.tokens_path, settings.admin_token, settings.org_name)
@@ -551,7 +726,7 @@ def test_mcp_graphql_bridge_enforces_the_acl(live_server, source, tool_name, dep
     scoped user — a field error for Linear's non-null `Issue!`, a null for Fireflies."""
     pytest.importorskip("fastmcp")
     base, settings = live_server
-    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    user = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"][0]
     row, email = _restricted_doc(settings, user["token"], source)
     assert row is not None, f"no {source} document is ACL-restricted from {email} in SAMPLE"
 
@@ -951,19 +1126,51 @@ def _initialised_mcp(*args, env=None):
     }
     proc.stdin.write((json.dumps(init) + "\n").encode())
     proc.stdin.flush()
-    ready, _, _ = select.select([proc.stdout], [], [], 120)
-    assert ready, "no initialize response within 120s"
-    line = proc.stdout.readline()
+    line = readline_within(proc.stdout, 120)
+    assert line is not None, "no initialize response within 120s"
     assert b'"result"' in line, line
     return proc
 
 
+# The exit code `Popen.terminate()` leaves `backlot mcp` with: 128 + SIGTERM from its handler on
+# POSIX, and on Windows the 1 that `terminate()` passes to `TerminateProcess`.
+_TERMINATED = 1 if sys.platform == "win32" else 128 + signal.SIGTERM
+
+
+def _running(pid: int) -> bool:
+    """Whether process ``pid`` is still running. On Windows `os.kill(pid, 0)` cannot ask that:
+    signal 0 there is CTRL_C_EVENT, which `os.kill` sends as a console event."""
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information, still_active = 0x1000, 259
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        return code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@POSIX_SIGNALS
 @pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT", "SIGHUP"])
 def test_backlot_mcp_exits_on_a_signal_with_stdin_still_open(live_server, signame):
-    """A supervisor that signals its child and waits must not hang. With stdin held open, each
-    terminating signal ends the process with the conventional 128+N — SIGTERM alone used to leave
-    it alive until stdin closed, because the stdio reader thread is non-daemon; SIGINT never ended
-    it; SIGHUP ended it by default disposition without unwinding."""
+    """A supervisor that signals its child and waits must not hang: with stdin held open, each
+    terminating signal ends the process with the conventional 128+N."""
     base, _ = live_server
     sig = getattr(signal, signame)
     proc = _initialised_mcp("--source", "slack", "--url", base)
@@ -993,13 +1200,13 @@ mcp.run(["slack"], url=sys.argv[2])
 """
 
 
+@POSIX_SIGNALS
 @pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT", "SIGHUP"])
 def test_backlot_mcp_exits_when_the_signal_lands_on_another_thread(live_server, signame):
     """A Python-level handler runs on the main thread only, once that thread is back in the
     interpreter — and the main thread here is the event loop, asleep in select with nothing to wake
-    it. When the kernel hands the signal to another thread, that never happens: measured, the
-    process stayed alive indefinitely, which is what the intermittent CI timeouts were. The exit
-    must not depend on which thread the signal reaches."""
+    it. When the kernel hands the signal to another thread, that never happens, so the exit must not
+    depend on which thread the signal reaches."""
     base, _ = live_server
     sig = getattr(signal, signame)
     proc = subprocess.Popen(
@@ -1019,24 +1226,38 @@ def test_backlot_mcp_exits_when_the_signal_lands_on_another_thread(live_server, 
     assert code == 128 + sig, (code, proc.stderr.read()[-500:])
 
 
-def test_backlot_mcp_takes_its_server_down_on_sighup(tmp_path):
-    """The server `attach` starts goes with the process on a signal too, not only when stdin
-    closes — SIGHUP is the one whose default disposition would have ended this process instantly
-    with the server left listening."""
+@pytest.mark.parametrize(
+    "end, code",
+    [
+        pytest.param(
+            "SIGHUP", 128 + getattr(signal, "SIGHUP", 0), marks=POSIX_SIGNALS, id="SIGHUP"
+        ),
+        pytest.param("SIGKILL", -getattr(signal, "SIGKILL", 9), marks=POSIX_SIGNALS, id="SIGKILL"),
+        pytest.param("terminate", _TERMINATED, marks=pytest.mark.windows, id="terminate"),
+    ],
+)
+def test_backlot_mcp_takes_its_server_down_when_it_is_ended(tmp_path, end, code):
+    """The server `attach` starts goes with the process when a supervisor ends it, not only when
+    stdin closes. SIGHUP is the signal whose default disposition would have ended this process
+    instantly with the server left listening. SIGKILL, and `terminate()` on Windows, run nothing in
+    this process (the comment on `serve()`'s stdin pipe says how the server still goes)."""
     if backlot_mcp.is_backlot(backlot_mcp.DEFAULT_URL):
         pytest.skip(
             f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"
         )
-    env = {**os.environ, "BACKLOT_DATA_DIR": str(tmp_path / "data")}
+    env = python_child_env(BACKLOT_DATA_DIR=str(tmp_path / "data"))
     proc = _initialised_mcp("--source", "slack", env=env)
     try:
-        proc.send_signal(signal.SIGHUP)
-        code = proc.wait(timeout=30)
+        if end == "terminate":
+            proc.terminate()
+        else:
+            proc.send_signal(getattr(signal, end))
+        exited = proc.wait(timeout=30)
         err = proc.stderr.read().decode()
     finally:
         if proc.poll() is None:
             proc.kill()
-    assert code == 128 + signal.SIGHUP, (code, err[-500:])
+    assert exited == code, (exited, err[-500:])
     up = re.search(r"Backlot is up at http://127\.0\.0\.1:(\d+)", err)
     assert up, err
     port = int(up.group(1))
@@ -1052,23 +1273,21 @@ def test_backlot_mcp_takes_its_server_down_on_sighup(tmp_path):
 
 
 # `backlot mcp` with the readiness poll held: `serve()` has spawned its server but not yielded, so
-# `attach` has nothing to close yet. The child's pid goes to stderr as it is spawned, so the test
-# can signal the parent inside that window without guessing at timing, and can check on the child
-# afterwards. Patches the *driver* process only; `backlot.mcp.run` and `serve()` are the real ones.
+# `attach` has nothing to close yet. The child's pid goes to stderr as `serve()` adds it to
+# `_CHILDREN`, so the test can signal the parent inside that window without guessing at timing,
+# and can check on the child afterwards. Patches the *driver* process only; `backlot.mcp.run` and
+# `serve()` are the real ones.
 _MCP_HELD_BEFORE_READY = """
-import subprocess, sys, time
+import sys, time
 import backlot.server as server
 import backlot.mcp as mcp
 
-_Popen = subprocess.Popen
+class Announcing(list):
+    def append(self, proc):
+        super().append(proc)
+        print(f"SPAWNED {proc.pid}", file=sys.stderr, flush=True)
 
-class Announcing(_Popen):
-    def __init__(self, args, *a, **k):
-        super().__init__(args, *a, **k)
-        if "serve" in args:
-            print(f"SPAWNED {self.pid}", file=sys.stderr, flush=True)
-
-subprocess.Popen = Announcing
+server._CHILDREN = Announcing()
 _warm, _since = server._warm, None
 
 def held_warm(url, timeout):
@@ -1081,15 +1300,16 @@ mcp.run(["slack"])
 """
 
 
+@pytest.mark.windows
 def test_backlot_mcp_takes_down_a_server_it_spawned_but_had_not_yet_yielded(tmp_path):
-    """A signal between `serve()`'s Popen and its yield must still end the server. `_started`
-    is not set until the yield, and a client that gives up on a slow start signals exactly then —
-    the handler used to go straight to `os._exit`, leaving the uvicorn child alive on its port."""
+    """Ending `backlot mcp` between `serve()`'s Popen and its yield must still end the server:
+    `_started` is not set until the yield, and a client that gives up on a slow start ends it
+    exactly then."""
     if backlot_mcp.is_backlot(backlot_mcp.DEFAULT_URL):
         pytest.skip(
             f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"
         )
-    env = {**os.environ, "BACKLOT_DATA_DIR": str(tmp_path / "data")}
+    env = python_child_env(BACKLOT_DATA_DIR=str(tmp_path / "data"))
     proc = subprocess.Popen(
         [sys.executable, "-c", _MCP_HELD_BEFORE_READY],
         stdin=subprocess.PIPE,
@@ -1101,9 +1321,9 @@ def test_backlot_mcp_takes_down_a_server_it_spawned_but_had_not_yet_yielded(tmp_
     try:
         deadline = time.monotonic() + 60
         while child is None:
-            ready, _, _ = select.select([proc.stderr], [], [], max(deadline - time.monotonic(), 0))
-            assert ready, "no SPAWNED line within 60s"
-            line = proc.stderr.readline().decode()
+            line = readline_within(proc.stderr, max(deadline - time.monotonic(), 0))
+            assert line is not None, "no SPAWNED line within 60s"
+            line = line.decode()
             if not line:
                 pytest.fail(f"backlot mcp ended before spawning a server, code {proc.poll()}")
             if line.startswith("SPAWNED "):
@@ -1114,17 +1334,15 @@ def test_backlot_mcp_takes_down_a_server_it_spawned_but_had_not_yet_yielded(tmp_
     finally:
         if proc.poll() is None:
             proc.kill()
-    assert code == 128 + signal.SIGTERM, (code, err[-500:])
+    assert code == _TERMINATED, (code, err[-500:])
     assert "Backlot is up" not in err, "the signal missed the window it was meant to land in"
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        try:
-            os.kill(child, 0)
-        except ProcessLookupError:
+        if not _running(child):
             break
         time.sleep(0.2)
     else:
-        os.kill(child, signal.SIGKILL)
+        os.kill(child, getattr(signal, "SIGKILL", signal.SIGTERM))
         pytest.fail(f"the server backlot mcp spawned (pid {child}) outlived it")
 
 
@@ -1148,7 +1366,7 @@ def test_backlot_mcp_scopes_every_tool_call_to_the_user(live_server):
     """Over the real command, `--user` is who each call answers as: the same search finds the
     restricted message for the admin (no --user) and not for the person named."""
     base, settings = live_server
-    user = yaml.safe_load(settings.tokens_path.read_text())["users"][0]
+    user = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"][0]
 
     def finds_it(*who):
         return asyncio.run(
@@ -1169,7 +1387,7 @@ def test_resolve_matches_an_email_case_insensitively(live_server):
     shape a Jira page displays it resolves to the same person — and carries the corpus's own
     spelling onward, which is what Atlassian's Basic header sends."""
     base, settings = live_server
-    email = yaml.safe_load(settings.tokens_path.read_text())["users"][0]["email"]
+    email = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"][0]["email"]
     assert email == email.lower(), email
     for spelling in (email, email.upper(), email.capitalize()):
         assert backlot_mcp.resolve(base, spelling).email == email, spelling
@@ -1181,9 +1399,11 @@ def test_backlot_mcp_refuses_an_email_the_corpus_does_not_know(live_server):
     base, _ = live_server
     out = subprocess.run(
         [sys.executable, "-m", "backlot", "mcp", "--url", base, "--user", "nobody@example.com"],
+        env=python_child_env(),
         capture_output=True,
         text=True,
         timeout=120,
+        encoding="utf-8",
     )
     assert out.returncode == 1, out
     assert "nobody@example.com" in out.stderr and "not one of the" in out.stderr, out.stderr
@@ -1205,11 +1425,11 @@ def test_backlot_mcp_starts_a_server_when_none_answers(tmp_path):
 
     errlog = tmp_path / "stderr.txt"
     params = _mcp_params(
-        "--source", "slack", env={**os.environ, "BACKLOT_DATA_DIR": str(tmp_path / "data")}
+        "--source", "slack", env=python_child_env(BACKLOT_DATA_DIR=str(tmp_path / "data"))
     )
 
     async def _list_channels():
-        with open(errlog, "w") as f:
+        with open(errlog, "w", encoding="utf-8") as f:
             async with stdio_client(params, errlog=f) as (r, w):
                 async with ClientSession(r, w) as sess:
                     await sess.initialize()
@@ -1219,7 +1439,7 @@ def test_backlot_mcp_starts_a_server_when_none_answers(tmp_path):
     body = json.loads(asyncio.run(_list_channels()))
     assert body["ok"] is True and body["channels"], body
 
-    err = errlog.read_text()
+    err = errlog.read_text(encoding="utf-8")
     assert "bundled hello-world corpus" in err, err
     up = re.search(r"Backlot is up at http://127\.0\.0\.1:(\d+)", err)
     assert up, err
@@ -1241,12 +1461,14 @@ def test_backlot_mcp_reports_an_unusable_corpus_and_exits(tmp_path):
     """When the data dir holds something that is not a corpus, the server the command starts dies
     before answering. What reaches the terminal is that server's own diagnosis — which file, and
     the `backlot import` that would fix it — as an exit, not a traceback through contextlib."""
-    (tmp_path / "db.sqlite").write_text("not a database")
+    (tmp_path / "db.sqlite").write_text("not a database", encoding="utf-8")
     out = subprocess.run(
         [sys.executable, "-m", "backlot", "mcp", "--source", "slack", "--data-dir", str(tmp_path)],
+        env=python_child_env(),
         capture_output=True,
         text=True,
         timeout=120,
+        encoding="utf-8",
     )
     assert out.returncode == 1, out
     assert "no usable corpus" in out.stderr and "backlot import" in out.stderr, out.stderr
@@ -1258,9 +1480,11 @@ def test_backlot_mcp_refuses_an_unreachable_url():
     server, and quietly serving a different corpus in its place would be the wrong kind of help."""
     out = subprocess.run(
         [sys.executable, "-m", "backlot", "mcp", "--url", "http://127.0.0.1:1"],
+        env=python_child_env(),
         capture_output=True,
         text=True,
         timeout=60,
+        encoding="utf-8",
     )
     assert out.returncode == 1, out
     assert "no Backlot server answers at http://127.0.0.1:1" in out.stderr

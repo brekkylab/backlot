@@ -410,7 +410,9 @@ def test_replies_only_on_slack():
 
 def test_load_corpus_rejects_invalid_record(tmp_path):
     bad = tmp_path / "bad.jsonl"
-    bad.write_text(json.dumps({"source_type": "confluence", "content": "c"}))  # no title
+    bad.write_text(
+        json.dumps({"source_type": "confluence", "content": "c"}), encoding="utf-8"
+    )  # no title
     with pytest.raises(SystemExit):
         load(bad, Settings(data_dir=tmp_path))
 
@@ -625,7 +627,8 @@ def test_linear_byo_round_trip_serves_what_it_loaded(tmp_path):
                 ],
             }
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     assert validate_file(corpus) == []
     settings = Settings(data_dir=tmp_path)
@@ -672,7 +675,8 @@ def test_linear_synthesized_identifier_is_resolvable(tmp_path):
                 author_email="ava@acme.com",
             )
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     settings = Settings(data_dir=tmp_path)
     load(corpus, settings)
@@ -719,18 +723,20 @@ def test_fireflies_record_with_neither_sentences_nor_content_is_rejected(tmp_pat
     ]
 
     corpus = tmp_path / "c.jsonl"
-    corpus.write_text(json.dumps({"source_type": "fireflies", "title": "Empty"}) + "\n")
+    corpus.write_text(
+        json.dumps({"source_type": "fireflies", "title": "Empty"}) + "\n", encoding="utf-8"
+    )
     with pytest.raises(SystemExit) as e:
         load(corpus, Settings(data_dir=tmp_path))
     assert "'content' is a required property" in str(e.value)
 
 
 def test_slack_reaction_refuses_the_ids_a_corpus_cannot_know():
-    """Slack's own OpenAPI types every entry of a reaction's `users` as a `defs_user_id`
-    (`^[UW][A-Z0-9]{2,}$`), which is `synth.slack_user_id` of a person — a value whoever writes the
-    corpus has no way to compute. A record names the reactor by address instead, and the old
-    spelling is REFUSED rather than read as an address that resolves to nobody, which is the one
-    outcome a corpus author would not notice.
+    """`reactions.get`'s own success example gives every entry of a reaction's `users` as a user
+    id (`"users": ["W222222"]`), which is `synth.slack_user_id` of a person — a value whoever
+    writes the corpus has no way to compute. A record names the reactor by address instead, and
+    the old spelling is REFUSED rather than read as an address that resolves to nobody, which is
+    the one outcome a corpus author would not notice.
     """
     old = complete("slack", content="c", reactions=[{"name": "eyes", "users": ["U01"]}])
     assert record_errors(old) == ["<root> [reactions/0/users/0]: 'U01' is not a 'email'"]
@@ -811,11 +817,11 @@ def _edited_record(edited, *, on: str) -> tuple[dict, str]:
 
 @pytest.mark.parametrize("on", ["root", "reply"])
 def test_slack_edited_refuses_the_id_a_corpus_cannot_know(on):
-    """Slack's own message event reference types `edited.user` as a user id (`defs_user_id`,
-    `^[UW][A-Z0-9]{2,}$`) — the same value `_reactions` already refuses in `reactions.users`, for
-    the same reason: a corpus author has no way to compute it. A record names the editor by
-    address instead, and the old spelling is REFUSED rather than read as an address that resolves
-    to nobody.
+    """Slack's own message event reference gives `edited.user` as a user id — its edited example
+    is `"edited": {"user": "U123ABC456", "ts": "1355517536.000001"}` — the same value `_reactions`
+    already refuses in `reactions.users`, for the same reason: a corpus author has no way to
+    compute it. A record names the editor by address instead, and the old spelling is REFUSED
+    rather than read as an address that resolves to nobody.
     """
     rec, at = _edited_record({"user": "UC20FA2B1C0", "ts": "1770311280.000000"}, on=on)
     assert record_errors(rec) == [f"<root> [{at}/user]: 'UC20FA2B1C0' is not a 'email'"]
@@ -833,9 +839,10 @@ def test_slack_edited_needs_the_timestamp_too(on):
 
 @pytest.mark.parametrize("on", ["root", "reply"])
 def test_slack_edited_ts_refuses_a_bare_number(on):
-    """Every live `ts` this project has read off `brekkylab.slack.com` is a quoted string in
-    Slack's own `defs_ts` shape (`^\\d{10}\\.\\d{6}$`), never a bare JSON number — so a corpus
-    stating one would have Backlot serve a shape real Slack never sends."""
+    """Every `ts` this project has read off a live workspace is a quoted string in the shape of
+    the message reference's own `"ts": "1355517536.000001"` (`^\\d{10}\\.\\d{6}$`), never a bare
+    JSON number — so a corpus stating one would have Backlot serve a shape real Slack never
+    sends."""
     number, at = _edited_record({"user": "ava@x.com", "ts": 1770311280}, on=on)
     assert record_errors(number) == [f"<root> [{at}/ts]: 1770311280 is not of type 'string'"]
     short, _ = _edited_record({"user": "ava@x.com", "ts": "1770311280.0"}, on=on)
@@ -857,11 +864,11 @@ def test_slack_edited_refuses_an_unknown_key(on):
 
 
 def test_slack_file_refuses_the_owner_id_a_corpus_cannot_know():
-    """Slack's own OpenAPI leaves `objs_file.user` untyped, but a live `search.files` call found
-    every file this workspace serves carries a `defs_user_id`-shaped (`^[UW][A-Z0-9]{2,}$`) one
-    anyway — the same value `reactions.users` and `edited.user` are already refused for. A record
-    names it by address instead, and the old spelling is REFUSED rather than read as an address
-    that resolves to nobody.
+    """Slack's file object reference types `user` as "the ID of the user who created the object",
+    and a live `search.files` call found one on every file the workspace served — the same value
+    `reactions.users` and `edited.user` are already refused for. A record names it by address
+    instead, and the old spelling is REFUSED rather than read as an address that resolves to
+    nobody.
     """
     rec = complete("slack", content="c", files=[{"id": "F1", "name": "x", "user": "UC20FA2B1C0"}])
     assert record_errors(rec) == ["<root> [files/0/user]: 'UC20FA2B1C0' is not a 'email'"]
@@ -1093,7 +1100,7 @@ def test_the_typescript_examples_corpus_would_load():
     from tests.conftest import REPO_ROOT
 
     path = REPO_ROOT / "examples/using-official-sdk/linear/index.ts"
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert "const CORPUS = [" in text, f"{path.name}: no CORPUS literal -- fix this extractor"
     body = text[text.index("const CORPUS = [") + len("const CORPUS = ") :]
     depth = 0
@@ -1123,7 +1130,7 @@ def test_every_record_the_docs_show_would_load():
         "examples/bring-your-own-corpus/README.md",
         "backlot/schemas/README.md",
     ):
-        for line in (REPO_ROOT / rel).read_text().split("\n"):
+        for line in (REPO_ROOT / rel).read_text(encoding="utf-8").split("\n"):
             text = line.strip()
             if text.startswith('{"source_type"') and text.endswith("}"):
                 shown.setdefault(rel, []).append(json.loads(text))
@@ -1215,7 +1222,7 @@ def _inline_corpora():
 
     out = []
     for path in sorted((REPO_ROOT / "examples").rglob("*.py")):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Assign):
                 continue
@@ -1292,7 +1299,11 @@ def _example_corpus():
 def _example_records():
     import json
 
-    return [json.loads(line) for line in _example_corpus().read_text().split("\n") if line.strip()]
+    return [
+        json.loads(line)
+        for line in _example_corpus().read_text(encoding="utf-8").split("\n")
+        if line.strip()
+    ]
 
 
 def test_example_corpus_is_valid():

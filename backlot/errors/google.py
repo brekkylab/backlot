@@ -95,6 +95,14 @@ UNREGISTERED_CALLER_MESSAGE = (
     "API Key or other form of API consumer identity to call this API."
 )
 MISSING_API_KEY_MESSAGE = "The request is missing a valid API key."
+QUERY_TOKEN_MESSAGE = (
+    "OAuth token was passed in the query parameter. Please send it in Authorization header instead."
+)
+
+# The query parameters real reads an OAuth token from, in the order its front end ranks them
+# (``routers.google._query_credential``). A byte-stream read refuses any of them
+# (:func:`token_in_query`).
+QUERY_TOKENS = ("access_token", "bearer_token", "oauth_token")
 
 
 def family(path: str) -> str | None:
@@ -394,12 +402,35 @@ def unsupported_conversion() -> GoogleError:
     )
 
 
-def bad_field_mask(path: str) -> GoogleError:
+def bad_field_mask(mask: str, path: str) -> GoogleError:
     """A ``fields`` mask naming something the response has no field for.
 
     Measured on Sheets: the top-level message is the generic ``Request contains an invalid
     argument.`` and the path that failed is named only inside a ``google.rpc.BadRequest`` detail —
-    so a client that wants to know WHICH path was wrong has to read `details`."""
+    so a client that wants to know WHICH path was wrong has to read `details`. The violation's
+    `field` is the whole mask, each ``/`` written ``.``: measured 2026-10-22, `spreadsheetId,bogus`
+    named `spreadsheetId,bogus` there and `sheets(properties/bogus)` named
+    `sheets(properties.bogus)`, the description naming the path alone."""
+    return _field_mask_refused(
+        mask, f"Error expanding 'fields' parameter. Cannot find matching fields for path '{path}'."
+    )
+
+
+def unbalanced_field_mask(mask: str, unpaired: str) -> GoogleError:
+    """:func:`bad_field_mask`'s 400 for a mask that leaves ``unpaired``, ``(`` or ``)``, without its
+    pair, the description naming the whole mask: measured 2026-10-22 on Sheets, `sheets(` answered
+    `Invalid FieldMask 'sheets('. Cannot find matching ')' for all '('.`, `spreadsheetId)`
+    `Cannot find matching '(' for all ')'.`, and `sheets(properties/title` wrote the mask
+    `sheets(properties.title` there."""
+    pair = ")" if unpaired == "(" else "("
+    return _field_mask_refused(
+        mask,
+        f"Invalid FieldMask '{mask.replace('/', '.')}'. "
+        f"Cannot find matching '{pair}' for all '{unpaired}'.",
+    )
+
+
+def _field_mask_refused(mask: str, description: str) -> GoogleError:
     return GoogleError(
         400,
         "Request contains an invalid argument.",
@@ -408,15 +439,7 @@ def bad_field_mask(path: str) -> GoogleError:
         details=[
             {
                 "@type": "type.googleapis.com/google.rpc.BadRequest",
-                "fieldViolations": [
-                    {
-                        "field": path,
-                        "description": (
-                            "Error expanding 'fields' parameter. Cannot find matching fields for "
-                            f"path '{path}'."
-                        ),
-                    }
-                ],
+                "fieldViolations": [{"field": mask.replace("/", "."), "description": description}],
             }
         ],
     )
@@ -585,8 +608,9 @@ def invalid_user_id() -> GoogleError:
 
 
 def refuse_download(request: Request) -> None:
-    """The one refusal a byte-stream read makes before it reads its parameters: a `callback` that
-    cannot be called is real's 503 `Backend Error`.
+    """The two refusals a byte-stream read makes before it reads its parameters: a token named in
+    the query (:func:`token_in_query`), then a `callback` that cannot be called, which is real's 503
+    `Backend Error`.
 
     A `callback` on a download is not JSONP. Measured 2026-10-07 on `files.get?alt=media` and
     `files.export`, against a PDF and a Doc: a name a script can call is ignored when the download
@@ -601,12 +625,33 @@ def refuse_download(request: Request) -> None:
     reaches here. A credential that does not resolve (``routers.google._credential``) answers its
     own 401 ahead of this, which is where real puts it.
     """
+    if names_a_query_token(request.query_params):
+        raise token_in_query()
     callback = first_repeat(request.query_params, CALLBACK) or ""
     if not callback:
         return
     request.state.google_download_live = True
     if not callable_jsonp_name(callback):
         raise backend_error()
+
+
+def names_a_query_token(query: Mapping[str, str]) -> bool:
+    """Whether ``query`` names one of the `QUERY_TOKENS` in any case, which is what
+    :func:`token_in_query` refuses."""
+    return any(name.lower() in QUERY_TOKENS for name in query)
+
+
+def token_in_query() -> GoogleError:
+    """A byte-stream read whose query names an OAuth token: 400 under `badRequest`, beside a header
+    credential that resolves as beside none, and whatever the value but one the query is read as a
+    token that does not resolve, which answers that token's 401 first (the route's credential check
+    runs ahead of this). The names are :func:`names_a_query_token`'s; a name that only resembles one
+    is left to the download's other refusals.
+
+    Measured 2026-10-13 on `files.export`, and on `files.get?alt=media` with an empty value and
+    inside a batch; ``tests/test_google.py::_DOWNLOAD_QUERY_TOKEN_ROWS`` holds the cases.
+    """
+    return invalid_argument(QUERY_TOKEN_MESSAGE)
 
 
 def download_credential_refused() -> GoogleError:
@@ -638,9 +683,10 @@ def missing_api_key() -> GoogleError:
 
     Real answers it last of the refusals a download makes, which is why the route raises it after
     the download's parameters rather than at the top. Measured 2026-10-07, the order a byte-stream
-    read answers in is: `$.xgafv` 400, a credential that does not resolve 401, `callback` 503, a
-    mistyped parameter or an absent `mimeType` 400, this 403 (or, for a header that is no
-    credential, :func:`download_credential_refused`), then the lookup."""
+    read answers in is: `$.xgafv` 400, a credential that does not resolve 401, a token named in the
+    query 400 (:func:`token_in_query`, 2026-10-13), `callback` 503, a mistyped parameter or an
+    absent `mimeType` 400, this 403 (or, for a header that is no credential,
+    :func:`download_credential_refused`), then the lookup."""
     return GoogleError(403, MISSING_API_KEY_MESSAGE, reason="forbidden")
 
 

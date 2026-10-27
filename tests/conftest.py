@@ -18,12 +18,18 @@ stay small and odd in ways neither of those may be, which is why it is not one o
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 
 import pytest
 import yaml
+
+# The suite's calls are not anyone's use of Backlot: no app it builds and no server it starts
+# (which inherit this environment) sends usage telemetry. tests/test_telemetry.py turns it back on
+# for its own app, with the export pointed somewhere local.
+os.environ["BACKLOT_TELEMETRY"] = "0"
 
 import backlot
 from backlot import store
@@ -115,6 +121,59 @@ SAMPLE = [
     {
         "source_type": "slack",
         "channel": "people-confidential",
+        "group": "people",
+        "content": "Confidential people-ops note: Q3 reorg headcount plan.",
+        "author_email": "hana@acme.com",
+        "author_groups": ["people"],
+        "visibility": "group",
+        "created": "2026-02-06T11:00:00Z",
+    },
+    {
+        "source_type": "msteams",
+        "channel": "Platform",
+        "group": "engineering",
+        "subject": "Deploy freeze",
+        "content": "Production deploy freeze starts Friday 5pm through Monday.",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "created": "2026-02-05T17:00:00Z",
+    },
+    {
+        "source_type": "msteams",
+        "doc_id": "ms-gateway-502",
+        "channel": "Incidents",
+        "group": "engineering",
+        "content": "Anyone else seeing 502s from the gateway?",
+        "author_email": "bob@acme.com",
+        "author_groups": ["engineering"],
+        "visibility": "public",
+        "importance": "high",
+        "reactions": [
+            {
+                "reactionType": "like",
+                "user": "ava@acme.com",
+                "createdDateTime": "2026-02-10T18:01:00Z",
+            }
+        ],
+        "replies": [
+            {
+                "content": "Yeah, looking now.",
+                "author_email": "ava@acme.com",
+                "created": "2026-02-10T18:00:40Z",
+            },
+            {
+                "content": "<p>Rolled back; 502s clearing.</p>",
+                "author_email": "bob@acme.com",
+                "content_type": "html",
+                "created": "2026-02-10T18:06:00Z",
+                "edited": "2026-02-10T18:07:00Z",
+            },
+        ],
+        "created": "2026-02-10T18:00:00Z",
+    },
+    {
+        "source_type": "msteams",
+        "channel": "People Confidential",
         "group": "people",
         "content": "Confidential people-ops note: Q3 reorg headcount plan.",
         "author_email": "hana@acme.com",
@@ -734,7 +793,7 @@ SAMPLE = [
         "created": "2026-01-16T10:00:00Z",
     },
     # A team no ACL-restricted caller can see into, so `teams` and `team(id:)` can be checked for
-    # agreement. Only hana is granted it.
+    # agreement, and the team's own state and cycle stay hidden with it. Only hana is granted it.
     {
         "source_type": "linear",
         "doc_id": "lin-blackops",
@@ -747,6 +806,7 @@ SAMPLE = [
         "readers": ["hana@acme.com"],
         "identifier": "BLA-1",
         "state": "Triage",
+        "cycle": "2026-W41-sealed",
         "created": "2026-02-25T09:00:00Z",
     },
     # --- fireflies: meeting transcripts -------------------------------------------------
@@ -850,7 +910,7 @@ def _build(data_dir: Path) -> Settings:
 
     settings = Settings(data_dir=data_dir)
     corpus = data_dir / "_corpus.jsonl"
-    corpus.write_text("\n".join(json.dumps(r) for r in SAMPLE))
+    corpus.write_text("\n".join(json.dumps(r) for r in SAMPLE), encoding="utf-8")
     load(corpus, settings)
     return settings
 
@@ -859,7 +919,7 @@ def _build(data_dir: Path) -> Settings:
 def sample_corpus_path(tmp_path) -> Path:
     """The in-code SAMPLE written to a JSONL tempfile (for corpus-file tests)."""
     p = tmp_path / "sample.jsonl"
-    p.write_text("\n".join(json.dumps(r) for r in SAMPLE))
+    p.write_text("\n".join(json.dumps(r) for r in SAMPLE), encoding="utf-8")
     return p
 
 
@@ -929,7 +989,7 @@ def acl(sample_settings) -> Acl:
 
 @pytest.fixture
 def tokens(sample_settings) -> dict[str, str]:
-    data = yaml.safe_load(sample_settings.tokens_path.read_text())
+    data = yaml.safe_load(sample_settings.tokens_path.read_text(encoding="utf-8"))
     return {u["email"]: u["token"] for u in data["users"]}
 
 
@@ -952,7 +1012,7 @@ def tokens_yaml(sample_settings) -> dict:
     NOT :func:`tokens`, which is the ``{email: token}`` map. Two shapes, two names: the same
     fixture name meaning different things per file is how a test ends up asserting on the wrong
     one."""
-    return yaml.safe_load(sample_settings.tokens_path.read_text())
+    return yaml.safe_load(sample_settings.tokens_path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
@@ -990,8 +1050,9 @@ def live_server(sample_settings):
     ``--add-host=…:host-gateway``. On Linux that is the bridge address, where a loopback-only
     server never answers; Docker Desktop forwards it to the host's own loopback instead, so on
     macOS the wider bind would buy nothing and cost every contributor the firewall prompt that
-    opening a port to the network raises. With no ``docker`` at all, that test does not run and
-    nothing dials the wider bind either — the same predicate ``_docker_available`` opens with.
+    opening a port to the network raises. With no ``docker`` at all, that test stops at
+    ``_require_linux_docker`` before it starts a container, so nothing dials the wider bind either;
+    ``_why_docker_runs_no_linux_containers`` opens with the same ``shutil.which`` check.
     """
     host = "0.0.0.0" if sys.platform == "linux" and shutil.which("docker") else "127.0.0.1"
     with backlot.serve(SAMPLE, host=host) as s:

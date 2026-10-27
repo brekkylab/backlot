@@ -4,145 +4,175 @@
     "https://api.hubspot.com/public/api/spec/v1/specs#Custom Objects/3",
     "https://api.hubspot.com/public/api/spec/v1/specs#Associations/4"
   ],
-  "measured": "2026-09-09",
-  "acknowledged": [
+  "measured": "2026-10-14",
+  "operations": [
     {
+      "operation": "DELETE /crm/v3/objects/{}/{}",
+      "id": "delete-/crm/v3/objects/{objectType}/{objectId}_archive",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /crm/v3/objects/{}/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "DELETE /crm/v4/objects/{}/{}/associations/{}/{}",
+      "id": "delete-/crm/v4/objects/{objectType}/{objectId}/associations/{toObjectType}/{toObjectId}_archive",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "DELETE /crm/v4/objects/{}/{}/associations/{}/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /crm/v3/objects/{}/{}?associations",
-      "detail": "the vendor accepts it; Backlot does not"
+      "operation": "GET /crm/v3/objects/{}",
+      "id": "get-/crm/v3/objects/{objectType}_getPage",
+      "status": "implemented",
+      "params": {
+        "associations": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "propertiesWithHistory": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /crm/v3/objects/{}/{}?idProperty",
-      "detail": "the vendor accepts it; Backlot does not"
+      "operation": "GET /crm/v3/objects/{}/{}",
+      "id": "get-/crm/v3/objects/{objectType}/{objectId}_getById",
+      "status": "implemented",
+      "params": {
+        "associations": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "idProperty": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "propertiesWithHistory": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /crm/v3/objects/{}/{}?propertiesWithHistory",
-      "detail": "the vendor accepts it; Backlot does not"
+      "operation": "GET /crm/v4/objects/{}/{}/associations/{}",
+      "id": "get-/crm/v4/objects/{objectType}/{objectId}/associations/{toObjectType}_getPage",
+      "status": "implemented"
     },
     {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /crm/v3/objects/{}?associations",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "GET /crm/v3/objects/{}?propertiesWithHistory",
-      "detail": "the vendor accepts it; Backlot does not"
-    },
-    {
+      "operation": "PATCH /crm/v3/objects/{}/{}",
+      "id": "patch-/crm/v3/objects/{objectType}/{objectId}_update",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PATCH /crm/v3/objects/{}/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /crm/v3/objects/{}",
+      "id": "post-/crm/v3/objects/{objectType}_create",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v3/objects/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /crm/v3/objects/{}/batch/archive",
+      "id": "post-/crm/v3/objects/{objectType}/batch/archive_archive",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v3/objects/{}/batch/archive",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /crm/v3/objects/{}/batch/create",
+      "id": "post-/crm/v3/objects/{objectType}/batch/create_create",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v3/objects/{}/batch/create",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
-      "kind": "missing_param",
-      "severity": "gap",
-      "path": "POST /crm/v3/objects/{}/batch/read?archived",
-      "detail": "the vendor accepts it; Backlot does not"
+      "operation": "POST /crm/v3/objects/{}/batch/read",
+      "id": "post-/crm/v3/objects/{objectType}/batch/read_read",
+      "status": "implemented"
     },
     {
+      "operation": "POST /crm/v3/objects/{}/batch/update",
+      "id": "post-/crm/v3/objects/{objectType}/batch/update_update",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v3/objects/{}/batch/update",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /crm/v3/objects/{}/batch/upsert",
+      "id": "post-/crm/v3/objects/{objectType}/batch/upsert",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v3/objects/{}/batch/upsert",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /crm/v3/objects/{}/merge",
+      "id": "post-/crm/v3/objects/{objectType}/merge_merge",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v3/objects/{}/merge",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
-      "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v4/associations/usage/high-usage-report/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "operation": "POST /crm/v3/objects/{}/search",
+      "id": "post-/crm/v3/objects/{objectType}/search_doSearch",
+      "status": "implemented"
     },
     {
+      "operation": "POST /crm/v4/associations/usage/high-usage-report/{}",
+      "id": "post-/crm/v4/associations/usage/high-usage-report/{userId}_request",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v4/associations/{}/{}/batch/archive",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /crm/v4/associations/{}/{}/batch/archive",
+      "id": "post-/crm/v4/associations/{fromObjectType}/{toObjectType}/batch/archive_archive",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v4/associations/{}/{}/batch/associate/default",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /crm/v4/associations/{}/{}/batch/associate/default",
+      "id": "post-/crm/v4/associations/{fromObjectType}/{toObjectType}/batch/associate/default_createDefault",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v4/associations/{}/{}/batch/create",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /crm/v4/associations/{}/{}/batch/create",
+      "id": "post-/crm/v4/associations/{fromObjectType}/{toObjectType}/batch/create_create",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v4/associations/{}/{}/batch/labels/archive",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /crm/v4/associations/{}/{}/batch/labels/archive",
+      "id": "post-/crm/v4/associations/{fromObjectType}/{toObjectType}/batch/labels/archive_archiveLabels",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "POST /crm/v4/associations/{}/{}/batch/read",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "POST /crm/v4/associations/{}/{}/batch/read",
+      "id": "post-/crm/v4/associations/{fromObjectType}/{toObjectType}/batch/read_getPage",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /crm/v4/objects/{}/{}/associations/default/{}/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
     },
     {
+      "operation": "PUT /crm/v4/objects/{}/{}/associations/default/{}/{}",
+      "id": "put-/crm/v4/objects/{fromObjectType}/{fromObjectId}/associations/default/{toObjectType}/{toObjectId}_createDefault",
+      "status": "missing",
       "kind": "missing_operation",
-      "severity": "gap",
-      "path": "PUT /crm/v4/objects/{}/{}/associations/{}/{}",
-      "detail": "the vendor serves it; Backlot does not"
+      "severity": "gap"
+    },
+    {
+      "operation": "PUT /crm/v4/objects/{}/{}/associations/{}/{}",
+      "id": "put-/crm/v4/objects/{objectType}/{objectId}/associations/{toObjectType}/{toObjectId}_create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
     }
   ]
 }

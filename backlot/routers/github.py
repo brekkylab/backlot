@@ -10,10 +10,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import re
 import time
+import unicodedata
 from collections.abc import Callable
-from email.utils import formatdate
+from email.utils import format_datetime
 from typing import NamedTuple
 from urllib.parse import quote, unquote_plus
 
@@ -21,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, store, synth
+from backlot import auth, published, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.pagination import (
@@ -90,16 +92,22 @@ def _require(request: Request) -> Caller:
     and at `/user`). A client that branches on which — retry versus re-authenticate — reads one
     answer for both otherwise.
 
-    Header PRESENT but not a scheme this API takes is the second case, not the first: real ignores
-    an `Authorization` it cannot parse and serves the request anonymously (measured: `Basic …` and a
-    scheme-less value both answer 200 on a public repo), so the caller reaches an auth-required
-    route with no credential rather than with a rejected one. Backlot serves no document
-    anonymously, which is why that lands here as the missing-credential 401 rather than as a public
-    read (`/rate_limit`, which serves none, is the exception — see :func:`_validate_path_owner`).
+    A header real serves as no credential is the second case, not the first: real ignores an
+    `Authorization` it does not read as one and serves the request anonymously (measured: a `Basic`
+    value that names no token and a scheme-less value both answer 200 on a public repo; which values
+    those are is :func:`backlot.auth.github_credential`'s table), so the caller reaches an
+    auth-required route with no credential rather than with a rejected one. Backlot serves no
+    document anonymously, which is why that lands here as the missing-credential 401 rather than as
+    a public read (`/rate_limit`, which serves none, is the exception — see
+    :func:`_validate_path_owner`).
     """
-    if auth.bearer_token(request) is None:
+    token = auth.github_credential(request)
+    if token is None:
         raise HTTPException(status_code=401, detail="Requires authentication")
-    return auth.require_bearer(request, "Bad credentials")
+    caller = auth.acl(request).resolve(token)
+    if caller is None:
+        raise HTTPException(status_code=401, detail="Bad credentials")
+    return caller
 
 
 async def _validate_bad_credential(request: Request) -> None:
@@ -107,16 +115,17 @@ async def _validate_bad_credential(request: Request) -> None:
 
     Real resolves a presented credential before it looks at ``X-GitHub-Api-Version``: a bad bearer
     with an unsupported version pinned is "Bad credentials", not the version's 400 (measured against
-    api.github.com 2026-09-15 on ``/repos/{owner}/{repo}`` and ``/rate_limit``). A request carrying
-    no credential at all still meets the version check first, measured on ``/user/repos``, the one
-    served route real refuses an anonymous caller: an unsupported version there is the version's 400
-    and a supported one is "Requires authentication" (2026-09-17, three runs of each on cache-busted
-    URLs). So this only fires for a token that arrived and failed to resolve;
+    api.github.com 2026-09-15 on ``/repos/{owner}/{repo}`` and ``/rate_limit``). A request
+    carrying no credential at all still meets the version check first, measured on ``/user/repos``,
+    a served route real refuses an anonymous caller: an unsupported version there is the version's
+    400 and a supported one is "Requires authentication" (2026-09-17, three runs of each on
+    cache-busted URLs). The routes :func:`_refuse_an_anonymous_caller` names refuse that caller
+    ahead of both. So this only fires for a token that arrived and failed to resolve;
     :func:`_validate_path_owner` answers the missing-credential case in its own place, after the
     version check.
     """
-    if auth.bearer_token(request) is not None:
-        auth.require_bearer(request, "Bad credentials")
+    if refused_a_credential(request):
+        raise HTTPException(status_code=401, detail="Bad credentials")
 
 
 def _org(request: Request) -> str:
@@ -150,6 +159,35 @@ CODE_SEARCH_PATH = "/github/search/code"
 SEARCH_PREFIX = "/github/search/"
 # The search endpoints real counts against the `search` resource; `code` is `CODE_SEARCH_PATH`'s.
 SEARCH_ENDPOINTS = frozenset({"commits", "issues", "labels", "repositories", "topics", "users"})
+REQUEST_ID_HEADER = "x-github-request-id"
+# Hex digits in each of the first four fields of real's request id (see `request_id`).
+_REQUEST_ID_WIDTHS = ((4, 4), (4, 6), (6, 7), (6, 7))
+
+
+def _hex_field(seed: bytes, fewest: int, most: int) -> str:
+    """An unpadded uppercase hex value between ``fewest`` and ``most`` digits long."""
+    digits = fewest + seed[0] % (most - fewest + 1)
+    lowest = 16 ** (digits - 1)
+    return f"{lowest + int.from_bytes(seed[1:]) % (16**digits - lowest):X}"
+
+
+def request_id(method: str, path: str, query: str) -> str:
+    """The `x-github-request-id` for one request.
+
+    Real sends five uppercase hex fields joined by colons: four digits, four to six, six or seven,
+    six or seven, then the second the request arrived (measured on api.github.com 2026-09-22 and
+    2026-09-23 over eleven answers from a 200 to the spent-window 403s, and 2026-10-18 over fifteen
+    more, code search's 200 and 401 among them, and over sixty-four across eight kinds of answer:
+    the second field had four digits on four, two of them `0BF8`, and `Date` was a second past the
+    last field on fourteen). Real answered three calls to one URL with three ids; here the first
+    four fields are seeded from the request, as ``backlot.routers.s3.request_ids`` seeds S3's, so
+    one request asked twice in the same second gets one id twice."""
+    raw = hashlib.shake_256(f"github-req:{method} {path}?{query}".encode()).digest(20)
+    fields = [
+        _hex_field(raw[5 * i : 5 * i + 5], fewest, most)
+        for i, (fewest, most) in enumerate(_REQUEST_ID_WIDTHS)
+    ]
+    return ":".join([*fields, f"{int(time.time()):X}"])
 
 
 def honours_api_version(request: Request) -> bool:
@@ -164,7 +202,7 @@ def honours_api_version(request: Request) -> bool:
 
     `/rate_limit` reads it only from a request that carries an `Authorization` header: with none, a
     pinned `2026-03-10` is still `resources` AND `rate` with no echo and a pinned `1999-01-01` is a
-    200 rather than the version's 400, where a token and an unparseable `Basic` alike get
+    200 rather than the version's 400, where a token and a `Basic` value naming no token alike get
     `resources` alone with the echo and the 400. The route is the whole of the exception — that
     same `1999-01-01` with no credential is a 400 on `/repos/psf/requests`, `/users/psf` and
     `/user/repos` (measured against api.github.com 2026-09-21, on cache-busted urls).
@@ -174,23 +212,218 @@ def honours_api_version(request: Request) -> bool:
     return request.url.path != RATE_LIMIT_PATH or "authorization" in request.headers
 
 
+# What Go's `unicode.IsSpace` holds, the set `strings.TrimSpace` trims from both ends: the pull and
+# contents backend trimmed each member a header value can carry (see `_read_api_version`), and CR,
+# LF, VT and FF never reach it.
+_GO_SPACE = (
+    "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009"
+    "\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+
+
+def _answered_by_backend(request: Request) -> bool:
+    """Whether the pull and contents backend reads this request's version, where the gateway reads
+    it on the other routes that read it (see :func:`honours_api_version`).
+
+    Measured against api.github.com on 2026-10-18: contents and the JSON pull backend answer a
+    one-member body, newline and empty Selected header, ahead of a missing repository or path and
+    of a missing credential, though a bad bearer is still `Bad credentials` first. A pull
+    `_github_media` reads as a diff or a patch keeps the gateway's envelope, a diff after
+    `application/json` included, and so does a HEAD on the pull whatever `Accept` holds, where a
+    HEAD on contents is the backend's (measured 2026-10-19).
+    """
+    route = getattr(request.scope.get("route"), "path", None)
+    return route in {
+        "/github/repos/{owner}/{repo}/contents",
+        "/github/repos/{owner}/{repo}/contents/{path:path}",
+    } or (
+        route == "/github/repos/{owner}/{repo}/pulls/{number}"
+        and not getattr(request.state, "answering_head", False)
+        and not (_github_media(request, "diff") or _github_media(request, "patch"))
+    )
+
+
+def _read_api_version(request: Request) -> str | None:
+    """The pinned value as the side reading it on this route reads it (see
+    :func:`_answered_by_backend`), or ``None`` with no header.
+
+    Starlette hands a header's bytes back decoded as latin-1, so encoding as latin-1 is the bytes
+    that arrived. Measured against api.github.com on 2026-10-25, on `issues/1`, `contents/README.md`
+    and `pulls/7619` of `psf/requests` with the bytes sent as they are:
+
+    - The gateway reads them as UTF-8, a truncated sequence as one U+FFFD (`a`, 0xE2 0x82, `b` is
+      `"a\\ufffdb"`) and each other byte that is not UTF-8 as one of its own (0xC0 0xAF is
+      two), and trims the spaces and tabs around the value: `2022-11-28` with a space, a tab or two
+      spaces after it, or a space before it, selects `2022-11-28`, where any character of
+      ``_GO_SPACE`` past ASCII after it is the version's 400 naming it.
+    - The backend keeps each byte that is not UTF-8 for :func:`_go_quoted` to name, and trims every
+      character of ``_GO_SPACE`` from both ends: `2022-11-28` with any one of them after it, or
+      U+00A0 before it, selects `2022-11-28`, a value of U+00A0 alone selects the default as an
+      empty one does, and U+200B, U+180E and U+FEFF stay to be quoted.
+    """
+    raw = request.headers.get(API_VERSION_HEADER)
+    if raw is None:
+        return None
+    data = raw.encode("latin-1")
+    if _answered_by_backend(request):
+        return data.decode("utf-8", "surrogateescape").strip(_GO_SPACE)
+    return data.strip(b" \t").decode("utf-8", "replace")
+
+
 def selected_api_version(request: Request) -> str | None:
-    """The version this request selected, or ``None`` if it pinned one that does not exist."""
-    pinned = request.headers.get(API_VERSION_HEADER)
-    if pinned is None:
+    """The version this request selected, or ``None`` if it pinned one that does not exist.
+
+    An empty header selects the default, as no header does: on api.github.com on 2026-10-18,
+    `X-GitHub-Api-Version:` with nothing after it was answered as an unpinned request and echoed
+    `2022-11-28` on `/repos/{owner}/{repo}`, its `/issues`, `/orgs/{org}`, `/zen` and
+    `DELETE /installation/token`, where `1999-01-01` is the version's 400. So does a value the side
+    reading it trims to nothing, U+00A0 alone on contents among them (see
+    :func:`_read_api_version`).
+    """
+    pinned = _read_api_version(request)
+    if not pinned:
         return DEFAULT_API_VERSION
     return pinned if pinned in API_VERSIONS else None
 
 
-def _unsupported_version_error(pinned: str) -> HTTPException:
-    """Real's own 400, wording included — a client that matches on the message needs the real text.
+# Real's Go carries Unicode 15.0 (see `_go_quoted`), but `unicodedata` carries the running
+# Python's database — 14.0 on 3.11, 15.1 on 3.13, 16.0 on 3.14, 17.0 on 3.15 — and a code point
+# one database prints and the other leaves unassigned is where the two backends disagree. The
+# disagreements are exactly the runs below, read off the two versions' UnicodeData.txt: a run
+# one database assigns a letter, mark, number, punctuation or symbol and the other does not.
+# `_PRINTABLE_FROM_15` is printed by 15.0 and not by 14.0; `_UNPRINTABLE_FROM_15` is keyed by
+# the running database's version and lists what it prints that 15.0 does not.
+# fmt: off
+_PRINTABLE_FROM_15 = (
+    (0xCF3, 0xCF3), (0xECE, 0xECE), (0x10EFD, 0x10EFF), (0x1123F, 0x11241), (0x11B00, 0x11B09),
+    (0x11F00, 0x11F10), (0x11F12, 0x11F3A), (0x11F3E, 0x11F59), (0x1342F, 0x1342F),
+    (0x13440, 0x13455), (0x1B132, 0x1B132), (0x1B155, 0x1B155), (0x1D2C0, 0x1D2D3),
+    (0x1DF25, 0x1DF2A), (0x1E030, 0x1E06D), (0x1E08F, 0x1E08F), (0x1E4D0, 0x1E4F9),
+    (0x1F6DC, 0x1F6DC), (0x1F774, 0x1F776), (0x1F77B, 0x1F77F), (0x1F7D9, 0x1F7D9),
+    (0x1FA75, 0x1FA77), (0x1FA87, 0x1FA88), (0x1FAAD, 0x1FAAF), (0x1FABB, 0x1FABD),
+    (0x1FABF, 0x1FABF), (0x1FACE, 0x1FACF), (0x1FADA, 0x1FADB), (0x1FAE8, 0x1FAE8),
+    (0x1FAF7, 0x1FAF8), (0x2B739, 0x2B739), (0x31350, 0x323AF)
+)
+_UNPRINTABLE_FROM_15 = {
+    "15.1.0": ((0x2FFC, 0x2FFF), (0x31EF, 0x31EF), (0x2EBF0, 0x2EE5D)),
+    "16.0.0": (
+        (0x897, 0x897), (0x1B4E, 0x1B4F), (0x1B7F, 0x1B7F), (0x1C89, 0x1C8A), (0x2427, 0x2429),
+        (0x2FFC, 0x2FFF), (0x31E4, 0x31E5), (0x31EF, 0x31EF), (0xA7CB, 0xA7CD), (0xA7DA, 0xA7DC),
+        (0x105C0, 0x105F3), (0x10D40, 0x10D65), (0x10D69, 0x10D85), (0x10D8E, 0x10D8F),
+        (0x10EC2, 0x10EC4), (0x10EFC, 0x10EFC), (0x11380, 0x11389), (0x1138B, 0x1138B),
+        (0x1138E, 0x1138E), (0x11390, 0x113B5), (0x113B7, 0x113C0), (0x113C2, 0x113C2),
+        (0x113C5, 0x113C5), (0x113C7, 0x113CA), (0x113CC, 0x113D5), (0x113D7, 0x113D8),
+        (0x113E1, 0x113E2), (0x116D0, 0x116E3), (0x11BC0, 0x11BE1), (0x11BF0, 0x11BF9),
+        (0x11F5A, 0x11F5A), (0x13460, 0x143FA), (0x16100, 0x16139), (0x16D40, 0x16D79),
+        (0x18CFF, 0x18CFF), (0x1CC00, 0x1CCF9), (0x1CD00, 0x1CEB3), (0x1E5D0, 0x1E5FA),
+        (0x1E5FF, 0x1E5FF), (0x1F8B2, 0x1F8BB), (0x1F8C0, 0x1F8C1), (0x1FA89, 0x1FA89),
+        (0x1FA8F, 0x1FA8F), (0x1FABE, 0x1FABE), (0x1FAC6, 0x1FAC6), (0x1FADC, 0x1FADC),
+        (0x1FADF, 0x1FADF), (0x1FAE9, 0x1FAE9), (0x1FBCB, 0x1FBEF), (0x2EBF0, 0x2EE5D),
+    ),
+    "17.0.0": (
+        (0x88F, 0x88F), (0x897, 0x897), (0xC5C, 0xC5C), (0xCDC, 0xCDC), (0x1ACF, 0x1ADD),
+        (0x1AE0, 0x1AEB), (0x1B4E, 0x1B4F), (0x1B7F, 0x1B7F), (0x1C89, 0x1C8A), (0x20C1, 0x20C1),
+        (0x2427, 0x2429), (0x2B96, 0x2B96), (0x2FFC, 0x2FFF), (0x31E4, 0x31E5), (0x31EF, 0x31EF),
+        (0xA7CB, 0xA7CF), (0xA7D2, 0xA7D2), (0xA7D4, 0xA7D4), (0xA7DA, 0xA7DC), (0xA7F1, 0xA7F1),
+        (0xFBC3, 0xFBD2), (0xFD90, 0xFD91), (0xFDC8, 0xFDCE), (0x105C0, 0x105F3),
+        (0x10940, 0x10959), (0x10D40, 0x10D65), (0x10D69, 0x10D85), (0x10D8E, 0x10D8F),
+        (0x10EC2, 0x10EC7), (0x10ED0, 0x10ED8), (0x10EFA, 0x10EFC), (0x11380, 0x11389),
+        (0x1138B, 0x1138B), (0x1138E, 0x1138E), (0x11390, 0x113B5), (0x113B7, 0x113C0),
+        (0x113C2, 0x113C2), (0x113C5, 0x113C5), (0x113C7, 0x113CA), (0x113CC, 0x113D5),
+        (0x113D7, 0x113D8), (0x113E1, 0x113E2), (0x116D0, 0x116E3), (0x11B60, 0x11B67),
+        (0x11BC0, 0x11BE1), (0x11BF0, 0x11BF9), (0x11DB0, 0x11DDB), (0x11DE0, 0x11DE9),
+        (0x11F5A, 0x11F5A), (0x13460, 0x143FA), (0x16100, 0x16139), (0x16D40, 0x16D79),
+        (0x16EA0, 0x16EB8), (0x16EBB, 0x16ED3), (0x16FF2, 0x16FF6), (0x187F8, 0x187FF),
+        (0x18CFF, 0x18CFF), (0x18D09, 0x18D1E), (0x18D80, 0x18DF2), (0x1CC00, 0x1CCFC),
+        (0x1CD00, 0x1CEB3), (0x1CEBA, 0x1CED0), (0x1CEE0, 0x1CEF0), (0x1E5D0, 0x1E5FA),
+        (0x1E5FF, 0x1E5FF), (0x1E6C0, 0x1E6DE), (0x1E6E0, 0x1E6F5), (0x1E6FE, 0x1E6FF),
+        (0x1F6D8, 0x1F6D8), (0x1F777, 0x1F77A), (0x1F8B2, 0x1F8BB), (0x1F8C0, 0x1F8C1),
+        (0x1F8D0, 0x1F8D8), (0x1FA54, 0x1FA57), (0x1FA89, 0x1FA8A), (0x1FA8E, 0x1FA8F),
+        (0x1FABE, 0x1FABE), (0x1FAC6, 0x1FAC6), (0x1FAC8, 0x1FAC8), (0x1FACD, 0x1FACD),
+        (0x1FADC, 0x1FADC), (0x1FADF, 0x1FADF), (0x1FAE9, 0x1FAEA), (0x1FAEF, 0x1FAEF),
+        (0x1FBCB, 0x1FBEF), (0x1FBFA, 0x1FBFA), (0x2B73A, 0x2B73F), (0x2CEA2, 0x2CEAD),
+        (0x2EBF0, 0x2EE5D), (0x323B0, 0x33479),
+    ),
+}
+# fmt: on
+
+
+def _in_runs(runs: tuple[tuple[int, int], ...], cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in runs)
+
+
+def _go_printable(ch: str) -> bool:
+    """Whether Go's `unicode.IsPrint` prints `ch`, by Unicode 15.0 as real's Go carries it:
+    letters, marks, numbers, punctuation, symbols and the ASCII space. `str.isprintable`
+    keeps the same classes by the running Python's database instead, so on a Python whose
+    database is not 15.0 the runs above correct it (see the tables' comment)."""
+    version = unicodedata.unidata_version
+    if version == "15.0.0":
+        return ch.isprintable()
+    cp = ord(ch)
+    if version == "14.0.0":
+        return ch.isprintable() or _in_runs(_PRINTABLE_FROM_15, cp)
+    later = _UNPRINTABLE_FROM_15.get(version)
+    if later is not None:
+        return ch.isprintable() and not _in_runs(later, cp)
+    return ch.isprintable()
+
+
+def _go_quoted(value: str) -> str:
+    """``value``'s bytes in double quotes as Go's `strconv.Quote` writes them, which is how real's
+    backend names the version it refused: `"` and `\\` behind a backslash, a tab as `\\t`, a byte
+    that is not UTF-8 as `\\x` and its two hex digits, a character Go does not print as `\\u` and
+    four (`\\U` and eight past U+FFFF), and every other character as it came. What Go prints is
+    what :func:`_go_printable` keeps. ``value`` is :func:`_read_api_version`'s reading on the
+    backend, each byte that is not UTF-8 still a surrogate.
+
+    Measured against api.github.com on 2026-10-19, sending each byte from 0x01 to 0xFF but CR and
+    LF between an `a` and a `b` on `contents/README.md`, then UTF-8 sequences the same way: the
+    printable ASCII came back as sent but for `"` and `\\`, a tab as `\\t`, a lone byte from 0x80
+    up as `\\x` and its digits, `é`, U+FFFD, U+10000, an emoji and a combining acute as sent,
+    U+00A0, U+2028, U+2029, U+200B, U+E000 and U+FFFF as `\\u` escapes, U+10FFFF as `\\U0010ffff`,
+    and each byte of a truncated, overlong, surrogate or past-U+10FFFF sequence as `\\x`. The other
+    control bytes and DEL were the front door's 400 and reached no backend. Real's Go carries
+    Unicode 15.0, as Python 3.12 does: U+1F6DC and U+31350, new in 15.0, came back as sent, and
+    U+2EBF0, U+31EF and U+2FFC from 15.1 and U+1CC00, U+0897 and U+1E5D0 from 16.0 as escapes, as
+    were U+0C5C and U+1E6C0 from 17.0 on 2026-10-25.
+    """
+    out = []
+    for ch in value:
+        cp = ord(ch)
+        if 0xDC80 <= cp <= 0xDCFF:  # where `surrogateescape` puts an undecodable byte
+            out.append(f"\\x{cp & 0xFF:02x}")
+        elif ch in '"\\':
+            out.append("\\" + ch)
+        elif ch == "\t":
+            out.append("\\t")
+        elif _go_printable(ch):
+            out.append(ch)
+        else:
+            out.append(f"\\u{cp:04x}" if cp < 0x10000 else f"\\U{cp:08x}")
+    return '"' + "".join(out) + '"'
+
+
+def _unsupported_version_error(pinned: str, *, backend: bool = False) -> HTTPException:
+    """The gateway or backend's 400, including the wording a client can match on.
 
     Composed from ``API_VERSIONS`` rather than pasted, so the sentence cannot fall out of step with
-    the list it describes. The "X (most recent) and Y" phrasing is real's for the two versions it
-    supports today; a third would need real's phrasing for three, not a guess at it.
+    the list it describes. The gateway's "X (most recent) and Y" and backend's comma before "and"
+    are measured for two versions; a third would need real's phrasing for three, not a guess at it.
     """
     newest, *rest = API_VERSIONS
     supported = ", ".join(f'"{v}"' for v in rest)
+    if backend:
+        quoted = _go_quoted(pinned)
+        exc = HTTPException(status_code=400, headers={SELECTED_VERSION_HEADER: ""})
+        exc.github_body = {
+            "message": (
+                f'The version you specified in the "X-GitHub-Api-Version" request header, {quoted}, '
+                f"is not a supported version. The following versions are currently supported: "
+                f'"{newest}" (most recent), and {supported}.'
+            )
+        }
+        return exc
     exc = HTTPException(status_code=400, detail="Bad Request")
     # The github envelope, carried on the exception the way backlot.errors.google carries its extra
     # fields; backlot.errors.github renders it. `errors` is a STRING here, not the usual array.
@@ -233,7 +466,9 @@ async def _validate_api_version(request: Request) -> None:
     """
     if honours_api_version(request) and selected_api_version(request) is None:
         # `None` is only reachable with the header present, so this read cannot miss.
-        raise _unsupported_version_error(request.headers[API_VERSION_HEADER])
+        raise _unsupported_version_error(
+            _read_api_version(request), backend=_answered_by_backend(request)
+        )
 
 
 async def _validate_path_owner(request: Request) -> None:
@@ -295,9 +530,219 @@ async def _canonical_path_repo(request: Request) -> None:
         request.path_params["repo"] = spelled
 
 
+#: The baseline's operations api.github.com does not route as a `{}` for any one segment would:
+#: `{archive_format}` routes `zip`, where the other three values sent, `tar` among them, were the
+#: 404, and `POST …/releases/{}/assets` routes nothing.
+_ROUTED_AS = {
+    "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip"
+}
+_NOT_ROUTED = frozenset({"POST /repos/{}/{}/releases/{}/assets"})
+#: The GitHub baseline's ``missing`` operations (``backlot.published``), read as those two say.
+#: One under `/organizations/{}` is matched at `/orgs/{}`, the path ``backlot.main``'s
+#: `resolve_github_id_paths` hands on for it; real answered each of the 13 under both with "Bad
+#: credentials" for `Bearer nope` (2026-10-14).
+_PUBLISHED_NOT_SERVED = published.operations(
+    _ROUTED_AS.get(op, op).replace(" /organizations/", " /orgs/", 1)
+    for op in published.missing_operations("github")
+    if op not in _NOT_ROUTED
+)
+
+
+async def refuse_an_unserved_operation(request: Request) -> None:
+    """Refuse a request whose method and path are an operation of :data:`_PUBLISHED_NOT_SERVED` as
+    real refuses it before running it: no `Authorization` header, or one that carries no
+    credential (:func:`_a_header_without_a_credential`), then a credential that does not resolve,
+    then a version real does not have, then a `Basic` value that names no token. A request none of
+    those refuse goes on to the router's own 404 or 405, an operation Backlot cannot run.
+
+    Measured against api.github.com on 2026-10-14, one cache-busted request each. With
+    `Bearer nope`, every operation the baseline lists answered "Bad credentials", but the
+    spellings :data:`_NOT_ROUTED` and :data:`_ROUTED_AS` leave out, with each `{}` past the owner
+    and the repository sent as `1` and again as `x`. With no `Authorization` header, 31 of a sample
+    of 42 answered "Requires authentication", and the four of them sent pinned to `1999-01-01` were
+    the 401 rather than the version's 400: `PATCH /repos/{owner}/{repo}`, `POST /user/gpg_keys`,
+    `GET /user/packages` and `GET /gists/starred`. Ten of the 42 real answered without asking for a
+    credential, 200, 404 or 422 (`GET /zen`, `GET /users/{username}/repos` and `POST /markdown`
+    among them), and the remaining one, `POST …/releases/{}/assets`, was the 404 :data:`_NOT_ROUTED`
+    keeps out; here no credential is :func:`_require`'s 401 on those ten too, as it is on every
+    served route but `/rate_limit`.
+
+    Of the 31, only `DELETE /installation/token` carried the version echo, and only a `GET` or a
+    `POST` carried the five `x-ratelimit-*` and counted: `PATCH`, `PUT` and `DELETE` were refused
+    with neither and moved no window, but `DELETE /installation/token`, which carried the five at
+    `used: 0`. On 2026-10-16, 2026-10-18 and 2026-10-19, each request on its own cache-busted URL
+    from one address with no token, that one delete was answered as a served route answers a caller
+    with no credential, header by header as ``GET /user/repos`` is here: no `Authorization`, an
+    empty one, `Digest x` and a `Basic` value naming no token were the 401 "Requires authentication"
+    with the version echo (`2026-03-10` when pinned to it) and the five; any of them pinned to
+    `1999-01-01` the version's 400 with the five; `Bearer nope` and `token nope` the 401 "Bad
+    credentials" with neither, and `Bearer<tab>x` that 401 with the five. None of them moved `used`
+    (:func:`refused_an_unserved_operation_reported`). Every other operation here carries no echo,
+    and the methods split as real's did; ``backlot.main`` asks
+    :func:`refused_an_unserved_operation` for the echo and
+    :func:`refused_an_unserved_operation_uncounted` for the headers. With a token, real's answers to
+    `GET /user/packages` and `GET /gists/starred` carried the echo, and so does the router's 404 or
+    405 here.
+
+    An `Authorization` header that carries no credential is the same 401 with neither, whatever the
+    method and ahead of the version: measured on 2026-10-16 on the 43 operations of a sample of 51
+    that asked for a credential, `Digest x`, `nope`, `Bearer<TAB>nope` and `Basic<TAB>!!!!` were
+    each "Requires authentication" with none of the five and no echo, and so was a bearer that
+    resolves after a tab, on the 18 `GET`s among them, which served it after a space. On the
+    eight operations the tests send, each pinned to `1999-01-01`, so was an empty `Authorization`.
+
+    A `Basic` value that names no token is the caller a served route serves with no credential: on
+    those eight, `Basic Zm9vOmJhcg==` was each operation's own answer to that caller, carrying the
+    echo and the five, on every method (2026-10-16). That answer was "Requires authentication" on
+    `GET /user/packages` and `DELETE /user/keys/1`, and on the other six a 400, a 403, a 404 or the
+    401 "You must be logged in to do that.". Pinned to `1999-01-01`, `GET /user/packages`,
+    `DELETE /user/keys/1`, `POST /user/gpg_keys` and `GET /gists/starred` were the version's 400,
+    counted. Here it is :func:`_require`'s 401 after the version, carrying both.
+
+    A `Basic` value holding a token in one of real's shapes (``backlot.auth._GITHUB_TOKEN_SHAPE``)
+    that resolves to no one is "Bad credentials" with neither the echo nor the five, ahead of the
+    version: on 2026-10-25 the base64 of `x:ghp_<36 A>`, with and without `1999-01-01`, was that 401
+    on ten operations, `DELETE /installation/token` and `PATCH /repos/{owner}/{repo}` among them.
+    """
+    if not is_an_unserved_operation(request.method, request.scope["path"]):
+        return
+    if _deletes_the_installation_token(request):
+        request.state.github_unserved_refusal = "reported"
+        await _validate_bad_credential(request)
+        await _validate_api_version(request)
+        _require(request)
+        del request.state.github_unserved_refusal
+        return
+    if "authorization" not in request.headers:
+        request.state.github_unserved_refusal = (
+            "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
+        )
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    if _a_header_without_a_credential(request):
+        request.state.github_unserved_refusal = "uncounted"
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    await _validate_bad_credential(request)
+    await _validate_api_version(request)
+    _require(request)
+
+
+#: The served routes real refuses a caller with no credential on ahead of everything else, as it
+#: refuses an operation of :data:`_PUBLISHED_NOT_SERVED` (see :func:`_refuse_an_anonymous_caller`).
+_REFUSE_AN_ANONYMOUS_CALLER_FIRST = frozenset(
+    {
+        "/github/orgs/{org}/teams",
+        "/github/repos/{owner}/{repo}/collaborators",
+        "/github/repos/{owner}/{repo}/teams",
+        "/github/repos/{owner}/{repo}/branches/{branch:path}/protection",
+        CODE_SEARCH_PATH,
+    }
+)
+#: Of those, the ones whose answer to a `Basic` value that names no token is their 404.
+_NOT_FOUND_FOR_A_BASIC_VALUE_WITHOUT_A_TOKEN = frozenset(
+    {
+        "/github/repos/{owner}/{repo}/teams",
+        "/github/repos/{owner}/{repo}/branches/{branch:path}/protection",
+    }
+)
+
+
+async def _refuse_an_anonymous_caller(request: Request) -> None:
+    """Refuse a caller with no credential on a route of :data:`_REFUSE_AN_ANONYMOUS_CALLER_FIRST`
+    as :func:`refuse_an_unserved_operation` refuses one on a `GET` it does not serve: ahead of the
+    version and of the owner, repository or branch the path names, with no version echo.
+
+    Measured against api.github.com with no token on 2026-10-18 and 2026-10-21, each request on its
+    own cache-busted URL, on `psf`, `psf/requests` and its `main` branch. On `/orgs/{org}/teams`,
+    `/repos/{owner}/{repo}/collaborators`, `/repos/{owner}/{repo}/teams`,
+    `/repos/{owner}/{repo}/branches/{branch}/protection` and `/search/code`, no `Authorization` was
+    the 401 "Requires authentication" with the five `x-ratelimit-*` and no
+    `X-GitHub-Api-Version-Selected`, with no version or `1999-01-01`, and on the first four with
+    `2022-11-28` too and ahead of an organization, a repository and a branch that do not exist.
+    `Foo bar` with or without `1999-01-01`, and `Digest x` and `Bearer<TAB>nope` pinned to it, were
+    that 401 without the five on each, where `token` with no value was `Bad credentials` without the
+    five (:func:`_validate_bad_credential`), and so was `Basic` and the base64 of `x:ghp_<36 A>` on
+    each, with or without `1999-01-01` (2026-10-25). A `Basic` value naming no token (`Basic eDp5`)
+    was the version's 400 pinned to `1999-01-01` on the first four, and otherwise each route's own
+    answer with the echo and the five: the 401 on the first two, and the 404 on a repository's teams
+    and a branch's protection (:data:`_NOT_FOUND_FOR_A_BASIC_VALUE_WITHOUT_A_TOKEN`). `Basic` and
+    the base64 of `x:<40 a>` or of `x:GHP_<36 A>` was `Bad credentials` with the five and no echo
+    on each of the five, with or without `1999-01-01` (2026-10-26).
+    """
+    route = getattr(request.scope.get("route"), "path", None)
+    if route not in _REFUSE_AN_ANONYMOUS_CALLER_FIRST:
+        return
+    if "authorization" not in request.headers:
+        request.state.github_unserved_refusal = "counted"
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    if _a_header_without_a_credential(request):
+        request.state.github_unserved_refusal = "uncounted"
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    if (
+        route in _NOT_FOUND_FOR_A_BASIC_VALUE_WITHOUT_A_TOKEN
+        and auth.github_credential(request) is None
+    ):
+        await _validate_api_version(request)
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+#: The methods whose 401 for no credential at all, on an operation of :data:`_PUBLISHED_NOT_SERVED`,
+#: carries none of the five `x-ratelimit-*` (see :func:`refuse_an_unserved_operation`).
+_UNCOUNTED_METHODS = frozenset({"PATCH", "PUT", "DELETE"})
+
+
+def _a_header_without_a_credential(request: Request) -> bool:
+    """Whether the request carries an `Authorization` header that real reads no credential from on
+    an operation of :data:`_PUBLISHED_NOT_SERVED`: one ``auth.github_scheme_then_a_tab`` holds for,
+    whatever it names, or one ``auth.github_credential`` reads as no credential, but a `Basic`
+    value."""
+    if "authorization" not in request.headers:
+        return False
+    if auth.github_scheme_then_a_tab(request):
+        return True
+    scheme, _ = auth.github_scheme(request)
+    return auth.github_credential(request) is None and scheme != "basic"
+
+
+def is_an_unserved_operation(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`. The path is
+    the scope's, decoded but whole, not ``request.url.path`` (``backlot.main._REPARSED``), which
+    would take `/zen%23` for `/zen`, where real answered `GET /zen%23` and `POST …/forks%23` with
+    the 404 on 2026-10-14."""
+    return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/github"))
+
+
+def refused_an_unserved_operation(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` refused this request with no credential: no
+    `Authorization` header, or one that carries none."""
+    return getattr(request.state, "github_unserved_refusal", None) is not None
+
+
+def refused_an_unserved_operation_uncounted(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` refused this request with a 401 that real counts
+    nowhere and sends without the five headers: for a header that carries no credential, on any
+    method, and for no header on a method in :data:`_UNCOUNTED_METHODS`."""
+    return getattr(request.state, "github_unserved_refusal", None) == "uncounted"
+
+
+def refused_an_unserved_operation_reported(request: Request) -> bool:
+    """Whether :func:`refuse_an_unserved_operation` answered ``DELETE /installation/token`` as a
+    served route does for a caller with no credential: the version echo, the five `x-ratelimit-*`,
+    and nothing counted. See that function for the measurement."""
+    return getattr(request.state, "github_unserved_refusal", None) == "reported"
+
+
+def _deletes_the_installation_token(request: Request) -> bool:
+    """Whether this is `DELETE /installation/token`, the one unpublished delete real answers as a
+    served route."""
+    return (
+        request.method == "DELETE"
+        and request.scope["path"].removeprefix("/github") == "/installation/token"
+    )
+
+
 # --- rate limits ----------------------------------------------------------------
 #
-# Real puts five `x-ratelimit-*` headers on every response it gives, 200 and error alike, and
+# Real puts five `x-ratelimit-*` headers on every response its API gives, 200 and error alike, and
 # serves `GET /rate_limit`. Measured against api.github.com on 2026-09-09 and 2026-09-10,
 # unauthenticated with curl and authenticated with `gh api`: an anonymous caller has `limit: 60`
 # on `core` and `10` on `search`, a token `5000`, `30` and `10` on `core`, `search` and
@@ -433,37 +878,34 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     with no credential (the docs' 60 an hour "for unauthenticated requests", `limit: 60` on every
     anonymous answer measured).
 
-    An `Authorization` real cannot parse is served rather than refused, and counted apart from the
-    bare-anonymous requests from the same address, in ONE window shared by every such value: on
-    `/repos/psf/requests`, alternating `Basic`, `Digest` and scheme-less values real had not seen
-    before ran one counter 10 through 15 at one `reset`, while the bare anonymous calls interleaved
-    with them read 23, 24, 25 at another, both at `limit: 60` (measured against api.github.com
-    2026-09-21).
+    An `Authorization` real reads as no credential (see :func:`backlot.auth.github_credential`) is
+    served rather than refused, and counted apart from the bare-anonymous requests from the same
+    address, in ONE window shared by every such value: on `/repos/psf/requests`, alternating
+    `Basic`, `Digest` and scheme-less values real had not seen before ran one counter 10 through 15
+    at one `reset`, while the bare anonymous calls interleaved with them read 23, 24, 25 at another,
+    both at `limit: 60` (measured against api.github.com 2026-09-21).
 
-    A `Bearer` or `token` followed by a tab rather than a space is counted in that same window,
-    though it is answered as Bad credentials: `Digest x` and then `Bearer<TAB>nope` on
-    `/repos/psf/requests` read `used` 4 and 5, while the address's anonymous window stayed at 8
-    (2026-10-14). A bearer that does not resolve after a space is keyed with the address here but
+    Either bearer scheme followed by a tab rather than a space (``auth.github_scheme_then_a_tab``)
+    is counted in that same window, though it is answered as Bad credentials: an unknown scheme and
+    then a bad bearer after a tab, on `/repos/psf/requests`, read `used` 4 and 5, while the
+    address's anonymous window stayed at 8 (2026-10-14). So is a `Basic` token
+    ``auth.github_basic_token_counted`` holds for: six such 401s in a row read `used` 3 through 8
+    (2026-10-25). Any other credential that does not resolve is keyed with the address here but
     never counted — see :func:`refused_without_a_window`. Callers that draw real's line themselves
     check `request.headers` for the presence of `Authorization` directly instead of asking
-    `auth.bearer_token`, which is `None` for a scheme it does not parse — see
+    `auth.github_credential`, which is `None` for a header real serves as anonymous — see
     `refuse_a_trailing_slash_on_github`."""
-    token = auth.bearer_token(request)
-    if token is not None and auth.resolve_bearer(request) is not None:
+    token = auth.github_credential(request)
+    if token is not None and auth.acl(request).resolve(token) is not None:
         return f"token:{token}", True
     host = request.client.host if request.client is not None else "anonymous"
-    if "authorization" in request.headers and (token is None or not _scheme_then_space(request)):
+    if "authorization" in request.headers and (
+        token is None
+        or auth.github_scheme_then_a_tab(request)
+        or auth.github_basic_token_counted(request)
+    ):
         return f"unparseable:{host}", False
     return f"host:{host}", False
-
-
-def _scheme_then_space(request: Request) -> bool:
-    """Whether the `Authorization` is `Bearer` or `token`, in any case, followed by a space: the
-    spelling real refuses with no `x-ratelimit-*` when the token does not resolve, where a tab
-    after the scheme (`Bearer<TAB>nope`, `Bearer<TAB> nope`) is counted as an unparseable one
-    (:func:`rate_limit_caller`)."""
-    scheme, space, _ = (request.headers.get("authorization") or "").partition(" ")
-    return bool(space) and scheme.lower() in ("bearer", "token")
 
 
 def refused_a_credential(request: Request) -> bool:
@@ -473,46 +915,66 @@ def refused_a_credential(request: Request) -> bool:
     `x-ratelimit-*` headers and no version echo, on `/repos/psf/requests` and on `/rate_limit`, and
     the address's `core` window read `used: 13` before three of them and after — where an anonymous
     401 on `/user/repos` carries all five, counts, and echoes (measured against api.github.com
-    2026-09-21). A path no route matches is answered the same way for a wider set of callers, see
-    ``backlot.main._some_github_route_matches``.
+    2026-09-21). A path real does not route is answered the same way for a wider set of callers,
+    see ``backlot.main._github_routes``.
 
-    A tab after the scheme is still "Bad credentials" (`auth.bearer_token` accepts it) and still
-    carries no version echo: on 2026-10-14 `Bearer<TAB>nope` on `/rate_limit` and
-    `/repos/psf/requests`, with and without `X-GitHub-Api-Version: 2022-11-28`, and on
-    `/user/repos` with it, answered no `x-github-api-version-selected`. Which of these 401s carry
-    the five is :func:`refused_without_a_window`'s.
+    A tab after the scheme is still "Bad credentials" and still carries no version echo: on
+    2026-10-14 a bearer that does not resolve after a tab answered no
+    `x-github-api-version-selected` on `/rate_limit` and `/repos/psf/requests`, with and without
+    `X-GitHub-Api-Version: 2022-11-28`, and on `/user/repos` with it. Which of these 401s carry the
+    five is
+    :func:`refused_without_a_window`'s.
     """
-    return auth.bearer_token(request) is not None and auth.resolve_bearer(request) is None
+    token = auth.github_credential(request)
+    return token is not None and auth.acl(request).resolve(token) is None
 
 
 def refused_without_a_window(request: Request) -> bool:
-    """Whether :func:`refused_a_credential` holds with a space after the scheme: the 401 real counts
-    in no window and answers with none of the five `x-ratelimit-*` headers.
+    """Whether :func:`refused_a_credential` holds and neither
+    ``backlot.auth.github_scheme_then_a_tab`` nor ``backlot.auth.github_basic_token_counted`` does:
+    the 401 real counts in no window and answers with none of the five headers, as each scheme with
+    nothing after it and a value after `Basic` that does not decode were (2026-10-14), and so were
+    `Bearer<TAB>,nope`, `token<TAB>,nope`, `Bearer<TAB>no,pe` and `Bearer<TAB>nope,` (2026-10-16),
+    all on the rate-limit route.
 
-    After a tab, the same 401 carries the five of the window it is counted in, the unparseable one:
-    measured against api.github.com 2026-10-14 on `GET /rate_limit`, `Bearer<TAB>nope` and
-    `token<TAB>nope` each answered 401 with `limit: 60`, `remaining: 60`, `used: 0`,
-    `resource: core` and a `reset` an hour after `Date`, while `Bearer nope` and `token nope`
-    answered the same 401 with none of the five. Once that window was spent, `Bearer<TAB>nope` and
-    `token<TAB>nope` on `/repos/psf/requests` and `Bearer<TAB>nope` on `/user/repos` were its 403,
-    as `Digest x` was, where `Bearer nope` was still the 401.
+    Where the first helper holds, the same 401 carries the five of the window it is counted in, the
+    unparseable one: measured against api.github.com 2026-10-14 on `GET /rate_limit`,
+    `Bearer<TAB>nope` and `token<TAB>nope` each answered 401 with `limit: 60`, `remaining: 60`,
+    `used: 0`, `resource: core` and a `reset` an hour after `Date`, while the same two after a space
+    answered the same 401 with none of the five. Once that window was spent, the two after a tab on
+    a public repository, and the first on `/user/repos`, were its 403, as an unknown scheme was,
+    where the bearer after a space was still the 401.
+
+    Where the second holds, the 401 carries the five and counts: in that same window on
+    `/user/repos`, a repository pinned to `1999-01-01` or not, its teams and `/zen` (2026-10-25),
+    and on `PATCH`, `PUT`, `DELETE` and `POST` to operations Backlot does not serve, an
+    organization's teams, a repository's collaborators, a branch's protection and `/search/issues`
+    pinned or not (2026-10-26). `DELETE /installation/token` carries the five and leaves `used`
+    where it was (:func:`refused_an_unserved_operation_reported`). After a space, unlike after a
+    tab, such a value stays the 401 once that window is spent — see :func:`rate_limit_refusal`.
     """
-    return refused_a_credential(request) and _scheme_then_space(request)
+    return (
+        refused_a_credential(request)
+        and not auth.github_scheme_then_a_tab(request)
+        and not auth.github_basic_token_counted(request)
+    )
 
 
-def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
+def rate_limit_headers(request: Request, status_code: int, *, count: bool = True) -> dict[str, str]:
     """The five `x-ratelimit-*` headers for a `/github` answer.
 
     Counts the request against the window, except on :data:`RATE_LIMIT_PATH`, which reports its
     window without counting: two `GET /rate_limit` in a row both answered `remaining: 5000`,
     `used: 0`, each carrying the five with `resource: core`, and the description's own note says
-    the route does not count. `/rate_limit/` never reaches this — see
+    the route does not count. ``count`` False reports the same way, which is how
+    ``DELETE /installation/token`` carries the five while leaving `used` where it was
+    (:func:`refused_an_unserved_operation_reported`). `/rate_limit/` never reaches this — see
     ``backlot.main.refuse_a_trailing_slash_on_github``."""
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, status_code)
     counted, limit = rate_limit_window(resource, authenticated)
     windows = _rate_limit_windows(request.app)
-    read = windows.count if request.url.path != RATE_LIMIT_PATH else windows.status
+    read = windows.count if count and request.url.path != RATE_LIMIT_PATH else windows.status
     window = read(key, counted, limit)
     return {
         "x-ratelimit-limit": str(window["limit"]),
@@ -549,21 +1011,25 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
     its cap. Real's sentence there is `API rate limit exceeded for user ID <id>. If you reach out
     to GitHub Support for help, please include the request ID <x-github-request-id> and timestamp
     <YYYY-MM-DD HH:MM:SS> UTC. For more on scraping GitHub and how it may affect your rights,
-    please review our Terms of Service (…)`. This returns real's sentence up to `user ID <id>.`;
-    the Support/Terms-of-Service sentence past it is not reproduced, because it names a request id
-    and a timestamp that come from `x-github-request-id` — a header Backlot sends on no `/github`
-    answer today (real sends it on every answer, 200 and refusal alike, and its own last field is
-    that answer's `Date` to the second). That header is #333's; the rest of this sentence belongs
-    there, not a synthesized or placeholder value here."""
+    please review our Terms of Service (…)`. The request id is the answer's own
+    `x-github-request-id` and the timestamp is that id's last field, on each of four refusals
+    measured 2026-10-18 the same way."""
     if not authenticated:
         host = request.client.host if request.client is not None else "anonymous"
         return (
             f"API rate limit exceeded for {host}. (But here's the good news: Authenticated "
             "requests get a higher rate limit. Check out the documentation for more details.)"
         )
-    caller = auth.resolve_bearer(request)
+    caller = auth.acl(request).resolve(auth.github_credential(request))
     email = caller.email if caller is not None and caller.email is not None else "admin"
-    return f"API rate limit exceeded for user ID {synth.github_user_id(email)}."
+    rid = request.state.github_request_id
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(rid.rsplit(":", 1)[1], 16)))
+    return (
+        f"API rate limit exceeded for user ID {synth.github_user_id(email)}. If you reach out to "
+        f"GitHub Support for help, please include the request ID {rid} and timestamp {stamp} UTC. "
+        "For more on scraping GitHub and how it may affect your rights, please review our Terms of "
+        "Service (https://docs.github.com/en/site-policy/github-terms/github-terms-of-service)"
+    )
 
 
 def rate_limit_refusal(request: Request) -> Response | None:
@@ -585,10 +1051,20 @@ def rate_limit_refusal(request: Request) -> Response | None:
     caller's mechanism: a tier in front of the one those dependencies run on. A token's own refusal
     answers from `server: github.com` instead, so the tier split explains the anonymous order
     rather than the order in general. The envelope differs by caller too (same doc section;
-    :data:`TOKEN_RATE_LIMIT_EXCEEDED_DOCS` is the token's own `documentation_url`)."""
+    :data:`TOKEN_RATE_LIMIT_EXCEEDED_DOCS` is the token's own `documentation_url`).
+
+    A `Basic` value ``auth.github_basic_token_counted`` holds for is not refused unless a tab
+    follows `Basic`: with the window it is counted in spent, the base64 of `x:<40 a>` after a space
+    was still the 401 "Bad credentials" at `used: 60` and `remaining: 0` on `/repos/psf/requests`
+    pinned to `1999-01-01` or not, `/user/repos`, `/user` and `/orgs/psf/teams`, and so was that of
+    `x:GHP_<36 A>` on the repository and the organization's teams, where `Basic eDp5` and the base64
+    of `x:<40 a>` after a tab were the 403 (2026-10-26).
+    """
     if not get_settings().github_enforce_rate_limits:
         return None
     if request.url.path == RATE_LIMIT_PATH:
+        return None
+    if auth.github_basic_token_counted(request) and not auth.github_scheme_then_a_tab(request):
         return None
     key, authenticated = rate_limit_caller(request)
     resource = rate_limit_resource(request.url.path, 401 if not authenticated else 200)
@@ -626,6 +1102,7 @@ router = APIRouter(
     # is 404 ahead of all three on real (measured 2026-09-17 on an unrouted path and on a
     # nonexistent subresource), and a router-wide dependency does not run for one either.
     dependencies=[
+        Depends(_refuse_an_anonymous_caller),
         Depends(_validate_bad_credential),
         Depends(_validate_api_version),
         Depends(_validate_path_owner),
@@ -642,8 +1119,45 @@ router = APIRouter(
 # which is silent corruption rather than a missing feature.
 
 
+# `application/vnd.github.` or legacy `…github.v3.`, a representation's name, `+json` if present.
+_GITHUB_MEDIA = re.compile(r"(application/vnd\.github\.(?:v3\.)?)([^+]*)(\+json)?", re.IGNORECASE)
+
+
 def _accept_types(request: Request) -> list[str]:
-    return [t.split(";")[0].strip().lower() for t in request.headers.get("accept", "").split(",")]
+    """The media types ``Accept`` lists, read as api.github.com read them on 2026-10-21.
+
+    A representation's name is read as spelt, and `application`, `github`, `v3` and `json` in any
+    case: a pull answers `…github.DIFF` with its JSON and `Application/vnd.github.diff`,
+    `…vnd.GitHub.diff`, `…github.V3.diff` and `…diff+JSON` each with the diff, and `raw` on
+    contents, readme and blobs and `text-match` on code search read those spellings the same way.
+    A ``diff`` whose ``q`` weight reads as zero (:func:`_zero_q`) is left out, and no other name
+    is: `patch;q=0`, `raw;q=0` and `text-match+json;q=0` are served as asked, and so is a diff
+    under `Q=0`, `q = 0` or a `q` after `charset=utf-8`."""
+    types: list[str] = []
+    for member in request.headers.get("accept", "").split(","):
+        media_type, _, params = member.partition(";")
+        media_type = media_type.strip()
+        m = _GITHUB_MEDIA.fullmatch(media_type)
+        if m is not None:
+            if m[2] == "diff" and _zero_q(params):
+                continue
+            media_type = m[1].lower() + m[2] + (m[3] or "").lower()
+        types.append(media_type)
+    return types
+
+
+def _zero_q(params: str) -> bool:
+    """Whether the `q` a member's parameters give it (:func:`_accept_q`) is a zero ``float()``
+    reads. Measured against api.github.com on 2026-10-21: `q=0;q=1` kept the diff and `q=1;q=0`
+    left it out; a sign or a space ahead of the digits leaves the `q` with no value (`q=-0`,
+    `q=+0`, `q=-0.0` and `q= 0` kept the diff), and a quote after the zero ends the parameters once
+    the zero is read (`q=0"` left the diff out, as `q="0"` did, and `q="0`, which no quote closes,
+    kept it)."""
+    value = _accept_q(params)
+    try:
+        return value is not None and float(value) == 0
+    except ValueError:
+        return False
 
 
 def _github_media(request: Request, name: str) -> bool:
@@ -658,18 +1172,110 @@ def _github_media(request: Request, name: str) -> bool:
     return any(t in wanted for t in _accept_types(request))
 
 
-def _raw_response(request: Request, content: str, media_type: str) -> Response | None:
+# A parameter of an `Accept` member, as api.github.com reads one: spaces or tabs, a name of ASCII
+# word characters and dots, `=`, and a value of the same or in quotes. The first parameter that does
+# not read so ends the member's parameters, and so does anything but spaces and tabs left after the
+# value of one that does. Measured on 2026-10-22 on the pull and under the version
+# :func:`_representation_content_type` names: `application/vnd.github.diff` with `foo=a.b;q=0`,
+# `foo=;q=0`, `foo="a-b";q=0`, `charset=utf8;q=0` or `q=1;foo=bar;q=0` was the JSON pull, and with
+# `foo=a-b;q=0`, `charset=utf-8;q=0`, `foo;q=0`, `foo-bar=x;q=0`, `foo=é;q=0`, `foo=1e-1;q=0` or
+# `q=0.5-;q=0` the diff. As a member's weight, `; q=0.1`, `;\tq=0.1`, `;a.b=c;q=0.1` and
+# `;q=0.9 ;q=0.1` read as `0.1`, `;foo=\xe9;q=0.1` as no `q` and `;q=0.9\xa0;q=0.1` as `0.9`, each
+# `\x..` one byte.
+_ACCEPT_PARAM = re.compile(r'[ \t]*([\w.]+)=("[^"]*"|[\w.]*)', re.ASCII)
+# The number a `q` value that `float()` cannot read, or reads as no finite number, starts with.
+_Q_LEAD = re.compile(r"\d+(?:\.\d*)?|\.\d+", re.ASCII)
+
+
+def _accept_q(params: str) -> str | None:
+    """The value of the last `q` among a member's parameters (:data:`_ACCEPT_PARAM` reads them),
+    out of its quotes, or None with no `q`."""
+    value = None
+    for param in params.split(";"):
+        m = _ACCEPT_PARAM.match(param)
+        if m is None:
+            break
+        if m[1] == "q":
+            value = m[2][1:-1] if m[2][:1] == '"' else m[2]
+        if param[m.end() :].strip(" \t"):
+            break
+    return value
+
+
+def _q_weight(params: str, unread: float | None = None) -> float:
+    """The weight a member's parameters give it: 1 with no `q`, else its `q` (:func:`_accept_q`)
+    read as a finite number, else ``unread``, or with no ``unread`` the number the value starts
+    with, or 0 where it starts with none."""
+    value = _accept_q(params)
+    if value is None:
+        return 1.0
+    try:
+        weight = float(value)
+    except ValueError:
+        weight = math.nan
+    if math.isfinite(weight):
+        return weight
+    if unread is not None:
+        return unread
+    lead = _Q_LEAD.match(value)
+    return float(lead[0]) if lead else 0.0
+
+
+def _representation_content_type(request: Request, unread: float | None = None) -> str:
+    """The `Content-Type` of a diff, a patch, or a raw file or readme: each `Accept` member with
+    nothing after its `;`, spelt as sent, heaviest first (:func:`_q_weight`, with ``unread``), and
+    at the same weight a concrete type before a `type/*` and that before `*/*`, otherwise in the
+    order sent; a member with nothing before its `;` is left out.
+
+    Measured on api.github.com on 2026-10-21 and 2026-10-22 under
+    `X-GitHub-Api-Version: 2022-11-28`, on `pulls/7619` of `psf/requests` and its `README.md`
+    through `contents` and `readme`: `application/vnd.github.v3.diff`, `Application/vnd.github.diff`
+    and `application/vnd.github.diff;foo=bar` were echoed without the parameter;
+    `application/json;q=0.1, application/vnd.github.diff;q=0.9, text/plain;q=0.5` as
+    `application/vnd.github.diff,text/plain,application/json`, a member at `q=0` kept, last, and the
+    same member twice kept twice; `*/*, text/*, application/vnd.github.diff` and
+    `text/*, */*, application/vnd.github.diff` as `application/vnd.github.diff,text/*,*/*` and
+    `application/*, */*, text/*, application/vnd.github.diff` as
+    `application/vnd.github.diff,application/*,text/*,*/*`; and `application/vnd.github.diff,`,
+    `,application/vnd.github.diff` and `;q=0.5, application/vnd.github.diff` as
+    `application/vnd.github.diff`. Beside a diff at `q=0.5`, `application/json` came first under
+    `q=0.1;q=0.9`, `foo=bar;q=0.6`, `q="0.9"`, `charset=utf-8;q=0.1`, `foo=a-b;q=0.1` and
+    `q=0.9;foo=a-b;q=0.1`, and after it under `q=0.9;q=0.1`, `foo=bar;q=0.1`, `q="0.1"`,
+    `charset=x;q=0.1` and `q=0.1-;q=0.9`; it came first under `q=9e-1`, `q=9E-1`, `q=1e-1`,
+    `q=9e-1x`, `q=0.9x` and `q=.9x` too, read as the number they start with. Under `q=abc`, `q=`,
+    `q=+0.9`, `q=inf` and `q=-0.9` it ranked as `q=0` does on the pull
+    (`application/json;q=abc, text/plain;q=0, …` kept that order), and under those, `q= 0.9` and
+    `q=nan` below a raw at `q=0.5` on the readme; on contents all of those seven but `q=nan` ranked
+    above the raw (``unread`` 1). Not modelled: `q=nan` on contents, and `*/ *`, which the pull
+    echoed as `*/`."""
+    members = []
+    for member in request.headers.get("accept", "").split(","):
+        media_type, _, params = member.partition(";")
+        media_type = media_type.strip()
+        if not media_type:
+            continue
+        members.append((media_type, _q_weight(params, unread)))
+    members.sort(key=lambda m: (-m[1], m[0].count("*")))
+    return ",".join(media_type for media_type, _ in members) + "; charset=utf-8"
+
+
+def _raw_response(
+    request: Request, content: str, media_type: str | None = None, unread: float | None = None
+) -> Response | None:
     """The raw body when the caller asked for it, else ``None`` so the handler falls through to its
-    JSON envelope."""
+    JSON envelope. A blob names ``media_type``; contents and readme name what they were sent
+    (`_representation_content_type`)."""
     if not _github_media(request, "raw"):
         return None
-    return Response(content=content.encode(), media_type=media_type)
+    content_type = media_type or _representation_content_type(request, unread)
+    return Response(content=content.encode(), headers={"Content-Type": content_type})
 
 
-# Real GitHub answers git/blobs raw with text/plain and contents/readme with vnd.github.raw. Both
-# are the same bytes; the difference is GitHub's own, so it is reproduced rather than unified.
+# A raw git blob's type, however `Accept` spells the raw type: api.github.com answered `git/blobs`
+# with it under `application/json, application/vnd.github.raw` on 2026-10-21, and under
+# `application/vnd.github.raw`, `…v3.raw`, `…raw+json`, `…v3.raw+json`,
+# `Application/vnd.GitHub.V3.raw+JSON` and `application/vnd.github.raw;q=0` on 2026-10-22.
 _BLOB_RAW_TYPE = "text/plain; charset=utf-8"
-_CONTENT_RAW_TYPE = "application/vnd.github.raw; charset=utf-8"
 
 
 class _Loose(BaseModel):
@@ -2178,9 +2784,11 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
     if wants_patch:
         return Response(
             content=_pr_mbox(row, obj, diff).encode(),
-            media_type="application/vnd.github.patch; charset=utf-8",
+            headers={"Content-Type": _representation_content_type(request)},
         )
-    return Response(content=diff.encode(), media_type="application/vnd.github.diff; charset=utf-8")
+    return Response(
+        content=diff.encode(), headers={"Content-Type": _representation_content_type(request)}
+    )
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/reviews")
@@ -2590,7 +3198,7 @@ async def _contents_response(
     if path:
         row = store.get_repo_file(conn, repo, path, ids, ref=ref)
         if row is not None:
-            return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
+            return _raw_response(request, row["content"], unread=1.0) or _file_obj(
                 owner, repo, row, ab, ref
             )
     rows = store.list_repo_files(conn, repo, ids)
@@ -3006,7 +3614,7 @@ async def get_readme_for_a_directory(
     row = _readme_row(conn, repo, f"{inside}/" if inside else "", ids, ref)
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
-    return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
+    return _raw_response(request, row["content"]) or _file_obj(
         owner, repo, row, _api_base(request), ref
     )
 
@@ -3027,9 +3635,7 @@ async def get_readme(owner: str, repo: str, request: Request, ref: str | None = 
     ab = _api_base(request)
     row = _readme_row(conn, repo, "", ids, ref)
     if row is not None:
-        return _raw_response(request, row["content"], _CONTENT_RAW_TYPE) or _file_obj(
-            owner, repo, row, ab, ref
-        )
+        return _raw_response(request, row["content"]) or _file_obj(owner, repo, row, ab, ref)
     raise HTTPException(status_code=404, detail="Not Found")
 
 
@@ -4036,7 +4642,7 @@ def _pr_mbox(row, obj: dict, diff: str) -> str:
     return (
         f"From {head} Mon Sep 17 00:00:00 2001\n"
         f"From: {login} <{email_addr}>\n"
-        f"Date: {formatdate(ts, usegmt=True)}\n"
+        f"Date: {format_datetime(synth.utc_datetime(ts), usegmt=True)}\n"
         f"Subject: [PATCH] {obj['title']}\n\n"
         f"{body}\n---\n{diff}-- \n2.45.0\n"
     )

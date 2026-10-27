@@ -63,6 +63,7 @@ SOURCES: dict[str, tuple[str, tuple[str, ...]]] = {
     "hubspot": ("HubSpot", ("/hubspot",)),
     "jira": ("Jira", ("/atlassian/rest/api",)),
     "linear": ("Linear", ("/linear/graphql",)),
+    "msteams": ("Microsoft Teams", ("/msgraph/v1.0",)),
     "notion": ("Notion", ("/notion/v1",)),
     "s3": ("Amazon S3", ("/s3",)),
     "slack": ("Slack", ("/slack/api",)),
@@ -85,6 +86,7 @@ AUTH_SECTIONS: dict[str, str] = {
     "hubspot": "HubSpot",
     "jira": "Jira and Confluence",
     "linear": "Linear",
+    "msteams": "Microsoft Teams",
     "notion": "Notion",
     "s3": "Amazon S3",
     "slack": "Slack",
@@ -143,7 +145,7 @@ def _sections(doc: Path) -> dict[str, str]:
     """
     return {
         heading.split("—", 1)[0].strip(): _anchor(heading)
-        for heading in re.findall(r"^###\s+(.*?)\s*$", doc.read_text(), re.M)
+        for heading in re.findall(r"^###\s+(.*?)\s*$", doc.read_text(encoding="utf-8"), re.M)
     }
 
 
@@ -284,7 +286,7 @@ def main() -> int:
     )
     stale = []
     for doc, name, render in blocks:
-        current = doc.read_text()
+        current = doc.read_text(encoding="utf-8")
         updated = replace_block(current, name, render(), doc)
         if current == updated:
             # Reported, not passed over in silence: SKILL.md tells its reader to run this command,
@@ -295,7 +297,7 @@ def main() -> int:
         if args.check:
             stale.append(doc.relative_to(REPO))
             continue
-        doc.write_text(updated)
+        doc.write_text(updated, encoding="utf-8")
         print(f"wrote {doc.relative_to(REPO)}")
 
     if stale:

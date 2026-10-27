@@ -1,18 +1,24 @@
 """Which comparison each source gets, and what it needs to run.
 
-Four kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
+Six kinds, and they differ in what each side of the comparison is. For the two GraphQL sources,
 Backlot's side is the SDL the server builds its engine from and the vendor's is a live introspection
-response, which needs a credential. For the eight document sources, Backlot's side is the app's own
+response, which needs a credential. For the seven document sources, Backlot's side is the app's own
 ``app.openapi()`` and the vendor's is one or more documents it publishes, which needs none. For
 S3, whose operations are selected by query string rather than by path, both sides are answers from
-a running server that ``backlot.serve()`` starts.
+a running server that ``backlot.serve()`` starts. Graph publishes a type system rather than a route
+list, so for Teams Backlot's side is such a server's answers, checked against Graph's CSDL, and its
+operations are paired with those of Graph's OpenAPI document. Slack maintains no machine-readable
+description at all, so its vendor side is its reference documentation, and Backlot's is
+``app.openapi()`` for the arguments and a running server's answers for what each method returns.
 
 A document does not always carry one contract. Google names its batch endpoint in a top-level
 ``batchPath`` rather than declaring it under ``resources``, so each Google document is read for two:
 the operations a path diff pairs, and that field, compared against the batch routes ``batch_mount``
-says the source speaks for. Both read the same fetched document.
+says the source speaks for. A document a ``walk`` reads is read for a third, the messages its
+methods answer with, against what a running server answers. All read the same fetched document.
 
-Nine of the eleven need no credential. All eleven run on a schedule and never on a pull request:
+
+Ten of the twelve need no credential. All twelve run on a schedule and never on a pull request:
 drift is this project's bug, but it is never the bug of whichever pull request happens to be open
 when a vendor ships a change.
 """
@@ -25,39 +31,58 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from backlot.fidelity import (
+    csdl_diff,
     google_discovery_diff,
+    google_walks,
     graphql_diff,
     hubspot_catalog,
+    msgraph,
     openapi_diff,
     s3_probe,
+    slack_docs,
 )
 from backlot.fidelity.errors import CredentialsMissing, FidelityError
 from backlot.fidelity.findings import BREAKING, Finding
+from backlot.fidelity.surface import (
+    MISSING,
+    GraphSurface,
+    Measurement,
+    OperationSurface,
+    SchemaSurface,
+)
 
 
-def _one_report(per_spec: list[list[Finding]]) -> list[Finding]:
-    """Several documents' findings as one source's report: de-duplicated by key, then ordered the
-    way a single document's are.
+def _one_report(per_spec: list[Measurement]) -> Measurement:
+    """Several documents' measurements as one source's: findings de-duplicated by key, then
+    ordered the way a single document's are, and surfaces as ``OperationSurface.joined`` joins
+    them.
 
     Two documents of one source can declare the SAME path. Atlassian's do: 11 paths sit outside
     ``/rest/api/{2,3}`` — ``/rest/atlassian-connect/1/*``, ``/rest/forge/1/*`` and one internal
     worklog route — so both Jira documents carry them and each reports as ``missing_operation``
     twice. That is a different case from the mirrored ``/rest/api/2/...`` and ``/rest/api/3/...``
     entries, which are distinct paths a client can call and both belong in the baseline. A
-    :class:`~backlot.fidelity.findings.Baseline` is keyed on ``kind:path`` and cannot hold the
+    :class:`~backlot.fidelity.baselines.Baseline` is keyed on ``kind:path`` and cannot hold the
     second copy, so leaving it in makes the file claim more than it can load and prints a genuinely
     new finding on such a path twice.
 
     Ordered here rather than left concatenated because ``diff_operations`` sorts breaking-first-
-    then-path per document, and that ordering does not survive joining two. The baseline is written
-    in the order it is given, so without this the next real change lands buried in a reordering of
-    the whole file.
+    then-path per document, and that ordering does not survive joining two; the command prints
+    them in this order.
     """
+    surface = OperationSurface.joined(m.surface for m in per_spec)
+    # An operation one document's mount serves is not missing because another document declares it
+    # under a mount that does not.
+    served = {e.operation for e in surface.operations if e.status != MISSING}
     seen: dict[str, Finding] = {}
-    for findings in per_spec:
-        for f in findings:
-            seen.setdefault(f.key, f)
-    return sorted(seen.values(), key=lambda f: (f.severity != BREAKING, f.path, f.kind))
+    for m in per_spec:
+        for f in m.findings:
+            if not (f.kind == "missing_operation" and f.path in served):
+                seen.setdefault(f.key, f)
+    return Measurement(
+        sorted(seen.values(), key=lambda f: (f.severity != BREAKING, f.path, f.kind)),
+        surface,
+    )
 
 
 @dataclass(frozen=True)
@@ -101,6 +126,10 @@ class Spec:
     # into the baseline's identity: a lambda would render as `<function … at 0x…>` and write a
     # fresh memory address into the file on every run.
     resolve_url: hubspot_catalog.Entry | None = None
+    # A discovery document's reads to make of a running Backlot, each named by the method it is
+    # (`google_walks.sheets`). Set, the document's response types join the source's baseline as
+    # `types` (`google_discovery_diff.types_measure`).
+    walk: Callable[[float], list[tuple[str, Any]]] | None = None
 
     @property
     def endpoint(self) -> str:
@@ -135,14 +164,14 @@ class OpenAPIComparison:
     def endpoints(self) -> tuple[str, ...]:
         return tuple(s.endpoint for s in self.specs)
 
-    def divergences(
+    def measure(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
-    ) -> list[Finding]:
+    ) -> Measurement:
         # One memo across this run's specs: HubSpot reaches every document through a single index,
         # so without it a source comparing two of its APIs reads that index once per spec.
         fetched: dict[str, dict] = {}
         return _one_report(
-            [openapi_diff.divergences(s, timeout=timeout, seen=fetched) for s in self.specs]
+            [openapi_diff.measure(s, timeout=timeout, seen=fetched) for s in self.specs]
         )
 
 
@@ -172,24 +201,36 @@ class GoogleDiscoveryComparison:
     def endpoints(self) -> tuple[str, ...]:
         return tuple(s.endpoint for s in self.specs)
 
-    def divergences(
+    def measure(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
-    ) -> list[Finding]:
+    ) -> Measurement:
         # One memo across this run's specs, so the batch check reads the documents the path diffs
         # already fetched rather than asking the vendor for them a second time: measured
         # 2026-09-17, the five documents these two sources read total 1.3 MB, the largest of them
         # 369 KB.
         fetched: dict[str, dict] = {}
         per_spec = [
-            google_discovery_diff.divergences(s, timeout=timeout, seen=fetched) for s in self.specs
+            google_discovery_diff.measure(s, timeout=timeout, seen=fetched) for s in self.specs
         ]
         if self.batch_mount:
             per_spec.append(
-                google_discovery_diff.batch_divergences(
+                google_discovery_diff.batch_measure(
                     self.batch_mount, [(s.spec_url, fetched[s.spec_url]) for s in self.specs]
                 )
             )
-        return _one_report(per_spec)
+        report = _one_report(per_spec)
+        typed = [
+            google_discovery_diff.types_measure(s, fetched[s.spec_url], timeout=timeout)
+            for s in self.specs
+            if s.walk
+        ]
+        if not typed:
+            return report
+        types = {n: t for m in typed for n, t in m.surface.types.items()}
+        return Measurement(
+            report.findings + [f for m in typed for f in m.findings],
+            GraphSurface(report.surface, SchemaSurface("", types)),
+        )
 
 
 @dataclass(frozen=True)
@@ -219,10 +260,44 @@ class GraphQLComparison:
         key = resolved["api_key"]
         return f"{self.auth_scheme} {key}".strip() if self.auth_scheme else key
 
-    def divergences(
+    def measure(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
-    ) -> list[Finding]:
-        return graphql_diff.divergences(self, credentials, timeout=min(timeout, 60.0))
+    ) -> Measurement:
+        return graphql_diff.measure(self, credentials, timeout=min(timeout, 60.0))
+
+
+@dataclass(frozen=True)
+class CSDLComparison:
+    """A source compared against the CSDL its vendor publishes.
+
+    Public like the OpenAPI kind, and unlike it in what the document says. A CSDL declares a type
+    system rather than a path map: entity types and their properties, which properties may be null,
+    whether a type accepts properties it does not name, and the members of every enum. So Backlot's
+    side of the comparison cannot be ``app.openapi()`` either, and is the responses a running server
+    actually sends. See :mod:`backlot.fidelity.csdl_diff` for what that catches.
+
+    ``walk`` is the source's own, for the reason :class:`ProbeComparison` names ``run``: which
+    request answers with which declared type is knowledge no document carries and no convention
+    should be asked to guess at.
+    """
+
+    name: str
+    spec_url: str
+    walk: Callable[[str, str, Any, float], Measurement]
+    mount: tuple[str, ...] = ()
+    credentials: tuple[Credential, ...] = ()
+    # The vendor's path document, where it publishes one beside the CSDL: the operations half of
+    # the comparison (see :class:`~backlot.fidelity.surface.GraphSurface`).
+    operations_url: str | None = None
+
+    @property
+    def endpoints(self) -> tuple[str, ...]:
+        return (self.spec_url,) + ((self.operations_url,) if self.operations_url else ())
+
+    def measure(
+        self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
+    ) -> Measurement:
+        return csdl_diff.measure(self, timeout=timeout)
 
 
 @dataclass(frozen=True)
@@ -245,7 +320,7 @@ class ProbeComparison:
     # name. A convention like `backlot.fidelity.{name}_probe` would turn a rename into an
     # ImportError on a nightly run instead of something a linter catches, and nothing static could
     # follow the link.
-    run: Callable[[str, Mapping[str, Any], float], list[Finding]]
+    run: Callable[[str, Mapping[str, Any], float], Measurement]
 
     @property
     def endpoints(self) -> tuple[str, ...]:
@@ -258,27 +333,43 @@ class ProbeComparison:
     mount: tuple[str, ...] = ()
     # None: a probe asks Backlot, not the vendor, and signs with the corpus's own keys. A probe
     # against a live vendor would declare what it needs here. Note that `run` is the only part a
-    # probe supplies: fetching the model and starting the server are `s3_probe.divergences`, and
+    # probe supplies: fetching the model and starting the server are `s3_probe.measure`, and
     # every probe goes through it.
     credentials: tuple[Credential, ...] = ()
 
-    def divergences(
+    def measure(
         self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
-    ) -> list[Finding]:
-        return s3_probe.divergences(self, timeout=timeout)
+    ) -> Measurement:
+        return s3_probe.measure(self, timeout=timeout)
+
+
+@dataclass(frozen=True)
+class SlackComparison:
+    """Slack, compared against its reference documentation (:mod:`backlot.fidelity.slack_docs`).
+
+    The one kind named after a source rather than a format, because the format is one vendor's:
+    a markdown page per method, read where the page gives a part one fixed spelling. The OpenAPI
+    document Slack published is archived and last changed 2020-10-06, and an answer read off
+    a live workspace depends on what that workspace holds, so neither is the contract here.
+    """
+
+    name: str
+    # The reference's method index, served as markdown (`docs.slack.dev/llms.txt`).
+    index_url: str
+    mount: tuple[str, ...]
+    credentials: tuple[Credential, ...] = ()
+
+    @property
+    def endpoints(self) -> tuple[str, ...]:
+        return (self.index_url,)
+
+    def measure(
+        self, credentials: Mapping[str, str] | None = None, *, timeout: float = 120.0
+    ) -> Measurement:
+        return slack_docs.measure(self, timeout=timeout)
 
 
 OPENAPI = {
-    "slack": OpenAPIComparison(
-        name="slack",
-        specs=(
-            Spec(
-                spec_url="https://raw.githubusercontent.com/slackapi/slack-api-specs/master/web-api/slack_web_openapi_v2.json",
-                mount=("/slack/api",),
-                strip="/slack/api",
-            ),
-        ),
-    ),
     "github": OpenAPIComparison(
         name="github",
         specs=(
@@ -396,6 +487,7 @@ GOOGLE_DISCOVERY = {
                 spec_url="https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
                 mount=("/sheets/v4",),
                 strip="/sheets",
+                walk=google_walks.sheets,
             ),
             Spec(
                 spec_url="https://www.googleapis.com/discovery/v1/apis/slides/v1/rest",
@@ -422,6 +514,31 @@ GRAPHQL = {
     ),
 }
 
+CSDL = {
+    "msteams": CSDLComparison(
+        name="msteams",
+        # Graph serves its own $metadata, anonymously: the type system Backlot is compared against
+        # is the one the live service answers with, not a copy of it in a repository.
+        spec_url="https://graph.microsoft.com/v1.0/$metadata",
+        mount=("/msgraph/v1.0",),
+        walk=msgraph.run,
+        # The OpenAPI document Microsoft generates its Graph SDKs from, of which the Teams surface
+        # is this source's operations (`msgraph.SCOPE`).
+        operations_url=(
+            "https://raw.githubusercontent.com/microsoftgraph/msgraph-metadata/master/openapi/"
+            "v1.0/openapi.yaml"
+        ),
+    ),
+}
+
+SLACK = {
+    "slack": SlackComparison(
+        name="slack",
+        index_url="https://docs.slack.dev/reference/methods.md",
+        mount=("/slack/api",),
+    ),
+}
+
 PROBE = {
     "s3": ProbeComparison(
         name="s3",
@@ -430,7 +547,6 @@ PROBE = {
         run=s3_probe.run,
     ),
 }
-
 
 # Served paths no published document covers, and why. Matched by prefix, so `/_meta` covers
 # `/_meta/users`.
@@ -451,10 +567,24 @@ UNCOMPARED = {
     ),
 }
 
-# The four kinds differ in what a vendor gives us to compare against, not in what they are for.
-Comparison = OpenAPIComparison | GoogleDiscoveryComparison | GraphQLComparison | ProbeComparison
+# The six kinds differ in what a vendor gives us to compare against, not in what they are for.
+Comparison = (
+    OpenAPIComparison
+    | GoogleDiscoveryComparison
+    | GraphQLComparison
+    | CSDLComparison
+    | ProbeComparison
+    | SlackComparison
+)
 
-COMPARISONS: dict[str, Comparison] = {**OPENAPI, **GOOGLE_DISCOVERY, **GRAPHQL, **PROBE}
+COMPARISONS: dict[str, Comparison] = {
+    **OPENAPI,
+    **SLACK,
+    **GOOGLE_DISCOVERY,
+    **GRAPHQL,
+    **CSDL,
+    **PROBE,
+}
 
 
 def _resolve_credentials(
@@ -487,20 +617,28 @@ def _resolve_credentials(
     return resolved
 
 
-def divergences(
+def measure(
     comparison: "Comparison",
     credentials: Mapping[str, str] | None = None,
     *,
     timeout: float = 120.0,
-) -> list[Finding]:
-    """Every divergence for one source, whichever kind of contract its vendor publishes.
+) -> Measurement:
+    """Every divergence for one source, and the operations it paired, whichever kind of contract
+    its vendor publishes.
 
     Each kind knows how to load its own two sides and compare them, so this neither branches on the
     kind nor unpacks the source: it resolves whatever credentials the source declares, then asks.
     """
     if not isinstance(
         comparison,
-        (OpenAPIComparison, GoogleDiscoveryComparison, GraphQLComparison, ProbeComparison),
+        (
+            OpenAPIComparison,
+            GoogleDiscoveryComparison,
+            GraphQLComparison,
+            CSDLComparison,
+            ProbeComparison,
+            SlackComparison,
+        ),
     ):
         raise FidelityError(
             f"{type(comparison).__name__} is not a kind of comparison this knows how to run"
@@ -508,7 +646,7 @@ def divergences(
     # Resolved here, for every kind, so a credential handed to a source that declares none is
     # refused rather than dropped on the floor — the kinds that need nothing are the majority, and
     # they are exactly where a silently ignored option goes unnoticed.
-    return comparison.divergences(_resolve_credentials(comparison, credentials), timeout=timeout)
+    return comparison.measure(_resolve_credentials(comparison, credentials), timeout=timeout)
 
 
 def baseline_path(source: str) -> Path:

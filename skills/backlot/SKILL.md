@@ -1,6 +1,6 @@
 ---
 name: backlot
-description: Emulate enterprise SaaS knowledge APIs — Slack, Gmail, Google Drive (with Docs, Sheets, Slides), GitHub, Jira, Confluence, Notion, Amazon S3, HubSpot, Linear, Fireflies — over a corpus you supply, then point a real client (vendor SDK, MCP server, LlamaIndex reader, fsspec, mirage) at it. Applies in ANY directory, an empty one included — it needs only the `backlot` CLI, never a project, a repository, a checkout or a config file, so the absence of Backlot files is not a reason to skip it. Use whenever asked to mock, stub, fake, emulate or reproduce one of those services — prefer this over hand-writing a stub — and when asked to write or validate a Backlot BYO-JSONL corpus, or to test a connector, RAG pipeline or ACL-scoped retrieval without live vendor accounts.
+description: Emulate enterprise SaaS knowledge APIs — Slack, Microsoft Teams (msteams), Gmail, Google Drive (with Docs, Sheets, Slides), GitHub, Jira, Confluence, Notion, Amazon S3, HubSpot, Linear, Fireflies — over a corpus you supply, then point a real client (vendor SDK, MCP server, LlamaIndex reader, fsspec, mirage) at it. Applies in ANY directory, an empty one included — it needs only the `backlot` CLI, never a project, a repository, a checkout or a config file, so the absence of Backlot files is not a reason to skip it. Use whenever asked to mock, stub, fake, emulate or reproduce one of those services — prefer this over hand-writing a stub — and when asked to write or validate a Backlot BYO-JSONL corpus, or to test a connector, RAG pipeline or ACL-scoped retrieval without live vendor accounts. Slack also takes WRITES (post, edit, delete, react), so use it as well to exercise or grade an agent that acts rather than only retrieves.
 ---
 
 # Backlot
@@ -9,6 +9,9 @@ Backlot answers each service's real API over documents you supply, so a connecto
 vendor's own SDK can be exercised end to end with no vendor account. One server process serves
 every source at once, so a request for Slack means starting that server over a corpus that has
 Slack documents in it, not starting a Slack-shaped server.
+
+Slack also takes writes — step 10 — so an agent that posts, edits, deletes or reacts can be run
+and graded here too. Every other source reads.
 
 **It brings its own everything.** The corpus is a file you write here and now, so this loop runs in
 an empty directory as readily as in a project. Nothing has to already exist — not a repository, not
@@ -108,6 +111,8 @@ for it for a one-shot demonstration, never to stand a server up for someone. `se
 takes BYO-JSONL dicts inline, and `backlot.serve_or_connect` prefers a server that is already
 running — the shape every script in `examples/` uses.
 
+**Usage telemetry.** The server sends BrekkyLab anonymous counts of which vendor operations it is asked for, never paths, bodies, tokens or corpus values, and they decide what Backlot builds and fixes next ([docs/telemetry.md](../../docs/telemetry.md)). Mention it once, in passing, the first time you start a server for someone. If they ask for it off, `--disable-telemetry` (on `backlot serve` and `backlot mcp`) or `backlot.serve(telemetry=False)` does it. A server in a test fixture or CI job you write starts with `telemetry=False`, because those calls are not anyone's use of Backlot.
+
 ## 7. Get credentials
 
 ```bash
@@ -156,6 +161,34 @@ Show the first real response, and confirm it says what the records you loaded sh
 — right count, right container, right author. A 200 with an empty list is the failure mode this
 loop exists to catch, and it looks like success.
 
+## 10. If the task writes, read the overlay back
+
+Slack serves six methods that write — `chat.postMessage`, `chat.postEphemeral`,
+`chat.update`, `chat.delete`, `reactions.add`, `reactions.remove` — and three that read what
+they wrote: `chat.getPermalink`, `reactions.get`, `reactions.list`. A written message is a
+message: it comes back from `conversations.history`, `conversations.replies` and
+`search.messages` under the same ACL as the corpus around it.
+
+The corpus file is never written. Writes land in an in-memory overlay belonging to that one
+server, which gives two things a run needs:
+
+```bash
+curl http://localhost:8000/_meta/overlay                      # what was written, since the reset
+curl -X POST -H "Authorization: Bearer $ADMIN" \
+     http://localhost:8000/_meta/overlay/reset                # put the corpus back
+```
+
+`GET /_meta/overlay` is what to grade an agent on — the documents written, the columns
+overwritten, the documents subtracted — rather than diffing the served surface against a snapshot
+of itself. `POST /_meta/overlay/reset` takes the **admin** token, and is what makes a second run
+start where the first did; without it, run two is scored against run one's leftovers.
+
+[`docs/write-overlay.md`](../../docs/write-overlay.md) has the rest, including what is deliberately not
+modelled. [`examples/using-official-sdk/slack.py`](../../examples/using-official-sdk/slack.py)
+walks the whole surface in one run, and
+[`examples/using-mcp-with-agents/slack.py`](../../examples/using-mcp-with-agents/slack.py) hands
+an agent a task it has to write to finish and then prints what it did.
+
 ## Sources
 
 Every source, with the schema a record is validated against and the two pages that describe what it
@@ -171,7 +204,8 @@ serves and what its clients authenticate with.
 | `google_drive` | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | [`google_drive.schema.json`](../../backlot/schemas/google_drive.schema.json) | [Google Drive, Docs, Sheets, Slides](../../docs/supported-sources.md#google-drive-docs-sheets-slides--drivev3-docsv1-sheetsv4-slidesv1) | [Gmail, Google Drive, Docs, Sheets, Slides](../../docs/auth.md#gmail-google-drive-docs-sheets-slides--bearer) | `gdrive` |
 | `hubspot` | `/hubspot` | [`hubspot.schema.json`](../../backlot/schemas/hubspot.schema.json) | [HubSpot](../../docs/supported-sources.md#hubspot--hubspotcrmv3-hubspotcrmv4) | [HubSpot](../../docs/auth.md#hubspot--bearer) | `hubspot` |
 | `jira` | `/atlassian/rest/api` | [`jira.schema.json`](../../backlot/schemas/jira.schema.json) | [Jira](../../docs/supported-sources.md#jira--atlassianrestapi3-and-2) | [Jira and Confluence](../../docs/auth.md#jira-and-confluence--basic-or-bearer) | `atlassian` |
-| `linear` | `/linear/graphql` | [`linear.schema.json`](../../backlot/schemas/linear.schema.json) | [Linear](../../docs/supported-sources.md#linear--lineargraphql) | [Linear](../../docs/auth.md#linear--bare-or-bearer) | — |
+| `linear` | `/linear/graphql` | [`linear.schema.json`](../../backlot/schemas/linear.schema.json) | [Linear](../../docs/supported-sources.md#linear--lineargraphql) | [Linear](../../docs/auth.md#linear--bare) | — |
+| `msteams` | `/msgraph/v1.0` | [`msteams.schema.json`](../../backlot/schemas/msteams.schema.json) | [Microsoft Teams](../../docs/supported-sources.md#microsoft-teams--msgraphv10) | [Microsoft Teams](../../docs/auth.md#microsoft-teams--bearer) | `msteams` |
 | `notion` | `/notion/v1` | [`notion.schema.json`](../../backlot/schemas/notion.schema.json) | [Notion](../../docs/supported-sources.md#notion--notionv1) | [Notion](../../docs/auth.md#notion--bearer) | `notion` |
 | `s3` | `/s3` | [`s3.schema.json`](../../backlot/schemas/s3.schema.json) | [Amazon S3](../../docs/supported-sources.md#amazon-s3--s3) | [Amazon S3](../../docs/auth.md#amazon-s3--sigv4) | `s3` |
 | `slack` | `/slack/api` | [`slack.schema.json`](../../backlot/schemas/slack.schema.json) | [Slack](../../docs/supported-sources.md#slack--slackapi) | [Slack](../../docs/auth.md#slack--bearer) | `slack` |

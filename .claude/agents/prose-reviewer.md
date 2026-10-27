@@ -37,6 +37,12 @@ the body with `gh pr view <n> --json body` or from the prompt, and `AGENTS.md`, 
    introspection or generated client and a date. The body ends at the template's checklist: a
    signature, a "Generated with" line or a session link after it is a finding.
 
+A debloat pull request (a `claude/debloat-` or `claude/rehearsal-debloat-` branch, or one the prompt
+calls debloat) follows `.claude/skills/backlot-debloat/SKILL.md` step 8 for its body: its
+measurement section carries the invariance proof instead of a vendor call, and it lists candidates
+left for a later run. Neither is a finding. Its rewrites shorten on purpose; judge them against that
+skill's rule 5 — a rewrite that drops what rule 5 keeps is drift.
+
 ## What you do not flag
 
 Correctness of code or tests, status codes, response shapes, ACL — the behaviour reviewer owns

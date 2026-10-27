@@ -8,13 +8,13 @@ dynamic = ["version"]
 description = "A local emulator for enterprise SaaS APIs, served over your own corpus with per-document ACLs"
 readme = "README.pypi.md"
 requires-python = ">=3.11"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE.md"]
 authors = [
     { name = "nuri-yoo", email = "yoonuri1@gmail.com" },
     { name = "khj809", email = "onsealeatang@gmail.com" },
 ]
-keywords = ["mock", "rag", "slack", "gmail", "google-drive", "jira", "confluence", "github", "notion", "s3", "amazon-s3", "hubspot", "linear", "graphql", "benchmark"]
+keywords = ["mock", "rag", "slack", "microsoft-teams", "microsoft-graph", "gmail", "google-drive", "jira", "confluence", "github", "notion", "s3", "amazon-s3", "hubspot", "linear", "graphql", "benchmark"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -23,6 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Framework :: FastAPI",
     "Topic :: Software Development :: Testing :: Mocking",
 ]
@@ -61,6 +62,8 @@ all = ["backlot[dev,official-sdk,mcp,llamaindex,mirage,fsspec]"]
 dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.6",
+    # scripts/invariance.py records coverage to hold a test-only change to the lines it executed.
+    "pytest-cov>=6",
     # starlette 1.6's TestClient wants httpx2; the httpx the tests also call directly is a core
     # dependency.
     "httpx2",
@@ -71,6 +74,10 @@ dev = [
 # Official SDKs used by examples/using-official-sdk/, tests/test_sdk.py (one per service) + the ACL demo.
 official-sdk = [
     "slack_sdk>=3.43",
+    # Microsoft Graph. Pulls azure-core/azure-identity and the kiota runtime with it, which is why
+    # the Teams example documents the two-line shim rather than hiding it: a reader who does not
+    # want that tree can drive the same endpoints over plain HTTP.
+    "msgraph-sdk>=1.5",
     "PyGithub>=2.3",
     "atlassian-python-api>=3.41",
     "google-api-python-client>=2.198",
@@ -126,10 +133,12 @@ llamaindex = [
 # mirage's S3 backend imports at module scope: without it `s3.py` dies on `import aioboto3` before
 # it reaches Backlot.
 mirage = [
-    # 0.0.6 is the floor: it holds the host constants `integrations.mirage` rebinds in
-    # `mirage.core.{google,github}.constants`, and it takes `GitHubResource(config)` alone, the
-    # signature `examples/using-mirage/github.py` calls. Earlier releases are not supported.
-    "mirage-ai[fuse,s3]>=0.0.6",
+    # 0.0.7 is the floor: the examples import `mirage.vfs.*` and call `Workspace.shell`, both new
+    # in it, and it holds the host constants `integrations.mirage` rebinds in
+    # `mirage.core.{google,github}.constants`. Earlier releases are not supported. It carries a
+    # Rust core and ships `cp311-abi3` wheels for macOS, glibc and musl Linux and Windows, each on
+    # x86_64 and arm64; anywhere else installs the sdist, which needs a Rust toolchain.
+    "mirage-ai[fuse,s3]>=0.0.7",
 ]
 # fsspec examples (examples/using-fsspec/): read the mock through the filesystem interface that
 # pandas, pyarrow, dask and LlamaIndex all consume. pandas is here because the examples' point is
@@ -189,6 +198,12 @@ extend-select = [
     "S612",  # logging.config.listen
 ]
 
+[tool.coverage.run]
+# Follow the uvicorn subprocess `live_server` and `backlot.serve` start, which most of the S3 and SDK
+# tests talk to; `backlot.serve` stops it with SIGTERM, which coverage saves nothing on unless told.
+patch = ["subprocess"]
+sigterm = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # loadfile, not the default: several modules share a module-scoped corpus.
@@ -200,6 +215,18 @@ filterwarnings = [
     "ignore:Duplicate Operation ID:UserWarning",
     # llama-index reads a pydantic field API pydantic itself deprecated; nothing here to change.
     "ignore:Call to deprecated function \\(or staticmethod\\) extra_info:DeprecationWarning",
+    # msgraph-sdk's GENERATED request builders warn on their own per-endpoint RequestConfiguration
+    # classes, which the kiota generator still emits. Raised by the SDK about itself on every
+    # Teams call, so it says nothing about this repo and there is nothing here to change.
+    "ignore:This class is deprecated. Please use the generic RequestConfiguration:DeprecationWarning",
+    "ignore:GetQueryParameters is deprecated:DeprecationWarning",
+    # An open without encoding= (a text file, or a subprocess pipe in text mode) in backlot, tests
+    # or scripts fails the test that reaches it; one in a dependency stays a warning. Python emits
+    # the warning only under PYTHONWARNDEFAULTENCODING=1, which CI sets.
+    "error::EncodingWarning:backlot|tests|scripts",
+]
+markers = [
+    "windows: a test the Windows workflow runs on every pull request it runs on",
 ]
 
 [tool.setuptools_scm]

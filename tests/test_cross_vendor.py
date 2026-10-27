@@ -412,8 +412,6 @@ def test_cloudflare_refuses_a_repeated_authorization(client, tokens_yaml, vendor
     assert answered == expected
 
 
-# A request to each vendor Cloudflare fronts, `{key}` standing for the vendor's own spelling of
-# the admin token, with a header Cloudflare refuses sent more than once, each answered with the
 # The same page on each vendor Cloudflare fronts, `{key}` as above, for each header it refuses
 # sent more than once. The controls: one copy reaches the vendor, and `Cache-Control` or `Range`
 # twice reaches it too. The one-copy `If-None-Match` sends a tag, not `*`: api.notion.com answers

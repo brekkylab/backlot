@@ -2,8 +2,8 @@
 
 The routes are registered on `routers.google.router`, so they share its system parameters
 (`routers.google._system_parameters`), credentials and batch endpoint; `routers.google` imports
-this module last to register them. A ``fields`` mask is read with the Sheets routes' helpers
-(`routers.google_sheets._gmask_select`).
+this module last to register them, and a ``fields`` mask is read as the Sheets routes read theirs
+(`routers.google._gmask_select`).
 
 Every answer below was measured on docs.googleapis.com on 2026-10-09 and 2026-10-26, by a Google
 Workspace member on a one-tab Doc it owns and by a second member it was shared with as a reader.
@@ -17,15 +17,17 @@ from backlot import auth, gdocs, protojson, store, synth
 from backlot.errors import google as gerr
 from backlot.openapi import qp
 from backlot.routers.google import (
+    _GOOGLE_FIELDS,
     _drive_owned_by,
     _editor_doc,
+    _gmask_apply,
+    _gmask_select,
     _require,
     _sheets_bool_value,
     _sheets_enum_value,
     _typed_query,
     router,
 )
-from backlot.routers.google_sheets import _GOOGLE_FIELDS, _gmask_apply, _gmask_select
 
 # `documents.get`'s two enums, names in number order. Measured 2026-10-09: `suggestionsViewMode`
 # reads `0` through `3`, `+1` and `01` (the value numbered 1) and a name in any ASCII case, and

@@ -2860,9 +2860,8 @@ _MASKS_SERVED = [
 def test_drive_answers_a_fields_mask_with_what_it_selects(client, admin_h, drive_check_ids):
     """The rows `_MASKS_SERVED` records. A row with top-level keys compares them on every route,
     `files.list` included, and the listed entries as its fourth column says; a row without compares
-    the whole answer with the unmasked one. `"default"` is each entry as an unmasked request gets
-    it. A `drives.list` row compares the top-level keys alone: Backlot serves no shared drive,
-    where real listed the member's two."""
+    the whole answer with the one `fields=*` gets. A `drives.list` row compares the top-level keys
+    alone: Backlot serves no shared drive, where real listed the member's two."""
 
     def get(path, **params):
         url, _, query = path.format(doc=drive_check_ids["doc"]).partition("?")
@@ -2873,17 +2872,12 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(client, admin_h, drive
         return r.json()
 
     def answer(path, mask, top, entries):
-        """The row's answer in its own shape: "default" where it is the unmasked one."""
+        """The row's answer in its own shape: "full" where it is the one `fields=*` gets."""
         body = get(path, fields=mask)
         if top is None:
-            return "default" if body == get(path) else body
+            return "full" if body == get(path, fields="*") else body
         listed = next((k for k in body if isinstance(body[k], list)), None)
-        if entries == "default":
-            shown = "default" if body[listed] == get(path)[listed] else body[listed]
-        elif entries == "full":
-            # permissions.list has no unmasked full object: no mask answers only id/type/kind/role,
-            # while an explicit wrapper or `*` adds emailAddress/displayName and the rest. The `*`
-            # request is the unmasked-equivalent a mask naming the whole list must agree with.
+        if entries == "full":
             shown = "full" if body[listed] == get(path, fields="*")[listed] else body[listed]
         elif entries:
             shown = {frozenset(e) for e in body[listed]}
@@ -2893,8 +2887,8 @@ def test_drive_answers_a_fields_mask_with_what_it_selects(client, admin_h, drive
 
     def expected(top, entries):
         if top is None:
-            return "default"
-        if entries and entries not in ("default", "full"):
+            return "full"
+        if entries and entries != "full":
             return (top, {frozenset(entries)})
         return (top, None if entries is None else entries or [])
 

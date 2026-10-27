@@ -3994,7 +3994,8 @@ async def drive_files_list(request: Request):
     else:
         files = _drive_newest_first(objects, folders, offset, limit)
         _drive_fill_shared(conn, files, stored)
-    # No mask answers each entry with the `_DRIVE_FILE_DEFAULT` keys alone, measured 2026-10-25.
+    # No mask answers each entry with the `_DRIVE_FILE_DEFAULT` keys alone, as `_drive_project_one`
+    # answers a file read by id.
     entry_keys = (
         set(_DRIVE_FILE_DEFAULT)
         if list_paths is None

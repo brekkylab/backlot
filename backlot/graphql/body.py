@@ -19,6 +19,8 @@ import zlib
 from decimal import Decimal
 from typing import Any
 
+import brotli as brotli_codec
+
 from backlot.graphql import v8_json
 
 # `json.decoder`'s whitespace and string scanner, and `json.scanner.NUMBER_RE` under `re.ASCII`: the
@@ -94,8 +96,8 @@ def body_parser_text(
     ``utf-`` is a 415, then an encoding other than ``identity``, ``gzip``, ``deflate`` and ``br``,
     then an uncompressed body past ``limit`` the 413, which ``raw-body`` answers from
     ``Content-Length`` before it reads, then a ``utf-`` charset iconv-lite does not know the 415;
-    then :func:`_inflate` reads a compressed body, and the bytes are decoded in the charset's byte
-    order (:func:`_byte_order`), or as UTF-7 (:func:`_utf7`).
+    then :func:`_inflate` or :func:`_unbrotli` reads a compressed body, and the bytes are decoded in
+    the charset's byte order (:func:`_byte_order`), or as UTF-7 (:func:`_utf7`).
 
     api.linear.app answered each step on 2026-10-19 (UTC): ``latin1``, ``iso-8859-1``, ``utf8`` and
     ``utf_16le`` were the charset 415, ``x-gzip``, ``bogus`` and ``gzip, gzip`` the encoding's, a
@@ -104,8 +106,7 @@ def body_parser_text(
     and ``utf-16le``, ``utf-16-le``, ``utf-16be``, ``utf-16`` and ``utf-32`` with and without a
     byte-order mark, ``utf-32le``, ``GZIP``, ``deflate`` and an empty encoding were served. It
     decompressed a ``br`` body, which body-parser 1.x refuses with the encoding's 415, so it runs a
-    2.x; such a body is read here as it arrives. Without ``brotli``, ``br`` is the encoding's 415
-    as on a 1.x."""
+    2.x. Without ``brotli``, ``br`` is the encoding's 415 as on a 1.x."""
     charset = _charset(content_type)
     if not charset.startswith("utf-"):
         raise Unread(415, f'unsupported charset "{charset.upper()}"')
@@ -119,6 +120,8 @@ def body_parser_text(
         raise Unread(415, f'unsupported charset "{charset.upper()}"')
     if encoding in ("gzip", "deflate"):
         raw = _inflate(raw, gzip=encoding == "gzip", limit=limit)
+    elif encoding == "br":
+        raw = _unbrotli(raw, limit)
     if name == "utf8":
         return decode(raw)
     if name in _ICONV_UTF7:
@@ -356,6 +359,53 @@ def _inflate(raw: bytes, gzip: bool, limit: int = LINEAR_LIMIT) -> bytes:
         raw = inflater.unused_data
         if not (gzip and raw[:1].strip(b"\x00")):
             return bytes(out)
+
+
+def _unbrotli(raw: bytes, limit: int = LINEAR_LIMIT) -> bytes:
+    """``raw`` through Node's ``createBrotliDecompress``, which ``body-parser`` 2.x pipes a ``br``
+    body through, and :class:`Unread` where that stream fails or yields more than ``limit`` bytes.
+    Node reads one stream and leaves what follows it unread; the messages are zlib's
+    ``Decompression failed`` for bytes Brotli cannot read and ``unexpected end of file`` for a
+    stream cut short. api.linear.app answered each on 2026-10-27 (UTC): a stream then ``xx``, or
+    then a second stream, was served, no bytes and a stream short of its last three were the end of
+    file, the query sent plain was the decompression failure, and a stream of 10485761 bytes the
+    413 where one of 10485760 was served."""
+    try:
+        out, finished = _brotli_read(raw, limit)
+    except brotli_codec.error:
+        # Python's decoder refuses bytes after the stream, which Node leaves unread: the stream
+        # ends at the shortest prefix that finishes it, if any does.
+        lo, hi = 0, len(raw)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            try:
+                out, finished = _brotli_read(raw[:mid], limit)
+            except brotli_codec.error:
+                hi = mid
+                continue
+            if finished or len(out) > limit:
+                hi = mid
+            else:
+                lo = mid + 1
+        try:
+            out, finished = _brotli_read(raw[:lo], limit)
+        except brotli_codec.error:
+            raise Unread(400, "Decompression failed") from None
+    if len(out) > limit:
+        raise Unread(413, "request entity too large")
+    if not finished:
+        raise Unread(400, "unexpected end of file")
+    return out
+
+
+def _brotli_read(raw: bytes, limit: int) -> tuple[bytes, bool]:
+    """What a Brotli decoder fed ``raw`` gives, up to a byte past ``limit``, and whether the stream
+    ended; ``brotli.error`` where the bytes are not Brotli's."""
+    decoder = brotli_codec.Decompressor()
+    out = bytearray(decoder.process(raw, output_buffer_limit=limit + 1))
+    while len(out) <= limit and not decoder.is_finished() and not decoder.can_accept_more_data():
+        out += decoder.process(b"", output_buffer_limit=limit + 1 - len(out))
+    return bytes(out), decoder.is_finished()
 
 
 class Double(float):

@@ -16,6 +16,7 @@ import zlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+import brotli
 import pytest
 from graphql import GraphQLError, build_client_schema, is_enum_type, parse, validate
 
@@ -2105,6 +2106,7 @@ def _charset(name: str) -> tuple:
 
 
 _GZIP = (("Content-Encoding", "gzip"),)
+_BR = (("Content-Encoding", "br"),)
 _EXPECTED_PROPERTY = _express(
     400, b"Expected property name or '}' in JSON at position 1 (line 1 column 2)"
 )
@@ -2128,6 +2130,21 @@ _IDEOGRAPHS_MISREAD = _express(
 )
 _LINEAR_READS = [
     pytest.param(_GZIP, gzip.compress(_TYPENAME), None, id="gzip"),
+    pytest.param(_BR, brotli.compress(_TYPENAME), None, id="br"),
+    pytest.param((("Content-Encoding", "BR"),), brotli.compress(_TYPENAME), None, id="BR"),
+    pytest.param(_BR, _TYPENAME, _express(400, b"Decompression failed"), id="br over a plain body"),
+    pytest.param(_BR, brotli.compress(_TYPENAME) + b"xx", None, id="br then xx"),
+    pytest.param(_BR, brotli.compress(_TYPENAME) * 2, None, id="br twice"),
+    pytest.param(_BR, brotli.compress(_TYPENAME)[:-3], _CUT_SHORT, id="br cut short"),
+    pytest.param(_BR, b"", _CUT_SHORT, id="br over no bytes"),
+    pytest.param(_BR, brotli.compress(b""), _NO_KEYS, id="br of no bytes"),
+    pytest.param(_BR, brotli.compress(b"{"), _EXPECTED_PROPERTY, id="br of {"),
+    pytest.param(
+        _BR + _charset("utf-16le"),
+        brotli.compress(_TYPENAME.decode().encode("utf-16-le")),
+        None,
+        id="br of utf-16le",
+    ),
     pytest.param((("Content-Encoding", "GZIP"),), gzip.compress(_TYPENAME), None, id="GZIP"),
     pytest.param((("Content-Encoding", "deflate"),), zlib.compress(_TYPENAME), None, id="deflate"),
     pytest.param((("Content-Encoding", ""),), _TYPENAME, None, id="an empty encoding"),
@@ -2474,6 +2491,8 @@ _LINEAR_READS = [
     pytest.param((), padded_query(_LIMIT + 1), _TOO_LARGE_DECLARED, id="past the limit"),
     pytest.param(_GZIP, gzip.compress(padded_query(_LIMIT)), None, id="the limit, gzipped"),
     pytest.param(_GZIP, gzip.compress(padded_query(_LIMIT + 1)), _TOO_LARGE, id="past it, gzipped"),
+    pytest.param(_BR, brotli.compress(padded_query(_LIMIT)), None, id="the limit, br"),
+    pytest.param(_BR, brotli.compress(padded_query(_LIMIT + 1)), _TOO_LARGE, id="past it, br"),
     pytest.param(
         _GZIP, gzip.compress(padded_query(_LIMIT + 2)), _TOO_LARGE, id="past it by two, gzipped"
     ),

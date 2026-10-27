@@ -1,6 +1,4 @@
-"""What Express does alike for each vendor whose answers it writes: the `ETag` the `etag` package
-puts on a body, and ``fresh``'s test for `no-cache`, the same in 0.5.2, which Express 4 asks, and
-in 2.0.0, which Express 5 asks."""
+"""What Express does alike for each vendor whose answers it writes."""
 
 from __future__ import annotations
 
@@ -17,6 +15,6 @@ def weak_etag(body: bytes) -> str:
 
 
 #: ``fresh``'s test for `no-cache` among the comma-separated parts of a request's `Cache-Control`,
-#: its `\s` written out as the characters JavaScript's `\s` holds in latin-1, which a header value
-#: is read as.
+#: the same in 0.5.2, which Express 4 asks, and in 2.0.0, which Express 5 asks, its `\s` written
+#: out as the characters JavaScript's `\s` holds in latin-1, which a header value is read as.
 NO_CACHE = re.compile(r"(?:^|,)[\t\n\v\f\r \xa0]*?no-cache[\t\n\v\f\r \xa0]*?(?:,|$)")

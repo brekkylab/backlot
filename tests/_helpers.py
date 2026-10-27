@@ -226,10 +226,11 @@ def client_for(settings: Settings, *, reload: bool = True):
 
     The lifespan sets the org a corpus recorded on the settings `get_settings` holds, which the
     routers read at each request, so on exit those settings are put back as they were on entry:
-    a client still open around this one keeps answering for its own org.
+    a client still open around this one keeps answering for its own org. Settings nothing had
+    read on entry are not read on exit, so the next read takes the environment as it is then.
     """
     prev = os.environ.get("BACKLOT_DATA_DIR")
-    outer = get_settings()
+    outer = get_settings() if get_settings.cache_info().currsize else None
     os.environ["BACKLOT_DATA_DIR"] = str(settings.data_dir)
     get_settings.cache_clear()
     try:
@@ -245,9 +246,10 @@ def client_for(settings: Settings, *, reload: bool = True):
             os.environ.pop("BACKLOT_DATA_DIR", None)
         else:
             os.environ["BACKLOT_DATA_DIR"] = prev
-        restored = get_settings()
-        for name in type(outer).model_fields:
-            setattr(restored, name, getattr(outer, name))
+        if outer is not None:
+            restored = get_settings()
+            for name in type(outer).model_fields:
+                setattr(restored, name, getattr(outer, name))
 
 
 def python_child_env(**extra: str) -> dict[str, str]:

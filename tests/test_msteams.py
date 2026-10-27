@@ -2577,8 +2577,7 @@ def test_a_reaction_without_its_own_time_takes_the_messages(tmp_path):
 
 
 def test_a_client_open_around_another_still_names_its_team(sample_settings, tmp_path):
-    """The team id is read off the settings the app's lifespan set its org on, and a client opened
-    and closed inside this one, as `corpus_client` is, leaves them as they were."""
+    """The team id is read off the org on the settings `client_for` puts back on exit."""
     h = {"Authorization": f"Bearer {sample_settings.admin_token}"}
     with client_for(sample_settings) as outer:
         team = outer.get(f"{V1}/me/joinedTeams", headers=h).json()["value"][0]["id"]

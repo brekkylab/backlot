@@ -2429,6 +2429,18 @@ _LINEAR_READS = [
     ),
     pytest.param(
         _charset("utf-7"),
+        b'{"query":"{ x+2D0- }"}',
+        b'{"errors":[{"message":"Syntax Error: Invalid character: U+D83D.","locations":[{"line":1,"column":4}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run of a lone high surrogate",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"query($a: Int) { issues(first: $a) { nodes { id } } }","variables":{"a":"+2D3eAA-"}}',
+        b'{"errors":[{"message":"Variable \\"$a\\" got invalid value \\"\xf0\x9f\x98\x80\\"; Int cannot represent non-integer value: \\"\xf0\x9f\x98\x80\\"","locations":[{"line":1,"column":7}],"extensions":{"code":"BAD_USER_INPUT","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run of a surrogate pair in a variable's value",
+    ),
+    pytest.param(
+        _charset("utf-7"),
         b'{"query":"{ x\xe9+AGE- }"}',
         b'{"errors":[{"message":"Syntax Error: Unexpected character: U+FFFD.","locations":[{"line":1,"column":4}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
         id="utf-7, a byte past 0x7f before a run",

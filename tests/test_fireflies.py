@@ -376,6 +376,40 @@ def test_fireflies_transcript_content_round_trips_through_the_api(client, admin_
         assert synth.fireflies_transcript_text(t["sentences"]) == row["content"]
 
 
+def test_fireflies_transcripts_for_a_channel_no_channel_has_is_an_error_not_an_empty_page(
+    client, admin_h
+):
+    """Real answers `Channel not found`, not an empty page (#1107): measured against
+    api.fireflies.ai 2026-10-27, `transcripts(channel_id:)` with an id the workspace
+    holds no channel for answers 200 with `data.transcripts` null and an
+    `object_not_found` field error whose metadata names `Channel`, where Backlot's
+    channel filter matched nothing and answered an empty list."""
+    r = ff_gql(
+        client,
+        '{ transcripts(channel_id: "nope-channel", limit: 5) { id } }',
+        admin_h,
+    )
+    body = r.json()
+    assert r.status_code == 200
+    assert body["data"]["transcripts"] is None
+    (error,) = body["errors"]
+    assert error["message"] == "Channel not found"
+    assert error["path"] == ["transcripts"]
+    assert error["code"] == "object_not_found"
+    extensions = error["extensions"]
+    assert extensions["code"] == "object_not_found"
+    assert extensions["status"] == 404
+    assert extensions["metadata"] == {"objectType": "Channel"}
+    # a channel that exists still lists: `channels.id` feeds straight back in
+    real = ff_gql(client, "{ transcripts(limit: 1) { channels { id } } }", admin_h).json()
+    channel = real["data"]["transcripts"][0]["channels"][0]["id"]
+    listed = ff_gql(
+        client, '{ transcripts(channel_id: "%s", limit: 50) { id } }' % channel, admin_h
+    ).json()
+    assert "errors" not in listed
+    assert listed["data"]["transcripts"]
+
+
 def test_fireflies_serves_the_documented_metadata_surface(client, admin_h):
     r = ff_gql(
         client,

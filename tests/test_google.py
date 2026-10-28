@@ -6809,7 +6809,7 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
         "doc_id": "crlf",
         "title": "CRLF notes",
         "author_email": "owner@acme.com",
-        "content": "one\r\ntwo\x01\ue000\t\x0b\uf900",
+        "content": "one\r\ntwo\x01\ue000\t\x0b\uf900\ufdcf\ufdf0",
     }
 
     def para(start, end, runs, style="NORMAL_TEXT"):
@@ -6895,7 +6895,7 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
     ]
     assert crlf.json()["body"]["content"][1:] == [
         para(1, 5, [("one\n", {}, 4)]),
-        para(5, 12, [("two\t\x0b\uf900\n", {}, 7)]),
+        para(5, 14, [("two\t\x0b\uf900\ufdcf\ufdf0\n", {}, 9)]),
     ]
     headings = [
         el["paragraph"]["paragraphStyle"]["headingId"]

@@ -46,7 +46,8 @@ _TEXT_STYLE_ORDER = (
 STRIPPED = re.compile("[\x00-\x08\x0c-\x1f\ue000-\uf8ff]")
 
 # The characters `insertText` refuses with a 500, U+FDD0-U+FDEF, keeping U+FDCF and U+FDF0 beside
-# them; a `.txt` holding one fails its conversion to a Doc as well.
+# them; a `.txt` holding one fails its conversion to a Doc as well, and Drive keeps an unconverted
+# `.txt` holding U+FDD0 and U+FDEF byte for byte.
 UNWRITABLE = re.compile("[\ufdd0-\ufdef]")
 
 # The colour a link gives its run, through the editor or `updateTextStyle` alike.

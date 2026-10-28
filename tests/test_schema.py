@@ -1731,3 +1731,4 @@ def test_a_lone_surrogate_is_refused_where_it_sits(record, expected):
     pair is one character and passes."""
     assert [m.split(", which")[0] for m in record_errors(record)] == [expected]
     assert record_errors(_drive(content=json.loads('"\\ud83d\\ude00"'))) == []
+    assert record_errors(_drive(content="\ud7ff\ue000")) == []

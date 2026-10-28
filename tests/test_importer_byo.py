@@ -6020,6 +6020,24 @@ def test_reimporting_a_structured_file_as_prose_drops_its_structure(tmp_path, st
     assert store.gdrive_doc_body_for(conn, row["id"]) is None
 
 
+def test_a_file_that_is_not_a_doc_may_hold_what_insert_text_refuses(tmp_path):
+    """The control for the `insertText refuses` rows of
+    `test_a_structure_a_record_cannot_mean_is_refused`: the same characters in a `.txt`, which Drive
+    keeps as uploaded (`gdocs.UNWRITABLE`), import and are stored as stated."""
+    content = "a\ufdd0\ufdefb"
+    record = {
+        **{k: v for k, v in PARAS_REC.items() if k != "paragraphs"},
+        "subtype": "txt",
+        "content": content,
+    }
+    corpus = _write(tmp_path, [record])
+    assert byo.run(corpus, dry_run=True) == 0
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    assert conn.execute("SELECT content FROM gdrive_files").fetchone()["content"] == content
+
+
 @pytest.mark.parametrize(
     "structure,overrides,fragment",
     [
@@ -6066,6 +6084,26 @@ def test_reimporting_a_structured_file_as_prose_drops_its_structure(tmp_path, st
         (
             "paragraphs",
             {"paragraphs": [{"runs": [{"text": "a", "link": "wiki.acme.example:8443/page"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a/b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a?b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a#b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": ":foo"}]}]},
             "does not match",
         ),
         ("paragraphs", {"paragraphs": [{"text": "a\ufdd0"}]}, "insertText refuses"),

@@ -2930,6 +2930,18 @@ _FIREFLIES_HTTP = [
                 "500",
                 "@include of a default",
             ),
+            (
+                b'{"query":"{ __proto__: user { __typename } }"}',
+                b'{"data":{"__proto__":{"__typename":"User"}}}\n',
+                "500",
+                "an alias __proto__",
+            ),
+            (
+                b'{"query":"query { ...__proto__ } fragment __proto__ on Query { user { __typename } }"}',
+                _USER_TYPENAME_DATA,
+                "500",
+                "a fragment __proto__",
+            ),
         )
     ),
     http_row(

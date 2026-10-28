@@ -262,9 +262,9 @@ def _answer(seen: dict[str, str], result: engine.Result, spent: Spent | None = N
 
 
 def _resolver_fields(operation: engine.Operation) -> list[tuple[str, FieldNode]]:
-    """The root fields ``operation`` selects whose resolvers run, in order: each response key, an
-    alias or a field's name, once, through fragments and as `@skip` and `@include` leave it with
-    the variables as the run reads them, and not `__typename`, `__schema` or `__type`, nor a field
+    """The root fields ``operation`` selects whose resolvers run, in order, through fragments and as
+    `@skip` and `@include` leave them with the variables as the run reads them: each response key,
+    an alias or a field's name, once, and not `__typename`, `__schema` or `__type`, nor a field
     whose arguments graphql-js refuses as it starts the field, which api.fireflies.ai answered with
     that refusal and not the budget's, its minute spent, on 2026-10-26 (UTC)."""
     root = ENGINE.schema.get_root_type(operation.operation.operation)
@@ -536,10 +536,10 @@ def nginx_passes(path: str) -> bool:
 async def unrouted(request: Request):
     """Fireflies' answer at a path Fastify has no route for, each of which ``backlot.main`` routes
     here: :data:`_NGINX_404` where nginx keeps the request (:func:`nginx_passes`), and Fastify's
-    where it passes it on, :func:`_preflight` to an `OPTIONS` and its not-found handler's 404
-    (:func:`_not_found`) to any other method, after reading the body of one of :data:`_BODIED`
-    (:func:`_fastify_read`). Fastify's answers carry what :func:`_from_fastify` adds, and nginx's
-    page :data:`_HSTS` alone."""
+    where it passes it on, :func:`_preflight` to an `OPTIONS`, and to any other method,
+    after reading the body of one of :data:`_BODIED` (:func:`_fastify_read`), its not-found
+    handler's 404 (:func:`_not_found`). Fastify's answers carry what :func:`_from_fastify` adds, and
+    nginx's page :data:`_HSTS` alone."""
     if not nginx_passes(sent_path(request.scope)):
         return Response(
             _NGINX_404,

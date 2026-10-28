@@ -6000,14 +6000,16 @@ def test_reimporting_a_workbook_replaces_its_sheets_rather_than_adding_to_them(t
     assert json.loads(rows[0]["grid"]) == [["only"]]
 
 
-def test_reimporting_a_workbook_as_prose_drops_its_sheets(tmp_path):
+@pytest.mark.parametrize("structure", ["sheets", "paragraphs"])
+def test_reimporting_a_structured_file_as_prose_drops_its_structure(tmp_path, structure):
     """The other direction of the same rule, and the worse one: a record that stops stating a grid
-    must stop serving one. Left behind, the stale sheets make `spreadsheets.get` answer with cells
-    that `files.export` no longer has -- one document described two ways, which is the whole thing
-    a derived `content` exists to prevent."""
+    or paragraphs must stop serving them. Left behind, the stale sheets make `spreadsheets.get`
+    answer with cells that `files.export` no longer has -- one document described two ways, which
+    is the whole thing a derived `content` exists to prevent."""
+    record = {"sheets": GRID_REC, "paragraphs": PARAS_REC}[structure]
     settings = Settings(data_dir=tmp_path)
-    load(_write(tmp_path, [GRID_REC], name="a.jsonl"), settings)
-    prose = {k: v for k, v in GRID_REC.items() if k != "sheets"}
+    load(_write(tmp_path, [record], name="a.jsonl"), settings)
+    prose = {k: v for k, v in record.items() if k != structure}
     prose["content"] = "now prose"
     load(_write(tmp_path, [prose], name="b.jsonl"), settings, reset=False)
 
@@ -6015,14 +6017,34 @@ def test_reimporting_a_workbook_as_prose_drops_its_sheets(tmp_path):
     row = conn.execute("SELECT id, content FROM gdrive_files").fetchone()
     assert row["content"] == "now prose"
     assert store.gdrive_sheets_for(conn, row["id"]) == []
+    assert store.gdrive_doc_body_for(conn, row["id"]) is None
+
+
+def test_a_file_that_is_not_a_doc_may_hold_what_insert_text_refuses(tmp_path):
+    """The control for the `insertText refuses` rows of
+    `test_a_structure_a_record_cannot_mean_is_refused`: the same characters in a `.txt`, which Drive
+    keeps as uploaded (`gdocs.UNWRITABLE`), import and are stored as stated."""
+    content = "a\ufdd0\ufdefb"
+    record = {
+        **{k: v for k, v in PARAS_REC.items() if k != "paragraphs"},
+        "subtype": "txt",
+        "content": content,
+    }
+    corpus = _write(tmp_path, [record])
+    assert byo.run(corpus, dry_run=True) == 0
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    assert conn.execute("SELECT content FROM gdrive_files").fetchone()["content"] == content
 
 
 @pytest.mark.parametrize(
-    "overrides,fragment",
+    "structure,overrides,fragment",
     [
-        ({"content": "prose"}, "drop 'content'"),
-        ({"subtype": "document"}, "subtype 'spreadsheet'"),
+        ("sheets", {"content": "prose"}, "drop 'content'"),
+        ("sheets", {"subtype": "document"}, "subtype 'spreadsheet'"),
         (
+            "sheets",
             {"sheets": [{"title": "Data", "grid": []}, {"title": "data", "grid": []}]},
             "duplicate sheet title",
         ),
@@ -6030,19 +6052,78 @@ def test_reimporting_a_workbook_as_prose_drops_its_sheets(tmp_path):
         # that spells `Sheet1` out collides with it. Comparing only STATED titles misses this and
         # leaves the second sheet unreachable by name -- lookup answers with the first match.
         (
+            "sheets",
             {"sheets": [{"grid": [["x"]]}, {"title": "Sheet1", "grid": [["y"]]}]},
             "duplicate sheet title",
         ),
+        ("paragraphs", {"content": "prose"}, "drop 'content'"),
+        ("paragraphs", {"subtype": "spreadsheet"}, "subtype 'document'"),
+        ("paragraphs", {"paragraphs": [{"text": "a", "runs": [{"text": "b"}]}]}, "one of"),
+        ("paragraphs", {"paragraphs": [{"style": "TITLE"}]}, "one of"),
+        ("paragraphs", {"paragraphs": [{"text": "a\nb"}]}, "holds none"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a"}, {"text": "b\n"}]}]}, "holds none"),
+        ("paragraphs", {"paragraphs": [{"text": "a\rb"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x00b"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x08b"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x0cb"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x1fb"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\ue000"}]}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\uf8ff"}]}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [1]}, "is not of type 'object'"),
+        ("paragraphs", {"paragraphs": [{"runs": [1]}]}, "is not of type 'object'"),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "example.com"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "#heading=h.x"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "wiki.acme.example:8443/page"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a/b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a?b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a#b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": ":foo"}]}]},
+            "does not match",
+        ),
+        ("paragraphs", {"paragraphs": [{"text": "a\ufdd0"}]}, "insertText refuses"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\ufdef"}]}]}, "insertText refuses"),
+        ("prose", {"content": "a\ufdd0"}, "insertText refuses"),
+        ("prose", {"content": "a\ud800b"}, "lone surrogate"),
     ],
 )
-def test_a_grid_a_record_cannot_mean_is_refused(tmp_path, capsys, overrides, fragment):
+def test_a_structure_a_record_cannot_mean_is_refused(
+    tmp_path, capsys, structure, overrides, fragment
+):
     """Cross-field rules, refused in Python rather than by the schema: expressed as an `if`/`then`
     each reports as a missing property at the record root, naming neither the field that put the
     rule in force nor what is wrong with the pairing.
 
     Asserted against BOTH passes. `--dry-run` walks the corpus itself rather than sharing the
     loader's, so a rule reaches it only by being wired into that pass as well."""
-    corpus = _write(tmp_path, [{**GRID_REC, **overrides}])
+    prose = {**{k: v for k, v in PARAS_REC.items() if k != "paragraphs"}, "content": "x"}
+    record = {"sheets": GRID_REC, "paragraphs": PARAS_REC, "prose": prose}[structure]
+    corpus = _write(tmp_path, [{**record, **overrides}])
     with pytest.raises(SystemExit) as e:
         load(corpus, Settings(data_dir=tmp_path))
     assert fragment in str(e.value)
@@ -6147,3 +6228,44 @@ def test_a_cell_json_cannot_carry_is_refused_at_import(tmp_path, cell):
     with pytest.raises(SystemExit) as e:
         _load_grid(tmp_path, [{**GRID_REC, "sheets": [{"grid": [[cell]]}]}])
     assert "RFC 8259" in str(e.value)
+
+
+# --- google_drive: a document that states its paragraphs ------------------------
+
+PARAS_REC = {
+    "source_type": "google_drive",
+    "title": "Plan",
+    "folder": "sales",
+    "doc_id": "gd-paras",
+    "author_email": "dana@example.com",
+    "paragraphs": [
+        {"style": "HEADING_1", "text": "Goals"},
+        {"runs": [{"text": "Ship "}, {"text": "it", "bold": True}]},
+        {"text": ""},
+    ],
+}
+
+
+def test_stated_paragraphs_are_the_body_and_their_text_is_the_content(tmp_path):
+    """The body is stored in real's shape with its indices left out, and `content` is the
+    paragraphs' text, one line each, which Drive's export and search read. Two documents with one
+    text and different styles are two documents, so the paragraphs reach the id; one that states
+    none stores no body."""
+    restyled = {
+        **PARAS_REC,
+        "doc_id": "gd-restyled",
+        "paragraphs": [{"text": "Goals"}, {"text": "Ship it"}, {"text": ""}],
+    }
+    unnamed = [{k: v for k, v in r.items() if k != "doc_id"} for r in (PARAS_REC, restyled)]
+    prose = {
+        **{k: v for k, v in PARAS_REC.items() if k != "paragraphs"},
+        "doc_id": "gd-prose",
+        "content": "Goals\nShip it\n",
+    }
+    conn = _load_grid(tmp_path, [*unnamed, prose])
+    rows = conn.execute("SELECT id, content FROM gdrive_files ORDER BY rowid").fetchall()
+    assert [r["content"] for r in rows] == ["Goals\nShip it\n"] * 3
+    body = store.gdrive_doc_body_for(conn, rows[0]["id"])
+    assert [el.keys() for el in body] == [{"sectionBreak"}] + [{"paragraph"}] * 3
+    assert store.gdrive_doc_body_for(conn, rows[1]["id"]) != body
+    assert store.gdrive_doc_body_for(conn, rows[2]["id"]) is None

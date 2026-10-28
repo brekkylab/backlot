@@ -112,13 +112,13 @@ async def docs_get(document_id: str, request: Request):
     ahead of the next when both hold, `fields=body,comments&includeTabsContent=true` answering the
     comment field's.
 
-    A caller who is not the owner is a reader here (`routers.google._drive_file_capabilities`),
-    the admin token of every file it did not create among them (`routers.google._drive_owned_by`).
-    A reader is answered with no `revisionId`, and a
-    `suggestionsViewMode` it does not ask for is `PREVIEW_WITHOUT_SUGGESTIONS`, where the owner's
-    is `SUGGESTIONS_INLINE`; a reader asking for `SUGGESTIONS_INLINE` or
-    `PREVIEW_SUGGESTIONS_ACCEPTED` is the 403. A mode asked for is echoed by its name, its number
-    included. No Doc here holds a suggestion, so a preview serves the same content."""
+    A caller who is not the owner is a reader here (`routers.google._drive_file_capabilities`), the
+    admin token of every file it did not create among them (`routers.google._drive_owned_by`). A
+    reader is answered with no `revisionId`, and a `suggestionsViewMode` it does not ask for is
+    `PREVIEW_WITHOUT_SUGGESTIONS`, where the owner's is `SUGGESTIONS_INLINE`; a reader asking for
+    `SUGGESTIONS_INLINE` or `PREVIEW_SUGGESTIONS_ACCEPTED` is the 403. A mode asked for is echoed by
+    its name, its number included. No Doc here holds a suggestion, so a preview serves the same
+    content."""
     caller = _require(request)
     flags = _typed_query(
         request,

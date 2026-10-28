@@ -1,7 +1,7 @@
-"""Google APIs: Gmail (``/gmail/v1``), Drive (``/drive/v3``), and the Workspace editor APIs —
-Docs (``/docs/v1``, in `routers.google_docs`), Sheets (``/sheets/v4``, in
-`routers.google_sheets`), Slides (``/slides/v1``) — for clients that read native docs structurally
-instead of via Drive export.
+"""Google APIs: Gmail (``/gmail/v1``), Drive (``/drive/v3``), and the Workspace editor APIs — Docs
+(``/docs/v1``, in `routers.google_docs`), Sheets (``/sheets/v4``, in `routers.google_sheets`),
+Slides (``/slides/v1``) — for clients that read native docs structurally instead of via Drive
+export.
 
 Client base-URL override: point the Gmail client at ``http://<host>/gmail`` and the
 Drive client at ``http://<host>/drive`` (google-api-python-client ``api_endpoint``).
@@ -4447,12 +4447,12 @@ def _gmask_resolve(path: tuple[str, ...], message: str | None) -> dict | None:
     """What ``path`` selects in ``message`` (`None` for a field that holds no message), or ``None``
     when it names nothing there; ``{}`` is all of it.
 
-    A ``*`` stands for one name. Measured 2026-10-22: `sheets.*.title` is
-    `sheets.properties.title`, `*.*.title` the same, `*.*.rowCount` refused as naming nothing (the
-    row count is three names under `sheets`), and `*.data` is `sheets.data`. A ``*`` that ends a
-    path selects all of what it is under, a field holding no message included, and so does a run
-    of them: `spreadsheetId.*`, `spreadsheetId.*.*`, a map's `criteria.*` and `*.*.*` answered,
-    where `spreadsheetId.*.x` names nothing."""
+    A ``*`` stands for one name. Measured 2026-10-22: `sheets.*.title` is `sheets.properties.title`,
+    `*.*.title` the same, `*.*.rowCount` refused as naming nothing (the row count is three names
+    under `sheets`), and `*.data` is `sheets.data`. A ``*`` that ends a path selects all of what it
+    is under, a field holding no message included, and so does a run of them: `spreadsheetId.*`,
+    `spreadsheetId.*.*`, a map's `criteria.*` and `*.*.*` answered, where `spreadsheetId.*.x` names
+    nothing."""
     if not path:
         return {}
     head, rest = path[0], path[1:]
@@ -4956,11 +4956,11 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
 
 # The typed booleans each Drive method Backlot serves declares, as the proto field its refusal
 # names. Each is parsed and the parsed value never read. Measured 2026-09-23 on each of them: the
-# spellings `_query_bool` reads, first measured on Sheets, 30 of them swept on
-# `supportsAllDrives`; and on 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since
-# only ASCII letters are folded (`protojson.to_bool`). Spelled `true`, four of them run a check of
-# their own and two lift one -- see `_drive_true`. `files.export` and `about.get` declare none, and
-# real ignores `supportsAllDrives=NOPE` on both.
+# spellings `_query_bool` reads, first measured on Sheets, 30 of them swept on `supportsAllDrives`;
+# and on 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since only ASCII letters are
+# folded (`protojson.to_bool`). Spelled `true`, four of them run a check of their own and two lift
+# one -- see `_drive_true`. `files.export` and `about.get` declare none, and real ignores
+# `supportsAllDrives=NOPE` on both.
 _DRIVE_BOOLS = {
     "supportsAllDrives": "supports_all_drives",
     "supportsTeamDrives": "supports_team_drives",

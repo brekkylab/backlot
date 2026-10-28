@@ -35,8 +35,8 @@ SOFTWARE.
 ## Apollo Server's landing page
 
 `backlot/graphql/apollo_landing_page.html` is the page Apollo Server 5.5.1 (`@apollo/server`)
-serves a browser, as api.fireflies.ai served it, with its nonce left as a placeholder. Apollo
-Server is released under the MIT License:
+serves a browser, as api.fireflies.ai served it, with `NONCE` where the page holds its nonce.
+Apollo Server is released under the MIT License:
 
 ```text
 The MIT License (MIT)

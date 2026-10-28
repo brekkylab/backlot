@@ -348,12 +348,9 @@ def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
 
 # A request to Linear or Fireflies that Cloudflare answers itself, `{key}` standing for the vendor's
 # own spelling of the admin token, and the status, media type, length, `Connection` and body of the
-# answer: the 400 page
-# `backlot.main.refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot` records for
-# `Authorization` or `If-None-Match` sent more than once, ahead of
-# `backlot.main._CLOUDFLARE_METHOD`'s answer to each of its methods. The last three rows are the
-# control: one header reaches the vendor, and a path that only starts with the vendor's name is not
-# the vendor's.
+# answer, as `backlot.main.refuse_cloudflares_methods_on_linear_and_fireflies` and the
+# repeated-header middleware it names record them. The last three rows are the control: one header
+# reaches the vendor, and a path that only starts with the vendor's name is not the vendor's.
 _TYPENAME = b'{"query":"{ __typename }"}'
 _CLOUDFLARE = 400
 _PAGE = (

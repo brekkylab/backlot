@@ -1478,7 +1478,9 @@ def answers_cors(path: str) -> bool:
     `/v1/users/me`, `/v1/search`, `/v1/nonexistent_thing/xyz`, `/v1/`, `/v1/oauth` and `/v1/oauthx`
     carried :data:`CORS_HEADERS` and answered the preflight 204; `/v1`, `/v2/users/me`, `/foo`,
     `/v1/oauth/`, `/v1/oauth/foo` and `/v1/oauth/token` carried none of them, answered the
-    preflight the URL's 400, and sent `vary: Accept-Encoding`, with `Origin` or without."""
+    preflight the URL's 400, and sent `vary: Accept-Encoding`, with `Origin` or without. On
+    2026-10-28 an escape counted as sent: `/v1/%6Fauth/token` and `/v1/oauth%2Ftoken` carried them,
+    and `/v1%2Fusers/me` and `/%761/users/me` did not."""
     path = path.removeprefix("/notion")
     return path.startswith("/v1/") and not path.startswith("/v1/oauth/")
 

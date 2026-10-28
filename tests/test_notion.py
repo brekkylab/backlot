@@ -491,6 +491,33 @@ def test_notion_cors_headers_preflight_and_vary_are_reals(client, notion_h):
         ("GET", "/notion/v1/users/me", notion_h, None, 200, none, both),
         ("GET", "/notion/v1/users/me", {**notion_h, "Origin": ""}, None, 200, none, both),
         ("GET", "/notion/v1/users/me", {**notion_h, "Origin": " "}, None, 200, none, both),
+        (
+            "GET",
+            "/notion/v1/users/me",
+            (*notion_h.items(), ("Origin", ""), *origin.items()),
+            None,
+            200,
+            five,
+            both,
+        ),
+        (
+            "GET",
+            "/notion/v1/users/me",
+            (*notion_h.items(), ("Origin", ""), ("Origin", "")),
+            None,
+            200,
+            none,
+            both,
+        ),
+        (
+            "OPTIONS",
+            "/notion/v1/users/me",
+            (("Origin", ""), *preflight.items()),
+            None,
+            204,
+            five,
+            "Origin",
+        ),
         ("TRACE", "/notion/v1/users/me", {**notion_h, **origin}, None, 405, none, None),
         ("OPTIONS", "/notion/v1/search", preflight, None, 204, five, "Origin"),
         ("OPTIONS", "/notion/v1/nonexistent_thing/xyz", preflight, None, 204, five, "Origin"),
@@ -525,11 +552,15 @@ def test_notion_cors_headers_preflight_and_vary_are_reals(client, notion_h):
         ("OPTIONS", "/notion/v2/users/me", preflight, None, 400, none, compression),
         ("OPTIONS", "/notion/v1/", preflight, None, 204, five, "Origin"),
         ("OPTIONS", "/notion/v1/oauth/", preflight, None, 400, none, compression),
+        ("GET", "/notion/v1/%6Fauth/token", {**notion_h, **origin}, None, 400, five, both),
+        ("OPTIONS", "/notion/v1/oauth%2Ftoken", preflight, None, 204, five, "Origin"),
+        ("OPTIONS", "/notion/v1%2Fusers/me", preflight, None, 400, none, compression),
     ]
     answered, wanted = {}, {}
     for method, path, headers, body, status, sent, vary in rows:
-        r = sent_as(client, method, path, headers, body)
-        row = (method, path, tuple(headers.items()))
+        pairs = tuple(headers.items() if isinstance(headers, dict) else headers)
+        r = sent_as(client, method, path, pairs, body)
+        row = (method, path, pairs)
         got = {name: r.headers.get(name) for name in _NOTION_CORS_HEADERS}
         answered[row] = (r.status_code, got, r.headers.get("vary"))
         wanted[row] = (status, sent, vary)

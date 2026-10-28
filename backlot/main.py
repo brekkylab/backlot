@@ -788,7 +788,8 @@ async def report_notion_cors(request: Request, call_next):
     `vary: Origin, Accept-Encoding`, with `Origin` or without; an `OPTIONS` with
     `Access-Control-Request-Method` beside that `Origin` (`POST`, `FOO` and an empty one alike) was
     instead a 204 with no body and `vary: Origin`, ahead of the URL check. An `Origin` that is
-    empty, a space or a tab counted as none. On the other paths `Origin` changed nothing
+    empty, a space or a tab counted as none, and on 2026-10-28 an `Origin` sent twice or three
+    times counted when one of them had a value. On the other paths `Origin` changed nothing
     (``notion.answers_cors`` has their `vary`). On 2026-10-28 the 304 an `If-None-Match: *` draws,
     which carries no `content-type`, was `vary: Origin`, with the CORS headers as `Origin` asked.
 
@@ -797,8 +798,9 @@ async def report_notion_cors(request: Request, call_next):
     the four: it reads the path with its trailing slash as sent, answers a preflight before the
     body is read, and puts its headers on a 304.
     """
-    origin = request.headers.get("origin", "").strip(" \t")
-    if not notion.answers_cors(request.url.path):
+    origin = any(value.strip(" \t") for value in request.headers.getlist("origin"))
+    raw_path = request.scope.get("raw_path") or request.url.path.encode()
+    if not notion.answers_cors(raw_path.decode("latin-1")):
         response = await call_next(request)
         response.headers["vary"] = "Accept-Encoding"
         return response

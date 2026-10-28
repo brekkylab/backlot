@@ -35,6 +35,7 @@ from starlette.routing import Match
 from backlot import (
     auth,
     collation,
+    gdocs,
     gsheets,
     protojson,
     store,
@@ -4403,7 +4404,8 @@ _DOCS_COMMENTS_VIEW = protojson.Enum(
 
 @router.get("/docs/v1/documents/{document_id}")
 async def docs_get(document_id: str, request: Request):
-    """The document as Docs structural elements: one ``paragraph`` per line of the stored text."""
+    """The document as Docs structural elements: its stored body, or one ``paragraph`` per line of
+    its text when it states none (`backlot.gdocs`)."""
     # The credential, then the typed values, then the lookup -- `_typed_query` records the order.
     _require(request)
     # Validated and then unused: the body is the same whatever a value that is read selects, where
@@ -4421,11 +4423,9 @@ async def docs_get(document_id: str, request: Request):
         },
     )
     row = _editor_doc(request, document_id, expect="document")
-    content = [{"sectionBreak": {"sectionStyle": {}}}]
-    for line in (row["content"] or "").split("\n"):
-        content.append(
-            {"paragraph": {"elements": [{"textRun": {"content": line + "\n", "textStyle": {}}}]}}
-        )
+    body = store.gdrive_doc_body_for(auth.conn(request), document_id)
+    if body is None:
+        body = gdocs.from_text(row["content"] or "")
     # Real's order for an untabbed read (docs.googleapis.com, 2026-10-16, twelve Docs, six owned by
     # a Workspace member and six by a consumer account), the same under each `suggestionsViewMode`,
     # `includeTabsContent=false` and a `fields` mask naming the members in another order
@@ -4434,9 +4434,9 @@ async def docs_get(document_id: str, request: Request):
     # them; this server serves none of the four.
     return {
         "title": row["title"],
-        "body": {"content": content},
-        "documentStyle": {},
-        "namedStyles": {"styles": []},
+        "body": {"content": gdocs.indexed(body)},
+        "documentStyle": gdocs.document_style(),
+        "namedStyles": gdocs.named_styles(),
         "revisionId": synth._digest(document_id)[:24],
         "suggestionsViewMode": "SUGGESTIONS_INLINE",
         "documentId": document_id,

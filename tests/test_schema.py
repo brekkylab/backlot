@@ -1685,11 +1685,50 @@ def test_a_malformed_grid_is_refused(sheets):
     assert record_errors(_drive(subtype="spreadsheet", sheets=sheets)) != []
 
 
-def test_content_is_required_only_when_no_grid_is_stated():
+def test_content_is_required_only_when_no_grid_or_paragraphs_are_stated():
     """The requirement moves rather than disappearing, and it keeps its wording -- `complete()`
     reads that message to fill a record, so a differently-phrased rule would silently stop
     supplying `content` to every drive test in the suite."""
     assert record_errors(_drive()) == [
-        "Q3 pipeline: 'content' is a required property when sheets is absent"
+        "Q3 pipeline: 'content' is a required property when sheets is absent and paragraphs is "
+        "absent"
     ]
     assert record_errors(_drive(subtype="spreadsheet", sheets=[{"grid": [["a"]]}])) == []
+    assert record_errors(_drive(paragraphs=[{"text": "a"}])) == []
+
+
+_LONE = "holds a lone surrogate, a `\\ud800`-style escape that pairs with nothing"
+
+
+@pytest.mark.parametrize(
+    "record,expected",
+    [
+        (_drive(content="a\ud800b"), f"Q3 pipeline [content]: {_LONE}"),
+        (_drive(title="T\udfff", content="ok"), f"T\\udfff [title]: {_LONE}"),
+        (
+            _drive(paragraphs=[{"runs": [{"text": "x\ud83d"}]}]),
+            f"Q3 pipeline [paragraphs/0/runs/0/text]: {_LONE}",
+        ),
+        (
+            {
+                "source_type": "slack",
+                "channel": "c",
+                "author_email": "a@acme.com",
+                "created": "2026-01-01T00:00:00Z",
+                "content": "x\udfffy",
+            },
+            f"<root> [content]: {_LONE}",
+        ),
+        (
+            complete("hubspot", properties={"k\udc00": "v"}),
+            f"<root> [properties/k\\udc00]: {_LONE}",
+        ),
+    ],
+)
+def test_a_lone_surrogate_is_refused_where_it_sits(record, expected):
+    """`json.loads` reads an unpaired `\\ud800` escape into a string UTF-8 cannot encode, so a
+    record holding one would pass `--dry-run` and stop the import at the first row it writes. A
+    pair is one character and passes."""
+    assert [m.split(", which")[0] for m in record_errors(record)] == [expected]
+    assert record_errors(_drive(content=json.loads('"\\ud83d\\ude00"'))) == []
+    assert record_errors(_drive(content="\ud7ff\ue000")) == []

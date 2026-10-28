@@ -181,7 +181,7 @@
           },
           "text": {
             "type": "string",
-            "description": "The paragraph's text, unstyled and without its newline. An empty string is an empty paragraph. State this or `runs`, not both. No character real strips from a document's text (U+0000-U+0008, U+000C-U+001F, U+E000-U+F8FF)."
+            "description": "The paragraph's text, unstyled and without its newline. An empty string is an empty paragraph. State this or `runs`, not both. No character real strips from a document's text (U+0000-U+0008, U+000C-U+001F, U+E000-U+F8FF) and none `insertText` refuses (U+FDD0-U+FDEF)."
           },
           "runs": {
             "type": "array",
@@ -216,8 +216,8 @@
                 },
                 "link": {
                   "type": "string",
-                  "pattern": "^ *[A-Za-z][A-Za-z0-9+.-]*:",
-                  "description": "The URL the run links to, with its scheme (`https:`, `mailto:`, ...): real stores a value without one as an `http://` URL and a `#heading=` value as a heading link, so neither is one a document holds. A link is served underlined and in the link colour, as the editor makes one."
+                  "pattern": "^[^.:/?#]+:",
+                  "description": "The URL the run links to, starting with a scheme: text before its first `:` with no `.`, `/`, `?` or `#` in it (`https:`, `mailto:`). Real stores most other values as an `http://` URL, `wiki.acme.example:8443/page` among them, and a `#heading=` value as a heading link, so a document holds neither as stated. A link is served underlined and in the link colour, as the editor makes one."
                 }
               }
             }

@@ -6045,7 +6045,14 @@ def test_reimporting_a_structured_file_as_prose_drops_its_structure(tmp_path, st
         ("paragraphs", {"paragraphs": [{"text": "a\nb"}]}, "holds none"),
         ("paragraphs", {"paragraphs": [{"runs": [{"text": "a"}, {"text": "b\n"}]}]}, "holds none"),
         ("paragraphs", {"paragraphs": [{"text": "a\rb"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x00b"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x08b"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x0cb"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x1fb"}]}, "real strips"),
         ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\ue000"}]}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\uf8ff"}]}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [1]}, "is not of type 'object'"),
+        ("paragraphs", {"paragraphs": [{"runs": [1]}]}, "is not of type 'object'"),
         (
             "paragraphs",
             {"paragraphs": [{"runs": [{"text": "a", "link": "example.com"}]}]},
@@ -6056,6 +6063,15 @@ def test_reimporting_a_structured_file_as_prose_drops_its_structure(tmp_path, st
             {"paragraphs": [{"runs": [{"text": "a", "link": "#heading=h.x"}]}]},
             "does not match",
         ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "wiki.acme.example:8443/page"}]}]},
+            "does not match",
+        ),
+        ("paragraphs", {"paragraphs": [{"text": "a\ufdd0"}]}, "insertText refuses"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\ufdef"}]}]}, "insertText refuses"),
+        ("prose", {"content": "a\ufdd0"}, "insertText refuses"),
+        ("prose", {"content": "a\ud800b"}, "lone surrogate"),
     ],
 )
 def test_a_structure_a_record_cannot_mean_is_refused(
@@ -6067,7 +6083,8 @@ def test_a_structure_a_record_cannot_mean_is_refused(
 
     Asserted against BOTH passes. `--dry-run` walks the corpus itself rather than sharing the
     loader's, so a rule reaches it only by being wired into that pass as well."""
-    record = {"sheets": GRID_REC, "paragraphs": PARAS_REC}[structure]
+    prose = {**{k: v for k, v in PARAS_REC.items() if k != "paragraphs"}, "content": "x"}
+    record = {"sheets": GRID_REC, "paragraphs": PARAS_REC, "prose": prose}[structure]
     corpus = _write(tmp_path, [{**record, **overrides}])
     with pytest.raises(SystemExit) as e:
         load(corpus, Settings(data_dir=tmp_path))

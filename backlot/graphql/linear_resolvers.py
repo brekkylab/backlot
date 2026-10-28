@@ -1175,6 +1175,27 @@ def resolve_documents(_root, info, first=None, after=None, last=None, before=Non
     return _list_page([], first, after, last, before)
 
 
+def _not_found(entity: str) -> GraphQLError:
+    """Linear's error for a by-id root given an id it holds no ``entity`` for, as api.linear.app
+    answered each of ``issue``, ``team``, ``user``, ``workflowState``, ``project``, ``issueLabel``,
+    ``cycle``, ``release``, ``issueRelation`` and ``teamMembership`` with an unknown UUID and with
+    ``nope`` on 2026-10-25 (UTC). ``attachment`` answered in words of its own (``_ATTACHMENT``)."""
+    return _input_error(f"Entity not found: {entity}", f"Could not find referenced {entity}.")
+
+
+def _input_error(message: str, presentable: str) -> GraphQLError:
+    return GraphQLError(
+        message,
+        extensions={
+            "type": "invalid input",
+            "code": "INPUT_ERROR",
+            "statusCode": 400,
+            "userError": True,
+            "userPresentableMessage": presentable,
+        },
+    )
+
+
 def resolve_issue(_root, info, id):
     """``issue(id:)`` takes a UUID or a human identifier, as the real API does. Linear declares
     this non-null, so a miss is an error rather than a null — the same thing the real API does
@@ -1185,7 +1206,7 @@ def resolve_issue(_root, info, id):
     if row is None:
         row = store.linear_issue_by_identifier(conn, str(id), visible_ids=visible)
     if row is None:
-        raise GraphQLError(f"Entity not found: Issue - Could not find referenced Issue. id={id}")
+        raise _not_found("Issue")
     return _issue(row, info)
 
 
@@ -1224,7 +1245,7 @@ def resolve_team(_root, info, id):
     ):
         container = None
     if container is None:
-        raise GraphQLError(f"Entity not found: Team - Could not find referenced Team. id={id}")
+        raise _not_found("Team")
     return _team(container, info)
 
 
@@ -1384,9 +1405,7 @@ def _by_id(info, kind: str, id_value, entity: str, *, unstored=None):
     ):
         found = None  # exists in the corpus, but not for this caller — answer as if absent
     if found is None:
-        raise GraphQLError(
-            f"Entity not found: {entity} - Could not find referenced {entity}. id={id_value}"
-        )
+        raise _not_found(entity)
     return found
 
 
@@ -1429,15 +1448,21 @@ def resolve_release(_root, info, id) -> dict:
     return _release(_by_id(info, "release", id, "Release"), info)
 
 
+# What api.linear.app answered `attachment(id:)` with for an unknown UUID and for `nope` on
+# 2026-10-25 (UTC): its message and presentable text speak of a url either way.
+_ATTACHMENT = (
+    "Entity not found: Attachment: could not find by url.",
+    "Could not find referenced attachment with this url.",
+)
+
+
 def resolve_attachment(_root, info, id) -> dict:
     """Attachments live in their own table, so this resolves by row id and scopes on the parent
     issue rather than through the name-keyed entities the other roots use."""
     ctx = _ctx(info)
     row = store.linear_attachment_by_id(ctx["conn"], str(id), visible_ids=ctx["visible_ids"])
     if row is None:
-        raise GraphQLError(
-            f"Entity not found: Attachment - Could not find referenced Attachment. id={id}"
-        )
+        raise _input_error(*_ATTACHMENT)
     return _attachment(row, info)
 
 
@@ -1445,9 +1470,7 @@ def resolve_issue_relation(_root, info, id) -> dict:
     ctx = _ctx(info)
     row = store.linear_relation_by_id(ctx["conn"], str(id), visible_ids=ctx["visible_ids"])
     if row is None:
-        raise GraphQLError(
-            f"Entity not found: IssueRelation - Could not find referenced IssueRelation. id={id}"
-        )
+        raise _not_found("IssueRelation")
     return _relation(row, info)
 
 
@@ -1582,7 +1605,7 @@ def resolve_team_membership(_root, info, id) -> dict:
             if synth.linear_team_membership_id(container, user_id) == str(id).lower():
                 user = _user(row["email"], row["display_name"], info)
                 return _membership(container, user, info)
-    raise GraphQLError("Entity not found: TeamMembership")
+    raise _not_found("TeamMembership")
 
 
 def resolve_team_membership_of(team, info, userId) -> dict | None:
@@ -1890,7 +1913,7 @@ def _issue_by_id(info, issue_id):
     ctx = _ctx(info)
     row = store.get_document(ctx["conn"], "linear", issue_id, visible_ids=ctx["visible_ids"])
     if row is None:
-        raise GraphQLError("Entity not found: Issue - Could not find referenced Issue.")
+        raise _not_found("Issue")
     return _issue(row, info)
 
 
@@ -2015,13 +2038,18 @@ RESOLVERS = {
 RESOLVERS["IssueSearchResult"] = RESOLVERS["Issue"]
 
 
+# Linear's other root types: its introspection named a mutation and a subscription type on
+# 2026-10-25 (UTC), and Backlot serves no field of either.
+ROOTS = ("Mutation", "Subscription")
+
+
 def build_engine():
     """The Linear engine, over the SDL beside this module. ``SCALARS`` binds Linear's date-operand
     grammar onto ``DateTimeOrDuration`` / ``TimelessDateOrDuration``, so a malformed filter value is
     a validation error (a 400) exactly where the real API makes it one."""
     from backlot.graphql import engine
 
-    return engine.from_sdl(__file__, "linear", RESOLVERS, SCALARS)
+    return engine.from_sdl(__file__, "linear", RESOLVERS, SCALARS, ROOTS)
 
 
 __all__ = ["RESOLVERS", "build_engine", "PAGE_DEFAULT", "PAGE_MAX"]

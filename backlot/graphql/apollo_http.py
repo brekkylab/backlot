@@ -242,14 +242,8 @@ def headers_seen(raw: list[tuple[bytes, bytes]]) -> dict[str, str]:
     """The request headers as Apollo Server reads them behind Node, from the ASGI ``raw`` list:
     each name in lower case and each value without the spaces and tabs at its ends, the values of
     a name sent more than once joined with ``", "`` but ``content-type``'s, of which Node keeps the
-    first, and a header with no value left out. Each vendor answered so on 2026-10-25 (UTC):
-    `Accept` sent as `application/json` and as `text/html`, in either order, was served;
-    `apollo-require-preflight` sent empty and as `1`, in either order, let a GET through, and an
-    `x-apollo-operation-name` of a space did not; a `Content-Type` sent twice was the first to
-    Fireflies; an empty `Content-Type` was none to Linear, which refused a POST carrying one as a
-    POST with none, and to Fireflies, which served a GET carrying one with the preflight header
-    where it refuses a GET carrying one that is not JSON. Linear reads `Content-Type` on its own
-    (``backlot.routers.linear``)."""
+    first, and a header with no value left out, as each vendor answered on 2026-10-25 (UTC). Linear
+    reads `Content-Type` on its own (``backlot.routers.linear``)."""
     seen: dict[str, str] = {}
     for name, value in raw:
         key, text = name.decode("latin-1").lower(), value.decode("latin-1").strip(" \t")

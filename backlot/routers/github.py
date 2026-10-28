@@ -820,8 +820,8 @@ def rate_limit_resource(path: str, status_code: int) -> str:
 class RateLimitWindows:
     """The requests counted so far, per credential and per resource, each in its resource's window.
 
-    A window opens at the first request counted or reported under a `(credential, resource)` and
-    closes its resource's length later — an hour for `core`, a minute for the two search resources
+    A window opens at the first request counted in a `(credential, resource)` and closes its
+    resource's length later — an hour for `core`, a minute for the two search resources
     (:data:`SEARCH_RATE_LIMIT_WINDOW`); `reset` is its closing second, the same on every answer
     inside it. The windows measured stayed put across the requests inside them and differed between
     credentials and between resources (an anonymous caller's `core` and `search` resets 1552 seconds
@@ -850,8 +850,24 @@ class RateLimitWindows:
         return self._status(window, resource, limit)
 
     def status(self, key: str, resource: str, limit: int) -> dict[str, int]:
-        """The window as it stands, nothing counted."""
-        return self._status(self._window(key, resource), resource, limit)
+        """The window as it stands: nothing counted, and nothing opened either.
+
+        A read must not open a window (measured against api.github.com 2026-10-28,
+        #1118): before anything is counted in one, every read answers `used: 0`
+        with `reset` a full window from THAT read, so it moves with the read, and
+        only the first request counted opens the window the reads after it count
+        down to. `count` is what opens a window, exactly as before.
+        """
+        now = int(self.clock())
+        window = self._windows.get((key, resource))
+        if window is None or now >= window[0] + RATE_LIMITS[resource].window:
+            return {
+                "limit": limit,
+                "used": 0,
+                "remaining": limit,
+                "reset": now + RATE_LIMITS[resource].window,
+            }
+        return self._status(window, resource, limit)
 
     @staticmethod
     def _status(window: list[int], resource: str, limit: int) -> dict[str, int]:

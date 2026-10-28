@@ -1321,9 +1321,9 @@ _CLOUDFLARE_METHOD = {
 async def refuse_cloudflares_methods_on_linear_and_fireflies(request: Request, call_next):
     """Answer a `/linear` or `/fireflies` request by one of :data:`_CLOUDFLARE_METHOD`'s methods
     with Cloudflare's answer, ahead of the route and the credential. Registered before
-    :func:`refuse_a_repeated_authorization_on_linear_and_fireflies`, which answers first: a
+    :func:`refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot`, which answers first: a
     `TRACE`, `CONNECT` or `PURGE` carrying `Authorization` twice drew its 400 from both vendors on
-    2026-10-25 (UTC)."""
+    2026-10-25 (UTC), and one carrying `If-None-Match` or `If-Modified-Since` twice on 2026-10-28."""
     status, body, headers = _CLOUDFLARE_METHOD[request.method]
     return Response(body, status_code=status, headers=headers)
 

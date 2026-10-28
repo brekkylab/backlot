@@ -130,9 +130,9 @@ _READ_THEN_NOT_FOUND = ("DELETE", "PATCH", "PUT")
 async def graphql(request: Request):
     """The single Fireflies endpoint, in front of which Fireflies runs Fastify and
     ``@fastify/cors``. Not in the OpenAPI document on purpose: this is a GraphQL service, and
-    describing one POST route that accepts an arbitrary query would tell an OpenAPI→MCP bridge
-    nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see ``backlot/openapi.py``).
-    Introspection is the schema description for this endpoint.
+    describing one route that accepts an arbitrary query would tell an OpenAPI→MCP bridge nothing
+    useful (hence no ``SOURCE_PREFIXES`` entry either — see ``backlot/openapi.py``). Introspection
+    is the schema description for this endpoint.
 
     The layers answer in this order, each measured against api.fireflies.ai on 2026-10-25 (UTC)
     with the one after it wrong too: ``@fastify/cors`` (:func:`_preflight`), Fastify

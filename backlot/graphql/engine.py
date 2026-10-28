@@ -112,9 +112,7 @@ class Refusal:
     """One request error as Apollo Server answers it: ``message`` as Apollo Server writes it, in
     graphql-js's words where graphql-js made the refusal, the ``locations`` graphql-js gives it,
     Apollo Server's ``code``, the status of the answer and the ``headers`` it sets on it.
-    ``thrown`` marks a refusal Apollo Server throws, each but
-    :data:`~backlot.graphql.apollo_http.NOT_ACCEPTABLE` before its request pipeline, which
-    ``Accept`` cannot turn into its 406 (:mod:`backlot.graphql.apollo_http`), and
+    ``thrown`` marks a refusal Apollo Server throws, which ``Accept`` cannot turn into its 406, and
     ``http_headers`` whether the ``http`` extension it carries names its ``headers``, as all but
     the 406's do."""
 

@@ -117,10 +117,10 @@ _LOAD_BALANCER_501 = frozenset(
 @router.api_route("/graphql", methods=list(apollo_http.METHODS), include_in_schema=False)
 async def graphql(request: Request):
     """The single Linear endpoint, in front of which Linear runs Express and ``cors``. Not in the
-    OpenAPI document on purpose: this is a GraphQL service, and describing one POST route that
-    accepts an arbitrary query would tell an OpenAPI→MCP bridge nothing useful (hence no
-    ``SOURCE_PREFIXES`` entry either — see ``backlot/openapi.py``). Introspection is the schema
-    description for this endpoint.
+    OpenAPI document on purpose: this is a GraphQL service, and describing one route that accepts an
+    arbitrary query would tell an OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES``
+    entry either — see ``backlot/openapi.py``). Introspection is the schema description for this
+    endpoint.
 
     The layers answer in this order, each measured against api.linear.app on 2026-10-25 (UTC) with
     the one after it wrong too: the load balancer (:data:`_LOAD_BALANCER_501`), ``cors``

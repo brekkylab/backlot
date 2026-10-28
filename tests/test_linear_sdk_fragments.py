@@ -88,7 +88,7 @@ def _bundle(*documents: str) -> str:
             _bundle('fragment Label on Label {\n  name(format: "x")\n  color\n}'),
             0,
             ["1 fragments, 1 on a type the schema serves beyond `id`"],
-            id="an escaped quote",
+            id="a quoted argument",
         ),
         pytest.param(
             _SCHEMA,

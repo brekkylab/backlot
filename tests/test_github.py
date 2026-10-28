@@ -2649,11 +2649,13 @@ _COUNTED_TOKEN_SHAPED = [
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
 #: nine are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the eighth as the `/orgs/{}` path
 #: `/organizations/{id}` is rewritten to and the ninth on a path whose slash-terminated spelling a
-#: route matches; the next two are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep out of it;
-#: the two after them are no operation, though a parsed URL ends the first at its decoded `#` and a
-#: `missing_param` row of the baseline spells the second's path; the next is a method GitHub does
-#: not publish on a path whose `PATCH` it does, which real answered a bad bearer with its 404; and
-#: the last is no GitHub request at all.
+#: route matches; the next five are in it too, but the last two, in `_ROUTED_UNPUBLISHED`; the next
+#: two are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep out of it; the two after them are
+#: no operation, though a parsed URL ends the first at its decoded `#` and a `missing_param` row of
+#: the baseline spells the second's path; the next is a method GitHub does not publish on a path
+#: whose `PATCH` it does, which real answered a bad bearer with its 404; the two after it are paths
+#: under `/agents/automations/{}` that real answered 404 for every credential; and the last is no
+#: GitHub request at all.
 _UNSERVED_ROWS = [
     ("PATCH", "/github/repos/{org}/codebase", True, 405),
     ("DELETE", "/github/repos/{org}/codebase", True, 405),
@@ -2664,11 +2666,23 @@ _UNSERVED_ROWS = [
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/zip", True, 404),
     ("GET", "/github/organizations/1/settings/billing/usage", True, 404),
     ("POST", "/github/repos/{org}/codebase/git/trees", True, 404),
+    ("POST", "/github/repos/{org}/codebase/issues/1/artifacts", True, 404),
+    ("PUT", "/github/agents/repos/{org}/codebase/pulls/1/agent-merge", True, 404),
+    (
+        "POST",
+        "/github/repos/{org}/codebase/security-advisories/GHSA-gc5v-m9x4-r6x2/comments",
+        True,
+        404,
+    ),
+    ("GET", "/github/agents/automations/available-tools", True, 404),
+    ("GET", "/github/agents/automations/1/tasks", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
     ("POST", "/github/repos/{org}/codebase/releases/1/assets", False, 404),
     ("GET", "/github/zen%23", False, 404),
     ("GET", "/github/repos/{org}/codebase/issues%3Fsince", False, 404),
     ("PUT", "/github/orgs/{org}", False, 405),
+    ("GET", "/github/agents/automations/1/nosuch", False, 404),
+    ("GET", "/github/agents/automations/x/y/z", False, 404),
     ("GET", "/zen", False, 404),
 ]
 
@@ -2684,7 +2698,10 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     value that names no token, each carrying the version echo. A row not refused is the
     router's answer for any caller. Real was measured on each row but the last with a bad bearer, an
     unknown scheme and a bearer after a tab, on each refused row with each header below, and with no
-    header on the first six.
+    header on the first six. On the five refused rows after `git/trees`, two of those headers have
+    no answer of real's: a bearer after a tab that resolves was not sent on the three writes, and
+    `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
+    with no `x-ratelimit-*`.
     """
     c, _ = gh_client
     url = path.format(org=gh_org)
@@ -4639,8 +4656,8 @@ def test_github_backend_version_error_order(gh_client, path):
 
 
 def _sent_raw(client, path: str, headers: dict[str, bytes]):
-    """A GET on ``path`` with each header's bytes as they are, which
-    ``tests.test_atlassian._sent_as`` says why the TestClient does not."""
+    """A GET on ``path`` with each header's bytes as they are, which ``tests._helpers.sent_as``
+    says why the TestClient does not."""
     import asyncio
 
     import httpx

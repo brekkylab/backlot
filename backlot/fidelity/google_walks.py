@@ -9,6 +9,9 @@ baseline records.
 `sheets` reads a grid holding each kind of cell a corpus states, a range that starts past the
 first row and column, a second sheet for a grid range to name, and a prose spreadsheet beside it,
 then writes to the grid, copies a sheet and creates a workbook, as its owner.
+
+`docs` reads a document stating a title, a heading and every run mark a corpus states, and a prose
+document beside it.
 """
 
 from __future__ import annotations
@@ -46,6 +49,62 @@ SHEETS_CORPUS = [
         "content": "month,revenue\nJan,1",
     },
 ]
+
+
+DOCS_CORPUS = [
+    {
+        "source_type": "google_drive",
+        "doc_id": "walk-doc",
+        "title": "Walk doc",
+        "folder": "walk",
+        "author_email": "walker@acme.com",
+        "created": "2026-01-10T08:00:00Z",
+        "updated": "2026-01-11T08:00:00Z",
+        "paragraphs": [
+            {"style": "TITLE", "text": "Walk doc"},
+            {"style": "HEADING_1", "text": "Section"},
+            {
+                "runs": [
+                    {"text": "plain "},
+                    {"text": "bold", "bold": True, "italic": True},
+                    {"text": " "},
+                    {"text": "struck", "underline": True, "strikethrough": True},
+                    {"text": " "},
+                    {"text": "link", "link": "https://example.com/"},
+                ]
+            },
+        ],
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "walk-doc-prose",
+        "title": "Walk prose doc",
+        "folder": "walk",
+        "author_email": "walker@acme.com",
+        "created": "2026-01-10T08:00:00Z",
+        "updated": "2026-01-10T08:00:00Z",
+        "content": "first line\nsecond line",
+    },
+]
+
+
+def docs(timeout: float) -> list[tuple[str, Any]]:
+    """Each document read through `documents.get`, as the service account."""
+    import backlot
+
+    with backlot.serve(DOCS_CORPUS, telemetry=False) as server:
+        headers = {"Authorization": f"Bearer {server.token}"}
+        with httpx.Client(base_url=server.base_url, headers=headers, timeout=timeout) as client:
+            files = _ok(
+                client.get(
+                    "/drive/v3/files",
+                    params={"q": "mimeType='application/vnd.google-apps.document'"},
+                )
+            )["files"]
+            return [
+                ("docs.documents.get", _ok(client.get(f"/docs/v1/documents/{f['id']}")))
+                for f in files
+            ]
 
 
 def sheets(timeout: float) -> list[tuple[str, Any]]:

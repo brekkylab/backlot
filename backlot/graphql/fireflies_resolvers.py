@@ -368,6 +368,24 @@ def _not_in_team(context) -> GraphQLError:
     )
 
 
+def _channel_not_found(context) -> GraphQLError:
+    """Real's answer to a `transcripts(channel_id:)` id that names no channel in the
+    workspace: the null stands and an ``object_not_found`` field error goes beside it,
+    the object type in its metadata — the same shape as `_object_not_found`'s
+    Transcript, with the `Channel not found` message and `Channel` type measured against
+    api.fireflies.ai 2026-10-27."""
+    return GraphQLError(
+        "Channel not found",
+        extensions={
+            "code": "object_not_found",
+            "correlationId": _correlation_id(context),
+            "status": 404,
+            "metadata": {"objectType": "Channel"},
+            "helpUrls": ["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"],
+        },
+    )
+
+
 def _object_not_found(context) -> GraphQLError:
     """Real's answer to a `transcript` id that names nothing: the null stands and an
     ``object_not_found`` field error goes beside it, the object type in its metadata
@@ -552,6 +570,12 @@ def resolve_transcripts(
 ):
     _validate_transcripts(locals())
     ctx = _ctx(info)
+
+    # An id the workspace holds no channel for is the `Channel not found` error, not
+    # an empty page — a channel that exists lists (possibly nothing the caller can
+    # see) while one that does not names nothing at all (api.fireflies.ai, 2026-10-27).
+    if channel_id is not None and not store.fireflies_channel_exists(ctx["conn"], channel_id):
+        raise _channel_not_found(ctx)
 
     hosts = [host_email] if host_email else []
     # `mine` and `user_id` both mean "restrict to this user's own meetings". The caller's own

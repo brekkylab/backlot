@@ -74,7 +74,7 @@ ENGINE = build_engine()
 # Cloudflare, Google and the edge add, `server`, `via`, `cf-ray`, `cf-cache-status`, `alt-svc` and
 # `age` are not sent.
 
-#: The `Cache-Control` on each answer Express sends.
+#: The `Cache-Control` Express sends on an answer that sets none of its own.
 _NO_STORE = "private, no-cache, no-store, must-revalidate"
 #: The headers ``cors`` names to a page whose `Origin` it allows, on a preflight and on an answer.
 _EXPOSED = (
@@ -93,11 +93,8 @@ def request_id() -> str:
 def _origin(request: Request) -> str | None:
     """The `Origin` ``cors`` echoes: each copy without the spaces and tabs around it, the empty ones
     ahead of the first that is not empty left off, the rest joined with `, ` and the join's trailing
-    spaces left off; or None where nothing is left. On 2026-10-26 (UTC) api.linear.app echoed
-    ` https://example.com ` as `https://example.com`, `https://example.com` and a U+00A0 as sent,
-    `https://a.example` then `https://b.example` as `https://a.example, https://b.example`, an empty
-    copy then `https://a.example` as `https://a.example`, the two the other way round as
-    `https://a.example,`, and `null`, and echoed neither one empty copy nor two."""
+    spaces left off; or None where nothing is left, as api.linear.app echoed each `Origin` row of
+    `_LINEAR_HTTP` in `tests/test_linear.py` on 2026-10-26 (UTC)."""
     copies = [value.strip(" \t") for value in request.headers.getlist("origin")]
     while copies and not copies[0]:
         copies.pop(0)
@@ -119,9 +116,8 @@ def _express_sent(
     where the request carries an `Origin` (:func:`_origin`), ``cors``'s answer to it:
     ``allow_origin`` where given, else that origin, with :data:`_EXPOSED`, and `Origin` in `Vary`. A
     `GET` or `HEAD` whose 2xx answer :func:`_fresh` finds fresh is Express's 304 instead, with no
-    body, `Content-Type` or `Accept-Encoding` in `Vary`, and no other answer is: api.linear.app
-    answered `If-None-Match: *` on a `GET` of a mutation with its 405 and on `OPTIONS /` with its
-    200 on 2026-10-27 (UTC). A `HEAD`'s other 2xx answer carries no `ETag`, as api.linear.app
+    body, `Content-Type` or `Accept-Encoding` in `Vary`, and no other answer is, as api.linear.app
+    answered on 2026-10-27 (UTC). A `HEAD`'s other 2xx answer carries no `ETag`, as api.linear.app
     answered `HEAD /` with and without the greeting's `ETag` in `If-None-Match` on 2026-10-26
     (UTC)."""
     headers: MutableHeaders = response.headers
@@ -145,38 +141,28 @@ def _express_sent(
     ):
         response.status_code = 304
         response.body = b""
-        for name in ("content-type", "content-length"):
-            if name in headers:
-                del headers[name]
+        del headers["content-type"]
+        del headers["content-length"]
         vary = [name for name in headers["vary"].split(", ") if name != "Accept-Encoding"]
         if vary:
             headers["vary"] = ", ".join(vary)
         else:
             del headers["vary"]
-    elif request.method == "HEAD" and 200 <= response.status_code < 300 and "etag" in headers:
+    elif request.method == "HEAD" and 200 <= response.status_code < 300:
         del headers["etag"]
     return response
 
 
 def _fresh(request: Request, etag: str | None) -> bool:
-    """Whether ``fresh`` 2.0.0, which Express 5 asks and api.linear.app's answers match (Linear does
-    not say what it runs), finds the answer carrying ``etag`` fresh to ``request``: an
-    `If-None-Match` of `*`, or one naming ``etag``, weakly or not, and no `no-cache`
-    (:data:`backlot.express_http.NO_CACHE`) in the request's `Cache-Control`, its copies joined with
-    `, `. The `If-None-Match` is read without the spaces and tabs around it, and an
-    `If-Modified-Since` is not read: 2.0.0 reads one only where no `If-None-Match` is sent, and
-    compares it with a `Last-Modified` no Linear answer carries.
-
-    api.linear.app answered `GET /graphql` and the greeting so on 2026-10-26 (UTC), with the 304
-    counted against the budget, and a `POST` naming the `ETag` with the 200; `no-cache` after a
-    U+00A0 drew the 200, and after a U+0085 the 304. On 2026-10-27 (UTC) `*` with a space or a tab
-    after it, or a space and a tab before it, and the `ETag` with either after it drew the 304. So
-    did `*` beside an `If-Modified-Since` of a past or a future date, of nothing, of spaces, of
-    U+00A0 or of `x`, and the `ETag` beside the past date, where either date alone drew the 200; `*`
-    beside `max-age=0` and `no-cache` sent as two `Cache-Control` headers, either way round, drew
-    the 200. A list is split at its commas and each tag stripped of spaces alone, as ``fresh``'s
-    ``parseTokenList`` reads it: api.linear.app answered the `ETag` after `"x",` and a tab or
-    U+00A0, or before a tab and `, "x"`, with the 200 on 2026-10-27 (UTC)."""
+    """Whether ``fresh`` 2.0.0, which api.linear.app's answers match (Linear does not say what it
+    runs), finds the answer carrying ``etag`` fresh to ``request``: an `If-None-Match` of `*`, or
+    one naming ``etag``, weakly or not, and no `no-cache` (:data:`backlot.express_http.NO_CACHE`) in
+    the request's `Cache-Control`, its copies joined with `, `. The `If-None-Match` is read without
+    the spaces and tabs around it, and a list split at its commas with each tag stripped of spaces
+    alone, as ``fresh``'s ``parseTokenList`` reads it; an `If-Modified-Since` is not read: 2.0.0
+    reads one only where no `If-None-Match` is sent, and compares it with a `Last-Modified` no
+    Linear answer carries. The rows of `_LINEAR_HTTP` in `tests/test_linear.py` that send either
+    hold api.linear.app's answers of 2026-10-26 to 2026-10-28 (UTC)."""
     none_match = request.headers.get("if-none-match", "").strip(" \t")
     if not none_match:
         return False
@@ -210,8 +196,8 @@ def _api_key_as_bearer(request: Request) -> Response:
     envelope, as api.linear.app sent it at `/GRAPHQL`, `//graphql`, `/graph%71l`, `/nosuch` and `/`
     on 2026-10-25 (UTC), the first three of which it serves as `/graphql`, where `/graphqlx`,
     `/graphql;x` and `/graphql%2F` drew the GraphQL error. Its `Access-Control-Allow-Origin` is
-    `https://linear.app`, whatever the request's `Origin`: api.linear.app answered
-    `Origin: https://example.com` with `https://linear.app` on 2026-10-26."""
+    `https://linear.app` where :func:`_origin` finds an `Origin`, whatever it is: api.linear.app
+    answered `Origin: https://example.com` with `https://linear.app` on 2026-10-26."""
     path = sent_path(request.scope)
     extensions = {
         "type": "invalid input",
@@ -452,6 +438,15 @@ def reads_as_root(scope) -> bool:
     return _dots_resolved(express_path(sent_path(scope))) == "/"
 
 
+def slashes_alone(scope) -> bool:
+    """Whether the path sent (:func:`backlot.routers.sent_path`) is slashes alone, where
+    Cloudflare's `CONNECT` 400 carries `X-Content-Type-Options: nosniff`: api.linear.app sent it at
+    `/`, `//` and `///`, and not at `/%2E`, `/x/..`, `/x/%2E%2E`, `/./`, `/\\` or `/nosuch`, on
+    2026-10-28 (UTC), where its front reads each of the first five as `/`
+    (:func:`reads_as_root`)."""
+    return re.fullmatch("/+", sent_path(scope)) is not None
+
+
 def _express_route(request: Request) -> Response:
     path = express_path(sent_path(request.scope))
     if path == "/" and request.method in ("GET", "HEAD"):
@@ -506,16 +501,17 @@ def _preflight(request: Request) -> Response:
     """Linear's 204 to an `OPTIONS` carrying `Origin`, ahead of the credential and the body:
     `Origin` echoed back, :data:`_PREFLIGHT`, an `x-request-id` (:func:`request_id`), which each of
     the 55 preflights api.linear.app answered on 2026-10-25 and 2026-10-26 (UTC) carried, and each
-    name `Access-Control-Request-Headers` lists, in each copy of it, without the spaces and tabs
-    around it. api.linear.app answered so with no credential, `nope` and an API key under `Bearer`,
-    with `Access-Control-Request-Method` naming `POST`, `PUT` or none, with `Origin: null`, and with
-    `Content-Type, X-Foo`, ` a , b `, `a,,b`, `a,  ,b`, a tab after `a` and `a` and `b` in two
-    copies asked for, which came back `Content-Type,X-Foo`, `a,b`, `a,,b`, `a,,b`, `a` and `a,b`. An
-    `OPTIONS` without `Origin` is Apollo Server's."""
+    name `Access-Control-Request-Headers` lists, in each copy of it, without the spaces, tabs and
+    U+00A0s around it: api.linear.app sent each byte from 0x80 to 0xFF before or after a name back
+    as sent but 0xA0 on 2026-10-28 (UTC). It answered so with no credential, `nope` and an API key
+    under `Bearer`, with `Access-Control-Request-Method` naming `POST`, `PUT` or none, with
+    `Origin: null`, and with `Content-Type, X-Foo`, ` a , b `, `a,,b`, `a,  ,b`, a tab after `a` and
+    `a` and `b` in two copies asked for, which came back `Content-Type,X-Foo`, `a,b`, `a,,b`,
+    `a,,b`, `a` and `a,b`. An `OPTIONS` without `Origin` is Apollo Server's."""
     headers = [("access-control-allow-origin", request.headers["origin"].strip(" \t"))]
     asked = apollo_http.headers_seen(request.headers.raw).get("access-control-request-headers")
     if asked is not None:
-        names = (name.strip(" \t") for name in asked.split(","))
+        names = (name.strip(" \t\xa0") for name in asked.split(","))
         headers.append(("access-control-allow-headers", ",".join(names)))
     headers += [*_PREFLIGHT, ("x-request-id", request_id())]
     response = Response(status_code=204)
@@ -632,15 +628,16 @@ class RequestBudget:
     hour, from which each answer to a document Linear ran, or whose variables it refused, takes
     one, `remaining` being its level rounded down. Measured against api.linear.app on 2026-10-26
     (UTC): thirty `{ __typename }` sent over 13 seconds took `x-ratelimit-requests-remaining` from
-    2499 to 2478, and the bucket gives each of the 42 answers in that run within 2 of real's, 30
-    of them exactly, where rounding to the nearest gives 12; twelve documents refused as they
-    validated, sent between two that ran, took none; and `x-ratelimit-requests-reset` was an hour
-    past the answer, in epoch milliseconds, 3599.9 to 3600.9 seconds after its `Date`, on each. A
-    caller with no credential is counted by its address, which the measurement did not vary.
-    Past the limit api.linear.app answers a 429 that takes nothing: once the bucket of a caller with
-    no credential was spent, ten more requests drew it, and one sent 13.8 seconds after the last
-    served was served with `x-ratelimit-requests-remaining` 3, on 2026-10-27 (UTC). This serves past
-    the limit, so the level stops at 0. ``clock`` is `time.time` unless a test hands in another."""
+    2499 to 2478, and the bucket gives each of the 42 answers with a key that carried the header in
+    that capture within 2 of real's, 30 of them exactly, where rounding to the nearest gives 12;
+    twelve documents refused as they validated, sent between two that ran, took none; and
+    `x-ratelimit-requests-reset` was an hour past the answer, in epoch milliseconds, 3599.9 to
+    3600.9 seconds after its `Date`, on each. A caller with no credential is counted by its address,
+    which the measurement did not vary. Past the limit api.linear.app answers a 429 that takes
+    nothing: once the bucket of a caller with no credential was spent, ten more requests drew it,
+    and one sent 13.8 seconds after the last served was served with `x-ratelimit-requests-remaining`
+    3, on 2026-10-27 (UTC). This serves past the limit, so the level stops at 0. ``clock`` is
+    `time.time` unless a test hands in another."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock

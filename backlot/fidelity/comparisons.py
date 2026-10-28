@@ -482,6 +482,7 @@ GOOGLE_DISCOVERY = {
                 spec_url="https://www.googleapis.com/discovery/v1/apis/docs/v1/rest",
                 mount=("/docs/v1",),
                 strip="/docs",
+                walk=google_walks.docs,
             ),
             Spec(
                 spec_url="https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",

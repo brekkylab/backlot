@@ -112,6 +112,29 @@ representation — a corpus states what a cell holds, and JSON has no date.
 word held only on a later sheet does not make the file a hit for `q=fullText contains`. Put what
 should be findable on the first sheet.
 
+### Documents
+
+A `document` record states its text one of two ways, as a spreadsheet does.
+
+Without `paragraphs`, `content` is the document, and the Docs API serves one plain paragraph per
+line of it.
+
+With `paragraphs`, the record states each paragraph's named style and its runs of text, and
+`content` must be **absent**: it is derived as the paragraphs' text, one line each. `documents.get`
+serves the headings, bold, italic, underlined and struck-through runs and links the record states,
+each indexed as real indexes it.
+
+```json
+{"source_type": "google_drive", "title": "Q1 planning notes", "folder": "finance", "author_email": "cfo@acme.com", "created": "2026-01-12T08:00:00Z", "updated": "2026-01-20T08:00:00Z", "paragraphs": [{"style": "HEADING_1", "text": "Goals"}, {"runs": [{"text": "Close the "}, {"text": "EU residency", "bold": true}, {"text": " gap before the "}, {"text": "security review", "link": "https://acme.example/security-review"}, {"text": "."}]}]}
+```
+
+A paragraph's `style` is one of `NORMAL_TEXT` (the default), `TITLE`, `SUBTITLE` and `HEADING_1` to
+`HEADING_6`. A paragraph states its text as `text` or as `runs`, never both, and holds no newline:
+the next line is the next paragraph. Nor does it hold a character real strips from a document's
+text (U+0000–U+0008, U+000C–U+001F, U+E000–U+F8FF), and a `link` carries its scheme. Neither a
+paragraph nor a document's `content` holds a character `insertText` refuses (U+FDD0–U+FDEF).
+Lists, tables, headers, footers and tabs have no representation yet.
+
 ## Load a public dataset
 
 [EnterpriseRAG-Bench](https://github.com/onyx-dot-app/EnterpriseRAG-Bench) is ~500k synthetic

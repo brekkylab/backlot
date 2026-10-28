@@ -7,6 +7,7 @@ or call the response builder directly.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import re
 import sqlite3
@@ -416,6 +417,17 @@ _FIREFLIES_BODIES = [
         id="a query of null",
     ),
     pytest.param(
+        b'{"query":"","extensions":{"persistedQuery":{"version":1,"sha256Hash":"'
+        + hashlib.sha256(b"").hexdigest().encode()
+        + b'"}}}',
+        _apollo(
+            b"Syntax Error: Unexpected <EOF>.",
+            b"GRAPHQL_PARSE_FAILED",
+            b'"locations":[{"line":1,"column":1}],',
+        ),
+        id="a persisted query's hash matching an empty query",
+    ),
+    pytest.param(
         b'{"query":"{"}',
         _apollo(
             b"Syntax Error: Expected Name, found <EOF>.",
@@ -553,6 +565,29 @@ _FIREFLIES_BODIES = [
             500,
         ),
         id="a fragment not defined",
+    ),
+    pytest.param(
+        b'{"query":"query __proto__ { __typename }"}',
+        WithTheKey(_INTERNAL, 500),
+        id="an operation named __proto__",
+    ),
+    pytest.param(
+        b'{"query":"query A { __typename } query __proto__ { __typename }","operationName":"A"}',
+        WithTheKey(_INTERNAL, 500),
+        id="an operation named __proto__ beside the one chosen",
+    ),
+    pytest.param(
+        b'{"query":"query constructor { __typename }"}', None, id="an operation named constructor"
+    ),
+    pytest.param(
+        b'{"query":"query __defineGetter__ { __typename }"}',
+        None,
+        id="an operation named __defineGetter__",
+    ),
+    pytest.param(
+        b'{"query":"query A { ...__proto__ } fragment __proto__ on Query { __typename }"}',
+        None,
+        id="a spread of a fragment named __proto__",
     ),
     pytest.param(
         b'{"query":"fragment F on Query { ...F } { ...F }"}',

@@ -346,76 +346,111 @@ def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
     assert answered == {row.id: (400, True, True) for row in _NUMBERS}
 
 
-# A request to Linear or Fireflies with `Authorization` sent more than once, `{key}` standing for
-# the vendor's own spelling of the admin token, or with a path holding `%00` or a broken escape,
-# each answered with the 400 page
-# `backlot.main.refuse_a_repeated_authorization_on_linear_and_fireflies` and
-# `refuse_a_broken_escape_on_linear_and_fireflies` record. The last four rows are the control: one
-# header reaches the vendor, a path that only starts with the vendor's name is not the vendor's,
-# with a broken escape in it or without, and a broken escape in the query string is not one in the
-# path.
+# A request to Linear or Fireflies that Cloudflare answers itself, `{key}` standing for the vendor's
+# own spelling of the admin token, and the status, media type, length, `Connection` and body of the
+# answer, as `backlot.main.refuse_cloudflares_methods_on_linear_and_fireflies`, the repeated-header
+# middleware it names and `backlot.main.refuse_a_broken_escape_on_linear_and_fireflies` record
+# them. The last five rows are the control: one header reaches the vendor, a path that only starts
+# with the vendor's name is not the vendor's, with a broken escape in it or without, and a broken
+# escape in the query string is not one in the path.
 _TYPENAME = b'{"query":"{ __typename }"}'
 _CLOUDFLARE = 400
-_REPEATED = [
-    pytest.param("POST", "/graphql", _TYPENAME, ("{key}", "{key}"), _CLOUDFLARE, id="two keys"),
-    pytest.param("POST", "/graphql", _TYPENAME, ("{key}", "nope"), _CLOUDFLARE, id="a key, nope"),
-    pytest.param("POST", "/graphql", _TYPENAME, ("nope", "{key}"), _CLOUDFLARE, id="nope, a key"),
-    pytest.param("POST", "/graphql", _TYPENAME, ("{key}", ""), _CLOUDFLARE, id="a key, empty"),
-    pytest.param("POST", "/graphql", _TYPENAME, ("", ""), _CLOUDFLARE, id="two empty"),
-    pytest.param("POST", "/graphql", _TYPENAME, ("{key}",) * 3, _CLOUDFLARE, id="three keys"),
-    pytest.param("POST", "/graphql", b"", ("{key}", "nope"), _CLOUDFLARE, id="no bytes"),
-    pytest.param("POST", "/graphql", b"{", ("{key}", "nope"), _CLOUDFLARE, id="{"),
-    pytest.param("POST", "/graphql", None, ("{key}", "nope"), _CLOUDFLARE, id="past the limit"),
-    pytest.param("GET", "/graphql", b"", ("{key}", "nope"), _CLOUDFLARE, id="GET"),
-    pytest.param("HEAD", "/graphql", b"", ("{key}", "nope"), _CLOUDFLARE, id="HEAD"),
-    pytest.param("POST", "/nosuch", _TYPENAME, ("{key}", "nope"), _CLOUDFLARE, id="another path"),
-    pytest.param("POST", "", _TYPENAME, ("{key}", "nope"), _CLOUDFLARE, id="the root"),
-    pytest.param("POST", "/a%2", _TYPENAME, ("{key}",), _CLOUDFLARE, id="%2 at the end"),
-    pytest.param("POST", "/graphql%zz", _TYPENAME, (), _CLOUDFLARE, id="%zz"),
-    pytest.param("POST", "/nosucha%b", b"{}", (), _CLOUDFLARE, id="% before b"),
+_PAGE = (
+    b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
+    b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
+)
+_BAD_REQUEST = (_CLOUDFLARE, "text/html", "155", "close", _PAGE % ((b"400 Bad Request",) * 2))
+_NOT_ALLOWED = (405, "text/html", "155", "close", _PAGE % ((b"405 Not Allowed",) * 2))
+_ERROR_1045 = (400, "text/plain; charset=UTF-8", "17", None, b"error code: 1045\n")
+_PURGED = (400, "text/html; charset=UTF-8", "155", None, _PAGE % ((b"400 Bad Request",) * 2))
+
+
+def _auth(*values: str) -> tuple:
+    return tuple(("Authorization", value) for value in values)
+
+
+_ETAG_TWICE = (("If-None-Match", '"x"'),) * 2
+_CLOUDFLARE_FIRST = [
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", "{key}"), _BAD_REQUEST, id="two keys"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="a key, nope"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("nope", "{key}"), _BAD_REQUEST, id="nope, a key"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", ""), _BAD_REQUEST, id="a key, empty"
+    ),
+    pytest.param("POST", "/graphql", _TYPENAME, _auth("", ""), _BAD_REQUEST, id="two empty"),
+    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}") * 3, _BAD_REQUEST, id="three keys"),
+    pytest.param("POST", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="no bytes"),
+    pytest.param("POST", "/graphql", b"{", _auth("{key}", "nope"), _BAD_REQUEST, id="{"),
+    pytest.param(
+        "POST", "/graphql", None, _auth("{key}", "nope"), _BAD_REQUEST, id="past the limit"
+    ),
+    pytest.param("GET", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="GET"),
+    pytest.param("HEAD", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="HEAD"),
+    pytest.param(
+        "POST", "/nosuch", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="another path"
+    ),
+    pytest.param("POST", "", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="the root"),
     *(
-        pytest.param(m, p, b"", (), _CLOUDFLARE, id=f"{m} {p}")
+        pytest.param(m, path, b"", _auth("{key}"), answer, id=f"{m} {path or '/'}")
+        for m, answer in (("TRACE", _NOT_ALLOWED), ("CONNECT", _ERROR_1045), ("PURGE", _PURGED))
+        for path in ("/graphql/", "/nosuch", "")
+    ),
+    *(
+        pytest.param(m, "/graphql", b"", _auth("{key}", "{key}"), _BAD_REQUEST, id=f"{m}, two keys")
+        for m in ("CONNECT", "PURGE")
+    ),
+    *(
+        pytest.param(
+            m, "/graphql", b"", (*_auth("{key}"), *_ETAG_TWICE), _BAD_REQUEST, id=f"{m}, ETag twice"
+        )
+        for m in ("TRACE", "CONNECT", "PURGE")
+    ),
+    pytest.param("POST", "/a%2", _TYPENAME, _auth("{key}"), _BAD_REQUEST, id="%2 at the end"),
+    pytest.param("POST", "/graphql%zz", _TYPENAME, (), _BAD_REQUEST, id="%zz"),
+    pytest.param("POST", "/nosucha%b", b"{}", (), _BAD_REQUEST, id="% before b"),
+    *(
+        pytest.param(m, p, b"", (), _BAD_REQUEST, id=f"{m} {p}")
         for m in ("TRACE", "CONNECT", "PURGE")
         for p in ("/a%zz", "/a%00b")
     ),
-    pytest.param("POST", "/graphql", _TYPENAME, ("{key}",), 200, id="one key"),
-    pytest.param("POST", "x/graphql", _TYPENAME, ("{key}", "nope"), 404, id="a longer name"),
-    pytest.param("POST", "x/a%zz", _TYPENAME, ("{key}",), 404, id="%zz under a longer name"),
-    pytest.param("POST", "/graphql?a=%zz", _TYPENAME, ("{key}",), 200, id="%zz in the query"),
+    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}"), 200, id="one key"),
+    pytest.param("POST", "x/graphql", _TYPENAME, _auth("{key}", "nope"), 404, id="a longer name"),
+    pytest.param("TRACE", "x/graphql", b"", _auth("{key}"), 404, id="TRACE, a longer name"),
+    pytest.param("POST", "x/a%zz", _TYPENAME, _auth("{key}"), 404, id="%zz under a longer name"),
+    pytest.param("POST", "/graphql?a=%zz", _TYPENAME, _auth("{key}"), 200, id="%zz in the query"),
 ]
 
 
 @pytest.mark.parametrize("vendor", ["linear", "fireflies"])
-def test_cloudflare_refuses_a_repeated_authorization_and_a_broken_escape(
-    client, tokens_yaml, vendor
-):
+def test_cloudflare_answers_ahead_of_linear_and_fireflies(client, tokens_yaml, vendor):
     admin = tokens_yaml["admin_token"]
     key = admin if vendor == "linear" else f"Bearer {admin}"
-    page = (
-        b"<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n"
-        b"<center><h1>400 Bad Request</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
-        b"</body>\r\n</html>\r\n"
-    )
     answered, expected = {}, {}
-    for row in _REPEATED:
-        method, path, body, values, status = row.values
+    for row in _CLOUDFLARE_FIRST:
+        method, path, body, sent, answer = row.values
         if body is None:
             body = padded_query({"linear": 10 * 2**20, "fireflies": 2**20}[vendor] + 1)
         headers = [("Content-Type", "application/json")]
-        headers += [("Authorization", value.format(key=key)) for value in values]
+        headers += [(name, value.format(key=key)) for name, value in sent]
         r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
-        if status != _CLOUDFLARE:
+        if isinstance(answer, int):
             answered[row.id] = (
                 r.status_code,
-                page in r.content,
+                b"cloudflare" in r.content,
                 "connection" in r.headers,
                 r.json() if r.status_code == 200 else None,
             )
             expected[row.id] = (
-                status,
+                answer,
                 False,
                 False,
-                {"data": {"__typename": "Query"}} if status == 200 else None,
+                {"data": {"__typename": "Query"}} if answer == 200 else None,
             )
             continue
         answered[row.id] = (
@@ -423,52 +458,72 @@ def test_cloudflare_refuses_a_repeated_authorization_and_a_broken_escape(
             r.headers.get("content-type"),
             r.headers.get("content-length"),
             r.headers.get("connection"),
-            None if method == "HEAD" else r.content,
+            r.content,
         )
-        expected[row.id] = (status, "text/html", "155", "close", None if method == "HEAD" else page)
+        expected[row.id] = (*answer[:4], b"" if method == "HEAD" else answer[4])
     assert answered == expected
 
 
-# Each of `backlot.main._CLOUDFLARE_METHOD`'s answers on the paths other than `/graphql` it records,
-# and the 400 ahead of it for `Authorization` sent twice. The last row is the control: a path that
-# only starts with the vendor's name is not the vendor's.
-_PAGE = (
-    b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
-    b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
-)
-_NOT_ALLOWED = (405, "text/html", "close", _PAGE % ((b"405 Not Allowed",) * 2))
-_ERROR_1045 = (400, "text/plain; charset=UTF-8", None, b"error code: 1045\n")
-_PURGED = (400, "text/html; charset=UTF-8", None, _PAGE % ((b"400 Bad Request",) * 2))
-_TWICE = (400, "text/html", "close", _PAGE % ((b"400 Bad Request",) * 2))
-_CLOUDFLARE_METHODS = [
-    *(
-        pytest.param(m, path, 1, answer, id=f"{m} {path or '/'}")
-        for m, answer in (("TRACE", _NOT_ALLOWED), ("CONNECT", _ERROR_1045), ("PURGE", _PURGED))
-        for path in ("/graphql/", "/nosuch", "")
-    ),
-    *(
-        pytest.param(m, "/graphql", 2, _TWICE, id=f"{m}, twice")
-        for m in ("TRACE", "CONNECT", "PURGE")
-    ),
-    pytest.param("TRACE", "x/graphql", 1, None, id="a longer name"),
+# The same page on each vendor Cloudflare fronts, `{key}` as above, for each header it refuses
+# sent more than once. The controls: one copy reaches the vendor, and `Cache-Control` or `Range`
+# twice reaches it too. The one-copy `If-None-Match` sends a tag, not `*`: api.notion.com answers
+# a single `*` on `GET /v1/users/me` with a 304, where these controls assert the 200.
+_CLOUDFLARE_REQUESTS = [
+    ("notion", "GET", "/v1/users/me", None, (("Notion-Version", "2025-09-03"),)),
+    ("linear", "POST", "/graphql", _TYPENAME, (("Content-Type", "application/json"),)),
+    ("fireflies", "POST", "/graphql", _TYPENAME, (("Content-Type", "application/json"),)),
+    ("hubspot", "GET", "/crm/v3/objects/contacts?limit=1", None, ()),
+]
+_CLOUDFLARE_REFUSED = [
+    ("Authorization", "{key}"),
+    ("If-None-Match", '"x"'),
+    ("If-Match", '"x"'),
+    ("If-Modified-Since", "Wed, 01 Jan 2025 00:00:00 GMT"),
+    ("If-Unmodified-Since", "Wed, 01 Jan 2025 00:00:00 GMT"),
+    ("If-Range", '"x"'),
+]
+_CLOUDFLARE_SERVED_TWICE = [
+    ("Cache-Control", "no-cache"),
+    ("Range", "bytes=0-99"),
 ]
 
 
-@pytest.mark.parametrize("vendor", ["linear", "fireflies"])
-def test_cloudflare_refuses_trace_connect_and_purge(client, tokens_yaml, vendor):
+def test_cloudflare_refuses_a_repeated_header(client, tokens_yaml):
     admin = tokens_yaml["admin_token"]
-    key = admin if vendor == "linear" else f"Bearer {admin}"
+    page = (
+        b"<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n"
+        b"<center><h1>400 Bad Request</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
+        b"</body>\r\n</html>\r\n"
+    )
     answered, expected = {}, {}
-    for row in _CLOUDFLARE_METHODS:
-        method, path, copies, answer = row.values
-        r = client.request(method, f"/{vendor}{path}", headers=[("Authorization", key)] * copies)
-        if answer is None:
-            answered[row.id] = (r.status_code, b"cloudflare" in r.content)
-            expected[row.id] = (404, False)
-            continue
-        got = (r.status_code, r.headers["content-type"], r.headers.get("connection"), r.content)
-        answered[row.id], expected[row.id] = got, answer
-    assert len(expected) == len(_CLOUDFLARE_METHODS)
+    for vendor, method, path, body, extra in _CLOUDFLARE_REQUESTS:
+        key = admin if vendor == "linear" else f"Bearer {admin}"
+        for name, value in _CLOUDFLARE_REFUSED:
+            for copies, status in ((2, _CLOUDFLARE), (1, 200)):
+                headers = list(extra)
+                headers += [(name, value.format(key=key)) for _ in range(copies)]
+                if name != "Authorization":
+                    headers.append(("Authorization", key))
+                r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
+                label = f"{vendor} {name} x{copies}"
+                if status == _CLOUDFLARE:
+                    answered[label] = (
+                        r.status_code,
+                        r.headers.get("content-type"),
+                        r.headers.get("content-length"),
+                        r.headers.get("connection"),
+                        r.content,
+                    )
+                    expected[label] = (400, "text/html", "155", "close", page)
+                else:
+                    answered[label] = (r.status_code, page in r.content)
+                    expected[label] = (200, False)
+        for name, value in _CLOUDFLARE_SERVED_TWICE:
+            headers = list(extra) + [(name, value)] * 2 + [("Authorization", key)]
+            r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
+            label = f"{vendor} {name} twice"
+            answered[label] = (r.status_code, page in r.content)
+            expected[label] = (200, False)
     assert answered == expected
 
 

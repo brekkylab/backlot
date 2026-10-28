@@ -279,9 +279,9 @@ async def graphql(request: Request):
     """Linear's endpoint, in front of which Linear runs Express and ``cors``, at `/graphql` and at
     each other path Express hands Apollo Server (:func:`routes_to_apollo`), which
     ``backlot.main`` routes here. Not in the OpenAPI document on purpose: this is a GraphQL
-    service, and describing one POST route that accepts an arbitrary query would tell an
-    OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
-    ``backlot/openapi.py``). Introspection is the schema description for this endpoint.
+    service, and describing one route that accepts an arbitrary query would tell an OpenAPI→MCP
+    bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see ``backlot/openapi.py``).
+    Introspection is the schema description for this endpoint.
 
     The layers answer in this order, each measured against api.linear.app on 2026-10-25 (UTC) with
     the one after it wrong too: those of :func:`_front`, ``body-parser`` (:func:`_has_body`,

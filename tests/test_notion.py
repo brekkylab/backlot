@@ -17,7 +17,7 @@ import pytest
 from backlot import store, synth
 from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS, weak_etag
 from backlot.routers.notion import router as notion_router
-from tests._helpers import client_for, sent_as, served_id, tiny_corpus, tok
+from tests._helpers import client_for, corpus_client, sent_as, served_id, tiny_corpus, tok
 
 
 @pytest.fixture
@@ -602,6 +602,43 @@ def test_notion_search_and_comments(client, notion_h):
     ).json()
     assert c["results"][0]["rich_text"][0]["plain_text"] == "add rate-limiter step"
     assert c["results"][0]["object"] == "comment"
+
+
+def test_notion_comment_times_are_cut_to_the_minute_with_milliseconds(tmp_path):
+    """Real lists a comment's `created_time` and `last_edited_time` as the minute it falls in, in
+    the millisecond form: a comment made at 10:20:33 reads `10:20:00.000Z` in both (#1110)."""
+    records = [
+        {
+            "source_type": "notion",
+            "doc_id": "page",
+            "teamspace": "eng",
+            "title": "Page",
+            "content": "Body.",
+            "author_email": "ava@acme.com",
+            "visibility": "public",
+            "created": "2026-03-01T08:15:42Z",
+            "updated": "2026-03-02T09:30:17Z",
+            "comments": [
+                {
+                    "author_email": "ava@acme.com",
+                    "content": "Looks good.",
+                    "created_ts": "2026-03-02T10:20:33Z",
+                }
+            ],
+        }
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        headers = {
+            "Authorization": f"Bearer {settings.admin_token}",
+            "Notion-Version": DATA_SOURCES_VERSION,
+        }
+        r = client.get(
+            "/notion/v1/comments", params={"block_id": synth.notion_id("page")}, headers=headers
+        )
+        assert r.status_code == 200, r.text
+        (comment,) = r.json()["results"]
+        assert comment["created_time"] == "2026-03-02T10:20:00.000Z"
+        assert comment["last_edited_time"] == "2026-03-02T10:20:00.000Z"
 
 
 _RUNBOOK = synth.notion_id("nt-runbook")

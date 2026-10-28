@@ -659,39 +659,6 @@ async def read_a_notion_body_as_express_does(request: Request, call_next):
     return refusal if refusal is not None else await call_next(request)
 
 
-@_middleware(
-    lambda scope: (
-        _url_path(scope).startswith(f"{errors.notion.PREFIX}/v1/")
-        and scope["method"] in notion.ROUTED_METHODS
-    )
-)
-async def report_notion_cors(request: Request, call_next):
-    """Reproduce Notion's application CORS layer and its route-independent preflight.
-
-    Measured 2026-10-27: `Origin` puts :data:`notion.CORS_HEADERS` on successes and refusals,
-    including body-reader and unknown-URL answers. An `OPTIONS` carrying both `Origin` and
-    `Access-Control-Request-Method` instead answers an empty 204 before URL routing. Registration
-    after :func:`read_a_notion_body_as_express_does` makes this the outer of those two layers.
-    """
-    has_origin = "origin" in request.headers
-    is_preflight = (
-        request.method == "OPTIONS"
-        and has_origin
-        and "access-control-request-method" in request.headers
-    )
-    response = Response(status_code=204) if is_preflight else await call_next(request)
-    if has_origin:
-        for name, value in notion.CORS_HEADERS.items():
-            response.headers[name] = value
-    if is_preflight:
-        response.headers["vary"] = "Origin"
-    elif has_origin or notion.cors_varies_on_origin(request.method, request.url.path):
-        response.headers["vary"] = "Origin, Accept-Encoding"
-    else:
-        response.headers["vary"] = "Accept-Encoding"
-    return response
-
-
 def _is_guid(value: str) -> bool:
     try:
         uuid.UUID(value)
@@ -772,6 +739,45 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     request.scope["path"] = trimmed
     request.scope["raw_path"] = trimmed.encode()
     return await call_next(request)
+
+
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def report_notion_cors(request: Request, call_next):
+    """Answer a `/notion` request as real's CORS layer does on the paths it sits in front of
+    (``notion.answers_cors``), and put a `vary` on each answer.
+
+    Measured against api.notion.com on 2026-10-27: on those paths a request whose `Origin` has a
+    value got ``notion.CORS_HEADERS`` on its answer, the URL's 400 and the body reader's
+    `invalid_json` and 415 among them, and each answer there was `vary: Origin, Accept-Encoding`,
+    with `Origin` or without; an `OPTIONS` with `Access-Control-Request-Method` beside that `Origin`
+    (`POST`, `FOO` and an empty one alike) was instead a 204 with no body and `vary: Origin`, ahead
+    of the URL check. An `Origin` that is empty, a space or a tab counted as none. On the other
+    paths `Origin` changed nothing (``notion.answers_cors`` has their `vary`).
+
+    Registered after ``serve_a_slashed_notion_path_as_the_path_without_it`` and
+    ``read_a_notion_body_as_express_does``, which makes it the outer of the three: it reads the
+    path with its trailing slash as sent, and answers a preflight before the body is read.
+    """
+    origin = request.headers.get("origin", "").strip(" \t")
+    if not notion.answers_cors(request.url.path):
+        response = await call_next(request)
+        response.headers["vary"] = "Accept-Encoding"
+        return response
+    if (
+        origin
+        and request.method == "OPTIONS"
+        and "access-control-request-method" in request.headers
+    ):
+        response = Response(status_code=204, headers={"vary": "Origin"})
+    else:
+        response = await call_next(request)
+        response.headers["vary"] = "Origin, Accept-Encoding"
+    if origin:
+        for name, value in notion.CORS_HEADERS.items():
+            response.headers[name] = value
+    return response
 
 
 def _a_slashed_hubspot_path(scope: Scope) -> bool:

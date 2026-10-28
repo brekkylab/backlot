@@ -95,8 +95,9 @@ APPLICATION_HEADERS = {
     "x-xss-protection": "0",
 }
 
-#: The CORS headers real puts on every application answer to a request carrying `Origin`, measured
-#: against api.notion.com on 2026-10-27. A valid preflight carries these same values.
+#: The headers real's CORS layer (:func:`answers_cors`) puts on an answer to a request whose
+#: `Origin` has a value, and on the 204 it answers a preflight with: one value each wherever they
+#: were measured against api.notion.com on 2026-10-27.
 CORS_HEADERS = {
     "access-control-allow-origin": "*",
     "access-control-allow-headers": (
@@ -1419,13 +1420,17 @@ _CLIENT_AUTH_OPERATIONS = frozenset(
 )
 
 
-def cors_varies_on_origin(method: str, path: str) -> bool:
-    """Whether a no-`Origin` `/notion/v1/` answer still varies on `Origin`.
+def answers_cors(path: str) -> bool:
+    """Whether real's CORS layer sits in front of ``path``, a `/notion` path as sent: one under
+    `/v1/` and not under `/v1/oauth/`, the OAuth client endpoints' prefix.
 
-    Measured 2026-10-27: ordinary application answers do; the three OAuth client operations,
-    which sit in front of that application surface, vary only on compression negotiation.
-    """
-    return (method, path.removeprefix("/notion")) not in _CLIENT_AUTH_OPERATIONS
+    Measured against api.notion.com on 2026-10-27, each path with `Origin` and as a preflight:
+    `/v1/users/me`, `/v1/search`, `/v1/nonexistent_thing/xyz`, `/v1/`, `/v1/oauth` and `/v1/oauthx`
+    carried :data:`CORS_HEADERS` and answered the preflight 204; `/v1`, `/v2/users/me`, `/foo`,
+    `/v1/oauth/`, `/v1/oauth/foo` and `/v1/oauth/token` carried none of them, answered the
+    preflight the URL's 400, and sent `vary: Accept-Encoding`, with `Origin` or without."""
+    path = path.removeprefix("/notion")
+    return path.startswith("/v1/") and not path.startswith("/v1/oauth/")
 
 
 def _invalid_client(request: Request) -> JSONResponse:

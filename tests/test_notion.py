@@ -395,63 +395,69 @@ _NOTION_CORS_HEADERS = {
 }
 
 
-def test_notion_an_origin_carries_the_cors_headers_real_sends(client, notion_h):
-    """Pins ``backlot.routers.notion.CORS_HEADERS`` on successful answers, application refusals,
-    the body reader's invalid JSON and the URL's 400 whenever the request has `Origin`. The
-    application's ordinary answers vary on both the origin and compression negotiation."""
+def test_notion_cors_headers_preflight_and_vary_are_reals(client, notion_h):
+    """Pins ``backlot.main.report_notion_cors`` and ``backlot.routers.notion.answers_cors``, each
+    row a request real answered that way."""
     versioned = {"Notion-Version": DATA_SOURCES_VERSION}
     origin = {"Origin": "https://example.com"}
+    asks = {"Access-Control-Request-Method": "POST"}
+    preflight = {**origin, **asks}
+    five, none = _NOTION_CORS_HEADERS, dict.fromkeys(_NOTION_CORS_HEADERS)
+    both, compression = "Origin, Accept-Encoding", "Accept-Encoding"
     rows = [
-        ("GET", "/notion/v1/users/me", {**notion_h, **origin}, None, 200),
-        ("GET", "/notion/v1/users/me", {**notion_h, "Origin": "null"}, None, 200),
-        ("GET", "/notion/v1/users/me", {**versioned, **origin}, None, 401),
-        ("POST", "/notion/v1/search", {**notion_h, **_JSON, **origin}, b"{", 400),
-        ("GET", "/notion/v1/nonexistent_thing/xyz", {**notion_h, **origin}, None, 400),
-        ("OPTIONS", "/notion/v1/search", origin, None, 400),
-    ]
-    for method, path, headers, body, status in rows:
-        r = client.request(method, path, headers=headers, content=body)
-        got = {name: r.headers.get(name) for name in _NOTION_CORS_HEADERS}
-        assert (r.status_code, got, r.headers.get("vary")) == (
-            status,
-            _NOTION_CORS_HEADERS,
-            "Origin, Accept-Encoding",
-        ), (method, path)
-
-
-def test_notion_a_cors_preflight_is_an_empty_204_on_every_path(client):
-    """Pins ``backlot.main.report_notion_cors`` ahead of URL routing: `Origin` plus
-    `Access-Control-Request-Method` makes an `OPTIONS` an empty 204 on a served and unknown path."""
-    headers = {
-        "Origin": "https://example.com",
-        "Access-Control-Request-Method": "POST",
-        "Access-Control-Request-Headers": "authorization, content-type",
-    }
-    for path in ("/notion/v1/search", "/notion/v1/nonexistent_thing/xyz"):
-        r = client.options(path, headers=headers)
-        got = {name: r.headers.get(name) for name in _NOTION_CORS_HEADERS}
-        assert (r.status_code, r.content, got, r.headers.get("vary")) == (
+        ("GET", "/notion/v1/users/me", {**notion_h, **origin}, None, 200, five, both),
+        ("HEAD", "/notion/v1/users/me", {**notion_h, **origin}, None, 200, five, both),
+        ("GET", "/notion/v1/users/me", {**notion_h, "Origin": "null"}, None, 200, five, both),
+        ("GET", "/notion/v1/users/me", {**notion_h, "Origin": "\xa0"}, None, 200, five, both),
+        ("GET", "/notion/v1/users/me", {**versioned, **origin}, None, 401, five, both),
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON, **origin}, b"{", 400, five, both),
+        ("GET", "/notion/v1/nonexistent_thing/xyz", {**notion_h, **origin}, None, 400, five, both),
+        ("GET", "/notion/v1/users/me", notion_h, None, 200, none, both),
+        ("GET", "/notion/v1/users/me", {**notion_h, "Origin": ""}, None, 200, none, both),
+        ("GET", "/notion/v1/users/me", {**notion_h, "Origin": " "}, None, 200, none, both),
+        ("TRACE", "/notion/v1/users/me", {**notion_h, **origin}, None, 405, none, None),
+        ("OPTIONS", "/notion/v1/search", preflight, None, 204, five, "Origin"),
+        ("OPTIONS", "/notion/v1/nonexistent_thing/xyz", preflight, None, 204, five, "Origin"),
+        (
+            "OPTIONS",
+            "/notion/v1/search",
+            {**origin, "Access-Control-Request-Method": ""},
+            None,
             204,
-            b"",
-            _NOTION_CORS_HEADERS,
+            five,
             "Origin",
-        ), path
-
-
-def test_notion_cors_needs_an_origin_and_a_preflight_needs_both_headers(client, notion_h):
-    """Pins the negative cases: no `Origin` means no CORS headers, and either preflight header by
-    itself leaves `OPTIONS` as the URL's 400 rather than turning it into a 204."""
-    rows = [
-        client.get("/notion/v1/users/me", headers=notion_h),
-        client.options("/notion/v1/search", headers={"Access-Control-Request-Method": "POST"}),
+        ),
+        ("OPTIONS", "/notion/v1/search", origin, None, 400, five, both),
+        ("OPTIONS", "/notion/v1/search", asks, None, 400, none, both),
+        ("OPTIONS", "/notion/v1/search", {**preflight, "Origin": ""}, None, 400, none, both),
+        *(
+            (method, "/notion/v1/users/me", {**notion_h, **preflight}, None, status, five, both)
+            for method, status in [
+                ("GET", 200),
+                ("HEAD", 200),
+                ("POST", 400),
+                ("PUT", 400),
+                ("PATCH", 400),
+                ("DELETE", 400),
+            ]
+        ),
+        ("POST", "/notion/v1/oauth/token", {**_JSON, **origin}, b"{}", 401, none, compression),
+        ("GET", "/notion/v1/oauth/token", {**notion_h, **origin}, None, 400, none, compression),
+        ("OPTIONS", "/notion/v1/oauth/token", preflight, None, 400, none, compression),
+        ("OPTIONS", "/notion/v1/oauth", preflight, None, 204, five, "Origin"),
+        ("GET", "/notion/v1", {**notion_h, **origin}, None, 400, none, compression),
+        ("OPTIONS", "/notion/v2/users/me", preflight, None, 400, none, compression),
+        ("OPTIONS", "/notion/v1/", preflight, None, 204, five, "Origin"),
+        ("OPTIONS", "/notion/v1/oauth/", preflight, None, 400, none, compression),
     ]
-    for r in rows:
+    answered, wanted = {}, {}
+    for method, path, headers, body, status, sent, vary in rows:
+        r = sent_as(client, method, path, headers, body)
+        row = (method, path, tuple(headers.items()))
         got = {name: r.headers.get(name) for name in _NOTION_CORS_HEADERS}
-        assert (r.status_code, got, r.headers.get("vary")) == (
-            200 if r.request.method == "GET" else 400,
-            dict.fromkeys(_NOTION_CORS_HEADERS),
-            "Origin, Accept-Encoding",
-        )
+        answered[row] = (r.status_code, got, r.headers.get("vary"))
+        wanted[row] = (status, sent, vary)
+    assert answered == wanted
 
 
 def test_notion_page_retrieve_and_blocks(client, notion_h):

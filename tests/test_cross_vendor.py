@@ -359,7 +359,7 @@ _PAGE = (
     b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
     b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
 )
-_TWICE = (_CLOUDFLARE, "text/html", "155", "close", _PAGE % ((b"400 Bad Request",) * 2))
+_BAD_REQUEST = (_CLOUDFLARE, "text/html", "155", "close", _PAGE % ((b"400 Bad Request",) * 2))
 _NOT_ALLOWED = (405, "text/html", "155", "close", _PAGE % ((b"405 Not Allowed",) * 2))
 _ERROR_1045 = (400, "text/plain; charset=UTF-8", "17", None, b"error code: 1045\n")
 _PURGED = (400, "text/html; charset=UTF-8", "155", None, _PAGE % ((b"400 Bad Request",) * 2))
@@ -371,39 +371,51 @@ def _auth(*values: str) -> tuple:
 
 _ETAG_TWICE = (("If-None-Match", '"x"'),) * 2
 _CLOUDFLARE_FIRST = [
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}", "{key}"), _TWICE, id="two keys"),
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}", "nope"), _TWICE, id="a key, nope"),
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("nope", "{key}"), _TWICE, id="nope, a key"),
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}", ""), _TWICE, id="a key, empty"),
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("", ""), _TWICE, id="two empty"),
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}") * 3, _TWICE, id="three keys"),
-    pytest.param("POST", "/graphql", b"", _auth("{key}", "nope"), _TWICE, id="no bytes"),
-    pytest.param("POST", "/graphql", b"{", _auth("{key}", "nope"), _TWICE, id="{"),
-    pytest.param("POST", "/graphql", None, _auth("{key}", "nope"), _TWICE, id="past the limit"),
-    pytest.param("GET", "/graphql", b"", _auth("{key}", "nope"), _TWICE, id="GET"),
-    pytest.param("HEAD", "/graphql", b"", _auth("{key}", "nope"), _TWICE, id="HEAD"),
-    pytest.param("POST", "/nosuch", _TYPENAME, _auth("{key}", "nope"), _TWICE, id="another path"),
-    pytest.param("POST", "", _TYPENAME, _auth("{key}", "nope"), _TWICE, id="the root"),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", "{key}"), _BAD_REQUEST, id="two keys"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="a key, nope"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("nope", "{key}"), _BAD_REQUEST, id="nope, a key"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", ""), _BAD_REQUEST, id="a key, empty"
+    ),
+    pytest.param("POST", "/graphql", _TYPENAME, _auth("", ""), _BAD_REQUEST, id="two empty"),
+    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}") * 3, _BAD_REQUEST, id="three keys"),
+    pytest.param("POST", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="no bytes"),
+    pytest.param("POST", "/graphql", b"{", _auth("{key}", "nope"), _BAD_REQUEST, id="{"),
+    pytest.param(
+        "POST", "/graphql", None, _auth("{key}", "nope"), _BAD_REQUEST, id="past the limit"
+    ),
+    pytest.param("GET", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="GET"),
+    pytest.param("HEAD", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="HEAD"),
+    pytest.param(
+        "POST", "/nosuch", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="another path"
+    ),
+    pytest.param("POST", "", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="the root"),
     *(
         pytest.param(m, path, b"", _auth("{key}"), answer, id=f"{m} {path or '/'}")
         for m, answer in (("TRACE", _NOT_ALLOWED), ("CONNECT", _ERROR_1045), ("PURGE", _PURGED))
         for path in ("/graphql/", "/nosuch", "")
     ),
     *(
-        pytest.param(m, "/graphql", b"", _auth("{key}", "{key}"), _TWICE, id=f"{m}, two keys")
+        pytest.param(m, "/graphql", b"", _auth("{key}", "{key}"), _BAD_REQUEST, id=f"{m}, two keys")
         for m in ("CONNECT", "PURGE")
     ),
     *(
         pytest.param(
-            m, "/graphql", b"", (*_auth("{key}"), *_ETAG_TWICE), _TWICE, id=f"{m}, ETag twice"
+            m, "/graphql", b"", (*_auth("{key}"), *_ETAG_TWICE), _BAD_REQUEST, id=f"{m}, ETag twice"
         )
         for m in ("TRACE", "CONNECT", "PURGE")
     ),
-    pytest.param("POST", "/a%2", _TYPENAME, _auth("{key}"), _TWICE, id="%2 at the end"),
-    pytest.param("POST", "/graphql%zz", _TYPENAME, (), _TWICE, id="%zz"),
-    pytest.param("POST", "/nosucha%b", b"{}", (), _TWICE, id="% before b"),
+    pytest.param("POST", "/a%2", _TYPENAME, _auth("{key}"), _BAD_REQUEST, id="%2 at the end"),
+    pytest.param("POST", "/graphql%zz", _TYPENAME, (), _BAD_REQUEST, id="%zz"),
+    pytest.param("POST", "/nosucha%b", b"{}", (), _BAD_REQUEST, id="% before b"),
     *(
-        pytest.param(m, p, b"", (), _TWICE, id=f"{m} {p}")
+        pytest.param(m, p, b"", (), _BAD_REQUEST, id=f"{m} {p}")
         for m in ("TRACE", "CONNECT", "PURGE")
         for p in ("/a%zz", "/a%00b")
     ),

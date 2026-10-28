@@ -743,11 +743,16 @@ RESOLVERS = {
 }
 
 
+# Fireflies' one other root type, which its introspection named beside `Query` with no
+# subscription type when measured on 2026-10-25 (UTC). Backlot serves no mutation.
+ROOTS = ("Mutation",)
+
+
 def build_engine():
     """The Fireflies engine, over the SDL beside this module."""
     from backlot.graphql import engine
 
-    return engine.from_sdl(__file__, "fireflies", RESOLVERS)
+    return engine.from_sdl(__file__, "fireflies", RESOLVERS, roots=ROOTS)
 
 
 __all__ = [

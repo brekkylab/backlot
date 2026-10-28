@@ -493,7 +493,7 @@ suite.
 
 Declared, not served: six live routes are `include_in_schema=False` and so invisible to that check.
 Four are FastAPI's own (`/docs`, `/docs/oauth2-redirect`, `/openapi.json`, `/redoc`). The other two
-are the GraphQL POSTs at `/fireflies/graphql` and `/linear/graphql`, which their own comparison
+are the GraphQL endpoints at `/fireflies/graphql` and `/linear/graphql`, which their own comparison
 covers — introspection, not a path map, so there is no mount to say so. Walking `app.routes`
 instead was ruled out for `gen_docs.py`, and the same reasoning holds here.
 

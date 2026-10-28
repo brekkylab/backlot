@@ -2341,7 +2341,7 @@ _LINEAR_READS = [
         _charset("utf-7"),
         b'{"query":"{ x+AGE- }"}',
         b'{"errors":[{"message":"Cannot query field \\"xa\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
-        id="utf-7, a run of one character, closed by -",
+        id="utf-7, a run of three characters, closed by -",
     ),
     pytest.param(
         _charset("utf-7"),
@@ -2443,7 +2443,7 @@ _LINEAR_READS = [
         _charset("utf-7"),
         b'+/v7+/w-{"query":"{ __typename }"}',
         b'{"error":"Unexpected token \'\xef\xbb\xbe\', \\"\xef\xbb\xbe\xef\xbb\xbf{\\"query\\"\\"... is not valid JSON","details":{},"code":400}',
-        id="utf-7, two byte-order marks opening the body",
+        id="utf-7, U+FEFE then a byte-order mark opening the body",
     ),
     pytest.param(
         _charset("utf-7-imap"),
@@ -2456,6 +2456,21 @@ _LINEAR_READS = [
         b'+/v/+/w-{"query":"{ __typename }"}',
         None,
         id="utf-7, a run of two byte-order marks opening the body",
+    ),
+    *(
+        pytest.param(
+            _charset(charset),
+            body,
+            _express(
+                400, b"Unexpected token '\xef\xbb\xbf', \\\"\xef\xbb\xbf\\\" is not valid JSON"
+            ),
+            id=f"{charset}, {label}",
+        )
+        for charset, body, label in (
+            ("utf-7", b"+/v/+/w", "a run the body ends in holding two marks"),
+            ("utf-7-imap", b"&/v/+/w", "a run the body ends in holding two marks"),
+            ("utf-7", b"+AG-+/v/+/w", "a run of no character, then that run"),
+        )
     ),
     pytest.param(
         _charset("utf-16le"),

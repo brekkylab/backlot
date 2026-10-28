@@ -50,9 +50,9 @@ def decode(raw: bytes) -> str:
     return text[1:] if text.startswith("\ufeff") else text
 
 
-#: The most bytes Linear's ``body-parser`` reads, counted after :func:`_inflate`: api.linear.app
-#: served a body of 10485760 bytes and refused one of 10485761 with :class:`Unread`'s 413 on
-#: 2026-10-19 (UTC), each sent plain and gzipped.
+#: The most bytes Linear's ``body-parser`` reads, counted after :func:`_inflate` or
+#: :func:`_unbrotli`: api.linear.app served a body of 10485760 bytes and refused one of 10485761
+#: with :class:`Unread`'s 413 on 2026-10-19 (UTC), each sent plain and gzipped.
 LINEAR_LIMIT = 10 * 1024 * 1024
 
 # The charsets iconv-lite names with `utf`, as `encodingExists` reads a name: in lower case, without
@@ -125,8 +125,7 @@ def body_parser_text(
     if name == "utf8":
         return decode(raw)
     if name in _ICONV_UTF7:
-        text = _utf7(raw, imap=name == "utf7imap")
-        return text[1:] if text.startswith("\ufeff") else text
+        return _utf7(raw, imap=name == "utf7imap")
     width = 2 if name.startswith("utf16") else 4
     order = name[5:] or _byte_order(raw, width)  # past `utf16` or `utf32`
     raw = raw[: len(raw) - len(raw) % width]
@@ -134,9 +133,7 @@ def body_parser_text(
         text = raw.decode(f"utf-16-{order}", "surrogatepass")
     else:
         points = struct.unpack(f"{'<' if order == 'le' else '>'}{len(raw) // 4}I", raw)
-        text = "".join(chr(p) if p <= 0x10FFFF else "\ufffd" for p in points)
-        # The units join into a JavaScript string, where a high surrogate then a low one is a pair.
-        text = text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+        text = _js_string("".join(chr(p) if p <= 0x10FFFF else "\ufffd" for p in points))
     return text[1:] if text.startswith("\ufeff") else text
 
 
@@ -292,11 +289,13 @@ def _utf7(raw: bytes, *, imap: bool) -> str:
     is dropped, and one right after the opening byte stands for that byte. Each run is decoded
     apart, and a run the body ends in is decoded in two, its characters up to a multiple of eight
     and the rest: see :func:`_base64_units`. A byte outside a run is a character when below 0x80
-    and U+FFFD otherwise. Measured on api.linear.app on 2026-10-27 (UTC), a byte-order mark that
-    opens a run is no character of the body, nor is one that starts at the ninth character of a run
-    the body ends in. ``raw-body`` hands the decoder each chunk as it arrives, so this is a body
-    read in one chunk; one that arrives in pieces reads otherwise where a piece ends inside a
-    run."""
+    and U+FFFD otherwise. A byte-order mark is no character where it opens a run, the part of a run
+    the body ends in that ``end`` decodes, or what ``write`` returns, and is one where it opens what
+    ``end`` returns, which iconv-lite's ``StripBOMWrapper`` leaves alone: api.linear.app answered so
+    on 2026-10-27 and 2026-10-28 (UTC), the second time quoting the mark of `+/v/+/w`, a run whose
+    two marks ``end`` decodes, as the token it stopped at. ``raw-body`` hands the decoder each chunk
+    as it arrives, so this is a body read in one chunk; one that arrives in pieces reads otherwise
+    where a piece ends inside a run."""
     shift, alphabet = (0x26, _BASE64 | {0x2C}) if imap else (0x2B, _BASE64)
     units: list[int] = []
     in_run, start, i = False, 0, 0
@@ -317,14 +316,22 @@ def _utf7(raw: bytes, *, imap: bool) -> str:
                 continue  # the byte is read again outside the run
             start = i + 1
         i += 1
+    tail: list[int] = []
     if not in_run:
         units += (b if b < 0x80 else 0xFFFD for b in raw[start:])
     else:
         rest = raw[start:]
         whole = len(rest) - len(rest) % 8
-        units += _base64_units(rest[:whole], imap) + _base64_units(rest[whole:], imap)
-    text = "".join(map(chr, units))
-    # The units join into a JavaScript string, where a high surrogate then a low one is a pair.
+        units += _base64_units(rest[:whole], imap)
+        tail = _base64_units(rest[whole:], imap)
+    if units[:1] == [0xFEFF]:
+        units = units[1:]
+    return _js_string("".join(map(chr, units + tail)))
+
+
+def _js_string(text: str) -> str:
+    """``text``, UTF-16 units each a character, as the JavaScript string they join into, where a
+    high surrogate then a low one is a pair."""
     return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
 
 

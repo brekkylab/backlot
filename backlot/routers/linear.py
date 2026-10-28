@@ -141,15 +141,14 @@ def _express_sent(
     ):
         response.status_code = 304
         response.body = b""
-        for name in ("content-type", "content-length"):
-            if name in headers:
-                del headers[name]
+        del headers["content-type"]
+        del headers["content-length"]
         vary = [name for name in headers["vary"].split(", ") if name != "Accept-Encoding"]
         if vary:
             headers["vary"] = ", ".join(vary)
         else:
             del headers["vary"]
-    elif request.method == "HEAD" and 200 <= response.status_code < 300 and "etag" in headers:
+    elif request.method == "HEAD" and 200 <= response.status_code < 300:
         del headers["etag"]
     return response
 
@@ -512,16 +511,17 @@ def _preflight(request: Request) -> Response:
     """Linear's 204 to an `OPTIONS` carrying `Origin`, ahead of the credential and the body:
     `Origin` echoed back, :data:`_PREFLIGHT`, an `x-request-id` (:func:`request_id`), which each of
     the 55 preflights api.linear.app answered on 2026-10-25 and 2026-10-26 (UTC) carried, and each
-    name `Access-Control-Request-Headers` lists, in each copy of it, without the spaces and tabs
-    around it. api.linear.app answered so with no credential, `nope` and an API key under `Bearer`,
-    with `Access-Control-Request-Method` naming `POST`, `PUT` or none, with `Origin: null`, and with
-    `Content-Type, X-Foo`, ` a , b `, `a,,b`, `a,  ,b`, a tab after `a` and `a` and `b` in two
-    copies asked for, which came back `Content-Type,X-Foo`, `a,b`, `a,,b`, `a,,b`, `a` and `a,b`. An
-    `OPTIONS` without `Origin` is Apollo Server's."""
+    name `Access-Control-Request-Headers` lists, in each copy of it, without the spaces, tabs and
+    U+00A0s around it: api.linear.app sent each byte from 0x80 to 0xFF before or after a name back
+    as sent but 0xA0 on 2026-10-28 (UTC). It answered so with no credential, `nope` and an API key
+    under `Bearer`, with `Access-Control-Request-Method` naming `POST`, `PUT` or none, with
+    `Origin: null`, and with `Content-Type, X-Foo`, ` a , b `, `a,,b`, `a,  ,b`, a tab after `a` and
+    `a` and `b` in two copies asked for, which came back `Content-Type,X-Foo`, `a,b`, `a,,b`,
+    `a,,b`, `a` and `a,b`. An `OPTIONS` without `Origin` is Apollo Server's."""
     headers = [("access-control-allow-origin", request.headers["origin"].strip(" \t"))]
     asked = apollo_http.headers_seen(request.headers.raw).get("access-control-request-headers")
     if asked is not None:
-        names = (name.strip(" \t") for name in asked.split(","))
+        names = (name.strip(" \t\xa0") for name in asked.split(","))
         headers.append(("access-control-allow-headers", ",".join(names)))
     headers += [*_PREFLIGHT, ("x-request-id", request_id())]
     response = Response(status_code=204)

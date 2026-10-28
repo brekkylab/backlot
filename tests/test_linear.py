@@ -6721,6 +6721,9 @@ _LINEAR_HTTP = [
             ("A-B, c_d", "A-B,c_d"),
             ("a\t", "a"),
             ("a b", "a b"),
+            ("a\xa0", "a"),
+            ("\xa0a", "a"),
+            ("a\x85", "a\x85"),
         )
     ),
     http_row(
@@ -7092,6 +7095,9 @@ _LINEAR_HTTP = [
             ),
             ("POST", (("If-None-Match", _ETAG_OF_TYPENAME),), 200, "its ETag"),
             ("GET", (("If-None-Match", 'W/"20-x"'),), 200, "another ETag"),
+            ("GET", (("If-None-Match", "W/" + _ETAG_OF_TYPENAME),), 304, "its ETag after W/"),
+            ("GET", (("If-None-Match", "W/W/" + _ETAG_OF_TYPENAME),), 200, "its ETag after W/W/"),
+            ("GET", (("If-None-Match", "w/" + _ETAG_OF_TYPENAME[2:]),), 200, "its ETag with w/"),
             ("GET", (("If-None-Match", '"x",   ' + _ETAG_OF_TYPENAME),), 304, "spaces in a list"),
             ("GET", (("If-None-Match", '"x",\t' + _ETAG_OF_TYPENAME),), 200, "a tab in a list"),
             ("GET", (("If-None-Match", '"x",\xa0' + _ETAG_OF_TYPENAME),), 200, "U+00A0 in a list"),

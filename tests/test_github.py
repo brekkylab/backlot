@@ -2698,9 +2698,10 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     value that names no token, each carrying the version echo. A row not refused is the
     router's answer for any caller. Real was measured on each row but the last with a bad bearer, an
     unknown scheme and a bearer after a tab, on each refused row with each header below, and with no
-    header on the first six. The four rows after `git/trees` and the `/tasks` row were measured with
-    fewer headers, which `_ROUTED_UNPUBLISHED` and the body of the pull request that added them
-    list.
+    header on the first six. On the five refused rows after `git/trees`, two of those headers have
+    no answer of real's: a bearer after a tab that resolves was not sent on the three writes, and
+    `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
+    with no `x-ratelimit-*`.
     """
     c, _ = gh_client
     url = path.format(org=gh_org)

@@ -6983,6 +6983,20 @@ _DOCS_MEMBER_ROWS = [
     ("owner", {"includeTabsContent": "false"}, _DOCS_FLAT, _INLINE, _OMITTED),
     (
         "owner",
+        [("suggestionsViewMode", "1"), ("suggestionsViewMode", "3")],
+        _DOCS_FLAT,
+        _PREVIEW,
+        _OMITTED,
+    ),
+    (
+        "owner",
+        [("includeTabsContent", "true"), ("includeTabsContent", "false")],
+        _DOCS_FLAT,
+        _INLINE,
+        _OMITTED,
+    ),
+    (
+        "owner",
         {"commentsViewMode": "COMMENTS_VIEW_MODE_UNSPECIFIED"},
         _DOCS_FLAT,
         _INLINE,
@@ -7006,8 +7020,9 @@ _DOCS_MEMBER_ROWS = [
 
 def test_docs_get_serves_members_in_reals_order(client, tokens_yaml, document_callers, document_id):
     """A document read serves its members in real's order, flat or as its one tab, the tab holding
-    what the flat read holds. A reader, the admin token among them, is served no `revisionId` and a
-    preview of the suggestions unless it asks for another mode, and comments to the owner alone.
+    what the flat read holds. A reader, the admin token on a corpus file among them, is served no
+    `revisionId` and a preview of the suggestions unless it asks for another mode, and comments to
+    the owner alone.
     """
     callers = {
         **document_callers,
@@ -7264,6 +7279,7 @@ _DOCS_VIEW_REFUSALS = [
         _TABS_ONLY,
     ),
     ("owner", "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED&fields=title", 400, _TABS_ONLY),
+    ("owner", "commentsViewMode=0&commentsViewMode=2", 400, _TABS_ONLY),
     ("owner", "includeTabsContent=true&commentsViewMode=3", 400, _INLINE_ONLY),
     (
         "owner",
@@ -7293,6 +7309,9 @@ _DOCS_VIEW_REFUSALS = [
     ("owner", "fields=title,suggestions", 400, _COMMENT_FIELD),
     ("owner", "fields=*.commentId", 400, _COMMENT_FIELD),
     ("owner", "fields=tabs.*.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.childTabs.documentTab.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.*.*.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.childTabs.childTabs.documentTab.commentAnchors", 400, _COMMENT_FIELD),
     (
         "owner",
         "fields=comments&includeTabsContent=true&commentsViewMode=2",
@@ -7397,6 +7416,12 @@ _DOCS_MASKS = [
         {},
     ),
     ("reader", "fields=comments&includeTabsContent=true&commentsViewMode=1", {}),
+    (
+        "owner",
+        "fields=tabs.childTabs.documentTab.commentAnchors&includeTabsContent=true"
+        "&commentsViewMode=1",
+        {"tabs": [{}]},
+    ),
     ("reader", "fields=title,revisionId", ["title"]),
     ("owner", "fields=nope", _no_match("nope", "nope")),
     ("owner", "fields=nope&fields=title", _no_match("nope", "nope")),

@@ -1,12 +1,11 @@
 """Google Docs v1 (``/docs/v1``): ``documents.get``.
 
-The routes are registered on `routers.google.router`, so they share its system parameters
-(`routers.google._system_parameters`), credentials and batch endpoint; `routers.google` imports
-this module last to register them, and a ``fields`` mask is read as the Sheets routes read theirs
-(`routers.google._gmask_select`).
+The routes are registered on `routers.google.router` as `routers.google_sheets` describes, and a
+``fields`` mask is read as the Sheets routes read theirs (`routers.google._gmask_select`).
 
-Every answer below was measured on docs.googleapis.com on 2026-10-09 and 2026-10-26, by a Google
-Workspace member on a one-tab Doc it owns and by a second member it was shared with as a reader.
+The answers below were measured on docs.googleapis.com between 2026-10-09 and 2026-10-28, each
+comment dating its own, by a Google Workspace member on a one-tab Doc it owns and by a second
+member it was shared with as a reader.
 """
 
 from __future__ import annotations
@@ -79,9 +78,18 @@ def _docs_comment_fields(named: dict) -> bool:
     """Whether a mask names a comment-specific field: measured 2026-10-26, `comments`,
     `suggestions`, `suggestions.*`, `*.commentId`, `tabs.documentTab.commentAnchors`,
     `tabs.*.commentAnchors` and `*.*.commentAnchors` were refused for it, and `*.*`, `*.*.*`,
-    `tabs` and `tabs.documentTab.*`, which reach them through ``*`` alone, were answered."""
-    anchors = named.get("tabs", {}).get("documentTab", {})
-    return "comments" in named or "suggestions" in named or "commentAnchors" in anchors
+    `tabs` and `tabs.documentTab.*`, which reach them through ``*`` alone, were answered. A child
+    tab's anchors are one as well, however deep: measured 2026-10-28,
+    `tabs.childTabs.documentTab.commentAnchors`, `tabs.childTabs.*.commentAnchors`,
+    `tabs.*.*.commentAnchors`, `tabs.*.*.*.commentAnchors` and
+    `tabs.childTabs.childTabs.documentTab.commentAnchors` were each refused on a one-tab Doc."""
+
+    def anchored(tab: dict) -> bool:
+        return bool(tab) and (
+            "commentAnchors" in tab.get("documentTab", {}) or anchored(tab.get("childTabs", {}))
+        )
+
+    return "comments" in named or "suggestions" in named or anchored(named.get("tabs", {}))
 
 
 def _docs_refuse_suggestions() -> gerr.GoogleError:
@@ -105,7 +113,8 @@ async def docs_get(document_id: str, request: Request):
     comment field's.
 
     A caller who is not the owner is a reader here (`routers.google._drive_file_capabilities`),
-    and the admin token one too. A reader is answered with no `revisionId`, and a
+    the admin token of every file it did not create among them (`routers.google._drive_owned_by`).
+    A reader is answered with no `revisionId`, and a
     `suggestionsViewMode` it does not ask for is `PREVIEW_WITHOUT_SUGGESTIONS`, where the owner's
     is `SUGGESTIONS_INLINE`; a reader asking for `SUGGESTIONS_INLINE` or
     `PREVIEW_SUGGESTIONS_ACCEPTED` is the 403. A mode asked for is echoed by its name, its number

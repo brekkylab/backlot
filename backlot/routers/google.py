@@ -4571,9 +4571,9 @@ def _gmask_hollow(value) -> bool:
 
 
 def _gmask_trim_rows(block: dict) -> None:
-    """Cut a projected `GridData` block's rows the way `google_sheets._sheets_grid_data` cuts them, a cell the
-    mask left empty counting as an empty cell. Measured 2026-10-22 over `D1:F4` holding `a` in D1
-    and `b` in F2: `rowData.values.userEnteredValue` answered
+    """Cut a projected `GridData` block's rows the way `google_sheets._sheets_grid_data` cuts
+    them, a cell the mask left empty counting as an empty cell. Measured 2026-10-22 over `D1:F4`
+    holding `a` in D1 and `b` in F2: `rowData.values.userEnteredValue` answered
     `[{"values": [{…}]}, {"values": [{}, {}, {…}]}]`, and `rowData.values.userEnteredFormat`, which
     no cell held, no `rowData` at all.
 

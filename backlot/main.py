@@ -685,12 +685,11 @@ async def report_notion_etag(request: Request, call_next):
     computation was checked against the bodies kept whole.
 
     Registered after ``read_a_notion_body_as_express_does``, which makes it the outer of the
-    two, so a refusal that reader answers carries the tag too, as real's 413 and 415 do; and
-    long before the `HEAD` rewrite below, which makes it the inner of those two, so a `HEAD` is
-    tagged over the body of the `GET` it is rewritten to, as real's is. A method outside
-    ``notion.ROUTED_METHODS`` is left out, as ``report_notion_headers`` leaves it: its 405 is
-    the framework's, where real's front door answers with a page of its own. An answer that is
-    not a JSON body carries none either.
+    two, so a refusal that reader answers carries the tag too; and long before the `HEAD` rewrite
+    below, which makes it the inner of those two, so a `HEAD` is tagged over the body of the `GET`
+    it is rewritten to. A method outside ``notion.ROUTED_METHODS`` is left out, as
+    ``report_notion_headers`` leaves it: its 405 is the framework's, where real's front door answers
+    with a page of its own. An answer that is not a JSON body carries none either.
     """
     response = await call_next(request)
     if not response.headers.get("content-type", "").startswith("application/json"):
@@ -1366,13 +1365,13 @@ async def refuse_cloudflares_methods_on_linear_and_fireflies(request: Request, c
     :func:`refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot`, which answers first: a
     `TRACE`, `CONNECT` or `PURGE` carrying `Authorization` twice drew its 400 from both vendors on
     2026-10-25 (UTC), and one carrying `If-None-Match` or `If-Modified-Since` twice on
-    2026-10-28. Linear's `CONNECT` at a path its front reads as `/`
-    (``backlot.routers.linear.reads_as_root``) carries `X-Content-Type-Options: nosniff`:
-    api.linear.app sent it at `/` four times of four on 2026-10-25 and 2026-10-26, and at `//`,
-    and not with `CONNECT` at `/nosuch`, nor with `TRACE` or `PURGE` at `/`."""
+    2026-10-28. Linear's `CONNECT` at a path of slashes alone
+    (``backlot.routers.linear.slashes_alone``) carries `X-Content-Type-Options: nosniff`:
+    api.linear.app sent it at `/` four times of four on 2026-10-25 and 2026-10-26, and not with
+    `TRACE` or `PURGE` at `/`."""
     status, body, headers = _CLOUDFLARE_METHOD[request.method]
     response = Response(body, status_code=status, headers=headers)
-    linear_root = request.scope["path"].startswith("/linear/") and linear.reads_as_root(
+    linear_root = request.scope["path"].startswith("/linear/") and linear.slashes_alone(
         request.scope
     )
     if request.method == "CONNECT" and linear_root:

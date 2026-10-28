@@ -7338,9 +7338,16 @@ _LINEAR_HEADERS = [
             },
             id=f"BIND at {t or '/graphql'}",
         )
-        for t, n in (("", None), ("/", "nosniff"), ("//", "nosniff"), ("/%2F", None))
+        for t, n in (
+            ("", None),
+            ("/", "nosniff"),
+            ("//", "nosniff"),
+            ("/%2E", "nosniff"),
+            ("/%2F", None),
+        )
     ),
-    # Cloudflare's `CONNECT` at `/`, and its `CONNECT` elsewhere and `PURGE` at `/`.
+    # Cloudflare's `CONNECT` at a path of slashes alone, and its `CONNECT` elsewhere and `PURGE` and
+    # `TRACE` at `/`.
     *(
         pytest.param(
             m,
@@ -7355,6 +7362,8 @@ _LINEAR_HEADERS = [
         for m, t, status, n in (
             ("CONNECT", "/", 400, "nosniff"),
             ("CONNECT", "//", 400, "nosniff"),
+            ("CONNECT", "/%2E", 400, None),
+            ("CONNECT", "/x/%2E%2E", 400, None),
             ("CONNECT", "/nosuch", 400, None),
             ("PURGE", "/", 400, None),
             ("TRACE", "/", 405, None),
@@ -7474,10 +7483,7 @@ def _taken(times, host="203.0.113.7", key="lin_api_x"):
 
 
 # The requests taken from `RequestBudget` (the second, the caller's address, its API key, None
-# for none), and the limit and `x-ratelimit-requests-remaining` on the last: one; thirty over the
-# 13.13 seconds of its measurement; 2,505 at once, past the limit; one an hour after 2,000; two a
-# second apart, which leave the level at 2498.69; two with no key from one address; one from
-# another address after those; and 1,210 with no key at once and one 13.8 seconds on.
+# for none), and the limit and `x-ratelimit-requests-remaining` on the last.
 _REQUEST_BUDGET = [
     pytest.param(_taken([0.0]), "2500", "2499", id="one"),
     pytest.param(

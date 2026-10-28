@@ -2,13 +2,11 @@
 
 An error code is the vendor's own identifier where its envelope has one: Slack's ``error``, S3's
 ``<Code>``, Google's ``reason`` or else its ``status``, Notion's ``code``, HubSpot's ``category``,
-Microsoft Graph's ``error.code``, a GraphQL ``extensions.code``. GitHub, Jira, Confluence, the
-GraphQL engine and Graph's OData validator answer with a message only; those messages are Backlot's
-own text, so each maps to a fixed slug here and the message itself, which can carry a key, a sha or
-a field name from the request, is never sent. A message this table does not know is
-``unrecognized``, except at 400 from Linear or Fireflies: the GraphQL engine answers 400 only for a
-request it refuses before any resolver runs, and the refusals no row names are graphql-core's
-validation of the document and its variables, so they are ``graphql_validation``.
+Microsoft Graph's ``error.code``, a GraphQL error's ``extensions.code``, or the ``code`` Fireflies
+writes beside the message. GitHub, Jira, Confluence, Graph's OData validator and the Linear
+resolvers' refusals that carry no code answer with a message only; those messages are Backlot's own
+text, so each maps to a fixed slug here and the message itself, which can carry a key, a sha or a
+field name from the request, is never sent. A message this table does not know is ``unrecognized``.
 
 The HTTP layer in front of Linear's and Fireflies' GraphQL refuses a body in an envelope of its own,
 with no ``errors``. Fireflies' HTTP layer names its code in ``code``. Linear's is Express, which
@@ -21,9 +19,9 @@ failure:
 | Class | The call failed because |
 |---|---|
 | ``unsupported`` | Backlot does not do this yet: the baseline records the operation as ``missing`` or ``refused``, or the GraphQL engine refused a filter |
-| ``internal`` | of a Backlot bug: Backlot's own failure (see below), or any 5xx but 501 and 505 |
+| ``internal`` | of a Backlot bug: its own failure, or a 5xx other than a vendor's answer (below) |
 | ``rate_limit`` | the vendor's rate limit was reached: a 429, or a 403 with ``x-ratelimit-remaining: 0`` as GitHub sends |
-| ``auth`` | the credential was missing, wrong, or not allowed: a 401 or 403, or Slack's auth errors, which it sends with a 200 |
+| ``auth`` | the credential was missing, wrong, or not allowed: a 401 or 403, or one in ``_AUTH`` |
 | ``client`` | the request was wrong: any other failure |
 
 Backlot's own failure is an exception raised instead of an answer, or a field error the GraphQL
@@ -32,7 +30,8 @@ the failure is Backlot's own, the status, the baseline's support state, the erro
 ``x-ratelimit-remaining`` header, so a code no rule names is classed by its status. A 501 from an
 operation Backlot serves is the vendor's own answer (Google's ``notImplemented``), so it is
 ``client``, and so is a 505, S3's front door's answer to a target holding a space
-(``backlot.request_target._s3``).
+(``backlot.request_target._s3``), and each 5xx in ``_ANSWERED_5XX``, a vendor's answer to a wrong
+request.
 """
 
 from __future__ import annotations
@@ -98,22 +97,7 @@ _CONFLUENCE = [
     (r"Failed to convert value|cannot be less than zero", "invalid_parameter"),
     (r"Cannot find custom content type", "content_type_not_found"),
 ]
-_GRAPHQL = [
-    (r"^Syntax Error", "graphql_parse"),
-    (r"^Entity not found", "entity_not_found"),
-    (r"^unsupported ", "unsupported_filter"),
-    (r"^Authentication required", "authentication_required"),
-    (
-        r"^(Must provide |Variables are invalid JSON|POST body sent invalid JSON|Unknown operation named )",
-        "graphql_request",
-    ),
-    (
-        r"^(Cannot query field|Unknown argument|Unknown type|Unknown fragment|Unknown directive|Field "
-        r"|Variable |Argument |Schema is not configured|There can be only one operation|Expected value"
-        r"|String cannot represent)",
-        "graphql_validation",
-    ),
-]
+_GRAPHQL = [(r"^unsupported ", "unsupported_filter")]
 # Graph's OData validator answers with an empty `error.code`; its message names the option.
 _MSGRAPH = [(r"^The query specified in the URI is not valid\.", "invalid_query_option")]
 _S3_CODE = re.compile(rb"<Code>([A-Za-z0-9_.-]{1,64})</Code>")
@@ -158,10 +142,11 @@ def error_code(source: str, status: int, body: bytes) -> str:
             return ""
         extensions = errors[0].get("extensions")
         code = extensions.get("code") if isinstance(extensions, dict) else None
+        if not code:
+            code = errors[0].get("code")
         if isinstance(code, str) and code:
             return code
-        slug = _slug(errors[0].get("message"), _GRAPHQL)
-        return "graphql_validation" if slug == "unrecognized" and status == 400 else slug
+        return _slug(errors[0].get("message"), _GRAPHQL)
     if status < 400:
         return ""
     if source == "github":
@@ -197,8 +182,16 @@ def error_code(source: str, status: int, body: bytes) -> str:
     return ""
 
 
-# Slack sends its auth errors with a 200.
-_SLACK_AUTH = frozenset({"account_inactive", "invalid_auth", "not_authed"})
+# The auth errors a vendor answers at a status other than 401 and 403: Slack's at 200, and
+# Fireflies' at 500 (`backlot.routers.fireflies._auth_failed`).
+_AUTH = frozenset(
+    {("slack", "account_inactive"), ("slack", "invalid_auth"), ("slack", "not_authed")}
+    | {("fireflies", "auth_failed")}
+)
+# Each 5xx a vendor answers a wrong request with, by source and error code, and Backlot answers too:
+# Fireflies' 500 for a document graphql-depth-limit throws on
+# (`backlot.routers.fireflies._depth_limit`).
+_ANSWERED_5XX = frozenset({("fireflies", "INTERNAL_SERVER_ERROR")})
 
 
 def error_class(
@@ -212,8 +205,8 @@ def error_class(
         return "unsupported"
     if status == 429 or (status == 403 and spent):
         return "rate_limit"
-    if status in (401, 403) or (source == "slack" and code in _SLACK_AUTH):
+    if status in (401, 403) or (source, code) in _AUTH:
         return "auth"
-    if status >= 500 and status not in (501, 505):
+    if status >= 500 and status not in (501, 505) and (source, code) not in _ANSWERED_5XX:
         return "internal"
     return "client"

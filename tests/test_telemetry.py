@@ -316,7 +316,12 @@ def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent
             b'{"errors":[{"message":"x","extensions":{"code":"invalid_argument"}}]}',
             "invalid_argument",
         ),
-        ("linear", 200, b'{"errors":[{"message":"Entity not found: Issue"}]}', "entity_not_found"),
+        (
+            "linear",
+            200,
+            b'{"errors":[{"message":"unsupported comparator \'x\'"}]}',
+            "unsupported_filter",
+        ),
         ("linear", 200, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
         ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
         (
@@ -648,7 +653,7 @@ def test_a_call_is_named_by_the_baseline(client, method, path, kwargs, expected)
         (
             '{ issue(id: "x") { id } teams { nodes { id } } }',
             None,
-            ("query.issue,teams", "implemented", 200, "entity_not_found", "client"),
+            ("query.issue,teams", "implemented", 200, "INPUT_ERROR", "client"),
         ),
         (
             "{ projects { nodes { id } } }",
@@ -811,8 +816,8 @@ def test_each_message_slug_is_one_backlot_sends(client, method, path, kwargs, ex
 # `transcripts` rows there are Fireflies' own.
 _GRAPHQL_MESSAGES = [
     ({"query": "{"}, LINEAR, "GRAPHQL_PARSE_FAILED"),
-    ({"query": '{ issue(id: "nope") { id } }'}, LINEAR, "entity_not_found"),
-    ({"query": "{ __typename }"}, {}, "authentication_required"),
+    ({"query": '{ issue(id: "nope") { id } }'}, LINEAR, "INPUT_ERROR"),
+    ({"query": "{ __typename }"}, {}, "AUTHENTICATION_ERROR"),
     ({"query": "{ nosuch }"}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
     ({"query": '{ issue(id: "x", bogus: 1) { id } }'}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
     ({"query": 'query($x: Nope) { issue(id: "x") { id } }'}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
@@ -1081,7 +1086,7 @@ def test_an_unhandled_exception_is_an_internal_error(client):
     "path, headers, broken, query, expected",
     [
         ("/linear/graphql", LINEAR, "linear_by_id", '{ issue(id: "x") { id } }', "internal_error"),
-        ("/linear/graphql", LINEAR, None, '{ issue(id: "nope") { id } }', "entity_not_found"),
+        ("/linear/graphql", LINEAR, None, '{ issue(id: "nope") { id } }', "INPUT_ERROR"),
         (
             "/fireflies/graphql",
             ADMIN,

@@ -21,11 +21,13 @@ credential and with ``nope``, an empty body, ``{}``, an array, a ``query`` of ``
 string ``variables``, an ``extensions`` or ``operationName`` of ``5``, a persisted query's hash
 alone or one that does not match, a document that does not parse or validate and one of two
 operations with no ``operationName`` drew what the key drew on 2026-10-25 (UTC), and a document
-missing a variable the 401. An API key under ``Bearer`` is refused ahead of the body: with
-``Bearer <key>``, ``{``, an empty body and a body holding ``NaN`` drew
-:func:`_api_key_as_bearer`'s 400 on 2026-10-18, and ``charset=latin1``, ``Content-Encoding: bogus``
-and a body past the size limit did on 2026-10-19, when a key in an API key's shape that Linear never
-issued drew it under ``Bearer`` with ``{``, ``NaN``, ``5``, ``charset=latin1`` and an empty body.
+missing a variable the 401, but for one that selects only ``__schema`` and ``__type``
+(:func:`_introspection_only`), which drew the variable's refusal as with the key. An API key under
+``Bearer`` is refused ahead of the body: with ``Bearer <key>``, ``{``, an empty body and a body
+holding ``NaN`` drew :func:`_api_key_as_bearer`'s 400 on 2026-10-18, and ``charset=latin1``,
+``Content-Encoding: bogus`` and a body past the size limit did on 2026-10-19, when a key in an API
+key's shape that Linear never issued drew it under ``Bearer`` with ``{``, ``NaN``, ``5``,
+``charset=latin1`` and an empty body.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
+from graphql import FieldNode, FragmentDefinitionNode, FragmentSpreadNode
 
 from backlot import auth
 from backlot.config import get_settings
@@ -122,21 +125,10 @@ async def graphql(request: Request):
         return _answer(request, resolved, payload)
     caller = auth.resolve_api_key(request)
     if caller is None:
-        # Real Linear answers a bad credential with a GraphQL error envelope and a 401, not a
-        # framework 403 — clients parse `errors[0].message`.
-        return JSONResponse(
-            {
-                "errors": [
-                    {
-                        "message": "Authentication required",
-                        "extensions": {
-                            "type": "authentication error",
-                            "userPresentableMessage": "Invalid API key",
-                        },
-                    }
-                ]
-            },
-            status_code=401,
+        if _introspection_only(resolved):
+            return _answer(request, ENGINE.run(resolved), payload)
+        return Response(
+            request_body.node_json(_UNAUTHENTICATED), status_code=401, media_type="application/json"
         )
     state = request.app.state
     context = {
@@ -153,6 +145,54 @@ async def graphql(request: Request):
         # (store.linear_entity_by_id, called by the resolvers' own `_by_id`).
     }
     return _answer(request, ENGINE.run(resolved, context=context), payload)
+
+
+# Linear's 401, as api.linear.app answered `{ viewer { id } }` with no `Authorization`, with
+# `Bearer nope`, `nope`, `Bearer` and `Basic Zm9vOmJhcg==` on 2026-10-25 (UTC).
+_UNAUTHENTICATED = {
+    "errors": [
+        {
+            "message": "Authentication required, not authenticated",
+            "extensions": {
+                "type": "authentication error",
+                "code": "AUTHENTICATION_ERROR",
+                "statusCode": 401,
+                "userError": True,
+                "userPresentableMessage": "You need to authenticate to access this operation.",
+                "meta": {},
+                "http": {"status": 401},
+            },
+        }
+    ]
+}
+_INTROSPECTION = frozenset({"__schema", "__type"})
+
+
+def _introspection_only(operation: engine.Operation) -> bool:
+    """Whether each root field ``operation`` selects, through its fragments and whatever their
+    directives say, is ``__schema`` or ``__type``. Linear answered such a document with no
+    credential on 2026-10-25 (UTC), aliased, in a named or an inline fragment, under ``@skip(if:
+    false)`` and as the operation ``operationName`` chose, and answered the 401 to one that also
+    selects ``__typename`` or a field it skips."""
+    fragments = {
+        d.name.value: d
+        for d in operation.document.definitions
+        if isinstance(d, FragmentDefinitionNode)
+    }
+
+    def only(selections) -> bool:
+        for selection in selections:
+            if isinstance(selection, FieldNode):
+                if selection.name.value not in _INTROSPECTION:
+                    return False
+            elif isinstance(selection, FragmentSpreadNode):
+                if not only(fragments[selection.name.value].selection_set.selections):
+                    return False
+            elif not only(selection.selection_set.selections):
+                return False
+        return True
+
+    return only(operation.operation.selection_set.selections)
 
 
 def _answer(request: Request, result: engine.Result, payload: Any) -> Response:
@@ -241,7 +281,8 @@ def _envelope(result: engine.Result, payload: Any) -> dict:
     or its hash as Linear's ``Internal server error``, an operation that cannot be chosen as
     :func:`_operation_missing`, and the request error after fifty refused variables, to which
     Apollo Server gives no code of its own, as :func:`_internal` (api.linear.app, 2026-10-26
-    UTC); and each error in ``result.assigned`` as :func:`_internal`."""
+    UTC); each error in ``result.assigned`` as :func:`_internal`, and each other field error in
+    Linear's member order (:func:`_in_linears_order`)."""
     if result.refusals:
         errors = []
         for refusal in result.refusals:
@@ -263,13 +304,22 @@ def _envelope(result: engine.Result, payload: Any) -> dict:
                     _apollo(refusal.message, refusal.code, refusal.status, refusal.locations)
                 )
         return {"errors": errors}
-    if not result.assigned:
+    if "errors" not in result.payload:
         return result.payload
     errors = [
-        _internal(error) if i in result.assigned else error
+        _internal(error) if i in result.assigned else _in_linears_order(error)
         for i, error in enumerate(result.payload["errors"])
     ]
     return {**result.payload, "errors": errors}
+
+
+def _in_linears_order(error: dict) -> dict:
+    """``error``'s members in the order Linear writes a field error's: api.linear.app put ``path``
+    before ``locations`` in each by-id root's not-found and in an ``Argument Validation Error`` on
+    2026-10-25 (UTC)."""
+    return {
+        key: error[key] for key in ("message", "path", "locations", "extensions") if key in error
+    }
 
 
 def _read(raw: bytes, content_type: str | None, content_encoding: str) -> Any:

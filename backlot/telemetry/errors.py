@@ -3,11 +3,10 @@
 An error code is the vendor's own identifier where its envelope has one: Slack's ``error``, S3's
 ``<Code>``, Google's ``reason`` or else its ``status``, Notion's ``code``, HubSpot's ``category``,
 Microsoft Graph's ``error.code``, a GraphQL error's ``extensions.code``, or the ``code`` Fireflies
-writes beside the message. GitHub, Jira, Confluence, Graph's OData validator, Linear's 401 and the
-Linear resolvers' refusals that carry no code answer with a message only; those messages are
-Backlot's own text, so each maps to a fixed slug here and the message itself, which can carry a
-key, a sha or a field name from the request, is never sent. A message this table does not know is
-``unrecognized``.
+writes beside the message. GitHub, Jira, Confluence, Graph's OData validator and the Linear
+resolvers' refusals that carry no code answer with a message only; those messages are Backlot's own
+text, so each maps to a fixed slug here and the message itself, which can carry a key, a sha or a
+field name from the request, is never sent. A message this table does not know is ``unrecognized``.
 
 The HTTP layer in front of Linear's and Fireflies' GraphQL refuses a body in an envelope of its own,
 with no ``errors``. Fireflies' HTTP layer names its code in ``code``. Linear's is Express, which
@@ -98,11 +97,7 @@ _CONFLUENCE = [
     (r"Failed to convert value|cannot be less than zero", "invalid_parameter"),
     (r"Cannot find custom content type", "content_type_not_found"),
 ]
-_GRAPHQL = [
-    (r"^Entity not found", "entity_not_found"),
-    (r"^unsupported ", "unsupported_filter"),
-    (r"^Authentication required", "authentication_required"),
-]
+_GRAPHQL = [(r"^unsupported ", "unsupported_filter")]
 # Graph's OData validator answers with an empty `error.code`; its message names the option.
 _MSGRAPH = [(r"^The query specified in the URI is not valid\.", "invalid_query_option")]
 _S3_CODE = re.compile(rb"<Code>([A-Za-z0-9_.-]{1,64})</Code>")

@@ -156,6 +156,74 @@
           }
         }
       }
+    },
+    "paragraphs": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The document's paragraphs, for a `document`, each with its named style and its runs of text, so the Docs API serves the headings, bold, italic and links a document really has. Authoritative when present, and then `content` must be ABSENT: it is derived at import as the paragraphs' text, one line each, which Drive's export and full-text search read. Omit `paragraphs` and `content` keeps its meaning unchanged -- one plain paragraph per line of it.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "style": {
+            "enum": [
+              "NORMAL_TEXT",
+              "TITLE",
+              "SUBTITLE",
+              "HEADING_1",
+              "HEADING_2",
+              "HEADING_3",
+              "HEADING_4",
+              "HEADING_5",
+              "HEADING_6"
+            ],
+            "description": "The paragraph's named style (default: NORMAL_TEXT)."
+          },
+          "text": {
+            "type": "string",
+            "description": "The paragraph's text, unstyled and without its newline. An empty string is an empty paragraph. State this or `runs`, not both. No character real strips from a document's text (U+0000-U+0008, U+000C-U+001F, U+E000-U+F8FF) and none `insertText` refuses (U+FDD0-U+FDEF)."
+          },
+          "runs": {
+            "type": "array",
+            "minItems": 1,
+            "description": "The paragraph's text as runs, each with the marks it carries, in order and without the paragraph's newline. State this or `text`, not both.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "text"
+              ],
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "bold": {
+                  "type": "boolean",
+                  "description": "Bold."
+                },
+                "italic": {
+                  "type": "boolean",
+                  "description": "Italic."
+                },
+                "underline": {
+                  "type": "boolean",
+                  "description": "Underlined."
+                },
+                "strikethrough": {
+                  "type": "boolean",
+                  "description": "Struck through."
+                },
+                "link": {
+                  "type": "string",
+                  "pattern": "^[^.:/?#]+:",
+                  "description": "The URL the run links to, starting with a scheme: text before its first `:` with no `.`, `/`, `?` or `#` in it (`https:`, `mailto:`). Real stores most other values as an `http://` URL, `wiki.acme.example:8443/page` among them, and a `#heading=` value as a heading link, so a document holds neither as stated. A link is served underlined and in the link colour, as the editor makes one."
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "required": [
@@ -169,8 +237,17 @@
   "additionalProperties": false,
   "if": {
     "not": {
-      "required": [
-        "sheets"
+      "anyOf": [
+        {
+          "required": [
+            "sheets"
+          ]
+        },
+        {
+          "required": [
+            "paragraphs"
+          ]
+        }
       ]
     }
   },

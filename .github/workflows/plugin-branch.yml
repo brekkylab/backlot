@@ -43,7 +43,6 @@ jobs:
       REF: ${{ github.event.release.tag_name || inputs.ref }}
       BRANCH: ${{ inputs.branch || 'plugin' }}
       INPUT_VERSION: ${{ inputs.version }}
-      TREE: ${{ runner.temp }}/plugin
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,6 +58,7 @@ jobs:
             version="$INPUT_VERSION"
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "TREE=$RUNNER_TEMP/plugin" >> "$GITHUB_ENV"
       # The skill tells an agent to `pip install backlot`, so the branch moves only once PyPI serves
       # the version it describes.
       - name: Wait for PyPI to serve the version

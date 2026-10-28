@@ -211,10 +211,7 @@ def test_linear_by_id_roots_do_not_leak_entities_off_hidden_issues(sample_settin
             tokens["ava@acme.com"],
             via,
         )
-        assert (
-            absent["errors"][0]["message"].split("id=")[0]
-            == hidden["errors"][0]["message"].split("id=")[0]
-        )
+        assert absent == hidden
 
 
 def test_linear_by_id_roots_still_answer_for_visible_entities(sample_settings, tokens):

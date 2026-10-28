@@ -10,10 +10,11 @@ Both vendors serve GraphQL through Apollo Server over graphql-js, so the engine 
 does: Apollo Server's checks of the body and of a persisted query come first, then graphql-js's
 parse, validation and choice of operation (:meth:`Engine.resolve_payload`), then the coercion of
 variables and the run itself (:meth:`Engine.run`), each refusal a :class:`Refusal` carrying Apollo
-Server's ``code`` and the message in graphql-js's words (:mod:`backlot.graphql.js_words`). A router
-that reads the credential between the two stages calls them apart. A refusal made before execution
-carries no ``data`` entry; an error made as the operation runs comes back beside ``data``, at 200.
-Each router turns the refusals into its vendor's envelope.
+Server's ``code`` and the message as Apollo Server writes it, in graphql-js's words where
+graphql-js made the refusal (:mod:`backlot.graphql.js_words`). A router that reads the credential
+between the two stages calls them apart. A refusal made before execution carries no ``data`` entry;
+an error made as the operation runs comes back beside ``data``, at 200. Each router turns the
+refusals into its vendor's envelope.
 """
 
 from __future__ import annotations
@@ -103,14 +104,15 @@ INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
 
 #: The errors graphql-js's ``validate`` takes, and graphql-core's: the next one is
 #: ``Too many validation errors, error limit reached. Validation aborted.``, and the last.
-_MAX_VALIDATION_ERRORS = 100
+MAX_VALIDATION_ERRORS = 100
 
 
 @dataclass(frozen=True)
 class Refusal:
-    """One request error as Apollo Server answers it: ``message`` in graphql-js's words, the
-    ``locations`` graphql-js gives it, Apollo Server's ``code``, the status of the answer and the
-    ``headers`` it sets on it. ``thrown`` marks a refusal Apollo Server throws, each but
+    """One request error as Apollo Server answers it: ``message`` as Apollo Server writes it, in
+    graphql-js's words where graphql-js made the refusal, the ``locations`` graphql-js gives it,
+    Apollo Server's ``code``, the status of the answer and the ``headers`` it sets on it.
+    ``thrown`` marks a refusal Apollo Server throws, each but
     :data:`~backlot.graphql.apollo_http.NOT_ACCEPTABLE` before its request pipeline, which
     ``Accept`` cannot turn into its 406 (:mod:`backlot.graphql.apollo_http`), and
     ``http_headers`` whether the ``http`` extension it carries names its ``headers``, as all but
@@ -274,17 +276,24 @@ PERSISTED_QUERY_VERSION = "Unsupported persisted query version"
 PERSISTED_QUERY_MISMATCH = "provided sha does not match query"
 
 
-def persisted_query_refusal(payload: dict) -> Result | None:
-    """Apollo Server's answer to the ``persistedQuery`` extension of ``payload``, or ``None`` for
-    a request it runs, as a server that keeps no query answers: a hash sent with no ``query``, or
-    with ``null``, ``false`` or ``0``, is ``PersistedQueryNotFound`` at 200. Both vendors answered
-    so on 2026-10-25 (UTC). Once a query had been sent with its hash and served, Linear answered
-    its hash alone so to each of 16 requests, and Fireflies to 15 of 16, serving the query to the
-    other. A version other than the number 1 is refused, then a hash that is not the SHA-256 of the
-    query sent, in lower-case hex, before the query is parsed."""
+def _persisted_query(payload: dict) -> Any:
+    """The ``persistedQuery`` extension of ``payload``, or ``None`` where it sends none JavaScript
+    reads as true."""
     extensions = payload.get("extensions")
     persisted = extensions.get("persistedQuery") if isinstance(extensions, dict) else None
-    if not _js_truthy(persisted):
+    return persisted if _js_truthy(persisted) else None
+
+
+def persisted_query_refusal(payload: dict) -> Result | None:
+    """Apollo Server's answer to the ``persistedQuery`` extension of ``payload``, or ``None`` for
+    a request it goes on with, as a server that keeps no query answers. A version other than the
+    number 1 is refused first. Then a hash sent with no ``query``, or with ``null``, ``false`` or
+    ``0``, is ``PersistedQueryNotFound`` at 200, as both vendors answered on 2026-10-25 (UTC); once
+    a query had been sent with its hash and served, Linear answered its hash alone so to each of 16
+    requests, and Fireflies to 15 of 16, serving the query to the other. Then a hash that is not the
+    SHA-256 of the query sent, in lower-case hex, is refused before the query is parsed."""
+    persisted = _persisted_query(payload)
+    if persisted is None:
         return None
     version = persisted.get("version") if isinstance(persisted, dict) else None
     if isinstance(version, bool) or version != 1:
@@ -395,7 +404,7 @@ class Engine:
 
         ``on_document`` is a validation rule of the vendor's that reports as graphql-js creates
         it: the :class:`Result` to answer with where it throws, or the errors it reports, which
-        come ahead of graphql-js's own and count toward the :data:`_MAX_VALIDATION_ERRORS` it
+        come ahead of graphql-js's own and count toward the :data:`MAX_VALIDATION_ERRORS` it
         takes."""
         try:
             doc = parse(document)
@@ -406,7 +415,7 @@ class Engine:
         reported = [] if on_document is None else on_document(doc)
         if isinstance(reported, Result):
             return reported
-        errors = validate(self._checked, doc, max_errors=_MAX_VALIDATION_ERRORS - len(reported))
+        errors = validate(self._checked, doc, max_errors=MAX_VALIDATION_ERRORS - len(reported))
         if reported or errors:
             return refused(
                 *(Refusal(e.message, VALIDATION_FAILED, js_words.locations(e)) for e in reported),
@@ -444,8 +453,10 @@ class Engine:
     ) -> Result | Operation:
         """A GraphQL-over-HTTP POST body (``{query, variables, operationName}``) its router has
         read with :mod:`backlot.graphql.body`, up to the choice of operation: :func:`body_refusal`,
-        then :func:`persisted_query_refusal`, then Apollo Server's refusal of a body with no query,
-        then :meth:`resolve`. With ``get``, ``payload`` is a GET's query string as
+        then :func:`persisted_query_refusal`, then Apollo Server's refusal of a body with no query
+        and no ``persistedQuery`` extension, then :meth:`resolve`. A query whose hash a
+        ``persistedQuery`` extension matches is parsed however empty it is, as both vendors parsed
+        ``""`` on 2026-10-28 (UTC). With ``get``, ``payload`` is a GET's query string as
         :func:`backlot.graphql.apollo_http.search_payload` reads it, which no body check runs on."""
         answer = None if get else body_refusal(payload)
         if answer is None:
@@ -453,7 +464,7 @@ class Engine:
         if answer is not None:
             return answer
         query = payload.get("query")
-        if not _js_truthy(query):
+        if not _js_truthy(query) and _persisted_query(payload) is None:
             return _refusal(NO_QUERY)
         return self.resolve(
             query,
@@ -502,12 +513,11 @@ class Engine:
             variable_values=variables,
             operation_name=operation.name,
         )
-        # graphql-core's ExecutionResult.formatted writes "data" first; api.fireflies.ai and
-        # api.linear.app open a response carrying a field error with "errors" (2026-10-21), so the
-        # errors come first here. Each error's locations are graphql-js's. An error graphql-core
-        # made itself is in graphql-js's words and carries the code Apollo Server gives an error
-        # with none, which a router writes in its vendor's envelope; one a resolver raised is the
-        # vendor's own.
+        # api.fireflies.ai and api.linear.app open a response carrying a field error with "errors"
+        # (2026-10-21), so the errors come first here. Each error's locations are graphql-js's. An
+        # error graphql-core made itself is in graphql-js's words and carries the code Apollo Server
+        # gives an error with none, which a router writes in its vendor's envelope; one a resolver
+        # raised is the vendor's own.
         payload: dict = {}
         assigned = []
         if result.errors:

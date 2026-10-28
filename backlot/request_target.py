@@ -195,12 +195,14 @@ def _google(path_kinds: list[str], query_kinds: list[str]) -> Response | None:
 
 
 def _cloudflare(scope: Scope, path_kinds: list[str], query_kinds: list[str]) -> Response | None:
-    """:data:`CLOUDFLARE_PAGE` where a `nul` or a `cr` is anywhere, and where `Authorization` comes
-    more than once (``auth.repeated_authorization``); then an empty 400 with no `Content-Type` for
-    any raw byte in the query, and for one in a path that holds no `space`; and a path with a
-    `space` in it read as its percent-encoding, whatever else the path holds."""
+    """:data:`CLOUDFLARE_PAGE` where a `nul` or a `cr` is anywhere, and where `Authorization` or
+    one of the five conditional headers comes more than once
+    (``auth.repeated_cloudflare_refused_header``), ahead of the bytes below; then an empty 400
+    with no `Content-Type` for any raw byte in the query, and for one in a path that holds no
+    `space`; and a path with a `space` in it read as its percent-encoding, whatever else the path
+    holds."""
     every = set(path_kinds) | set(query_kinds)
-    if every & {"nul", "cr"} or auth.repeated_authorization(Request(scope)):
+    if every & {"nul", "cr"} or auth.repeated_cloudflare_refused_header(Request(scope)):
         return _page(CLOUDFLARE_PAGE, "text/html")
     if query_kinds or "space" not in path_kinds:
         return _page(b"", None, close=False)

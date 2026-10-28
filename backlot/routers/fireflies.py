@@ -143,7 +143,7 @@ _BODIED = ("DELETE", "PATCH", "POST", "PUT")
 async def graphql(request: Request):
     """Fireflies' endpoint, the one path Fastify routes, in front of which Fireflies runs nginx
     (:func:`nginx_passes`), Fastify and ``@fastify/cors``. Not in the OpenAPI document on purpose:
-    this is a GraphQL service, and describing one POST route that accepts an arbitrary query would
+    this is a GraphQL service, and describing one route that accepts an arbitrary query would
     tell an OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
     ``backlot/openapi.py``). Introspection is the schema description for this endpoint.
 
@@ -644,9 +644,6 @@ def _envelope(result: engine.Result) -> dict:
 #: graphql-depth-limit's ``maxDepth`` on api.fireflies.ai, which on 2026-10-26 (UTC) refused a
 #: selection eleven fields deep and crawled one ten deep.
 _MAX_DEPTH = 10
-#: The errors graphql-js's ``validate`` takes before it stops, which a 101st report from a rule
-#: throws past.
-_MAX_ERRORS = 100
 
 
 class _Thrown(Exception):
@@ -663,10 +660,16 @@ def _depth_limit(doc: DocumentNode) -> engine.Result | list[GraphQLError]:
     ``''``: a field's selections one deeper, but none of a field whose name starts ``__``, and a
     spread's fragment, the last of its name, at the spread's depth. A selection deeper than
     :data:`_MAX_DEPTH` is reported and not crawled. A spread of a fragment the document does not
-    define, a spread back to a fragment with no field between, and a report past
-    :data:`_MAX_ERRORS` throw. api.fireflies.ai answered so on 2026-10-26 (UTC), and answered
-    ``{ ...F }`` with ``F`` undefined inside a field ten deep with the 500 and eleven deep with the
-    depth error."""
+    define, a spread back to a fragment with no field between, and a report past the
+    :data:`backlot.graphql.engine.MAX_VALIDATION_ERRORS` graphql-js's ``validate`` takes throw.
+    api.fireflies.ai answered so on 2026-10-26 (UTC), and answered ``{ ...F }`` with ``F`` undefined
+    inside a field ten deep with the 500 and eleven deep with the depth error.
+
+    A document with an operation named ``__proto__`` throws too, whichever operation is chosen:
+    graphql-depth-limit keeps the operations in a plain object, which takes an operation of that
+    name as its prototype, and its ``for…in`` crawls the operation's own members. api.fireflies.ai
+    answered it with the 500 on 2026-10-28 (UTC), and served an operation named ``constructor`` or
+    ``__defineGetter__`` and a spread of a fragment named ``__proto__``."""
     fragments: dict[str, FragmentDefinitionNode] = {}
     operations: dict[str, OperationDefinitionNode] = {}
     for definition in doc.definitions:
@@ -690,7 +693,7 @@ def _depth_limit(doc: DocumentNode) -> engine.Result | list[GraphQLError]:
                 reported += spread(node.name.value, depth)
             else:
                 reported += crawl(node.selection_set.selections, depth)
-            if len(reported) > _MAX_ERRORS:
+            if len(reported) > engine.MAX_VALIDATION_ERRORS:
                 raise _Thrown
         return reported
 
@@ -704,9 +707,11 @@ def _depth_limit(doc: DocumentNode) -> engine.Result | list[GraphQLError]:
 
     errors: list[GraphQLError] = []
     try:
+        if "__proto__" in operations:
+            raise _Thrown
         for name, operation in operations.items():
             for node in crawl(operation.selection_set.selections, 0):
-                if len(errors) == _MAX_ERRORS:
+                if len(errors) == engine.MAX_VALIDATION_ERRORS:
                     raise _Thrown
                 message = f"'{name}' exceeds maximum operation depth of {_MAX_DEPTH}"
                 errors.append(GraphQLError(message, node))

@@ -1,14 +1,18 @@
-"""graphql-js's words for the errors graphql-core makes with its own.
+"""graphql-js 16's words for the errors graphql-core 3.2 makes with its own.
+
+Linear and Fireflies answered a validation error, a syntax error and a variable's refusal in
+graphql-js 16.14.2's words on 2026-10-25 (UTC), and Linear refused an array sent for an input object
+as 16.14.2 does, where 16.9.0 reads the array's indices as field names. graphql-js 17.0.2 words
+five refusals otherwise (run on 2026-10-28 (UTC)): a variable of the wrong type, a null non-null
+variable, a missing non-null variable, a list item its type refuses, and a missing argument. A
+vendor's move to 17 shows here as answers that diverge, not as an error.
 
 Linear and Fireflies run graphql-js under Apollo Server, and graphql-core is a port of graphql-js
 whose messages differ from it: graphql-core quotes a name, a type, a token or a character with
 ``'`` where graphql-js quotes it with ``"``, names a directive's location by its value (``query``)
 where graphql-js names it ``QUERY``, prints a variable's value with Python's ``repr`` where
 graphql-js prints it with its own ``inspect``, words a variable's refusals its own way (``to be a
-mapping``), and counts a line at characters graphql-js does not break at. Both vendors answered a
-validation error, a syntax error and a variable's refusal in graphql-js's words on 2026-10-25
-(UTC), quotes and values as graphql-js 16.14.2 writes them: Linear also refused an array sent for
-an input object as graphql-js 16.14.2 does, where 16.9.0 reads the array's indices as field names.
+mapping``), and counts a line at characters graphql-js does not break at.
 
 Here are :func:`requote` for a message, :func:`locations` for where it points, and
 :func:`coerce_variable_values` for a variable's refusals, which it makes from the value as the

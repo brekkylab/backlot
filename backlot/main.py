@@ -784,15 +784,18 @@ async def report_notion_cors(request: Request, call_next):
 
     Measured against api.notion.com on 2026-10-27: on those paths a request whose `Origin` has a
     value got ``notion.CORS_HEADERS`` on its answer, the URL's 400 and the body reader's
-    `invalid_json` and 415 among them, and each answer there was `vary: Origin, Accept-Encoding`,
-    with `Origin` or without; an `OPTIONS` with `Access-Control-Request-Method` beside that `Origin`
-    (`POST`, `FOO` and an empty one alike) was instead a 204 with no body and `vary: Origin`, ahead
-    of the URL check. An `Origin` that is empty, a space or a tab counted as none. On the other
-    paths `Origin` changed nothing (``notion.answers_cors`` has their `vary`).
+    `invalid_json` and 415 among them, and each answer there with a `content-type` was
+    `vary: Origin, Accept-Encoding`, with `Origin` or without; an `OPTIONS` with
+    `Access-Control-Request-Method` beside that `Origin` (`POST`, `FOO` and an empty one alike) was
+    instead a 204 with no body and `vary: Origin`, ahead of the URL check. An `Origin` that is
+    empty, a space or a tab counted as none. On the other paths `Origin` changed nothing
+    (``notion.answers_cors`` has their `vary`). On 2026-10-28 the 304 an `If-None-Match: *` draws,
+    which carries no `content-type`, was `vary: Origin`, with the CORS headers as `Origin` asked.
 
-    Registered after ``serve_a_slashed_notion_path_as_the_path_without_it`` and
-    ``read_a_notion_body_as_express_does``, which makes it the outer of the three: it reads the
-    path with its trailing slash as sent, and answers a preflight before the body is read.
+    Registered after ``serve_a_slashed_notion_path_as_the_path_without_it``,
+    ``read_a_notion_body_as_express_does`` and ``report_notion_etag``, which makes it the outer of
+    the four: it reads the path with its trailing slash as sent, answers a preflight before the
+    body is read, and puts its headers on a 304.
     """
     origin = request.headers.get("origin", "").strip(" \t")
     if not notion.answers_cors(request.url.path):
@@ -807,7 +810,9 @@ async def report_notion_cors(request: Request, call_next):
         response = Response(status_code=204, headers={"vary": "Origin"})
     else:
         response = await call_next(request)
-        response.headers["vary"] = "Origin, Accept-Encoding"
+        response.headers["vary"] = (
+            "Origin, Accept-Encoding" if "content-type" in response.headers else "Origin"
+        )
     if origin:
         for name, value in notion.CORS_HEADERS.items():
             response.headers[name] = value

@@ -410,13 +410,14 @@ def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, noti
 def test_notion_answers_an_if_none_match_of_a_star_as_real_does(client, notion_h):
     """Each request below is answered as ``backlot.routers.notion.not_modified`` records real
     answering it: with the 304 ``backlot.main.report_notion_etag`` makes of the answer it stands
-    for, or with the status it gets without `If-None-Match`."""
+    for, under the `vary` ``backlot.main.report_notion_cors`` gives an answer with no
+    `content-type`, or with the status it gets without `If-None-Match`."""
     me, page = "/notion/v1/users/me", f"/notion/v1/pages/{synth.notion_id('nt-runbook')}"
     stands_for = {}
     for path in (me, page):
         headers = dict(client.get(path, headers=notion_h).headers)
         del headers["content-type"], headers["content-length"]
-        stands_for[path] = (304, b"", headers)
+        stands_for[path] = (304, b"", {**headers, "vary": "Origin"})
     star = ("If-None-Match", "*")
     wanted = {
         ("GET", me, (star,)): stands_for[me],
@@ -475,9 +476,13 @@ def test_notion_cors_headers_preflight_and_vary_are_reals(client, notion_h):
     preflight = {**origin, **asks}
     five, none = _NOTION_CORS_HEADERS, dict.fromkeys(_NOTION_CORS_HEADERS)
     both, compression = "Origin, Accept-Encoding", "Accept-Encoding"
+    fresh = {"If-None-Match": "*"}
     rows = [
         ("GET", "/notion/v1/users/me", {**notion_h, **origin}, None, 200, five, both),
         ("HEAD", "/notion/v1/users/me", {**notion_h, **origin}, None, 200, five, both),
+        ("GET", "/notion/v1/users/me", {**notion_h, **origin, **fresh}, None, 304, five, "Origin"),
+        ("HEAD", "/notion/v1/users/me", {**notion_h, **origin, **fresh}, None, 304, five, "Origin"),
+        ("GET", "/notion/v1/users/me", {**notion_h, **fresh}, None, 304, none, "Origin"),
         ("GET", "/notion/v1/users/me", {**notion_h, "Origin": "null"}, None, 200, five, both),
         ("GET", "/notion/v1/users/me", {**notion_h, "Origin": "\xa0"}, None, 200, five, both),
         ("GET", "/notion/v1/users/me", {**versioned, **origin}, None, 401, five, both),

@@ -1699,9 +1699,8 @@ def _roster_emails(settings):
 
 # --- Fastify, @fastify/cors and Apollo Server in front of Fireflies' GraphQL ----------------------
 # Each row: a request, its credential (`_FIREFLIES_CREDENTIALS`), and api.fireflies.ai's answer to
-# it, as `graphql` records the layers it was measured through: status, media type and body less
-# the newline Apollo Server ends one with, `_TYPENAME_DATA` where the query was served, nothing for
-# a `HEAD`.
+# it, as `graphql` records the layers it was measured through: status, media type and body,
+# `_TYPENAME_DATA` where the query was served, nothing for a `HEAD`.
 _CSRF = _apollo(
     b"This operation has been blocked as a potential Cross-Site Request Forgery (CSRF). Please"
     b" either specify a 'content-type' header (with a type that is not one of"
@@ -1722,6 +1721,8 @@ _UNSUPPORTED = (
     b'"errorMessage":"Unsupported Media Type"}'
 )
 _TYPENAME_DATA = b'{"data":{"__typename":"Query"}}\n'
+_USER_TYPENAME = b'{"query":"{ user { __typename } }"}'
+_USER_TYPENAME_DATA = b'{"data":{"user":{"__typename":"User"}}}\n'
 _JSON_UTF8 = "application/json; charset=utf-8"
 _GRAPHQL_RESPONSE = "application/graphql-response+json; charset=utf-8"
 _CLOUDFLARE_PAGE = (
@@ -2782,12 +2783,204 @@ _FIREFLIES_HTTP = [
     http_row(
         "POST", "/graphq%6c", _J, _TYPENAME, "none", 500, _JSON_UTF8, _BAD_KEY, id="POST /graphq%6c"
     ),
+    # The headers on each kind of answer Apollo Server and Fastify write.
+    http_row(
+        "POST",
+        "",
+        _J,
+        _TYPENAME,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="served",
+        answered=_fastify("no-store"),
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        _USER_TYPENAME,
+        "person",
+        200,
+        _JSON_UTF8,
+        _USER_TYPENAME_DATA,
+        id="a resolver ran",
+        answered=_fastify("no-store")
+        | {
+            "x-ratelimit-limit-api_burst": "30",
+            "x-ratelimit-limit-api": "500",
+            "x-ratelimit-limit": "500",
+            "retry-after": None,
+        },
+    ),
+    *(
+        http_row(
+            "POST", "", _J, b, "key", 400, _JSON_UTF8, answer, id=i, answered=_fastify("no-store")
+        )
+        for b, answer, i in (
+            (
+                b'{"query":"{ nosuch }"}',
+                _apollo(
+                    b'Cannot query field \\"nosuch\\" on type \\"Query\\".',
+                    b"GRAPHQL_VALIDATION_FAILED",
+                    b'"locations":[{"line":1,"column":3}],',
+                ),
+                "not valid",
+            ),
+            (
+                b'{"query":"{"}',
+                _apollo(
+                    b"Syntax Error: Expected Name, found <EOF>.",
+                    b"GRAPHQL_PARSE_FAILED",
+                    b'"locations":[{"line":1,"column":2}],',
+                ),
+                "does not parse",
+            ),
+            (
+                b'{"query":""}',
+                _apollo(
+                    b"GraphQL operations must contain a non-empty `query` or a `persistedQuery`"
+                    b" extension."
+                ),
+                "no query",
+            ),
+            (
+                b'{"query":"query($x: Int!) { __typename }"}',
+                _apollo(
+                    b'Variable \\"$x\\" is never used.',
+                    b"GRAPHQL_VALIDATION_FAILED",
+                    b'"locations":[{"line":1,"column":7}],',
+                ),
+                "a variable not provided",
+            ),
+        )
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        b'{"query":"{ ...F }"}',
+        "key",
+        500,
+        _JSON_UTF8,
+        _INTERNAL,
+        id="depth-limit's 500",
+        answered=_fastify(None),
+    ),
+    # Which documents spend the budget: a root field a resolver runs for, through a fragment and
+    # as `@include` leaves it, and not `__schema`, a root the SDL leaves out or a refused variable.
+    *(
+        http_row(
+            "POST",
+            "",
+            _J,
+            b,
+            "person",
+            400 if b"String!" in b else 200,
+            _JSON_UTF8,
+            answer,
+            id=i,
+            answered=_fastify("no-store", x_ratelimit_limit_api=spends),
+        )
+        for b, answer, spends, i in (
+            (
+                b'{"query":"query { ...F } fragment F on Query { user { __typename } }"}',
+                _USER_TYPENAME_DATA,
+                "500",
+                "a fragment",
+            ),
+            (
+                b'{"query":"query($v: Boolean!) { user @include(if: $v) { __typename } }","variables":{"v":true}}',
+                _USER_TYPENAME_DATA,
+                "500",
+                "@include true",
+            ),
+            (
+                b'{"query":"query($v: Boolean!) { user @include(if: $v) { __typename } }","variables":{"v":false}}',
+                b'{"data":{}}\n',
+                None,
+                "@include false",
+            ),
+            (
+                b'{"query":"{ __schema { queryType { name } } }"}',
+                b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
+                None,
+                "__schema",
+            ),
+            (
+                b'{"query":"mutation { __typename }"}',
+                b'{"data":{"__typename":"Mutation"}}\n',
+                None,
+                "a mutation of __typename",
+            ),
+            (
+                b'{"query":"query($x: String!) { user(id: $x) { __typename } }"}',
+                _apollo(
+                    b'Variable \\"$x\\" of required type \\"String!\\" was not provided.',
+                    b"BAD_USER_INPUT",
+                    b'"locations":[{"line":1,"column":7}],',
+                ),
+                None,
+                "a variable not provided to a field",
+            ),
+            (
+                b'{"query":"query($v: Boolean = true) { user @include(if: $v) { __typename } }"}',
+                _USER_TYPENAME_DATA,
+                "500",
+                "@include of a default",
+            ),
+        )
+    ),
+    http_row(
+        "POST", "", _J, b"[]", "key", 400, _JSON_UTF8, _BATCHING, id="a batch", answered=_fastify()
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        _USER_TYPENAME,
+        "none",
+        500,
+        _JSON_UTF8,
+        _BAD_KEY,
+        id="no credential",
+        answered=_fastify(),
+    ),
+    http_row(
+        "POST", "", _J, b"x", "key", 400, _JSON_UTF8, _NOT_JSON, id="not JSON", answered=_fastify()
+    ),
+    http_row(
+        "POST",
+        "",
+        (("Content-Type", "a/b/c"),),
+        b"x",
+        "key",
+        415,
+        _JSON_UTF8,
+        _UNSUPPORTED,
+        id="415",
+        answered=_fastify(),
+    ),
+    http_row(
+        "PUT",
+        "",
+        _J,
+        _TYPENAME,
+        "key",
+        404,
+        _JSON_UTF8,
+        _not_found("PUT", ""),
+        id="Fastify's 404",
+        answered=_fastify(),
+    ),
 ]
 _FIREFLIES_CREDENTIALS = {
     "none": None,
     "Bearer nope": "Bearer nope",
     "key": "Bearer {t}",
     "twice": "Bearer {t}",
+    "person": "Bearer {p}",
 }
 
 
@@ -2809,7 +3002,9 @@ def test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does(cl
         method, target, headers, body, credential, status, media_type, answer, named = row.values
         sent = list(headers)
         if _FIREFLIES_CREDENTIALS[credential] is not None:
-            value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
+            value = _FIREFLIES_CREDENTIALS[credential].format(
+                t=tokens_yaml["admin_token"], p=tokens_yaml["users"][0]["token"]
+            )
             sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
         content = body.chunks() if isinstance(body, Chunked) else body
         path = target if target.startswith("/") else f"/graphql{target}"
@@ -2825,107 +3020,7 @@ def test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does(cl
     assert answered == expected
 
 
-# The headers on the answer to each request `_FIREFLIES_HTTP` has no row for: the request, the
-# credential (`_FIREFLIES_CREDENTIALS`), the status, and each header named.
 _RESOLVER = b'{"query":"{ user { user_id } }"}'
-_FIREFLIES_HEADERS = [
-    pytest.param("POST", "", _J, _TYPENAME, "key", 200, _fastify("no-store"), id="served"),
-    pytest.param(
-        "POST",
-        "",
-        _J,
-        _RESOLVER,
-        "key",
-        200,
-        _fastify("no-store")
-        | {
-            "x-ratelimit-limit-api_burst": "30",
-            "x-ratelimit-limit-api": "500",
-            "x-ratelimit-limit": "500",
-            "retry-after": None,
-        },
-        id="a resolver ran",
-    ),
-    *(
-        pytest.param("POST", "", _J, b, "key", 400, _fastify("no-store"), id=i)
-        for b, i in (
-            (b'{"query":"{ nosuch }"}', "not valid"),
-            (b'{"query":"{"}', "does not parse"),
-            (b'{"query":""}', "no query"),
-            (b'{"query":"query($x: Int!) { __typename }"}', "a variable not provided"),
-        )
-    ),
-    pytest.param(
-        "POST", "", _J, b'{"query":"{ ...F }"}', "key", 500, _fastify(None), id="depth-limit's 500"
-    ),
-    # Which documents spend the budget: a root field a resolver runs for, through a fragment and
-    # as `@include` leaves it, and not `__schema`, a root the SDL leaves out or a refused variable.
-    *(
-        pytest.param(
-            "POST",
-            "",
-            _J,
-            b,
-            "key",
-            400 if b"String!" in b else 200,
-            _fastify("no-store", x_ratelimit_limit_api=spends),
-            id=i,
-        )
-        for b, spends, i in (
-            (
-                b'{"query":"query { ...F } fragment F on Query { user { user_id } }"}',
-                "500",
-                "a fragment",
-            ),
-            (
-                b'{"query":"query($v: Boolean!) { user @include(if: $v) { user_id } }","variables":{"v":true}}',
-                "500",
-                "@include true",
-            ),
-            (
-                b'{"query":"query($v: Boolean!) { user @include(if: $v) { user_id } }","variables":{"v":false}}',
-                None,
-                "@include false",
-            ),
-            (b'{"query":"{ __schema { queryType { name } } }"}', None, "__schema"),
-            (b'{"query":"mutation { __typename }"}', None, "a mutation of __typename"),
-            (
-                b'{"query":"query($x: String!) { user(id: $x) { user_id } }"}',
-                None,
-                "a variable not provided to a field",
-            ),
-            (
-                b'{"query":"query($v: Boolean = true) { user @include(if: $v) { user_id } }"}',
-                "500",
-                "@include of a default",
-            ),
-        )
-    ),
-    pytest.param("POST", "", _J, b"[]", "key", 400, _fastify(), id="a batch"),
-    pytest.param("POST", "", _J, _RESOLVER, "none", 500, _fastify(), id="no credential"),
-    pytest.param("POST", "", _J, b"x", "key", 400, _fastify(), id="not JSON"),
-    pytest.param("POST", "", (("Content-Type", "a/b/c"),), b"x", "key", 415, _fastify(), id="415"),
-    pytest.param("PUT", "", _J, _TYPENAME, "key", 404, _fastify(), id="Fastify's 404"),
-]
-
-
-def test_fireflies_answers_carry_the_headers_fireflies_sends(client, tokens_yaml):
-    """Each row of `_FIREFLIES_HEADERS`: the status and the headers named, with no type or body,
-    which the rows of `test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does`
-    hold."""
-    answered, expected = {}, {}
-    for row in _FIREFLIES_HEADERS:
-        method, target, headers, body, credential, status, named = row.values
-        sent = list(headers)
-        if _FIREFLIES_CREDENTIALS[credential] is not None:
-            value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
-            sent.append(("Authorization", value))
-        path = target if target.startswith("/") else f"/graphql{target}"
-        r = sent_as(client, method, f"/fireflies{path}", sent, content=body, bare=True)
-        answered[row.id] = (r.status_code, {name: r.headers.get(name) for name in named})
-        expected[row.id] = (status, named)
-    assert len(expected) == len(_FIREFLIES_HEADERS)
-    assert answered == expected
 
 
 def _budget(client, monkeypatch, start=1_793_020_105.0):

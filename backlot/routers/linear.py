@@ -94,7 +94,7 @@ def _origin(request: Request) -> str | None:
     """The `Origin` ``cors`` echoes: each copy without the spaces and tabs around it, the empty ones
     ahead of the first that is not empty left off, the rest joined with `, ` and the join's trailing
     spaces left off; or None where nothing is left, as api.linear.app echoed each `Origin` row of
-    `_LINEAR_HEADERS` in `tests/test_linear.py` on 2026-10-26 (UTC)."""
+    `_LINEAR_HTTP` in `tests/test_linear.py` on 2026-10-26 (UTC)."""
     copies = [value.strip(" \t") for value in request.headers.getlist("origin")]
     while copies and not copies[0]:
         copies.pop(0)

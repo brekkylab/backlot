@@ -5975,6 +5975,12 @@ _CLOUDFLARE_PAGE = (
     b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
     b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
 )
+#: The media type and body of Cloudflare's own answer to each method it answers ahead of Linear.
+_CLOUDFLARE_ANSWER = {
+    "TRACE": ("text/html", _CLOUDFLARE_PAGE % ((b"405 Not Allowed",) * 2)),
+    "CONNECT": ("text/plain; charset=UTF-8", b"error code: 1045\n"),
+    "PURGE": ("text/html; charset=UTF-8", _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+}
 _LINEAR_PREFLIGHT = {
     "access-control-allow-origin": "https://example.com",
     "cache-control": "s-maxage=43200",
@@ -7042,70 +7048,37 @@ _LINEAR_HTTP = [
         b"GET, HEAD",
         id="OPTIONS /, Bearer key",
     ),
-]
-_LINEAR_CREDENTIALS = {
-    "none": None,
-    "nope": "nope",
-    "Bearer key": "Bearer {t}",
-    "key": "{t}",
-    "twice": "{t}",
-}
-
-
-def test_linear_answers_each_method_path_type_and_accept_as_linear_does(client, tokens_yaml):
-    """Each row of `_LINEAR_HTTP` is answered as api.linear.app answered it."""
-    answered, expected = {}, {}
-    for row in _LINEAR_HTTP:
-        method, target, headers, body, credential, status, media_type, answer, named = row.values
-        sent = list(headers)
-        if _LINEAR_CREDENTIALS[credential] is not None:
-            value = _LINEAR_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
-            sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
-        content = body.chunks() if isinstance(body, Chunked) else body
-        path = target if target.startswith("/") else f"/graphql{target}"
-        r = sent_as(client, method, f"/linear{path}", sent, content=content, bare=True)
-        answered[row.id] = (
-            r.status_code,
-            r.headers.get("content-type"),
-            r.content,
-            {name: r.headers.get(name) for name in named},
-        )
-        expected[row.id] = (status, media_type, answer, named)
-    assert len(expected) == len(_LINEAR_HTTP)
-    assert answered == expected
-
-
-# The headers on the answer to each request `_LINEAR_HTTP` has no row for: the request, the
-# credential (`_LINEAR_CREDENTIALS`), the status, and each header named. The `ETag`s are the ones
-# real sent, so a row with an `ETag` holds the body to its last byte.
-_LINEAR_HEADERS = [
-    pytest.param(
+    http_row(
         "POST",
         "",
         _J,
         _TYPENAME,
         "key",
         200,
-        _sent(_ETAG_OF_TYPENAME) | _counted(2500),
+        _JSON_UTF8,
+        _TYPENAME_DATA,
         id="served",
+        answered=_sent(_ETAG_OF_TYPENAME) | _counted(2500),
     ),
     # Express's 304 to a GET its `ETag` is fresh to, and its answer where not
     # (`linear._express_sent`, `linear._fresh`).
     *(
-        pytest.param(
+        http_row(
             m,
             _Q if m == "GET" else "",
             (*_P, *sent) if m == "GET" else (*_J, *sent),
             None if m == "GET" else _TYPENAME,
             "key",
             status,
-            (
+            None if status == 304 else _JSON_UTF8,
+            b"" if status == 304 else _TYPENAME_DATA,
+            id=f"{m}, {label}",
+            answered=(
                 _sent(_ETAG_OF_TYPENAME, vary=None, content_type=None)
                 if status == 304
                 else _sent(_ETAG_OF_TYPENAME)
             )
             | _counted(2500),
-            id=f"{m}, {label}",
         )
         for m, sent, status, label in (
             ("GET", (("If-None-Match", _ETAG_OF_TYPENAME),), 304, "its ETag"),
@@ -7157,186 +7130,228 @@ _LINEAR_HEADERS = [
             ),
         )
     ),
-    pytest.param(
+    http_row(
         "GET",
         "?query=mutation%20%7B%20__typename%20%7D",
         (*_P, ("If-None-Match", "*")),
         None,
         "key",
         405,
-        _sent('W/"ce-z0YB89QJgWlJGjEG4cmlKGgjXcg"', allow="POST"),
+        _JSON_UTF8,
+        _GET_MUTATION,
         id="GET of a mutation, *",
+        answered=_sent('W/"ce-z0YB89QJgWlJGjEG4cmlKGgjXcg"', allow="POST"),
     ),
-    pytest.param(
+    http_row(
         "OPTIONS",
         "/",
         (("If-None-Match", "*"),),
         None,
         "none",
         200,
-        _sent(
+        "text/plain",
+        b"GET, HEAD",
+        id="OPTIONS /, *",
+        answered=_sent(
             None,
             allow="GET, HEAD",
             cache_control=f"{_NO_STORE}, s-maxage=43200",
             cache_tag="preflight",
             x_content_type_options="nosniff",
         ),
-        id="OPTIONS /, *",
     ),
-    pytest.param(
+    http_row(
         "POST",
         "",
         _J,
         b'{"query":"{ __schema { queryType { name } } }"}',
         "none",
         200,
-        _sent('W/"35-JB5+8RfqjQXUu2SN0MW5BgcE+BU"') | _counted(1200),
+        _JSON_UTF8,
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
         id="introspection, no credential",
+        answered=_sent('W/"35-JB5+8RfqjQXUu2SN0MW5BgcE+BU"') | _counted(1200),
     ),
-    pytest.param(
+    http_row(
         "POST",
         "",
         (*_J, ("Accept", "application/graphql-response+json")),
         b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }"}',
         "key",
         400,
-        _sent('W/"ce-VUG9Oahq4m/rKQGebfuTeJHpOEU"') | _counted(2500),
+        _GRAPHQL_RESPONSE,
+        b'{"errors":[{"message":"Variable \\"$b\\" of required type \\"Boolean!\\" was not provided.","locations":[{"line":1,"column":7}],"extensions":{"code":"BAD_USER_INPUT","type":"graphql error","userError":true}}]}\n',
         id="a variable not provided",
+        answered=_sent('W/"ce-VUG9Oahq4m/rKQGebfuTeJHpOEU"') | _counted(2500),
     ),
-    pytest.param(
+    http_row(
         "POST",
         "",
         _J,
         b'{"query":"{ viewer { id } }"}',
         "none",
         401,
-        _sent('W/"121-zqm5UPdEe2zPAnGCLuDQqbBUkgc"') | _NOT_COUNTED,
+        _JSON_UTF8,
+        _UNAUTHENTICATED,
         id="401",
+        answered=_sent('W/"121-zqm5UPdEe2zPAnGCLuDQqbBUkgc"') | _NOT_COUNTED,
     ),
-    pytest.param(
+    http_row(
         "POST",
         "",
         _J,
         b'{"query":"{ nosuch }"}',
         "key",
         400,
-        _sent('W/"ed-iulnxLcPjpFsZfStGL/BMaMkpH0"') | _NOT_COUNTED,
+        _JSON_UTF8,
+        b'{"errors":[{"message":"Cannot query field \\"nosuch\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
         id="not valid",
+        answered=_sent('W/"ed-iulnxLcPjpFsZfStGL/BMaMkpH0"') | _NOT_COUNTED,
     ),
-    pytest.param(
+    http_row(
         "POST",
         "",
         (*_J, ("Accept", "application/graphql-response+json")),
         b'{"extensions":{"persistedQuery":{"version":1,"sha256Hash":"' + b"1" * 64 + b'"}}}',
         "key",
         200,
-        _sent(
+        _GRAPHQL_RESPONSE,
+        b'{"errors":[{"message":"PersistedQueryNotFound","extensions":{"http":{"status":200,"headers":{}},"code":"PERSISTED_QUERY_NOT_FOUND","type":"graphql error","userError":true}}]}\n',
+        id="a persisted query's hash alone",
+        answered=_sent(
             'W/"af-G/6bF//BYk8X0oNXb1A0LRJslBE"', cache_control="private, no-cache, must-revalidate"
         )
         | _NOT_COUNTED,
-        id="a persisted query's hash alone",
     ),
-    pytest.param(
-        "POST", "", _J, b"x", "key", 400, _sent('W/"51-Jb7vCM8EoSOeaR6XRpsgTQcPNkI"'), id="x"
+    http_row(
+        "POST",
+        "",
+        _J,
+        b"x",
+        "key",
+        400,
+        _JSON_UTF8,
+        b'{"error":"Unexpected token \'x\', \\"x\\" is not valid JSON","details":{},"code":400}',
+        id="x",
+        answered=_sent('W/"51-Jb7vCM8EoSOeaR6XRpsgTQcPNkI"'),
     ),
-    pytest.param(
+    http_row(
         "POST",
         "",
         (("Content-Type", "application/json; charset=latin1"),),
         _TYPENAME,
         "key",
         415,
-        _sent('W/"42-Tot5z7ploFQn/H0QtssgcnHyvC4"'),
+        _JSON_UTF8,
+        _LATIN1,
         id="latin1",
+        answered=_sent('W/"42-Tot5z7ploFQn/H0QtssgcnHyvC4"'),
     ),
-    pytest.param(
+    http_row(
         "PUT",
         "",
         _J,
         None,
         "key",
         405,
-        _sent('W/"b9-gq5kxI+usdfwWz5UDzUMGmXMbSE"', allow="GET, POST"),
+        _JSON_UTF8,
+        _ONLY_GET_POST,
         id="PUT",
+        answered=_sent('W/"b9-gq5kxI+usdfwWz5UDzUMGmXMbSE"', allow="GET, POST"),
     ),
-    pytest.param(
+    http_row(
         "POST",
         "",
         _J,
         _TYPENAME,
         "Bearer key",
         400,
-        _sent(_ETAG_OF_THE_BEARER_400),
+        _JSON_UTF8,
+        _API_KEY_AS_BEARER,
         id="Bearer at /graphql",
+        answered=_sent(_ETAG_OF_THE_BEARER_400),
     ),
-    pytest.param(
+    http_row(
         "GET",
         "/",
         (("If-None-Match", 'W/"22-p50xJmghTUzB/yxthmCh2AutfIs"'),),
         None,
         "none",
         304,
-        _sent(
+        None,
+        b"",
+        id="greeting, its ETag",
+        answered=_sent(
             'W/"22-p50xJmghTUzB/yxthmCh2AutfIs"',
             x_content_type_options="nosniff",
             vary=None,
             content_type=None,
         ),
-        id="greeting, its ETag",
     ),
     *(
-        pytest.param(
+        http_row(
             "HEAD",
             "/",
             (("If-None-Match", sent),),
             None,
             "none",
             304,
-            _sent(
+            None,
+            b"",
+            id=f"HEAD /, {label}",
+            answered=_sent(
                 'W/"22-p50xJmghTUzB/yxthmCh2AutfIs"',
                 x_content_type_options="nosniff",
                 vary=None,
                 content_type=None,
             ),
-            id=f"HEAD /, {label}",
         )
         for sent, label in (('W/"22-p50xJmghTUzB/yxthmCh2AutfIs"', "its ETag"), ("*", "*"))
     ),
-    pytest.param(
+    http_row(
         "GET",
         _Q,
         (*_P, *_ORIGIN, ("If-None-Match", _ETAG_OF_TYPENAME)),
         None,
         "key",
         304,
-        _sent(_ETAG_OF_TYPENAME, content_type=None) | _cors() | {"vary": "Origin"} | _counted(2500),
+        None,
+        b"",
         id="GET, its ETag, Origin",
+        answered=_sent(_ETAG_OF_TYPENAME, content_type=None)
+        | _cors()
+        | {"vary": "Origin"}
+        | _counted(2500),
     ),
-    pytest.param(
+    http_row(
         "OPTIONS",
         "/",
         _PREFLIGHT_ASKED,
         None,
         "key",
         204,
-        {"x-request-id": _REQUEST_ID, "x-content-type-options": "nosniff"},
+        None,
+        b"",
         id="preflight at /",
+        answered={"x-request-id": _REQUEST_ID, "x-content-type-options": "nosniff"},
     ),
     *(
-        pytest.param(
+        http_row(
             "BIND",
             t,
             _J,
             _TYPENAME,
             "key",
             501,
-            {
+            None,
+            b"",
+            id=f"BIND at {t or '/graphql'}",
+            answered={
                 "x-request-id": None,
                 "cache-control": None,
                 "vary": None,
                 "x-content-type-options": n,
             },
-            id=f"BIND at {t or '/graphql'}",
         )
         for t, n in (
             ("", None),
@@ -7349,15 +7364,16 @@ _LINEAR_HEADERS = [
     # Cloudflare's `CONNECT` at a path of slashes alone, and its `CONNECT` elsewhere and `PURGE` and
     # `TRACE` at `/`.
     *(
-        pytest.param(
+        http_row(
             m,
             t,
             (),
             None,
             "key",
             status,
-            {"x-content-type-options": n, "x-request-id": None},
+            *_CLOUDFLARE_ANSWER[m],
             id=f"{m} {t}",
+            answered={"x-content-type-options": n, "x-request-id": None},
         )
         for m, t, status, n in (
             ("CONNECT", "/", 400, "nosniff"),
@@ -7372,16 +7388,18 @@ _LINEAR_HEADERS = [
     # `cors` in front of each: the origin sent, each copy without its spaces and tabs and joined,
     # and none for an empty one.
     *(
-        pytest.param(
+        http_row(
             "POST",
             "",
             (*_J, *origin),
             _TYPENAME,
             "key",
             200,
-            _sent(_ETAG_OF_TYPENAME)
+            _JSON_UTF8,
+            _TYPENAME_DATA,
+            id=f"served, Origin {label}",
+            answered=_sent(_ETAG_OF_TYPENAME)
             | ({"vary": "Accept-Encoding"} if allowed is None else _cors(allowed)),
-            id=f"Origin {label}",
         )
         for label, origin, allowed in (
             ("null", (("Origin", "null"),), "null"),
@@ -7407,74 +7425,100 @@ _LINEAR_HEADERS = [
             ("U+00A0 after", (("Origin", "https://example.com\xa0"),), "https://example.com\xa0"),
         )
     ),
-    pytest.param(
+    http_row(
         "POST",
         "",
         (*_J, *_ORIGIN),
         b'{"query":"{ viewer { id } }"}',
         "none",
         401,
-        _sent('W/"121-zqm5UPdEe2zPAnGCLuDQqbBUkgc"') | _cors(),
+        _JSON_UTF8,
+        _UNAUTHENTICATED,
         id="Origin, 401",
+        answered=_sent('W/"121-zqm5UPdEe2zPAnGCLuDQqbBUkgc"') | _cors(),
     ),
-    pytest.param(
+    http_row(
         "POST",
         "",
         (*_J, *_ORIGIN),
         b"x",
         "key",
         400,
-        _sent('W/"51-Jb7vCM8EoSOeaR6XRpsgTQcPNkI"') | _cors(),
+        _JSON_UTF8,
+        b'{"error":"Unexpected token \'x\', \\"x\\" is not valid JSON","details":{},"code":400}',
         id="Origin, x",
+        answered=_sent('W/"51-Jb7vCM8EoSOeaR6XRpsgTQcPNkI"') | _cors(),
     ),
-    pytest.param(
+    http_row(
         "POST",
         "",
         (*_J, *_ORIGIN),
         _TYPENAME,
         "Bearer key",
         400,
-        _sent(_ETAG_OF_THE_BEARER_400) | _cors("https://linear.app"),
+        _JSON_UTF8,
+        _API_KEY_AS_BEARER,
         id="Origin, Bearer",
+        answered=_sent(_ETAG_OF_THE_BEARER_400) | _cors("https://linear.app"),
     ),
-    pytest.param(
+    http_row(
         "GET",
         "/",
         _ORIGIN,
         None,
         "none",
         200,
-        _sent('W/"22-p50xJmghTUzB/yxthmCh2AutfIs"', x_content_type_options="nosniff") | _cors(),
+        _HTML_UTF8,
+        _GREETING,
         id="Origin, greeting",
+        answered=_sent('W/"22-p50xJmghTUzB/yxthmCh2AutfIs"', x_content_type_options="nosniff")
+        | _cors(),
     ),
-    pytest.param(
+    http_row(
         "POST",
         "/nosuch",
         (*_J, *_ORIGIN),
         _TYPENAME,
         "key",
         404,
-        _sent(None, content_security_policy="default-src 'none'", x_content_type_options="nosniff")
-        | _cors(),
+        _HTML_UTF8,
+        b'<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /nosuch</pre>\n</body>\n</html>\n',
         id="Origin, 404",
+        answered=_sent(
+            None, content_security_policy="default-src 'none'", x_content_type_options="nosniff"
+        )
+        | _cors(),
     ),
 ]
+_LINEAR_CREDENTIALS = {
+    "none": None,
+    "nope": "nope",
+    "Bearer key": "Bearer {t}",
+    "key": "{t}",
+    "twice": "{t}",
+}
 
 
-def test_linear_answers_carry_the_headers_linear_sends(client, tokens_yaml):
-    """Each row of `_LINEAR_HEADERS`, as the comment over it reads one."""
+def test_linear_answers_each_method_path_type_and_accept_as_linear_does(client, tokens_yaml):
+    """Each row of `_LINEAR_HTTP` is answered as api.linear.app answered it."""
     answered, expected = {}, {}
-    for row in _LINEAR_HEADERS:
-        method, target, headers, body, credential, status, named = row.values
+    for row in _LINEAR_HTTP:
+        method, target, headers, body, credential, status, media_type, answer, named = row.values
         sent = list(headers)
         if _LINEAR_CREDENTIALS[credential] is not None:
             value = _LINEAR_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
-            sent.append(("Authorization", value))
+            sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
+        content = body.chunks() if isinstance(body, Chunked) else body
         path = target if target.startswith("/") else f"/graphql{target}"
-        r = sent_as(client, method, f"/linear{path}", sent, content=body, bare=True)
-        answered[row.id] = (r.status_code, {name: r.headers.get(name) for name in named})
-        expected[row.id] = (status, named)
-    assert len(expected) == len(_LINEAR_HEADERS)
+        r = sent_as(client, method, f"/linear{path}", sent, content=content, bare=True)
+        answered[row.id] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            r.content,
+            {name: r.headers.get(name) for name in named},
+        )
+        expected[row.id] = (status, media_type, answer, named)
+    assert len(expected) == len(_LINEAR_HTTP)
     assert answered == expected
 
 

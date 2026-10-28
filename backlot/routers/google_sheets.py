@@ -26,7 +26,7 @@ from backlot import (
 )
 from backlot.acl import Caller
 from backlot.errors import google as gerr
-from backlot.openapi import qp
+from backlot.openapi import proto_body, qp
 from backlot.routers.google import (
     _BATCH_OUTER,
     _drive_owned_by,
@@ -1541,7 +1541,7 @@ def _sheets_filter_echo(f: dict) -> dict:
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchGetByDataFilter",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_BATCH_GET_BY_FILTER)},
 )
 async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: Request):
     """``values:batchGet`` addressed by DataFilter rather than by A1 string.
@@ -1633,7 +1633,7 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}:getByDataFilter",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_GET_BY_FILTER)},
 )
 async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
     """``spreadsheets.get`` addressed by DataFilter. Same response, and the filters scope the
@@ -2024,7 +2024,7 @@ def _sheets_updated_data(
 
 @router.put(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values/{a1_range:path}",
-    openapi_extra={"parameters": _P_SHEETS_UPDATE},
+    openapi_extra={"parameters": _P_SHEETS_UPDATE, **proto_body(_PJ_UPDATE, "data")},
 )
 async def sheets_values_update(spreadsheet_id: str, a1_range: str, request: Request):
     """``spreadsheets.values.update``.
@@ -2064,7 +2064,7 @@ async def sheets_values_update(spreadsheet_id: str, a1_range: str, request: Requ
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_BATCH_UPDATE)},
 )
 async def sheets_values_batch_update(spreadsheet_id: str, request: Request):
     """``spreadsheets.values.batchUpdate``: every entry checked before any is written, so one bad
@@ -2242,7 +2242,10 @@ def _sheets_table(grid: list[list], r0: int, c0: int, r1: int, c1: int):
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values/{a1_range:path}:append",
-    openapi_extra={"parameters": [qp("insertDataOption"), *_P_SHEETS_UPDATE]},
+    openapi_extra={
+        "parameters": [qp("insertDataOption"), *_P_SHEETS_UPDATE],
+        **proto_body(_PJ_UPDATE, "data"),
+    },
 )
 async def sheets_values_append(spreadsheet_id: str, a1_range: str, request: Request):
     """``spreadsheets.values.append``: ``{spreadsheetId, tableRange, updates}``, with ``tableRange``
@@ -2302,7 +2305,7 @@ async def sheets_values_append(spreadsheet_id: str, a1_range: str, request: Requ
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchClear",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_BATCH_CLEAR)},
 )
 async def sheets_values_batch_clear(spreadsheet_id: str, request: Request):
     """``spreadsheets.values.batchClear``: ``clearedRanges`` in the order sent, each as resolved,
@@ -2573,7 +2576,39 @@ def _sheets_json(message: dict) -> dict:
     }
 
 
-@router.post("/sheets/v4/spreadsheets", openapi_extra={"parameters": _P_SHEETS_STD})
+# What `sheets_create` keeps of a `Spreadsheet`; the rest it reads and drops (`docs/write-overlay.md`).
+_SHEETS_CREATE_KEPT = {
+    "properties": {"title": None, "locale": None, "timeZone": None, "autoRecalc": None},
+    "sheets": {
+        "properties": {
+            "sheetId": None,
+            "title": None,
+            "index": None,
+            "sheetType": None,
+            "gridProperties": None,
+            "hidden": None,
+            "tabColor": None,
+            "tabColorStyle": None,
+            "rightToLeft": None,
+        },
+        "data": {
+            "startRow": None,
+            "startColumn": None,
+            "rowData": {
+                "values": {"userEnteredValue": None, "userEnteredFormat": {"numberFormat": None}}
+            },
+        },
+    },
+}
+
+
+@router.post(
+    "/sheets/v4/spreadsheets",
+    openapi_extra={
+        "parameters": _P_SHEETS_STD,
+        **proto_body(_PJ_CREATE, "spreadsheet", _SHEETS_CREATE_KEPT),
+    },
+)
 async def sheets_create(request: Request):
     """``spreadsheets.create``: a new workbook at the caller's My Drive root, owned by the caller
     and shared with nobody, answered as `spreadsheets.get` answers it without grid data.
@@ -2672,7 +2707,7 @@ _PJ_COPY_TO = protojson.Message(
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/sheets/{sheet_id}:copyTo",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_COPY_TO)},
 )
 async def sheets_copy_to(spreadsheet_id: str, sheet_id: str, request: Request):
     """``spreadsheets.sheets.copyTo``: the copy's `SheetProperties`.
@@ -2793,7 +2828,7 @@ def _sheets_filter_fit(values: list, named: str, height: int, width: int, matche
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchUpdateByDataFilter",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_BATCH_UPDATE_BY_FILTER)},
 )
 async def sheets_values_batch_update_by_data_filter(spreadsheet_id: str, request: Request):
     """``spreadsheets.values.batchUpdateByDataFilter``: `values:batchUpdate` with each range named
@@ -2871,7 +2906,7 @@ async def sheets_values_batch_update_by_data_filter(spreadsheet_id: str, request
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchClearByDataFilter",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_BATCH_CLEAR_BY_FILTER)},
 )
 async def sheets_values_batch_clear_by_data_filter(spreadsheet_id: str, request: Request):
     """``spreadsheets.values.batchClearByDataFilter``: ``clearedRanges`` for what the filters

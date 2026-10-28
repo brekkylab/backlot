@@ -16,7 +16,7 @@ from fastapi import Request
 
 from backlot import auth, gdocs, protojson, store, synth
 from backlot.errors import google as gerr
-from backlot.openapi import qp
+from backlot.openapi import proto_body, qp
 from backlot.routers.google import (
     _BATCH_OUTER,
     _GOOGLE_FIELDS,
@@ -263,7 +263,10 @@ _DOCS_CREATE_QUERY = {
 _P_DOCS_CREATE = [qp("fields")]
 
 
-@router.post("/docs/v1/documents", openapi_extra={"parameters": _P_DOCS_CREATE})
+@router.post(
+    "/docs/v1/documents",
+    openapi_extra={"parameters": _P_DOCS_CREATE, **proto_body(_PJ_DOCUMENT, keep={"title": None})},
+)
 async def docs_create(request: Request):
     """``documents.create``: a blank Doc at the caller's My Drive root, owned by the caller and
     shared with nobody (`routers.google._editor_store`), answered as its owner's `documents.get`

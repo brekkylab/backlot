@@ -951,6 +951,11 @@ _APOLLO_CHECKS = [
     pytest.param(_persisted(sha256=_HASH.upper(), query=_TYPENAME), _MISMATCH, id="pq upper hash"),
     pytest.param(_persisted(sha256=5, query=_TYPENAME), _MISMATCH, id="pq hash 5"),
     pytest.param(_persisted(query=""), _MISMATCH, id="pq, an empty query"),
+    pytest.param(
+        _persisted(sha256=hashlib.sha256(b"").hexdigest(), query=""),
+        _refused("Syntax Error: Unexpected <EOF>.", "GRAPHQL_PARSE_FAILED", locations=[(1, 1)]),
+        id="pq matching an empty query",
+    ),
     pytest.param(_persisted(query=False), _NOT_FOUND, id="pq, query false"),
     pytest.param(_persisted(query=0), _NOT_FOUND, id="pq, query 0"),
     pytest.param(

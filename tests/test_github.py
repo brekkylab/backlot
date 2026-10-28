@@ -2698,12 +2698,9 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     value that names no token, each carrying the version echo. A row not refused is the
     router's answer for any caller. Real was measured on each row but the last with a bad bearer, an
     unknown scheme and a bearer after a tab, on each refused row with each header below, and with no
-    header on the first six. On `…/issues/1/artifacts`, `…/agent-merge`,
-    `…/security-advisories/…/comments` and `/agents/automations/available-tools`, no header,
-    `Digest x`, `nope`, an empty value, `Bearer nope` and a `Basic` token shape were measured, and
-    a token that resolves on the `GET`; `Basic Zm9vOmJhcg==` was a 404 or 403 of the operation's own
-    on two of them and is unmeasured on the `/agents` pair, which the router answers as `_require`
-    does. `/agents/automations/1/tasks` was measured with no header, `Bearer nope` and a token.
+    header on the first six. The four rows after `git/trees` and the `/tasks` row were measured with
+    fewer headers, which `_ROUTED_UNPUBLISHED` and the body of the pull request that added them
+    list.
     """
     c, _ = gh_client
     url = path.format(org=gh_org)

@@ -559,10 +559,11 @@ _ROUTED_UNPUBLISHED = published.operations(
 
 async def refuse_an_unserved_operation(request: Request) -> None:
     """Refuse a request whose method and path are an operation of :data:`_PUBLISHED_NOT_SERVED` or
-    :data:`_ROUTED_UNPUBLISHED` as real refuses it before running it: no `Authorization` header, or one that carries no
-    credential (:func:`_a_header_without_a_credential`), then a credential that does not resolve,
-    then a version real does not have, then a `Basic` value that names no token. A request none of
-    those refuse goes on to the router's own 404 or 405, an operation Backlot cannot run.
+    :data:`_ROUTED_UNPUBLISHED` as real refuses it before running it: no `Authorization` header, or
+    one that carries no credential (:func:`_a_header_without_a_credential`), then a credential that
+    does not resolve, then a version real does not have, then a `Basic` value that names no token.
+    A request none of those refuse goes on to the router's own 404 or 405, an operation Backlot
+    cannot run.
 
     Measured against api.github.com on 2026-10-14, one cache-busted request each. With
     `Bearer nope`, every operation the baseline lists answered "Bad credentials", but the
@@ -694,15 +695,15 @@ async def _refuse_an_anonymous_caller(request: Request) -> None:
         raise HTTPException(status_code=404, detail="Not Found")
 
 
-#: The methods whose 401 for no credential at all, on an unserved operation, carries none of the five `x-ratelimit-*` (see :func:`refuse_an_unserved_operation`).
+#: The methods whose 401 for no credential at all, on an unserved operation, carries none of the
+#: five `x-ratelimit-*` (see :func:`refuse_an_unserved_operation`).
 _UNCOUNTED_METHODS = frozenset({"PATCH", "PUT", "DELETE"})
 
 
 def _a_header_without_a_credential(request: Request) -> bool:
     """Whether the request carries an `Authorization` header that real reads no credential from on
-    an unserved operation: one ``auth.github_scheme_then_a_tab`` holds for,
-    whatever it names, or one ``auth.github_credential`` reads as no credential, but a `Basic`
-    value."""
+    an unserved operation: one ``auth.github_scheme_then_a_tab`` holds for, whatever it names, or
+    one ``auth.github_credential`` reads as no credential, but a `Basic` value."""
     if "authorization" not in request.headers:
         return False
     if auth.github_scheme_then_a_tab(request):

@@ -3,12 +3,12 @@
 
     python scripts/linear_sdk_fragments.py BUNDLE [--schema backlot/graphql/linear.graphql]
 
-BUNDLE is the SDK's `dist/index.mjs`, where each generated fragment is GraphQL source in a string.
-For each ``fragment X on T`` there, where the schema declares ``T`` with a field besides ``id``,
-every field ``X`` selects at its top level has to be declared on ``T``: a field it is not is a
-``Cannot query field`` the SDK meets as soon as it sends a document holding that fragment. A
-fragment on a type the schema does not declare, or declares with ``id`` alone, is left out, since
-Backlot does not serve that type in full.
+BUNDLE is the SDK's `dist/index.mjs`, where each generated fragment is GraphQL source in a template
+literal (``new TypedDocumentString(`…`)``), its newlines as they are. For each ``fragment X on T``
+there, where the schema declares ``T`` with a field besides ``id``, every field ``X`` selects at its
+top level has to be declared on ``T``: a field it is not is a ``Cannot query field`` the SDK meets
+as soon as it sends a document holding that fragment. A fragment on a type the schema does not
+declare, or declares with ``id`` alone, is left out, since Backlot does not serve that type in full.
 
 Prints how many fragments the bundle holds and how many were checked, then one line per fragment
 selecting an undeclared field. Exit 0 when none does, 1 when one does, 2 when the bundle cannot be
@@ -32,21 +32,19 @@ _FRAGMENT = re.compile(rf"fragment ({_NAME}) on ({_NAME})[ \t\n\r,]*\{{")
 
 def fragments(source: str) -> dict[str, tuple[str, list[str]]]:
     """Each fragment in ``source``, by name: the type it is on and the fields its top level
-    selects. The bundle writes a document as a string literal, so its escaped newlines and quotes
-    are read back first."""
-    text = source.replace("\\n", "\n").replace('\\"', '"')
+    selects."""
     found: dict[str, tuple[str, list[str]]] = {}
-    for m in _FRAGMENT.finditer(text):
+    for m in _FRAGMENT.finditer(source):
         depth, end = 0, m.end() - 1
         while True:
-            if text[end] == "{":
+            if source[end] == "{":
                 depth += 1
-            elif text[end] == "}":
+            elif source[end] == "}":
                 depth -= 1
                 if depth == 0:
                     break
             end += 1
-        definition = parse(text[m.start() : end + 1]).definitions[0]
+        definition = parse(source[m.start() : end + 1]).definitions[0]
         selected = sorted(
             {s.name.value for s in definition.selection_set.selections if isinstance(s, FieldNode)}
         )

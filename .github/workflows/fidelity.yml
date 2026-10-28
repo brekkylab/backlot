@@ -165,7 +165,8 @@ jobs:
         run: exit 1
 
       # The newest @linear/sdk, which the Linear example's pin reaches only once someone moves it.
-      # Run whatever the comparison found; exit 2, a bundle the script could not read, is red too.
+      # Runs whatever the comparison found, and any non-zero exit (the script's docstring lists
+      # them) is red.
       - name: Check the newest @linear/sdk's fragments
         if: ${{ !cancelled() && matrix.source == 'linear' }}
         run: |

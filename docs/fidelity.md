@@ -451,7 +451,7 @@ and a source still diverging the next morning gets a new issue that links back t
 closed issue is never reopened and never written over.
 
 The Linear run also runs `scripts/linear_sdk_fragments.py` over the newest `@linear/sdk`: a fragment
-it names turns the run red, and opens no issue.
+it names, or a bundle it cannot read, turns the run red, and opens no issue.
 
 ## Coverage
 

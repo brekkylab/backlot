@@ -13,8 +13,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def _script():
-    """The script as a module, since `scripts/` is not a package; named under `scripts` so
-    pyproject.toml's EncodingWarning filter, which goes by module name, reaches it."""
+    """The script as a module, loaded the way `_check` in `tests/test_prose_check.py` is."""
     spec = importlib.util.spec_from_file_location(
         "scripts.linear_sdk_fragments", REPO / "scripts" / "linear_sdk_fragments.py"
     )
@@ -33,12 +32,8 @@ type Stub { id: ID! }
 
 
 def _bundle(*documents: str) -> str:
-    """Documents as the SDK's bundle writes them: template strings whose newlines and quotes are
-    escaped."""
-    return "\n".join(
-        "const D = new TypedDocumentString(`%s`);" % d.replace("\n", "\\n").replace('"', '\\"')
-        for d in documents
-    )
+    """Documents as @linear/sdk 99.0.0's bundle writes them, in template literals as they are."""
+    return "\n".join("const D = new TypedDocumentString(`%s`);" % d for d in documents)
 
 
 # (the schema, `None` for the one Backlot serves; the bundle; the exit code; the lines printed)
@@ -125,14 +120,24 @@ def test_linear_sdk_fragments(tmp_path, capsys, schema, bundle, code, lines):
     assert capsys.readouterr().out.splitlines() == lines
 
 
-@pytest.mark.parametrize("bundle", [None, "export const x = 1;"], ids=["no file", "no fragment"])
-def test_linear_sdk_fragments_cannot_check_what_it_cannot_read(tmp_path, capsys, bundle):
-    """Exit 2 rather than 0, so a bundle that moved or changed its string format is not read as
-    one whose fragments all pass."""
+@pytest.mark.parametrize(
+    "bundle, line",
+    [
+        (None, "cannot read {path}: "),
+        (
+            "export const x = 1;",
+            "{path} holds no `fragment … on …`; the bundle's layout may have changed",
+        ),
+    ],
+    ids=["no file", "no fragment"],
+)
+def test_linear_sdk_fragments_cannot_check_what_it_cannot_read(tmp_path, capsys, bundle, line):
     path = tmp_path / "index.mjs"
     if bundle is not None:
         path.write_text(bundle, encoding="utf-8")
     assert script.main([str(path)]) == 2
+    printed = capsys.readouterr().out.splitlines()
+    assert len(printed) == 1 and printed[0].startswith(line.format(path=path))
 
 
 def test_linear_sdk_fragments_runs_as_ci_runs_it(tmp_path):

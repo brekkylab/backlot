@@ -1993,18 +1993,19 @@ async def confluence_space_get(key: str, request: Request):
 
 @router.get("/wiki/rest/api/search", response_model=ConfluenceResults, openapi_extra=_P_CQL)
 async def confluence_cql_search(request: Request):
-    """CQL search used by Confluence clients (e.g. mcp-atlassian). Seven clauses are read: a `~`
-    operand is a keyword search over the ACL-visible corpus, and `space`, `type`, `label`, `id`,
-    `ancestor` and `parent` filter its matches, or the whole ACL-visible corpus when there is no
-    `~`. `id`, `ancestor` and `parent` take `=` or `in (...)` and name the content id the content
-    reads serve; `parent` selects the direct children and `ancestor` every descendant, grandchildren
-    included (Confluence Cloud, 2026-10-26, over a chain of three pages). Each of the six clauses
-    also reads negated — `!=`, `not in (...)`, or a `not` after `and` before the clause, in
-    parentheses or not — and leaves out the rows the clause names, every negated clause read and a
-    row the field is absent on passing: a page with no parent passes `parent != …` and one with no
-    label passes `label != …` (measured over the same chain on 2026-10-26 and 2026-10-27). Real
-    answers `parent in (...)` and `parent not in (...)` with a 500, where this server selects, or
-    leaves out, the children of each id the list names.
+    """CQL search used by Confluence clients (e.g. mcp-atlassian). Real reads a query as a
+    boolean expression, which this server evaluates through `_cql_parse`. Seven clauses are read: a
+    `~` operand matches the rows a keyword search over the ACL-visible corpus finds, and `space`,
+    `type`, `label`, `id`, `ancestor` and `parent` match on their fields. `id`, `ancestor` and
+    `parent` take `=` or `in (...)` and name the content id the content reads serve; `parent`
+    selects the direct children and `ancestor` every descendant, grandchildren included (Confluence
+    Cloud, 2026-10-26, over a chain of three pages). Each of the six clauses also reads negated —
+    `!=`, `not in (...)`, or a `not` after `and` before the clause, in parentheses or not — and
+    leaves out the rows the clause names, every negated clause read and a row the field is absent on
+    passing: a page with no parent passes `parent != …` and one with no label passes `label != …`
+    (measured over the same chain on 2026-10-26 and 2026-10-27). Real answers `parent in (...)` and
+    `parent not in (...)` with a 500, where this server selects, or leaves out, the children of each
+    id the list names.
 
     Measured 2026-10-05 with no `~`: real's `type=page` is every page on the site and
     `space=<KEY> and type=page` that space's pages; its `space=<KEY>` also holds the space's
@@ -2105,38 +2106,35 @@ async def confluence_cql_search(request: Request):
     sent_cursor = (request.query_params.getlist("cursor") or [None])[0]
     after = _cql_search_after(sent_cursor) if sent_cursor else None
 
-    # fetch the full ACL-visible match set, filter by the clauses, then paginate — so
-    # totalSize reflects the true match count (not just the returned page).
-    if term:
-        everything = store.search_documents(conn, term, "confluence", ids, limit=100_000, offset=0)
-    elif (
-        space_key
-        or want_type
-        or want_label
-        or want_ids
-        or want_ancestors
-        or want_parents
-        or not_ids
-        or not_ancestors
-        or not_parents
-        or not_types
-        or not_labels
-        or not_spaces
-    ):
-        everything = store.list_documents(
-            conn, "confluence", container=None, visible_ids=ids, limit=100_000, offset=0
-        )
-    else:
-        everything = []
+    # the rows the clause readers filter, read only for a query `_cql_parse` does not cover: the
+    # full ACL-visible match set, filtered by the clauses, then paginated — so totalSize reflects
+    # the true match count (not just the returned page).
+    def _clause_rows() -> list:
+        if term:
+            return store.search_documents(conn, term, "confluence", ids, limit=100_000, offset=0)
+        if (
+            space_key
+            or want_type
+            or want_label
+            or want_ids
+            or want_ancestors
+            or want_parents
+            or not_ids
+            or not_ancestors
+            or not_parents
+            or not_types
+            or not_labels
+            or not_spaces
+        ):
+            return store.list_documents(
+                conn, "confluence", container=None, visible_ids=ids, limit=100_000, offset=0
+            )
+        return []
 
     # the parent of every row fetched, and of every page read since, so each link of a chain is
     # read once; a link outside the fetched rows (a page the `~` term missed, or one the caller
     # cannot see) is read from the store, as the content read's `ancestors` expansion does.
-    parents = (
-        {str(r["id"]): r["parent_id"] for r in everything}
-        if want_ancestors or not_ancestors
-        else {}
-    )
+    parents: dict = {}
 
     def _ancestor_ids(row) -> set[str]:
         chain: set[str] = set()
@@ -2190,7 +2188,97 @@ async def confluence_cql_search(request: Request):
                 return False
         return True
 
-    matched = [r for r in everything if _match(r)]
+    # The boolean reading of the query (`_cql_parse`). A `~` atom is membership in that term's
+    # keyword-search set; the other atoms read their fields as the readers above do (an absent field
+    # passes a negated clause, a space key resolves through `_space_container_for_key`, an
+    # unresolvable positive space key matches nothing). The rows read are the matches of the
+    # leftmost positive `~` atom on the query's top-level `and`s, in its keyword-search order, where
+    # there is one, and the full ACL-visible corpus otherwise, so a lone negated `~` answers every
+    # row but the term's matches, as real does. An atom this route does not read passes, negated or
+    # not, and a query with no atom it reads answers no row. Beside an `id in (...)` naming three
+    # pages made that day, real answered `lastmodified > 2020-01-01`, `created >= "2020-01-01"`,
+    # `creator = currentUser()` and `not lastmodified > 2999-01-01` with the three, as this route
+    # does, and `lastmodified > 2999-01-01`, `not lastmodified > 2020-01-01` and
+    # `not creator = currentUser()` with none, where this route answers the three (Confluence Cloud,
+    # 2026-10-28). Where the tokens do not parse this way, the clause readers above stay the answer.
+    try:
+        expr = _cql_parse(tokens)
+        term_sets: dict[str, set[str]] = {}
+
+        def _needed_term(node) -> str | None:
+            if node[0] == "and":
+                left = _needed_term(node[1])
+                return left if left is not None else _needed_term(node[2])
+            if node[0] == "atom" and node[2] == "~" and node[5] and not node[4]:
+                return node[3][0]
+            return None
+
+        needed = _needed_term(expr)
+        if needed is None:
+            eval_rows = store.list_documents(
+                conn, "confluence", container=None, visible_ids=ids, limit=100_000, offset=0
+            )
+        else:
+            eval_rows = store.search_documents(
+                conn, needed, "confluence", ids, limit=100_000, offset=0
+            )
+            term_sets[needed] = {str(r["id"]) for r in eval_rows}
+        parents.update({str(r["id"]): r["parent_id"] for r in eval_rows})
+
+        def _term_ids(term: str) -> set[str]:
+            if term not in term_sets:
+                term_sets[term] = {
+                    str(h["id"])
+                    for h in store.search_documents(
+                        conn, term, "confluence", ids, limit=100_000, offset=0
+                    )
+                }
+            return term_sets[term]
+
+        def _eval(node, r) -> bool:
+            kind = node[0]
+            if kind == "and":
+                return _eval(node[1], r) and _eval(node[2], r)
+            if kind == "or":
+                return _eval(node[1], r) or _eval(node[2], r)
+            if kind == "not":
+                child = node[1]
+                if child[0] == "atom" and not child[5]:
+                    return True
+                return not _eval(child, r)
+            _, field, op, values, negated, readable = node
+            if not readable:
+                return True
+            if field in ("text", "title", "sitesearch"):
+                hit = str(r["id"]) in _term_ids(values[0])
+            elif field in ("space", "space.key"):
+                containers = {_space_container_for_key(conn, v) for v in values} - {None}
+                hit = r["space"] in containers
+            elif field == "type":
+                hit = (r["subtype"] or "page") in values
+            elif field == "label":
+                hit = not set(values).isdisjoint(store.jcol(r, "labels"))
+            elif field == "id":
+                hit = str(r["id"]) in values
+            elif field == "ancestor":
+                hit = not set(values).isdisjoint(_ancestor_ids(r))
+            elif field == "parent":
+                hit = r["parent_id"] is not None and str(r["parent_id"]) in values
+            else:  # pragma: no cover - readable is False for any other field
+                hit = False
+            return (not hit) if negated else hit
+
+        def _reads(node) -> bool:
+            if node[0] == "atom":
+                return node[5]
+            return any(_reads(child) for child in node[1:])
+
+        matched = [r for r in eval_rows if _eval(expr, r)] if _reads(expr) else []
+    except _CQLParseError:
+        everything = _clause_rows()
+        parents.update({str(r["id"]): r["parent_id"] for r in everything})
+        matched = [r for r in everything if _match(r)]
+
     total = len(matched)
     position = _cql_position(matched, after[0]) if after else 0
     rows = matched[position : position + limit]
@@ -3251,6 +3339,167 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     except _Stop as stop:
         return stop.refusal
     return None
+
+
+class _CQLParseError(Exception):
+    """A token shape the boolean reader below does not cover; the caller falls back to the
+    clause readers in :func:`confluence_cql_search` rather than failing the request."""
+
+
+def _cql_unquote(kind: str, text: str) -> str:
+    """A token's value: a quoted value without its quotes and with its backslash escapes
+    resolved, any other value as sent."""
+    if kind != "QUOTED":
+        return text
+    return re.sub(r"\\(.)", r"\1", text[1:-1], flags=re.S)
+
+
+# The fields :func:`confluence_cql_search` reads, and the operators each takes. Anything else (a
+# field this route does not read, or an operator the field does not take, as `title="Guide"` is)
+# passes. `siteSearch ~` is read as `text ~` is. On 2026-10-28 real answered the two with the same
+# pages for each of two words of the site's page bodies, but not over a chain of three pages whose
+# last alone held a word: `siteSearch ~` for the word answered all three, and the same clause in an
+# `or` beside the first page's `id` answered that page alone (Confluence Cloud).
+_CQL_READABLE = {
+    "text": {"~"},
+    "title": {"~"},
+    "sitesearch": {"~"},
+    "space": {"=", "in"},
+    "space.key": {"=", "in"},
+    "type": {"=", "in"},
+    "label": {"=", "in"},
+    "id": {"=", "in"},
+    "ancestor": {"=", "in"},
+    "parent": {"=", "in"},
+}
+
+
+def _cql_parse(tokens: list[tuple[str, str]]):
+    """The tokens of a CQL query as a boolean expression, over the grammar `_cql_refusal`
+    walks: an `or` of `and`s of `not`s of atoms and groups, `and` binding tighter than `or`,
+    a `not` only straight after `and`, stopping at `order by`.
+
+    An atom is ``("atom", field, op, values, negated, readable)``: `op` is `=`, `in` or `~`,
+    `negated` covers `!=`, `!~` and `not in (...)`, and `readable` says whether the field takes
+    the operator (see `_CQL_READABLE`). Raises `_CQLParseError` for anything else, including a
+    field with no operator, which real refuses with a message of its own and this server answers
+    at 200 through the clause readers."""
+    at = 0
+
+    def peek(offset=0):
+        return tokens[at + offset] if at + offset < len(tokens) else (None, None)
+
+    def keyword(word, offset=0):
+        kind, text = peek(offset)
+        return kind == "WORD" and text.lower() == word
+
+    def value():
+        nonlocal at
+        kind, text = peek()
+        if kind not in _CQL_VALUES or text.lower() in _CQL_KEYWORDS:
+            raise _CQLParseError()
+        at += 1
+        if peek() == ("PUNCT", "("):  # a function value tail: now("..."), currentUser()
+            depth = 0
+            while True:
+                kind, _ = peek()
+                if kind is None:
+                    raise _CQLParseError()
+                if peek() == ("PUNCT", "("):
+                    depth += 1
+                elif peek() == ("PUNCT", ")"):
+                    depth -= 1
+                    if depth == 0:
+                        at += 1
+                        break
+                at += 1
+        return _cql_unquote(kind, text)
+
+    def atom():
+        nonlocal at
+        kind, field = peek()
+        if kind != "WORD" or field.lower() in _CQL_KEYWORDS:
+            raise _CQLParseError()
+        at += 1
+        field = field.lower()
+        negated = False
+        if keyword("not") and keyword("in", 1):
+            negated = True
+            at += 2
+        elif keyword("in"):
+            at += 1
+        elif peek()[0] == "OP":
+            op = peek()[1]
+            at += 1
+            if op in ("!=", "!~"):
+                negated = True
+                op = "=" if op == "!=" else "~"
+            if op not in ("=", "~"):
+                value()  # an operator the field does not take: consume its value, read no row
+                return ("atom", field, op, (), False, False)
+            return ("atom", field, op, (value(),), negated, op in _CQL_READABLE.get(field, set()))
+        else:
+            raise _CQLParseError()
+        if peek() != ("PUNCT", "("):
+            raise _CQLParseError()
+        at += 1
+        values = []
+        while True:
+            values.append(value())
+            if peek() == ("PUNCT", ","):
+                at += 1
+                continue
+            break
+        if peek() != ("PUNCT", ")"):
+            raise _CQLParseError()
+        at += 1
+        return (
+            "atom",
+            field,
+            "in",
+            tuple(values),
+            negated,
+            "in" in _CQL_READABLE.get(field, set()),
+        )
+
+    def primary():
+        nonlocal at
+        if peek() == ("PUNCT", "("):
+            at += 1
+            node = parse_or()
+            if peek() != ("PUNCT", ")"):
+                raise _CQLParseError()
+            at += 1
+            return node
+        return atom()
+
+    def parse_and():
+        nonlocal at
+        node = primary()
+        while keyword("and"):
+            at += 1
+            negated = keyword("not")
+            if negated:
+                at += 1
+            right = primary()
+            if negated:
+                right = ("not", right)
+            node = ("and", node, right)
+        return node
+
+    def parse_or():
+        nonlocal at
+        node = parse_and()
+        while keyword("or"):
+            at += 1
+            node = ("or", node, parse_and())
+        return node
+
+    node = parse_or()
+    rest = tokens[at:]
+    if rest and not (keyword("order") and keyword("by", 1)):
+        raise _CQLParseError()
+    return node
 
 
 def _cql_page_param(request: Request, name: str, default: int) -> int | None:

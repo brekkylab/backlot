@@ -2052,8 +2052,8 @@ _PARENT_RECORDS = [
         "content": "body",
         "author_email": "ava@acme.com",
         "visibility": "public",
-        "created": "2026-03-01T08:15:00Z",
-        "updated": "2026-03-02T09:30:00Z",
+        "created": "2026-03-01T08:15:42Z",
+        "updated": "2026-03-02T09:30:17Z",
     },
     {
         "source_type": "notion",
@@ -2073,8 +2073,8 @@ _PARENT_RECORDS = [
         "author_email": "ava@acme.com",
         "visibility": "public",
         "properties": {"Status": {"type": "select"}},
-        "created": "2026-03-03T10:00:00Z",
-        "updated": "2026-03-04T11:45:00Z",
+        "created": "2026-03-03T10:00:51Z",
+        "updated": "2026-03-04T11:45:09Z",
     },
     {
         "source_type": "notion",
@@ -2168,7 +2168,20 @@ def test_notion_url_is_the_app_host_and_a_data_source_names_its_databases(client
     )
 
 
-def test_notion_a_page_its_blocks_and_a_data_source_answer_millisecond_timestamps(parent_corpus):
+def test_notion_timestamps_follow_the_minute_and_the_database_its_version(parent_corpus):
+    """`_PARENT_RECORDS` dates its page and its database to the second, so the minute and the
+    second differ."""
+    minute = ("2026-03-03T10:00:00.000Z", "2026-03-04T11:45:00.000Z")
+    offset = ("2026-03-03T10:00:51.000+00:00", "2026-03-04T11:45:09.000+00:00")
+    database = {
+        "2021-05-11": minute,
+        "2021-05-13": minute,
+        "2021-08-16": minute,
+        "2022-02-22": minute,
+        "2022-06-28": minute,
+        "2025-09-03": offset,
+        "2026-03-11": offset,
+    }
     settings = parent_corpus
     with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}", "Notion-Version": "2025-09-03"}
@@ -2184,8 +2197,13 @@ def test_notion_a_page_its_blocks_and_a_data_source_answer_millisecond_timestamp
         source = client.get(
             f"/notion/v1/data_sources/{synth.notion_data_source_id('nf-db')}", headers=h
         ).json()
-        assert source["created_time"] == "2026-03-03T10:00:00.000Z"
-        assert source["last_edited_time"] == "2026-03-04T11:45:00.000Z"
+        assert (source["created_time"], source["last_edited_time"]) == minute
+        db = served_id("notion", "nf-db")
+        for version, times in database.items():
+            got = client.get(
+                f"/notion/v1/databases/{db}", headers={**h, "Notion-Version": version}
+            ).json()
+            assert (got["created_time"], got["last_edited_time"]) == times, version
 
 
 def test_notion_search_and_query_trailers_follow_the_version(client, admin_h):

@@ -69,6 +69,23 @@ def rfc3339_millis(ts: int) -> str:
     return utc_datetime(ts).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
+def rfc3339_minute(ts: int) -> str:
+    """e.g. 2024-04-05T17:00:00.000Z for a moment at 17:00:51 (Notion page/block/data source).
+
+    Measured against api.notion.com on 2026-10-20: a page, a row, their blocks and a data source
+    answer the minute, with zero seconds and milliseconds, whatever second the corpus stores."""
+    return utc_datetime(int(ts) // 60 * 60).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def rfc3339_offset_millis(ts: int) -> str:
+    """e.g. 2024-04-05T17:00:51.000+00:00 (Notion database under 2025-09-03 and later).
+
+    Measured against api.notion.com on 2026-10-20: a database under the data sources model keeps
+    its seconds and milliseconds and spells the offset as ``+00:00`` in place of ``Z``. The
+    corpus stores seconds only, so the milliseconds are ``.000``."""
+    return utc_datetime(ts).strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
+
+
 def jira_datetime(ts: int) -> str:
     """e.g. 2024-04-05T17:00:00.000+0000 (Jira)."""
     return utc_datetime(ts).strftime("%Y-%m-%dT%H:%M:%S.000+0000")

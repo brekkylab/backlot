@@ -7099,6 +7099,8 @@ _LINEAR_HTTP = [
             ("GET", (("If-None-Match", "*"), ("Cache-Control", "no-cache")), 200, "*, no-cache"),
             ("GET", (("If-None-Match", "* "),), 304, "* then a space"),
             ("GET", (("If-None-Match", "*\t"),), 304, "* then a tab"),
+            ("GET", (("If-None-Match", "*\x85"),), 200, "* then U+0085"),
+            ("GET", (("If-None-Match", "*\xa0"),), 200, "* then U+00A0"),
             ("GET", (("If-None-Match", _ETAG_OF_TYPENAME + "\t"),), 304, "its ETag then a tab"),
             (
                 "GET",

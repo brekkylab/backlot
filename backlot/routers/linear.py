@@ -159,9 +159,10 @@ def _fresh(request: Request, etag: str | None) -> bool:
     runs), finds the answer carrying ``etag`` fresh to ``request``: an `If-None-Match` of `*`, or
     one naming ``etag``, weakly or not, and no `no-cache` (:data:`backlot.express_http.NO_CACHE`) in
     the request's `Cache-Control`, its copies joined with `, `. The `If-None-Match` is read without
-    the spaces and tabs around it, and an `If-Modified-Since` is not read: 2.0.0 reads one only
-    where no `If-None-Match` is sent, and compares it with a `Last-Modified` no Linear answer
-    carries.
+    the spaces and tabs around it and with any other character there, as api.linear.app answered `*`
+    then U+0085 or U+00A0 with the 200 on 2026-10-28 (UTC); and an `If-Modified-Since` is not read:
+    2.0.0 reads one only where no `If-None-Match` is sent, and compares it with a `Last-Modified` no
+    Linear answer carries.
 
     api.linear.app answered `GET /graphql` and the greeting so on 2026-10-26 (UTC), with the 304
     counted against the budget, and a `POST` naming the `ETag` with the 200; `no-cache` after a

@@ -547,14 +547,23 @@ _PUBLISHED_NOT_SERVED = published.operations(
     for op in published.missing_operations("github")
     if op not in _NOT_ROUTED
 )
+#: The two operations api.github.com routes though its description does not publish them,
+#: matched one segment at a time: `GET /agents/automations/{available-tools,available-triggers,1}`
+#: and `…/1/tasks` were 401 "Requires authentication" with no credential, 401 "Bad credentials"
+#: for `Bearer nope` and 404 with a token, where `…/1/nosuch` and `…/x/y/z` were 404 for every
+#: credential (maintainer's measurement, 2026-10-28).
+_ROUTED_UNPUBLISHED = published.operations(
+    ("GET /agents/automations/{}", "GET /agents/automations/{}/tasks")
+)
 
 
 async def refuse_an_unserved_operation(request: Request) -> None:
-    """Refuse a request whose method and path are an operation of :data:`_PUBLISHED_NOT_SERVED` as
-    real refuses it before running it: no `Authorization` header, or one that carries no
-    credential (:func:`_a_header_without_a_credential`), then a credential that does not resolve,
-    then a version real does not have, then a `Basic` value that names no token. A request none of
-    those refuse goes on to the router's own 404 or 405, an operation Backlot cannot run.
+    """Refuse a request whose method and path are an operation of :data:`_PUBLISHED_NOT_SERVED` or
+    :data:`_ROUTED_UNPUBLISHED` as real refuses it before running it: no `Authorization` header, or
+    one that carries no credential (:func:`_a_header_without_a_credential`), then a credential that
+    does not resolve, then a version real does not have, then a `Basic` value that names no token.
+    A request none of those refuse goes on to the router's own 404 or 405, an operation Backlot
+    cannot run.
 
     Measured against api.github.com on 2026-10-14, one cache-busted request each. With
     `Bearer nope`, every operation the baseline lists answered "Bad credentials", but the
@@ -628,7 +637,7 @@ async def refuse_an_unserved_operation(request: Request) -> None:
 
 
 #: The served routes real refuses a caller with no credential on ahead of everything else, as it
-#: refuses an operation of :data:`_PUBLISHED_NOT_SERVED` (see :func:`_refuse_an_anonymous_caller`).
+#: refuses an unserved operation (see :func:`_refuse_an_anonymous_caller`).
 _REFUSE_AN_ANONYMOUS_CALLER_FIRST = frozenset(
     {
         "/github/orgs/{org}/teams",
@@ -686,16 +695,15 @@ async def _refuse_an_anonymous_caller(request: Request) -> None:
         raise HTTPException(status_code=404, detail="Not Found")
 
 
-#: The methods whose 401 for no credential at all, on an operation of :data:`_PUBLISHED_NOT_SERVED`,
-#: carries none of the five `x-ratelimit-*` (see :func:`refuse_an_unserved_operation`).
+#: The methods whose 401 for no credential at all, on an unserved operation, carries none of the
+#: five `x-ratelimit-*` (see :func:`refuse_an_unserved_operation`).
 _UNCOUNTED_METHODS = frozenset({"PATCH", "PUT", "DELETE"})
 
 
 def _a_header_without_a_credential(request: Request) -> bool:
     """Whether the request carries an `Authorization` header that real reads no credential from on
-    an operation of :data:`_PUBLISHED_NOT_SERVED`: one ``auth.github_scheme_then_a_tab`` holds for,
-    whatever it names, or one ``auth.github_credential`` reads as no credential, but a `Basic`
-    value."""
+    an unserved operation: one ``auth.github_scheme_then_a_tab`` holds for, whatever it names, or
+    one ``auth.github_credential`` reads as no credential, but a `Basic` value."""
     if "authorization" not in request.headers:
         return False
     if auth.github_scheme_then_a_tab(request):
@@ -705,11 +713,14 @@ def _a_header_without_a_credential(request: Request) -> bool:
 
 
 def is_an_unserved_operation(method: str, path: str) -> bool:
-    """Whether ``method`` on the `/github` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`. The path is
-    the scope's, decoded but whole, not ``request.url.path`` (``backlot.main._REPARSED``), which
-    would take `/zen%23` for `/zen`, where real answered `GET /zen%23` and `POST …/forks%23` with
-    the 404 on 2026-10-14."""
-    return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/github"))
+    """Whether ``method`` on the `/github` ``path`` is in :data:`_PUBLISHED_NOT_SERVED` or
+    :data:`_ROUTED_UNPUBLISHED`. The path is the scope's, decoded but whole, not
+    ``request.url.path`` (``backlot.main._REPARSED``), which would take `/zen%23` for `/zen`, where
+    real answered `GET /zen%23` and `POST …/forks%23` with the 404 on 2026-10-14."""
+    path = path.removeprefix("/github")
+    return published.includes(_PUBLISHED_NOT_SERVED, method, path) or published.includes(
+        _ROUTED_UNPUBLISHED, method, path
+    )
 
 
 def refused_an_unserved_operation(request: Request) -> bool:

@@ -3047,6 +3047,26 @@ def fireflies_transcript_by_id(conn, transcript_id, visible_ids=None) -> sqlite3
     return conn.execute(sql + clause, [transcript_id] + cparams).fetchone()
 
 
+def fireflies_channel_exists(conn, channel_id) -> bool:
+    """Whether the workspace holds a channel with this id.
+
+    Fireflies answers ``transcripts(channel_id:)`` for one the workspace has no channel
+    for with a ``Channel not found`` ``object_not_found`` error rather than an empty
+    page (api.fireflies.ai, 2026-10-27), so the existence read is workspace-wide on
+    purpose: a channel exists through the meetings held in it, and a caller whose
+    visibility does not reach those meetings still gets the page (possibly empty) for
+    a channel that exists, not the error. Reads the channel column alone — one indexed
+    row answers the question, no transcript is fetched.
+    """
+    return (
+        conn.execute(
+            "SELECT 1 FROM fireflies_transcripts WHERE channel = ? LIMIT 1",
+            [channel_id],
+        ).fetchone()
+        is not None
+    )
+
+
 def fireflies_speakers(conn, transcript_ids) -> dict[str, list[sqlite3.Row]]:
     """The numbered speakers of each transcript, as ``{transcript_id: [row, ...]}`` in number
     order — each row carrying ``speaker_id`` and ``speaker_name``.

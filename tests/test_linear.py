@@ -7104,15 +7104,43 @@ _LINEAR_HTTP = [
             ("GET", (("If-None-Match", _ETAG_OF_TYPENAME + '\t, "x"'),), 200, "a tab after it"),
             ("GET", (("If-None-Match", "*"), ("Cache-Control", "no-cache")), 200, "*, no-cache"),
             ("GET", (("If-None-Match", "* "),), 304, "* then a space"),
+            ("GET", (("If-None-Match", " \t*"),), 304, "a space and a tab before *"),
             ("GET", (("If-None-Match", "*\t"),), 304, "* then a tab"),
             ("GET", (("If-None-Match", "*\x85"),), 200, "* then U+0085"),
             ("GET", (("If-None-Match", "*\xa0"),), 200, "* then U+00A0"),
             ("GET", (("If-None-Match", _ETAG_OF_TYPENAME + "\t"),), 304, "its ETag then a tab"),
+            ("GET", (("If-None-Match", _ETAG_OF_TYPENAME + " "),), 304, "its ETag then a space"),
             (
                 "GET",
                 (("If-None-Match", "*"), ("If-Modified-Since", "Tue, 01 Jan 2019 00:00:00 GMT")),
                 304,
                 "*, If-Modified-Since",
+            ),
+            *(
+                ("GET", (("If-None-Match", "*"), ("If-Modified-Since", since)), 304, f"*, {label}")
+                for since, label in (
+                    ("Tue, 01 Jan 2030 00:00:00 GMT", "a future If-Modified-Since"),
+                    ("", "an empty If-Modified-Since"),
+                    ("   ", "If-Modified-Since of spaces"),
+                    ("\xa0", "If-Modified-Since of U+00A0"),
+                    ("x", "If-Modified-Since of x"),
+                )
+            ),
+            (
+                "GET",
+                (
+                    ("If-None-Match", _ETAG_OF_TYPENAME),
+                    ("If-Modified-Since", "Tue, 01 Jan 2019 00:00:00 GMT"),
+                ),
+                304,
+                "its ETag, If-Modified-Since",
+            ),
+            *(
+                ("GET", (("If-Modified-Since", since),), 200, label)
+                for since, label in (
+                    ("Tue, 01 Jan 2019 00:00:00 GMT", "If-Modified-Since alone"),
+                    ("Tue, 01 Jan 2030 00:00:00 GMT", "a future If-Modified-Since alone"),
+                )
             ),
             (
                 "GET",
@@ -7123,6 +7151,16 @@ _LINEAR_HTTP = [
                 ),
                 200,
                 "*, no-cache in a second Cache-Control",
+            ),
+            (
+                "GET",
+                (
+                    ("If-None-Match", "*"),
+                    ("Cache-Control", "no-cache"),
+                    ("Cache-Control", "max-age=0"),
+                ),
+                200,
+                "*, no-cache in the first of two Cache-Control",
             ),
             (
                 "GET",
@@ -7369,8 +7407,7 @@ _LINEAR_HTTP = [
             ("/%2F", None),
         )
     ),
-    # Cloudflare's `CONNECT` at a path of slashes alone, and its `CONNECT` elsewhere and `PURGE` and
-    # `TRACE` at `/`.
+    # Cloudflare's answers (`refuse_cloudflares_methods_on_linear_and_fireflies` in `backlot.main`).
     *(
         http_row(
             m,

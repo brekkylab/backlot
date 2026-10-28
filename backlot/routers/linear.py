@@ -158,21 +158,11 @@ def _fresh(request: Request, etag: str | None) -> bool:
     runs), finds the answer carrying ``etag`` fresh to ``request``: an `If-None-Match` of `*`, or
     one naming ``etag``, weakly or not, and no `no-cache` (:data:`backlot.express_http.NO_CACHE`) in
     the request's `Cache-Control`, its copies joined with `, `. The `If-None-Match` is read without
-    the spaces and tabs around it and with any other character there, as api.linear.app answered `*`
-    then U+0085 or U+00A0 with the 200 on 2026-10-28 (UTC); and an `If-Modified-Since` is not read:
-    2.0.0 reads one only where no `If-None-Match` is sent, and compares it with a `Last-Modified` no
-    Linear answer carries.
-
-    api.linear.app answered `GET /graphql` and the greeting so on 2026-10-26 (UTC), with the 304
-    counted against the budget, and a `POST` naming the `ETag` with the 200; `no-cache` after a
-    U+00A0 drew the 200, and after a U+0085 the 304. On 2026-10-27 (UTC) `*` with a space or a tab
-    after it, or a space and a tab before it, and the `ETag` with either after it drew the 304. So
-    did `*` beside an `If-Modified-Since` of a past or a future date, of nothing, of spaces, of
-    U+00A0 or of `x`, and the `ETag` beside the past date, where either date alone drew the 200; `*`
-    beside `max-age=0` and `no-cache` sent as two `Cache-Control` headers, either way round, drew
-    the 200. A list is split at its commas and each tag stripped of spaces alone, as ``fresh``'s
-    ``parseTokenList`` reads it: api.linear.app answered the `ETag` after `"x",` and a tab or
-    U+00A0, or before a tab and `, "x"`, with the 200 on 2026-10-27 (UTC)."""
+    the spaces and tabs around it, and a list split at its commas with each tag stripped of spaces
+    alone, as ``fresh``'s ``parseTokenList`` reads it; an `If-Modified-Since` is not read: 2.0.0
+    reads one only where no `If-None-Match` is sent, and compares it with a `Last-Modified` no
+    Linear answer carries. The rows of `_LINEAR_HTTP` in `tests/test_linear.py` that send either
+    hold api.linear.app's answers of 2026-10-26 to 2026-10-28 (UTC)."""
     none_match = request.headers.get("if-none-match", "").strip(" \t")
     if not none_match:
         return False

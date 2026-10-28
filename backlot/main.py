@@ -1365,10 +1365,9 @@ async def refuse_cloudflares_methods_on_linear_and_fireflies(request: Request, c
     :func:`refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot`, which answers first: a
     `TRACE`, `CONNECT` or `PURGE` carrying `Authorization` twice drew its 400 from both vendors on
     2026-10-25 (UTC), and one carrying `If-None-Match` or `If-Modified-Since` twice on
-    2026-10-28. Linear's `CONNECT` at a path of slashes alone
-    (``backlot.routers.linear.slashes_alone``) carries `X-Content-Type-Options: nosniff`:
-    api.linear.app sent it at `/` four times of four on 2026-10-25 and 2026-10-26, and not with
-    `TRACE` or `PURGE` at `/`."""
+    2026-10-28. `nosniff` goes on Linear's `CONNECT` where ``backlot.routers.linear.slashes_alone``
+    holds, and on no other method of Cloudflare's at `/`, as api.linear.app answered on 2026-10-25
+    and 2026-10-26."""
     status, body, headers = _CLOUDFLARE_METHOD[request.method]
     response = Response(body, status_code=status, headers=headers)
     linear_root = request.scope["path"].startswith("/linear/") and linear.slashes_alone(

@@ -6849,6 +6849,120 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert _ratelimit(code_refused)["resource"] == "code_search"
 
 
+def test_github_a_rate_limit_read_does_not_open_the_windows_it_reports():
+    """Real does not open a window on a read; Backlot's first `GET /rate_limit` did (#1118).
+
+    Measured against api.github.com 2026-10-28: before anything is counted in a
+    caller's `core` or `search` window, every `GET /rate_limit` answers `used: 0`
+    with `reset` a full window from that read (3600 for `core`, 60 for `search`),
+    the first request counted opens the window, and the reads after it count down
+    to that reset. Backlot's `status` opened every window it reported, so the
+    first read fixed the `reset` the later reads and the first counted request
+    reported.
+    """
+    from backlot.routers.github import (
+        RATE_LIMIT_WINDOW,
+        SEARCH_RATE_LIMIT_WINDOW,
+        RateLimitWindows,
+    )
+
+    t = [1_000_000]
+    windows = RateLimitWindows(clock=lambda: t[0])
+
+    first = windows.status("caller", "core", 5000)
+    assert first == {
+        "limit": 5000,
+        "used": 0,
+        "remaining": 5000,
+        "reset": t[0] + RATE_LIMIT_WINDOW,
+    }
+    t[0] += 3
+    second = windows.status("caller", "core", 5000)
+    assert second == {
+        "limit": 5000,
+        "used": 0,
+        "remaining": 5000,
+        "reset": t[0] + RATE_LIMIT_WINDOW,
+    }
+
+    t[0] += 10
+    counted = windows.count("caller", "core", 5000)
+    opened = t[0]
+    assert counted == {
+        "limit": 5000,
+        "used": 1,
+        "remaining": 4999,
+        "reset": opened + RATE_LIMIT_WINDOW,
+    }
+    t[0] += 3
+    after = windows.status("caller", "core", 5000)
+    assert after == {
+        "limit": 5000,
+        "used": 1,
+        "remaining": 4999,
+        "reset": opened + RATE_LIMIT_WINDOW,
+    }
+
+    # a read of another resource opens nothing: `search` still reads a full
+    # window from the read, `used: 0`
+    search = windows.status("caller", "search", 30)
+    assert search == {
+        "limit": 30,
+        "used": 0,
+        "remaining": 30,
+        "reset": t[0] + SEARCH_RATE_LIMIT_WINDOW,
+    }
+
+
+def test_github_rate_limit_route_reads_before_any_request_move_with_the_read(tmp_path):
+    """#1118 over the served route: two `GET /rate_limit` reads three seconds
+    apart, then a counted request, then another read — each read keeps `reset` a
+    full window from that read until the request opens the window, where the
+    first read used to fix every later answer's `reset`."""
+    from backlot.routers import github as gh
+
+    settings = build_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "gh-rl-read-issue",
+                "repo": "rl",
+                "title": "Paced",
+                "content": "body",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+            },
+        ],
+        name="rl.jsonl",
+    )
+    with client_for(settings, reload=True) as c:
+        t = [2_000_000_000]
+        c.app.state.github_rate_limits = gh.RateLimitWindows(clock=lambda: t[0])
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        read1 = c.get("/github/rate_limit", headers=h).json()["resources"]["core"]
+        assert read1["used"] == 0
+        t[0] += 3
+        read2 = c.get("/github/rate_limit", headers=h).json()["resources"]["core"]
+        assert read2["used"] == 0
+        # the read does not count and does not open: `reset` moves with the read
+        assert read2["reset"] == read1["reset"] + 3
+
+        t[0] += 5
+        org = c.get("/_meta/users").json()["org"]
+        repo = c.get(f"/github/repos/{org}/rl", headers=h)
+        assert repo.status_code == 200
+        # the counted request is what opens the window, a full window from itself
+        reset = int(_ratelimit(repo)["reset"])
+        assert reset == t[0] + gh.RATE_LIMIT_WINDOW
+
+        t[0] += 7
+        read3 = c.get("/github/rate_limit", headers=h).json()["resources"]["core"]
+        assert read3["used"] == 1
+        assert read3["reset"] == reset
+
+
 def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_it_off(
     tmp_path, monkeypatch
 ):

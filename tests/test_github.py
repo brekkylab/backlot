@@ -4639,8 +4639,8 @@ def test_github_backend_version_error_order(gh_client, path):
 
 
 def _sent_raw(client, path: str, headers: dict[str, bytes]):
-    """A GET on ``path`` with each header's bytes as they are, which
-    ``tests.test_atlassian._sent_as`` says why the TestClient does not."""
+    """A GET on ``path`` with each header's bytes as they are, which ``tests._helpers.sent_as``
+    says why the TestClient does not."""
     import asyncio
 
     import httpx

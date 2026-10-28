@@ -215,7 +215,7 @@ def render_sources() -> str:
     for source_type in sorted(SOURCES):
         name, prefixes = SOURCES[source_type]
         if source_type in GRAPHQL_ONLY:
-            endpoints = "GraphQL (one `POST`)"
+            endpoints = "GraphQL (one endpoint, `POST` or `GET`)"
         else:
             endpoints = str(
                 sum(1 for path in spec_paths if any(path.startswith(p) for p in prefixes))

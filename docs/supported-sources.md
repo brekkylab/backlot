@@ -16,13 +16,13 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `source_type` | Service | URL prefix | Endpoints | Record schema | What one record is |
 |---|---|---|---|---|---|
 | `confluence` | Confluence | `/atlassian/wiki/rest/api` | 10 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
-| `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one `POST`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
+| `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
 | `github` | GitHub | `/github` | 34 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
-| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 13 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
+| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 21 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
-| `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
+| `linear` | Linear | `/linear/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
 | `msteams` | Microsoft Teams | `/msgraph/v1.0` | 13 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
 | `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
 | `s3` | Amazon S3 | `/s3` | 5 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
@@ -87,7 +87,10 @@ what `search` answers a `GET` or `HEAD`, but for a 401 and a refusal of its `Acc
 
 ### Fireflies — `/fireflies/graphql`
 
-**GraphQL only**, one `POST`. Root `Query` fields:
+**GraphQL only**, one endpoint: a `POST` with a JSON or form body, or a `GET` with the query in its
+query string and a JSON `Content-Type` or none. Apollo Server serves a form, or a `GET` with no
+`Content-Type`, only beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its
+check that a browser preflighted the request. Root `Query` fields:
 
 | Query field | Notes |
 |---|---|
@@ -269,16 +272,28 @@ One `source_type` (`google_drive`) across four prefixes.
 | `/drive/v3/files/{id}/permissions` | `fields`, validated and applied to the list and its entries |
 | `/drive/v3/drives` | `q`, as a member who is not the domain's administrator may send it: `name` with `contains`/`=`/`!=`/`<`/`<=`/`>`/`>=` and `hidden` with `=`/`!=` or alone; any other term is a 400. `fields`, validated and applied to the list and its entries |
 | `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
-| `/docs/v1/documents/{id}` | |
+| `/docs/v1/documents/{id}` | `body.content` with each element's indices in UTF-16 code units (a `startIndex` of 0 left out, as real leaves it out), each paragraph's `paragraphStyle` and each run's `textStyle`, and the `documentStyle` and `namedStyles` of a document `documents.create` makes |
 | `/sheets/v4/spreadsheets/{id}` | One entry per sheet, with its own `sheetId`, `index`, `title` and `gridProperties`. Structure only — cells need `includeGridData=true`, as in real Sheets. `ranges` filters the `sheets` array itself, and gives a sheet one `data` block per range that touches it |
 | `/sheets/v4/spreadsheets/{id}/values/{range}` | A1 ranges incl. `Summary!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not, an empty one before the bang (`!A1` is the first sheet), and R1C1 — absolute (`R1C1:R2C2`) and bracketed offsets from A1 (`R[1]C[1]`), echoed as the A1 equivalent, with real's reversed-range rule. Any sheet in the workbook, matched case-insensitively; an unqualified range answers from the sheet at index 0. `majorDimension`, `valueRenderOption` |
 | `/sheets/v4/spreadsheets/{id}/values:batchGet` | As above; one unparseable range fails the whole call |
 | `/sheets/v4/spreadsheets/{id}:getByDataFilter` | The same read addressed by `DataFilter` (an `a1Range`, a `gridRange` or a `developerMetadataLookup`) instead of `ranges`. A read, over POST because the filters do not fit in a query string; no filter means every sheet, and so do lookups alone, since a corpus states no developer metadata for one to match. Two filters covering the same cells get a single `data` block |
 | `/sheets/v4/spreadsheets/{id}/values:batchGetByDataFilter` | Likewise for values. Each entry carries the filters that selected it, echoed as the proto real read, filters whose answers name the same range sharing one entry, and the entries come back ordered by where each range starts rather than as sent. A `gridRange` with no cells answers `#REF!`, and a lookup no entry |
+| `PUT /sheets/v4/spreadsheets/{id}/values/{range}` | `values.update`: `valueInputOption` `RAW` or `USER_ENTERED`, the latter read the way the Sheets UI reads typing, with the number format it infers. `includeValuesInResponse` and its two render options |
+| `POST /sheets/v4/spreadsheets/{id}/values/{range}:append` | `values.append`: below the table the range finds, `insertDataOption` `OVERWRITE` or `INSERT_ROWS` |
+| `POST /sheets/v4/spreadsheets/{id}/values/{range}:clear` | `values.clear`: values go, formats stay |
+| `POST /sheets/v4/spreadsheets/{id}/values:batchUpdate`, `values:batchClear` | Every entry checked before any is written; an option the body leaves unset is read from the query |
+| `POST /sheets/v4/spreadsheets/{id}/values:batchUpdateByDataFilter`, `values:batchClearByDataFilter` | The same, each range named by a `DataFilter`, and what a filter matches is a bound on what is written |
+| `POST /sheets/v4/spreadsheets` | `spreadsheets.create`: a workbook at the creator's My Drive root, visible to them alone, with the sheets, cells, number formats, `locale`, `timeZone` and `autoRecalc` the request states |
+| `POST /sheets/v4/spreadsheets/{id}/sheets/{sheetId}:copyTo` | Into a workbook the caller may write, titled in that workbook's language |
 | `/slides/v1/presentations/{id}` | |
 
 The three editor APIs serve native-doc content for editor-aware clients, read structurally instead
 of via Google Drive export.
+
+Only a spreadsheet's owner may write it: every grant a corpus states makes a reader, and a
+reader's write is real's 403. A write lands in a per-server overlay and the corpus file is never
+written; [Writes, and where they go](write-overlay.md) covers what a read then sees, what is not
+modelled, and how to read the overlay back and reset it.
 
 Folders are files here: they match `mimeType='…folder'`, project, sort and resolve permissions like
 stored rows. A trashed file is listed to its owner with the rest unless `q` leaves it out with
@@ -290,7 +305,12 @@ real workbook: named sheets over a 2D grid whose cells keep the type the corpus 
 string. A record that states only `content` keeps the older reading — one sheet, each stored **line**
 held in a single cell verbatim, with Backlot picking no column delimiter, so splitting (CSV, pipes,
 …) stays the corpus owner's decision. Either way `files.export` and the Sheets API describe the same
-cells. Reading a file of the wrong type through any of the three editor APIs is refused, as real
+cells.
+
+A document has two shapes in the same way. A record that states `paragraphs` gives each paragraph
+its named style and its runs bold, italic, underlined, struck through or linked, and its `content`
+is their text, one line each. A record that states only `content` is one plain paragraph per line
+of it. Reading a file of the wrong type through any of the three editor APIs is refused, as real
 Google does, not reinterpreted.
 
 #### OAuth and batch
@@ -560,7 +580,10 @@ operation's 415 carry the account id alone.
 
 ### Linear — `/linear/graphql`
 
-**GraphQL only**, one `POST`. Root `Query` fields:
+**GraphQL only**, one endpoint: a `POST` with a JSON body, or a `GET` with the query in its query
+string. Apollo Server serves a `GET` with no `Content-Type`, or a form or `text/plain` one, only
+beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its check that a
+browser preflighted the request. Root `Query` fields:
 
 | Query field | Notes |
 |---|---|
@@ -739,7 +762,10 @@ twice answers the same id. Past the front door, an answer to a `GET`, `HEAD`, `P
 `PUT`, `DELETE` or `OPTIONS` carries the eight headers real's application sets
 (`x-frame-options: SAMEORIGIN`, `content-security-policy: default-src 'none'` and the rest of
 `backlot.routers.notion.APPLICATION_HEADERS`), and the body reader's refusals below carry none, as
-on real.
+on real. Each JSON answer to those methods carries Express's weak `ETag` over its body, the body
+reader's refusals included, and a `GET` or `HEAD` sent `If-None-Match: *` whose answer would be a
+2xx gets a 304 instead, as real answers one; the tag of a repeated request repeats here, where
+real's `request_id` makes each of its tags new.
 
 A request is read as the real API reads it before anything is looked up. A JSON body is read first,
 ahead of the credential and the version, as Express reads one: a body that does not parse is

@@ -3,7 +3,7 @@
   "endpoints": [
     "https://docs.slack.dev/reference/methods.md"
   ],
-  "measured": "2026-10-22",
+  "measured": "2026-10-28",
   "operations": [
     {
       "operation": "admin.analytics.getFile",
@@ -685,11 +685,35 @@
       "severity": "gap"
     },
     {
+      "operation": "admin.users.access.pause",
+      "id": "admin.users.access.pause",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Slack's reference marks it \"only available to Slack workspaces on an Enterprise plan\" and says it pauses \"organization-wide access for frontline members\", with \"an organization-level token belonging to an org admin or owner, with the `admin.users:write` scope\" (read 2026-10-28). No corpus record states an Enterprise organization, an organization-level token or a frontline member, so this is a gap rather than an answer about an organization the corpus does not have. Measured against slack.com on 2026-10-28 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `admin.users:write` to a user token whose `auth.test` names no `enterprise_id`, where `admin.users.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials."
+    },
+    {
+      "operation": "admin.users.access.resume",
+      "id": "admin.users.access.resume",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Slack's reference marks it \"only available to Slack workspaces on an Enterprise plan\" and says it restores \"organization-wide access for frontline members\", with \"an organization-level token belonging to an org admin or owner, with the `admin.users:write` scope\" (read 2026-10-28). No corpus record states an Enterprise organization, an organization-level token or a frontline member, so this is a gap rather than an answer about an organization the corpus does not have. Measured against slack.com on 2026-10-28 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `admin.users:write` to a user token whose `auth.test` names no `enterprise_id`, where `admin.users.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials."
+    },
+    {
       "operation": "admin.users.assign",
       "id": "admin.users.assign",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "admin.users.deactivate",
+      "id": "admin.users.deactivate",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Slack's reference marks it \"only available to Slack workspaces on an Enterprise plan\" and says it deactivates \"a user from an enterprise organization and all its workspaces\" (read 2026-10-28). No corpus record states an Enterprise organization, so this is a gap rather than an answer about an organization the corpus does not have. Measured against slack.com on 2026-10-28 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `admin.users:write` to a user token whose `auth.test` names no `enterprise_id`, where `admin.users.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials."
     },
     {
       "operation": "admin.users.getExpiration",

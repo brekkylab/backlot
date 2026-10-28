@@ -10,6 +10,7 @@ not merely that it filters something.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import itertools
 import json
 import zlib
@@ -22,13 +23,17 @@ from graphql import GraphQLError, build_client_schema, is_enum_type, parse, vali
 from backlot import synth
 from backlot.fidelity.graphql_diff import backlot_schema
 from backlot.graphql import linear_filters, mcp_tools
+from backlot.graphql.body import node_json
 from tests._helpers import (
     SWEPT_BYTES,
+    Chunked,
+    WithTheKey,
     build_corpus,
     client_for,
     complete,
     corpus_client,
     db_count,
+    http_row,
     padded_query,
     selected_field_count,
     selected_fields,
@@ -177,19 +182,6 @@ def test_linear_comment_url_is_the_issue_url_with_the_ids_first_eight(client, ad
     same = [c for c in data["comments"]["nodes"] if c["id"] == from_comment["id"]]
     assert same, "the issue's comment must also answer from the comments root"
     assert same[0]["url"] == from_comment["url"]
-
-
-def test_linear_missing_issue_is_a_field_error_not_a_400(client, admin_h):
-    """Linear declares `issue` non-null, so a miss nulls `data` and reports an error — but the
-    request itself was fine, so the status stays 200."""
-    r = gql(client, '{ issue(id: "NOPE-1") { identifier } }', admin_h)
-    assert r.status_code == 200
-    assert r.content.startswith(b'{"errors":[')
-    assert r.json()["data"] is None
-    assert "Entity not found" in r.json()["errors"][0]["message"]
-    # control: an issue that exists still opens with "data"
-    ok = gql(client, '{ issue(id: "ENG-101") { identifier } }', admin_h)
-    assert ok.content.startswith(b'{"data":')
 
 
 def test_linear_team_resolves_by_key_and_uuid(client, admin_h, ro_conn):
@@ -731,6 +723,111 @@ def test_linear_by_id_relation_roots_answer(client, admin_h):
     assert label["groupType"] is None
 
 
+def _unknown_id(root: str, id_: str, message: str, presentable: str, row: str):
+    """A `_LINEAR_BODIES` row: the by-id root ``root`` sent an id it holds nothing for, and Linear's
+    error for it with ``message`` and ``presentable`` (`linear_resolvers._not_found`,
+    `linear_resolvers._ATTACHMENT`)."""
+    body = {"query": "query($x: String!) { %s(id: $x) { id } }" % root, "variables": {"x": id_}}
+    error = {
+        "message": message,
+        "path": [root],
+        "locations": [{"line": 1, "column": 22}],
+        "extensions": {
+            "type": "invalid input",
+            "code": "INPUT_ERROR",
+            "statusCode": 400,
+            "userError": True,
+            "userPresentableMessage": presentable,
+        },
+    }
+    answer = node_json({"errors": [error], "data": None})
+    return pytest.param(json.dumps(body).encode(), WithTheKey(answer, 200), id=row)
+
+
+_UNKNOWN_IDS = [
+    _unknown_id(
+        "issue",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Issue",
+        "Could not find referenced Issue.",
+        "issue 00000000",
+    ),
+    _unknown_id(
+        "issue",
+        "NOPE-1",
+        "Entity not found: Issue",
+        "Could not find referenced Issue.",
+        "issue NOPE-1",
+    ),
+    _unknown_id(
+        "team", "nope", "Entity not found: Team", "Could not find referenced Team.", "team nope"
+    ),
+    _unknown_id(
+        "user",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: User",
+        "Could not find referenced User.",
+        "user 00000000",
+    ),
+    _unknown_id(
+        "workflowState",
+        "nope",
+        "Entity not found: WorkflowState",
+        "Could not find referenced WorkflowState.",
+        "workflowState nope",
+    ),
+    _unknown_id(
+        "project",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Project",
+        "Could not find referenced Project.",
+        "project 00000000",
+    ),
+    _unknown_id(
+        "issueLabel",
+        "nope",
+        "Entity not found: IssueLabel",
+        "Could not find referenced IssueLabel.",
+        "issueLabel nope",
+    ),
+    _unknown_id(
+        "cycle",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Cycle",
+        "Could not find referenced Cycle.",
+        "cycle 00000000",
+    ),
+    _unknown_id(
+        "release",
+        "nope",
+        "Entity not found: Release",
+        "Could not find referenced Release.",
+        "release nope",
+    ),
+    _unknown_id(
+        "issueRelation",
+        "nope",
+        "Entity not found: IssueRelation",
+        "Could not find referenced IssueRelation.",
+        "issueRelation nope",
+    ),
+    _unknown_id(
+        "teamMembership",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: TeamMembership",
+        "Could not find referenced TeamMembership.",
+        "teamMembership 00000000",
+    ),
+    _unknown_id(
+        "attachment",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Attachment: could not find by url.",
+        "Could not find referenced attachment with this url.",
+        "attachment 00000000",
+    ),
+]
+
+
 def test_linear_workflow_states_are_per_team(client, admin_h):
     """Two teams' identically-named states are different objects in Linear, so their ids differ.
     The corpus has no shared state name, so assert the construction directly instead."""
@@ -841,22 +938,34 @@ def test_linear_malformed_document_is_a_400_with_a_graphql_envelope(client, admi
     assert "Syntax Error" in body["errors"][0]["message"]
 
 
-def test_linear_unauthenticated_is_401(client):
-    r = client.post("/linear/graphql", json={"query": "{ viewer { email } }"})
-    assert r.status_code == 401
-    assert r.json()["errors"][0]["message"] == "Authentication required"
-
-
 # --- the body, and where the credential is read against it ---------------------------------------
+def _apollo(message: bytes) -> bytes:
+    """Apollo Server's refusal of a body as Linear writes it around ``message``, already
+    JSON-escaped."""
+    return (
+        b'{"errors":[{"message":"%s","extensions":{"http":{"status":400,"headers":{}},'
+        b'"code":"BAD_REQUEST","type":"graphql error","userError":true}}]}' % message
+    )
+
+
+def _status(answer: bytes) -> int:
+    envelope = json.loads(answer)
+    if "code" in envelope:
+        return envelope["code"]
+    if "errors" not in envelope:
+        return 200
+    return envelope["errors"][0]["extensions"].get("http", {}).get("status", 400)
+
+
+_NO_KEYS = _apollo(b"POST body missing, invalid Content-Type, or JSON object has no keys.")
+_BATCHING = _apollo(b"Operation batching disabled.")
 # The headers a body was sent with beyond `Content-Type: application/json`, the body, and the bytes
-# Linear refused it with, at the status their `code` names (400 where there is none), or None where
-# Linear served the query, as `backlot.graphql.body` and `backlot.graphql.v8_json` read them.
-# `_GRAPHQL_JS_NOT_JSON` marks the rows `backlot.routers.linear._read` answers in graphql-js's
-# words for the key, no credential and `nope` alike: a body with no text. `_REQUEST_ERROR` marks a
-# JSON array, the 400 with the key; Linear answers it with `Operation batching disabled.` with or
-# without one.
-_GRAPHQL_JS_NOT_JSON = b'{"errors":[{"message":"POST body sent invalid JSON."}]}'
-_REQUEST_ERROR = object()
+# Linear answered it with for the key, no credential and `nope` alike, at the status their `code` or
+# `extensions.http.status` names, 400 for an error naming neither and 200 for an answer with no
+# `errors` (`_status`), or None where Linear served the query with the key and answered 401 without
+# one, as `backlot.graphql.body` and `backlot.graphql.v8_json` read them. A `WithTheKey` row draws
+# the 401 without the key. Apollo Server's envelopes are api.linear.app's, but for the newline that
+# ends each there.
 _LINEAR_BODIES = [
     pytest.param(
         b"{",
@@ -1610,10 +1719,323 @@ _LINEAR_BODIES = [
         b'{"error":"Unexpected token \'}\', \\"{\\r\\n\\"query\\":\\r\\n}\\" is not valid JSON","details":{},"code":400}',
         id="CRLF then bad",
     ),
-    pytest.param(b"", _GRAPHQL_JS_NOT_JSON, id="empty"),
-    pytest.param(b"\xef\xbb\xbf", _GRAPHQL_JS_NOT_JSON, id="a byte-order mark alone"),
-    pytest.param(b"[]", _REQUEST_ERROR, id="an array"),
-    pytest.param(b'[{"query":"{ __typename }"}]', _REQUEST_ERROR, id="a batch of one query"),
+    pytest.param(b"", _NO_KEYS, id="empty"),
+    pytest.param(b"\xef\xbb\xbf", _NO_KEYS, id="a byte-order mark alone"),
+    pytest.param(b"{}", _NO_KEYS, id="an empty object"),
+    pytest.param(b"[]", _BATCHING, id="an array"),
+    pytest.param(b'[{"query":"{ __typename }"}]', _BATCHING, id="a batch of one query"),
+    pytest.param(b'{"query":5}', _apollo(b"GraphQL queries must be strings."), id="a query of 5"),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":"x"}',
+        _apollo(
+            b"`variables` in a POST body should be provided as an object, not a recursively "
+            b"JSON-encoded string."
+        ),
+        id="a string of variables",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","extensions":5}',
+        _apollo(b"`extensions` in a POST body must be an object if provided."),
+        id="extensions of 5",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","operationName":5}',
+        _apollo(b"`operationName` in a POST body must be a string if provided."),
+        id="an operationName of 5",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","extensions":{"persistedQuery":{"version":1,"sha256Hash":"'
+        + b"0" * 64
+        + b'"}}}',
+        b'{"errors":[{"message":"Internal server error","extensions":{"http":{"status":400,'
+        b'"headers":{}},"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}]}',
+        id="a persisted query's hash that does not match",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","extensions":{"persistedQuery":{"version":2,"sha256Hash":"'
+        + b"0" * 64
+        + b'"}}}',
+        b'{"errors":[{"message":"Internal server error","extensions":{"http":{"status":400,"headers":{}},"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}]}',
+        id="a persisted query's version 2",
+    ),
+    pytest.param(
+        b'{"extensions":{"persistedQuery":{"version":1,"sha256Hash":"' + b"1" * 64 + b'"}}}',
+        b'{"errors":[{"message":"PersistedQueryNotFound","extensions":{"http":{"status":200,'
+        b'"headers":{}},"code":"PERSISTED_QUERY_NOT_FOUND","type":"graphql error",'
+        b'"userError":true}}]}',
+        id="a persisted query's hash alone",
+    ),
+    pytest.param(
+        b'{"query":null}',
+        b'{"errors":[{"message":"GraphQL operations must contain a non-empty `query` or a '
+        b'`persistedQuery` extension.","extensions":{"http":{"status":400,"headers":{}},'
+        b'"code":"INVALID_INPUT","type":"invalid input","userError":true}}]}',
+        id="a query of null",
+    ),
+    pytest.param(
+        b'{"query":"","extensions":{"persistedQuery":{"version":1,"sha256Hash":"'
+        + hashlib.sha256(b"").hexdigest().encode()
+        + b'"}}}',
+        b'{"errors":[{"message":"Syntax Error: Unexpected <EOF>.","locations":[{"line":1,'
+        b'"column":1}],"extensions":{"http":{"status":400,"headers":{}},'
+        b'"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}',
+        id="a persisted query's hash matching an empty query",
+    ),
+    pytest.param(
+        b'{"query":"query __proto__ { __typename }"}', None, id="an operation named __proto__"
+    ),
+    pytest.param(
+        b'{"query":"{"}',
+        b'{"errors":[{"message":"Syntax Error: Expected Name, found <EOF>.","locations":[{"line":1,'
+        b'"column":2}],"extensions":{"http":{"status":400,"headers":{}},'
+        b'"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}',
+        id="a document that does not parse",
+    ),
+    pytest.param(
+        b'{"query":"{ nosuch }"}',
+        b'{"errors":[{"message":"Cannot query field \\"nosuch\\" on type \\"Query\\".",'
+        b'"locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},'
+        b'"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}',
+        id="a document that does not validate",
+    ),
+    pytest.param(
+        b'{"query":"query A { __typename } query B { __typename }"}',
+        b'{"errors":[{"message":"operation does not exist","extensions":{"type":"invalid input",'
+        b'"code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"The '
+        b'operation does not exist on the query.","http":{"status":400}}}]}',
+        id="two operations and no operationName",
+    ),
+    pytest.param(
+        b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }"}',
+        WithTheKey(
+            b'{"errors":[{"message":"Variable \\"$b\\" of required type \\"Boolean!\\" was not '
+            b'provided.","locations":[{"line":1,"column":7}],"extensions":{"code":"BAD_USER_INPUT",'
+            b'"type":"graphql error","userError":true}}]}'
+        ),
+        id="a variable not provided",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","operationName":"Z"}',
+        b'{"errors":[{"message":"operation does not exist","extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"The operation \'Z\' does not exist on the query.","http":{"status":400}}}]}',
+        id="an operationName no operation has",
+    ),
+    pytest.param(
+        b'{"query":"query A { __typename }","operationName":""}',
+        b'{"errors":[{"message":"operation does not exist","extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"The operation does not exist on the query.","http":{"status":400}}}]}',
+        id="an empty operationName",
+    ),
+    pytest.param(
+        b'{"query":{"kind":"Document"}}',
+        b'{"errors":[{"message":"GraphQL queries must be strings. It looks like you\'re sending the internal graphql-js representation of a parsed query in your request instead of a request in the GraphQL query language. You can convert an AST to a string using the `print` function from `graphql`, or use a client like `apollo-client` which converts the internal representation to a string for you.","extensions":{"http":{"status":400,"headers":{}},"code":"BAD_REQUEST","type":"graphql error","userError":true}}]}',
+        id="a parsed document",
+    ),
+    pytest.param(
+        b'{"query":false}',
+        b'{"errors":[{"message":"GraphQL operations must contain a non-empty `query` or a `persistedQuery` extension.","extensions":{"http":{"status":400,"headers":{}},"code":"INVALID_INPUT","type":"invalid input","userError":true}}]}',
+        id="a query of false",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":"[1]"}',
+        b'{"errors":[{"message":"`variables` in a POST body must be an object if provided.","extensions":{"http":{"status":400,"headers":{}},"code":"BAD_REQUEST","type":"graphql error","userError":true}}]}',
+        id="variables of '[1]'",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":"null"}',
+        None,
+        id="variables of 'null'",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":" {} "}',
+        None,
+        id="variables of ' {} '",
+    ),
+    pytest.param(
+        b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }","variables":"{\\"b\\":5}"}',
+        WithTheKey(
+            b'{"errors":[{"message":"Variable \\"$b\\" got invalid value 5; Boolean cannot represent a non boolean value: 5","locations":[{"line":1,"column":7}],"extensions":{"code":"BAD_USER_INPUT","type":"graphql error","userError":true}}]}'
+        ),
+        id="variables of a string its operation refuses",
+    ),
+    pytest.param(
+        b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }","variables":"{\\"b\\":true}"}',
+        None,
+        id="variables of a string its operation takes",
+    ),
+    pytest.param(
+        b'{"query":"query($v: [ID!]) { issues(first: 1, filter: {id: {in: $v}}) { nodes { id } } }",'
+        b'"variables":{"v":[%s]}}' % b",".join([b"true"] * 60),
+        WithTheKey(
+            b'{"errors":[%s,{"message":"Internal server error","extensions":{"code":'
+            b'"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}]}'
+            % b",".join(
+                b'{"message":"Variable \\"$v\\" got invalid value true at \\"v[%d]\\"; ID cannot '
+                b'represent value: true","locations":[{"line":1,"column":7}],"extensions":{"code":'
+                b'"BAD_USER_INPUT","type":"graphql error","userError":true}}' % n
+                for n in range(50)
+            )
+        ),
+        id="sixty variables refused",
+    ),
+    pytest.param(
+        b'{"query":"mutation { __typename }"}',
+        WithTheKey(b'{"data":{"__typename":"Mutation"}}', 200),
+        id="a mutation of __typename",
+    ),
+    pytest.param(
+        b'{"query":"subscription S { __typename }"}',
+        b'{"errors":[{"message":"Subscription \\"S\\" must not select an introspection top level field.","locations":[{"line":1,"column":18}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}',
+        id="a subscription of __typename",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\") { issue(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["issue"],"locations":[{"line":1,"column":37}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}',
+            200,
+        ),
+        id="null for a non-null argument",
+    ),
+    pytest.param(
+        b'{"query":"query($v: Boolean = true) { __typename @include(if: $v) }","variables":{"v":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","locations":[{"line":1,"column":53}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}',
+            200,
+        ),
+        id="null for a directive's argument at the root",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\") { team(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["team"],"locations":[{"line":1,"column":36}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}',
+            200,
+        ),
+        id="null for team's non-null id",
+    ),
+    pytest.param(
+        b'{"query":"query($v: ID = \\"a\\") { issues(filter: {id: {in: [$v]}}) { nodes { id } } }","variables":{"v":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["issues"],"locations":[{"line":1,"column":38}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}',
+            200,
+        ),
+        id="null inside a filter's list",
+    ),
+    pytest.param(
+        b'{"query":"query($v: Boolean = true) { viewer { id @include(if: $v) } }","variables":{"v":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["viewer"],"locations":[{"line":1,"column":54}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}',
+            200,
+        ),
+        id="null for a directive one level down",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\") # a\xe2\x80\xa8b\\n{ issue(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["issue"],"locations":[{"line":2,"column":13}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}',
+            200,
+        ),
+        id="null for a non-null argument after U+2028 in a comment",
+    ),
+    pytest.param(
+        b'{"query":"{ __schema { queryType { name } } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}',
+        id="introspection",
+    ),
+    pytest.param(
+        b'{"query":"{ __type(name: \\"Query\\") { name } }"}',
+        b'{"data":{"__type":{"name":"Query"}}}',
+        id="__type",
+    ),
+    pytest.param(
+        b'{"query":"{ s: __schema { queryType { name } } }"}',
+        b'{"data":{"s":{"queryType":{"name":"Query"}}}}',
+        id="an alias of __schema",
+    ),
+    pytest.param(
+        b'{"query":"{ __schema { queryType { name } } __type(name: \\"Issue\\") { name } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}},"__type":{"name":"Issue"}}}',
+        id="__schema and __type",
+    ),
+    pytest.param(
+        b'{"query":"{ ...F } fragment F on Query { __schema { queryType { name } } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}',
+        id="__schema in a fragment",
+    ),
+    pytest.param(
+        b'{"query":"{ ... on Query { __schema { queryType { name } } } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}',
+        id="__schema in an inline fragment",
+    ),
+    pytest.param(
+        b'{"query":"{ __schema @skip(if: false) { queryType { name } } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}',
+        id="__schema under @skip(if: false)",
+    ),
+    pytest.param(
+        b'{"query":"query Q { __schema { queryType { name } } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}',
+        id="a named query of __schema",
+    ),
+    pytest.param(
+        b'{"query":"query A { __schema { queryType { name } } } query B { viewer { id } }","operationName":"A"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}',
+        id="the introspection operationName chose",
+    ),
+    pytest.param(
+        b'{"query":"query($b: Boolean!) { __schema @include(if: $b) { queryType { name } } }"}',
+        b'{"errors":[{"message":"Variable \\"$b\\" of required type \\"Boolean!\\" was not provided.","locations":[{"line":1,"column":7}],"extensions":{"code":"BAD_USER_INPUT","type":"graphql error","userError":true}}]}',
+        id="introspection with a variable not provided",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename __schema { queryType { name } } }"}',
+        WithTheKey(
+            b'{"data":{"__typename":"Query","__schema":{"queryType":{"name":"Query"}}}}', 200
+        ),
+        id="__typename beside __schema",
+    ),
+    pytest.param(
+        b'{"query":"{ __schema { queryType { name } } viewer @skip(if: true) { id } }"}',
+        WithTheKey(b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}', 200),
+        id="__schema beside a skipped field",
+    ),
+    pytest.param(
+        b'{"query":"{ viewer @skip(if: true) { id } }"}',
+        WithTheKey(b'{"data":{}}', 200),
+        id="a skipped field alone",
+    ),
+    pytest.param(
+        b'{"query":"{ ...F } fragment F on Query { __typename }"}',
+        None,
+        id="__typename in a fragment",
+    ),
+    pytest.param(
+        b'{"query":"{ ... on Query { __typename } }"}',
+        None,
+        id="__typename in an inline fragment",
+    ),
+    pytest.param(
+        b'{"query":"{ __schema { queryType { name } } ...F } fragment F on Query { __typename }"}',
+        WithTheKey(
+            b'{"data":{"__schema":{"queryType":{"name":"Query"}},"__typename":"Query"}}', 200
+        ),
+        id="__schema and __typename in a fragment",
+    ),
+    pytest.param(
+        b'{"query":"{ ... on Query { __schema { queryType { name } } } ...F } fragment F on Query { __typename }"}',
+        WithTheKey(
+            b'{"data":{"__schema":{"queryType":{"name":"Query"}},"__typename":"Query"}}', 200
+        ),
+        id="__typename in a fragment beside an inline __schema",
+    ),
+    pytest.param(
+        b'{"query":"{ ...F }"}',
+        b'{"errors":[{"message":"Unknown fragment \\"F\\".","locations":[{"line":1,"column":6}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}',
+        id="a fragment not defined",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { ...F } { ...F }"}',
+        b'{"errors":[{"message":"Cannot spread fragment \\"F\\" within itself.","locations":[{"line":1,"column":23}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}',
+        id="a fragment that spreads itself",
+    ),
+    *_UNKNOWN_IDS,
 ]
 
 
@@ -1783,7 +2205,7 @@ _LINEAR_READS = [
     pytest.param(_GZIP, gzip.compress(_TYPENAME) + b"xx", _HEADER_CHECK, id="gzip then xx"),
     pytest.param(_GZIP, gzip.compress(_TYPENAME)[:-5], _CUT_SHORT, id="gzip cut short"),
     pytest.param(_GZIP, b"", _CUT_SHORT, id="gzip over no bytes"),
-    pytest.param(_GZIP, gzip.compress(b""), _GRAPHQL_JS_NOT_JSON, id="gzip of no bytes"),
+    pytest.param(_GZIP, gzip.compress(b""), _NO_KEYS, id="gzip of no bytes"),
     pytest.param(_GZIP, gzip.compress(b"{"), _EXPECTED_PROPERTY, id="gzip of {"),
     pytest.param(
         (("Content-Encoding", "deflate"),),
@@ -1842,7 +2264,7 @@ _LINEAR_READS = [
     pytest.param(
         _charset("utf-16le"), "{".encode("utf-16-le"), _EXPECTED_PROPERTY, id="utf-16le {"
     ),
-    pytest.param(_charset("utf-16le"), b"", _GRAPHQL_JS_NOT_JSON, id="utf-16le, no bytes"),
+    pytest.param(_charset("utf-16le"), b"", _NO_KEYS, id="utf-16le, no bytes"),
     pytest.param(_charset("utf-8; foo=bar"), _TYPENAME, None, id="another parameter"),
     pytest.param(_charset('"utf\\-8"'), _TYPENAME, None, id="a quoted pair"),
     pytest.param(_charset('"lat\\in1"'), _TYPENAME, _LATIN1, id="a quoted pair, latin1"),
@@ -1951,19 +2373,74 @@ _LINEAR_READS = [
 
 # `Bearer` and a value in a Linear API key's shape that no account holds.
 _KEY_SHAPED = "Bearer lin_api_" + "0" * 40
-
-
-@pytest.mark.parametrize("credential", ["key", "none", "nope", "Bearer key", "Bearer, key-shaped"])
-@pytest.mark.parametrize(
-    "headers,body,answer",
-    [pytest.param((), *row.values, id=row.id) for row in _LINEAR_BODIES] + _LINEAR_READS,
+# The rows every credential but the key is sent with: one for each way `_read` refuses a body (V8's
+# words, `strict`'s, graphql-js's, a body it cannot decode, an unsupported encoding, an unsupported
+# charset, past the limit), one it reads and serves, one for each stage of Apollo Server's that
+# refuses a document ahead of the credential (a batch, a query that is not a string, a persisted
+# query's hash alone and one that does not match, a parse, a validation, the choice of operation),
+# and a `WithTheKey` row.
+_EACH_WAY_READ = (
+    "{",
+    "top-level 5",
+    "empty",
+    "gzip over a plain body",
+    "bogus",
+    "latin1",
+    "past the limit",
+    "__proto__ key",
+    "an array",
+    "a query of null",
+    "a persisted query's hash alone",
+    "a persisted query's hash that does not match",
+    "a document that does not parse",
+    "a document that does not validate",
+    "two operations and no operationName",
+    "a variable not provided",
 )
+# The rows whose answer without a key turns on what the document selects
+# (`backlot.routers.linear._introspection_only`), each sent with every credential too.
+_WHAT_IT_SELECTS = (
+    "introspection",
+    "__type",
+    "an alias of __schema",
+    "__schema and __type",
+    "__schema in a fragment",
+    "__schema in an inline fragment",
+    "__schema under @skip(if: false)",
+    "a named query of __schema",
+    "the introspection operationName chose",
+    "introspection with a variable not provided",
+    "__typename beside __schema",
+    "__schema beside a skipped field",
+    "a skipped field alone",
+    "__typename in a fragment",
+    "__typename in an inline fragment",
+    "__schema and __typename in a fragment",
+    "__typename in a fragment beside an inline __schema",
+)
+assert set(_EACH_WAY_READ + _WHAT_IT_SELECTS) <= {
+    row.id for row in (*_LINEAR_BODIES, *_LINEAR_READS)
+}
+
+
+def _linear_body_cases() -> list:
+    rows = [pytest.param((), *row.values, id=row.id) for row in _LINEAR_BODIES] + _LINEAR_READS
+    return [
+        pytest.param(credential, *row.values, id=f"{row.id}-{credential}")
+        for credential in ("key", "none", "nope", "Bearer key", "Bearer, key-shaped")
+        for row in rows
+        if credential == "key" or row.id in _EACH_WAY_READ + _WHAT_IT_SELECTS
+    ]
+
+
+@pytest.mark.parametrize("credential,headers,body,answer", _linear_body_cases())
 def test_linear_orders_the_body_and_the_credential(
     client, tokens_yaml, credential, headers, body, answer
 ):
-    """Each row answers as the comment over `_LINEAR_BODIES` says, and every refusal but a
-    `_REQUEST_ERROR` row's is the same for the key, no credential and `nope`; an API key under
-    `Bearer`, and `_KEY_SHAPED`, are `_API_KEY_AS_BEARER` ahead of every body."""
+    """Each row answers as the comment over `_LINEAR_BODIES` says with the key, and each row
+    `_EACH_WAY_READ` or `_WHAT_IT_SELECTS` names answers so under no credential and `nope` too; an
+    API key under `Bearer`, and `_KEY_SHAPED`, are `_API_KEY_AS_BEARER` ahead of each of those
+    bodies."""
     admin = tokens_yaml["admin_token"]
     if not any(name == "Content-Type" for name, _ in headers):
         headers = (("Content-Type", "application/json"), *headers)
@@ -1975,16 +2452,14 @@ def test_linear_orders_the_body_and_the_credential(
     r = sent_as(client, "POST", "/linear/graphql", headers, content=body)
     if credential.startswith("Bearer"):
         assert (r.status_code, r.content) == (400, _API_KEY_AS_BEARER)
-    elif answer is _REQUEST_ERROR:
-        if credential == "key":
-            assert r.content == _GRAPHQL_JS_NOT_JSON
-        assert r.status_code == (400 if credential == "key" else 401)
-    elif answer is not None:
-        assert (r.status_code, r.content) == (json.loads(answer).get("code", 400), answer)
-    elif credential == "key":
+    elif credential != "key" and (answer is None or isinstance(answer, WithTheKey)):
+        assert (r.status_code, r.content) == (401, _UNAUTHENTICATED)
+    elif answer is None:
         assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
+    elif isinstance(answer, WithTheKey):
+        assert (r.status_code, r.content) == (answer.status, answer)
     else:
-        assert r.status_code == 401
+        assert (r.status_code, r.content) == (_status(answer), answer)
 
 
 def test_linear_parent_resolves_and_is_acl_scoped(client, admin_h, tokens_yaml):
@@ -2095,21 +2570,11 @@ def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
 # --- Linear relations / children / attachments / releases -----------------------
 
 
-@pytest.mark.parametrize(
-    ("args", "served"),
-    [
-        ("", ["ENG-3", "ENG-2"]),
-        ("(orderBy: createdAt)", ["ENG-3", "ENG-2"]),
-        ("(orderBy: updatedAt)", ["ENG-2", "ENG-3"]),
-        ("(first: 1)", ["ENG-3"]),
-        ("(last: 1)", ["ENG-2"]),
-    ],
-)
-def test_linear_children_are_newest_first(tmp_path, args, served):
-    """Each row is an issue's `children` in the order the comment on `LINEAR_DEFAULT_ORDER_BY`
-    records; `ENG-2` was created first and edited last, so the two fields disagree."""
-    settings = build_corpus(
-        tmp_path,
+@pytest.fixture(scope="module")
+def two_children(tmp_path_factory):
+    """ENG-1 and its two children, ENG-2 created first and edited last, ENG-3 the reverse."""
+    return build_corpus(
+        tmp_path_factory.mktemp("two_children"),
         [
             {
                 "source_type": "linear",
@@ -2153,6 +2618,22 @@ def test_linear_children_are_newest_first(tmp_path, args, served):
             },
         ],
     )
+
+
+@pytest.mark.parametrize(
+    ("args", "served"),
+    [
+        ("", ["ENG-3", "ENG-2"]),
+        ("(orderBy: createdAt)", ["ENG-3", "ENG-2"]),
+        ("(orderBy: updatedAt)", ["ENG-2", "ENG-3"]),
+        ("(first: 1)", ["ENG-3"]),
+        ("(last: 1)", ["ENG-2"]),
+    ],
+)
+def test_linear_children_are_newest_first(two_children, args, served):
+    """Each row is an issue's `children` in the order the comment on `LINEAR_DEFAULT_ORDER_BY`
+    records; `ENG-2` was created first and edited last, so the two fields disagree."""
+    settings = two_children
     query = '{ issue(id: "ENG-1") { children%s { nodes { identifier } } } }' % args
     with client_for(settings) as client:
         body = gql(client, query, {"Authorization": settings.admin_token}).json()
@@ -2247,7 +2728,7 @@ def test_linear_attachments_take_no_url_argument_and_filter_by_url_instead(clien
     )
     assert r.status_code == 400 and "data" not in r.json()
     assert r.json()["errors"][0]["message"] == (
-        "Unknown argument 'url' on field 'Issue.attachments'."
+        'Unknown argument "url" on field "Issue.attachments".'
     )
     one = gql(
         client,
@@ -2567,9 +3048,10 @@ def test_a_malformed_date_is_the_validation_error_linear_answers(fclient, litera
     assert r.status_code == 400
     body = r.json()
     assert "data" not in body
-    message = body["errors"][0]["message"]
-    assert message.startswith("Expected value of type 'DateTimeOrDuration', found ")
-    assert message.endswith("into a valid date")
+    assert body["errors"][0]["message"] == (
+        f'Expected value of type "DateTimeOrDuration", found {literal}; '
+        f"Unable to parse value '{literal[1:-1]}' into a valid date"
+    )
 
 
 def test_a_date_operand_must_be_a_string(fclient):
@@ -2581,11 +3063,11 @@ def test_a_date_operand_must_be_a_string(fclient):
     q = "query($d: DateTimeOrDuration) { issues(filter: {createdAt: {gt: $d}}) { nodes { id } } }"
     r = post(fclient, q, {"d": 1700000000})
     assert r.status_code == 400
-    assert r.json()["errors"][0]["message"].startswith("Variable '$d' got invalid value 1700000000")
+    assert r.json()["errors"][0]["message"].startswith('Variable "$d" got invalid value 1700000000')
     assert "supports only string values" in r.json()["errors"][0]["message"]
     r = post(fclient, q, {"d": "not-a-date"})
     assert r.status_code == 400
-    assert "Expected type 'DateTimeOrDuration'" in r.json()["errors"][0]["message"]
+    assert 'Expected type "DateTimeOrDuration"' in r.json()["errors"][0]["message"]
 
 
 @pytest.mark.parametrize(
@@ -2619,9 +3101,10 @@ def test_forms_outside_the_measured_grammar_are_refused(fclient, literal):
         fclient, "{ issues(filter: {createdAt: {gt: %s}}) { nodes { identifier } } }" % literal
     )
     assert r.status_code == 400
-    message = r.json()["errors"][0]["message"]
-    assert message.startswith("Expected value of type 'DateTimeOrDuration', found ")
-    assert message.endswith("into a valid date"), message
+    assert r.json()["errors"][0]["message"] == (
+        f'Expected value of type "DateTimeOrDuration", found {literal}; '
+        f"Unable to parse value '{literal[1:-1]}' into a valid date"
+    )
     # The other scalar names itself `TimelessDate` and quotes the value (measured).
     r = post(fclient, "{ issues(filter: {dueDate: {eq: 1}}) { nodes { identifier } } }")
     assert r.status_code == 400
@@ -2742,7 +3225,7 @@ def test_an_unsupported_filter_field_is_an_error_not_a_dropped_filter(fclient):
         "/linear/graphql", json={"query": q}, headers={"Authorization": fclient.__dict__["_admin"]}
     )
     assert r.status_code == 400
-    assert "not defined by type 'IssueFilter'" in r.json()["errors"][0]["message"]
+    assert r.json()["errors"][0]["message"] == 'Field "nope" is not defined by type "IssueFilter".'
 
 
 def test_an_unsupported_comparator_is_an_error(fclient):
@@ -2844,16 +3327,15 @@ _COMMENT_OR_CELLS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "literal,expected", _COMMENT_OR_CELLS, ids=[c[0] for c in _COMMENT_OR_CELLS]
-)
-def test_comment_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+def test_comment_filter_or_reads_a_branch_as_linear(fclient):
     """Linear's `or` on `CommentFilter` is the `or` `_issue_parts` compiles: the keys of one branch
     are alternatives, a branch with nothing in it is dropped, and a branch whose key constrains
     nothing makes the whole `or` constrain nothing. Compiling a branch as one conjunction, as this
     router used to, answered `{or: [{body: {eq: A}, id: {eq: B}}]}` with no comment where Linear
     answers two, and nothing in the well-formed empty list said so."""
-    assert comment_bodies(fclient, literal) == expected
+    assert {literal: comment_bodies(fclient, literal) for literal, _ in _COMMENT_OR_CELLS} == dict(
+        _COMMENT_OR_CELLS
+    )
 
 
 def test_issue_comments_connection_reads_an_or_branch_the_same_way(fclient):
@@ -3314,15 +3796,16 @@ _LABEL_CELLS = [
 ]
 
 
-@pytest.mark.parametrize("literal,expected", _LABEL_CELLS, ids=[c[0] for c in _LABEL_CELLS])
-def test_labels_quantifiers_answer_as_linear(fclient, literal, expected):
+def test_labels_quantifiers_answer_as_linear(fclient):
     """Linear pushes a negation outside the quantifier: `some` over a negative predicate is the
     complement of `every` over its positive form, so it answers an issue with no labels; and `every`
     over a positive predicate needs at least one label, so it does not. The textbook EXISTS and
     NOT EXISTS answer the opposite on both counts, which is what #112 measured over label-less
     issues. Each cell here is one measured answer; the mapping to the fixture is above
     `_LABEL_CELLS`."""
-    assert ids(fclient, "{labels: %s}" % literal) == sorted(expected)
+    assert {literal: ids(fclient, "{labels: %s}" % literal) for literal, _ in _LABEL_CELLS} == {
+        literal: sorted(expected) for literal, expected in _LABEL_CELLS
+    }
 
 
 # The whole `IssueFilter`, where an `or` branch that constrains nothing is the case that matters:
@@ -3425,14 +3908,15 @@ _ISSUE_CELLS = [
 ]
 
 
-@pytest.mark.parametrize("literal,expected", _ISSUE_CELLS, ids=[c[0] for c in _ISSUE_CELLS])
-def test_issue_filter_or_answers_a_vacuous_branch_as_linear(fclient, literal, expected):
+def test_issue_filter_or_answers_a_vacuous_branch_as_linear(fclient):
     """An `or` branch that constrains nothing is not dropped by api.linear.app: it makes the whole
     `or` constrain nothing, so `{or: [{labels: {}}, X]}` answers every issue where X alone answers
     a few. Dropping it, which the empty fragment invites, is a refusal turned into a quietly
     narrower answer. A branch with nothing in it IS dropped, and a null operand is a condition of
     its own. Each cell is one measured answer; the stand-ins are above `_ISSUE_CELLS`."""
-    assert ids(fclient, literal) == sorted(expected)
+    assert {literal: ids(fclient, literal) for literal, _ in _ISSUE_CELLS} == {
+        literal: sorted(expected) for literal, expected in _ISSUE_CELLS
+    }
 
 
 # A nullable relation's `null: true` beside other keys. api.linear.app reads nothing else in the
@@ -3480,15 +3964,14 @@ _RELATION_NULL_CELLS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "literal,expected", _RELATION_NULL_CELLS, ids=[c[0] for c in _RELATION_NULL_CELLS]
-)
-def test_relation_null_true_reads_nothing_else_in_the_object_as_linear(fclient, literal, expected):
+def test_relation_null_true_reads_nothing_else_in_the_object_as_linear(fclient):
     """`null: true` on a nullable relation is not one condition among the object's keys: Linear
     answers the issues without the relation whatever else the object says, where ANDing the keys
     answers none. `null: false` does AND with them. Each cell is one measured answer; the mapping
     to the fixture is above `_RELATION_NULL_CELLS`."""
-    assert ids(fclient, literal) == sorted(expected)
+    assert {literal: ids(fclient, literal) for literal, _ in _RELATION_NULL_CELLS} == {
+        literal: sorted(expected) for literal, expected in _RELATION_NULL_CELLS
+    }
 
 
 # An `or` on a nullable relation, cell by cell, as api.linear.app answered it on 2026-09-04. The
@@ -3868,18 +4351,17 @@ def rclient(tmp_path_factory):
         yield c
 
 
-@pytest.mark.parametrize(
-    "relation,literal,expected",
-    _RELATION_OR_CELLS,
-    ids=[f"{r}: {c}" for r, c, _ in _RELATION_OR_CELLS],
-)
-def test_relation_or_reads_a_branch_as_linear(rclient, relation, literal, expected):
+def test_relation_or_reads_a_branch_as_linear(rclient):
     """An `or` on a nullable relation is not the union of its branches each read as an object:
     the keys of one branch are alternatives, a branch that says nothing about the related row
     beside one that does adds the issues without the relation, and every branch carrying
     `null: true` is those issues alone. The full rule is on `_sub_filter`; each cell is one
     measured answer, the mapping to the fixture above `_RELATION_OR_CORPUS`."""
-    assert ids(rclient, "{%s: %s}" % (relation, literal)) == sorted(expected)
+    cells = {f"{r}: {literal}": sorted(expected) for r, literal, expected in _RELATION_OR_CELLS}
+    assert {
+        f"{r}: {literal}": ids(rclient, "{%s: %s}" % (r, literal))
+        for r, literal, _ in _RELATION_OR_CELLS
+    } == cells
 
 
 def test_relation_negative_operators_do_not_shadow_the_labels_polarity_rule():
@@ -3930,8 +4412,8 @@ def _linear_client(tmp_path):
 # --- schema drift against api.linear.app (issue #101) --------------------------------------------
 # Every type below is what introspection of https://api.linear.app/graphql reported, the oldest on
 # 2026-09-03, copied here as literals so the suite runs offline; a literal moves when a later
-# measurement finds the vendor has moved. `IntegrationService` has gained two members that way
-# since that date, and the enum in `backlot/graphql/linear.graphql` carries their dates.
+# measurement finds the vendor has moved. `IntegrationService` is the 2026-10-27 introspection,
+# the date its description in `backlot/graphql/linear.graphql` carries.
 # `backlot diff --source linear` is the live re-measurement and
 # `backlot/fidelity/baseline/linear.json` the record of the gaps it accepts.
 # Most entries were a `breaking` finding in #101: Backlot declared the same name at a different
@@ -4015,6 +4497,7 @@ LINEAR_ENUMS = {
         "githubPersonal",
         "githubCodeAccessPersonal",
         "gitlab",
+        "gitlabPersonal",
         "origin",
         "googleCalendarPersonal",
         "googleSheets",
@@ -4335,7 +4818,11 @@ def test_linear_team_membership_is_the_teams_group(tmp_path, ava_groups):
         for x in (synth.linear_id("nope"), "a\ud800b"):
             body = {"query": "query($x: String!) { teamMembership(id: $x) { id } }"}
             body["variables"] = {"x": x}
-            miss = client.post("/linear/graphql", content=json.dumps(body), headers=h)
+            miss = client.post(
+                "/linear/graphql",
+                content=json.dumps(body),
+                headers={**h, "Content-Type": "application/json"},
+            )
             assert miss.status_code == 200
             assert miss.json()["errors"][0]["message"] == "Entity not found: TeamMembership"
 
@@ -4383,19 +4870,19 @@ def test_release_stage_and_pipeline_are_non_null_and_stable(fclient):
     [
         (
             '{ issues(filter: {branchName: {eq: "x"}}) { nodes { id } } }',
-            "Field 'branchName' is not defined by type 'IssueFilter'.",
+            'Field "branchName" is not defined by type "IssueFilter".',
         ),
         (
             '{ issue(id: "ENG-2") { releases(filter: {slugId: {eq: "x"}}) { nodes { id } } } }',
-            "Field 'slugId' is not defined by type 'ReleaseFilter'.",
+            'Field "slugId" is not defined by type "ReleaseFilter".',
         ),
         (
             "{ users(sort: [{createdAt: {order: Descending}}]) { nodes { id } } }",
-            "Field 'createdAt' is not defined by type 'UserSortInput'.",
+            'Field "createdAt" is not defined by type "UserSortInput".',
         ),
         (
             "{ users(sort: [{updatedAt: {order: Descending}}]) { nodes { id } } }",
-            "Field 'updatedAt' is not defined by type 'UserSortInput'.",
+            'Field "updatedAt" is not defined by type "UserSortInput".',
         ),
     ],
     ids=[
@@ -4499,7 +4986,7 @@ def test_due_date_is_compared_as_a_timeless_date(fclient, now_is_2026_03_01_noon
     r = post(fclient, '{ issues(filter: {dueDate: {eq: "nope"}}) { nodes { id } } }')
     assert r.status_code == 400
     assert r.json()["errors"][0]["message"].startswith(
-        "Expected value of type 'TimelessDateOrDuration', found "
+        'Expected value of type "TimelessDateOrDuration", found "nope"; '
     )
 
 
@@ -4697,19 +5184,9 @@ LINEAR_CORPUS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "caller, unassigned",
-    [
-        ("mia@acme.com", "mia/eng-2-rotate-the-signing-keys"),
-        # the admin token has no address, so there is no user segment
-        ("admin", "eng-2-rotate-the-signing-keys"),
-    ],
-)
-def test_an_unassigned_issue_branch_name_starts_with_the_callers_handle(
-    tmp_path, caller, unassigned
-):
-    """An issue with no assignee takes the caller's email local part as its branch prefix.
-    An assigned issue keeps the assignee's local part in front of the same slug."""
+@pytest.fixture(scope="module")
+def assigned_and_unassigned(tmp_path_factory):
+    """ENG-1 assigned to raj and ENG-2 unassigned, both titled alike."""
     records = [
         {
             "source_type": "linear",
@@ -4735,7 +5212,24 @@ def test_an_unassigned_issue_branch_name_starts_with_the_callers_handle(
             "created": "2026-02-01T09:00:00Z",
         },
     ]
-    with corpus_client(tmp_path, records) as (client, settings):
+    return build_corpus(tmp_path_factory.mktemp("assigned_and_unassigned"), records)
+
+
+@pytest.mark.parametrize(
+    "caller, unassigned",
+    [
+        ("mia@acme.com", "mia/eng-2-rotate-the-signing-keys"),
+        # the admin token has no address, so there is no user segment
+        ("admin", "eng-2-rotate-the-signing-keys"),
+    ],
+)
+def test_an_unassigned_issue_branch_name_starts_with_the_callers_handle(
+    assigned_and_unassigned, caller, unassigned
+):
+    """An issue with no assignee takes the caller's email local part as its branch prefix.
+    An assigned issue keeps the assignee's local part in front of the same slug."""
+    settings = assigned_and_unassigned
+    with client_for(settings) as client:
         users = client.get("/_meta/users").json()["users"]
         if caller == "admin":
             token = settings.admin_token
@@ -4898,8 +5392,13 @@ _API_KEY_AS_BEARER = (
     b' Remove the Bearer prefix from the Authorization header.","extensions":{"type":"invalid'
     b' input","code":"INPUT_ERROR","statusCode":400,"userError":true}}]}'
 )
+_UNAUTHENTICATED = (
+    b'{"errors":[{"message":"Authentication required, not authenticated","extensions":{"type":"a'
+    b'uthentication error","code":"AUTHENTICATION_ERROR","statusCode":401,"userError":true,"user'
+    b'PresentableMessage":"You need to authenticate to access this operation.","meta":{},"http":{"status":401}}}]}'
+)
 # `Authorization` values, `{t}` for an API key that resolves, and the status Linear gave each: 200
-# serving the query and 400 being `_API_KEY_AS_BEARER`. Backlot's 401 keeps its own body.
+# serving the query, 400 being `_API_KEY_AS_BEARER` and 401 `_UNAUTHENTICATED`.
 _LINEAR_SPELLINGS = [
     pytest.param("{t}", 200, id="bare"),
     pytest.param(" {t}", 200, id="a space before"),
@@ -4938,6 +5437,9 @@ _LINEAR_SPELLINGS = [
     pytest.param("Bearer nope", 401, id="Bearer nope"),
     pytest.param("bearer nope", 401, id="bearer nope"),
     pytest.param("Token {t}", 401, id="Token"),
+    pytest.param("nope", 401, id="nope"),
+    pytest.param("Bearer", 401, id="Bearer alone"),
+    pytest.param("Basic Zm9vOmJhcg==", 401, id="Basic"),
 ]
 
 
@@ -4952,28 +5454,9 @@ _LINEAR_BYTES = {
 }
 
 
-def _linear_credentials() -> list:
-    """`_LINEAR_SPELLINGS`, then each of `SWEPT_BYTES` in each place `_LINEAR_BYTES` names and
-    each of the 64 casings of the scheme, less the values the table already holds."""
-    rows = list(_LINEAR_SPELLINGS)
-    seen = {row.values[0] for row in rows}
-
-    def add(value: str, status: int, id: str) -> None:
-        if value not in seen:
-            seen.add(value)
-            rows.append(pytest.param(value, status, id=id))
-
-    for shape, answers in _LINEAR_BYTES.items():
-        for byte in SWEPT_BYTES:
-            add(shape.replace("{x}", chr(byte)), answers.get(byte, 401), f"{shape} {byte:#04x}")
-    for letters in itertools.product(*[(c, c.upper()) for c in "bearer"]):
-        scheme = "".join(letters)
-        add(f"{scheme} {{t}}", 400 if scheme in ("Bearer", "bearer") else 401, scheme)
-    return rows
-
-
-@pytest.mark.parametrize("value, status", _linear_credentials())
-def test_linear_reads_a_credential_as_linear_does(client, tokens_yaml, value, status):
+def _linear_status(client, tokens_yaml, value: str) -> int:
+    """The status `Authorization: value` draws, read as the comment over `_LINEAR_SPELLINGS` reads
+    it."""
     header = value.replace("{t}", tokens_yaml["admin_token"])
     r = sent_as(
         client,
@@ -4982,11 +5465,32 @@ def test_linear_reads_a_credential_as_linear_does(client, tokens_yaml, value, st
         {"Authorization": header, "Content-Type": "application/json"},
         content=b'{"query":"{ viewer { id } }"}',
     )
-    assert r.status_code == status
-    if status == 200:
+    if r.status_code == 200:
         assert r.json()["data"]["viewer"]["id"]
-    elif status == 400:
+    elif r.status_code == 400:
         assert r.content == _API_KEY_AS_BEARER
+    else:
+        assert r.content == _UNAUTHENTICATED
+    return r.status_code
+
+
+@pytest.mark.parametrize("value, status", _LINEAR_SPELLINGS)
+def test_linear_reads_a_credential_as_linear_does(client, tokens_yaml, value, status):
+    assert _linear_status(client, tokens_yaml, value) == status
+
+
+def test_linear_reads_a_swept_byte_and_a_casing_of_the_scheme_as_linear_does(client, tokens_yaml):
+    """Each of `SWEPT_BYTES` in each place `_LINEAR_BYTES` names, and each of the 64 casings of the
+    scheme, draws the status Linear gave it."""
+    expected = {
+        shape.replace("{x}", chr(byte)): answers.get(byte, 401)
+        for shape, answers in _LINEAR_BYTES.items()
+        for byte in SWEPT_BYTES
+    }
+    for letters in itertools.product(*[(c, c.upper()) for c in "bearer"]):
+        scheme = "".join(letters)
+        expected[f"{scheme} {{t}}"] = 400 if scheme in ("Bearer", "bearer") else 401
+    assert {value: _linear_status(client, tokens_yaml, value) for value in expected} == expected
 
 
 def test_linear_issue_asserts_rather_than_re_derive_a_missing_identifier():
@@ -5302,18 +5806,9 @@ _BACKWARD_ROOTS = {
 }
 
 
-@pytest.mark.parametrize("root", list(_BACKWARD_ROOTS))
-@pytest.mark.parametrize(
-    "operation", ["order", "end", "start", "walk", "edges", "forward", "flags"]
-)
-def test_linear_backward_pages_name_the_served_nodes(tmp_path, root, operation):
-    """The measurement on ``linear_resolvers._connection`` covers these connections.
-
-    Its before endCursor continues backward; before startCursor overlaps the preceding page.
-    Distinct timestamps make position independent of database tie ordering. ENG-1 holds eight
-    comments, labels and attachments, a relation to each other issue and one release, every other
-    issue a relation to ENG-2, and each team past the first one issue.
-    """
+@pytest.fixture(scope="module")
+def backward_pages(tmp_path_factory):
+    """The corpus `test_linear_backward_pages_name_the_served_nodes` describes."""
     records = [
         {
             "source_type": "linear",
@@ -5360,7 +5855,19 @@ def test_linear_backward_pages_name_the_served_nodes(tmp_path, root, operation):
         }
         for i in range(1, 8)
     ]
-    settings = build_corpus(tmp_path, records)
+    return build_corpus(tmp_path_factory.mktemp("backward_pages"), records)
+
+
+@pytest.mark.parametrize("root", list(_BACKWARD_ROOTS))
+def test_linear_backward_pages_name_the_served_nodes(backward_pages, root):
+    """The measurement on ``linear_resolvers._connection`` covers these connections.
+
+    Its before endCursor continues backward; before startCursor overlaps the preceding page.
+    Distinct timestamps make position independent of database tie ordering. ENG-1 holds eight
+    comments, labels and attachments, a relation to each other issue and one release, every other
+    issue a relation to ENG-2, and each team past the first one issue.
+    """
+    settings = backward_pages
     with client_for(settings) as client:
 
         def page(args):
@@ -5385,46 +5892,851 @@ def test_linear_backward_pages_name_the_served_nodes(tmp_path, root, operation):
         def got(result):
             return [node["id"] for node in result["nodes"]]
 
-        if operation == "order":
-            assert got(backward) == forward[-3:][::-1]
-        elif operation == "end":
-            following = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
-            assert got(following) == forward[-6:-3][::-1]
-        elif operation == "start":
-            overlapping = page("last: 3, before: " + lit(backward["pageInfo"]["startCursor"]))
-            assert got(overlapping) == forward[-4:-1][::-1]
-        elif operation == "edges":
-            first = page("first: 1")
-            assert first["pageInfo"]["startCursor"] == first["pageInfo"]["endCursor"]
-            empty = page("last: 3, before: " + lit(first["pageInfo"]["startCursor"]))
-            assert empty["nodes"] == []
-            assert empty["pageInfo"]["startCursor"] is None
-            assert empty["pageInfo"]["endCursor"] is None
-            assert got(page("last: 50")) == forward[::-1]
-        elif operation == "flags":
-            after = page("first: 1, after: " + lit(page("first: 1")["pageInfo"]["endCursor"]))
-            assert after["pageInfo"]["hasPreviousPage"] is False
-            assert after["pageInfo"]["hasNextPage"] is (len(forward) > 2)
-            before = page("last: 1, before: " + lit(backward["pageInfo"]["endCursor"]))
-            assert before["pageInfo"]["hasNextPage"] is False
-            assert before["pageInfo"]["hasPreviousPage"] is (len(forward) > 4)
-        elif operation == "forward":
-            current = page("first: 3")
-            after_first = page("first: 2, after: " + lit(current["pageInfo"]["startCursor"]))
-            assert got(after_first) == forward[1:3]
-            seen = []
-            for _ in range(len(forward) + 1):
-                seen.extend(got(current))
-                if not current["nodes"]:
-                    break
-                current = page("first: 3, after: " + lit(current["pageInfo"]["endCursor"]))
-            assert seen == forward
-        else:
-            seen = []
-            for _ in range(len(forward) + 1):
-                seen.extend(got(backward))
-                if not backward["nodes"]:
-                    break
-                backward = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
-            assert seen == forward[::-1]
-            assert len(seen) == len(set(seen))
+        assert got(backward) == forward[-3:][::-1]
+
+        following = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
+        assert got(following) == forward[-6:-3][::-1]
+        overlapping = page("last: 3, before: " + lit(backward["pageInfo"]["startCursor"]))
+        assert got(overlapping) == forward[-4:-1][::-1]
+
+        first = page("first: 1")
+        assert first["pageInfo"]["startCursor"] == first["pageInfo"]["endCursor"]
+        empty = page("last: 3, before: " + lit(first["pageInfo"]["startCursor"]))
+        assert empty["nodes"] == []
+        assert empty["pageInfo"]["startCursor"] is None
+        assert empty["pageInfo"]["endCursor"] is None
+        assert got(page("last: 50")) == forward[::-1]
+
+        after = page("first: 1, after: " + lit(first["pageInfo"]["endCursor"]))
+        assert after["pageInfo"]["hasPreviousPage"] is False
+        assert after["pageInfo"]["hasNextPage"] is (len(forward) > 2)
+        before = page("last: 1, before: " + lit(backward["pageInfo"]["endCursor"]))
+        assert before["pageInfo"]["hasNextPage"] is False
+        assert before["pageInfo"]["hasPreviousPage"] is (len(forward) > 4)
+
+        current = page("first: 3")
+        after_first = page("first: 2, after: " + lit(current["pageInfo"]["startCursor"]))
+        assert got(after_first) == forward[1:3]
+        seen = []
+        for _ in range(len(forward) + 1):
+            seen.extend(got(current))
+            if not current["nodes"]:
+                break
+            current = page("first: 3, after: " + lit(current["pageInfo"]["endCursor"]))
+        assert seen == forward
+
+        seen = []
+        for _ in range(len(forward) + 1):
+            seen.extend(got(backward))
+            if not backward["nodes"]:
+                break
+            backward = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
+        assert seen == forward[::-1]
+        assert len(seen) == len(set(seen))
+
+
+# --- the load balancer, Express, cors and Apollo Server in front of Linear's GraphQL --------------
+# The request, the credential (`_LINEAR_CREDENTIALS`) and the answer api.linear.app gave it, as
+# `graphql` records the layers it was measured through: its status, its media type and its body but
+# for the newline Apollo Server ends one with, `_TYPENAME_DATA` where it served the query, and none
+# for a `HEAD`.
+_CSRF = (
+    b'{"errors":[{"message":"This operation has been blocked as a potential Cross-Site Request'
+    b" Forgery (CSRF). Please either specify a 'content-type' header (with a type that is not one"
+    b" of application/x-www-form-urlencoded, multipart/form-data, text/plain) or provide a"
+    b" non-empty value for one of the following headers: x-apollo-operation-name,"
+    b' apollo-require-preflight\\n","extensions":{"http":{"status":400,"headers":{}},"code":"BAD_R'
+    b'EQUEST","type":"graphql error","userError":true}}]}'
+)
+_ONLY_GET_POST = (
+    b'{"errors":[{"message":"Apollo Server supports only GET/POST requests.","extensions":{"http":'
+    b'{"status":405,"headers":{}},"code":"BAD_REQUEST","type":"graphql error","userError":true}}]}'
+)
+_GET_MUTATION = (
+    b'{"errors":[{"message":"GET requests only support query operations, not mutation operations"'
+    b',"extensions":{"http":{"status":405,"headers":{}},"code":"BAD_REQUEST","type":"graphql erro'
+    b'r","userError":true}}]}'
+)
+_NOT_ACCEPTABLE = (
+    b'{"errors":[{"message":"An \'accept\' header was provided for this request which does not'
+    b" accept application/json; charset=utf-8 or application/graphql-response+json; charset=utf-8"
+    b'","extensions":{"http":{"status":406},"code":"BAD_REQUEST","type":"graphql error","userErr'
+    b'or":true}}]}'
+)
+_NO_QUERY = (
+    b'{"errors":[{"message":"GraphQL operations must contain a non-empty `query` or a `persistedQ'
+    b'uery` extension.","extensions":{"http":{"status":400,"headers":{}},"code":"INVALID_INPUT","'
+    b'type":"invalid input","userError":true}}]}'
+)
+_TYPENAME_DATA = b'{"data":{"__typename":"Query"}}'
+_JSON_UTF8 = "application/json; charset=utf-8"
+_GRAPHQL_RESPONSE = "application/graphql-response+json; charset=utf-8"
+_CLOUDFLARE_PAGE = (
+    b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
+    b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
+)
+_LINEAR_PREFLIGHT = {
+    "access-control-allow-origin": "https://example.com",
+    "cache-control": "s-maxage=43200",
+    "vary": "Origin, Access-Control-Request-Headers",
+    "cache-tag": "preflight",
+    "access-control-allow-methods": "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS",
+    "access-control-expose-headers": "Cache-Control,Content-Language,Content-Length,Content-Type,"
+    "Expires,Last-Modified,Pragma,x-request-id,cf-ray,cf-cache-status,Retry-After",
+    "access-control-max-age": "86400",
+    # Sent no `Access-Control-Request-Headers`, a preflight is answered none.
+    "access-control-allow-headers": None,
+}
+_J = (("Content-Type", "application/json"),)
+_P = (("apollo-require-preflight", "1"),)
+_ORIGIN = (("Origin", "https://example.com"),)
+_PREFLIGHT_ASKED = (*_ORIGIN, ("Access-Control-Request-Method", "POST"))
+_Q = "?query=%7B%20__typename%20%7D"
+
+
+def _search_refusal(message: bytes) -> bytes:
+    return (
+        b'{"errors":[{"message":"%s","extensions":{"http":{"status":400,"headers":{}},"code":"BAD_REQ'
+        b'UEST","type":"graphql error","userError":true}}]}' % message
+    )
+
+
+_LINEAR_HTTP = [
+    # Cloudflare, then Linear's load balancer, ahead of everything; then Apollo Server's 405 for
+    # each other method.
+    http_row(
+        "TRACE",
+        "",
+        (),
+        None,
+        "key",
+        405,
+        "text/html",
+        _CLOUDFLARE_PAGE % ((b"405 Not Allowed",) * 2),
+        id="TRACE",
+        answered={"connection": "close"},
+    ),
+    http_row(
+        "CONNECT",
+        "",
+        (),
+        None,
+        "key",
+        400,
+        "text/plain; charset=UTF-8",
+        b"error code: 1045\n",
+        id="CONNECT",
+        answered={"connection": None},
+    ),
+    http_row(
+        "PURGE",
+        "",
+        (),
+        None,
+        "key",
+        400,
+        "text/html; charset=UTF-8",
+        _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2),
+        id="PURGE",
+        answered={"connection": None},
+    ),
+    http_row(
+        "TRACE",
+        "",
+        (),
+        None,
+        "twice",
+        400,
+        "text/html",
+        _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2),
+        id="TRACE, Authorization twice",
+        answered={"connection": "close"},
+    ),
+    *(
+        http_row(m, "", (*_J, *_P), None, "key", 501, None, b"", id=m)
+        for m in ("BIND", "LINK", "M-SEARCH", "MKCALENDAR", "REBIND", "SOURCE", "UNBIND", "UNLINK")
+    ),
+    *(
+        http_row(m, "", (*_J, *_P), None, "key", 405, _JSON_UTF8, _ONLY_GET_POST, id=m)
+        for m in (
+            "ACL",
+            "CHECKOUT",
+            "COPY",
+            "DELETE",
+            "LOCK",
+            "MERGE",
+            "MKACTIVITY",
+            "MKCOL",
+            "MOVE",
+            "NOTIFY",
+            "OPTIONS",
+            "PATCH",
+            "PROPFIND",
+            "PROPPATCH",
+            "QUERY",
+            "REPORT",
+            "SEARCH",
+            "SUBSCRIBE",
+            "UNLOCK",
+            "UNSUBSCRIBE",
+        )  # fmt: skip
+    ),
+    # `cors`, whatever the credential; Apollo Server's CSRF check and 405 without `Origin`.
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            _PREFLIGHT_ASKED,
+            None,
+            c,
+            204,
+            None,
+            b"",
+            id=f"preflight, {c}",
+            answered=_LINEAR_PREFLIGHT,
+        )
+        for c in ("key", "none", "Bearer key")
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        _ORIGIN,
+        None,
+        "nope",
+        204,
+        None,
+        b"",
+        id="Origin alone",
+        answered=_LINEAR_PREFLIGHT,
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Origin", "null"), ("Access-Control-Request-Method", "POST")),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="Origin null",
+        answered={**_LINEAR_PREFLIGHT, "access-control-allow-origin": "null"},
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (*_ORIGIN, ("Access-Control-Request-Method", "PUT")),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="asked PUT",
+        answered=_LINEAR_PREFLIGHT,
+    ),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            (*_PREFLIGHT_ASKED, ("Access-Control-Request-Headers", asked)),
+            None,
+            "key",
+            204,
+            None,
+            b"",
+            id=f"asked {asked!r}",
+            answered={**_LINEAR_PREFLIGHT, "access-control-allow-headers": allowed},
+        )
+        for asked, allowed in (
+            ("Content-Type, X-Foo", "Content-Type,X-Foo"),
+            (" a , b ", "a,b"),
+            ("a,,b", "a,,b"),
+        )
+    ),
+    http_row("OPTIONS", "", (), None, "key", 400, _JSON_UTF8, _CSRF, id="OPTIONS, unpreflighted"),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            (("Origin", origin), ("Access-Control-Request-Method", "POST")),
+            None,
+            c,
+            400,
+            _JSON_UTF8,
+            _CSRF,
+            id=f"Origin {origin!r}, {c}",
+        )
+        for origin in ("", "   ")
+        for c in ("key", "none")
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Origin", ""), *_J),
+        None,
+        "key",
+        405,
+        _JSON_UTF8,
+        _ONLY_GET_POST,
+        id="Origin '', JSON",
+    ),
+    http_row(
+        "OPTIONS", "", (), None, "Bearer key", 400, _JSON_UTF8, _CSRF, id="OPTIONS, Bearer key"
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Access-Control-Request-Method", "POST"),),
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="OPTIONS, no Origin",
+    ),
+    http_row("OPTIONS", "", _J, None, "key", 405, _JSON_UTF8, _ONLY_GET_POST, id="OPTIONS, JSON"),
+    # `_api_key_as_bearer` ahead of `body-parser`.
+    *(
+        http_row(m, t, h, b, "Bearer key", 400, _JSON_UTF8, a, id=f"{m}, Bearer key")
+        for m, t, h, b, a in (
+            ("GET", _Q, (), None, _API_KEY_AS_BEARER),
+            ("PUT", "", _J, b"{", _API_KEY_AS_BEARER),
+            ("HEAD", _Q, _P, None, b""),
+            ("PATCH", "", _J, None, _API_KEY_AS_BEARER),
+        )
+    ),
+    # `body-parser` on a JSON body (`_has_body`), then Apollo Server's CSRF check, then its 405.
+    http_row("PUT", "", (*_J, *_P), b"{", "key", 400, _JSON_UTF8, _EXPECTED_PROPERTY, id="PUT {"),
+    http_row(
+        "OPTIONS", "", (*_J, *_P), b"{", "key", 400, _JSON_UTF8, _EXPECTED_PROPERTY, id="OPTIONS {"
+    ),
+    http_row(
+        "PUT", "", (*_J, *_P), _TYPENAME, "key", 405, _JSON_UTF8, _ONLY_GET_POST, id="PUT, a query"
+    ),
+    http_row(
+        "DELETE", "", _J, _TYPENAME, "none", 405, _JSON_UTF8, _ONLY_GET_POST, id="DELETE, a query"
+    ),
+    http_row(
+        "PUT",
+        "",
+        (("Content-Type", "text/plain"),),
+        _TYPENAME,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="PUT, text/plain",
+    ),
+    http_row("DELETE", "", (), None, "nope", 400, _JSON_UTF8, _CSRF, id="DELETE, unpreflighted"),
+    # A POST's content type: read as JSON, refused as a request a browser sends unpreflighted, or
+    # passed with nothing read.
+    *(
+        http_row(
+            "POST",
+            "",
+            (("Content-Type", t), *h),
+            _TYPENAME,
+            "key",
+            s,
+            _JSON_UTF8,
+            a,
+            id=f"{t!r}{i}",
+        )
+        for t, h, s, a, i in (
+            ("text/plain", (), 400, _CSRF, ""),
+            ("text/plain", _P, 400, _NO_KEYS, ", preflight"),
+            ("TEXT/PLAIN;X=Y", (), 400, _CSRF, ""),
+            ("application/x-www-form-urlencoded", (), 400, _CSRF, ""),
+            ("multipart/form-data; boundary=x", (), 400, _CSRF, ""),
+            ("", (), 400, _CSRF, ""),
+            ("foo", (), 400, _NO_KEYS, ""),
+            ("text/plain, application/json", (), 400, _NO_KEYS, ""),
+            ("application/graphql", (), 400, _NO_KEYS, ""),
+            ("application/json;", (), 400, _NO_KEYS, ""),
+            ("application/json; x=y, text/plain", (), 400, _NO_KEYS, ""),
+            ("application/json\t;", (), 400, _NO_KEYS, ""),
+            ("Application/JSON", (), 200, _TYPENAME_DATA, ""),
+            ("application/json ;charset=utf-8", (), 200, _TYPENAME_DATA, ""),
+            ('application/json;x="a;b"', (), 200, _TYPENAME_DATA, ""),
+        )
+    ),
+    http_row("POST", "", (), _TYPENAME, "key", 400, _JSON_UTF8, _CSRF, id="no type"),
+    http_row("POST", "", _P, _TYPENAME, "key", 400, _JSON_UTF8, _NO_KEYS, id="no type, preflight"),
+    http_row("POST", "", _J, b"", "key", 400, _JSON_UTF8, _NO_KEYS, id="JSON, empty"),
+    # A GET: its query string, Apollo Server's 405 for one that is not a query, ahead of the
+    # credential.
+    http_row("GET", _Q, _P, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id="GET"),
+    http_row("GET", _Q, (), None, "key", 400, _JSON_UTF8, _CSRF, id="GET, unpreflighted"),
+    http_row("GET", _Q, _J, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id="GET, JSON"),
+    http_row(
+        "GET",
+        _Q,
+        (("Content-Type", "text/plain"), *_P),
+        None,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="GET, text/plain",
+    ),
+    http_row(
+        "GET",
+        _Q,
+        (("Content-Type", "foo"),),
+        None,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="GET, foo",
+    ),
+    http_row("GET", _Q, _P, None, "none", 401, _JSON_UTF8, _UNAUTHENTICATED, id="GET, none"),
+    http_row(
+        "GET",
+        "?query=%7B+__typename+%7D",
+        _P,
+        None,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="GET, +",
+    ),
+    http_row("GET", "", _P, None, "key", 400, _JSON_UTF8, _NO_QUERY, id="GET, no query"),
+    http_row(
+        "GET", "?QUERY" + _Q[6:], _P, None, "key", 400, _JSON_UTF8, _NO_QUERY, id="GET, QUERY"
+    ),
+    *(
+        http_row("GET", t, _P, None, "key", 400, _JSON_UTF8, _search_refusal(m), id=i)
+        for t, m, i in (
+            (
+                _Q + "&query=",
+                b"The 'query' search parameter may only be specified once.",
+                "query twice",
+            ),
+            (
+                _Q + "&operationName=A&operationName=B",
+                b"The 'operationName' search parameter may only be specified once.",
+                "operationName twice",
+            ),
+            (
+                _Q + "&variables=nope",
+                b"The variables search parameter contains invalid JSON.",
+                "variables nope",
+            ),
+            (
+                _Q + "&variables=",
+                b"The variables search parameter contains invalid JSON.",
+                "variables empty",
+            ),
+            (
+                _Q + "&variables=%5B1%5D",
+                b"The variables search parameter should contain a JSON-encoded object.",
+                "variables [1]",
+            ),
+            (
+                _Q + "&variables=null",
+                b"The variables search parameter should contain a JSON-encoded object.",
+                "variables null",
+            ),
+            (
+                _Q + "&extensions=5",
+                b"The extensions search parameter should contain a JSON-encoded object.",
+                "extensions 5",
+            ),
+            (
+                "?query=%7B&query=%7B&variables=nope",
+                b"The 'query' search parameter may only be specified once.",
+                "query twice, variables nope",
+            ),
+            (
+                "?operationName=A&operationName=B&query=%7B&query=%7B",
+                b"The 'query' search parameter may only be specified once.",
+                "operationName twice, query twice",
+            ),
+            (
+                "?operationName=A&operationName=B&variables=nope",
+                b"The 'operationName' search parameter may only be specified once.",
+                "operationName twice, variables nope",
+            ),
+            (
+                "?variables=nope&extensions=5",
+                b"The variables search parameter contains invalid JSON.",
+                "variables nope, extensions 5",
+            ),
+        )
+    ),
+    *(
+        http_row(
+            "GET",
+            "?query=mutation%20%7B%20__typename%20%7D",
+            _P,
+            None,
+            c,
+            405,
+            _JSON_UTF8,
+            _GET_MUTATION,
+            id=f"GET mutation, {c}",
+            answered={"allow": "POST"},
+        )
+        for c in ("key", "none")
+    ),
+    http_row(
+        "GET",
+        "?query=query%20A%20%7B%20__typename%20%7D%20mutation%20B%20%7B%20__typename%20%7D"
+        "&operationName=A",
+        _P,
+        None,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="GET, a query beside a mutation",
+    ),
+    http_row(
+        "HEAD",
+        _Q,
+        _P,
+        None,
+        "key",
+        405,
+        _JSON_UTF8,
+        b"",
+        id="HEAD",
+        answered={"allow": "GET, POST"},
+    ),
+    http_row(
+        "HEAD",
+        _Q,
+        (("Content-Type", "text/plain"),),
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        b"",
+        id="HEAD, text/plain",
+    ),
+    # `apollo_http.response_type` and its 406, the 401 among the answers it replaces.
+    *(
+        http_row("POST", "", (*_J, ("Accept", a)), _TYPENAME, "key", s, t, b, id=f"Accept {a!r}")
+        for a, s, t, b in (
+            ("text/html", 406, _JSON_UTF8, _NOT_ACCEPTABLE),
+            ("application/json;q=0", 406, _JSON_UTF8, _NOT_ACCEPTABLE),
+            ("application/json;q", 406, _JSON_UTF8, _NOT_ACCEPTABLE),
+            ("application/json; charset=latin1", 406, _JSON_UTF8, _NOT_ACCEPTABLE),
+            ("", 200, _JSON_UTF8, _TYPENAME_DATA),
+            ("*/*", 200, _JSON_UTF8, _TYPENAME_DATA),
+            ("application/graphql-response+json", 200, _GRAPHQL_RESPONSE, _TYPENAME_DATA),
+            ("application/json;q=0, */*", 200, _GRAPHQL_RESPONSE, _TYPENAME_DATA),
+            ("text/html;q=0.9, */*;q=0.1", 200, _JSON_UTF8, _TYPENAME_DATA),
+            (
+                "application/json; callbackSpec=1.0",
+                200,
+                "application/json; callbackspec=1.0; charset=utf-8",
+                _TYPENAME_DATA,
+            ),
+        )
+    ),
+    *(
+        http_row("POST", "", (*_J, ("Accept", a)), b, c, s, t, e, id=f"Accept {a!r}, {i}")
+        for a, b, c, s, t, e, i in (
+            ("text/html", b"{}", "key", 400, _JSON_UTF8, _NO_KEYS, "{}"),
+            (
+                "application/graphql-response+json",
+                b"{}",
+                "key",
+                400,
+                _GRAPHQL_RESPONSE,
+                _NO_KEYS,
+                "{}",
+            ),
+            ("text/html", b"[]", "key", 400, _JSON_UTF8, _BATCHING, "[]"),
+            (
+                "text/html",
+                b'{"query":"{"}',
+                "key",
+                406,
+                _JSON_UTF8,
+                _NOT_ACCEPTABLE,
+                "a parse error",
+            ),
+            ("text/html", _TYPENAME, "none", 406, _JSON_UTF8, _NOT_ACCEPTABLE, "none"),
+            (
+                "application/graphql-response+json",
+                _TYPENAME,
+                "none",
+                401,
+                _GRAPHQL_RESPONSE,
+                _UNAUTHENTICATED,
+                "none",
+            ),
+            ("text/html", b"{", "key", 400, _JSON_UTF8, _EXPECTED_PROPERTY, "{"),
+        )
+    ),
+    http_row(
+        "GET",
+        _Q,
+        (*_P, ("Accept", "text/html")),
+        None,
+        "key",
+        406,
+        _JSON_UTF8,
+        _NOT_ACCEPTABLE,
+        id="GET, Accept text/html",
+    ),
+    http_row(
+        "GET",
+        "?query=mutation%20%7B%20__typename%20%7D",
+        (*_P, ("Accept", "text/html;level=1")),
+        None,
+        "key",
+        406,
+        _JSON_UTF8,
+        _NOT_ACCEPTABLE,
+        id="GET mutation, Accept text/html;level=1",
+    ),
+    http_row(
+        "POST",
+        "",
+        (("Content-Type", "text/plain"), ("Accept", "application/graphql-response+json")),
+        _TYPENAME,
+        "key",
+        400,
+        _GRAPHQL_RESPONSE,
+        _CSRF,
+        id="text/plain, Accept graphql-response",
+    ),
+    http_row(
+        "PUT",
+        "",
+        (*_J, ("Accept", "application/graphql-response+json")),
+        _TYPENAME,
+        "key",
+        405,
+        _GRAPHQL_RESPONSE,
+        _ONLY_GET_POST,
+        id="PUT, Accept graphql-response",
+    ),
+    http_row(
+        "GET",
+        _Q,
+        (*_P, ("Accept", "text/html, application/graphql-response+json")),
+        None,
+        "key",
+        200,
+        _GRAPHQL_RESPONSE,
+        _TYPENAME_DATA,
+        id="GET, Accept text/html then graphql-response",
+    ),
+    # `cors` lets any other method carrying `Origin` through; an API key under `Bearer` on DELETE.
+    *(
+        http_row(m, t, (*h, *_ORIGIN), b, "key", s, _JSON_UTF8, a, id=f"{m}, Origin")
+        for m, t, h, b, s, a in (
+            ("POST", "", _J, _TYPENAME, 200, _TYPENAME_DATA),
+            ("GET", _Q, _P, None, 200, _TYPENAME_DATA),
+            ("HEAD", _Q, _P, None, 405, b""),
+            ("PUT", "", _J, _TYPENAME, 405, _ONLY_GET_POST),
+            ("PATCH", "", _J, _TYPENAME, 405, _ONLY_GET_POST),
+            ("DELETE", "", _J, _TYPENAME, 405, _ONLY_GET_POST),
+        )
+    ),
+    http_row(
+        "DELETE",
+        "",
+        (),
+        None,
+        "Bearer key",
+        400,
+        _JSON_UTF8,
+        _API_KEY_AS_BEARER,
+        id="DELETE, Bearer key",
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (
+            *_PREFLIGHT_ASKED,
+            ("Access-Control-Request-Headers", "a"),
+            ("Access-Control-Request-Headers", "b"),
+        ),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="asked twice",
+        answered={**_LINEAR_PREFLIGHT, "access-control-allow-headers": "a,b"},
+    ),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            (*_PREFLIGHT_ASKED, ("Access-Control-Request-Headers", asked)),
+            None,
+            "key",
+            204,
+            None,
+            b"",
+            id=f"asked {asked!r}",
+            answered={**_LINEAR_PREFLIGHT, "access-control-allow-headers": allowed},
+        )
+        for asked, allowed in (
+            ("a,  ,b", "a,,b"),
+            ("A-B, c_d", "A-B,c_d"),
+            ("a\t", "a"),
+            ("a b", "a b"),
+        )
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Origin", " https://example.com\xa0"), ("Access-Control-Request-Method", "POST")),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="Origin with spaces",
+        answered={**_LINEAR_PREFLIGHT, "access-control-allow-origin": "https://example.com\xa0"},
+    ),
+    # Copies of a header: `Content-Type` as `backlot.graphql.body.joined_header` joins them, the
+    # rest as `apollo_http.headers_seen` reads them.
+    *(
+        http_row("POST", "", h, _TYPENAME, "key", s, _JSON_UTF8, a, id=i)
+        for h, s, a, i in (
+            (
+                (*_J, ("Accept", "application/json"), ("Accept", "text/html")),
+                200,
+                _TYPENAME_DATA,
+                "Accept json, html",
+            ),
+            (
+                (*_J, ("Accept", "text/html"), ("Accept", "application/json")),
+                200,
+                _TYPENAME_DATA,
+                "Accept html, json",
+            ),
+            ((*_J, ("Content-Type", "text/plain")), 400, _NO_KEYS, "Content-Type json, text/plain"),
+            ((("Content-Type", "text/plain"), *_J), 400, _NO_KEYS, "Content-Type text/plain, json"),
+            ((*_J, ("Content-Type", "")), 400, _NO_KEYS, "Content-Type json, empty"),
+            ((("Content-Type", ""), *_J), 200, _TYPENAME_DATA, "Content-Type empty, json"),
+            ((*_J, *_J), 400, _NO_KEYS, "Content-Type json twice"),
+            (
+                (("Content-Type", "text/plain"), ("x-apollo-operation-name", " ")),
+                400,
+                _CSRF,
+                "operation name a space",
+            ),
+        )
+    ),
+    *(
+        http_row("GET", _Q, h, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id=i)
+        for h, i in (
+            ((("apollo-require-preflight", ""), *_P), "preflight empty, 1"),
+            ((*_P, ("apollo-require-preflight", "")), "preflight 1, empty"),
+        )
+    ),
+    # No body and no length under a JSON type, by method (`_has_body`).
+    *(
+        http_row(
+            m,
+            t,
+            (("Content-Type", "application/json; charset=latin1"), *h),
+            None,
+            "key",
+            s,
+            _JSON_UTF8,
+            a,
+            id=f"{m}, latin1, no body",
+        )
+        for m, t, h, s, a in (
+            ("POST", "", (), 415, _LATIN1),
+            ("PUT", "", (), 415, _LATIN1),
+            ("PATCH", "", (), 415, _LATIN1),
+            ("DELETE", "", (), 415, _LATIN1),
+            ("OPTIONS", "", (), 415, _LATIN1),
+            ("PROPFIND", "", (), 415, _LATIN1),
+            ("GET", "", (), 400, _NO_QUERY),
+            ("HEAD", "", (), 405, b""),
+        )
+    ),
+    http_row("POST", "", _J, None, "key", 400, _JSON_UTF8, _NO_KEYS, id="JSON, no body"),
+    http_row("POST", "", (), None, "key", 400, _JSON_UTF8, _CSRF, id="no type, no body"),
+    http_row(
+        "POST", "", _P, None, "key", 400, _JSON_UTF8, _NO_KEYS, id="no type, no body, preflight"
+    ),
+    http_row(
+        "POST",
+        "",
+        _P,
+        Chunked(_TYPENAME),
+        "key",
+        400,
+        _JSON_UTF8,
+        _NO_KEYS,
+        id="no type, chunked, preflight",
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        Chunked(_TYPENAME),
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="JSON, chunked",
+    ),
+    http_row(
+        "GET",
+        "?query=%7B&query=%7B",
+        (),
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="GET, unpreflighted, query twice",
+    ),
+    http_row(
+        "GET",
+        _Q + "&variables=%7B%7D&operationName=",
+        _P,
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        b'{"errors":[{"message":"operation does not exist","extensions":{"type":"invalid input","code":"INPUT_ERROR",'
+        b'"statusCode":400,"userError":true,"userPresentableMessage":"The operation does not exist on the query.",'
+        b'"http":{"status":400}}}]}',
+        id="GET, variables {}, operationName empty",
+    ),
+]
+_LINEAR_CREDENTIALS = {
+    "none": None,
+    "nope": "nope",
+    "Bearer key": "Bearer {t}",
+    "key": "{t}",
+    "twice": "{t}",
+}
+
+
+def test_linear_answers_each_method_type_and_accept_as_linear_does(client, tokens_yaml):
+    """Each row of `_LINEAR_HTTP` is answered as api.linear.app answered it."""
+    answered, expected = {}, {}
+    for row in _LINEAR_HTTP:
+        method, target, headers, body, credential, status, media_type, answer, named = row.values
+        sent = list(headers)
+        if _LINEAR_CREDENTIALS[credential] is not None:
+            value = _LINEAR_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
+            sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
+        content = body.chunks() if isinstance(body, Chunked) else body
+        r = sent_as(client, method, f"/linear/graphql{target}", sent, content=content, bare=True)
+        answered[row.id] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            r.content,
+            {name: r.headers.get(name) for name in named},
+        )
+        expected[row.id] = (status, media_type, answer, named)
+    assert len(expected) == len(_LINEAR_HTTP)
+    assert answered == expected

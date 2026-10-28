@@ -350,8 +350,8 @@ The surface takes the shape of the contract:
   name and the message's (`sheets.Spreadsheet`): every message the responses of the methods the
   walk reads reach, with every field and the `type` it holds, since a `fields` mask is read against
   all of them and no served schema answers that offline. Which reads to make is the document's
-  `walk`, one of `backlot.fidelity.google_walks` (`sheets` for Sheets). A message one of its
-  answers was is `implemented`, each field they carried `implemented`, each they did not
+  `walk`, one of `backlot.fidelity.google_walks` (`sheets` for Sheets, `docs` for Docs). A message
+  one of its answers was is `implemented`, each field they carried `implemented`, each they did not
   `missing`, a gap, and each the message does not declare `extra`, breaking; a message none of
   them was is `missing`, with no finding. There is no `root`: the operations are under
   `operations`.
@@ -493,7 +493,7 @@ suite.
 
 Declared, not served: six live routes are `include_in_schema=False` and so invisible to that check.
 Four are FastAPI's own (`/docs`, `/docs/oauth2-redirect`, `/openapi.json`, `/redoc`). The other two
-are the GraphQL POSTs at `/fireflies/graphql` and `/linear/graphql`, which their own comparison
+are the GraphQL endpoints at `/fireflies/graphql` and `/linear/graphql`, which their own comparison
 covers — introspection, not a path map, so there is no mount to say so. Walking `app.routes`
 instead was ruled out for `gen_docs.py`, and the same reasoning holds here.
 

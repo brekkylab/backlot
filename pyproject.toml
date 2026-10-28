@@ -49,6 +49,9 @@ dependencies = [
     # SigV4a's ECDSA over P-256 (`backlot.sigv4a`), which the standard library has none of either;
     # `pyjwt[crypto]` above installs it already, and this names the import the S3 router makes.
     "cryptography>=3.4",
+    # The time-zone database `zoneinfo` reads a Sheets write's date in, which Windows does not
+    # ship; the platforms that have one need no package.
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -60,7 +63,7 @@ dependencies = [
 # of step with them.
 all = ["backlot[dev,official-sdk,mcp,llamaindex,mirage,fsspec]"]
 dev = [
-    "pytest>=8.0",
+    "pytest>=8.4",
     "pytest-xdist>=3.6",
     # scripts/invariance.py records coverage to hold a test-only change to the lines it executed.
     "pytest-cov>=6",
@@ -206,8 +209,14 @@ sigterm = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# loadfile, not the default: several modules share a module-scoped corpus.
-addopts = "-q -n auto --dist loadfile"
+# worksteal: an idle worker takes tests from a busy one, so a slow file such as tests/test_mcp.py
+# does not run alone after the rest have finished; each worker builds the module-scoped fixtures of
+# the modules it runs.
+addopts = "-q -n auto --dist worksteal"
+# A table-driven test compares every row's answer at once; untruncated, a failure lists each row
+# that broke rather than the first few.
+truncation_limit_lines = "0"
+truncation_limit_chars = "0"
 # Several routes serve more than one HTTP method for vendor fidelity (Slack GET+POST, Jira v2/v3,
 # S3 GET+HEAD), so FastAPI warns about duplicate operationIds — expected, and collapsed by
 # backlot.openapi. Silenced at import there too, but pytest resets filters per test.
@@ -243,6 +252,7 @@ backlot = [
     "schemas/*.json",
     "schemas/*.md",
     "graphql/*.graphql",
+    "graphql/*.html",
     "data/*.json",
     "data/*.jsonl",
     "data/*.wadl",

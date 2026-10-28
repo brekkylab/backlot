@@ -27,12 +27,15 @@ from backlot.server import HELLO_CORPUS
 from backlot.telemetry import clients, enabled, errors, naming, notice, recorder
 from backlot.telemetry.errors import error_class
 from backlot.telemetry.middleware import _credential
-from backlot.telemetry.recorder import MAX_SERIES, RECORDER, Exporter, Recorder, encode
-from tests._helpers import build_corpus, client_for
+from backlot.telemetry.recorder import ENDPOINT, MAX_SERIES, RECORDER, Exporter, Recorder, encode
+from backlot.version import version
+from tests._helpers import build_corpus, client_for, settings_put_back
 
 ADMIN = {"Authorization": "Bearer admin-service-token"}
 LINEAR = {"Authorization": "admin-service-token"}
 JSON = {"Content-Type": "application/json"}
+_PREFLIGHT = {"apollo-require-preflight": "1"}
+_TYPENAME_SEARCH = "?query=%7B%20__typename%20%7D"
 UNREACHABLE = "http://127.0.0.1:9/v1/metrics"
 # The values an export may carry. The collector replaces a value outside its own shape checks with
 # `invalid`, and every pattern here is narrower than those.
@@ -107,8 +110,16 @@ def _calls(send) -> list[dict]:
     return [dict(key) | {"count": n} for key, n in counts.items()]
 
 
+@pytest.fixture
+def settings_kept():
+    """The module's `client` stays open across a test that clears the settings `get_settings`
+    holds, so they are put back once it is done (`settings_put_back`)."""
+    with settings_put_back():
+        yield
+
+
 def test_it_is_on_unless_backlot_telemetry_or_do_not_track_says_off(
-    hello, capsys, tmp_path, monkeypatch
+    hello, capsys, tmp_path, monkeypatch, settings_kept
 ):
     for on in (None, "0", ""):
         with _env(BACKLOT_TELEMETRY=None, DO_NOT_TRACK=on):
@@ -137,14 +148,13 @@ def test_it_is_on_unless_backlot_telemetry_or_do_not_track_says_off(
             with client_for(hello) as c:
                 assert _calls(lambda: c.get("/github/repos/acme/docs-site", headers=ADMIN)) == []
             assert "usage counts" not in capsys.readouterr().err
-    get_settings.cache_clear()
 
 
 class _Started(Exception):
     pass
 
 
-def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys):
+def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys, settings_kept):
     import uvicorn
     from typer.testing import CliRunner
 
@@ -184,12 +194,13 @@ def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys):
         for telemetry in (True, False):
             os.environ.pop("BACKLOT_TELEMETRY", None)
             capsys.readouterr()
-            with pytest.raises(_Started):
-                with backlot.server.serve(data_dir=hello.data_dir, telemetry=telemetry):
-                    pass
-            # The child's own notice goes to its log, so serve() says it where its caller sees it.
-            seen.append(notice(recorder.ENDPOINT) in capsys.readouterr().err)
-    get_settings.cache_clear()
+            # serve()'s notice names the endpoint the child sends to, `ENDPOINT` as the recorder
+            # module writes it, however this process's exporter is pointed.
+            with _ExportTo(UNREACHABLE):
+                with pytest.raises(_Started):
+                    with backlot.server.serve(data_dir=hello.data_dir, telemetry=telemetry):
+                        pass
+                seen.append(notice(ENDPOINT) in capsys.readouterr().err)
     assert seen == [True, False, True, False, None, True, "0", False]
 
 
@@ -257,6 +268,11 @@ def test_each_client_rule_names_the_headers_it_was_measured_from():
         ("gmail", "implemented", 501, "notImplemented", False, "client"),
         ("s3", "implemented", 505, "HttpVersionNotSupported", False, "client"),
         ("gmail", "implemented", 503, "backendError", False, "internal"),
+        ("fireflies", "unknown", 500, "INTERNAL_SERVER_ERROR", False, "client"),
+        ("linear", "unknown", 500, "INTERNAL_SERVER_ERROR", False, "internal"),
+        ("fireflies", "unknown", 500, "", False, "internal"),
+        ("fireflies", "unknown", 500, "auth_failed", False, "auth"),
+        ("linear", "unknown", 500, "auth_failed", False, "internal"),
     ],
 )
 def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent, expected):
@@ -304,9 +320,27 @@ def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent
             b'{"errors":[{"message":"x","extensions":{"code":"invalid_argument"}}]}',
             "invalid_argument",
         ),
-        ("linear", 200, b'{"errors":[{"message":"Entity not found: Issue"}]}', "entity_not_found"),
+        (
+            "linear",
+            200,
+            b'{"errors":[{"message":"unsupported comparator \'x\'"}]}',
+            "unsupported_filter",
+        ),
         ("linear", 200, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
-        ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "graphql_validation"),
+        ("linear", 400, b'{"errors":[{"message":"x","extensions":[1]}]}', "unrecognized"),
+        (
+            "fireflies",
+            400,
+            b'{"errors":[{"friendly":false,"message":"x","code":"BAD_REQUEST","extensions":{}}]}',
+            "BAD_REQUEST",
+        ),
+        (
+            "fireflies",
+            500,
+            b'{"errors":[{"message":"x","code":"A","extensions":{"code":"B"}}]}',
+            "B",
+        ),
+        ("fireflies", 400, b'{"errors":[{"message":"x","code":5}]}', "unrecognized"),
         ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":5}}]}', "unrecognized"),
         ("linear", 200, b'{"errors":[{"message":"x","extensions":{"code":""}}]}', "unrecognized"),
         ("fireflies", 200, b'{"data":{},"extensions":{"code":"X"}}', ""),
@@ -547,6 +581,20 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             {"headers": JSON, "content": b"x" * (1024 * 1024 + 1)},
             ("fireflies", "unparsed", "unknown", 413, "http", "client"),
         ),
+        # Fireflies' refusal of a subscription, a 200, and its 500 for a fragment it does not
+        # define, are its answers, not Backlot bugs.
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"json": {"query": "subscription { __typename }"}},
+            ("fireflies", "subscription", "unknown", 200, "INTERNAL_SERVER_ERROR", "client"),
+        ),
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"json": {"query": "{ ...F }"}},
+            ("fireflies", "query.unmatched", "unknown", 500, "INTERNAL_SERVER_ERROR", "client"),
+        ),
         (
             "POST",
             "/linear/graphql",
@@ -558,6 +606,65 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             "/linear/graphql",
             {"headers": LINEAR | JSON, "content": b"{"},
             ("linear", "unparsed", "unknown", 400, None, "client"),
+        ),
+        # The HTTP layer in front of each GraphQL server answers each method and `Accept`, a GET's
+        # query among them, and Fireflies' credential's 500 is a refusal of the credential.
+        (
+            "GET",
+            "/fireflies/graphql" + _TYPENAME_SEARCH,
+            {"headers": _PREFLIGHT},
+            ("fireflies", "query.__typename", "extra", 200, None, None),
+        ),
+        (
+            "GET",
+            "/fireflies/graphql" + _TYPENAME_SEARCH,
+            {"headers": _PREFLIGHT | {"Authorization": "Bearer nope"}},
+            ("fireflies", "unparsed", "unknown", 500, "auth_failed", "auth"),
+        ),
+        (
+            "PROPFIND",
+            "/fireflies/graphql",
+            {"headers": JSON},
+            ("fireflies", "unparsed", "unknown", 404, "not_found", "client"),
+        ),
+        (
+            "OPTIONS",
+            "/fireflies/graphql",
+            {},
+            ("fireflies", "unparsed", "unknown", 400, None, "client"),
+        ),
+        (
+            "GET",
+            "/linear/graphql" + _TYPENAME_SEARCH,
+            {"headers": LINEAR | _PREFLIGHT},
+            ("linear", "query.__typename", "extra", 200, None, None),
+        ),
+        (
+            "PUT",
+            "/linear/graphql",
+            {"headers": LINEAR | JSON, "json": {"query": "{ __typename }"}},
+            ("linear", "unparsed", "unknown", 405, "BAD_REQUEST", "client"),
+        ),
+        (
+            "POST",
+            "/linear/graphql",
+            {
+                "headers": LINEAR | JSON | {"Accept": "text/html"},
+                "json": {"query": "{ __typename }"},
+            },
+            ("linear", "query.__typename", "extra", 406, "BAD_REQUEST", "client"),
+        ),
+        (
+            "BIND",
+            "/linear/graphql",
+            {"headers": LINEAR},
+            ("linear", "unparsed", "unknown", 501, None, "client"),
+        ),
+        (
+            "TRACE",
+            "/linear/graphql",
+            {"headers": LINEAR},
+            ("linear", "unparsed", "unknown", 405, None, "client"),
         ),
         (
             "GET",
@@ -609,24 +716,24 @@ def test_a_call_is_named_by_the_baseline(client, method, path, kwargs, expected)
         (
             '{ issue(id: "x") { id } teams { nodes { id } } }',
             None,
-            ("query.issue,teams", "implemented", 200, "entity_not_found", "client"),
+            ("query.issue,teams", "implemented", 200, "INPUT_ERROR", "client"),
         ),
         (
             "{ projects { nodes { id } } }",
             None,
-            ("query.projects", "missing", 400, "graphql_validation", "unsupported"),
+            ("query.projects", "missing", 400, "GRAPHQL_VALIDATION_FAILED", "unsupported"),
         ),
         (
             "{ notAField }",
             None,
-            ("query.unmatched", "unknown", 400, "graphql_validation", "client"),
+            ("query.unmatched", "unknown", 400, "GRAPHQL_VALIDATION_FAILED", "client"),
         ),
         (
             'mutation { issueCreate(input: {title: "x", teamId: "t"}) { success } }',
             None,
-            ("mutation", "unknown", 400, "graphql_validation", "client"),
+            ("mutation", "unknown", 400, "GRAPHQL_VALIDATION_FAILED", "client"),
         ),
-        ("{ issues {", None, ("unparsed", "unknown", 400, "graphql_parse", "client")),
+        ("{ issues {", None, ("unparsed", "unknown", 400, "GRAPHQL_PARSE_FAILED", "client")),
         # Introspection is no vendor operation, so it is `extra` alone and leaves a field it
         # rides with to name the support.
         (
@@ -771,43 +878,52 @@ def test_each_message_slug_is_one_backlot_sends(client, method, path, kwargs, ex
 # Linear's rows; Fireflies runs the same engine, so a few of them are sent there as well. The
 # `transcripts` rows there are Fireflies' own.
 _GRAPHQL_MESSAGES = [
-    ({"query": "{"}, LINEAR, "graphql_parse"),
-    ({"query": '{ issue(id: "nope") { id } }'}, LINEAR, "entity_not_found"),
-    ({"query": "{ __typename }"}, {}, "authentication_required"),
-    ({"query": "{ nosuch }"}, LINEAR, "graphql_validation"),
-    ({"query": '{ issue(id: "x", bogus: 1) { id } }'}, LINEAR, "graphql_validation"),
-    ({"query": 'query($x: Nope) { issue(id: "x") { id } }'}, LINEAR, "graphql_validation"),
-    ({"query": "{ issue { id } }"}, LINEAR, "graphql_validation"),
-    ({"query": "query($x: String!) { issue(id: $x) { id } }"}, LINEAR, "graphql_validation"),
+    ({"query": "{"}, LINEAR, "GRAPHQL_PARSE_FAILED"),
+    ({"query": '{ issue(id: "nope") { id } }'}, LINEAR, "INPUT_ERROR"),
+    ({"query": "{ __typename }"}, {}, "AUTHENTICATION_ERROR"),
+    ({"query": "{ nosuch }"}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
+    ({"query": '{ issue(id: "x", bogus: 1) { id } }'}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
+    ({"query": 'query($x: Nope) { issue(id: "x") { id } }'}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
+    ({"query": "{ issue { id } }"}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
+    ({"query": "query($x: String!) { issue(id: $x) { id } }"}, LINEAR, "BAD_USER_INPUT"),
     (
         {
             "query": 'query($x: String = "a") { issue(id: $x) { id } }',
             "variables": {"x": None},
         },
         LINEAR,
-        "graphql_validation",
+        "INTERNAL_SERVER_ERROR",
     ),
-    ({"query": "mutation { x }"}, LINEAR, "graphql_validation"),
-    ({"query": "{ ...F }"}, LINEAR, "graphql_validation"),
-    ({"query": "{ issues @nope { nodes { id } } }"}, LINEAR, "graphql_validation"),
+    ({"query": "mutation { x }"}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
+    ({"query": "{ ...F }"}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
+    ({"query": "{ issues @nope { nodes { id } } }"}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
     (
         {"query": "query A { viewer { id } } query A { viewer { id } }"},
         LINEAR,
-        "graphql_validation",
+        "GRAPHQL_VALIDATION_FAILED",
     ),
-    ({"query": "{ issue(id: 5) { id } }"}, LINEAR, "graphql_validation"),
-    ({"query": "{ issue(id: null) { id } }"}, LINEAR, "graphql_validation"),
-    ({"query": '{ issues(first: "x") { nodes { id } } }'}, LINEAR, "graphql_validation"),
-    ({"query": "{ issues(orderBy: createdat) { nodes { id } } }"}, LINEAR, "graphql_validation"),
-    ({"query": "fragment F on User { id } { viewer { id } }"}, LINEAR, "graphql_validation"),
-    ({}, LINEAR, "graphql_request"),
-    ([], LINEAR, "graphql_request"),
-    ({"query": "{ viewer { id } }", "variables": "{"}, LINEAR, "graphql_request"),
-    ({"query": "query A { viewer { id } }", "operationName": "B"}, LINEAR, "graphql_request"),
+    ({"query": "{ issue(id: 5) { id } }"}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
+    ({"query": "{ issue(id: null) { id } }"}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
+    ({"query": '{ issues(first: "x") { nodes { id } } }'}, LINEAR, "GRAPHQL_VALIDATION_FAILED"),
+    (
+        {"query": "{ issues(orderBy: createdat) { nodes { id } } }"},
+        LINEAR,
+        "GRAPHQL_VALIDATION_FAILED",
+    ),
+    (
+        {"query": "fragment F on User { id } { viewer { id } }"},
+        LINEAR,
+        "GRAPHQL_VALIDATION_FAILED",
+    ),
+    ({}, LINEAR, "BAD_REQUEST"),
+    ([], LINEAR, "BAD_REQUEST"),
+    ({"query": "{ viewer { id } }", "variables": "{"}, LINEAR, "BAD_REQUEST"),
+    ({"variables": {}}, LINEAR, "INVALID_INPUT"),
+    ({"query": "query A { viewer { id } }", "operationName": "B"}, LINEAR, "INPUT_ERROR"),
     (
         {"query": "query A { viewer { id } } query B { viewer { id } }"},
         LINEAR,
-        "graphql_request",
+        "INPUT_ERROR",
     ),
 ]
 
@@ -816,24 +932,27 @@ _GRAPHQL_MESSAGES = [
     "path, payload, headers, expected",
     [("/linear/graphql", *row) for row in _GRAPHQL_MESSAGES]
     + [
-        ("/fireflies/graphql", {"query": "{"}, ADMIN, "graphql_parse"),
-        ("/fireflies/graphql", {"query": "{ nosuch }"}, ADMIN, "graphql_validation"),
+        ("/fireflies/graphql", {"query": "{"}, ADMIN, "GRAPHQL_PARSE_FAILED"),
+        ("/fireflies/graphql", {"query": "{ nosuch }"}, ADMIN, "GRAPHQL_VALIDATION_FAILED"),
         (
             "/fireflies/graphql",
             {"query": '{ transcripts(limit: "x") { id } }'},
             ADMIN,
-            "graphql_validation",
+            "GRAPHQL_VALIDATION_FAILED",
         ),
         (
             "/fireflies/graphql",
             {"query": '{ transcripts(date: "x") { id } }'},
             ADMIN,
-            "graphql_validation",
+            "GRAPHQL_VALIDATION_FAILED",
         ),
-        ("/fireflies/graphql", {}, ADMIN, "graphql_request"),
+        ("/fireflies/graphql", {}, ADMIN, "BAD_REQUEST"),
+        ("/fireflies/graphql", {"query": "{ ...F }"}, ADMIN, "INTERNAL_SERVER_ERROR"),
     ],
 )
-def test_each_graphql_message_slug_is_one_backlot_sends(client, path, payload, headers, expected):
+def test_each_graphql_error_is_counted_by_the_code_backlot_sends(
+    client, path, payload, headers, expected
+):
     calls = _calls(lambda: client.post(path, headers=headers, json=payload))
     assert [c.get("backlot.error_code") for c in calls] == [expected], calls
 
@@ -843,7 +962,7 @@ def test_every_message_slug_has_a_request_that_sends_it():
         row[-1]
         for t in (
             test_each_message_slug_is_one_backlot_sends,
-            test_each_graphql_message_slug_is_one_backlot_sends,
+            test_each_graphql_error_is_counted_by_the_code_backlot_sends,
         )
         for row in t.pytestmark[0].args[1]
     } | {"rate_limited", "unsupported_filter"}
@@ -1030,7 +1149,7 @@ def test_an_unhandled_exception_is_an_internal_error(client):
     "path, headers, broken, query, expected",
     [
         ("/linear/graphql", LINEAR, "linear_by_id", '{ issue(id: "x") { id } }', "internal_error"),
-        ("/linear/graphql", LINEAR, None, '{ issue(id: "nope") { id } }', "entity_not_found"),
+        ("/linear/graphql", LINEAR, None, '{ issue(id: "nope") { id } }', "INPUT_ERROR"),
         (
             "/fireflies/graphql",
             ADMIN,
@@ -1110,15 +1229,24 @@ def test_nothing_the_request_spelled_reaches_an_export(client):
             value = attr["value"].get("stringValue")
             if pattern and value is not None:
                 assert re.match(pattern, value), (attr["key"], value)
-    keys = {a["key"] for a in body["resourceMetrics"][0]["resource"]["attributes"]}
-    assert keys == {"service.name", "service.version", "os.type", "process.runtime.version"}
+    (export,) = body["resourceMetrics"]
+    resource = {a["key"]: a["value"]["stringValue"] for a in export["resource"]["attributes"]}
+    assert resource.keys() == {
+        "service.name",
+        "service.version",
+        "os.type",
+        "process.runtime.version",
+    }
+    assert resource["service.version"] == export["scopeMetrics"][0]["scope"]["version"] == version()
 
 
 class _Collector(BaseHTTPRequestHandler):
     bodies: list = []
+    user_agents: list = []
 
     def do_POST(self):
         self.bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+        self.user_agents.append(self.headers["User-Agent"])
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -1131,6 +1259,7 @@ class _Collector(BaseHTTPRequestHandler):
 @pytest.fixture
 def collector():
     _Collector.bodies = []
+    _Collector.user_agents = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}/v1/metrics", _Collector.bodies
@@ -1153,6 +1282,7 @@ def test_the_exporter_posts_each_interval_and_survives_a_dead_endpoint(collector
     live.flush()
     live.flush()  # an empty interval sends nothing
     assert (live.sent, live.failed, len(bodies)) == (1, 0, 1)
+    assert _Collector.user_agents == [f"backlot/{version()}"]
     (sums, hists, gauge) = bodies[0]["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
     assert gauge["name"] == "backlot.surface.operations"
     assert gauge["gauge"]["dataPoints"][0]["asInt"] == "32"

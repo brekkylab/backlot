@@ -407,7 +407,7 @@ async def refuse_an_unserved_hubspot_operation(request: Request, call_next):
     """An operation HubSpot publishes that no route here serves is refused for its credential as a
     served route refuses one, ahead of the router's 404 or 405
     (``backlot.routers.hubspot.refuse_an_unserved_operation``)."""
-    refusal = hubspot.refuse_an_unserved_operation(request)
+    refusal = await hubspot.refuse_an_unserved_operation(request)
     if refusal is not None:
         return refusal
     return await call_next(request)
@@ -657,6 +657,40 @@ async def read_a_notion_body_as_express_does(request: Request, call_next):
     the inner of the two, so the path it derives an answer's ids from is the one the route sees."""
     refusal = await notion.front_door_body(request)
     return refusal if refusal is not None else await call_next(request)
+
+
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def report_notion_etag(request: Request, call_next):
+    """Put ``notion.weak_etag``, computed over its body, on each JSON Notion answer, and answer a
+    request ``notion.not_modified`` finds fresh with a 304 that carries the tag and the answer's
+    headers but its body, `content-type` and `content-length`.
+
+    Registered after ``read_a_notion_body_as_express_does``, which makes it the outer of the
+    two, so a refusal that reader answers carries the tag too, as real's 413 and 415 do; and
+    long before the `HEAD` rewrite below, which makes it the inner of those two, so a `HEAD` is
+    tagged over the body of the `GET` it is rewritten to, as real's is. A method outside
+    ``notion.ROUTED_METHODS`` is left out, as ``report_notion_headers`` leaves it: its 405 is
+    the framework's, where real's front door answers with a page of its own. An answer that is
+    not a JSON body carries none either.
+    """
+    response = await call_next(request)
+    if not response.headers.get("content-type", "").startswith("application/json"):
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    if notion.not_modified(request, response.status_code):
+        tagged = Response(status_code=304)
+        tagged.raw_headers = [
+            (name, value)
+            for name, value in response.raw_headers
+            if name not in (b"content-type", b"content-length")
+        ]
+    else:
+        tagged = Response(body, status_code=response.status_code)
+        tagged.raw_headers = response.raw_headers
+    tagged.headers["etag"] = notion.weak_etag(body)
+    return tagged
 
 
 def _is_guid(value: str) -> bool:
@@ -1083,10 +1117,10 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     `content-length` a client reads a `HEAD` for is the GET body's length and computing the body is
     the only way to have that number; a `HEAD` costs what its GET costs, here as on real.
 
-    What the vendors do NOT share is the `content-length`: GitHub, Notion and HubSpot declare the
-    length of the body the `GET` would have carried (HubSpot's `HEAD` on `search` declared the 229
-    of its `GET`'s 405 page, measured 2026-10-19), and Atlassian's and Google's answers split, so
-    that header is asked for rather than assumed, through ``errors.head_content_length``. The
+    What the vendors do NOT share is the `content-length`: GitHub and HubSpot declare the length
+    of the body the `GET` would have carried (HubSpot's `HEAD` on `search` declared the 229 of its
+    `GET`'s 405 page, measured 2026-10-19), and Atlassian's, Google's and Notion's answers split,
+    so that header is asked for rather than assumed, through ``errors.head_content_length``. The
     request is marked ``answering_head`` on its state for ``errors.google.jsonp_callback`` and
     ``routers.github._validate_api_version``, which read it.
 
@@ -1277,6 +1311,63 @@ async def warn_slack_post_charset(request: Request, call_next):
     )
 
 
+#: Cloudflare's answer to each method it refuses in front of Linear and Fireflies, as
+#: api.linear.app and api.fireflies.ai answered each on `/graphql`, `/graphql/`, `/nosuch` and `/`
+#: on 2026-10-25 (UTC): a page with CRLF line ends, or a line of text, and the headers it puts on
+#: it. Both closed the connection after the `TRACE` answer and answered a second request on it after
+#: the other two (`/graphql`, 2026-10-26).
+_CLOUDFLARE_METHOD = {
+    "TRACE": (
+        405,
+        b"<html>\r\n<head><title>405 Not Allowed</title></head>\r\n<body>\r\n"
+        b"<center><h1>405 Not Allowed</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
+        b"</body>\r\n</html>\r\n",
+        {"content-type": "text/html", "connection": "close"},
+    ),
+    "CONNECT": (
+        400,
+        b"error code: 1045\n",
+        {
+            "content-type": "text/plain; charset=UTF-8",
+            "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, "
+            "post-check=0, pre-check=0",
+            "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+            "referrer-policy": "same-origin",
+            "x-frame-options": "SAMEORIGIN",
+        },
+    ),
+    "PURGE": (
+        400,
+        request_target.CLOUDFLARE_PAGE,
+        {
+            "content-type": "text/html; charset=UTF-8",
+            "x-frame-options": "SAMEORIGIN",
+            "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, "
+            "post-check=0, pre-check=0",
+            "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+            "referrer-policy": "same-origin",
+        },
+    ),
+}
+
+
+@_middleware(
+    lambda scope: (
+        scope["method"] in _CLOUDFLARE_METHOD
+        and _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
+    )
+)
+async def refuse_cloudflares_methods_on_linear_and_fireflies(request: Request, call_next):
+    """Answer a `/linear` or `/fireflies` request by one of :data:`_CLOUDFLARE_METHOD`'s methods
+    with Cloudflare's answer, ahead of the route and the credential. Registered before
+    :func:`refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot`, which answers first: a
+    `TRACE`, `CONNECT` or `PURGE` carrying `Authorization` twice drew its 400 from both vendors on
+    2026-10-25 (UTC), and one carrying `If-None-Match` or `If-Modified-Since` twice on
+    2026-10-28."""
+    status, body, headers = _CLOUDFLARE_METHOD[request.method]
+    return Response(body, status_code=status, headers=headers)
+
+
 @_middleware(
     lambda scope: (scope.get("raw_path") or b"").startswith((b"/slack/api//", b"/slack/api/\\"))
 )
@@ -1311,19 +1402,24 @@ async def merge_slashes_before_a_slack_method_name(request: Request, call_next):
 
 @_middleware(
     lambda scope: (
-        _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
-        and auth.repeated_authorization(Request(scope))
+        _at_or_under(_url_path(scope), ("/notion", "/linear", "/fireflies", "/hubspot"))
+        and auth.repeated_cloudflare_refused_header(Request(scope))
     )
 )
-async def refuse_a_repeated_authorization_on_linear_and_fireflies(request: Request, call_next):
-    """Answer a `/linear` or `/fireflies` request that carries `Authorization` more than once with
+async def refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot(
+    request: Request, call_next
+):
+    """Answer a `/notion`, `/linear`, `/fireflies` or `/hubspot` request that carries
+    `Authorization` or one of the five conditional headers more than once with
     :data:`backlot.request_target.CLOUDFLARE_PAGE`'s 400, ahead of the route, the body and the
-    credential. api.linear.app and api.fireflies.ai answered it on 2026-10-19 (UTC) to two copies of
-    a key, a key and `nope` in either order, a key and an empty value, two empty values, three
-    copies and a second header named in lower case; on `POST /graphql` with a query, with no bytes,
-    with `{` and with a body past each vendor's size limit, on `GET /graphql`, on `HEAD /graphql`,
-    which declared the 155 bytes and sent none, and on `POST /nosuch` and `POST /`. Both closed the
-    connection after it (`GET /graphql`, 2026-10-23)."""
+    credential. api.linear.app and api.fireflies.ai answered a repeated `Authorization` on
+    2026-10-19 (UTC) to two copies of a key, a key and `nope` in either order, a key and an empty
+    value, two empty values, three copies and a second header named in lower case; on
+    `POST /graphql` with a query, with no bytes, with `{` and with a body past each vendor's size
+    limit, on `GET /graphql`, on `HEAD /graphql`, which declared the 155 bytes and sent none, and
+    on `POST /nosuch` and `POST /`. Both closed the connection after it (`GET /graphql`,
+    2026-10-23). Which headers, on all four vendors, is
+    :func:`backlot.auth.repeated_cloudflare_refused_header`'s."""
     return Response(
         request_target.CLOUDFLARE_PAGE,
         status_code=400,
@@ -1596,7 +1692,7 @@ def meta_overlay():
     An ACL oracle asks what an agent did, and answering it by diffing the served surface against
     itself means knowing what the surface looked like before. The overlay already IS that
     difference, so it is reported directly: the documents written, the grants they carry, the
-    columns overwritten, and the documents subtracted.
+    columns overwritten, the parts replaced (a spreadsheet's sheets), and the documents subtracted.
 
     The FTS index is left out. It holds no fact the document rows do not.
 
@@ -1608,7 +1704,7 @@ def meta_overlay():
     out: dict[str, list[dict]] = {}
     for src in sorted(store.WRITABLE):
         names = [n for n in overlay.table_names(src).values() if not n.endswith("_fts_ov")]
-        for name in names:
+        for name in [*names, *store.SATELLITES.get(src, {})]:
             out[name] = [dict(r) for r in conn.execute(f"SELECT * FROM ov.{name}")]
     return out
 

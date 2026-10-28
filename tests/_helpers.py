@@ -215,8 +215,29 @@ def build_corpus(
 
 
 @contextlib.contextmanager
+def settings_put_back():
+    """Puts back on exit the settings `get_settings` held on entry, as they were then; with none
+    held on entry it holds none on exit, so the next read takes the environment as it is then.
+
+    A client's lifespan sets the org its corpus recorded on the settings `get_settings` holds, and
+    routers read the org off them as they answer (Teams builds its team id from it), so a client
+    still open keeps answering for its own org across anything inside this that clears the cache.
+    """
+    outer = get_settings() if get_settings.cache_info().currsize else None
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()
+        if outer is not None:
+            restored = get_settings()
+            for name in type(outer).model_fields:
+                setattr(restored, name, getattr(outer, name))
+
+
+@contextlib.contextmanager
 def client_for(settings: Settings, *, reload: bool = True):
-    """A TestClient whose app is pointed at ``settings``, with the env restored on exit.
+    """A TestClient whose app is pointed at ``settings``, with the env and the settings
+    `get_settings` holds put back on exit (`settings_put_back`).
 
     ``backlot.main`` is re-imported first, so each client starts its lifespan on an app of its own.
     The lifespan puts its connection on ``app.state`` and closes it on exit, so two clients open on
@@ -225,21 +246,21 @@ def client_for(settings: Settings, *, reload: bool = True):
     ``reload=False`` serves the app ``backlot.main`` holds without re-importing it.
     """
     prev = os.environ.get("BACKLOT_DATA_DIR")
-    os.environ["BACKLOT_DATA_DIR"] = str(settings.data_dir)
-    get_settings.cache_clear()
-    try:
-        import backlot.main as main_module
-
-        if reload:
-            main_module = importlib.reload(main_module)
-        with TestClient(main_module.app) as c:
-            yield c
-    finally:
+    with settings_put_back():
+        os.environ["BACKLOT_DATA_DIR"] = str(settings.data_dir)
         get_settings.cache_clear()
-        if prev is None:
-            os.environ.pop("BACKLOT_DATA_DIR", None)
-        else:
-            os.environ["BACKLOT_DATA_DIR"] = prev
+        try:
+            import backlot.main as main_module
+
+            if reload:
+                main_module = importlib.reload(main_module)
+            with TestClient(main_module.app) as c:
+                yield c
+        finally:
+            if prev is None:
+                os.environ.pop("BACKLOT_DATA_DIR", None)
+            else:
+                os.environ["BACKLOT_DATA_DIR"] = prev
 
 
 def python_child_env(**extra: str) -> dict[str, str]:
@@ -288,11 +309,23 @@ def gql(client, path: str, query: str, token: str | None = None, **variables):
 SWEPT_BYTES = (0x09, *range(0x20, 0x7F), *range(0x80, 0x100))
 
 
-def sent_as(client, method: str, path: str, headers, content=None):
+class WithTheKey(bytes):
+    """A GraphQL vendor's answer with the key, at ``status``, to a body it answers once it has read
+    the credential; without the key the body draws the vendor's refusal of the credential."""
+
+    def __new__(cls, answer: bytes, status: int = 400):
+        self = super().__new__(cls, answer)
+        self.status = status
+        return self
+
+
+def sent_as(client, method: str, path: str, headers, content=None, bare: bool = False):
     """``method`` on ``path`` with each header's latin-1 bytes as sent, ``headers`` a mapping or a
     sequence of pairs, which can name a header twice. The TestClient re-encodes a header's bytes
     above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's own
-    `ASGITransport` hands the app what it was given, over the app the fixture started."""
+    `ASGITransport` hands the app what it was given, over the app the fixture started. ``bare``
+    leaves out the headers httpx sends unasked, `Accept: */*` among them, and with no ``content``
+    the `Content-Length: 0` it puts on a POST."""
     import asyncio
 
     import httpx
@@ -303,9 +336,29 @@ def sent_as(client, method: str, path: str, headers, content=None):
     async def send():
         transport = httpx.ASGITransport(app=client.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
-            return await c.request(method, path, headers=raw, content=content)
+            if bare:
+                c.headers.clear()
+            request = c.build_request(method, path, headers=raw, content=content)
+            if bare and content is None:
+                request.headers.pop("content-length", None)
+            return await c.send(request)
 
     return asyncio.run(send())
+
+
+class Chunked(bytes):
+    """A body :func:`sent_as` sends in chunks, with no `Content-Length`."""
+
+    async def chunks(self):
+        yield bytes(self)
+
+
+def http_row(method, target, sent, body, credential, status, media_type, answer, id, answered=None):
+    """A row of an HTTP layer's table: the request, the credential, and the answer, ``answered``
+    naming headers on it."""
+    return pytest.param(
+        method, target, sent, body, credential, status, media_type, answer, answered or {}, id=id
+    )
 
 
 def selected_fields(document: str, *path: str) -> set[str]:

@@ -2,7 +2,7 @@
 
 [← README](../README.md)
 
-Backlot serves writes on Slack. They never reach the corpus.
+Backlot supports write APIs for some vendors; each source's section of [Supported sources](supported-sources.md) lists the methods that write. A write never reaches the corpus.
 
 ## The corpus is not writable, and that is enforced
 
@@ -45,6 +45,30 @@ is found once, by what it says now.
 ignores are listed in its own docstring; `backlot diff` cannot see them, because it compares query
 parameters and Slack's spec declares them as form fields.
 
+A spreadsheet written through `values.update`, `values:batchUpdate`, `values.append`,
+`values.clear` or `values:batchClear` reads back written through every Sheets read, and through
+Drive: `files.export`
+serialises the new cells, fullText search finds them, and `modifiedTime` moves to the write's time.
+Real's Drive shows those about a minute after the write; Backlot shows them at once. A spreadsheet
+whose corpus record states no grid reads as one sheet of its lines, and a write lands in that grid,
+after which it is a grid: real has no spreadsheet that refuses a write.
+
+`USER_ENTERED` reads a typed string the way the Sheets UI does, into a number with a number format
+(`12.5%`, `$1,234.50`, `2024-01-15`, `10:30 PM`), a boolean, an error or text, and a cell keeps or
+replaces its format by the rules real applies, measured input by input.
+
+`spreadsheets.create` makes a new workbook at the caller's My Drive root, owned by the caller and
+shared with nobody: it is listed under `'root' in parents`, and anyone else is refused it as a file
+they cannot see. The sheets, grid sizes and sheet properties it states are kept, and so are its
+cells. `sheets.copyTo` copies a sheet into a workbook the caller may write, titled in that
+workbook's language. `values:batchUpdateByDataFilter` and `values:batchClearByDataFilter` write and
+clear what DataFilters match.
+
+`values.append` finds the table it writes below the way real does: from the last cell in the range
+holding a value, row by row, grown through every cell in the row or column next to it, and
+the values go on the row under it from its first column. `INSERT_ROWS` inserts whole rows there,
+and the sheet's row count grows with them.
+
 Search needed one thing more. Relevance is bm25, whose inverse document frequency is a property of
 the index a term is in — so an overlay holding a handful of rows scores everything in it at about
 `-1e-06`, where the corpus index scores comparable text `-2.70`. Lower ranks higher, so a newly
@@ -64,7 +88,8 @@ curl -X POST -H "Authorization: Bearer <admin token>" \
 ```
 
 `GET /_meta/overlay` is the read a grader makes: the documents written, the grants they carry, the
-columns overwritten, the documents subtracted, and the memberships changed — what an agent did, in
+columns overwritten, the parts replaced (a written spreadsheet's sheets), the documents subtracted,
+and the memberships changed — what an agent did, in
 one place, without diffing the served surface against itself.
 
 `POST /_meta/overlay/reset` restores the corpus's own state, tombstones included, so a second
@@ -78,10 +103,15 @@ A user token writes as that person. The admin/service token writes as `USERVICE0
 `auth.test` already reports it as — and its messages carry the `bot_message` subtype real Slack
 gives an app-posted message.
 
+A spreadsheet is written by its owner alone. Every grant a corpus states makes a reader, and a
+reader's write is the 403 real gives one, `The caller does not have permission`; so is the
+admin/service token's, which owns only the spreadsheets its service account created, and is
+answered as their owner by Drive too.
+
 ## What is not modelled
 
-Each is measured, and the ones `backlot diff` can see are recorded in
-`backlot/fidelity/baseline/slack.json` with the measurement behind them. The comparison reads a
+Each is measured, and the ones `backlot diff` can see are recorded in the source's baseline under
+`backlot/fidelity/baseline/` with the measurement behind them. The comparison reads a
 field list, so the ordering divergence below has no entry to live in and is stated only here.
 
 - **OAuth scopes.** Real Slack splits some answers on scope rather than on identity: posting to a
@@ -98,6 +128,14 @@ field list, so the ordering divergence below has no entry to live in and is stat
 - **The emoji set.** `reactions.add` takes any name; real answers `invalid_name` for one its
   workspace does not have. Validating it needs Slack's emoji list, and a partial list would
   refuse names real accepts.
+- **Formulas.** A `USER_ENTERED` string starting `=` or `+`, or a `formulaValue` a new workbook
+  states, is a formula on real, evaluated into its result. Backlot stores the text typed.
+- **What a new workbook states and Backlot cannot serve back.** Named ranges, developer metadata,
+  data sources, and every cell format but a number format are read and not kept.
+- **`spreadsheets.batchUpdate`.** Not served, so a workbook's sheets change only by
+  `spreadsheets.create` and `sheets.copyTo`.
+- **Rate limits.** Real Sheets refuses a user's writes past 60 a minute with 429
+  `RESOURCE_EXHAUSTED`. Backlot does not count them.
 
 ## Adding a source
 
@@ -107,3 +145,9 @@ the eleven `<source>_acl` tables already are. Making another source writable is 
 through `store.merged_source`, minting ids the way its importer does, and the endpoints themselves.
 A source outside `WRITABLE` gets no overlay tables and reads exactly the SQL it read before writes
 existed.
+
+A source whose documents keep some of their state in a table of their own (a spreadsheet's sheets
+live in `gdrive_sheets`, not on its `gdrive_files` row) names that table in `store.SATELLITES`.
+The overlay mirrors it, `store.replace_parts` writes a document's rows there together with the
+columns that follow from them, and `store.parts_for` reads the overlay's rows for a document when
+it holds any and the corpus's otherwise, never a mix of the two.

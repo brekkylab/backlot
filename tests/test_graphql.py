@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import hashlib
 import json
 import math
 import random
@@ -26,8 +27,8 @@ from graphql.type.scalars import coerce_id
 from starlette.testclient import TestClient
 
 from backlot import auth, pagination, store
+from backlot.graphql import apollo_http, engine, mcp_tools, v8_json
 from backlot.graphql import body as request_body
-from backlot.graphql import engine, mcp_tools, v8_json
 from tests._helpers import selected_fields
 
 SDL = """
@@ -180,10 +181,9 @@ def test_unknown_field_returns_a_validation_error(gql):
     r = gql.execute('{ widget(id: "w1") { nope } }')
     assert r.request_error is True
     assert "data" not in r.payload
-    # graphql-core quotes identifiers with '' where graphql-js uses ""; assert the substance,
-    # which is the part a client acts on.
-    msg = r.payload["errors"][0]["message"]
-    assert msg.startswith("Cannot query field") and "nope" in msg and "Widget" in msg
+    assert r.payload["errors"][0]["message"] == (
+        'Cannot query field "nope" on type "Widget". Did you mean "name"?'
+    )
 
 
 def test_resolver_error_nulls_the_field_and_reports_its_path(gql):
@@ -193,6 +193,18 @@ def test_resolver_error_nulls_the_field_and_reports_its_path(gql):
     err = r.payload["errors"][0]
     assert err["message"] == "no widget factory today"
     assert err["path"] == ["boom"]
+
+
+@pytest.mark.parametrize(
+    "query, location",
+    [
+        ('{ widget(id: "\U0001f600") { name } boom }', {"line": 1, "column": 29}),
+        ("# a\u2028b\n{ boom }", {"line": 2, "column": 3}),
+    ],
+)
+def test_a_resolver_error_is_located_as_graphql_js_locates_it(gql, query, location):
+    """A resolver's error carries the locations `js_words.locations` gives it."""
+    assert gql.execute(query).payload["errors"][0]["locations"] == [location]
 
 
 def test_partial_data_survives_alongside_an_error(gql):
@@ -216,26 +228,36 @@ def _crashed(_root, _info):
 
 
 @pytest.mark.parametrize(
-    "query, variables, raised",
+    "query, variables, raised, assigned",
     [
-        ("{ placed }", None, False),
-        ("{ crashed }", None, True),
-        ("{ boom crashed }", None, True),
+        ("{ placed }", None, False, []),
+        ("{ crashed }", None, True, []),
+        ("{ boom crashed }", None, True, []),
         # graphql-core completing a value the schema refuses
-        ("{ blank }", None, True),
-        ("{ count }", None, True),
-        ("{ many }", None, True),
-        ("{ either { ... on Widget { id } } }", None, True),
+        ("{ blank }", None, True, []),
+        ("{ count }", None, True, [0]),
+        ("{ many }", None, True, [0]),
+        ("{ either { ... on Widget { id } } }", None, True, [0]),
         # graphql-core refusing, as it runs the field, an argument the request sent
-        ('query W($id: ID = "w1") { widget(id: $id) { name } }', {"id": None}, False),
+        ('query W($id: ID = "w1") { widget(id: $id) { name } }', {"id": None}, False, [0]),
         (
             'query W($show: Boolean = true) { widget(id: "w1") { name @include(if: $show) } }',
             {"show": None},
             False,
+            [0],
         ),
+        (
+            'query W($id: ID = "w1") { boom widget(id: $id) { name } }',
+            {"id": None},
+            False,
+            [1],
+        ),
+        # an operation on a root type the test schema has none of
+        ("mutation { __typename }", None, False, [0]),
+        ("subscription { __typename }", None, False, [0]),
     ],
 )
-def test_a_field_error_is_marked_raised_unless_it_refuses_the_request(query, variables, raised):
+def test_a_field_error_is_marked_by_who_made_it(query, variables, raised, assigned):
     gql = engine.Engine(
         SDL.replace(
             "boom: String",
@@ -257,6 +279,12 @@ def test_a_field_error_is_marked_raised_unless_it_refuses_the_request(query, var
     )
     r = gql.execute(query, variables=variables)
     assert (r.request_error, "errors" in r.payload, r.raised) == (False, True, raised)
+    assert sorted(r.assigned) == assigned
+    assert [
+        i
+        for i, error in enumerate(r.payload["errors"])
+        if error.get("extensions", {}).get("code") == engine.INTERNAL_SERVER_ERROR
+    ] == assigned
 
 
 # --- operation selection --------------------------------------------------------
@@ -381,9 +409,10 @@ _ECHO_FIELDS = {
             {
                 "errors": [
                     {
-                        "message": "Variable '$x' got invalid value 1.5; "
+                        "message": 'Variable "$x" got invalid value 1.5; '
                         "ID cannot represent value: 1.5",
                         "locations": [{"line": 1, "column": 7}],
+                        "extensions": {"code": "BAD_USER_INPUT"},
                     }
                 ]
             },
@@ -405,9 +434,10 @@ _ECHO_FIELDS = {
             {
                 "errors": [
                     {
-                        "message": "Variable '$x' got invalid value {'nope': 1e+21}; "
-                        "Field 'nope' is not defined by type 'F'.",
+                        "message": 'Variable "$x" got invalid value { nope: 1e+21 }; '
+                        'Field "nope" is not defined by type "F".',
                         "locations": [{"line": 1, "column": 7}],
+                        "extensions": {"code": "BAD_USER_INPUT"},
                     }
                 ]
             },
@@ -419,9 +449,10 @@ _ECHO_FIELDS = {
             {
                 "errors": [
                     {
-                        "message": "Variable '$x' got invalid value 5; "
-                        "Expected type 'F' to be a mapping.",
+                        "message": 'Variable "$x" got invalid value 5; '
+                        'Expected type "F" to be an object.',
                         "locations": [{"line": 1, "column": 7}],
+                        "extensions": {"code": "BAD_USER_INPUT"},
                     }
                 ]
             },
@@ -431,7 +462,9 @@ _ECHO_FIELDS = {
     ],
 )
 def test_a_variable_is_read_as_graphql_js_reads_it(type_, value, answer):
-    """Each value is read by :func:`backlot.graphql.engine._ids_as_graphql_js_reads_them`."""
+    """Each value is read as graphql-js reads it: an ``ID`` by
+    :func:`backlot.graphql.engine._ids_as_graphql_js_reads_them`, a refusal by
+    :func:`backlot.graphql.js_words.coerce_variable_values`."""
     query = "query($x: %s) { %s }" % (type_, _ECHO_FIELDS[type_])
     body = '{"query": "%s", "variables": {"x": %s}}' % (query, value)
     assert _ECHO.execute_payload(request_body.parse(body)).payload == answer
@@ -801,16 +834,708 @@ def test_a_body_with_no_byte_order_mark_is_read_in_the_order_iconv_lite_picks(
     assert request_body._byte_order(bytes.fromhex(hex_bytes), width) == order
 
 
-def test_execute_payload_requires_a_query_string(gql):
-    r = gql.execute_payload({"variables": {}})
-    assert r.request_error is True
-    assert r.payload["errors"][0]["message"] == "Must provide query string."
+_TYPENAME = "{ __typename }"
+_HASH = hashlib.sha256(_TYPENAME.encode()).hexdigest()
 
 
-def test_execute_payload_rejects_non_object_variables(gql):
-    r = gql.execute_payload({"query": "{ widgets { id } }", "variables": "nope"})
-    assert r.request_error is True
-    assert r.payload["errors"][0]["message"] == "Variables are invalid JSON."
+def _persisted(version=1, sha256=_HASH, **payload) -> dict:
+    return {**payload, "extensions": {"persistedQuery": {"version": version, "sha256Hash": sha256}}}
+
+
+def _refused(message, code="BAD_REQUEST", status=400, locations=()) -> tuple:
+    """Apollo Server's refusal ``message``: its status and body, each location (line, column)."""
+    error: dict = {"message": message}
+    if locations:
+        error["locations"] = [{"line": line, "column": column} for line, column in locations]
+    error["extensions"] = {"code": code}
+    return status, {"errors": [error]}
+
+
+_SERVED = (200, {"data": {"__typename": "Query"}})
+_NOT_A_STRING = _refused("GraphQL queries must be strings.")
+_NO_KEYS = _refused(engine.NO_KEYS)
+_NO_QUERY = _refused(engine.NO_QUERY)
+_MISMATCH = _refused("provided sha does not match query", "INTERNAL_SERVER_ERROR")
+_VERSION = _refused("Unsupported persisted query version", "INTERNAL_SERVER_ERROR")
+_NOT_FOUND = _refused("PersistedQueryNotFound", "PERSISTED_QUERY_NOT_FOUND", 200)
+
+
+# A body, and Apollo Server's answer to it in Apollo Server's own envelope: a refusal with the
+# message, code, locations and status api.fireflies.ai answered it with, or `_SERVED` where it ran
+# the query. Where two checks apply, the row's answer is the one that came first.
+_APOLLO_CHECKS = [
+    pytest.param([{"query": _TYPENAME}], _refused("Operation batching disabled."), id="a batch"),
+    pytest.param({}, _NO_KEYS, id="an empty object"),
+    pytest.param(None, _NO_KEYS, id="null"),
+    pytest.param(5, _NO_KEYS, id="a number"),
+    pytest.param({"query": 5, "variables": [1]}, _NOT_A_STRING, id="query 5, variables [1]"),
+    pytest.param({"query": 5, "extensions": 5}, _NOT_A_STRING, id="query 5, extensions 5"),
+    pytest.param({"query": {}}, _NOT_A_STRING, id="a query of an empty object"),
+    pytest.param({"query": 0}, _NO_QUERY, id="a query of 0"),
+    pytest.param({"query": 5, "variables": "{"}, _NOT_A_STRING, id="query 5, variables '{'"),
+    pytest.param(
+        {"query": {"kind": "Document"}},
+        _refused(
+            "GraphQL queries must be strings. It looks like you're sending the internal graphql-js representation "
+            "of a parsed query in your request instead of a request in the GraphQL query language. "
+            "You can convert an AST to a string using the `print` function from `graphql`, or use "
+            "a client like `apollo-client` which converts the internal representation to a string "
+            "for you."
+        ),
+        id="a parsed document",
+    ),
+    pytest.param(
+        {"query": _TYPENAME, "variables": "x", "extensions": 5},
+        _refused(engine.RECURSIVELY_ENCODED.format("variables")),
+        id="variables 'x', extensions 5",
+    ),
+    pytest.param(
+        {"query": _TYPENAME, "variables": "x", "extensions": "x"},
+        _refused(engine.RECURSIVELY_ENCODED.format("variables")),
+        id="variables 'x', extensions 'x'",
+    ),
+    pytest.param(
+        {"query": _TYPENAME, "extensions": "x", "variables": [1]},
+        _refused(engine.RECURSIVELY_ENCODED.format("extensions")),
+        id="extensions 'x', variables [1]",
+    ),
+    pytest.param(
+        {"query": _TYPENAME, "extensions": "x"},
+        _refused(engine.RECURSIVELY_ENCODED.format("extensions")),
+        id="extensions 'x'",
+    ),
+    pytest.param(
+        {"query": _TYPENAME, "extensions": 5, "variables": [1]},
+        _refused("`extensions` in a POST body must be an object if provided."),
+        id="extensions 5, variables [1]",
+    ),
+    pytest.param(
+        {"query": _TYPENAME, "variables": [1], "operationName": 1},
+        _refused("`variables` in a POST body must be an object if provided."),
+        id="variables [1], operationName 1",
+    ),
+    pytest.param(
+        {"query": None, "operationName": 1},
+        _refused("`operationName` in a POST body must be a string if provided."),
+        id="query null, operationName 1",
+    ),
+    pytest.param({"variables": {}}, _NO_QUERY, id="no query"),
+    pytest.param({"query": ""}, _NO_QUERY, id="an empty query"),
+    pytest.param({"extensions": {"persistedQuery": False}}, _NO_QUERY, id="pq false"),
+    pytest.param(
+        {"query": "   "},
+        _refused("Syntax Error: Unexpected <EOF>.", "GRAPHQL_PARSE_FAILED", locations=[(1, 4)]),
+        id="a query of spaces",
+    ),
+    pytest.param(_persisted(2, query=5), _NOT_A_STRING, id="pq version 2, query 5"),
+    pytest.param(_persisted(2, query="{"), _VERSION, id="pq version 2, a query that cannot parse"),
+    pytest.param(
+        _persisted(sha256="0" * 64, query="{"),
+        _MISMATCH,
+        id="pq mismatch, a query that cannot parse",
+    ),
+    pytest.param({"extensions": {"persistedQuery": 5}}, _VERSION, id="pq 5"),
+    pytest.param(_persisted("1", query=_TYPENAME), _VERSION, id="pq version '1'"),
+    pytest.param(_persisted(True, query=_TYPENAME), _VERSION, id="pq version true"),
+    pytest.param(_persisted(1.0, query=_TYPENAME), _SERVED, id="pq version 1.0"),
+    pytest.param(
+        {"extensions": {"persistedQuery": {"version": 1}}},
+        _NOT_FOUND,
+        id="pq with no hash",
+    ),
+    pytest.param(
+        {"query": _TYPENAME, "extensions": {"persistedQuery": {"version": 1}}},
+        _MISMATCH,
+        id="pq with no hash, a query",
+    ),
+    pytest.param(_persisted(sha256=_HASH.upper(), query=_TYPENAME), _MISMATCH, id="pq upper hash"),
+    pytest.param(_persisted(sha256=5, query=_TYPENAME), _MISMATCH, id="pq hash 5"),
+    pytest.param(_persisted(query=""), _MISMATCH, id="pq, an empty query"),
+    pytest.param(
+        _persisted(sha256=hashlib.sha256(b"").hexdigest(), query=""),
+        _refused("Syntax Error: Unexpected <EOF>.", "GRAPHQL_PARSE_FAILED", locations=[(1, 1)]),
+        id="pq matching an empty query",
+    ),
+    pytest.param(_persisted(query=False), _NOT_FOUND, id="pq, query false"),
+    pytest.param(_persisted(query=0), _NOT_FOUND, id="pq, query 0"),
+    pytest.param(
+        {"query": False, "extensions": {"persistedQuery": {"version": 1}}},
+        _NOT_FOUND,
+        id="pq with no hash, query false",
+    ),
+    pytest.param(
+        _persisted(query=None),
+        _NOT_FOUND,
+        id="pq, query null",
+    ),
+    pytest.param(_persisted(query=_TYPENAME), _SERVED, id="pq matching its query"),
+    pytest.param(
+        _persisted(
+            sha256=hashlib.sha256(b"{ __typename } # \xef\xbf\xbd").hexdigest(),
+            query="{ __typename } # \ud800",
+        ),
+        _refused(
+            "Syntax Error: Invalid character: U+D800.", "GRAPHQL_PARSE_FAILED", locations=[(1, 18)]
+        ),
+        id="pq hashed with U+FFFD for a lone surrogate",
+    ),
+    pytest.param(
+        _persisted(
+            sha256=hashlib.sha256(b"{ __typename } # \xed\xa0\x80").hexdigest(),
+            query="{ __typename } # \ud800",
+        ),
+        _MISMATCH,
+        id="pq hashed with a lone surrogate's own bytes",
+    ),
+    pytest.param(
+        {"query": _TYPENAME, "extensions": {"persistedQuery": None}}, _SERVED, id="pq null"
+    ),
+    pytest.param(
+        {"query": "{", "operationName": "Z"},
+        _refused(
+            "Syntax Error: Expected Name, found <EOF>.", "GRAPHQL_PARSE_FAILED", locations=[(1, 2)]
+        ),
+        id="a query that cannot parse, operationName Z",
+    ),
+    pytest.param(
+        {"query": "query A { nosuch }", "operationName": "Z"},
+        _refused(
+            'Cannot query field "nosuch" on type "Query".',
+            "GRAPHQL_VALIDATION_FAILED",
+            locations=[(1, 11)],
+        ),
+        id="a query that does not validate, operationName Z",
+    ),
+    pytest.param(
+        {"query": "query A($b: Boolean!) { __typename @include(if: $b) } query B { __typename }"},
+        _refused(
+            "Must provide operation name if query contains multiple operations.",
+            engine.OPERATION_RESOLUTION_FAILURE,
+        ),
+        id="two operations, a variable not provided",
+    ),
+    pytest.param(
+        {"query": "query A($b: Boolean!) { __typename @include(if: $b) }", "operationName": "Z"},
+        _refused('Unknown operation named "Z".', engine.OPERATION_RESOLUTION_FAILURE),
+        id="a variable not provided, operationName Z",
+    ),
+    pytest.param(
+        {"query": "query A { __typename }", "operationName": ""},
+        _refused('Unknown operation named "".', engine.OPERATION_RESOLUTION_FAILURE),
+        id="operationName ''",
+    ),
+    pytest.param({"query": _TYPENAME, "variables": None}, _SERVED, id="variables null"),
+    pytest.param({"query": _TYPENAME, "operationName": None}, _SERVED, id="operationName null"),
+    pytest.param({"query": _TYPENAME, "extensions": None}, _SERVED, id="extensions null"),
+]
+
+
+@pytest.mark.parametrize("payload, answer", _APOLLO_CHECKS)
+def test_apollo_server_reads_a_body_in_its_order(gql, payload, answer):
+    r = gql.execute_payload(payload)
+    assert (r.status, r.payload) == answer
+
+
+_TOO_MANY = "Too many errors processing variables, error limit reached. Execution aborted."
+_WORDS = engine.Engine(
+    """
+    enum Color {
+      RED
+      GREEN
+      BLUE
+      BLACK
+    }
+
+    enum Size {
+      S
+      M
+      L
+      XL
+    }
+
+    input Box {
+      a: Int
+      b: Int
+      c: Int
+      d: Int! = 1
+    }
+
+    input Point {
+      x: Int!
+      y: Int = 0
+      label: String
+      tags: [String!]
+      next: Point
+    }
+
+    type Query {
+      int(v: Int): Int
+      float(v: Float): Float
+      string(v: String): String
+      boolean(v: Boolean): Boolean
+      id(v: ID): ID
+      color(v: Color): Color
+      point(v: Point): Int
+      ints(v: [Int!]): Int
+      nested(v: [[Int]]): Int
+      required(v: Int!): Int
+      pair(a: Int, b: String): Int
+      size(v: Size): Size
+      box(v: Box): Int
+    }
+    """
+)
+_STAGES = {
+    "parse": engine.PARSE_FAILED,
+    "validate": engine.VALIDATION_FAILED,
+    "variables": engine.BAD_USER_INPUT,
+}
+
+
+# A document over `_WORDS`, its variables as the body sent them, and graphql-js 16.14.2's answer
+# under Node: the stage that refused it and each error's message and locations, or "ok" where it
+# coerced every variable. An error's code is the stage's, or the third member where Apollo Server
+# gives it another.
+_GRAPHQL_JS_WORDS = [
+    pytest.param(
+        '{ string(v: "\U0001f600\U0001f600") nosuch }',
+        None,
+        "validate",
+        [('Cannot query field "nosuch" on type "Query".', [(1, 21)])],
+        id="two characters past U+FFFF before a validation error",
+    ),
+    pytest.param(
+        '{ string(v: "\U0001f600") } !',
+        None,
+        "parse",
+        [('Syntax Error: Unexpected "!".', [(1, 21)])],
+        id="a character past U+FFFF before a syntax error",
+    ),
+    pytest.param(
+        'query($w: String = "\U0001f600", $v: Int) { int(v: $v) string(v: $w) }',
+        '{"v": "a"}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value "a"; Int cannot represent non-integer value: "a"',
+                [(1, 26)],
+            )
+        ],
+        id="a character past U+FFFF before a refused variable",
+    ),
+    pytest.param(
+        "# a\r{ nosuch }",
+        None,
+        "validate",
+        [('Cannot query field "nosuch" on type "Query".', [(2, 3)])],
+        id="a carriage return",
+    ),
+    pytest.param(
+        "# a\r\n{ nosuch }",
+        None,
+        "validate",
+        [('Cannot query field "nosuch" on type "Query".', [(2, 3)])],
+        id="a carriage return and a line feed",
+    ),
+    pytest.param(
+        "# a\x0c{ nosuch }",
+        None,
+        "parse",
+        [("Syntax Error: Unexpected <EOF>.", [(1, 15)])],
+        id="a form feed in a comment",
+    ),
+    pytest.param(
+        "# a\u2028{ nosuch }",
+        None,
+        "parse",
+        [("Syntax Error: Unexpected <EOF>.", [(1, 15)])],
+        id="a line separator in a comment",
+    ),
+    pytest.param(
+        '{ int(v: 1.") }',
+        None,
+        "parse",
+        [("Syntax Error: Invalid number, expected digit but got: '\"'.", [(1, 12)])],
+        id="a quote where a digit was expected",
+    ),
+    pytest.param(
+        "{ int(v: 1.a) }",
+        None,
+        "parse",
+        [('Syntax Error: Invalid number, expected digit but got: "a".', [(1, 12)])],
+        id="a letter where a digit was expected",
+    ),
+    pytest.param(
+        "{",
+        None,
+        "parse",
+        [("Syntax Error: Expected Name, found <EOF>.", [(1, 2)])],
+        id="a document cut short",
+    ),
+    pytest.param(
+        "query($v: Int) # c\nd\n{ int(v: $v) }",
+        '{"v": "x"}',
+        "parse",
+        [('Syntax Error: Expected "{", found Name "d".', [(2, 1)])],
+        id="a comment's line break",
+    ),
+    pytest.param(
+        "query($v: Int! = null) { required(v: $v) }",
+        "{}",
+        "validate",
+        [('Expected value of type "Int!", found null.', [(1, 18)])],
+        id="a null default for a non-null variable",
+    ),
+    pytest.param(
+        '{ int(v: "a\x0bb") }',
+        None,
+        "validate",
+        [('Int cannot represent non-integer value: "a\\u000Bb"', [(1, 10)])],
+        id="a vertical tab in a string",
+    ),
+    pytest.param(
+        "query @include(if: true) { int }",
+        None,
+        "validate",
+        [('Directive "@include" may not be used on QUERY.', [(1, 7)])],
+        id="a directive where it may not be used",
+    ),
+    pytest.param(
+        "{ int(v: \"'a'\") }",
+        None,
+        "validate",
+        [("Int cannot represent non-integer value: \"'a'\"", [(1, 10)])],
+        id="a string literal holding quoted text",
+    ),
+    pytest.param(
+        "query($v: Size) { size(v: $v) }",
+        '{"v": ""}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value ""; Value "" does not exist in "Size" enum. Did you mean the enum value "L", "M", or "S"?',
+                [(1, 7)],
+            )
+        ],
+        id="an empty enum value, three suggestions and more",
+    ),
+    pytest.param(
+        "query($v: Size) { size(v: $v) }",
+        '{"v": false}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value false; Enum "Size" cannot represent non-string value: false.',
+                [(1, 7)],
+            )
+        ],
+        id="false for an enum",
+    ),
+    pytest.param(
+        "query($v: Size) { size(v: $v) }",
+        '{"v": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, ... 1 more item]; Enum "Size" cannot represent non-string value: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, ... 1 more item].',
+                [(1, 7)],
+            )
+        ],
+        id="eleven items",
+    ),
+    pytest.param(
+        "query($v: Size) { size(v: $v) }",
+        '{"v": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, ... 2 more items]; Enum "Size" cannot represent non-string value: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, ... 2 more items].',
+                [(1, 7)],
+            )
+        ],
+        id="twelve items",
+    ),
+    pytest.param(
+        "query($v: Size) { size(v: $v) }",
+        '{"v": {"x": 1, "tags": ["a", 1, null]}}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value { x: 1, tags: ["a", 1, null] }; Enum "Size" cannot represent non-string value: { x: 1, tags: ["a", 1, null] }.',
+                [(1, 7)],
+            )
+        ],
+        id="an object for an enum",
+    ),
+    pytest.param(
+        "query($v: Box) { box(v: $v) }",
+        '{"v": [[[1]]]}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value [[[Array]]]; Expected type "Box" to be an object.',
+                [(1, 7)],
+            )
+        ],
+        id="an array three deep for an input object",
+    ),
+    pytest.param(
+        "query($v: Box) { box(v: $v) }",
+        '{"v": {"b": 1, "1": 2, "0": 3, "01": 4, "²": 5, "4294967294": 6, "4294967295": 7, "a b": 8}}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value { 0: 3, 1: 2, 4294967294: 6, b: 1, 01: 4, ²: 5, 4294967295: 7, a b: 8 }; Field "0" is not defined by type "Box". Did you mean "a", "b", "c", or "d"?',
+                [(1, 7)],
+            ),
+            (
+                'Variable "$v" got invalid value { 0: 3, 1: 2, 4294967294: 6, b: 1, 01: 4, ²: 5, 4294967295: 7, a b: 8 }; Field "1" is not defined by type "Box". Did you mean "a", "b", "c", or "d"?',
+                [(1, 7)],
+            ),
+            (
+                'Variable "$v" got invalid value { 0: 3, 1: 2, 4294967294: 6, b: 1, 01: 4, ²: 5, 4294967295: 7, a b: 8 }; Field "4294967294" is not defined by type "Box".',
+                [(1, 7)],
+            ),
+            (
+                'Variable "$v" got invalid value { 0: 3, 1: 2, 4294967294: 6, b: 1, 01: 4, ²: 5, 4294967295: 7, a b: 8 }; Field "01" is not defined by type "Box".',
+                [(1, 7)],
+            ),
+            (
+                'Variable "$v" got invalid value { 0: 3, 1: 2, 4294967294: 6, b: 1, 01: 4, ²: 5, 4294967295: 7, a b: 8 }; Field "²" is not defined by type "Box". Did you mean "a", "b", "c", or "d"?',
+                [(1, 7)],
+            ),
+            (
+                'Variable "$v" got invalid value { 0: 3, 1: 2, 4294967294: 6, b: 1, 01: 4, ²: 5, 4294967295: 7, a b: 8 }; Field "4294967295" is not defined by type "Box".',
+                [(1, 7)],
+            ),
+            (
+                'Variable "$v" got invalid value { 0: 3, 1: 2, 4294967294: 6, b: 1, 01: 4, ²: 5, 4294967295: 7, a b: 8 }; Field "a b" is not defined by type "Box". Did you mean "a" or "b"?',
+                [(1, 7)],
+            ),
+        ],
+        id="the keys an object prints in JavaScript's order",
+    ),
+    pytest.param(
+        "query($v: Box) { box(v: $v) }",
+        '{"v": {"aa": 1, "b": "x"}}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value "x" at "v.b"; Int cannot represent non-integer value: "x"',
+                [(1, 7)],
+            ),
+            (
+                'Variable "$v" got invalid value { aa: 1, b: "x" }; Field "aa" is not defined by type "Box". Did you mean "a"?',
+                [(1, 7)],
+            ),
+        ],
+        id="a field's refusal, then an unknown field",
+    ),
+    pytest.param(
+        "query($v: Float) { float(v: $v) }",
+        '{"v": 1e400}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value Infinity; Float cannot represent non numeric value: Infinity',
+                [(1, 7)],
+            )
+        ],
+        id="Infinity for a Float",
+    ),
+    pytest.param(
+        "query($v: Float) { float(v: $v) }",
+        '{"v": true}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value true; Float cannot represent non numeric value: true',
+                [(1, 7)],
+            )
+        ],
+        id="true for a Float",
+    ),
+    pytest.param(
+        "query($v: String) { string(v: $v) }",
+        '{"v": {"a": {"b": {"c": {}}}}}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value { a: { b: [Object] } }; String cannot represent a non string value: { a: { b: [Object] } }',
+                [(1, 7)],
+            )
+        ],
+        id="an object four deep",
+    ),
+    pytest.param(
+        "query($v: Boolean) { boolean(v: $v) }",
+        '{"v": [[[]]]}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value [[[]]]; Boolean cannot represent a non boolean value: [[[]]]',
+                [(1, 7)],
+            )
+        ],
+        id="an empty array three deep",
+    ),
+    pytest.param(
+        "query($v: ID) { id(v: $v) }",
+        '{"v": {"a": {"b": {}}}}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value { a: { b: {} } }; ID cannot represent value: { a: { b: {} } }',
+                [(1, 7)],
+            )
+        ],
+        id="an empty object three deep",
+    ),
+    pytest.param(
+        "query($v: Point) { point(v: $v) }",
+        '{"v": {}}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value {}; Field "x" of required type "Int!" was not provided.',
+                [(1, 7)],
+            )
+        ],
+        id="a required field not provided",
+    ),
+    pytest.param(
+        "query($v: Point) { point(v: $v) }",
+        '{"v": {"x": 1, "tags": ["a", 1, null]}}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value 1 at "v.tags[1]"; String cannot represent a non string value: 1',
+                [(1, 7)],
+            ),
+            (
+                'Variable "$v" got invalid value null at "v.tags[2]"; Expected non-nullable type "String!" not to be null.',
+                [(1, 7)],
+            ),
+        ],
+        id="a list item refused, and null for a non-null item",
+    ),
+    pytest.param(
+        "query($v: [Int!]) { ints(v: $v) }",
+        '{"v": 1.5}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value 1.5; Int cannot represent non-integer value: 1.5',
+                [(1, 7)],
+            )
+        ],
+        id="1.5 for a list of Int",
+    ),
+    pytest.param(
+        "query($v: Int!) { required(v: $v) }",
+        '{"v": null}',
+        "variables",
+        [('Variable "$v" of non-null type "Int!" must not be null.', [(1, 7)])],
+        id="null for a non-null variable",
+    ),
+    pytest.param(
+        "query($v: Int!) { required(v: $v) }",
+        '{"v": 2147483648}',
+        "variables",
+        [
+            (
+                'Variable "$v" got invalid value 2147483648; Int cannot represent non 32-bit signed integer value: 2147483648',
+                [(1, 7)],
+            )
+        ],
+        id="an Int past 32 bits",
+    ),
+    pytest.param(
+        "query($v: [Int!]) { ints(v: $v) }",
+        json.dumps({"v": ["a"] * 60}),
+        "variables",
+        [
+            (
+                f'Variable "$v" got invalid value "a" at "v[{n}]"; Int cannot represent non-integer value: "a"',
+                [(1, 7)],
+            )
+            for n in range(50)
+        ]
+        + [(_TOO_MANY, [], engine.INTERNAL_SERVER_ERROR)],
+        id="the fifty-first refusal",
+    ),
+    pytest.param(
+        "query($a: Int!, $b: String) { pair(a: $a, b: $b) }",
+        "{}",
+        "variables",
+        [('Variable "$a" of required type "Int!" was not provided.', [(1, 7)])],
+        id="a non-null variable not provided",
+    ),
+    pytest.param(
+        "query($v: Float) { float(v: $v) }",
+        '{"v": 0}',
+        "ok",
+        [],
+        id="0 for a Float",
+    ),
+    pytest.param(
+        "query($v: Boolean) { boolean(v: $v) }",
+        '{"v": true}',
+        "ok",
+        [],
+        id="true for a Boolean",
+    ),
+    pytest.param(
+        "query($v: ID) { id(v: $v) }",
+        '{"v": 0}',
+        "ok",
+        [],
+        id="0 for an ID",
+    ),
+    pytest.param(
+        "query($v: ID) { id(v: $v) }",
+        '{"v": ""}',
+        "ok",
+        [],
+        id="an empty string for an ID",
+    ),
+    pytest.param(
+        "query($v: Color) { color(v: $v) }",
+        '{"v": "RED"}',
+        "ok",
+        [],
+        id="an enum value",
+    ),
+    pytest.param(
+        "query($v: [Int!]) { ints(v: $v) }",
+        '{"v": null}',
+        "ok",
+        [],
+        id="null for a list",
+    ),
+    pytest.param(
+        "query($v: Int! = 1) { required(v: $v) }",
+        "{}",
+        "ok",
+        [],
+        id="a non-null variable's default",
+    ),
+]
+
+
+@pytest.mark.parametrize("document, variables, stage, errors", _GRAPHQL_JS_WORDS)
+def test_a_refusal_is_in_graphql_js_words(document, variables, stage, errors):
+    r = _WORDS.execute(
+        document, variables=None if variables is None else request_body.parse(variables)
+    )
+    got = [
+        (refusal.message, [(at["line"], at["column"]) for at in refusal.locations])
+        for refusal in r.refusals
+    ]
+    assert got == [error[:2] for error in errors]
+    assert [refusal.code for refusal in r.refusals] == [
+        error[2] if len(error) > 2 else _STAGES[stage] for error in errors
+    ]
 
 
 # --- resolver binding -----------------------------------------------------------
@@ -881,13 +1606,9 @@ def acme_client(db, acl):
                 {"errors": [{"message": "Authentication required"}]}, status_code=401
             )
         context = {"conn": auth.conn(request), "visible_ids": auth.visible_ids(request, caller)}
-        try:
-            payload = request_body.parse(request_body.decode(await request.body()))
-        except request_body.NotJson:
-            result = engine.not_json()
-        else:
-            result = ACME.execute_payload(payload, context=context)
-        return JSONResponse(result.payload, status_code=400 if result.request_error else 200)
+        payload = request_body.parse(request_body.decode(await request.body()))
+        result = ACME.execute_payload(payload, context=context)
+        return JSONResponse(result.payload, status_code=result.status)
 
     app.include_router(router)
     return TestClient(app)
@@ -930,18 +1651,6 @@ def test_mounted_endpoint_returns_a_graphql_envelope_for_a_malformed_document(
     assert "detail" not in body
     assert "data" not in body
     assert "Syntax Error" in body["errors"][0]["message"]
-
-
-def test_mounted_endpoint_returns_a_graphql_envelope_for_a_non_json_body(
-    acme_client, sample_settings
-):
-    r = acme_client.post(
-        "/acme/graphql",
-        content=b"not json",
-        headers={"Authorization": sample_settings.admin_token, "Content-Type": "application/json"},
-    )
-    assert r.status_code == 400
-    assert r.json()["errors"][0]["message"] == "POST body sent invalid JSON."
 
 
 def test_acl_filters_results_through_the_resolver_context(acme_client, tokens):
@@ -1331,3 +2040,194 @@ def test_a_derived_document_validates_against_the_schema(tools):
 
 def test_a_tool_carries_its_fields_description(tools):
     assert "Loose notes, newest first." in tools["notes"].description
+
+
+# --- the Node libraries `apollo_http` and `body` are read off -------------------------------------
+# Each value and what the library behind the port each test names answered for it under Node
+# 24.18.0; the ports' docstrings name each library's release.
+_ACCEPTED = [
+    ("*/*", apollo_http.JSON, False),
+    ("application/*", apollo_http.JSON, False),
+    ("text/html", None, True),
+    ("", apollo_http.JSON, False),
+    ("application/json;q=0", None, False),
+    ("application/json;q", None, False),
+    ("application/json;q=abc", None, False),
+    ("application/json;q=1.5", apollo_http.JSON, False),
+    ("application/json; charset=utf-8", apollo_http.JSON, False),
+    ("application/json; charset=latin1", None, False),
+    ("APPLICATION/JSON", apollo_http.JSON, False),
+    ("application/json;Q=0", None, False),
+    ("application/json;q=0.5;charset=latin1", apollo_http.JSON, False),
+    ('application/json;x="a,b"', None, False),
+    ('"a,b", application/json', apollo_http.JSON, False),
+    ("text/html;q=0.5;charset=utf-8", None, True),
+    ("text/html;level=1", None, False),
+    (",", None, False),
+    ("foo", None, False),
+    ("application/json\xa0", apollo_http.JSON, False),
+    ("application/json\x85", None, False),
+    ("application/json;q=Infinity", apollo_http.JSON, False),
+    ("application/json;q=-0", None, False),
+    ("application/json; callbackSpec=1.0", apollo_http.CALLBACK, False),
+    (
+        "application/graphql-response+json;q=0.5, application/json;q=0.5",
+        apollo_http.GRAPHQL_RESPONSE,
+        False,
+    ),
+    ("application/json, application/graphql-response+json", apollo_http.JSON, False),
+    ("application/json;q=0, */*", apollo_http.GRAPHQL_RESPONSE, False),
+    ("text/html, application/json", apollo_http.JSON, True),
+    ("text/*", None, True),
+    ("*/*;q=0.001, text/html;q=0.0005", apollo_http.JSON, False),
+    ("application/json;q= 0.5", apollo_http.JSON, False),
+    ("application/json;q=0.5x", apollo_http.JSON, False),
+    ("application/json ;q=0", None, False),
+    ("application/json;q =0", None, False),
+    (
+        "application/json;charset=utf-8;q=0.1, application/json;q=0.9, application/graphql-response+json;q=0.5",
+        apollo_http.GRAPHQL_RESPONSE,
+        False,
+    ),
+    ("application/json;q=abc, application/json;q=0.5", apollo_http.JSON, False),
+    ('text/html;x=",application/json,"', None, False),
+    ('application/json;x="a;q=0"', None, False),
+    ('application/json;charset="utf-8"', apollo_http.JSON, False),
+    ('application/json;charset=autf-8"', None, False),
+    ('application/json;charset="utf-8a', None, False),
+    ("application/json;charset=*", apollo_http.JSON, False),
+    ("application/json;foo", apollo_http.JSON, False),
+    ("multipart/mixed; deferSpec=20220824, text/html;q=0.9", None, False),
+    ("multipart/mixed; incrementalSpec=v0.2, text/html;q=0.9", None, False),
+    ("multipart/mixed, text/html;q=0.9", None, False),
+    ("application/json;q=.5, application/graphql-response+json;q=0.4", apollo_http.JSON, False),
+    (
+        "application/json;q=1e-1, application/graphql-response+json;q=0.4",
+        apollo_http.GRAPHQL_RESPONSE,
+        False,
+    ),
+    ("application/json;q=+0.1, application/graphql-response+json;q=0.05", apollo_http.JSON, False),
+]
+
+
+@pytest.mark.parametrize("accept,media_type,html", _ACCEPTED)
+def test_apollo_server_reads_accept_as_negotiator_does(accept, media_type, html):
+    """Each row of `_ACCEPTED`: the media type negotiator picks for a single result, and whether it
+    puts `text/html` first for a GET."""
+    assert apollo_http.response_type(accept) == media_type
+    assert apollo_http.prefers_html("GET", accept) is html
+    assert apollo_http.prefers_html("POST", accept) is False
+
+
+_ESSENCES = [
+    (" text/plain ", "text/plain"),
+    ("TEXT/PLAIN;x", "text/plain"),
+    ("text/plain ;", "text/plain"),
+    ("text/plain\t", "text/plain"),
+    ("text/plain\xa0", None),
+    ("text /plain", None),
+    ("text/ plain", None),
+    ("a/b/c", None),
+    ("/b", None),
+    ("a/", None),
+    ("", None),
+    ("text/plain, application/json", None),
+    ('text/plain;"', "text/plain"),
+    ("text/pl@in", None),
+    ("\ttext/plain;charset=utf-8", "text/plain"),
+    ("multipart/form-data; boundary=x", "multipart/form-data"),
+    ("application/x-www-form-urlencoded", "application/x-www-form-urlencoded"),
+    ("*/*", "*/*"),
+    ("text/plain\x0c", None),
+    ("te!xt/plain", "te!xt/plain"),
+]
+
+
+@pytest.mark.parametrize("content_type,essence", _ESSENCES)
+def test_apollo_server_reads_a_content_type_as_whatwg_mimetype_does(content_type, essence):
+    assert apollo_http.mime_essence(content_type) == essence
+
+
+_EXPRESS_JSON = [
+    ("application/json", True),
+    ("Application/JSON", True),
+    (" application/json ", True),
+    ("application/json;", False),
+    ("application/json; foo", False),
+    ('application/json;x="a;b"', True),
+    ('application/json;x="a', False),
+    ("application/json; charset=utf-8; x=y", True),
+    ("application/json\xa0", True),
+    ("application/json\x85", False),
+    ("application/json\t;charset=utf-8", True),
+    ("application/json ;", False),
+    ("application/json+x", False),
+    ("", False),
+    ("application/json;charset=utf-8,", False),
+    ('application/json; x="\\""', True),
+    ("1application/json", False),
+]
+
+
+@pytest.mark.parametrize("content_type,read", _EXPRESS_JSON)
+def test_body_parser_reads_json_where_type_is_does(content_type, read):
+    assert request_body.express_reads_json(content_type) is read
+
+
+_FASTIFY_TYPES = [
+    ("application/json", "application/json"),
+    ("application/json;", "application/json"),
+    ("application/json ,", None),
+    ("application/json\t;", "application/json"),
+    ("application/json x", None),
+    ("\xa0application/json", "application/json"),
+    ("application/json\xa0", "application/json"),
+    ("application/json\x85", None),
+    ("", None),
+    ("undefined", None),
+    ("Undefined", None),
+    ("a/b/c", None),
+    ("text /plain", None),
+    ("text/ plain", None),
+    ("TEXT/PLAIN;X=Y", "text/plain"),
+    ("application/json; x=y, text/plain", "application/json"),
+    ("/json", None),
+    ("application/", None),
+    ("app_lication/json", "app_lication/json"),
+    ("application/json@", None),
+    ("text/plain\x0b", "text/plain"),
+    ("t\xe9xt/plain", None),
+    ("application; charset=utf-8", None),
+    ("text/pl\xe1in;x=y", None),
+]
+
+
+@pytest.mark.parametrize("content_type,media_type", _FASTIFY_TYPES)
+def test_fastify_reads_a_content_type_as_its_content_type_class_does(content_type, media_type):
+    assert request_body.fastify_media_type(content_type) == media_type
+
+
+_FORMS = [
+    ("query=%7B%20__typename%20%7D", {"query": "{ __typename }"}),
+    ("a&b=&=c&&d", {"a": "", "b": "", "": "c", "d": ""}),
+    ("a=1&a=2&a=3", {"a": ["1", "2", "3"]}),
+    ("a+b=c+d", {"a b": "c d"}),
+    ("a=%zz", {"a": "%zz"}),
+    ("a=%C3%A9", {"a": "\u00e9"}),
+    ("a=%C3", {"a": "%C3"}),
+    ("a=%E2%82", {"a": "%E2%82"}),
+    ("%zz=1", {"%zz": "1"}),
+    ("a==b", {"a": "=b"}),
+    ("a=%41%2", {"a": "%41%2"}),
+    ("x=%F0%9F%98%80", {"x": "\U0001f600"}),
+    ("__proto__=1", {"__proto__": "1"}),
+    ("a=1&b", {"a": "1", "b": ""}),
+    ("x=a%zz%41", {"x": "a%zz%41"}),
+    ("%41=1", {"A": "1"}),
+    ("x=%c3%a9", {"x": "\xe9"}),
+]
+
+
+@pytest.mark.parametrize("text,fields", _FORMS)
+def test_a_form_is_read_as_fast_querystring_reads_it(text, fields):
+    assert request_body.form_fields(text) == fields

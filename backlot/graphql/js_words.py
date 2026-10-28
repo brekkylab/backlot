@@ -2,10 +2,17 @@
 
 Linear and Fireflies answered a validation error, a syntax error and a variable's refusal in
 graphql-js 16.14.2's words on 2026-10-25 (UTC), and Linear refused an array sent for an input object
-as 16.14.2 does, where 16.9.0 reads the array's indices as field names. graphql-js 17.0.2 words
-five refusals otherwise (run on 2026-10-28 (UTC)): a variable of the wrong type, a null non-null
-variable, a missing non-null variable, a list item its type refuses, and a missing argument. A
-vendor's move to 17 shows here as answers that diverge, not as an error.
+as 16.14.2 does, where 16.9.0 reads the array's indices as field names. Of the refusals this module
+words, graphql-js 17.0.2 words otherwise each refusal of a variable's value, of an argument's value
+as the field runs, of a missing argument, of a ``null`` written for a non-null type, of an input
+object written as another kind of value, without a required field or with an unknown one, and of a
+literal a custom scalar refuses, unless it refuses with a ``GraphQLError``, and the syntax errors at
+``.5`` and ``..``. It also refuses a subscription where the schema has no subscription type as it
+validates, in words of its own, adds a refusal of ``@skip`` or ``@include`` at a subscription's root
+and, beside the unknown directive, the refusals its rules for ``@defer`` and ``@stream`` make, and
+puts a variable's being unused ahead of its type's being unknown or not an input type. That was run
+on 2026-10-28 (UTC) over documents for each of 16.14.2's validation rules, lexer and parser errors
+and coercions of a value. A vendor's move to 17 shows here as answers that diverge, not as an error.
 
 Linear and Fireflies run graphql-js under Apollo Server, and graphql-core is a port of graphql-js
 whose messages differ from it: graphql-core quotes a name, a type, a token or a character with

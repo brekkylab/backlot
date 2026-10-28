@@ -346,8 +346,8 @@ def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
 
 # A request to Linear or Fireflies with `Authorization` sent more than once, `{key}` standing for
 # the vendor's own spelling of the admin token, each answered with the 400 page
-# `backlot.main.refuse_a_repeated_authorization_on_linear_and_fireflies` records. The last three
-# rows are the control: one header reaches the vendor, and a path that only starts with the
+# `backlot.main.refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot` records. The last
+# three rows are the control: one header reaches the vendor, and a path that only starts with the
 # vendor's name is not the vendor's.
 _TYPENAME = b'{"query":"{ __typename }"}'
 _CLOUDFLARE = 400
@@ -409,6 +409,69 @@ def test_cloudflare_refuses_a_repeated_authorization(client, tokens_yaml, vendor
             None if method == "HEAD" else r.content,
         )
         expected[row.id] = (status, "text/html", "155", "close", None if method == "HEAD" else page)
+    assert answered == expected
+
+
+# The same page on each vendor Cloudflare fronts, `{key}` as above, for each header it refuses
+# sent more than once. The controls: one copy reaches the vendor, and `Cache-Control` or `Range`
+# twice reaches it too. The one-copy `If-None-Match` sends a tag, not `*`: api.notion.com answers
+# a single `*` on `GET /v1/users/me` with a 304, where these controls assert the 200.
+_CLOUDFLARE_REQUESTS = [
+    ("notion", "GET", "/v1/users/me", None, (("Notion-Version", "2025-09-03"),)),
+    ("linear", "POST", "/graphql", _TYPENAME, (("Content-Type", "application/json"),)),
+    ("fireflies", "POST", "/graphql", _TYPENAME, (("Content-Type", "application/json"),)),
+    ("hubspot", "GET", "/crm/v3/objects/contacts?limit=1", None, ()),
+]
+_CLOUDFLARE_REFUSED = [
+    ("Authorization", "{key}"),
+    ("If-None-Match", '"x"'),
+    ("If-Match", '"x"'),
+    ("If-Modified-Since", "Wed, 01 Jan 2025 00:00:00 GMT"),
+    ("If-Unmodified-Since", "Wed, 01 Jan 2025 00:00:00 GMT"),
+    ("If-Range", '"x"'),
+]
+_CLOUDFLARE_SERVED_TWICE = [
+    ("Cache-Control", "no-cache"),
+    ("Range", "bytes=0-99"),
+]
+
+
+def test_cloudflare_refuses_a_repeated_header(client, tokens_yaml):
+    admin = tokens_yaml["admin_token"]
+    page = (
+        b"<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n"
+        b"<center><h1>400 Bad Request</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
+        b"</body>\r\n</html>\r\n"
+    )
+    answered, expected = {}, {}
+    for vendor, method, path, body, extra in _CLOUDFLARE_REQUESTS:
+        key = admin if vendor == "linear" else f"Bearer {admin}"
+        for name, value in _CLOUDFLARE_REFUSED:
+            for copies, status in ((2, _CLOUDFLARE), (1, 200)):
+                headers = list(extra)
+                headers += [(name, value.format(key=key)) for _ in range(copies)]
+                if name != "Authorization":
+                    headers.append(("Authorization", key))
+                r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
+                label = f"{vendor} {name} x{copies}"
+                if status == _CLOUDFLARE:
+                    answered[label] = (
+                        r.status_code,
+                        r.headers.get("content-type"),
+                        r.headers.get("content-length"),
+                        r.headers.get("connection"),
+                        r.content,
+                    )
+                    expected[label] = (400, "text/html", "155", "close", page)
+                else:
+                    answered[label] = (r.status_code, page in r.content)
+                    expected[label] = (200, False)
+        for name, value in _CLOUDFLARE_SERVED_TWICE:
+            headers = list(extra) + [(name, value)] * 2 + [("Authorization", key)]
+            r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
+            label = f"{vendor} {name} twice"
+            answered[label] = (r.status_code, page in r.content)
+            expected[label] = (200, False)
     assert answered == expected
 
 

@@ -72,6 +72,10 @@ sees least. Nothing about the request changes but the identity.
 | Amazon S3 | AWS SigV4, SigV4a or Signature Version 2, signed with the identity's key pair |
 | A Google client with a config | Exchange it at `POST /oauth2/token` — see the Google section |
 
+Notion, HubSpot, Linear and Fireflies sit behind Cloudflare, which answers a request carrying
+`Authorization` twice, or one of `If-None-Match`, `If-Match`, `If-Modified-Since`,
+`If-Unmodified-Since` or `If-Range` twice, with a `400` HTML page of its own, there and here.
+
 ### Slack — `Bearer`
 
 ```bash
@@ -278,8 +282,7 @@ body is read. Linear tells an API key there by its shape, `lin_api_` and forty A
 digits, so a value in that shape draws the `400` whether or not Linear issued it; Backlot gives the
 same `400` to its own tokens, which stand for API keys. Any other value is the key itself, so
 `Token <token>` or `BEARER <token>` is a key that does not resolve: a `401`. Space or tab around the
-whole header value is ignored by both. A request carrying `Authorization` twice is a `400` HTML page
-from Cloudflare, in front of Linear and Fireflies alike, there and here.
+whole header value is ignored by both.
 
 ### Fireflies — `Bearer`
 

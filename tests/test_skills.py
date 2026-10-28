@@ -18,6 +18,8 @@ import importlib.util
 import json
 import re
 import struct
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -231,6 +233,52 @@ def test_every_skills_sh_command_names_the_published_skill():
         for rest in commands:
             named = re.search(r"--skill (\S+)", rest)
             assert named and (REPO / "skills" / named[1] / "SKILL.md").exists(), (readme, rest)
+
+
+def _named(value) -> list[str]:
+    if isinstance(value, dict):
+        return [p for v in value.values() for p in _named(v)]
+    if isinstance(value, list):
+        return [p for v in value for p in _named(v)]
+    return [value[2:].rstrip("/")] if isinstance(value, str) and value.startswith("./") else []
+
+
+def test_the_plugin_branch_carries_the_skill_at_one_release_and_nothing_else(tmp_path):
+    """The tree ``scripts/plugin_branch.py`` builds for the ``plugin`` branch. It holds what either
+    manifest names, both manifests at the release's version and otherwise as committed, a README
+    over the 40 words outside code blocks that Anthropic's directory requires (pre-submission
+    checklist, 2026-10-27), and the license. The skill's links into the rest of the repository,
+    which the branch does not carry, point at that file on GitHub at the release's ref."""
+    out = tmp_path / "plugin"
+    subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "plugin_branch.py")]
+        + ["--version", "9.8.7", "--ref", "v9.8.7", str(out)],
+        check=True,
+    )
+    built = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
+
+    named = set()
+    for manifest in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
+        committed = json.loads((REPO / manifest).read_text(encoding="utf-8"))
+        shipped = json.loads((out / manifest).read_text(encoding="utf-8"))
+        assert shipped == {**committed, "version": "9.8.7"}
+        named |= set(_named(committed))
+    for path in named:
+        assert path in built or any(f.startswith(f"{path}/") for f in built), path
+    extra = built - {".claude-plugin/plugin.json", ".codex-plugin/plugin.json"}
+    extra -= {"README.md", "LICENSE", "NOTICE.md"}
+    assert not {f for f in extra if not any(f == n or f.startswith(f"{n}/") for n in named)}
+
+    readme = re.sub(r"```.*?```", "", (out / "README.md").read_text(encoding="utf-8"), flags=re.S)
+    assert len(readme.split()) >= 40
+
+    skill = (out / "skills" / "backlot" / "SKILL.md").read_text(encoding="utf-8")
+    links = re.findall(r"\]\(([^)\s]+)\)", skill)
+    assert not [link for link in links if not link.startswith(("https://", "http://", "#"))]
+    pinned = re.findall(r"github\.com/brekkylab/backlot/(blob|tree)/v9\.8\.7/([^)#\s]+)", skill)
+    assert pinned
+    for kind, path in pinned:
+        assert (REPO / path).is_dir() if kind == "tree" else (REPO / path).is_file(), path
 
 
 # Backlot's own endpoints, as opposed to the vendor prefixes gen_docs.py already checks. Matched by

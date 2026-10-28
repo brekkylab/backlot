@@ -1,0 +1,95 @@
+# Publishes the branch the Claude Code and Codex marketplaces install the plugin from: the tree
+# scripts/plugin_branch.py builds for one release, as one commit on top of the branch's last. main
+# keeps the package, its tests and its lock file; the branch carries the skill and what its
+# manifests name, nothing else.
+#
+# A published release builds `plugin` from its tag. A manual run builds any ref at any version into
+# any branch, so the workflow can be exercised against a scratch branch before a release relies on it.
+name: Plugin branch
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build from, normally a release tag"
+        type: string
+        required: true
+      version:
+        description: "Version both plugin manifests carry, e.g. 1.2.3"
+        type: string
+        required: true
+      branch:
+        description: "Branch to publish to"
+        type: string
+        default: plugin
+
+permissions:
+  contents: read
+
+# Two runs racing for one branch would each read the same parent; the second push then fails
+# rather than losing the first, but it is simpler never to race.
+concurrency:
+  group: plugin-branch-${{ inputs.branch || 'plugin' }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      REF: ${{ github.event.release.tag_name || inputs.ref }}
+      BRANCH: ${{ inputs.branch || 'plugin' }}
+      INPUT_VERSION: ${{ inputs.version }}
+      TREE: ${{ runner.temp }}/plugin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Choose the version
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = release ]; then
+            version="${REF#v}"
+          else
+            version="$INPUT_VERSION"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      # The skill tells an agent to `pip install backlot`, so the branch moves only once PyPI serves
+      # the version it describes.
+      - name: Wait for PyPI to serve the version
+        if: github.event_name == 'release'
+        run: |
+          for _ in $(seq 60); do
+            curl -sf -o /dev/null "https://pypi.org/pypi/backlot/$VERSION/json" && exit 0
+            sleep 10
+          done
+          echo "PyPI does not serve backlot $VERSION after 10 minutes" >&2
+          exit 1
+      - name: Build the plugin tree
+        run: python scripts/plugin_branch.py --version "$VERSION" --ref "$REF" "$TREE"
+      # The directory's own checks run on submission; this is the subset the CLI runs. It needs no
+      # login. Bump the pinned version deliberately, not to latest.
+      - name: Validate the tree as Anthropic's directory profile does
+        run: npx -y @anthropic-ai/claude-code@2.1.308 plugin validate --profile directory --strict "$TREE"
+      - name: Commit the tree onto the branch and push it
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git fetch --no-tags origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null || true
+          parent=$(git rev-parse -q --verify "refs/remotes/origin/$BRANCH" || true)
+          tree=$(GIT_INDEX_FILE="$RUNNER_TEMP/index" sh -c 'git --work-tree="$TREE" add -A && git write-tree')
+          if [ -n "$parent" ] && [ "$(git rev-parse "$parent^{tree}")" = "$tree" ]; then
+            echo "$BRANCH already carries this tree"
+            exit 0
+          fi
+          commit=$(git commit-tree "$tree" ${parent:+-p "$parent"} -m "Plugin $VERSION, built from $REF")
+          git push origin "$commit:refs/heads/$BRANCH"
+          echo "$BRANCH is $commit: plugin $VERSION, built from $REF" >> "$GITHUB_STEP_SUMMARY"

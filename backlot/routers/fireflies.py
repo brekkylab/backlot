@@ -1,9 +1,10 @@
-"""Fireflies.ai's GraphQL API, served at ``POST /fireflies/graphql``.
+"""Fireflies.ai's GraphQL API, served at ``/fireflies/graphql``.
 
 Fireflies is **GraphQL only** — there is no REST surface to emulate — so this router is one
 endpoint. The schema and the resolvers live in ``backlot/graphql/`` (``fireflies.graphql`` +
-``fireflies_resolvers.py``); everything here is HTTP: a body and credentials in, a GraphQL
-envelope out, or its HTTP layer's for a body it cannot read (:func:`_body_refusal`).
+``fireflies_resolvers.py``); everything here is HTTP: a request and credentials in, a GraphQL
+envelope out, or the answer of a layer in front of Apollo Server's run, in the order
+:func:`graphql` lists them.
 
 Auth is the bearer path (``Authorization: Bearer <api_key>``), which is what the vendor's own
 quickstart shows for all four of its raw-HTTP examples, read by
@@ -23,7 +24,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 from graphql import (
     DocumentNode,
     FieldNode,
@@ -35,8 +36,8 @@ from graphql import (
 
 from backlot import auth
 from backlot.config import get_settings
+from backlot.graphql import apollo_http, engine
 from backlot.graphql import body as request_body
-from backlot.graphql import engine
 from backlot.graphql.fireflies_resolvers import build_engine
 
 router = APIRouter(prefix="/fireflies", tags=["fireflies"])
@@ -45,31 +46,34 @@ router = APIRouter(prefix="/fireflies", tags=["fireflies"])
 # schema fails at startup instead of on the first request.
 ENGINE = build_engine()
 
+# The media type api.fireflies.ai answered each envelope of `_body_refusal` and `_not_found` in.
+_JSON = "application/json; charset=utf-8"
 _EMPTY = "Body cannot be empty when content-type is set to 'application/json'"
+_UNSUPPORTED = "Unsupported Media Type"
 _NOT_JSON = "Body is not valid JSON but content-type is set to 'application/json'"
 _TOO_LARGE = "Request body is too large"
+_SIZE_MISMATCH = "Request body size did not match Content-Length"
 #: The most bytes Fireflies reads: api.fireflies.ai served a body of 1048576 bytes and answered one
 #: of 1048577 with :data:`_TOO_LARGE`'s 413 on 2026-10-19, with a credential, with none and with
 #: ``Authorization: nope``.
 _LIMIT = 1024 * 1024
 
 
-def _body_refusal(message: str, status: int = 400) -> JSONResponse:
+def _body_refusal(message: str, status: int = 400, code: str = "http") -> Response:
     """Fireflies' answer to a body it cannot read: an envelope of its HTTP layer, not a GraphQL
     one, with the message twice. :data:`_EMPTY` is the 400 for a body of no bytes and
     :data:`_NOT_JSON` the 400 for every other one :mod:`backlot.graphql.body` cannot read or finds
     :func:`~backlot.graphql.body.prototype_poisoned`, as api.fireflies.ai answered on 2026-10-18;
-    :data:`_TOO_LARGE` is the 413 for one over :data:`_LIMIT`."""
-    return JSONResponse(
-        {
-            "statusCode": status,
-            "status": False,
-            "code": "http",
-            "message": message,
-            "errorMessage": message,
-        },
-        status_code=status,
-    )
+    :data:`_TOO_LARGE` is the 413 for one over :data:`_LIMIT` and :data:`_UNSUPPORTED` the 415
+    for one of a type it does not read. :func:`_not_found` is the same envelope."""
+    envelope = {
+        "statusCode": status,
+        "status": False,
+        "code": code,
+        "message": message,
+        "errorMessage": message,
+    }
+    return Response(request_body.node_json(envelope), status_code=status, media_type=_JSON)
 
 
 # The two messages Fireflies refuses a credential with: a value with no `Bearer` prefix, and the
@@ -85,23 +89,28 @@ _BAD_KEY = (
 )
 
 
-def _auth_failed(message: str) -> JSONResponse:
+def _auth_failed(seen: dict[str, str], message: str) -> Response:
     """Fireflies' answer to a credential it does not take: a 500 carrying an ``auth_failed``
     entry, as api.fireflies.ai answered on 2026-10-18 with no ``Authorization``, with ``nope``,
     ``Basic …``, ``token <key>``, the bare key, ``Bearer nope`` and ``Bearer <key> extra``. The
-    document is not read first: ``{"query":"{"}``, ``[]`` and ``5`` drew the same 500."""
-    return JSONResponse(
-        {
-            "errors": [
-                {
-                    "friendly": True,
-                    "code": "auth_failed",
-                    "message": message,
-                    "extensions": {"code": "auth_failed"},
-                }
-            ]
-        },
+    document is not read first: ``{"query":"{"}``, ``[]`` and ``5`` drew the same 500. Apollo
+    Server makes it from the error its context function throws, so it takes a thrown refusal's
+    media type (:mod:`backlot.graphql.apollo_http`)."""
+    return Response(
+        request_body.node_json(
+            {
+                "errors": [
+                    {
+                        "friendly": True,
+                        "code": "auth_failed",
+                        "message": message,
+                        "extensions": {"code": "auth_failed"},
+                    }
+                ]
+            }
+        ),
         status_code=500,
+        media_type=apollo_http.response_type(seen.get("accept")) or apollo_http.JSON,
     )
 
 
@@ -112,25 +121,58 @@ _FRIENDLY = {
     "object_not_found": True,
 }
 
+# The methods Fastify reads a body for and has no route for at this path: it reads the body, then
+# answers its not-found handler's 404 (:func:`_not_found`).
+_READ_THEN_NOT_FOUND = ("DELETE", "PATCH", "PUT")
 
-@router.post("/graphql", include_in_schema=False)
+
+@router.api_route("/graphql", methods=list(apollo_http.METHODS), include_in_schema=False)
 async def graphql(request: Request):
-    """The single Fireflies endpoint. Not in the OpenAPI document on purpose: this is a GraphQL
-    service, and describing one POST route that accepts an arbitrary query would tell an
-    OpenAPI→MCP bridge nothing useful (hence no ``SOURCE_PREFIXES`` entry either — see
-    ``backlot/openapi.py``). Introspection is the schema description for this endpoint."""
-    # Off the event loop, as a body of `_LIMIT` bytes can keep `_read` busy a third of a second.
-    payload = await run_in_threadpool(_read, await request.body())
-    if isinstance(payload, JSONResponse):
-        return payload
-    # The telemetry middleware names the call by this document (backlot.telemetry.naming).
-    request.state.graphql_payload = payload
+    """The single Fireflies endpoint, in front of which Fireflies runs Fastify and
+    ``@fastify/cors``. Not in the OpenAPI document on purpose: this is a GraphQL service, and
+    describing one route that accepts an arbitrary query would tell an OpenAPI→MCP bridge nothing
+    useful (hence no ``SOURCE_PREFIXES`` entry either — see ``backlot/openapi.py``). Introspection
+    is the schema description for this endpoint.
+
+    The layers answer in this order, each measured against api.fireflies.ai on 2026-10-25 (UTC)
+    with the one after it wrong too: ``@fastify/cors`` (:func:`_preflight`), Fastify
+    (:func:`_fastify_read`, :func:`_not_found`), then Apollo Server
+    (:mod:`backlot.graphql.apollo_http`): its page for a browser and its CSRF check ahead of the
+    credential (:func:`_auth_failed`), and the rest after it (:func:`_answer`)."""
+    method = request.method
+    if method == "OPTIONS":
+        return _preflight(request)
+    if method not in ("GET", "HEAD", "POST"):
+        if method in _READ_THEN_NOT_FOUND:
+            read = await _fastify_read(request, routed=False)
+            if isinstance(read, Response):
+                return read
+        return _not_found(request)
+    payload: Any = None
+    if method == "POST":
+        payload = await _fastify_read(request, routed=True)
+        if isinstance(payload, Response):
+            return payload
+        # The telemetry middleware names the call by this document (backlot.telemetry.naming).
+        request.state.graphql_payload = payload
+    seen = apollo_http.headers_seen(request.headers.raw)
+    if apollo_http.prefers_html(method, seen.get("accept")):
+        return Response(apollo_http.landing_page(), headers={"content-type": "text/html"})
+    refusal = apollo_http.csrf_refusal(seen)
+    if refusal is not None:
+        return _answer(seen, engine.refused(refusal))
     token = auth.fireflies_bearer_token(request)
-    if token is None:
-        return _auth_failed(_NO_PREFIX)
     caller = auth.acl(request).resolve(token)
     if caller is None:
-        return _auth_failed(_BAD_KEY)
+        return _auth_failed(seen, _NO_PREFIX if token is None else _BAD_KEY)
+    if method == "HEAD":
+        return _answer(seen, engine.refused(apollo_http.method_refusal()))
+    if method == "GET":
+        refusal = apollo_http.get_content_type_refusal(seen)
+        payload = refusal or apollo_http.search_payload(request.scope["query_string"])
+        if isinstance(payload, engine.Refusal):
+            return _answer(seen, engine.refused(payload))
+        request.state.graphql_payload = payload
     state = request.app.state
     context = {
         "conn": auth.conn(request),
@@ -143,13 +185,113 @@ async def graphql(request: Request):
         # scale measured) and almost none of them have a Fireflies account. See resolve_users.
         "roster": frozenset(state.acl.email_to_token()) if getattr(state, "acl", None) else None,
     }
-    result = ENGINE.execute_payload(payload, context=context, on_document=_depth_limit)
+    result = ENGINE.execute_payload(
+        payload, context=context, on_document=_depth_limit, get=method == "GET"
+    )
     request.state.graphql_raised = result.raised
+    return _answer(seen, result)
+
+
+def _answer(seen: dict[str, str], result: engine.Result) -> Response:
+    """Apollo Server's answer to ``result`` in Fireflies' envelope (:func:`_envelope`), in the
+    media type :func:`~backlot.graphql.apollo_http.response_type` picks, or Apollo Server's 406."""
+    media_type = apollo_http.response_type(seen.get("accept"))
+    if media_type is None and not (result.refusals and result.refusals[0].thrown):
+        result = engine.refused(apollo_http.NOT_ACCEPTABLE)
     return Response(
         request_body.node_json(_envelope(result)),
         status_code=result.status,
-        media_type="application/json",
+        headers=dict(result.headers),
+        media_type=media_type or apollo_http.JSON,
     )
+
+
+#: The headers ``@fastify/cors`` writes on each preflight, as api.fireflies.ai answered every one
+#: sent with `Origin` and `Access-Control-Request-Method` on 2026-10-25 (UTC).
+_PREFLIGHT = (
+    ("access-control-allow-origin", "*"),
+    ("access-control-allow-methods", "GET,HEAD,POST"),
+    ("vary", "Access-Control-Request-Headers"),
+)
+
+
+def _preflight(request: Request) -> Response:
+    """``@fastify/cors``'s answer to an `OPTIONS`, ahead of the body and the credential: its 204,
+    with :data:`_PREFLIGHT` and `Access-Control-Request-Headers` echoed back as Node reads it, to
+    one carrying both `Origin` and `Access-Control-Request-Method` with more than spaces and tabs in
+    them, and its 400 to any other. api.fireflies.ai answered so with no credential and
+    `Bearer nope`, with `Access-Control-Request-Method` naming `POST` or `PUT`, with `Origin: null`,
+    and with a JSON body or `{`; it echoed ` a , b ` as `a , b`, `a` and `b` in two copies as
+    `a, b`, and a value with a space, a tab, U+0085 or U+00A0 inside it, U+00A0 at either end or
+    U+0085 after it, as sent. It answered an empty or blank `Origin` and an empty
+    `Access-Control-Request-Method` with the 400 on 2026-10-26 (UTC)."""
+    seen = apollo_http.headers_seen(request.headers.raw)
+    if "origin" not in seen or "access-control-request-method" not in seen:
+        return Response(
+            b"Invalid Preflight Request", status_code=400, headers={"content-type": "text/plain"}
+        )
+    response = Response(status_code=204)
+    asked = seen.get("access-control-request-headers")
+    echoed = () if asked is None else (("access-control-allow-headers", asked),)
+    response.raw_headers += [(k.encode(), v.encode("latin-1")) for k, v in (*_PREFLIGHT, *echoed)]
+    return response
+
+
+def _not_found(request: Request) -> Response:
+    """Fireflies' 404 for a method its route does not take, the method and the path quoted in it as
+    a client puts them after ``https://api.fireflies.ai``, the query string as sent.
+    api.fireflies.ai answered so each of the 28 methods of :data:`apollo_http.METHODS` but GET,
+    HEAD, POST, OPTIONS and Cloudflare's three on 2026-10-25 (UTC), `PUT`, `DELETE` and `PATCH` once
+    Fastify had read their body (:func:`_fastify_read`), and quoted `/graphql?x=%7B%20y&z&a=b+c` as
+    sent."""
+    # The path as sent, but for the segment that names Fireflies here.
+    path = "/" + request.scope["raw_path"].decode("latin-1").split("/", 2)[2]
+    query = request.scope["query_string"].decode("latin-1")
+    message = f"Cannot {request.method} {path}{'?' if query else ''}{query}"
+    return _body_refusal(message, 404, "not_found")
+
+
+_FASTIFY_PARSED = ("application/json", "text/plain", "application/x-www-form-urlencoded")
+
+
+async def _fastify_read(request: Request, routed: bool) -> Any:
+    """The body Fastify 5.10.0 hands a request's handler, or :func:`_body_refusal`'s refusal of it,
+    read off ``lib/handle-request.js`` and ``lib/content-type-parser.js``. With no
+    ``Content-Type``, a request with no ``Content-Length`` or one of 0, and no
+    ``Transfer-Encoding``, has none, and any other is the 415; a type it cannot parse
+    (:func:`~backlot.graphql.body.fastify_media_type`) is the 415. It reads JSON as :func:`_read`
+    does, plain text and a form (:func:`~backlot.graphql.body.form_fields`). On a request its route
+    does not take, ``routed`` false, any other type and no type are left unread, where a routed
+    request gets the 415.
+
+    api.fireflies.ai answered so each body sent on 2026-10-25 (UTC) to `POST`, `PUT`, `DELETE`
+    and `PATCH`: no type with a body was the 415 by `POST` and the 404 by `PUT`, `a/b/c` and an
+    empty type the 415 by both, `application/graphql` the 415 by `POST`, past the limit too, and
+    the 404 by `PUT`, and a form or plain text past the limit the 413 by both."""
+    content_type = request.headers.get("content-type")
+    if content_type is None:
+        length = request.headers.get("content-length")
+        if "transfer-encoding" not in request.headers and length in (None, "0"):
+            return None
+        return _body_refusal(_UNSUPPORTED, 415) if routed else None
+    media_type = request_body.fastify_media_type(content_type)
+    if media_type is None:
+        return _body_refusal(_UNSUPPORTED, 415)
+    if media_type not in _FASTIFY_PARSED:
+        return _body_refusal(_UNSUPPORTED, 415) if routed else None
+    raw = await request.body()
+    if media_type == "application/json":
+        # Off the event loop, as a body of `_LIMIT` bytes can keep `_read` busy a third of a second.
+        return await run_in_threadpool(_read, raw)
+    if len(raw) > _LIMIT:
+        return _body_refusal(_TOO_LARGE, 413)
+    text = raw.decode("utf-8", "replace")
+    if media_type != "text/plain":
+        return request_body.form_fields(text)
+    # Fastify reads plain text as UTF-8 and counts the text's own UTF-8 bytes against the body's:
+    # `text/plain` holding the byte 0xE9, with a charset or none, by POST and by PUT, was the 400 on
+    # 2026-10-26 (UTC), where a form holding it was served and 0xE9 past the limit was the 413.
+    return text if len(text.encode("utf-8")) == len(raw) else _body_refusal(_SIZE_MISMATCH)
 
 
 def _entry(error: dict, code: str, friendly: bool, extensions: dict) -> dict:
@@ -275,8 +417,8 @@ def _depth_limit(doc: DocumentNode) -> engine.Result | list[GraphQLError]:
 
 
 def _read(raw: bytes) -> Any:
-    """The payload Fireflies reads from the body ``raw``, or :func:`_body_refusal`'s refusal of
-    it."""
+    """The payload Fireflies reads from the JSON body ``raw``, or :func:`_body_refusal`'s refusal
+    of it."""
     if len(raw) > _LIMIT:
         return _body_refusal(_TOO_LARGE, 413)
     if not raw:

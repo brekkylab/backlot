@@ -109,12 +109,18 @@ MAX_VALIDATION_ERRORS = 100
 class Refusal:
     """One request error as Apollo Server answers it: ``message`` as Apollo Server writes it, in
     graphql-js's words where graphql-js made the refusal, the ``locations`` graphql-js gives it,
-    Apollo Server's ``code``, and the status of the answer."""
+    Apollo Server's ``code``, the status of the answer and the ``headers`` it sets on it.
+    ``thrown`` marks a refusal Apollo Server throws, which ``Accept`` cannot turn into its 406, and
+    ``http_headers`` whether the ``http`` extension it carries names its ``headers``, as all but
+    the 406's do."""
 
     message: str
     code: str
     locations: tuple = ()
     status: int = 400
+    headers: tuple[tuple[str, str], ...] = ()
+    thrown: bool = False
+    http_headers: bool = True
 
 
 @dataclass(frozen=True)
@@ -141,6 +147,11 @@ class Result:
     def status(self) -> int:
         """The status of the answer: a refusal's, or 200 for an operation that ran."""
         return self.refusals[0].status if self.refusals else 200
+
+    @property
+    def headers(self) -> tuple[tuple[str, str], ...]:
+        """The headers Apollo Server sets on the answer: a refusal's, or none."""
+        return self.refusals[0].headers if self.refusals else ()
 
 
 @dataclass(frozen=True)
@@ -200,8 +211,10 @@ def refused(*refusals: Refusal) -> Result:
     return Result(payload={"errors": errors}, refusals=refusals)
 
 
-def _refusal(message: str, code: str = BAD_REQUEST, status: int = 400) -> Result:
-    return refused(Refusal(message, code, status=status))
+def _refusal(
+    message: str, code: str = BAD_REQUEST, status: int = 400, thrown: bool = False
+) -> Result:
+    return refused(Refusal(message, code, status=status, thrown=thrown))
 
 
 def _js_truthy(value: Any) -> bool:
@@ -234,22 +247,22 @@ def body_refusal(payload: Any) -> Result | None:
     type. Both vendors kept that order with two wrong at once on 2026-10-25 (UTC). A ``null``
     member is one not sent."""
     if isinstance(payload, list):
-        return _refusal("Operation batching disabled.")
+        return _refusal("Operation batching disabled.", thrown=True)
     if not isinstance(payload, dict) or not payload:
-        return _refusal(NO_KEYS)
+        return _refusal(NO_KEYS, thrown=True)
     query = payload.get("query")
     if _js_truthy(query) and not isinstance(query, str):
         document = isinstance(query, dict) and query.get("kind") == "Document"
-        return _refusal(_A_DOCUMENT if document else _NOT_A_STRING)
+        return _refusal(_A_DOCUMENT if document else _NOT_A_STRING, thrown=True)
     for name in ("variables", "extensions"):
         if isinstance(payload.get(name), str):
-            return _refusal(RECURSIVELY_ENCODED.format(name))
+            return _refusal(RECURSIVELY_ENCODED.format(name), thrown=True)
     for name in ("extensions", "variables"):
         if payload.get(name) is not None and not isinstance(payload[name], dict):
-            return _refusal(f"`{name}` in a POST body must be an object if provided.")
+            return _refusal(f"`{name}` in a POST body must be an object if provided.", thrown=True)
     name = payload.get("operationName")
     if name is not None and not isinstance(name, str):
-        return _refusal("`operationName` in a POST body must be a string if provided.")
+        return _refusal("`operationName` in a POST body must be a string if provided.", thrown=True)
     return None
 
 
@@ -378,10 +391,12 @@ class Engine:
         variables: Any = None,
         operation_name: str | None = None,
         on_document: Callable[[DocumentNode], Result | list[GraphQLError]] | None = None,
+        get: bool = False,
     ) -> Result | Operation:
         """``document`` read as graphql-js reads it under Apollo Server, up to the choice of the
         operation to run: parse, then validation, then the choice of operation, each refused with
-        Apollo Server's code; :meth:`run` takes the operation it chose.
+        Apollo Server's code; :meth:`run` takes the operation it chose. Sent by ``get``, an
+        operation that is not a query is Apollo Server's 405.
 
         ``on_document`` is a validation rule of the vendor's that reports as graphql-js creates
         it: the :class:`Result` to answer with where it throws, or the errors it reports, which
@@ -413,6 +428,16 @@ class Engine:
                 else f'Unknown operation named "{operation_name}".'
             )
             return _refusal(message, OPERATION_RESOLUTION_FAILURE)
+        kind = operation.operation.value
+        if get and kind != "query":
+            return refused(
+                Refusal(
+                    f"GET requests only support query operations, not {kind} operations",
+                    BAD_REQUEST,
+                    status=405,
+                    headers=(("allow", "POST"),),
+                )
+            )
         return Operation(doc, operation, variables, operation_name)
 
     def resolve_payload(
@@ -420,14 +445,16 @@ class Engine:
         payload: Any,
         *,
         on_document: Callable[[DocumentNode], Result | list[GraphQLError]] | None = None,
+        get: bool = False,
     ) -> Result | Operation:
         """A GraphQL-over-HTTP POST body (``{query, variables, operationName}``) its router has
         read with :mod:`backlot.graphql.body`, up to the choice of operation: :func:`body_refusal`,
         then :func:`persisted_query_refusal`, then Apollo Server's refusal of a body with no query
         and no ``persistedQuery`` extension, then :meth:`resolve`. A query whose hash a
         ``persistedQuery`` extension matches is parsed however empty it is, as both vendors parsed
-        ``""`` on 2026-10-28 (UTC)."""
-        answer = body_refusal(payload)
+        ``""`` on 2026-10-28 (UTC). With ``get``, ``payload`` is a GET's query string as
+        :func:`backlot.graphql.apollo_http.search_payload` reads it, which no body check runs on."""
+        answer = None if get else body_refusal(payload)
         if answer is None:
             answer = persisted_query_refusal(payload)
         if answer is not None:
@@ -440,6 +467,7 @@ class Engine:
             variables=payload.get("variables"),
             operation_name=payload.get("operationName"),
             on_document=on_document,
+            get=get,
         )
 
     def run(self, operation: Operation, *, context: Any = None) -> Result:
@@ -524,9 +552,10 @@ class Engine:
         *,
         context: Any = None,
         on_document: Callable[[DocumentNode], Result | list[GraphQLError]] | None = None,
+        get: bool = False,
     ) -> Result:
         """:meth:`resolve_payload`, then :meth:`run` the operation it chose."""
-        resolved = self.resolve_payload(payload, on_document=on_document)
+        resolved = self.resolve_payload(payload, on_document=on_document, get=get)
         return resolved if isinstance(resolved, Result) else self.run(resolved, context=context)
 
 

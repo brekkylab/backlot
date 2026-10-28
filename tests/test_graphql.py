@@ -27,8 +27,8 @@ from graphql.type.scalars import coerce_id
 from starlette.testclient import TestClient
 
 from backlot import auth, pagination, store
+from backlot.graphql import apollo_http, engine, mcp_tools, v8_json
 from backlot.graphql import body as request_body
-from backlot.graphql import engine, mcp_tools, v8_json
 from tests._helpers import selected_fields
 
 SDL = """
@@ -2040,3 +2040,194 @@ def test_a_derived_document_validates_against_the_schema(tools):
 
 def test_a_tool_carries_its_fields_description(tools):
     assert "Loose notes, newest first." in tools["notes"].description
+
+
+# --- the Node libraries `apollo_http` and `body` are read off -------------------------------------
+# Each value and what the library behind the port each test names answered for it under Node
+# 24.18.0; the ports' docstrings name each library's release.
+_ACCEPTED = [
+    ("*/*", apollo_http.JSON, False),
+    ("application/*", apollo_http.JSON, False),
+    ("text/html", None, True),
+    ("", apollo_http.JSON, False),
+    ("application/json;q=0", None, False),
+    ("application/json;q", None, False),
+    ("application/json;q=abc", None, False),
+    ("application/json;q=1.5", apollo_http.JSON, False),
+    ("application/json; charset=utf-8", apollo_http.JSON, False),
+    ("application/json; charset=latin1", None, False),
+    ("APPLICATION/JSON", apollo_http.JSON, False),
+    ("application/json;Q=0", None, False),
+    ("application/json;q=0.5;charset=latin1", apollo_http.JSON, False),
+    ('application/json;x="a,b"', None, False),
+    ('"a,b", application/json', apollo_http.JSON, False),
+    ("text/html;q=0.5;charset=utf-8", None, True),
+    ("text/html;level=1", None, False),
+    (",", None, False),
+    ("foo", None, False),
+    ("application/json\xa0", apollo_http.JSON, False),
+    ("application/json\x85", None, False),
+    ("application/json;q=Infinity", apollo_http.JSON, False),
+    ("application/json;q=-0", None, False),
+    ("application/json; callbackSpec=1.0", apollo_http.CALLBACK, False),
+    (
+        "application/graphql-response+json;q=0.5, application/json;q=0.5",
+        apollo_http.GRAPHQL_RESPONSE,
+        False,
+    ),
+    ("application/json, application/graphql-response+json", apollo_http.JSON, False),
+    ("application/json;q=0, */*", apollo_http.GRAPHQL_RESPONSE, False),
+    ("text/html, application/json", apollo_http.JSON, True),
+    ("text/*", None, True),
+    ("*/*;q=0.001, text/html;q=0.0005", apollo_http.JSON, False),
+    ("application/json;q= 0.5", apollo_http.JSON, False),
+    ("application/json;q=0.5x", apollo_http.JSON, False),
+    ("application/json ;q=0", None, False),
+    ("application/json;q =0", None, False),
+    (
+        "application/json;charset=utf-8;q=0.1, application/json;q=0.9, application/graphql-response+json;q=0.5",
+        apollo_http.GRAPHQL_RESPONSE,
+        False,
+    ),
+    ("application/json;q=abc, application/json;q=0.5", apollo_http.JSON, False),
+    ('text/html;x=",application/json,"', None, False),
+    ('application/json;x="a;q=0"', None, False),
+    ('application/json;charset="utf-8"', apollo_http.JSON, False),
+    ('application/json;charset=autf-8"', None, False),
+    ('application/json;charset="utf-8a', None, False),
+    ("application/json;charset=*", apollo_http.JSON, False),
+    ("application/json;foo", apollo_http.JSON, False),
+    ("multipart/mixed; deferSpec=20220824, text/html;q=0.9", None, False),
+    ("multipart/mixed; incrementalSpec=v0.2, text/html;q=0.9", None, False),
+    ("multipart/mixed, text/html;q=0.9", None, False),
+    ("application/json;q=.5, application/graphql-response+json;q=0.4", apollo_http.JSON, False),
+    (
+        "application/json;q=1e-1, application/graphql-response+json;q=0.4",
+        apollo_http.GRAPHQL_RESPONSE,
+        False,
+    ),
+    ("application/json;q=+0.1, application/graphql-response+json;q=0.05", apollo_http.JSON, False),
+]
+
+
+@pytest.mark.parametrize("accept,media_type,html", _ACCEPTED)
+def test_apollo_server_reads_accept_as_negotiator_does(accept, media_type, html):
+    """Each row of `_ACCEPTED`: the media type negotiator picks for a single result, and whether it
+    puts `text/html` first for a GET."""
+    assert apollo_http.response_type(accept) == media_type
+    assert apollo_http.prefers_html("GET", accept) is html
+    assert apollo_http.prefers_html("POST", accept) is False
+
+
+_ESSENCES = [
+    (" text/plain ", "text/plain"),
+    ("TEXT/PLAIN;x", "text/plain"),
+    ("text/plain ;", "text/plain"),
+    ("text/plain\t", "text/plain"),
+    ("text/plain\xa0", None),
+    ("text /plain", None),
+    ("text/ plain", None),
+    ("a/b/c", None),
+    ("/b", None),
+    ("a/", None),
+    ("", None),
+    ("text/plain, application/json", None),
+    ('text/plain;"', "text/plain"),
+    ("text/pl@in", None),
+    ("\ttext/plain;charset=utf-8", "text/plain"),
+    ("multipart/form-data; boundary=x", "multipart/form-data"),
+    ("application/x-www-form-urlencoded", "application/x-www-form-urlencoded"),
+    ("*/*", "*/*"),
+    ("text/plain\x0c", None),
+    ("te!xt/plain", "te!xt/plain"),
+]
+
+
+@pytest.mark.parametrize("content_type,essence", _ESSENCES)
+def test_apollo_server_reads_a_content_type_as_whatwg_mimetype_does(content_type, essence):
+    assert apollo_http.mime_essence(content_type) == essence
+
+
+_EXPRESS_JSON = [
+    ("application/json", True),
+    ("Application/JSON", True),
+    (" application/json ", True),
+    ("application/json;", False),
+    ("application/json; foo", False),
+    ('application/json;x="a;b"', True),
+    ('application/json;x="a', False),
+    ("application/json; charset=utf-8; x=y", True),
+    ("application/json\xa0", True),
+    ("application/json\x85", False),
+    ("application/json\t;charset=utf-8", True),
+    ("application/json ;", False),
+    ("application/json+x", False),
+    ("", False),
+    ("application/json;charset=utf-8,", False),
+    ('application/json; x="\\""', True),
+    ("1application/json", False),
+]
+
+
+@pytest.mark.parametrize("content_type,read", _EXPRESS_JSON)
+def test_body_parser_reads_json_where_type_is_does(content_type, read):
+    assert request_body.express_reads_json(content_type) is read
+
+
+_FASTIFY_TYPES = [
+    ("application/json", "application/json"),
+    ("application/json;", "application/json"),
+    ("application/json ,", None),
+    ("application/json\t;", "application/json"),
+    ("application/json x", None),
+    ("\xa0application/json", "application/json"),
+    ("application/json\xa0", "application/json"),
+    ("application/json\x85", None),
+    ("", None),
+    ("undefined", None),
+    ("Undefined", None),
+    ("a/b/c", None),
+    ("text /plain", None),
+    ("text/ plain", None),
+    ("TEXT/PLAIN;X=Y", "text/plain"),
+    ("application/json; x=y, text/plain", "application/json"),
+    ("/json", None),
+    ("application/", None),
+    ("app_lication/json", "app_lication/json"),
+    ("application/json@", None),
+    ("text/plain\x0b", "text/plain"),
+    ("t\xe9xt/plain", None),
+    ("application; charset=utf-8", None),
+    ("text/pl\xe1in;x=y", None),
+]
+
+
+@pytest.mark.parametrize("content_type,media_type", _FASTIFY_TYPES)
+def test_fastify_reads_a_content_type_as_its_content_type_class_does(content_type, media_type):
+    assert request_body.fastify_media_type(content_type) == media_type
+
+
+_FORMS = [
+    ("query=%7B%20__typename%20%7D", {"query": "{ __typename }"}),
+    ("a&b=&=c&&d", {"a": "", "b": "", "": "c", "d": ""}),
+    ("a=1&a=2&a=3", {"a": ["1", "2", "3"]}),
+    ("a+b=c+d", {"a b": "c d"}),
+    ("a=%zz", {"a": "%zz"}),
+    ("a=%C3%A9", {"a": "\u00e9"}),
+    ("a=%C3", {"a": "%C3"}),
+    ("a=%E2%82", {"a": "%E2%82"}),
+    ("%zz=1", {"%zz": "1"}),
+    ("a==b", {"a": "=b"}),
+    ("a=%41%2", {"a": "%41%2"}),
+    ("x=%F0%9F%98%80", {"x": "\U0001f600"}),
+    ("__proto__=1", {"__proto__": "1"}),
+    ("a=1&b", {"a": "1", "b": ""}),
+    ("x=a%zz%41", {"x": "a%zz%41"}),
+    ("%41=1", {"A": "1"}),
+    ("x=%c3%a9", {"x": "\xe9"}),
+]
+
+
+@pytest.mark.parametrize("text,fields", _FORMS)
+def test_a_form_is_read_as_fast_querystring_reads_it(text, fields):
+    assert request_body.form_fields(text) == fields

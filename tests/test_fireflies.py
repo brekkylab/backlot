@@ -9,6 +9,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import re
 import sqlite3
 import time
 import tracemalloc
@@ -20,10 +21,12 @@ from backlot import store
 from backlot.graphql import mcp_tools
 from tests._helpers import (
     SWEPT_BYTES,
+    Chunked,
     WithTheKey,
     client_for,
     corpus_client,
     gql,
+    http_row,
     padded_query,
     sent_as,
     served_id,
@@ -194,6 +197,10 @@ _NOT_JSON = (
 _TOO_LARGE = (
     b'{"statusCode":413,"status":false,"code":"http","message":"Request body is too large",'
     b'"errorMessage":"Request body is too large"}'
+)
+_SIZE_MISMATCH = (
+    b'{"statusCode":400,"status":false,"code":"http","message":"Request body size did not match'
+    b' Content-Length","errorMessage":"Request body size did not match Content-Length"}'
 )
 _TYPENAME = b'{"query":"{ __typename }"}'
 
@@ -1659,3 +1666,878 @@ def _roster_emails(settings):
 
     data = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")) or {}
     return [u["email"] for u in data.get("users", [])]
+
+
+# --- Fastify, @fastify/cors and Apollo Server in front of Fireflies' GraphQL ----------------------
+# Each row: a request, its credential (`_FIREFLIES_CREDENTIALS`), and api.fireflies.ai's answer to
+# it, as `graphql` records the layers it was measured through: status, media type and body less
+# the newline Apollo Server ends one with, `_TYPENAME_DATA` where the query was served, nothing for
+# a `HEAD`.
+_CSRF = _apollo(
+    b"This operation has been blocked as a potential Cross-Site Request Forgery (CSRF). Please"
+    b" either specify a 'content-type' header (with a type that is not one of"
+    b" application/x-www-form-urlencoded, multipart/form-data, text/plain) or provide a non-empty"
+    b" value for one of the following headers: x-apollo-operation-name, apollo-require-preflight"
+    b"\\n"
+)
+_ONLY_GET_POST = _apollo(b"Apollo Server supports only GET/POST requests.")
+_NOT_ACCEPTABLE = _apollo(
+    b"An 'accept' header was provided for this request which does not accept application/json;"
+    b" charset=utf-8 or application/graphql-response+json; charset=utf-8"
+)
+_GET_CONTENT_TYPE = _apollo(
+    b"GET requests may not have a content-type header other than application/json."
+)
+_UNSUPPORTED = (
+    b'{"statusCode":415,"status":false,"code":"http","message":"Unsupported Media Type",'
+    b'"errorMessage":"Unsupported Media Type"}'
+)
+_TYPENAME_DATA = b'{"data":{"__typename":"Query"}}'
+_JSON_UTF8 = "application/json; charset=utf-8"
+_GRAPHQL_RESPONSE = "application/graphql-response+json; charset=utf-8"
+_CLOUDFLARE_PAGE = (
+    b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
+    b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
+)
+_FIREFLIES_PREFLIGHT = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,HEAD,POST",
+    "vary": "Access-Control-Request-Headers",
+    # A preflight asking for no header names gets none back.
+    "access-control-allow-headers": None,
+}
+_J = (("Content-Type", "application/json"),)
+_P = (("apollo-require-preflight", "1"),)
+_PREFLIGHT_ASKED = (("Origin", "https://example.com"), ("Access-Control-Request-Method", "POST"))
+_Q = "?query=%7B%20__typename%20%7D"
+
+
+_PAST_THE_LIMIT = b"x" * (2**20 + 10)
+_LANDING_PAGE = object()  # Apollo Server's page for a browser, `landing_page`'s
+
+
+def _not_found(method: str, target: str) -> bytes:
+    message = b"Cannot %s /graphql%s" % (method.encode(), target.encode())
+    return (
+        b'{"statusCode":404,"status":false,"code":"not_found","message":"%s","errorMessage":"%s"}'
+        % (message, message)
+    )
+
+
+_FIREFLIES_HTTP = [
+    # Cloudflare, ahead of everything.
+    http_row(
+        "TRACE",
+        "",
+        (),
+        None,
+        "key",
+        405,
+        "text/html",
+        _CLOUDFLARE_PAGE % ((b"405 Not Allowed",) * 2),
+        id="TRACE",
+        answered={"connection": "close"},
+    ),
+    http_row(
+        "CONNECT",
+        "",
+        (),
+        None,
+        "key",
+        400,
+        "text/plain; charset=UTF-8",
+        b"error code: 1045\n",
+        id="CONNECT",
+        answered={"connection": None},
+    ),
+    http_row(
+        "PURGE",
+        "",
+        (),
+        None,
+        "key",
+        400,
+        "text/html; charset=UTF-8",
+        _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2),
+        id="PURGE",
+        answered={"connection": None},
+    ),
+    http_row(
+        "TRACE",
+        "",
+        (),
+        None,
+        "twice",
+        400,
+        "text/html",
+        _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2),
+        id="TRACE, Authorization twice",
+        answered={"connection": "close"},
+    ),
+    # `@fastify/cors`, whatever the credential and the body.
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            _PREFLIGHT_ASKED,
+            None,
+            c,
+            204,
+            None,
+            b"",
+            id=f"preflight, {c}",
+            answered=_FIREFLIES_PREFLIGHT,
+        )
+        for c in ("key", "none", "Bearer nope")
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Origin", "null"), ("Access-Control-Request-Method", "POST")),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="Origin null",
+        answered=_FIREFLIES_PREFLIGHT,
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Origin", "https://example.com"), ("Access-Control-Request-Method", "PUT")),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="asked PUT",
+        answered=_FIREFLIES_PREFLIGHT,
+    ),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            (*_PREFLIGHT_ASKED, ("Access-Control-Request-Headers", asked)),
+            None,
+            "key",
+            204,
+            None,
+            b"",
+            id=f"asked {asked!r}",
+            answered={**_FIREFLIES_PREFLIGHT, "access-control-allow-headers": allowed},
+        )
+        for asked, allowed in (
+            ("Content-Type, X-Foo", "Content-Type, X-Foo"),
+            (" a , b ", "a , b"),
+            ("a,,b", "a,,b"),
+        )
+    ),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            h,
+            b,
+            c,
+            400,
+            "text/plain",
+            b"Invalid Preflight Request",
+            id=f"OPTIONS {i}, {c}",
+        )
+        for h, b, c, i in (
+            ((), None, "key", ""),
+            ((), None, "none", ""),
+            ((), None, "Bearer nope", ""),
+            ((("Origin", "https://example.com"),), None, "key", "Origin alone"),
+            ((("Access-Control-Request-Method", "POST"),), None, "key", "no Origin"),
+            ((("Origin", ""), ("Access-Control-Request-Method", "POST")), None, "key", "Origin ''"),
+            (
+                (("Origin", "  "), ("Access-Control-Request-Method", "POST")),
+                None,
+                "key",
+                "Origin '  '",
+            ),
+            (
+                (("Origin", "https://example.com"), ("Access-Control-Request-Method", "")),
+                None,
+                "key",
+                "Access-Control-Request-Method ''",
+            ),
+            ((*_J, *_P), b"{", "key", "{"),
+        )
+    ),
+    # `_not_found`, after `_fastify_read`.
+    http_row(
+        "ACL",
+        "?_=271823726",
+        (*_J, *_P),
+        None,
+        "key",
+        404,
+        _JSON_UTF8,
+        b'{"statusCode":404,"status":false,"code":"not_found","message":"Cannot ACL /graphql?_=27182'
+        b'3726","errorMessage":"Cannot ACL /graphql?_=271823726"}',
+        id="ACL",
+    ),
+    *(
+        http_row(m, "?_=1", (*_J, *_P), None, "key", 404, _JSON_UTF8, _not_found(m, "?_=1"), id=m)
+        for m in (
+            "BIND",
+            "CHECKOUT",
+            "COPY",
+            "LINK",
+            "LOCK",
+            "M-SEARCH",
+            "MERGE",
+            "MKACTIVITY",
+            "MKCALENDAR",
+            "MKCOL",
+            "MOVE",
+            "NOTIFY",
+            "PROPFIND",
+            "PROPPATCH",
+            "QUERY",
+            "REBIND",
+            "REPORT",
+            "SEARCH",
+            "SOURCE",
+            "SUBSCRIBE",
+            "UNBIND",
+            "UNLINK",
+            "UNLOCK",
+            "UNSUBSCRIBE",
+        )  # fmt: skip
+    ),
+    http_row(
+        "PROPFIND",
+        "?x=%7B%20y&z&a=b+c&_=1",
+        _J,
+        None,
+        "key",
+        404,
+        _JSON_UTF8,
+        _not_found("PROPFIND", "?x=%7B%20y&z&a=b+c&_=1"),
+        id="PROPFIND, a query string",
+    ),
+    *(
+        http_row(m, "", h, b, c, s, _JSON_UTF8, a, id=f"{m} {i}")
+        for m, h, b, c, s, a, i in (
+            ("PUT", (*_J, *_P), _TYPENAME, "key", 404, _not_found("PUT", ""), "a query"),
+            ("DELETE", _J, _TYPENAME, "none", 404, _not_found("DELETE", ""), "a query"),
+            ("PUT", (), _TYPENAME, "key", 404, _not_found("PUT", ""), "no type"),
+            (
+                "PATCH",
+                (("Content-Type", "application/x-www-form-urlencoded"),),
+                b"query=%7B%7D",
+                "key",
+                404,
+                _not_found("PATCH", ""),
+                "a form",
+            ),
+            (
+                "DELETE",
+                (("Content-Type", "text/plain"),),
+                b"",
+                "key",
+                404,
+                _not_found("DELETE", ""),
+                "text/plain",
+            ),
+            ("PUT", (*_J, *_P), b"{", "key", 400, _NOT_JSON, "{"),
+            ("PATCH", (*_J, *_P), None, "key", 400, _EMPTY, "empty"),
+            ("PUT", (("Content-Type", "a/b/c"),), _TYPENAME, "key", 415, _UNSUPPORTED, "a/b/c"),
+            ("PUT", (("Content-Type", ""),), _TYPENAME, "key", 415, _UNSUPPORTED, "an empty type"),
+            ("PUT", (("Content-Type", "text/plain"),), b"\xe9", "key", 400, _SIZE_MISMATCH, "0xE9"),
+            (
+                "PUT",
+                (("Content-Type", "text/plain"),),
+                _PAST_THE_LIMIT,
+                "key",
+                413,
+                _TOO_LARGE,
+                "past the limit",
+            ),
+        )
+    ),
+    # A POST's content type: a 415 for one Fastify does not read; CSRF for one a browser sends
+    # unpreflighted; the CSRF check ahead of the credential.
+    *(
+        http_row("POST", "", (("Content-Type", t), *h), b, c, s, _JSON_UTF8, a, id=f"{t!r}{i}")
+        for t, h, b, c, s, a, i in (
+            ("text/plain", (), _TYPENAME, "key", 400, _CSRF, ""),
+            ("text/plain", (), _TYPENAME, "none", 400, _CSRF, ", none"),
+            ("text/plain", _P, _TYPENAME, "key", 400, _NO_KEYS, ", preflight"),
+            ("text/plain", _P, b"\xe9", "key", 400, _SIZE_MISMATCH, ", preflight, 0xE9"),
+            ("text/plain", (), b"\xe9", "key", 400, _SIZE_MISMATCH, ", 0xE9"),
+            ("text/plain; charset=latin1", _P, b"\xe9", "key", 400, _SIZE_MISMATCH, ", 0xE9"),
+            ("text/plain", _P, "\u00e9".encode(), "key", 400, _NO_KEYS, ", preflight, U+00E9"),
+            (
+                "application/x-www-form-urlencoded",
+                _P,
+                b"query=%7B__typename%7D&x=\xe9",
+                "key",
+                200,
+                b'{"data":{"__typename":"Query"}}',
+                ", preflight, 0xE9",
+            ),
+            ("TEXT/PLAIN;X=Y", (), _TYPENAME, "key", 400, _CSRF, ""),
+            ("application/x-www-form-urlencoded", (), _TYPENAME, "key", 400, _CSRF, ""),
+            ("", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            ("foo", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            ("text /plain", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            ("multipart/form-data; boundary=x", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            ("application/graphql", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            (
+                "application/graphql",
+                (),
+                _PAST_THE_LIMIT,
+                "key",
+                415,
+                _UNSUPPORTED,
+                ", past the limit",
+            ),
+            ("application/json ,", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            ("text/plain", (), _PAST_THE_LIMIT, "key", 413, _TOO_LARGE, ", past the limit"),
+            (
+                "text/plain",
+                _P,
+                b"\xe9" * 2**20 + b"\xe9",
+                "key",
+                413,
+                _TOO_LARGE,
+                ", past the limit, 0xE9",
+            ),
+            (
+                "application/x-www-form-urlencoded",
+                (),
+                _PAST_THE_LIMIT,
+                "key",
+                413,
+                _TOO_LARGE,
+                ", past the limit",
+            ),
+            ("application/json;", (), _TYPENAME, "key", 200, _TYPENAME_DATA, ""),
+            ("application/json\t;", (), _TYPENAME, "key", 200, _TYPENAME_DATA, ""),
+            ("Application/JSON", (), _TYPENAME, "key", 200, _TYPENAME_DATA, ""),
+            (
+                "application/x-www-form-urlencoded",
+                _P,
+                b"query=%7B%20__typename%20%7D",
+                "key",
+                200,
+                _TYPENAME_DATA,
+                ", a form",
+            ),
+            (
+                "application/x-www-form-urlencoded",
+                _P,
+                b"query=%7B%20__typename%20%7D&query=x",
+                "key",
+                400,
+                _apollo(b"GraphQL queries must be strings."),
+                ", query twice",
+            ),
+            (
+                "application/x-www-form-urlencoded",
+                _P,
+                b"query=%7B%20__typename%20%7D&variables=%7B%7D",
+                "key",
+                400,
+                _apollo(
+                    b"`variables` in a POST body should be provided as an object, not a recursively JSON-encoded string."
+                ),
+                ", variables",
+            ),
+            ("application/x-www-form-urlencoded", _P, b"", "key", 400, _NO_KEYS, ", empty"),
+            ("text/plain", _P, b"", "key", 400, _NO_KEYS, ", empty"),
+        )
+    ),
+    http_row("POST", "", (), _TYPENAME, "key", 415, _JSON_UTF8, _UNSUPPORTED, id="no type"),
+    http_row(
+        "POST", "", _P, _TYPENAME, "key", 415, _JSON_UTF8, _UNSUPPORTED, id="no type, preflight"
+    ),
+    http_row("POST", "", (), b"", "key", 400, _JSON_UTF8, _CSRF, id="no type, empty"),
+    http_row("POST", "", _P, b"", "key", 400, _JSON_UTF8, _NO_KEYS, id="no type, empty, preflight"),
+    # Apollo Server's page for a browser, ahead of the CSRF check and the credential.
+    *(
+        http_row("GET", t, (*h, ("Accept", a)), None, c, s, ty, e, id=f"GET, Accept {a!r}{i}")
+        for t, h, a, c, s, ty, e, i in (
+            ("", (), "text/html", "none", 200, "text/html", _LANDING_PAGE, ", none"),
+            (_Q, _P, "text/html,application/json", "key", 200, "text/html", _LANDING_PAGE, ""),
+            (_Q, _P, "text/*", "key", 200, "text/html", _LANDING_PAGE, ""),
+            (_Q, _P, "text/html;q=0.5;charset=utf-8", "key", 200, "text/html", _LANDING_PAGE, ""),
+            (
+                _Q,
+                _P,
+                "application/json;q=0.5, text/html;q=0.6",
+                "key",
+                200,
+                "text/html",
+                _LANDING_PAGE,
+                "",
+            ),
+            (_Q, _P, "text/html;level=1", "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
+            (_Q, _P, "text/html;q", "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
+            (
+                _Q,
+                _P,
+                "text/html;q=0.9, application/json",
+                "key",
+                200,
+                _JSON_UTF8,
+                _TYPENAME_DATA,
+                "",
+            ),
+        )
+    ),
+    # A GET, its content type and its query string read after the credential.
+    http_row("GET", _Q, _P, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id="GET"),
+    http_row("GET", _Q, (), None, "key", 400, _JSON_UTF8, _CSRF, id="GET, unpreflighted"),
+    http_row("GET", _Q, _J, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id="GET, JSON"),
+    *(
+        http_row(
+            "GET", _Q, (("Content-Type", t), *h), None, c, s, _JSON_UTF8, a, id=f"GET, {t!r}{i}"
+        )
+        for t, h, c, s, a, i in (
+            ("text/plain", _P, "key", 415, _GET_CONTENT_TYPE, ""),
+            ("foo", (), "key", 415, _GET_CONTENT_TYPE, ""),
+            ("foo", _P, "none", 500, _BAD_KEY, ", none"),
+            ("application/graphql-response+json", _P, "key", 415, _GET_CONTENT_TYPE, ""),
+            ("", _P, "key", 200, _TYPENAME_DATA, ""),
+            ("application/json; charset=latin1", _P, "key", 200, _TYPENAME_DATA, ""),
+        )
+    ),
+    http_row(
+        "GET",
+        "?query=%7B&query=%7B",
+        (("Content-Type", "text/plain"), *_P),
+        None,
+        "key",
+        415,
+        _JSON_UTF8,
+        _GET_CONTENT_TYPE,
+        id="GET, text/plain, query twice",
+    ),
+    *(
+        http_row("GET", t, _P, None, "key", 400, _JSON_UTF8, _apollo(m), id=i)
+        for t, m, i in (
+            (
+                _Q + "&query=",
+                b"The 'query' search parameter may only be specified once.",
+                "query twice",
+            ),
+            (
+                _Q + "&variables=nope",
+                b"The variables search parameter contains invalid JSON.",
+                "variables nope",
+            ),
+            (
+                _Q + "&variables=null",
+                b"The variables search parameter should contain a JSON-encoded object.",
+                "variables null",
+            ),
+            (
+                "?query=%7B&query=%7B&variables=nope",
+                b"The 'query' search parameter may only be specified once.",
+                "query twice, variables nope",
+            ),
+            (
+                "?operationName=A&operationName=B&variables=nope",
+                b"The 'operationName' search parameter may only be specified once.",
+                "operationName twice, variables nope",
+            ),
+            (
+                "?variables=nope&extensions=5",
+                b"The variables search parameter contains invalid JSON.",
+                "variables nope, extensions 5",
+            ),
+        )
+    ),
+    *(
+        http_row(
+            "GET",
+            f"?query={op}%20%7B%20__typename%20%7D",
+            _P,
+            None,
+            c,
+            s,
+            _JSON_UTF8,
+            a,
+            id=f"GET {op}, {c}",
+            **h,
+        )
+        for op, c, s, a, h in (
+            (
+                "mutation",
+                "key",
+                405,
+                _apollo(
+                    b"GET requests only support query operations, not mutation operations",
+                    status=405,
+                ),
+                {"answered": {"allow": "POST"}},
+            ),
+            (
+                "subscription",
+                "key",
+                405,
+                _apollo(
+                    b"GET requests only support query operations, not subscription operations",
+                    status=405,
+                ),
+                {"answered": {"allow": "POST"}},
+            ),
+            ("mutation", "none", 500, _BAD_KEY, {}),
+        )
+    ),
+    http_row(
+        "HEAD",
+        _Q,
+        _P,
+        None,
+        "key",
+        405,
+        _JSON_UTF8,
+        b"",
+        id="HEAD",
+        answered={"allow": "GET, POST"},
+    ),
+    http_row(
+        "HEAD",
+        _Q,
+        (*_P, ("Accept", "text/html")),
+        None,
+        "key",
+        405,
+        _JSON_UTF8,
+        b"",
+        id="HEAD, Accept text/html",
+    ),
+    http_row("HEAD", _Q, _P, None, "none", 500, _JSON_UTF8, b"", id="HEAD, none"),
+    http_row(
+        "HEAD",
+        _Q,
+        (("Content-Type", "text/plain"),),
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        b"",
+        id="HEAD, text/plain",
+    ),
+    # `apollo_http.response_type` and its 406, the credential's 500 among the thrown refusals.
+    *(
+        http_row("POST", "", (*_J, ("Accept", a)), b, c, s, t, e, id=f"Accept {a!r}{i}")
+        for a, b, c, s, t, e, i in (
+            ("text/html", _TYPENAME, "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
+            ("application/json;q=0", _TYPENAME, "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
+            ("application/json;q", _TYPENAME, "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
+            (
+                "application/graphql-response+json",
+                _TYPENAME,
+                "key",
+                200,
+                _GRAPHQL_RESPONSE,
+                _TYPENAME_DATA,
+                "",
+            ),
+            (
+                "application/json; callbackSpec=1.0",
+                _TYPENAME,
+                "key",
+                200,
+                "application/json; callbackSpec=1.0; charset=utf-8",
+                _TYPENAME_DATA,
+                "",
+            ),
+            ("text/html", b"{}", "key", 400, _JSON_UTF8, _NO_KEYS, ", {}"),
+            (
+                "application/graphql-response+json",
+                b"{}",
+                "key",
+                400,
+                _GRAPHQL_RESPONSE,
+                _NO_KEYS,
+                ", {}",
+            ),
+            (
+                "text/html",
+                b'{"query":"{"}',
+                "key",
+                406,
+                _JSON_UTF8,
+                _NOT_ACCEPTABLE,
+                ", a parse error",
+            ),
+            ("text/html", _TYPENAME, "none", 500, _JSON_UTF8, _BAD_KEY, ", none"),
+            (
+                "application/graphql-response+json",
+                _TYPENAME,
+                "none",
+                500,
+                _GRAPHQL_RESPONSE,
+                _BAD_KEY,
+                ", none",
+            ),
+            ("text/html", b"{", "key", 400, _JSON_UTF8, _NOT_JSON, ", {"),
+        )
+    ),
+    http_row(
+        "POST",
+        "",
+        (("Content-Type", "text/plain"), ("Accept", "application/graphql-response+json")),
+        _TYPENAME,
+        "key",
+        400,
+        _GRAPHQL_RESPONSE,
+        _CSRF,
+        id="text/plain, Accept graphql-response",
+    ),
+    http_row(
+        "PUT",
+        "",
+        (*_J, ("Accept", "application/graphql-response+json")),
+        _TYPENAME,
+        "key",
+        404,
+        _JSON_UTF8,
+        _not_found("PUT", ""),
+        id="PUT, Accept graphql-response",
+    ),
+    # Fastify reads the body of a DELETE before its 404, and leaves a type it has no parser for
+    # unread there.
+    http_row("DELETE", "", (*_J, *_P), b"{", "key", 400, _JSON_UTF8, _NOT_JSON, id="DELETE {"),
+    http_row(
+        "PUT",
+        "",
+        (("Content-Type", "application/graphql"), *_P),
+        _TYPENAME,
+        "key",
+        404,
+        _JSON_UTF8,
+        _not_found("PUT", ""),
+        id="PUT application/graphql",
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (
+            *_PREFLIGHT_ASKED,
+            ("Access-Control-Request-Headers", "a"),
+            ("Access-Control-Request-Headers", "b"),
+        ),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="asked twice",
+        answered={**_FIREFLIES_PREFLIGHT, "access-control-allow-headers": "a, b"},
+    ),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            (*_PREFLIGHT_ASKED, ("Access-Control-Request-Headers", asked)),
+            None,
+            "key",
+            204,
+            None,
+            b"",
+            id=f"asked {asked!r}",
+            answered={**_FIREFLIES_PREFLIGHT, "access-control-allow-headers": allowed},
+        )
+        for asked, allowed in (
+            ("a\xa0b", "a\xa0b"),
+            ("a b", "a b"),
+            ("a\x85b", "a\x85b"),
+            ("a\tb", "a\tb"),
+            ("a\xa0", "a\xa0"),
+            ("\xa0a", "\xa0a"),
+            ("a\x85", "a\x85"),
+            ("a\t", "a"),
+            ("a,  ,b", "a,  ,b"),
+            ("A-B, c_d", "A-B, c_d"),
+        )
+    ),
+    # Copies of a header, read as `apollo_http.headers_seen` reads them.
+    *(
+        http_row("POST", "", h, _TYPENAME, "key", s, _JSON_UTF8, a, id=i)
+        for h, s, a, i in (
+            (
+                (*_J, ("Accept", "application/json"), ("Accept", "text/html")),
+                200,
+                _TYPENAME_DATA,
+                "Accept json, html",
+            ),
+            (
+                (*_J, ("Accept", "text/html"), ("Accept", "application/json")),
+                200,
+                _TYPENAME_DATA,
+                "Accept html, json",
+            ),
+            (
+                (*_J, ("Content-Type", "text/plain")),
+                200,
+                _TYPENAME_DATA,
+                "Content-Type json, text/plain",
+            ),
+            ((("Content-Type", "text/plain"), *_J), 400, _CSRF, "Content-Type text/plain, json"),
+            ((*_J, ("Content-Type", "")), 200, _TYPENAME_DATA, "Content-Type json, empty"),
+            ((("Content-Type", ""), *_J), 415, _UNSUPPORTED, "Content-Type empty, json"),
+            ((*_J, *_J), 200, _TYPENAME_DATA, "Content-Type json twice"),
+            (
+                (("Content-Type", "text/plain"), ("x-apollo-operation-name", " ")),
+                400,
+                _CSRF,
+                "operation name a space",
+            ),
+        )
+    ),
+    *(
+        http_row("GET", _Q, h, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id=i)
+        for h, i in (
+            ((("apollo-require-preflight", ""), *_P), "preflight empty, 1"),
+            ((*_P, ("apollo-require-preflight", "")), "preflight 1, empty"),
+        )
+    ),
+    # Each method under a JSON type, with no body and no length.
+    *(
+        http_row(
+            m,
+            t,
+            (("Content-Type", "application/json; charset=latin1"),),
+            None,
+            "key",
+            s,
+            ty,
+            a,
+            id=f"{m}, latin1, no body",
+        )
+        for m, t, s, ty, a in (
+            ("POST", "", 400, _JSON_UTF8, _EMPTY),
+            ("PUT", "", 400, _JSON_UTF8, _EMPTY),
+            ("PATCH", "", 400, _JSON_UTF8, _EMPTY),
+            ("DELETE", "", 400, _JSON_UTF8, _EMPTY),
+            ("OPTIONS", "", 400, "text/plain", b"Invalid Preflight Request"),
+            ("PROPFIND", "", 404, _JSON_UTF8, _not_found("PROPFIND", "")),
+            (
+                "GET",
+                "",
+                400,
+                _JSON_UTF8,
+                _apollo(
+                    b"GraphQL operations must contain a non-empty `query` or a `persistedQuery` extension."
+                ),
+            ),
+            ("HEAD", "", 405, _JSON_UTF8, b""),
+        )
+    ),
+    http_row("POST", "", (), None, "key", 400, _JSON_UTF8, _CSRF, id="no type, no body"),
+    http_row(
+        "POST", "", _P, None, "key", 400, _JSON_UTF8, _NO_KEYS, id="no type, no body, preflight"
+    ),
+    http_row(
+        "POST",
+        "",
+        _P,
+        Chunked(_TYPENAME),
+        "key",
+        415,
+        _JSON_UTF8,
+        _UNSUPPORTED,
+        id="no type, chunked, preflight",
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        Chunked(_TYPENAME),
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="JSON, chunked",
+    ),
+    http_row(
+        "GET",
+        "?query=%7B&query=%7B",
+        (),
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="GET, unpreflighted, query twice",
+    ),
+    http_row(
+        "GET",
+        _Q + "&variables=%7B%7D&operationName=",
+        _P,
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        _apollo(b'Unknown operation named \\"\\".', b"OPERATION_RESOLUTION_FAILURE"),
+        id="GET, variables {}, operationName empty",
+    ),
+    *(
+        http_row(
+            m,
+            t,
+            (*h, ("Origin", "https://example.com")),
+            b,
+            "key",
+            s,
+            _JSON_UTF8,
+            a,
+            id=f"{m}, Origin",
+        )
+        for m, t, h, b, s, a in (
+            ("POST", "", _J, _TYPENAME, 200, _TYPENAME_DATA),
+            ("GET", _Q, _P, None, 200, _TYPENAME_DATA),
+            ("HEAD", _Q, _P, None, 405, b""),
+            ("PUT", "", _J, _TYPENAME, 404, _not_found("PUT", "")),
+        )
+    ),
+]
+_FIREFLIES_CREDENTIALS = {
+    "none": None,
+    "Bearer nope": "Bearer nope",
+    "key": "Bearer {t}",
+    "twice": "Bearer {t}",
+}
+
+
+def _fireflies_body(r, answer):
+    """``r``'s body, or `_LANDING_PAGE` where ``answer`` is and ``r`` is Apollo Server's page: one
+    nonce of 64 hex digits, 3,522 bytes and its title."""
+    if answer is not _LANDING_PAGE:
+        return r.content
+    page = r.text
+    nonces = set(re.findall(r"nonce-([0-9a-f]+)", page))
+    whole = len(page.encode()) == 3522 and "<title>Apollo Server</title>" in page
+    return _LANDING_PAGE if len(nonces) == 1 and len(nonces.pop()) == 64 and whole else r.content
+
+
+def test_fireflies_answers_each_method_type_and_accept_as_fireflies_does(client, tokens_yaml):
+    """Each row of `_FIREFLIES_HTTP` is answered as api.fireflies.ai answered it."""
+    answered, expected = {}, {}
+    for row in _FIREFLIES_HTTP:
+        method, target, headers, body, credential, status, media_type, answer, named = row.values
+        sent = list(headers)
+        if _FIREFLIES_CREDENTIALS[credential] is not None:
+            value = _FIREFLIES_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
+            sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
+        content = body.chunks() if isinstance(body, Chunked) else body
+        r = sent_as(client, method, f"/fireflies/graphql{target}", sent, content=content, bare=True)
+        answered[row.id] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            _fireflies_body(r, answer),
+            {name: r.headers.get(name) for name in named},
+        )
+        expected[row.id] = (status, media_type, answer, named)
+    assert len(expected) == len(_FIREFLIES_HTTP)
+    assert answered == expected

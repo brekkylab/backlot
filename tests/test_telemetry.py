@@ -34,6 +34,8 @@ from tests._helpers import build_corpus, client_for, settings_put_back
 ADMIN = {"Authorization": "Bearer admin-service-token"}
 LINEAR = {"Authorization": "admin-service-token"}
 JSON = {"Content-Type": "application/json"}
+_PREFLIGHT = {"apollo-require-preflight": "1"}
+_TYPENAME_SEARCH = "?query=%7B%20__typename%20%7D"
 UNREACHABLE = "http://127.0.0.1:9/v1/metrics"
 # The values an export may carry. The collector replaces a value outside its own shape checks with
 # `invalid`, and every pattern here is narrower than those.
@@ -269,6 +271,8 @@ def test_each_client_rule_names_the_headers_it_was_measured_from():
         ("fireflies", "unknown", 500, "INTERNAL_SERVER_ERROR", False, "client"),
         ("linear", "unknown", 500, "INTERNAL_SERVER_ERROR", False, "internal"),
         ("fireflies", "unknown", 500, "", False, "internal"),
+        ("fireflies", "unknown", 500, "auth_failed", False, "auth"),
+        ("linear", "unknown", 500, "auth_failed", False, "internal"),
     ],
 )
 def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent, expected):
@@ -602,6 +606,65 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             "/linear/graphql",
             {"headers": LINEAR | JSON, "content": b"{"},
             ("linear", "unparsed", "unknown", 400, None, "client"),
+        ),
+        # The HTTP layer in front of each GraphQL server answers each method and `Accept`, a GET's
+        # query among them, and Fireflies' credential's 500 is a refusal of the credential.
+        (
+            "GET",
+            "/fireflies/graphql" + _TYPENAME_SEARCH,
+            {"headers": _PREFLIGHT},
+            ("fireflies", "query.__typename", "extra", 200, None, None),
+        ),
+        (
+            "GET",
+            "/fireflies/graphql" + _TYPENAME_SEARCH,
+            {"headers": _PREFLIGHT | {"Authorization": "Bearer nope"}},
+            ("fireflies", "unparsed", "unknown", 500, "auth_failed", "auth"),
+        ),
+        (
+            "PROPFIND",
+            "/fireflies/graphql",
+            {"headers": JSON},
+            ("fireflies", "unparsed", "unknown", 404, "not_found", "client"),
+        ),
+        (
+            "OPTIONS",
+            "/fireflies/graphql",
+            {},
+            ("fireflies", "unparsed", "unknown", 400, None, "client"),
+        ),
+        (
+            "GET",
+            "/linear/graphql" + _TYPENAME_SEARCH,
+            {"headers": LINEAR | _PREFLIGHT},
+            ("linear", "query.__typename", "extra", 200, None, None),
+        ),
+        (
+            "PUT",
+            "/linear/graphql",
+            {"headers": LINEAR | JSON, "json": {"query": "{ __typename }"}},
+            ("linear", "unparsed", "unknown", 405, "BAD_REQUEST", "client"),
+        ),
+        (
+            "POST",
+            "/linear/graphql",
+            {
+                "headers": LINEAR | JSON | {"Accept": "text/html"},
+                "json": {"query": "{ __typename }"},
+            },
+            ("linear", "query.__typename", "extra", 406, "BAD_REQUEST", "client"),
+        ),
+        (
+            "BIND",
+            "/linear/graphql",
+            {"headers": LINEAR},
+            ("linear", "unparsed", "unknown", 501, None, "client"),
+        ),
+        (
+            "TRACE",
+            "/linear/graphql",
+            {"headers": LINEAR},
+            ("linear", "unparsed", "unknown", 405, None, "client"),
         ),
         (
             "GET",

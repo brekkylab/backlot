@@ -2649,8 +2649,8 @@ _COUNTED_TOKEN_SHAPED = [
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
 #: nine are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the eighth as the `/orgs/{}` path
 #: `/organizations/{id}` is rewritten to and the ninth on a path whose slash-terminated spelling a
-#: route matches; the next two are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep out of it;
-#: the two after them are no operation, though a parsed URL ends the first at its decoded `#` and a
+#: route matches; the next four are in it too, but the last, in `_ROUTED_UNPUBLISHED`; the next two
+#: are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep out of it; the two after them are no operation, though a parsed URL ends the first at its decoded `#` and a
 #: `missing_param` row of the baseline spells the second's path; the next is a method GitHub does
 #: not publish on a path whose `PATCH` it does, which real answered a bad bearer with its 404; and
 #: the last is no GitHub request at all.
@@ -2664,6 +2664,15 @@ _UNSERVED_ROWS = [
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/zip", True, 404),
     ("GET", "/github/organizations/1/settings/billing/usage", True, 404),
     ("POST", "/github/repos/{org}/codebase/git/trees", True, 404),
+    ("POST", "/github/repos/{org}/codebase/issues/1/artifacts", True, 404),
+    ("PUT", "/github/agents/repos/{org}/codebase/pulls/1/agent-merge", True, 404),
+    (
+        "POST",
+        "/github/repos/{org}/codebase/security-advisories/GHSA-gc5v-m9x4-r6x2/comments",
+        True,
+        404,
+    ),
+    ("GET", "/github/agents/automations/available-tools", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
     ("POST", "/github/repos/{org}/codebase/releases/1/assets", False, 404),
     ("GET", "/github/zen%23", False, 404),
@@ -2684,7 +2693,10 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     value that names no token, each carrying the version echo. A row not refused is the
     router's answer for any caller. Real was measured on each row but the last with a bad bearer, an
     unknown scheme and a bearer after a tab, on each refused row with each header below, and with no
-    header on the first six.
+    header on the first six. On the four added after the ninth, no header, `Digest x`,
+    `nope`, an empty value, `Bearer nope` and a `Basic` token shape were measured, and a token
+    that resolves on the `GET`; `Basic Zm9vOmJhcg==` was a 404 or 403 of the operation's own on two
+    of them and is unmeasured on the `/agents` pair, which the router answers as `_require` does.
     """
     c, _ = gh_client
     url = path.format(org=gh_org)

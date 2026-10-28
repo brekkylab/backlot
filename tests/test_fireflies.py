@@ -7,6 +7,7 @@ or call the response builder directly.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import sqlite3
 
@@ -365,7 +366,9 @@ def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_
 
 def test_fireflies_ids_are_ulids(client, admin_h):
     """A served user id and transcript id are ULIDs as `synth._ulid` writes them, their first ten
-    characters, the time, zero."""
+    characters, the time, zero, and the other 16 the first 80 bits of the seed's digest."""
+    from backlot import synth
+
     alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
     data = ff_gql(
         client, "{ users { user_id } transcripts(limit: 2) { id user { user_id } } }", admin_h
@@ -379,6 +382,11 @@ def test_fireflies_ids_are_ulids(client, admin_h):
         assert len(one) == 26, one
         assert set(one) <= set(alphabet), one
         assert one[:10] == "0" * 10, one
+
+    value = 0
+    for char in synth._ulid("seed"):
+        value = value * 32 + alphabet.index(char)
+    assert value == int(hashlib.sha256(b"seed").hexdigest()[:20], 16)
 
 
 def test_fireflies_transcript_content_round_trips_through_the_api(client, admin_h, ro_conn):

@@ -10,6 +10,7 @@ not merely that it filters something.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import itertools
 import json
 import zlib
@@ -1770,6 +1771,18 @@ _LINEAR_BODIES = [
         b'`persistedQuery` extension.","extensions":{"http":{"status":400,"headers":{}},'
         b'"code":"INVALID_INPUT","type":"invalid input","userError":true}}]}',
         id="a query of null",
+    ),
+    pytest.param(
+        b'{"query":"","extensions":{"persistedQuery":{"version":1,"sha256Hash":"'
+        + hashlib.sha256(b"").hexdigest().encode()
+        + b'"}}}',
+        b'{"errors":[{"message":"Syntax Error: Unexpected <EOF>.","locations":[{"line":1,'
+        b'"column":1}],"extensions":{"http":{"status":400,"headers":{}},'
+        b'"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}',
+        id="a persisted query's hash matching an empty query",
+    ),
+    pytest.param(
+        b'{"query":"query __proto__ { __typename }"}', None, id="an operation named __proto__"
     ),
     pytest.param(
         b'{"query":"{"}',

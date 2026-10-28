@@ -407,7 +407,7 @@ async def refuse_an_unserved_hubspot_operation(request: Request, call_next):
     """An operation HubSpot publishes that no route here serves is refused for its credential as a
     served route refuses one, ahead of the router's 404 or 405
     (``backlot.routers.hubspot.refuse_an_unserved_operation``)."""
-    refusal = hubspot.refuse_an_unserved_operation(request)
+    refusal = await hubspot.refuse_an_unserved_operation(request)
     if refusal is not None:
         return refusal
     return await call_next(request)

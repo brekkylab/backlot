@@ -3,9 +3,9 @@
 Linear and Fireflies answered a validation error, a syntax error and a variable's refusal in
 graphql-js 16.14.2's words on 2026-10-25 (UTC), and Linear refused an array sent for an input object
 as 16.14.2 does, where 16.9.0 reads the array's indices as field names. graphql-js 17.0.2 words
-these otherwise (run on 2026-10-28 (UTC)): a variable of the wrong type, a null or missing non-null
-variable, a list item its type refuses, and a missing argument. A vendor's move to 17 shows here as
-answers that diverge, not as an error.
+five refusals otherwise (run on 2026-10-28 (UTC)): a variable of the wrong type, a null non-null
+variable, a missing non-null variable, a list item its type refuses, and a missing argument. A
+vendor's move to 17 shows here as answers that diverge, not as an error.
 
 Linear and Fireflies run graphql-js under Apollo Server, and graphql-core is a port of graphql-js
 whose messages differ from it: graphql-core quotes a name, a type, a token or a character with

@@ -10,11 +10,9 @@ Both vendors serve GraphQL through Apollo Server over graphql-js, so the engine 
 does: Apollo Server's checks of the body and of a persisted query come first, then graphql-js's
 parse, validation and choice of operation (:meth:`Engine.resolve_payload`), then the coercion of
 variables and the run itself (:meth:`Engine.run`), each refusal a :class:`Refusal` carrying Apollo
-Server's ``code`` and the message as Apollo Server writes it, in graphql-js's words where
-graphql-js made the refusal (:mod:`backlot.graphql.js_words`). A router that reads the credential
-between the two stages calls them apart. A refusal made before execution carries no ``data`` entry;
-an error made as the operation runs comes back beside ``data``, at 200. Each router turns the
-refusals into its vendor's envelope.
+Server's ``code`` and message. A router that reads the credential between the two stages calls them
+apart. A refusal made before execution carries no ``data`` entry; an error made as the operation
+runs comes back beside ``data``, at 200. Each router turns the refusals into its vendor's envelope.
 """
 
 from __future__ import annotations

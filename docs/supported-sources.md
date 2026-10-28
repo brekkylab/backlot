@@ -269,7 +269,7 @@ One `source_type` (`google_drive`) across four prefixes.
 | `/drive/v3/files/{id}/permissions` | `fields`, validated and applied to the list and its entries |
 | `/drive/v3/drives` | `q`, as a member who is not the domain's administrator may send it: `name` with `contains`/`=`/`!=`/`<`/`<=`/`>`/`>=` and `hidden` with `=`/`!=` or alone; any other term is a 400. `fields`, validated and applied to the list and its entries |
 | `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
-| `/docs/v1/documents/{id}` | |
+| `/docs/v1/documents/{id}` | `body.content` with each element's indices in UTF-16 code units (a `startIndex` of 0 left out, as real leaves it out), each paragraph's `paragraphStyle` and each run's `textStyle`, and the `documentStyle` and `namedStyles` of a document `documents.create` makes |
 | `/sheets/v4/spreadsheets/{id}` | One entry per sheet, with its own `sheetId`, `index`, `title` and `gridProperties`. Structure only — cells need `includeGridData=true`, as in real Sheets. `ranges` filters the `sheets` array itself, and gives a sheet one `data` block per range that touches it |
 | `/sheets/v4/spreadsheets/{id}/values/{range}` | A1 ranges incl. `Summary!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not, an empty one before the bang (`!A1` is the first sheet), and R1C1 — absolute (`R1C1:R2C2`) and bracketed offsets from A1 (`R[1]C[1]`), echoed as the A1 equivalent, with real's reversed-range rule. Any sheet in the workbook, matched case-insensitively; an unqualified range answers from the sheet at index 0. `majorDimension`, `valueRenderOption` |
 | `/sheets/v4/spreadsheets/{id}/values:batchGet` | As above; one unparseable range fails the whole call |
@@ -302,7 +302,12 @@ real workbook: named sheets over a 2D grid whose cells keep the type the corpus 
 string. A record that states only `content` keeps the older reading — one sheet, each stored **line**
 held in a single cell verbatim, with Backlot picking no column delimiter, so splitting (CSV, pipes,
 …) stays the corpus owner's decision. Either way `files.export` and the Sheets API describe the same
-cells. Reading a file of the wrong type through any of the three editor APIs is refused, as real
+cells.
+
+A document has two shapes in the same way. A record that states `paragraphs` gives each paragraph
+its named style and its runs bold, italic, underlined, struck through or linked, and its `content`
+is their text, one line each. A record that states only `content` is one plain paragraph per line
+of it. Reading a file of the wrong type through any of the three editor APIs is refused, as real
 Google does, not reinterpreted.
 
 #### OAuth and batch

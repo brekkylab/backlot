@@ -185,6 +185,19 @@ def _rows():
     yield pytest.param(
         b"GET", "/hubspot/crm/v3/objects/contacts/", b"nope\tx", "cloudflare page", 2, b""
     )
+    # a conditional header twice, which Cloudflare refuses ahead of the bytes, and once, which
+    # draws the empty 400 the byte alone draws: on each vendor, with no credential, a `\x01` in
+    # the query
+    for base in ("/notion/v1/", "/linear/", "/fireflies/", "/hubspot/crm/v3/objects/contacts/"):
+        for header, answer, times in (
+            (b"If-None-Match: *\r\nIf-None-Match: *\r\n", "cloudflare page", "twice"),
+            (b"If-Match: *\r\nIf-Match: *\r\n", "cloudflare page", "twice"),
+            (b"If-None-Match: *\r\n", "cloudflare empty", "once"),
+        ):
+            name = header.split(b":")[0].decode()
+            yield pytest.param(
+                b"GET", base, b"nope?b=\x01x", answer, 0, header, id=f"{base} {name} {times}"
+            )
     yield pytest.param(
         b"GET", "/_meta/", b"nope\x80x", "uvicorn", 1, b"", id="a path no vendor owns"
     )

@@ -131,8 +131,9 @@ each indexed as real indexes it.
 A paragraph's `style` is one of `NORMAL_TEXT` (the default), `TITLE`, `SUBTITLE` and `HEADING_1` to
 `HEADING_6`. A paragraph states its text as `text` or as `runs`, never both, and holds no newline:
 the next line is the next paragraph. Nor does it hold a character real strips from a document's
-text (U+0000–U+0008, U+000C–U+001F, U+E000–U+F8FF), and a `link` carries its scheme. Lists,
-tables, headers, footers and tabs have no representation yet.
+text (U+0000–U+0008, U+000C–U+001F, U+E000–U+F8FF), and a `link` carries its scheme. Neither a
+paragraph nor a document's `content` holds a character `insertText` refuses (U+FDD0–U+FDEF).
+Lists, tables, headers, footers and tabs have no representation yet.
 
 ## Load a public dataset
 

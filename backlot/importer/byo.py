@@ -1107,7 +1107,20 @@ def _paragraphs_pairing_errors(rec: dict) -> list[str]:
                 f"paragraphs[{i}]: holds a character real strips from a document's text "
                 "(U+0000-U+0008, U+000C-U+001F or U+E000-U+F8FF)"
             )
+        if any(isinstance(t, str) and gdocs.UNWRITABLE.search(t) for t in texts):
+            msgs.append(f"paragraphs[{i}]: {_UNWRITABLE}")
     return msgs
+
+
+_UNWRITABLE = "holds a character insertText refuses (U+FDD0-U+FDEF), which no document holds"
+
+
+def _document_content_errors(rec: dict) -> list[str]:
+    """What a `document`'s `content` may not hold: the characters no write puts in a Doc."""
+    content = rec.get("content")
+    if (rec.get("subtype") or "document") != "document" or not isinstance(content, str):
+        return []
+    return [f"content: {_UNWRITABLE}"] if gdocs.UNWRITABLE.search(content) else []
 
 
 def _sheet_title(sheet: dict, i: int) -> str:
@@ -1954,7 +1967,9 @@ class _Loader:
         if src == "github" and (bad := _github_pairing_errors(rec)):
             raise SystemExit(f"{where}: " + "; ".join(bad))
         if src == "google_drive" and (
-            bad := _sheets_pairing_errors(rec) + _paragraphs_pairing_errors(rec)
+            bad := _sheets_pairing_errors(rec)
+            + _paragraphs_pairing_errors(rec)
+            + _document_content_errors(rec)
         ):
             raise SystemExit(f"{where}: " + "; ".join(bad))
         gcol = store.grouping_col(src)
@@ -3888,7 +3903,11 @@ def run(
                 continue
             errs = record_errors(rec)
             if isinstance(rec, dict) and rec.get("source_type") == "google_drive":
-                errs += _sheets_pairing_errors(rec) + _paragraphs_pairing_errors(rec)
+                errs += (
+                    _sheets_pairing_errors(rec)
+                    + _paragraphs_pairing_errors(rec)
+                    + _document_content_errors(rec)
+                )
             if isinstance(rec, dict) and rec.get("source_type") == "github":
                 errs += _github_pairing_errors(rec)
                 # Only from a record that is otherwise sound: its own `path` may be the thing that

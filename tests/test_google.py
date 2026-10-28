@@ -6762,7 +6762,7 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
                 "runs": [
                     {"text": "Ship the "},
                     {"text": "reader", "bold": True},
-                    {"text": " and"},
+                    {"text": " and", "bold": False},
                     {"text": " the "},
                     {"text": "writer", "italic": True},
                     {"text": "."},
@@ -6785,7 +6785,13 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
             {
                 "runs": [
                     {"text": "A "},
-                    {"text": "linkbold", "link": url, "bold": True},
+                    {
+                        "text": "linkbold",
+                        "link": url,
+                        "bold": True,
+                        "italic": True,
+                        "strikethrough": True,
+                    },
                 ]
             },
             {"runs": [{"text": "pre "}, {"text": "ullink", "underline": True, "link": url}]},
@@ -6803,7 +6809,7 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
         "doc_id": "crlf",
         "title": "CRLF notes",
         "author_email": "owner@acme.com",
-        "content": "one\r\ntwo\x01\ue000",
+        "content": "one\r\ntwo\x01\ue000\t\x0b\uf900\ufdcf\ufdf0",
     }
 
     def para(start, end, runs, style="NORMAL_TEXT"):
@@ -6869,7 +6875,11 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
         para(
             105,
             116,
-            [("A ", {}, 2), ("linkbold", {"bold": True, **link}, 8), ("\n", {"bold": True}, 1)],
+            [
+                ("A ", {}, 2),
+                ("linkbold", {"bold": True, "italic": True, "strikethrough": True, **link}, 8),
+                ("\n", {"bold": True, "italic": True, "strikethrough": True}, 1),
+            ],
         ),
         para(116, 127, [("pre ", {}, 4), ("ullink", link, 6), ("\n", {"underline": True}, 1)]),
         para(
@@ -6885,7 +6895,7 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
     ]
     assert crlf.json()["body"]["content"][1:] == [
         para(1, 5, [("one\n", {}, 4)]),
-        para(5, 9, [("two\n", {}, 4)]),
+        para(5, 14, [("two\t\x0b\uf900\ufdcf\ufdf0\n", {}, 9)]),
     ]
     headings = [
         el["paragraph"]["paragraphStyle"]["headingId"]
@@ -6894,6 +6904,26 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
     ]
     assert len(headings) == len(set(headings)) == 2
     assert all(re.fullmatch(r"h[.][a-z0-9]{12}", h) for h in headings)
+    # `==` above holds whatever order the members come in, so real's is asserted on its own.
+    content = doc["body"]["content"]
+    assert list(content[0]) == ["endIndex", "sectionBreak"]
+    assert list(content[1]) == ["startIndex", "endIndex", "paragraph"]
+    assert list(content[1]["paragraph"]["paragraphStyle"]) == [
+        "headingId",
+        "namedStyleType",
+        "direction",
+    ]
+    run, newline = content[7]["paragraph"]["elements"][1:]
+    assert list(run) == ["startIndex", "endIndex", "textRun"]
+    assert list(run["textRun"]["textStyle"]) == [
+        "bold",
+        "italic",
+        "underline",
+        "strikethrough",
+        "foregroundColor",
+        "link",
+    ]
+    assert list(newline["textRun"]["textStyle"]) == ["bold", "italic", "strikethrough"]
 
 
 _DOCS_FLAT = [

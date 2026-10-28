@@ -42,9 +42,13 @@ _TEXT_STYLE_ORDER = (
 )
 
 # The characters `insertText` strips from what it inserts: U+0000-U+0008, U+000C-U+001F (`\r`
-# among them) and U+E000-U+F8FF, so no document real holds has one. A tab, `\x0b`, `\x7f`, U+2028
-# and a character past the BMP are kept.
+# among them) and U+E000-U+F8FF. A tab, `\x0b`, `\x7f`, U+2028 and a character past the BMP stay.
 STRIPPED = re.compile("[\x00-\x08\x0c-\x1f\ue000-\uf8ff]")
+
+# The characters `insertText` refuses with a 500, U+FDD0-U+FDEF, keeping U+FDCF and U+FDF0 beside
+# them; a `.txt` holding one fails its conversion to a Doc as well, and Drive keeps an unconverted
+# `.txt` holding U+FDD0 and U+FDEF byte for byte.
+UNWRITABLE = re.compile("[\ufdd0-\ufdef]")
 
 # The colour a link gives its run, through the editor or `updateTextStyle` alike.
 _LINK_COLOR = {"color": {"rgbColor": {"red": 0.06666667, "green": 0.33333334, "blue": 0.8}}}
@@ -129,8 +133,8 @@ def from_paragraphs(file_id: str, paragraphs: list[dict]) -> list[dict]:
 
 
 def from_text(text: str) -> list[dict]:
-    """A document that states no structure: one unstyled paragraph per line of its text, without
-    the characters real strips."""
+    """A document that states no structure: one unstyled paragraph per line of its text, read as
+    `insertText` would write it, so without the characters it strips."""
     return [_section_break()] + [
         _paragraph([(STRIPPED.sub("", line), {})], {}, "NORMAL_TEXT", None)
         for line in text.split("\n")

@@ -7561,6 +7561,7 @@ _LINEAR_HTTP = [
             ("CONNECT", "//", 400, "nosniff"),
             ("CONNECT", "/%2E", 400, None),
             ("CONNECT", "/x/%2E%2E", 400, None),
+            ("CONNECT", "/%2E%2E", 400, None),
             ("CONNECT", "/nosuch", 400, None),
             ("PURGE", "/", 400, None),
             ("TRACE", "/", 405, None),

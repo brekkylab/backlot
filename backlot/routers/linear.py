@@ -441,8 +441,8 @@ def reads_as_root(scope) -> bool:
 def slashes_alone(scope) -> bool:
     """Whether the path sent (:func:`backlot.routers.sent_path`) is slashes alone, where
     Cloudflare's `CONNECT` 400 carries `X-Content-Type-Options: nosniff`: api.linear.app sent it at
-    `/`, `//` and `///`, and not at `/%2E`, `/x/..`, `/x/%2E%2E`, `/./`, `/\\` or `/nosuch`, on
-    2026-10-28 (UTC), where its front reads each of the first five as `/`
+    `/`, `//` and `///`, and not at `/%2E`, `/x/..`, `/x/%2E%2E`, `/./`, `/..`, `/%2E%2E`, `/\\` or
+    `/nosuch`, on 2026-10-28 (UTC), where its front reads each of the first five as `/`
     (:func:`reads_as_root`)."""
     return re.fullmatch("/+", sent_path(scope)) is not None
 

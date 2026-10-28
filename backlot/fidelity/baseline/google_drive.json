@@ -6,7 +6,7 @@
     "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
     "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest"
   ],
-  "measured": "2026-10-26",
+  "measured": "2026-10-28",
   "operations": [
     {
       "operation": "DELETE /drive/v3/drives/{}",
@@ -926,9 +926,37 @@
       "operation": "POST /v1/documents",
       "id": "docs.documents.create",
       "response": "docs.Document",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "POST /v1/documents/{}:batchUpdate",

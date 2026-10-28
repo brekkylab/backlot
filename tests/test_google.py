@@ -1119,6 +1119,7 @@ _BATCH_ROWS = [
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values:batchGet?ranges=A1", None, None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _A1_FILTER, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents", '{"title": "x"}', None), 501, None, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1", None, None), 501, 404, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, 403, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/NoSuchSheet!A1", None, None), 501, 400, _UNIMPLEMENTED),
@@ -13972,6 +13973,7 @@ def test_who_may_write_and_in_what_order_a_write_is_refused(
 @pytest.mark.parametrize(
     "method,suffix,rpc",
     [
+        ("POST", "/docs/v1/documents", "docs.v1.DocumentsService.CreateDocument"),
         ("PUT", "/values/A1", "UpdateValues"),
         ("POST", "/values:batchUpdate", "BatchUpdateValues"),
         ("POST", "/values/A1:clear", "ClearValues"),
@@ -13988,9 +13990,12 @@ def test_who_may_write_and_in_what_order_a_write_is_refused(
         ("GET", "/developerMetadata/5", "GetDeveloperMetadata"),
     ],
 )
-def test_a_sheets_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method, suffix, rpc):
-    """No credential on these is a 401 whose ErrorInfo names the RPC."""
-    r = wc.request(method, f"{wbook}{suffix}", params=_RAW, json={})
+def test_an_editor_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method, suffix, rpc):
+    """No credential on these is a 401 whose ErrorInfo names the RPC: a Sheets one by its name on
+    the spreadsheet the path suffixes, any other by its path and its whole name."""
+    if "." not in rpc:
+        suffix, rpc = f"{wbook}{suffix}", f"sheets.v4.SpreadsheetsService.{rpc}"
+    r = wc.request(method, suffix, params=_RAW, json={})
     assert r.status_code == 401
     assert r.json()["error"]["details"] == [
         {
@@ -13998,8 +14003,8 @@ def test_a_sheets_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method
             "reason": "CREDENTIALS_MISSING",
             "domain": "googleapis.com",
             "metadata": {
-                "method": f"google.apps.sheets.v4.SpreadsheetsService.{rpc}",
-                "service": "sheets.googleapis.com",
+                "method": f"google.apps.{rpc}",
+                "service": f"{rpc.split('.')[0]}.googleapis.com",
             },
         }
     ]
@@ -14790,6 +14795,219 @@ def test_a_created_spreadsheet_keeps_what_its_sheets_state(wc, wh):
 )
 def test_a_create_real_refuses_is_refused_with_reals_message(wc, wh, body, message):
     r = wc.post("/sheets/v4/spreadsheets", headers=wh[_OWNER], json=body)
+    assert (r.status_code, r.json()["error"]["message"]) == (400, message)
+    assert wc.get("/_meta/overlay").json()["gdrive_files"] == []
+
+
+def _create_doc(wc, h, body=None, **params):
+    r = wc.post("/docs/v1/documents", headers=h, params=params, json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh):
+    """Measured: the answer is the owner's `documents.get` with `tabs` beside the flat members and
+    no `commentsViewMode`, its body a section break and one empty paragraph, and the next read
+    serves its `revisionId`; the Drive file sits at the creator's My Drive root with one
+    permission, the owner's; anyone else gets the 403 and 404 a hidden file gets."""
+    h = wh[_OWNER]
+    doc = _create_doc(wc, h, {"title": "Fresh doc"})
+    did = doc["documentId"]
+    assert list(doc) == [
+        "title",
+        "body",
+        "documentStyle",
+        "namedStyles",
+        "revisionId",
+        "suggestionsViewMode",
+        "documentId",
+        "tabs",
+    ]
+    assert doc["body"]["content"] == [
+        {
+            "endIndex": 1,
+            "sectionBreak": {
+                "sectionStyle": {
+                    "columnSeparatorStyle": "NONE",
+                    "contentDirection": "LEFT_TO_RIGHT",
+                    "sectionType": "CONTINUOUS",
+                }
+            },
+        },
+        {
+            "startIndex": 1,
+            "endIndex": 2,
+            "paragraph": {
+                "elements": [
+                    {
+                        "startIndex": 1,
+                        "endIndex": 2,
+                        "textRun": {"content": "\n", "textStyle": {}},
+                    }
+                ],
+                "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT"},
+            },
+        },
+    ]
+    held = {k: doc[k] for k in ("body", "documentStyle", "namedStyles")}
+    assert doc["tabs"] == [{"tabProperties": _DOCS_TAB, "documentTab": held}]
+    read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+    flat = {k: v for k, v in doc.items() if k != "tabs"}
+    assert read == {**flat, "commentsViewMode": "COMMENTS_VIEW_MODE_OMITTED"}
+    f = wc.get(
+        f"/drive/v3/files/{did}", headers=h, params={"fields": "name,mimeType,parents,shared"}
+    ).json()
+    assert f == {
+        "name": "Fresh doc",
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": [synth.drive_root_id(_OWNER)],
+        "shared": False,
+    }
+    roots = wc.get("/drive/v3/files", headers=h, params={"q": "'root' in parents"}).json()
+    assert did in [x["id"] for x in roots["files"]]
+    perms = wc.get(f"/drive/v3/files/{did}/permissions", headers=h).json()["permissions"]
+    assert [p["role"] for p in perms] == ["owner"]
+    other = wh["reader@acme.com"]
+    assert wc.get(f"/docs/v1/documents/{did}", headers=other).status_code == 403
+    assert wc.get(f"/drive/v3/files/{did}", headers=other).status_code == 404
+    # the admin token owns what its service account creates
+    admin = wh["admin"]
+    mine = _create_doc(wc, admin, {})["documentId"]
+    owned = wc.get("/drive/v3/files", headers=admin, params={"q": "'me' in owners"}).json()
+    assert [x["id"] for x in owned["files"]] == [mine]
+
+
+def test_a_created_document_keeps_its_title_alone(wc, wh):
+    """Measured: of what a request states, only `title` is kept, from the body or, over it, the
+    query, whose last repeat is read; no title, `null` or an empty one is `Untitled document`."""
+    h = wh[_OWNER]
+    plain = _create_doc(wc, h, {"title": "t"})
+    stated = _create_doc(
+        wc,
+        h,
+        {
+            "title": "t",
+            "documentId": "abc",
+            "revisionId": "abc",
+            "suggestionsViewMode": "PREVIEW_WITHOUT_SUGGESTIONS",
+            "commentsViewMode": 3,
+            "body": {"content": [{"paragraph": {"elements": [{"textRun": {"content": "hi\n"}}]}}]},
+            "tabs": [{"tabProperties": {"title": "X"}}, {"tabProperties": {"title": "Y"}}],
+            "documentStyle": {"marginTop": {"magnitude": 10, "unit": "PT"}},
+            "namedStyles": {"styles": []},
+        },
+        suggestionsViewMode="PREVIEW_WITHOUT_SUGGESTIONS",
+        documentId="abc",
+    )
+    ignored = ("documentId", "revisionId")
+    assert {k: v for k, v in stated.items() if k not in ignored} == {
+        k: v for k, v in plain.items() if k not in ignored
+    }
+    assert stated["documentId"] not in ("abc", plain["documentId"])
+    titles = [
+        ({}, {}),
+        (None, {}),
+        ({"title": None}, {}),
+        ({"title": ""}, {}),
+        ({"title": "   "}, {}),
+        ({"title": "body"}, {"title": "query"}),
+        ({"title": "body"}, {"title": ""}),
+        ({}, [("title", "first"), ("title", "last")]),
+    ]
+    assert [
+        wc.post("/docs/v1/documents", headers=h, params=params, json=body).json()["title"]
+        for body, params in titles
+    ] == [
+        "Untitled document",
+        "Untitled document",
+        "Untitled document",
+        "Untitled document",
+        "   ",
+        "query",
+        "Untitled document",
+        "last",
+    ]
+    masks = {
+        "documentId": ["documentId"],
+        "title,tabs": ["title", "tabs"],
+        "body": ["body"],
+        "*": list(plain),
+        "comments": [],
+    }
+    assert {mask: list(_create_doc(wc, h, {"title": "m"}, fields=mask)) for mask in masks} == masks
+    assert _create_doc(wc, h, {}, fields="*.tabProperties") == {
+        "tabs": [{"tabProperties": _DOCS_TAB}]
+    }
+
+
+_DOCS_TYPE = "type.googleapis.com/google.apps.docs.v1"
+_ROOT_NOT_A_MESSAGE = (
+    'Invalid JSON payload received. Unknown name "": Root element must be a message.'
+)
+
+
+@pytest.mark.parametrize(
+    "params,body,message",
+    [
+        ({}, {"title": 5}, "Invalid value at 'title' (TYPE_STRING), 5"),
+        ({}, {"title": True}, "Invalid value at 'title' (TYPE_STRING), true"),
+        (
+            {},
+            {"title": ["a"]},
+            'Invalid JSON payload received. Unknown name "title": Proto field is not repeating, '
+            "cannot start list.",
+        ),
+        ({}, {"title": {"a": 1}}, "Invalid value (title), Starting an object on a scalar field"),
+        ({}, [], _ROOT_NOT_A_MESSAGE),
+        ({}, "x", _ROOT_NOT_A_MESSAGE),
+        ({}, 5, _ROOT_NOT_A_MESSAGE),
+        (
+            {},
+            {"zap": 2, "title": "t", "nope": 1},
+            'Invalid JSON payload received. Unknown name "zap": Cannot find field.\n'
+            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+        ),
+        (
+            {},
+            {"nope": 1, "title": 5},
+            'Invalid JSON payload received. Unknown name "nope": Cannot find field.\n'
+            "Invalid value at 'title' (TYPE_STRING), 5",
+        ),
+        (
+            {},
+            {"body": {"content": "x"}},
+            f"Invalid value at 'body.content' ({_DOCS_TYPE}.StructuralElement), \"x\"",
+        ),
+        (
+            {},
+            {"body": {"nope": 1}},
+            "Invalid JSON payload received. Unknown name \"nope\" at 'body': Cannot find field.",
+        ),
+        ({}, {"comments": 5}, f"Invalid value at 'comments' ({_DOCS_TYPE}.CommentThread), 5"),
+        (
+            {},
+            {"suggestionsViewMode": "NOPE"},
+            f"Invalid value at 'suggestions_view_mode' ({_DOCS_TYPE}.SuggestionsViewMode), \"NOPE\"",
+        ),
+        # the query's enums are refused beside the body's refusals, and ahead of the mask's
+        (
+            {"suggestionsViewMode": "NOPE"},
+            {"title": 5},
+            "Invalid value at 'title' (TYPE_STRING), 5\nInvalid value at 'suggestions_view_mode' "
+            f'({_DOCS_TYPE}.SuggestionsViewMode), "NOPE"',
+        ),
+        (
+            {"commentsViewMode": "NOPE", "fields": "nope"},
+            {},
+            f"Invalid value at 'comments_view_mode' ({_DOCS_TYPE}.CommentsViewMode), \"NOPE\"",
+        ),
+        ({"fields": "nope"}, [], _ROOT_NOT_A_MESSAGE),
+        ({"fields": "nope"}, {}, "Request contains an invalid argument."),
+        ({"fields": "tabs("}, {}, "Request contains an invalid argument."),
+    ],
+)
+def test_a_docs_create_real_refuses_is_refused_with_reals_message(wc, wh, params, body, message):
+    r = wc.post("/docs/v1/documents", headers=wh[_OWNER], params=params, json=body)
     assert (r.status_code, r.json()["error"]["message"]) == (400, message)
     assert wc.get("/_meta/overlay").json()["gdrive_files"] == []
 

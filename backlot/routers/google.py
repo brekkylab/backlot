@@ -18,7 +18,9 @@ import json
 import quopri
 import re
 import string
+import time
 import xml.parsers.expat
+from collections.abc import Callable
 from contextvars import ContextVar
 from email.parser import BytesParser
 from email.utils import formataddr, getaddresses
@@ -155,7 +157,7 @@ class _BatchOuter(NamedTuple):
 # part reaches see what `batch` set.
 _BATCH_OUTER: ContextVar[_BatchOuter | None] = ContextVar("google_batch_outer", default=None)
 # The service account an admin/service caller stands for, which `_require` sets: what it creates
-# is its own (`routers.google_sheets._sheets_creator`, `_drive_owned_by`).
+# is its own (`_editor_creator`, `_drive_owned_by`).
 _ADMIN_OWNER: ContextVar[str | None] = ContextVar("google_admin_owner", default=None)
 
 
@@ -4335,6 +4337,59 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     raise gerr.invalid_argument(EDITOR_INVALID_ARG)
 
 
+def _editor_writable(request: Request, row) -> None:
+    """Refuse a write to a file the caller may only read. Only its owner may write a file here (the
+    admin's being what its service account created, `_drive_owned_by`): every grant makes a reader
+    (`_drive_file_capabilities`), and a reader's write is the 403 ``The caller does not have
+    permission``, measured on Sheets' update, batchUpdate, clear, batchClear and append."""
+    if not _drive_owned_by(row["author_email"], _require(request).email):
+        raise gerr.permission_denied()
+
+
+def _editor_creator(request: Request, caller: Caller) -> str:
+    """Who a created file belongs to: the caller, or for the admin/service token the service
+    account, which on real owns what it creates."""
+    return caller.email or _service_email(request)
+
+
+def _editor_new_file_id(conn, owner: str) -> str:
+    """A Drive file id no stored file has, minted as the importer mints one
+    (`synth.gdrive_file_id`) from a seed only this creation has."""
+    while True:
+        file_id = synth.gdrive_file_id(f"created:{owner}:{time.time_ns()}")
+        if store.gdrive_by_id(conn, file_id) is None:
+            return file_id
+
+
+def _editor_store(
+    conn, file_id: str, owner: str, title: str, subtype: str, content: str, parts=None
+) -> None:
+    """A created editor file, stored at its owner's My Drive root and granted to the owner alone:
+    measured on `spreadsheets.create` 2026-10-26 and `documents.create` 2026-10-28, the Drive file's
+    ``parents`` is the creator's root, listed under ``'root' in parents``, its one permission the
+    owner's, and anyone else is answered as for a file nobody shared with them."""
+    now = int(time.time())
+    store.insert_document(
+        conn,
+        "google_drive",
+        {
+            "id": file_id,
+            "folder": _DRIVE_ROOT_FOLDER,
+            "author_email": owner,
+            "title": title,
+            "content": content,
+            "subtype": subtype,
+            "parents": json.dumps([synth.drive_root_id(owner)]),
+            "created_ts": now,
+            "updated_ts": now,
+            "trashed": 0,
+            "title_fold": store.drive_name_fold(title),
+        },
+        grants=[("user", owner)],
+        parts=parts,
+    )
+
+
 def _enum_error(field: str, enum: protojson.Enum, value: str) -> str:
     """Google's own wording for a bad read enum — it names the proto field and message type, e.g.
     ``Invalid value at 'major_dimension' (…sheets.v4.Dimension), "DIAGONAL"``. Measured, because a
@@ -4395,6 +4450,57 @@ def _google_types() -> dict[str, dict[str, str | None]]:
 
 
 _GOOGLE_FIELDS = _google_types()
+
+# A request body that is a whole editor message (`spreadsheets.create`'s `Spreadsheet`,
+# `documents.create`'s `Document`) is read with a `protojson.Message` generated from the message the
+# `google_drive` baseline records from the discovery document (`backlot diff` keeps it current), so
+# a name the vendor's message lacks is refused where real refuses it and every name it has is read.
+_GOOGLE_RECORDED = json.loads((_BASELINES / "google_drive.json").read_text(encoding="utf-8"))[
+    "types"
+]
+_PJ_SCALAR_KINDS = {"integer": "int32", "number": "double", "boolean": "bool", "string": "string"}
+
+
+def _pj_messages(package: str, enums: dict) -> Callable[[str], protojson.Message]:
+    """A reader of the recorded messages of one editor API: ``package`` is its type URL prefix
+    (``type.googleapis.com/google.apps.sheets.v4``), and ``enums`` the `protojson.Enum` of each
+    enum field by ``(message, field)``, the baseline recording an enum as `string`."""
+    built: dict[str, protojson.Message] = {}
+
+    def message(name: str) -> protojson.Message:
+        if name in built:
+            return built[name]
+        fields: list[protojson.Field] = []
+        # kept before its fields are read, for a message that holds itself: a Docs table cell
+        # holds the structural elements that hold the table
+        built[name] = protojson.Message(f"{package}.{name.split('.', 1)[1]}", fields)
+        for json_name, member in _GOOGLE_RECORDED[name].get("fields", {}).items():
+            type_ = member.get("type", "any")
+            repeated = type_.startswith("[") and type_ != "[[any]]"
+            inner = type_[1:-1] if repeated else type_
+            proto = re.sub(r"(?<!^)(?=[A-Z])", "_", json_name).lower()
+            enum = enums.get((name, json_name))
+            if enum is not None:
+                fields.append(
+                    protojson.Field(json_name, proto, "enum", enum=enum, repeated=repeated)
+                )
+            elif inner in _GOOGLE_RECORDED:
+                fields.append(
+                    protojson.Field(
+                        json_name, proto, "message", message=message(inner), repeated=repeated
+                    )
+                )
+            elif type_ == "[[any]]":
+                fields.append(protojson.Field(json_name, proto, "rows"))
+            elif inner in _PJ_SCALAR_KINDS:
+                fields.append(
+                    protojson.Field(json_name, proto, _PJ_SCALAR_KINDS[inner], repeated=repeated)
+                )
+            else:  # a map or a bare JSON value: kept as sent
+                fields.append(protojson.Field(json_name, proto, "any"))
+        return built[name]
+
+    return message
 
 
 def _gmask_paths(mask: str) -> tuple[list[tuple[str, ...]], str]:
@@ -4952,6 +5058,33 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
     if refused:
         raise gerr.invalid_field_values([v for group in refused.values() for v in group])
     return parsed
+
+
+async def _query_and_body(
+    request: Request, readers: dict, message: protojson.Message, *, field: str | None = None
+) -> tuple[dict, dict]:
+    """``(query, body)`` of an editor POST or PUT: each typed query parameter in ``readers`` by
+    its last repeat (``None`` when absent), and the body read into ``message``.
+
+    A query parameter names a field of the request, and real reads both. Measured 2026-10-27 on
+    Sheets' update, append, batchUpdate, batchUpdateByDataFilter, batchGetByDataFilter and
+    getByDataFilter, and 2026-10-28 on Docs' create: with both refused, one 400 lists the body's
+    refusals and then the query's -- ``Invalid value at 'data.values' (…), "x"`` then
+    ``Invalid value at 'include_values_in_response' (TYPE_BOOL), "on"`` -- an unknown body name
+    among them; with both set, the query's value is the one used."""
+    raw = await request.body()
+    try:
+        parsed = _typed_query(request, readers)
+    except gerr.GoogleError as exc:
+        refused = gerr.field_violations(exc)
+        try:
+            protojson.read(raw, message, field=field)
+        except gerr.GoogleError as body_exc:
+            if refused and gerr.field_violations(body_exc):
+                raise gerr.invalid_field_values(gerr.field_violations(body_exc) + refused) from None
+        raise
+    query = {name: (values[-1] if values else None) for name, values in parsed.items()}
+    return query, protojson.read(raw, message, field=field)
 
 
 # The typed booleans each Drive method Backlot serves declares, as the proto field its refusal

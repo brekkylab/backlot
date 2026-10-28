@@ -1,12 +1,13 @@
-"""Google Docs v1 (``/docs/v1``): ``documents.get``.
+"""Google Docs v1 (``/docs/v1``): ``documents.get`` and ``documents.create``.
 
 The routes are registered on `routers.google.router`, so they share its system parameters
 (`routers.google._system_parameters`), credentials and batch endpoint; `routers.google` imports
 this module last to register them, and a ``fields`` mask is read as the Sheets routes read theirs
 (`routers.google._gmask_select`).
 
-Every answer below was measured on docs.googleapis.com on 2026-10-09 and 2026-10-26, by a Google
-Workspace member on a one-tab Doc it owns and by a second member it was shared with as a reader.
+Every answer below was measured on docs.googleapis.com on 2026-10-09, 2026-10-26 and 2026-10-28,
+by a Google Workspace member on a one-tab Doc it owns and by a second member it was shared with as a
+reader.
 """
 
 from __future__ import annotations
@@ -17,11 +18,17 @@ from backlot import auth, gdocs, protojson, store, synth
 from backlot.errors import google as gerr
 from backlot.openapi import qp
 from backlot.routers.google import (
+    _BATCH_OUTER,
     _GOOGLE_FIELDS,
     _drive_owned_by,
+    _editor_creator,
     _editor_doc,
+    _editor_new_file_id,
+    _editor_store,
     _gmask_apply,
     _gmask_select,
+    _pj_messages,
+    _query_and_body,
     _query_bool,
     _query_enum,
     _require,
@@ -82,6 +89,25 @@ def _docs_comment_fields(named: dict) -> bool:
     `tabs` and `tabs.documentTab.*`, which reach them through ``*`` alone, were answered."""
     anchors = named.get("tabs", {}).get("documentTab", {})
     return "comments" in named or "suggestions" in named or "commentAnchors" in anchors
+
+
+def _docs_content(body: list[dict]) -> dict:
+    """What a Doc and its one tab both hold: ``body`` (`backlot.gdocs`) and the default styles."""
+    return {
+        "body": {"content": gdocs.indexed(body)},
+        "documentStyle": gdocs.document_style(),
+        "namedStyles": gdocs.named_styles(),
+    }
+
+
+def _docs_tabs(content: dict) -> list[dict]:
+    return [{"tabProperties": dict(_DOCS_TAB), "documentTab": content}]
+
+
+def _docs_revision(document_id: str) -> str:
+    """The `revisionId` the owner is served, the same from `documents.create` and every read
+    after it: measured 2026-10-26, a created Doc's next `documents.get` served its create's."""
+    return synth._digest(document_id)[:24]
 
 
 def _docs_refuse_suggestions() -> gerr.GoogleError:
@@ -176,14 +202,8 @@ async def docs_get(document_id: str, request: Request):
     )
 
     body = store.gdrive_doc_body_for(auth.conn(request), document_id)
-    if body is None:
-        body = gdocs.from_text(row["content"] or "")
-    content = {
-        "body": {"content": gdocs.indexed(body)},
-        "documentStyle": gdocs.document_style(),
-        "namedStyles": gdocs.named_styles(),
-    }
-    revision = {"revisionId": synth._digest(document_id)[:24]} if owned else {}
+    content = _docs_content(body if body is not None else gdocs.from_text(row["content"] or ""))
+    revision = {"revisionId": _docs_revision(document_id)} if owned else {}
     # Real's orders, measured 2026-10-16 on twelve Docs and 2026-10-26 on the tabbed answer, the
     # same under each mode and whatever order a mask names the members in. Real also serves
     # `headers` and `footers` after `body`, `lists` after `namedStyles` and `inlineObjects` before
@@ -194,7 +214,7 @@ async def docs_get(document_id: str, request: Request):
             **revision,
             "suggestionsViewMode": suggestions,
             "documentId": document_id,
-            "tabs": [{"tabProperties": dict(_DOCS_TAB), "documentTab": content}],
+            "tabs": _docs_tabs(content),
             "commentsViewMode": view,
         }
     else:
@@ -206,4 +226,76 @@ async def docs_get(document_id: str, request: Request):
             "documentId": document_id,
             "commentsViewMode": view,
         }
+    return doc if tree is None else _gmask_apply(tree, doc)
+
+
+# --- `documents.create` ----------------------------------------------------------------------------
+
+# A new Doc's title when the request names none, an English account's: measured 2026-10-28, a
+# missing, `null` or empty `title` was this, and `"   "` was kept as sent.
+DOCS_UNTITLED = "Untitled document"
+
+# The request body is the `Document` itself, read against the recorded message
+# (`routers.google._pj_messages`): measured 2026-10-28, an unknown name is
+# ``Unknown name "nope": Cannot find field.`` with no field path, a nested one names its message
+# (``at 'body'``), and a name the `Document` has is typed (``Invalid value at 'title' (TYPE_STRING),
+# 5``), a number in an enum field read whether or not the enum declares it.
+_PJ_DOCUMENT = _pj_messages(
+    _DOCS_VIEW,
+    {
+        ("docs.Document", "suggestionsViewMode"): _DOCS_SUGGESTIONS_VIEW,
+        ("docs.Document", "commentsViewMode"): _DOCS_COMMENTS_VIEW,
+    },
+)("docs.Document")
+
+# A query parameter binds to the `Document` field it names. Measured 2026-10-28: `title` names the
+# Doc over the body's, its last repeat read and an empty one naming none; the enums are read as
+# `documents.get` reads them and refused beside the body's refusals (`_query_and_body`), ahead of
+# the `fields` mask's. `documentId` and `revisionId` bind and change nothing, as in the body.
+_DOCS_CREATE_QUERY = {
+    "title": lambda raw: raw,
+    "suggestionsViewMode": lambda raw: _query_enum(
+        raw, "suggestions_view_mode", _DOCS_SUGGESTIONS_VIEW
+    ),
+    "commentsViewMode": lambda raw: _query_enum(raw, "comments_view_mode", _DOCS_COMMENTS_VIEW),
+}
+
+_P_DOCS_CREATE = [qp("fields")]
+
+
+@router.post("/docs/v1/documents", openapi_extra={"parameters": _P_DOCS_CREATE})
+async def docs_create(request: Request):
+    """``documents.create``: a blank Doc at the caller's My Drive root, owned by the caller and
+    shared with nobody (`routers.google._editor_store`), answered as its owner's `documents.get`
+    answers it with `tabs` beside the flat members and no `commentsViewMode`.
+
+    Measured 2026-10-28:
+
+    * only `title` is kept: a stated `body`, `tabs`, `documentStyle`, `namedStyles`, `documentId`,
+      `revisionId`, `suggestionsViewMode` and `commentsViewMode` are read, typed, and dropped;
+    * the body is a section break and one empty paragraph `[1, 2)`;
+    * the order is the credential, the body and the typed query values, then the `fields` mask;
+    * inside a batch it is the 501 real's batch answered it with;
+    * a mask is applied to the whole answer, tabs included, so `fields=*` serves the tabs, and
+      neither `comments` nor a member a tab also carries is refused beside them."""
+    caller = _require(request)
+    query, body = await _query_and_body(request, _DOCS_CREATE_QUERY, _PJ_DOCUMENT)
+    tree, _ = _gmask_select(gerr.first_repeat(request.query_params, "fields"), "docs.Document")
+    if _BATCH_OUTER.get() is not None:
+        raise gerr.unimplemented()
+    title = query["title"] if query["title"] is not None else body.get("title")
+    title = title or DOCS_UNTITLED
+    conn = auth.conn(request)
+    owner = _editor_creator(request, caller)
+    file_id = _editor_new_file_id(conn, owner)
+    _editor_store(conn, file_id, owner, title, "document", "")
+    content = _docs_content(gdocs.from_text(""))
+    doc = {
+        "title": title,
+        **content,
+        "revisionId": _docs_revision(file_id),
+        "suggestionsViewMode": "SUGGESTIONS_INLINE",
+        "documentId": file_id,
+        "tabs": _docs_tabs(content),
+    }
     return doc if tree is None else _gmask_apply(tree, doc)

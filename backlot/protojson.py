@@ -15,6 +15,7 @@ import codecs
 import json
 import math
 import re
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import NamedTuple
 
@@ -47,7 +48,7 @@ class Field(NamedTuple):
 
 class Message(NamedTuple):
     type_url: str
-    fields: tuple[Field, ...]
+    fields: Sequence[Field]
 
     def find(self, name: str) -> Field | None:
         """A field by its JSON name or its proto name, the two spellings real accepts, matched

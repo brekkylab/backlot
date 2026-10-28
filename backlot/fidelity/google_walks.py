@@ -90,7 +90,7 @@ DOCS_CORPUS = [
 
 def docs(timeout: float) -> list[tuple[str, Any]]:
     """Each document read through `documents.get`, flat and as its tabs, as its owner: a reader is
-    served no `revisionId`."""
+    served no `revisionId`; then one `documents.create`."""
     import backlot
     from backlot.server import meta_users
 
@@ -108,11 +108,13 @@ def docs(timeout: float) -> list[tuple[str, Any]]:
                     params={"q": "mimeType='application/vnd.google-apps.document'"},
                 )
             )["files"]
-            return [
+            walked = [
                 ("docs.documents.get", _ok(client.get(f"/docs/v1/documents/{f['id']}", params=q)))
                 for f in files
                 for q in ({}, {"includeTabsContent": "true"})
             ]
+            created = _ok(client.post("/docs/v1/documents", json={"title": "Walk created doc"}))
+            return [*walked, ("docs.documents.create", created)]
 
 
 def sheets(timeout: float) -> list[tuple[str, Any]]:

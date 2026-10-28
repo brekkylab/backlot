@@ -27,7 +27,7 @@ from backlot.server import HELLO_CORPUS
 from backlot.telemetry import clients, enabled, errors, naming, notice, recorder
 from backlot.telemetry.errors import error_class
 from backlot.telemetry.middleware import _credential
-from backlot.telemetry.recorder import MAX_SERIES, RECORDER, Exporter, Recorder, encode
+from backlot.telemetry.recorder import ENDPOINT, MAX_SERIES, RECORDER, Exporter, Recorder, encode
 from backlot.version import version
 from tests._helpers import build_corpus, client_for, settings_put_back
 
@@ -192,11 +192,13 @@ def test_each_way_to_start_a_server_can_turn_it_off(monkeypatch, hello, capsys, 
         for telemetry in (True, False):
             os.environ.pop("BACKLOT_TELEMETRY", None)
             capsys.readouterr()
-            with pytest.raises(_Started):
-                with backlot.server.serve(data_dir=hello.data_dir, telemetry=telemetry):
-                    pass
-            # The child's own notice goes to its log, so serve() says it where its caller sees it.
-            seen.append(notice(recorder.ENDPOINT) in capsys.readouterr().err)
+            # serve()'s notice names the endpoint the child sends to, `ENDPOINT` as the recorder
+            # module writes it, however this process's exporter is pointed.
+            with _ExportTo(UNREACHABLE):
+                with pytest.raises(_Started):
+                    with backlot.server.serve(data_dir=hello.data_dir, telemetry=telemetry):
+                        pass
+                seen.append(notice(ENDPOINT) in capsys.readouterr().err)
     assert seen == [True, False, True, False, None, True, "0", False]
 
 

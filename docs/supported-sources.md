@@ -100,13 +100,13 @@ nginx's 400.
 Every answer past Cloudflare but nginx's 400 carries `Strict-Transport-Security`, and Fastify's add
 `Access-Control-Allow-Origin: *`; an answer of Apollo Server's request pipeline carries
 `Cache-Control: no-store` unless it sets its own, and the JSON Apollo Server writes ends in a
-newline. Each root field a document runs, an alias of one as one more, spends a key's budget: 30 a
-minute, from the first of them, and 500 a calendar day in UTC, a Free plan's, unless
-`BACKLOT_FIREFLIES_PER_MINUTE` and `BACKLOT_FIREFLIES_PER_DAY` set others. An answer that serves
-each field carries `x-ratelimit-{limit,remaining,reset}` for `-api_burst`, for `-api` and bare. A
-field past either budget is `null` beside a `too_many_requests` error, and its answer carries
-`retry-after-api_burst` if the minute refused one, `retry-after-api` if the day did, the
-`-api_burst` window if a field passed the minute, the `-api` window if one was served, and
+newline. Each root field a document runs a resolver for, an alias of one as one more, spends a key's
+budget: 30 a minute, from the first of them, and 500 a calendar day in UTC, a Free plan's, unless
+`BACKLOT_FIREFLIES_PER_MINUTE` and `BACKLOT_FIREFLIES_PER_DAY` set others. An answer that spends the
+budget and serves each field carries `x-ratelimit-{limit,remaining,reset}` for `-api_burst`, for
+`-api` and bare. A field past either budget is `null` beside a `too_many_requests` error, and its
+answer carries `retry-after-api_burst` if the minute refused one, `retry-after-api` if the day did,
+the `-api_burst` window if a field passed the minute, the `-api` window if one was served, and
 `retry-after` with the bare window: the day's once the day is spent, and before, the minute's wait
 beside the day's numbers, or beside the minute's limit and 0 where no field was served
 (`backlot.routers.fireflies.Budget`). `BACKLOT_FIREFLIES_ENFORCE_RATE_LIMITS` turns the refusal off.

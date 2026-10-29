@@ -41,9 +41,9 @@ API caps at 100 is a client that breaks in production.
 
 | Env var | Default | What it does |
 |---|---|---|
-| `BACKLOT_FIREFLIES_ENFORCE_RATE_LIMITS` | `true` | Refuse each root field a `/fireflies` document runs once its key has spent the minute's or the day's budget, with `too_many_requests` and a null in its data, the way api.fireflies.ai does. The counts and their `x-ratelimit-*` headers are sent either way. Turn it off for a long-lived `serve()` whose own volume would rather not meet the minute's budget |
-| `BACKLOT_FIREFLIES_PER_MINUTE` | `30` | The root fields a key may run in a minute from the first of them, a Free plan's. Fireflies gives a Pro plan, and a Free user's first 14 days, `60` |
-| `BACKLOT_FIREFLIES_PER_DAY` | `500` | The root fields a key may run in a calendar day in UTC, a Free plan's. Fireflies gives a Pro plan, and a Free user's first 14 days, `5000` |
+| `BACKLOT_FIREFLIES_ENFORCE_RATE_LIMITS` | `true` | Refuse each root field a `/fireflies` document runs a resolver for once its key has spent the minute's or the day's budget, with `too_many_requests` and a null in its data, the way api.fireflies.ai does. The counts and their `x-ratelimit-*` headers are sent either way. Turn it off for a long-lived `serve()` whose own volume would rather not meet the minute's budget |
+| `BACKLOT_FIREFLIES_PER_MINUTE` | `30` | The root fields a key may run resolvers for in a minute from the first of them, a Free plan's. Fireflies gives a Pro plan, and a Free user's first 14 days, `60` |
+| `BACKLOT_FIREFLIES_PER_DAY` | `500` | The root fields a key may run resolvers for in a calendar day in UTC, a Free plan's. Fireflies gives a Pro plan, and a Free user's first 14 days, `5000` |
 
 ## Telemetry
 

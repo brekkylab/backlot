@@ -572,11 +572,11 @@ def nginx_passes(path: bytes) -> bool:
 @router.api_route("/", methods=list(apollo_http.METHODS), include_in_schema=False)
 async def unrouted(request: Request):
     """Fireflies' answer at a path Fastify has no route for, each of which ``backlot.main`` routes
-    here: nginx's page where nginx keeps the request (:func:`nginx_path`, :func:`nginx_passes`),
-    and Fastify's where it passes it on: :func:`_preflight` to an `OPTIONS`, and to any other
-    method, after reading the body of one of :data:`_BODIED` (:func:`_fastify_read`), its
-    not-found handler's 404 (:func:`_not_found`). Fastify's answers carry what
-    :func:`_from_fastify` adds, nginx's 404 page :data:`_HSTS` alone, and its 400 neither."""
+    here: nginx's page where nginx keeps the request (:func:`nginx_path`, :func:`nginx_passes`), its
+    400 without :data:`_HSTS` and its 404 with it alone, and Fastify's where it passes it on:
+    :func:`_preflight` to an `OPTIONS`, and to any other method, after reading the body of one of
+    :data:`_BODIED` (:func:`_fastify_read`), its not-found handler's 404 (:func:`_not_found`), each
+    with what :func:`_from_fastify` adds."""
     path = nginx_path(sent_path(request.scope))
     if path is None:
         return Response(_NGINX_400, status_code=400, headers={"content-type": "text/html"})

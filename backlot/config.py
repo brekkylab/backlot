@@ -78,10 +78,10 @@ class Settings(BaseSettings):
     # production (see ``backlot.routers.fireflies.Budget``). docs/configuration.md's Fireflies
     # section has what the switches do and when to flip them.
     fireflies_enforce_rate_limits: bool = True
-    # The root fields a key may run a minute and a calendar day in UTC, a Free plan's: the
-    # `x-ratelimit-limit-api_burst` and `x-ratelimit-limit-api` api.fireflies.ai sent the key
-    # measured with on 2026-10-26 and 2026-10-29 (UTC), and the "30 requests" and "500 requests"
-    # its limits page gives the plan.
+    # The root fields a key may run resolvers for in a minute and in a calendar day in UTC, a Free
+    # plan's: the `x-ratelimit-limit-api_burst` and `x-ratelimit-limit-api` api.fireflies.ai sent
+    # the key measured with on 2026-10-26 and 2026-10-29 (UTC), and the "30 requests" and "500
+    # requests" its limits page gives the plan.
     fireflies_per_minute: int = 30
     fireflies_per_day: int = 500
 

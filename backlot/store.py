@@ -3850,23 +3850,27 @@ def list_slack_top_level(
     visible_ids=None,
     limit=100,
     offset=0,
-    ts_lo=None,
-    ts_hi=None,
     *,
+    after=None,
+    before=None,
     newest_first=False,
 ) -> list[sqlite3.Row]:
     """Top-level (thread-root/standalone) messages in a channel, oldest first unless
-    ``newest_first``. ``ts_lo``/``ts_hi`` bound ``created_ts`` for a time-windowed
-    conversations.history, so a day window is an indexed range rather than the whole channel
-    filtered in Python. Widen the bounds by ±1s — the public ts carries a sub-second fraction — and
-    re-check the exact float window in the caller."""
+    ``newest_first``. ``after`` and ``before`` bound them by ts for conversations.history, each
+    ``(microseconds, inclusive)``. ``created_ts`` narrows each bound to the second, widened by 1s,
+    so a day window is an indexed range rather than the whole channel."""
     sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
     params: list = [channel]
-    if ts_lo is not None or ts_hi is not None:
-        lo = ts_lo if ts_lo is not None else -(1 << 62)
-        hi = ts_hi if ts_hi is not None else (1 << 62)
-        sql += " AND created_ts >= ? AND created_ts <= ?"
-        params += [lo, hi]
+    us = (
+        "(CAST(substr(ts, 1, instr(ts, '.') - 1) AS INTEGER) * 1000000"
+        " + CAST(substr(ts, instr(ts, '.') + 1) AS INTEGER))"
+    )
+    if after is not None:
+        sql += f" AND created_ts >= ? AND {us} {'>=' if after[1] else '>'} ?"
+        params += [after[0] // 1_000_000 - 1, after[0]]
+    if before is not None:
+        sql += f" AND created_ts <= ? AND {us} {'<=' if before[1] else '<'} ?"
+        params += [before[0] // 1_000_000 + 1, before[0]]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause + f" ORDER BY {_order_by('slack', desc=newest_first)} LIMIT ? OFFSET ?"
     params += cparams + [limit, offset]

@@ -492,8 +492,8 @@ class Engine:
     def run(self, operation: Operation, *, context: Any = None) -> Result:
         """Coerce the variables of ``operation``, refused with Apollo Server's code, and run it
         with ``context``, the errors of the root arguments graphql-js refuses
-        (:meth:`_refused_root_arguments`) ahead of the run's, or in its place where one is a
-        non-null field's."""
+        (:meth:`_refused_root_arguments`) ahead of the run's at the other root fields, or in its
+        place where one is a non-null field's."""
         variables = operation.variables
         coercion = js_words.coerce_variable_values(
             self.schema, list(operation.operation.variable_definitions), variables

@@ -214,23 +214,31 @@ def test_a_head_that_ends_is_read_to_the_bound_real_read_it_to(
 
 def test_each_request_on_a_connection_is_counted_from_its_own_start(live_server):
     """Two heads of 10,000 bytes on one connection, past S3's bound of 16,384 together: the second
-    is read as the first was, and waits for its end like any head within the bound."""
+    is read as the first was, and waits for its end like any head within the bound; a third that
+    reaches the bound on its own draws real's answer at it."""
     base_url, _ = live_server
     start = "GET /s3/no-such-bucket/nope HTTP/1.1\r\nHost: x\r\nX-A: "
     value = "a" * (10_000 - len(start) - len("\r\n\r\n") + len("/s3"))
     with _connect(base_url) as c:
         reader = c.makefile("rb")
+
+        def served() -> None:
+            assert reader.readline().startswith(b"HTTP/1.1 404")
+            length = 0
+            while (line := reader.readline()) not in (b"\r\n", b""):
+                if line.lower().startswith(b"content-length:"):
+                    length = int(line.split(b":")[1])
+            reader.read(length)
+
         c.sendall(f"{start}{value}\r\n\r\n".encode())
-        assert reader.readline().startswith(b"HTTP/1.1 404")
-        length = 0
-        while (line := reader.readline()) not in (b"\r\n", b""):
-            if line.lower().startswith(b"content-length:"):
-                length = int(line.split(b":")[1])
-        reader.read(length)
+        served()
         c.sendall(f"{start}{value}".encode())
         assert not select.select([c], [], [], 0.5)[0]
         c.sendall(b"\r\n\r\n")
-        assert reader.readline().startswith(b"HTTP/1.1 404")
+        served()
+        c.sendall(f"{start}{'a' * (16_384 - len(start) + len('/s3'))}".encode())
+        answer = _until_closed(c)
+    assert _as_real(answer) == _REAL["s3"]
 
 
 #: A body longer than the bound after a head that ends, on Graph, whose bound refuses a head at its
@@ -244,11 +252,11 @@ _BODIES = [
 
 @pytest.mark.parametrize("mount, path, size", _BODIES)
 def test_a_body_after_the_head_is_not_counted(live_server, mount, path, size):
-    """The long body draws the answer a body of ten bytes draws; the CR and the LF that end the head
-    come in two reads, the body with the LF."""
+    """The long body draws the status line and `Content-Type` a body of ten bytes draws; the CR and
+    the LF that end the head come in two reads, the body with the LF."""
     base_url, _ = live_server
 
-    def status(length: int) -> int:
+    def answer(length: int) -> tuple[bytes, bytes | None]:
         head = (
             f"POST {mount}{path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
             f"Content-Length: {length}\r\n\r"
@@ -257,9 +265,14 @@ def test_a_body_after_the_head_is_not_counted(live_server, mount, path, size):
             c.sendall(head.encode())
             assert not select.select([c], [], [], 0.2)[0]
             c.sendall(b"\n" + b"a" * length)
-            return int(c.makefile("rb").readline().split()[1])
+            reader = c.makefile("rb")
+            status_line = reader.readline()
+            while (line := reader.readline()) not in (b"\r\n", b""):
+                if line.lower().startswith(b"content-type:"):
+                    return status_line, line
+            return status_line, None
 
-    assert status(size) == status(10)
+    assert answer(size) == answer(10)
 
 
 @pytest.fixture(scope="module")

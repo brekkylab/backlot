@@ -377,7 +377,9 @@ def _unbrotli(raw: bytes, limit: int = LINEAR_LIMIT) -> bytes:
     stream cut short. Measured on api.linear.app on 2026-10-27 (UTC): a stream then ``xx``, or then
     a second stream, was served, no bytes and a stream short of its last three were the end of
     file, the query sent plain was the decompression failure, and a stream one byte past
-    :data:`LINEAR_LIMIT` the 413 where one of that many was served."""
+    :data:`LINEAR_LIMIT` the 413 where one of that many was served. On 2026-10-29 (UTC) a stream
+    cut short past :data:`LINEAR_LIMIT`, then bytes Brotli cannot read, was the decompression
+    failure in 14 of 16 sends over three such bodies, and the 413 in the other two."""
     try:
         out, finished = _brotli_read(raw, limit)
     except brotli_codec.error:
@@ -391,7 +393,7 @@ def _unbrotli(raw: bytes, limit: int = LINEAR_LIMIT) -> bytes:
             except brotli_codec.error:
                 hi = mid
                 continue
-            if finished or len(out) > limit:
+            if finished:
                 hi = mid
             else:
                 lo = mid + 1

@@ -13,6 +13,7 @@ import gzip
 import hashlib
 import itertools
 import json
+import random
 import zlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -2153,6 +2154,17 @@ def _charset(name: str) -> tuple:
 
 _GZIP = (("Content-Encoding", "gzip"),)
 _BR = (("Content-Encoding", "br"),)
+
+
+def _br_cut_past_the_limit() -> bytes:
+    """A ``br`` stream of random hex, cut short where it has given more than :data:`_LIMIT`, then
+    bytes Brotli cannot read."""
+    hex_ = random.Random(0).randbytes(_LIMIT // 2 + 2**15).hex().encode()
+    padded = b'{"query":"{ __typename }","pad":"' + hex_ + b'"}'
+    whole = brotli.compress(padded, quality=0)
+    return whole[: len(whole) * (_LIMIT + 24000) // len(padded)] + b"\xff" * 64
+
+
 _EXPECTED_PROPERTY = _express(
     400, b"Expected property name or '}' in JSON at position 1 (line 1 column 2)"
 )
@@ -2619,6 +2631,12 @@ _LINEAR_READS = [
     ),
     pytest.param(
         _BR, brotli.compress(padded_query(_LIMIT + 1)) + b"xx", _TOO_LARGE, id="past it, br then xx"
+    ),
+    pytest.param(
+        _BR,
+        _br_cut_past_the_limit(),
+        _express(400, b"Decompression failed"),
+        id="past it, br cut short then bytes Brotli cannot read",
     ),
     pytest.param(
         _GZIP, gzip.compress(padded_query(_LIMIT + 2)), _TOO_LARGE, id="past it by two, gzipped"

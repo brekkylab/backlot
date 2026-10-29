@@ -491,7 +491,9 @@ class Engine:
 
     def run(self, operation: Operation, *, context: Any = None) -> Result:
         """Coerce the variables of ``operation``, refused with Apollo Server's code, and run it
-        with ``context``."""
+        with ``context``, the errors of the root arguments graphql-js refuses
+        (:meth:`_refused_root_arguments`) ahead of the run's, or in its place where one is a
+        non-null field's."""
         variables = operation.variables
         coercion = js_words.coerce_variable_values(
             self.schema, list(operation.operation.variable_definitions), variables
@@ -521,14 +523,23 @@ class Engine:
         # A root type only `self._checked` has runs there, and one neither schema has is
         # graphql-core's refusal.
         on_a_root = getattr(self.schema, f"{operation.operation.operation.value}_type") is None
-        refusal = None if on_a_root else self._refused_root_argument(operation, variables)
-        result = refusal or execute_sync(
-            self._checked if on_a_root else self.schema,
-            operation.document,
-            context_value=context,
-            variable_values=variables,
-            operation_name=operation.name,
+        argued, nulled = (
+            ([], False) if on_a_root else self._refused_root_arguments(operation, variables)
         )
+        if nulled:
+            result = ExecutionResult(None, argued)
+        else:
+            result = execute_sync(
+                self._checked if on_a_root else self.schema,
+                operation.document,
+                context_value=context,
+                variable_values=variables,
+                operation_name=operation.name,
+            )
+            if argued:
+                keys = {error.path[0] for error in argued}
+                ran = [e for e in result.errors or () if not e.path or e.path[0] not in keys]
+                result = ExecutionResult(result.data, [*argued, *ran])
         # api.fireflies.ai and api.linear.app open a response carrying a field error with "errors"
         # (2026-10-21), so the errors come first here. Each error's locations are graphql-js's. An
         # error graphql-core made itself is in graphql-js's words and carries the code Apollo Server
@@ -554,20 +565,20 @@ class Engine:
             assigned=frozenset(assigned),
         )
 
-    def _refused_root_argument(
+    def _refused_root_arguments(
         self, operation: Operation, variables: Any
-    ) -> ExecutionResult | None:
-        """The answer to ``operation`` where a non-null root field's arguments are refused, or
-        None to run it. graphql-js reads each root field's arguments as it starts the field, in
-        the order the fields come, before any resolver's answer arrives, as Linear's resolvers
-        answer asynchronously: the first non-null root field whose argument it refuses nulls the
-        data, its error answered after those of the nullable root fields refused before it and
-        ahead of whatever an earlier root field's resolver would answer. api.linear.app answered
-        `Internal server error` at a later `issue(id: $x)` sent `null`, ahead of an earlier `issue`
-        it does not hold and of an earlier `viewer`, and through a fragment, on 2026-10-21 and
-        2026-10-26 (UTC), and after the same error at a `__type(name: $y)` sent `null` before it on
-        2026-10-26. Where no non-null root field is refused, as on Fireflies, whose root fields are
-        each nullable, the run answers, and so it does a refused directive."""
+    ) -> tuple[list[GraphQLError], bool]:
+        """The errors of the root fields of ``operation`` whose arguments graphql-js refuses, in
+        the order the fields come, and whether the last is a non-null field's, which nulls the
+        data and ends them. graphql-js reads each query root field's arguments as it starts the
+        field, before any resolver's answer arrives, as Linear's resolvers answer asynchronously, so
+        these come ahead of every resolver's error. api.linear.app answered `Internal server error`
+        at a later `issue(id: $x)` sent `null`, ahead of an earlier `issue` it does not hold and of
+        an earlier `viewer`, and through a fragment, on 2026-10-21 and 2026-10-26 (UTC), and after
+        the same error at a `__type(name: $y)` sent `null` before it on 2026-10-26; and it answered
+        one or two `__type(name: $y)` sent `null` ahead of an earlier `issue` it does not hold, the
+        data null, and ahead of an `issue` before a served `__type`, on 2026-10-29. A refused
+        directive refuses none here, and the run answers it."""
         root = self.schema.get_root_type(operation.operation.operation)
         fragments = {
             d.name.value: d
@@ -582,7 +593,7 @@ class Engine:
                 self.schema, fragments, coerced, root, operation.operation.selection_set
             )
         except GraphQLError:
-            return None
+            return [], False
         refused: list[GraphQLError] = []
         for key, nodes in fields.items():
             name = nodes[0].name.value
@@ -598,8 +609,8 @@ class Engine:
             except GraphQLError as error:
                 refused.append(located_error(error, nodes, [key]))
                 if isinstance(field.type, GraphQLNonNull):
-                    return ExecutionResult(None, refused)
-        return None
+                    return refused, True
+        return refused, False
 
     def execute(
         self,

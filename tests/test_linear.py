@@ -2001,6 +2001,30 @@ _LINEAR_BODIES = [
         id="null for __type's and issue's arguments, after an issue Linear does not hold",
     ),
     pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } t: __type(name: $y) { name } }","variables":{"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":107}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Entity not found: Issue","path":["a"],"locations":[{"line":1,"column":31}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Could not find referenced Issue."}}],"data":null}\n',
+            200,
+        ),
+        id="an issue Linear does not hold, then null for __type's argument",
+    ),
+    pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\", $z: String = \\"Team\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } t: __type(name: $y) { name } u: __type(name: $z) { name } }","variables":{"y":null,"z":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":128}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Internal server error","path":["u"],"locations":[{"line":1,"column":157}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Entity not found: Issue","path":["a"],"locations":[{"line":1,"column":52}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Could not find referenced Issue."}}],"data":null}\n',
+            200,
+        ),
+        id="an issue Linear does not hold, then null for two __type arguments",
+    ),
+    pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } s: __type(name: \\"Team\\") { name } t: __type(name: $y) { name } }","variables":{"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":140}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Entity not found: Issue","path":["a"],"locations":[{"line":1,"column":31}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Could not find referenced Issue."}}],"data":null}\n',
+            200,
+        ),
+        id="an issue Linear does not hold, a __type served, then null for __type's argument",
+    ),
+    pytest.param(
         b'{"query":"{ __schema { queryType { name } } }"}',
         b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
         id="introspection",

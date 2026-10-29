@@ -20,7 +20,7 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.datastructures import URL, Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, DispatchFunction
@@ -418,7 +418,7 @@ async def refuse_an_unserved_hubspot_operation(request: Request, call_next):
     """An operation HubSpot publishes that no route here serves is refused for its credential as a
     served route refuses one, ahead of the router's 404 or 405
     (``backlot.routers.hubspot.refuse_an_unserved_operation``)."""
-    refusal = hubspot.refuse_an_unserved_operation(request)
+    refusal = await hubspot.refuse_an_unserved_operation(request)
     if refusal is not None:
         return refusal
     return await call_next(request)
@@ -789,6 +789,52 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     request.scope["path"] = trimmed
     request.scope["raw_path"] = trimmed.encode()
     return await call_next(request)
+
+
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def report_notion_cors(request: Request, call_next):
+    """Answer a `/notion` request as real's CORS layer does on the paths it sits in front of
+    (``notion.answers_cors``), and put a `vary` on each answer.
+
+    Measured against api.notion.com on 2026-10-27: on those paths a request whose `Origin` has a
+    value got ``notion.CORS_HEADERS`` on its answer, the URL's 400 and the body reader's
+    `invalid_json` and 415 among them, and each answer there with a `content-type` was
+    `vary: Origin, Accept-Encoding`, with `Origin` or without; an `OPTIONS` with
+    `Access-Control-Request-Method` beside that `Origin` (`POST`, `FOO` and an empty one alike) was
+    instead a 204 with no body and `vary: Origin`, ahead of the URL check. An `Origin` that is
+    empty, a space or a tab counted as none, and on 2026-10-28 an `Origin` sent twice or three
+    times counted when one of them had a value. On the other paths `Origin` changed nothing
+    (``notion.answers_cors`` has their `vary`). On 2026-10-28 the 304 an `If-None-Match: *` draws,
+    which carries no `content-type`, was `vary: Origin`, with the CORS headers as `Origin` asked.
+
+    Registered after ``serve_a_slashed_notion_path_as_the_path_without_it``,
+    ``read_a_notion_body_as_express_does`` and ``report_notion_etag``, which makes it the outer of
+    the four: it reads the path with its trailing slash as sent, answers a preflight before the
+    body is read, and puts its headers on a 304.
+    """
+    origin = any(value.strip(" \t") for value in request.headers.getlist("origin"))
+    raw_path = request.scope.get("raw_path") or request.url.path.encode()
+    if not notion.answers_cors(raw_path.decode("latin-1")):
+        response = await call_next(request)
+        response.headers["vary"] = "Accept-Encoding"
+        return response
+    if (
+        origin
+        and request.method == "OPTIONS"
+        and "access-control-request-method" in request.headers
+    ):
+        response = Response(status_code=204, headers={"vary": "Origin"})
+    else:
+        response = await call_next(request)
+        response.headers["vary"] = (
+            "Origin, Accept-Encoding" if "content-type" in response.headers else "Origin"
+        )
+    if origin:
+        for name, value in notion.CORS_HEADERS.items():
+            response.headers[name] = value
+    return response
 
 
 def _a_slashed_hubspot_path(scope: Scope) -> bool:
@@ -1313,6 +1359,16 @@ async def warn_slack_post_charset(request: Request, call_next):
     )
 
 
+#: The headers Cloudflare puts beside the `Content-Type` of its answers to a `CONNECT`, a `PURGE`
+#: and a cut escape in front of Linear and Fireflies.
+_CLOUDFLARE_PRIVATE = {
+    "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, "
+    "post-check=0, pre-check=0",
+    "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+    "referrer-policy": "same-origin",
+    "x-frame-options": "SAMEORIGIN",
+}
+
 #: Cloudflare's answer to each method it refuses in front of Linear and Fireflies, as
 #: api.linear.app and api.fireflies.ai answered each on `/graphql`, `/graphql/`, `/nosuch` and `/`
 #: on 2026-10-25 (UTC): a page with CRLF line ends, or a line of text, and the headers it puts on
@@ -1329,28 +1385,42 @@ _CLOUDFLARE_METHOD = {
     "CONNECT": (
         400,
         b"error code: 1045\n",
-        {
-            "content-type": "text/plain; charset=UTF-8",
-            "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, "
-            "post-check=0, pre-check=0",
-            "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
-            "referrer-policy": "same-origin",
-            "x-frame-options": "SAMEORIGIN",
-        },
+        {"content-type": "text/plain; charset=UTF-8", **_CLOUDFLARE_PRIVATE},
     ),
     "PURGE": (
         400,
         request_target.CLOUDFLARE_PAGE,
-        {
-            "content-type": "text/html; charset=UTF-8",
-            "x-frame-options": "SAMEORIGIN",
-            "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, "
-            "post-check=0, pre-check=0",
-            "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
-            "referrer-policy": "same-origin",
-        },
+        {"content-type": "text/html; charset=UTF-8", **_CLOUDFLARE_PRIVATE},
     ),
 }
+
+
+def _sent(scope: Scope) -> tuple[bytes, bytes | None]:
+    """The vendor's path as sent and the query string, ``None`` where it is empty: the scope does
+    not keep a `?` with nothing after it."""
+    return sent_path(scope).encode("latin-1"), scope["query_string"] or None
+
+
+@_middleware(
+    lambda scope: (
+        _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
+        and request_target.cut_escape(*_sent(scope))
+    )
+)
+async def refuse_a_cut_escape_on_linear_and_fireflies(request: Request, call_next):
+    """Answer a `/linear` or `/fireflies` request whose path the end cuts short in a `%`
+    (``request_target.cut_escape``) with Cloudflare's 400, ahead of the route and the credential
+    and behind :func:`refuse_cloudflares_methods_on_linear_and_fireflies`. api.linear.app and
+    api.fireflies.ai answered so `/a%2`, `/a%`, `/a%0`, `/a%F`, `/%`, `/nosucha%b`, `/a%2b%2`,
+    `/graphql%2` and `/graphql/%2` by `POST`, and `/a%2` by `GET`, `HEAD`, `OPTIONS` and `DELETE`,
+    on 2026-10-29 (UTC), and answered a second request on the connection after it. `TRACE`,
+    `CONNECT` and `PURGE` at `/a%2` drew their own answer, and so did `Authorization` or
+    `If-None-Match` sent twice. Linear's answer came in chunks and Fireflies' with a length."""
+    page = request_target.CLOUDFLARE_PAGE
+    headers = {"content-type": "text/html; charset=UTF-8", **_CLOUDFLARE_PRIVATE}
+    if _url_path(request.scope).startswith("/linear"):
+        return StreamingResponse(iter([page]), status_code=400, headers=headers)
+    return Response(page, status_code=400, headers=headers)
 
 
 @_middleware(
@@ -1437,23 +1507,22 @@ async def refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot(
     )
 
 
-def _a_broken_escape(scope: Scope) -> bool:
-    return request_target.broken_escape(scope.get("raw_path") or scope["path"].encode())
-
-
 @_middleware(
     lambda scope: (
-        _at_or_under(_url_path(scope), ("/linear", "/fireflies")) and _a_broken_escape(scope)
+        _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
+        and request_target.refused_path(*_sent(scope))
     )
 )
-async def refuse_a_broken_escape_on_linear_and_fireflies(request: Request, call_next):
-    """Answer a `/linear` or `/fireflies` request whose path holds `%00`, or a `%` two hex digits do
-    not follow, with :data:`backlot.request_target.CLOUDFLARE_PAGE`'s 400, ahead of
-    :func:`refuse_cloudflares_methods_on_linear_and_fireflies`. api.linear.app and api.fireflies.ai
-    answered so `/a%zz` and `/a%00b` by each method of :data:`_CLOUDFLARE_METHOD`, and `/a%2`,
-    `/graphql%zz` and a `%` before `b` by `POST`, on 2026-10-25 (UTC), and passed `?a=%zz`, `?a=%`,
-    `?a=%2` and `?a=%00` after `/graphql` on to the vendor. Both closed the connection after the 400
-    (`POST /graphql%zz`, `POST /a%00b`, `GET /a%2`, 2026-10-26)."""
+async def refuse_a_path_cloudflare_refuses_on_linear_and_fireflies(request: Request, call_next):
+    """Answer a `/linear` or `/fireflies` request whose path Cloudflare refuses
+    (``request_target.refused_path``) with :data:`backlot.request_target.CLOUDFLARE_PAGE`'s 400,
+    ahead of :func:`refuse_cloudflares_methods_on_linear_and_fireflies`. api.linear.app and
+    api.fireflies.ai answered so `/a%zz` and `/a%00b` by each method of :data:`_CLOUDFLARE_METHOD`,
+    and `/graphql%zz` by `POST`, on 2026-10-25 (UTC), and `/../graphql` by `POST`, `GET` and each
+    method of :data:`_CLOUDFLARE_METHOD`, and `/a%2?x=1`, `/a%2/` and `/a%z` by `POST`, on
+    2026-10-29, and passed `?a=%zz`, `?a=%`, `?a=%2` and `?a=%00` after `/graphql` on to the
+    vendor. Both closed the connection after the 400 (`POST /graphql%zz`, `POST /a%00b`,
+    2026-10-26; `POST /../graphql`, `POST /a%2/`, 2026-10-29)."""
     return Response(
         request_target.CLOUDFLARE_PAGE,
         status_code=400,

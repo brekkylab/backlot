@@ -36,6 +36,7 @@ from tests._helpers import (
     db_count,
     http_row,
     padded_query,
+    raw_exchange,
     selected_field_count,
     selected_fields,
     sent_as,
@@ -7652,26 +7653,72 @@ def test_linears_request_budget_takes_one_for_a_run_and_none_for_a_refusal(clien
     ]
 
 
-def test_linears_front_routes_a_path_once_its_dot_segments_are_resolved():
-    """`routes_to_apollo` on paths holding dot segments, which httpx would resolve were
-    `_LINEAR_HTTP` to send them."""
-    from backlot.routers import linear
+# A path httpx would resolve or escape before sending it, written as it is to `backlot serve` with
+# the key and `{ __typename }`, and the status and body api.linear.app answers it with: the
+# endpoint, Express's 404 quoting the path Linear's front reads (`express_path`), its greeting, and
+# Cloudflare's page for a `..` past the root (`request_target.refused_path`).
+_LINEAR_SENT_RAW = [
+    *(
+        pytest.param("POST", p, 200, _TYPENAME_DATA, id=p)
+        for p in (
+            "/./graphql",
+            "/x/../graphql",
+            "/graphql/.",
+            "/graphql/x/..",
+            "/graphql/x/%2E%2E",
+            "/..\\graphql",
+            "/graphql//..",
+        )
+    ),
+    *(
+        pytest.param("POST", p, 404, _express_404("POST", echo), id=p)
+        for p, echo in (
+            ("/graphql/..", "/"),
+            ("/graphql/../x", "/x"),
+            ("/graphql/%2e%2E/x", "/x"),
+            ("/graphql/x/../..", "/"),
+            ("/..", "/"),
+            ("/./..", "/"),
+            ("/x/..", "/"),
+            ("/./nosuch", "/nosuch"),
+            ("/x//../graphql", "/x/graphql"),
+            ("/x/.//graphql", "/x/graphql"),
+            ("/r/./b", "/r/b"),
+            ("/r/b/.", "/r/b/"),
+            ("/r/b/%2e%2e", "/r/"),
+            ("/x/..%2F..", "/x/..%2F.."),
+            *((f"/nosucha{char}b", f"/nosucha%{ord(char):02X}b") for char in '"<>`{}'),
+        )
+    ),
+    *(pytest.param("GET", p, 200, _GREETING, id=f"GET {p}") for p in ("/r/..", "/./", "/%2e")),
+    *(
+        pytest.param("POST", p, 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2), id=p)
+        for p in (
+            "/../graphql",
+            "/./../graphql",
+            "/x/../../",
+            "//../graphql",
+            "/../.",
+            "/graphql/../../x",
+        )
+    ),
+]
 
-    served = dict.fromkeys(
-        ("/./graphql", "/x/../graphql", "/graphql/.", "/graphql/x/..", "/graphql/x/%2E%2E"), True
+
+@pytest.mark.parametrize("method, path, status, body", _LINEAR_SENT_RAW)
+def test_linear_answers_a_path_sent_as_written_as_linear_does(
+    live_server, method, path, status, body
+):
+    base_url, settings = live_server
+    request = (
+        b"%s /linear%s HTTP/1.1\r\nHost: x\r\nAuthorization: %s\r\n"
+        b"Content-Type: application/json\r\nContent-Length: %d\r\n\r\n%s"
+        % (
+            method.encode(),
+            path.encode(),
+            settings.admin_token.encode(),
+            len(_TYPENAME) if method == "POST" else 0,
+            _TYPENAME if method == "POST" else b"",
+        )
     )
-    served |= dict.fromkeys(
-        ("/graphql/..", "/graphql/../x", "/graphql/%2e%2E/x", "/graphql/x/../..", "/../graphql"),
-        False,
-    )
-    assert {p: linear.routes_to_apollo(linear.express_path(p)) for p in served} == served
-
-
-def test_linears_front_escapes_a_character_httpx_escapes_first():
-    """The characters :func:`backlot.routers.linear.express_path` escapes that httpx escapes
-    before it sends a path, so `_LINEAR_HTTP` cannot send them bare; it sends the other two, `|`
-    and `^`."""
-    from backlot.routers import linear
-
-    escaped = {char: f"/nosucha%{ord(char):02X}b" for char in '"<>`{}'}
-    assert {char: linear.express_path(f"/nosucha{char}b") for char in escaped} == escaped
+    assert raw_exchange(base_url, request)[::2] == (status, body)

@@ -1449,9 +1449,8 @@ async def list_comments(request: Request):
             "id": synth.notion_id(c["id"]),
             "parent": {"type": "page_id", "page_id": parent_id},
             "discussion_id": synth.notion_id(f"disc:{row['id']}"),
-            # Real cuts a comment's time to its minute, in the millisecond form (#1110).
-            "created_time": synth.rfc3339_millis(c["created_ts"] // 60 * 60),
-            "last_edited_time": synth.rfc3339_millis(c["created_ts"] // 60 * 60),
+            "created_time": synth.rfc3339_minute(c["created_ts"]),
+            "last_edited_time": synth.rfc3339_minute(c["created_ts"]),
             "created_by": _user_obj(conn, c["author_email"]),
             "rich_text": synth.notion_rich_text(c["body"]),
         }

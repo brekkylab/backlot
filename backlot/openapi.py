@@ -152,12 +152,34 @@ def qp(
 
 _PROTO_SCALARS = {
     "int32": {"type": "integer", "format": "int32"},
+    "int64": {"type": "string", "format": "int64"},
+    "float": {"type": "number", "format": "float"},
     "double": {"type": "number", "format": "double"},
     "string": {"type": "string"},
     "bool": {"type": "boolean"},
+    "timestamp": {"type": "string", "format": "date-time"},
     "rows": {"type": "array", "items": {"type": "array", "items": {}}},
     "any": {},
 }
+
+
+def _proto_value(field: protojson.Field, keep: dict | None, seen: tuple[str, ...]) -> dict:
+    """The schema of what one field holds, a map as an object of its values."""
+    if field.map:
+        assert field.message is not None
+        value = _proto_value(field.message.fields[1], keep, seen)
+        return {"type": "object", "additionalProperties": value}
+    if field.kind == "message":
+        assert field.message is not None
+        value = _proto_schema(field.message, keep, seen)
+    elif field.kind == "enum":
+        assert field.enum is not None
+        value = {"type": "string", "enum": list(field.enum.names)}
+    else:
+        value = dict(_PROTO_SCALARS[field.kind])
+    if field.repeated and field.kind != "rows":
+        value = {"type": "array", "items": value}
+    return value
 
 
 def _proto_schema(message: protojson.Message, keep: dict | None, seen: tuple[str, ...]) -> dict:
@@ -167,23 +189,16 @@ def _proto_schema(message: protojson.Message, keep: dict | None, seen: tuple[str
         unknown = set(keep) - {f.json_name for f in message.fields}
         if unknown:
             raise ValueError(f"{message.type_url} has no field {sorted(unknown)}")
-    properties = {}
-    for field in message.fields:
-        if keep is not None and field.json_name not in keep:
-            continue
-        if field.kind == "message":
-            assert field.message is not None
-            within = None if keep is None else keep[field.json_name]
-            value = _proto_schema(field.message, within, (*seen, message.type_url))
-        elif field.kind == "enum":
-            assert field.enum is not None
-            value = {"type": "string", "enum": list(field.enum.names)}
-        else:
-            value = dict(_PROTO_SCALARS[field.kind])
-        if field.repeated and field.kind != "rows":
-            value = {"type": "array", "items": value}
-        properties[field.json_name] = value
-    return {"type": "object", "properties": properties}
+    return {
+        "type": "object",
+        "properties": {
+            field.json_name: _proto_value(
+                field, None if keep is None else keep[field.json_name], (*seen, message.type_url)
+            )
+            for field in message.fields
+            if keep is None or field.json_name in keep
+        },
+    }
 
 
 def proto_body(

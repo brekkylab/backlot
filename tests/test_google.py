@@ -1120,6 +1120,9 @@ _BATCH_ROWS = [
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _A1_FILTER, None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/docs/v1/documents", '{"title": "x"}', None), 501, None, _UNIMPLEMENTED),
+    # a create's body and mask are refused ahead of the batch's 501
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents", '{"title": 5}', None), 400, 400, "Invalid value at 'title' (TYPE_STRING), 5"),
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents?fields=title,nope", '{"title": "x"}', None), 400, 400, "Request contains an invalid argument."),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1", None, None), 501, 404, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, 403, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/NoSuchSheet!A1", None, None), 501, 400, _UNIMPLEMENTED),
@@ -1897,16 +1900,17 @@ def test_drive_permissions_list_pages_a_file_with_three_permissions(three_reader
 
 
 @pytest.mark.parametrize(
-    "route, names",
+    "route, method, names",
     [
-        ("/drive/v3/files/{file_id}/permissions", {"pageSize", "pageToken", "fields"}),
-        ("/drive/v3/drives", {"q", "fields"}),
+        ("/drive/v3/files/{file_id}/permissions", "get", {"pageSize", "pageToken", "fields"}),
+        ("/drive/v3/drives", "get", {"q", "fields"}),
+        ("/docs/v1/documents", "post", {"fields"}),
     ],
 )
-def test_drive_listing_declares_the_parameters_it_reads(client, route, names):
+def test_a_google_route_declares_the_parameters_it_reads(client, route, method, names):
     """A parameter that shapes the answer is declared, so a client reading the OpenAPI document can
     find it, and `backlot diff --source google_drive` reports none of them as missing."""
-    op = client.app.openapi()["paths"][route]["get"]
+    op = client.app.openapi()["paths"][route][method]
     assert names <= {p["name"] for p in op["parameters"]}
 
 
@@ -8301,6 +8305,19 @@ _GRID = "Invalid value at 'include_grid_data' (TYPE_BOOL), "
             {"dataFilters": [{"a1Range": "Sheet1!A1"}], "includeGridData": "NOPE"},
             [("include_grid_data", _GRID + '"NOPE"')],
         ),
+        # a body that is not an object is refused alone (`protojson.whole`)
+        (
+            "POST",
+            "values_by_filter",
+            [("majorDimension", "NOPE")],
+            [],
+            [
+                (
+                    None,
+                    'Invalid JSON payload received. Unknown name "": Root element must be a message.',
+                )
+            ],
+        ),
     ],
 )
 def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
@@ -8326,7 +8343,7 @@ def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
     err = r.json()["error"]
     [bad_request] = err["details"]
     assert bad_request["@type"] == "type.googleapis.com/google.rpc.BadRequest"
-    got = [(v["field"], v["description"]) for v in bad_request["fieldViolations"]]
+    got = [(v.get("field"), v["description"]) for v in bad_request["fieldViolations"]]
     assert err["message"] == "\n".join(m for _, m in got)
     assert err["status"] == "INVALID_ARGUMENT"
 
@@ -14731,174 +14748,185 @@ def test_a_created_spreadsheet_keeps_what_its_sheets_state(wc, wh):
         assert [x["properties"]["title"] for x in made["sheets"]] == list(pair)
 
 
-@pytest.mark.parametrize(
-    "body,message",
-    [
-        (
-            {
-                "sheets": [
-                    {"properties": {"title": "a", "sheetId": 7}},
-                    {"properties": {"title": "b", "sheetId": 7}},
-                ]
-            },
-            "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
-        ),
-        (
-            {"sheets": [{"properties": {"title": "a", "sheetId": -1}}]},
-            "Invalid sheets[0]: Sheet id must be non-negative.",
-        ),
-        (
-            {"sheets": [{"properties": {"title": "Same"}}, {"properties": {"title": "same"}}]},
-            'Invalid sheets[1]: A sheet with the name "same" already exists. Please enter another name.',
-        ),
-        (
-            {"sheets": [{"properties": {"title": "x" * 101}}]},
-            "Invalid sheets[0]: The sheet name cannot be greater than 100 characters.",
-        ),
-        (
-            {"sheets": [{"properties": {"index": 3}}]},
-            "Invalid sheets: The new sheet index is too high.",
-        ),
-        (
-            {"sheets": [{"properties": {"hidden": True}}]},
-            "Invalid sheets[0]: You can't hide all the sheets in a document.",
-        ),
-        (
-            {"sheets": [{"properties": {"gridProperties": {"columnCount": -1}}}]},
-            "Invalid sheets[0]: You can't delete all the columns on the sheet.",
-        ),
-        (
-            {"sheets": [{"properties": {"gridProperties": {"rowCount": -1}}}]},
-            "Invalid sheets[0]: You can't delete all the rows on the sheet.",
-        ),
-        ({"spreadsheetId": "abc"}, "Invalid spreadsheet.spreadsheetId: The id is invalid."),
-        # two refusals at once: real names the one it checks first
-        (
-            {"spreadsheetId": "abc", "properties": {"locale": "xx_YY"}},
-            "Invalid properties: Unsupported locale: xx_YY",
-        ),
-        (
-            {"sheets": [{"properties": {"title": "x" * 101, "sheetId": -1}}]},
-            "Invalid sheets[0]: Sheet id must be non-negative.",
-        ),
-        (
-            {
-                "sheets": [
-                    {"properties": {"title": "a", "sheetId": 7}},
-                    {"properties": {"title": "A", "sheetId": 7}},
-                ]
-            },
-            "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
-        ),
-        (
-            {"sheets": [{"properties": {"gridProperties": {"rowCount": -1, "columnCount": -1}}}]},
-            "Invalid sheets[0]: You can't delete all the rows on the sheet.",
-        ),
-        (
-            {"sheets": [{"properties": {"index": 3, "hidden": True}}]},
-            "Invalid sheets[0]: You can't hide all the sheets in a document.",
-        ),
-        (
-            {"bogus": 1},
-            "Invalid JSON payload received. Unknown name \"bogus\" at 'spreadsheet': Cannot find field.",
-        ),
-        ({"properties": {"locale": "xx_YY"}}, "Invalid properties: Unsupported locale: xx_YY"),
-        ({"properties": {"locale": "en_us"}}, "Invalid properties: Unsupported locale: en_us"),
-        (
-            {"sheets": [{"properties": {"title": "o", "sheetType": "OBJECT"}}]},
-            "Object sheets must have exactly one embedded object",
-        ),
-        (
-            {
-                "sheets": [
-                    {
-                        "data": [
-                            {
-                                "rowData": [
-                                    {
-                                        "values": [
-                                            {"userEnteredValue": {"errorValue": {"type": "N_A"}}}
-                                        ]
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ]
-            },
-            "Invalid sheets[0].data[0]: Cannot set cell to an error value",
-        ),
-        (
-            {
-                "sheets": [
-                    {
-                        "properties": {"gridProperties": {"rowCount": 2, "columnCount": 2}},
-                        "data": [
-                            {
-                                "startRow": 3,
-                                "rowData": [
-                                    {"values": [{"userEnteredValue": {"stringValue": "x"}}]}
-                                ],
-                            }
-                        ],
-                    }
-                ]
-            },
-            "Invalid sheets[0].data[0]: GridCoordinate.rowIndex[3] is after last row in grid[1]",
-        ),
-        # a block starting inside the grid and running past it says what it attempted
-        (
-            {
-                "sheets": [
-                    {
-                        "properties": {"gridProperties": {"rowCount": 2}},
-                        "data": [
-                            {
-                                "rowData": [
-                                    {"values": [{"userEnteredValue": {"stringValue": "x"}}]}
-                                ]
-                                * 3
-                            }
-                        ],
-                    }
-                ]
-            },
-            "Invalid sheets[0].data[0]: Attempting to write row: 2, beyond the last requested row "
-            "of: 1",
-        ),
-        (
-            {
-                "sheets": [
-                    {
-                        "properties": {"gridProperties": {"columnCount": 2}},
-                        "data": [
-                            {
-                                "rowData": [
-                                    {"values": [{"userEnteredValue": {"stringValue": "x"}}] * 3}
-                                ]
-                            }
-                        ],
-                    }
-                ]
-            },
-            "Invalid sheets[0].data[0]: Attempting to write column: 2, beyond the last requested "
-            "column of: 1",
-        ),
-        # titles collide as Java's equalsIgnoreCase compares them
-        (
-            {"sheets": [{"properties": {"title": "ſheet"}}, {"properties": {"title": "Sheet"}}]},
-            'Invalid sheets[1]: A sheet with the name "Sheet" already exists. Please enter another name.',
-        ),
-        (
-            {"sheets": [{"properties": {"title": "ς"}}, {"properties": {"title": "σ"}}]},
-            'Invalid sheets[1]: A sheet with the name "σ" already exists. Please enter another name.',
-        ),
-    ],
-)
-def test_a_create_real_refuses_is_refused_with_reals_message(wc, wh, body, message):
-    r = wc.post("/sheets/v4/spreadsheets", headers=wh[_OWNER], json=body)
-    assert (r.status_code, r.json()["error"]["message"]) == (400, message)
-    assert wc.get("/_meta/overlay").json()["gdrive_files"] == []
+_SHEETS_TITLE_5 = "Invalid value at 'spreadsheet.properties.title' (TYPE_STRING), 5"
+_SHEETS_CRITERIA_AT = "spreadsheet.sheets[0].basic_filter"
+
+
+def _criteria(criteria) -> dict:
+    """A `Spreadsheet` whose one sheet's basic filter states ``criteria``, and a title of 5."""
+    return {"sheets": [{"basicFilter": {"criteria": criteria}}], "properties": {"title": 5}}
+
+
+# What `spreadsheets.create` refuses, as `(body, message)`.
+_SHEETS_CREATE_REFUSALS = [
+    # a map is read as its entries, an int32 key typed
+    (
+        _criteria(5),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria' "
+        f"(type.googleapis.com/google.apps.sheets.v4.BasicFilter.CriteriaEntry), 5\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria([]),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}' (Map), Cannot bind a list to map for field "
+        f"'criteria'.\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria({"a": {"condition": 5}}),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].key' (TYPE_INT32), \"a\"\n"
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].value.condition' "
+        f"(type.googleapis.com/google.apps.sheets.v4.BooleanCondition), 5\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria({"0": []}),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].value' (Map), Cannot have repeated "
+        f"items ('0') within a map.\n{_SHEETS_TITLE_5}",
+    ),
+    (_criteria({"+1": {}, "2": None}), _SHEETS_TITLE_5),
+    (
+        {
+            "sheets": [
+                {"properties": {"title": "a", "sheetId": 7}},
+                {"properties": {"title": "b", "sheetId": 7}},
+            ]
+        },
+        "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "a", "sheetId": -1}}]},
+        "Invalid sheets[0]: Sheet id must be non-negative.",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "Same"}}, {"properties": {"title": "same"}}]},
+        'Invalid sheets[1]: A sheet with the name "same" already exists. Please enter another name.',
+    ),
+    (
+        {"sheets": [{"properties": {"title": "x" * 101}}]},
+        "Invalid sheets[0]: The sheet name cannot be greater than 100 characters.",
+    ),
+    (
+        {"sheets": [{"properties": {"index": 3}}]},
+        "Invalid sheets: The new sheet index is too high.",
+    ),
+    (
+        {"sheets": [{"properties": {"hidden": True}}]},
+        "Invalid sheets[0]: You can't hide all the sheets in a document.",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"columnCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the columns on the sheet.",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"rowCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the rows on the sheet.",
+    ),
+    ({"spreadsheetId": "abc"}, "Invalid spreadsheet.spreadsheetId: The id is invalid."),
+    # two refusals at once: real names the one it checks first
+    (
+        {"spreadsheetId": "abc", "properties": {"locale": "xx_YY"}},
+        "Invalid properties: Unsupported locale: xx_YY",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "x" * 101, "sheetId": -1}}]},
+        "Invalid sheets[0]: Sheet id must be non-negative.",
+    ),
+    (
+        {
+            "sheets": [
+                {"properties": {"title": "a", "sheetId": 7}},
+                {"properties": {"title": "A", "sheetId": 7}},
+            ]
+        },
+        "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"rowCount": -1, "columnCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the rows on the sheet.",
+    ),
+    (
+        {"sheets": [{"properties": {"index": 3, "hidden": True}}]},
+        "Invalid sheets[0]: You can't hide all the sheets in a document.",
+    ),
+    (
+        {"bogus": 1},
+        "Invalid JSON payload received. Unknown name \"bogus\" at 'spreadsheet': Cannot find field.",
+    ),
+    ({"properties": {"locale": "xx_YY"}}, "Invalid properties: Unsupported locale: xx_YY"),
+    ({"properties": {"locale": "en_us"}}, "Invalid properties: Unsupported locale: en_us"),
+    (
+        {"sheets": [{"properties": {"title": "o", "sheetType": "OBJECT"}}]},
+        "Object sheets must have exactly one embedded object",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "data": [
+                        {
+                            "rowData": [
+                                {"values": [{"userEnteredValue": {"errorValue": {"type": "N_A"}}}]}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Cannot set cell to an error value",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"rowCount": 2, "columnCount": 2}},
+                    "data": [
+                        {
+                            "startRow": 3,
+                            "rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}]}],
+                        }
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: GridCoordinate.rowIndex[3] is after last row in grid[1]",
+    ),
+    # a block starting inside the grid and running past it says what it attempted
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"rowCount": 2}},
+                    "data": [
+                        {"rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}]}] * 3}
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Attempting to write row: 2, beyond the last requested row "
+        "of: 1",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"columnCount": 2}},
+                    "data": [
+                        {"rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}] * 3}]}
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Attempting to write column: 2, beyond the last requested "
+        "column of: 1",
+    ),
+    # titles collide as Java's equalsIgnoreCase compares them
+    (
+        {"sheets": [{"properties": {"title": "ſheet"}}, {"properties": {"title": "Sheet"}}]},
+        'Invalid sheets[1]: A sheet with the name "Sheet" already exists. Please enter another name.',
+    ),
+    (
+        {"sheets": [{"properties": {"title": "ς"}}, {"properties": {"title": "σ"}}]},
+        'Invalid sheets[1]: A sheet with the name "σ" already exists. Please enter another name.',
+    ),
+]
 
 
 def _create_doc(wc, h, body=None, **params):
@@ -14907,11 +14935,12 @@ def _create_doc(wc, h, body=None, **params):
     return r.json()
 
 
-def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh):
+def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh, monkeypatch):
     """Measured: the answer is the owner's `documents.get` with `tabs` beside the flat members and
     no `commentsViewMode`, its body a section break and one empty paragraph, and the next read
     serves its `revisionId`; the Drive file sits at the creator's My Drive root with one
-    permission, the owner's; anyone else gets the 403 and 404 a hidden file gets."""
+    permission, the owner's, a `size` of 1 and `version` 1; anyone else gets the 403 and 404 a
+    hidden file gets. A new id is one no file has."""
     h = wh[_OWNER]
     doc = _create_doc(wc, h, {"title": "Fresh doc"})
     did = doc["documentId"]
@@ -14956,14 +14985,18 @@ def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh):
     read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
     flat = {k: v for k, v in doc.items() if k != "tabs"}
     assert read == {**flat, "commentsViewMode": "COMMENTS_VIEW_MODE_OMITTED"}
-    f = wc.get(
-        f"/drive/v3/files/{did}", headers=h, params={"fields": "name,mimeType,parents,shared"}
-    ).json()
+    fields = "name,mimeType,parents,shared,size,quotaBytesUsed,version,createdTime,modifiedTime"
+    f = wc.get(f"/drive/v3/files/{did}", headers=h, params={"fields": fields}).json()
     assert f == {
         "name": "Fresh doc",
         "mimeType": "application/vnd.google-apps.document",
         "parents": [synth.drive_root_id(_OWNER)],
         "shared": False,
+        "size": "1",
+        "quotaBytesUsed": "1",
+        "version": "1",
+        "createdTime": f["modifiedTime"],
+        "modifiedTime": f["modifiedTime"],
     }
     roots = wc.get("/drive/v3/files", headers=h, params={"q": "'root' in parents"}).json()
     assert did in [x["id"] for x in roots["files"]]
@@ -14977,6 +15010,9 @@ def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh):
     mine = _create_doc(wc, admin, {})["documentId"]
     owned = wc.get("/drive/v3/files", headers=admin, params={"q": "'me' in owners"}).json()
     assert [x["id"] for x in owned["files"]] == [mine]
+    minted = iter([did, "1fresh"])
+    monkeypatch.setattr(synth, "gdrive_file_id", lambda seed: next(minted))
+    assert _create_doc(wc, h)["documentId"] == "1fresh"
 
 
 def test_a_created_document_keeps_its_title_alone(wc, wh):
@@ -15006,6 +15042,34 @@ def test_a_created_document_keeps_its_title_alone(wc, wh):
         k: v for k, v in plain.items() if k not in ignored
     }
     assert stated["documentId"] not in ("abc", plain["documentId"])
+    # values of the right kind, each read and dropped
+    read = [
+        *(
+            _doc_style(paragraphStyle={"namedStyleType": v})
+            for v in (5, 999, -1, "heading_1", "HEADING-1", "1")
+        ),
+        {"headers": None},
+        {"headers": {"h1": None}},
+        {"headers": {"h1": {"headerId": "x"}}},
+        *(
+            _doc_date(v)
+            for v in (
+                "2026-10-29T00:00:00Z",
+                "2026-10-29T00:00:00.123456789+09:00",
+                " 2026-10-29T00:00:00Z",
+                "2026-10-29T00:00:60Z",
+                {},
+                {"seconds": 1, "nanos": 2},
+                None,
+            )
+        ),
+        *(_doc_red(v) for v in ("NaN", "Infinity", 3.4e38, 1e-50)),
+        *(_doc_style(textStyle={"bold": v}) for v in ({"value": True}, {}, "true", 1)),
+        {"tabs": [{"tabProperties": {"index": "1"}}]},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": "x"}}]}},
+        _doc_tables(13),
+    ]
+    assert {_create_doc(wc, h, body)["title"] for body in read} == {"Untitled document"}
     titles = [
         ({}, {}),
         (None, {}),
@@ -15048,68 +15112,294 @@ _ROOT_NOT_A_MESSAGE = (
 )
 
 
+def _doc_element(element: dict) -> dict:
+    """A `Document` whose body holds one paragraph holding ``element``."""
+    return {"body": {"content": [{"paragraph": {"elements": [element]}}]}}
+
+
+def _doc_style(**style) -> dict:
+    """A `Document` whose one named style states ``style``."""
+    return {"namedStyles": {"styles": [style]}}
+
+
+def _doc_date(value) -> dict:
+    return _doc_element({"dateElement": {"dateElementProperties": {"timestamp": value}}})
+
+
+def _doc_red(value) -> dict:
+    return {"documentStyle": {"background": {"color": {"color": {"rgbColor": {"red": value}}}}}}
+
+
+def _doc_tables(depth: int) -> dict:
+    """A `Document` whose body nests ``depth`` tables, each in the one cell of the last."""
+    cell: dict = {}
+    for _ in range(depth):
+        cell = {"table": {"tableRows": [{"tableCells": [{"content": [cell]}]}]}}
+    return {"body": {"content": [cell]}}
+
+
+def _nested(depth: int, value=1):
+    for _ in range(depth):
+        value = {"a": value}
+    return value
+
+
+_DOCS_DATE_AT = "body.content[0].paragraph.elements[0].date_element.date_element_properties"
+_DOCS_TIMESTAMP = "type.googleapis.com/google.protobuf.Timestamp"
+_DOCS_TOO_DEEP = "Invalid JSON payload received. Message too deep. Max recursion depth reached"
+_DOCS_TOO_LONG = "Request contains an invalid argument."
+
+# What `documents.create` refuses, as `(params, body, message)`.
+_DOCS_CREATE_REFUSALS = [
+    ({}, {"title": 5}, "Invalid value at 'title' (TYPE_STRING), 5"),
+    ({}, {"title": True}, "Invalid value at 'title' (TYPE_STRING), true"),
+    (
+        {},
+        {"title": ["a"]},
+        'Invalid JSON payload received. Unknown name "title": Proto field is not repeating, '
+        "cannot start list.",
+    ),
+    ({}, {"title": {"a": 1}}, "Invalid value (title), Starting an object on a scalar field"),
+    ({}, [], _ROOT_NOT_A_MESSAGE),
+    ({}, "x", _ROOT_NOT_A_MESSAGE),
+    ({}, 5, _ROOT_NOT_A_MESSAGE),
+    (
+        {},
+        {"zap": 2, "title": "t", "nope": 1},
+        'Invalid JSON payload received. Unknown name "zap": Cannot find field.\n'
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    ),
+    (
+        {},
+        {"nope": 1, "title": 5},
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.\n'
+        "Invalid value at 'title' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"body": {"content": "x"}},
+        f"Invalid value at 'body.content' ({_DOCS_TYPE}.StructuralElement), \"x\"",
+    ),
+    (
+        {},
+        {"body": {"nope": 1}},
+        "Invalid JSON payload received. Unknown name \"nope\" at 'body': Cannot find field.",
+    ),
+    ({}, {"comments": 5}, f"Invalid value at 'comments' ({_DOCS_TYPE}.CommentThread), 5"),
+    (
+        {},
+        {"suggestionsViewMode": "NOPE"},
+        f"Invalid value at 'suggestions_view_mode' ({_DOCS_TYPE}.SuggestionsViewMode), \"NOPE\"",
+    ),
+    # the query's enums are refused beside the body's refusals, and ahead of the mask's
+    (
+        {"suggestionsViewMode": "NOPE"},
+        {"title": 5},
+        "Invalid value at 'title' (TYPE_STRING), 5\nInvalid value at 'suggestions_view_mode' "
+        f'({_DOCS_TYPE}.SuggestionsViewMode), "NOPE"',
+    ),
+    (
+        {"commentsViewMode": "NOPE", "fields": "nope"},
+        {},
+        f"Invalid value at 'comments_view_mode' ({_DOCS_TYPE}.CommentsViewMode), \"NOPE\"",
+    ),
+    ({"fields": "nope"}, [], _ROOT_NOT_A_MESSAGE),
+    ({"fields": "nope"}, {}, "Request contains an invalid argument."),
+    ({"fields": "tabs("}, {}, "Request contains an invalid argument."),
+    # a title past 10,000 UTF-16 code units, last
+    ({}, {"title": "x" * 10_001}, _DOCS_TOO_LONG),
+    ({}, {"title": "\U0001f600" * 5_001}, _DOCS_TOO_LONG),
+    ({"title": "x" * 10_001}, {}, _DOCS_TOO_LONG),
+    (
+        {},
+        {"title": "x" * 10_001, "nope": 1},
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    ),
+    # a body refused as a whole is answered alone
+    ({"suggestionsViewMode": "NOPE"}, [], _ROOT_NOT_A_MESSAGE),
+    # a map is read as its entries, each named by its count and `value`
+    ({}, {"headers": 5}, f"Invalid value at 'headers' ({_DOCS_TYPE}.Document.HeadersEntry), 5"),
+    (
+        {},
+        {"inlineObjects": []},
+        "Invalid value (Map), Cannot bind a list to map for field 'inlineObjects'.",
+    ),
+    (
+        {},
+        {"tabs": [{"documentTab": {"inlineObjects": []}}]},
+        "Invalid value at 'tabs[0].document_tab' (Map), Cannot bind a list to map for field "
+        "'inlineObjects'.",
+    ),
+    ({}, {"headers": {"h1": 5}}, f"Invalid value at 'headers[0].value' ({_DOCS_TYPE}.Header), 5"),
+    (
+        {},
+        {"headers": {"h1": []}},
+        "Invalid value at 'headers[0].value' (Map), Cannot have repeated items ('h1') within a "
+        "map.",
+    ),
+    (
+        {},
+        {"headers": {"a": {"headerId": "x"}, "b": {"headerId": 5}}},
+        "Invalid value at 'headers[1].value.header_id' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"lists": {"l1": {"nope": 1}}},
+        "Invalid JSON payload received. Unknown name \"nope\" at 'lists[0].value': Cannot find "
+        "field.",
+    ),
+    (
+        {},
+        {"lists": {"l": {"suggestedListPropertiesChanges": {"s": 5}}}},
+        "Invalid value at 'lists[0].value.suggested_list_properties_changes[0].value' "
+        f"({_DOCS_TYPE}.SuggestedListProperties), 5",
+    ),
+    # every enum is typed as its own, a number past int32 refused
+    (
+        {},
+        _doc_style(paragraphStyle={"namedStyleType": "BOGUS"}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.named_style_type' "
+        f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"',
+    ),
+    (
+        {},
+        _doc_style(paragraphStyle={"namedStyleType": 2**31}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.named_style_type' "
+        f"({_DOCS_TYPE}.NamedStyleType), 2147483648",
+    ),
+    (
+        {},
+        _doc_element({"autoText": {"type": "BOGUS"}}),
+        "Invalid value at 'body.content[0].paragraph.elements[0].auto_text.type' "
+        f'({_DOCS_TYPE}.AutoText.Type), "BOGUS"',
+    ),
+    # a wrapped value is named at `value`
+    (
+        {},
+        {"documentStyle": {"defaultHeaderId": 5}},
+        "Invalid value at 'document_style.default_header_id.value' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": {"value": "x"}}),
+        "Invalid value at 'named_styles.styles[0].text_style.bold.value' (TYPE_BOOL), \"x\"",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": 2}),
+        "Invalid value at 'named_styles.styles[0].text_style.bold.value' (TYPE_BOOL), 2",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": {"nope": 1}}),
+        'Invalid JSON payload received. Unknown name "nope" at '
+        "'named_styles.styles[0].text_style.bold': Cannot find field.",
+    ),
+    (
+        {},
+        _doc_style(paragraphStyle={"lineSpacing": 1e39}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.line_spacing.value' "
+        "(TYPE_FLOAT), 1e+39",
+    ),
+    (
+        {},
+        {"tabs": [{"tabProperties": {"index": {"value": "x"}}}]},
+        "Invalid value at 'tabs[0].tab_properties.index.value' (TYPE_INT32), \"x\"",
+    ),
+    # a float past a float's range
+    (
+        {},
+        _doc_red(1e39),
+        "Invalid value at 'document_style.background.color.color.rgb_color.red' (TYPE_FLOAT), "
+        "1e+39",
+    ),
+    (
+        {},
+        _doc_red("1e39"),
+        "Invalid value at 'document_style.background.color.color.rgb_color.red' (TYPE_FLOAT), "
+        '"1e39"',
+    ),
+    # a timestamp: a string in RFC 3339, or the message it is
+    (
+        {},
+        _doc_date(5),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid data type for timestamp, value is 5",
+    ),
+    (
+        {},
+        _doc_date("2026-10-29"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Illegal timestamp format; timestamps must end with 'Z' or have a valid timezone offset.",
+    ),
+    (
+        {},
+        _doc_date("2026-13-01T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid time format: Failed to parse input",
+    ),
+    (
+        {},
+        _doc_date("2026-02-30T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid time format: Out-of-range field",
+    ),
+    (
+        {},
+        _doc_date("0000-01-01T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Timestamp value exceeds limits",
+    ),
+    (
+        {},
+        _doc_date({"seconds": "x"}),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp.seconds' (TYPE_INT64), \"x\"",
+    ),
+    (
+        {},
+        {"suggestions": [{"replies": [{"create_time": 5}]}]},
+        f"Invalid value at 'suggestions[0].replies[0].create_time' ({_DOCS_TIMESTAMP}), Field "
+        "'create_time', Invalid data type for timestamp, value is 5",
+    ),
+    # a second member of a oneof
+    (
+        {},
+        _doc_element({"textRun": {}, "autoText": {}}),
+        "Invalid value at 'body.content[0].paragraph.elements[0]' (oneof), oneof field "
+        "'content' is already set. Cannot set 'autoText'",
+    ),
+    # a repeated string takes one value, and counts only the elements it refuses
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": 5}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": [5, "a", 6]}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids[0]' (TYPE_STRING), "
+        "5\nInvalid value at 'body.content[0].paragraph.positioned_object_ids[1]' "
+        "(TYPE_STRING), 6",
+    ),
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": [{}]}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids' "
+        "(positioned_object_ids), Starting an object on a scalar field",
+    ),
+    # nested past 100, alone whatever else is refused
+    ({}, {"title": 5, **_doc_tables(14)}, f"{_DOCS_TOO_DEEP} in array"),
+    ({}, {"title": 5, "nope": _nested(100)}, f"{_DOCS_TOO_DEEP} for key 'a'"),
+]
+
+
 @pytest.mark.parametrize(
-    "params,body,message",
-    [
-        ({}, {"title": 5}, "Invalid value at 'title' (TYPE_STRING), 5"),
-        ({}, {"title": True}, "Invalid value at 'title' (TYPE_STRING), true"),
-        (
-            {},
-            {"title": ["a"]},
-            'Invalid JSON payload received. Unknown name "title": Proto field is not repeating, '
-            "cannot start list.",
-        ),
-        ({}, {"title": {"a": 1}}, "Invalid value (title), Starting an object on a scalar field"),
-        ({}, [], _ROOT_NOT_A_MESSAGE),
-        ({}, "x", _ROOT_NOT_A_MESSAGE),
-        ({}, 5, _ROOT_NOT_A_MESSAGE),
-        (
-            {},
-            {"zap": 2, "title": "t", "nope": 1},
-            'Invalid JSON payload received. Unknown name "zap": Cannot find field.\n'
-            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
-        ),
-        (
-            {},
-            {"nope": 1, "title": 5},
-            'Invalid JSON payload received. Unknown name "nope": Cannot find field.\n'
-            "Invalid value at 'title' (TYPE_STRING), 5",
-        ),
-        (
-            {},
-            {"body": {"content": "x"}},
-            f"Invalid value at 'body.content' ({_DOCS_TYPE}.StructuralElement), \"x\"",
-        ),
-        (
-            {},
-            {"body": {"nope": 1}},
-            "Invalid JSON payload received. Unknown name \"nope\" at 'body': Cannot find field.",
-        ),
-        ({}, {"comments": 5}, f"Invalid value at 'comments' ({_DOCS_TYPE}.CommentThread), 5"),
-        (
-            {},
-            {"suggestionsViewMode": "NOPE"},
-            f"Invalid value at 'suggestions_view_mode' ({_DOCS_TYPE}.SuggestionsViewMode), \"NOPE\"",
-        ),
-        # the query's enums are refused beside the body's refusals, and ahead of the mask's
-        (
-            {"suggestionsViewMode": "NOPE"},
-            {"title": 5},
-            "Invalid value at 'title' (TYPE_STRING), 5\nInvalid value at 'suggestions_view_mode' "
-            f'({_DOCS_TYPE}.SuggestionsViewMode), "NOPE"',
-        ),
-        (
-            {"commentsViewMode": "NOPE", "fields": "nope"},
-            {},
-            f"Invalid value at 'comments_view_mode' ({_DOCS_TYPE}.CommentsViewMode), \"NOPE\"",
-        ),
-        ({"fields": "nope"}, [], _ROOT_NOT_A_MESSAGE),
-        ({"fields": "nope"}, {}, "Request contains an invalid argument."),
-        ({"fields": "tabs("}, {}, "Request contains an invalid argument."),
-    ],
+    "route,params,body,message",
+    [("/sheets/v4/spreadsheets", {}, *row) for row in _SHEETS_CREATE_REFUSALS]
+    + [("/docs/v1/documents", *row) for row in _DOCS_CREATE_REFUSALS],
 )
-def test_a_docs_create_real_refuses_is_refused_with_reals_message(wc, wh, params, body, message):
-    r = wc.post("/docs/v1/documents", headers=wh[_OWNER], params=params, json=body)
+def test_a_create_real_refuses_is_refused_with_reals_message(wc, wh, route, params, body, message):
+    r = wc.post(route, headers=wh[_OWNER], params=params, json=body)
     assert (r.status_code, r.json()["error"]["message"]) == (400, message)
     assert wc.get("/_meta/overlay").json()["gdrive_files"] == []
 

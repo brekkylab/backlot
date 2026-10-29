@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Read Google Drive and Sheets, write Sheets and create a Doc, through the official google-api-python-client — authenticating with a
-Google **service-account** credential, the way a real connector does, rather than a raw token.
-Self-contained.
+"""Read Google Drive and Sheets, write Sheets and create a Doc, through the official
+google-api-python-client — authenticating with a Google **service-account** credential, the way a
+real connector does, rather than a raw token. Self-contained.
 
     pip install -e ".[official-sdk]"
     python examples/using-official-sdk/gdrive.py                          # bare SA → admin, sees all

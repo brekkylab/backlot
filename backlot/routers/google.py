@@ -4434,8 +4434,8 @@ def _editor_creator(request: Request, caller: Caller) -> str:
 
 
 def _editor_new_file_id(conn, owner: str) -> str:
-    """A Drive file id no stored file has, minted as the importer mints one
-    (`synth.gdrive_file_id`) from a seed only this creation has."""
+    """A Drive file id no stored file has, minted as the importer mints one (`synth.gdrive_file_id`)
+    from a seed only this creation has."""
     while True:
         file_id = synth.gdrive_file_id(f"created:{owner}:{time.time_ns()}")
         if store.gdrive_by_id(conn, file_id) is None:
@@ -4542,11 +4542,43 @@ _GOOGLE_RECORDED = json.loads((_BASELINES / "google_drive.json").read_text(encod
 _PJ_SCALAR_KINDS = {"integer": "int32", "number": "double", "boolean": "bool", "string": "string"}
 
 
-def _pj_messages(package: str, enums: dict) -> Callable[[str], protojson.Message]:
+def _pj_messages(
+    package: str, enums: dict, shapes: dict | None = None
+) -> Callable[[str], protojson.Message]:
     """A reader of the recorded messages of one editor API: ``package`` is its type URL prefix
-    (``type.googleapis.com/google.apps.sheets.v4``), and ``enums`` the `protojson.Enum` of each
-    enum field by ``(message, field)``, the baseline recording an enum as `string`."""
+    (``type.googleapis.com/google.apps.sheets.v4``), ``enums`` the `protojson.Enum` of each enum
+    field by ``(message, field)``, the baseline recording an enum as `string`, and ``shapes`` what
+    else the baseline cannot say of a field, by the same key: the `protojson.Field` members
+    (``kind``, ``wrapper``, ``oneof``) that differ from what its recorded type gives, or for a map
+    the ``key`` kind, `string` when unsaid."""
     built: dict[str, protojson.Message] = {}
+    shapes = shapes or {}
+
+    def field(name: str, json_name: str, proto: str, type_: str) -> protojson.Field:
+        repeated = type_.startswith("[") and type_ != "[[any]]"
+        inner = type_[1:-1] if repeated else type_
+        enum = enums.get((name, json_name))
+        shape = shapes.get((name, json_name), {})
+        if enum is not None:
+            made = protojson.Field(json_name, proto, "enum", enum=enum, repeated=repeated)
+        elif type_.startswith("map<string, "):
+            value = field("", json_name, proto, type_[len("map<string, ") : -1])
+            key = shape.get("key", "string")
+            entry = protojson.map_entry(built[name].type_url, json_name, value, key)
+            return protojson.Field(
+                json_name, proto, "message", message=entry, repeated=True, map=True
+            )
+        elif inner in _GOOGLE_RECORDED:
+            made = protojson.Field(
+                json_name, proto, "message", message=message(inner), repeated=repeated
+            )
+        elif type_ == "[[any]]":
+            made = protojson.Field(json_name, proto, "rows")
+        elif inner in _PJ_SCALAR_KINDS:
+            made = protojson.Field(json_name, proto, _PJ_SCALAR_KINDS[inner], repeated=repeated)
+        else:  # a bare JSON value: kept as sent
+            made = protojson.Field(json_name, proto, "any")
+        return made._replace(**shape)
 
     def message(name: str) -> protojson.Message:
         if name in built:
@@ -4556,29 +4588,8 @@ def _pj_messages(package: str, enums: dict) -> Callable[[str], protojson.Message
         # holds the structural elements that hold the table
         built[name] = protojson.Message(f"{package}.{name.split('.', 1)[1]}", fields)
         for json_name, member in _GOOGLE_RECORDED[name].get("fields", {}).items():
-            type_ = member.get("type", "any")
-            repeated = type_.startswith("[") and type_ != "[[any]]"
-            inner = type_[1:-1] if repeated else type_
             proto = re.sub(r"(?<!^)(?=[A-Z])", "_", json_name).lower()
-            enum = enums.get((name, json_name))
-            if enum is not None:
-                fields.append(
-                    protojson.Field(json_name, proto, "enum", enum=enum, repeated=repeated)
-                )
-            elif inner in _GOOGLE_RECORDED:
-                fields.append(
-                    protojson.Field(
-                        json_name, proto, "message", message=message(inner), repeated=repeated
-                    )
-                )
-            elif type_ == "[[any]]":
-                fields.append(protojson.Field(json_name, proto, "rows"))
-            elif inner in _PJ_SCALAR_KINDS:
-                fields.append(
-                    protojson.Field(json_name, proto, _PJ_SCALAR_KINDS[inner], repeated=repeated)
-                )
-            else:  # a map or a bare JSON value: kept as sent
-                fields.append(protojson.Field(json_name, proto, "any"))
+            fields.append(field(name, json_name, proto, member.get("type", "any")))
         return built[name]
 
     return message
@@ -4926,6 +4937,16 @@ def _drive_file_capabilities(is_folder: bool, owned: bool) -> dict:
     }
 
 
+def _drive_version(row) -> str:
+    """A file's ``version``: 2 once it states a modification, and 1 for a Doc never modified after
+    it was made -- measured 2026-10-29, a Doc `documents.create` made was version 1, its
+    `modifiedTime` its `createdTime`, 2 and 20 seconds on."""
+    if not row["updated_ts"]:
+        return "1"
+    untouched = row["subtype"] == "document" and row["updated_ts"] == row["created_ts"]
+    return "1" if untouched else "2"
+
+
 def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) -> dict:
     """The served ``files`` resource for a stored row. ``me`` is the caller's email, which decides
     the per-caller ``ownedByMe`` (None for the admin/service token, which owns nothing)."""
@@ -4968,7 +4989,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "ownedByMe": owned,
         **_modified_by_me(author, me, modified),
         **_shared_with_me_time(author, me, created),
-        "version": str(2 if row["updated_ts"] else 1),
+        "version": _drive_version(row),
         "spaces": ["drive"],
         "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
@@ -5152,7 +5173,8 @@ async def _query_and_body(
     getByDataFilter, and 2026-10-28 on Docs' create: with both refused, one 400 lists the body's
     refusals and then the query's -- ``Invalid value at 'data.values' (…), "x"`` then
     ``Invalid value at 'include_values_in_response' (TYPE_BOOL), "on"`` -- an unknown body name
-    among them; with both set, the query's value is the one used."""
+    among them; with both set, the query's value is the one used. A body refused as a whole
+    (`protojson.whole`) is answered alone."""
     raw = await request.body()
     try:
         parsed = _typed_query(request, readers)
@@ -5161,8 +5183,9 @@ async def _query_and_body(
         try:
             protojson.read(raw, message, field=field)
         except gerr.GoogleError as body_exc:
-            if refused and gerr.field_violations(body_exc):
-                raise gerr.invalid_field_values(gerr.field_violations(body_exc) + refused) from None
+            if protojson.whole(body_exc):
+                raise body_exc from None
+            raise gerr.invalid_field_values(gerr.field_violations(body_exc) + refused) from None
         raise
     query = {name: (values[-1] if values else None) for name, values in parsed.items()}
     return query, protojson.read(raw, message, field=field)

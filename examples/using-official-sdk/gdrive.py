@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read Google Drive and Sheets, write Sheets and create a Doc, through the official google-api-python-client — authenticating with a
+"""Read Google Drive and Sheets, write Sheets, and create and write a Doc, through the official google-api-python-client — authenticating with a
 Google **service-account** credential, the way a real connector does, rather than a raw token.
 Self-contained.
 
@@ -208,6 +208,36 @@ with serve_or_connect(CORPUS, url=args.url) as s:
         for el in se["paragraph"]["elements"]
     )
     print(f"  read back: body {text!r}, same revision: {read['revisionId'] == made['revisionId']}")
+
+    # `documents.batchUpdate` writes its text: each request's index counts what the ones before
+    # it inserted, `replaceAllText` answers how many it changed, and the write's revision is the
+    # one the next read serves.
+    wrote = (
+        docs.documents()
+        .batchUpdate(
+            documentId=doc_id,
+            body={
+                "requests": [
+                    {"insertText": {"location": {"index": 1}, "text": "Ship the beta\n"}},
+                    {"insertText": {"location": {"index": 15}, "text": "Tell the team"}},
+                    {"replaceAllText": {"containsText": {"text": "beta"}, "replaceText": "v2"}},
+                ],
+                "writeControl": {"requiredRevisionId": read["revisionId"]},
+            },
+        )
+        .execute()
+    )
+    print(f"  batchUpdate replies: {wrote['replies']}")
+    read = docs.documents().get(documentId=doc_id).execute()
+    lines = [
+        (se["startIndex"], "".join(el["textRun"]["content"] for el in se["paragraph"]["elements"]))
+        for se in read["body"]["content"]
+        if "paragraph" in se
+    ]
+    print(f"  paragraphs by start index: {lines}")
+    print(
+        f"  revision moved to the write's: {read['revisionId'] == wrote['writeControl']['requiredRevisionId']}"
+    )
     drive_as_author = build(
         "drive",
         "v3",

@@ -6973,31 +6973,133 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
     assert list(newline["textRun"]["textStyle"]) == ["bold", "italic", "strikethrough"]
 
 
-@pytest.mark.parametrize(
-    "params",
-    [{}, {"suggestionsViewMode": "PREVIEW_WITHOUT_SUGGESTIONS"}, {"includeTabsContent": "true"}],
-    ids=["plain", "preview-without-suggestions", "tabs-content"],
-)
-def test_docs_get_serves_members_in_reals_order(base, admin_h, params):
-    """A document read serves its members in real's order, `commentsViewMode` last with the value
-    real serves. The tabbed shape `includeTabsContent=true` selects is not served, so that row
-    checks the last member alone.
+_DOCS_FLAT = [
+    "title",
+    "body",
+    "documentStyle",
+    "namedStyles",
+    "revisionId",
+    "suggestionsViewMode",
+    "documentId",
+    "commentsViewMode",
+]
+_DOCS_TABBED = [
+    "title",
+    "revisionId",
+    "suggestionsViewMode",
+    "documentId",
+    "tabs",
+    "commentsViewMode",
+]
+_DOCS_TAB = {"tabId": "t.0", "title": "Tab 1", "index": 0}
+_INLINE, _PREVIEW = "SUGGESTIONS_INLINE", "PREVIEW_WITHOUT_SUGGESTIONS"
+_OMITTED, _INCLUDED = "COMMENTS_VIEW_MODE_OMITTED", "COMMENTS_VIEW_MODE_INCLUDED"
+_TABS = {"includeTabsContent": "true"}
+_DEFAULT_COMMENTS = {"commentsViewMode": "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS"}
+
+
+@pytest.fixture(scope="module")
+def document_callers(tokens_yaml):
+    """The SAMPLE document's owner, and a user it is visible to, whom every grant here makes a
+    reader, as headers."""
+    tokens = {u["email"]: u["token"] for u in tokens_yaml["users"]}
+    return {
+        who: {"Authorization": f"Bearer {tokens[email]}"}
+        for who, email in (("owner", "mia@acme.com"), ("reader", "cfo@acme.com"))
+    }
+
+
+# `(caller, query, members, suggestionsViewMode, commentsViewMode)` per measured read.
+_DOCS_MEMBER_ROWS = [
+    ("owner", {}, _DOCS_FLAT, _INLINE, _OMITTED),
+    (
+        "owner",
+        {"suggestionsViewMode": "DEFAULT_FOR_CURRENT_ACCESS"},
+        _DOCS_FLAT,
+        _INLINE,
+        _OMITTED,
+    ),
+    ("owner", {"suggestionsViewMode": _PREVIEW}, _DOCS_FLAT, _PREVIEW, _OMITTED),
+    (
+        "owner",
+        {"suggestionsViewMode": "2"},
+        _DOCS_FLAT,
+        "PREVIEW_SUGGESTIONS_ACCEPTED",
+        _OMITTED,
+    ),
+    ("owner", {"includeTabsContent": "false"}, _DOCS_FLAT, _INLINE, _OMITTED),
+    (
+        "owner",
+        [("suggestionsViewMode", "1"), ("suggestionsViewMode", "3")],
+        _DOCS_FLAT,
+        _PREVIEW,
+        _OMITTED,
+    ),
+    (
+        "owner",
+        [("includeTabsContent", "true"), ("includeTabsContent", "false")],
+        _DOCS_FLAT,
+        _INLINE,
+        _OMITTED,
+    ),
+    (
+        "owner",
+        {"commentsViewMode": "COMMENTS_VIEW_MODE_UNSPECIFIED"},
+        _DOCS_FLAT,
+        _INLINE,
+        _OMITTED,
+    ),
+    ("owner", _TABS, _DOCS_TABBED, _INLINE, _OMITTED),
+    ("owner", {**_TABS, **_DEFAULT_COMMENTS}, _DOCS_TABBED, _INLINE, _INCLUDED),
+    (
+        "owner",
+        {**_TABS, "commentsViewMode": "3", "suggestionsViewMode": _INLINE},
+        _DOCS_TABBED,
+        _INLINE,
+        _INCLUDED,
+    ),
+    ("reader", {}, _DOCS_FLAT, _PREVIEW, _OMITTED),
+    ("reader", {"suggestionsViewMode": "0"}, _DOCS_FLAT, _PREVIEW, _OMITTED),
+    ("reader", {**_TABS, **_DEFAULT_COMMENTS}, _DOCS_TABBED, _PREVIEW, _OMITTED),
+    ("admin", _TABS, _DOCS_TABBED, _PREVIEW, _OMITTED),
+]
+
+
+def test_docs_get_serves_members_in_reals_order(client, tokens_yaml, document_callers, document_id):
+    """A document read serves its members in real's order, flat or as its one tab, the tab holding
+    what the flat read holds. A reader, the admin token on a corpus file among them, is served no
+    `revisionId` and a preview of the suggestions unless it asks for another mode, and comments to
+    the owner alone.
     """
-    fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
-    r = httpx.get(f"{base}/docs/v1/documents/{fid}", headers=admin_h, params=params)
-    assert r.status_code == 200
-    assert list(r.json().items())[-1] == ("commentsViewMode", "COMMENTS_VIEW_MODE_OMITTED")
-    if "includeTabsContent" not in params:
-        assert list(r.json()) == [
-            "title",
-            "body",
-            "documentStyle",
-            "namedStyles",
-            "revisionId",
-            "suggestionsViewMode",
-            "documentId",
-            "commentsViewMode",
-        ]
+    callers = {
+        **document_callers,
+        "admin": {"Authorization": f"Bearer {tokens_yaml['admin_token']}"},
+    }
+    url = f"/docs/v1/documents/{document_id}"
+    flat = {who: client.get(url, headers=h).json() for who, h in callers.items()}
+
+    def answer(who, params):
+        r = client.get(url, headers=callers[who], params=params)
+        doc = r.json()
+        views = (doc.get("suggestionsViewMode"), doc.get("commentsViewMode"))
+        return (r.status_code, list(doc), *views, doc.get("tabs"))
+
+    def tabs(who):
+        held = {k: flat[who][k] for k in ("body", "documentStyle", "namedStyles")}
+        return [{"tabProperties": _DOCS_TAB, "documentTab": held}]
+
+    assert {
+        f"{who} {urlencode(params)}": answer(who, params) for who, params, *_ in _DOCS_MEMBER_ROWS
+    } == {
+        f"{who} {urlencode(params)}": (
+            200,
+            [m for m in members if m != "revisionId" or who == "owner"],
+            suggestions,
+            comments,
+            tabs(who) if "tabs" in members else None,
+        )
+        for who, params, members, suggestions, comments in _DOCS_MEMBER_ROWS
+    }
 
 
 _DOCS_SUGGESTIONS = "type.googleapis.com/google.apps.docs.v1.SuggestionsViewMode"
@@ -7126,12 +7228,13 @@ def document_id(client, tokens_yaml):
 
 
 def test_documents_get_reads_a_query_value_real_reads_and_refuses_one_it_cannot(
-    client, tokens_yaml, document_id
+    client, document_callers, document_id
 ):
-    """The spellings `docs_get` records. A repeat holding a refused value is that value's 400
-    whichever end it is at; two values that are read are served. At `$.xgafv=1` the refusal's
-    `errors` entry is the one `backlot.errors.google.invalid_field_value` records."""
-    headers = {"Authorization": f"Bearer {tokens_yaml['admin_token']}"}
+    """The spellings `docs_get` records, read by the document's owner, whom every mode is served
+    to. A repeat holding a refused value is that value's 400 whichever end it is at; two values that
+    are read are served. At `$.xgafv=1` the refusal's `errors` entry is the one
+    `backlot.errors.google.invalid_field_value` records."""
+    headers = document_callers["owner"]
 
     def answer(query):
         r = client.get(f"/docs/v1/documents/{document_id}?{urlencode(query)}", headers=headers)
@@ -7166,14 +7269,21 @@ def test_documents_get_reads_a_query_value_real_reads_and_refuses_one_it_cannot(
         ("suggestionsViewMode=NOPE", "admin", "missing", 400, "suggestions_view_mode"),
         ("includeTabsContent=NOPE", "admin", "missing", 400, "include_tabs_content"),
         ("commentsViewMode=NOPE", "admin", "missing", 400, "comments_view_mode"),
+        ("fields=nope&suggestionsViewMode=NOPE", "admin", "missing", 400, "suggestions_view_mode"),
+        ("fields=nope", "admin", "missing", 400, "path 'nope'"),
+        ("fields=title", "admin", "missing", 404, "Requested entity"),
+        ("commentsViewMode=COMMENTS_VIEW_MODE_OMITTED", "admin", "missing", 404, "Requested"),
+        ("fields=comments", "admin", "missing", 404, "Requested entity"),
+        ("fields=body&includeTabsContent=true", "admin", "missing", 404, "Requested entity"),
     ],
 )
 def test_documents_get_answers_a_bad_query_after_the_credential_and_before_the_lookup(
     client, tokens_yaml, document_id, query, who, target, status, needle
 ):
     """A bad token or none is the 401, and `$.xgafv=3` is that parameter's 400, ahead of a value
-    `docs_get` cannot read. On an id that does not exist the same value is the 400, where the
-    request without it is the 404."""
+    `docs_get` cannot read, and that value ahead of a mask naming nothing. On an id that does not
+    exist either is the 400, where the request without it is the 404; the refusals of a mode or a
+    mask real can read come after the lookup."""
     headers = {
         "none": {},
         "bad": BAD_TOKEN,
@@ -7189,6 +7299,227 @@ def test_documents_get_answers_a_bad_query_after_the_credential_and_before_the_l
         assert r.content == client.get(f"/docs/v1/documents/{document}", headers=headers).content
     if target == "missing":
         assert client.get(f"/docs/v1/documents/{document}", headers=headers).status_code == 404
+
+
+_TABS_ONLY = "Comments view mode may only be specified if tabs content is also requested."
+_INLINE_ONLY = (
+    "Comments may only be explicitly included if inline suggestions are also explicitly requested."
+)
+_PREVIEWING = "Comments may not be requested when previewing suggestions."
+_COMMENT_FIELD = "Field mask may not contain comment-specific fields if comments are not requested"
+_LEGACY_FIELD = (
+    "Field mask may not contain legacy text-level Document resource fields while requesting tabs "
+    "content"
+)
+_NO_SUGGESTIONS = "You do not have permission to access the document suggestions."
+
+
+# `(caller, query, status, message)` per measured refusal, the last rows two that both hold.
+_DOCS_VIEW_REFUSALS = [
+    ("reader", "suggestionsViewMode=SUGGESTIONS_INLINE", 403, _NO_SUGGESTIONS),
+    ("reader", "suggestionsViewMode=PREVIEW_SUGGESTIONS_ACCEPTED", 403, _NO_SUGGESTIONS),
+    ("owner", "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED", 400, _TABS_ONLY),
+    (
+        "owner",
+        "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED&includeTabsContent=false",
+        400,
+        _TABS_ONLY,
+    ),
+    ("owner", "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED&fields=title", 400, _TABS_ONLY),
+    ("owner", "commentsViewMode=0&commentsViewMode=2", 400, _TABS_ONLY),
+    ("owner", "includeTabsContent=true&commentsViewMode=3", 400, _INLINE_ONLY),
+    (
+        "owner",
+        "includeTabsContent=true&commentsViewMode=3&suggestionsViewMode=0",
+        400,
+        _INLINE_ONLY,
+    ),
+    (
+        "owner",
+        "includeTabsContent=true&commentsViewMode=3&suggestionsViewMode=2",
+        400,
+        _PREVIEWING,
+    ),
+    (
+        "owner",
+        "includeTabsContent=true&commentsViewMode=1&suggestionsViewMode=3",
+        400,
+        _PREVIEWING,
+    ),
+    (
+        "reader",
+        "includeTabsContent=true&commentsViewMode=1&suggestionsViewMode=3",
+        400,
+        _PREVIEWING,
+    ),
+    ("owner", "fields=comments", 400, _COMMENT_FIELD),
+    ("owner", "fields=title,suggestions", 400, _COMMENT_FIELD),
+    ("owner", "fields=*.commentId", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.*.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.childTabs.documentTab.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.*.*.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.childTabs.childTabs.documentTab.commentAnchors", 400, _COMMENT_FIELD),
+    (
+        "owner",
+        "fields=comments&includeTabsContent=true&commentsViewMode=2",
+        400,
+        _COMMENT_FIELD,
+    ),
+    ("owner", "fields=body&includeTabsContent=true", 400, _LEGACY_FIELD),
+    ("owner", "fields=footnotes&includeTabsContent=true", 400, _LEGACY_FIELD),
+    ("owner", "fields=*.content,tabs", 400, _LEGACY_FIELD),
+    ("owner", "fields=tabs.documentTab.body,body&includeTabsContent=true", 400, _LEGACY_FIELD),
+    # each ahead of the next when both hold
+    (
+        "reader",
+        "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED&suggestionsViewMode=SUGGESTIONS_INLINE",
+        403,
+        _NO_SUGGESTIONS,
+    ),
+    (
+        "reader",
+        "fields=body&includeTabsContent=true&suggestionsViewMode=SUGGESTIONS_INLINE",
+        403,
+        _NO_SUGGESTIONS,
+    ),
+    ("owner", "commentsViewMode=3&suggestionsViewMode=3", 400, _TABS_ONLY),
+    ("owner", "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED&fields=comments", 400, _TABS_ONLY),
+    ("owner", "includeTabsContent=true&commentsViewMode=3&fields=comments", 400, _INLINE_ONLY),
+    ("owner", "includeTabsContent=true&commentsViewMode=3&fields=body", 400, _INLINE_ONLY),
+    ("owner", "fields=body,comments&includeTabsContent=true", 400, _COMMENT_FIELD),
+]
+
+
+def test_documents_get_refuses_the_view_real_refuses(client, document_callers, document_id):
+    """A reader asking to see suggestions, a comments mode without the tabs, comments beside a
+    suggestions mode other than inline, a comment field the mode did not ask for, and a field a
+    tab carries beside the tabs, each refused as real refuses it and in its order. At `$.xgafv=1`
+    each `errors` entry is under `global`."""
+    url = f"/docs/v1/documents/{document_id}"
+
+    def answer(who, query):
+        r = client.get(f"{url}?{query}", headers=document_callers[who])
+        verbose = client.get(f"{url}?{query}&$.xgafv=1", headers=document_callers[who])
+        return (r.status_code, r.json(), verbose.json()["error"].get("errors"))
+
+    status = {400: "INVALID_ARGUMENT", 403: "PERMISSION_DENIED"}
+    reason = {400: "badRequest", 403: "forbidden"}
+    assert {f"{who} {query}": answer(who, query) for who, query, *_ in _DOCS_VIEW_REFUSALS} == {
+        f"{who} {query}": (
+            code,
+            {"error": {"code": code, "message": message, "status": status[code]}},
+            [{"message": message, "domain": "global", "reason": reason[code]}],
+        )
+        for who, query, code, message in _DOCS_VIEW_REFUSALS
+    }
+
+
+def _bad_docs_mask(field, description):
+    return {
+        "error": {
+            "code": 400,
+            "message": "Request contains an invalid argument.",
+            "status": "INVALID_ARGUMENT",
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.BadRequest",
+                    "fieldViolations": [{"field": field, "description": description}],
+                }
+            ],
+        }
+    }
+
+
+def _no_match(mask, path):
+    return _bad_docs_mask(
+        mask, f"Error expanding 'fields' parameter. Cannot find matching fields for path '{path}'."
+    )
+
+
+# `(caller, query, answer)` per measured mask: the body, its members in order, or the refusal.
+_DOCS_MASKS = [
+    ("owner", "fields=title", {"title": "Brand guidelines v3"}),
+    ("owner", "fields=documentId,title", ["title", "documentId"]),
+    ("owner", "fields=,title,,documentId,", ["title", "documentId"]),
+    ("owner", "fields=title&fields=nope", ["title"]),
+    ("owner", "fields=*", _DOCS_FLAT),
+    ("owner", "fields=", _DOCS_FLAT),
+    ("owner", "fields=*.*", _DOCS_FLAT),
+    ("owner", "fields=tabs()", _DOCS_FLAT),
+    ("owner", "fields=body.content.endIndex", ["body"]),
+    ("owner", "fields=documentStyle.pageSize", ["documentStyle"]),
+    ("owner", "fields=tabs", ["tabs"]),
+    ("owner", "fields=tabs,title", ["title", "tabs"]),
+    ("owner", "fields=tabs&includeTabsContent=false", ["tabs"]),
+    ("owner", "fields=*.tabProperties", {"tabs": [{"tabProperties": _DOCS_TAB}]}),
+    ("owner", "fields=tabs.childTabs", {"tabs": [{}]}),
+    ("owner", "fields=tabs.documentTab.*", ["tabs"]),
+    ("owner", "fields=*&includeTabsContent=true", _DOCS_TABBED),
+    ("owner", "fields=documentId,title&includeTabsContent=true", ["title", "documentId"]),
+    ("owner", "fields=title,body()&includeTabsContent=true", ["title"]),
+    (
+        "owner",
+        "fields=comments&includeTabsContent=true&commentsViewMode=3&suggestionsViewMode=1",
+        {},
+    ),
+    ("reader", "fields=comments&includeTabsContent=true&commentsViewMode=1", {}),
+    (
+        "owner",
+        "fields=tabs.childTabs.documentTab.commentAnchors&includeTabsContent=true"
+        "&commentsViewMode=1",
+        {"tabs": [{}]},
+    ),
+    ("reader", "fields=title,revisionId", ["title"]),
+    ("owner", "fields=nope", _no_match("nope", "nope")),
+    ("owner", "fields=nope&fields=title", _no_match("nope", "nope")),
+    ("owner", "fields=title,nope", _no_match("title,nope", "nope")),
+    ("owner", "fields=Title", _no_match("Title", "Title")),
+    ("owner", "fields= title", _no_match(" title", " title")),
+    ("owner", "fields=*.tabId", _no_match("*.tabId", "*.tabId")),
+    ("owner", "fields=nope,tabs", _no_match("nope,tabs", "nope")),
+    ("owner", "fields=body,nope&includeTabsContent=true", _no_match("body,nope", "nope")),
+    (
+        "owner",
+        "fields=nope&commentsViewMode=COMMENTS_VIEW_MODE_OMITTED",
+        _no_match("nope", "nope"),
+    ),
+    (
+        "owner",
+        "fields=body(content",
+        _bad_docs_mask(
+            "body(content",
+            "Invalid FieldMask 'body(content'. Cannot find matching ')' for all '('.",
+        ),
+    ),
+    (
+        "owner",
+        "fields=title)",
+        _bad_docs_mask(
+            "title)", "Invalid FieldMask 'title)'. Cannot find matching '(' for all ')'."
+        ),
+    ),
+]
+
+
+def test_documents_get_trims_to_a_fields_mask_as_real_does(client, document_callers, document_id):
+    """A mask trims the answer to what it names, in the order real serves the members whatever
+    order the mask names them in, and selects the tabbed answer when it names `tabs`. The first
+    `fields` is the one read. A path naming nothing, or a bracket left unpaired, is the 400 whose
+    detail names the whole mask."""
+    url = f"/docs/v1/documents/{document_id}"
+
+    def answer(who, query, expected):
+        r = client.get(f"{url}?{query}", headers=document_callers[who])
+        if r.status_code != 200 or isinstance(expected, dict):
+            return r.json()
+        return list(r.json())
+
+    assert {f"{who} {query}": answer(who, query, want) for who, query, want in _DOCS_MASKS} == {
+        f"{who} {query}": want for who, query, want in _DOCS_MASKS
+    }
+    whole = client.get(url, headers=document_callers["owner"]).json()["body"]["content"]
+    ends = client.get(f"{url}?fields=body.content.endIndex", headers=document_callers["owner"])
+    assert ends.json() == {"body": {"content": [{"endIndex": el["endIndex"]} for el in whole]}}
 
 
 def test_sheets_get_withholds_grid_data_by_default(base, admin_h):

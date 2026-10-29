@@ -160,8 +160,7 @@ async def _refuse_a_long_line_or_path(request: Request) -> None:
     ``tests/test_github.py::_LONG_TARGET_ROWS`` holds the cases. Real frames the path's empty 414
     with `Transfer-Encoding: chunked` where a token came and with `Content-Length: 0` where none
     did; it is the second here."""
-    route = request.scope.get("route")
-    if route is None or route.path in _SERVED_HOWEVER_LONG:
+    if request.scope["route"].path in _SERVED_HOWEVER_LONG:
         return
     method = "HEAD" if getattr(request.state, "answering_head", False) else request.method
     query = request.scope["query_string"]

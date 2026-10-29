@@ -1,8 +1,11 @@
 """The answers ``backlot.protocol`` gives a request head at its front door's bound
-(``backlot.head_bounds``), each held against the answer real gave at that bound.
+(``backlot.head_bounds``), each held against the answer real gave at that bound, and what it leaves
+alone: a head within the bound, the body after a head, and the app, which a head answered at its
+bound never reaches.
 
 A head that has not ended cannot be sent through a client library, so each one here goes over a
-socket of its own to the server ``live_server`` starts.
+socket of its own, to the server ``live_server`` starts or, where what reaches the app is the
+question, to ``recording_server``.
 """
 
 from __future__ import annotations
@@ -11,9 +14,14 @@ import hashlib
 import re
 import select
 import socket
+import threading
+import time
 import urllib.parse
 
 import pytest
+import uvicorn
+
+from backlot import protocol
 
 #: Real's answer at each bound (``backlot.head_bounds`` has the measurement): the status line,
 #: `Content-Type` (``None`` where it sent none), and the body's length and SHA-256, with the
@@ -96,6 +104,8 @@ _BOUNDS = [
     ("", "/drive/v3/files", 65_536, False, "google", "google"),
     ("", "/gmail/v1/users/me/profile", 65_536, False, "google", "google"),
     ("/docs", "/v1/documents/x", 65_536, False, "google", "google"),
+    ("/sheets", "/v4/spreadsheets/x", 65_536, False, "google", "google"),
+    ("/slides", "/v1/presentations/x", 65_536, False, "google", "google"),
     ("/atlassian", "/rest/api/3/myself", 32_768, True, "jira 414", "jira 494"),
     ("/notion", "/v1/users", 131_072, True, "cloudflare 414", "cloudflare 400"),
     ("/hubspot", "/crm/v3/objects/contacts", 131_072, True, "cloudflare 414", "cloudflare 400"),
@@ -158,8 +168,8 @@ def _status(base_url: str, head: bytes) -> int:
 def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_it(
     live_server, mount, path, bound, per_line, in_line, in_headers, part
 ):
-    """One byte short of the bound the head waits for more; the byte that reaches it is answered
-    and the connection closed."""
+    """One byte short of the bound the head waits for more; the byte that reaches it is answered and
+    the connection closed. The first read ends inside the path, before it names a vendor."""
     base_url, _ = live_server
     line = f"GET {mount}{path}?x="
     if part == "line":
@@ -169,7 +179,9 @@ def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_
         counted = len("X-A: ") if per_line else len(start) - len(mount)
         head = start + "a" * (bound - counted)
     with _connect(base_url) as c:
-        c.sendall(head[:-1].encode())
+        c.sendall(head[:6].encode())
+        assert not select.select([c], [], [], 0.2)[0]
+        c.sendall(head[6:-1].encode())
         assert not select.select([c], [], [], 0.5)[0]
         c.sendall(head[-1:].encode())
         answer = _until_closed(c)
@@ -219,3 +231,71 @@ def test_each_request_on_a_connection_is_counted_from_its_own_start(live_server)
         assert not select.select([c], [], [], 0.5)[0]
         c.sendall(b"\r\n\r\n")
         assert reader.readline().startswith(b"HTTP/1.1 404")
+
+
+#: A body longer than the bound after a head that ends, on Graph, whose bound refuses a head at its
+#: end, and on Notion, behind a line bound: the prefix, the path and the body's length. Real
+#: answered each as it answered a body of ten bytes (2026-10-29).
+_BODIES = [
+    ("/msgraph", "/v1.0/me", 50_000),
+    ("/notion", "/v1/search", 140_000),
+]
+
+
+@pytest.mark.parametrize("mount, path, size", _BODIES)
+def test_a_body_after_the_head_is_not_counted(live_server, mount, path, size):
+    """The long body draws the answer a body of ten bytes draws; the CR and the LF that end the head
+    come in two reads, the body with the LF."""
+    base_url, _ = live_server
+
+    def status(length: int) -> int:
+        head = (
+            f"POST {mount}{path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {length}\r\n\r"
+        )
+        with _connect(base_url) as c:
+            c.sendall(head.encode())
+            assert not select.select([c], [], [], 0.2)[0]
+            c.sendall(b"\n" + b"a" * length)
+            return int(c.makefile("rb").readline().split()[1])
+
+    assert status(size) == status(10)
+
+
+@pytest.fixture(scope="module")
+def recording_server():
+    """``backlot.protocol.Protocol`` served in this process in front of an app that keeps the path
+    of each request it is handed and answers 200."""
+    seen: list[str] = []
+
+    async def app(scope, receive, send):
+        if scope["type"] == "http":
+            seen.append(scope["path"])
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+    config = uvicorn.Config(app, port=0, http=protocol.Protocol, lifespan="off", log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    while not server.started:
+        time.sleep(0.01)
+    port = server.servers[0].sockets[0].getsockname()[1]
+    yield f"http://127.0.0.1:{port}", seen
+    server.should_exit = True
+    thread.join()
+
+
+def test_a_head_answered_at_its_bound_never_reaches_the_app(recording_server):
+    """A head that ends at Graph's bound is refused in the read that ends it, and the app runs only
+    the request sent after it."""
+    base_url, seen = recording_server
+    seen.clear()
+    start = "GET /msgraph/v1.0/me HTTP/1.1\r\nHost: x\r\nX-A: "
+    head = start + "a" * (40_960 + len("/msgraph") - len(start) - len("\r\n\r\n")) + "\r\n\r\n"
+    with _connect(base_url) as c:
+        c.sendall(head.encode())
+        answer = _until_closed(c)
+    assert _as_real(answer) == _REAL["graph 400"]
+    assert _status(base_url, b"GET /msgraph/v1.0/me HTTP/1.1\r\nHost: x\r\n\r\n") == 200
+    assert seen == ["/msgraph/v1.0/me"]

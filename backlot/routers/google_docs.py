@@ -11,13 +11,15 @@ member it was shared with as a reader.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import functools
 import json
 import time
 
 from fastapi import Request
 
-from backlot import auth, gdocs, protojson, store, synth
+from backlot import auth, gdocs, protojson, store
 from backlot.errors import google as gerr
 from backlot.openapi import proto_body, qp
 from backlot.routers.google import (
@@ -29,6 +31,7 @@ from backlot.routers.google import (
     _editor_creator,
     _editor_doc,
     _editor_new_file_id,
+    _editor_requests,
     _editor_store,
     _editor_writable,
     _EditorRefused,
@@ -120,11 +123,31 @@ def _docs_tabs(content: dict) -> list[dict]:
     return [{"tabProperties": dict(_DOCS_TAB), "documentTab": content}]
 
 
+# Real's `revisionId` is `AHj4eM` and about a hundred characters of URL-safe base64 (measured
+# 2026-10-26). This one encodes the Doc and its revision, so a write can tell an id of another Doc
+# from one of no Doc at all, as real does (`docs_batch_update`).
+_DOCS_REVISION_PREFIX = "AHj4eM"
+
+
 def _docs_revision(document_id: str, revision: int = 0) -> str:
     """The `revisionId` the owner is served after a Doc's ``revision``-th `documents.batchUpdate`:
     measured 2026-10-26, a created Doc's next `documents.get` served its create's, and on
     2026-10-29 each batchUpdate answered a new one, which the next read served."""
-    return synth._digest(document_id if not revision else f"{document_id}\0{revision}")[:24]
+    encoded = base64.urlsafe_b64encode(f"{revision}:{document_id}".encode()).decode()
+    return _DOCS_REVISION_PREFIX + encoded.rstrip("=")
+
+
+def _docs_revision_of(revision_id: str) -> tuple[str, int] | None:
+    """The Doc and revision a `revisionId` this server served names, or None for any other."""
+    if not revision_id.startswith(_DOCS_REVISION_PREFIX):
+        return None
+    encoded = revision_id[len(_DOCS_REVISION_PREFIX) :]
+    try:
+        text = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
+        revision, document_id = text.split(":", 1)
+        return document_id, int(revision)
+    except (ValueError, binascii.Error):
+        return None
 
 
 def _docs_refuse_suggestions() -> gerr.GoogleError:
@@ -255,11 +278,6 @@ async def docs_get(document_id: str, request: Request):
 # missing, `null` or empty `title` was this, and `"   "` was kept as sent.
 DOCS_UNTITLED = "Untitled document"
 
-# The request body is the `Document` itself, read against the recorded message
-# (`routers.google._pj_messages`): measured 2026-10-28, an unknown name is
-# ``Unknown name "nope": Cannot find field.`` with no field path, a nested one names its message
-# (``at 'body'``), and a name the `Document` has is typed (``Invalid value at 'title' (TYPE_STRING),
-# 5``), a number in an enum field read whether or not the enum declares it.
 _DOCS_WRITE_MODE = protojson.Enum(
     f"{_DOCS_VIEW}.WriteControl.WriteMode", ("WRITE_MODE_UNSPECIFIED", "EDIT", "SUGGEST")
 )
@@ -275,10 +293,10 @@ _DOCS_ONEOFS = {
     ("docs.ReplaceAllTextRequest", "containsText"): "criteria",
 }
 # A range's two indices are `Int32Value`s: measured 2026-10-29, `"startIndex": "a"` is refused at
-# `requests[0].delete_content_range.range.start_index.value`, and a `null` one is no index. A
-# request is declared inside the body's message: `"requests": "x"` is refused naming
-# `….BatchUpdateDocumentRequest.Request`.
+# `requests[0].delete_content_range.range.start_index.value`, and a `null` one is no index.
 _DOCS_WRAPPERS = frozenset({("docs.Range", "startIndex"), ("docs.Range", "endIndex")})
+# A request is declared inside the body's message: `"requests": "x"` is refused naming
+# `….BatchUpdateDocumentRequest.Request`.
 _PJ_DOCS = _pj_messages(
     _DOCS_VIEW,
     {
@@ -290,6 +308,11 @@ _PJ_DOCS = _pj_messages(
     _DOCS_WRAPPERS,
     {"docs.Request": "BatchUpdateDocumentRequest.Request"},
 )
+# The request body is the `Document` itself, read against the recorded message
+# (`routers.google._pj_messages`): measured 2026-10-28, an unknown name is
+# ``Unknown name "nope": Cannot find field.`` with no field path, a nested one names its message
+# (``at 'body'``), and a name the `Document` has is typed (``Invalid value at 'title' (TYPE_STRING),
+# 5``), a number in an enum field read whether or not the enum declares it.
 _PJ_DOCUMENT = _PJ_DOCS("docs.Document")
 
 # A query parameter binds to the `Document` field it names. Measured 2026-10-28: `title` names the
@@ -508,12 +531,13 @@ async def docs_batch_update(document_id: str, request: Request):
     reading stored by its first write.
 
     The order real answers in, measured 2026-10-29: the credential, the body, the `fields` mask,
-    the lookup and a reader's 403, `Must specify at least one request.`, a `requiredRevisionId`
-    that is not the Doc's latest or a `targetRevisionId` that is no revision of it, then each
-    request's refusal, the first one's named alone. A 500 a request leads to (`gdocs.UNWRITABLE`, an
-    unknown tab in `tabsCriteria`) comes after every request is read, and keeps nothing. A request
-    with no kind set is `No request set.`; a kind other than the three applied here is refused
-    naming itself, and so is the `SUGGEST` write mode, which records the requests as suggestions.
+    the lookup and a reader's 403, no requests or one with no kind set (`_editor_requests`), a
+    revision of another Doc, a `requiredRevisionId` that is not the Doc's latest or a
+    `targetRevisionId` that is no revision of it, then each request's refusal, the first one's
+    named alone. A 500 a request leads to (`gdocs.UNWRITABLE`, an unknown tab in `tabsCriteria`)
+    comes after every request is read, and keeps nothing. A kind other than the three applied here
+    is refused naming itself, and so is the `SUGGEST` write mode, which records the requests as
+    suggestions.
 
     Every write, one that changed nothing included, moves the `revisionId`, answered as
     `writeControl.requiredRevisionId` and served by the next read; real takes any recent revision as
@@ -530,9 +554,7 @@ async def docs_batch_update(document_id: str, request: Request):
         raise gerr.unimplemented()
     row = _editor_doc(request, document_id, expect="document")
     _editor_writable(request, row)
-    requests = body.get("requests", [])
-    if not requests:
-        raise gerr.invalid_argument("Must specify at least one request.")
+    requests = _editor_requests(body.get("requests", []))
     control = body.get("write_control", {})
     if _DOCS_WRITE_MODE.names[control.get("write_mode", 0)] == "SUGGEST":
         raise gerr.invalid_argument(
@@ -541,6 +563,10 @@ async def docs_batch_update(document_id: str, request: Request):
         )
     conn = auth.conn(request)
     written = store.gdrive_doc_revision(conn, document_id)
+    for field in ("required_revision_id", "target_revision_id"):
+        named = _docs_revision_of(control.get(field, ""))
+        if named is not None and named[0] != document_id:
+            raise gerr.invalid_argument("The provided revision ID is invalid.")
     if "required_revision_id" in control:
         stated = control["required_revision_id"]
         if stated != _docs_revision(document_id, written):
@@ -549,7 +575,8 @@ async def docs_batch_update(document_id: str, request: Request):
             )
     if "target_revision_id" in control:
         stated = control["target_revision_id"]
-        if stated not in (_docs_revision(document_id, n) for n in range(written + 1)):
+        named = _docs_revision_of(stated)
+        if named is None or named[1] > written:
             raise gerr.invalid_argument(f"Invalid revision ID: {stated}")
 
     stored = store.gdrive_doc_body_for(conn, document_id)

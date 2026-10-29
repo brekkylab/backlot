@@ -248,9 +248,8 @@ class Body:
     write changes it in memory, and :meth:`content` is what is stored back.
 
     A run is kept apart from its neighbour of the same style until a delete brings the two
-    together: measured, text inserted at a link's end, unstyled, stayed a run of its own before the
-    unstyled text after the link, and so did italic text inserted at the start of an italic run,
-    while deleting a bold run joined the unstyled runs either side of it.
+    together (`_run_at` says when an insert starts one): measured, deleting a bold run joined the
+    unstyled runs either side of it.
 
     Positions here count characters; :meth:`position` turns a request's index, in UTF-16 code
     units, into one. The checks a request's refusal names are the router's
@@ -319,33 +318,35 @@ class Body:
     def _starts_paragraph(self, pos: int) -> bool:
         return pos == 0 or self.chars[pos - 1][0] == "\n"
 
-    def _style_at(self, pos: int) -> tuple[dict, bool]:
-        """The style text inserted before ``pos`` takes, and whether a link was taken off it: the
-        character before it's, or at the start of a paragraph the first character's, the newline's
-        in an empty one; a link only between two characters of that link. Measured on inserts at
-        both ends of and inside a bold run and a link, at the start of an italic paragraph after a
-        struck-through newline, and into an empty paragraph."""
+    def _style_at(self, pos: int) -> dict:
+        """The style text inserted before ``pos`` takes: the character before it's, or at the start
+        of a paragraph the first character's, the newline's in an empty one; a link only between
+        two characters of that link. Measured on inserts at both ends of and inside a bold run and a
+        link, at the start of an italic paragraph after a struck-through newline, and into an empty
+        paragraph."""
         if self._starts_paragraph(pos):
             style, inside = self.chars[pos][1], False
         else:
             style = self.chars[pos - 1][1]
             inside = self.chars[pos][1].get("link") == style.get("link")
-        if inside or "link" not in style:
-            return style, False
-        return _unlinked(style), True
+        return style if inside or "link" not in style else _unlinked(style)
 
     def _run_at(self, pos: int, style: dict) -> int:
-        """The run text in ``style`` inserted before ``pos`` joins: the one before it in the same
-        paragraph when that is its style; at a paragraph's start the one after it, when the newline
-        before is in that style too, measured on inserts at the start of a heading, into an empty
-        paragraph and at the start of an italic paragraph after a struck-through newline, which
-        alone stayed a run of its own; and a run of its own otherwise."""
-        if not self._starts_paragraph(pos):
-            before = self.chars[pos - 1]
-            return before[2] if before[1] == style else next(self._runs)
-        after = self.chars[pos]
-        if after[1] == style and (pos == 0 or self.chars[pos - 1][1] == style):
-            return after[2]
+        """The run text in ``style`` inserted before ``pos`` joins. Text that lacks a member the
+        character before it has (the newline before a paragraph's first character included) is a
+        run of its own; otherwise it joins the run before it in the same paragraph when that is its
+        style, else the run after it when that is. Measured: text at a link's end, italic text after
+        a struck-through newline, and an unstyled character replaced after a bold one each stayed a
+        run of their own, while text at the start of a heading, of an empty paragraph and of a bold
+        paragraph after an unstyled newline, and a bold character replaced after an unstyled one,
+        joined the run after it."""
+        before = self.chars[pos - 1][1] if pos else {}
+        if not before.keys() <= style.keys():
+            return next(self._runs)
+        if not self._starts_paragraph(pos) and before == style:
+            return self.chars[pos - 1][2]
+        if self.chars[pos][1] == style:
+            return self.chars[pos][2]
         return next(self._runs)
 
     def _split_style(self, style: dict) -> dict:
@@ -364,12 +365,8 @@ class Body:
         keeps its `headingId`, and anywhere else after it. Measured on newlines inserted at the
         start, middle and end of a heading."""
         at_start = self._starts_paragraph(pos)
-        unlinked = False
-        if style is None:
-            style, unlinked = self._style_at(pos)
-        # text a link was taken off stays a run of its own, measured beside unstyled text after
-        # the link
-        run = next(self._runs) if unlinked else self._run_at(pos, style)
+        style = self._style_at(pos) if style is None else style
+        run = self._run_at(pos, style)
         p = self._paragraph_of(pos)
         self.chars[pos:pos] = [(c, style, run) for c in text]
         own = self.paragraphs[p]

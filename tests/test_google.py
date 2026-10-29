@@ -13784,6 +13784,18 @@ WRITE_RECORDS = [
     },
     {
         "source_type": "google_drive",
+        "doc_id": "wr-hidden",
+        "subtype": "document",
+        "title": "Hidden",
+        "folder": "hr",
+        "visibility": "private",
+        "author_email": "reader@acme.com",
+        "content": "not yours",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
         "doc_id": "wr-private",
         "subtype": "spreadsheet",
         "title": "Private",
@@ -14094,6 +14106,88 @@ def test_a_write_real_refuses_is_refused_with_reals_message(wc, wh, wbook, rng, 
             "Invalid value at 'value_input_option' "
             '(type.googleapis.com/google.apps.sheets.v4.ValueInputOption), "BOGUS"',
         ),
+        # a Doc's batchUpdate (`<doc>:batchUpdate`): the body and the mask before the lookup, a
+        # reader's 403 before the body's emptiness, a Doc the caller cannot see before its indices
+        (
+            "reader@acme.com",
+            "wr-text:batchUpdate",
+            {},
+            {"requests": []},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            "reader@acme.com",
+            "wr-text:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 0}, "text": "x"}}]},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            "admin",
+            "wr-text:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 1}, "text": "x"}}]},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            _OWNER,
+            "wr-hidden:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 0}, "text": "x"}}]},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 0}, "text": "x"}}]},
+            404,
+            "Requested entity was not found.",
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {},
+            {"requests": [{}]},
+            404,
+            "Requested entity was not found.",
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {},
+            {"requests": [], "nope": 1},
+            400,
+            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {"fields": "nope"},
+            {"requests": []},
+            400,
+            "Request contains an invalid argument.",
+        ),
+        (
+            _OWNER,
+            "wr-text:batchUpdate",
+            {"fields": "nope"},
+            {"nope": 1},
+            400,
+            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+        ),
+        (
+            _OWNER,
+            "wr-book:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 1}, "text": "x"}}]},
+            404,
+            "Requested entity was not found.",
+        ),
     ],
 )
 def test_who_may_write_and_in_what_order_a_write_is_refused(
@@ -14101,8 +14195,13 @@ def test_who_may_write_and_in_what_order_a_write_is_refused(
 ):
     from tests._helpers import served_id
 
-    path = f"/sheets/v4/spreadsheets/{served_id('google_drive', book)}/values/A1"
-    r = wc.put(path, headers=wh[who], params=params, json=body)
+    book, _, method = book.partition(":")
+    fid = served_id("google_drive", book) if book != "nope" else "1nope" + "0" * 38
+    if method:
+        r = wc.post(f"/docs/v1/documents/{fid}:{method}", headers=wh[who], params=params, json=body)
+    else:
+        path = f"/sheets/v4/spreadsheets/{fid}/values/A1"
+        r = wc.put(path, headers=wh[who], params=params, json=body)
     assert (r.status_code, r.json()["error"]["message"]) == (status, message)
 
 
@@ -15278,6 +15377,9 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
         # at a paragraph's start, the first character's; a run of its own after a newline that is
         # not in that style
         ([_ins(45, "X")], [*_STYLED[:4], "N i:X|i:BOLDSTART| x\n", *_STYLED[5:]]),
+        # ... and joins its run after an unstyled newline: `BOLD` starts the paragraph once
+        # `plain ` is gone
+        ([_del(12, 18), _ins(12, "X")], [_STYLED[0], "N b:XBOLD| tail\n", *_STYLED[2:]]),
         ([_ins(57, "X")], [*_STYLED[:5], "N X\n", _STYLED[6]]),
         ([{"insertText": {"endOfSegmentLocation": {}, "text": "Z"}}], [*_STYLED[:6], "N lastZ\n"]),
         # joined paragraphs take the first one's style, or the last one's when the range starts at
@@ -15538,6 +15640,11 @@ _DOCS_BATCH_REFUSALS = [
         "Must specify at least one request.",
     ),
     (
+        {"requests": [{}], "writeControl": {"requiredRevisionId": "abc"}},
+        400,
+        "Invalid requests[0]: No request set.",
+    ),
+    (
         {"requests": [_ins(0, "x")], "writeControl": {"requiredRevisionId": "abc"}},
         400,
         "The required revision ID 'abc' does not match the latest revision.",
@@ -15562,7 +15669,7 @@ def test_a_batch_update_takes_what_real_takes(wc, wh):
     """Measured: text that is only characters `insertText` strips is taken and inserts nothing,
     as is the one tab by its id and an empty `tabsCriteria`; `requests` as one object is a list of
     it; a range may end inside a letter's combining mark; a `requiredRevisionId` must be the latest,
-    and a `targetRevisionId` may be any earlier one."""
+    a `targetRevisionId` may be any earlier one, and another Doc's is refused as either."""
     from tests._helpers import served_id
 
     h = wh[_OWNER]
@@ -15592,84 +15699,16 @@ def test_a_batch_update_takes_what_real_takes(wc, wh):
     assert _docs_write(wc, h, "wr-text", pinned).status_code == 400
     late = {"requests": [_ins(1, "w")], "writeControl": {"targetRevisionId": first}}
     assert _docs_write(wc, h, "wr-text", late).status_code == 200
-
-
-@pytest.mark.parametrize(
-    "who,doc,body,params,status,message",
-    [
-        # the body and the mask before the lookup, a reader's 403 before the body's emptiness
-        (
-            "reader@acme.com",
-            "wr-text",
-            {"requests": []},
-            {},
-            403,
-            "The caller does not have permission",
-        ),
-        (
-            "reader@acme.com",
-            "wr-text",
-            {"requests": [_ins(0, "x")]},
-            {},
-            403,
-            "The caller does not have permission",
-        ),
-        (
-            "admin",
-            "wr-text",
-            {"requests": [_ins(1, "x")]},
-            {},
-            403,
-            "The caller does not have permission",
-        ),
-        (_OWNER, "nope", {"requests": [_ins(0, "x")]}, {}, 404, "Requested entity was not found."),
-        (_OWNER, "nope", {"requests": [{}]}, {}, 404, "Requested entity was not found."),
-        (
-            _OWNER,
-            "nope",
-            {"requests": [], "nope": 1},
-            {},
+    # another Doc's revision is neither, as either
+    other = served_id("google_drive", "wr-doc")
+    theirs = wc.get(f"/docs/v1/documents/{other}", headers=h).json()["revisionId"]
+    for field in ("requiredRevisionId", "targetRevisionId"):
+        body = {"requests": [_ins(1, "v")], "writeControl": {field: theirs}}
+        r = _docs_write(wc, h, "wr-text", body)
+        assert (r.status_code, r.json()["error"]["message"]) == (
             400,
-            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
-        ),
-        (
-            _OWNER,
-            "nope",
-            {"requests": []},
-            {"fields": "nope"},
-            400,
-            "Request contains an invalid argument.",
-        ),
-        (
-            _OWNER,
-            "wr-text",
-            {"nope": 1},
-            {"fields": "nope"},
-            400,
-            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
-        ),
-        (
-            _OWNER,
-            "wr-book",
-            {"requests": [_ins(1, "x")]},
-            {},
-            404,
-            "Requested entity was not found.",
-        ),
-    ],
-)
-def test_who_may_write_a_document_and_in_what_order_it_is_refused(
-    wc, wh, who, doc, body, params, status, message
-):
-    from tests._helpers import served_id
-
-    did = (
-        served_id("google_drive", doc)
-        if doc != "nope"
-        else "1nope0000000000000000000000000000000000000"
-    )
-    r = wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=wh[who], params=params, json=body)
-    assert (r.status_code, r.json()["error"]["message"]) == (status, message)
+            "The provided revision ID is invalid.",
+        )
 
 
 def test_copy_to_adds_a_copy_named_in_the_destinations_language(wc, wh, wbook):

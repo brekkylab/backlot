@@ -4476,6 +4476,19 @@ class _EditorRefused(Exception):
     ``Invalid requests[i].<kind>: ``."""
 
 
+def _editor_requests(requests: list[dict]) -> list[dict]:
+    """An editor `batchUpdate`'s requests, refused when there are none or one sets no kind: measured
+    2026-10-29 on Docs, ``Must specify at least one request.`` and then
+    ``Invalid requests[i]: No request set.``, both ahead of a revision the write is pinned to and
+    of any other request's refusal."""
+    if not requests:
+        raise gerr.invalid_argument("Must specify at least one request.")
+    for i, req in enumerate(requests):
+        if not req:
+            raise gerr.invalid_argument(f"Invalid requests[{i}]: No request set.")
+    return requests
+
+
 def _editor_batch(
     requests: list[dict],
     kinds: dict[str, str],
@@ -4487,17 +4500,15 @@ def _editor_batch(
     every request has been read. ``kinds`` gives each kind's JSON name by the proto name a read
     body carries it under, and ``product`` names the editor.
 
-    Measured 2026-10-29 on Docs' `documents.batchUpdate`: a request with no kind set is
-    ``Invalid requests[i]: No request set.``, a refusal names its request and kind and only the
-    first is answered, and a 500 a request leads to comes after the refusals of every request
-    behind it. A kind ``apply`` lacks is refused naming itself. The caller keeps what the
-    functions changed only once this returns."""
+    Every request sets a kind (`_editor_requests`). Measured 2026-10-29 on Docs'
+    `documents.batchUpdate`: a refusal names its request and kind and only the first is answered,
+    and a 500 a request leads to comes after the refusals of every request behind it. A kind
+    ``apply`` lacks is refused naming itself. The caller keeps what the functions changed only
+    once this returns."""
     replies = []
     fails = False
     for i, req in enumerate(requests):
-        kind = next(iter(req), None)
-        if kind is None:
-            raise gerr.invalid_argument(f"Invalid requests[{i}]: No request set.")
+        kind = next(iter(req))
         name = kinds[kind]
         try:
             if kind not in apply:

@@ -153,10 +153,9 @@ field list, so the ordering divergence below has no entry to live in and is stat
   mode, is refused naming itself, where real applies it.
 - **Collaborators.** A `targetRevisionId` naming any revision of the Doc is taken. Real refuses one
   too far behind, and merges the write into what collaborators did since it, which here is nothing.
-- **Two run boundaries.** When `replaceText` holds a newline, real ends the paragraph it splits off
-  with a newline in the style of the text before the match, where Backlot keeps that newline's own
-  style; and replacing every empty match of a regular expression left one run fewer on real. The
-  text is real's in both.
+- **A replacement's newline.** When `replaceText` holds a newline, real ends the paragraph it
+  splits off with a newline in the style of the text before the match, where Backlot keeps that
+  newline's own style. The text is real's.
 - **Rate limits.** Real Sheets refuses a user's writes past 60 a minute with 429
   `RESOURCE_EXHAUSTED`. Backlot does not count them.
 - **A `Document` checked only as deep as the baseline records it.** `documents.create` refuses an

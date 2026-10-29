@@ -194,9 +194,9 @@ class _Head:
 
     def _read_header(self, part: bytes) -> None:
         """Read ``part``, the next bytes of a header line: its name up to the colon, whether its
-        value holds 0x00, and the value of a `Transfer-Encoding`. A 0x00 in any value makes the
-        refusal `nul`, as real answered a 0x00 whether another byte httptools refuses in a value
-        came before it or after it (:mod:`backlot.parser_refusals`)."""
+        value holds 0x00, and the value of a `Transfer-Encoding`. A refusal for a byte in a value
+        is `nul` where any value holds 0x00, as real answered a 0x00 whether another byte
+        httptools refuses in a value came before it or after it (:mod:`backlot.parser_refusals`)."""
         if not self.in_value:
             colon = part.find(b":")
             self.name = (self.name + part[: len(part) if colon < 0 else colon])[:_NAMES_READ]

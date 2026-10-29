@@ -170,6 +170,7 @@ _KINDS = {
     "nul": ("GET", " HTTP/1.1", ["X-Probe: a\x00b"], False),
     "control": ("GET", " HTTP/1.1", ["X-Probe: a\x01b"], False),
     "control in a later read": ("GET", " HTTP/1.1", ["X-Probe: a|\x7fb"], False),
+    "nul in a later read": ("GET", " HTTP/1.1", ["X-Probe: a|\x00b"], False),
     "control, credential ahead": (
         "GET",
         " HTTP/1.1",
@@ -314,6 +315,7 @@ _ROWS = [
     (*_LINEAR, "nul", "cloudflare 400"),
     (*_LINEAR, "control", "cloudflare empty"),
     (*_LINEAR, "control in a later read", "cloudflare empty"),
+    (*_LINEAR, "nul in a later read", "cloudflare 400"),
     (*_LINEAR, "blank coding", "cloudflare 501"),
     (*_LINEAR, "blank coding, no length", "cloudflare 501"),
     (*_LINEAR, "blank coding after a length", "cloudflare 501"),

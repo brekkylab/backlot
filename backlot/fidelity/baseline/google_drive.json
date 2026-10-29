@@ -561,19 +561,6 @@
           "kind": "missing_param",
           "severity": "gap"
         },
-        "commentsViewMode": {
-          "kind": "missing_param",
-          "severity": "gap",
-          "note": "One family with `GET /v1/presentations/{}?commentsViewMode` and `GET /v4/spreadsheets/{}?commentsViewMode`, all three marked Developer Preview. Google's own description (Docs): \"The comments view mode to apply to the document. This allows viewing the document with comments omitted or included. If one is not specified, COMMENTS_VIEW_MODE_OMITTED is used.\" Backlot declares it on Sheets alone (`routers.google_sheets._sheets_comments_view`). Measured against the three hosts on 2026-09-29 with a user token: Sheets and Slides answer each of the four enum values 200, and `comments_view_mode_omitted` in lower case as well, and refuse `BOGUS` and the empty value with 400 `Invalid value at 'comments_view_mode' (type.googleapis.com/google.apps.sheets.v4.CommentsViewMode), \"BOGUS\"` (`google.apps.slides.v1` on Slides). Docs refuses those two the same way under `google.apps.docs.v1` and answers `COMMENTS_VIEW_MODE_UNSPECIFIED` 200, but refuses the other three with 400 `Comments view mode may only be specified if tabs content is also requested.` unless `includeTabsContent=true` or a `fields` mask naming `tabs` comes with them. With tabs requested, `COMMENTS_VIEW_MODE_INCLUDED` is refused with `Comments may only be explicitly included if inline suggestions are also explicitly requested.` until `suggestionsViewMode=SUGGESTIONS_INLINE` joins it, and `COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS` beside `suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS` with `Comments may not be requested when previewing suggestions.` Those two Docs parameters are gaps in this file as well: this server reads neither, so the rules that tie them to this one have nothing to act on."
-        },
-        "fields": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "includeTabsContent": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "key": {
           "kind": "missing_param",
           "severity": "gap"
@@ -583,10 +570,6 @@
           "severity": "gap"
         },
         "quotaUser": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "suggestionsViewMode": {
           "kind": "missing_param",
           "severity": "gap"
         },
@@ -617,7 +600,7 @@
         "commentsViewMode": {
           "kind": "missing_param",
           "severity": "gap",
-          "note": "Same family as `GET /v1/documents/{}?commentsViewMode`, whose note carries the measurement on all three hosts."
+          "note": "One family with `GET /v1/documents/{}?commentsViewMode` and `GET /v4/spreadsheets/{}?commentsViewMode`, all three marked Developer Preview. Google's own description (Docs): \"The comments view mode to apply to the document. This allows viewing the document with comments omitted or included. If one is not specified, COMMENTS_VIEW_MODE_OMITTED is used.\" Backlot reads it on Sheets (`routers.google_sheets._sheets_comments_view`) and Docs (`routers.google_docs.docs_get`). Measured against the three hosts on 2026-09-29 with a user token: Sheets and Slides answer each of the four enum values 200, and `comments_view_mode_omitted` in lower case as well, and refuse `BOGUS` and the empty value with 400 `Invalid value at 'comments_view_mode' (type.googleapis.com/google.apps.slides.v1.CommentsViewMode), \"BOGUS\"`, where Docs refuses all but `COMMENTS_VIEW_MODE_UNSPECIFIED` unless the tabs are requested."
         },
         "fields": {
           "kind": "missing_param",
@@ -1516,10 +1499,8 @@
           "type": "string"
         },
         "tabs": {
-          "status": "missing",
-          "type": "[docs.Tab]",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "[docs.Tab]"
         },
         "title": {
           "status": "implemented",
@@ -1643,63 +1624,85 @@
     },
     "docs.DocumentTab": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "body": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Body"
         },
         "commentAnchors": {
           "status": "missing",
-          "type": "map<string, docs.CommentAnchor>"
+          "type": "map<string, docs.CommentAnchor>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "documentStyle": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.DocumentStyle"
         },
         "dropdownDefinitions": {
           "status": "missing",
-          "type": "map<string, docs.DropdownDefinition>"
+          "type": "map<string, docs.DropdownDefinition>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "footers": {
           "status": "missing",
-          "type": "map<string, docs.Footer>"
+          "type": "map<string, docs.Footer>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "footnotes": {
           "status": "missing",
-          "type": "map<string, docs.Footnote>"
+          "type": "map<string, docs.Footnote>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "headers": {
           "status": "missing",
-          "type": "map<string, docs.Header>"
+          "type": "map<string, docs.Header>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "inlineObjects": {
           "status": "missing",
-          "type": "map<string, docs.InlineObject>"
+          "type": "map<string, docs.InlineObject>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "lists": {
           "status": "missing",
-          "type": "map<string, docs.List>"
+          "type": "map<string, docs.List>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "namedRanges": {
           "status": "missing",
-          "type": "map<string, docs.NamedRanges>"
+          "type": "map<string, docs.NamedRanges>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "namedStyles": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.NamedStyles"
         },
         "positionedObjects": {
           "status": "missing",
-          "type": "map<string, docs.PositionedObject>"
+          "type": "map<string, docs.PositionedObject>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "suggestedDocumentStyleChanges": {
           "status": "missing",
-          "type": "map<string, docs.SuggestedDocumentStyle>"
+          "type": "map<string, docs.SuggestedDocumentStyle>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "suggestedNamedStylesChanges": {
           "status": "missing",
-          "type": "map<string, docs.SuggestedNamedStyles>"
+          "type": "map<string, docs.SuggestedNamedStyles>",
+          "kind": "missing_field",
+          "severity": "gap"
         }
       }
     },
@@ -2637,48 +2640,56 @@
     },
     "docs.Tab": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "childTabs": {
           "status": "missing",
-          "type": "[docs.Tab]"
+          "type": "[docs.Tab]",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "documentTab": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.DocumentTab"
         },
         "tabProperties": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TabProperties"
         }
       }
     },
     "docs.TabProperties": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "iconEmoji": {
           "status": "missing",
-          "type": "string"
+          "type": "string",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "index": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "nestingLevel": {
           "status": "missing",
-          "type": "integer"
+          "type": "integer",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "parentTabId": {
           "status": "missing",
-          "type": "string"
+          "type": "string",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "tabId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "title": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }

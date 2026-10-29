@@ -15,17 +15,17 @@ Bytes are counted as the client sent them but for the prefix a path starts with 
 receives (``backlot.request_target.front_door``): the head real gets is that much shorter. The rest
 of the head is counted as sent, `Host` and all. A path no vendor owns has no bound.
 
-Measured on 2026-10-29 over raw HTTP/1.1 on TLS sockets, cache-busted: each request sent exactly N
-bytes and then waited for an answer (six seconds, four on api.github.com, which closes a head it has
-had no byte of for about five), and N was bisected for a request line with no LF
+Measured on 2026-10-29 with each request written to a TLS socket by hand and cache-busted: each sent
+exactly N bytes and then waited for an answer (six seconds, four on api.github.com, which closes a
+head it has had no byte of for about five), and N was bisected for a request line with no LF
 (`GET <path>?_=<r>&x=aaa…`) and for a header with none (`X-A: aaa…` after a complete request line,
-`Host`, `User-Agent` and `Connection`). A 1,000-byte header line before `X-A` moved the bound of Jira
-Cloud and of the four behind Cloudflare by 1,000, which makes theirs line bounds. The same requests
-with their LF and the end of the head, bisected the same day, showed how each bound takes a head that
-ends: on Slack, Google and S3 one of the bound's length is read and one byte longer is refused, on
-Graph one of the bound's length is refused, and on Cloudflare a request line of 131,071 bytes before
-its LF is read and one of 131,072 refused. GitHub's and Jira Cloud's ended heads met a lower bound
-first.
+`Host`, `User-Agent` and `Connection`). A 1,000-byte header line before `X-A` moved the bound of
+Jira Cloud and of the four behind Cloudflare by 1,000, which makes theirs line bounds. The same
+requests with their LF and the end of the head, bisected the same day, showed how each bound takes a
+head that ends: on Slack, Google and S3 one of the bound's length is read and one byte longer is
+refused, on Graph one of the bound's length is refused, and on Cloudflare a request line of 131,071
+bytes before its LF is read and one of 131,072 refused, and a header line the same on Linear and
+Fireflies. GitHub's and Jira Cloud's ended heads met a lower bound first.
 """
 
 from __future__ import annotations
@@ -52,9 +52,9 @@ class Bound:
     per_line: bool
     #: Whether a head of :attr:`limit` bytes is refused where its last byte ends it.
     refuses_its_end: bool
-    #: The answer where the bound is reached in the request line.
+    #: The answer to a request line that reaches the bound.
     in_line: bytes
-    #: The answer where the bound is reached in the headers.
+    #: The answer to a header that reaches it.
     in_headers: bytes
     #: The bytes of the request line real never receives (``front_door``'s prefix).
     mount: int = 0
@@ -109,8 +109,8 @@ GOOGLE_PAGE_413 = request_target.google_page(
     b" <ins>That\xe2\x80\x99s all we know.</ins>\n",
 )
 
-#: Cloudflare's two pages in front of Notion, HubSpot, Linear and Fireflies, `text/html` with no
-#: charset.
+#: Cloudflare's two pages, for the `cloudflare` door of ``backlot.request_target.front_door``,
+#: `text/html` with no charset.
 CLOUDFLARE_PAGE_414 = (
     b"<html>\r\n<head><title>414 Request-URI Too Large</title></head>\r\n<body>\r\n"
     b"<center><h1>414 Request-URI Too Large</h1></center>\r\n<hr><center>cloudflare</center>\r\n"

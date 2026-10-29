@@ -150,22 +150,16 @@ async def _refuse_a_long_line_or_path(request: Request) -> None:
     """414 a request line of 8,192 bytes or more before its LF with :data:`_LONG_LINE_PAGE`, and
     then a path of 4,097 characters or more once decoded with an empty body, on every route but
     :data:`_SERVED_HOWEVER_LONG`. Both count from after `/github`, which real never receives; the
-    line is counted as `<method> <target> HTTP/1.1` and its CR, the target as sent, so a `?` with
-    nothing after it is not counted. A target of 8,192 is refused ahead of both
-    (``backlot.main.answer_a_github_request_target_past_its_bound``).
+    line is counted as `<method> <target> HTTP/1.1` and its CR, the target as sent but for a `?`
+    with nothing after it, which the scope does not hold. A bad token, and no credential on a route
+    :func:`_refuse_an_anonymous_caller` names, is answered ahead of both, and an unsupported
+    `X-GitHub-Api-Version` after them.
 
-    Measured against api.github.com on 2026-10-29 with a cache-buster on each request. Each of the
-    34 routes here with the path filled to 4,097 by each of its parameters in turn was the 414, and
-    to 4,096 its own answer, but `pulls/{number}`, `contents` and `contents/{path}`, which answered
-    their 404 at both; with a GET's target of 8,180 every route was the page but those three, which
-    answered their 200, and code search, which answers its own 414 first. A GET's target of 8,178
-    and a `HEAD`'s or a `POST`'s of 8,177 were the page where 8,177 and 8,176 were served. A path of
-    7,097 characters sent with 1,500 `%31` was the 414 and one of 7,096 the 404. A bad token was
-    "Bad credentials" ahead of both, and on `collaborators`, a route
-    :func:`_refuse_an_anonymous_caller` names, no credential was its 401 ahead of both; an
-    unsupported `X-GitHub-Api-Version` came after both, and on `issues/{number}` the page came ahead
-    of a path of 8,180. Real frames the path's empty 414 with `Transfer-Encoding: chunked` where a
-    token came and with `Content-Length: 0` where none did; it is the second here."""
+    Measured against api.github.com on 2026-10-29 with a cache-buster on each request, on each of
+    the 34 routes here with the path filled by each of its parameters in turn and with a long query;
+    ``tests/test_github.py::_LONG_TARGET_ROWS`` holds the cases. Real frames the path's empty 414
+    with `Transfer-Encoding: chunked` where a token came and with `Content-Length: 0` where none
+    did; it is the second here."""
     route = request.scope.get("route")
     if route is None or route.path in _SERVED_HOWEVER_LONG:
         return

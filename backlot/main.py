@@ -1462,19 +1462,19 @@ _GITHUB_TARGET_TOO_LONG = (
 
 @_middleware(lambda scope: _at_or_under(_url_path(scope), ("/github",)))
 async def answer_a_github_request_target_past_its_bound(request: Request, call_next):
-    """414 a `/github` request whose target, as sent and from after `/github`, is 8,192 characters
-    or more, or 8,174 on code search, with :data:`_GITHUB_TARGET_TOO_LONG` on
-    `application/json; charset=utf-8`, on any path and any method, ahead of the route and its
-    refusals. A `?` with nothing after it is not counted.
+    """414 a `/github` request on any path and any method whose target is 8,192 characters or more
+    (8,174 on code search), counted as ``backlot.routers.github._refuse_a_long_line_or_path``
+    counts it, with :data:`_GITHUB_TARGET_TOO_LONG` on `application/json; charset=utf-8`, ahead of
+    the route and its refusals, which a shorter target meets.
 
-    Measured against api.github.com on 2026-10-29 with a cache-buster on each request: on
-    `/repos/{owner}/{repo}` a `GET`, a `HEAD` and a `POST` with a target of 8,192 were this 414,
-    and so were a `GET` on a path no route matches and one with no query on `contents/{path}`,
-    where 8,191 was each one's own answer; on `/search/code` 8,174 was this 414 and 8,173 the 200,
-    twice each. A bad token was this 414, and a raw byte in the target was the front door's 400
+    On api.github.com, 2026-10-29, each request cache-busted: on `/repos/{owner}/{repo}` a `GET`, a
+    `HEAD` and a `POST` with a target of 8,192 were this 414, and so were a `GET` on a path no route
+    matches and one with no query on `contents/{path}`, where 8,191 was each one's own answer; on
+    `/search/code` 8,174 was this 414 and 8,173 the 200, twice each. A bad token was this 414, and a
+    raw byte in the target was the front door's 400
     (:func:`answer_a_raw_byte_in_the_request_target`) ahead of it. Real's status line reads
-    `414 Request-URI Too Large` and the answer carries no `x-github-request-id` and no rate limit.
-    A shorter target meets ``backlot.routers.github._refuse_a_long_line_or_path``."""
+    `414 Request-URI Too Large` and the answer carries no `x-github-request-id` and no rate
+    limit."""
     query = request.scope["query_string"]
     target = request.scope["raw_path"][len("/github") :] + (b"?" + query if query else b"")
     bound = 8_174 if request.scope["path"] == "/github/search/code" else 8_192

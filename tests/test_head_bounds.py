@@ -1,9 +1,8 @@
 """The answers ``backlot.protocol`` gives a request head at its front door's bound
-(``backlot.head_bounds``), over a real uvicorn, each held against the answer real gave at that bound.
+(``backlot.head_bounds``), each held against the answer real gave at that bound.
 
-Each request is written to a socket by hand, to the server ``live_server`` starts with
-``backlot serve``, as the measurement wrote it: a request line or a header that has not ended, or a
-head that has.
+A head that has not ended cannot be sent through a client library, so each one here goes over a
+socket of its own to the server ``live_server`` starts.
 """
 
 from __future__ import annotations
@@ -16,10 +15,9 @@ import urllib.parse
 
 import pytest
 
-#: Real's answer at each bound on 2026-10-29: the status line, `Content-Type` (``None`` where it
-#: sent none), and the body's length and SHA-256, the `Request ID` line of CloudFront's page emptied.
-#: Google's is the same on www, gmail, docs, sheets and slides.googleapis.com; Cloudflare's on
-#: api.notion.com, api.hubapi.com, api.linear.app and api.fireflies.ai.
+#: Real's answer at each bound (``backlot.head_bounds`` has the measurement): the status line,
+#: `Content-Type` (``None`` where it sent none), and the body's length and SHA-256, with the
+#: `Request ID` line of CloudFront's page emptied.
 _REAL = {
     "github 414": (
         "HTTP/1.1 414 URI Too Long",
@@ -90,8 +88,8 @@ _REAL = {
 }
 
 #: Each front door's bound on a head that has not ended: the prefix real never receives, the path
-#: after it, the bytes read, whether they are a line's rather than the whole head's, and the answer
-#: where the bound is reached in the request line and in a header.
+#: after it, the bytes it reads, whether of one line or of the whole head, and its answer in the
+#: request line and in a header.
 _BOUNDS = [
     ("/github", "/repos/acme/docs-site", 68_552, False, "github 414", "github 431"),
     ("/slack", "/api/api.test", 61_440, False, "slack", "slack"),
@@ -159,8 +157,8 @@ def _status(base_url: str, head: bytes) -> int:
 def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_it(
     live_server, mount, path, bound, per_line, in_line, in_headers, part
 ):
-    """A head one byte short of the bound waits for more, and the byte that reaches it draws the
-    front door's answer and the close."""
+    """One byte short of the bound the head waits for more; the byte that reaches it is answered
+    and the connection closed."""
     base_url, _ = live_server
     line = f"GET {mount}{path}?x="
     if part == "line":

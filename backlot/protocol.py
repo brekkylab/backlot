@@ -41,7 +41,7 @@ class Protocol(HttpToolsProtocol):
     Each read is counted by :class:`_Head` first, whatever it holds, against the head of the request
     it carries: from the connection's first byte, and from the first read after a request that has
     been read to its end. A read that takes the head to its bound draws the front door's answer and
-    the close, and no read after it is handed to the parser.
+    the close, after which the transport reads nothing more.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -52,11 +52,8 @@ class Protocol(HttpToolsProtocol):
         self._head = _Head()
 
     def data_received(self, data: bytes) -> None:
-        if self._head is None:
-            return
         answer = self._head.read(data)
         if answer is not None:
-            self._head = None
             self.transport.write(answer)
             self.transport.close()
             return
@@ -83,8 +80,7 @@ class Protocol(HttpToolsProtocol):
     def on_message_complete(self) -> None:
         super().on_message_complete()
         self._between_requests = True
-        if self._head is not None:
-            self._head = _Head()
+        self._head = _Head()
 
 
 class _Head:

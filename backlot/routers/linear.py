@@ -273,11 +273,12 @@ async def graphql(request: Request):
     the one after it wrong too: those of :func:`_front`, ``body-parser`` (:func:`_has_body`,
     :func:`~backlot.graphql.body.express_reads_json`), Apollo Server
     (:mod:`backlot.graphql.apollo_http`) up to the choice of operation, then the credential and the
-    run (:func:`_answer`). Each answer of Express's carries what :func:`_express_sent` adds."""
-    front = _front(request)
-    if front is not None:
-        return front
-    return _express_sent(request, await _apollo_server(request))
+    run (:func:`_answer`). Each answer of Express's carries what :func:`_express_sent` adds, and any
+    answer at a path the load balancer reads as `/` carries `nosniff` (:func:`_at_the_root`)."""
+    response = _front(request)
+    if response is None:
+        response = _express_sent(request, await _apollo_server(request))
+    return _at_the_root(request, response)
 
 
 async def _apollo_server(request: Request) -> Response:
@@ -366,13 +367,19 @@ def express_path(path: str) -> str:
     `/nosuch` and `/nosuch/x`, `/a\\b` as `/a/b`, `/a%2fb` and `/a%3cb` as sent, each character of
     :data:`_BARE` escaped in upper case (`|` as `%7C`), and each other printable ASCII character but
     `%`, `?` and `#` as sent, on 2026-10-25 (UTC)."""
+    path = re.sub("/{2,}", "/", _dots_resolved(_unreserved(path)))
+    return "".join(f"%{ord(char):02X}" if char in _BARE else char for char in path)
+
+
+def _unreserved(path: str) -> str:
+    """``path`` with each backslash a slash and each escape of a character RFC 3986 leaves
+    unreserved that character."""
 
     def one(match: re.Match[str]) -> str:
         char = chr(int(match[1], 16))
         return char if char in _UNRESERVED else match[0]
 
-    path = re.sub("/{2,}", "/", _dots_resolved(_ESCAPE.sub(one, path.replace("\\", "/"))))
-    return "".join(f"%{ord(char):02X}" if char in _BARE else char for char in path)
+    return _ESCAPE.sub(one, path.replace("\\", "/"))
 
 
 def routes_to_apollo(path: str) -> bool:
@@ -422,28 +429,39 @@ async def express(request: Request):
     `X-Content-Type-Options: nosniff`, as api.linear.app sent them on 2026-10-25 and 2026-10-26:
     the greeting with an `ETag` to a `GET` and none to a `HEAD`, the methods with none, `Allow` and
     the edge's `Cache-Control` and `Cache-Tag` for an `OPTIONS`, and the 404 page with none and with
-    `Content-Security-Policy: default-src 'none'`. Every answer this route gives at a path Linear's
-    front reads as `/` (:func:`reads_as_root`), the load balancer's 501 and a preflight among
-    them, carries `nosniff` too."""
-    response = _front(request) or _express_route(request)
-    if reads_as_root(request.scope):
-        response.headers["x-content-type-options"] = "nosniff"
-    return response
+    `Content-Security-Policy: default-src 'none'`. The 404 page goes without its `Content-Length`,
+    which uvicorn sends in chunks, and with neither header to a `HEAD`, as api.linear.app sent it
+    to each of `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` and `PROPFIND` on
+    2026-10-29 (UTC). Any answer at a path the load balancer reads as `/` carries `nosniff`
+    (:func:`_at_the_root`)."""
+    return _at_the_root(request, _front(request) or _express_route(request))
 
 
 def reads_as_root(scope) -> bool:
-    """Whether Linear's front reads the path sent (:func:`backlot.routers.sent_path`) as `/`, once
-    :func:`express_path` has read it and its dot segments are resolved: api.linear.app put
-    `X-Content-Type-Options: nosniff` on the load balancer's 501 at `//`, `///`, `/\\`, `/%2E` and
-    `/x/..`, and not at `/%2F`, on 2026-10-26 (UTC)."""
-    return _dots_resolved(express_path(sent_path(scope))) == "/"
+    """Whether Linear's load balancer reads the path sent (:func:`backlot.routers.sent_path`) as
+    `/`: as :func:`express_path` reads a backslash and an escape (:func:`_unreserved`), but with a
+    run of slashes folded ahead of resolving the dot segments, where Express resolves them first."""
+    return _dots_resolved(re.sub("/{2,}", "/", _unreserved(sent_path(scope)))) == "/"
+
+
+def _at_the_root(request: Request, response: Response) -> Response:
+    """``response`` with `X-Content-Type-Options: nosniff` where Linear's load balancer reads the
+    path as `/` (:func:`reads_as_root`), whatever answered: api.linear.app put it on the load
+    balancer's 501 at `//`, `///`, `/\\`, `/%2E` and `/x/..`, and not at `/%2F`, on 2026-10-26
+    (UTC). On 2026-10-29 it put it on Apollo Server's 401 at `/graphql//..`, `/graphql///..` and
+    `/graphql/x//../..` and not at `/graphql//x/..` or `/graphql/./`, paths Express hands Apollo
+    Server alike; on the 200, 400 and 405, the preflight and the 501 at `/graphql//..`; and on
+    Express's 404 at `/x//..`."""
+    if reads_as_root(request.scope):
+        response.headers["x-content-type-options"] = "nosniff"
+    return response
 
 
 def slashes_alone(scope) -> bool:
     """Whether the path sent (:func:`backlot.routers.sent_path`) is slashes alone, where
     Cloudflare's `CONNECT` 400 carries `X-Content-Type-Options: nosniff`: api.linear.app sent it at
     `/`, `//` and `///`, and not at `/%2E`, `/x/..`, `/x/%2E%2E`, `/./`, `/..`, `/%2E%2E`, `/\\` or
-    `/nosuch`, on 2026-10-28 (UTC), where its front reads each of the first five as `/`
+    `/nosuch`, on 2026-10-28 (UTC), where its load balancer reads each of them but `/nosuch` as `/`
     (:func:`reads_as_root`)."""
     return re.fullmatch("/+", sent_path(scope)) is not None
 
@@ -471,6 +489,7 @@ def _express_route(request: Request) -> Response:
         response = Response(_not_found(request.method, path), status_code=404, media_type=_HTML)
         response.headers["content-security-policy"] = "default-src 'none'"
         _express_sent(request, response, etag=False)
+        del response.headers["content-length"]
     response.headers["x-content-type-options"] = "nosniff"
     return response
 

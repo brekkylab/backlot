@@ -605,11 +605,11 @@ Every answer past the load balancer carries `x-request-id` and, to a request wit
 `Cache-Control: private, no-cache, no-store, must-revalidate` where they carry none of their own,
 and `Vary`, and all but its 404 page, `OPTIONS /` and a `HEAD`'s 200 an `ETag`; a `GET` or `HEAD`
 whose `If-None-Match` names that `ETag`, or is `*`, draws Express's 304, without `Accept-Encoding`
-in `Vary`. Apollo Server's JSON ends in a newline. An answer to a document Linear ran carries
-`x-ratelimit-requests-limit` (2,500 an hour under an API key, 1,200 with no credential),
-`x-ratelimit-requests-remaining` and `x-ratelimit-requests-reset`, an hour past the answer.
-`x-complexity` and the four `x-ratelimit-complexity-*` headers are not sent, and a spent budget is
-not refused.
+in `Vary`. Apollo Server's JSON ends in a newline. An answer to a document Linear ran, or whose
+variables it refused, carries `x-ratelimit-requests-limit` (2,500 an hour under an API key, 1,200
+with no credential), `x-ratelimit-requests-remaining` and `x-ratelimit-requests-reset`, an hour past
+the answer. `x-complexity` and the four `x-ratelimit-complexity-*` headers are not sent, and a spent
+budget is not refused.
 
 Root `Query` fields:
 

@@ -69,10 +69,10 @@ ENGINE = build_engine()
 
 # --- the headers on an answer ----------------------------------------------------------------
 #
-# Read off the 1,058 answers api.linear.app gave on 2026-10-25 and 2026-10-26 (UTC) to the requests
-# the tests' tables hold and to each kind of answer with and without `Origin`. Of the headers
-# Cloudflare, Google and the edge add, `server`, `via`, `cf-ray`, `cf-cache-status`, `alt-svc` and
-# `age` are not sent.
+# Read off the answers api.linear.app gave on 2026-10-25 to 2026-10-28 (UTC) to the requests the
+# tests' tables hold and to each kind of answer with and without `Origin`. Backlot sends none of the
+# headers Cloudflare, Google and the edge add (`via`, `cf-ray`, `cf-cache-status`, `alt-svc` and
+# `age`), and its server's own `Server` where Cloudflare's says `cloudflare`.
 
 #: The `Cache-Control` Express sends on an answer that sets none of its own.
 _NO_STORE = "private, no-cache, no-store, must-revalidate"
@@ -637,8 +637,7 @@ class RequestBudget:
     which the measurement did not vary. Past the limit api.linear.app answers a 429 that takes
     nothing: once the bucket of a caller with no credential was spent, ten more requests drew it,
     and one sent 13.8 seconds after the last served was served with `x-ratelimit-requests-remaining`
-    3, on 2026-10-27 (UTC). This serves past the limit, so the level stops at 0. ``clock`` is
-    `time.time` unless a test hands in another."""
+    3, on 2026-10-27 (UTC). This serves past the limit, so the level stops at 0."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock

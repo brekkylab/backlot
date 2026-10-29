@@ -177,7 +177,7 @@ def _proto_value(field: protojson.Field, keep: dict | None, seen: tuple[str, ...
         value = {"type": "string", "enum": list(field.enum.names)}
     else:
         value = dict(_PROTO_SCALARS[field.kind])
-    if field.repeated and field.kind != "rows":
+    if field.repeated:
         value = {"type": "array", "items": value}
     return value
 

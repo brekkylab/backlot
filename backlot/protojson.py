@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import calendar
 import codecs
+import datetime
 import json
 import math
 import re
@@ -108,6 +109,7 @@ def value_text(piece: tuple[str, object]) -> str:
 _ASCII_SPACE = " \t\n\v\f\r"
 _INT32 = (-(2**31), 2**31 - 1)
 _INT64 = (-(2**63), 2**63 - 1)
+_EPOCH_DAY = datetime.date(1970, 1, 1).toordinal()
 
 
 def _str_to_int32(text: str, bounds: tuple[int, int] = _INT32) -> int:
@@ -164,16 +166,29 @@ def to_float(piece: tuple[str, object]) -> float:
     return value
 
 
-# Measured 2026-10-29 on Docs `documents.create`: a string that does not end in `Z` or a `±hh:mm`
-# offset (`2026-10-29`, a lower-case `z`, `+0900`) is the first, a date or time out of its range
-# (month 13, hour 24) the second, 30 February the third, and a year 0 or ten fractional digits the
-# last. Space ahead of it and a second of 60 are read.
+# Measured 2026-10-29 on Docs `documents.create`, the refusals below in the order they are checked:
+# no `Z` or `±hh:mm` offset under a day at the end (`2026-10-29`, a lower-case `z`, `+0900`,
+# `+24:00`); what precedes the zone and the fraction not read as `%Y-%m-%dT%H:%M:%S`, each field
+# after the year one or two digits in its range and space allowed around the whole (month 13, hour
+# 24, `+2026`, a lower-case `t`, no seconds); anything left after the seconds; a day past its
+# month's last (30 February); a fraction, what follows the last `.`, that is not an int32 (`1a`,
+# `+1`, `1 `, twelve digits); and a time outside 0001 to 9999 UTC once the offset is applied, a
+# negative fraction or one past nine digits. An empty fraction, a year of two or six digits and a
+# second of 60 are read.
 _TS_NO_ZONE = (
     "Illegal timestamp format; timestamps must end with 'Z' or have a valid timezone offset."
 )
 _TS_UNPARSED = "Invalid time format: Failed to parse input"
+_TS_TRAILING = "Invalid time format: Illegal trailing data in input string"
 _TS_NO_SUCH_DAY = "Invalid time format: Out-of-range field"
+_TS_NANOS = "Invalid time format, failed to parse nano seconds"
 _TS_PAST_LIMITS = "Timestamp value exceeds limits"
+_TS_ZONE = re.compile(r"(?:Z|([+-])([01][0-9]|2[0-3]):([0-5][0-9]))$")
+_TS_FIELDS = re.compile(
+    r"(-?[0-9]+)-([0-9]{1,2})-([0-9]{1,2})T([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2})"
+)
+# 0001-01-01T00:00:00Z and 9999-12-31T23:59:59Z, in seconds since the epoch
+_TS_SECONDS = (-62_135_596_800, 253_402_300_799)
 
 
 def _timestamp_error(piece: tuple[str, object]) -> str | None:
@@ -182,24 +197,36 @@ def _timestamp_error(piece: tuple[str, object]) -> str | None:
     kind, value = piece
     if kind != "string":
         return f"Invalid data type for timestamp, value is {value_text(piece)}"
-    text = value.lstrip(_ASCII_SPACE)  # type: ignore[union-attr]
-    zone = re.search(r"(Z|[+-][0-9]{2}:[0-9]{2})$", text)
+    zone = _TS_ZONE.search(value)  # type: ignore[arg-type]
     if zone is None:
         return _TS_NO_ZONE
-    parts = re.fullmatch(
-        r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]+))?",
-        text[: zone.start()],
-    )
+    text, dot, fraction = value[: zone.start()].rpartition(".")  # type: ignore[index]
+    if not dot:
+        text, fraction = fraction, ""
+    text = text.lstrip(_ASCII_SPACE)
+    parts = _TS_FIELDS.match(text)
     if parts is None:
         return _TS_UNPARSED
-    year, month, day, hour, minute, second = (int(p) for p in parts.groups()[:6])
-    if len(parts[7] or "") > 9:
-        return _TS_PAST_LIMITS
+    year, month, day, hour, minute, second = (int(p) for p in parts.groups())
     if not (1 <= month <= 12 and 1 <= day <= 31 and hour < 24 and minute < 60 and second <= 60):
         return _TS_UNPARSED
-    if day > calendar.monthrange(year or 2000, month)[1]:
+    if text[parts.end() :].strip(_ASCII_SPACE):
+        return _TS_TRAILING
+    if day > (29 if month == 2 and calendar.isleap(year) else calendar.mdays[month]):
         return _TS_NO_SUCH_DAY
-    if year == 0:
+    if fraction and re.fullmatch(r"-?[0-9]+", fraction) is None:
+        return _TS_NANOS
+    nanos = int(fraction or 0)
+    if not _INT32[0] <= nanos <= _INT32[1]:
+        return _TS_NANOS
+    if nanos < 0 or len(fraction) > 9 or not 1 <= year <= 9999:
+        return _TS_PAST_LIMITS
+    days = datetime.date(year, month, day).toordinal() - _EPOCH_DAY
+    offset = 0
+    if zone[1]:
+        offset = (int(zone[2]) * 60 + int(zone[3])) * 60 * (-1 if zone[1] == "-" else 1)
+    seconds = days * 86_400 + hour * 3600 + minute * 60 + second - offset
+    if not _TS_SECONDS[0] <= seconds <= _TS_SECONDS[1]:
         return _TS_PAST_LIMITS
     return None
 
@@ -599,8 +626,9 @@ _WRAPPERS = {
     "float": "FloatValue",
 }
 _LIST_VALUE = "type.googleapis.com/google.protobuf.ListValue"
-# What an object given for a Timestamp is read as, measured 2026-10-29: `{"seconds": 1, "nanos":
-# 2}` is read, `"seconds": "x"` is `TYPE_INT64` and an unknown name is refused naming the field.
+# What an object given for a Timestamp is read as, measured 2026-10-29:
+# `{"seconds": 1, "nanos": 2}` is read, `"seconds": "x"` is `TYPE_INT64` and an unknown name is
+# refused naming the field.
 _TIMESTAMP = Message(
     "type.googleapis.com/google.protobuf.Timestamp",
     (Field("seconds", "seconds", "int64"), Field("nanos", "nanos", "int32")),

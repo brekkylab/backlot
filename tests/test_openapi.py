@@ -176,13 +176,12 @@ def test_proto_body_declares_the_fields_a_route_keeps_as_its_message_types_them(
             "notes": {"type": "object", "additionalProperties": inner},
         },
     }
-    assert _body_schema(_OUTER, keep={"inner": {"count": None}}) == {
+    counted = {"type": "object", "properties": {"count": inner["properties"]["count"]}}
+    assert _body_schema(_OUTER, keep={"inner": {"count": None}, "notes": {"count": None}}) == {
         "type": "object",
         "properties": {
-            "inner": {
-                "type": "array",
-                "items": {"type": "object", "properties": {"count": inner["properties"]["count"]}},
-            }
+            "inner": {"type": "array", "items": counted},
+            "notes": {"type": "object", "additionalProperties": counted},
         },
     }
     wrapped = protojson.Message(

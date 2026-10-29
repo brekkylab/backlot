@@ -4555,7 +4555,7 @@ def _pj_messages(
     shapes = shapes or {}
 
     def field(name: str, json_name: str, proto: str, type_: str) -> protojson.Field:
-        repeated = type_.startswith("[") and type_ != "[[any]]"
+        repeated = type_.startswith("[")
         inner = type_[1:-1] if repeated else type_
         enum = enums.get((name, json_name))
         shape = shapes.get((name, json_name), {})
@@ -4572,8 +4572,6 @@ def _pj_messages(
             made = protojson.Field(
                 json_name, proto, "message", message=message(inner), repeated=repeated
             )
-        elif type_ == "[[any]]":
-            made = protojson.Field(json_name, proto, "rows")
         elif inner in _PJ_SCALAR_KINDS:
             made = protojson.Field(json_name, proto, _PJ_SCALAR_KINDS[inner], repeated=repeated)
         else:  # a bare JSON value: kept as sent
@@ -4938,13 +4936,13 @@ def _drive_file_capabilities(is_folder: bool, owned: bool) -> dict:
 
 
 def _drive_version(row) -> str:
-    """A file's ``version``: 2 once it states a modification, and 1 for a Doc never modified after
-    it was made -- measured 2026-10-29, a Doc `documents.create` made was version 1, its
-    `modifiedTime` its `createdTime`, 2 and 20 seconds on."""
+    """A file's ``version``: 2 once it states a modification, and 1 for a blank Doc -- measured
+    2026-10-29, a Doc `documents.create` made was version 1 at 2, 20, 60 and 150 seconds, and a
+    Doc converted from a text upload was 4 as the upload answered and 6 three seconds on."""
     if not row["updated_ts"]:
         return "1"
-    untouched = row["subtype"] == "document" and row["updated_ts"] == row["created_ts"]
-    return "1" if untouched else "2"
+    blank = row["subtype"] == "document" and not row["content"]
+    return "1" if blank else "2"
 
 
 def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) -> dict:

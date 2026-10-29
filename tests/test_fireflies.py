@@ -28,6 +28,7 @@ from tests._helpers import (
     gql,
     http_row,
     padded_query,
+    raw_exchange,
     sent_as,
     served_id,
     tiny_corpus,
@@ -2711,3 +2712,74 @@ def test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does(cl
         expected[row.id] = (status, media_type, answer, named)
     assert len(expected) == len(_FIREFLIES_HTTP)
     assert answered == expected
+
+
+# A path httpx would resolve before sending it, written as it is to `backlot serve` with the key and
+# `{ __typename }`, and the status and body api.fireflies.ai answers it with: Fastify's 404 where
+# nginx resolves the dot segments to `/graphql` and passes the path on as sent, nginx's 404 where
+# they resolve to any other path and its 400 where a `..` climbs past the root (`nginx_path`), and
+# Cloudflare's page where one does with a segment after it (`request_target.refused_path`).
+_NGINX_400 = _NGINX_404.replace(b"404 Not Found", b"400 Bad Request")
+_FIREFLIES_SENT_RAW = [
+    *(
+        pytest.param(m, p, 404, _not_found(m, p), id=f"{m} {p}")
+        for m, p in (
+            ("POST", "/x/../graphql"),
+            ("POST", "/x//../graphql"),
+            ("POST", "/a/b/../../graphql"),
+            ("POST", "/x/..%2Fgraphql"),
+            ("POST", "/graphql/x/.."),
+            ("POST", "/./graphql"),
+            ("POST", "/graphql/."),
+            ("POST", "/%2e/graphql"),
+            ("POST", "/graphql/../graphql"),
+        )
+    ),
+    *(
+        pytest.param("POST", p, 404, _NGINX_404, id=f"POST {p}")
+        for p in (
+            "/graphql/..",
+            "/graphql//..",
+            "/x/.//graphql",
+            "/graphql/x/../..",
+            "/x/..",
+            "/..\\graphql",
+        )
+    ),
+    *(
+        pytest.param(m, p, 400, _NGINX_400, id=f"{m} {p}")
+        for m, p in (
+            ("POST", "/.."),
+            ("POST", "/x/../.."),
+            ("POST", "/x/..%2F.."),
+            ("POST", "/%2e%2e"),
+            ("POST", "/./.."),
+            ("POST", "/graphql/../.."),
+            ("GET", "/.."),
+            ("OPTIONS", "/.."),
+        )
+    ),
+    *(
+        pytest.param("POST", p, 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2), id=f"POST {p}")
+        for p in ("/../graphql", "/./../graphql")
+    ),
+]
+
+
+@pytest.mark.parametrize("method, path, status, body", _FIREFLIES_SENT_RAW)
+def test_fireflies_answers_a_path_sent_as_written_as_fireflies_does(
+    live_server, method, path, status, body
+):
+    base_url, settings = live_server
+    request = (
+        b"%s /fireflies%s HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\n"
+        b"Content-Type: application/json\r\nContent-Length: %d\r\n\r\n%s"
+        % (
+            method.encode(),
+            path.encode(),
+            settings.admin_token.encode(),
+            len(_TYPENAME) if method == "POST" else 0,
+            _TYPENAME if method == "POST" else b"",
+        )
+    )
+    assert raw_exchange(base_url, request)[::2] == (status, body)

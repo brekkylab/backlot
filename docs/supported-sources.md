@@ -92,8 +92,10 @@ query string and a JSON `Content-Type` or none. Apollo Server serves a form, or 
 `Content-Type`, only beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its
 check that a browser preflighted the request. Fastify serves `/graphql` alone, an escaped letter in
 it decoded. Any other path nginx passes on to Fastify, `/graphql` in any case, alone, before a
-newline that ends it, or with a slash and more after it, once each escape is decoded and each run of
-slashes is one, gets Fastify's 404, and any other path nginx's 404 page. Root `Query` fields:
+newline that ends it, or with a slash and anything after it, once each escape is decoded, each run
+of slashes is one and the dot segments are resolved, gets Fastify's 404, or its preflight to an
+`OPTIONS`; any other path gets nginx's 404 page, and one ending in a `..` that climbs past the root
+nginx's 400. Root `Query` fields:
 
 | Query field | Notes |
 |---|---|
@@ -591,11 +593,12 @@ operation's 415 carry the account id alone.
 string. Apollo Server serves a `GET` with no `Content-Type`, or a form or `text/plain` one, only
 beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its check that a
 browser preflighted the request. Express hands Apollo Server `/graphql` in any case, alone or with
-a slash and more after it, once Linear's front has turned a backslash into a slash, folded a run of
-slashes into one and decoded an escape of a letter, a digit or one of `-._~`, and once its dot
-segments are resolved, so each of those paths is the endpoint too, but for one whose `..` climbs
-past the root; `/` answers a `GET` or `HEAD` with a greeting, and any other method there, or any
-other path, Express's 404 page. Root `Query` fields:
+a slash and anything after it, once Linear's front has turned a backslash into a slash, decoded an
+escape of a letter, a digit or one of `-._~`, resolved the dot segments and then folded a run of
+slashes into one, so each of those paths is the endpoint too, but for one where a `..` with a
+segment after it climbs past the root, which Cloudflare refuses with its 400; `/` answers a `GET` or
+`HEAD` with a greeting and an `OPTIONS` with the methods it takes, and any other method there, or
+any other path, Express's 404 page. Root `Query` fields:
 
 | Query field | Notes |
 |---|---|

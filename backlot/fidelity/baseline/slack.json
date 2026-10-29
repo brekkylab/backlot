@@ -543,7 +543,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Maintainer decision on the gap: record it, serve nothing without a measured answer. Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `admin.skills:read`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+      "note": "Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `admin.skills:read`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "admin.slackbot.skills.publish",
@@ -551,7 +551,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Maintainer decision on the gap: record it, serve nothing without a measured answer. Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `admin.skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+      "note": "Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `admin.skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "admin.slackbot.skills.setAutoEnabled",
@@ -559,7 +559,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Maintainer decision on the gap: record it, serve nothing without a measured answer. Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `admin.skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+      "note": "Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `admin.skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "admin.slackbot.skills.unpublish",
@@ -567,7 +567,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Maintainer decision on the gap: record it, serve nothing without a measured answer. Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `admin.skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+      "note": "Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `admin.skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "admin.teams.admins.list",
@@ -3300,7 +3300,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Maintainer decision on the gap: record it, serve nothing without a measured answer. Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+      "note": "Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "slackbot.skills.delete",
@@ -3308,7 +3308,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Maintainer decision on the gap: record it, serve nothing without a measured answer. Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+      "note": "Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "slackbot.skills.info",
@@ -3316,7 +3316,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Maintainer decision on the gap: record it, serve nothing without a measured answer. Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:read`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+      "note": "Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:read`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "slackbot.skills.library.add",
@@ -3324,7 +3324,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Maintainer decision on the gap: record it, serve nothing without a measured answer. Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+      "note": "Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "slackbot.skills.library.remove",
@@ -3332,7 +3332,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Maintainer decision on the gap: record it, serve nothing without a measured answer. Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+      "note": "Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "slackbot.skills.list",
@@ -3340,7 +3340,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Maintainer decision on the gap: record it, serve nothing without a measured answer. Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:read`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+      "note": "Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:read`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "slackbot.skills.update",
@@ -3348,7 +3348,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Maintainer decision on the gap: record it, serve nothing without a measured answer. Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+      "note": "Measured against slack.com on 2026-10-29 with a user token carrying `identify`, `channels:*`, `files:read`, `reactions:*`, `search:read`, `users:read` and `chat:write`: it answers `missing_scope` with `needed` `skills:write`, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "stars.add",

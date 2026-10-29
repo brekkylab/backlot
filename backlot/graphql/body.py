@@ -381,8 +381,8 @@ def _unbrotli(raw: bytes, limit: int = LINEAR_LIMIT) -> bytes:
     try:
         out, finished = _brotli_read(raw, limit)
     except brotli_codec.error:
-        # Python's decoder refuses bytes after the stream, which Node leaves unread: the stream
-        # ends at the shortest prefix that finishes it, if any does.
+        # Python's decoder refuses bytes after the stream: the stream ends at the shortest prefix
+        # that finishes it, if any does.
         lo, hi = 0, len(raw)
         while lo < hi:
             mid = (lo + hi) // 2

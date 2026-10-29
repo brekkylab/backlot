@@ -2518,6 +2518,12 @@ def cdn_bad_request(method: str, raw_path: str) -> str:
     return _cloudfront(400, CDN_BAD_REQUEST, method, raw_path)
 
 
+def cdn_too_long(status: int, method: str, raw_path: str) -> str:
+    """The CDN's page with ``status`` in it, 414 for a request line it stops reading and 494 for a
+    header line (``backlot.head_bounds``), which say why as its 400 does."""
+    return _cloudfront(status, CDN_BAD_REQUEST, method, raw_path)
+
+
 #: What the edge answers a `;` in a path with, JSON or a page as `Accept` picks
 #: (:func:`front_door`). The JSON is this body, 28 bytes with its newline, on `application/json`;
 #: real's page is 18,943 bytes on `text/html` with no charset,

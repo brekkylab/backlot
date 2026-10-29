@@ -187,7 +187,7 @@ def docs_url(path: str) -> str:
     return DOCS_ROOT
 
 
-def http_body(path: str, exc, query=None) -> dict | None:
+def http_body(path: str, exc, query=None) -> dict | bytes | None:
     """Render an exception into the envelope.
 
     An error the router shaped by hand carries its own body as ``github_body``, and that wins. Seven
@@ -201,7 +201,9 @@ def http_body(path: str, exc, query=None) -> dict | None:
     ``/commits/{sha}`` 422 of ``_no_commit_for_sha``, whose ``documentation_url`` is the route's
     own). Everything else is the three-member envelope over the exception's own detail, whose
     wording is already real's ("Not Found", "Bad credentials") because the routers were written
-    against measured responses; only the shape around it was FastAPI's.
+    against measured responses; only the shape around it was FastAPI's. The two 414s of
+    ``backlot.routers.github._refuse_a_long_line_or_path`` carry theirs as ``bytes``, a page and an
+    empty body, which :func:`rendered` sends as they stand.
 
     A 405 is the exception, and keeps FastAPI's ``detail``. Every route here declares GET, so a
     wrong method that reaches the router is refused by Starlette with
@@ -212,7 +214,7 @@ def http_body(path: str, exc, query=None) -> dict | None:
     Starlette's phrase in real's envelope would read as measured.
     """
     body = getattr(exc, "github_body", None)
-    if isinstance(body, dict):
+    if isinstance(body, (dict, bytes)):
         return body
     if exc.status_code == 405:
         return None
@@ -225,16 +227,21 @@ def http_body(path: str, exc, query=None) -> dict | None:
     }
 
 
-def rendered(request: Request, status_code: int, body: dict, headers=None) -> Response | None:
+def rendered(
+    request: Request, status_code: int, body: dict | bytes, headers=None
+) -> Response | None:
     """The backend version refusal's newline and Go-style HTML escapes.
 
     Each `<`, `>` and `&` in its `message` came back from api.github.com on 2026-10-19 as
     `\\u003c`, `\\u003e` and `\\u0026`, as Go's `encoding/json` writes them. The newline's
     measurement is the comment in ``backlot.routers.github._validate_api_version``.
 
-    Its empty Selected header distinguishes it from the gateway's version refusal. Other GitHub
-    errors keep the shared JSON rendering.
+    Its empty Selected header distinguishes it from the gateway's version refusal. A body of
+    ``bytes`` goes out as it stands (:func:`http_body` says which). Other GitHub errors keep the
+    shared JSON rendering.
     """
+    if isinstance(body, bytes):
+        return Response(body, status_code=status_code, headers=headers)
     if status_code == 400 and headers and headers.get("X-GitHub-Api-Version-Selected") == "":
         written = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
         for ch in "<>&":

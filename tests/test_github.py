@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import time
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import pytest
 import yaml
@@ -2599,8 +2599,9 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
     """A path number that is not an integer (`²` included), or one outside 64 bits (see
     store.github_by_number), gets the 404 an unknown number gets on that route, byte for byte, as
     real answers both; `²` was measured on all eleven routes. A number of 4,301 digits, one more
-    than `int()` converts, gets that 404 too, where real answers a path that long with a 414 on
-    `issues/{number}` and the git refs, and with a 404 on `pulls/{number}`.
+    than `int()` converts, makes a path real answers with its empty 414 on each route but
+    `pulls/{number}`, which answers the 404
+    (``backlot.routers.github._refuse_a_long_line_or_path``).
 
     The routes that declare the number an `int` match `notanint` and then fail to validate it, and
     that has to be the route's 404 rather than a 422: `{"detail": [...]}` would announce itself as
@@ -2618,7 +2619,8 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
         for label, number in numbers.items()
         for r in [c.get(base + route.format(number=number), headers=gh_admin_h)]
     }
-    assert answers == dict.fromkeys(numbers, (404, unknown.content))
+    long = (404, unknown.content) if route == "pulls/{number}" else (414, b"")
+    assert answers == dict.fromkeys(numbers, (404, unknown.content)) | {"4301 digits": long}
 
 
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
@@ -4654,6 +4656,95 @@ def test_github_backend_version_error_order(gh_client, path):
     assert response.status_code == 401
     assert response.json()["message"] == "Bad credentials"
     assert "X-GitHub-Api-Version-Selected" not in response.headers
+
+
+#: Each of the two 414 pages real sends a long request: nginx's where the request line holds 8,192
+#: bytes (as sent, with the method, the spaces and the CR), and the gateway's JSON where the target
+#: does.
+_LINE_PAGE_414 = (
+    b"<html>\r\n<head><title>414 Request-URI Too Large</title></head>\r\n<body>\r\n"
+    b"<center><h1>414 Request-URI Too Large</h1></center>\r\n<hr><center>nginx</center>\r\n"
+    b"</body>\r\n</html>\r\n"
+)
+_TARGET_JSON_414 = (
+    b'{"message": "We received a Request-URL that is too long from your client."}\r\n'
+)
+
+#: A request whose `{pad}` is filled with `1`s to ``length`` characters after `/github`, counted on
+#: the path decoded or on the target as sent; who sends it; and the answer: a status, or one of the
+#: three 414s (``backlot.routers.github._refuse_a_long_line_or_path``,
+#: ``backlot.main.answer_a_github_request_target_past_its_bound``).
+_LONG_TARGET_ROWS = [
+    ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_096, "admin", 404),
+    ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_097, "admin", "path"),
+    ("GET", "/repos/{org}/gateway/issues/" + "%31" * 1_000 + "{pad}", "path", 4_096, "admin", 404),
+    (
+        "GET",
+        "/repos/{org}/gateway/issues/" + "%31" * 1_000 + "{pad}",
+        "path",
+        4_097,
+        "admin",
+        "path",
+    ),
+    ("GET", "/repos/{org}/{pad}", "path", 4_097, "admin", "path"),
+    ("GET", "/repos/{org}/gateway/pulls/{pad}", "path", 4_097, "admin", 404),
+    ("GET", "/repos/{org}/gateway/contents/{pad}", "path", 4_097, "admin", 404),
+    ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 8_180, "admin", "line"),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_177, "admin", 200),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_178, "admin", "line"),
+    ("HEAD", "/repos/{org}/gateway?x={pad}", "target", 8_176, "admin", 200),
+    ("HEAD", "/repos/{org}/gateway?x={pad}", "target", 8_177, "admin", "line"),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_191, "admin", "line"),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_192, "admin", "json"),
+    ("HEAD", "/repos/{org}/gateway?x={pad}", "target", 8_192, "admin", "json"),
+    ("POST", "/repos/{org}/gateway?x={pad}", "target", 8_192, "admin", "json"),
+    ("GET", "/repos/{org}/gateway/pulls/1?x={pad}", "target", 8_191, "admin", 404),
+    ("GET", "/repos/{org}/gateway/contents?x={pad}", "target", 8_191, "admin", 200),
+    ("GET", "/nope?x={pad}", "target", 8_191, "admin", 404),
+    ("GET", "/nope?x={pad}", "target", 8_192, "admin", "json"),
+    ("GET", "/search/code?q=a&x={pad}", "target", 8_173, "admin", 200),
+    ("GET", "/search/code?q=a&x={pad}", "target", 8_174, "admin", "json"),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_180, "a bad token", 401),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_192, "a bad token", "json"),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_180, "an unsupported version", "line"),
+    ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_097, "an unsupported version", "path"),
+    ("GET", "/repos/{org}/{pad}/collaborators", "path", 4_097, "no credential", 401),
+    ("GET", "/repos/{org}/gateway/collaborators?x={pad}", "target", 8_180, "no credential", 401),
+    ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_097, "no credential", "path"),
+]
+
+
+@pytest.mark.parametrize("method, target, counted, length, sender, answer", _LONG_TARGET_ROWS)
+def test_github_a_long_path_or_target_is_answered_as_real_answers_it(
+    gh_client, gh_admin_h, gh_org, method, target, counted, length, sender, answer
+):
+    c, _ = gh_client
+    target = target.replace("{org}", gh_org)
+    filled = target.replace("{pad}", "")
+    have = len(unquote(filled.partition("?")[0])) if counted == "path" else len(filled)
+    target = target.replace("{pad}", "1" * (length - have))
+    headers = {
+        "admin": gh_admin_h,
+        "a bad token": {"Authorization": "Bearer nope"},
+        "an unsupported version": {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"},
+        "no credential": {},
+    }[sender]
+    r = c.request(method, f"/github{target}", headers=headers)
+    if isinstance(answer, int):
+        assert r.status_code == answer
+        return
+    body, media_type, counted_headers = {
+        "path": (b"", None, True),
+        "line": (_LINE_PAGE_414, "text/html", True),
+        "json": (_TARGET_JSON_414, "application/json; charset=utf-8", False),
+    }[answer]
+    assert (r.status_code, r.headers.get("content-type")) == (414, media_type)
+    assert r.content == (b"" if method == "HEAD" else body)
+    assert r.headers["content-length"] == str(len(body))
+    assert ("x-ratelimit-limit" in r.headers, "x-github-request-id" in r.headers) == (
+        counted_headers,
+        counted_headers,
+    )
 
 
 def _sent_raw(client, path: str, headers: dict[str, bytes]):

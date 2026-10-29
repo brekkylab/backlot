@@ -1,6 +1,14 @@
 """The HTTP/1.1 protocol `backlot serve` hands uvicorn: uvicorn's own httptools protocol, which
-reads a request line that starts a read from the socket before its parser does (:class:`Protocol`
-says which).
+counts each request head against its front door's bound as it arrives (:mod:`backlot.head_bounds`)
+and reads a request line that starts a read from the socket before its parser does
+(:class:`Protocol` says which).
+
+httptools reads a header of 262,144 bytes and hands its request to the app, where each front door
+has answered at its bound, which is shorter, and closed the connection. :class:`Protocol` answers
+there as the front door does, before the parser is handed the byte that reached it. A head that ends
+within its bound goes to the parser; one whose target holds 65,536 bytes or more is answered
+uvicorn's 400 reading `Invalid HTTP request received.`, the target being longer than
+``httptools.parse_url`` reads.
 
 httptools refuses a request target holding one of the bytes :mod:`backlot.request_target` names,
 in the path or in the query, and uvicorn answers the refusal itself with a 400 reading
@@ -15,7 +23,7 @@ from __future__ import annotations
 import httptools
 from uvicorn.protocols.http.httptools_impl import HttpToolsProtocol
 
-from backlot import request_target
+from backlot import head_bounds, request_target
 
 
 class Protocol(HttpToolsProtocol):
@@ -29,6 +37,11 @@ class Protocol(HttpToolsProtocol):
     A read with no LF is held for the reads after it while :func:`_starts_a_request_line` holds for
     what is held. Once it does not, the held bytes go to the parser as they came, which refuses
     them, and uvicorn answers its 400 at once: `hello` with no LF is answered so.
+
+    Each read is counted by :class:`_Head` first, whatever it holds, against the head of the request
+    it carries: from the connection's first byte, and from the first read after a request that has
+    been read to its end. A read that takes the head to its bound draws the front door's answer and
+    the close, and no read after it is handed to the parser.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -36,8 +49,17 @@ class Protocol(HttpToolsProtocol):
         self._between_requests = True
         self._held = b""
         self._sent: bytes | None = None
+        self._head = _Head()
 
     def data_received(self, data: bytes) -> None:
+        if self._head is None:
+            return
+        answer = self._head.read(data)
+        if answer is not None:
+            self._head = None
+            self.transport.write(answer)
+            self.transport.close()
+            return
         if self._between_requests:
             data = self._held + data
             self._held = b""
@@ -61,6 +83,63 @@ class Protocol(HttpToolsProtocol):
     def on_message_complete(self) -> None:
         super().on_message_complete()
         self._between_requests = True
+        if self._head is not None:
+            self._head = _Head()
+
+
+class _Head:
+    """The head of one request as it arrives, read only as far as :mod:`backlot.head_bounds` needs:
+    how many bytes it holds, how many the line it is in holds before its LF, and the request
+    line's first bytes, which name the vendor."""
+
+    def __init__(self) -> None:
+        self.size = 0
+        self.line = 0
+        self.first = b""
+        self.start = b""
+        self.in_request_line = True
+        self.ended = False
+        self.bound: head_bounds.Bound | None = None
+        self.named = False
+
+    def read(self, data: bytes) -> bytes | None:
+        """The vendor's answer where ``data`` takes the head to its front door's bound, else None.
+        Nothing after the empty line that ends the head is read."""
+        pos = 0
+        while not self.ended and pos < len(data):
+            lf = data.find(b"\n", pos)
+            end = len(data) if lf < 0 else lf
+            if self.line == 0:
+                self.first = data[pos : pos + 1]
+            if self.in_request_line:
+                self.start += data[pos:end][: head_bounds.NAMED_WITHIN - len(self.start)]
+            self.line += end - pos
+            self.size += end - pos
+            if (answer := self._over()) is not None or lf < 0:
+                return answer
+            empty = self.line == 0 or (self.line == 1 and self.first == b"\r")
+            self.size += 1
+            self.line = 0
+            if self.in_request_line:
+                self.in_request_line = False
+            elif empty:
+                self.ended = True
+            if (answer := self._over()) is not None:
+                return answer
+            pos = lf + 1
+        return None
+
+    def _over(self) -> bytes | None:
+        """The answer once the head is past its bound. The vendor is read off the request line once
+        it ends or holds :data:`backlot.head_bounds.NAMED_WITHIN` bytes."""
+        if not self.named and (
+            not self.in_request_line or len(self.start) >= head_bounds.NAMED_WITHIN
+        ):
+            self.named = True
+            self.bound = head_bounds.bound(self.start)
+        if self.bound is None:
+            return None
+        return self.bound.answer(self.size, self.line, self.in_request_line, self.ended)
 
 
 def _starts_a_request_line(held: bytes) -> bool:

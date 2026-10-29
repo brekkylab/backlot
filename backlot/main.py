@@ -1441,15 +1441,50 @@ async def put_a_request_id_on_github_answers(request: Request, call_next):
     (:func:`answer_a_raw_byte_in_the_request_target`) is outside it and carries none, as on real
     (api.github.com, 2026-10-23).
 
-    Registered after the other `/github` middlewares so it wraps them, and the refusals they answer
-    early carry it too. Made before the route runs (``backlot.routers.github.request_id`` has why)
-    and left on ``request.state`` for the token's spent-window `message`, which quotes it
+    Registered after the other `/github` middlewares but
+    :func:`answer_a_github_request_target_past_its_bound`, so it wraps them and the refusals they
+    answer early carry it too. Made before the route runs (``backlot.routers.github.request_id`` has
+    why) and left on ``request.state`` for the token's spent-window `message`, which quotes it
     (``github._rate_limit_exceeded_message``)."""
     rid = github.request_id(request.method, request.url.path, request.url.query)
     request.state.github_request_id = rid
     response = await call_next(request)
     response.headers.setdefault(github.REQUEST_ID_HEADER, rid)
     return response
+
+
+#: Real's body for a request target past its bound
+#: (:func:`answer_a_github_request_target_past_its_bound`).
+_GITHUB_TARGET_TOO_LONG = (
+    b'{"message": "We received a Request-URL that is too long from your client."}\r\n'
+)
+
+
+@_middleware(lambda scope: _at_or_under(_url_path(scope), ("/github",)))
+async def answer_a_github_request_target_past_its_bound(request: Request, call_next):
+    """414 a `/github` request whose target, as sent and from after `/github`, is 8,192 characters
+    or more, or 8,174 on code search, with :data:`_GITHUB_TARGET_TOO_LONG` on
+    `application/json; charset=utf-8`, on any path and any method, ahead of the route and its
+    refusals. A `?` with nothing after it is not counted.
+
+    Measured against api.github.com on 2026-10-29 with a cache-buster on each request: on
+    `/repos/{owner}/{repo}` a `GET`, a `HEAD` and a `POST` with a target of 8,192 were this 414,
+    and so were a `GET` on a path no route matches and one with no query on `contents/{path}`,
+    where 8,191 was each one's own answer; on `/search/code` 8,174 was this 414 and 8,173 the 200,
+    twice each. A bad token was this 414, and a raw byte in the target was the front door's 400
+    (:func:`answer_a_raw_byte_in_the_request_target`) ahead of it. Real's status line reads
+    `414 Request-URI Too Large` and the answer carries no `x-github-request-id` and no rate limit.
+    A shorter target meets ``backlot.routers.github._refuse_a_long_line_or_path``."""
+    query = request.scope["query_string"]
+    target = request.scope["raw_path"][len("/github") :] + (b"?" + query if query else b"")
+    bound = 8_174 if request.scope["path"] == "/github/search/code" else 8_192
+    if len(target) >= bound:
+        return Response(
+            _GITHUB_TARGET_TOO_LONG,
+            status_code=414,
+            headers={"Content-Type": "application/json; charset=utf-8", "Connection": "close"},
+        )
+    return await call_next(request)
 
 
 # The Google paths whose reads real answers when they arrive as a POST that names one in

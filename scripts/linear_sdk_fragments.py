@@ -11,8 +11,9 @@ as soon as it sends a document holding that fragment. A fragment on a type the s
 declare, or declares with ``id`` alone, is left out, since Backlot does not serve that type in full.
 
 Prints how many fragments the bundle holds and how many were checked, then one line per fragment
-selecting an undeclared field. Exit 0 when none does, 1 when one does, 2 when the bundle cannot be
-read or holds no fragment, which a moved bundle or a changed string format would look like.
+selecting an undeclared field. Exit 0 when none does, 1 when one does, 2 when the bundle or the
+schema cannot be read, or the bundle holds no fragment or one that does not parse, which a moved
+bundle or a changed string format would look like.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import re
 import sys
 from pathlib import Path
 
-from graphql import GraphQLInterfaceType, GraphQLObjectType, build_schema, parse
+from graphql import GraphQLError, GraphQLInterfaceType, GraphQLObjectType, build_schema, parse
 from graphql.language import FieldNode
 
 SCHEMA = Path(__file__).resolve().parent.parent / "backlot" / "graphql" / "linear.graphql"
@@ -32,11 +33,11 @@ _FRAGMENT = re.compile(rf"fragment ({_NAME}) on ({_NAME})[ \t\n\r,]*\{{")
 
 def fragments(source: str) -> dict[str, tuple[str, list[str]]]:
     """Each fragment in ``source``, by name: the type it is on and the fields its top level
-    selects."""
+    selects. ``ValueError`` for a fragment whose braces never close or that does not parse."""
     found: dict[str, tuple[str, list[str]]] = {}
     for m in _FRAGMENT.finditer(source):
         depth, end = 0, m.end() - 1
-        while True:
+        while end < len(source):
             if source[end] == "{":
                 depth += 1
             elif source[end] == "}":
@@ -44,7 +45,14 @@ def fragments(source: str) -> dict[str, tuple[str, list[str]]]:
                 if depth == 0:
                     break
             end += 1
-        definition = parse(source[m.start() : end + 1]).definitions[0]
+        else:
+            raise ValueError(f"fragment {m.group(1)}'s braces never close")
+        try:
+            definition = parse(source[m.start() : end + 1]).definitions[0]
+        except GraphQLError as exc:
+            raise ValueError(
+                f"fragment {m.group(1)} does not parse: {exc.message.rstrip('.')}"
+            ) from None
         selected = sorted(
             {s.name.value for s in definition.selection_set.selections if isinstance(s, FieldNode)}
         )
@@ -75,16 +83,23 @@ def main(argv: list[str]) -> int:
     ap.add_argument("bundle", type=Path)
     ap.add_argument("--schema", type=Path, default=SCHEMA)
     args = ap.parse_args(argv)
+    texts = []
+    for path in (args.bundle, args.schema):
+        try:
+            texts.append(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"cannot read {path}: {exc}")
+            return 2
+    source, schema_source = texts
     try:
-        source = args.bundle.read_text(encoding="utf-8")
-    except OSError as exc:
-        print(f"cannot read {args.bundle}: {exc}")
+        found = fragments(source)
+    except ValueError as exc:
+        print(f"{args.bundle}: {exc}; the bundle's layout may have changed")
         return 2
-    found = fragments(source)
     if not found:
         print(f"{args.bundle} holds no `fragment … on …`; the bundle's layout may have changed")
         return 2
-    checked, hits = undeclared(found, args.schema.read_text(encoding="utf-8"))
+    checked, hits = undeclared(found, schema_source)
     print(f"{len(found)} fragments, {checked} on a type the schema serves beyond `id`")
     for name, on, missing in hits:
         print(f"fragment {name} on {on} selects what {on} does not declare: {', '.join(missing)}")

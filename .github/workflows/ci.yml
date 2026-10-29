@@ -81,9 +81,8 @@ jobs:
           BACKLOT_TELEMETRY: "0"
         run: npx tsx index.ts
       - name: Check the SDK's fragments against the schema Backlot serves
-        # Each fragment @linear/sdk can send on a type the schema serves beyond `id`; the example
-        # run above sends a few of them. After it, so a fragment this names leaves that run's
-        # result in place.
+        # After the example's run, which sends a few of these fragments, so a fragment this names
+        # leaves that run's result in place.
         if: ${{ !cancelled() }}
         run: >-
           uv run --no-sync python scripts/linear_sdk_fragments.py

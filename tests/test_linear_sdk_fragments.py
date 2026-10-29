@@ -13,7 +13,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def _script():
-    """The script as a module, loaded the way `_check` in `tests/test_prose_check.py` is."""
+    """Loaded from its path, `scripts/` being no package."""
     spec = importlib.util.spec_from_file_location(
         "scripts.linear_sdk_fragments", REPO / "scripts" / "linear_sdk_fragments.py"
     )
@@ -28,6 +28,7 @@ _SCHEMA = """
 type Query { label: Label }
 type Label { id: ID! name: String! color: String! }
 type Stub { id: ID! }
+interface Named { id: ID! name: String! }
 """
 
 
@@ -68,6 +69,23 @@ def _bundle(*documents: str) -> str:
                 "fragment Label on Label selects what Label does not declare: team",
             ],
             id="a nested selection is not read",
+        ),
+        pytest.param(
+            _SCHEMA,
+            _bundle("fragment Named on Named {\n  id\n  name\n  color\n}"),
+            1,
+            [
+                "1 fragments, 1 on a type the schema serves beyond `id`",
+                "fragment Named on Named selects what Named does not declare: color",
+            ],
+            id="an interface",
+        ),
+        pytest.param(
+            _SCHEMA,
+            _bundle("fragment Label on Label\n{\n  id\n  name\n}"),
+            0,
+            ["1 fragments, 1 on a type the schema serves beyond `id`"],
+            id="a newline before the selection",
         ),
         pytest.param(
             _SCHEMA,
@@ -121,23 +139,52 @@ def test_linear_sdk_fragments(tmp_path, capsys, schema, bundle, code, lines):
 
 
 @pytest.mark.parametrize(
-    "bundle, line",
+    "bundle, schema, line",
     [
-        (None, "cannot read {path}: "),
+        (None, None, "cannot read {path}: "),
+        (b"\xff\xfe", None, "cannot read {path}: "),
+        (
+            _bundle("fragment Label on Label {\n  id\n}"),
+            "none.graphql",
+            "cannot read {tmp}/none.graphql: ",
+        ),
         (
             "export const x = 1;",
+            None,
             "{path} holds no `fragment … on …`; the bundle's layout may have changed",
         ),
+        (
+            'const D = new TypedDocumentString("fragment Label on Label {\\n  id\\n}");',
+            None,
+            "{path}: fragment Label does not parse: Syntax Error",
+        ),
+        (
+            "const D = new TypedDocumentString(`fragment Label on Label {\n  id\n`);",
+            None,
+            "{path}: fragment Label's braces never close; the bundle's layout may have changed",
+        ),
     ],
-    ids=["no file", "no fragment"],
+    ids=[
+        "no file",
+        "not UTF-8",
+        "no schema",
+        "no fragment",
+        "a fragment in a string with escaped newlines",
+        "braces that never close",
+    ],
 )
-def test_linear_sdk_fragments_cannot_check_what_it_cannot_read(tmp_path, capsys, bundle, line):
+def test_linear_sdk_fragments_cannot_check_what_it_cannot_read(
+    tmp_path, capsys, bundle, schema, line
+):
     path = tmp_path / "index.mjs"
-    if bundle is not None:
+    if isinstance(bundle, bytes):
+        path.write_bytes(bundle)
+    elif bundle is not None:
         path.write_text(bundle, encoding="utf-8")
-    assert script.main([str(path)]) == 2
+    argv = [str(path)] if schema is None else [str(path), "--schema", str(tmp_path / schema)]
+    assert script.main(argv) == 2
     printed = capsys.readouterr().out.splitlines()
-    assert len(printed) == 1 and printed[0].startswith(line.format(path=path))
+    assert len(printed) == 1 and printed[0].startswith(line.format(path=path, tmp=tmp_path))
 
 
 def test_linear_sdk_fragments_runs_as_ci_runs_it(tmp_path):

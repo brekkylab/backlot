@@ -23,18 +23,12 @@ in place of where the front door has an answer of its own (:mod:`backlot.parser_
 
 from __future__ import annotations
 
-import re
 import sys
 
 import httptools
 from uvicorn.protocols.http.httptools_impl import HttpToolsProtocol
 
 from backlot import head_bounds, parser_refusals, request_target
-
-#: The bytes httptools refuses in a header value as `Invalid header value char`: every byte from
-#: 0x00 to 0x1F but the tab, the LF and the CR, and 0x7F. A lone LF or CR in a value it refuses for
-#: the line's ending instead.
-REFUSED_IN_A_VALUE = re.compile(rb"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 class Protocol(HttpToolsProtocol):
@@ -126,8 +120,8 @@ class Protocol(HttpToolsProtocol):
         head = self._head
         if head.size == 0:
             return None
-        if reason == "Invalid header value char" and head.value_byte is not None:
-            return "nul" if head.value_byte == 0 else "control"
+        if reason == "Invalid header value char":
+            return "nul" if head.nul else "control"
         if reason == "Invalid header token" and self._no_version:
             return "versionless"
         if reason == "Empty Transfer-Encoding":
@@ -165,7 +159,7 @@ class _Head:
         self.names: list[bytes] = []
         self.codings: list[bytes] = []
         self.coding_after_length = False
-        self.value_byte: int | None = None
+        self.nul = False
 
     def read(self, data: bytes) -> bytes | None:
         """The vendor's answer where ``data`` takes the head to its front door's bound, else None.
@@ -199,10 +193,10 @@ class _Head:
         return None
 
     def _read_header(self, part: bytes) -> None:
-        """Read ``part``, the next bytes of a header line: its name up to the colon, the bytes of
-        :data:`REFUSED_IN_A_VALUE` its value holds, and the value of a `Transfer-Encoding`. Of those
-        bytes the head keeps 0x00 where a value holds one, as real answered a 0x00 whether another
-        of them came before it or after it (:mod:`backlot.parser_refusals`), and else the first."""
+        """Read ``part``, the next bytes of a header line: its name up to the colon, whether its
+        value holds 0x00, and the value of a `Transfer-Encoding`. A 0x00 in any value makes the
+        refusal `nul`, as real answered a 0x00 whether another byte httptools refuses in a value
+        came before it or after it (:mod:`backlot.parser_refusals`)."""
         if not self.in_value:
             colon = part.find(b":")
             self.name = (self.name + part[: len(part) if colon < 0 else colon])[:_NAMES_READ]
@@ -211,8 +205,8 @@ class _Head:
             self.names.append(self.name.lower())
             self.in_value = True
             part = part[colon + 1 :]
-        if self.value_byte != 0 and (refused := REFUSED_IN_A_VALUE.search(part)):
-            self.value_byte = 0 if b"\x00" in part else (self.value_byte or refused[0][0])
+        if b"\x00" in part:
+            self.nul = True
         if self.names[-1] == b"transfer-encoding":
             self.value = (self.value + part)[: _NAMES_READ + 1]
 

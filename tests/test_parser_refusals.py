@@ -218,10 +218,10 @@ _KINDS = {
         [_JSON, "Transfer-Encoding: ", "X-Probe: a\x01b", _LENGTH],
         True,
     ),
-    "blank coding, split in its name": (
+    "identity, split in its name": (
         "POST",
         " HTTP/1.1",
-        [_JSON, "Transfer-Enc|oding: ", _LENGTH],
+        [_JSON, "Transfer-Enc|oding: identity", _LENGTH],
         True,
     ),
     "nul, then a length and a blank coding": (
@@ -327,7 +327,7 @@ _ROWS = [
     (*_LINEAR, "nul, then a control byte", "cloudflare 400"),
     (*_LINEAR, "control, then a nul", "cloudflare 400"),
     (*_LINEAR, "blank coding, then a control byte", "cloudflare 501"),
-    (*_LINEAR, "blank coding, split in its name", "cloudflare 501"),
+    (*_LINEAR, "identity, split in its name", "cloudflare 400"),
     ("/notion", "/v1/users", "control", "cloudflare empty"),
     ("/hubspot", "/crm/v3/objects/contacts", "blank coding", "cloudflare 501"),
     ("/fireflies", "/graphql", "identity", "cloudflare 400"),

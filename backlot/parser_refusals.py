@@ -16,13 +16,13 @@ the connection with no answer.
 Measured on 2026-10-29 over raw HTTP/1.1 on TLS sockets, one connection per request and a
 cache-buster in each query, on api.github.com, slack.com, www.googleapis.com, Jira Cloud,
 api.notion.com, api.linear.app, api.fireflies.ai, api.hubapi.com, S3 in us-east-1 and
-graph.microsoft.com, each with no credential: a header value holding each byte of
-:data:`backlot.protocol.REFUSED_IN_A_VALUE` between two letters; a `POST` whose `Transfer-Encoding`
-was empty, a space or a tab, once or twice, ahead of a `Content-Length`, after one or with none;
-`identity` and `IDENTITY` ahead of a `Content-Length` and `identity` after one; an LF in a path no
-route serves (`…/nope<LF>x HTTP/1.1`) on `GET`, `POST`, `HEAD`, `PUT`, `DELETE`, `PATCH` and
-`OPTIONS`, and in a query value (`?b=<LF>x`) on `GET`; and a 0x00 and a 0x01 in two header values,
-and an empty `Transfer-Encoding` and a 0x01 in another header's value, each pair in either order. On
+graph.microsoft.com, each with no credential: a header value holding each byte of `nul` and
+`control` (:data:`Cause`) between two letters; a `POST` whose `Transfer-Encoding` was empty, a space
+or a tab, once or twice, ahead of a `Content-Length`, after one or with none; `identity` and
+`IDENTITY` ahead of a `Content-Length` and `identity` after one; an LF in a path no route serves
+(`…/nope<LF>x HTTP/1.1`) on `GET`, `POST`, `HEAD`, `PUT`, `DELETE`, `PATCH` and `OPTIONS`, and in a
+query value (`?b=<LF>x`) on `GET`; and a 0x00 and a 0x01 in two header values, and an empty
+`Transfer-Encoding` and a 0x01 in another header's value, each pair in either order. On
 api.github.com a `control` byte was sent with a token ahead of the header and after it, and with one
 that does not resolve, and a 0x00 and an LF each ahead of a `Content-Length` and an empty
 `Transfer-Encoding`. The four Cloudflare hosts answered each alike.
@@ -36,10 +36,11 @@ from typing import Literal, NamedTuple
 from backlot import errors, head_bounds, request_target
 from backlot.routers import github
 
-#: Why httptools refused a request: a header value holding 0x00 (`nul`) or another byte of
-#: :data:`backlot.protocol.REFUSED_IN_A_VALUE` (`control`), a `Transfer-Encoding` that is empty or
-#: only spaces and tabs (`blank`), one that is `identity` beside a `Content-Length` (`identity`),
-#: and a request line an LF in the target ends, which leaves it with no version (`versionless`).
+#: Why httptools refused a request: a header value holding 0x00 (`nul`) or another byte it refuses
+#: there as `Invalid header value char`, 0x01 to 0x1F but the tab, the LF and the CR, and 0x7F
+#: (`control`), a `Transfer-Encoding` that is empty or only spaces and tabs (`blank`), one that is
+#: `identity` beside a `Content-Length` (`identity`), and a request line an LF in the target ends,
+#: which leaves it with no version (`versionless`).
 Cause = Literal["nul", "control", "blank", "identity", "versionless"]
 
 

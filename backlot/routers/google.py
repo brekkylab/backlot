@@ -1,6 +1,7 @@
-"""Google APIs: Gmail (``/gmail/v1``), Drive (``/drive/v3``), and the Workspace editor APIs —
-Docs (``/docs/v1``), Sheets (``/sheets/v4``, in `routers.google_sheets`), Slides (``/slides/v1``) —
-for clients that read native docs structurally instead of via Drive export.
+"""Google APIs: Gmail (``/gmail/v1``), Drive (``/drive/v3``), and the Workspace editor APIs — Docs
+(``/docs/v1``, in `routers.google_docs`), Sheets (``/sheets/v4``, in `routers.google_sheets`),
+Slides (``/slides/v1``) — for clients that read native docs structurally instead of via Drive
+export.
 
 Client base-URL override: point the Gmail client at ``http://<host>/gmail`` and the
 Drive client at ``http://<host>/drive`` (google-api-python-client ``api_endpoint``).
@@ -35,7 +36,6 @@ from starlette.routing import Match
 from backlot import (
     auth,
     collation,
-    gdocs,
     gsheets,
     protojson,
     store,
@@ -3388,24 +3388,105 @@ def _drive_project_paths(entries: list[dict], paths, under: str, defaults: froze
     ]
 
 
+# Real Drive's key orders, measured 2026-10-27 with `fields=*` on 54 files of ten types, each
+# listed and then read by id: a listing's entries in one, a read by id in another, and a
+# listing's own top level in a third. A mask does not change them.
+_DRIVE_FILE_LIST_ORDER = (
+    "kind",
+    "fileExtension",
+    "md5Checksum",
+    "viewedByMe",
+    "mimeType",
+    "exportLinks",
+    "parents",
+    "iconLink",
+    "shared",
+    "lastModifyingUser",
+    "owners",
+    "webViewLink",
+    "webContentLink",
+    "size",
+    "spaces",
+    "id",
+    "name",
+    "starred",
+    "trashed",
+    "explicitlyTrashed",
+    "createdTime",
+    "modifiedTime",
+    "modifiedByMeTime",
+    "sharedWithMeTime",
+    "quotaBytesUsed",
+    "version",
+    "ownedByMe",
+    "fullFileExtension",
+    "capabilities",
+    "modifiedByMe",
+)
+_DRIVE_FILE_GET_ORDER = (
+    "kind",
+    "id",
+    "name",
+    "mimeType",
+    "starred",
+    "trashed",
+    "explicitlyTrashed",
+    "parents",
+    "spaces",
+    "version",
+    "webContentLink",
+    "webViewLink",
+    "iconLink",
+    "viewedByMe",
+    "createdTime",
+    "modifiedTime",
+    "modifiedByMeTime",
+    "modifiedByMe",
+    "sharedWithMeTime",
+    "owners",
+    "lastModifyingUser",
+    "shared",
+    "ownedByMe",
+    "capabilities",
+    "fullFileExtension",
+    "fileExtension",
+    "md5Checksum",
+    "size",
+    "quotaBytesUsed",
+    "exportLinks",
+)
+_DRIVE_LIST_TOP_ORDER = ("files", "kind", "nextPageToken", "incompleteSearch")
+
+
+def _drive_ordered(obj: dict, order: tuple[str, ...]) -> dict:
+    """`obj` with its keys in `order`. A key the order does not name is kept after them, in
+    its original order, so reordering never drops a key."""
+    out = {k: obj[k] for k in order if k in obj}
+    out.update({k: v for k, v in obj.items() if k not in out})
+    return out
+
+
 def _drive_project_one(obj: dict, fields: str | None) -> dict:
     """A single file resource trimmed to a ``files.get`` mask; the mask is validated (400 on a name
-    real refuses) before trimming, including nested object fields. Trimming a file read by id as
-    a listing's entries are trimmed is what makes one file look the same either way.
+    real refuses) before trimming, including nested object fields. A file read by id is trimmed as
+    a listing's entries are, so it carries the keys and values it carries in a listing, in the
+    order real gives a read.
 
     No mask answers the `_DRIVE_FILE_DEFAULT` keys alone, measured 2026-10-25. A mask that is empty
     or of spaces and tabs alone selects nothing, which is not the same as no mask: measured
     2026-09-23, `fields=` and `fields=%20` answer ``{}``, and `fields=%09` did too on 2026-10-20."""
     paths = _drive_mask(fields)
     if paths is None:
-        return {k: v for k, v in obj.items() if k in _DRIVE_FILE_DEFAULT}
-    _check_mask(
-        paths,
-        _DRIVE_FILE_FIELDS,
-        unserved=_DRIVE_FILE_UNSERVED,
-        subfields=_DRIVE_FILE_SUBFIELDS,
-    )
-    return _drive_trim_object(obj, paths, None, _DRIVE_FILE_DEFAULT)
+        trimmed = {k: v for k, v in obj.items() if k in _DRIVE_FILE_DEFAULT}
+    else:
+        _check_mask(
+            paths,
+            _DRIVE_FILE_FIELDS,
+            unserved=_DRIVE_FILE_UNSERVED,
+            subfields=_DRIVE_FILE_SUBFIELDS,
+        )
+        trimmed = _drive_trim_object(obj, paths, None, _DRIVE_FILE_DEFAULT)
+    return _drive_ordered(trimmed, _DRIVE_FILE_GET_ORDER)
 
 
 def _drive_fill_shared(conn, files: list[dict], stored: set[str]) -> None:
@@ -4067,6 +4148,9 @@ async def drive_files_list(request: Request):
         if any(p[0] == "files" for p in list_paths):
             tops.add("files")
         body = {k: v for k, v in body.items() if k in tops}
+    if "files" in body:
+        body["files"] = [_drive_ordered(e, _DRIVE_FILE_LIST_ORDER) for e in body["files"]]
+    body = _drive_ordered(body, _DRIVE_LIST_TOP_ORDER)
     if not body:
         return JSONResponse({})
     return JSONResponse(body)
@@ -4128,9 +4212,6 @@ async def drive_files_get(file_id: str, request: Request):
             raise gerr.not_downloadable()
         mime = row["mime_type"] or "application/octet-stream"
         return Response(row["content"].encode("utf-8"), media_type=mime)
-    # Same projection as files.list: a file resolved by id and the same file read out of a listing
-    # must come back identical, or caching/diffing behaves differently depending on which call
-    # produced the row.
     return _drive_project_one(
         _drive_file(conn, row, me=caller.email),
         gerr.first_repeat(request.query_params, "fields"),
@@ -4335,14 +4416,14 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     raise gerr.invalid_argument(EDITOR_INVALID_ARG)
 
 
-def _a1_enum_error(field: str, enum: protojson.Enum, value: str) -> str:
+def _enum_error(field: str, enum: protojson.Enum, value: str) -> str:
     """Google's own wording for a bad read enum — it names the proto field and message type, e.g.
     ``Invalid value at 'major_dimension' (…sheets.v4.Dimension), "DIAGONAL"``. Measured, because a
     client that matches on the message needs the real one."""
     return f"Invalid value at '{field}' ({enum.type_url}), \"{value}\""
 
 
-def _sheets_bool_value(raw: str | None, field: str) -> bool:
+def _query_bool(raw: str | None, field: str) -> bool:
     """One of the boolean query parameters, read as a JSON body's string is (``protojson.to_bool``).
     Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, whatever the
     case of their ASCII letters, while `on`/`off`, a padded `" true"`, `2`, `01` and `1.0` are
@@ -4358,7 +4439,7 @@ def _sheets_bool_value(raw: str | None, field: str) -> bool:
         ) from None
 
 
-def _sheets_enum_value(raw: str, field: str, enum: protojson.Enum) -> str:
+def _query_enum(raw: str, field: str, enum: protojson.Enum) -> str:
     """One of the read enums from the query string, as its canonical name.
 
     Read the way a JSON body's string is (``protojson.enum_from_string``), measured on the query
@@ -4371,81 +4452,233 @@ def _sheets_enum_value(raw: str, field: str, enum: protojson.Enum) -> str:
     try:
         return enum.names[protojson.enum_from_string(raw, enum)]
     except protojson.ConversionError:
-        raise gerr.invalid_field_value(field, _a1_enum_error(field, enum, raw)) from None
+        raise gerr.invalid_field_value(field, _enum_error(field, enum, raw)) from None
 
 
-# `documents.get`'s two enums, names in number order. Measured 2026-10-09: `suggestionsViewMode`
-# reads `0` through `3`, `+1` and `01` (the value numbered 1) and a name in any ASCII case, and
-# refuses `4`, `-1`, `1.0`, a padded `" 1"`, empty and `NOPE`. `commentsViewMode` reads the same
-# way (2026-10-14: `3`, `+1` and `comments_view_mode_omitted` read, `4` and `-1` refused).
-# `includeTabsContent` is the boolean `_sheets_bool_value` reads (2026-10-14: `no`, `n`, `y`, `T`
-# and `F` read, `on`, `off`, `2` and `tru` refused). A value that cannot be read is a 400 before
-# the document is looked up.
-_DOCS_VIEW = "type.googleapis.com/google.apps.docs.v1"
-_DOCS_SUGGESTIONS_VIEW = protojson.Enum(
-    f"{_DOCS_VIEW}.SuggestionsViewMode",
-    (
-        "DEFAULT_FOR_CURRENT_ACCESS",
-        "SUGGESTIONS_INLINE",
-        "PREVIEW_SUGGESTIONS_ACCEPTED",
-        "PREVIEW_WITHOUT_SUGGESTIONS",
-    ),
-)
-_DOCS_COMMENTS_VIEW = protojson.Enum(
-    f"{_DOCS_VIEW}.CommentsViewMode",
-    (
-        "COMMENTS_VIEW_MODE_UNSPECIFIED",
-        "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
-        "COMMENTS_VIEW_MODE_OMITTED",
-        "COMMENTS_VIEW_MODE_INCLUDED",
-    ),
-)
+# --- the `fields` mask the Sheets and Docs reads apply --------------------------------------------
 
 
-@router.get("/docs/v1/documents/{document_id}")
-async def docs_get(document_id: str, request: Request):
-    """The document as Docs structural elements: its stored body, or one ``paragraph`` per line of
-    its text when it states none (`backlot.gdocs`)."""
-    # The credential, then the typed values, then the lookup -- `_typed_query` records the order.
-    _require(request)
-    # Validated and then unused: the body is the same whatever a value that is read selects, where
-    # real's changes with it.
-    _typed_query(
-        request,
-        {
-            "suggestionsViewMode": lambda raw: _sheets_enum_value(
-                raw, "suggestions_view_mode", _DOCS_SUGGESTIONS_VIEW
-            ),
-            "includeTabsContent": lambda raw: _sheets_bool_value(raw, "include_tabs_content"),
-            "commentsViewMode": lambda raw: _sheets_enum_value(
-                raw, "comments_view_mode", _DOCS_COMMENTS_VIEW
-            ),
-        },
-    )
-    row = _editor_doc(request, document_id, expect="document")
-    body = store.gdrive_doc_body_for(auth.conn(request), document_id)
-    if body is None:
-        body = gdocs.from_text(row["content"] or "")
-    # Real's order for an untabbed read (docs.googleapis.com, 2026-10-16, twelve Docs, six owned by
-    # a Workspace member and six by a consumer account), the same under each `suggestionsViewMode`,
-    # `includeTabsContent=false` and a `fields` mask naming the members in another order
-    # (`documentId,title`, `revisionId,body,title`). Real also serves `headers` and `footers` after
-    # `body`, `lists` after `namedStyles` and `inlineObjects` before `documentId` when a Doc has
-    # them; this server serves none of the four.
+def _google_types() -> dict[str, dict[str, str | None]]:
+    """The messages a Sheets or Docs read answers with and every message they reach, each as its
+    fields and the message each holds (`None` for a scalar, an enum, a map or a list of lists): the
+    `types` `backlot diff` records in the `google_drive` baseline from the discovery documents. A
+    field only Backlot serves is not one a mask may name."""
+    types = json.loads((_BASELINES / "google_drive.json").read_text(encoding="utf-8"))["types"]
+
+    def held(type_: str) -> str | None:
+        name = type_.strip("[]")
+        return name if name in types else None
+
     return {
-        "title": row["title"],
-        "body": {"content": gdocs.indexed(body)},
-        "documentStyle": gdocs.document_style(),
-        "namedStyles": gdocs.named_styles(),
-        "revisionId": synth._digest(document_id)[:24],
-        "suggestionsViewMode": "SUGGESTIONS_INLINE",
-        "documentId": document_id,
-        # Last, where real serves it. Real's value for a read that asks for no comments, whatever
-        # `suggestionsViewMode` and `includeTabsContent` select (measured 2026-10-09 and
-        # 2026-10-15); `commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED` beside the tabs and inline
-        # suggestions is answered `COMMENTS_VIEW_MODE_INCLUDED` there and this value here.
-        "commentsViewMode": "COMMENTS_VIEW_MODE_OMITTED",
+        name: {f: held(m["type"]) for f, m in entry.get("fields", {}).items() if "type" in m}
+        for name, entry in types.items()
     }
+
+
+_GOOGLE_FIELDS = _google_types()
+
+
+def _gmask_paths(mask: str) -> tuple[list[tuple[str, ...]], str]:
+    """The paths a ``fields`` mask names, in its order, each as its names, and the bracket it leaves
+    unpaired (``""`` for none).
+
+    Measured grammar: ``.`` and ``/`` both descend, ``a(b,c)`` groups a sub-selection, ``,``
+    separates siblings and a trailing comma is tolerated. A name is matched case-sensitively and is
+    not trimmed -- `` spreadsheetId`` with a leading space 400s. An empty group names nothing, not
+    even the name before it: measured 2026-10-22, `a()` answered the whole spreadsheet with no
+    refusal for `a`, and `spreadsheetId,sheets()` the `spreadsheetId` alone.
+
+    A bracket left unpaired is refused after the paths before it, a ``)`` where it stands and a
+    ``(`` at the end (`gerr.unbalanced_field_mask`): measured 2026-10-22, `a)` and
+    `bogus)spreadsheetId` named `a` and `bogus`, `spreadsheetId)bogus` was the `)` refusal, and
+    `sheets(properties/title,bogus` named `sheets.bogus` where `sheets(properties/title` was the
+    `(` one."""
+    paths: list[tuple[str, ...]] = []
+    # the prefix of each open group
+    stack: list[tuple[str, ...]] = []
+    prefix: tuple[str, ...] = ()
+    token = ""
+
+    def names(text: str) -> tuple[str, ...]:
+        return tuple(text.replace("/", ".").split("."))
+
+    for ch in mask:
+        if ch == "(":
+            stack.append(prefix)
+            prefix += names(token) if token else ()
+            token = ""
+        elif ch == ")":
+            if token:
+                paths.append(prefix + names(token))
+            if not stack:
+                return paths, ")"
+            prefix, token = stack.pop(), ""
+        elif ch == ",":
+            if token:
+                paths.append(prefix + names(token))
+            token = ""
+        else:
+            token += ch
+    if token:
+        paths.append(prefix + names(token))
+    return paths, "(" if stack else ""
+
+
+def _gmask_resolve(path: tuple[str, ...], message: str | None) -> dict | None:
+    """What ``path`` selects in ``message`` (`None` for a field that holds no message), or ``None``
+    when it names nothing there; ``{}`` is all of it.
+
+    A ``*`` stands for one name. Measured 2026-10-22: `sheets.*.title` is `sheets.properties.title`,
+    `*.*.title` the same, `*.*.rowCount` refused as naming nothing (the row count is three names
+    under `sheets`), and `*.data` is `sheets.data`. A ``*`` that ends a path selects all of what it
+    is under, a field holding no message included, and so does a run of them: `spreadsheetId.*`,
+    `spreadsheetId.*.*`, a map's `criteria.*` and `*.*.*` answered, where `spreadsheetId.*.x` names
+    nothing."""
+    if not path:
+        return {}
+    head, rest = path[0], path[1:]
+    if message is None:
+        return {} if all(name == "*" for name in path) else None
+    fields = _GOOGLE_FIELDS[message]
+    if head == "*":
+        if not rest:
+            return {}
+        out = {}
+        for name, held in fields.items():
+            sub = _gmask_resolve(rest, held)
+            if sub is not None:
+                out[name] = sub
+        return out or None
+    if head not in fields:
+        return None
+    sub = _gmask_resolve(rest, fields[head])
+    return None if sub is None else {head: sub}
+
+
+# The messages a mask selects whole once any path names them whole, a narrower path beside it
+# notwithstanding. Measured 2026-10-27: `values(userEnteredValue,userEnteredValue.formulaValue)`
+# answered a string cell's `stringValue`, and so did the same for `effectiveValue`, an
+# `errorValue`'s `message` beside `errorValue.type`, a `backgroundColorStyle`'s `rgbColor` beside
+# `backgroundColorStyle.themeColor`, and `themeColors` whole beside `themeColors.colorType`.
+_GMASK_WHOLE = frozenset(
+    {"sheets.ExtendedValue", "sheets.ErrorValue", "sheets.ColorStyle", "sheets.ThemeColorPair"}
+)
+
+
+def _gmask_merge(into: dict, selection: dict, message: str | None) -> None:
+    """Merge one path's selection into the tree, a narrower selection replacing a wider one:
+    measured 2026-10-22, `spreadsheetId,*` answered `spreadsheetId` alone, and
+    `sheets,sheets.properties.title` and `sheets.*,sheets.properties.title` the title alone, and
+    on 2026-10-27 `effectiveFormat,effectiveFormat.numberFormat` and
+    `properties(defaultFormat,defaultFormat.numberFormat)` the narrower path alone, in either
+    order. A message in :data:`_GMASK_WHOLE` is the exception, kept whole."""
+    fields = _GOOGLE_FIELDS.get(message, {}) if message else {}
+    for name, sub in selection.items():
+        held = fields.get(name)
+        if held in _GMASK_WHOLE and (sub == {} or into.get(name) == {}):
+            into[name] = {}
+        else:
+            _gmask_merge(into.setdefault(name, {}), sub, held)
+
+
+def _gmask_named(selection: dict, path: tuple[str, ...]) -> dict:
+    """The part of one path's ``selection`` the path names: down to its last name that is not
+    ``*``, so `tabs.documentTab.*` names `tabs.documentTab` and nothing under it, `*.commentId`
+    names `comments.commentId`, and `*.*` names nothing."""
+    depth = max((i + 1 for i, name in enumerate(path) if name != "*"), default=0)
+
+    def cut(tree: dict, levels: int) -> dict:
+        return {name: cut(sub, levels - 1) if levels > 1 else {} for name, sub in tree.items()}
+
+    return cut(selection, depth) if depth else {}
+
+
+def _gmask_select(mask: str | None, message: str) -> tuple[dict | None, dict]:
+    """The selection tree a ``fields`` mask makes of a ``message`` response, ``{}`` at a leaf
+    meaning all of it, and the fields its paths name (`_gmask_named`), merged. ``None`` for no
+    mask, which an empty one, an empty group and a ``*`` alone each are: measured 2026-10-22,
+    `fields=*` answered what no mask does, `includeGridData` deciding the grid.
+
+    A path that names nothing is refused, the first such in the mask's order (measured on
+    `sheets.properties.title,bogus2,sheets.bogus3`: `bogus2`), so a declared field the response
+    holds no value for answers 200 without it rather than the 400 a field it does not declare gets.
+    Checked against the whole schema, not against what this module builds: measured 2026-10-22,
+    `namedRanges`, `sheets(merges,conditionalFormats)` and a cell's `userEnteredFormat` each
+    answered 200 on a spreadsheet holding none. A bracket left unpaired is refused after the paths
+    before it (`_gmask_paths`).
+
+    What a path names is what the editors' own refusals read: measured 2026-10-22 on Sheets,
+    `comments`, `comments.*`, `*.commentId` and `*.headPost` were refused for asking after comments
+    that `commentsViewMode` did not request, and `*.*`, which reaches `comments` through ``*``
+    alone, was answered."""
+    if not mask:
+        return None, {}
+    tree: dict = {}
+    named: dict = {}
+    paths, unpaired = _gmask_paths(mask)
+    for path in paths:
+        selection = _gmask_resolve(path, message)
+        if selection is None:
+            raise gerr.bad_field_mask(mask, ".".join(path))
+        _gmask_merge(named, _gmask_named(selection, path), message)
+        _gmask_merge(tree, selection, message)
+    if unpaired:
+        raise gerr.unbalanced_field_mask(mask, unpaired)
+    return (tree or None), named
+
+
+def _gmask_apply(tree: dict, value):
+    """Project ``value`` through a selection tree, mapping over a list rather than indexing it —
+    which is what lets ``sheets.properties.title`` reach into every sheet — and keeping the order
+    ``value`` has: measured 2026-10-22, `*.title,spreadsheetId` answered `spreadsheetId` first."""
+    if not tree:
+        return value
+    if isinstance(value, list):
+        return [_gmask_apply(tree, v) for v in value]
+    if not isinstance(value, dict):
+        return value
+    out = {name: _gmask_apply(tree[name], v) for name, v in value.items() if name in tree}
+    if "rowData" in out:
+        _gmask_trim_rows(out)
+    return out
+
+
+_CELL_FORMATS = frozenset({"userEnteredFormat", "effectiveFormat"})
+
+
+def _gmask_hollow(value) -> bool:
+    """Whether a projected message holds nothing but empty messages."""
+    return isinstance(value, dict) and all(_gmask_hollow(v) for v in value.values())
+
+
+def _gmask_trim_rows(block: dict) -> None:
+    """Cut a projected `GridData` block's rows the way `google_sheets._sheets_grid_data` cuts
+    them, a cell the mask left empty counting as an empty cell. Measured 2026-10-22 over `D1:F4`
+    holding `a` in D1 and `b` in F2: `rowData.values.userEnteredValue` answered
+    `[{"values": [{…}]}, {"values": [{}, {}, {…}]}]`, and `rowData.values.userEnteredFormat`, which
+    no cell held, no `rowData` at all.
+
+    A cell's format the mask leaves holding nothing is left out, where every other message is kept
+    empty. Measured 2026-10-27: `values(userEnteredValue,effectiveFormat.numberFormat)` served no
+    `effectiveFormat` on a string, a number or a boolean, and neither did
+    `effectiveFormat.textFormat.link`, while `effectiveValue.numberValue` served a string's
+    `effectiveValue` as `{}`, and `sheets.properties.tabColorStyle` and
+    `properties.defaultFormat.numberFormat` served `properties` and `defaultFormat` as `{}`."""
+    rows = []
+    for row in block["rowData"]:
+        values = [
+            {k: v for k, v in cell.items() if k not in _CELL_FORMATS or not _gmask_hollow(v)}
+            for cell in row.get("values", [])
+        ]
+        while values and not values[-1]:
+            values.pop()
+        rows.append({"values": values} if values else {})
+    while rows and not rows[-1]:
+        rows.pop()
+    if rows:
+        block["rowData"] = rows
+    else:
+        del block["rowData"]
 
 
 @router.get("/slides/v1/presentations/{presentation_id}")
@@ -4804,10 +5037,10 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
 
 # The typed booleans each Drive method Backlot serves declares, as the proto field its refusal
 # names. Each is parsed and the parsed value never read. Measured 2026-09-23 on each of them: the
-# Sheets boolean spellings (`_sheets_bool_value`), 30 of them swept on `supportsAllDrives`; and on
-# 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since only ASCII letters are folded
-# (`protojson.to_bool`). Spelled `true`, four of them run a check of their own and two lift one --
-# see `_drive_true`. `files.export` and `about.get` declare none, and real ignores
+# spellings `_query_bool` reads, first measured on Sheets, 30 of them swept on `supportsAllDrives`;
+# and on 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since only ASCII letters are
+# folded (`protojson.to_bool`). Spelled `true`, four of them run a check of their own and two lift
+# one -- see `_drive_true`. `files.export` and `about.get` declare none, and real ignores
 # `supportsAllDrives=NOPE` on both.
 _DRIVE_BOOLS = {
     "supportsAllDrives": "supports_all_drives",
@@ -4823,8 +5056,7 @@ def _drive_typed(request: Request, *bools: str, page_size: bool = False) -> dict
     """`_typed_query` over the booleans a Drive method declares, and its `pageSize` if it has
     one."""
     readers = {
-        name: (lambda raw, field=_DRIVE_BOOLS[name]: _sheets_bool_value(raw, field))
-        for name in bools
+        name: (lambda raw, field=_DRIVE_BOOLS[name]: _query_bool(raw, field)) for name in bools
     }
     if page_size:
         readers["pageSize"] = _drive_int32
@@ -5073,6 +5305,6 @@ def _drive_page_size(sizes: list[int]) -> int:
     return min(size, get_settings().max_page_size)
 
 
-# The Sheets routes, registered on `router` by the module that holds them -- which imports this
-# one's helpers, so it is imported last.
-from backlot.routers import google_sheets  # noqa: E402, F401
+# The Sheets and Docs routes, registered on `router` by the modules that hold them -- which import
+# this one's helpers, so they are imported last.
+from backlot.routers import google_docs, google_sheets  # noqa: E402, F401

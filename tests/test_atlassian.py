@@ -1259,8 +1259,9 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
 
 def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
     """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` answers an `id`, `ancestor`
-    or `parent` clause, alone and beside `type`, `space`, a `~` term and each other, and each of
-    those five and `label` negated.
+    or `parent` clause, alone and beside `type`, `space`, a `~` term and each other, each of those
+    five and `label` negated, `space.key`, clauses joined by `or`, grouped and negated as a group,
+    clauses on fields it does not read, and `siteSearch ~`.
 
     Not SAMPLE: its one child sits directly under its parent, so an `ancestor` clause would select
     the same rows as `parent`, and a `~` term that misses a chain's middle could not be sent."""
@@ -1370,6 +1371,38 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         ("parent != {Guide}", {"Guide", "Grand", "Other", "Post"}),
         ("ancestor != {Guide}", {"Guide", "Other", "Post"}),
         ('label != "oncall"', {"Guide", "Child", "Other", "Post"}),
+        # a negated `~` clause, `or`, `and` before `or`, and a `not` on a group or on a negated
+        # clause, Grand alone carrying `Deep` in its body
+        (three + ' and text !~ "Deep"', {"Guide", "Child"}),
+        (three + ' and not text ~ "Deep"', {"Guide", "Child"}),
+        ('text !~ "Deep"', {"Guide", "Child", "Other", "Post"}),
+        (three + ' and text ~ "Deep"', {"Grand"}),
+        (three + ' and title !~ "Grand"', {"Guide", "Child"}),
+        (three + ' and not title ~ "Grand"', {"Guide", "Child"}),
+        ("id={Guide} or id={Child}", {"Guide", "Child"}),
+        (three + " and (id={Guide} or id={Child})", {"Guide", "Child"}),
+        (three + ' and (ancestor={Guide} or label="oncall")', {"Child", "Grand"}),
+        ("id={Guide} or id={Child} and type=blogpost", {"Guide"}),
+        ("(id={Guide} or id={Child}) and type=blogpost", set()),
+        (three + " and not (id={Child} or id={Grand})", {"Guide"}),
+        (three + " and not (id={Child} and type=page)", {"Guide", "Grand"}),
+        (three + " and not id != {Child}", {"Child"}),
+        (three + " and not ancestor != {Guide}", {"Child", "Grand"}),
+        # `space.key`, and `not in (...)`
+        (three + f' and space.key = "{eng}"', {"Guide", "Child", "Grand"}),
+        (three + f' and space.key in ("{eng}", NOSUCHKEY)', {"Guide", "Child", "Grand"}),
+        (three + " and space.key = NOSUCHKEY", set()),
+        (three + " and space.key in (NOSUCHKEY, NOPEKEY)", set()),
+        (three + " and id not in ({Guide})", {"Child", "Grand"}),
+        (three + " and (id={Guide} or id not in ({Guide},{Child}))", {"Guide", "Grand"}),
+        # beside a field this route does not read, which held for each of the three
+        (three + " and lastmodified > 2020-01-01", {"Guide", "Child", "Grand"}),
+        (three + ' and created >= "2020-01-01"', {"Guide", "Child", "Grand"}),
+        (three + " and creator = currentUser()", {"Guide", "Child", "Grand"}),
+        (three + " and not lastmodified > 2999-01-01", {"Guide", "Child", "Grand"}),
+        ('id={Guide} or id={Child} and created >= now("-4w")', {"Guide", "Child"}),
+        (three + ' and (created >= now("-4w") or id={Guide})', {"Guide", "Child", "Grand"}),
+        (three + ' and not (id={Guide} or created >= now("-4w"))', set()),
     ]
     with client_for(settings, reload=True) as c:
         written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
@@ -1381,7 +1414,65 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
             cql = template.format(**ids)
             r = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": cql}).json()
             answered[template] = ({x["title"] for x in r["results"]}, r["totalSize"])
+        cql = {"cql": 'siteSearch ~ "Deep"'}
+        site = c.get("/atlassian/wiki/rest/api/search", headers=h, params=cql).json()
     assert answered == {template: (want, len(want)) for template, want in rows}
+    # read as `text ~` is, which over this chain is not real's answer: see `_CQL_READABLE`
+    assert {x["title"] for x in site["results"]} == {"Grand"}
+
+
+def test_confluence_cql_search_reads_its_rows_once_in_a_needed_terms_order(tmp_path, monkeypatch):
+    """The rows :func:`backlot.routers.atlassian.confluence_cql_search` reads for each query, as
+    the comment above its evaluator gives them, and their order. Each page says `alpha` and `beta`
+    a different number of times, so the two terms rank the four pages in opposite orders, and
+    neither is the order they are listed in."""
+    page = {
+        "source_type": "confluence",
+        "space": "eng",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+    }
+    words = {n: " ".join(["alpha"] * n + ["beta"] * (5 - n)) for n in (2, 4, 1, 3)}
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {**page, "doc_id": f"rank-{n}", "title": f"P{n}", "content": text}
+            for n, text in words.items()
+        ],
+    )
+    rows = [
+        # cql, the titles in the order served, and how many times the corpus is listed and a
+        # term searched
+        ('text ~ "alpha"', ["P4", "P3", "P2", "P1"], 0, 1),
+        ('text ~ "beta"', ["P1", "P2", "P3", "P4"], 0, 1),
+        ('text ~ "alpha" and text ~ "beta"', ["P4", "P3", "P2", "P1"], 0, 2),
+        ('type = page and text ~ "beta"', ["P1", "P2", "P3", "P4"], 0, 1),
+        ('text ~ "alpha" or type = page', ["P4", "P1", "P2", "P3"], 1, 1),
+        ("type = page", ["P4", "P1", "P2", "P3"], 1, 0),
+    ]
+    reads = []
+
+    def spying(name):
+        read = getattr(store, name)
+
+        def spy(*args, **kwargs):
+            reads.append(name)
+            return read(*args, **kwargs)
+
+        return spy
+
+    with client_for(settings, reload=True) as c:
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        h = {"Authorization": f"Bearer {written['admin_token']}"}
+        for name in ("list_documents", "search_documents"):
+            monkeypatch.setattr(store, name, spying(name))
+        answered = {}
+        for cql, *_ in rows:
+            reads.clear()
+            r = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": cql}).json()
+            titles = [x["title"] for x in r["results"]]
+            answered[cql] = (titles, reads.count("list_documents"), reads.count("search_documents"))
+    assert answered == {cql: tuple(answer) for cql, *answer in rows}
 
 
 _CQL_REQUIRED = {

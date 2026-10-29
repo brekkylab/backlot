@@ -270,6 +270,8 @@ def test_each_client_rule_names_the_headers_it_was_measured_from():
         ("gmail", "implemented", 503, "backendError", False, "internal"),
         ("fireflies", "unknown", 500, "INTERNAL_SERVER_ERROR", False, "client"),
         ("fireflies", "implemented", 200, "too_many_requests", False, "rate_limit"),
+        # A document with a root field Backlot does not serve is put down to that field first.
+        ("fireflies", "missing", 200, "too_many_requests", False, "unsupported"),
         ("fireflies", "implemented", 200, "object_not_found", True, "client"),
         ("linear", "implemented", 200, "too_many_requests", False, "client"),
         ("linear", "unknown", 500, "INTERNAL_SERVER_ERROR", False, "internal"),
@@ -692,6 +694,24 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             "/linear/a%zz",
             {"headers": LINEAR | JSON, "json": {"query": "{ __typename }"}},
             ("linear", "unmatched", "unknown", 400, None, "client"),
+        ),
+        (
+            "POST",
+            "/linear/a%2",
+            {"headers": LINEAR | JSON, "json": {"query": "{ __typename }"}},
+            ("linear", "unmatched", "unknown", 400, None, "client"),
+        ),
+        (
+            "POST",
+            "/fireflies/%2e%2e/graphql",
+            {"headers": JSON, "json": {"query": "{ __typename }"}},
+            ("fireflies", "unmatched", "unknown", 400, None, "client"),
+        ),
+        (
+            "POST",
+            "/fireflies/%2e%2e",
+            {"headers": JSON, "json": {"query": "{ __typename }"}},
+            ("fireflies", "unmatched", "unknown", 400, None, "client"),
         ),
         (
             "POST",

@@ -37,6 +37,7 @@ from tests._helpers import (
     db_count,
     http_row,
     padded_query,
+    raw_exchange,
     selected_field_count,
     selected_fields,
     sent_as,
@@ -1999,6 +2000,38 @@ _LINEAR_BODIES = [
             200,
         ),
         id="null for __type's and issue's arguments, after an issue Linear does not hold",
+    ),
+    pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } t: __type(name: $y) { name } }","variables":{"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":107}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Entity not found: Issue","path":["a"],"locations":[{"line":1,"column":31}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Could not find referenced Issue."}}],"data":null}\n',
+            200,
+        ),
+        id="an issue Linear does not hold, then null for __type's argument",
+    ),
+    pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\", $z: String = \\"Team\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } t: __type(name: $y) { name } u: __type(name: $z) { name } }","variables":{"y":null,"z":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":128}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Internal server error","path":["u"],"locations":[{"line":1,"column":157}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Entity not found: Issue","path":["a"],"locations":[{"line":1,"column":52}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Could not find referenced Issue."}}],"data":null}\n',
+            200,
+        ),
+        id="an issue Linear does not hold, then null for two __type arguments",
+    ),
+    pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } s: __type(name: \\"Team\\") { name } t: __type(name: $y) { name } }","variables":{"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":140}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Entity not found: Issue","path":["a"],"locations":[{"line":1,"column":31}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Could not find referenced Issue."}}],"data":null}\n',
+            200,
+        ),
+        id="an issue Linear does not hold, a __type served, then null for __type's argument",
+    ),
+    pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\") { t: __type(name: $y) { name } }","variables":{"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":47}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":{"t":null}}\n',
+            200,
+        ),
+        id="null for __type's argument alone",
     ),
     pytest.param(
         b'{"query":"{ __schema { queryType { name } } }"}',
@@ -6299,6 +6332,9 @@ def _cors(origin="https://example.com"):
     }
 
 
+#: Express's 404 page goes with no `Content-Length`, so on the wire in chunks (`_CHUNKED`).
+_NO_LENGTH = {"content-length": None}
+_CHUNKED = _NO_LENGTH | {"transfer-encoding": "chunked"}
 _ETAG_OF_TYPENAME = 'W/"20-/8NdYwgmGsmmlrq5Nh8mH1T+tAs"'
 _ETAG_OF_THE_BEARER_400 = 'W/"f9-BDIWTD84v19kyk2Xj/zxwnhRq74"'
 _LINEAR_HTTP = [
@@ -7162,7 +7198,18 @@ _LINEAR_HTTP = [
         answered=_sent(_ETAG_OF_THE_BEARER_400, x_content_type_options="nosniff"),
     ),
     *(
-        http_row(m, p, h, b, c, 404, _HTML_UTF8, _express_404(m, echo), id=f"{m} {p}, {c}")
+        http_row(
+            m,
+            p,
+            h,
+            b,
+            c,
+            404,
+            _HTML_UTF8,
+            _express_404(m, echo),
+            id=f"{m} {p}, {c}",
+            answered=_NO_LENGTH,
+        )
         for m, p, h, b, c, echo in (
             ("POST", "/graphqlx", _J, _TYPENAME, "key", "/graphqlx"),
             ("POST", "/graphql.json", _J, _TYPENAME, "key", "/graphql.json"),
@@ -7214,9 +7261,21 @@ _LINEAR_HTTP = [
         id="POST /nosuch, key",
         answered=_sent(
             None, content_security_policy="default-src 'none'", x_content_type_options="nosniff"
-        ),
+        )
+        | _NO_LENGTH,
     ),
-    http_row("HEAD", "/nosuch", (), None, "none", 404, _HTML_UTF8, b"", id="HEAD /nosuch"),
+    http_row(
+        "HEAD",
+        "/nosuch",
+        (),
+        None,
+        "none",
+        404,
+        _HTML_UTF8,
+        b"",
+        id="HEAD /nosuch",
+        answered=_NO_LENGTH,
+    ),
     http_row("BIND", "/nosuch", (), None, "key", 501, None, b"", id="BIND /nosuch"),
     http_row(
         "OPTIONS",
@@ -7888,26 +7947,85 @@ def test_linears_request_budget_takes_one_for_a_run_and_none_for_a_refusal(clien
     ]
 
 
-def test_linears_front_routes_a_path_once_its_dot_segments_are_resolved():
-    """`routes_to_apollo` on paths holding dot segments, which httpx would resolve were
-    `_LINEAR_HTTP` to send them."""
-    from backlot.routers import linear
+# A path httpx would resolve or escape before sending it, written as it is to `backlot serve` with
+# the key and `{ __typename }`, and the status, body and named headers api.linear.app answers it
+# with: the endpoint, with `nosniff` where the load balancer reads the path as `/`
+# (`reads_as_root`), Express's 404 quoting the path Linear's front reads (`express_path`), its
+# greeting, and Cloudflare's page for a `..` past the root (`request_target.refused_path`).
+_LINEAR_SENT_RAW = [
+    *(
+        pytest.param("POST", p, 200, _TYPENAME_DATA, {"x-content-type-options": n}, id=p)
+        for p, n in (
+            ("/./graphql", None),
+            ("/x/../graphql", None),
+            ("/graphql/.", None),
+            ("/graphql/x/..", None),
+            ("/graphql/x/%2E%2E", None),
+            ("/..\\graphql", None),
+            ("/graphql//..", "nosniff"),
+            ("/graphql///..", "nosniff"),
+            ("/graphql/x//../..", "nosniff"),
+            ("/graphql//x/..", None),
+        )
+    ),
+    pytest.param(
+        "BIND",
+        "/graphql//..",
+        501,
+        b"",
+        {"x-content-type-options": "nosniff"},
+        id="BIND /graphql//..",
+    ),
+    *(
+        pytest.param("POST", p, 404, _express_404("POST", echo), _CHUNKED, id=p)
+        for p, echo in (
+            ("/graphql/..", "/"),
+            ("/graphql/../x", "/x"),
+            ("/graphql/%2e%2E/x", "/x"),
+            ("/graphql/x/../..", "/"),
+            ("/..", "/"),
+            ("/./..", "/"),
+            ("/x/..", "/"),
+            ("/./nosuch", "/nosuch"),
+            ("/x//../graphql", "/x/graphql"),
+            ("/x/.//graphql", "/x/graphql"),
+            ("/r/./b", "/r/b"),
+            ("/r/b/.", "/r/b/"),
+            ("/r/b/%2e%2e", "/r/"),
+            ("/x/..%2F..", "/x/..%2F.."),
+            *((f"/nosucha{char}b", f"/nosucha%{ord(char):02X}b") for char in '"<>`{}'),
+        )
+    ),
+    *(pytest.param("GET", p, 200, _GREETING, {}, id=f"GET {p}") for p in ("/r/..", "/./", "/%2e")),
+    *(
+        pytest.param("POST", p, 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2), {}, id=p)
+        for p in (
+            "/../graphql",
+            "/./../graphql",
+            "/x/../../",
+            "//../graphql",
+            "/../.",
+            "/graphql/../../x",
+        )
+    ),
+]
 
-    served = dict.fromkeys(
-        ("/./graphql", "/x/../graphql", "/graphql/.", "/graphql/x/..", "/graphql/x/%2E%2E"), True
+
+@pytest.mark.parametrize("method, path, status, body, named", _LINEAR_SENT_RAW)
+def test_linear_answers_a_path_sent_as_written_as_linear_does(
+    live_server, method, path, status, body, named
+):
+    base_url, settings = live_server
+    request = (
+        b"%s /linear%s HTTP/1.1\r\nHost: x\r\nAuthorization: %s\r\n"
+        b"Content-Type: application/json\r\nContent-Length: %d\r\n\r\n%s"
+        % (
+            method.encode(),
+            path.encode(),
+            settings.admin_token.encode(),
+            len(_TYPENAME) if method == "POST" else 0,
+            _TYPENAME if method == "POST" else b"",
+        )
     )
-    served |= dict.fromkeys(
-        ("/graphql/..", "/graphql/../x", "/graphql/%2e%2E/x", "/graphql/x/../..", "/../graphql"),
-        False,
-    )
-    assert {p: linear.routes_to_apollo(linear.express_path(p)) for p in served} == served
-
-
-def test_linears_front_escapes_a_character_httpx_escapes_first():
-    """The characters :func:`backlot.routers.linear.express_path` escapes that httpx escapes
-    before it sends a path, so `_LINEAR_HTTP` cannot send them bare; it sends the other two, `|`
-    and `^`."""
-    from backlot.routers import linear
-
-    escaped = {char: f"/nosucha%{ord(char):02X}b" for char in '"<>`{}'}
-    assert {char: linear.express_path(f"/nosucha{char}b") for char in escaped} == escaped
+    answer, headers, content = raw_exchange(base_url, request)
+    assert (answer, content, {name: headers.get(name) for name in named}) == (status, body, named)

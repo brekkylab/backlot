@@ -3,7 +3,7 @@
   "endpoints": [
     "https://docs.slack.dev/reference/methods.md"
   ],
-  "measured": "2026-10-28",
+  "measured": "2026-10-29",
   "operations": [
     {
       "operation": "admin.analytics.getFile",
@@ -536,6 +536,38 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "admin.slackbot.skills.list",
+      "id": "admin.slackbot.skills.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-10-29 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `admin.skills:read` to a user token whose scopes do not include it, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+    },
+    {
+      "operation": "admin.slackbot.skills.publish",
+      "id": "admin.slackbot.skills.publish",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-10-29 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `admin.skills:write` to a user token whose scopes do not include it, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+    },
+    {
+      "operation": "admin.slackbot.skills.setAutoEnabled",
+      "id": "admin.slackbot.skills.setAutoEnabled",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-10-29 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `admin.skills:write` to a user token whose scopes do not include it, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+    },
+    {
+      "operation": "admin.slackbot.skills.unpublish",
+      "id": "admin.slackbot.skills.unpublish",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-10-29 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `admin.skills:write` to a user token whose scopes do not include it, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "admin.teams.admins.list",
@@ -3261,6 +3293,62 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "slackbot.skills.create",
+      "id": "slackbot.skills.create",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-10-29 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `skills:write` to a user token whose scopes do not include it, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+    },
+    {
+      "operation": "slackbot.skills.delete",
+      "id": "slackbot.skills.delete",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-10-29 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `skills:write` to a user token whose scopes do not include it, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+    },
+    {
+      "operation": "slackbot.skills.info",
+      "id": "slackbot.skills.info",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-10-29 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `skills:read` to a user token whose scopes do not include it, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+    },
+    {
+      "operation": "slackbot.skills.library.add",
+      "id": "slackbot.skills.library.add",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-10-29 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `skills:write` to a user token whose scopes do not include it, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+    },
+    {
+      "operation": "slackbot.skills.library.remove",
+      "id": "slackbot.skills.library.remove",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-10-29 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `skills:write` to a user token whose scopes do not include it, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+    },
+    {
+      "operation": "slackbot.skills.list",
+      "id": "slackbot.skills.list",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-10-29 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `skills:read` to a user token whose scopes do not include it, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
+    },
+    {
+      "operation": "slackbot.skills.update",
+      "id": "slackbot.skills.update",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-10-29 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `skills:write` to a user token whose scopes do not include it, where `slackbot.skills.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials. No credential in the environment carries that scope, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "stars.add",

@@ -250,7 +250,7 @@ def _crashed(_root, _info):
             'query W($id: ID = "w1") { boom widget(id: $id) { name } }',
             {"id": None},
             False,
-            [1],
+            [0],
         ),
         # an operation on a root type the test schema has none of
         ("mutation { __typename }", None, False, [0]),

@@ -11,7 +11,7 @@ first row and column, a second sheet for a grid range to name, and a prose sprea
 then writes to the grid, copies a sheet and creates a workbook, as its owner.
 
 `docs` reads a document stating a title, a heading and every run mark a corpus states, and a prose
-document beside it.
+document beside it, flat and as their tabs, as their owner.
 """
 
 from __future__ import annotations
@@ -89,11 +89,18 @@ DOCS_CORPUS = [
 
 
 def docs(timeout: float) -> list[tuple[str, Any]]:
-    """Each document read through `documents.get`, as the service account."""
+    """Each document read through `documents.get`, flat and as its tabs, as its owner: a reader is
+    served no `revisionId`."""
     import backlot
+    from backlot.server import meta_users
 
     with backlot.serve(DOCS_CORPUS, telemetry=False) as server:
-        headers = {"Authorization": f"Bearer {server.token}"}
+        owner = next(
+            u["token"]
+            for u in meta_users(server.base_url, timeout)["users"]
+            if u["email"] == DOCS_CORPUS[0]["author_email"]
+        )
+        headers = {"Authorization": f"Bearer {owner}"}
         with httpx.Client(base_url=server.base_url, headers=headers, timeout=timeout) as client:
             files = _ok(
                 client.get(
@@ -102,8 +109,9 @@ def docs(timeout: float) -> list[tuple[str, Any]]:
                 )
             )["files"]
             return [
-                ("docs.documents.get", _ok(client.get(f"/docs/v1/documents/{f['id']}")))
+                ("docs.documents.get", _ok(client.get(f"/docs/v1/documents/{f['id']}", params=q)))
                 for f in files
+                for q in ({}, {"includeTabsContent": "true"})
             ]
 
 

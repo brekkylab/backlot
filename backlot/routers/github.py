@@ -789,21 +789,30 @@ RATE_LIMITS: dict[str, _ResourceLimit] = {
 }
 
 
-def rate_limit_window(resource: str, authenticated: bool) -> tuple[str, int]:
+def rate_limit_window(
+    resource: str, authenticated: bool, unparseable: bool = False
+) -> tuple[str, int]:
     """The window a request for ``resource`` lands in, and that window's limit for this caller.
 
-    A caller with no credential has no `code_search` window of its own: an anonymous
+    A request with no `Authorization` has no `code_search` window of its own: an anonymous
     `GET /rate_limit` reported it and `core` as one set of four numbers (`limit: 60, used: 29,
     remaining: 31, reset: 1789960795`) and a single anonymous `GET /repos/psf/requests` moved both
     from 29 to 30, so it is `core`'s window under both names (measured against api.github.com
     2026-09-21).
+
+    An ``unparseable`` caller (:func:`rate_limit_caller`) has one, at `limit: 0`: with `Basic eDp5`,
+    `Digest x`, `Foo bar` or `Basic<TAB>eDp5`, `GET /rate_limit` reported `code_search` at
+    `limit: 0`, `used: 0`, `remaining: 0` and a `reset` a minute on, beside `core` at `limit: 60`
+    (measured against api.github.com 2026-10-26).
     """
+    if resource == "code_search" and unparseable:
+        return "code_search", 0
     counted = "core" if resource == "code_search" and not authenticated else resource
     limits = RATE_LIMITS[counted]
     return counted, (limits.authenticated if authenticated else limits.anonymous)
 
 
-def rate_limit_resource(path: str, status_code: int) -> str:
+def rate_limit_resource(path: str, status_code: int, unparseable: bool = False) -> str:
     """The resource a request to ``path`` answered with ``status_code`` counts against.
 
     `code_search` for code search, `search` for the other search endpoints and `core` for
@@ -818,9 +827,13 @@ def rate_limit_resource(path: str, status_code: int) -> str:
     nothing after the slash, a first segment real serves no endpoint for (`/search/nonexistent-zz`,
     `/search/repositories.zz`) and `/search/code/{rest}` count against `core` at `limit: 60`
     (measured against api.github.com 2026-09-21 with no credential, across `repositories`,
-    `issues`, `users`, `topics`, `commits` and `labels`)."""
+    `issues`, `users`, `topics`, `commits` and `labels`).
+
+    An ``unparseable`` caller's 401 on code search counts against `code_search` instead: `Basic`
+    and the base64 of `x:<40 a>` or `x:GHP_<36 A>` was the 401 "Bad credentials" with
+    `limit: 0` and `resource: code_search` (measured against api.github.com 2026-10-26)."""
     if path == CODE_SEARCH_PATH:
-        return "core" if status_code == 401 else "code_search"
+        return "core" if status_code == 401 and not unparseable else "code_search"
     if path.startswith(SEARCH_PREFIX):
         endpoint, slash, rest = path[len(SEARCH_PREFIX) :].partition("/")
         if endpoint in SEARCH_ENDPOINTS and (not slash or rest):
@@ -983,8 +996,9 @@ def rate_limit_headers(request: Request, status_code: int, *, count: bool = True
     (:func:`refused_an_unserved_operation_reported`). `/rate_limit/` never reaches this — see
     ``backlot.main.refuse_a_trailing_slash_on_github``."""
     key, authenticated = rate_limit_caller(request)
-    resource = rate_limit_resource(request.url.path, status_code)
-    counted, limit = rate_limit_window(resource, authenticated)
+    unparseable = key.startswith("unparseable:")
+    resource = rate_limit_resource(request.url.path, status_code, unparseable)
+    counted, limit = rate_limit_window(resource, authenticated, unparseable)
     windows = _rate_limit_windows(request.app)
     read = windows.count if count and request.url.path != RATE_LIMIT_PATH else windows.status
     window = read(key, counted, limit)
@@ -1011,10 +1025,35 @@ TOKEN_RATE_LIMIT_EXCEEDED_DOCS = (
 )
 
 
-def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
+#: The page real names on that 403 for a `Basic` value naming no token after a space (`Basic eDp5`,
+#: `Basic Zm9vOmJhcg==`), where `Digest x`, `Foo bar`, `nope`, `Bearer<TAB>nope`, `token<TAB>nope`,
+#: `Basic<TAB>eDp5`, `Basic<TAB>!!!!` and `Basic<TAB>` and the base64 of `x:<40 a>` named
+#: :data:`TOKEN_RATE_LIMIT_EXCEEDED_DOCS`, and so did a token that resolves after `Basic` and a
+#: space (measured against api.github.com 2026-10-28 on `/repos/psf/requests`, the token on code
+#: search).
+BASIC_RATE_LIMIT_EXCEEDED_DOCS = (
+    "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api"
+)
+
+
+def _rate_limit_support_sentence(request: Request) -> str:
+    """The sentence real ends a token's spent-window 403 with, and an unparseable caller's."""
+    rid = request.state.github_request_id
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(rid.rsplit(":", 1)[1], 16)))
+    return (
+        f"If you reach out to GitHub Support for help, please include the request ID {rid} and "
+        f"timestamp {stamp} UTC. For more on scraping GitHub and how it may affect your rights, "
+        "please review our Terms of Service "
+        "(https://docs.github.com/en/site-policy/github-terms/github-terms-of-service)"
+    )
+
+
+def _rate_limit_exceeded_message(
+    request: Request, authenticated: bool, unparseable: bool = False
+) -> str:
     """Real's `message` on the spent-window 403.
 
-    A caller with no credential: this sentence, with the caller's own address, measured against
+    No `Authorization` header: this sentence, with the caller's own address, measured against
     api.github.com 2026-09-17 (the 61st anonymous `core` request in the hour and three more after
     it, `used: 60` pinned at `limit: 60` on each, `server: Varnish` where a served answer is
     `server: github.com`).
@@ -1025,22 +1064,24 @@ def _rate_limit_exceeded_message(request: Request, authenticated: bool) -> str:
     <YYYY-MM-DD HH:MM:SS> UTC. For more on scraping GitHub and how it may affect your rights,
     please review our Terms of Service (…)`. The request id is the answer's own
     `x-github-request-id` and the timestamp is that id's last field, on each of four refusals
-    measured 2026-10-18 the same way."""
+    measured 2026-10-18 the same way.
+
+    An ``unparseable`` caller (:func:`rate_limit_caller`): the anonymous sentence, then the token's
+    from "If you reach out", with the answer's own request id and `Date` (measured against
+    api.github.com 2026-10-26 with `Basic eDp5`, `Digest x`, `Bearer<TAB>nope` and `Basic<TAB>`
+    and base64 on `/repos/psf/requests`, and with `Basic eDp5` on `/user/repos` and code search)."""
     if not authenticated:
         host = request.client.host if request.client is not None else "anonymous"
-        return (
+        message = (
             f"API rate limit exceeded for {host}. (But here's the good news: Authenticated "
             "requests get a higher rate limit. Check out the documentation for more details.)"
         )
+        return f"{message} {_rate_limit_support_sentence(request)}" if unparseable else message
     caller = auth.acl(request).resolve(auth.github_credential(request))
     email = caller.email if caller is not None and caller.email is not None else "admin"
-    rid = request.state.github_request_id
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(int(rid.rsplit(":", 1)[1], 16)))
     return (
-        f"API rate limit exceeded for user ID {synth.github_user_id(email)}. If you reach out to "
-        f"GitHub Support for help, please include the request ID {rid} and timestamp {stamp} UTC. "
-        "For more on scraping GitHub and how it may affect your rights, please review our Terms of "
-        "Service (https://docs.github.com/en/site-policy/github-terms/github-terms-of-service)"
+        f"API rate limit exceeded for user ID {synth.github_user_id(email)}. "
+        f"{_rate_limit_support_sentence(request)}"
     )
 
 
@@ -1071,6 +1112,15 @@ def rate_limit_refusal(request: Request) -> Response | None:
     pinned to `1999-01-01` or not, `/user/repos`, `/user` and `/orgs/psf/teams`, and so was that of
     `x:GHP_<36 A>` on the repository and the organization's teams, where `Basic eDp5` and the base64
     of `x:<40 a>` after a tab were the 403 (2026-10-26).
+
+    Code search refuses a `Basic` value naming no token at once, since that caller's `code_search`
+    window is at `limit: 0` (:func:`rate_limit_window`): `Basic eDp5` and `Basic Zm9vOmJhcg==`
+    were the 403 with `used: 0`, pinned to a version or not and with no `q`, where `Digest x` and
+    `Basic<TAB>eDp5` were the 401 "Requires authentication" with none of the five (2026-10-26).
+    That 401 comes ahead of the window for a header ``_a_header_without_a_credential`` holds for:
+    `Digest x`, `Foo bar`, `nope` and a tab after `Basic`, `Bearer` or `token` were the 401 with
+    the window those values share spent, and so was a token that resolves after a tab, with that
+    token's `code_search` window fresh and spent (2026-10-28).
     """
     if not get_settings().github_enforce_rate_limits:
         return None
@@ -1079,8 +1129,11 @@ def rate_limit_refusal(request: Request) -> Response | None:
     if auth.github_basic_token_counted(request) and not auth.github_scheme_then_a_tab(request):
         return None
     key, authenticated = rate_limit_caller(request)
-    resource = rate_limit_resource(request.url.path, 401 if not authenticated else 200)
-    counted, limit = rate_limit_window(resource, authenticated)
+    unparseable = key.startswith("unparseable:")
+    resource = rate_limit_resource(request.url.path, 401 if not authenticated else 200, unparseable)
+    if resource == "code_search" and _a_header_without_a_credential(request):
+        return None
+    counted, limit = rate_limit_window(resource, authenticated, unparseable)
     windows = _rate_limit_windows(request.app)
     status = windows.status(key, counted, limit)
     if status["used"] < limit:
@@ -1092,13 +1145,15 @@ def rate_limit_refusal(request: Request) -> Response | None:
         "x-ratelimit-reset": str(status["reset"]),
         "x-ratelimit-resource": resource,
     }
-    message = _rate_limit_exceeded_message(request, authenticated)
-    if authenticated:
-        body = {
-            "message": message,
-            "documentation_url": TOKEN_RATE_LIMIT_EXCEEDED_DOCS,
-            "status": "403",
-        }
+    message = _rate_limit_exceeded_message(request, authenticated, unparseable)
+    if authenticated or unparseable:
+        basic = auth.github_scheme(request)[0] == "basic"
+        docs = (
+            BASIC_RATE_LIMIT_EXCEEDED_DOCS
+            if unparseable and basic and not auth.github_scheme_then_a_tab(request)
+            else TOKEN_RATE_LIMIT_EXCEEDED_DOCS
+        )
+        body = {"message": message, "documentation_url": docs, "status": "403"}
     else:
         body = {"message": message, "documentation_url": RATE_LIMIT_EXCEEDED_DOCS}
     return JSONResponse(body, status_code=403, headers=headers)
@@ -1149,9 +1204,8 @@ def _accept_types(request: Request) -> list[str]:
     types: list[str] = []
     zero_diffs: set[int] = set()
     has_patch = False
-    for member in request.headers.get("accept", "").split(","):
-        media_type, _, params = member.partition(";")
-        media_type = media_type.strip()
+    for member in _accept_members(request):
+        media_type, params = member[1], member[3] or ""
         m = _GITHUB_MEDIA.fullmatch(media_type)
         if m is not None:
             if m[2] == "diff" and _zero_q(params):
@@ -1219,18 +1273,22 @@ def _accept_q(params: str) -> str | None:
 
 
 def _q_weight(params: str, unread: float | None = None) -> float:
-    """The weight a member's parameters give it: 1 with no `q`, else its `q` (:func:`_accept_q`)
-    read as a finite number, else ``unread``, or with no ``unread`` the number the value starts
-    with, or 0 where it starts with none."""
+    """The weight a member's parameters give it: 1 with no `q`; else with ``unread``, as on
+    contents, whatever ``float()`` reads of its `q` (:func:`_accept_q`), `inf` and `nan` too, and
+    ``unread`` where it reads nothing; else its `q` read as a finite number, the number the value
+    starts with, or 0 where it starts with none. Measured on 2026-10-27: on contents `q=inf` came
+    ahead of a member at 1 and `q=nan` stayed between the members on either side of it
+    (:func:`_ordered_accept`), and on the pull and the readme `q=nan` ranked at zero."""
     value = _accept_q(params)
     if value is None:
         return 1.0
     try:
         weight = float(value)
     except ValueError:
-        weight = math.nan
-    if math.isfinite(weight):
-        return weight
+        pass
+    else:
+        if unread is not None or math.isfinite(weight):
+            return weight
     if unread is not None:
         return unread
     lead = _Q_LEAD.match(value)
@@ -1238,15 +1296,44 @@ def _q_weight(params: str, unread: float | None = None) -> float:
 
 
 def _ordered_accept(request: Request, unread: float | None = None) -> list[tuple[str, float]]:
-    """Members in the order `_representation_content_type` measures."""
+    """Members in the order `_representation_content_type` measures, each spelt as it echoes them:
+    with ``unread`` as contents does, without it as the pull and the readme do
+    (:data:`_ACCEPT_MEMBER`)."""
     members = []
-    for member in request.headers.get("accept", "").split(","):
-        media_type, _, params = member.partition(";")
-        media_type = media_type.strip()
-        if media_type:
-            members.append((media_type, _q_weight(params, unread)))
-    members.sort(key=lambda m: (-m[1], m[0].count("*")))
+    for m in _accept_members(request):
+        if unread is None:
+            echoed = m[1] + m[2].replace(" ", "")
+        else:
+            echoed = m[1] + m[2] if m[3] is not None else m[1]
+        members.append((echoed, _q_weight(m[3] or "", unread)))
+    # A NaN does not cross another member; the runs on either side still sort. All six
+    # permutations of nan, 0 and 0.5 on contents kept that boundary on 2026-10-27.
+    start = 0
+    for end in [i for i, (_, weight) in enumerate(members) if math.isnan(weight)] + [len(members)]:
+        members[start:end] = sorted(members[start:end], key=lambda m: (-m[1], m[0].count("*")))
+        start = end + 1
     return members
+
+
+# One `Accept` member as api.github.com read it on 2026-10-27 on `pulls/7619` of `psf/requests` and
+# its `README.md` through `readme` and `contents`: white space before it, its type (the visible
+# ASCII up to the first other character or `;`), spaces and tabs, and parameters only where a `;`
+# comes next. Anything else after the type ends the member, parameters and all: `diff x;q=0` was
+# the diff and `*/*\xa0;q=0.1` a `*/*` at full weight. Of those spaces and tabs the pull and the
+# readme echoed the tabs (`diff \t,` as `diff\t`, `diff\t\xa0\t,` as `diff\t`), and contents
+# echoed them all where a `;` came next and none where it did not (`raw \t;q=0.5` as `raw \t`,
+# `raw\t,` as `raw`).
+_ACCEPT_MEMBER = re.compile(r"([!-:<-~]*)([ \t]*)(?:;(.*))?", re.S)
+
+
+def _accept_members(request: Request) -> list[re.Match]:
+    """``Accept``'s members (:data:`_ACCEPT_MEMBER`), each header sent trimmed of spaces and tabs at
+    both ends and the headers joined with commas in the order sent: real answered `Accept` sent
+    twice as that one header, and echoed `application/json, application/vnd.github.diff` and a tab
+    without the tab."""
+    joined = ",".join(value.strip(" \t") for value in request.headers.getlist("accept"))
+    members = (_ACCEPT_MEMBER.match(member.lstrip()) for member in joined.split(","))
+    return [m for m in members if m[1]]
 
 
 def _wildcard_leads(request: Request, unread: float | None = None) -> bool:
@@ -1263,7 +1350,7 @@ def _wildcard_leads(request: Request, unread: float | None = None) -> bool:
     (``unread`` 1) and not on the pull, the readme or the blob. Code search serves `text-match`
     beside a heavier `*/*` too, and does not ask."""
     members = _ordered_accept(request, unread)
-    return bool(members) and members[0][0] == "*/*"
+    return bool(members) and members[0][0].strip() == "*/*"
 
 
 def _representation_content_type(request: Request, unread: float | None = None) -> str:
@@ -1291,8 +1378,8 @@ def _representation_content_type(request: Request, unread: float | None = None) 
     `q=+0.9`, `q=inf` and `q=-0.9` it ranked as `q=0` does on the pull
     (`application/json;q=abc, text/plain;q=0, …` kept that order), and under those, `q= 0.9` and
     `q=nan` below a raw at `q=0.5` on the readme; on contents all of those seven but `q=nan` ranked
-    above the raw (``unread`` 1). Not modelled: `q=nan` on contents, and `*/ *`, which the pull
-    echoed as `*/`."""
+    above the raw, `q=inf` as infinity and the rest at ``unread`` 1 (:func:`_q_weight`). A member's
+    spaces and tabs echo as :data:`_ACCEPT_MEMBER` says."""
     members = _ordered_accept(request, unread)
     return ",".join(media_type for media_type, _ in members) + "; charset=utf-8"
 
@@ -2322,9 +2409,11 @@ async def get_rate_limit(request: Request):
 
     The three resources are the ones Backlot counts, of the fifteen real's authenticated answer
     carries (`graphql`, `integration_manifest`, `scim`, …) and the five its anonymous one does.
-    They are listed in the order that answer lists them in, which is not the same order for the two
-    callers (:data:`_RESOURCE_ORDER`), and a caller with no credential reads `core`'s own window
-    under `code_search` as well (:func:`rate_limit_window`).
+    They are listed in the order that answer lists them in, which is not the same order for a
+    request with no `Authorization` as for one with a token or a value real cannot parse
+    (:data:`_RESOURCE_ORDER`). A request with no `Authorization` reads `core`'s own window under
+    `code_search` as well, and a value real cannot parse a `code_search` window at `limit: 0`
+    (:func:`rate_limit_window`).
 
     `rate`, `core` under a second name, is served to `2022-11-28` and not to `2026-03-10`, which
     removed it (measured 2026-09-20: the body's keys are `resources`, `rate` under the one and
@@ -2342,10 +2431,11 @@ async def get_rate_limit(request: Request):
     real answered could only be reproduced by reporting a window nothing counts against.
     """
     key, authenticated = rate_limit_caller(request)
+    unparseable = key.startswith("unparseable:")
     windows = _rate_limit_windows(request.app)
     resources = {}
-    for resource in _RESOURCE_ORDER[authenticated]:
-        counted, limit = rate_limit_window(resource, authenticated)
+    for resource in _RESOURCE_ORDER[authenticated or unparseable]:
+        counted, limit = rate_limit_window(resource, authenticated, unparseable)
         resources[resource] = windows.status(key, counted, limit)
     if _version(request) not in _HAS_RATE_ALIAS:
         return {"resources": resources}
@@ -4213,10 +4303,12 @@ def _issue_number(row) -> int:
 _HAS_SINGULAR_ASSIGNEE = frozenset({"2022-11-28"})  # 2026-03-10: superseded by `assignees`
 _HAS_MERGE_COMMIT_SHA = frozenset({"2022-11-28"})  # 2026-03-10: removed from every pull body
 _HAS_RATE_ALIAS = frozenset({"2022-11-28"})  # 2026-03-10: `rate` removed from `/rate_limit`
-#: authenticated? -> the order `/rate_limit` lists `resources` in: real runs `core`, `search`, …,
-#: `code_search` for a token and `code_search`, `core`, …, `search` for a caller with no
-#: credential, so the two answers differ in order as well as in membership (measured against
-#: api.github.com 2026-09-21).
+#: authenticated or unparseable? -> the order `/rate_limit` lists `resources` in: real runs `core`,
+#: `search`, …, `code_search` for a token and `code_search`, `core`, …, `search` with no
+#: `Authorization`, so the two answers differ in order as well as in membership (measured against
+#: api.github.com 2026-09-21); an `Authorization` real cannot parse gets the token's fifteen in the
+#: token's order (`Basic eDp5`, `Basic Zm9vOmJhcg==`, `Digest x`, `Foo bar`, `nope`,
+#: `Basic<TAB>eDp5` and `Basic<TAB>!!!!`, 2026-10-28).
 _RESOURCE_ORDER = {
     True: ("core", "search", "code_search"),
     False: ("code_search", "core", "search"),

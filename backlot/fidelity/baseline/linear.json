@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-27",
+  "measured": "2026-10-29",
   "root": {
     "query": "Query"
   },
@@ -7912,6 +7912,13 @@
         },
         "ledInitiativeCount": {
           "status": "implemented"
+        },
+        "loopWebhooksEnabled": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Measured against api.linear.app on 2026-10-29, `teams(first:5){nodes{key loopWebhooksEnabled}}` answers `true` for the one team in the workspace measured; the corpus carries no team setting that backs a value, so none is invented."
         },
         "loops": {
           "status": "missing",

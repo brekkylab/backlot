@@ -28,6 +28,7 @@ from tests._helpers import (
     gql,
     http_row,
     padded_query,
+    raw_exchange,
     sent_as,
     served_id,
     tiny_corpus,
@@ -880,6 +881,31 @@ def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_
     )
 
 
+def test_fireflies_ids_are_ulids(client, admin_h):
+    """A served user id and transcript id are ULIDs as `synth._ulid` writes them, their first ten
+    characters, the time, zero, and the other 16 the first 80 bits of the seed's digest."""
+    from backlot import synth
+
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    data = ff_gql(
+        client, "{ users { user_id } transcripts(limit: 2) { id user { user_id } } }", admin_h
+    ).json()["data"]
+    served = [u["user_id"] for u in data["users"]]
+    served += [t["id"] for t in data["transcripts"]]
+    served += [t["user"]["user_id"] for t in data["transcripts"]]
+
+    assert len(served) >= 2
+    for one in served:
+        assert len(one) == 26, one
+        assert set(one) <= set(alphabet), one
+        assert one[:10] == "0" * 10, one
+
+    value = 0
+    for char in synth._ulid("seed"):
+        value = value * 32 + alphabet.index(char)
+    assert value == int(hashlib.sha256(b"seed").hexdigest()[:20], 16)
+
+
 def test_fireflies_transcript_content_round_trips_through_the_api(client, admin_h, ro_conn):
     """The sentences the API serves must rebuild the stored `content` byte for byte — that is the
     whole point of defining content as the concatenation."""
@@ -1202,21 +1228,25 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
     ava_h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
     seen = ff_gql(client, listing, ava_h).json()["data"]["transcripts"]
     (hidden,) = {t["id"] for t in every} - {t["id"] for t in seen}
-    me = ff_gql(client, "{ user { user_id } }", ava_h).json()["data"]["user"]["user_id"]
+    ava_id = ff_gql(client, "{ user { user_id } }", ava_h).json()["data"]["user"]["user_id"]
     wanted = {
         ("ava@acme.com", '{ user(id: "nope") { user_id } }', None): not_in_team(),
         ("ava@acme.com", '{ user(id: " ") { user_id } }', None): not_in_team(),
         ("ava@acme.com", '{ user(id: "nobody@example.com") { user_id } }', None): not_in_team(),
         ("ava@acme.com", '{ user(id: "ava@acme.com") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: "%s") { user_id } }' % ava_id.lower(), None): not_in_team(),
         ("ava@acme.com", '{ transcript(id: "nope") { id } }', None): object_not_found(),
         ("ava@acme.com", '{ transcript(id: "%s") { id } }' % hidden, None): object_not_found(),
+        ("ava@acme.com", '{ transcript(id: "%s") { id } }' % seen[0]["id"].lower(), None): (
+            object_not_found()
+        ),
         ("hana@acme.com", '{ transcript(id: "%s") { id } }' % hidden, None): (
             '{"data":{"transcript":{"id":"%s"}}}\n' % hidden
         ),
         (
             "ava@acme.com",
             "query($x: String) { user(id: $x) { user_id } }",
-            me + "\ud800",
+            ava_id + "\ud800",
         ): not_in_team(21),
         (
             "ava@acme.com",
@@ -1667,7 +1697,7 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
         )["data"]["user"]
         assert got["email"] == "ghost@acme.com" and got["name"] == "Ghost Person"
 
-    # No probe: `synth.fireflies_user_id` draws from a 96-bit digest, so the raw seed is
+    # No probe: `synth.fireflies_user_id` draws 80 bits from the digest, so the raw seed is
     # stored as-is -- a forced collision between two DIFFERENT users must fail the import loudly
     # through `idx_fireflies_user_served`, not silently let one user's row overwrite the other's.
     # A fresh two-host corpus, not FIREFLIES_CORPUS: that fixture's only ACCOUNT is ava (organizer
@@ -1777,7 +1807,8 @@ _HSTS = "max-age=31536000; includeSubDomains"
 
 
 def _fastify(cache_control=None, **more):
-    """What each answer of Fastify's carries, ``cache_control`` and ``more`` beside it."""
+    """What each answer of Fastify's carries, with ``cache_control``, no `x-ratelimit-limit-api`
+    and ``more`` beside it, each `_` in a name read as `-`."""
     return {
         "access-control-allow-origin": "*",
         "strict-transport-security": _HSTS,
@@ -3115,19 +3146,19 @@ def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monk
     assert all(body["data"][f"a{i}"]["user_id"] for i in range(1, 30))
     assert [body["data"][f"a{i}"] for i in (30, 31, 32)] == [None, None, None]
     assert list(body) == ["errors", "data"]
-    assert _ratelimit(r) == {
-        "x-ratelimit-limit-api_burst": "30",
-        "x-ratelimit-remaining-api_burst": "0",
-        "x-ratelimit-reset-api_burst": "60",
-        "retry-after-api_burst": "60",
-        "x-ratelimit-limit-api": "500",
-        "x-ratelimit-remaining-api": "440",
-        "x-ratelimit-reset-api": "39029",
-        "x-ratelimit-limit": "500",
-        "x-ratelimit-remaining": "440",
-        "x-ratelimit-reset": "39029",
-        "retry-after": "60",
-    }
+    assert list(_ratelimit(r).items()) == [
+        ("x-ratelimit-limit-api_burst", "30"),
+        ("x-ratelimit-remaining-api_burst", "0"),
+        ("x-ratelimit-reset-api_burst", "60"),
+        ("retry-after-api_burst", "60"),
+        ("x-ratelimit-limit-api", "500"),
+        ("x-ratelimit-remaining-api", "440"),
+        ("x-ratelimit-reset-api", "39029"),
+        ("x-ratelimit-limit", "500"),
+        ("x-ratelimit-remaining", "440"),
+        ("x-ratelimit-reset", "39029"),
+        ("retry-after", "60"),
+    ]
     now[0] = 1_793_020_231.0
     r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
     assert r.headers["x-ratelimit-remaining-api_burst"] == "29"
@@ -3154,6 +3185,7 @@ def test_fireflies_holds_a_refused_key_for_a_minute_from_its_first_refusal(
         r = client.post("/fireflies/graphql", json={"query": document}, headers=_key(tokens_yaml))
         assert r.headers.get("retry-after") == wait
         if wait is not None:
+            assert r.headers["x-ratelimit-reset"] == wait
             assert r.json()["errors"][0]["extensions"]["metadata"] == {"retryAfter": 1793039280192}
     assert _ratelimit(r) == {
         "x-ratelimit-limit-api_burst": "30",
@@ -3218,44 +3250,277 @@ def test_fireflies_orders_the_budgets_refusals_among_a_runs_errors(
     assert answered == expected
 
 
-def test_fireflies_serves_past_the_budget_with_the_refusal_off(client, tokens_yaml, monkeypatch):
-    """With `fireflies_enforce_rate_limits` off the 31st field of a minute and the 501st of a day
-    are served, each count stopping at 0."""
+def _limits(**parts):
+    """The budget's headers in the order of ``parts``: ``minute``, ``day`` and ``bare`` the limit,
+    remaining and reset of the `-api_burst`, `-api` and bare windows, and ``burst``, ``retry`` and
+    ``wait`` the `retry-after-api_burst`, `retry-after-api` and `retry-after`."""
+    windows = {"minute": "-api_burst", "day": "-api", "bare": ""}
+    waits = {"burst": "-api_burst", "retry": "-api", "wait": ""}
+    headers = []
+    for part, value in parts.items():
+        if part in windows:
+            names = ("limit", "remaining", "reset")
+            headers += [(f"x-ratelimit-{n}{windows[part]}", v) for n, v in zip(names, value)]
+        else:
+            headers.append((f"retry-after{waits[part]}", value))
+    return headers
+
+
+_T = 1_793_256_105.275
+_DAY = "Too many requests. Please retry after Fri, 30 Oct 2026 00:00:00 GMT (UTC)"
+
+# The run past the day `Budget`'s docstring records, and a field half a second into the next day:
+# the moment of each document and its fields; with the refusal on, the fields served, the first
+# refusal's message and `retryAfter`, and the budget's headers in the order api.fireflies.ai sent
+# them; the headers with it off; and those of a key on a Pro plan's 60 and 5,000, which is served
+# each field.
+_PAST_THE_DAY = [
+    pytest.param(
+        _T,
+        17,
+        15,
+        (_DAY, 1793318400275),
+        _limits(
+            minute=("30", "13", "60"),
+            day=("500", "0", "62295"),
+            retry="62295",
+            bare=("500", "0", "62295"),
+            wait="62295",
+        ),
+        _limits(minute=("30", "13", "60"), day=("500", "0", "62295"), bare=("500", "0", "62295")),
+        _limits(
+            minute=("60", "43", "60"),
+            day=("5000", "4498", "62295"),
+            bare=("5000", "4498", "62295"),
+        ),
+        id="the day's last and two past it",
+    ),
+    pytest.param(
+        _T + 0.43,
+        1,
+        0,
+        (_DAY, 1793318400705),
+        _limits(minute=("30", "12", "60"), retry="62295", wait="62295", bare=("500", "0", "62295")),
+        _limits(minute=("30", "12", "60"), day=("500", "0", "62295"), bare=("500", "0", "62295")),
+        _limits(
+            minute=("60", "42", "60"),
+            day=("5000", "4497", "62295"),
+            bare=("5000", "4497", "62295"),
+        ),
+        id="past the day",
+    ),
+    pytest.param(
+        _T + 0.786,
+        15,
+        0,
+        (_DAY, 1793318400061),
+        _limits(
+            minute=("30", "0", "60"),
+            burst="60",
+            retry="62294",
+            wait="62294",
+            bare=("500", "0", "62294"),
+        ),
+        _limits(minute=("30", "0", "60"), day=("500", "0", "62294"), bare=("500", "0", "62294")),
+        _limits(
+            minute=("60", "27", "60"),
+            day=("5000", "4482", "62294"),
+            bare=("5000", "4482", "62294"),
+        ),
+        id="past the day and the minute",
+    ),
+    pytest.param(
+        _T + 1.173,
+        3,
+        0,
+        (_DAY, 1793318400448),
+        _limits(burst="60", wait="62294", bare=("500", "0", "62294")),
+        _limits(minute=("30", "0", "59"), day=("500", "0", "62294"), bare=("500", "0", "62294")),
+        _limits(
+            minute=("60", "24", "59"),
+            day=("5000", "4479", "62294"),
+            bare=("5000", "4479", "62294"),
+        ),
+        id="past the day, in the minute's hold",
+    ),
+    pytest.param(
+        _T + 21.513,
+        1,
+        0,
+        (_DAY, 1793318400788),
+        _limits(burst="40", wait="62274", bare=("500", "0", "62274")),
+        _limits(minute=("30", "0", "39"), day=("500", "0", "62274"), bare=("500", "0", "62274")),
+        _limits(
+            minute=("60", "23", "39"),
+            day=("5000", "4478", "62274"),
+            bare=("5000", "4478", "62274"),
+        ),
+        id="past the day, 20 seconds into the hold",
+    ),
+    pytest.param(
+        _T + 75.083,
+        1,
+        0,
+        (_DAY, 1793318400358),
+        _limits(minute=("30", "29", "60"), retry="62220", wait="62220", bare=("500", "0", "62220")),
+        _limits(minute=("30", "29", "60"), day=("500", "0", "62220"), bare=("500", "0", "62220")),
+        _limits(
+            minute=("60", "59", "60"),
+            day=("5000", "4477", "62220"),
+            bare=("5000", "4477", "62220"),
+        ),
+        id="past the day, after the hold",
+    ),
+    pytest.param(
+        1_793_318_400.5,
+        1,
+        1,
+        None,
+        _limits(
+            minute=("30", "29", "60"), day=("500", "499", "86400"), bare=("500", "499", "86400")
+        ),
+        _limits(
+            minute=("30", "29", "60"), day=("500", "499", "86400"), bare=("500", "499", "86400")
+        ),
+        _limits(
+            minute=("60", "59", "60"), day=("5000", "4999", "86400"), bare=("5000", "4999", "86400")
+        ),
+        id="the next day",
+    ),
+]
+
+
+def test_fireflies_answers_past_the_day_with_the_refusal_on_and_off(
+    client, tokens_yaml, monkeypatch
+):
+    """Each row of `_PAST_THE_DAY` after 485 fields spent in the minutes before it, with the
+    default settings, with the refusal off, and on a Pro plan's budget."""
+    from backlot.config import Settings
     from backlot.routers import fireflies
 
-    now = _budget(client, monkeypatch)
-    monkeypatch.setattr(fireflies.get_settings(), "fireflies_enforce_rate_limits", False)
-    for _ in range(31):
-        r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
-    assert r.json().get("errors") is None
-    assert r.headers["x-ratelimit-remaining-api_burst"] == "0"
-    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(30))
-    for minute in range(1, 18):
-        now[0] = 1_793_020_105.0 + minute * 61
-        r = client.post(
-            "/fireflies/graphql", json={"query": "{ " + aliases + " }"}, headers=_key(tokens_yaml)
-        )
-    assert r.json().get("errors") is None
-    assert r.headers["x-ratelimit-remaining-api"] == "0"
+    def aliases(n):
+        return {"query": "{ " + " ".join(f"a{i}: user {{ user_id }}" for i in range(n)) + " }"}
+
+    for name in ("ENFORCE_RATE_LIMITS", "PER_MINUTE", "PER_DAY"):
+        monkeypatch.delenv(f"BACKLOT_FIREFLIES_{name}", raising=False)
+    default = Settings(_env_file=None)
+    answered, expected = {}, {}
+    for plan, enforce, per_minute, per_day in (
+        (
+            "on",
+            default.fireflies_enforce_rate_limits,
+            default.fireflies_per_minute,
+            default.fireflies_per_day,
+        ),
+        ("off", False, 30, 500),
+        ("Pro", True, 60, 5000),
+    ):
+        now = _budget(client, monkeypatch)
+        settings = fireflies.get_settings()
+        monkeypatch.setattr(settings, "fireflies_enforce_rate_limits", enforce)
+        monkeypatch.setattr(settings, "fireflies_per_minute", per_minute)
+        monkeypatch.setattr(settings, "fireflies_per_day", per_day)
+        for i, n in enumerate([30] * 16 + [5]):
+            now[0] = _T - (17 - i) * 61
+            client.post("/fireflies/graphql", json=aliases(n), headers=_key(tokens_yaml))
+        for row in _PAST_THE_DAY:
+            moment, fields, served, refusal, on, off, pro = row.values
+            now[0] = moment
+            r = client.post("/fireflies/graphql", json=aliases(fields), headers=_key(tokens_yaml))
+            body = r.json()
+            answered[plan, row.id] = (
+                sum(value is not None for value in body["data"].values()),
+                [error["code"] for error in body.get("errors", [])],
+                next(
+                    (
+                        (error["message"], error["extensions"]["metadata"]["retryAfter"])
+                        for error in body.get("errors", [])
+                    ),
+                    None,
+                ),
+                list(_ratelimit(r).items()),
+            )
+            if plan == "on":
+                refused = ["too_many_requests"] * (fields - served)
+                expected[plan, row.id] = (served, refused, refusal, on)
+            else:
+                expected[plan, row.id] = (fields, [], None, off if plan == "off" else pro)
+    assert answered == expected
 
 
-def test_fireflies_refuses_a_field_past_the_days_500(client, tokens_yaml, monkeypatch):
-    """Once the day's 500 are spent a field is refused until midnight UTC, and the next day serves
-    it again."""
-    now = _budget(client, monkeypatch)
-    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(30))
-    for minute in range(17):
-        now[0] = 1_793_020_105.0 + minute * 61
-        r = client.post(
-            "/fireflies/graphql", json={"query": "{ " + aliases + " }"}, headers=_key(tokens_yaml)
+# A path httpx would resolve before sending it, written as it is to `backlot serve` with the key and
+# `{ __typename }`, and the status, body and named headers api.fireflies.ai answers it with:
+# Fastify's 404 where nginx resolves the dot segments to `/graphql` and passes the path on as sent,
+# nginx's 404 where they resolve to any other path and its 400 where a `..` climbs past the root
+# (`nginx_path`), and Cloudflare's page where one does with a segment after it
+# (`request_target.refused_path`).
+_NGINX_400 = _NGINX_404.replace(b"404 Not Found", b"400 Bad Request")
+_FASTIFYS = {"access-control-allow-origin": "*", "strict-transport-security": _HSTS}
+_NGINXS = {"access-control-allow-origin": None, "strict-transport-security": _HSTS}
+_NEITHER = {"access-control-allow-origin": None, "strict-transport-security": None}
+_FIREFLIES_SENT_RAW = [
+    *(
+        pytest.param(m, p, 404, _not_found(m, p), _FASTIFYS, id=f"{m} {p}")
+        for m, p in (
+            ("POST", "/x/../graphql"),
+            ("POST", "/x//../graphql"),
+            ("POST", "/a/b/../../graphql"),
+            ("POST", "/x/..%2Fgraphql"),
+            ("POST", "/graphql/x/.."),
+            ("POST", "/./graphql"),
+            ("POST", "/graphql/."),
+            ("POST", "/%2e/graphql"),
+            ("POST", "/graphql/../graphql"),
         )
-    body = r.json()
-    assert len(body["errors"]) == 10
-    message = body["errors"][0]["message"]
-    assert message == "Too many requests. Please retry after Tue, 27 Oct 2026 00:00:00 GMT (UTC)"
-    assert body["errors"][0]["extensions"]["metadata"] == {"retryAfter": 1793059200000}
-    assert r.headers["x-ratelimit-remaining-api"] == "0"
-    now[0] = 1_793_059_200.0
-    r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
-    assert r.json().get("errors") is None
-    assert r.headers["x-ratelimit-remaining-api"] == "499"
+    ),
+    *(
+        pytest.param("POST", p, 404, _NGINX_404, _NGINXS, id=f"POST {p}")
+        for p in (
+            "/graphql/..",
+            "/graphql//..",
+            "/x/.//graphql",
+            "/graphql/x/../..",
+            "/x/..",
+            "/..\\graphql",
+        )
+    ),
+    *(
+        pytest.param(m, p, 400, _NGINX_400, _NEITHER, id=f"{m} {p}")
+        for m, p in (
+            ("POST", "/.."),
+            ("POST", "/x/../.."),
+            ("POST", "/x/..%2F.."),
+            ("POST", "/%2e%2e"),
+            ("POST", "/./.."),
+            ("POST", "/graphql/../.."),
+            ("GET", "/.."),
+            ("OPTIONS", "/.."),
+        )
+    ),
+    *(
+        pytest.param(
+            "POST", p, 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2), _NEITHER, id=f"POST {p}"
+        )
+        for p in ("/../graphql", "/./../graphql")
+    ),
+]
+
+
+@pytest.mark.parametrize("method, path, status, body, named", _FIREFLIES_SENT_RAW)
+def test_fireflies_answers_a_path_sent_as_written_as_fireflies_does(
+    live_server, method, path, status, body, named
+):
+    base_url, settings = live_server
+    request = (
+        b"%s /fireflies%s HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\n"
+        b"Content-Type: application/json\r\nContent-Length: %d\r\n\r\n%s"
+        % (
+            method.encode(),
+            path.encode(),
+            settings.admin_token.encode(),
+            len(_TYPENAME) if method == "POST" else 0,
+            _TYPENAME if method == "POST" else b"",
+        )
+    )
+    answer, headers, content = raw_exchange(base_url, request)
+    assert (answer, content, {name: headers.get(name) for name in named}) == (status, body, named)

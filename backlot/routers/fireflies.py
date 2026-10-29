@@ -304,11 +304,6 @@ def _resolver_fields(operation: engine.Operation) -> list[tuple[str, FieldNode]]
 # same field under two aliases, and 1 for a `transcript` it did not find, and none for
 # `{ __typename }`, a document it refused or a credential it did not take, on 2026-10-26 (UTC).
 
-#: The root fields a Free plan's key may run a minute and a calendar day in UTC: the
-#: `x-ratelimit-limit-api_burst` and `x-ratelimit-limit-api` api.fireflies.ai sent on 2026-10-26
-#: (UTC), which its limits page gives for the plan: "30 requests" and "500 requests".
-_PER_MINUTE = 30
-_PER_DAY = 500
 _TOO_MANY = "https://docs.fireflies.ai/miscellaneous/error-codes#too_many_requests"
 
 
@@ -375,8 +370,9 @@ class Spent:
 
 class Budget:
     """Each key's minute and day: the minute opens at the first field it counts and closes 60
-    seconds on, the day is the calendar day in UTC, and a field past either is refused while
-    :attr:`backlot.config.Settings.fireflies_enforce_rate_limits` is on. Measured on 2026-10-26
+    seconds on, the day is the calendar day in UTC, each holds the fields
+    :attr:`backlot.config.Settings.fireflies_per_minute` and ``fireflies_per_day`` give, and a field
+    past either is refused while ``fireflies_enforce_rate_limits`` is on. Measured on 2026-10-26
     (UTC): thirty `{ user { user_id } }` in 11 seconds were served with
     `x-ratelimit-remaining-api_burst` falling from 29 to 0 and `x-ratelimit-reset-api_burst` from
     60 to 50, the next three refused, `{ __typename }` beside them served, and a document of 33
@@ -384,12 +380,21 @@ class Budget:
 
     A key the minute refuses is held from its first refused field to 60 seconds on, past its
     minute's own close: each field it sends meanwhile is refused, counted in the minute it falls in
-    and not in the day, with the seconds left in `retry-after` and that moment in the message.
-    api.fireflies.ai refused one 51 seconds into a hold opened 10 seconds into a minute, with 9,
-    then served one 11 seconds later as the second of a new minute, the day down only by that one;
-    and refused fields 32 and 34 seconds into a hold opened 30 seconds into a minute with 28 and 26,
-    and one 5 seconds in with 56, a second over what the hold gives, on 2026-10-26 (UTC). ``clock``
-    is `time.time` unless a test hands in another."""
+    and not in the day, with the seconds left in `retry-after-api_burst`, and, while the day has
+    room, in `retry-after` and the message. api.fireflies.ai refused one 51 seconds into a hold
+    opened 10 seconds into a minute, with 9, then served one 11 seconds later as the second of a new
+    minute, the day down only by that one; and refused fields 32 and 34 seconds into a hold opened
+    30 seconds into a minute with 28 and 26, and one 5 seconds in with 56, a second over what the
+    hold gives, on 2026-10-26 (UTC).
+
+    A field past the day is refused until midnight UTC and counted in the minute all the same. An
+    answer refusing a field carries the `-api_burst` window where a field passed the minute,
+    `retry-after-api_burst` where the minute refused one, the `-api` window where one was served,
+    and `retry-after-api` where the day refused one. Once the day is spent, `retry-after`, the bare
+    `x-ratelimit-*` and the moment in the message are the day's; before, they are the minute's
+    where it refuses every field, and the day's numbers beside the minute's wait where it serves
+    one. Measured on 2026-10-29 (UTC) on a key with 15 fields left of its day: 17 fields at once,
+    then 1, 15 past the minute's 30, 3 and then 1 in the hold that opened, and 1 after it."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock
@@ -417,48 +422,59 @@ class Budget:
         today = self._days.get(key)
         if today is None or today[0] != int(now // 86400):
             today = self._days[key] = [int(now // 86400), 0]
-        enforce = get_settings().fireflies_enforce_rate_limits
+        settings = get_settings()
+        per_minute, per_day = settings.fireflies_per_minute, settings.fireflies_per_day
+        enforce = settings.fireflies_enforce_rate_limits
         held = enforce and now < self._held.get(key, now)
         refused: list[tuple[str, FieldNode]] = []
-        by_day = False
+        by_minute = by_day = passed = served = False
         for field in fields:
-            if held or (enforce and minute[1] >= _PER_MINUTE):
+            minute[1] += 1
+            if held or (enforce and minute[1] > per_minute):
                 refused.append(field)
-                minute[1] += 1
-            elif enforce and today[1] >= _PER_DAY:
+                by_minute = True
+                continue
+            passed = True
+            if enforce and today[1] >= per_day:
                 refused.append(field)
                 by_day = True
             else:
-                minute[1] += 1
                 today[1] += 1
+                served = True
         midnight = (today[0] + 1) * 86400
-        burst = _window("api_burst", _PER_MINUTE, minute[1], math.ceil(minute[0] + 60 - now))
-        day = _window("api", _PER_DAY, today[1], math.ceil(midnight - now))
+        burst = _window("api_burst", per_minute, minute[1], math.ceil(minute[0] + 60 - now))
+        day = _window("api", per_day, today[1], math.ceil(midnight - now))
         plain = {name.removesuffix("-api"): value for name, value in day.items()}
         if not refused:
             return Spent([], burst | day | plain, now)
-        if by_day:
-            # Not measured, as measuring it spends a day of the key's budget: the shape of the
-            # minute's refusal of a document it partly serves, with the day's numbers, whether or
-            # not any field is served.
-            wait = str(math.ceil(midnight - now))
-            headers = burst | day | {"retry-after-api": wait} | plain | {"retry-after": wait}
-            return Spent(refused, headers, midnight)
-        if not held:
+        if by_minute and not held:
             self._held[key] = now + 60
-        until = self._held[key]
-        wait = str(math.ceil(until - now))
-        if len(refused) < len(fields):
-            headers = burst | {"retry-after-api_burst": wait} | day | plain | {"retry-after": wait}
+        headers = burst if passed else {}
+        if by_minute:
+            headers["retry-after-api_burst"] = str(math.ceil(self._held[key] - now))
+        if served:
+            headers |= day
+        if by_day:
+            headers["retry-after-api"] = day["x-ratelimit-reset-api"]
+        if today[1] >= per_day:
+            wait = day["x-ratelimit-reset-api"]
+            bare = plain
+            retry_at = now + int(wait)
         else:
-            headers = {
-                "retry-after-api_burst": wait,
-                "retry-after": wait,
-                "x-ratelimit-limit": str(_PER_MINUTE),
-                "x-ratelimit-remaining": "0",
-                "x-ratelimit-reset": wait,
-            }
-        return Spent(refused, headers, until)
+            wait = headers["retry-after-api_burst"]
+            bare = plain
+            if not served:
+                bare = {
+                    "x-ratelimit-limit": str(per_minute),
+                    "x-ratelimit-remaining": "0",
+                    "x-ratelimit-reset": wait,
+                }
+            retry_at = self._held[key]
+        if served:
+            headers |= bare | {"retry-after": wait}
+        else:
+            headers |= {"retry-after": wait} | bare
+        return Spent(refused, headers, retry_at)
 
 
 def _window(name: str, limit: int, used: int, reset: int) -> dict[str, str]:
@@ -514,33 +530,57 @@ def _not_found(request: Request) -> Response:
     return _body_refusal(message, 404, "not_found")
 
 
-_NGINX_404 = (
-    b"<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n"
-    b"<center><h1>404 Not Found</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
+_NGINX_PAGE = (
+    b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
+    b"<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
 )
+_NGINX_404 = _NGINX_PAGE % ((b"404 Not Found",) * 2)
+_NGINX_400 = _NGINX_PAGE % ((b"400 Bad Request",) * 2)
 _NGINX_LOCATION = re.compile(rb"/graphql(/|$)", re.IGNORECASE)
 
 
-def nginx_passes(path: str) -> bool:
-    """Whether nginx in front of Fastify passes on ``path``, as a client sent it
-    (:func:`~backlot.routers.sent_path`): once each escape is decoded and each run of slashes is
-    one, it starts with `/graphql`, in any case, followed by a slash, by nothing or by a newline
-    that ends it. api.fireflies.ai answered with Fastify's 404 at each path :func:`_not_found`
-    names, and with nginx's (:data:`_NGINX_404`) at `/graphqlx`, `/graphql.json`, `/graphql;x`,
-    `/graphql%20`, `/graphql%7E`, `/x/graphql` and `/`, on 2026-10-25 (UTC)."""
-    decoded = re.sub(rb"/{2,}", b"/", urllib.parse.unquote_to_bytes(path))
-    return _NGINX_LOCATION.match(decoded) is not None
+def nginx_path(path: str) -> bytes | None:
+    """``path``, as a client sent it (:func:`~backlot.routers.sent_path`), as nginx in front of
+    Fastify reads it to pick a location: each escape decoded, each run of slashes one, then each
+    `.` segment dropped and each `..` segment taking the segment before it away; or ``None`` where a
+    `..` has no segment before it to take, which nginx refuses with :data:`_NGINX_400`. On
+    2026-10-29 (UTC) `/x/../graphql`, `/x//../graphql`, `/a/b/../../graphql`, `/x/..%2Fgraphql` and
+    `/graphql/x/..` drew Fastify's 404 from api.fireflies.ai, `/graphql/..`, `/graphql//..` and
+    `/x/.//graphql` :data:`_NGINX_404`, and `/..`, `/x/../..`, `/x/..%2F..` and `/%2e%2e`
+    :data:`_NGINX_400`."""
+    segments = re.sub(rb"/{2,}", b"/", urllib.parse.unquote_to_bytes(path)).split(b"/")[1:]
+    out: list[bytes] = []
+    for segment in segments:
+        if segment == b"..":
+            if not out:
+                return None
+            out.pop()
+        elif segment != b".":
+            out.append(segment)
+    return b"/" + b"/".join(out)
+
+
+def nginx_passes(path: bytes) -> bool:
+    """Whether nginx passes on ``path``, as :func:`nginx_path` reads it, to Fastify: it starts with
+    `/graphql`, in any case, followed by a slash, by nothing or by a newline that ends it.
+    api.fireflies.ai answered with Fastify's 404 at each path :func:`_not_found` names, and with
+    :data:`_NGINX_404` at `/graphqlx`, `/graphql.json`, `/graphql;x`, `/graphql%20`, `/graphql%7E`,
+    `/x/graphql` and `/`, on 2026-10-25 (UTC)."""
+    return _NGINX_LOCATION.match(path) is not None
 
 
 @router.api_route("/", methods=list(apollo_http.METHODS), include_in_schema=False)
 async def unrouted(request: Request):
     """Fireflies' answer at a path Fastify has no route for, each of which ``backlot.main`` routes
-    here: :data:`_NGINX_404` where nginx keeps the request (:func:`nginx_passes`), and Fastify's
-    where it passes it on, :func:`_preflight` to an `OPTIONS`, and to any other method,
-    after reading the body of one of :data:`_BODIED` (:func:`_fastify_read`), its not-found
-    handler's 404 (:func:`_not_found`). Fastify's answers carry what :func:`_from_fastify` adds, and
-    nginx's page :data:`_HSTS` alone."""
-    if not nginx_passes(sent_path(request.scope)):
+    here: nginx's page where nginx keeps the request (:func:`nginx_path`, :func:`nginx_passes`), its
+    400 without :data:`_HSTS` and its 404 with it alone, and Fastify's where it passes it on:
+    :func:`_preflight` to an `OPTIONS`, and to any other method, after reading the body of one of
+    :data:`_BODIED` (:func:`_fastify_read`), its not-found handler's 404 (:func:`_not_found`), each
+    with what :func:`_from_fastify` adds."""
+    path = nginx_path(sent_path(request.scope))
+    if path is None:
+        return Response(_NGINX_400, status_code=400, headers={"content-type": "text/html"})
+    if not nginx_passes(path):
         return Response(
             _NGINX_404,
             status_code=404,

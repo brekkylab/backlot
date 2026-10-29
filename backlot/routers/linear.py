@@ -69,10 +69,10 @@ ENGINE = build_engine()
 
 # --- the headers on an answer ----------------------------------------------------------------
 #
-# Read off the 1,058 answers api.linear.app gave on 2026-10-25 and 2026-10-26 (UTC) to the requests
-# the tests' tables hold and to each kind of answer with and without `Origin`. Of the headers
-# Cloudflare, Google and the edge add, `server`, `via`, `cf-ray`, `cf-cache-status`, `alt-svc` and
-# `age` are not sent.
+# Read off the answers api.linear.app gave on 2026-10-25 to 2026-10-28 (UTC) to the requests the
+# tests' tables hold and to each kind of answer with and without `Origin`. Backlot sends none of the
+# headers Cloudflare, Google and the edge add (`via`, `cf-ray`, `cf-cache-status`, `alt-svc` and
+# `age`), and its server's own `Server` where Cloudflare's says `cloudflare`.
 
 #: The `Cache-Control` Express sends on an answer that sets none of its own.
 _NO_STORE = "private, no-cache, no-store, must-revalidate"
@@ -273,11 +273,12 @@ async def graphql(request: Request):
     the one after it wrong too: those of :func:`_front`, ``body-parser`` (:func:`_has_body`,
     :func:`~backlot.graphql.body.express_reads_json`), Apollo Server
     (:mod:`backlot.graphql.apollo_http`) up to the choice of operation, then the credential and the
-    run (:func:`_answer`). Each answer of Express's carries what :func:`_express_sent` adds."""
-    front = _front(request)
-    if front is not None:
-        return front
-    return _express_sent(request, await _apollo_server(request))
+    run (:func:`_answer`). Each answer of Express's carries what :func:`_express_sent` adds, and any
+    answer at a path the load balancer reads as `/` carries `nosniff` (:func:`_at_the_root`)."""
+    response = _front(request)
+    if response is None:
+        response = _express_sent(request, await _apollo_server(request))
+    return _at_the_root(request, response)
 
 
 async def _apollo_server(request: Request) -> Response:
@@ -360,47 +361,54 @@ _BARE = frozenset('"<>^`{|}')
 def express_path(path: str) -> str:
     """``path``, as a client sent it (:func:`backlot.routers.sent_path`), as Express reads it behind
     Linear's front: a backslash is a slash, an escape of a character RFC 3986 leaves unreserved is
-    that character, a run of slashes is one, each character of :data:`_BARE` sent bare is escaped in
-    upper case, and any other escape is kept as sent. Express's 404 quoted `/%6Eosuch` as `/nosuch`,
-    `//nosuch` and `/nosuch//x` as `/nosuch` and `/nosuch/x`, `/a\\b` as `/a/b`, `/a%2fb` and
-    `/a%3cb` as sent, each character of :data:`_BARE` escaped in upper case (`|` as `%7C`), and
-    each other printable ASCII character but `%`, `?` and `#` as sent, on 2026-10-25 (UTC)."""
+    that character, the dot segments are resolved (:func:`_dots_resolved`), a run of slashes is
+    one, each character of :data:`_BARE` sent bare is escaped in upper case, and any other escape is
+    kept as sent. Express's 404 quoted `/%6Eosuch` as `/nosuch`, `//nosuch` and `/nosuch//x` as
+    `/nosuch` and `/nosuch/x`, `/a\\b` as `/a/b`, `/a%2fb` and `/a%3cb` as sent, each character of
+    :data:`_BARE` escaped in upper case (`|` as `%7C`), and each other printable ASCII character but
+    `%`, `?` and `#` as sent, on 2026-10-25 (UTC)."""
+    path = re.sub("/{2,}", "/", _dots_resolved(_unreserved(path)))
+    return "".join(f"%{ord(char):02X}" if char in _BARE else char for char in path)
+
+
+def _unreserved(path: str) -> str:
+    """``path`` with each backslash a slash and each escape of a character RFC 3986 leaves
+    unreserved that character."""
 
     def one(match: re.Match[str]) -> str:
         char = chr(int(match[1], 16))
         return char if char in _UNRESERVED else match[0]
 
-    path = re.sub("/{2,}", "/", _ESCAPE.sub(one, path.replace("\\", "/")))
-    return "".join(f"%{ord(char):02X}" if char in _BARE else char for char in path)
+    return _ESCAPE.sub(one, path.replace("\\", "/"))
 
 
 def routes_to_apollo(path: str) -> bool:
     """Whether Express hands ``path`` (:func:`express_path`) to Apollo Server: `/graphql` in any
-    case, alone or with a slash after it and anything after that, once its dot segments are
-    resolved (:func:`_dots_resolved`). api.linear.app served `/GRAPHQL`, `/GraphQL/`, `/graphql/`,
-    `/graphql/x` and `/Graphql/X/Y` and answered `/graphqlx`, `/graphql.json`, `/graphql;x`,
-    `/graphql%20` and `/graphql%2F` with Express's 404 on 2026-10-25 (UTC). On 2026-10-26 it served
-    `/./graphql`, `/x/../graphql`, `/graphql/.`, `/graphql/x/..` and `/graphql/x/%2E%2E`, and
-    answered `/graphql/..`, `/graphql/../x`, `/graphql/%2e%2E/x` and `/graphql/x/../..` with
-    Express's 404 and `/../graphql` with Cloudflare's 400."""
-    resolved = _dots_resolved(path)
-    return (
-        resolved is not None
-        and re.fullmatch(r"/graphql(?:/.*)?", resolved, re.ASCII | re.IGNORECASE) is not None
-    )
+    case, alone or with a slash after it and anything after that. api.linear.app served `/GRAPHQL`,
+    `/GraphQL/`, `/graphql/`, `/graphql/x` and `/Graphql/X/Y` and answered `/graphqlx`,
+    `/graphql.json`, `/graphql;x`, `/graphql%20` and `/graphql%2F` with Express's 404 on 2026-10-25
+    (UTC)."""
+    return re.fullmatch(r"/graphql(?:/.*)?", path, re.ASCII | re.IGNORECASE) is not None
 
 
-def _dots_resolved(path: str) -> str | None:
-    """``path`` with each `.` segment dropped and each `..` segment taking the one before it away,
-    or None where a `..` has no segment before it to take."""
+def _dots_resolved(path: str) -> str:
+    """``path`` with each `.` segment dropped and each `..` segment taking the segment before it
+    away, an empty one included, as a URL's path is resolved: a `..` with none before it takes
+    nothing, and a path that ends in either keeps the slash before it. Linear's front resolves them
+    so ahead of folding a run of slashes: on 2026-10-29 (UTC) api.linear.app served `/..\\graphql`
+    and `/graphql//..`, answered `/x//../graphql` and `/x/.//graphql` with Express's 404 quoting
+    `/x/graphql`, and `/graphql/x/../..` and `/r/b/%2e%2e` quoting `/` and `/r/`, and answered a
+    `GET` to `/r/..` with its greeting. Cloudflare refuses a `..` that climbs past the root with a
+    segment after it first (``backlot.request_target.refused_path``)."""
+    segments = path.split("/")[1:]
     out: list[str] = []
-    for segment in path.split("/")[1:]:
+    for segment in segments:
         if segment == "..":
-            if not out:
-                return None
-            out.pop()
+            out = out[:-1]
         elif segment != ".":
             out.append(segment)
+    if segments[-1] in (".", ".."):
+        out.append("")
     return "/" + "/".join(out)
 
 
@@ -421,28 +429,39 @@ async def express(request: Request):
     `X-Content-Type-Options: nosniff`, as api.linear.app sent them on 2026-10-25 and 2026-10-26:
     the greeting with an `ETag` to a `GET` and none to a `HEAD`, the methods with none, `Allow` and
     the edge's `Cache-Control` and `Cache-Tag` for an `OPTIONS`, and the 404 page with none and with
-    `Content-Security-Policy: default-src 'none'`. Every answer this route gives at a path Linear's
-    front reads as `/` (:func:`reads_as_root`), the load balancer's 501 and a preflight among
-    them, carries `nosniff` too."""
-    response = _front(request) or _express_route(request)
-    if reads_as_root(request.scope):
-        response.headers["x-content-type-options"] = "nosniff"
-    return response
+    `Content-Security-Policy: default-src 'none'`. The 404 page goes without its `Content-Length`,
+    which uvicorn sends in chunks, and with neither header to a `HEAD`, as api.linear.app sent it
+    to each of `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` and `PROPFIND` on
+    2026-10-29 (UTC). Any answer at a path the load balancer reads as `/` carries `nosniff`
+    (:func:`_at_the_root`)."""
+    return _at_the_root(request, _front(request) or _express_route(request))
 
 
 def reads_as_root(scope) -> bool:
-    """Whether Linear's front reads the path sent (:func:`backlot.routers.sent_path`) as `/`, once
-    :func:`express_path` has read it and its dot segments are resolved: api.linear.app put
-    `X-Content-Type-Options: nosniff` on the load balancer's 501 at `//`, `///`, `/\\`, `/%2E` and
-    `/x/..`, and not at `/%2F`, on 2026-10-26 (UTC)."""
-    return _dots_resolved(express_path(sent_path(scope))) == "/"
+    """Whether Linear's load balancer reads the path sent (:func:`backlot.routers.sent_path`) as
+    `/`: as :func:`express_path` reads a backslash and an escape (:func:`_unreserved`), but with a
+    run of slashes folded ahead of resolving the dot segments, where Express resolves them first."""
+    return _dots_resolved(re.sub("/{2,}", "/", _unreserved(sent_path(scope)))) == "/"
+
+
+def _at_the_root(request: Request, response: Response) -> Response:
+    """``response`` with `X-Content-Type-Options: nosniff` where Linear's load balancer reads the
+    path as `/` (:func:`reads_as_root`), whatever answered: api.linear.app put it on the load
+    balancer's 501 at `//`, `///`, `/\\`, `/%2E` and `/x/..`, and not at `/%2F`, on 2026-10-26
+    (UTC). On 2026-10-29 it put it on Apollo Server's 401 at `/graphql//..`, `/graphql///..` and
+    `/graphql/x//../..` and not at `/graphql//x/..` or `/graphql/./`, paths Express hands Apollo
+    Server alike; on the 200, 400 and 405, the preflight and the 501 at `/graphql//..`; and on
+    Express's 404 at `/x//..`."""
+    if reads_as_root(request.scope):
+        response.headers["x-content-type-options"] = "nosniff"
+    return response
 
 
 def slashes_alone(scope) -> bool:
     """Whether the path sent (:func:`backlot.routers.sent_path`) is slashes alone, where
     Cloudflare's `CONNECT` 400 carries `X-Content-Type-Options: nosniff`: api.linear.app sent it at
     `/`, `//` and `///`, and not at `/%2E`, `/x/..`, `/x/%2E%2E`, `/./`, `/..`, `/%2E%2E`, `/\\` or
-    `/nosuch`, on 2026-10-28 (UTC), where its front reads each of the first five as `/`
+    `/nosuch`, on 2026-10-28 (UTC), where its load balancer reads each of them but `/nosuch` as `/`
     (:func:`reads_as_root`)."""
     return re.fullmatch("/+", sent_path(scope)) is not None
 
@@ -470,6 +489,7 @@ def _express_route(request: Request) -> Response:
         response = Response(_not_found(request.method, path), status_code=404, media_type=_HTML)
         response.headers["content-security-policy"] = "default-src 'none'"
         _express_sent(request, response, etag=False)
+        del response.headers["content-length"]
     response.headers["x-content-type-options"] = "nosniff"
     return response
 
@@ -636,8 +656,7 @@ class RequestBudget:
     which the measurement did not vary. Past the limit api.linear.app answers a 429 that takes
     nothing: once the bucket of a caller with no credential was spent, ten more requests drew it,
     and one sent 13.8 seconds after the last served was served with `x-ratelimit-requests-remaining`
-    3, on 2026-10-27 (UTC). This serves past the limit, so the level stops at 0. ``clock`` is
-    `time.time` unless a test hands in another."""
+    3, on 2026-10-27 (UTC). This serves past the limit, so the level stops at 0."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock

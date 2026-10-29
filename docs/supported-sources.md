@@ -219,10 +219,13 @@ answered before a route runs included: five uppercase hex fields joined by colon
 the second the request arrived (measured 2026-09-22, 2026-09-23 and 2026-10-18), and a token's
 spent-window 403 quotes it and that second in its `message`. The front door's 400 for a raw byte in
 the request target (2026-10-23), its JSON 414 for a target of 8,192 bytes or more (8,174 on code
-search) and its 414 and 431 for a head that has not ended by its 68,552nd byte (2026-10-29) carry
-neither it nor the five `x-ratelimit-*`, on real as here. Real's `Date` is the second its answer
-left, the id's or one past it; under `backlot serve` it is uvicorn's, which reads the clock once a
-second, so it can be one behind the id's.
+search), its 414 and 431 for a head that has not ended by its 68,552nd byte, and its 400 page for a
+0x00 in a header value, a blank or `identity` `Transfer-Encoding` and an LF in the request target
+(2026-10-29) carry neither it nor the five `x-ratelimit-*`, on real as here. Its empty 400 for
+another control byte in a header value, from a request that sends no `Authorization`, carries the id
+with neither the five nor a `Date` (2026-10-29), on real as here. Real's `Date` is the second its
+answer left, the id's or one past it; under `backlot serve` it is uvicorn's, which reads the clock
+once a second, so it can be one behind the id's.
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository

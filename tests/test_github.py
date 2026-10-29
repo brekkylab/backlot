@@ -4659,7 +4659,7 @@ def test_github_backend_version_error_order(gh_client, path):
 
 
 #: Each of the two 414 pages real sends a long request: nginx's where the request line holds 8,192
-#: bytes (as sent, with the method, the spaces and the CR), and the gateway's JSON where the target
+#: bytes or more (as sent, with the method, the spaces and the CR), and the JSON where the target
 #: does.
 _LINE_PAGE_414 = (
     b"<html>\r\n<head><title>414 Request-URI Too Large</title></head>\r\n<body>\r\n"

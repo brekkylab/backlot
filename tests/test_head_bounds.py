@@ -105,9 +105,10 @@ _BOUNDS = [
     ("/msgraph", "/v1.0/me", 40_960, False, "graph 414", "graph 400"),
 ]
 
-#: How a head that ends after a long header meets the bound: the prefix, the path, whether the
-#: bytes counted are the header line's, the most of them real read, and its answer to one byte more
-#: (``None`` on a path no vendor owns, where that is read too).
+#: How a head that ends after a long header meets the bound: the prefix, the path, whether the bytes
+#: counted are the header line's, the most of them real read, and its answer to one byte more; on a
+#: path no vendor owns, with no bound, a head of 262,144 bytes and ``None``, one byte more being
+#: read as well.
 _ENDED = [
     ("/slack", "/api/api.test", False, 61_440, "slack"),
     ("", "/drive/v3/files", False, 65_536, "google"),
@@ -180,7 +181,7 @@ def test_a_head_that_ends_is_read_to_the_bound_real_read_it_to(
     live_server, mount, path, per_line, read, refused
 ):
     """The longest head that ends real read draws the answer the same request draws with `x=1`, and
-    one a byte longer real's refusal."""
+    one a byte longer real's refusal; on a path no vendor owns, both draw that answer."""
     base_url, _ = live_server
 
     def head(counted: int) -> bytes:

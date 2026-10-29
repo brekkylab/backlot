@@ -6,10 +6,11 @@ A front door bounds either the whole head, every byte of it that has arrived, or
 the bytes before the line's LF with the CR among them (:attr:`Bound.per_line`). Once that many have
 arrived it answers and closes the connection, with a page that turns on whether the bound was
 reached in the request line or in the headers. A head whose last byte, the LF that ends it, is the
-bound's last gets past a head bound on all but Graph (:attr:`Bound.refuses_its_end`); a line bound
-counts no LF, so a line holding that many bytes is refused whether its LF follows or not. The
-answer carries the front door's status line, media type and body with its length and
-`Connection: close`, and none of its other headers (`Server`, `Date`, `Via` and the request ids).
+bound's last gets past a head bound unless :attr:`Bound.refuses_its_end`; a line bound counts no LF,
+so a line holding that many bytes is refused whether its LF follows or not. The answer here is the
+front door's status line, `Content-Type` and body, with `Content-Length` and `Connection: close`,
+and none of the front door's other headers (`Server`, `Date`, `Via`, `Cache-Control`,
+`Referrer-Policy`, `X-Cache`, `X-Amz-Cf-Pop` and the request ids).
 
 Bytes are counted as the client sent them but for the prefix a path starts with here and real never
 receives (``backlot.request_target.front_door``): the head real gets is that much shorter. The rest
@@ -21,11 +22,12 @@ head it has had no byte of for about five), and N was bisected for a request lin
 (`GET <path>?_=<r>&x=aaa…`) and for a header with none (`X-A: aaa…` after a complete request line,
 `Host`, `User-Agent` and `Connection`). A 1,000-byte header line before `X-A` moved the bound of
 Jira Cloud and of the four behind Cloudflare by 1,000, which makes theirs line bounds. The same
-requests with their LF and the end of the head, bisected the same day, showed how each bound takes a
-head that ends: on Slack, Google and S3 one of the bound's length is read and one byte longer is
-refused, on Graph one of the bound's length is refused, and on Cloudflare a request line of 131,071
-bytes before its LF is read and one of 131,072 refused, and a header line the same on Linear and
-Fireflies. GitHub's and Jira Cloud's ended heads met a lower bound first.
+requests with their LF and the end of the head, bisected the same day, showed how five of the bounds
+take a head that ends: on Slack, Google and S3 one of the bound's length is read and one byte longer
+is refused, on Graph one of the bound's length is refused, and on Cloudflare a request line of
+131,071 bytes before its LF is read and one of 131,072 refused, and a header line the same on Linear
+and Fireflies. GitHub's and Jira Cloud's ended heads met a lower bound first; GitHub's bound is
+taken to read one as Slack's does.
 """
 
 from __future__ import annotations

@@ -128,7 +128,7 @@ async def _validate_bad_credential(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Bad credentials")
 
 
-#: The routes real answers whatever the length of their request line and path
+#: The routes on which real answers neither the request line's 414 nor the path's
 #: (:func:`_refuse_a_long_line_or_path`).
 _SERVED_HOWEVER_LONG = frozenset(
     {

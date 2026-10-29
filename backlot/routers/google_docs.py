@@ -53,7 +53,7 @@ _DOCS_VIEW = "type.googleapis.com/google.apps.docs.v1"
 # refusal at `….value`; a `float`; a `timestamp`; and the members of each oneof, refused as a
 # second member is.
 _DOCS_PROTO = json.loads(
-    (Path(__file__).resolve().parent.parent / "data" / "docs_proto.json").read_text(
+    (Path(__file__).resolve().parent.parent / "data" / "gdocs_proto.json").read_text(
         encoding="utf-8"
     )
 )

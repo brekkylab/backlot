@@ -80,12 +80,14 @@ def from_google_discovery(doc: Mapping[str, Any]) -> dict[tuple[str, str], Opera
                 if isinstance(p, dict) and p.get("location") == "query"
             }
             ref = (method.get("response") or {}).get("$ref")
+            body = (method.get("request") or {}).get("$ref")
             o = Operation(
                 method.get("httpMethod", "GET").lower(),
                 canonical(service_path + method["path"]),
                 frozenset(params | common),
                 method.get("id") or "",
                 f"{prefix}.{ref}" if ref else "",
+                f"{prefix}.{body}" if body else "",
             )
             ops[o.key] = o
         for child in (node.get("resources") or {}).values():
@@ -309,7 +311,7 @@ class TypesTarget(Protocol):
     """What :func:`types_measure` needs of one document's comparison."""
 
     spec_url: str
-    walk: Callable[[float], list[tuple[str, Any]]] | None
+    walk: Callable[[float], list[tuple[Any, ...]]] | None
 
 
 def types_measure(spec: TypesTarget, doc: Mapping[str, Any], *, timeout: float) -> Measurement:
@@ -317,20 +319,34 @@ def types_measure(spec: TypesTarget, doc: Mapping[str, Any], *, timeout: float) 
     against what a running Backlot served, with the statuses ``docs/fidelity.md`` gives a Google
     source's `types`.
 
+    A walk entry is ``(method, answer)``, or ``(method, answer, sent)`` for a method whose request
+    body Backlot reads into the vendor's message (`backlot.routers.google._pj_messages`): its
+    request message and every message that reaches join the types, a field marked as carried when
+    the walk sent it, so the baseline records the messages a route reads its body against.
+
     Every one of them is listed whether or not Backlot serves it, where a GraphQL source lists none
     of the vendor's types Backlot does not declare: a `fields` mask is read against the whole of
     each (`backlot.routers.google._gmask_select`), so the baseline has to carry it offline.
     A field the vendor does not declare is `extra`, and breaking."""
     types = declared_types(doc)
-    answers = {o.id: o.response for o in from_google_discovery(doc).values() if o.response}
-    walked: list[tuple[str, Any]] = spec.walk(timeout) if spec.walk else []
+    ops = from_google_discovery(doc).values()
+    answers = {o.id: o.response for o in ops if o.response}
+    requests = {o.id: o.request for o in ops if o.request}
+    walked: list[tuple[Any, ...]] = spec.walk(timeout) if spec.walk else []
     served: dict[str, set[str]] = {}
-    for method, body in walked:
+    roots: set[str] = set()
+    for method, body, *sent in walked:
         if method not in answers:
             raise FidelityError(f"{spec.spec_url} declares no response for {method!r}")
         served_fields(types, answers[method], body, served)
+        roots.add(answers[method])
+        if sent:
+            if method not in requests:
+                raise FidelityError(f"{spec.spec_url} declares no request for {method!r}")
+            served_fields(types, requests[method], sent[0], served)
+            roots.add(requests[method])
     reached: set[str] = set()
-    todo = sorted({answers[m] for m, _ in walked})
+    todo = sorted(roots)
     while todo:
         name = todo.pop()
         if name in reached or name not in types:
@@ -354,7 +370,7 @@ def types_measure(spec: TypesTarget, doc: Mapping[str, Any], *, timeout: float) 
                         "missing_field",
                         GAP,
                         f"{name}.{field}",
-                        f"the vendor declares it ({type_}); no answer the walk read carried it",
+                        f"the vendor declares it ({type_}); no answer the walk read, nor body it sent, carried it",
                     )
                 )
         for field in sorted((carried or set()) - set(types[name])):

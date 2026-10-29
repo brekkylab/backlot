@@ -37,6 +37,8 @@ class Operation:
     id: str = ""
     # The message it answers with, where the document names one: a discovery method's `response`.
     response: str = ""
+    # The message its body is, where the document names one: a discovery method's `request`.
+    request: str = ""
 
     @property
     def key(self) -> tuple[str, str]:
@@ -162,5 +164,6 @@ def inventory(
         else:
             status = IMPLEMENTED if key in real else EXTRA
         response = real[key].response if key in real else ""
-        out.append(OperationEntry(str(op), status, name, response))
+        request = real[key].request if key in real else ""
+        out.append(OperationEntry(str(op), status, name, response, request))
     return OperationSurface(tuple(out))

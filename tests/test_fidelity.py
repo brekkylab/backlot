@@ -880,9 +880,12 @@ def test_every_served_element_is_one_its_baseline_records_served():
             schema = baseline.surface.schema
             types = {n: {f: m.type for f, m in t.fields.items()} for n, t in schema.types.items()}
             answers = {e.id: e.response for e in baseline.operations if e.response}
+            requests = {e.id: e.request for e in baseline.operations if e.request}
             served: dict[str, set[str]] = {}
-            for method, body in (read for walk in walks for read in walk(20.0)):
+            for method, body, *sent in (read for walk in walks for read in walk(20.0)):
                 google_discovery_diff.served_fields(types, answers[method], body, served)
+                for request in sent:
+                    google_discovery_diff.served_fields(types, requests[method], request, served)
             elements = set(served) | {f"{n}.{f}" for n, fs in served.items() for f in fs}
             recorded = {p for p, st in schema.elements().items() if st in (IMPLEMENTED, EXTRA)}
             assert recorded == elements, rerun

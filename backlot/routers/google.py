@@ -4471,6 +4471,50 @@ def _editor_store(
     )
 
 
+class _EditorRefused(Exception):
+    """One request of an editor's `batchUpdate` refused, worded as real words what follows
+    ``Invalid requests[i].<kind>: ``."""
+
+
+def _editor_batch(
+    requests: list[dict],
+    kinds: dict[str, str],
+    apply: dict[str, Callable[[dict], tuple[dict, bool]]],
+    product: str,
+) -> list[dict]:
+    """The replies to an editor's `batchUpdate` requests, each checked and applied in order by
+    ``apply``'s function for its kind, which answers its reply and whether real fails on it once
+    every request has been read. ``kinds`` gives each kind's JSON name by the proto name a read
+    body carries it under, and ``product`` names the editor.
+
+    Measured 2026-10-29 on Docs' `documents.batchUpdate`: a request with no kind set is
+    ``Invalid requests[i]: No request set.``, a refusal names its request and kind and only the
+    first is answered, and a 500 a request leads to comes after the refusals of every request
+    behind it. A kind ``apply`` lacks is refused naming itself. The caller keeps what the
+    functions changed only once this returns."""
+    replies = []
+    fails = False
+    for i, req in enumerate(requests):
+        kind = next(iter(req), None)
+        if kind is None:
+            raise gerr.invalid_argument(f"Invalid requests[{i}]: No request set.")
+        name = kinds[kind]
+        try:
+            if kind not in apply:
+                raise _EditorRefused(
+                    f"'{name}' is not served by Backlot: real {product} applies it, and nothing "
+                    "here keeps what it changes."
+                )
+            reply, failed = apply[kind](req[kind])
+        except _EditorRefused as refused:
+            raise gerr.invalid_argument(f"Invalid requests[{i}].{name}: {refused}") from None
+        replies.append(reply)
+        fails |= failed
+    if fails:
+        raise gerr.internal_error()
+    return replies
+
+
 def _enum_error(field: str, enum: protojson.Enum, value: str) -> str:
     """Google's own wording for a bad read enum — it names the proto field and message type, e.g.
     ``Invalid value at 'major_dimension' (…sheets.v4.Dimension), "DIAGONAL"``. Measured, because a
@@ -4542,10 +4586,20 @@ _GOOGLE_RECORDED = json.loads((_BASELINES / "google_drive.json").read_text(encod
 _PJ_SCALAR_KINDS = {"integer": "int32", "number": "double", "boolean": "bool", "string": "string"}
 
 
-def _pj_messages(package: str, enums: dict) -> Callable[[str], protojson.Message]:
+def _pj_messages(
+    package: str,
+    enums: dict,
+    oneofs: dict | None = None,
+    wrappers: frozenset = frozenset(),
+    nested: dict | None = None,
+) -> Callable[[str], protojson.Message]:
     """A reader of the recorded messages of one editor API: ``package`` is its type URL prefix
     (``type.googleapis.com/google.apps.sheets.v4``), and ``enums`` the `protojson.Enum` of each
-    enum field by ``(message, field)``, the baseline recording an enum as `string`."""
+    enum field by ``(message, field)``, the baseline recording an enum as `string`. A discovery
+    document records neither a oneof nor an `Int32Value`, so ``oneofs`` names the oneof each field
+    in one belongs to and ``wrappers`` each wrapped field, both by ``(message, field)``; nor which
+    message is declared inside another, which ``nested`` spells for its type URL by name."""
+    oneofs, nested = oneofs or {}, nested or {}
     built: dict[str, protojson.Message] = {}
 
     def message(name: str) -> protojson.Message:
@@ -4554,28 +4608,45 @@ def _pj_messages(package: str, enums: dict) -> Callable[[str], protojson.Message
         fields: list[protojson.Field] = []
         # kept before its fields are read, for a message that holds itself: a Docs table cell
         # holds the structural elements that hold the table
-        built[name] = protojson.Message(f"{package}.{name.split('.', 1)[1]}", fields)
+        built[name] = protojson.Message(
+            f"{package}.{nested.get(name, name.split('.', 1)[1])}", fields
+        )
         for json_name, member in _GOOGLE_RECORDED[name].get("fields", {}).items():
             type_ = member.get("type", "any")
             repeated = type_.startswith("[") and type_ != "[[any]]"
             inner = type_[1:-1] if repeated else type_
             proto = re.sub(r"(?<!^)(?=[A-Z])", "_", json_name).lower()
             enum = enums.get((name, json_name))
+            oneof = oneofs.get((name, json_name))
             if enum is not None:
                 fields.append(
-                    protojson.Field(json_name, proto, "enum", enum=enum, repeated=repeated)
+                    protojson.Field(
+                        json_name, proto, "enum", enum=enum, repeated=repeated, oneof=oneof
+                    )
                 )
             elif inner in _GOOGLE_RECORDED:
                 fields.append(
                     protojson.Field(
-                        json_name, proto, "message", message=message(inner), repeated=repeated
+                        json_name,
+                        proto,
+                        "message",
+                        message=message(inner),
+                        repeated=repeated,
+                        oneof=oneof,
                     )
                 )
             elif type_ == "[[any]]":
                 fields.append(protojson.Field(json_name, proto, "rows"))
             elif inner in _PJ_SCALAR_KINDS:
                 fields.append(
-                    protojson.Field(json_name, proto, _PJ_SCALAR_KINDS[inner], repeated=repeated)
+                    protojson.Field(
+                        json_name,
+                        proto,
+                        _PJ_SCALAR_KINDS[inner],
+                        wrapper=(name, json_name) in wrappers,
+                        repeated=repeated,
+                        oneof=oneof,
+                    )
                 )
             else:  # a map or a bare JSON value: kept as sent
                 fields.append(protojson.Field(json_name, proto, "any"))

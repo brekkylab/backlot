@@ -15,7 +15,8 @@ A document does not always carry one contract. Google names its batch endpoint i
 ``batchPath`` rather than declaring it under ``resources``, so each Google document is read for two:
 the operations a path diff pairs, and that field, compared against the batch routes ``batch_mount``
 says the source speaks for. A document a ``walk`` reads is read for a third, the messages its
-methods answer with, against what a running server answers. All read the same fetched document.
+methods answer with and the writes it sends take, against what a running server answers and what
+the walk sent. All read the same fetched document.
 
 
 Ten of the twelve need no credential. All twelve run on a schedule and never on a pull request:
@@ -127,9 +128,9 @@ class Spec:
     # fresh memory address into the file on every run.
     resolve_url: hubspot_catalog.Entry | None = None
     # A discovery document's reads to make of a running Backlot, each named by the method it is
-    # (`google_walks.sheets`). Set, the document's response types join the source's baseline as
-    # `types` (`google_discovery_diff.types_measure`).
-    walk: Callable[[float], list[tuple[str, Any]]] | None = None
+    # (`google_walks.sheets`). Set, the document's response types, and the request types of the
+    # writes it sends, join the source's baseline as `types` (`google_discovery_diff.types_measure`).
+    walk: Callable[[float], list[tuple[Any, ...]]] | None = None
 
     @property
     def endpoint(self) -> str:

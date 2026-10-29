@@ -4,7 +4,8 @@ Outside the router for the reason `gsheets` is: the importer is the other caller
 
 A body is stored as real serves `body.content` with every `startIndex` and `endIndex` left out, and
 :func:`indexed` puts them back at read time, so the stored form is the vendor's own. A document
-that states no structure is stored as nothing and read through :func:`from_text`.
+that states no structure is stored as nothing and read through :func:`from_text`, until its first
+write stores that reading (:class:`Body`).
 
 Measured against the live Docs v1 API on 2026-10-26, as a Workspace member on documents it owns and
 as a second account on the Docs it can read.
@@ -13,8 +14,10 @@ as a second account on the Docs it can read.
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import re
+import unicodedata
 from pathlib import Path
 
 from backlot import synth
@@ -85,7 +88,7 @@ def _newline_style(marks: dict) -> dict:
     return text_style({k: v for k, v in marks.items() if k != "link"})
 
 
-def heading_id(file_id: str, ordinal: int) -> str:
+def heading_id(file_id: str, ordinal: int | str) -> str:
     """A heading paragraph's `headingId`: ``h.`` and twelve base-36 characters, the length 262 of
     281 measured ids have (the rest are one or two shorter). Real gave one to every TITLE,
     SUBTITLE and HEADING_n paragraph in all but one Doc read, and none to NORMAL_TEXT."""
@@ -176,3 +179,293 @@ def indexed(content: list[dict]) -> list[dict]:
 
 def _span(start: int, end: int) -> dict:
     return ({"startIndex": start} if start else {}) | {"endIndex": end}
+
+
+# --- a body opened for a write --------------------------------------------------------------------
+#
+# Measured against the live Docs v1 API on 2026-10-29, as a Workspace member writing a Doc it owns,
+# through `documents.batchUpdate`'s `insertText`, `deleteContentRange` and `replaceAllText`.
+
+# The characters a grapheme cluster continues with, beyond a combining mark: the zero-width joiner
+# and the five emoji skin tones (Extend, in Unicode's text segmentation).
+_ZWJ = chr(0x200D)
+_SKIN_TONES = ("\U0001f3fb", "\U0001f3ff")
+_REGIONAL = ("\U0001f1e6", "\U0001f1ff")
+# The Hangul jamo pairs one syllable joins, by text segmentation's L, V, T, LV and LVT.
+_HANGUL_JOINS = frozenset(
+    {
+        ("L", "L"),
+        ("L", "V"),
+        ("L", "LV"),
+        ("L", "LVT"),
+        ("LV", "V"),
+        ("LV", "T"),
+        ("V", "V"),
+        ("V", "T"),
+        ("LVT", "T"),
+        ("T", "T"),
+    }
+)
+
+
+def _hangul(ch: str) -> str | None:
+    cp = ord(ch)
+    if 0x1100 <= cp <= 0x115F or 0xA960 <= cp <= 0xA97C:
+        return "L"
+    if 0x1160 <= cp <= 0x11A7 or 0xD7B0 <= cp <= 0xD7C6:
+        return "V"
+    if 0x11A8 <= cp <= 0x11FF or 0xD7CB <= cp <= 0xD7FB:
+        return "T"
+    if 0xAC00 <= cp <= 0xD7A3:
+        return "LV" if (cp - 0xAC00) % 28 == 0 else "LVT"
+    return None
+
+
+def _pictographic(ch: str) -> bool:
+    """Whether a character is an emoji a zero-width joiner joins to the one before it: the
+    pictographic blocks, without the full Extended_Pictographic table."""
+    cp = ord(ch)
+    return 0x1F000 <= cp <= 0x1FAFF or 0x2600 <= cp <= 0x27BF or 0x2300 <= cp <= 0x23FF
+
+
+def _unlinked(style: dict) -> dict:
+    """A run's style with its link taken off, along with the underline and colour a link brings:
+    what text written next to a link, and not inside it, is given."""
+    return {
+        k: v
+        for k, v in style.items()
+        if k not in ("link", "underline") and not (k == "foregroundColor" and v == _LINK_COLOR)
+    }
+
+
+def _heading(style: dict) -> bool:
+    return style.get("namedStyleType", "NORMAL_TEXT") != "NORMAL_TEXT"
+
+
+class Body:
+    """A document's body opened for a write: each character with the `TextStyle` of the run it sits
+    in and that run, and each paragraph's `paragraphStyle`, every paragraph ending at a newline. A
+    write changes it in memory, and :meth:`content` is what is stored back.
+
+    A run is kept apart from its neighbour of the same style until a delete brings the two
+    together: measured, text inserted at a link's end, unstyled, stayed a run of its own before the
+    unstyled text after the link, and so did italic text inserted at the start of an italic run,
+    while deleting a bold run joined the unstyled runs either side of it.
+
+    Positions here count characters; :meth:`position` turns a request's index, in UTF-16 code
+    units, into one. The checks a request's refusal names are the router's
+    (`routers.google_docs`), which asks :meth:`position` and :meth:`splits_cluster`."""
+
+    def __init__(self, file_id: str, content: list[dict], revision: int):
+        self.file_id = file_id
+        self.revision = revision
+        self._section = content[0]
+        self._runs = itertools.count()
+        self.chars: list[tuple[str, dict, int]] = []
+        self.paragraphs: list[dict] = []
+        for el in content[1:]:
+            for pe in el["paragraph"]["elements"]:
+                run, n = pe["textRun"], next(self._runs)
+                self.chars += [(c, run.get("textStyle", {}), n) for c in run["content"]]
+            self.paragraphs.append(el["paragraph"].get("paragraphStyle", {}))
+        self._split = 0
+
+    @property
+    def end(self) -> int:
+        """The body's end index: one past its last newline."""
+        return 1 + sum(utf16_len(c) for c, *_ in self.chars)
+
+    def position(self, index: int) -> int | None:
+        """The character a body index falls before, or None when it falls between the two halves
+        of a surrogate pair. ``index`` is at least 1 and at most :attr:`end`."""
+        at = 1
+        for pos, (c, *_) in enumerate(self.chars):
+            if at == index:
+                return pos
+            if at > index:
+                return None
+            at += utf16_len(c)
+        return len(self.chars) if at == index else None
+
+    def splits_cluster(self, pos: int) -> bool:
+        """Whether an insert before the character at ``pos`` would land inside a grapheme cluster:
+        measured, between a letter and U+0301, an emoji and a skin tone, two regional indicators of
+        a flag, a Hangul leading and vowel jamo, a heart and U+FE0F, and a man and the zero-width
+        joiner before a woman in a family emoji. Inserting U+0301 after a letter composes a cluster
+        and was taken."""
+        if pos == 0 or pos >= len(self.chars):
+            return False
+        prev, nxt = self.chars[pos - 1][0], self.chars[pos][0]
+        if prev == "\n":
+            return False
+        if unicodedata.category(nxt) in ("Mn", "Mc", "Me") or nxt == _ZWJ:
+            return True
+        if _SKIN_TONES[0] <= nxt <= _SKIN_TONES[1]:
+            return True
+        if prev == _ZWJ and _pictographic(nxt):
+            return True
+        if _REGIONAL[0] <= prev <= _REGIONAL[1] and _REGIONAL[0] <= nxt <= _REGIONAL[1]:
+            run = 0
+            while (
+                pos - 1 - run >= 0 and _REGIONAL[0] <= self.chars[pos - 1 - run][0] <= _REGIONAL[1]
+            ):
+                run += 1
+            return run % 2 == 1
+        return (_hangul(prev), _hangul(nxt)) in _HANGUL_JOINS
+
+    def _paragraph_of(self, pos: int) -> int:
+        return sum(1 for c, *_ in self.chars[:pos] if c == "\n")
+
+    def _starts_paragraph(self, pos: int) -> bool:
+        return pos == 0 or self.chars[pos - 1][0] == "\n"
+
+    def _style_at(self, pos: int) -> tuple[dict, bool]:
+        """The style text inserted before ``pos`` takes, and whether a link was taken off it: the
+        character before it's, or at the start of a paragraph the first character's, the newline's
+        in an empty one; a link only between two characters of that link. Measured on inserts at
+        both ends of and inside a bold run and a link, at the start of an italic paragraph after a
+        struck-through newline, and into an empty paragraph."""
+        if self._starts_paragraph(pos):
+            style, inside = self.chars[pos][1], False
+        else:
+            style = self.chars[pos - 1][1]
+            inside = self.chars[pos][1].get("link") == style.get("link")
+        if inside or "link" not in style:
+            return style, False
+        return _unlinked(style), True
+
+    def _run_at(self, pos: int, style: dict) -> int:
+        """The run text in ``style`` inserted before ``pos`` joins: the one before it in the same
+        paragraph when that is its style; at a paragraph's start the one after it, when the newline
+        before is in that style too, measured on inserts at the start of a heading, into an empty
+        paragraph and at the start of an italic paragraph after a struck-through newline, which
+        alone stayed a run of its own; and a run of its own otherwise."""
+        if not self._starts_paragraph(pos):
+            before = self.chars[pos - 1]
+            return before[2] if before[1] == style else next(self._runs)
+        after = self.chars[pos]
+        if after[1] == style and (pos == 0 or self.chars[pos - 1][1] == style):
+            return after[2]
+        return next(self._runs)
+
+    def _split_style(self, style: dict) -> dict:
+        """The `paragraphStyle` of a paragraph an inserted newline makes: the one it was cut from,
+        a heading with a `headingId` of its own."""
+        out = {k: v for k, v in style.items() if k != "headingId"}
+        if not _heading(style):
+            return out
+        self._split += 1
+        return {"headingId": heading_id(self.file_id, f"r{self.revision}.{self._split}")} | out
+
+    def insert(self, pos: int, text: str, style: dict | None = None) -> None:
+        """``text`` before the character at ``pos``, every character of it in one style (`_style_at`
+        unless given). Each newline in it ends a paragraph styled as the one it was inserted in;
+        at a paragraph's start the new paragraphs come before the one they were cut from, which
+        keeps its `headingId`, and anywhere else after it. Measured on newlines inserted at the
+        start, middle and end of a heading."""
+        at_start = self._starts_paragraph(pos)
+        unlinked = False
+        if style is None:
+            style, unlinked = self._style_at(pos)
+        # text a link was taken off stays a run of its own, measured beside unstyled text after
+        # the link
+        run = next(self._runs) if unlinked else self._run_at(pos, style)
+        p = self._paragraph_of(pos)
+        self.chars[pos:pos] = [(c, style, run) for c in text]
+        own = self.paragraphs[p]
+        made = [self._split_style(own) for _ in range(text.count("\n"))]
+        if made:
+            self.paragraphs[p : p + 1] = [*made, own] if at_start else [own, *made]
+
+    def delete(self, start: int, end: int) -> None:
+        """The characters in ``[start, end)``. The paragraphs a deleted newline joins take the first
+        one's style, or, when the range starts at that paragraph's start, the last one's. Measured
+        on ranges from inside and from the start of a heading into the paragraph after it, and on
+        whole paragraphs."""
+        first = self._paragraph_of(start)
+        joined = sum(1 for c, *_ in self.chars[start:end] if c == "\n")
+        keep = first + joined if self._starts_paragraph(start) else first
+        del self.chars[start:end]
+        if joined:
+            self.paragraphs[first : first + joined + 1] = [self.paragraphs[keep]]
+        if 0 < start < len(self.chars) and self.chars[start - 1][1] == self.chars[start][1]:
+            left, right, at = self.chars[start - 1][2], self.chars[start][2], start
+            while at < len(self.chars) and self.chars[at][2] == right:
+                self.chars[at] = (*self.chars[at][:2], left)
+                at += 1
+
+    def find(self, text: str, *, match_case: bool, regex: bool) -> list[tuple[int, int]]:
+        """Where ``text`` matches, as ``[start, end)`` character ranges, left to right and not
+        overlapping, newlines included: measured, a match may cross paragraphs, `aa` matches
+        `aaa` once, and without `matchCase` the comparison folds case fully, `STRASSE` matching
+        `straße` and `ÉTÉ` `été`. A regular expression reads `^` at each paragraph's start and
+        `.` as no newline, and one that does not compile matches nothing; an empty match takes the
+        character it stands before, measured on `z*`, which replaced every character of a Doc."""
+        body = "".join(c for c, *_ in self.chars)
+        if regex:
+            try:
+                pattern = re.compile(text, re.MULTILINE | (0 if match_case else re.IGNORECASE))
+            except re.error:
+                return []
+            return [
+                (m.start(), max(m.end(), m.start() + 1))
+                for m in pattern.finditer(body)
+                if m.start() < len(body)
+            ]
+        if match_case:
+            folded, origin = body, list(range(len(body)))
+            needle = text
+        else:
+            parts: list[str] = []
+            origin = []
+            for pos, c in enumerate(body):
+                parts.append(c.casefold())
+                origin += [pos] * len(parts[-1])
+            folded, needle = "".join(parts), text.casefold()
+        out = []
+        at = folded.find(needle)
+        while at >= 0:
+            last = at + len(needle) - 1
+            whole = (at == 0 or origin[at - 1] != origin[at]) and (
+                last + 1 == len(origin) or origin[last + 1] != origin[last]
+            )
+            if whole:
+                out.append((origin[at], origin[last] + 1))
+                at = folded.find(needle, last + 1)
+            else:
+                at = folded.find(needle, at + 1)
+        return out
+
+    def replace(self, matches: list[tuple[int, int]], text: str) -> None:
+        """Each match replaced by ``text`` in the style of its first character, measured on matches
+        starting either side of a bold run's edge. The body's last newline stays: a match ending
+        with it keeps it after the replacement, measured on `last\\n` and on `\\n`."""
+        for start, end in reversed(matches):
+            style = self.chars[start][1]
+            end = min(end, len(self.chars) - 1)
+            if end > start:
+                self.delete(start, end)
+            if text:
+                self.insert(start, text, style)
+
+    def text(self) -> str:
+        """The body as the text Drive's search and export read: one line per paragraph."""
+        return "".join(c for c, *_ in self.chars)[:-1]
+
+    def content(self) -> list[dict]:
+        """The body as it is stored, one `textRun` per run in each paragraph."""
+        out = [self._section]
+        runs: list[tuple[str, dict, int]] = []
+        p = 0
+        for c, style, run in self.chars:
+            if runs and runs[-1][2] == run:
+                runs[-1] = (runs[-1][0] + c, style, run)
+            else:
+                runs.append((c, style, run))
+            if c == "\n":
+                elements = [{"textRun": {"content": t, "textStyle": s}} for t, s, _ in runs]
+                out.append(
+                    {"paragraph": {"elements": elements, "paragraphStyle": self.paragraphs[p]}}
+                )
+                runs, p = [], p + 1
+        return out

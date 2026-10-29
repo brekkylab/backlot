@@ -246,10 +246,12 @@ PATCHABLE = {
     # `subtype` is here because a deleted thread root becomes a `tombstone` rather than
     # disappearing (`chat_delete`), which is a change to the message real keeps serving.
     "slack": frozenset({"content", "reactions", "edited", "thread_ts", "subtype"}),
-    # A Sheets write changes a file's cells, which live in `gdrive_sheets` (see SATELLITES), and
-    # these two follow from them. `content` is the first sheet's CSV, which `files.export` and
-    # fullText search read: measured 2026-10-26, both reflect a `values.update` on real Drive.
-    # `updated_ts` is `modifiedTime`, which real moves to the write's own time.
+    # A Sheets write changes a file's cells, which live in `gdrive_sheets` (see SATELLITES), and a
+    # Docs write its body, in `gdrive_doc_bodies`; these two follow from them. `content` is the
+    # first sheet's CSV or the document's text, which `files.export` and fullText search read:
+    # measured 2026-10-26, both reflect a `values.update` on real Drive. `updated_ts` is
+    # `modifiedTime`, which real moves to the write's own time, a Docs write's within two seconds
+    # (measured 2026-10-29).
     "google_drive": frozenset({"content", "updated_ts"}),
 }
 
@@ -499,9 +501,10 @@ CREATE TABLE IF NOT EXISTS gdrive_spreadsheets (
     file_id TEXT PRIMARY KEY, properties TEXT NOT NULL
 );
 
--- A document's stored body (`backlot.gdocs`).
+-- A document's stored body (`backlot.gdocs`), and how many `documents.batchUpdate` calls it has
+-- taken, which its `revisionId` is drawn from: none for a corpus's.
 CREATE TABLE IF NOT EXISTS gdrive_doc_bodies (
-    file_id TEXT PRIMARY KEY, body TEXT NOT NULL
+    file_id TEXT PRIMARY KEY, body TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0
 );
 
 -- `path` names the file THIS row is (only kind='file' rows have one). `changed_paths` is the other
@@ -2807,6 +2810,12 @@ def gdrive_doc_body_for(conn, file_id: str) -> list | None:
     clause, for the reason :func:`gdrive_sheets_for` gives."""
     rows = parts_for(conn, "google_drive", "gdrive_doc_bodies", (file_id,), order_by="file_id")
     return json.loads(rows[0]["body"]) if rows else None
+
+
+def gdrive_doc_revision(conn, file_id: str) -> int:
+    """How many `documents.batchUpdate` calls a document has taken: 0 until its first."""
+    rows = parts_for(conn, "google_drive", "gdrive_doc_bodies", (file_id,), order_by="file_id")
+    return rows[0]["revision"] if rows else 0
 
 
 def gdrive_replace_doc_body(conn, file_id: str, body: list | None) -> None:

@@ -23,7 +23,7 @@ import jwt
 import pytest
 import yaml
 
-from backlot import gsheets, oauth, store, synth
+from backlot import gdocs, gsheets, oauth, store, synth
 from backlot.config import Settings
 from backlot.errors import google as gerr
 from tests._helpers import (
@@ -1120,6 +1120,7 @@ _BATCH_ROWS = [
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _A1_FILTER, None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/docs/v1/documents", '{"title": "x"}', None), 501, None, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents/{doc}:batchUpdate", '{"requests": []}', None), 501, None, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1", None, None), 501, 404, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, 403, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/NoSuchSheet!A1", None, None), 501, 400, _UNIMPLEMENTED),
@@ -3415,6 +3416,8 @@ _NO_CREDENTIAL_ROWS = [
     ("POST", "/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", 401, 404),
     ("POST", "/sheets/v4/spreadsheets/x:getByDataFilter", 401, 404),
     ("GET", "/docs/v1/documents/x", 401, 404),
+    # the admin's body, a data filter, is refused before the lookup
+    ("POST", "/docs/v1/documents/x:batchUpdate", 401, 400),
     ("GET", "/slides/v1/presentations/x", 401, 404),
     ("GET", "/gmail/v1/users/me/profile", 401, 200),
     ("GET", "/gmail/v1/users/me/labels", 401, 200),
@@ -3436,7 +3439,6 @@ _NO_CREDENTIAL_ROWS = [
     ("POST", "/drive/v3/files/{doc}/copy", 401, 404),
     ("GET", "/sheets/v4/spreadsheets/x/developerMetadata/1", 401, 404),
     ("POST", "/sheets/v4/spreadsheets/x:batchUpdate", 401, 405),
-    ("POST", "/docs/v1/documents/x:batchUpdate", 401, 405),
     ("GET", "/slides/v1/presentations/x/pages/p1", 401, 404),
     ("POST", "/gmail/v1/users/me/messages/send", 401, 405),
     ("GET", "/gmail/v1/users/me/drafts", 401, 404),
@@ -13750,6 +13752,38 @@ WRITE_RECORDS = [
     },
     {
         "source_type": "google_drive",
+        "doc_id": "wr-text",
+        "subtype": "document",
+        "title": "Text",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "content": "Hello world\nSecond para",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-styled",
+        "subtype": "document",
+        "title": "Styled",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "paragraphs": [
+            {"style": "HEADING_1", "text": "Title line"},
+            {"runs": [{"text": "plain "}, {"text": "BOLD", "bold": True}, {"text": " tail"}]},
+            {"runs": [{"text": "link", "link": "https://example.com/"}, {"text": " here"}]},
+            {"runs": [{"text": "struck", "strikethrough": True}]},
+            {"runs": [{"text": "BOLDSTART", "italic": True}, {"text": " x"}]},
+            {"text": ""},
+            {"text": "last"},
+        ],
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
         "doc_id": "wr-private",
         "subtype": "spreadsheet",
         "title": "Private",
@@ -14076,6 +14110,11 @@ def test_who_may_write_and_in_what_order_a_write_is_refused(
     "method,suffix,rpc",
     [
         ("POST", "/docs/v1/documents", "docs.v1.DocumentsService.CreateDocument"),
+        (
+            "POST",
+            "/docs/v1/documents/1nope:batchUpdate",
+            "docs.v1.DocumentsService.BatchUpdateDocument",
+        ),
         ("PUT", "/values/A1", "UpdateValues"),
         ("POST", "/values:batchUpdate", "BatchUpdateValues"),
         ("POST", "/values/A1:clear", "ClearValues"),
@@ -15112,6 +15151,525 @@ def test_a_docs_create_real_refuses_is_refused_with_reals_message(wc, wh, params
     r = wc.post("/docs/v1/documents", headers=wh[_OWNER], params=params, json=body)
     assert (r.status_code, r.json()["error"]["message"]) == (400, message)
     assert wc.get("/_meta/overlay").json()["gdrive_files"] == []
+
+
+# --- `documents.batchUpdate` ----------------------------------------------------------------------
+#
+# `wr-text` is the prose `Hello world\nSecond para`, end index 25. `wr-styled` states, by index:
+# a HEADING_1 `Title line` [1, 12); `plain ` [12, 18), bold `BOLD` [18, 22), ` tail` [22, 28); a
+# link `link` [28, 32), ` here` [32, 38); struck `struck` [38, 45), its newline struck too; italic
+# `BOLDSTART` [45, 54), ` x` [54, 57); an empty paragraph [57, 58); `last` [58, 63).
+
+
+def _docs_write(wc, h, doc, body, **params):
+    from tests._helpers import served_id
+
+    path = f"/docs/v1/documents/{served_id('google_drive', doc)}:batchUpdate"
+    return wc.post(path, headers=h, params=params, json=body)
+
+
+def _docs_runs(wc, h, doc) -> list[str]:
+    """A Doc's paragraphs as `<style><headingId> <runs>`: the style `H1` or `N`, the headingId
+    `#orig` when it is the one `wr-styled` starts with and `#new` otherwise, and each run as its
+    marks (`b`, `i`, `s`, `L` for a link with its underline and colour) before its text, runs
+    joined by `|`."""
+    from tests._helpers import served_id
+
+    did = served_id("google_drive", doc)
+    content = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["body"]["content"]
+    marks = {"bold": "b", "italic": "i", "strikethrough": "s", "link": "L"}
+    out = []
+    for el in content[1:]:
+        p = el["paragraph"]
+        style = p["paragraphStyle"]
+        tag = "H1" if style["namedStyleType"] == "HEADING_1" else "N"
+        if "headingId" in style:
+            orig = gdocs.heading_id(did, 0)
+            tag += "#orig" if style["headingId"] == orig else "#new"
+        runs = []
+        for pe in p["elements"]:
+            run = pe["textRun"]
+            m = "".join(v for k, v in marks.items() if k in run["textStyle"])
+            runs.append(f"{m}:{run['content']}" if m else run["content"])
+        out.append(f"{tag} {'|'.join(runs)}")
+    return out
+
+
+_STYLED = [
+    "H1#orig Title line\n",
+    "N plain |b:BOLD| tail\n",
+    "N L:link| here\n",
+    "N s:struck\n",
+    "N i:BOLDSTART| x\n",
+    "N \n",
+    "N last\n",
+]
+
+
+def _ins(index, text):
+    return {"insertText": {"location": {"index": index}, "text": text}}
+
+
+def _del(start, end):
+    return {"deleteContentRange": {"range": {"startIndex": start, "endIndex": end}}}
+
+
+def _rep(text, by, **criteria):
+    return {"replaceAllText": {"containsText": {"text": text, **criteria}, "replaceText": by}}
+
+
+def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left(wc, wh):
+    """Measured: each request's indices count what the ones before it inserted, the answer is one
+    reply and one suggestion response per request with `replaceAllText`'s count left out at zero,
+    every write moves the `revisionId` the next read serves, and Drive reads the written text,
+    with `modifiedTime` the write's."""
+    from tests._helpers import served_id
+
+    h = wh[_OWNER]
+    did = served_id("google_drive", "wr-text")
+    before = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
+    r = _docs_write(wc, h, "wr-text", {"requests": [_ins(1, "A"), _ins(2, "B"), _del(3, 4)]})
+    assert r.status_code == 200, r.text
+    answer = r.json()
+    revision = answer["writeControl"]["requiredRevisionId"]
+    assert answer == {
+        "replies": [{}, {}, {}],
+        "writeControl": {"requiredRevisionId": revision},
+        "documentId": did,
+        "suggestionResponses": [{}, {}, {}],
+        "commentUpdateState": "NO_UPDATES_REQUESTED",
+    }
+    assert revision != before
+    assert _docs_runs(wc, h, "wr-text") == ["N ABello world\n", "N Second para\n"]
+    read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+    assert read["revisionId"] == revision
+    assert [e["endIndex"] for e in read["body"]["content"]] == [1, 14, 26]
+    replaced = _docs_write(
+        wc, h, "wr-text", {"requests": [_rep("o", "0"), _rep("zzz", "y")]}, fields="replies"
+    ).json()
+    assert replaced == {
+        "replies": [{"replaceAllText": {"occurrencesChanged": 3}}, {"replaceAllText": {}}]
+    }
+    unchanged = _docs_write(wc, h, "wr-text", {"requests": [_rep("zzz", "y")]}).json()
+    assert unchanged["writeControl"]["requiredRevisionId"] not in (before, revision)
+    f = wc.get(f"/drive/v3/files/{did}", headers=h, params={"fields": "modifiedTime"}).json()
+    assert f["modifiedTime"] > "2026-07-14T17:20:00.000Z"
+    found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains 'ABell0'"})
+    assert [x["id"] for x in found.json()["files"]] == [did]
+    assert wc.get(
+        f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"}
+    ).text.endswith("ABell0 w0rld\nSec0nd para")
+
+
+@pytest.mark.parametrize(
+    "requests,runs",
+    [
+        # a newline splits a heading into two, the new one with a headingId of its own: after the
+        # one it was cut from, or before it at the heading's start
+        ([_ins(6, "\n")], ["H1#orig Title\n", "H1#new  line\n", *_STYLED[1:]]),
+        ([_ins(1, "a\nb\nc")], ["H1#new a\n", "H1#new b\n", "H1#orig cTitle line\n", *_STYLED[1:]]),
+        # inserted text takes the style of the character before it, joining its run
+        ([_ins(18, "X")], [_STYLED[0], "N plain X|b:BOLD| tail\n", *_STYLED[2:]]),
+        ([_ins(22, "X")], [_STYLED[0], "N plain |b:BOLDX| tail\n", *_STYLED[2:]]),
+        ([_ins(22, "X\nY")], [_STYLED[0], "N plain |b:BOLDX\n", "N b:Y| tail\n", *_STYLED[2:]]),
+        # a link only inside it; after it the text is unstyled, and a run of its own
+        ([_ins(30, "X")], [*_STYLED[:2], "N L:liXnk| here\n", *_STYLED[3:]]),
+        ([_ins(32, "X")], [*_STYLED[:2], "N L:link|X| here\n", *_STYLED[3:]]),
+        # at a paragraph's start, the first character's; a run of its own after a newline that is
+        # not in that style
+        ([_ins(45, "X")], [*_STYLED[:4], "N i:X|i:BOLDSTART| x\n", *_STYLED[5:]]),
+        ([_ins(57, "X")], [*_STYLED[:5], "N X\n", _STYLED[6]]),
+        ([{"insertText": {"endOfSegmentLocation": {}, "text": "Z"}}], [*_STYLED[:6], "N lastZ\n"]),
+        # joined paragraphs take the first one's style, or the last one's when the range starts at
+        # the first one's start; a delete joins the runs it brings together
+        ([_del(11, 12)], ["H1#orig Title lineplain |b:BOLD| tail\n", *_STYLED[2:]]),
+        ([_del(1, 14)], ["N ain |b:BOLD| tail\n", *_STYLED[2:]]),
+        ([_del(1, 12)], _STYLED[1:]),
+        ([_del(18, 22)], [_STYLED[0], "N plain  tail\n", *_STYLED[2:]]),
+        # a replacement takes its match's first character's style, and the body's last newline
+        # stays
+        ([_rep("n BO", "##", matchCase=True)], [_STYLED[0], "N plai##|b:LD| tail\n", *_STYLED[2:]]),
+        ([_rep("LD t", "##", matchCase=True)], [_STYLED[0], "N plain |b:BO##|ail\n", *_STYLED[2:]]),
+        ([_rep("line\nplain", "Z")], ["H1#orig Title Z |b:BOLD| tail\n", *_STYLED[2:]]),
+        ([_rep("last\n", "L")], [*_STYLED[:6], "N L\n"]),
+        # matching folds case fully; a regular expression's `$1` is text
+        ([_ins(58, "straße "), _rep("STRASSE", "R")], [*_STYLED[:6], "N R last\n"]),
+        (
+            [_rep("(pl)ain", "$1X", searchByRegex=True)],
+            [_STYLED[0], "N $1X |b:BOLD| tail\n", *_STYLED[2:]],
+        ),
+        ([_rep("^la", "R", searchByRegex=True)], [*_STYLED[:6], "N Rst\n"]),
+    ],
+)
+def test_a_write_styles_what_it_inserts_as_real_does(wc, wh, requests, runs):
+    h = wh[_OWNER]
+    r = _docs_write(wc, h, "wr-styled", {"requests": requests})
+    assert r.status_code == 200, r.text
+    assert _docs_runs(wc, h, "wr-styled") == runs
+
+
+_GRAPHEME = (
+    "Invalid requests[1].insertText: The insertion index cannot be within a grapheme cluster."
+)
+_IN_PARAGRAPH = (
+    "Invalid requests[0].insertText: The insertion index must be inside the bounds of an existing "
+    "paragraph. You can still create new paragraphs by inserting newlines."
+)
+_PAST_END = "must be less than the end index of the referenced segment, 25."
+_NO_SEGMENT = (
+    "Segment with ID kix.nope was not found. If a segment ID is provided, it must be a header, "
+    "footer or footnote ID. Use an empty segment ID to reference the body."
+)
+_DOCS_BATCH_REFUSALS = [
+    ([], 400, "Must specify at least one request."),
+    ({"requests": None}, 400, "Must specify at least one request."),
+    ([{}], 400, "Invalid requests[0]: No request set."),
+    ([{"insertText": None}], 400, "Invalid requests[0]: No request set."),
+    # the first refusal is named alone, and what came before it is not kept
+    ([_ins(0, "x"), _del(3, 2)], 400, _IN_PARAGRAPH),
+    (
+        [_ins(1, "ZZ"), _del(3, 2)],
+        400,
+        "Invalid requests[1].deleteContentRange: Invalid range: end index cannot be less than start index",
+    ),
+    (
+        [{"insertText": {"text": "x"}}],
+        400,
+        "Invalid requests[0].insertText: No insertion location set.",
+    ),
+    ([{"insertText": {}}], 400, "Invalid requests[0].insertText: No insertion location set."),
+    (
+        [{"insertText": {"location": {"index": 1}}}],
+        400,
+        "Invalid requests[0].insertText: Insert text requests must specify text to insert.",
+    ),
+    (
+        [{"insertText": {"location": {"index": 0}}}],
+        400,
+        "Invalid requests[0].insertText: Insert text requests must specify text to insert.",
+    ),
+    (
+        [_ins(1, "")],
+        400,
+        "Invalid requests[0].insertText: Insert text requests must specify text to insert.",
+    ),
+    (
+        [{"insertText": {"location": {"index": 1, "tabId": "t.nope", "segmentId": "kix.nope"}}}],
+        400,
+        "Invalid requests[0].insertText: Cannot apply request to an invalid tab ID.",
+    ),
+    (
+        [{"insertText": {"location": {"index": 1000, "segmentId": "kix.nope"}, "text": "x"}}],
+        400,
+        f"Invalid requests[0].insertText: {_NO_SEGMENT}",
+    ),
+    (
+        [{"insertText": {"endOfSegmentLocation": {"tabId": "t.nope"}, "text": "x"}}],
+        400,
+        "Invalid requests[0].insertText: Cannot apply request to an invalid tab ID.",
+    ),
+    (
+        [_ins(-1, "x")],
+        400,
+        "Invalid requests[0].insertText: Index must be greater than or equal to 0.",
+    ),
+    ([_ins(25, "x")], 400, f"Invalid requests[0].insertText: Index 25 {_PAST_END}"),
+    ([_ins(1000, "x")], 400, f"Invalid requests[0].insertText: Index 1000 {_PAST_END}"),
+    ([_ins(0, "x")], 400, _IN_PARAGRAPH),
+    ([{"insertText": {"location": {}, "text": "x"}}], 400, _IN_PARAGRAPH),
+    ([_ins(1, "\U0001f600"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "é"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "\U0001f44d\U0001f3fd"), _ins(3, "x")], 400, _GRAPHEME),
+    ([_ins(1, "\U0001f1f0\U0001f1f7"), _ins(3, "x")], 400, _GRAPHEME),
+    ([_ins(1, "가"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "❤️"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "\U0001f468‍\U0001f469"), _ins(3, "x")], 400, _GRAPHEME),
+    (
+        [{"deleteContentRange": {}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Delete content range requests must include a range to delete.",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"endIndex": 3}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: must contain a start and end index",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"startIndex": None, "endIndex": 3}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: must contain a start and end index",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"startIndex": 2, "endIndex": 2, "tabId": "t.nope"}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Cannot apply request to an invalid tab ID.",
+    ),
+    (
+        [
+            {
+                "deleteContentRange": {
+                    "range": {"startIndex": 2, "endIndex": 3, "segmentId": "kix.nope"}
+                }
+            }
+        ],
+        400,
+        f"Invalid requests[0].deleteContentRange: {_NO_SEGMENT}",
+    ),
+    (
+        [_del(5, -1)],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: end index cannot be less than start index",
+    ),
+    (
+        [_del(-1, -1)],
+        400,
+        "Invalid requests[0].deleteContentRange: Index must be greater than or equal to 0.",
+    ),
+    ([_del(30, 30)], 400, f"Invalid requests[0].deleteContentRange: Index 30 {_PAST_END}"),
+    ([_del(0, 30)], 400, f"Invalid requests[0].deleteContentRange: Index 29 {_PAST_END}"),
+    ([_del(0, 0)], 400, "Invalid requests[0].deleteContentRange: The range should not be empty."),
+    (
+        [_del(0, 2)],
+        400,
+        "Invalid requests[0].deleteContentRange: Cannot operate on the first section break in the document.",
+    ),
+    (
+        [_del(24, 25)],
+        400,
+        "Invalid requests[0].deleteContentRange: The range cannot include the newline character at the end of the segment.",
+    ),
+    (
+        [_ins(1, "\U0001f600"), _del(1, 2)],
+        400,
+        "Invalid requests[1].deleteContentRange: Invalid deletion range. Cannot delete the requested range.",
+    ),
+    (
+        [{"replaceAllText": {"replaceText": "x"}}],
+        400,
+        "Invalid requests[0].replaceAllText: The substring match text should not be empty",
+    ),
+    (
+        [_rep("", "x")],
+        400,
+        "Invalid requests[0].replaceAllText: The substring match text should not be empty",
+    ),
+    # a 500 a request leads to comes after every refusal, and keeps nothing either
+    ([_ins(1, "﷐"), _ins(0, "a")], 400, _IN_PARAGRAPH.replace("[0]", "[1]")),
+    ([_ins(1, "a"), _ins(1, "﷐")], 500, "Internal error encountered."),
+    ([_rep("world", "﷐")], 500, "Internal error encountered."),
+    (
+        [
+            {
+                "replaceAllText": {
+                    "containsText": {"text": "zzz"},
+                    "replaceText": "x",
+                    "tabsCriteria": {"tabIds": ["t.0", "t.nope"]},
+                }
+            }
+        ],
+        500,
+        "Internal error encountered.",
+    ),
+    # what is not served here names itself
+    (
+        [{"updateTextStyle": {}}],
+        400,
+        "Invalid requests[0].updateTextStyle: 'updateTextStyle' is not served by Backlot: real Docs applies it, and nothing here keeps what it changes.",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"writeMode": "SUGGEST"}},
+        400,
+        "'SUGGEST' is not served by Backlot: real Docs records each request as a suggestion, and nothing here keeps one.",
+    ),
+    # the body is read as the proto layer reads it
+    (
+        [{**_ins(1, "x"), **_del(2, 3)}],
+        400,
+        "Invalid value at 'requests[0]' (oneof), oneof field 'request' is already set. Cannot set 'deleteContentRange'",
+    ),
+    (
+        [{"insertText": {"location": {"index": 1}, "endOfSegmentLocation": {}, "text": "x"}}],
+        400,
+        "Invalid value at 'requests[0].insert_text' (oneof), oneof field 'insertion_location' is already set. Cannot set 'endOfSegmentLocation'",
+    ),
+    (
+        {
+            "requests": [_ins(1, "x")],
+            "writeControl": {"requiredRevisionId": "a", "targetRevisionId": "a"},
+        },
+        400,
+        "Invalid value at 'write_control' (oneof), oneof field 'control' is already set. Cannot set 'targetRevisionId'",
+    ),
+    (
+        [{"insertFoo": {}}],
+        400,
+        "Invalid JSON payload received. Unknown name \"insertFoo\" at 'requests[0]': Cannot find field.",
+    ),
+    (
+        [_ins("a", "x")],
+        400,
+        "Invalid value at 'requests[0].insert_text.location.index' (TYPE_INT32), \"a\"",
+    ),
+    (
+        [_del("a", 3)],
+        400,
+        "Invalid value at 'requests[0].delete_content_range.range.start_index.value' (TYPE_INT32), \"a\"",
+    ),
+    (
+        {"requests": "x"},
+        400,
+        f"Invalid value at 'requests' ({_DOCS_TYPE}.BatchUpdateDocumentRequest.Request), \"x\"",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"writeMode": "BOGUS"}},
+        400,
+        f"Invalid value at 'write_control.write_mode' ({_DOCS_TYPE}.WriteControl.WriteMode), \"BOGUS\"",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "nope": 1},
+        400,
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    ),
+    ([1], 400, _ROOT_NOT_A_MESSAGE),
+    # `requests` before the revision, the revision before the requests' own refusals
+    (
+        {"requests": [], "writeControl": {"requiredRevisionId": "abc"}},
+        400,
+        "Must specify at least one request.",
+    ),
+    (
+        {"requests": [_ins(0, "x")], "writeControl": {"requiredRevisionId": "abc"}},
+        400,
+        "The required revision ID 'abc' does not match the latest revision.",
+    ),
+    (
+        {"requests": [_ins(0, "x")], "writeControl": {"targetRevisionId": "abc"}},
+        400,
+        "Invalid revision ID: abc",
+    ),
+]
+
+
+@pytest.mark.parametrize("body,status,message", _DOCS_BATCH_REFUSALS)
+def test_a_batch_update_real_refuses_is_refused_with_reals_message(wc, wh, body, status, message):
+    body = {"requests": body} if isinstance(body, list) and body != [1] else body
+    r = _docs_write(wc, wh[_OWNER], "wr-text", body)
+    assert (r.status_code, r.json()["error"]["message"]) == (status, message)
+    assert wc.get("/_meta/overlay").json()["gdrive_doc_bodies"] == []
+
+
+def test_a_batch_update_takes_what_real_takes(wc, wh):
+    """Measured: text that is only characters `insertText` strips is taken and inserts nothing,
+    as is the one tab by its id and an empty `tabsCriteria`; `requests` as one object is a list of
+    it; a range may end inside a letter's combining mark; a `requiredRevisionId` must be the latest,
+    and a `targetRevisionId` may be any earlier one."""
+    from tests._helpers import served_id
+
+    h = wh[_OWNER]
+    did = served_id("google_drive", "wr-text")
+    first = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
+    taken = [
+        [_ins(1, "\x01\r")],
+        [{"insertText": {"location": {"index": 1, "tabId": "t.0"}, "text": "x"}}],
+        [
+            {
+                "replaceAllText": {
+                    "containsText": {"text": "zzz"},
+                    "replaceText": "x",
+                    "tabsCriteria": {"tabIds": []},
+                }
+            }
+        ],
+        _ins(1, "y"),
+        [_ins(1, "é"), _del(2, 3)],
+    ]
+    for requests in taken:
+        assert _docs_write(wc, h, "wr-text", {"requests": requests}).status_code == 200
+    assert _docs_runs(wc, h, "wr-text") == ["N eyxHello world\n", "N Second para\n"]
+    latest = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
+    pinned = {"requests": [_ins(1, "z")], "writeControl": {"requiredRevisionId": latest}}
+    assert _docs_write(wc, h, "wr-text", pinned).status_code == 200
+    assert _docs_write(wc, h, "wr-text", pinned).status_code == 400
+    late = {"requests": [_ins(1, "w")], "writeControl": {"targetRevisionId": first}}
+    assert _docs_write(wc, h, "wr-text", late).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "who,doc,body,params,status,message",
+    [
+        # the body and the mask before the lookup, a reader's 403 before the body's emptiness
+        (
+            "reader@acme.com",
+            "wr-text",
+            {"requests": []},
+            {},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            "reader@acme.com",
+            "wr-text",
+            {"requests": [_ins(0, "x")]},
+            {},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            "admin",
+            "wr-text",
+            {"requests": [_ins(1, "x")]},
+            {},
+            403,
+            "The caller does not have permission",
+        ),
+        (_OWNER, "nope", {"requests": [_ins(0, "x")]}, {}, 404, "Requested entity was not found."),
+        (_OWNER, "nope", {"requests": [{}]}, {}, 404, "Requested entity was not found."),
+        (
+            _OWNER,
+            "nope",
+            {"requests": [], "nope": 1},
+            {},
+            400,
+            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+        ),
+        (
+            _OWNER,
+            "nope",
+            {"requests": []},
+            {"fields": "nope"},
+            400,
+            "Request contains an invalid argument.",
+        ),
+        (
+            _OWNER,
+            "wr-text",
+            {"nope": 1},
+            {"fields": "nope"},
+            400,
+            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+        ),
+        (
+            _OWNER,
+            "wr-book",
+            {"requests": [_ins(1, "x")]},
+            {},
+            404,
+            "Requested entity was not found.",
+        ),
+    ],
+)
+def test_who_may_write_a_document_and_in_what_order_it_is_refused(
+    wc, wh, who, doc, body, params, status, message
+):
+    from tests._helpers import served_id
+
+    did = (
+        served_id("google_drive", doc)
+        if doc != "nope"
+        else "1nope0000000000000000000000000000000000000"
+    )
+    r = wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=wh[who], params=params, json=body)
+    assert (r.status_code, r.json()["error"]["message"]) == (status, message)
 
 
 def test_copy_to_adds_a_copy_named_in_the_destinations_language(wc, wh, wbook):

@@ -851,6 +851,109 @@ def test_mcp_notion_tools_take_the_version_every_request_carries(live_server):
         assert '"object": "page"' in text or '"object":"page"' in text, (name, text[:200])
 
 
+# The pattern `backlot.mcp.ARGUMENT_NAME` quotes from the Anthropic API's 400, written out here so a
+# change to that constant is a failure rather than a new expectation.
+_ANTHROPIC_KEY = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+
+
+@pytest.mark.parametrize(
+    "source, tool, args, renamed, answer",
+    [
+        # Graph's `$select` trims the user to the properties it names.
+        (
+            "msteams",
+            "me",
+            {"select": "displayName"},
+            "select",
+            lambda text: ("displayName" in json.loads(text), "givenName" in json.loads(text)),
+        ),
+        # Google's error format (`backlot.errors.google.has_errors_array`).
+        (
+            "gmail",
+            "gmail_label_get",
+            {"user_id": "me", "label_id": "no-such-label", "xgafv": "2"},
+            "xgafv",
+            lambda text: ("NOT_FOUND" in text, "'errors'" in text),
+        ),
+    ],
+    ids=["msteams-select", "gmail-xgafv"],
+)
+def test_a_renamed_argument_reaches_the_route_under_the_vendors_name(
+    live_server, source, tool, args, renamed, answer
+):
+    """An argument renamed for the Anthropic API still reaches the route as the parameter the
+    vendor names: ``answer`` reads a call's text as whether the route answered it and whether the
+    answer has what only the route's default has, and only the call that sends the argument lacks
+    the latter. A separate function from ``_BRIDGE_CASES``, which compares two callers on one call
+    rather than one caller on two."""
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    base, _ = live_server
+    creds = backlot_mcp.resolve(base, None)
+
+    async def _go():
+        async with Client(backlot_mcp.openapi_server(base, creds, source)) as c:
+            out = []
+            for call in (args, {k: v for k, v in args.items() if k != renamed}):
+                res = await c.call_tool(tool, call, raise_on_error=False)
+                out.append(answer("".join(getattr(b, "text", "") for b in res.content)))
+            return out
+
+    assert asyncio.run(_go()) == [(True, False), (True, True)]
+
+
+def test_a_tool_the_bridge_does_not_serve_is_unknown(live_server):
+    """A call names a tool before the bridge knows it has one, so the renaming steps aside for a
+    name the source has no tool by, and the client hears that the tool is unknown rather than an
+    internal error."""
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    base, _ = live_server
+
+    async def _go():
+        server = backlot_mcp.openapi_server(base, backlot_mcp.resolve(base, None), "gmail")
+        async with Client(server) as c:
+            res = await c.call_tool("no_such_tool", {}, raise_on_error=False)
+            return res.is_error, "".join(getattr(b, "text", "") for b in res.content)
+
+    assert asyncio.run(_go()) == (True, "Unknown tool: 'no_such_tool'")
+
+
+@pytest.mark.parametrize(
+    "properties, arguments",
+    [
+        (
+            {"$select": {"description": "Comma-separated properties to return."}, "user_id": {}},
+            [
+                ("select", "Comma-separated properties to return. Sent as `$select`."),
+                ("user_id", None),
+            ],
+        ),
+        ({"$.xgafv": {}}, [("xgafv", "Sent as `$.xgafv`.")]),
+        ({"user_id": {}}, [("user_id", None)]),
+        # a name the pattern takes keeps even a leading dot, the character a rename strips there
+        ({".x": {}}, [(".x", None)]),
+    ],
+    ids=["select", "xgafv", "unchanged", "leading-dot"],
+)
+def test_an_argument_the_pattern_refuses_is_renamed(properties, arguments):
+    """Each argument the pattern refuses goes by the name :func:`backlot.mcp.argument_name` gives
+    it, its description naming what the call is sent as, and each argument the pattern takes keeps
+    its name."""
+    pytest.importorskip("fastmcp")
+    from fastmcp.tools import Tool
+
+    class _Tool(Tool):
+        async def run(self, arguments):
+            return None
+
+    tool = _Tool(name="t", parameters={"type": "object", "properties": properties})
+    listed = backlot_mcp._with_argument_names(tool).parameters["properties"]
+    assert [(name, p.get("description")) for name, p in listed.items()] == arguments
+
+
 # ------------------------------------------------------------------ `backlot mcp` over stdio
 # The command an MCP client runs. The in-memory tests above prove each source's bridge; these prove
 # the process around it: the stdio transport, the per-source namespace, the server it starts when
@@ -871,10 +974,10 @@ def _icons(server_info) -> list[dict]:
     return [i.model_dump(mode="json", by_alias=True, exclude_none=True) for i in server_info.icons]
 
 
-async def _tools_and_instructions(params, errlog=None) -> tuple[list[str], str | None]:
-    """The tool names a session lists, and the ``instructions`` it advertised alongside them — a
-    client feeds the latter to the model, so the two have to agree about which sources exist. Also
-    asserts that ``initialize`` reported Backlot's version and icons."""
+async def _tools_and_instructions(params, errlog=None) -> tuple[list, str | None]:
+    """The tools a session lists, and the ``instructions`` it advertised alongside them — a client
+    feeds the latter to the model, so the two have to agree about which sources exist. Also asserts
+    that ``initialize`` reported Backlot's version and icons."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
@@ -883,13 +986,12 @@ async def _tools_and_instructions(params, errlog=None) -> tuple[list[str], str |
             init = await sess.initialize()
             assert init.server_info.version == metadata.version("backlot")
             assert _icons(init.server_info) == list(backlot_mcp.ICONS)
-            names = [t.name for t in (await sess.list_tools()).tools]
-            return names, init.instructions
+            return (await sess.list_tools()).tools, init.instructions
 
 
 async def _tool_names(params, errlog=None) -> list[str]:
-    names, _ = await _tools_and_instructions(params, errlog=errlog)
-    return names
+    tools, _ = await _tools_and_instructions(params, errlog=errlog)
+    return [t.name for t in tools]
 
 
 def _served_tool_ids(base: str, source: str) -> set[str]:
@@ -916,9 +1018,16 @@ def test_backlot_mcp_serves_one_source_under_its_own_tool_names(live_server):
 def test_backlot_mcp_serves_every_source_namespaced(live_server):
     """No `--source` is all of them in one server, each tool prefixed with its source so two
     vendors' same-named operations cannot collide — and none long enough for an MCP client's
-    64-character cap to truncate."""
+    64-character cap to truncate. Nor does any tool take an argument `_ANTHROPIC_KEY` refuses."""
     base, _ = live_server
-    names = asyncio.run(_tool_names(_mcp_params("--url", base)))
+    tools, _ = asyncio.run(_tools_and_instructions(_mcp_params("--url", base)))
+    names = [t.name for t in tools]
+    refused = {
+        t.name: bad
+        for t in tools
+        if (bad := [a for a in t.input_schema.get("properties", {}) if not _ANTHROPIC_KEY.match(a)])
+    }
+    assert not refused, refused
     by_source = collections.defaultdict(set)
     for name in names:
         source, _, tool = name.partition("_")
@@ -1368,10 +1477,10 @@ def test_backlot_mcp_advertises_only_the_sources_it_mounted(live_server):
     `--source` run's missing sources are there to call, and it would read every tool-not-found as
     its own mistake."""
     base, _ = live_server
-    names, instructions = asyncio.run(
+    tools, instructions = asyncio.run(
         _tools_and_instructions(_mcp_params("--source", "slack", "--source", "s3", "--url", base))
     )
-    assert {n.partition("_")[0] for n in names} == {"slack", "s3"}
+    assert {t.name.partition("_")[0] for t in tools} == {"slack", "s3"}
     assert "slack_*" in instructions and "s3_*" in instructions
     for absent in ("gmail_*", "notion_*", "linear_*", "atlassian_*"):
         assert absent not in instructions, instructions

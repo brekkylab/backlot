@@ -5232,7 +5232,8 @@ _CAPS_TRUE = {
 
 @pytest.fixture(scope="module")
 def owned_and_lent(tmp_path_factory):
-    """A file and a folder record of ava's and of mia's in folder `Plans`, each readable by both."""
+    """A file and a folder record of ava's and of mia's, and a PDF of mia's, in folder `Plans`,
+    each readable by both."""
     record = {
         "source_type": "google_drive",
         "folder": "Plans",
@@ -5240,8 +5241,11 @@ def owned_and_lent(tmp_path_factory):
         "readers": ["ava@acme.com", "mia@acme.com"],
         "visibility": "private",
     }
-    rows = [("mine", "Mine", "ava", None), ("theirs", "Theirs", "mia", None)]
-    rows += [("figures", "Figures", "ava", "folder"), ("drafts", "Drafts", "mia", "folder")]
+    folder = {"subtype": "folder"}
+    pdf = {"subtype": "pdf", "mime_type": "application/pdf"}
+    rows = [("mine", "Mine", "ava", {}), ("theirs", "Theirs", "mia", {})]
+    rows += [("figures", "Figures", "ava", folder), ("drafts", "Drafts", "mia", folder)]
+    rows += [("scan", "Scan.pdf", "mia", pdf)]
     return tiny_corpus(
         tmp_path_factory.mktemp("owned_and_lent"),
         [
@@ -5250,9 +5254,9 @@ def owned_and_lent(tmp_path_factory):
                 "doc_id": doc_id,
                 "title": title,
                 "author_email": f"{author}@acme.com",
-                **({"subtype": subtype} if subtype else {}),
+                **extra,
             }
-            for doc_id, title, author, subtype in rows
+            for doc_id, title, author, extra in rows
         ],
     )
 
@@ -5296,6 +5300,45 @@ def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(
         assert (f["ownedByMe"], f["capabilities"]["canShare"], f["modifiedByMe"]) == (owned,) * 3
         assert f.get("modifiedByMeTime") == (f["modifiedTime"] if owned else None)
         assert {k for k, v in f["capabilities"].items() if v} == _CAPS_TRUE[kind, owned]
+
+
+def test_drive_key_order_differs_between_listing_and_read(owned_and_lent):
+    """Each item comes in real's listing order in a listing and in its read order when read by
+    id, with the same keys and values both ways, and the listing's own keys come in a third
+    order. Between them the items carry every key either order names: ava is a scoped caller,
+    so her own file carries `modifiedByMeTime`, what mia lent her `sharedWithMeTime`, and the
+    PDF the keys only a binary file has."""
+    list_order = (
+        "kind fileExtension md5Checksum viewedByMe mimeType exportLinks parents iconLink "
+        "shared lastModifyingUser owners webViewLink webContentLink size spaces id name "
+        "starred trashed explicitlyTrashed createdTime modifiedTime modifiedByMeTime "
+        "sharedWithMeTime quotaBytesUsed version ownedByMe fullFileExtension capabilities "
+        "modifiedByMe"
+    ).split()
+    get_order = (
+        "kind id name mimeType starred trashed explicitlyTrashed parents spaces version "
+        "webContentLink webViewLink iconLink viewedByMe createdTime modifiedTime "
+        "modifiedByMeTime modifiedByMe sharedWithMeTime owners lastModifyingUser shared "
+        "ownedByMe capabilities fullFileExtension fileExtension md5Checksum size "
+        "quotaBytesUsed exportLinks"
+    ).split()
+    s = owned_and_lent
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
+    ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+    with client_for(s, reload=True) as c:
+        listing = c.get(
+            "/drive/v3/files", headers=ava, params={"fields": "*", "pageSize": 100}
+        ).json()
+        assert {k for entry in listing["files"] for k in entry} == set(list_order)
+        for entry in listing["files"]:
+            assert list(entry) == [k for k in list_order if k in entry]
+            got = c.get(
+                f"/drive/v3/files/{entry['id']}", headers=ava, params={"fields": "*"}
+            ).json()
+            assert got == entry
+            assert list(got) == [k for k in get_order if k in got]
+        paged = c.get("/drive/v3/files", headers=ava, params={"pageSize": 2}).json()
+        assert list(paged) == ["files", "kind", "nextPageToken", "incompleteSearch"]
 
 
 _PER_CALLER = "ownedByMe,capabilities,modifiedByMe,modifiedByMeTime,modifiedTime"
@@ -6298,6 +6341,8 @@ def test_drive_get_honors_the_fields_mask(client, admin_h):
         f"/drive/v3/files/{row['id']}", headers=admin_h, params={"fields": mask}
     ).json()
     assert got == row
+    assert list(row) == ["mimeType", "webViewLink", "size", "id", "name", "modifiedTime"]
+    assert list(got) == ["id", "name", "mimeType", "webViewLink", "modifiedTime", "size"]
     r = client.get(
         f"/drive/v3/files/{row['id']}", headers=admin_h, params={"fields": "totallyBogusField"}
     )
@@ -6306,15 +6351,17 @@ def test_drive_get_honors_the_fields_mask(client, admin_h):
 
 def test_drive_files_answer_the_default_keys_with_no_mask(client, admin_h):
     """With no mask a file is `kind`, `id`, `name` and `mimeType`, listed and read by id, a folder
-    as well as a stored file."""
+    as well as a stored file, in a listing's order and in a read's."""
     listing = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 2}).json()
     folders = client.get(
         "/drive/v3/files", headers=admin_h, params={"q": f"mimeType='{FOLDER_MIME}'", "pageSize": 1}
     ).json()
     entries = listing["files"] + folders["files"]
-    assert len(entries) == 3 and all(set(x) == {"kind", "id", "name", "mimeType"} for x in entries)
+    assert [list(x) for x in entries] == [["kind", "mimeType", "id", "name"]] * 3
     for x in entries:
-        assert client.get(f"/drive/v3/files/{x['id']}", headers=admin_h).json() == x
+        got = client.get(f"/drive/v3/files/{x['id']}", headers=admin_h).json()
+        assert got == x
+        assert list(got) == ["kind", "id", "name", "mimeType"]
 
 
 def test_drive_folders_are_found_by_mime_type(client, admin_h):

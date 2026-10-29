@@ -775,6 +775,52 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     return await call_next(request)
 
 
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def report_notion_cors(request: Request, call_next):
+    """Answer a `/notion` request as real's CORS layer does on the paths it sits in front of
+    (``notion.answers_cors``), and put a `vary` on each answer.
+
+    Measured against api.notion.com on 2026-10-27: on those paths a request whose `Origin` has a
+    value got ``notion.CORS_HEADERS`` on its answer, the URL's 400 and the body reader's
+    `invalid_json` and 415 among them, and each answer there with a `content-type` was
+    `vary: Origin, Accept-Encoding`, with `Origin` or without; an `OPTIONS` with
+    `Access-Control-Request-Method` beside that `Origin` (`POST`, `FOO` and an empty one alike) was
+    instead a 204 with no body and `vary: Origin`, ahead of the URL check. An `Origin` that is
+    empty, a space or a tab counted as none, and on 2026-10-28 an `Origin` sent twice or three
+    times counted when one of them had a value. On the other paths `Origin` changed nothing
+    (``notion.answers_cors`` has their `vary`). On 2026-10-28 the 304 an `If-None-Match: *` draws,
+    which carries no `content-type`, was `vary: Origin`, with the CORS headers as `Origin` asked.
+
+    Registered after ``serve_a_slashed_notion_path_as_the_path_without_it``,
+    ``read_a_notion_body_as_express_does`` and ``report_notion_etag``, which makes it the outer of
+    the four: it reads the path with its trailing slash as sent, answers a preflight before the
+    body is read, and puts its headers on a 304.
+    """
+    origin = any(value.strip(" \t") for value in request.headers.getlist("origin"))
+    raw_path = request.scope.get("raw_path") or request.url.path.encode()
+    if not notion.answers_cors(raw_path.decode("latin-1")):
+        response = await call_next(request)
+        response.headers["vary"] = "Accept-Encoding"
+        return response
+    if (
+        origin
+        and request.method == "OPTIONS"
+        and "access-control-request-method" in request.headers
+    ):
+        response = Response(status_code=204, headers={"vary": "Origin"})
+    else:
+        response = await call_next(request)
+        response.headers["vary"] = (
+            "Origin, Accept-Encoding" if "content-type" in response.headers else "Origin"
+        )
+    if origin:
+        for name, value in notion.CORS_HEADERS.items():
+            response.headers[name] = value
+    return response
+
+
 def _a_slashed_hubspot_path(scope: Scope) -> bool:
     path = _url_path(scope)
     return (

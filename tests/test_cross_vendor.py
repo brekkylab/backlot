@@ -630,6 +630,7 @@ _RUNS = [
         {"Notion-Version": "2022-06-28"},
         [
             "vendor_json_media_type",
+            "report_notion_cors",
             "report_notion_etag",
             "read_a_notion_body_as_express_does",
             "report_notion_headers",

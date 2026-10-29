@@ -875,6 +875,31 @@ def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_
     )
 
 
+def test_fireflies_ids_are_ulids(client, admin_h):
+    """A served user id and transcript id are ULIDs as `synth._ulid` writes them, their first ten
+    characters, the time, zero, and the other 16 the first 80 bits of the seed's digest."""
+    from backlot import synth
+
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    data = ff_gql(
+        client, "{ users { user_id } transcripts(limit: 2) { id user { user_id } } }", admin_h
+    ).json()["data"]
+    served = [u["user_id"] for u in data["users"]]
+    served += [t["id"] for t in data["transcripts"]]
+    served += [t["user"]["user_id"] for t in data["transcripts"]]
+
+    assert len(served) >= 2
+    for one in served:
+        assert len(one) == 26, one
+        assert set(one) <= set(alphabet), one
+        assert one[:10] == "0" * 10, one
+
+    value = 0
+    for char in synth._ulid("seed"):
+        value = value * 32 + alphabet.index(char)
+    assert value == int(hashlib.sha256(b"seed").hexdigest()[:20], 16)
+
+
 def test_fireflies_transcript_content_round_trips_through_the_api(client, admin_h, ro_conn):
     """The sentences the API serves must rebuild the stored `content` byte for byte — that is the
     whole point of defining content as the concatenation."""
@@ -1192,13 +1217,18 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
     ava_h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
     seen = ff_gql(client, listing, ava_h).json()["data"]["transcripts"]
     (hidden,) = {t["id"] for t in every} - {t["id"] for t in seen}
+    ava_id = ff_gql(client, "{ user { user_id } }", ava_h).json()["data"]["user"]["user_id"]
     wanted = {
         ("ava@acme.com", '{ user(id: "nope") { user_id } }'): not_in_team,
         ("ava@acme.com", '{ user(id: " ") { user_id } }'): not_in_team,
         ("ava@acme.com", '{ user(id: "nobody@example.com") { user_id } }'): not_in_team,
         ("ava@acme.com", '{ user(id: "ava@acme.com") { user_id } }'): not_in_team,
+        ("ava@acme.com", '{ user(id: "%s") { user_id } }' % ava_id.lower()): not_in_team,
         ("ava@acme.com", '{ transcript(id: "nope") { id } }'): object_not_found,
         ("ava@acme.com", '{ transcript(id: "%s") { id } }' % hidden): object_not_found,
+        ("ava@acme.com", '{ transcript(id: "%s") { id } }' % seen[0]["id"].lower()): (
+            object_not_found
+        ),
         ("hana@acme.com", '{ transcript(id: "%s") { id } }' % hidden): (
             '{"data":{"transcript":{"id":"%s"}}}' % hidden
         ),
@@ -1638,7 +1668,7 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
         )["data"]["user"]
         assert got["email"] == "ghost@acme.com" and got["name"] == "Ghost Person"
 
-    # No probe: `synth.fireflies_user_id` draws from a 96-bit digest, so the raw seed is
+    # No probe: `synth.fireflies_user_id` draws 80 bits from the digest, so the raw seed is
     # stored as-is -- a forced collision between two DIFFERENT users must fail the import loudly
     # through `idx_fireflies_user_served`, not silently let one user's row overwrite the other's.
     # A fresh two-host corpus, not FIREFLIES_CORPUS: that fixture's only ACCOUNT is ava (organizer

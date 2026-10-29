@@ -17,8 +17,10 @@ import importlib
 import json
 import os
 import re
+import socket
 import sys
 import threading
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -317,6 +319,35 @@ class WithTheKey(bytes):
         self = super().__new__(cls, answer)
         self.status = status
         return self
+
+
+def read_answer(reader) -> tuple[int, dict[str, str], bytes] | None:
+    """One answer off ``reader``, by its `Content-Length` or its chunks, or ``None`` where the
+    connection closed ahead of it."""
+    if not (status_line := reader.readline()):
+        return None
+    headers = {}
+    while (line := reader.readline()) not in (b"\r\n", b""):
+        name, _, value = line.decode("latin-1").partition(":")
+        headers[name.strip().lower()] = value.strip()
+    if headers.get("transfer-encoding") == "chunked":
+        body = b""
+        while size := int(reader.readline().split(b";")[0], 16):
+            body += reader.read(size)
+            reader.readline()
+        reader.readline()
+    else:
+        body = reader.read(int(headers.get("content-length", 0)))
+    return int(status_line.split()[1]), headers, body
+
+
+def raw_exchange(base_url: str, request: bytes) -> tuple[int, dict[str, str], bytes]:
+    """``request`` written as it is to the server at ``base_url``, and its answer: for a target a
+    client library would resolve, escape or refuse before sending it."""
+    url = urllib.parse.urlsplit(base_url)
+    with socket.create_connection((url.hostname, url.port), timeout=10) as c:
+        c.sendall(request)
+        return read_answer(c.makefile("rb"))
 
 
 def sent_as(client, method: str, path: str, headers, content=None, bare: bool = False):

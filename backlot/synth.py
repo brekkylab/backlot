@@ -23,6 +23,25 @@ def _digest(seed: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
+# Crockford's base32, the alphabet a ULID is written in: I and L are dropped because they read as a
+# 1, O as a 0, and U so a typed id cannot spell a word with it.
+_CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _ulid(seed: str) -> str:
+    """A ULID, 26 characters of Crockford's base32: a 48-bit millisecond time, then 80 bits of
+    ``seed``'s digest.
+
+    Fireflies serves ULIDs (measured 2026-10-27: 26 characters, this alphabet, upper case). The
+    time is zero, which a client decodes as 1970-01-01T00:00:00Z: a measured id's time sits
+    *before* its own meeting by an amount that varies (1 day 22 hours on one transcript, 4 hours
+    24 minutes on another), so there is no rule to reproduce, and zero keeps the id a function of
+    ``seed`` alone.
+    """
+    value = int(_digest(seed)[:20], 16)
+    return "".join(_CROCKFORD32[(value >> shift) & 31] for shift in range(125, -1, -5))
+
+
 def hnum(seed: str, start: int = 0, length: int = 8, salt: str = "") -> int:
     """A stable non-negative integer derived from a hex slice of the digest."""
     h = _digest(salt + seed) if salt else _digest(seed)
@@ -67,6 +86,23 @@ def rfc3339(ts: int) -> str:
 def rfc3339_millis(ts: int) -> str:
     """e.g. 2024-04-05T17:00:00.000Z (Confluence version.when)."""
     return utc_datetime(ts).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def rfc3339_minute(ts: int) -> str:
+    """e.g. 2024-04-05T17:00:00.000Z for a moment at 17:00:51 (Notion page/block/data source).
+
+    Measured against api.notion.com on 2026-10-20: a page, a row, their blocks and a data source
+    answer the minute, with zero seconds and milliseconds, whatever second the corpus stores."""
+    return utc_datetime(int(ts) // 60 * 60).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def rfc3339_offset_millis(ts: int) -> str:
+    """e.g. 2024-04-05T17:00:51.000+00:00 (Notion database under 2025-09-03 and later).
+
+    Measured against api.notion.com on 2026-10-20: a database under the data sources model keeps
+    its seconds and milliseconds and spells the offset as ``+00:00`` in place of ``Z``. The
+    corpus stores seconds only, so the milliseconds are ``.000``."""
+    return utc_datetime(ts).strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
 
 
 def jira_datetime(ts: int) -> str:
@@ -1121,18 +1157,19 @@ def fireflies_fill_times(sentences, duration_secs: float | None = None) -> None:
 
 
 def fireflies_id(seed: str) -> str:
-    """A transcript's API-facing id: the 24-character lowercase hex Fireflies serves.
+    """A transcript's API-facing id: the ULID Fireflies serves, 26 Crockford base32 characters.
 
     Synthesized rather than reused from a corpus's own meeting id, which is not required to be
-    unique — ``transcript(id:)`` looks a meeting up by this one (see the store schema).
+    unique — ``transcript(id:)`` looks a meeting up by this one (see the store schema). Its time is
+    zero; see ``_ulid`` for why.
     """
-    return _digest("fireflies:" + seed)[:24]
+    return _ulid("fireflies:" + seed)
 
 
 def fireflies_user_id(email: str) -> str:
-    """A workspace user's id. Fireflies' own ids are 24-character hex, like a transcript's; keyed
-    on the address so it is stable and reversible through the app's startup index."""
-    return _digest("fireflies-user:" + (email or ""))[:24]
+    """A workspace user's id: a ULID, like a transcript's, keyed on the address so it is stable and
+    reversible through the app's startup index."""
+    return _ulid("fireflies-user:" + (email or ""))
 
 
 # No `fireflies_speaker_id` here on purpose: Fireflies numbers speakers WITHIN one meeting, so an

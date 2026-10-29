@@ -2025,6 +2025,14 @@ _LINEAR_BODIES = [
         id="an issue Linear does not hold, a __type served, then null for __type's argument",
     ),
     pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\") { t: __type(name: $y) { name } }","variables":{"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":47}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":{"t":null}}\n',
+            200,
+        ),
+        id="null for __type's argument alone",
+    ),
+    pytest.param(
         b'{"query":"{ __schema { queryType { name } } }"}',
         b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
         id="introspection",

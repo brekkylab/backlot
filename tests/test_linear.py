@@ -7201,6 +7201,24 @@ _LINEAR_HTTP = [
                 200,
                 "its ETag, U+00A0 before no-cache",
             ),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "no-cache\x85")),
+                304,
+                "its ETag, U+0085 after no-cache",
+            ),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "no-cache\xa0")),
+                200,
+                "its ETag, U+00A0 after no-cache",
+            ),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "no-cache ,max-age=0")),
+                200,
+                "its ETag, a space between no-cache and a comma",
+            ),
         )
     ),
     http_row(

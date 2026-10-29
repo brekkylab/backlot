@@ -36,6 +36,11 @@ API caps at 100 is a client that breaks in production.
 | Env var | Default | What it does |
 |---|---|---|
 | `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` | `true` | Refuse a `/github` request once the caller's rate-limit window is spent, 403, the way api.github.com does — for a caller with no credential and for a token alike. Turn it off for a long-lived `serve()` whose own test volume would rather not meet real's 10-a-minute code search window than fix the tests that cross it |
+
+## Fireflies
+
+| Env var | Default | What it does |
+|---|---|---|
 | `BACKLOT_FIREFLIES_ENFORCE_RATE_LIMITS` | `true` | Refuse each root field a `/fireflies` document runs once its key has spent the minute's 30 or the day's 500, with `too_many_requests` and a null in its data, the way api.fireflies.ai does on its Free plan. The counts and their `x-ratelimit-*` headers are sent either way. Turn it off for a long-lived `serve()` whose own volume would rather not meet a 30-a-minute window |
 
 ## Telemetry

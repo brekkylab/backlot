@@ -1777,7 +1777,8 @@ _HSTS = "max-age=31536000; includeSubDomains"
 
 
 def _fastify(cache_control=None, **more):
-    """What each answer of Fastify's carries, ``cache_control`` and ``more`` beside it."""
+    """What each answer of Fastify's carries, with ``cache_control``, no `x-ratelimit-limit-api`
+    and ``more`` beside it, each `_` in a name read as `-`."""
     return {
         "access-control-allow-origin": "*",
         "strict-transport-security": _HSTS,

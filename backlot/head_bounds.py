@@ -27,7 +27,8 @@ take a head that ends: on Slack, Google and S3 one of the bound's length is read
 is refused, on Graph one of the bound's length is refused, and on Cloudflare a request line of
 131,071 bytes before its LF is read and one of 131,072 refused, and a header line the same on Linear
 and Fireflies. GitHub's and Jira Cloud's ended heads met a lower bound first; GitHub's bound is
-taken to read one as Slack's does.
+taken to read one as Slack's does. A body after a head that ended, 50,000 bytes on Graph and 140,000
+on Notion, drew the status line and `Content-Type` a body of ten bytes drew.
 """
 
 from __future__ import annotations

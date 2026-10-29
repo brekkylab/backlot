@@ -242,8 +242,8 @@ def test_each_request_on_a_connection_is_counted_from_its_own_start(live_server)
 
 
 #: A body longer than the bound after a head that ends, on Graph, whose bound refuses a head at its
-#: end, and on Notion, behind a line bound: the prefix, the path and the body's length. Real
-#: answered each as it answered a body of ten bytes (2026-10-29).
+#: end, and on Notion, behind a line bound: the prefix, the path and the body's length, as
+#: ``backlot.head_bounds`` has them measured.
 _BODIES = [
     ("/msgraph", "/v1.0/me", 50_000),
     ("/notion", "/v1/search", 140_000),
@@ -252,7 +252,7 @@ _BODIES = [
 
 @pytest.mark.parametrize("mount, path, size", _BODIES)
 def test_a_body_after_the_head_is_not_counted(live_server, mount, path, size):
-    """The long body draws the status line and `Content-Type` a body of ten bytes draws; the CR and
+    """The long body is answered as the ten-byte one, by status line and `Content-Type`; the CR and
     the LF that end the head come in two reads, the body with the LF."""
     base_url, _ = live_server
 

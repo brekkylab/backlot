@@ -3,11 +3,18 @@
   "endpoints": [
     "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
   ],
-  "measured": "2026-10-14",
+  "measured": "2026-10-28",
   "operations": [
     {
       "operation": "DELETE /agents/repos/{}/{}/automations/{}",
       "id": "agent-automations/delete-repo-automation",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "DELETE /agents/repos/{}/{}/pulls/{}/agent-merge",
+      "id": "agent-merge/delete-agent-merge-enrollment",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -944,6 +951,13 @@
       "severity": "gap"
     },
     {
+      "operation": "DELETE /repos/{}/{}/issues/{}/artifacts/{}",
+      "id": "issues/delete-issue-artifact",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
       "operation": "DELETE /repos/{}/{}/issues/{}/assignees",
       "id": "issues/remove-assignees",
       "status": "missing",
@@ -1355,39 +1369,25 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "No corpus record states a Copilot agent automation, so this family of ten routes \u2014 the caller's automations and a repository's, one by id and one per repository, an automation's tasks, the tools and triggers available to one, and create, edit and delete per repository \u2014 404 rather than answer an invented automation, and three of the ten are writes besides. Read from the vendor's published OpenAPI document (github/rest-api-description, `agent-automations`) on 2026-10-13. Measured against api.github.com the same day: with no credential all ten answer 401 `Requires authentication`, where `GET /agents/nosuchthing` answers 404 `Not Found`; with a token, the seven `GET`s answer 404 with an empty body and the three writes 403 `copilot_plan_required`, \"This API requires a valid Copilot license.\" `GET /agents/automations`, `GET /agents/repos/{}/{}/automations/{}` and the `DELETE` answered the same with `X-GitHub-Api-Version` `2022-11-28` and `2026-03-10`."
-    },
-    {
-      "operation": "GET /agents/automations/available-tools",
-      "id": "agent-automations/list-available-automation-tools",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /agents/automations/available-triggers",
-      "id": "agent-automations/list-available-automation-triggers",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /agents/automations/{}",
-      "id": "agent-automations/get-automation",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
-    },
-    {
-      "operation": "GET /agents/automations/{}/tasks",
-      "id": "agent-automations/list-automation-tasks",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "note": "No corpus record states a Copilot agent automation, so this family of ten routes (the caller's automations, and per repository the list and create, one by id with its edit and delete, its tasks and a run of it, and the tools and triggers available to the repository's automations) 404 rather than answer a list or an automation the corpus cannot vouch for, and four of the ten are writes besides. Read from the vendor's published OpenAPI document (github/rest-api-description, `agent-automations`) on 2026-10-28. Measured against api.github.com the same day: with no credential all ten answer 401 `Requires authentication`, where `GET /agents/nosuchthing` answers 404 `Not Found`; with a token, `GET /agents/automations` answered 200 `[]`, the repository's list, one by id and the available tools and triggers 404 `not found`, and the tasks of an automation that does not exist 404 with `error_code` `automation_not_found`, the same with no `X-GitHub-Api-Version` and with `2026-03-10`."
     },
     {
       "operation": "GET /agents/repos/{}/{}/automations",
       "id": "agent-automations/list-repo-automations",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /agents/repos/{}/{}/automations/available-tools",
+      "id": "agent-automations/list-available-repo-automation-tools",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /agents/repos/{}/{}/automations/available-triggers",
+      "id": "agent-automations/list-available-repo-automation-triggers",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -1398,6 +1398,21 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "GET /agents/repos/{}/{}/automations/{}/tasks",
+      "id": "agent-automations/list-repo-automation-tasks",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /agents/repos/{}/{}/pulls/{}/agent-merge",
+      "id": "agent-merge/get-agent-merge-enrollment",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states a pull request's Agent Merge enrollment, so these three (`GET`, `PUT` and `DELETE` per pull request) 404 rather than answer an invented configuration, and two of the three are writes besides. Read from the vendor's published OpenAPI document (`agent-merge`) on 2026-10-28, whose `PUT` \"is only available to users with a Copilot subscription, excluding Copilot Free users\". Measured against api.github.com the same day: with no credential all three answer 401 `Requires authentication`; with a token, the `GET` answered 404 with an empty body on an open and a merged pull request of a repository the token can write and on a pull request of one it cannot, with no `X-GitHub-Api-Version` and with `2026-03-10`."
     },
     {
       "operation": "GET /agents/repos/{}/{}/tasks",
@@ -4528,6 +4543,21 @@
       "status": "implemented"
     },
     {
+      "operation": "GET /repos/{}/{}/issues/{}/artifacts",
+      "id": "issues/list-issue-artifacts",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states an issue's artifacts, so these five (list and create per issue, and get, update and delete one by number) 404 rather than answer a list the corpus cannot vouch for, and three of the five are writes besides. Read from the vendor's published OpenAPI document (`issues/list-issue-artifacts` and its four siblings) on 2026-10-28. Measured against api.github.com the same day on public repositories: with a token, the list answered 200 `[]` on an issue and on a pull request with none, 404 `Not Found` for an issue number that does not exist, and the get of artifact 1 404 `Not Found`; with no credential the list and the get answered 404 `Not Found` where the token's list answered 200, and the three writes 401 `Requires authentication`."
+    },
+    {
+      "operation": "GET /repos/{}/{}/issues/{}/artifacts/{}",
+      "id": "issues/get-issue-artifact",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
       "operation": "GET /repos/{}/{}/issues/{}/assignees/{}",
       "id": "issues/check-user-can-be-assigned-to-issue",
       "status": "missing",
@@ -5010,6 +5040,21 @@
     {
       "operation": "GET /repos/{}/{}/security-advisories/{}",
       "id": "security-advisories/get-repository-advisory",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /repos/{}/{}/security-advisories/{}/comments",
+      "id": "security-advisories/list-repository-advisory-comments",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "These four (list and create per advisory, and get and update one by id) sit under a repository security advisory, which no corpus record states and which this server does not serve (`GET /repos/{}/{}/security-advisories/{}` is a gap in this baseline), so they 404 with it; two of the four are writes. Read from the vendor's published OpenAPI document (`security-advisories/list-repository-advisory-comments` and its three siblings) on 2026-10-28. Measured against api.github.com the same day on a published advisory of `psf/requests` (`GHSA-gc5v-m9x4-r6x2`): the list answered 200 `[]` with a token and without, the get of comment 1 404 `Not Found` with a token and without, and with no credential the two writes 401 `Requires authentication`."
+    },
+    {
+      "operation": "GET /repos/{}/{}/security-advisories/{}/comments/{}",
+      "id": "security-advisories/get-repository-advisory-comment",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -6372,6 +6417,13 @@
       "severity": "gap"
     },
     {
+      "operation": "PATCH /repos/{}/{}/issues/{}/artifacts/{}",
+      "id": "issues/update-issue-artifact",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
       "operation": "PATCH /repos/{}/{}/issues/{}/sub_issues/priority",
       "id": "issues/reprioritize-sub-issue",
       "status": "missing",
@@ -6449,6 +6501,13 @@
       "severity": "gap"
     },
     {
+      "operation": "PATCH /repos/{}/{}/security-advisories/{}/comments/{}",
+      "id": "security-advisories/update-repository-advisory-comment",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
       "operation": "PATCH /teams/{}",
       "id": "teams/update-legacy",
       "status": "missing",
@@ -6500,6 +6559,13 @@
     {
       "operation": "POST /agents/repos/{}/{}/automations",
       "id": "agent-automations/create-repo-automation",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "POST /agents/repos/{}/{}/automations/{}/tasks",
+      "id": "agent-automations/create-repo-automation-task",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -7373,6 +7439,13 @@
       "severity": "gap"
     },
     {
+      "operation": "POST /repos/{}/{}/issues/{}/artifacts",
+      "id": "issues/create-issue-artifact",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
       "operation": "POST /repos/{}/{}/issues/{}/assignees",
       "id": "issues/add-assignees",
       "status": "missing",
@@ -7633,6 +7706,13 @@
       "severity": "gap"
     },
     {
+      "operation": "POST /repos/{}/{}/security-advisories/{}/comments",
+      "id": "security-advisories/create-repository-advisory-comment",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
       "operation": "POST /repos/{}/{}/security-advisories/{}/cve",
       "id": "security-advisories/create-repository-advisory-cve-request",
       "status": "missing",
@@ -7852,6 +7932,13 @@
     {
       "operation": "POST /users/{}/projectsV2/{}/views",
       "id": "projects/create-view-for-user",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "PUT /agents/repos/{}/{}/pulls/{}/agent-merge",
+      "id": "agent-merge/put-agent-merge-enrollment",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"

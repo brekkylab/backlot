@@ -5233,7 +5233,8 @@ _CAPS_TRUE = {
 
 @pytest.fixture(scope="module")
 def owned_and_lent(tmp_path_factory):
-    """A file and a folder record of ava's and of mia's in folder `Plans`, each readable by both."""
+    """A file and a folder record of ava's and of mia's, and a PDF of mia's, in folder `Plans`,
+    each readable by both."""
     record = {
         "source_type": "google_drive",
         "folder": "Plans",
@@ -5241,8 +5242,11 @@ def owned_and_lent(tmp_path_factory):
         "readers": ["ava@acme.com", "mia@acme.com"],
         "visibility": "private",
     }
-    rows = [("mine", "Mine", "ava", None), ("theirs", "Theirs", "mia", None)]
-    rows += [("figures", "Figures", "ava", "folder"), ("drafts", "Drafts", "mia", "folder")]
+    folder = {"subtype": "folder"}
+    pdf = {"subtype": "pdf", "mime_type": "application/pdf"}
+    rows = [("mine", "Mine", "ava", {}), ("theirs", "Theirs", "mia", {})]
+    rows += [("figures", "Figures", "ava", folder), ("drafts", "Drafts", "mia", folder)]
+    rows += [("scan", "Scan.pdf", "mia", pdf)]
     return tiny_corpus(
         tmp_path_factory.mktemp("owned_and_lent"),
         [
@@ -5251,9 +5255,9 @@ def owned_and_lent(tmp_path_factory):
                 "doc_id": doc_id,
                 "title": title,
                 "author_email": f"{author}@acme.com",
-                **({"subtype": subtype} if subtype else {}),
+                **extra,
             }
-            for doc_id, title, author, subtype in rows
+            for doc_id, title, author, extra in rows
         ],
     )
 
@@ -5297,6 +5301,45 @@ def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(
         assert (f["ownedByMe"], f["capabilities"]["canShare"], f["modifiedByMe"]) == (owned,) * 3
         assert f.get("modifiedByMeTime") == (f["modifiedTime"] if owned else None)
         assert {k for k, v in f["capabilities"].items() if v} == _CAPS_TRUE[kind, owned]
+
+
+def test_drive_key_order_differs_between_listing_and_read(owned_and_lent):
+    """Each item comes in real's listing order in a listing and in its read order when read by
+    id, with the same keys and values both ways, and the listing's own keys come in a third
+    order. Between them the items carry every key either order names: ava is a scoped caller,
+    so her own file carries `modifiedByMeTime`, what mia lent her `sharedWithMeTime`, and the
+    PDF the keys only a binary file has."""
+    list_order = (
+        "kind fileExtension md5Checksum viewedByMe mimeType exportLinks parents iconLink "
+        "shared lastModifyingUser owners webViewLink webContentLink size spaces id name "
+        "starred trashed explicitlyTrashed createdTime modifiedTime modifiedByMeTime "
+        "sharedWithMeTime quotaBytesUsed version ownedByMe fullFileExtension capabilities "
+        "modifiedByMe"
+    ).split()
+    get_order = (
+        "kind id name mimeType starred trashed explicitlyTrashed parents spaces version "
+        "webContentLink webViewLink iconLink viewedByMe createdTime modifiedTime "
+        "modifiedByMeTime modifiedByMe sharedWithMeTime owners lastModifyingUser shared "
+        "ownedByMe capabilities fullFileExtension fileExtension md5Checksum size "
+        "quotaBytesUsed exportLinks"
+    ).split()
+    s = owned_and_lent
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
+    ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+    with client_for(s, reload=True) as c:
+        listing = c.get(
+            "/drive/v3/files", headers=ava, params={"fields": "*", "pageSize": 100}
+        ).json()
+        assert {k for entry in listing["files"] for k in entry} == set(list_order)
+        for entry in listing["files"]:
+            assert list(entry) == [k for k in list_order if k in entry]
+            got = c.get(
+                f"/drive/v3/files/{entry['id']}", headers=ava, params={"fields": "*"}
+            ).json()
+            assert got == entry
+            assert list(got) == [k for k in get_order if k in got]
+        paged = c.get("/drive/v3/files", headers=ava, params={"pageSize": 2}).json()
+        assert list(paged) == ["files", "kind", "nextPageToken", "incompleteSearch"]
 
 
 _PER_CALLER = "ownedByMe,capabilities,modifiedByMe,modifiedByMeTime,modifiedTime"
@@ -6299,6 +6342,8 @@ def test_drive_get_honors_the_fields_mask(client, admin_h):
         f"/drive/v3/files/{row['id']}", headers=admin_h, params={"fields": mask}
     ).json()
     assert got == row
+    assert list(row) == ["mimeType", "webViewLink", "size", "id", "name", "modifiedTime"]
+    assert list(got) == ["id", "name", "mimeType", "webViewLink", "modifiedTime", "size"]
     r = client.get(
         f"/drive/v3/files/{row['id']}", headers=admin_h, params={"fields": "totallyBogusField"}
     )
@@ -6307,15 +6352,17 @@ def test_drive_get_honors_the_fields_mask(client, admin_h):
 
 def test_drive_files_answer_the_default_keys_with_no_mask(client, admin_h):
     """With no mask a file is `kind`, `id`, `name` and `mimeType`, listed and read by id, a folder
-    as well as a stored file."""
+    as well as a stored file, in a listing's order and in a read's."""
     listing = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 2}).json()
     folders = client.get(
         "/drive/v3/files", headers=admin_h, params={"q": f"mimeType='{FOLDER_MIME}'", "pageSize": 1}
     ).json()
     entries = listing["files"] + folders["files"]
-    assert len(entries) == 3 and all(set(x) == {"kind", "id", "name", "mimeType"} for x in entries)
+    assert [list(x) for x in entries] == [["kind", "mimeType", "id", "name"]] * 3
     for x in entries:
-        assert client.get(f"/drive/v3/files/{x['id']}", headers=admin_h).json() == x
+        got = client.get(f"/drive/v3/files/{x['id']}", headers=admin_h).json()
+        assert got == x
+        assert list(got) == ["kind", "id", "name", "mimeType"]
 
 
 def test_drive_folders_are_found_by_mime_type(client, admin_h):
@@ -6763,7 +6810,7 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
                 "runs": [
                     {"text": "Ship the "},
                     {"text": "reader", "bold": True},
-                    {"text": " and"},
+                    {"text": " and", "bold": False},
                     {"text": " the "},
                     {"text": "writer", "italic": True},
                     {"text": "."},
@@ -6786,7 +6833,13 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
             {
                 "runs": [
                     {"text": "A "},
-                    {"text": "linkbold", "link": url, "bold": True},
+                    {
+                        "text": "linkbold",
+                        "link": url,
+                        "bold": True,
+                        "italic": True,
+                        "strikethrough": True,
+                    },
                 ]
             },
             {"runs": [{"text": "pre "}, {"text": "ullink", "underline": True, "link": url}]},
@@ -6804,7 +6857,7 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
         "doc_id": "crlf",
         "title": "CRLF notes",
         "author_email": "owner@acme.com",
-        "content": "one\r\ntwo\x01\ue000",
+        "content": "one\r\ntwo\x01\ue000\t\x0b\uf900\ufdcf\ufdf0",
     }
 
     def para(start, end, runs, style="NORMAL_TEXT"):
@@ -6870,7 +6923,11 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
         para(
             105,
             116,
-            [("A ", {}, 2), ("linkbold", {"bold": True, **link}, 8), ("\n", {"bold": True}, 1)],
+            [
+                ("A ", {}, 2),
+                ("linkbold", {"bold": True, "italic": True, "strikethrough": True, **link}, 8),
+                ("\n", {"bold": True, "italic": True, "strikethrough": True}, 1),
+            ],
         ),
         para(116, 127, [("pre ", {}, 4), ("ullink", link, 6), ("\n", {"underline": True}, 1)]),
         para(
@@ -6886,7 +6943,7 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
     ]
     assert crlf.json()["body"]["content"][1:] == [
         para(1, 5, [("one\n", {}, 4)]),
-        para(5, 9, [("two\n", {}, 4)]),
+        para(5, 14, [("two\t\x0b\uf900\ufdcf\ufdf0\n", {}, 9)]),
     ]
     headings = [
         el["paragraph"]["paragraphStyle"]["headingId"]
@@ -6895,6 +6952,26 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
     ]
     assert len(headings) == len(set(headings)) == 2
     assert all(re.fullmatch(r"h[.][a-z0-9]{12}", h) for h in headings)
+    # `==` above holds whatever order the members come in, so real's is asserted on its own.
+    content = doc["body"]["content"]
+    assert list(content[0]) == ["endIndex", "sectionBreak"]
+    assert list(content[1]) == ["startIndex", "endIndex", "paragraph"]
+    assert list(content[1]["paragraph"]["paragraphStyle"]) == [
+        "headingId",
+        "namedStyleType",
+        "direction",
+    ]
+    run, newline = content[7]["paragraph"]["elements"][1:]
+    assert list(run) == ["startIndex", "endIndex", "textRun"]
+    assert list(run["textRun"]["textStyle"]) == [
+        "bold",
+        "italic",
+        "underline",
+        "strikethrough",
+        "foregroundColor",
+        "link",
+    ]
+    assert list(newline["textRun"]["textStyle"]) == ["bold", "italic", "strikethrough"]
 
 
 _DOCS_FLAT = [
@@ -6954,6 +7031,20 @@ _DOCS_MEMBER_ROWS = [
     ("owner", {"includeTabsContent": "false"}, _DOCS_FLAT, _INLINE, _OMITTED),
     (
         "owner",
+        [("suggestionsViewMode", "1"), ("suggestionsViewMode", "3")],
+        _DOCS_FLAT,
+        _PREVIEW,
+        _OMITTED,
+    ),
+    (
+        "owner",
+        [("includeTabsContent", "true"), ("includeTabsContent", "false")],
+        _DOCS_FLAT,
+        _INLINE,
+        _OMITTED,
+    ),
+    (
+        "owner",
         {"commentsViewMode": "COMMENTS_VIEW_MODE_UNSPECIFIED"},
         _DOCS_FLAT,
         _INLINE,
@@ -6977,8 +7068,9 @@ _DOCS_MEMBER_ROWS = [
 
 def test_docs_get_serves_members_in_reals_order(client, tokens_yaml, document_callers, document_id):
     """A document read serves its members in real's order, flat or as its one tab, the tab holding
-    what the flat read holds. A reader, the admin token among them, is served no `revisionId` and a
-    preview of the suggestions unless it asks for another mode, and comments to the owner alone.
+    what the flat read holds. A reader, the admin token on a corpus file among them, is served no
+    `revisionId` and a preview of the suggestions unless it asks for another mode, and comments to
+    the owner alone.
     """
     callers = {
         **document_callers,
@@ -7235,6 +7327,7 @@ _DOCS_VIEW_REFUSALS = [
         _TABS_ONLY,
     ),
     ("owner", "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED&fields=title", 400, _TABS_ONLY),
+    ("owner", "commentsViewMode=0&commentsViewMode=2", 400, _TABS_ONLY),
     ("owner", "includeTabsContent=true&commentsViewMode=3", 400, _INLINE_ONLY),
     (
         "owner",
@@ -7264,6 +7357,9 @@ _DOCS_VIEW_REFUSALS = [
     ("owner", "fields=title,suggestions", 400, _COMMENT_FIELD),
     ("owner", "fields=*.commentId", 400, _COMMENT_FIELD),
     ("owner", "fields=tabs.*.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.childTabs.documentTab.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.*.*.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.childTabs.childTabs.documentTab.commentAnchors", 400, _COMMENT_FIELD),
     (
         "owner",
         "fields=comments&includeTabsContent=true&commentsViewMode=2",
@@ -7368,6 +7464,12 @@ _DOCS_MASKS = [
         {},
     ),
     ("reader", "fields=comments&includeTabsContent=true&commentsViewMode=1", {}),
+    (
+        "owner",
+        "fields=tabs.childTabs.documentTab.commentAnchors&includeTabsContent=true"
+        "&commentsViewMode=1",
+        {"tabs": [{}]},
+    ),
     ("reader", "fields=title,revisionId", ["title"]),
     ("owner", "fields=nope", _no_match("nope", "nope")),
     ("owner", "fields=nope&fields=title", _no_match("nope", "nope")),

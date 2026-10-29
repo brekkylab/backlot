@@ -1210,11 +1210,12 @@ router = APIRouter(
     prefix="/github",
     tags=["github"],
     # Order is the answering order: real resolves a credential that arrived before it looks at the
-    # version or the path, an unsupported API version is a malformed request it refuses next — ahead
-    # of a MISSING credential and of the owner the path names — and the repo's spelling is resolved
-    # last, so never for a request that fails one of the three ahead of it. A path no route matches
-    # is 404 ahead of all three on real (measured 2026-09-17 on an unrouted path and on a
-    # nonexistent subresource), and a router-wide dependency does not run for one either.
+    # version or the path, refuses a request line or path too long for it next, and then an
+    # unsupported API version as a malformed request — ahead of a MISSING credential and of the
+    # owner the path names — and the repo's spelling is resolved last, so never for a request that
+    # fails one of the four ahead of it. A path no route matches is 404 ahead of the credential, the
+    # version and the owner on real (measured 2026-09-17 on an unrouted path and on a nonexistent
+    # subresource), and a router-wide dependency does not run for one either.
     dependencies=[
         Depends(_refuse_an_anonymous_caller),
         Depends(_validate_bad_credential),

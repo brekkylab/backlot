@@ -1,7 +1,7 @@
 """Google APIs: Gmail (``/gmail/v1``), Drive (``/drive/v3``), and the Workspace editor APIs — Docs
 (``/docs/v1``, in `routers.google_docs`), Sheets (``/sheets/v4``, in `routers.google_sheets`),
-Slides (``/slides/v1``) — for clients that read native docs structurally instead of via Drive
-export.
+Slides (``/slides/v1``) — for clients that read a Doc, Sheet or Slide deck structurally instead
+of via Drive export.
 
 Client base-URL override: point the Gmail client at ``http://<host>/gmail`` and the
 Drive client at ``http://<host>/drive`` (google-api-python-client ``api_endpoint``).
@@ -3823,8 +3823,8 @@ _DRIVE_EXPORT_FORMATS = {
 }
 
 # Source type -> the native types Drive can convert it into on upload. Google's map is longer;
-# this is the part that covers every format Backlot's own corpus contains (native docs, Office
-# files, PDFs, delimited text, images), so a client's lookup for a real file resolves.
+# this is the part that covers every format Backlot's own corpus contains (native editor files,
+# Office files, PDFs, delimited text, images), so a client's lookup for a real file resolves.
 _DRIVE_IMPORT_FORMATS = {
     "application/pdf": [DRIVE_DOC_MIME],
     "application/rtf": [DRIVE_DOC_MIME],
@@ -4340,7 +4340,7 @@ async def drive_files_permissions(file_id: str, request: Request):
 
 # --- Google Workspace editors read APIs (Docs / Sheets / Slides) ------------------
 #
-# Drive `files.export` renders a native doc to text, but editor-aware clients (e.g. mirage)
+# Drive `files.export` renders a native editor file to text, but editor-aware clients (mirage)
 # read the *structured* document straight from the Docs/Sheets/Slides APIs instead. These
 # endpoints serve the corpus content shaped into each API's read response, keyed on the same
 # Drive file id, and enforce the same ACL as Drive.
@@ -4847,7 +4847,7 @@ _NATIVE = {
 
 
 def _native(row):
-    """Return the _NATIVE tuple for this doc, or None if it's a binary (non-native) file."""
+    """Return the _NATIVE tuple for this file, or None if it's a binary (non-native) file."""
     return _NATIVE.get(row["subtype"] or store.DRIVE_DEFAULT_SUBTYPE)
 
 
@@ -4962,10 +4962,10 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
             if seg
             else f"https://drive.google.com/drive/folders/{row['id']}"
         )
-    else:  # binary file (PDF, image, office doc)
+    else:  # binary file (PDF, image, Office file)
         view = f"https://drive.google.com/file/d/{row['id']}/view"
     is_folder = row["subtype"] == "folder"
-    # "shared" = visible to anyone besides the owner — true for org/group/multi-reader docs.
+    # "shared" = visible to anyone besides the owner — true for org/group/multi-reader files.
     # In a list the caller passes it in (batch-computed); for a single get, look it up here.
     if shared is None:
         shared = bool(store.gdrive_shared(conn, [row["id"]]))

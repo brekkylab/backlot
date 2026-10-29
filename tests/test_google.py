@@ -15374,8 +15374,8 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
         # a link only inside it; after it the text is unstyled, and a run of its own
         ([_ins(30, "X")], [*_STYLED[:2], "N L:liXnk| here\n", *_STYLED[3:]]),
         ([_ins(32, "X")], [*_STYLED[:2], "N L:link|X| here\n", *_STYLED[3:]]),
-        # at a paragraph's start, the first character's; a run of its own after a newline that is
-        # not in that style
+        # at a paragraph's start, the first character's; a run of its own after a newline with a
+        # member it lacks (struck here)
         ([_ins(45, "X")], [*_STYLED[:4], "N i:X|i:BOLDSTART| x\n", *_STYLED[5:]]),
         # ... and joins its run after an unstyled newline: `BOLD` starts the paragraph once
         # `plain ` is gone
@@ -15653,6 +15653,16 @@ _DOCS_BATCH_REFUSALS = [
         {"requests": [_ins(0, "x")], "writeControl": {"targetRevisionId": "abc"}},
         400,
         "Invalid revision ID: abc",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"requiredRevisionId": "AHj4eMabc"}},
+        500,
+        "Internal error encountered.",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"targetRevisionId": "AHj4eMabc"}},
+        500,
+        "Internal error encountered.",
     ),
 ]
 

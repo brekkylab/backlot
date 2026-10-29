@@ -564,7 +564,11 @@ async def docs_batch_update(document_id: str, request: Request):
     conn = auth.conn(request)
     written = store.gdrive_doc_revision(conn, document_id)
     for field in ("required_revision_id", "target_revision_id"):
-        named = _docs_revision_of(control.get(field, ""))
+        stated = control.get(field, "")
+        named = _docs_revision_of(stated)
+        # measured 2026-10-29: `AHj4eMabc`, real's prefix on no revision, is a 500 as either
+        if named is None and stated.startswith(_DOCS_REVISION_PREFIX):
+            raise gerr.internal_error()
         if named is not None and named[0] != document_id:
             raise gerr.invalid_argument("The provided revision ID is invalid.")
     if "required_revision_id" in control:

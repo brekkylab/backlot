@@ -461,21 +461,20 @@ _VALIDATION = "Argument Validation Error"
         ({"term": "x", "teamId": "11111111-1111-0111-8111-111111111111"}, _VALIDATION),
         ({"term": "a\ud800b", "teamId": "ENG"}, _VALIDATION),
         ({"term": "a\ud800b", "filter": {"id": {"eq": "not-a-uuid"}}}, _VALIDATION),
-        (
-            {"term": "a\ud800b", "first": 1, "last": 1},
-            "passing both `first` and `last` is not supported",
-        ),
+        ({"term": "a\ud800b", "first": 1, "last": 1}, None),
     ],
 )
 def test_linear_search_issues_refuses_what_real_refuses(client, admin_h, variables, message):
-    """Each row refused as `resolve_search_issues` records, a lone-surrogate term beside three of
-    them; `first` with `last` in `_slice`'s words. The body is `json.dumps`'s, which writes a lone
-    surrogate as its escape."""
+    """Each row refused as `resolve_search_issues` and `_search_backend_failed` record, a
+    lone-surrogate term beside three of them, and none with the search backend's error. `_slice`
+    refuses `first` with `last` in its own words, where Linear answers `_VALIDATION`, so that row's
+    message is `None`. The body is `json.dumps`'s, which writes a lone surrogate as its escape."""
     body = json.dumps({"query": _SEARCH, "variables": variables}).encode()
     headers = {**admin_h, "Content-Type": "application/json"}
     r = client.post("/linear/graphql", content=body, headers=headers).json()
     assert r["data"] is None
-    assert r["errors"][0]["message"] == message
+    assert r["errors"][0]["message"] != "Failed to query search backend"
+    assert message is None or r["errors"][0]["message"] == message
 
 
 def test_linear_search_ranks_by_relevance_unless_order_by(client, admin_h):

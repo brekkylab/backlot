@@ -92,10 +92,12 @@ query string and a JSON `Content-Type` or none. Apollo Server serves a form, or 
 `Content-Type`, only beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its
 check that a browser preflighted the request. Fastify serves `/graphql` alone, an escaped letter in
 it decoded. Any other path nginx passes on to Fastify, `/graphql` in any case, alone, before a
-newline that ends it, or with a slash and more after it, once each escape is decoded and each run of
-slashes is one, gets Fastify's 404, and any other path nginx's 404 page.
+newline that ends it, or with a slash and anything after it, once each escape is decoded, each run
+of slashes is one and the dot segments are resolved, gets Fastify's 404, or its preflight to an
+`OPTIONS`; any other path gets nginx's 404 page, and one ending in a `..` that climbs past the root
+nginx's 400.
 
-Every answer past Cloudflare carries `Strict-Transport-Security`, and Fastify's add
+Every answer past Cloudflare but nginx's 400 carries `Strict-Transport-Security`, and Fastify's add
 `Access-Control-Allow-Origin: *`; an answer of Apollo Server's request pipeline carries
 `Cache-Control: no-store` unless it sets its own, and the JSON Apollo Server writes ends in a
 newline. Each root field a document runs, an alias of one as one more, spends a key's budget, which
@@ -212,8 +214,12 @@ it cannot parse, and refused once that window is spent (2026-10-14); the two `Ba
 paragraph above counts in that window get their own 401 once it is spent, as with it fresh, when a
 space follows the scheme (2026-10-26). The refused request is not itself counted, which is why
 `used` holds at `limit` rather than climbing past it. The body differs by caller: two members
-(`message`, `documentation_url`) for a caller with no credential, three (`status` besides) for a
-token, each with its own `documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal
+(`message`, `documentation_url`) with no `Authorization`, three (`status` besides) for a token, each
+with its own `documentation_url`, and three for an `Authorization` real cannot parse, the anonymous
+sentence followed by the token's, with the token's `documentation_url` but for a `Basic` value
+naming no token after a space, which names a third page (2026-10-26 and 2026-10-28). Such a value
+has a `code_search` window of its own at `limit: 0`, so code search answers a `Basic` value naming
+no token with that 403 at once (2026-10-26). `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal
 off (see [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does
 not count, and is never refused — the one route a client reads its way out of a spent window with;
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
@@ -598,22 +604,23 @@ operation's 415 carry the account id alone.
 string. Apollo Server serves a `GET` with no `Content-Type`, or a form or `text/plain` one, only
 beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its check that a
 browser preflighted the request. Express hands Apollo Server `/graphql` in any case, alone or with
-a slash and more after it, once Linear's front has turned a backslash into a slash, folded a run of
-slashes into one and decoded an escape of a letter, a digit or one of `-._~`, and once its dot
-segments are resolved, so each of those paths is the endpoint too, but for one whose `..` climbs
-past the root; `/` answers a `GET` or `HEAD` with a greeting, and any other method there, or any
-other path, Express's 404 page.
+a slash and anything after it, once Linear's front has turned a backslash into a slash, decoded an
+escape of a letter, a digit or one of `-._~`, resolved the dot segments and then folded a run of
+slashes into one, so each of those paths is the endpoint too, but for one where a `..` with a
+segment after it climbs past the root, which Cloudflare refuses with its 400; `/` answers a `GET` or
+`HEAD` with a greeting and an `OPTIONS` with the methods it takes, and any other method there, or
+any other path, Express's 404 page.
 
 Every answer past the load balancer carries `x-request-id` and, to a request with an `Origin`,
 `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers`. Express's answers add
 `Cache-Control: private, no-cache, no-store, must-revalidate` where they carry none of their own,
 and `Vary`, and all but its 404 page, `OPTIONS /` and a `HEAD`'s 200 an `ETag`; a `GET` or `HEAD`
 whose `If-None-Match` names that `ETag`, or is `*`, draws Express's 304, without `Accept-Encoding`
-in `Vary`. Apollo Server's JSON ends in a newline. An answer to a document Linear ran carries
-`x-ratelimit-requests-limit` (2,500 an hour under an API key, 1,200 with no credential),
-`x-ratelimit-requests-remaining` and `x-ratelimit-requests-reset`, an hour past the answer.
-`x-complexity` and the four `x-ratelimit-complexity-*` headers are not sent, and a spent budget is
-not refused.
+in `Vary`. Apollo Server's JSON ends in a newline. An answer to a document Linear ran, or whose
+variables it refused, carries `x-ratelimit-requests-limit` (2,500 an hour under an API key, 1,200
+with no credential), `x-ratelimit-requests-remaining` and `x-ratelimit-requests-reset`, an hour past
+the answer. `x-complexity` and the four `x-ratelimit-complexity-*` headers are not sent, and a spent
+budget is not refused.
 
 Root `Query` fields:
 

@@ -514,33 +514,57 @@ def _not_found(request: Request) -> Response:
     return _body_refusal(message, 404, "not_found")
 
 
-_NGINX_404 = (
-    b"<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n"
-    b"<center><h1>404 Not Found</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
+_NGINX_PAGE = (
+    b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
+    b"<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
 )
+_NGINX_404 = _NGINX_PAGE % ((b"404 Not Found",) * 2)
+_NGINX_400 = _NGINX_PAGE % ((b"400 Bad Request",) * 2)
 _NGINX_LOCATION = re.compile(rb"/graphql(/|$)", re.IGNORECASE)
 
 
-def nginx_passes(path: str) -> bool:
-    """Whether nginx in front of Fastify passes on ``path``, as a client sent it
-    (:func:`~backlot.routers.sent_path`): once each escape is decoded and each run of slashes is
-    one, it starts with `/graphql`, in any case, followed by a slash, by nothing or by a newline
-    that ends it. api.fireflies.ai answered with Fastify's 404 at each path :func:`_not_found`
-    names, and with nginx's (:data:`_NGINX_404`) at `/graphqlx`, `/graphql.json`, `/graphql;x`,
-    `/graphql%20`, `/graphql%7E`, `/x/graphql` and `/`, on 2026-10-25 (UTC)."""
-    decoded = re.sub(rb"/{2,}", b"/", urllib.parse.unquote_to_bytes(path))
-    return _NGINX_LOCATION.match(decoded) is not None
+def nginx_path(path: str) -> bytes | None:
+    """``path``, as a client sent it (:func:`~backlot.routers.sent_path`), as nginx in front of
+    Fastify reads it to pick a location: each escape decoded, each run of slashes one, then each
+    `.` segment dropped and each `..` segment taking the segment before it away; or ``None`` where a
+    `..` has no segment before it to take, which nginx refuses with :data:`_NGINX_400`. On
+    2026-10-29 (UTC) `/x/../graphql`, `/x//../graphql`, `/a/b/../../graphql`, `/x/..%2Fgraphql` and
+    `/graphql/x/..` drew Fastify's 404 from api.fireflies.ai, `/graphql/..`, `/graphql//..` and
+    `/x/.//graphql` :data:`_NGINX_404`, and `/..`, `/x/../..`, `/x/..%2F..` and `/%2e%2e`
+    :data:`_NGINX_400`."""
+    segments = re.sub(rb"/{2,}", b"/", urllib.parse.unquote_to_bytes(path)).split(b"/")[1:]
+    out: list[bytes] = []
+    for segment in segments:
+        if segment == b"..":
+            if not out:
+                return None
+            out.pop()
+        elif segment != b".":
+            out.append(segment)
+    return b"/" + b"/".join(out)
+
+
+def nginx_passes(path: bytes) -> bool:
+    """Whether nginx passes on ``path``, as :func:`nginx_path` reads it, to Fastify: it starts with
+    `/graphql`, in any case, followed by a slash, by nothing or by a newline that ends it.
+    api.fireflies.ai answered with Fastify's 404 at each path :func:`_not_found` names, and with
+    :data:`_NGINX_404` at `/graphqlx`, `/graphql.json`, `/graphql;x`, `/graphql%20`, `/graphql%7E`,
+    `/x/graphql` and `/`, on 2026-10-25 (UTC)."""
+    return _NGINX_LOCATION.match(path) is not None
 
 
 @router.api_route("/", methods=list(apollo_http.METHODS), include_in_schema=False)
 async def unrouted(request: Request):
     """Fireflies' answer at a path Fastify has no route for, each of which ``backlot.main`` routes
-    here: :data:`_NGINX_404` where nginx keeps the request (:func:`nginx_passes`), and Fastify's
-    where it passes it on, :func:`_preflight` to an `OPTIONS`, and to any other method,
-    after reading the body of one of :data:`_BODIED` (:func:`_fastify_read`), its not-found
-    handler's 404 (:func:`_not_found`). Fastify's answers carry what :func:`_from_fastify` adds, and
-    nginx's page :data:`_HSTS` alone."""
-    if not nginx_passes(sent_path(request.scope)):
+    here: nginx's page where nginx keeps the request (:func:`nginx_path`, :func:`nginx_passes`),
+    and Fastify's where it passes it on: :func:`_preflight` to an `OPTIONS`, and to any other
+    method, after reading the body of one of :data:`_BODIED` (:func:`_fastify_read`), its
+    not-found handler's 404 (:func:`_not_found`). Fastify's answers carry what
+    :func:`_from_fastify` adds, nginx's 404 page :data:`_HSTS` alone, and its 400 neither."""
+    path = nginx_path(sent_path(request.scope))
+    if path is None:
+        return Response(_NGINX_400, status_code=400, headers={"content-type": "text/html"})
+    if not nginx_passes(path):
         return Response(
             _NGINX_404,
             status_code=404,

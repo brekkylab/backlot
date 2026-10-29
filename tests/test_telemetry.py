@@ -695,6 +695,24 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
         ),
         (
             "POST",
+            "/linear/a%2",
+            {"headers": LINEAR | JSON, "json": {"query": "{ __typename }"}},
+            ("linear", "unmatched", "unknown", 400, None, "client"),
+        ),
+        (
+            "POST",
+            "/fireflies/%2e%2e/graphql",
+            {"headers": JSON, "json": {"query": "{ __typename }"}},
+            ("fireflies", "unmatched", "unknown", 400, None, "client"),
+        ),
+        (
+            "POST",
+            "/fireflies/%2e%2e",
+            {"headers": JSON, "json": {"query": "{ __typename }"}},
+            ("fireflies", "unmatched", "unknown", 400, None, "client"),
+        ),
+        (
+            "POST",
             "/fireflies/graphql/",
             {"headers": JSON, "json": {"query": "{ __typename }"}},
             ("fireflies", "unmatched", "unknown", 404, "not_found", "client"),

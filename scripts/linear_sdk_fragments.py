@@ -100,7 +100,7 @@ def main(argv: list[str]) -> int:
         print(f"{args.bundle} holds no `fragment … on …`; the bundle's layout may have changed")
         return 2
     checked, hits = undeclared(found, schema_source)
-    print(f"{len(found)} fragments, {checked} on a type the schema serves beyond `id`")
+    print(f"fragments: {len(found)}, checked: {checked}")
     for name, on, missing in hits:
         print(f"fragment {name} on {on} selects what {on} does not declare: {', '.join(missing)}")
     return 1 if hits else 0

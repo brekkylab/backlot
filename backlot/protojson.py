@@ -169,14 +169,15 @@ def to_float(piece: tuple[str, object]) -> float:
 # Measured 2026-10-29 and 2026-10-30 on Docs `documents.create`, the refusals below in the order
 # they are checked: no `Z` or `±hh:mm` offset under a day at the very end (`2026-10-29`, a
 # lower-case `z`, `+0900`, `+24:00`, a final newline); what precedes the zone and the fraction not
-# read as `%Y-%m-%dT%H:%M:%S`, the year an int64 and each field after it one or two digits in its
-# range, space allowed around the whole (month 13, hour 24, `+2026`, a lower-case `t`, no seconds);
-# anything left after the seconds; a day past its month's last (30 February), or a time, offset
-# not applied, past int64 seconds from the epoch (`292277026596-12-04T15:30:08Z`); a fraction, what
-# follows the last `.`, that is not an int32 or is `-` and zeros (`1a`, `+1`, `1 `, twelve digits,
-# `-0`); and a time outside 0001 to 9999 UTC once the offset is applied, a negative fraction or a
-# fraction past nine digits that is not zero. An empty fraction, ten zeros, a year of two or six
-# digits, a second of 60 and `10000-01-01T00:00:00+01:00` are read.
+# read as `%Y-%m-%dT%H:%M:%S`, the year an int64 but not `-` and zeros, each field after it one or
+# two digits in its range, space allowed around the whole (month 13, hour 24, `+2026`, `-0000`, a
+# lower-case `t`, no seconds); anything left after the seconds; a day past its month's last (30
+# February), or a time, offset not applied, past int64 seconds from the epoch
+# (`292277026596-12-04T15:30:08Z`); a fraction, what follows the last `.`, that is not an int32 or
+# is `-` and zeros (`1a`, `+1`, `1 `, twelve digits, `-0`); and a time outside 0001 to 9999 UTC once
+# the offset is applied, a negative fraction or a fraction past nine digits that is not zero. An
+# empty fraction, ten zeros, a year of two or six digits, a second of 60 and
+# `10000-01-01T00:00:00+01:00` are read.
 _TS_NO_ZONE = (
     "Illegal timestamp format; timestamps must end with 'Z' or have a valid timezone offset."
 )
@@ -212,7 +213,7 @@ def _timestamp_error(piece: tuple[str, object]) -> str | None:
     year, month, day, hour, minute, second = (int(p) for p in parts.groups())
     if not (1 <= month <= 12 and 1 <= day <= 31 and hour < 24 and minute < 60 and second <= 60):
         return _TS_UNPARSED
-    if not _INT64[0] <= year <= _INT64[1]:
+    if not _INT64[0] <= year <= _INT64[1] or (parts[1].startswith("-") and not year):
         return _TS_UNPARSED
     if text[parts.end() :].strip(_ASCII_SPACE):
         return _TS_TRAILING

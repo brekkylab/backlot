@@ -15030,7 +15030,8 @@ def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh, monkeypa
     notes = f"/drive/v3/files/{served_id('google_drive', 'wr-doc')}"
     f = wc.get(notes, headers=h, params={"fields": fields}).json()
     assert (f["size"], f["version"], f["createdTime"]) == ("1024", "2", f["modifiedTime"])
-    # and so is a spreadsheet with no cells, two seconds on, which the quota counts as its size
+    # and so is a spreadsheet with no cells, its version, size and quota as real's read together
+    # three seconds on
     quota = {"fields": "storageQuota(usage)"}
     used = int(wc.get("/drive/v3/about", headers=h, params=quota).json()["storageQuota"]["usage"])
     r = wc.post("/sheets/v4/spreadsheets", headers=h, json={"properties": {"title": "Empty"}})
@@ -16011,6 +16012,10 @@ _DOCS_TIMESTAMPS = [
     ("-9223372036854775808-01-01T00:00:00Z", _TS_NO_SUCH_DAY),
     ("-9223372036854775809-01-01T00:00:00Z", _TS_UNPARSED),
     ("9223372036854775808-01-01T00:00:00 xZ", _TS_UNPARSED),
+    ("-0000-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-0-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-0000-01-01T00:00:00 xZ", _TS_UNPARSED),
+    ("-0000-02-30T00:00:00Z", _TS_UNPARSED),
     ("292277026596-12-04T15:30:07Z", _TS_PAST_LIMITS),
     ("292277026596-12-04T15:30:08Z", _TS_NO_SUCH_DAY),
     ("292277026596-12-04T15:30:08+01:00", _TS_NO_SUCH_DAY),

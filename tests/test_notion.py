@@ -2017,6 +2017,13 @@ _PARENT_RECORDS = [
         "visibility": "public",
         "created": "2026-03-01T08:15:42Z",
         "updated": "2026-03-02T09:30:17Z",
+        "comments": [
+            {
+                "content": "Looks good.",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-03-02T10:20:33Z",
+            }
+        ],
     },
     {
         "source_type": "notion",
@@ -2132,8 +2139,8 @@ def test_notion_url_is_the_app_host_and_a_data_source_names_its_databases(client
 
 
 def test_notion_timestamps_follow_the_minute_and_the_database_its_version(parent_corpus):
-    """`_PARENT_RECORDS` dates its page and its database to the second, so the minute and the
-    second differ."""
+    """`_PARENT_RECORDS` dates its page, its comment and its database to the second, so the minute
+    and the second differ."""
     minute = ("2026-03-03T10:00:00.000Z", "2026-03-04T11:45:00.000Z")
     offset = ("2026-03-03T10:00:51.000+00:00", "2026-03-04T11:45:09.000+00:00")
     database = {
@@ -2157,6 +2164,12 @@ def test_notion_timestamps_follow_the_minute_and_the_database_its_version(parent
         for obj in answers:
             assert obj["created_time"] == "2026-03-01T08:15:00.000Z", obj["object"]
             assert obj["last_edited_time"] == "2026-03-02T09:30:00.000Z", obj["object"]
+        listed = client.get("/notion/v1/comments", params={"block_id": page}, headers=h).json()
+        (comment,) = listed["results"]
+        assert (comment["created_time"], comment["last_edited_time"]) == (
+            "2026-03-02T10:20:00.000Z",
+            "2026-03-02T10:20:00.000Z",
+        )
         source = client.get(
             f"/notion/v1/data_sources/{synth.notion_data_source_id('nf-db')}", headers=h
         ).json()

@@ -16,14 +16,19 @@ in the path or in the query, and uvicorn answers the refusal itself with a 400 r
 none of the ten ``set_dangerous_leniencies`` options lets one through). :class:`Protocol` hands
 the parser the line with those bytes percent-encoded and leaves the target as sent on the scope,
 where ``backlot.main.answer_a_raw_byte_in_the_request_target`` answers it.
+
+What else httptools refuses, uvicorn answers with that 400 as well, which :class:`Protocol` writes
+in place of where the front door has an answer of its own (:mod:`backlot.parser_refusals`).
 """
 
 from __future__ import annotations
 
+import sys
+
 import httptools
 from uvicorn.protocols.http.httptools_impl import HttpToolsProtocol
 
-from backlot import head_bounds, request_target
+from backlot import head_bounds, parser_refusals, request_target
 
 
 class Protocol(HttpToolsProtocol):
@@ -41,7 +46,10 @@ class Protocol(HttpToolsProtocol):
     Each read is counted by :class:`_Head` first, whatever it holds, against the head of the request
     it carries: from the connection's first byte, and from the first read after a request that has
     been read to its end. A read that takes the head to its bound draws the front door's answer and
-    the close, after which the transport reads nothing more.
+    the close, after which the transport reads nothing more. What :class:`_Head` has read of a head
+    when httptools refuses it names the refusal (:meth:`_cause`); a request whose head it has not
+    read, one that rides in the same read as the end of the one before it, is answered uvicorn's
+    400.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -49,6 +57,7 @@ class Protocol(HttpToolsProtocol):
         self._between_requests = True
         self._held = b""
         self._sent: bytes | None = None
+        self._no_version = False
         self._head = _Head()
 
     def data_received(self, data: bytes) -> None:
@@ -63,6 +72,7 @@ class Protocol(HttpToolsProtocol):
             end = data.find(b"\n")
             if end >= 0:
                 line, self._sent = request_target.encode_line(data[: end + 1])
+                self._no_version = _has_no_version(line)
                 data = line + data[end + 1 :]
             elif _starts_a_request_line(data):
                 self._held = data
@@ -82,11 +92,57 @@ class Protocol(HttpToolsProtocol):
         self._between_requests = True
         self._head = _Head()
 
+    def send_400_response(self, msg: str) -> None:
+        """The front door's answer to what httptools refused (``backlot.parser_refusals``) where it
+        has one, else uvicorn's 400. uvicorn calls this as it handles the parser's refusal, which
+        :func:`sys.exception` gives."""
+        cause = self._cause(str(sys.exception()))
+        answer = None
+        if cause is not None:
+            refused = parser_refusals.Refused(
+                cause,
+                self.parser.get_method().decode("latin-1"),
+                self.url,
+                frozenset(self._head.names),
+                self._head.coding_after_length,
+            )
+            answer = parser_refusals.answer(refused)
+        if answer is None:
+            super().send_400_response(msg)
+            return
+        self.transport.write(answer)
+        self.transport.close()
+
+    def _cause(self, reason: str) -> parser_refusals.Cause | None:
+        """Which of ``backlot.parser_refusals.Cause`` httptools refused the request for, read off
+        the ``reason`` it gave and the head as far as it has arrived, or ``None`` for any other
+        refusal."""
+        head = self._head
+        if head.size == 0:
+            return None
+        if reason == "Invalid header value char":
+            return "nul" if head.nul else "control"
+        if reason == "Invalid header token" and self._no_version:
+            return "versionless"
+        if reason == "Empty Transfer-Encoding":
+            return "blank"
+        if reason not in (
+            "Content-Length can't be present with Transfer-Encoding",
+            "Transfer-Encoding can't be present with Content-Length",
+        ):
+            return None
+        if head.codings and all(coding.lower() == b"identity" for coding in head.codings):
+            return "identity"
+        if head.coding_after_length and head.codings[-1:] == [b""]:
+            return "blank"
+        return None
+
 
 class _Head:
-    """The head of one request as it arrives, read only as far as :mod:`backlot.head_bounds` needs:
-    how many bytes it holds, how many the line it is in holds before its LF, and the request
-    line's first bytes, which name the vendor."""
+    """The head of one request as it arrives, read only as far as :mod:`backlot.head_bounds` and
+    :data:`backlot.parser_refusals.Cause` need: how many bytes it holds, how many the line it is in
+    holds before its LF, the request line's first bytes, which name the vendor, and of the header
+    lines what :meth:`_read_header` keeps."""
 
     def __init__(self) -> None:
         self.size = 0
@@ -97,6 +153,13 @@ class _Head:
         self.ended = False
         self.bound: head_bounds.Bound | None = None
         self.named = False
+        self.name = b""
+        self.in_value = False
+        self.value = b""
+        self.names: list[bytes] = []
+        self.codings: list[bytes] = []
+        self.coding_after_length = False
+        self.nul = False
 
     def read(self, data: bytes) -> bytes | None:
         """The vendor's answer where ``data`` takes the head to its front door's bound, else None.
@@ -109,6 +172,8 @@ class _Head:
                 self.first = data[pos : pos + 1]
             if self.in_request_line:
                 self.start += data[pos:end][: head_bounds.NAMED_WITHIN - len(self.start)]
+            else:
+                self._read_header(data[pos:end])
             self.line += end - pos
             self.size += end - pos
             if (answer := self._over()) is not None or lf < 0:
@@ -116,6 +181,8 @@ class _Head:
             empty = self.line == 0 or (self.line == 1 and self.first == b"\r")
             self.size += 1
             self.line = 0
+            if not self.in_request_line:
+                self._end_header()
             if self.in_request_line:
                 self.in_request_line = False
             elif empty:
@@ -124,6 +191,36 @@ class _Head:
                 return answer
             pos = lf + 1
         return None
+
+    def _read_header(self, part: bytes) -> None:
+        """Read ``part``, the next bytes of a header line: its name up to the colon, whether its
+        value holds 0x00, and the value of a `Transfer-Encoding`. A refusal for a byte in a value
+        is `nul` where any value holds 0x00, as real answered a 0x00 whether another byte
+        httptools refuses in a value came before it or after it (:mod:`backlot.parser_refusals`)."""
+        if not self.in_value:
+            colon = part.find(b":")
+            self.name = (self.name + part[: len(part) if colon < 0 else colon])[:_NAMES_READ]
+            if colon < 0:
+                return
+            self.names.append(self.name.lower())
+            self.in_value = True
+            part = part[colon + 1 :]
+        if b"\x00" in part:
+            self.nul = True
+        if self.names[-1] == b"transfer-encoding":
+            self.value = (self.value + part)[: _NAMES_READ + 1]
+
+    def _end_header(self) -> None:
+        """Keep a `Transfer-Encoding` the header line that has ended holds, without the spaces,
+        tabs and CR around it where it fits in :data:`_NAMES_READ`, and whether a `Content-Length`
+        came ahead of it."""
+        if self.in_value and self.names[-1] == b"transfer-encoding":
+            fits = len(self.value) <= _NAMES_READ
+            self.codings.append(self.value.strip(b" \t\r") if fits else self.value)
+            self.coding_after_length = b"content-length" in self.names
+        self.name = b""
+        self.in_value = False
+        self.value = b""
 
     def _over(self) -> bytes | None:
         """The answer once the head is past its bound. The vendor is read off the request line once
@@ -136,6 +233,18 @@ class _Head:
         if self.bound is None:
             return None
         return self.bound.answer(self.size, self.line, self.in_request_line, self.ended)
+
+
+#: How much of a header line's name, and of a `Transfer-Encoding`'s value, :class:`_Head` keeps:
+#: enough for the names it reads (`authorization`, `content-length`) and the codings
+#: (``backlot.parser_refusals.Cause``) to be told from any longer one.
+_NAMES_READ = 32
+
+
+def _has_no_version(line: bytes) -> bool:
+    """Whether ``line``, which ends at its LF, holds no `HTTP/` version after its last space, as a
+    line an LF in the target ends holds none."""
+    return not line.rstrip(b"\r\n").rpartition(b" ")[2].startswith(b"HTTP/")
 
 
 def _starts_a_request_line(held: bytes) -> bool:

@@ -2518,9 +2518,11 @@ def cdn_bad_request(method: str, raw_path: str) -> str:
     return _cloudfront(400, CDN_BAD_REQUEST, method, raw_path)
 
 
-def cdn_too_long(status: int, method: str, raw_path: str) -> str:
-    """The CDN's page with ``status`` in it, 414 for a request line it stops reading and 494 for a
-    header line (``backlot.head_bounds``), which say why as its 400 does."""
+def cdn_page(status: int, method: str, raw_path: str) -> str:
+    """The CDN's page with ``status`` in it, which says why as its 400 does: 414 for a request line
+    it stops reading and 494 for a header line (``backlot.head_bounds``), and 400 for a 0x00 in a
+    header value, 501 for a blank `Transfer-Encoding` and 505 for a request line an LF ends
+    (``backlot.parser_refusals``)."""
     return _cloudfront(status, CDN_BAD_REQUEST, method, raw_path)
 
 

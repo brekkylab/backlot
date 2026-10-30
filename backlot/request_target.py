@@ -295,6 +295,18 @@ def _front_door(scope: Scope, layer: str, page: str, headers: dict[str, str]) ->
     return _page(page.encode(), "text/html", **headers)
 
 
+def s3_version_not_supported(method: str, path: str, sent: bytes) -> bytes:
+    """S3's 505 `HttpVersionNotSupported`, on `application/xml`, for a request whose target holds
+    ``sent``, from which its `RequestId` is made."""
+    request_id = hashlib.sha256(b"s3-505:" + sent).hexdigest()[:16].upper()
+    host_id = s3.request_ids(method, path, "")[1]
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?><Error><Code>HttpVersionNotSupported</Code>'
+        "<Message>The HTTP version specified is not supported.</Message>"
+        f"<RequestId>{request_id}</RequestId><HostId>{host_id}</HostId></Error>"
+    ).encode()
+
+
 def _s3(scope: Scope, path_kinds: list[str], query_kinds: list[str]) -> Response | None:
     """An empty 400 where a `nul` or a `cr` is anywhere, then real's 505 where a `space` is, then an
     empty 400 again where a `tab` is. A `control` is read as its percent-encoding, and so is a
@@ -309,15 +321,8 @@ def _s3(scope: Scope, path_kinds: list[str], query_kinds: list[str]) -> Response
     if every & {"nul", "cr"}:
         return _page(b"", None)
     if "space" in every:
-        sent = scope[SENT]
-        request_id = hashlib.sha256(b"s3-505:" + sent).hexdigest()[:16].upper()
-        host_id = s3.request_ids(scope["method"], scope["path"], "")[1]
-        body = (
-            '<?xml version="1.0" encoding="UTF-8"?><Error><Code>HttpVersionNotSupported</Code>'
-            "<Message>The HTTP version specified is not supported.</Message>"
-            f"<RequestId>{request_id}</RequestId><HostId>{host_id}</HostId></Error>"
-        )
-        return _page(body.encode(), "application/xml", status=505)
+        body = s3_version_not_supported(scope["method"], scope["path"], scope[SENT])
+        return _page(body, "application/xml", status=505)
     if "tab" in every:
         return _page(b"", None)
     if "control" in every:

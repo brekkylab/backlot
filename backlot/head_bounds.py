@@ -77,11 +77,16 @@ class Bound:
         return self.in_line if in_request_line else self.in_headers
 
 
-def _answer(status_line: str, media_type: str | None, body: bytes) -> bytes:
-    """``body`` as a front door sends it here (the module docstring says which headers)."""
+def written(
+    status_line: str, media_type: str | None, body: bytes, headers: dict[str, str] | None = None
+) -> bytes:
+    """``body`` as a front door sends it here (the module docstring says which headers), with
+    ``headers`` after `Content-Type`."""
     head = f"{status_line}\r\n"
     if media_type is not None:
         head += f"Content-Type: {media_type}\r\n"
+    for name, value in (headers or {}).items():
+        head += f"{name}: {value}\r\n"
     return f"{head}Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body
 
 
@@ -126,14 +131,15 @@ CLOUDFLARE_PAGE_HEADER = (
     b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
 )
 
-_GRAPH = "text/html; charset=us-ascii"
-_SLACK_431 = _answer(
+#: Graph's pages' `Content-Type`.
+GRAPH_TYPE = "text/html; charset=us-ascii"
+_SLACK_431 = written(
     "HTTP/1.1 431 Request Header Fields Too Large", "text/plain", b"Request Header Fields Too Large"
 )
-_GOOGLE_413 = _answer(
+_GOOGLE_413 = written(
     "HTTP/1.0 413 Request Entity Too Large", "text/html; charset=UTF-8", GOOGLE_PAGE_413
 )
-_S3_400 = _answer("HTTP/1.1 400 Bad Request", None, b"")
+_S3_400 = written("HTTP/1.1 400 Bad Request", None, b"")
 
 #: Each front door's bound but Jira Cloud's, whose page names the request (:func:`bound`).
 _BOUNDS = {
@@ -141,8 +147,8 @@ _BOUNDS = {
         68_552,
         per_line=False,
         refuses_its_end=False,
-        in_line=_answer("HTTP/1.1 414 URI Too Long", "text/html", GITHUB_PAGE_414),
-        in_headers=_answer(
+        in_line=written("HTTP/1.1 414 URI Too Long", "text/html", GITHUB_PAGE_414),
+        in_headers=written(
             "HTTP/1.1 431 Request Header Fields Too Large", "text/html", GITHUB_PAGE_431
         ),
     ),
@@ -164,8 +170,8 @@ _BOUNDS = {
         131_072,
         per_line=True,
         refuses_its_end=False,
-        in_line=_answer("HTTP/1.1 414 Request-URI Too Large", "text/html", CLOUDFLARE_PAGE_414),
-        in_headers=_answer("HTTP/1.1 400 Bad Request", "text/html", CLOUDFLARE_PAGE_HEADER),
+        in_line=written("HTTP/1.1 414 Request-URI Too Large", "text/html", CLOUDFLARE_PAGE_414),
+        in_headers=written("HTTP/1.1 400 Bad Request", "text/html", CLOUDFLARE_PAGE_HEADER),
     ),
     "s3": Bound(
         16_384,
@@ -178,16 +184,16 @@ _BOUNDS = {
         40_960,
         per_line=False,
         refuses_its_end=True,
-        in_line=_answer(
+        in_line=written(
             "HTTP/1.1 414 Request-URI Too Long",
-            _GRAPH,
+            GRAPH_TYPE,
             request_target.graph_page(
                 414, "Request URL Too Long", "Request URL Too Long", "The request URL is too long."
             ),
         ),
-        in_headers=_answer(
+        in_headers=written(
             "HTTP/1.1 400 Bad Request",
-            _GRAPH,
+            GRAPH_TYPE,
             request_target.graph_page(
                 400,
                 "Bad Request",
@@ -202,7 +208,7 @@ _BOUNDS = {
 def bound(start: bytes) -> Bound | None:
     """The bound on a head whose request line starts ``start``, read off the path in it, or
     ``None`` where no vendor owns the path. Jira Cloud's is a line bound of 32,768 with the CDN's
-    page, 414 in the request line and 494 in the headers (``errors.atlassian.cdn_too_long``)."""
+    page, 414 in the request line and 494 in the headers (``errors.atlassian.cdn_page``)."""
     method, _, target = start.partition(b" ")
     path = re.split(rb"[? ]", target, maxsplit=1)[0].decode("latin-1")
     named = request_target.front_door(urllib.parse.unquote(path))
@@ -211,10 +217,10 @@ def bound(start: bytes) -> Bound | None:
     door, prefix = named
     if door == "atlassian":
         line, headers = (
-            _answer(
+            written(
                 status_line,
                 "text/html",
-                errors.atlassian.cdn_too_long(status, method.decode("latin-1"), path).encode(),
+                errors.atlassian.cdn_page(status, method.decode("latin-1"), path).encode(),
             )
             for status, status_line in (
                 (414, "HTTP/1.1 414 Request-URI Too Large"),

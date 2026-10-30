@@ -1,5 +1,6 @@
-"""A string argument as the vendors' Node servers look it up: a lone surrogate, which a JavaScript
-string can hold and UTF-8 cannot, as U+FFFD, the character ``Buffer.from`` writes for one.
+"""A string as the vendors' Node servers write it in UTF-8 to look it up or hash it: a lone
+surrogate, which a JavaScript string can hold and UTF-8 cannot, as U+FFFD, the character
+``Buffer.from`` writes for one.
 
 Measured on 2026-10-27 (UTC), both vendors answered each of these string arguments, sent with
 ``\\ud800`` in it, as with ``\\ufffd`` in its place: ``issue(id:)``, ``team(id:)`` and ``issues``
@@ -16,20 +17,20 @@ import re
 import sqlite3
 from typing import Any
 
-_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def holds_a_lone_surrogate(value: str) -> bool:
     """Whether ``value`` holds a surrogate, which in a string the body reader made is a lone one:
     :func:`backlot.graphql.body.parse` joins a pair into the one character it encodes."""
-    return _LONE_SURROGATE.search(value) is not None
+    return LONE_SURROGATE.search(value) is not None
 
 
 def written(value: Any) -> Any:
     """``value`` as Node writes it: a string with each lone surrogate replaced by U+FFFD, and
     anything else as it is."""
     if isinstance(value, str):
-        return _LONE_SURROGATE.sub("\ufffd", value)
+        return LONE_SURROGATE.sub("\ufffd", value)
     return value
 
 

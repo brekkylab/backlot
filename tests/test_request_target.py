@@ -419,6 +419,33 @@ def _ids_left_out(base: str, body: bytes) -> object:
     return body
 
 
+_PAGES = {
+    "github": (400, "text/html; charset=utf-8", request_target.GITHUB_PAGE),
+    "slack": (400, "text/plain", b"Bad Request"),
+    "slack empty": (400, None, b""),
+    "slack 404 empty": (404, None, b""),
+    "google 54": (400, "text/html; charset=UTF-8", request_target.GOOGLE_PAGE_54),
+    "google 1555": (400, "text/html; charset=UTF-8", request_target.GOOGLE_PAGE_1555),
+    "cloudflare page": (400, "text/html", request_target.CLOUDFLARE_PAGE),
+    "cloudflare empty": (400, None, b""),
+    "cloudflare forbidden": (403, "text/html", bracketed_host.CLOUDFLARE_FORBIDDEN),
+    "s3 empty": (400, None, b""),
+    "graph empty": (400, None, b""),
+    "graph invalid url": (400, "text/html; charset=us-ascii", request_target.GRAPH_INVALID_URL),
+    "graph invalid hostname": (
+        400,
+        "text/html; charset=us-ascii",
+        request_target.GRAPH_INVALID_HOSTNAME,
+    ),
+    "graph badly formed": (
+        400,
+        "text/html; charset=us-ascii",
+        request_target.GRAPH_BADLY_FORMED,
+    ),
+    "uvicorn": (400, "text/plain; charset=utf-8", _UVICORN),
+}
+
+
 def _page(answer: str, method: bytes, target: bytes) -> tuple[int, str | None, bytes]:
     if answer == "cloudfront":
         raw_path = _encoded(target).partition(b"?")[0].decode("latin-1")
@@ -433,31 +460,7 @@ def _page(answer: str, method: bytes, target: bytes) -> tuple[int, str | None, b
             "text/html",
             errors.atlassian.cdn_refused_host(method.decode(), raw_path).encode(),
         )
-    return {
-        "github": (400, "text/html; charset=utf-8", request_target.GITHUB_PAGE),
-        "slack": (400, "text/plain", b"Bad Request"),
-        "slack empty": (400, None, b""),
-        "slack 404 empty": (404, None, b""),
-        "google 54": (400, "text/html; charset=UTF-8", request_target.GOOGLE_PAGE_54),
-        "google 1555": (400, "text/html; charset=UTF-8", request_target.GOOGLE_PAGE_1555),
-        "cloudflare page": (400, "text/html", request_target.CLOUDFLARE_PAGE),
-        "cloudflare empty": (400, None, b""),
-        "cloudflare forbidden": (403, "text/html", bracketed_host.CLOUDFLARE_FORBIDDEN),
-        "s3 empty": (400, None, b""),
-        "graph empty": (400, None, b""),
-        "graph invalid url": (400, "text/html; charset=us-ascii", request_target.GRAPH_INVALID_URL),
-        "graph invalid hostname": (
-            400,
-            "text/html; charset=us-ascii",
-            request_target.GRAPH_INVALID_HOSTNAME,
-        ),
-        "graph badly formed": (
-            400,
-            "text/html; charset=us-ascii",
-            request_target.GRAPH_BADLY_FORMED,
-        ),
-        "uvicorn": (400, "text/plain; charset=utf-8", _UVICORN),
-    }[answer]
+    return _PAGES[answer]
 
 
 @pytest.mark.parametrize("method, base, rest, answer, authorizations, header, host", list(_rows()))
@@ -470,6 +473,7 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
     status, headers, body = _send(base_url, method, target, admin, authorizations, header, host)
     if isinstance(answer, int):  # the API behind the front door, which read the target on
         assert status == answer
+        assert body not in {page for _, _, page in _PAGES.values() if page}
         return
     assert headers.get("connection") == (None if answer in _KEEPS_THE_CONNECTION else "close")
     reading = answer.removesuffix(" closed").removesuffix(" kept")

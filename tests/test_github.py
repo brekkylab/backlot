@@ -6759,10 +6759,9 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
     seconds, the same on every answer inside a window; `GET /rate_limit` 200 with
     `resources.core`, `.search`, `.code_search` each `{limit, used, remaining, reset}` and `rate`
     beside them under `2022-11-28` and not under `2026-03-10`, carrying the five itself and not
-    counting (two reads in a row both `used: 0`); a bad bearer on it the 401. What real's route
-    reports is a fresh window rather than the headers' (see the route's docstring); Backlot reports
-    the headers'. Past the limit, real refuses (403, `used` pinned at `limit`) — see
-    `rate_limit_refusal` for that measurement, taken 2026-09-17.
+    counting (two reads in a row both `used: 0`); a bad bearer on it the 401. The windows the route
+    reports are the headers' (see the route's docstring). Past the limit, real refuses (403, `used`
+    pinned at `limit`) — see `rate_limit_refusal` for that measurement, taken 2026-09-17.
 
     Five more answers measured 2026-09-21, each against the function that carries its measurement:
     `SEARCH_RATE_LIMIT_WINDOW`, `rate_limit_window`, `refused_a_credential`, `rate_limit_caller`
@@ -7085,6 +7084,73 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         code_refused = c.get("/github/search/code", headers=h, params={"q": "extension:md"})
         assert code_refused.status_code == 403
         assert _ratelimit(code_refused)["resource"] == "code_search"
+
+
+@pytest.mark.parametrize(
+    "authorization, counted, resource, used",
+    [
+        ("Bearer {admin}", "search/issues?q=x", "search", 1),
+        ("Digest x", "search/issues?q=x", "search", 1),
+        (None, "repos/{org}/codebase", "core", 1),
+        ("Basic eDp5", "search/code?q=x", "code_search", 0),
+    ],
+)
+def test_github_a_rate_limit_read_opens_no_window(
+    gh_client, gh_org, gh_user_tokens, authorization, counted, resource, used
+):
+    """Two reads before anything is counted each answer a full window from themselves, the request
+    after them, counted or refused, opens the window the next read counts down to, and a read once
+    that window's time is up opens no new one (`RateLimitWindows.status` and
+    `RateLimitWindows.opened` have the measurements)."""
+    from backlot.routers import github as gh
+
+    c, _ = gh_client
+    t = [2_000_000_000]
+    c.app.state.github_rate_limits = gh.RateLimitWindows(clock=lambda: t[0])
+    h = {}
+    if authorization is not None:
+        h["Authorization"] = authorization.format(admin=gh_user_tokens["admin"])
+    length = gh.RATE_LIMITS[resource].window
+
+    def read():
+        window = c.get("/github/rate_limit", headers=h).json()["resources"][resource]
+        return window["used"], window["reset"] - t[0]
+
+    assert read() == (0, length)
+    t[0] += 3
+    assert read() == (0, length)
+    t[0] += 3
+    five = _ratelimit(c.get(f"/github/{counted.format(org=gh_org)}", headers=h))
+    assert (five["used"], int(five["reset"]) - t[0]) == (str(used), length)
+    t[0] += 3
+    assert read() == (used, length - 3)
+    t[0] += length
+    assert read() == (0, length)
+    t[0] += 3
+    assert read() == (0, length)
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("DELETE", "installation/token"),
+        ("PATCH", "repos/{org}/codebase"),
+        ("PUT", "user/following/octocat"),
+    ],
+)
+def test_github_an_answer_that_counts_nothing_opens_no_window(gh_client, gh_org, method, path):
+    """The read after each still answers `core` a full window from itself (see
+    `RateLimitWindows.status`)."""
+    from backlot.routers import github as gh
+
+    c, _ = gh_client
+    t = [2_000_000_000]
+    c.app.state.github_rate_limits = gh.RateLimitWindows(clock=lambda: t[0])
+    h = {"Authorization": "Digest x"}
+    assert c.request(method, f"/github/{path.format(org=gh_org)}", headers=h).status_code == 401
+    t[0] += 3
+    core = c.get("/github/rate_limit", headers=h).json()["resources"]["core"]
+    assert (core["used"], core["reset"] - t[0]) == (0, gh.RATE_LIMIT_WINDOW)
 
 
 def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_it_off(
@@ -7499,7 +7565,7 @@ def test_github_code_search_answers_an_unparseable_caller_from_its_zero_window(
             "403",
         )
     after = c.get("/github/rate_limit", headers={"Authorization": value}).json()["resources"]
-    assert after["core"] == core
+    assert after["core"]["used"] == core["used"]
 
 
 @pytest.mark.parametrize(

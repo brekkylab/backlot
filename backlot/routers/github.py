@@ -844,8 +844,8 @@ def rate_limit_resource(path: str, status_code: int, unparseable: bool = False) 
 class RateLimitWindows:
     """The requests counted so far, per credential and per resource, each in its resource's window.
 
-    A window opens at the first request counted or reported under a `(credential, resource)` and
-    closes its resource's length later — an hour for `core`, a minute for the two search resources
+    A window opens at the first request counted or refused in a `(credential, resource)` and closes
+    its resource's length later — an hour for `core`, a minute for the two search resources
     (:data:`SEARCH_RATE_LIMIT_WINDOW`); `reset` is its closing second, the same on every answer
     inside it. The windows measured stayed put across the requests inside them and differed between
     credentials and between resources (an anonymous caller's `core` and `search` resets 1552 seconds
@@ -874,7 +874,34 @@ class RateLimitWindows:
         return self._status(window, resource, limit)
 
     def status(self, key: str, resource: str, limit: int) -> dict[str, int]:
-        """The window as it stands, nothing counted."""
+        """The window as it stands, nothing counted and nothing opened: a window nothing has opened
+        yet, or whose time is up, reads as one this read opened.
+
+        Measured against api.github.com 2026-10-30, each request on its own cache-busted URL four or
+        five seconds after the one before: under a token, two reads answered `search` at `used: 0`
+        with `reset` 60 and 59 seconds after their `Date`, a `/search/issues` opened the window 59
+        seconds out, and the read after it answered 55; under `Digest x`, a read answered 60, a
+        `/search/issues` opened the window 60 seconds out, and the read after it answered 55; with
+        no `Authorization`, four reads answered `core`'s `reset` 3601 seconds after their `Date`, a
+        `GET /repos/psf/requests` opened the window 3600 seconds out, and the read after it answered
+        3596. Under `Digest x`, `core` still read 3600 after `DELETE /installation/token`, which
+        reports it without counting, and after the uncounted 401s of `PATCH /repos/psf/requests`
+        and `PUT /user/following/octocat`.
+        """
+        now = int(self.clock())
+        window = self._windows.get((key, resource))
+        if window is None or now >= window[0] + RATE_LIMITS[resource].window:
+            window = [now, 0]
+        return self._status(window, resource, limit)
+
+    def opened(self, key: str, resource: str, limit: int) -> dict[str, int]:
+        """The window as it stands, nothing counted, opened now if nothing had opened it.
+
+        Real's 403 on code search for a `code_search` window at `limit: 0` opens that window: with
+        `Basic eDp5`, a read answered its `reset` 60 seconds after the read's `Date`, a 403 five
+        seconds later 60 as well, and a 403 and a read four and eight seconds after that 56 and 52
+        (measured against api.github.com 2026-10-30, each request on its own cache-busted URL).
+        """
         return self._status(self._window(key, resource), resource, limit)
 
     @staticmethod
@@ -1135,9 +1162,9 @@ def rate_limit_refusal(request: Request) -> Response | None:
         return None
     counted, limit = rate_limit_window(resource, authenticated, unparseable)
     windows = _rate_limit_windows(request.app)
-    status = windows.status(key, counted, limit)
-    if status["used"] < limit:
+    if windows.status(key, counted, limit)["used"] < limit:
         return None
+    status = windows.opened(key, counted, limit)
     headers = {
         "x-ratelimit-limit": str(status["limit"]),
         "x-ratelimit-remaining": str(status["remaining"]),
@@ -2423,12 +2450,10 @@ async def get_rate_limit(request: Request):
     that does not resolve is real's 401 (measured — see :func:`_validate_bad_credential`, which
     answers it router-wide before this handler runs).
 
-    Which window real's route reports is not the one its headers had just reported: a minute after
-    answers carrying `remaining: 4994`, `used: 6`, `reset: 1789020007`, the route answered
-    `remaining: 5000`, `used: 0`, `reset: 1789020728`, on 2026-09-10 as on 2026-09-09. The docs
-    page says the route is how a client checks "your current rate limit status", and a client asks
-    it to learn what the headers would say, so this reports the headers' window; the fresh window
-    real answered could only be reproduced by reporting a window nothing counts against.
+    Under a token, real's route reports the windows its headers report: a read three seconds after a
+    `GET /repos/psf/requests` that carried `used: 34` answered `core` at `used: 34` with the same
+    `reset` (measured against api.github.com 2026-10-30). :meth:`RateLimitWindows.status` has the
+    reads before and after the request that opens a window.
     """
     key, authenticated = rate_limit_caller(request)
     unparseable = key.startswith("unparseable:")

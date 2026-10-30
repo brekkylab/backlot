@@ -527,12 +527,12 @@ def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatc
                     "emailAddress": {"type": "string"},
                     "labels": {"type": "array", "items": {"$ref": "Label"}},
                     "history": {"$ref": "History"},
-                    "byKey": {"type": "object", "additionalProperties": {"$ref": "Unreached"}},
+                    "byKey": {"type": "object", "additionalProperties": {"$ref": "Keyed"}},
                 }
             },
             "Label": {"properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
             "History": {"properties": {"id": {"type": "string"}}},
-            "Unreached": {"properties": {"x": {"type": "string"}}},
+            "Keyed": {"properties": {"x": {"type": "string"}}},
         },
     }
     fetched = []
@@ -575,7 +575,7 @@ def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatc
     assert written["types"]["gmail.Profile"]["fields"] == {
         "byKey": {
             "status": "missing",
-            "type": "map<string, gmail.Unreached>",
+            "type": "map<string, gmail.Keyed>",
             "kind": "missing_field",
             "severity": "gap",
         },
@@ -599,7 +599,12 @@ def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatc
         "status": "missing",
         "fields": {"id": {"status": "missing", "type": "string"}},
     }
-    assert "gmail.Unreached" not in written["types"]
+    # a map's value is reached, so a body reader can be built from it
+    assert written["types"]["gmail.Keyed"] == {
+        "type_kind": "object",
+        "status": "missing",
+        "fields": {"x": {"status": "missing", "type": "string"}},
+    }
     # Each finding has an element to sit on, operations, batch and types alike.
     _, back = GraphSurface.from_json(written)
     assert sorted(f.key for f in back) == sorted(f.key for f in found)

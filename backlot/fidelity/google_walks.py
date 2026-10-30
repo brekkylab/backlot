@@ -10,10 +10,10 @@ baseline records.
 first row and column, a second sheet for a grid range to name, and a prose spreadsheet beside it,
 then writes to the grid, copies a sheet and creates a workbook, as its owner.
 
-`docs` reads a document stating a title, a heading and every run mark a corpus states, and a prose
-document beside it, flat and as their tabs, as their owner; then creates a document and writes the
-first one with each request `documents.batchUpdate` applies, the body it sent recorded beside the
-answer.
+`gdocs` reads a document stating a title, a heading and every run mark a corpus states, and a
+prose document beside it, flat and as their tabs, as their owner; then creates a document and
+writes the first one with each request `documents.batchUpdate` applies, the body it sent recorded
+beside the answer.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ SHEETS_CORPUS = [
 ]
 
 
-DOCS_CORPUS = [
+GDOCS_CORPUS = [
     {
         "source_type": "google_drive",
         "doc_id": "walk-doc",
@@ -90,18 +90,18 @@ DOCS_CORPUS = [
 ]
 
 
-def docs(timeout: float) -> list[tuple[Any, ...]]:
+def gdocs(timeout: float) -> list[tuple[Any, ...]]:
     """Each document read through `documents.get`, flat and as its tabs, as its owner: a reader is
     served no `revisionId`; then one `documents.create`, and two `documents.batchUpdate` calls that
     between them send every field it reads."""
     import backlot
     from backlot.server import meta_users
 
-    with backlot.serve(DOCS_CORPUS, telemetry=False) as server:
+    with backlot.serve(GDOCS_CORPUS, telemetry=False) as server:
         owner = next(
             u["token"]
             for u in meta_users(server.base_url, timeout)["users"]
-            if u["email"] == DOCS_CORPUS[0]["author_email"]
+            if u["email"] == GDOCS_CORPUS[0]["author_email"]
         )
         headers = {"Authorization": f"Bearer {owner}"}
         with httpx.Client(base_url=server.base_url, headers=headers, timeout=timeout) as client:

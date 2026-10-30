@@ -130,6 +130,20 @@ _OUTER = protojson.Message(
         protojson.Field("name", "name", "string"),
         protojson.Field("kind", "kind", "enum", enum=protojson.Enum("t.Kind", ("A", "B"))),
         protojson.Field("inner", "inner", "message", message=_INNER, repeated=True),
+        protojson.Field("tags", "tags", "string", repeated=True),
+        protojson.Field("days", "days", "int32", repeated=True),
+        protojson.Field(
+            "notes",
+            "notes",
+            "message",
+            message=protojson.map_entry(
+                "type.googleapis.com/t.Outer",
+                "notes",
+                protojson.Field("v", "v", "message", message=_INNER),
+            ),
+            repeated=True,
+            map=True,
+        ),
     ),
 )
 
@@ -143,7 +157,7 @@ def _body_schema(*args, **kwargs) -> dict:
 def test_proto_body_declares_the_fields_a_route_keeps_as_its_message_types_them():
     """The body a route declares is the message it reads, so an MCP tool's arguments are what the
     reader takes; `keep` cuts it to what the route keeps, and a name the message lacks, or a
-    message that holds itself with no cut, refuses to build."""
+    message that holds itself with no cut, refuses to build. A map is an object of its values."""
     inner = {
         "type": "object",
         "properties": {
@@ -157,15 +171,17 @@ def test_proto_body_declares_the_fields_a_route_keeps_as_its_message_types_them(
             "name": {"type": "string"},
             "kind": {"type": "string", "enum": ["A", "B"]},
             "inner": {"type": "array", "items": inner},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "days": {"type": "array", "items": {"type": "integer", "format": "int32"}},
+            "notes": {"type": "object", "additionalProperties": inner},
         },
     }
-    assert _body_schema(_OUTER, keep={"inner": {"count": None}}) == {
+    counted = {"type": "object", "properties": {"count": inner["properties"]["count"]}}
+    assert _body_schema(_OUTER, keep={"inner": {"count": None}, "notes": {"count": None}}) == {
         "type": "object",
         "properties": {
-            "inner": {
-                "type": "array",
-                "items": {"type": "object", "properties": {"count": inner["properties"]["count"]}},
-            }
+            "inner": {"type": "array", "items": counted},
+            "notes": {"type": "object", "additionalProperties": counted},
         },
     }
     wrapped = protojson.Message(

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Read Google Drive through mirage's virtual filesystem, and create a Doc with mirage's ``gws``
-command. Self-contained: run it directly.
+"""Read Google Drive through mirage's virtual filesystem, and, run in-process, create a Doc with
+mirage's ``gws`` command. Self-contained: run it directly.
 
 Mirage mounts Backlot's Drive API as a filesystem — folders and files you read with plain
 ``ls`` / ``cat`` (Google-native docs are exported to text on read). Auth is an ordinary Google
@@ -15,7 +15,8 @@ the Google APIs themselves, so the Doc it creates appears in the mount's next li
     python examples/using-mirage/gdrive.py --url http://localhost:8000 --fuse   # real OS mount
 
 With ``--fuse`` the Drive tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read
-with plain ``os``/shell tools; otherwise it's driven in-process via ``ws.shell``.
+with plain ``os``/shell tools, and nothing is created; otherwise it's driven in-process via
+``ws.shell``.
 """
 
 import argparse

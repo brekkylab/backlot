@@ -67,7 +67,7 @@ clear what DataFilters match.
 `documents.create` makes a blank Doc the same way, at the caller's My Drive root and shared with
 nobody. As on real, only the `title` it states is kept, from the body or from a `title` query
 parameter, which wins; a body, tabs or styles it states are read, checked against the `Document`
-message and dropped.
+message and every message it holds, a map's entries included, and dropped.
 
 `documents.batchUpdate` writes a Doc's text with `insertText`, `deleteContentRange` and
 `replaceAllText`, each request applied to the body the ones before it left, and all of them or none
@@ -158,10 +158,6 @@ field list, so the ordering divergence below has no entry to live in and is stat
   newline's own style. The text is real's.
 - **Rate limits.** Real Sheets refuses a user's writes past 60 a minute with 429
   `RESOURCE_EXHAUSTED`. Backlot does not count them.
-- **A `Document` checked only as deep as the baseline records it.** `documents.create` refuses an
-  unknown name, or a value of the wrong kind, in the messages a Doc served here carries. Real also
-  refuses one inside a message no Doc here carries (a `lists` entry, a header) and an enum name
-  misspelt anywhere below the `Document` itself; Backlot reads those as sent and drops them.
 
 ## Adding a source
 

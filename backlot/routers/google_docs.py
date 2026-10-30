@@ -4,7 +4,7 @@
 The routes are registered on `routers.google.router` as `routers.google_sheets` describes, and a
 ``fields`` mask is read as the Sheets routes read theirs (`routers.google._gmask_select`).
 
-The answers below were measured on docs.googleapis.com between 2026-10-09 and 2026-10-28, each
+The answers below were measured on docs.googleapis.com between 2026-10-09 and 2026-10-29, each
 comment dating its own, by a Google Workspace member on a one-tab Doc it owns and by a second
 member it was shared with as a reader.
 """
@@ -16,6 +16,7 @@ import binascii
 import functools
 import json
 import time
+from pathlib import Path
 
 from fastapi import Request
 
@@ -54,24 +55,26 @@ from backlot.routers.google import (
 # and `F` read, `on`, `off`, `2` and `tru` refused). A value that cannot be read is a 400 before
 # the document is looked up.
 _DOCS_VIEW = "type.googleapis.com/google.apps.docs.v1"
-_DOCS_SUGGESTIONS_VIEW = protojson.Enum(
-    f"{_DOCS_VIEW}.SuggestionsViewMode",
-    (
-        "DEFAULT_FOR_CURRENT_ACCESS",
-        "SUGGESTIONS_INLINE",
-        "PREVIEW_SUGGESTIONS_ACCEPTED",
-        "PREVIEW_WITHOUT_SUGGESTIONS",
-    ),
+
+# What the baseline cannot say of the `Document` and the messages it holds, measured 2026-10-29 by
+# sending `documents.create` a value of the wrong kind in every field of each of the 125 messages
+# and reading the type each refusal named: each enum's type, with the discovery document's names in
+# number order; a field held in a `StringValue`, `BoolValue`, `FloatValue` or `Int32Value`, its
+# refusal at `….value`; a `float`; a `timestamp`; and the members of each oneof, refused as a
+# second member is.
+_DOCS_PROTO = json.loads(
+    (Path(__file__).resolve().parent.parent / "data" / "gdocs_proto.json").read_text(
+        encoding="utf-8"
+    )
 )
-_DOCS_COMMENTS_VIEW = protojson.Enum(
-    f"{_DOCS_VIEW}.CommentsViewMode",
-    (
-        "COMMENTS_VIEW_MODE_UNSPECIFIED",
-        "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
-        "COMMENTS_VIEW_MODE_OMITTED",
-        "COMMENTS_VIEW_MODE_INCLUDED",
-    ),
-)
+
+
+def _docs_enum(name: str) -> protojson.Enum:
+    return protojson.Enum(f"{_DOCS_VIEW}.{name}", tuple(_DOCS_PROTO["enums"][name]))
+
+
+_DOCS_SUGGESTIONS_VIEW = _docs_enum("SuggestionsViewMode")
+_DOCS_COMMENTS_VIEW = _docs_enum("CommentsViewMode")
 _DOCS_PREVIEWS = frozenset(_DOCS_SUGGESTIONS_VIEW.names[2:])
 
 # The members a tab carries as well as the document, which a mask may not name beside the tabs:
@@ -272,11 +275,42 @@ async def docs_get(document_id: str, request: Request):
     return doc if tree is None else _gmask_apply(tree, doc)
 
 
-# --- `documents.create` ----------------------------------------------------------------------------
+# --- `documents.create` ---------------------------------------------------------------------------
 
 # A new Doc's title when the request names none, an English account's: measured 2026-10-28, a
 # missing, `null` or empty `title` was this, and `"   "` was kept as sent.
 DOCS_UNTITLED = "Untitled document"
+
+# The longest title a create keeps, in UTF-16 code units: measured 2026-10-29, 10,000 `x` or
+# 5,000 `😀` were kept and 10,001 `x` or 5,001 `😀` refused, from the body or the query alike,
+# after the body's refusals, the mask's and a batch's 501.
+_DOCS_TITLE_UNITS = 10_000
+
+_DOCS_WRAPPED = {
+    "StringValue": "string",
+    "BoolValue": "bool",
+    "FloatValue": "float",
+    "Int32Value": "int32",
+}
+
+
+def _docs_shape(spec: str) -> dict:
+    if spec.startswith("enum "):
+        return {"kind": "enum", "enum": _docs_enum(spec.removeprefix("enum "))}
+    if spec in _DOCS_WRAPPED:
+        return {"kind": _DOCS_WRAPPED[spec], "wrapper": True}
+    return {"kind": spec}
+
+
+_DOCS_SHAPES = {
+    (f"docs.{message}", field): _docs_shape(spec)
+    for message, fields in _DOCS_PROTO["fields"].items()
+    for field, spec in fields.items()
+}
+for _message, _groups in _DOCS_PROTO["oneofs"].items():
+    for _group, _members in _groups.items():
+        for _member in _members:
+            _DOCS_SHAPES.setdefault((f"docs.{_message}", _member), {})["oneof"] = _group
 
 _DOCS_WRITE_MODE = protojson.Enum(
     f"{_DOCS_VIEW}.WriteControl.WriteMode", ("WRITE_MODE_UNSPECIFIED", "EDIT", "SUGGEST")
@@ -284,35 +318,30 @@ _DOCS_WRITE_MODE = protojson.Enum(
 # The oneofs of a `documents.batchUpdate` body, each named as real's refusal of a second member
 # names it: measured 2026-10-29, `Invalid value at 'requests[0]' (oneof), oneof field 'request' is
 # already set. Cannot set 'deleteContentRange'`, and likewise `insertion_location` and `control`.
-_DOCS_ONEOFS = {
+for _key, _group in {
     **{("docs.Request", kind): "request" for kind in _GOOGLE_RECORDED["docs.Request"]["fields"]},
     ("docs.InsertTextRequest", "location"): "insertion_location",
     ("docs.InsertTextRequest", "endOfSegmentLocation"): "insertion_location",
     ("docs.WriteControl", "requiredRevisionId"): "control",
     ("docs.WriteControl", "targetRevisionId"): "control",
     ("docs.ReplaceAllTextRequest", "containsText"): "criteria",
-}
-# A range's two indices are `Int32Value`s: measured 2026-10-29, `"startIndex": "a"` is refused at
-# `requests[0].delete_content_range.range.start_index.value`, and a `null` one is no index.
-_DOCS_WRAPPERS = frozenset({("docs.Range", "startIndex"), ("docs.Range", "endIndex")})
+}.items():
+    _DOCS_SHAPES[_key] = {"oneof": _group}
 # A request is declared inside the body's message: `"requests": "x"` is refused naming
 # `….BatchUpdateDocumentRequest.Request`.
 _PJ_DOCS = _pj_messages(
     _DOCS_VIEW,
-    {
-        ("docs.Document", "suggestionsViewMode"): _DOCS_SUGGESTIONS_VIEW,
-        ("docs.Document", "commentsViewMode"): _DOCS_COMMENTS_VIEW,
-        ("docs.WriteControl", "writeMode"): _DOCS_WRITE_MODE,
-    },
-    _DOCS_ONEOFS,
-    _DOCS_WRAPPERS,
+    {("docs.WriteControl", "writeMode"): _DOCS_WRITE_MODE},
+    _DOCS_SHAPES,
     {"docs.Request": "BatchUpdateDocumentRequest.Request"},
 )
+
 # The request body is the `Document` itself, read against the recorded message
-# (`routers.google._pj_messages`): measured 2026-10-28, an unknown name is
+# (`routers.google._pj_messages`) and `_DOCS_SHAPES`: measured 2026-10-28, an unknown name is
 # ``Unknown name "nope": Cannot find field.`` with no field path, a nested one names its message
 # (``at 'body'``), and a name the `Document` has is typed (``Invalid value at 'title' (TYPE_STRING),
-# 5``), a number in an enum field read whether or not the enum declares it.
+# 5``); and 2026-10-29, a number in any enum field is read whether or not the enum declares it,
+# and a map's entries are read as its value's message.
 _PJ_DOCUMENT = _PJ_DOCS("docs.Document")
 
 # A query parameter binds to the `Document` field it names. Measured 2026-10-28: `title` names the
@@ -347,7 +376,8 @@ async def docs_create(request: Request):
     * the order is the credential, the body and the typed query values, then the `fields` mask;
     * inside a batch it is the 501 real's batch answered it with;
     * a mask is applied to the whole answer, tabs included, so `fields=*` serves the tabs, and
-      neither `comments` nor a member a tab also carries is refused beside them."""
+      neither `comments` nor a member a tab also carries is refused beside them;
+    * a title past `_DOCS_TITLE_UNITS` is refused last."""
     caller = _require(request)
     query, body = await _query_and_body(request, _DOCS_CREATE_QUERY, _PJ_DOCUMENT)
     tree, _ = _gmask_select(gerr.first_repeat(request.query_params, "fields"), "docs.Document")
@@ -355,6 +385,8 @@ async def docs_create(request: Request):
         raise gerr.unimplemented()
     title = query["title"] if query["title"] is not None else body.get("title")
     title = title or DOCS_UNTITLED
+    if len(title.encode("utf-16-le")) > 2 * _DOCS_TITLE_UNITS:
+        raise gerr.invalid_argument("Request contains an invalid argument.")
     conn = auth.conn(request)
     owner = _editor_creator(request, caller)
     file_id = _editor_new_file_id(conn, owner)

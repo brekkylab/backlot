@@ -2030,12 +2030,12 @@ async def sheets_values_update(spreadsheet_id: str, a1_range: str, request: Requ
     """``spreadsheets.values.update``.
 
     Refused in real's order, measured: the credential, the typed query values and the body
-    (`_sheets_write_request`), the `fields` mask, the lookup and who may write (`_workbook`), then a missing
-    `valueInputOption`, then a body `range` that is not the URL's, then the range and its values
-    (`_sheets_writing`). The body's `range`, when sent, must be the URL's as typed: `data!a1:b1`
-    and `'Data'!A1:B1` against `Data!A1:B1` are each ``Request range[Data!A1:B1] does not match
-    value's range[data!a1:b1]``. Where a mismatched `range` and an unparseable URL range fall
-    relative to each other was not measured."""
+    (`_sheets_write_request`), the `fields` mask, the lookup and who may write (`_workbook`), then
+    a missing `valueInputOption`, then a body `range` that is not the URL's, then the range and its
+    values (`_sheets_writing`). The body's `range`, when sent, must be the URL's as typed:
+    `data!a1:b1` and `'Data'!A1:B1` against `Data!A1:B1` are each ``Request range[Data!A1:B1] does
+    not match value's range[data!a1:b1]``. Where a mismatched `range` and an unparseable URL range
+    fall relative to each other was not measured."""
     _sheets_alt(request)
     _require(request)
     opts, body = await _sheets_write_request(request, _PJ_UPDATE, field="data")
@@ -2333,10 +2333,10 @@ async def sheets_values_batch_clear(spreadsheet_id: str, request: Request):
 
 # --- request bodies read from the recorded Sheets messages --------------------------------------
 #
-# `spreadsheets.create` takes a whole `Spreadsheet`, a tree of a hundred and more messages, each read
-# with the `protojson.Message` `routers.google._pj_messages` builds from the recorded message. The
-# baseline records an enum as `string`; the enums this module acts on are declared here, with the
-# discovery document's values in number order.
+# `spreadsheets.create` takes a whole `Spreadsheet`, a tree of a hundred and more messages, each
+# read with the `protojson.Message` `routers.google._pj_messages` builds from the recorded message.
+# The baseline records an enum as `string`; the enums this module acts on are declared here, with
+# the discovery document's values in number order.
 
 _PJ_ENUM_FIELDS = {
     ("sheets.SheetProperties", "sheetType"): _pj_enum(
@@ -2371,7 +2371,13 @@ _PJ_ENUM_FIELDS = {
         "SCIENTIFIC",
     ),
 }
-_pj_message = _pj_messages(_SHEETS_ENUM, _PJ_ENUM_FIELDS)
+# A filter's and a pivot table's `criteria` map is keyed by column, an int32: measured 2026-10-29,
+# `{"a": {}}` is ``Invalid value at '…criteria[0].key' (TYPE_INT32), "a"`` and `+1` is read.
+_PJ_MAP_KEYS = {
+    (message, "criteria"): {"key": "int32"}
+    for message in ("sheets.BasicFilter", "sheets.FilterView", "sheets.PivotTable")
+}
+_pj_message = _pj_messages(_SHEETS_ENUM, _PJ_ENUM_FIELDS, _PJ_MAP_KEYS)
 
 
 # --- `spreadsheets.create` -----------------------------------------------------------------------
@@ -2576,7 +2582,8 @@ def _sheets_json(message: dict) -> dict:
     }
 
 
-# What `sheets_create` keeps of a `Spreadsheet`; the rest it reads and drops (`docs/write-overlay.md`).
+# What `sheets_create` keeps of a `Spreadsheet`; the rest it reads and drops
+# (`docs/write-overlay.md`).
 _SHEETS_CREATE_KEPT = {
     "properties": {"title": None, "locale": None, "timeZone": None, "autoRecalc": None},
     "sheets": {

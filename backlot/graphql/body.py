@@ -9,6 +9,7 @@ open with an object or an array, :mod:`backlot.graphql.v8_json` for the rest, an
 
 from __future__ import annotations
 
+import base64
 import json
 import json.decoder
 import math
@@ -18,7 +19,9 @@ import zlib
 from decimal import Decimal
 from typing import Any
 
-from backlot.graphql import v8_json
+import brotli as brotli_codec
+
+from backlot.graphql import node_utf8, v8_json
 
 # `json.decoder`'s whitespace and string scanner, and `json.scanner.NUMBER_RE` under `re.ASCII`: the
 # C reader `json.loads` runs reads only the digits 0 to 9, which Python 3.11's `\d` alone does not.
@@ -47,9 +50,9 @@ def decode(raw: bytes) -> str:
     return text[1:] if text.startswith("\ufeff") else text
 
 
-#: The most bytes Linear's ``body-parser`` reads, counted after :func:`_inflate`: api.linear.app
-#: served a body of 10485760 bytes and refused one of 10485761 with :class:`Unread`'s 413 on
-#: 2026-10-19 (UTC), each sent plain and gzipped.
+#: The most bytes Linear's ``body-parser`` reads, counted after :func:`_inflate` or
+#: :func:`_unbrotli`: api.linear.app served a body of 10485760 bytes and refused one of 10485761
+#: with :class:`Unread`'s 413 on 2026-10-19 (UTC), each sent plain and gzipped.
 LINEAR_LIMIT = 10 * 1024 * 1024
 
 # The charsets iconv-lite names with `utf`, as `encodingExists` reads a name: in lower case, without
@@ -93,8 +96,8 @@ def body_parser_text(
     ``utf-`` is a 415, then an encoding other than ``identity``, ``gzip``, ``deflate`` and ``br``,
     then an uncompressed body past ``limit`` the 413, which ``raw-body`` answers from
     ``Content-Length`` before it reads, then a ``utf-`` charset iconv-lite does not know the 415;
-    then :func:`_inflate` reads a compressed body, and the bytes are decoded in the charset's byte
-    order (:func:`_byte_order`).
+    then :func:`_inflate` or :func:`_unbrotli` reads a compressed body, and the bytes are decoded in
+    the charset's byte order (:func:`_byte_order`), or as UTF-7 (:func:`_utf7`).
 
     api.linear.app answered each step on 2026-10-19 (UTC): ``latin1``, ``iso-8859-1``, ``utf8`` and
     ``utf_16le`` were the charset 415, ``x-gzip``, ``bogus`` and ``gzip, gzip`` the encoding's, a
@@ -103,8 +106,7 @@ def body_parser_text(
     and ``utf-16le``, ``utf-16-le``, ``utf-16be``, ``utf-16`` and ``utf-32`` with and without a
     byte-order mark, ``utf-32le``, ``GZIP``, ``deflate`` and an empty encoding were served. It
     decompressed a ``br`` body, which body-parser 1.x refuses with the encoding's 415, so it runs a
-    2.x; such a body is read here as it arrives, and a ``utf-7`` or ``utf-7-imap`` one as UTF-8.
-    Without ``brotli``, ``br`` is the encoding's 415 as on a 1.x."""
+    2.x. Without ``brotli``, ``br`` is the encoding's 415 as on a 1.x."""
     charset = _charset(content_type)
     if not charset.startswith("utf-"):
         raise Unread(415, f'unsupported charset "{charset.upper()}"')
@@ -118,8 +120,12 @@ def body_parser_text(
         raise Unread(415, f'unsupported charset "{charset.upper()}"')
     if encoding in ("gzip", "deflate"):
         raw = _inflate(raw, gzip=encoding == "gzip", limit=limit)
-    if name in ("utf8", *_ICONV_UTF7):
+    elif encoding == "br":
+        raw = _unbrotli(raw, limit)
+    if name == "utf8":
         return decode(raw)
+    if name in _ICONV_UTF7:
+        return _utf7(raw, imap=name == "utf7imap")
     width = 2 if name.startswith("utf16") else 4
     order = name[5:] or _byte_order(raw, width)  # past `utf16` or `utf32`
     raw = raw[: len(raw) - len(raw) % width]
@@ -127,9 +133,7 @@ def body_parser_text(
         text = raw.decode(f"utf-16-{order}", "surrogatepass")
     else:
         points = struct.unpack(f"{'<' if order == 'le' else '>'}{len(raw) // 4}I", raw)
-        text = "".join(chr(p) if p <= 0x10FFFF else "\ufffd" for p in points)
-        # The units join into a JavaScript string, where a high surrogate then a low one is a pair.
-        text = text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+        text = _js_string("".join(chr(p) if p <= 0x10FFFF else "\ufffd" for p in points))
     return text[1:] if text.startswith("\ufeff") else text
 
 
@@ -275,6 +279,74 @@ def _byte_order(raw: bytes, width: int) -> str:
     return "be" if score > 0 else "le"
 
 
+_BASE64 = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+
+
+def _utf7(raw: bytes, *, imap: bool) -> str:
+    """``raw`` as iconv-lite 0.7's ``utf-7`` or ``utf-7-imap`` decoder reads it in one ``write``
+    and its ``end``, from ``encodings/utf7.js``. A ``+`` (``&`` for IMAP) opens a run of base64
+    characters, IMAP's also taking ``,`` as ``/``, that the first other byte ends; a ``-`` ending it
+    is dropped, and one right after the opening byte stands for that byte. Each run is decoded
+    apart, and a run the body ends in is decoded in two, its characters up to a multiple of eight
+    and the rest: see :func:`_base64_units`. A byte outside a run is a character when below 0x80
+    and U+FFFD otherwise. A byte-order mark is no character where it opens a run, the part of a run
+    the body ends in that ``end`` decodes, or what ``write`` returns, and is one where it opens what
+    ``end`` returns, which iconv-lite's ``StripBOMWrapper`` leaves alone: api.linear.app answered so
+    on 2026-10-27 and 2026-10-28 (UTC), the second time quoting the mark of `+/v/+/w`, a run whose
+    two marks ``end`` decodes, as the token it stopped at. ``raw-body`` hands the decoder each chunk
+    as it arrives, so this is a body read in one chunk; one that arrives in pieces reads otherwise
+    where a piece ends inside a run."""
+    shift, alphabet = (0x26, _BASE64 | {0x2C}) if imap else (0x2B, _BASE64)
+    units: list[int] = []
+    in_run, start, i = False, 0, 0
+    while i < len(raw):
+        byte = raw[i]
+        if not in_run:
+            if byte == shift:
+                units += (b if b < 0x80 else 0xFFFD for b in raw[start:i])
+                in_run, start = True, i + 1
+        elif byte not in alphabet:
+            if i == start and byte == 0x2D:
+                units.append(shift)
+            else:
+                units += _base64_units(raw[start:i], imap)
+            in_run = False
+            if byte != 0x2D:
+                start = i
+                continue  # the byte is read again outside the run
+            start = i + 1
+        i += 1
+    tail: list[int] = []
+    if not in_run:
+        units += (b if b < 0x80 else 0xFFFD for b in raw[start:])
+    else:
+        rest = raw[start:]
+        whole = len(rest) - len(rest) % 8
+        units += _base64_units(rest[:whole], imap)
+        tail = _base64_units(rest[whole:], imap)
+    if units[:1] == [0xFEFF]:
+        units = units[1:]
+    return _js_string("".join(map(chr, units + tail)))
+
+
+def _js_string(text: str) -> str:
+    """``text``, UTF-16 units each a character, as the JavaScript string they join into, where a
+    high surrogate then a low one is a pair."""
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+
+
+def _base64_units(chars: bytes, imap: bool) -> list[int]:
+    """The UTF-16 units a run of base64 ``chars`` gives: Node's ``Buffer.from(…, "base64")``, which
+    drops a last character that makes no byte, then iconv-lite's ``utf16-be`` decoder, which drops a
+    last odd byte and a byte-order mark at the start of the run."""
+    if imap:
+        chars = chars.replace(b",", b"/")
+    chars = chars[: len(chars) - (len(chars) % 4 == 1)]
+    data = base64.b64decode(chars + b"=" * (-len(chars) % 4))
+    units = [data[i] << 8 | data[i + 1] for i in range(0, len(data) - 1, 2)]
+    return units[1:] if units[:1] == [0xFEFF] else units
+
+
 def _inflate(raw: bytes, gzip: bool, limit: int = LINEAR_LIMIT) -> bytes:
     """``raw`` through Node's ``createGunzip`` or ``createInflate``, which ``body-parser`` pipes a
     body through, and :class:`Unread` where that stream fails or yields more than ``limit``
@@ -295,6 +367,53 @@ def _inflate(raw: bytes, gzip: bool, limit: int = LINEAR_LIMIT) -> bytes:
         raw = inflater.unused_data
         if not (gzip and raw[:1].strip(b"\x00")):
             return bytes(out)
+
+
+def _unbrotli(raw: bytes, limit: int = LINEAR_LIMIT) -> bytes:
+    """``raw`` through Node's ``createBrotliDecompress``, which ``body-parser`` 2.x pipes a ``br``
+    body through, and :class:`Unread` where that stream fails or yields more than ``limit`` bytes.
+    Node reads one stream and leaves what follows it unread; the messages are zlib's
+    ``Decompression failed`` for bytes Brotli cannot read and ``unexpected end of file`` for a
+    stream cut short. Measured on api.linear.app on 2026-10-27 (UTC): a stream then ``xx``, or then
+    a second stream, was served, no bytes and a stream short of its last three were the end of
+    file, the query sent plain was the decompression failure, and a stream one byte past
+    :data:`LINEAR_LIMIT` the 413 where one of that many was served. On 2026-10-29 (UTC) a stream
+    cut short past :data:`LINEAR_LIMIT`, then bytes Brotli cannot read, was the decompression
+    failure in 14 of 16 sends over three such bodies, and the 413 in the other two."""
+    try:
+        out, finished = _brotli_read(raw, limit)
+    except brotli_codec.error:
+        # Python's decoder refuses bytes after the stream: the stream ends at the shortest prefix
+        # that finishes it, if any does.
+        lo, hi = 0, len(raw)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            try:
+                out, finished = _brotli_read(raw[:mid], limit)
+            except brotli_codec.error:
+                hi = mid
+                continue
+            if finished:
+                hi = mid
+            else:
+                lo = mid + 1
+        try:
+            out, finished = _brotli_read(raw[:lo], limit)
+        except brotli_codec.error:
+            raise Unread(400, "Decompression failed") from None
+    if len(out) > limit:
+        raise Unread(413, "request entity too large")
+    if not finished:
+        raise Unread(400, "unexpected end of file")
+    return out
+
+
+def _brotli_read(raw: bytes, limit: int) -> tuple[bytes, bool]:
+    """What a Brotli decoder fed ``raw`` gives, stopping once it holds more than ``limit`` bytes,
+    and whether the stream ended; ``brotli.error`` where the bytes are not Brotli's."""
+    decoder = brotli_codec.Decompressor()
+    out = decoder.process(raw, output_buffer_limit=limit + 1)
+    return out, decoder.is_finished()
 
 
 class Double(float):
@@ -370,7 +489,7 @@ def parse(text: str) -> Any:
         raise NotJson(text) from None
     except RecursionError:
         value = _parse_iteratively(text)
-    return _joined(value) if _LONE_SURROGATE.search(text) else value
+    return _joined(value) if node_utf8.LONE_SURROGATE.search(text) else value
 
 
 def _join(string: str) -> str:
@@ -543,9 +662,6 @@ def prototype_poisoned(value: Any) -> bool:
     return False
 
 
-_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
-
-
 def node_json(value: Any) -> bytes:
     """``value`` the way ``JSON.stringify`` writes it for Express's ``res.json`` and Apollo Server:
     compact, non-ASCII as itself, and a lone surrogate as a lower-case ``\\u`` escape, which UTF-8
@@ -554,4 +670,4 @@ def node_json(value: Any) -> bytes:
     and from Linear sent as an unknown field of an input object. A float that is not finite is
     refused, as Starlette's ``JSONResponse`` refuses one."""
     text = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-    return _LONE_SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", text).encode("utf-8")
+    return node_utf8.LONE_SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", text).encode("utf-8")

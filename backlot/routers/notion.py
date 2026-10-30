@@ -39,7 +39,6 @@ Object mapping: a Notion *page* is one doc (``subtype='page'``); a *database* is
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import re
@@ -49,7 +48,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, published, store, synth
+from backlot import auth, express_http, published, store, synth
 from backlot import notion_request as req
 from backlot.graphql import body as request_body
 from backlot.openapi import qp
@@ -112,32 +111,12 @@ CORS_HEADERS = {
 }
 
 
-def weak_etag(body: bytes) -> str:
-    """The `ETag` real puts on a Notion answer: a weak tag holding the body's length in bytes, in
-    hex, and the first 27 characters of the base64 SHA-1 of the body, the form Express's `etag`
-    writes.
-
-    Measured against api.notion.com on 2026-10-27: the 200s of `users/me`, `pages/{id}` and
-    `search`, the 401s (the OAuth client endpoints' among them), the 400s, a 404 and a 503, and
-    the body reader's 413 and 415 each carried one over its own body, a `HEAD` the tag of the
-    body its `GET` answers; the root's 302 and a CORS preflight's 204 carried none. The
-    computation was checked against the bodies kept whole.
-    """
-    digest = base64.b64encode(hashlib.sha1(body).digest()).decode("ascii")[:27]
-    return f'W/"{len(body):x}-{digest}"'
-
-
-#: ``fresh``'s test for `no-cache` among the comma-separated parts of a request's `Cache-Control`,
-#: its `\s` written out as the characters JavaScript's `\s` holds in latin-1, which a header value
-#: is read as.
-_NO_CACHE = re.compile(r"(?:^|,)[\t\n\v\f\r \xa0]*?no-cache[\t\n\v\f\r \xa0]*?(?:,|$)")
-
-
 def not_modified(request: Request, status_code: int) -> bool:
     """Whether real answers ``request`` with a 304 in place of its answer of ``status_code``: the
     freshness check Express runs on a `GET`'s 2xx (``fresh`` 0.5.2), which finds `If-None-Match: *`
-    fresh unless a non-empty `If-Modified-Since`, or `no-cache` in `Cache-Control`, goes with it. A
-    `HEAD` reaches this as the `GET` it is rewritten to.
+    fresh unless a non-empty `If-Modified-Since`, or `no-cache` in `Cache-Control`
+    (:data:`backlot.express_http.NO_CACHE`), goes with it. A `HEAD` reaches this as the `GET` it is
+    rewritten to.
 
     Measured against api.notion.com on 2026-10-27: `If-None-Match: *`, with or without spaces or a
     tab around it, drew a 304 on a `GET` and a `HEAD` of `users/me`, and on a `GET` of `users`,
@@ -156,7 +135,7 @@ def not_modified(request: Request, status_code: int) -> bool:
         return False
     if request.headers.get("if-modified-since", "").strip(" \t"):
         return False
-    if _NO_CACHE.search(", ".join(request.headers.getlist("cache-control"))):
+    if express_http.NO_CACHE.search(", ".join(request.headers.getlist("cache-control"))):
         return False
     return request.headers.get("if-none-match", "").strip(" \t") == "*"
 

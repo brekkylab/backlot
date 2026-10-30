@@ -15030,6 +15030,15 @@ def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh, monkeypa
     notes = f"/drive/v3/files/{served_id('google_drive', 'wr-doc')}"
     f = wc.get(notes, headers=h, params={"fields": fields}).json()
     assert (f["size"], f["version"], f["createdTime"]) == ("1024", "2", f["modifiedTime"])
+    # and so is a spreadsheet with no cells, two seconds on, which the quota counts as its size
+    quota = {"fields": "storageQuota(usage)"}
+    used = int(wc.get("/drive/v3/about", headers=h, params=quota).json()["storageQuota"]["usage"])
+    r = wc.post("/sheets/v4/spreadsheets", headers=h, json={"properties": {"title": "Empty"}})
+    sheet = f"/drive/v3/files/{r.json()['spreadsheetId']}"
+    f = wc.get(sheet, headers=h, params={"fields": fields}).json()
+    assert (f["size"], f["quotaBytesUsed"], f["version"]) == ("1024", "1024", "2")
+    quota = wc.get("/drive/v3/about", headers=h, params=quota).json()["storageQuota"]
+    assert int(quota["usage"]) == used + 1024
     roots = wc.get("/drive/v3/files", headers=h, params={"q": "'root' in parents"}).json()
     assert did in [x["id"] for x in roots["files"]]
     perms = wc.get(f"/drive/v3/files/{did}/permissions", headers=h).json()["permissions"]
@@ -15443,6 +15452,25 @@ _DOCS_CREATE_REFUSALS = [
             (b'"x": ' + b"[" * 99 + b"]" * 99 + b', "nope": ', b""),
         ),
         f"{_DOCS_TOO_DEEP} for key 'a\"'",
+    ),
+    # brackets inside a string, each run after a character that does not end it, are not counted
+    (
+        {},
+        _deep(
+            b'{"a": ',
+            b"1",
+            b"}",
+            1_000_000,
+            (
+                b'"s": "'
+                + b"".join(bytes([c]) + b"[" * 101 for c in b"'\t\n\r\x07\x08\x0c")
+                + b'\\"'
+                + b"[" * 101
+                + b'", "nope": ',
+                b"",
+            ),
+        ),
+        f"{_DOCS_TOO_DEEP} for key 'a'",
     ),
     (
         {},
@@ -15968,6 +15996,32 @@ _DOCS_TIMESTAMPS = [
     ("0001-01-01T00:01:00+00:01", None),
     ("9999-12-31T23:58:59-00:01", None),
     ("9999-12-31T23:59:00-00:01", _TS_PAST_LIMITS),
+    ("10000-01-01T00:00:00+01:00", None),
+    ("2026-01-01T00:00:00Z\n", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00+09:00\n", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00.-0Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.-00Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.-0000000000Z", _TS_NANOS),
+    ("2026-02-30T00:00:00.-0Z", _TS_NO_SUCH_DAY),
+    ("10000-01-01T00:00:00.-0Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.0000000000Z", None),
+    ("2026-01-01T00:00:00.00000000000000Z", None),
+    ("9223372036854775807-01-01T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("9223372036854775808-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-9223372036854775808-01-01T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("-9223372036854775809-01-01T00:00:00Z", _TS_UNPARSED),
+    ("9223372036854775808-01-01T00:00:00 xZ", _TS_UNPARSED),
+    ("292277026596-12-04T15:30:07Z", _TS_PAST_LIMITS),
+    ("292277026596-12-04T15:30:08Z", _TS_NO_SUCH_DAY),
+    ("292277026596-12-04T15:30:08+01:00", _TS_NO_SUCH_DAY),
+    ("-292277022657-01-27T08:29:52Z", _TS_PAST_LIMITS),
+    ("-292277022657-01-27T08:29:51Z", _TS_NO_SUCH_DAY),
+    ("292277026597-01-01T00:00:00 xZ", _TS_TRAILING),
+    ("292277026597-01-01T00:00:00.1aZ", _TS_NO_SUCH_DAY),
+    ("2024-01-31T00:00:00Z", None),
+    ("2026-13-01T00:00:00.1.2Z", _TS_UNPARSED),
+    ("2026-02-30T00:00:00.1.2Z", _TS_TRAILING),
+    ("2026-02-30T00:00:00.1aZ", _TS_NO_SUCH_DAY),
 ]
 _DOCS_CREATE_REFUSALS += [
     (

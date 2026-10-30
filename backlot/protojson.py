@@ -166,15 +166,17 @@ def to_float(piece: tuple[str, object]) -> float:
     return value
 
 
-# Measured 2026-10-29 on Docs `documents.create`, the refusals below in the order they are checked:
-# no `Z` or `±hh:mm` offset under a day at the end (`2026-10-29`, a lower-case `z`, `+0900`,
-# `+24:00`); what precedes the zone and the fraction not read as `%Y-%m-%dT%H:%M:%S`, each field
-# after the year one or two digits in its range and space allowed around the whole (month 13, hour
-# 24, `+2026`, a lower-case `t`, no seconds); anything left after the seconds; a day past its
-# month's last (30 February); a fraction, what follows the last `.`, that is not an int32 (`1a`,
-# `+1`, `1 `, twelve digits); and a time outside 0001 to 9999 UTC once the offset is applied, a
-# negative fraction or one past nine digits. An empty fraction, a year of two or six digits and a
-# second of 60 are read.
+# Measured 2026-10-29 and 2026-10-30 on Docs `documents.create`, the refusals below in the order
+# they are checked: no `Z` or `±hh:mm` offset under a day at the very end (`2026-10-29`, a
+# lower-case `z`, `+0900`, `+24:00`, a final newline); what precedes the zone and the fraction not
+# read as `%Y-%m-%dT%H:%M:%S`, the year an int64 and each field after it one or two digits in its
+# range, space allowed around the whole (month 13, hour 24, `+2026`, a lower-case `t`, no seconds);
+# anything left after the seconds; a day past its month's last (30 February), or a time, offset
+# not applied, past int64 seconds from the epoch (`292277026596-12-04T15:30:08Z`); a fraction, what
+# follows the last `.`, that is not an int32 or is `-` and zeros (`1a`, `+1`, `1 `, twelve digits,
+# `-0`); and a time outside 0001 to 9999 UTC once the offset is applied, a negative fraction or a
+# fraction past nine digits that is not zero. An empty fraction, ten zeros, a year of two or six
+# digits, a second of 60 and `10000-01-01T00:00:00+01:00` are read.
 _TS_NO_ZONE = (
     "Illegal timestamp format; timestamps must end with 'Z' or have a valid timezone offset."
 )
@@ -183,7 +185,7 @@ _TS_TRAILING = "Invalid time format: Illegal trailing data in input string"
 _TS_NO_SUCH_DAY = "Invalid time format: Out-of-range field"
 _TS_NANOS = "Invalid time format, failed to parse nano seconds"
 _TS_PAST_LIMITS = "Timestamp value exceeds limits"
-_TS_ZONE = re.compile(r"(?:Z|([+-])([01][0-9]|2[0-3]):([0-5][0-9]))$")
+_TS_ZONE = re.compile(r"(?:Z|([+-])([01][0-9]|2[0-3]):([0-5][0-9]))\Z")
 _TS_FIELDS = re.compile(
     r"(-?[0-9]+)-([0-9]{1,2})-([0-9]{1,2})T([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2})"
 )
@@ -210,22 +212,26 @@ def _timestamp_error(piece: tuple[str, object]) -> str | None:
     year, month, day, hour, minute, second = (int(p) for p in parts.groups())
     if not (1 <= month <= 12 and 1 <= day <= 31 and hour < 24 and minute < 60 and second <= 60):
         return _TS_UNPARSED
+    if not _INT64[0] <= year <= _INT64[1]:
+        return _TS_UNPARSED
     if text[parts.end() :].strip(_ASCII_SPACE):
         return _TS_TRAILING
     if day > (29 if month == 2 and calendar.isleap(year) else calendar.mdays[month]):
         return _TS_NO_SUCH_DAY
+    cycles, year_in_cycle = divmod(year - 1, 400)  # the calendar repeats every 400 years
+    days = cycles * 146_097 + datetime.date(year_in_cycle + 1, month, day).toordinal() - _EPOCH_DAY
+    seconds = days * 86_400 + hour * 3600 + minute * 60 + second
+    if not _INT64[0] <= seconds <= _INT64[1]:
+        return _TS_NO_SUCH_DAY
     if fraction and re.fullmatch(r"-?[0-9]+", fraction) is None:
         return _TS_NANOS
     nanos = int(fraction or 0)
-    if not _INT32[0] <= nanos <= _INT32[1]:
+    if not _INT32[0] <= nanos <= _INT32[1] or (fraction.startswith("-") and not nanos):
         return _TS_NANOS
-    if nanos < 0 or len(fraction) > 9 or not 1 <= year <= 9999:
+    if nanos < 0 or (len(fraction) > 9 and nanos):
         return _TS_PAST_LIMITS
-    days = datetime.date(year, month, day).toordinal() - _EPOCH_DAY
-    offset = 0
     if zone[1]:
-        offset = (int(zone[2]) * 60 + int(zone[3])) * 60 * (-1 if zone[1] == "-" else 1)
-    seconds = days * 86_400 + hour * 3600 + minute * 60 + second - offset
+        seconds -= (int(zone[2]) * 60 + int(zone[3])) * 60 * (-1 if zone[1] == "-" else 1)
     if not _TS_SECONDS[0] <= seconds <= _TS_SECONDS[1]:
         return _TS_PAST_LIMITS
     return None

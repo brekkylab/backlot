@@ -13814,6 +13814,40 @@ WRITE_RECORDS = [
     },
     {
         "source_type": "google_drive",
+        "doc_id": "wr-links",
+        "subtype": "document",
+        "title": "Links",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "paragraphs": [
+            {
+                "runs": [
+                    {"text": "BL", "bold": True, "link": "https://example.com/"},
+                    {"text": " t"},
+                ]
+            },
+            {
+                "runs": [
+                    {"text": "BL", "bold": True, "link": "https://example.com/"},
+                    {"text": " t", "bold": True},
+                ]
+            },
+            {
+                "runs": [
+                    {"text": "lnk", "bold": True, "link": "https://example.com/"},
+                    {"text": " t"},
+                ]
+            },
+            {"text": "ab"},
+            {"runs": [{"text": "cd", "underline": True}]},
+            {"runs": [{"text": "x"}, {"text": "YZ", "bold": True}]},
+        ],
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
         "doc_id": "wr-hidden",
         "subtype": "document",
         "title": "Hidden",
@@ -16198,7 +16232,10 @@ def test_a_create_real_refuses_is_refused_with_reals_message(wc, wh, route, para
 
 # --- `documents.batchUpdate` ----------------------------------------------------------------------
 #
-# `wr-text` is the prose `Hello world\nSecond para`, end index 25. `wr-styled` states, by index:
+# `wr-text` is the prose `Hello world\nSecond para`, end index 25. `wr-links` states, by index: a
+# bold link `BL` [1, 3) and ` t` [3, 5); the same with ` t` bold [6, 11); a bold link `lnk`
+# [11, 14) and ` t` [14, 16); `ab` [17, 19); underlined `cd` [20, 22); `x` and bold `YZ` [23, 26).
+# `wr-styled` states, by index:
 # a HEADING_1 `Title line` [1, 12); `plain ` [12, 18), bold `BOLD` [18, 22), ` tail` [22, 28); a
 # link `link` [28, 32), ` here` [32, 38); struck `struck` [38, 45), its newline struck too; italic
 # `BOLDSTART` [45, 54), ` x` [54, 57); an empty paragraph [57, 58); `last` [58, 63).
@@ -16214,13 +16251,13 @@ def _docs_write(wc, h, doc, body, **params):
 def _docs_runs(wc, h, doc) -> list[str]:
     """A Doc's paragraphs as `<style><headingId> <runs>`: the style `H1` or `N`, the headingId
     `#orig` when it is the one `wr-styled` starts with and `#new` otherwise, and each run as its
-    marks (`b`, `i`, `s`, `L` for a link with its underline and colour) before its text, runs
+    marks (`b`, `i`, `u`, `s`, `L` for a link with its underline and colour) before its text, runs
     joined by `|`."""
     from tests._helpers import served_id
 
     did = served_id("google_drive", doc)
     content = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["body"]["content"]
-    marks = {"bold": "b", "italic": "i", "strikethrough": "s", "link": "L"}
+    marks = {"bold": "b", "italic": "i", "underline": "u", "strikethrough": "s", "link": "L"}
     out = []
     for el in content[1:]:
         p = el["paragraph"]
@@ -16232,7 +16269,12 @@ def _docs_runs(wc, h, doc) -> list[str]:
         runs = []
         for pe in p["elements"]:
             run = pe["textRun"]
-            m = "".join(v for k, v in marks.items() if k in run["textStyle"])
+            style = run["textStyle"]
+            m = "".join(
+                v
+                for k, v in marks.items()
+                if k in style and (k != "underline" or "link" not in style)
+            )
             runs.append(f"{m}:{run['content']}" if m else run["content"])
         out.append(f"{tag} {'|'.join(runs)}")
     return out
@@ -16265,7 +16307,8 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
     """Measured: each request's indices count what the ones before it inserted, the answer is one
     reply and one suggestion response per request with `replaceAllText`'s count left out at zero,
     every write moves the `revisionId` the next read serves, and Drive reads the written text,
-    with `modifiedTime` the write's."""
+    with `modifiedTime` the write's, and `size` and `version` as `docs_batch_update` stores
+    them."""
     from tests._helpers import served_id
 
     h = wh[_OWNER]
@@ -16295,8 +16338,28 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
     }
     unchanged = _docs_write(wc, h, "wr-text", {"requests": [_rep("zzz", "y")]}).json()
     assert unchanged["writeControl"]["requiredRevisionId"] not in (before, revision)
-    f = wc.get(f"/drive/v3/files/{did}", headers=h, params={"fields": "modifiedTime"}).json()
+    fields = {"fields": "modifiedTime,version,size,quotaBytesUsed"}
+    f = wc.get(f"/drive/v3/files/{did}", headers=h, params=fields).json()
     assert f["modifiedTime"] > "2026-07-14T17:20:00.000Z"
+    # `version` moves once per write and `size` stays, but a blank Doc's first write takes it from
+    # 1 to 1024, which the quota counts as well
+    assert (f["version"], f["size"], f["quotaBytesUsed"]) == ("5", "1024", "1024")
+    about = {"fields": "storageQuota"}
+
+    def quota():
+        return int(
+            wc.get("/drive/v3/about", headers=h, params=about).json()["storageQuota"]["usage"]
+        )
+
+    used = quota()
+    blank = wc.post("/docs/v1/documents", headers=h, json={"title": "Blank"}).json()["documentId"]
+    assert quota() == used + 1
+    write = {"requests": [_ins(1, "x" * 3000)]}
+    assert (
+        wc.post(f"/docs/v1/documents/{blank}:batchUpdate", headers=h, json=write).status_code == 200
+    )
+    f = wc.get(f"/drive/v3/files/{blank}", headers=h, params=fields).json()
+    assert (f["version"], f["size"], quota()) == ("2", "1024", used + 1024)
     found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains 'ABell0'"})
     assert [x["id"] for x in found.json()["files"]] == [did]
     assert wc.get(
@@ -16304,54 +16367,144 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
     ).text.endswith("ABell0 w0rld\nSec0nd para")
 
 
+def _searched(seed, *replace):
+    """`wr-text` rewritten to ``seed`` alone, then replaced in as ``replace`` says."""
+    return [_del(1, 24), _ins(1, seed), *replace]
+
+
+_LINKS = [
+    "N bL:BL| t\n",
+    "N bL:BL|b: t\n",
+    "N bL:lnk| t\n",
+    "N ab\n",
+    "N u:cd\n",
+    "N x|b:YZ\n",
+]
+_RE = {"searchByRegex": True, "matchCase": True}
+
+
+_STYLED_ROWS = [
+    # a newline splits a heading into two, the new one with a headingId of its own: after the
+    # one it was cut from, or before it at the heading's start
+    ([_ins(6, "\n")], ["H1#orig Title\n", "H1#new  line\n", *_STYLED[1:]]),
+    (
+        [_ins(1, "a\nb\nc")],
+        ["H1#new a\n", "H1#new b\n", "H1#orig cTitle line\n", *_STYLED[1:]],
+    ),
+    # inserted text takes the style of the character before it, joining its run
+    ([_ins(18, "X")], [_STYLED[0], "N plain X|b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_ins(22, "X")], [_STYLED[0], "N plain |b:BOLDX| tail\n", *_STYLED[2:]]),
+    (
+        [_ins(22, "X\nY")],
+        [_STYLED[0], "N plain |b:BOLDX\n", "N b:Y| tail\n", *_STYLED[2:]],
+    ),
+    # a link only inside it; after it the text is unstyled, and a run of its own
+    ([_ins(30, "X")], [*_STYLED[:2], "N L:liXnk| here\n", *_STYLED[3:]]),
+    ([_ins(32, "X")], [*_STYLED[:2], "N L:link|X| here\n", *_STYLED[3:]]),
+    # at a paragraph's start, the first character's; a run of its own after a newline with a
+    # member it lacks (struck here)
+    ([_ins(45, "X")], [*_STYLED[:4], "N i:X|i:BOLDSTART| x\n", *_STYLED[5:]]),
+    # ... and joins its run after an unstyled newline: `BOLD` starts the paragraph once
+    # `plain ` is gone
+    ([_del(12, 18), _ins(12, "X")], [_STYLED[0], "N b:XBOLD| tail\n", *_STYLED[2:]]),
+    ([_ins(57, "X")], [*_STYLED[:5], "N X\n", _STYLED[6]]),
+    (
+        [{"insertText": {"endOfSegmentLocation": {}, "text": "Z"}}],
+        [*_STYLED[:6], "N lastZ\n"],
+    ),
+    # joined paragraphs take the first one's style, or the last one's when the range starts at
+    # the first one's start; a delete joins the runs it brings together
+    ([_del(11, 12)], ["H1#orig Title lineplain |b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_del(1, 14)], ["N ain |b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_del(1, 12)], _STYLED[1:]),
+    ([_del(18, 22)], [_STYLED[0], "N plain  tail\n", *_STYLED[2:]]),
+    # a replacement takes its match's first character's style, and the body's last newline
+    # stays
+    (
+        [_rep("n BO", "##", matchCase=True)],
+        [_STYLED[0], "N plai##|b:LD| tail\n", *_STYLED[2:]],
+    ),
+    (
+        [_rep("LD t", "##", matchCase=True)],
+        [_STYLED[0], "N plain |b:BO##|ail\n", *_STYLED[2:]],
+    ),
+    ([_rep("line\nplain", "Z")], ["H1#orig Title Z |b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_rep("last\n", "L")], [*_STYLED[:6], "N L\n"]),
+    # matching folds case fully; a regular expression's `$1` is text
+    ([_ins(58, "straße "), _rep("STRASSE", "R")], [*_STYLED[:6], "N R last\n"]),
+    (
+        [_rep("(pl)ain", "$1X", searchByRegex=True)],
+        [_STYLED[0], "N $1X |b:BOLD| tail\n", *_STYLED[2:]],
+    ),
+    ([_rep("^la", "R", searchByRegex=True)], [*_STYLED[:6], "N Rst\n"]),
+]
+
+
 @pytest.mark.parametrize(
-    "requests,runs",
+    "doc,requests,runs",
     [
-        # a newline splits a heading into two, the new one with a headingId of its own: after the
-        # one it was cut from, or before it at the heading's start
-        ([_ins(6, "\n")], ["H1#orig Title\n", "H1#new  line\n", *_STYLED[1:]]),
-        ([_ins(1, "a\nb\nc")], ["H1#new a\n", "H1#new b\n", "H1#orig cTitle line\n", *_STYLED[1:]]),
-        # inserted text takes the style of the character before it, joining its run
-        ([_ins(18, "X")], [_STYLED[0], "N plain X|b:BOLD| tail\n", *_STYLED[2:]]),
-        ([_ins(22, "X")], [_STYLED[0], "N plain |b:BOLDX| tail\n", *_STYLED[2:]]),
-        ([_ins(22, "X\nY")], [_STYLED[0], "N plain |b:BOLDX\n", "N b:Y| tail\n", *_STYLED[2:]]),
-        # a link only inside it; after it the text is unstyled, and a run of its own
-        ([_ins(30, "X")], [*_STYLED[:2], "N L:liXnk| here\n", *_STYLED[3:]]),
-        ([_ins(32, "X")], [*_STYLED[:2], "N L:link|X| here\n", *_STYLED[3:]]),
-        # at a paragraph's start, the first character's; a run of its own after a newline with a
-        # member it lacks (struck here)
-        ([_ins(45, "X")], [*_STYLED[:4], "N i:X|i:BOLDSTART| x\n", *_STYLED[5:]]),
-        # ... and joins its run after an unstyled newline: `BOLD` starts the paragraph once
-        # `plain ` is gone
-        ([_del(12, 18), _ins(12, "X")], [_STYLED[0], "N b:XBOLD| tail\n", *_STYLED[2:]]),
-        ([_ins(57, "X")], [*_STYLED[:5], "N X\n", _STYLED[6]]),
-        ([{"insertText": {"endOfSegmentLocation": {}, "text": "Z"}}], [*_STYLED[:6], "N lastZ\n"]),
-        # joined paragraphs take the first one's style, or the last one's when the range starts at
-        # the first one's start; a delete joins the runs it brings together
-        ([_del(11, 12)], ["H1#orig Title lineplain |b:BOLD| tail\n", *_STYLED[2:]]),
-        ([_del(1, 14)], ["N ain |b:BOLD| tail\n", *_STYLED[2:]]),
-        ([_del(1, 12)], _STYLED[1:]),
-        ([_del(18, 22)], [_STYLED[0], "N plain  tail\n", *_STYLED[2:]]),
-        # a replacement takes its match's first character's style, and the body's last newline
-        # stays
-        ([_rep("n BO", "##", matchCase=True)], [_STYLED[0], "N plai##|b:LD| tail\n", *_STYLED[2:]]),
-        ([_rep("LD t", "##", matchCase=True)], [_STYLED[0], "N plain |b:BO##|ail\n", *_STYLED[2:]]),
-        ([_rep("line\nplain", "Z")], ["H1#orig Title Z |b:BOLD| tail\n", *_STYLED[2:]]),
-        ([_rep("last\n", "L")], [*_STYLED[:6], "N L\n"]),
-        # matching folds case fully; a regular expression's `$1` is text
-        ([_ins(58, "straße "), _rep("STRASSE", "R")], [*_STYLED[:6], "N R last\n"]),
-        (
-            [_rep("(pl)ain", "$1X", searchByRegex=True)],
-            [_STYLED[0], "N $1X |b:BOLD| tail\n", *_STYLED[2:]],
+        *(("wr-styled", *row) for row in _STYLED_ROWS),
+        # at a link's end, the next character's style; text starting with a newline inside a link
+        # is unstyled
+        ("wr-links", [_ins(3, "X")], ["N bL:BL|X| t\n", *_LINKS[1:]]),
+        ("wr-links", [_ins(8, "X")], [_LINKS[0], "N bL:BL|b:X|b: t\n", *_LINKS[2:]]),
+        ("wr-links", [_ins(12, "\nX")], [*_LINKS[:2], "N bL:l|\n", "N X|bL:nk| t\n", *_LINKS[3:]]),
+        ("wr-links", [_ins(20, "X")], [*_LINKS[:4], "N u:Xcd\n", _LINKS[5]]),
+        ("wr-links", [_ins(20, "\n")], [*_LINKS[:4], "N u:\n", "N u:cd\n", _LINKS[5]]),
+        ("wr-links", [_rep("YZ", "Q", matchCase=True)], [*_LINKS[:5], "N x|b:Q\n"]),
+        # a letter with a mark and 102 others compare as `gdocs._FOLD` folds them, case or not,
+        # and a match of part of a fold reaches as `gdocs._unfold` says
+        *(
+            ("wr-text", _searched(seed, _rep(text, "R", **criteria)), [f"N {after}\n"])
+            for seed, text, criteria, after in [
+                ("ßs", "s", {}, "RR"),
+                ("sßs", "ss", {}, "RR"),
+                ("xæ y", "a", {"matchCase": True}, "R y"),
+                ("xæ y", "xa", {"matchCase": True}, "Ræ y"),
+                ("x\næ y", "a", {"matchCase": True}, "xR y"),
+                ("aæ y", "a", {"matchCase": True}, "R y"),
+                ("e\u0301 x", "e", {}, "R x"),
+                ("ete é", "é", {"matchCase": True}, "RtR R"),
+                ("Résumé resume", "resume", {}, "R R"),
+                ("ı I i", "I", {}, "R R R"),
+                ("ǅ dž", "Ǆ", {}, "R R"),
+                ("ſ s", "s", {"matchCase": True}, "ſ R"),
+                ("ľ l L", "L", {"matchCase": True}, "R l R"),
+                ("ﬁx fix", "FI", {}, "ﬁx Rx"),
+                ("ß x", "ẞ", {}, "ß x"),
+                ("ά α", "α", {}, "ά R"),
+                # a regular expression is `java.util.regex`'s, over the folded text
+                ("été x", "e", {"searchByRegex": True}, "RtR x"),
+                ("café", "[a-z]+", _RE, "R"),
+                ("ß", "^..$", _RE, "R"),
+                ("a1 b٣ c１", "\\d", _RE, "aR b٣ c１"),
+                ("a\u00a0b c\u2003d", "\\s", _RE, "a\u00a0bRc\u2003dR"),
+                ("aé_1 ж", "\\w", _RE, "RRRR ж"),
+                ("жa", "(?U)\\w", _RE, "RR"),
+                ("ab1", "\\p{L}", _RE, "RR1"),
+                ("ab1ж", "\\p{Alpha}", _RE, "RR1ж"),
+                ("aB", "a(?i)b", _RE, "R"),
+                ("Ж", "(?i)ж", _RE, "Ж"),
+                ("aab", "(?<n>a)\\k<n>", _RE, "Rb"),
+                ("a.b axb", "\\Qa.b\\E", _RE, "R axb"),
+                ("ab", "b\\Z", _RE, "aR"),
+                ("ab", "b\\z", _RE, "ab"),
+                ("A", "\\0101", _RE, "R"),
+                ("abc", "[a-c&&[^b]]", _RE, "RbR"),
+                ("abcx", "[a-c[x]]", _RE, "RRRR"),
+                ("a:", "[[:alpha:]]", _RE, "RR"),
+                ("aaa", "a++a", _RE, "aaa"),
+                ("aaaa", "a{,2}", _RE, "aaaa"),
+                ("a", "a(?#c)", _RE, "a"),
+            ]
         ),
-        ([_rep("^la", "R", searchByRegex=True)], [*_STYLED[:6], "N Rst\n"]),
     ],
 )
-def test_a_write_styles_what_it_inserts_as_real_does(wc, wh, requests, runs):
+def test_a_write_styles_what_it_inserts_as_real_does(wc, wh, doc, requests, runs):
     h = wh[_OWNER]
-    r = _docs_write(wc, h, "wr-styled", {"requests": requests})
+    r = _docs_write(wc, h, doc, {"requests": requests})
     assert r.status_code == 200, r.text
-    assert _docs_runs(wc, h, "wr-styled") == runs
+    assert _docs_runs(wc, h, doc) == runs
 
 
 _GRAPHEME = (
@@ -16430,6 +16583,33 @@ _DOCS_BATCH_REFUSALS = [
     ([_ins(1, "가"), _ins(2, "x")], 400, _GRAPHEME),
     ([_ins(1, "❤️"), _ins(2, "x")], 400, _GRAPHEME),
     ([_ins(1, "\U0001f468‍\U0001f469"), _ins(3, "x")], 400, _GRAPHEME),
+    # where Unicode's extended grapheme clusters have no boundary
+    *(
+        ([_ins(1, seed), _ins(at, "x")], 400, _GRAPHEME)
+        for seed, at in [
+            ("a\u200cb", 2),
+            ("\U0001f408\u200d\u2b1b", 3),
+            ("\U0001f408\u200d\u2b1b", 4),
+            ("\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f", 3),
+            ("\u0600\u0661", 2),
+            ("a\u200d\U0001f600", 2),
+            ("\U0001f1f0\U0001f1f7\U0001f1fa", 3),
+            ("\U0001f1f0\U0001f1f7\U0001f1fa\U0001f1f8", 7),
+            ("\u1100\u1100", 2),
+            ("\u1100가", 2),
+            ("\u1161\u11a8", 2),
+            ("\u11a8\u11a8", 2),
+            ("가\u11a8", 2),
+            ("각\u11a8", 2),
+            ("\ua960\u1161", 2),
+            ("\u1100\ud7b0\ud7cb", 3),
+            ("क\u093e", 2),
+            ("a\u20dd", 2),
+            ("a\U0001f3fb", 2),
+            ("\U0001f600\u093e", 3),
+            ("\U0001f1f0\u0301", 3),
+        ]
+    ),
     (
         [{"deleteContentRange": {}}],
         400,
@@ -16442,6 +16622,11 @@ _DOCS_BATCH_REFUSALS = [
     ),
     (
         [{"deleteContentRange": {"range": {"startIndex": None, "endIndex": 3}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: must contain a start and end index",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"startIndex": 3}}}],
         400,
         "Invalid requests[0].deleteContentRange: Invalid range: must contain a start and end index",
     ),
@@ -16474,20 +16659,29 @@ _DOCS_BATCH_REFUSALS = [
     ([_del(30, 30)], 400, f"Invalid requests[0].deleteContentRange: Index 30 {_PAST_END}"),
     ([_del(0, 30)], 400, f"Invalid requests[0].deleteContentRange: Index 29 {_PAST_END}"),
     ([_del(0, 0)], 400, "Invalid requests[0].deleteContentRange: The range should not be empty."),
-    (
-        [_del(0, 2)],
-        400,
-        "Invalid requests[0].deleteContentRange: Cannot operate on the first section break in the document.",
+    *(
+        (
+            [_del(0, end)],
+            400,
+            "Invalid requests[0].deleteContentRange: Cannot operate on the first section break in the document.",
+        )
+        for end in (2, 25)
     ),
-    (
-        [_del(24, 25)],
-        400,
-        "Invalid requests[0].deleteContentRange: The range cannot include the newline character at the end of the segment.",
+    *(
+        (
+            [_del(start, 25)],
+            400,
+            "Invalid requests[0].deleteContentRange: The range cannot include the newline character at the end of the segment.",
+        )
+        for start in (1, 24)
     ),
-    (
-        [_ins(1, "\U0001f600"), _del(1, 2)],
-        400,
-        "Invalid requests[1].deleteContentRange: Invalid deletion range. Cannot delete the requested range.",
+    *(
+        (
+            [_ins(1, "\U0001f600b"), _del(start, end)],
+            400,
+            "Invalid requests[1].deleteContentRange: Invalid deletion range. Cannot delete the requested range.",
+        )
+        for start, end in ((1, 2), (2, 4))
     ),
     (
         [{"replaceAllText": {"replaceText": "x"}}],
@@ -16643,10 +16837,26 @@ def test_a_batch_update_takes_what_real_takes(wc, wh):
         ],
         _ins(1, "y"),
         [_ins(1, "é"), _del(2, 3)],
+        [_rep("zzz", "\ufdd0")],
+        [{"insertText": {"location": {"index": 1, "tabId": ""}, "text": "t"}}],
+        [{"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 2, "tabId": ""}}}],
+        # a cluster's boundary: after a ZWNJ, between a ZWJ that follows a letter and an emoji,
+        # after a flag's pair, between a syllable and a leading jamo
+        [_ins(1, "a\u200cb"), _ins(3, "x")],
+        [_ins(1, "a\u200d\U0001f600"), _ins(3, "x")],
+        [_ins(1, "\U0001f1f0\U0001f1f7\U0001f1fa"), _ins(5, "x")],
+        [_ins(1, "가\u1100"), _ins(2, "x")],
     ]
     for requests in taken:
         assert _docs_write(wc, h, "wr-text", {"requests": requests}).status_code == 200
-    assert _docs_runs(wc, h, "wr-text") == ["N eyxHello world\n", "N Second para\n"]
+    # a `writeMode` is its number, and only `SUGGEST`'s is refused
+    for mode in (7, -1, "1"):
+        body = {"requests": [_ins(1, "m")], "writeControl": {"writeMode": mode}}
+        assert _docs_write(wc, h, "wr-text", body).status_code == 200
+    assert _docs_runs(wc, h, "wr-text") == [
+        "N mmm가xᄀ\U0001f1f0\U0001f1f7x\U0001f1faa\u200dx\U0001f600a\u200cxbeyxHello world\n",
+        "N Second para\n",
+    ]
     latest = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
     pinned = {"requests": [_ins(1, "z")], "writeControl": {"requiredRevisionId": latest}}
     assert _docs_write(wc, h, "wr-text", pinned).status_code == 200

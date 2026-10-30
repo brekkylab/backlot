@@ -5011,6 +5011,8 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     author = row["author_email"]
     native = _native(row)
     mime = _drive_mime(row)
+    # a Doc `documents.batchUpdate` wrote serves the `size` and `version` it stored
+    written = store.gdrive_doc_written(conn, row["id"]) if mime == DRIVE_DOC_MIME else None
     if native is not None:
         seg = native[1]
         view = (
@@ -5045,7 +5047,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "ownedByMe": owned,
         **_modified_by_me(author, me, modified),
         **_shared_with_me_time(author, me, created),
-        "version": _drive_version(row),
+        "version": str(written[1]) if written else _drive_version(row),
         "spaces": ["drive"],
         "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
@@ -5059,7 +5061,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     # both measured 2026-10-21/25. A native file's `size` never goes under
     # `store.DRIVE_NATIVE_MIN_BYTES`, where the measurement is recorded.
     if not is_folder:
-        nbytes = store.drive_file_bytes(row["subtype"], row["content"])
+        nbytes = written[0] if written else store.drive_file_bytes(row["subtype"], row["content"])
         f["size"] = str(nbytes)
         f["quotaBytesUsed"] = str(nbytes)
     if native is not None and not is_folder:

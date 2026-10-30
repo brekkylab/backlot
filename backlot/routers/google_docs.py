@@ -28,6 +28,7 @@ from backlot.routers.google import (
     _GOOGLE_FIELDS,
     _GOOGLE_RECORDED,
     _drive_owned_by,
+    _drive_version,
     _editor_batch,
     _editor_creator,
     _editor_doc,
@@ -316,8 +317,9 @@ _DOCS_WRITE_MODE = protojson.Enum(
     f"{_DOCS_VIEW}.WriteControl.WriteMode", ("WRITE_MODE_UNSPECIFIED", "EDIT", "SUGGEST")
 )
 # The oneofs of a `documents.batchUpdate` body, each named as real's refusal of a second member
-# names it: measured 2026-10-29, `Invalid value at 'requests[0]' (oneof), oneof field 'request' is
-# already set. Cannot set 'deleteContentRange'`, and likewise `insertion_location` and `control`.
+# names it: measured 2026-10-29, a request with two kinds was refused with
+# `Invalid value at 'requests[0]' (oneof), oneof field 'request' is already set.`, and likewise
+# `insertion_location` and `control`.
 for _key, _group in {
     **{("docs.Request", kind): "request" for kind in _GOOGLE_RECORDED["docs.Request"]["fields"]},
     ("docs.InsertTextRequest", "location"): "insertion_location",
@@ -403,7 +405,7 @@ async def docs_create(request: Request):
     return doc if tree is None else _gmask_apply(tree, doc)
 
 
-# --- `documents.batchUpdate` -----------------------------------------------------------------------
+# --- `documents.batchUpdate` ----------------------------------------------------------------------
 #
 # Measured against the live Docs v1 API on 2026-10-29, as a Workspace member writing a Doc it owns
 # and as a second member it was shared with as a reader. How each request changes the body is
@@ -507,9 +509,10 @@ def _docs_delete_content_range(body: gdocs.Body, req: dict) -> tuple[dict, bool]
 def _docs_replace_all_text(body: gdocs.Body, req: dict) -> tuple[dict, bool]:
     """``replaceAllText``: real fails on a replacement holding a character in `gdocs.UNWRITABLE`
     that matched, and on a `tabsCriteria` naming a tab the Doc does not have, once every request
-    is read. Without `matchCase` the match folds case, and an empty or missing `replaceText`
-    deletes what matched; the characters `insertText` strips are stripped from it too. A
-    `searchByRegex` replacement is the text as sent: `$1` is not a group."""
+    is read; measured, a zero-match replace by U+FDD0 was a 200. What matches is
+    `gdocs.Body.find`'s, and an empty or missing `replaceText` deletes it; the characters
+    `insertText` strips are stripped from it too. A `searchByRegex` replacement is the text as
+    sent: `$1` is not a group."""
     criteria = req.get("contains_text") or {}
     if not criteria.get("text"):
         raise _EditorRefused("The substring match text should not be empty")
@@ -588,7 +591,8 @@ async def docs_batch_update(document_id: str, request: Request):
     _editor_writable(request, row)
     requests = _editor_requests(body.get("requests", []))
     control = body.get("write_control", {})
-    if _DOCS_WRITE_MODE.names[control.get("write_mode", 0)] == "SUGGEST":
+    # The number as sent: measured, a `writeMode` of 7 or -1 applied the write as `EDIT` does.
+    if control.get("write_mode") == _DOCS_WRITE_MODE.names.index("SUGGEST"):
         raise gerr.invalid_argument(
             "'SUGGEST' is not served by Backlot: real Docs records each request as a suggestion, "
             "and nothing here keeps one."
@@ -628,13 +632,27 @@ async def docs_batch_update(document_id: str, request: Request):
         "Docs",
     )
 
+    # Drive's `size` is what real stores, not the text: measured 2026-10-30, a Doc of 1024 stayed
+    # 1024 through 6,000 inserted characters, a blank Doc's 1 became 1024 on its first write, and
+    # of 55 Docs read, ones of 297 and 56,195 bytes of text were 2,562 and 51,253. `version` went
+    # from 1 to 2 with a blank Doc's first write, and climbs once per write here.
+    before = store.gdrive_doc_written(conn, document_id)
+    nbytes, version = before or (
+        max(store.drive_file_bytes(row["subtype"], row["content"]), store.DRIVE_NATIVE_MIN_BYTES),
+        int(_drive_version(row)),
+    )
     store.replace_parts(
         conn,
         "google_drive",
         (document_id,),
         {
             "gdrive_doc_bodies": [
-                {"body": json.dumps(doc.content(), ensure_ascii=False), "revision": written + 1}
+                {
+                    "body": json.dumps(doc.content(), ensure_ascii=False),
+                    "revision": written + 1,
+                    "bytes": nbytes,
+                    "version": version + 1,
+                }
             ]
         },
         {"content": doc.text(), "updated_ts": int(time.time())},

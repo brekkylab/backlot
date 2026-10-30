@@ -129,7 +129,8 @@ class Spec:
     resolve_url: hubspot_catalog.Entry | None = None
     # A discovery document's reads to make of a running Backlot, each named by the method it is
     # (`google_walks.sheets`). Set, the document's response types, and the request types of the
-    # writes it sends, join the source's baseline as `types` (`google_discovery_diff.types_measure`).
+    # writes it sends, join the source's baseline as `types`
+    # (`google_discovery_diff.types_measure`).
     walk: Callable[[float], list[tuple[Any, ...]]] | None = None
 
     @property

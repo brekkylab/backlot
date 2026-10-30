@@ -74,9 +74,13 @@ message and every message it holds, a map's entries included, and dropped.
 kept. Inserted text takes the style of the text beside it as real gives it, a heading a newline
 splits gives the new part a `headingId` of its own, and every write moves the Doc's `revisionId`,
 which `requiredRevisionId` is checked against. A Doc whose corpus record states only `content`
-reads as one paragraph per line, and its first write stores that reading. Drive reads what the
-write left: `files.export` and fullText search see the new text, and `modifiedTime` moves to the
-write's time, as real's does.
+reads as one paragraph per line, and its first write stores that reading. `replaceAllText`
+compares text as real folds it (a letter with a mark as its base letter, `æ` as `ae`, `ß` as
+`ss`), and reads a regular expression as `java.util.regex` does; an insert inside a grapheme
+cluster, by Unicode's text segmentation, is refused. Drive reads what the write left:
+`files.export` and fullText search see the new text, `modifiedTime` moves to the write's time, and
+`version` moves by one while `size` stays what it was, a blank Doc's first write taking it from 1
+to 1024 as real's does.
 
 `values.append` finds the table it writes below the way real does: from the last cell in the range
 holding a value, row by row, grown through every cell in the row or column next to it, and
@@ -156,6 +160,12 @@ field list, so the ordering divergence below has no entry to live in and is stat
 - **A replacement's newline.** When `replaceText` holds a newline, real ends the paragraph it
   splits off with a newline in the style of the text before the match, where Backlot keeps that
   newline's own style. The text is real's.
+- **A fold's match after a character outside the BMP.** A match of the first letter of `æ` or
+  another two-letter fold takes the character before it too, as real's does, but after an emoji
+  real leaves a space where the emoji was and Backlot removes it whole.
+- **Drive's timing.** Real's `version` also climbs with no write, about once a minute, and its
+  `modifiedTime` shows at most one write in a couple of minutes, later writes appearing a minute
+  or two on or not at all. Backlot moves both on every write, at once.
 - **Rate limits.** Real Sheets refuses a user's writes past 60 a minute with 429
   `RESOURCE_EXHAUSTED`. Backlot does not count them.
 

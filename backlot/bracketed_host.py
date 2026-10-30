@@ -1,9 +1,9 @@
 """What each vendor's front door answers a `Host` in brackets that holds no IPv6 address, with a
 port after the brackets or none: `[0:0]`, `[x]`, `[1.2.3.4]`, `[v1.x]`.
 
-Starlette builds ``request.url`` from such a `Host` where the brackets hold only hex digits, colons
-and dots, and Python's ``urlsplit`` refuses the URL, so it cannot be left to the layers that read
-the URL. :func:`answer` gives the front door's answer, which
+Starlette builds ``request.url`` from such a `Host` where the brackets hold hex digits or none, a
+colon, then hex digits, colons and dots (`[0:0]`), and Python's ``urlsplit`` refuses the URL, so it
+cannot be left to the layers that read the URL. :func:`answer` gives the front door's answer, which
 ``backlot.main.answer_a_host_in_brackets_that_holds_no_ipv6_address`` sends ahead of every
 middleware but telemetry's. Where the front door reads the request on, on S3 and on a path no vendor
 owns, the request goes on with the server's own address as its `Host`, which is what Starlette

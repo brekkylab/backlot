@@ -14023,17 +14023,24 @@ def _gzipped_to(size: int) -> bytes:
         ("/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", 134_217_728, None),
         ("/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", 134_217_729, _413_BARE),
         ("/drive/v3/files", 134_217_729, _413),
+        ("/drive/v3/nosuch", 134_217_729, "without"),
+        ("/drive/v3/about", 134_217_729, "without"),
+        ("/sheets/v4/nosuch", 134_217_729, "without"),
     ],
 )
 def test_google_refuses_a_body_that_decompresses_past_its_front_ends_limit(
     client, path, size, answer
 ):
-    """A body gzipped to decompress to ``size`` bytes, sent with no credential: real's 400 ahead of
-    the credential on 2026-10-30 (UTC) where ``answer`` is one, and where it is not, the route's
-    401."""
+    """A body gzipped to decompress to ``size`` bytes, `POST`ed with no credential: real's 400
+    ahead of the credential on 2026-10-30 (UTC) where ``answer`` is one; the route's 401 where it is
+    ``None``; and where it is `without`, the answer to the same `POST` with no body, as real's was
+    its answer to a path or method it does not route."""
     sent = {"Content-Type": "application/json", "Content-Encoding": "gzip"}
     r = client.post(path, headers=sent, content=_gzipped_to(size))
-    if answer is None:
+    if answer == "without":
+        without = client.post(path, headers={"Content-Type": "application/json"})
+        assert (r.status_code, r.content) == (without.status_code, without.content)
+    elif answer is None:
         assert r.status_code == 401
     else:
         assert (r.status_code, r.content) == (400, answer)

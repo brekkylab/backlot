@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -266,6 +267,18 @@ def client_for(settings: Settings, *, reload: bool = True):
 def python_child_env(**extra: str) -> dict[str, str]:
     """The environment for a Python child process whose output a test reads as UTF-8."""
     return {**os.environ, "PYTHONIOENCODING": "utf-8", **extra}
+
+
+def script_module(name: str):
+    """`scripts/<name>.py` as a module, loaded by path since `scripts/` is not a package. Named
+    `scripts.<name>` so that pyproject.toml's EncodingWarning filter, which goes by module name,
+    reaches it."""
+    spec = importlib.util.spec_from_file_location(
+        f"scripts.{name}", Path(__file__).resolve().parent.parent / "scripts" / f"{name}.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 # Delivering a POSIX signal, which Windows cannot: it has no SIGHUP and no `signal.pthread_kill`,

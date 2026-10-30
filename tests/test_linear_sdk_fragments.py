@@ -2,27 +2,18 @@
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from tests._helpers import script_module
+
 REPO = Path(__file__).resolve().parent.parent
 
 
-def _script():
-    """Loaded from its path, `scripts/` being no package."""
-    spec = importlib.util.spec_from_file_location(
-        "scripts.linear_sdk_fragments", REPO / "scripts" / "linear_sdk_fragments.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-script = _script()
+script = script_module("linear_sdk_fragments")
 
 _SCHEMA = """
 type Query { label: Label }

@@ -17,6 +17,7 @@ import urllib.parse
 import pytest
 
 from backlot import errors, request_target
+from tests._helpers import raw_exchange, raw_request, read_answer
 
 _UTF8, _LONE = b"\xc3\xa9", b"\x80"
 _UVICORN = b"Invalid HTTP request received."
@@ -35,9 +36,10 @@ _KINDS = {
 _AS = {"del": "control", "ff": "lone"}
 
 # What the front door answers each kind with, in the path and in a query value. `encoded` is the
-# answer to the request with the byte percent-encoded, `?` the one with each high byte in the path
-# read as a `?` and the other bytes percent-encoded, and ` closed` after either that answer with the
-# connection closed after it.
+# answer to the request with the byte percent-encoded, `encoded, cut` the one with the byte
+# percent-encoded and the `%` that ends the path taken off with the hex digit after it, `?` the one
+# with each high byte in the path read as a `?` and the other bytes percent-encoded, and ` closed`
+# after one of them that answer with the connection closed after it.
 _GOOGLE = dict.fromkeys(("utf-8", "lone"), "encoded") | {
     "control": "google 54",
     "nul": "google 54",
@@ -118,6 +120,31 @@ _TARGETS = [
     ("/notion/v1/", b"nope x?b=\x80x", "cloudflare empty"),
     ("/notion/v1/", b"nope\x01x?b= x", "cloudflare empty"),
     ("/notion/v1/", b"nope\x80y\x0dx", "cloudflare page"),
+    # Linear and Fireflies: a path Cloudflare refuses beside a raw byte, its page
+    # (`request_target.refused_path`), a broken escape in the query and one the end of the path
+    # cuts short (`request_target.cut_escape`), the 400 the byte draws, and a cut one beside a
+    # space, the path read as its percent-encoding without it
+    *(
+        (base, rest, "cloudflare page")
+        for base in ("/linear/", "/fireflies/")
+        for rest in (
+            b"a\xc3\xa9%zz",
+            b"a%zz\xc3\xa9",
+            b"a\x01%zz",
+            b"a\xc3\xa9%00",
+            b"a%zz?b=\xc3\xa9",
+            b"a%2?b=\xc3\xa9",
+            b"a%2\xc3\xa9",
+            b"../a\xc3\xa9",
+            b"../a b",
+        )
+    ),
+    *(
+        (base, rest, "cloudflare empty")
+        for base in ("/linear/", "/fireflies/")
+        for rest in (b"a\xc3\xa9?b=%zz", b"a\x01?b=%00", b"a\xc3\xa9%2", b"a\x01%2")
+    ),
+    *((base, b"a b%2", "encoded, cut") for base in ("/linear/", "/fireflies/")),
     ("/s3/no-such-bucket/", b"nope\x0dy x", "s3 empty"),
     ("/s3/no-such-bucket/", b"nope\x09y x", "s3 505"),
     ("/s3/no-such-bucket/", b"nope y\x09x", "s3 505"),
@@ -210,33 +237,6 @@ def _rows():
         )
 
 
-def _read(reader) -> tuple[int, dict[str, str], bytes] | None:
-    """One answer off ``reader``, by its `Content-Length` or its chunks, or ``None`` where the
-    connection closed ahead of it."""
-    if not (status_line := reader.readline()):
-        return None
-    headers = {}
-    while (line := reader.readline()) not in (b"\r\n", b""):
-        name, _, value = line.decode("latin-1").partition(":")
-        headers[name.strip().lower()] = value.strip()
-    if headers.get("transfer-encoding") == "chunked":
-        body = b""
-        while size := int(reader.readline().split(b";")[0], 16):
-            body += reader.read(size)
-            reader.readline()
-        reader.readline()
-    else:
-        body = reader.read(int(headers.get("content-length", 0)))
-    return int(status_line.split()[1]), headers, body
-
-
-def _exchange(base_url: str, request: bytes) -> tuple[int, dict[str, str], bytes]:
-    url = urllib.parse.urlsplit(base_url)
-    with socket.create_connection((url.hostname, url.port), timeout=10) as c:
-        c.sendall(request)
-        return _read(c.makefile("rb"))
-
-
 def _send(
     base_url: str,
     method: bytes,
@@ -245,9 +245,9 @@ def _send(
     times: int = 1,
     header: bytes = b"",
 ) -> tuple[int, dict[str, str], bytes]:
-    credential = b"Authorization: Bearer %s\r\n" % admin.encode() * times if admin else b""
-    request = b"%s %s HTTP/1.1\r\nHost: x\r\n%s%s\r\n" % (method, target, credential, header)
-    return _exchange(base_url, request)
+    authorization = f"Bearer {admin}" if admin else None
+    request = raw_request(method, target, authorization, times=times, headers=header)
+    return raw_exchange(base_url, request)
 
 
 def _encoded(target: bytes, question_marks: bool = False) -> bytes:
@@ -261,7 +261,7 @@ def _encoded(target: bytes, question_marks: bool = False) -> bytes:
 
 #: The answers after which the connection reads another request; it is closed after every other one
 #: (``backlot.request_target._page``).
-_KEEPS_THE_CONNECTION = {"encoded", "?", "cloudflare empty", "graph empty"}
+_KEEPS_THE_CONNECTION = {"encoded", "encoded, cut", "?", "cloudflare empty", "graph empty"}
 
 
 def _ids_left_out(base: str, body: bytes) -> object:
@@ -310,8 +310,10 @@ def test_a_raw_byte_in_the_target_is_answered_as_the_vendors_front_door_answers_
     status, headers, body = _send(base_url, method, target, admin, authorizations, header)
     assert headers.get("connection") == (None if answer in _KEEPS_THE_CONNECTION else "close")
     reading = answer.removesuffix(" closed")
-    if reading in ("encoded", "?"):
+    if reading in ("encoded", "encoded, cut", "?"):
         encoded = _encoded(target, question_marks=reading == "?")
+        if reading == "encoded, cut":
+            encoded = re.sub(rb"%[0-9A-Fa-f]?\Z", b"", encoded)
         twin = _send(base_url, method, encoded, admin, header=header)
         assert status == twin[0]
         assert _ids_left_out(base, body) == _ids_left_out(base, twin[2])
@@ -390,7 +392,7 @@ def test_a_request_line_in_two_reads_after_another_on_one_connection(
                     early.append(bool(select.select([c], [], [], 1)[0]))
                     if not early[-1]:
                         c.sendall(second)
-                answer = _read(reader)
+                answer = read_answer(reader)
             except OSError:  # closed after the answer before
                 break
             if answer is None:

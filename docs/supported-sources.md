@@ -90,7 +90,28 @@ what `search` answers a `GET` or `HEAD`, but for a 401 and a refusal of its `Acc
 **GraphQL only**, one endpoint: a `POST` with a JSON or form body, or a `GET` with the query in its
 query string and a JSON `Content-Type` or none. Apollo Server serves a form, or a `GET` with no
 `Content-Type`, only beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its
-check that a browser preflighted the request. Root `Query` fields:
+check that a browser preflighted the request. Fastify serves `/graphql` alone, an escaped letter in
+it decoded. Any other path nginx passes on to Fastify, `/graphql` in any case, alone, before a
+newline that ends it, or with a slash and anything after it, once each escape is decoded, each run
+of slashes is one and the dot segments are resolved, gets Fastify's 404, or its preflight to an
+`OPTIONS`; any other path gets nginx's 404 page, and one ending in a `..` that climbs past the root
+nginx's 400.
+
+Every answer past Cloudflare but nginx's 400 carries `Strict-Transport-Security`, and Fastify's add
+`Access-Control-Allow-Origin: *`; an answer of Apollo Server's request pipeline carries
+`Cache-Control: no-store` unless it sets its own, and the JSON Apollo Server writes ends in a
+newline. Each root field a document runs a resolver for, an alias of one as one more, spends a key's
+budget: 30 a minute, from the first of them, and 500 a calendar day in UTC, a Free plan's, unless
+`BACKLOT_FIREFLIES_PER_MINUTE` and `BACKLOT_FIREFLIES_PER_DAY` set others. An answer that spends the
+budget and serves each field carries `x-ratelimit-{limit,remaining,reset}` for `-api_burst`, for
+`-api` and bare. A field past either budget is `null` beside a `too_many_requests` error, and its
+answer carries `retry-after-api_burst` if the minute refused one, `retry-after-api` if the day did,
+the `-api_burst` window if a field passed the minute, the `-api` window if one was served, and
+`retry-after` with the bare window: the day's once the day is spent, and before, the minute's wait
+beside the day's numbers, or beside the minute's limit and 0 where no field was served
+(`backlot.routers.fireflies.Budget`). `BACKLOT_FIREFLIES_ENFORCE_RATE_LIMITS` turns the refusal off.
+
+Root `Query` fields:
 
 | Query field | Notes |
 |---|---|
@@ -589,7 +610,26 @@ operation's 415 carry the account id alone.
 **GraphQL only**, one endpoint: a `POST` with a JSON body, or a `GET` with the query in its query
 string. Apollo Server serves a `GET` with no `Content-Type`, or a form or `text/plain` one, only
 beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its check that a
-browser preflighted the request. Root `Query` fields:
+browser preflighted the request. Express hands Apollo Server `/graphql` in any case, alone or with
+a slash and anything after it, once Linear's front has turned a backslash into a slash, decoded an
+escape of a letter, a digit or one of `-._~`, resolved the dot segments and then folded a run of
+slashes into one, so each of those paths is the endpoint too, but for one where a `..` with a
+segment after it climbs past the root, which Cloudflare refuses with its 400; `/` answers a `GET` or
+`HEAD` with a greeting and an `OPTIONS` with the methods it takes, and any other method there, or
+any other path, Express's 404 page.
+
+Every answer past the load balancer carries `x-request-id` and, to a request with an `Origin`,
+`Access-Control-Allow-Origin` and `Access-Control-Expose-Headers`. Express's answers add
+`Cache-Control: private, no-cache, no-store, must-revalidate` where they carry none of their own,
+and `Vary`, and all but its 404 page, `OPTIONS /` and a `HEAD`'s 200 an `ETag`; a `GET` or `HEAD`
+whose `If-None-Match` names that `ETag`, or is `*`, draws Express's 304, without `Accept-Encoding`
+in `Vary`. Apollo Server's JSON ends in a newline. An answer to a document Linear ran, or whose
+variables it refused, carries `x-ratelimit-requests-limit` (2,500 an hour under an API key, 1,200
+with no credential), `x-ratelimit-requests-remaining` and `x-ratelimit-requests-reset`, an hour past
+the answer. `x-complexity` and the four `x-ratelimit-complexity-*` headers are not sent, and a spent
+budget is not refused.
+
+Root `Query` fields:
 
 | Query field | Notes |
 |---|---|

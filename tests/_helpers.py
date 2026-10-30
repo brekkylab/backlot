@@ -362,15 +362,16 @@ def raw_request(
     times: int = 1,
     headers: bytes = b"",
     body: bytes | None = None,
+    host: bytes = b"x",
 ) -> bytes:
-    """An HTTP/1.1 request for :func:`raw_exchange`: ``target`` as written, `Host: x`, the
-    `Authorization` value ``times`` times, ``headers`` (whole lines), and with a ``body`` its
+    """An HTTP/1.1 request for :func:`raw_exchange`: ``target`` as written, ``host`` as the `Host`,
+    the `Authorization` value ``times`` times, ``headers`` (whole lines), and with a ``body`` its
     `Content-Type: application/json` and `Content-Length` ahead of it. A `str` is sent as its
     latin-1 bytes."""
     method, target, authorization = (
         v.encode("latin-1") if isinstance(v, str) else v for v in (method, target, authorization)
     )
-    request = b"%s %s HTTP/1.1\r\nHost: x\r\n" % (method, target)
+    request = b"%s %s HTTP/1.1\r\nHost: %s\r\n" % (method, target, host)
     if authorization is not None:
         request += b"Authorization: %s\r\n" % authorization * times
     request += headers

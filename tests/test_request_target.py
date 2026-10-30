@@ -1,9 +1,10 @@
-"""The raw bytes ``backlot.request_target`` answers, over a real uvicorn.
+"""The raw bytes and the escapes ``backlot.request_target`` answers, and the `Host`s
+``backlot.bracketed_host`` answers, over a real uvicorn.
 
-A client library percent-encodes such a byte or refuses to send it, and the TestClient would too,
-so each request here is written to a socket by hand, to the server ``live_server`` starts with
+A client library percent-encodes a raw byte or refuses to send it, and the TestClient would too, so
+each request here is written to a socket by hand, to the server ``live_server`` starts with
 ``backlot serve``. A single-byte row names the vendor host whose measured answer it holds; a row
-of `_TARGETS` names its path, measured on the host that path is.
+of `_TARGETS`, `_ESCAPES` or `_HOSTS` names its path, measured on the host that path is.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import urllib.parse
 
 import pytest
 
-from backlot import errors, request_target
+from backlot import bracketed_host, errors, request_target
 from tests._helpers import raw_exchange, raw_request, read_answer
 
 _UTF8, _LONE = b"\xc3\xa9", b"\x80"
@@ -190,27 +191,118 @@ _CDN_METHODS = [
 ]
 
 
+# An escape in the path or the query, sent as an escape: (base, target after it, answer), the answer
+# the front door's page or, where it read the target on, the status of the API behind it
+# (``request_target.escape_answer`` dates the measurement).
+_ESCAPES = [
+    ("/slack/api/", b"auth.test%00", "slack empty"),
+    ("/slack/api/", b"nope%00x", "slack empty"),
+    ("/slack/api/", b"auth.test%01", 404),
+    ("/slack/api/", b"auth.test?b=%00x", 200),
+    ("/drive/v3/", b"about%00", "google 1555 kept"),
+    ("/drive/v3/", b"nope%00x", "google 1555 kept"),
+    ("/drive/v3", b"%00x", 404),
+    ("/drive/v3/", b"nope%01x", 404),
+    ("/batch/drive/v3", b"%00", "google 1555 kept"),
+    ("/batch", b"%00x", 404),
+    ("/gmail/v1/users/me/", b"profile%00", "google 1555 kept"),
+    ("/gmail/v1", b"%00x", "google 1555 kept"),
+    ("/sheets/v4/spreadsheets/", b"x%00", "google 1555 kept"),
+    ("/sheets/v4", b"%00x", "google 1555 kept"),
+    ("/docs/v1", b"%00x", "google 1555 kept"),
+    ("/slides/v1/", b"nope%00x", "google 1555 kept"),
+    ("/notion/v1/", b"users%00", "cloudflare page"),
+    ("/notion/v1/", b"nope%00x", "cloudflare page"),
+    ("/notion/v1/", b"nope%01x", 400),
+    ("/hubspot/crm/v3/objects/", b"contacts%00", "cloudflare page"),
+    ("/hubspot/crm/v3/objects/contacts/", b"nope%00x", "cloudflare page"),
+    ("/hubspot/crm/v3/objects/contacts/", b"nope%01x", 404),
+    ("/s3/", b"%00", "s3 empty"),
+    ("/s3/no-such-bucket/", b"nope%00x", "s3 empty"),
+    ("/s3/no-such-bucket/", b"nope%01x", 404),
+    *(
+        ("/msgraph/v1.0/", b"nope%s" % escape, "graph invalid url")
+        for escape in (b"%00x", b"%01x", b"%0ax", b"%0Dx", b"%1Fx", b"%7fx")
+    ),
+    ("/msgraph/v1.0/", b"me%0A", "graph invalid url"),
+    ("/msgraph/v1.0/", b"me?b=%01x", 401),
+    ("/github/", b"nope%00x", 404),
+]
+#: The hosts real was measured on with no credential, whose rows here send none.
+_UNCREDENTIALED = ("/gmail/", "/sheets/", "/docs/", "/slides/", "/s3/", "/msgraph/")
+
+# A `Host` in brackets that holds no IPv6 address (``backlot.bracketed_host`` dates the
+# measurement): (host, method, base, target after it, answer), "served" the answer to the request
+# with a `Host` of `x`. `[0:0]` on a path each vendor serves, the other `Host`s on GitHub's,
+# `[v1.x]` on each host behind Cloudflare and on Google's batch endpoint, and on S3, which serves
+# each as it serves its own `Host`, an IPv6 address in brackets and brackets left open.
+_HOSTS = [
+    *(
+        (b"[0:0]", method, base, rest, answer)
+        for method, base, rest, answer in (
+            (b"GET", "/github/", b"rate_limit", "github"),
+            (b"GET", "/slack/api/", b"auth.test", "slack 404 empty"),
+            (b"GET", "/atlassian/rest/api/3/", b"serverInfo", "cloudfront 403"),
+            (b"GET", "/atlassian/wiki/rest/api/", b"space", "cloudfront 403"),
+            (b"GET", "/drive/v3/", b"about", "google 1555 kept"),
+            (b"GET", "/gmail/v1/users/me/", b"profile", "google 1555 kept"),
+            (b"GET", "/sheets/v4/spreadsheets/", b"x", "google 1555 kept"),
+            (b"GET", "/docs/v1/documents/", b"x", "google 1555 kept"),
+            (b"GET", "/slides/v1/presentations/", b"x", "google 1555 kept"),
+            (b"POST", "/batch/drive/", b"v3", "google 1555 kept"),
+            (b"GET", "/notion/v1/", b"users", "cloudflare page"),
+            (b"GET", "/hubspot/crm/v3/objects/", b"contacts", "cloudflare page"),
+            (b"POST", "/linear/", b"graphql", "cloudflare page"),
+            (b"POST", "/fireflies/", b"graphql", "cloudflare page"),
+            (b"GET", "/msgraph/v1.0/", b"me", "graph invalid hostname"),
+            (b"GET", "/s3/", b"", "served"),
+            (b"GET", "/s3/no-such-bucket/", b"x", "served"),
+        )
+    ),
+    *(
+        (host, b"GET", "/github/", b"rate_limit", "github")
+        for host in (b"[0:0]:443", b"[x]", b"[1.2.3.4]", b"[v1.x]", b"[:]", b"[g::1]")
+    ),
+    *(
+        (b"[v1.x]", method, base, rest, "cloudflare forbidden")
+        for method, base, rest in (
+            (b"GET", "/notion/v1/", b"users"),
+            (b"GET", "/hubspot/crm/v3/objects/", b"contacts"),
+            (b"POST", "/linear/", b"graphql"),
+            (b"POST", "/fireflies/", b"graphql"),
+        )
+    ),
+    (b"[v1.x]", b"POST", "/batch/drive/", b"v3", "google 1555 kept"),
+    *(
+        (host, b"GET", "/s3/no-such-bucket/", b"x", "served")
+        for host in (b"[::1]", b"[::1]:443", b"[::]", b"[ABCD::1]", b"[::ffff:1.2.3.4]", b"[0:0")
+    ),
+]
+
+
 def _rows():
     for host, (base, path, query) in _MEASURED.items():
         for kind, sent in _KINDS.items():
             answer = _AS.get(kind, kind)
             ids = (f"{host} path {kind}", f"{host} {kind}")
-            yield pytest.param(b"GET", base, b"nope" + sent + b"x", path[answer], 1, b"", id=ids[0])
             yield pytest.param(
-                b"GET", base, b"nope?b=" + sent + b"x", query[answer], 1, b"", id=ids[1]
+                b"GET", base, b"nope" + sent + b"x", path[answer], 1, b"", b"x", id=ids[0]
+            )
+            yield pytest.param(
+                b"GET", base, b"nope?b=" + sent + b"x", query[answer], 1, b"", b"x", id=ids[1]
             )
     for base, rest, answer in _TARGETS:
-        yield pytest.param(b"GET", base, rest, answer, 1, b"", id=f"{base} {rest!r}")
+        yield pytest.param(b"GET", base, rest, answer, 1, b"", b"x", id=f"{base} {rest!r}")
     for method, base, rest, answer in _CDN_METHODS:
         yield pytest.param(
-            method, base, rest, answer, 1, b"", id=f"{method.decode()} {base} {rest!r}"
+            method, base, rest, answer, 1, b"", b"x", id=f"{method.decode()} {base} {rest!r}"
         )
     # `Authorization` twice, which Cloudflare refuses ahead of the bytes
     for base, sent in (("/linear/", b"\t"), ("/fireflies/", b"\x01"), ("/notion/v1/", b"\t")):
         rest = b"nope" + sent + b"x"
-        yield pytest.param(b"GET", base, rest, "cloudflare page", 2, b"", id=f"{base} twice")
+        yield pytest.param(b"GET", base, rest, "cloudflare page", 2, b"", b"x", id=f"{base} twice")
     yield pytest.param(
-        b"GET", "/hubspot/crm/v3/objects/contacts/", b"nope\tx", "cloudflare page", 2, b""
+        b"GET", "/hubspot/crm/v3/objects/contacts/", b"nope\tx", "cloudflare page", 2, b"", b"x"
     )
     # a conditional header twice, which Cloudflare refuses ahead of the bytes, and once, which
     # draws the empty 400 the byte alone draws: on each vendor, with no credential, a `\x01` in
@@ -223,17 +315,26 @@ def _rows():
         ):
             name = header.split(b":")[0].decode()
             yield pytest.param(
-                b"GET", base, b"nope?b=\x01x", answer, 0, header, id=f"{base} {name} {times}"
+                b"GET", base, b"nope?b=\x01x", answer, 0, header, b"x", id=f"{base} {name} {times}"
             )
     yield pytest.param(
-        b"GET", "/_meta/", b"nope\x80x", "uvicorn", 1, b"", id="a path no vendor owns"
+        b"GET", "/_meta/", b"nope\x80x", "uvicorn", 1, b"", b"x", id="a path no vendor owns"
     )
+    for base, rest, answer in _ESCAPES:
+        authorizations = 0 if base.startswith(_UNCREDENTIALED) else 1
+        yield pytest.param(
+            b"GET", base, rest, answer, authorizations, b"", b"x", id=f"{base} {rest!r}"
+        )
+    for host, method, base, rest, answer in _HOSTS:
+        authorizations = 0 if base.startswith(_UNCREDENTIALED) else 1
+        id = f"{host.decode()} {method.decode()} {base}{rest.decode()}"
+        yield pytest.param(method, base, rest, answer, authorizations, b"", host, id=id)
     # a read sent as a POST naming GET, which Google's API reads behind its front door
     override = b"X-HTTP-Method-Override: GET\r\n"
     for sent, answer in ((b"\x01", "google 54"), (b"\t", "google 1555"), (b"\x80", "encoded")):
         rest = b"?fields=kind&b=" + sent + b"x"
         yield pytest.param(
-            b"POST", "/drive/v3/about", rest, answer, 1, override, id=f"override {sent!r}"
+            b"POST", "/drive/v3/about", rest, answer, 1, override, b"x", id=f"override {sent!r}"
         )
 
 
@@ -244,9 +345,10 @@ def _send(
     admin: str | None,
     times: int = 1,
     header: bytes = b"",
+    host: bytes = b"x",
 ) -> tuple[int, dict[str, str], bytes]:
     authorization = f"Bearer {admin}" if admin else None
-    request = raw_request(method, target, authorization, times=times, headers=header)
+    request = raw_request(method, target, authorization, times=times, headers=header, host=host)
     return raw_exchange(base_url, request)
 
 
@@ -261,7 +363,18 @@ def _encoded(target: bytes, question_marks: bool = False) -> bytes:
 
 #: The answers after which the connection reads another request; it is closed after every other one
 #: (``backlot.request_target._page``).
-_KEEPS_THE_CONNECTION = {"encoded", "encoded, cut", "?", "cloudflare empty", "graph empty"}
+_KEEPS_THE_CONNECTION = {
+    "encoded",
+    "encoded, cut",
+    "?",
+    "cloudflare empty",
+    "graph empty",
+    "google 1555 kept",
+    "slack 404 empty",
+    "cloudfront 403",
+    "cloudflare forbidden",
+    "served",
+}
 
 
 def _ids_left_out(base: str, body: bytes) -> object:
@@ -281,16 +394,31 @@ def _page(answer: str, method: bytes, target: bytes) -> tuple[int, str | None, b
         return 400, "text/html", page.encode()
     if answer.startswith("edge "):
         return 400, "text/html", errors.atlassian.edge_page(f"http1.{answer[5:]}").encode()
+    if answer == "cloudfront 403":
+        raw_path = target.partition(b"?")[0].decode("latin-1")
+        return (
+            403,
+            "text/html",
+            errors.atlassian.cdn_refused_host(method.decode(), raw_path).encode(),
+        )
     return {
         "github": (400, "text/html; charset=utf-8", request_target.GITHUB_PAGE),
         "slack": (400, "text/plain", b"Bad Request"),
+        "slack empty": (400, None, b""),
+        "slack 404 empty": (404, None, b""),
         "google 54": (400, "text/html; charset=UTF-8", request_target.GOOGLE_PAGE_54),
         "google 1555": (400, "text/html; charset=UTF-8", request_target.GOOGLE_PAGE_1555),
         "cloudflare page": (400, "text/html", request_target.CLOUDFLARE_PAGE),
         "cloudflare empty": (400, None, b""),
+        "cloudflare forbidden": (403, "text/html", bracketed_host.CLOUDFLARE_FORBIDDEN),
         "s3 empty": (400, None, b""),
         "graph empty": (400, None, b""),
         "graph invalid url": (400, "text/html; charset=us-ascii", request_target.GRAPH_INVALID_URL),
+        "graph invalid hostname": (
+            400,
+            "text/html; charset=us-ascii",
+            request_target.GRAPH_INVALID_HOSTNAME,
+        ),
         "graph badly formed": (
             400,
             "text/html; charset=us-ascii",
@@ -300,18 +428,21 @@ def _page(answer: str, method: bytes, target: bytes) -> tuple[int, str | None, b
     }[answer]
 
 
-@pytest.mark.parametrize("method, base, rest, answer, authorizations, header", list(_rows()))
-def test_a_raw_byte_in_the_target_is_answered_as_the_vendors_front_door_answers_it(
-    live_server, method, base, rest, answer, authorizations, header
+@pytest.mark.parametrize("method, base, rest, answer, authorizations, header, host", list(_rows()))
+def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answers_it(
+    live_server, method, base, rest, answer, authorizations, header, host
 ):
     base_url, settings = live_server
     admin = None if base.startswith("/s3/") else settings.admin_token
     target = base.encode() + rest
-    status, headers, body = _send(base_url, method, target, admin, authorizations, header)
+    status, headers, body = _send(base_url, method, target, admin, authorizations, header, host)
+    if isinstance(answer, int):  # the API behind the front door, which read the target on
+        assert status == answer
+        return
     assert headers.get("connection") == (None if answer in _KEEPS_THE_CONNECTION else "close")
-    reading = answer.removesuffix(" closed")
-    if reading in ("encoded", "encoded, cut", "?"):
-        encoded = _encoded(target, question_marks=reading == "?")
+    reading = answer.removesuffix(" closed").removesuffix(" kept")
+    if reading in ("encoded", "encoded, cut", "?", "served"):
+        encoded = target if reading == "served" else _encoded(target, question_marks=reading == "?")
         if reading == "encoded, cut":
             encoded = re.sub(rb"%[0-9A-Fa-f]?\Z", b"", encoded)
         twin = _send(base_url, method, encoded, admin, header=header)
@@ -322,7 +453,7 @@ def test_a_raw_byte_in_the_target_is_answered_as_the_vendors_front_door_answers_
         assert (status, headers["content-type"]) == (505, "application/xml")
         assert b"<Code>HttpVersionNotSupported</Code>" in body
         return
-    want_status, want_type, want_body = _page(answer, method, target)
+    want_status, want_type, want_body = _page(reading, method, target)
     assert (status, headers.get("content-type"), body) == (want_status, want_type, want_body)
     # the edge's page carries the edge's two headers beside its own, CloudFront's neither
     edge = {"x-content-type-options": "nosniff", "x-xss-protection": "1; mode=block"}

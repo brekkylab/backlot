@@ -3817,6 +3817,7 @@ def test_slack_refuses_a_body_before_the_method_runs(
 
 
 _PAGE = "<real's 404 page>"
+_FILE_NOT_FOUND = "<Apache's 404 page>"
 _ROUTED = "<the route's answer>"
 _LEFT = "<the router's 404>"
 _RETIRED_MESSAGE = (
@@ -3906,6 +3907,32 @@ _RETIRED = (
                 "/a-b",
                 "a//b.c",
                 "a\\b.c",
+                "%20auth.test",
+                "auth.test%0C",
+                "auth.test%20x",
+            )
+        ),
+        # the run real drops off the end of a path, and an LF anywhere else (`slack.drop_the_end`)
+        *(
+            (
+                "GET",
+                f"nonexistent.method{end}",
+                None,
+                None,
+                None,
+                ("unknown_method", "nonexistent.method"),
+            )
+            for end in ("%0A", "%0D")
+        ),
+        *(
+            ("GET", path, None, None, None, _FILE_NOT_FOUND)
+            for path in (
+                "nonexistent.method%0A%0A",
+                "%0Aauth.test",
+                "auth%0A.test",
+                "auth.test%0A/",
+                "auth.test%0A+",
+                "auth.test%0D%0Ax",
             )
         ),
         ("POST", "nonexistent-xyz", None, "application/json", b"{}", _PAGE),
@@ -3992,10 +4019,10 @@ def test_slack_answers_a_path_no_route_serves_as_real_does(
     """A path under `/slack/api/` that none of the routes serves, answered as slack.com/api answered
     each row but a ``_LEFT`` one (the comment above ``slack.UNSERVED_METHODS`` dates the
     measurement): ``want`` is the error, (error, `req_method`) for `unknown_method`, the whole
-    answer, or real's 404 page. A `POST` with a JSON body carries the `missing_charset` warning, as
-    each of real's answers to one did but the page. A ``_ROUTED`` row only says this layer leaves it
-    be: real runs the method. A ``_LEFT`` row is one this layer leaves to the router, which real
-    answers otherwise."""
+    answer, or one of real's two 404 pages. A `POST` with a JSON body carries the `missing_charset`
+    warning, as each of real's answers to one did but the pages. A ``_ROUTED`` row only says this
+    layer leaves it be: real runs the method. A ``_LEFT`` row is one this layer leaves to the
+    router, which real answers otherwise."""
     headers = {}
     url = f"/slack/api/{path}"
     if credential == "admin":
@@ -4013,10 +4040,12 @@ def test_slack_answers_a_path_no_route_serves_as_real_does(
     if want == _LEFT:
         assert (r.status_code, r.content) == (404, b'{"detail":"Not Found"}')
         return
-    if want == _PAGE:
-        assert r.status_code == 404
-        assert r.headers["content-type"] == "text/html; charset=utf-8"
-        assert r.content == slack._NOT_FOUND_PAGE
+    if want in (_PAGE, _FILE_NOT_FOUND):
+        page = {
+            _PAGE: ("text/html; charset=utf-8", slack._NOT_FOUND_PAGE),
+            _FILE_NOT_FOUND: ("text/html", slack.FILE_NOT_FOUND_PAGE),
+        }[want]
+        assert (r.status_code, r.headers["content-type"], r.content) == (404, *page)
         return
     if isinstance(want, dict):
         expected = dict(want)
@@ -4033,26 +4062,45 @@ def test_slack_answers_a_path_no_route_serves_as_real_does(
     assert r.content == JSONResponse(expected).body
 
 
-@pytest.mark.parametrize("run", ["/", "//", "\\", "\\\\", "\\/", "/\\"])
+_SERVED_CASES = [
+    ("GET", "api.test", None, None),
+    ("GET", "api.test", "bogus", None),
+    ("POST", "api.test", None, b"a=b"),
+    ("GET", "conversations.list", None, None),
+    ("GET", "conversations.list", "bogus", None),
+    ("GET", "conversations.list", "admin", None),
+    ("GET", "conversations.list", "ava", None),
+    ("POST", "conversations.list", "ava", b""),
+]
+#: The ends `slack.drop_the_end` takes off, as real was sent them, but `%0A`, which the test below
+#: sends with each case.
+_DROPPED_ENDS = (
+    *("%09 %0a %0B %0b %0D %0d %20 %2B %2b + %0D%0A %0D%0a %0D%0D %20%0A".split()),
+    *("%09%0D%0A %0B%0A %2B%0A ++%0A %20+%09 %20%20%0A %0D%0D%0A".split()),
+)
+
+
 @pytest.mark.parametrize(
-    "verb, name, credential, body",
+    "before, after, verb, name, credential, body",
     [
-        ("GET", "api.test", None, None),
-        ("GET", "api.test", "bogus", None),
-        ("POST", "api.test", None, b"a=b"),
-        ("GET", "conversations.list", None, None),
-        ("GET", "conversations.list", "bogus", None),
-        ("GET", "conversations.list", "admin", None),
-        ("GET", "conversations.list", "ava", None),
-        ("POST", "conversations.list", "ava", b""),
+        *(
+            (run, "", *case)
+            for run in ("/", "//", "\\", "\\\\", "\\/", "/\\")
+            for case in _SERVED_CASES
+        ),
+        *(("", "%0A", *case) for case in _SERVED_CASES),
+        *(("", end, "GET", "conversations.list", "ava", None) for end in _DROPPED_ENDS),
+        ("/", "%0A", "GET", "conversations.list", "ava", None),
     ],
 )
-def test_slack_a_method_after_a_run_of_slashes_is_the_method(
-    client, admin_h, tokens, run, verb, name, credential, body
+def test_slack_a_method_amid_what_real_reads_past_is_the_method(
+    client, admin_h, tokens, before, after, verb, name, credential, body
 ):
-    """A served method's name after a run of `/`s and `\\`s, in any mix, is answered as the name on
-    its own spelling, with its credential pair, and with what the admin token and a scoped one each
-    see (``backlot.main.merge_slashes_before_a_slack_method_name`` has the measurement)."""
+    """A served method's name after a run of `/`s and `\\`s, in any mix, or ahead of a run real
+    drops off the end of the path, is answered as the name on its own spelling, with its credential
+    pair, and with what the admin token and a scoped one each see
+    (``backlot.main.merge_slashes_before_a_slack_method_name`` and ``slack.drop_the_end`` have the
+    measurement)."""
     headers = {"Content-Type": _FORM} if body is not None else {}
     if credential == "bogus":
         headers["Authorization"] = "Bearer xoxb-not-a-real-token"
@@ -4061,7 +4109,9 @@ def test_slack_a_method_after_a_run_of_slashes_is_the_method(
     elif credential == "ava":
         headers["Authorization"] = f"Bearer {tokens['ava@acme.com']}"
     plain = client.request(verb, f"/slack/api/{name}", headers=headers, content=body)
-    merged = client.request(verb, f"/slack/api/{run}{name}", headers=headers, content=body)
+    merged = client.request(
+        verb, f"/slack/api/{before}{name}{after}", headers=headers, content=body
+    )
     assert plain.status_code == 200
     assert (merged.status_code, merged.content) == (plain.status_code, plain.content)
 

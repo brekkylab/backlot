@@ -29,6 +29,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from backlot import (
     auth,
+    bracketed_host,
     errors,
     express_http,
     openapi,
@@ -1479,6 +1480,19 @@ async def merge_slashes_before_a_slack_method_name(request: Request, call_next):
     return await call_next(request)
 
 
+@_middleware(lambda scope: slack.drops_an_end(scope["path"]))
+async def drop_what_slack_drops_off_the_end_of_a_path(request: Request, call_next):
+    """Read a `/slack/api/` path as real does without the run at its end it drops, or answer one
+    holding an LF elsewhere with its 404 page (``slack.drop_the_end``). Registered after
+    :func:`merge_slashes_before_a_slack_method_name`, which makes it the outer of the two: real
+    answered `/api//auth.test%0A` as `auth.test` on 2026-10-30, so the run before the name is merged
+    once the end is gone."""
+    answer = slack.drop_the_end(request.scope)
+    if answer is not None:
+        return answer
+    return await call_next(request)
+
+
 @_middleware(
     lambda scope: (
         _at_or_under(_url_path(scope), ("/notion", "/linear", "/fireflies", "/hubspot"))
@@ -1615,6 +1629,14 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
     return await call_next(request)
 
 
+@_middleware(lambda scope: request_target.escape_answer(scope) is not None)
+async def answer_an_escape_a_front_door_refuses(request: Request, call_next):
+    """Answer a path holding an escape the vendor's front door refuses as it does
+    (``backlot.request_target.escape_answer``), ahead of every vendor's middleware, as a front door
+    answers ahead of the API behind it."""
+    return request_target.escape_answer(request.scope)
+
+
 @_middleware(lambda scope: request_target.SENT in scope)
 async def answer_a_raw_byte_in_the_request_target(request: Request, call_next):
     """Answer a request whose target held a raw byte as the vendor's front door answers it
@@ -1663,6 +1685,21 @@ async def vendor_json_media_type(request: Request, call_next):
         if media_type is not None:
             response.headers["content-type"] = media_type
     return response
+
+
+@_middleware(bracketed_host.holds_no_address)
+async def answer_a_host_in_brackets_that_holds_no_ipv6_address(request: Request, call_next):
+    """Answer a request whose `Host` is in brackets that hold no IPv6 address as the vendor's front
+    door answers it (``backlot.bracketed_host.answer``), or hand it on without its `Host`, so that
+    ``request.url`` is built from the server's address. Registered after every other middleware,
+    which makes it the outermost: those read ``request.url``, which Starlette builds from such a
+    `Host` and Python's ``urlsplit`` refuses where the brackets hold only hex digits, colons and
+    dots."""
+    answer = bracketed_host.answer(request.scope)
+    if answer is not None:
+        return answer
+    request.scope["headers"] = [(k, v) for k, v in request.scope["headers"] if k != b"host"]
+    return await call_next(request)
 
 
 # Registered after every middleware above, which makes it the outermost: it sees every answer,

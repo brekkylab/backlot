@@ -19,6 +19,7 @@ import urllib.parse
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
+from starlette.types import Scope
 
 from backlot import auth, overlay, published, store, synth
 from backlot.acl import Caller
@@ -907,8 +908,8 @@ UNSERVED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 #: letters, digits and `.`, but not `.` or `..` alone (:func:`method_name`); any other byte in it,
 #: where :func:`unserved_answer` does not leave the path to the router, is answered with real's 404
 #: page. Real answers `-`, `_` and the bytes past ASCII so, but refuses `%00`, `%2F`, `%3F`, `%5C`
-#: and a `%` that starts no escape at its front end, and `%0A` but at a name's end, where it drops
-#: `%09`, `%0A`, `%0B`, `%0D`, `%20` and `%2B`.
+#: and a `%` that starts no escape at its front end, and reads the end of the path as
+#: :func:`drop_the_end` says.
 _METHOD_NAME = re.compile(r"[0-9A-Za-z.]+")
 #: The Slack baseline's ``missing`` operations (``backlot.published``): the methods Slack's
 #: reference index lists that no route here serves, by name. Measured on 2026-10-20 with no token
@@ -1029,6 +1030,45 @@ def method_name(path: str) -> str | None:
     if name in (".", "..") or not _METHOD_NAME.fullmatch(name):
         return None
     return name
+
+
+#: What real drops off the end of a `/api/` path before it reads the path: a run of tabs, vertical
+#: tabs, CRs, spaces and `+`s, then one LF, either or both.
+_DROPPED_END = re.compile(r"[\t\x0b\r +]*\n?\Z")
+#: The same run as sent: each escaped, in either case, and a `+` escaped or not.
+_DROPPED_END_SENT = re.compile(rb"(?:\+|%(?:09|0[BbDd]|20|2[Bb]))*(?:%0[Aa])?\Z")
+#: Apache's 404 page, `text/html` with no charset, which real answers a `/api/` path holding an LF
+#: anywhere but at its end with.
+FILE_NOT_FOUND_PAGE = b"404 File Not Found"
+
+
+def drops_an_end(path: str) -> bool:
+    """Whether :func:`drop_the_end` has anything to do with ``path``: a `/slack/api/` path that
+    holds an LF or ends in one of the bytes real drops (:data:`_DROPPED_END`)."""
+    return path.startswith("/slack/api/") and (
+        "\n" in path or _DROPPED_END.sub("", path, 1) != path
+    )
+
+
+def drop_the_end(scope: Scope) -> Response | None:
+    """Take the run :data:`_DROPPED_END` matches off the end of a `/slack/api/` path, on the path
+    and as sent, and leave the rest to be read as it would be without it; or answer a path holding
+    an LF anywhere else with :data:`FILE_NOT_FOUND_PAGE`'s 404.
+
+    Measured against slack.com/api on 2026-10-30 (UTC): `auth.test` followed by `%09`, `%0A`, `%0B`,
+    `%0D`, `%20`, `%2B`, `+`, `%0D%0A`, `%0D%0D`, `%20%0A`, `%09%0D%0A`, `%2B%0A`, `++%0A` or
+    `%20+%09` answered as `auth.test`, `nonexistent.method%0A` and `%0D` as `nonexistent.method`'s
+    `unknown_method`, and `/api//auth.test%0A` as `auth.test`; `%0C`, each other escape from `%01`
+    to `%1F`, `%7F`, and `%20`, `%09`, `%0B`, `%0D` or `+` ahead of the name were the 404 page for a
+    name real does not read (:func:`unserved_answer`). An LF ahead of the name, inside it, ahead of
+    a `/` after it, or followed by anything (`%0A%0A`, `%0A%20`, `%0A+`, `%0D%0Ax`) was
+    :data:`FILE_NOT_FOUND_PAGE`'s 404, from a server real names `Apache`."""
+    path = scope["path"]
+    if "\n" in path[:-1]:
+        return Response(FILE_NOT_FOUND_PAGE, status_code=404, headers={"Content-Type": "text/html"})
+    scope["path"] = _DROPPED_END.sub("", path, 1)
+    scope["raw_path"] = _DROPPED_END_SENT.sub(b"", scope["raw_path"], 1)
+    return None
 
 
 def unserved_answer(request: Request) -> Response | None:

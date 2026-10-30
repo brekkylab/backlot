@@ -387,9 +387,9 @@ def test_linear_team_lists_its_states_labels_projects_and_cycles(client, admin_h
 
 
 _SEARCH = """query($term: String!, $filter: IssueFilter, $teamId: String, $c: Boolean,
-                  $orderBy: PaginationOrderBy) {
+                  $orderBy: PaginationOrderBy, $first: Int, $last: Int) {
   searchIssues(term: $term, filter: $filter, teamId: $teamId, includeComments: $c,
-               orderBy: $orderBy) {
+               orderBy: $orderBy, first: $first, last: $last) {
     totalCount
     nodes { identifier metadata state { name } }
     archivePayload { archive totalCount databaseVersion includesDependencies }
@@ -453,20 +453,31 @@ def test_linear_search_issues(client, admin_h, tokens_yaml, variables, caller, i
     }
 
 
+_VALIDATION = "Argument Validation Error"
+
+
 @pytest.mark.parametrize(
-    "variables",
+    "variables,message",
     [
-        {"term": ""},
-        {"term": "x", "teamId": "ENG"},
-        {"term": "x", "teamId": "11111111-1111-0111-8111-111111111111"},
+        ({"term": ""}, _VALIDATION),
+        ({"term": "x", "teamId": "ENG"}, _VALIDATION),
+        ({"term": "x", "teamId": "11111111-1111-0111-8111-111111111111"}, _VALIDATION),
+        ({"term": "a\ud800b", "teamId": "ENG"}, _VALIDATION),
+        ({"term": "a\ud800b", "filter": {"id": {"eq": "not-a-uuid"}}}, _VALIDATION),
+        ({"term": "a\ud800b", "first": 1, "last": 1}, None),
     ],
 )
-def test_linear_search_issues_refuses_what_real_refuses(client, admin_h, variables):
-    """An empty term and a team key for `teamId`, each refused as `resolve_search_issues`
-    records."""
-    r = gql(client, _SEARCH, admin_h, **variables).json()
+def test_linear_search_issues_refuses_what_real_refuses(client, admin_h, variables, message):
+    """Each row refused as `resolve_search_issues` and `_search_backend_failed` record, a
+    lone-surrogate term beside three of them, and none with the search backend's error. `_slice`
+    refuses `first` with `last` in its own words, where Linear answers `_VALIDATION`, so that row's
+    message is `None`. The body is `json.dumps`'s, which writes a lone surrogate as its escape."""
+    body = json.dumps({"query": _SEARCH, "variables": variables}).encode()
+    headers = {**admin_h, "Content-Type": "application/json"}
+    r = client.post("/linear/graphql", content=body, headers=headers).json()
     assert r["data"] is None
-    assert r["errors"][0]["message"] == "Argument Validation Error"
+    assert r["errors"][0]["message"] != "Failed to query search backend"
+    assert message is None or r["errors"][0]["message"] == message
 
 
 def test_linear_search_ranks_by_relevance_unless_order_by(client, admin_h):
@@ -829,6 +840,65 @@ _UNKNOWN_IDS = [
         "Entity not found: Attachment: could not find by url.",
         "Could not find referenced attachment with this url.",
         "attachment 00000000",
+    ),
+]
+
+
+def _with_the_key(query: str, value: str, answer: dict, row: str):
+    """A `_LINEAR_BODIES` row: ``query`` sent with ``value`` for ``$x``, and Linear's ``answer``
+    to it with the key."""
+    body = {"query": query, "variables": {"x": value}}
+    return pytest.param(
+        json.dumps(body).encode(), WithTheKey(node_json(answer) + b"\n", 200), id=row
+    )
+
+
+_SEARCH_BACKEND_FAILED = {
+    "errors": [
+        {
+            "message": "Failed to query search backend",
+            "path": ["searchIssues"],
+            "locations": [{"line": 1, "column": 22}],
+            "extensions": {
+                "type": "internal error",
+                "code": "EXTERNAL_SERVICE_ERROR",
+                "statusCode": 500,
+                "userError": False,
+            },
+        }
+    ],
+    "data": None,
+}
+_SEARCH_A_TERM = "query($x: String!) { searchIssues(term: $x, first: 3) { nodes { id } } }"
+# Linear's rows for `backlot.graphql.node_utf8`: a lone surrogate after an id the corpus holds,
+# alone in a title filter, and in a search term, high or low (`_search_backend_failed`).
+_LONE_SURROGATES = [
+    _unknown_id(
+        "issue",
+        "ENG-101\ud800",
+        "Entity not found: Issue",
+        "Could not find referenced Issue.",
+        "issue ENG-101, a lone surrogate",
+    ),
+    _unknown_id(
+        "team",
+        "ENG\ud800",
+        "Entity not found: Team",
+        "Could not find referenced Team.",
+        "team ENG, a lone surrogate",
+    ),
+    _with_the_key(
+        "query($x: String) { issues(first: 3, filter: {title: {containsIgnoreCase: $x}}) "
+        "{ nodes { id } } }",
+        "\ud800",
+        {"data": {"issues": {"nodes": []}}},
+        "an issues title filter, a lone surrogate",
+    ),
+    _with_the_key(
+        _SEARCH_A_TERM, "a\ud800b", _SEARCH_BACKEND_FAILED, "searchIssues, a lone surrogate"
+    ),
+    _with_the_key(
+        _SEARCH_A_TERM, "a\udc00b", _SEARCH_BACKEND_FAILED, "searchIssues, a lone low surrogate"
     ),
 ]
 
@@ -2137,6 +2207,7 @@ _LINEAR_BODIES = [
         id="a fragment that spreads itself",
     ),
     *_UNKNOWN_IDS,
+    *_LONE_SURROGATES,
 ]
 
 

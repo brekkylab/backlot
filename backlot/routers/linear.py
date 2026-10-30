@@ -49,7 +49,7 @@ from starlette.datastructures import MutableHeaders
 
 from backlot import auth, express_http
 from backlot.config import get_settings
-from backlot.graphql import apollo_http, engine, v8_json
+from backlot.graphql import apollo_http, engine, node_utf8, v8_json
 from backlot.graphql import body as request_body
 from backlot.graphql.linear_resolvers import build_engine
 from backlot.routers import sent_path
@@ -329,7 +329,7 @@ async def _apollo_server(request: Request) -> Response:
     key = auth.api_key_token(request)
     state = request.app.state
     context = {
-        "conn": auth.conn(request),
+        "conn": node_utf8.Written(auth.conn(request)),
         "visible_ids": auth.visible_ids(request, caller),
         "caller_email": None if caller.is_admin else caller.email,
         # `org` is the workspace slug in a linear.app URL; `org_domain` is what the

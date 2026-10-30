@@ -45,7 +45,7 @@ from graphql.execution.values import get_argument_values, get_variable_values
 
 from backlot import auth
 from backlot.config import get_settings
-from backlot.graphql import apollo_http, engine, js_words
+from backlot.graphql import apollo_http, engine, js_words, node_utf8
 from backlot.graphql import body as request_body
 from backlot.graphql.fireflies_resolvers import build_engine
 from backlot.routers import sent_path
@@ -194,7 +194,7 @@ async def _fastify(request: Request) -> Response:
         request.state.graphql_payload = payload
     state = request.app.state
     context = {
-        "conn": auth.conn(request),
+        "conn": node_utf8.Written(auth.conn(request)),
         "visible_ids": auth.visible_ids(request, caller),
         "caller_email": None if caller.is_admin else caller.email,
         "org": getattr(state.acl, "org_name", None),

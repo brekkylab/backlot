@@ -21,7 +21,7 @@ from typing import Any
 
 import brotli as brotli_codec
 
-from backlot.graphql import v8_json
+from backlot.graphql import node_utf8, v8_json
 
 # `json.decoder`'s whitespace and string scanner, and `json.scanner.NUMBER_RE` under `re.ASCII`: the
 # C reader `json.loads` runs reads only the digits 0 to 9, which Python 3.11's `\d` alone does not.
@@ -489,7 +489,7 @@ def parse(text: str) -> Any:
         raise NotJson(text) from None
     except RecursionError:
         value = _parse_iteratively(text)
-    return _joined(value) if _LONE_SURROGATE.search(text) else value
+    return _joined(value) if node_utf8.LONE_SURROGATE.search(text) else value
 
 
 def _join(string: str) -> str:
@@ -662,9 +662,6 @@ def prototype_poisoned(value: Any) -> bool:
     return False
 
 
-_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
-
-
 def node_json(value: Any) -> bytes:
     """``value`` the way ``JSON.stringify`` writes it for Express's ``res.json`` and Apollo Server:
     compact, non-ASCII as itself, and a lone surrogate as a lower-case ``\\u`` escape, which UTF-8
@@ -673,4 +670,4 @@ def node_json(value: Any) -> bytes:
     and from Linear sent as an unknown field of an input object. A float that is not finite is
     refused, as Starlette's ``JSONResponse`` refuses one."""
     text = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-    return _LONE_SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", text).encode("utf-8")
+    return node_utf8.LONE_SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", text).encode("utf-8")

@@ -15,6 +15,7 @@ import json
 import math
 import random
 import shutil
+import sqlite3
 import struct
 import subprocess
 import zlib
@@ -27,7 +28,7 @@ from graphql.type.scalars import coerce_id
 from starlette.testclient import TestClient
 
 from backlot import auth, pagination, store
-from backlot.graphql import apollo_http, engine, mcp_tools, v8_json
+from backlot.graphql import apollo_http, engine, mcp_tools, node_utf8, v8_json
 from backlot.graphql import body as request_body
 from tests._helpers import selected_fields
 
@@ -2239,3 +2240,17 @@ _FORMS = [
 @pytest.mark.parametrize("text,fields", _FORMS)
 def test_a_form_is_read_as_fast_querystring_reads_it(text, fields):
     assert request_body.form_fields(text) == fields
+
+
+def test_a_statement_binds_a_lone_surrogate_as_u_fffd():
+    conn = node_utf8.Written(sqlite3.connect(":memory:"))
+    bound = {
+        "by position": conn.execute("SELECT ?, ?", ("a\ud800b", 1)).fetchone(),
+        "by name": conn.execute("SELECT :x, :n", {"x": "a\udfffb", "n": None}).fetchone(),
+        "a pair": conn.execute("SELECT ?", ("a\U0001f600b",)).fetchone(),
+    }
+    assert bound == {
+        "by position": ("a\ufffdb", 1),
+        "by name": ("a\ufffdb", None),
+        "a pair": ("a\U0001f600b",),
+    }

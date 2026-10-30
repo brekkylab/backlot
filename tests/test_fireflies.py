@@ -797,6 +797,12 @@ _FIREFLIES_BODIES = [
         ),
         id="a type definition beside an operation",
     ),
+    pytest.param(
+        b'{"query":"query($x: String) { transcripts(keyword: $x, limit: 2) { id } }",'
+        b'"variables":{"x":"\\ud800"}}',
+        WithTheKey(b'{"data":{"transcripts":[]}}\n', 200),
+        id="a keyword of a lone surrogate",
+    ),
 ]
 
 
@@ -1198,24 +1204,29 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
     builds, its `correlationId` eight letters and digits — but for an empty `channel_id`, which
     real reads as none. A transcript the caller cannot see, or a channel holding only such
     transcripts, draws what one that does not exist draws, and `hana@acme.com`, who can see it,
-    reads it."""
+    reads it. An id the caller can read with a lone surrogate after it, sent as a variable, names
+    nothing too (`backlot.graphql.node_utf8`)."""
     import re
 
-    not_in_team = (
-        '{"errors":[{"friendly":true,"message":"You do not have permissions for this team",'
-        '"locations":[{"line":1,"column":3}],"path":["user"],"code":"not_in_team",'
-        '"extensions":{"code":"not_in_team","correlationId":"<8>","status":403,"helpUrls":'
-        '["https://docs.fireflies.ai/miscellaneous/error-codes#not_in_team"]}}],'
-        '"data":{"user":null}}\n'
-    )
-    object_not_found = (
-        '{"errors":[{"friendly":true,"message":"Transcript not found",'
-        '"locations":[{"line":1,"column":3}],"path":["transcript"],"code":"object_not_found",'
-        '"extensions":{"code":"object_not_found","correlationId":"<8>","status":404,'
-        '"metadata":{"objectType":"Transcript"},"helpUrls":'
-        '["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"]}}],'
-        '"data":{"transcript":null}}\n'
-    )
+    def not_in_team(column=3):
+        return (
+            '{"errors":[{"friendly":true,"message":"You do not have permissions for this team",'
+            '"locations":[{"line":1,"column":%d}],"path":["user"],"code":"not_in_team",'
+            '"extensions":{"code":"not_in_team","correlationId":"<8>","status":403,"helpUrls":'
+            '["https://docs.fireflies.ai/miscellaneous/error-codes#not_in_team"]}}],'
+            '"data":{"user":null}}\n' % column
+        )
+
+    def object_not_found(column=3):
+        return (
+            '{"errors":[{"friendly":true,"message":"Transcript not found",'
+            '"locations":[{"line":1,"column":%d}],"path":["transcript"],"code":"object_not_found",'
+            '"extensions":{"code":"object_not_found","correlationId":"<8>","status":404,'
+            '"metadata":{"objectType":"Transcript"},"helpUrls":'
+            '["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"]}}],'
+            '"data":{"transcript":null}}\n' % column
+        )
+
     channel_not_found = (
         '{"errors":[{"friendly":true,"message":"Channel not found",'
         '"locations":[{"line":1,"column":3}],"path":["transcripts"],"code":"object_not_found",'
@@ -1234,33 +1245,53 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
     (channel,) = (c["id"] for c in held_in.json()["data"]["transcript"]["channels"])
     ava_id = ff_gql(client, "{ user { user_id } }", ava_h).json()["data"]["user"]["user_id"]
     wanted = {
-        ("ava@acme.com", '{ user(id: "nope") { user_id } }'): not_in_team,
-        ("ava@acme.com", '{ user(id: " ") { user_id } }'): not_in_team,
-        ("ava@acme.com", '{ user(id: "nobody@example.com") { user_id } }'): not_in_team,
-        ("ava@acme.com", '{ user(id: "ava@acme.com") { user_id } }'): not_in_team,
-        ("ava@acme.com", '{ user(id: "%s") { user_id } }' % ava_id.lower()): not_in_team,
-        ("ava@acme.com", '{ transcript(id: "nope") { id } }'): object_not_found,
-        ("ava@acme.com", '{ transcript(id: "%s") { id } }' % hidden): object_not_found,
-        ("ava@acme.com", '{ transcript(id: "%s") { id } }' % seen[0]["id"].lower()): (
-            object_not_found
+        ("ava@acme.com", '{ user(id: "nope") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: " ") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: "nobody@example.com") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: "ava@acme.com") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: "%s") { user_id } }' % ava_id.lower(), None): not_in_team(),
+        ("ava@acme.com", '{ transcript(id: "nope") { id } }', None): object_not_found(),
+        ("ava@acme.com", '{ transcript(id: "%s") { id } }' % hidden, None): object_not_found(),
+        ("ava@acme.com", '{ transcript(id: "%s") { id } }' % seen[0]["id"].lower(), None): (
+            object_not_found()
         ),
-        ("hana@acme.com", '{ transcript(id: "%s") { id } }' % hidden): (
+        ("hana@acme.com", '{ transcript(id: "%s") { id } }' % hidden, None): (
             '{"data":{"transcript":{"id":"%s"}}}\n' % hidden
         ),
-        ("ava@acme.com", '{ transcripts(channel_id: "nope") { id } }'): channel_not_found,
-        ("ava@acme.com", '{ transcripts(channel_id: "%s") { id } }' % channel): channel_not_found,
-        ("hana@acme.com", '{ transcripts(channel_id: "%s") { id } }' % channel): (
+        (
+            "ava@acme.com",
+            "query($x: String) { user(id: $x) { user_id } }",
+            ava_id + "\ud800",
+        ): not_in_team(21),
+        (
+            "ava@acme.com",
+            "query($x: String!) { transcript(id: $x) { id } }",
+            seen[0]["id"] + "\ud800",
+        ): object_not_found(22),
+        ("ava@acme.com", '{ transcripts(channel_id: "nope") { id } }', None): channel_not_found,
+        ("ava@acme.com", '{ transcripts(channel_id: "%s") { id } }' % channel, None): (
+            channel_not_found
+        ),
+        ("hana@acme.com", '{ transcripts(channel_id: "%s") { id } }' % channel, None): (
             '{"data":{"transcripts":[{"id":"%s"}]}}\n' % hidden
         ),
-        ("ava@acme.com", '{ transcripts(channel_id: "") { id } }'): (
+        ("ava@acme.com", '{ transcripts(channel_id: "") { id } }', None): (
             ff_gql(client, "{ transcripts { id } }", ava_h).text
         ),
     }
     answered = {}
-    for caller, query in wanted:
-        r = ff_gql(client, query, {"Authorization": f"Bearer {tokens[caller]}"})
+    for caller, query, x in wanted:
+        body = {"query": query} if x is None else {"query": query, "variables": {"x": x}}
+        r = client.post(
+            "/fireflies/graphql",
+            content=json.dumps(body).encode(),
+            headers={
+                "Authorization": f"Bearer {tokens[caller]}",
+                "Content-Type": "application/json",
+            },
+        )
         assert r.status_code == 200, query
-        answered[caller, query] = re.sub(
+        answered[caller, query, x] = re.sub(
             r'"correlationId":"[A-Za-z0-9]{8}"', '"correlationId":"<8>"', r.text
         )
     assert answered == wanted

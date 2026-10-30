@@ -53,7 +53,7 @@ from graphql.execution.values import get_argument_values, get_variable_values
 from graphql.type.introspection import TypeMetaFieldDef
 
 from backlot.graphql import body as request_body
-from backlot.graphql import js_words
+from backlot.graphql import js_words, node_utf8
 
 Resolver = Callable[..., Any]
 
@@ -317,9 +317,9 @@ def persisted_query_refusal(payload: dict) -> Result | None:
             headers=PERSISTED_QUERY_NOT_FOUND_HEADERS,
         )
     # Both vendors hashed a query holding U+D800 as the same query with U+FFFD in its place on
-    # 2026-10-25 (UTC), the UTF-8 Node writes for a lone surrogate.
-    units = query.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
-    if persisted.get("sha256Hash") != hashlib.sha256(units.encode("utf-8")).hexdigest():
+    # 2026-10-25 (UTC).
+    written = node_utf8.written(query)
+    if persisted.get("sha256Hash") != hashlib.sha256(written.encode("utf-8")).hexdigest():
         return _refusal(PERSISTED_QUERY_MISMATCH, INTERNAL_SERVER_ERROR)
     return None
 

@@ -37,6 +37,7 @@ from tests._helpers import (
     http_row,
     padded_query,
     raw_exchange,
+    raw_request,
     selected_field_count,
     selected_fields,
     sent_as,
@@ -7862,16 +7863,7 @@ def test_linear_answers_a_path_sent_as_written_as_linear_does(
     live_server, method, path, status, body, named
 ):
     base_url, settings = live_server
-    request = (
-        b"%s /linear%s HTTP/1.1\r\nHost: x\r\nAuthorization: %s\r\n"
-        b"Content-Type: application/json\r\nContent-Length: %d\r\n\r\n%s"
-        % (
-            method.encode(),
-            path.encode(),
-            settings.admin_token.encode(),
-            len(_TYPENAME) if method == "POST" else 0,
-            _TYPENAME if method == "POST" else b"",
-        )
-    )
+    sent = _TYPENAME if method == "POST" else b""
+    request = raw_request(method, f"/linear{path}", settings.admin_token, body=sent)
     answer, headers, content = raw_exchange(base_url, request)
     assert (answer, content, {name: headers.get(name) for name in named}) == (status, body, named)

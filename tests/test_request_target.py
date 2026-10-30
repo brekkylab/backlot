@@ -17,7 +17,7 @@ import urllib.parse
 import pytest
 
 from backlot import errors, request_target
-from tests._helpers import raw_exchange, read_answer
+from tests._helpers import raw_exchange, raw_request, read_answer
 
 _UTF8, _LONE = b"\xc3\xa9", b"\x80"
 _UVICORN = b"Invalid HTTP request received."
@@ -245,8 +245,8 @@ def _send(
     times: int = 1,
     header: bytes = b"",
 ) -> tuple[int, dict[str, str], bytes]:
-    credential = b"Authorization: Bearer %s\r\n" % admin.encode() * times if admin else b""
-    request = b"%s %s HTTP/1.1\r\nHost: x\r\n%s%s\r\n" % (method, target, credential, header)
+    authorization = f"Bearer {admin}" if admin else None
+    request = raw_request(method, target, authorization, times=times, headers=header)
     return raw_exchange(base_url, request)
 
 

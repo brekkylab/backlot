@@ -74,7 +74,9 @@ sees least. Nothing about the request changes but the identity.
 
 Notion, HubSpot, Linear and Fireflies sit behind Cloudflare, which answers a request carrying
 `Authorization` twice, or one of `If-None-Match`, `If-Match`, `If-Modified-Since`,
-`If-Unmodified-Since` or `If-Range` twice, with a `400` HTML page of its own, there and here.
+`If-Unmodified-Since` or `If-Range` twice, with a `400` HTML page of its own, there and here. On
+HubSpot it answers a header value whose bytes are not UTF-8 with its `403` block page,
+`Attention Required! | Cloudflare`, ahead of the credential.
 
 ### Slack — `Bearer`
 

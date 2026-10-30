@@ -19,7 +19,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
 | `github` | GitHub | `/github` | 34 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
-| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 21 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
+| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 22 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
@@ -277,6 +277,7 @@ One `source_type` (`google_drive`) across four prefixes.
 | `/drive/v3/drives` | `q`, as a member who is not the domain's administrator may send it: `name` with `contains`/`=`/`!=`/`<`/`<=`/`>`/`>=` and `hidden` with `=`/`!=` or alone; any other term is a 400. `fields`, validated and applied to the list and its entries |
 | `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
 | `/docs/v1/documents/{id}` | `body.content` with each element's indices in UTF-16 code units (a `startIndex` of 0 left out, as real leaves it out), each paragraph's `paragraphStyle` and each run's `textStyle`, and the `documentStyle` and `namedStyles` of a document `documents.create` makes |
+| `POST /docs/v1/documents` | `documents.create`: a blank Doc at the creator's My Drive root, visible to them alone, titled as the body or the `title` query parameter states; the rest of the `Document` it states is checked as real checks it and dropped |
 | `/sheets/v4/spreadsheets/{id}` | One entry per sheet, with its own `sheetId`, `index`, `title` and `gridProperties`. Structure only — cells need `includeGridData=true`, as in real Sheets. `ranges` filters the `sheets` array itself, and gives a sheet one `data` block per range that touches it |
 | `/sheets/v4/spreadsheets/{id}/values/{range}` | A1 ranges incl. `Summary!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not, an empty one before the bang (`!A1` is the first sheet), and R1C1 — absolute (`R1C1:R2C2`) and bracketed offsets from A1 (`R[1]C[1]`), echoed as the A1 equivalent, with real's reversed-range rule. Any sheet in the workbook, matched case-insensitively; an unqualified range answers from the sheet at index 0. `majorDimension`, `valueRenderOption` |
 | `/sheets/v4/spreadsheets/{id}/values:batchGet` | As above; one unparseable range fails the whole call |

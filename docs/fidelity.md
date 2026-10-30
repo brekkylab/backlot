@@ -450,8 +450,9 @@ Closing it closes the record. The body and the comments stay as the account of w
 and a source still diverging the next morning gets a new issue that links back to the last one — a
 closed issue is never reopened and never written over.
 
-The Linear run also runs `scripts/linear_sdk_fragments.py` over the newest `@linear/sdk`: a fragment
-it names, or a bundle it cannot read, turns the run red, and opens no issue.
+The Linear run also runs `scripts/linear_sdk_fragments.py` over the newest `@linear/sdk`, and a
+fragment it names goes on Linear's issue beside the comparison's report. That, or a bundle the run
+cannot install or read, turns the run red.
 
 ## Coverage
 

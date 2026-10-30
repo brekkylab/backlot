@@ -4,20 +4,20 @@ port after the brackets or none: `[0:0]`, `[x]`, `[1.2.3.4]`, `[v1.x]`.
 Starlette builds ``request.url`` from such a `Host` where the brackets hold only hex digits, colons
 and dots, and Python's ``urlsplit`` refuses the URL, so it cannot be left to the layers that read
 the URL. :func:`answer` gives the front door's answer, which
-``backlot.main.answer_a_host_in_brackets_that_holds_no_ipv6_address`` sends ahead of every other
-layer. Where the front door reads the request on, on S3 and on a path no vendor owns, the request
-goes on with the server's own address as its `Host`, which is what Starlette builds the URL from
-where the `Host` does not parse, from 1.7.0.
+``backlot.main.answer_a_host_in_brackets_that_holds_no_ipv6_address`` sends ahead of every
+middleware but telemetry's. Where the front door reads the request on, on S3 and on a path no vendor
+owns, the request goes on with the server's own address as its `Host`, which is what Starlette
+builds the URL from where the `Host` does not parse, from 1.7.0.
 
-Measured on 2026-10-30 (UTC) over raw HTTP/1.1 on TLS sockets, on a path each host serves, with the
-vendors' credentials but Gmail's, the Docs editors', S3's and Graph's: `[0:0]`, `[0:0]:443`, `[x]`,
-`[1.2.3.4]`, `[v1.x]`, `[:]` and `[g::1]`, each answered as :func:`answer` says, `[0:0]` and
-`[v1.x]` at Google's `/batch/drive/v3`, and `[0:0]` at GitHub's `/` and after a `User-Agent`. An
-IPv6 address in brackets (`[::1]`, `[::1]:443`, `[::]`, `[ABCD::1]`, `[::ffff:1.2.3.4]`) is how a
-client reaches a server on an IPv6 address, and is served here as any other `Host` is. Real's front
-doors answered it as they answered `example.com`, a host they do not serve, but for two: S3 answered
-it as it answers its own `Host`, and Graph refused it as it refuses the `Host`s above, where it
-served `example.com`.
+Measured on 2026-10-30 (UTC) over raw HTTP/1.1 on TLS sockets, on a path each host serves (on S3,
+the bucket list or a bucket that does not exist), with the vendors' credentials but Gmail's, the
+Docs editors', S3's and Graph's: `[0:0]`, `[0:0]:443`, `[x]`, `[1.2.3.4]`, `[v1.x]`, `[:]` and
+`[g::1]`, each answered as :func:`answer` says, `[0:0]` and `[v1.x]` at Google's `/batch/drive/v3`,
+and `[0:0]` at GitHub's `/` and after a `User-Agent`. An IPv6 address in brackets (`[::1]`,
+`[::1]:443`, `[::]`, `[ABCD::1]`, `[::ffff:1.2.3.4]`) is how a client reaches a server on an IPv6
+address, and is served here as any other `Host` is. Real's front doors answered it as they answered
+`example.com`, a host they do not serve, but for two: S3 answered it as it answers its own `Host`,
+and Graph refused it as it refuses the `Host`s above, where it served `example.com`.
 """
 
 from __future__ import annotations

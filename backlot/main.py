@@ -1485,10 +1485,9 @@ async def merge_slashes_before_a_slack_method_name(request: Request, call_next):
 @_middleware(lambda scope: slack.drops_an_end(scope["path"]))
 async def drop_what_slack_drops_off_the_end_of_a_path(request: Request, call_next):
     """Read a `/slack/api/` path as real does without the run at its end it drops, or answer one
-    holding an LF elsewhere with its 404 page (``slack.drop_the_end``). Registered after
-    :func:`merge_slashes_before_a_slack_method_name`, which makes it the outer of the two: real
-    answered `/api//auth.test%0A` as `auth.test` on 2026-10-30, so the run before the name is merged
-    once the end is gone."""
+    holding an LF elsewhere with its 404 page (``slack.drop_the_end``, which has the measurement).
+    Registered after :func:`merge_slashes_before_a_slack_method_name`, which makes it the outer of
+    the two, so that a run of `/`s before the name is merged once the end is gone."""
     answer = slack.drop_the_end(request.scope)
     if answer is not None:
         return answer
@@ -1670,13 +1669,13 @@ async def vendor_json_media_type(request: Request, call_next):
     key, and real's own spec says `application/json` there: the charset is a fact about the wire,
     not about the contract, and `backlot diff` compares the contract. Only a response that is
     exactly `application/json` is touched, so the raw, diff and text/plain answers keep their own
-    types. Registered last of the middlewares, which makes it the outermost, so a JSON body another
-    middleware returns (``refuse_a_bearer_jira_cannot_read``'s 403) passes through it too rather
-    than around it; the route handlers and the two exception handlers above are covered from either
-    position, those handlers because they run inside ``ExceptionMiddleware``. The status goes along
-    with the path because the answer can depend on it: code search's own 200 and 422 carry no
-    charset where the gateway's 401 on the same path does. An answer given in front of Jira is not
-    Jira's, and keeps the type its layer gives (the edge's `;` 400,
+    types. Registered after every middleware above it, which makes it outside each of them, so a
+    JSON body another middleware returns (``refuse_a_bearer_jira_cannot_read``'s 403) passes through
+    it too rather than around it; the route handlers and the two exception handlers above are
+    covered from either position, those handlers because they run inside ``ExceptionMiddleware``.
+    The status goes along with the path because the answer can depend on it: code search's own 200
+    and 422 carry no charset where the gateway's 401 on the same path does. An answer given in front
+    of Jira is not Jira's, and keeps the type its layer gives (the edge's `;` 400,
     ``errors.atlassian.front_door``).
     """
     response = await call_next(request)
@@ -1691,12 +1690,11 @@ async def vendor_json_media_type(request: Request, call_next):
 
 @_middleware(bracketed_host.holds_no_address)
 async def answer_a_host_in_brackets_that_holds_no_ipv6_address(request: Request, call_next):
-    """Answer a request whose `Host` is in brackets that hold no IPv6 address as the vendor's front
-    door answers it (``backlot.bracketed_host.answer``), or hand it on without its `Host`, so that
-    ``request.url`` is built from the server's address. Registered after every other middleware,
-    which makes it the outermost: those read ``request.url``, which Starlette builds from such a
-    `Host` and Python's ``urlsplit`` refuses where the brackets hold only hex digits, colons and
-    dots."""
+    """Answer a request whose `Host` ``backlot.bracketed_host.holds_no_address`` picks as the
+    vendor's front door answers it (``backlot.bracketed_host.answer``), or hand it on without its
+    `Host`, so that ``request.url`` is built from the server's address. Registered after every
+    middleware but telemetry's, which makes it outside each of them: those read ``request.url``,
+    which cannot be built from such a `Host` (``backlot.bracketed_host`` says why)."""
     answer = bracketed_host.answer(request.scope)
     if answer is not None:
         return answer

@@ -2342,9 +2342,7 @@ def test_github_401_says_which_credential_failed(gh_client, gh_admin_h, gh_org):
 def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admin_h, gh_org):
     """Real's `documentation_url` is per-ENDPOINT — `/branches` names the list-branches anchor,
     `/tags` the list-tags one — so a single root URL would be a divergence on every 404. The table
-    was measured by requesting each route shape against a repository that does not exist, and on
-    2026-10-30 a route's path with a tab, CR, LF, `#` or `?` after it, escaped, which named the root
-    where no route takes the byte and the route's anchor where its parameter does.
+    was measured by requesting each route shape against a repository that does not exist.
 
     Every route the app serves needs an entry, which is what the first assertion holds: a route
     added without one would answer the root and nobody would notice.

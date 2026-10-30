@@ -403,8 +403,8 @@ _ESCAPED_CONTROL = re.compile(rb"%(?:[01][0-9A-Fa-f]|7[Ff])")
 #: Where Google's hosts refuse a `%00`: anywhere on the four with a host of their own, and on
 #: www.googleapis.com, which Drive and the batch endpoint share, under `/drive/v3/` or `/batch/`.
 #: That host answered `/drive/v3%00x`, `/drive%00x`, `/batch%00x` and `/nope%00x` with its 404 page
-#: on 2026-10-30 (UTC), where gmail.googleapis.com, sheets.googleapis.com and docs.googleapis.com
-#: refused `/gmail/v1%00x`, `/v4%00x`, `/v1%00x` and `/nope%00x`.
+#: on 2026-10-30 (UTC), where gmail.googleapis.com, sheets.googleapis.com, docs.googleapis.com and
+#: slides.googleapis.com refused `/gmail/v1%00x`, `/v4%00x`, `/v1%00x` and `/nope%00x`.
 _GOOGLE_NUL = ("/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1", "/drive/v3/", "/batch/")
 
 
@@ -415,15 +415,15 @@ def escape_answer(scope: Scope) -> Response | None:
     slack.com's empty 400; Google's 1,555-byte page where :data:`_GOOGLE_NUL` says, on a connection
     that answers the next request; Cloudflare's page in front of Notion and HubSpot; S3's empty 400,
     whose status line real words `400 Invalid URI`; and Graph's page naming the URL invalid.
-    Measured on 2026-10-30 (UTC) over raw HTTP/1.1 on TLS sockets, at a path no route serves
-    (`…/nope<escape>x`) and at the end of one a route serves, with the vendors' credentials but
-    Gmail's, the Docs editors', S3's and Graph's, for each escape from `%00` to `%1F` and `%7F`:
-    each of the others was read as the path's other bytes are, on every host but Graph, and Graph
-    refused the lower-case spellings `%0a`, `%0b`, `%0d`, `%1f` and `%7f` too. A `%00` in the query
-    was read as its other bytes are on each of those hosts. Jira Cloud's and Confluence's front door
-    answers a `%00` with the CDN's page (``backlot.errors.atlassian.cdn_refusal``), Linear's and
-    Fireflies' with Cloudflare's (:func:`refused_path`), and api.github.com read it as any other
-    byte."""
+    Measured on 2026-10-30 (UTC) over raw HTTP/1.1 on TLS sockets, with the vendors' credentials
+    but Gmail's, the Docs editors', S3's and Graph's, for each escape from `%00` to `%1F` and `%7F`
+    at a path no route serves (`…/nope<escape>x`), and for `%00`, `%0A` and `%0D` at the end of one
+    a route serves: each of the others was read as the path's other bytes are, on every host but
+    Graph, and Graph refused the lower-case spellings `%0a`, `%0b`, `%0d`, `%1f` and `%7f` too. A
+    `%00` in the query was read as its other bytes are on each of those hosts but Confluence, which
+    answered Tomcat's 400 page. Jira Cloud's and Confluence's front door answers a `%00` in the
+    path with the CDN's page (``backlot.errors.atlassian.cdn_refusal``), Linear's and Fireflies'
+    with Cloudflare's (:func:`refused_path`), and api.github.com read it as any other byte."""
     path, sent = scope["path"], scope["raw_path"]
     if _under(path, "/msgraph"):
         if _ESCAPED_CONTROL.search(sent) is None:

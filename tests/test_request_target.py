@@ -218,8 +218,9 @@ def _rows():
             id=f"hubspot {sent!r} blocked",
         )
     # Google's 400 for a body on a GET and its 415 for a coding it does not read, beside the byte,
-    # with no credential: the measured GETs sent `Content-Length: 1` and the body `x`, where these
-    # leave the body unsent, which real answered on `about` as it answered the body sent
+    # with no credential. The measured GETs with a body sent `Content-Length: 1` and the body `x`,
+    # where the `Content-Length` row sends the header alone: real answered `Content-Length: 5` with
+    # no body sent on `about` as it answered the body
     for header, answers in (
         (b"Content-Length: 1\r\n", ("google 54", "google 1555", "google 1555")),
         (b"Content-Encoding: br\r\n", ("google 54", "google 1555", "encoded")),

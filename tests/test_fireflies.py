@@ -29,6 +29,7 @@ from tests._helpers import (
     http_row,
     padded_query,
     raw_exchange,
+    raw_request,
     sent_as,
     served_id,
     tiny_corpus,
@@ -3481,16 +3482,7 @@ def test_fireflies_answers_a_path_sent_as_written_as_fireflies_does(
     live_server, method, path, status, body, named
 ):
     base_url, settings = live_server
-    request = (
-        b"%s /fireflies%s HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\n"
-        b"Content-Type: application/json\r\nContent-Length: %d\r\n\r\n%s"
-        % (
-            method.encode(),
-            path.encode(),
-            settings.admin_token.encode(),
-            len(_TYPENAME) if method == "POST" else 0,
-            _TYPENAME if method == "POST" else b"",
-        )
-    )
+    sent = _TYPENAME if method == "POST" else b""
+    request = raw_request(method, f"/fireflies{path}", f"Bearer {settings.admin_token}", body=sent)
     answer, headers, content = raw_exchange(base_url, request)
     assert (answer, content, {name: headers.get(name) for name in named}) == (status, body, named)

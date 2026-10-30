@@ -19,11 +19,13 @@ omit it. :func:`_page` is the single place that decides this.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
 import unicodedata
 from functools import lru_cache
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -259,6 +261,60 @@ def _error_page(request: Request, status: int, reason: str, headers: dict) -> Re
         status_code=status,
         headers=headers,
         media_type="text/html;charset=iso-8859-1",
+    )
+
+
+def blocks_a_header_value(headers: list[tuple[bytes, bytes]]) -> bool:
+    """Whether Cloudflare, in front of api.hubapi.com, answers a request carrying ``headers`` with
+    :func:`cloudflare_block`: one of their values is not UTF-8, as Python's codec reads it.
+
+    Measured on 2026-10-30 (UTC) with no credential, `X-Probe: a<bytes>b` on
+    `GET /crm/v3/objects/contacts`. Served, the route's 401: `C2 80`, `C2 A0`, `C3 A9`,
+    `E2 82 AC`, `F0 9F 98 80`, `EF BB BF`, `EF BF BF`, `ED 9F BF`, `F4 8F BF BF`, `C3 A9 C3 A9` and
+    `C3 A9` ending the value. Blocked: `ED A0 80`, a surrogate; `C0 80`, `C1 BF` and `E0 80 80`,
+    overlong; `F4 90 80 80`, past U+10FFFF; `F5 80 80 80` and `F8 88 80 80 80`; `C3` and `E2 82`
+    cut short, and `C3` ending the value; `80`, `BF`, `FE` and `FF` alone; and `C3 A9 80`. A value
+    of `A0` alone and `Bearer a<80>b` in `Authorization` were blocked too, and `a<80>b` on a `HEAD`,
+    a `POST`, an `OPTIONS`, under `Accept: text/html`, on `/`, `/oauth/v1/token` and `/nosuch`."""
+    for _, value in headers:
+        try:
+            value.decode("utf-8")
+        except UnicodeDecodeError:
+            return True
+    return False
+
+
+#: The page :func:`cloudflare_block` answers, with ``{ray}`` and ``{ip}`` where it puts the
+#: request's Ray ID and the client's address, the only bytes that differed across 34 of real's
+#: answers on 2026-10-30.
+_BLOCK_PAGE = (Path(__file__).parent.parent / "data" / "hubspot_block.html").read_bytes()
+
+
+def cloudflare_block(request: Request) -> Response:
+    """Cloudflare's 403 block page, titled `Attention Required! | Cloudflare`, on
+    `text/html; charset=UTF-8` with the four headers below. Real's Ray ID was 16 lower-case hex
+    digits in each of those 34 answers, and the same as the `CF-RAY` header's up to its `-`; here it
+    is derived from the request. The address is the client's as the server saw it, where real's
+    was the address the probe sent from."""
+    sent = b"%s %s?%s" % (
+        request.method.encode(),
+        request.scope.get("raw_path") or request.scope["path"].encode(),
+        request.scope.get("query_string", b""),
+    )
+    ray = hashlib.sha256(b"hubspot-block:" + sent).hexdigest()[:16]
+    address = request.client.host if request.client else ""
+    body = _BLOCK_PAGE.replace(b"{ray}", ray.encode()).replace(b"{ip}", address.encode())
+    return Response(
+        body,
+        status_code=403,
+        headers={
+            "Content-Type": "text/html; charset=UTF-8",
+            "Cache-Control": "private, max-age=0, no-store, no-cache, must-revalidate, "
+            "post-check=0, pre-check=0",
+            "Expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+            "Referrer-Policy": "same-origin",
+            "X-Frame-Options": "SAMEORIGIN",
+        },
     )
 
 

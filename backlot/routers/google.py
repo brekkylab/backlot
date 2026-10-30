@@ -19,6 +19,7 @@ import quopri
 import re
 import string
 import xml.parsers.expat
+import zlib
 from contextvars import ContextVar
 from email.parser import BytesParser
 from email.utils import formataddr, getaddresses
@@ -496,11 +497,70 @@ def refuse_an_unserved_operation(request: Request) -> None:
     callable `callback` and an uncallable one, with a trailing slash and as a `HEAD`: each refused
     as a served route of the same method does. The operation is chosen on
     :func:`_operation_path`."""
-    path = _operation_path(request)
-    if not any(m == request.method and p.fullmatch(path) for m, p in _PUBLISHED_NOT_SERVED):
+    if not is_an_unserved_operation(request):
         return
     gerr.validate_system_parameters(request)
     _require(request)
+
+
+def is_an_unserved_operation(request: Request) -> bool:
+    """Whether the request names an operation in `_PUBLISHED_NOT_SERVED`, chosen on
+    :func:`_operation_path`."""
+    path = _operation_path(request)
+    return any(m == request.method and p.fullmatch(path) for m, p in _PUBLISHED_NOT_SERVED)
+
+
+#: How many bytes real reads of a body under `gzip` once decompressed
+#: (:func:`gerr.payload_too_large`): on 2026-10-30 (UTC), with no credential, a `POST` to Sheets'
+#: `values:batchGetByDataFilter` whose body decompressed to 134,217,728 bytes was the route's 401,
+#: and one of 134,217,729 that 400, as it was on Drive's `files`.
+PAYLOAD_LIMIT = 134_217_728
+
+
+def _codings(values: list[str]) -> list[str]:
+    """The members of each `Content-Encoding` value in ``values``, split on commas, with the spaces
+    and tabs around each trimmed off."""
+    return [member.strip(" \t") for value in values for member in value.split(",")]
+
+
+def refuses_coding(values: list[str]) -> bool:
+    """Whether real answers :func:`gerr.unsupported_coding` for a body under the `Content-Encoding`
+    values ``values``: a member is something but `gzip`, `identity` or nothing, in any case.
+
+    Measured on 2026-10-30 (UTC) on Drive's `about` and `files` with no credential, the route's 401
+    where the coding was read: `br`, `BR`, `Br`, `deflate`, `DEFLATE`, `x-gzip`, `X-GZIP`,
+    `compress`, `foo`, `*`, `gzip, br`, `br, gzip`, `identity, br`, and `gzip` and `br` sent as two
+    headers in either order, or an empty one and `br`, were the 415; `Gzip`, `IDENTITY`,
+    `gzip, gzip`, `gzip, identity`, `identity,identity`, `gzip,`, two `gzip` headers and a value of
+    two spaces were the 401."""
+    return any(member.lower() not in ("", "gzip", "identity") for member in _codings(values))
+
+
+def inflated(body: bytes, values: list[str]) -> bytes | None:
+    """``body`` as real reads it under the `Content-Encoding` values ``values``: decompressed where a
+    member is `gzip` as spelt and ``body`` is one whole gzip member, its CRC and length checked, and
+    as sent otherwise; ``None`` where it decompresses past :data:`PAYLOAD_LIMIT`.
+
+    Measured on 2026-10-30 (UTC) on Drive's batch endpoint with no credential, which answers each
+    part's 401 for a body it can split and a 400 for one it cannot: a gzipped body was split under
+    `gzip`, `gzip, identity`, `identity, gzip`, `gzip,`, `gzip, gzip` and two `gzip` headers, and
+    not under `GZIP`, `Gzip`, `identity` or an empty value; under `gzip, gzip` and two `gzip`
+    headers a body gzipped twice was not split; and a body that is not gzip was split under
+    `gzip`. A member followed by another member, by a NUL or by a gzip header, cut short or
+    carrying a wrong CRC or length was not split. On Sheets' `values:batchGetByDataFilter` with a
+    Workspace member's token on 2026-10-23, a JSON body that is not gzip was read under `gzip` as
+    sent. How real reads a gzip body it does not decompress is not measured past the batch
+    endpoint's 400; this server reads it as sent."""
+    if "gzip" not in _codings(values):
+        return body
+    inflater = zlib.decompressobj(31)
+    try:
+        read = inflater.decompress(body, PAYLOAD_LIMIT + 1)
+    except zlib.error:
+        return body
+    if len(read) > PAYLOAD_LIMIT:
+        return None
+    return read if inflater.eof and not inflater.unused_data else body
 
 
 def _b64url(text: str) -> str:

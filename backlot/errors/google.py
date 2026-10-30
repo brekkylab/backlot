@@ -488,6 +488,28 @@ def failed_precondition(message: str) -> GoogleError:
     return GoogleError(400, message, reason="failedPrecondition", status="FAILED_PRECONDITION")
 
 
+def unsupported_coding() -> GoogleError:
+    """The 415 for a body under a `Content-Encoding` real does not read
+    (``backlot.routers.google.refuses_coding``)."""
+    return GoogleError(
+        415,
+        "Unsupported Content-Encoding; only identity/gzip are supported.",
+        reason="failedPrecondition",
+        status="FAILED_PRECONDITION",
+    )
+
+
+def payload_too_large() -> GoogleError:
+    """The 400 for a body under `gzip` that decompresses past
+    ``backlot.routers.google.PAYLOAD_LIMIT``."""
+    return GoogleError(
+        400,
+        "Request payload size exceeds the limit: 134217728 bytes.",
+        reason="badRequest",
+        status="INVALID_ARGUMENT",
+    )
+
+
 # The challenge the front end's 401s carry, measured 2026-10-11 on all five hosts, with a credential
 # that does not resolve adding `error="invalid_token"` to it (:func:`bad_token`). It rides along on
 # a 401 a `callback` wraps at 200 as well. The download server's own 401 names the realm without

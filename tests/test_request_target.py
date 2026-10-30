@@ -205,6 +205,35 @@ def _rows():
             yield pytest.param(
                 b"GET", base, b"nope?b=\x01x", answer, 0, header, id=f"{base} {name} {times}"
             )
+    # a header value Cloudflare blocks on HubSpot (`hubspot.blocks_a_header_value`), whose block
+    # comes after the byte's answer, with no credential
+    for sent, answer in ((b"\x80", "cloudflare empty"), (b"\x00", "cloudflare page")):
+        yield pytest.param(
+            b"GET",
+            "/hubspot/crm/v3/objects/contacts",
+            sent,
+            answer,
+            0,
+            b"X-Probe: a\x80b\r\n",
+            id=f"hubspot {sent!r} blocked",
+        )
+    # Google's 400 for a body on a GET and its 415 for a coding it does not read, beside the byte,
+    # with no credential: the measured GETs sent `Content-Length: 1` and the body `x`, where these
+    # leave the body unsent, which real answered on `about` as it answered the body sent
+    for header, answers in (
+        (b"Content-Length: 1\r\n", ("google 54", "google 1555", "google 1555")),
+        (b"Content-Encoding: br\r\n", ("google 54", "google 1555", "encoded")),
+    ):
+        for rest, answer in zip((b"about\x01", b"ab out", b"about\x80"), answers, strict=True):
+            yield pytest.param(
+                b"GET",
+                "/drive/v3/",
+                rest,
+                answer,
+                0,
+                header,
+                id=f"{header.split(b':')[0].decode()} {rest!r}",
+            )
     yield pytest.param(
         b"GET", "/_meta/", b"nope\x80x", "uvicorn", 1, b"", id="a path no vendor owns"
     )

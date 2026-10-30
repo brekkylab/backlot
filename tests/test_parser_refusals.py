@@ -3,18 +3,23 @@
 refusals it leaves to uvicorn's 400.
 
 Each request is written byte for byte to the server ``live_server`` starts, so that httptools reads
-it as written.
+it as written. A request sent in two reads is handed to the protocol in this process instead, a
+``data_received`` call for each, as over a socket the server can take both in one read.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import socket
-import time
 import urllib.parse
 
 import pytest
+import uvicorn
+from uvicorn.server import ServerState
+
+from backlot import protocol
 
 #: Real's answer to each request below (``backlot.parser_refusals`` has the measurement), as its
 #: status line and `Content-Type`, each ``None`` where real sent none, the size and SHA-256 of its
@@ -384,13 +389,50 @@ def _request(mount: str, path: str, kind: str, token: str) -> list[bytes]:
     ]
 
 
+async def _refused(scope, receive, send):
+    raise AssertionError("a request httptools refuses reached the app")
+
+
+class _Transport(asyncio.Transport):
+    """A connection that keeps what the protocol writes to it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.written = b""
+        self.closed = False
+
+    def get_extra_info(self, name, default=None):
+        return default
+
+    def write(self, data) -> None:
+        self.written += data
+
+    def close(self) -> None:
+        self.closed = True
+
+    def is_closing(self) -> bool:
+        return self.closed
+
+
 def _answer(base_url: str, reads: list[bytes]) -> bytes:
+    if len(reads) > 1:
+        loop = asyncio.new_event_loop()
+        try:
+            config = uvicorn.Config(
+                _refused, http=protocol.Protocol, lifespan="off", log_config=None
+            )
+            served = protocol.Protocol(config, ServerState(), {}, _loop=loop)
+            transport = _Transport()
+            served.connection_made(transport)
+            for read in reads:
+                if not transport.closed:
+                    served.data_received(read)
+        finally:
+            loop.close()
+        return transport.written
     url = urllib.parse.urlsplit(base_url)
     with socket.create_connection((url.hostname, url.port), timeout=10) as c:
-        for i, read in enumerate(reads):
-            if i:
-                time.sleep(0.2)
-            c.sendall(read)
+        c.sendall(reads[0])
         got = b""
         while chunk := c.recv(65536):
             got += chunk

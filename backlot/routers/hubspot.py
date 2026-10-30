@@ -19,10 +19,10 @@ omit it. :func:`_page` is the single place that decides this.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
+import secrets
 import unicodedata
 from functools import lru_cache
 from pathlib import Path
@@ -293,15 +293,10 @@ _BLOCK_PAGE = (Path(__file__).parent.parent / "data" / "hubspot_block.html").rea
 def cloudflare_block(request: Request) -> Response:
     """Cloudflare's 403 block page, titled `Attention Required! | Cloudflare`, on
     `text/html; charset=UTF-8` with the four headers below. Real's Ray ID was 16 lower-case hex
-    digits in each of those 34 answers, and the same as the `CF-RAY` header's up to its `-`; here it
-    is derived from the request. The address is the client's as the server saw it, where real's
-    was the address the probe sent from."""
-    sent = b"%s %s?%s" % (
-        request.method.encode(),
-        request.scope.get("raw_path") or request.scope["path"].encode(),
-        request.scope.get("query_string", b""),
-    )
-    ray = hashlib.sha256(b"hubspot-block:" + sent).hexdigest()[:16]
+    digits in each of those 34 answers, a different one each time, and the same as the `CF-RAY`
+    header's up to its `-`; here it is 16 random ones. The address is the client's as the server saw
+    it, where real's was the address the probe sent from."""
+    ray = secrets.token_hex(8)
     address = request.client.host if request.client else ""
     body = _BLOCK_PAGE.replace(b"{ray}", ray.encode()).replace(b"{ip}", address.encode())
     return Response(

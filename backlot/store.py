@@ -3047,6 +3047,13 @@ def fireflies_transcript_by_id(conn, transcript_id, visible_ids=None) -> sqlite3
     return conn.execute(sql + clause, [transcript_id] + cparams).fetchone()
 
 
+def fireflies_channel_exists(conn, channel_id, visible_ids=None) -> bool:
+    """Whether channel ``channel_id`` holds a transcript ``visible_ids`` lets the caller read."""
+    clause, cparams = _acl_clause("fireflies", visible_ids=visible_ids)
+    sql = "SELECT 1 FROM fireflies_transcripts WHERE channel = ?"
+    return conn.execute(sql + clause + " LIMIT 1", [channel_id] + cparams).fetchone() is not None
+
+
 def fireflies_speakers(conn, transcript_ids) -> dict[str, list[sqlite3.Row]]:
     """The numbered speakers of each transcript, as ``{transcript_id: [row, ...]}`` in number
     order — each row carrying ``speaker_id`` and ``speaker_name``.

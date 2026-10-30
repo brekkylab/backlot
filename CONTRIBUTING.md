@@ -130,7 +130,15 @@ the marketplace when you are done — uninstalling leaves the cache directory be
 
 1. Fork and create a topic branch off `main`.
 2. Keep changes focused; one logical change per PR.
-3. Add or update tests — a bug fix should come with a test that fails without it.
+3. Add or update tests — a bug fix should come with a test that fails without it. A new assertion
+   on a state an existing test already sets up goes into that test, and a new test function is for
+   a state no existing test sets up. A new case for a request an existing test already sends is
+   another row of that test's table, and a test that sends a single request becomes a table with
+   that request as its first row: one test that sends every row, records each answer and compares
+   them all with the expected answers once, after the loop, rather than a `parametrize` case per
+   row. Two new tests that differ only by their input, such as a refused request and the one that
+   succeeds on the same URL, are one table of that shape. A case that proves which principal may
+   read something stays a parametrized case of its own.
 4. Make sure `pytest` and `ruff check . && ruff format --check .` pass locally before opening the
    PR, since CI's first run on your first pull request waits for a maintainer to approve it.
 5. Title the PR with one sentence saying what Backlot does once it is merged. A PR that closes a

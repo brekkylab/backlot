@@ -271,6 +271,14 @@ def held(type_: str, types: Mapping[str, Any]) -> str | None:
     return name if name in types else None
 
 
+def leads_to(type_: str, types: Mapping[str, Any]) -> str | None:
+    """The message a field leads a body reader to: what :func:`held` gives, or a map's value, which
+    a request body may state (`documents.create` reads a `Document`'s `headers` as `Header`s)."""
+    if type_.startswith("map<string, "):
+        type_ = type_[len("map<string, ") : -1]
+    return held(type_, types)
+
+
 def declared_types(doc: Mapping[str, Any]) -> dict[str, dict[str, str]]:
     """Every message the document declares, as its fields and what each holds."""
     prefix = str(doc.get("name") or "")
@@ -319,8 +327,10 @@ def types_measure(spec: TypesTarget, doc: Mapping[str, Any], *, timeout: float) 
 
     Every one of them is listed whether or not Backlot serves it, where a GraphQL source lists none
     of the vendor's types Backlot does not declare: a `fields` mask is read against the whole of
-    each (`backlot.routers.google._gmask_select`), so the baseline has to carry it offline.
-    A field the vendor does not declare is `extra`, and breaking."""
+    each (`backlot.routers.google._gmask_select`), so the baseline has to carry it offline. A map's
+    value is reached too, since an editor create reads a body with the vendor's message
+    (`backlot.routers.google._pj_messages`). A field the vendor does not declare is `extra`, and
+    breaking."""
     types = declared_types(doc)
     answers = {o.id: o.response for o in from_google_discovery(doc).values() if o.response}
     walked: list[tuple[str, Any]] = spec.walk(timeout) if spec.walk else []
@@ -336,7 +346,7 @@ def types_measure(spec: TypesTarget, doc: Mapping[str, Any], *, timeout: float) 
         if name in reached or name not in types:
             continue
         reached.add(name)
-        todo += [h for t in types[name].values() if (h := held(t, types))]
+        todo += [h for t in types[name].values() if (h := leads_to(t, types))]
     findings: list[Finding] = []
     nodes: dict[str, TypeNode] = {}
     for name in sorted(reached):

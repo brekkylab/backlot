@@ -8,7 +8,6 @@ this module last to register them.
 from __future__ import annotations
 
 import datetime
-import functools
 import json
 import re
 import struct
@@ -27,19 +26,22 @@ from backlot import (
 )
 from backlot.acl import Caller
 from backlot.errors import google as gerr
-from backlot.openapi import qp
+from backlot.openapi import proto_body, qp
 from backlot.routers.google import (
-    _BASELINES,
     _BATCH_OUTER,
-    _DRIVE_ROOT_FOLDER,
     _drive_owned_by,
+    _editor_creator,
     _editor_doc,
+    _editor_new_file_id,
+    _editor_store,
+    _editor_writable,
     _gmask_apply,
     _gmask_select,
+    _pj_messages,
+    _query_and_body,
     _query_bool,
     _query_enum,
     _require,
-    _service_email,
     _typed_query,
     router,
 )
@@ -976,8 +978,12 @@ def _sheets_value_range(
 _Sheet = gsheets.Sheet
 
 
-def _workbook(request: Request, spreadsheet_id: str) -> tuple:
+def _workbook(request: Request, spreadsheet_id: str, *, write: bool = False) -> tuple:
     """``(row, sheets)`` — the Drive row behind a spreadsheet and the sheets it serves.
+
+    With ``write``, a spreadsheet the caller may only read is refused
+    (`routers.google._editor_writable`), ahead of a missing `valueInputOption` and of any check on
+    the range.
 
     A document that STATES a grid answers with its stored sheets; one that does not answers with a
     SINGLE synthesized sheet holding ``_sheets_grid``'s line-per-cell reading. Prose is therefore
@@ -997,6 +1003,8 @@ def _workbook(request: Request, spreadsheet_id: str) -> tuple:
     if _BATCH_OUTER.get() is not None:
         raise gerr.unimplemented()
     row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
+    if write:
+        _editor_writable(request, row)
     stored = store.gdrive_sheets_for(auth.conn(request), spreadsheet_id)
     if not stored:
         return row, [_Sheet(0, 0, SHEETS_SHEET_TITLE, _sheets_grid(row["content"]))]
@@ -1533,7 +1541,7 @@ def _sheets_filter_echo(f: dict) -> dict:
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchGetByDataFilter",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_BATCH_GET_BY_FILTER)},
 )
 async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: Request):
     """``values:batchGet`` addressed by DataFilter rather than by A1 string.
@@ -1541,7 +1549,7 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     A read, issued over POST because the filters do not fit in a query string. Each entry carries
     the ``valueRange`` AND the filters that selected it — measured — so a caller that sent several
     can tell which answer belongs to which. `majorDimension`, `valueRenderOption` and
-    `dateTimeRenderOption` may come in the query too, which wins (`_sheets_query_and_body`).
+    `dateTimeRenderOption` may come in the query too, which wins (`_query_and_body`).
 
     In the order real answers, measured 2026-10-04 with two wrong at once: an `alt` naming no format
     (`_sheets_alt`), the credential, then the body (``protojson.read``), then the `fields` mask
@@ -1551,7 +1559,7 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     `dateTimeRenderOption` number it does not declare reads as `SERIAL_NUMBER`."""
     _sheets_alt(request)
     _require(request)
-    query, body = await _sheets_query_and_body(
+    query, body = await _query_and_body(
         request,
         {
             "majorDimension": lambda raw: _query_enum(raw, "major_dimension", _PJ_DIMENSION),
@@ -1625,7 +1633,7 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}:getByDataFilter",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_GET_BY_FILTER)},
 )
 async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
     """``spreadsheets.get`` addressed by DataFilter. Same response, and the filters scope the
@@ -1635,10 +1643,10 @@ async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
     2026-10-04). The credential, the body, the spreadsheet's lookup and the filters come in the
     order its sibling's docstring gives. `includeGridData`, `excludeTablesInBandedRanges` and
     `commentsViewMode` may come in the query too, read as `spreadsheets.get` reads them, and the
-    query's wins (`_sheets_query_and_body`)."""
+    query's wins (`_query_and_body`)."""
     _sheets_alt(request)
     caller = _require(request)
-    query, body = await _sheets_query_and_body(request, _SHEETS_GET_FLAGS, _PJ_GET_BY_FILTER)
+    query, body = await _query_and_body(request, _SHEETS_GET_FLAGS, _PJ_GET_BY_FILTER)
     tree, named = _sheets_mask(request, "sheets.Spreadsheet")
     row, sheets = _workbook(request, spreadsheet_id)
     selections = _sheets_selections(body.get("data_filters", []), sheets, values_level=False)
@@ -1764,38 +1772,11 @@ def _sheets_write_readers(*, append: bool = False) -> dict:
     }
 
 
-async def _sheets_query_and_body(
-    request: Request, readers: dict, message: protojson.Message, *, field: str | None = None
-) -> tuple[dict, dict]:
-    """``(query, body)`` of a POST or PUT: each typed query parameter in ``readers`` by its last
-    repeat (``None`` when absent), and the body read into ``message``.
-
-    A query parameter names a field of the request, and real reads both. Measured 2026-10-27 on
-    update, append, batchUpdate, batchUpdateByDataFilter, batchGetByDataFilter and
-    getByDataFilter: with both refused, one 400 lists the body's refusals and then the query's --
-    ``Invalid value at 'data.values' (…), "x"`` then
-    ``Invalid value at 'include_values_in_response' (TYPE_BOOL), "on"`` -- an unknown body name
-    among them; with both set, the query's value is the one used (`_sheets_batch_options`)."""
-    raw = await request.body()
-    try:
-        parsed = _typed_query(request, readers)
-    except gerr.GoogleError as exc:
-        refused = gerr.field_violations(exc)
-        try:
-            protojson.read(raw, message, field=field)
-        except gerr.GoogleError as body_exc:
-            if refused and gerr.field_violations(body_exc):
-                raise gerr.invalid_field_values(gerr.field_violations(body_exc) + refused) from None
-        raise
-    query = {name: (values[-1] if values else None) for name, values in parsed.items()}
-    return query, protojson.read(raw, message, field=field)
-
-
 async def _sheets_write_request(
     request: Request, message: protojson.Message, *, field: str | None = None, append: bool = False
 ) -> tuple[dict, dict]:
     """``(query options, body)`` of a write (`_sheets_write_readers`)."""
-    return await _sheets_query_and_body(
+    return await _query_and_body(
         request, _sheets_write_readers(append=append), message, field=field
     )
 
@@ -1841,22 +1822,6 @@ def _sheets_input_option(name: str | None) -> str:
     if name in (None, _PJ_VALUE_INPUT.names[0]):
         raise gerr.invalid_argument("'valueInputOption' is required but not specified")
     return name
-
-
-def _sheets_writable(request: Request, spreadsheet_id: str) -> tuple:
-    """``(row, sheets)`` for a spreadsheet the caller may write, or the refusal real gives.
-
-    The lookup is the reads' (`_workbook`): a missing id or a Doc is 404, a file nobody shared with
-    the caller 403. Of the files the caller can read, only its own may be written (the admin's
-    being what its service account created, `routers.google._drive_owned_by`) -- every grant
-    here makes a reader (`routers.google._drive_file_capabilities`), and a reader's write is the
-    same 403 ``The caller does not have permission``, measured on update, batchUpdate, clear,
-    batchClear and append. Both come ahead of a missing `valueInputOption` and of any check on the
-    range."""
-    row, sheets = _workbook(request, spreadsheet_id)
-    if not _drive_owned_by(row["author_email"], _require(request).email):
-        raise gerr.permission_denied()
-    return row, sheets
 
 
 class _Writing(NamedTuple):
@@ -2059,24 +2024,24 @@ def _sheets_updated_data(
 
 @router.put(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values/{a1_range:path}",
-    openapi_extra={"parameters": _P_SHEETS_UPDATE},
+    openapi_extra={"parameters": _P_SHEETS_UPDATE, **proto_body(_PJ_UPDATE, "data")},
 )
 async def sheets_values_update(spreadsheet_id: str, a1_range: str, request: Request):
     """``spreadsheets.values.update``.
 
     Refused in real's order, measured: the credential, the typed query values and the body
-    (`_sheets_write_request`), the `fields` mask, the lookup and who may write (`_sheets_writable`), then a missing
-    `valueInputOption`, then a body `range` that is not the URL's, then the range and its values
-    (`_sheets_writing`). The body's `range`, when sent, must be the URL's as typed: `data!a1:b1`
-    and `'Data'!A1:B1` against `Data!A1:B1` are each ``Request range[Data!A1:B1] does not match
-    value's range[data!a1:b1]``. Where a mismatched `range` and an unparseable URL range fall
-    relative to each other was not measured."""
+    (`_sheets_write_request`), the `fields` mask, the lookup and who may write (`_workbook`), then
+    a missing `valueInputOption`, then a body `range` that is not the URL's, then the range and its
+    values (`_sheets_writing`). The body's `range`, when sent, must be the URL's as typed:
+    `data!a1:b1` and `'Data'!A1:B1` against `Data!A1:B1` are each ``Request range[Data!A1:B1] does
+    not match value's range[data!a1:b1]``. Where a mismatched `range` and an unparseable URL range
+    fall relative to each other was not measured."""
     _sheets_alt(request)
     _require(request)
     opts, body = await _sheets_write_request(request, _PJ_UPDATE, field="data")
     body = body.get("data", {})
     tree, _ = _sheets_mask(request, "sheets.UpdateValuesResponse")
-    row, sheets = _sheets_writable(request, spreadsheet_id)
+    row, sheets = _workbook(request, spreadsheet_id, write=True)
     option = _sheets_input_option(opts["valueInputOption"])
     if "range" in body and body["range"] != a1_range:
         raise gerr.invalid_argument(
@@ -2099,7 +2064,7 @@ async def sheets_values_update(spreadsheet_id: str, a1_range: str, request: Requ
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_BATCH_UPDATE)},
 )
 async def sheets_values_batch_update(spreadsheet_id: str, request: Request):
     """``spreadsheets.values.batchUpdate``: every entry checked before any is written, so one bad
@@ -2115,7 +2080,7 @@ async def sheets_values_batch_update(spreadsheet_id: str, request: Request):
     _require(request)
     query, body = await _sheets_write_request(request, _PJ_BATCH_UPDATE)
     tree, _ = _sheets_mask(request, "sheets.BatchUpdateValuesResponse")
-    row, sheets = _sheets_writable(request, spreadsheet_id)
+    row, sheets = _workbook(request, spreadsheet_id, write=True)
     option, include, opts = _sheets_batch_options(query, body)
     entries = body.get("data", [])
     writings = []
@@ -2208,7 +2173,7 @@ async def sheets_values_clear(spreadsheet_id: str, a1_range: str, request: Reque
     _require(request)
     protojson.read(await request.body(), _PJ_CLEAR)
     tree, _ = _sheets_mask(request, "sheets.ClearValuesResponse")
-    row, sheets = _sheets_writable(request, spreadsheet_id)
+    row, sheets = _workbook(request, spreadsheet_id, write=True)
     clearing = _sheets_clearing(a1_range, sheets)
     grids = _sheets_grids(sheets)
     if _sheets_clear(grids, clearing):
@@ -2277,7 +2242,10 @@ def _sheets_table(grid: list[list], r0: int, c0: int, r1: int, c1: int):
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values/{a1_range:path}:append",
-    openapi_extra={"parameters": [qp("insertDataOption"), *_P_SHEETS_UPDATE]},
+    openapi_extra={
+        "parameters": [qp("insertDataOption"), *_P_SHEETS_UPDATE],
+        **proto_body(_PJ_UPDATE, "data"),
+    },
 )
 async def sheets_values_append(spreadsheet_id: str, a1_range: str, request: Request):
     """``spreadsheets.values.append``: ``{spreadsheetId, tableRange, updates}``, with ``tableRange``
@@ -2295,7 +2263,7 @@ async def sheets_values_append(spreadsheet_id: str, a1_range: str, request: Requ
     opts, body = await _sheets_write_request(request, _PJ_UPDATE, field="data", append=True)
     body = body.get("data", {})
     tree, _ = _sheets_mask(request, "sheets.AppendValuesResponse")
-    row, sheets = _sheets_writable(request, spreadsheet_id)
+    row, sheets = _workbook(request, spreadsheet_id, write=True)
     option = _sheets_input_option(opts["valueInputOption"])
     if "range" in body and body["range"] != a1_range:
         raise gerr.invalid_argument(
@@ -2337,7 +2305,7 @@ async def sheets_values_append(spreadsheet_id: str, a1_range: str, request: Requ
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchClear",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_BATCH_CLEAR)},
 )
 async def sheets_values_batch_clear(spreadsheet_id: str, request: Request):
     """``spreadsheets.values.batchClear``: ``clearedRanges`` in the order sent, each as resolved,
@@ -2347,7 +2315,7 @@ async def sheets_values_batch_clear(spreadsheet_id: str, request: Request):
     _require(request)
     body = protojson.read(await request.body(), _PJ_BATCH_CLEAR)
     tree, _ = _sheets_mask(request, "sheets.BatchClearValuesResponse")
-    row, sheets = _sheets_writable(request, spreadsheet_id)
+    row, sheets = _workbook(request, spreadsheet_id, write=True)
     clearings = [
         _sheets_clearing(spec, sheets, prefix=f"Invalid range[{i}]: ")
         for i, spec in enumerate(body.get("ranges", []))
@@ -2365,16 +2333,11 @@ async def sheets_values_batch_clear(spreadsheet_id: str, request: Request):
 
 # --- request bodies read from the recorded Sheets messages --------------------------------------
 #
-# `spreadsheets.create` takes a whole `Spreadsheet`, a tree of a hundred and more messages. Each is
-# read with a `protojson.Message` generated from the message the `google_drive` baseline records
-# from the discovery document (`backlot diff` keeps it current), so a name the vendor's message
-# lacks is refused where real refuses it and every name it has is read. The baseline records an
-# enum as `string`; the enums this module acts on are declared here, with the discovery
-# document's values in number order.
+# `spreadsheets.create` takes a whole `Spreadsheet`, a tree of a hundred and more messages, each
+# read with the `protojson.Message` `routers.google._pj_messages` builds from the recorded message.
+# The baseline records an enum as `string`; the enums this module acts on are declared here, with
+# the discovery document's values in number order.
 
-_SHEETS_RECORDED = json.loads((_BASELINES / "google_drive.json").read_text(encoding="utf-8"))[
-    "types"
-]
 _PJ_ENUM_FIELDS = {
     ("sheets.SheetProperties", "sheetType"): _pj_enum(
         "SheetType", "SHEET_TYPE_UNSPECIFIED", "GRID", "OBJECT", "DATA_SOURCE"
@@ -2408,36 +2371,13 @@ _PJ_ENUM_FIELDS = {
         "SCIENTIFIC",
     ),
 }
-_PJ_SCALAR_KINDS = {"integer": "int32", "number": "double", "boolean": "bool", "string": "string"}
-
-
-@functools.cache
-def _pj_message(name: str) -> protojson.Message:
-    """The recorded message ``name`` (`sheets.SheetProperties`) as a `protojson.Message`."""
-    fields = []
-    for json_name, member in _SHEETS_RECORDED[name].get("fields", {}).items():
-        type_ = member.get("type", "any")
-        repeated = type_.startswith("[") and type_ != "[[any]]"
-        inner = type_[1:-1] if repeated else type_
-        proto = re.sub(r"(?<!^)(?=[A-Z])", "_", json_name).lower()
-        enum = _PJ_ENUM_FIELDS.get((name, json_name))
-        if enum is not None:
-            fields.append(protojson.Field(json_name, proto, "enum", enum=enum, repeated=repeated))
-        elif inner in _SHEETS_RECORDED:
-            fields.append(
-                protojson.Field(
-                    json_name, proto, "message", message=_pj_message(inner), repeated=repeated
-                )
-            )
-        elif type_ == "[[any]]":
-            fields.append(protojson.Field(json_name, proto, "rows"))
-        elif inner in _PJ_SCALAR_KINDS:
-            fields.append(
-                protojson.Field(json_name, proto, _PJ_SCALAR_KINDS[inner], repeated=repeated)
-            )
-        else:  # a map or a bare JSON value: kept as sent
-            fields.append(protojson.Field(json_name, proto, "any"))
-    return protojson.Message(f"{_SHEETS_ENUM}.{name.split('.', 1)[1]}", tuple(fields))
+# A filter's and a pivot table's `criteria` map is keyed by column, an int32: measured 2026-10-29,
+# `{"a": {}}` is ``Invalid value at '…criteria[0].key' (TYPE_INT32), "a"`` and `+1` is read.
+_PJ_MAP_KEYS = {
+    (message, "criteria"): {"key": "int32"}
+    for message in ("sheets.BasicFilter", "sheets.FilterView", "sheets.PivotTable")
+}
+_pj_message = _pj_messages(_SHEETS_ENUM, _PJ_ENUM_FIELDS, _PJ_MAP_KEYS)
 
 
 # --- `spreadsheets.create` -----------------------------------------------------------------------
@@ -2642,22 +2582,40 @@ def _sheets_json(message: dict) -> dict:
     }
 
 
-def _sheets_creator(request: Request, caller: Caller) -> str:
-    """Who a created file belongs to: the caller, or for the admin/service token the service
-    account, which on real owns what it creates."""
-    return caller.email or _service_email(request)
+# What `sheets_create` keeps of a `Spreadsheet`; the rest it reads and drops
+# (`docs/write-overlay.md`).
+_SHEETS_CREATE_KEPT = {
+    "properties": {"title": None, "locale": None, "timeZone": None, "autoRecalc": None},
+    "sheets": {
+        "properties": {
+            "sheetId": None,
+            "title": None,
+            "index": None,
+            "sheetType": None,
+            "gridProperties": None,
+            "hidden": None,
+            "tabColor": None,
+            "tabColorStyle": None,
+            "rightToLeft": None,
+        },
+        "data": {
+            "startRow": None,
+            "startColumn": None,
+            "rowData": {
+                "values": {"userEnteredValue": None, "userEnteredFormat": {"numberFormat": None}}
+            },
+        },
+    },
+}
 
 
-def _sheets_new_file_id(conn, owner: str) -> str:
-    """A Drive file id no stored file has, minted as the importer mints one
-    (`synth.gdrive_file_id`) from a seed only this creation has."""
-    while True:
-        file_id = synth.gdrive_file_id(f"created:{owner}:{time.time_ns()}")
-        if store.gdrive_by_id(conn, file_id) is None:
-            return file_id
-
-
-@router.post("/sheets/v4/spreadsheets", openapi_extra={"parameters": _P_SHEETS_STD})
+@router.post(
+    "/sheets/v4/spreadsheets",
+    openapi_extra={
+        "parameters": _P_SHEETS_STD,
+        **proto_body(_PJ_CREATE, "spreadsheet", _SHEETS_CREATE_KEPT),
+    },
+)
 async def sheets_create(request: Request):
     """``spreadsheets.create``: a new workbook at the caller's My Drive root, owned by the caller
     and shared with nobody, answered as `spreadsheets.get` answers it without grid data.
@@ -2684,8 +2642,8 @@ async def sheets_create(request: Request):
     if _BATCH_OUTER.get() is not None:
         raise gerr.unimplemented()
     conn = auth.conn(request)
-    owner = _sheets_creator(request, caller)
-    file_id = _sheets_new_file_id(conn, owner)
+    owner = _editor_creator(request, caller)
+    file_id = _editor_new_file_id(conn, owner)
     stated = body.get("properties") or {}
     settings = dict(gsheets.DEFAULT_PROPERTIES)
     if stated.get("locale"):
@@ -2719,26 +2677,14 @@ async def sheets_create(request: Request):
         raise gerr.invalid_argument(f"Invalid sheets[0]: {_SHEETS_ALL_HIDDEN}")
     if misplaced:
         raise gerr.invalid_argument(f"Invalid sheets: {_SHEETS_INDEX_TOO_HIGH}")
-    title = stated.get("title") or SHEETS_UNTITLED
-    now = int(time.time())
-    store.insert_document(
+    _editor_store(
         conn,
-        "google_drive",
+        file_id,
+        owner,
+        stated.get("title") or SHEETS_UNTITLED,
+        "spreadsheet",
+        gsheets.to_csv(book.sheets[0].grid),
         {
-            "id": file_id,
-            "folder": _DRIVE_ROOT_FOLDER,
-            "author_email": owner,
-            "title": title,
-            "content": gsheets.to_csv(book.sheets[0].grid),
-            "subtype": "spreadsheet",
-            "parents": json.dumps([synth.drive_root_id(owner)]),
-            "created_ts": now,
-            "updated_ts": now,
-            "trashed": 0,
-            "title_fold": store.drive_name_fold(title),
-        },
-        grants=[("user", owner)],
-        parts={
             "gdrive_sheets": _sheets_sheet_rows(book.sheets),
             "gdrive_spreadsheets": [{"properties": json.dumps(settings, sort_keys=True)}],
         },
@@ -2768,7 +2714,7 @@ _PJ_COPY_TO = protojson.Message(
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/sheets/{sheet_id}:copyTo",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_COPY_TO)},
 )
 async def sheets_copy_to(spreadsheet_id: str, sheet_id: str, request: Request):
     """``spreadsheets.sheets.copyTo``: the copy's `SheetProperties`.
@@ -2797,7 +2743,7 @@ async def sheets_copy_to(spreadsheet_id: str, sheet_id: str, request: Request):
     dest_row = store.gdrive_by_id(conn, dest_id) if dest_id else None
     if dest_row is None or (dest_row["subtype"] or "document") != "spreadsheet":
         raise gerr.invalid_argument(f"Invalid destinationSpreadsheetId [{dest_id}]")
-    dest_row, dest_sheets = _sheets_writable(request, dest_id)
+    dest_row, dest_sheets = _workbook(request, dest_id, write=True)
     book = gsheets.Workbook(dest_id, dest_sheets, _sheets_settings(conn, dest_id))
     title = book.copy_title(source.title)
     copied = _Sheet(
@@ -2889,7 +2835,7 @@ def _sheets_filter_fit(values: list, named: str, height: int, width: int, matche
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchUpdateByDataFilter",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_BATCH_UPDATE_BY_FILTER)},
 )
 async def sheets_values_batch_update_by_data_filter(spreadsheet_id: str, request: Request):
     """``spreadsheets.values.batchUpdateByDataFilter``: `values:batchUpdate` with each range named
@@ -2905,7 +2851,7 @@ async def sheets_values_batch_update_by_data_filter(spreadsheet_id: str, request
     _require(request)
     query, body = await _sheets_write_request(request, _PJ_BATCH_UPDATE_BY_FILTER)
     tree, _ = _sheets_mask(request, "sheets.BatchUpdateValuesByDataFilterResponse")
-    row, sheets = _sheets_writable(request, spreadsheet_id)
+    row, sheets = _workbook(request, spreadsheet_id, write=True)
     option, include, opts = _sheets_batch_options(query, body)
     writings = []
     for i, entry in enumerate(body.get("data", [])):
@@ -2967,7 +2913,7 @@ async def sheets_values_batch_update_by_data_filter(spreadsheet_id: str, request
 
 @router.post(
     "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchClearByDataFilter",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+    openapi_extra={"parameters": _P_SHEETS_STD, **proto_body(_PJ_BATCH_CLEAR_BY_FILTER)},
 )
 async def sheets_values_batch_clear_by_data_filter(spreadsheet_id: str, request: Request):
     """``spreadsheets.values.batchClearByDataFilter``: ``clearedRanges`` for what the filters
@@ -2979,7 +2925,7 @@ async def sheets_values_batch_clear_by_data_filter(spreadsheet_id: str, request:
     _require(request)
     body = protojson.read(await request.body(), _PJ_BATCH_CLEAR_BY_FILTER)
     tree, _ = _sheets_mask(request, "sheets.BatchClearValuesByDataFilterResponse")
-    row, sheets = _sheets_writable(request, spreadsheet_id)
+    row, sheets = _workbook(request, spreadsheet_id, write=True)
     selections = _sheets_selections(body.get("data_filters", []), sheets, values_level=True)
     matched = [s for s in selections if s is not None]
     out: dict = {"spreadsheetId": spreadsheet_id}

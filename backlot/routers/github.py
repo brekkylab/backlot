@@ -206,7 +206,15 @@ def honours_api_version(request: Request) -> bool:
     `resources` alone with the echo and the 400. The route is the whole of the exception — that
     same `1999-01-01` with no credential is a 400 on `/repos/psf/requests`, `/users/psf` and
     `/user/repos` (measured against api.github.com 2026-09-21, on cache-busted urls).
+
+    The agent paths read it from nobody: a maintainer's live calls of 2026-10-28 answered a token
+    that resolves the same 404 on four `/agents/...` operations with `1999-01-01` pinned as
+    without it, and carried `X-GitHub-Api-Version-Selected` on none of their answers, so no
+    `/agents` answer here echoes a version and the version's 400 does not run on one (see
+    :func:`_an_agent_path` for how much of the path space that is).
     """
+    if _an_agent_path(request.scope["path"]):
+        return False
     if request.url.path == CODE_SEARCH_PATH:
         return False
     return request.url.path != RATE_LIMIT_PATH or "authorization" in request.headers
@@ -613,6 +621,16 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     that resolves to no one is "Bad credentials" with neither the echo nor the five, ahead of the
     version: on 2026-10-25 the base64 of `x:ghp_<36 A>`, with and without `1999-01-01`, was that 401
     on ten operations, `DELETE /installation/token` and `PATCH /repos/{owner}/{repo}` among them.
+
+    On the agent paths the version runs for nobody it reaches: a maintainer's live calls of
+    2026-10-28 answered a token that resolves the same 404 on four `/agents/...` operations with
+    `1999-01-01` pinned as without it, and no answer of theirs carried the echo — the four being
+    `GET /agents/automations/1/tasks`, a repository's automations one by id and its tasks, and an
+    agent-merge `GET` (:func:`under_an_agent_family`'s note has the families). So
+    :func:`_validate_api_version` does not run here on an agent path
+    (:func:`honours_api_version` leaves it False for the whole of `/agents`), and the 404 the
+    router answers for the token carries no echo, nor does :func:`_require`'s 401 for a `Basic`
+    value that names no token.
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return
@@ -723,9 +741,79 @@ def is_an_unserved_operation(method: str, path: str) -> bool:
     )
 
 
+def _an_agent_path(path: str) -> bool:
+    """Whether the path is an `/agents` one, the `/github` prefix aside: the prefix the agent
+    families share, and the one real reads no API version on (see :func:`honours_api_version`)."""
+    return path.removeprefix("/github").startswith("/agents/")
+
+
+def under_an_agent_family(path: str) -> bool:
+    """Whether the `/github` path is at or under one of the two agent families real asks a
+    credential on before it answers anything at all under them, on any path, published or not: a
+    repository's agent surface, `/agents/repos/{owner}/{repo}/…`, and the agent task statuses,
+    `/agents/tasks/{id}/…`, each family's own path included.
+
+    Measured against api.github.com on 2026-10-28, a maintainer's live calls: no credential, a
+    `Bearer nope` and a token on `GET /agents/repos/{o}/{r}/nosuch`,
+    `GET /agents/repos/{o}/{r}/automations/1/nosuch` and `GET /agents/tasks/1/nosuch` were 401
+    "Requires authentication", 401 "Bad credentials" and a plain-text `404 page not found`. The
+    families are two, not the whole of `/agents`: real answered `GET /agents/nosuchthing` 404
+    with no credential, and the paths under `/agents/automations/` that no operation of the
+    baseline names 404 for every credential (see :data:`_ROUTED_UNPUBLISHED`'s note).
+
+    The paths an operation of the baseline does publish on a family keep their own refusal
+    (:func:`refuse_an_unserved_operation`, which the same 401s are), so a token's answer there
+    stays the router's 404 rather than the plain text; ``backlot.main`` asks this and
+    :func:`is_an_unserved_operation` together to draw that line.
+    """
+    parts = path.removeprefix("/github").split("/")
+    if len(parts) < 4 or parts[1] != "agents":
+        return False
+    if parts[2] == "repos":
+        return len(parts) >= 5 and bool(parts[3]) and bool(parts[4])
+    if parts[2] == "tasks":
+        return len(parts) >= 4 and bool(parts[3])
+    return False
+
+
+async def refuse_a_credential_on_an_agent_path(request: Request) -> PlainTextResponse | None:
+    """Refuse a request whose path :func:`under_an_agent_family` names for its credential, ahead
+    of the router's 404, as real asks for one there on any path of the two families, published or
+    not: no `Authorization` header, or one that carries no credential
+    (:func:`_a_header_without_a_credential`), is the 401 "Requires authentication"; a credential
+    that arrived and did not resolve is the 401 "Bad credentials"
+    (:func:`_validate_bad_credential`); a `Basic` value that names no token is :func:`_require`'s
+    401, as on an unserved operation. A caller whose credential resolves is answered here — no
+    route of Backlot's underlies any path the gate takes — with the plain-text `404 page not
+    found` real answers a token with, no version read on the way.
+
+    The no-credential 401 carries the five `x-ratelimit-*` and counts on the methods an
+    unserved operation's does (:data:`_UNCOUNTED_METHODS` aside), and the header-without-a-
+    credential one on no method, which is the state :func:`refused_an_unserved_operation` reads
+    and this refusal marks too; the measured neighbors of these paths both answer a caller with
+    no header that way, the unserved operation's 401 and the 404 of a path real does not route.
+    The "Bad credentials" 401 carries none of the five on any path, and neither does the token's
+    text 404, which is the 404 a token gets on a path real does not route (see
+    ``backlot.main._github_routes``).
+    """
+    if "authorization" not in request.headers:
+        request.state.github_unserved_refusal = (
+            "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
+        )
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    if _a_header_without_a_credential(request):
+        request.state.github_unserved_refusal = "uncounted"
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    await _validate_bad_credential(request)
+    if auth.github_credential(request) is None:
+        _require(request)
+    return PlainTextResponse("404 page not found", status_code=404)
+
+
 def refused_an_unserved_operation(request: Request) -> bool:
     """Whether :func:`refuse_an_unserved_operation` refused this request with no credential: no
-    `Authorization` header, or one that carries none."""
+    `Authorization` header, or one that carries none. The refusal the agent families get
+    (:func:`refuse_a_credential_on_an_agent_path`) marks the same state."""
     return getattr(request.state, "github_unserved_refusal", None) is not None
 
 

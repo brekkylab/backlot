@@ -2702,6 +2702,12 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     no answer of real's: a bearer after a tab that resolves was not sent on the three writes, and
     `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
     with no `x-ratelimit-*`.
+
+    On the three refused rows under `/agents`, the version is read by no caller: a maintainer's
+    live calls answered a token that resolves the same 404 with `1999-01-01` pinned as without it,
+    and no answer of the family carried the echo (see
+    `backlot.routers.github.honours_api_version`), so those rows' answers here carry no echo and
+    a pinned unknown version is no 400, the five `x-ratelimit-*` on the answers as before.
     """
     c, _ = gh_client
     url = path.format(org=gh_org)
@@ -2739,14 +2745,98 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert "x-github-api-version-selected" not in bad.headers, headers
         assert not any(name.startswith("x-ratelimit-") for name in bad.headers), headers
     basic = {"Authorization": "Basic Zm9vOmJhcg=="}
+    agents = url.startswith("/github/agents")
     for headers, answered in ((gh_admin_h, status), (basic, 401)):
         r = c.request(method, url, headers=headers)
         assert r.status_code == answered, headers
-        assert r.headers["x-github-api-version-selected"] == "2022-11-28", headers
         assert any(name.startswith("x-ratelimit-") for name in r.headers), headers
+        if agents:
+            # The version is read by nobody on the `/agents` answers (a maintainer's live calls:
+            # the same 404 with `1999-01-01` pinned as without it, and no echo on any of the
+            # family's answers — see `backlot.routers.github.honours_api_version`), so the echo
+            # is off here and a pinned unknown version is no 400: the answer is the same 404, the
+            # five `x-ratelimit-*` with it as before.
+            assert "x-github-api-version-selected" not in r.headers, headers
+            unversioned = c.request(method, url, headers={**headers, **bad_version})
+            assert unversioned.status_code == answered, headers
+            assert "x-github-api-version-selected" not in unversioned.headers, headers
+            assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
+            continue
+        assert r.headers["x-github-api-version-selected"] == "2022-11-28", headers
         unversioned = c.request(method, url, headers={**headers, **bad_version})
         assert (unversioned.status_code, unversioned.json()["message"]) == (400, "Bad Request")
         assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
+
+
+_AGENT_FAMILY_PATHS = [
+    "/github/agents/repos/{org}/codebase/nosuch",
+    "/github/agents/repos/{org}/codebase/automations/1/nosuch",
+    "/github/agents/tasks/1/nosuch",
+]
+
+
+@pytest.mark.parametrize("path", _AGENT_FAMILY_PATHS)
+def test_github_the_agent_families_ask_for_a_credential_on_any_path(
+    gh_client, gh_admin_h, gh_org, path
+):
+    """Any path of the two agent families real gates — a repository's and the task statuses' — is
+    refused for its credential before anything answers it, published or not: no credential, a
+    `Bearer nope` and a token were 401 "Requires authentication", 401 "Bad credentials" and a
+    plain-text `404 page not found` on each of the three paths, a maintainer's live calls, each
+    sent with `1999-01-01` pinned and without, the answers the same either way — the version is
+    read on no `/agents` answer (see `backlot.routers.github.honours_api_version`;
+    `backlot.routers.github.refuse_a_credential_on_an_agent_path` says where the five
+    `x-ratelimit-*` and the counting of the no-credential 401 come from: the unserved operation's
+    refusal and the 404 of a path real does not route, these paths' measured neighbors, both
+    answer a caller with no header that way).
+    """
+    c, _ = gh_client
+    url = path.format(org=gh_org)
+    bad_version = {"X-GitHub-Api-Version": "1999-01-01"}
+    for headers in ({}, bad_version):
+        anonymous = c.get(url, headers=headers)
+        assert (
+            anonymous.status_code,
+            anonymous.json()["message"],
+        ) == (401, "Requires authentication"), headers
+        assert "x-github-api-version-selected" not in anonymous.headers, headers
+        assert any(name.startswith("x-ratelimit-") for name in anonymous.headers), headers
+    for headers in (
+        {"Authorization": "Bearer nope"},
+        {"Authorization": "Bearer nope", **bad_version},
+    ):
+        bad = c.get(url, headers=headers)
+        assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials"), headers
+        assert "x-github-api-version-selected" not in bad.headers, headers
+        assert not any(name.startswith("x-ratelimit-") for name in bad.headers), headers
+    for headers in (gh_admin_h, {**gh_admin_h, **bad_version}):
+        found = c.get(url, headers=headers)
+        assert (found.status_code, found.text) == (404, "404 page not found"), headers
+        assert found.headers["content-type"].startswith("text/plain"), headers
+        assert "x-github-api-version-selected" not in found.headers, headers
+        assert not any(name.startswith("x-ratelimit-") for name in found.headers), headers
+
+
+def test_github_the_agent_families_gate_their_own_paths_too(gh_client, gh_admin_h, gh_org):
+    """A family's own path is gated like the paths under it — `GET /agents/repos/{o}/{r}` is at
+    or under the repository's family the same as the paths below it are — though the calls of the
+    measurement name only deeper ones: `under_an_agent_family` reads any path the two families
+    cover. The paths an operation of the baseline does publish on a family keep their own
+    refusal (`test_github_an_unserved_operation_is_refused_for_its_credential_first`), which is
+    why the task statuses' id is not here: `GET /agents/tasks/{}` is one of the baseline's
+    `missing` operations.
+    """
+    c, _ = gh_client
+    url = f"/github/agents/repos/{gh_org}/codebase"
+    anonymous = c.get(url)
+    assert (anonymous.status_code, anonymous.json()["message"]) == (
+        401,
+        "Requires authentication",
+    )
+    bad = c.get(url, headers={"Authorization": "Bearer nope"})
+    assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials")
+    found = c.get(url, headers=gh_admin_h)
+    assert (found.status_code, found.text) == (404, "404 page not found")
 
 
 _NO_CREDENTIAL = "Requires authentication"

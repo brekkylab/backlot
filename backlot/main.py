@@ -399,6 +399,31 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
 
 @_middleware(
     lambda scope: (
+        github.under_an_agent_family(scope["path"])
+        and not github.is_an_unserved_operation(scope["method"], scope["path"])
+    )
+)
+async def refuse_a_credential_on_an_agent_path(request: Request, call_next):
+    """A path of one of the agent families real gates a credential on is refused for it ahead of
+    the router's 404, on any path, published or not, and a caller whose credential resolves is
+    answered there with the plain-text 404 real answers a token with
+    (``backlot.routers.github.refuse_a_credential_on_an_agent_path``).
+
+    Registered after `refuse_an_unserved_github_operation`, which keeps the paths an operation of
+    the baseline publishes on a family — those it refuses itself, a token among them on to the
+    router's 404 — and before the version echo and the rate-limit headers, so the refusals leave
+    through them as an unserved operation's do: no echo, the five `x-ratelimit-*` by the state
+    :func:`github.refused_an_unserved_operation_uncounted` reads, which the refusal marks.
+    """
+    try:
+        answer = await github.refuse_a_credential_on_an_agent_path(request)
+    except StarletteHTTPException as exc:
+        return await _http_exception_handler(request, exc)
+    return answer if answer is not None else await call_next(request)
+
+
+@_middleware(
+    lambda scope: (
         scope["path"].startswith("/hubspot/")
         and hubspot.is_an_unserved_operation(scope["method"], scope["path"])
     )
@@ -467,7 +492,9 @@ async def echo_github_api_version(request: Request, call_next):
     caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
     (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
     ``DELETE /installation/token``'s 401 is the one of those that echoes, as a served route's does
-    (:func:`github.refused_an_unserved_operation_reported`).
+    (:func:`github.refused_an_unserved_operation_reported`). Nor does anything on an agent path:
+    real reads the version header on none of the `/agents` answers
+    (``github.honours_api_version``).
     """
     response = await call_next(request)
     if (

@@ -1726,12 +1726,26 @@ def _confluence_json(body: dict) -> bytes:
     `cqlQuery` as `\\uD83D\\uDE00` for a `title~` and a `label=` query alike.
     """
 
+    written = json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    return escape_past_bmp(written).encode()
+
+
+def escape_past_bmp(written: str) -> str:
+    """JSON text with each character past U+FFFF as Confluence writes it: two ``\\u`` escapes, its
+    UTF-16 surrogates in upper-case hex. Such a character can stand only inside a JSON string, so
+    the text decodes to the same value either way.
+
+    Real writes every 200 so, not only the CQL search's: measured on Confluence Cloud 2026-10-23,
+    U+1F600 and U+1D7D3 in a page's and a child page's title and storage body, and in a comment's
+    body, went out as `\\uD83D\\uDE00` and `\\uD835\\uDFD3` on `content/{id}` with and without
+    `expand=body.storage`, `content?spaceKey=`, `content?title=`, `content/{id}/child/page`,
+    `content/{id}/child/comment` and the search, where `é` stayed its UTF-8 bytes."""
+
     def escapes(match: re.Match[str]) -> str:
         past = ord(match.group()) - 0x10000
         return f"\\u{0xD800 + (past >> 10):04X}\\u{0xDC00 + (past & 0x3FF):04X}"
 
-    written = json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-    return _PAST_BMP.sub(escapes, written).encode()
+    return _PAST_BMP.sub(escapes, written)
 
 
 def rendered(request, status_code: int, body, headers=None) -> Response | None:

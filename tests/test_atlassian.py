@@ -1949,6 +1949,55 @@ def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(client,
     assert "é".encode() in inside.content
 
 
+def test_confluence_200s_write_corpus_text_past_the_bmp_as_surrogate_escapes(tmp_path):
+    """A title, body or comment from the corpus holding a character past U+FFFF goes out escaped on
+    every Confluence 200, as the search's answer already did, and `é` stays its UTF-8 bytes."""
+    e1, e2 = "\U0001f600", "\U0001d7d3"
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": "eng",
+        "title": f"probe {e1}{e2} é",
+        "content": f"body {e1}{e2}",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "comments": [
+            {
+                "content": f"comment {e1}{e2}",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-10-02T09:00:00Z",
+            }
+        ],
+        "created": "2026-10-01T09:00:00Z",
+    }
+    child = {**page, "doc_id": "c", "parent": "p", "title": f"child {e1}{e2}", "comments": []}
+    settings = tiny_corpus(tmp_path, [page, child])
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        rows = c.get(f"{api}/content?expand=space", headers=h).json()["results"]
+        ids = {r["title"]: r["id"] for r in rows}
+        pid, key = ids[page["title"]], rows[0]["space"]["key"]
+        for path in (
+            f"/content/{pid}",
+            f"/content/{pid}?expand=body.storage",
+            f"/content/{ids[child['title']]}",
+            f"/content?spaceKey={key}",
+            f"/content/{pid}/child/page",
+            f"/content/{pid}/child/comment?expand=body.storage",
+            '/search?cql=title~"probe"',
+        ):
+            answer = c.get(api + path, headers=h)
+            assert answer.status_code == 200, path
+            assert rb"\uD83D\uDE00" in answer.content, path
+            assert e1.encode() not in answer.content, path
+            assert e2.encode() not in answer.content, path
+        titled = c.get(f"{api}/content/{pid}", headers=h)
+        assert rb"\uD83D\uDE00\uD835\uDFD3 " + "é".encode() in titled.content
+        assert titled.json()["title"] == page["title"]
+        assert titled.headers["content-length"] == str(len(titled.content))
+
+
 # --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------
 
 

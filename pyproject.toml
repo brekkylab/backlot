@@ -252,6 +252,7 @@ backlot = [
     "schemas/*.json",
     "schemas/*.md",
     "graphql/*.graphql",
+    "graphql/*.html",
     "data/*.json",
     "data/*.jsonl",
     "data/*.wadl",

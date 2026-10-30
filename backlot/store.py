@@ -328,7 +328,7 @@ ID_SEED = {
     # synth.gdrive_file_id's docstring for the digest-bytes reasoning and idx_gdrive_id's
     # schema comment for the collision argument and the folder-id disjointness.
     "google_drive": (synth.gdrive_file_id, None),
-    # A transcript's own 24-hex id. A BYO record may still provide one (its `transcript_id`), which
+    # A transcript's own ULID. A BYO record may still provide one (its `transcript_id`), which
     # wins the way a provided github number does; the seed fills every row that gives none.
     "fireflies": (synth.fireflies_id, None),
 }
@@ -973,9 +973,9 @@ CREATE TABLE IF NOT EXISTS principals (
 CREATE TABLE IF NOT EXISTS fireflies_users (
     email TEXT PRIMARY KEY REFERENCES principals(id), served_id TEXT NOT NULL
 );
--- `synth.fireflies_user_id` is 24 hex characters (96 bits) -- like gmail/notion's own served ids,
--- the raw seed is stored as-is and a collision (vanishingly unlikely at any real scale) fails the
--- import loudly through this index rather than resolving silently.
+-- `synth.fireflies_user_id` is a ULID, 80 of whose bits vary -- the raw seed is stored as-is and a
+-- collision (vanishingly unlikely at any real scale) fails the import loudly through this index
+-- rather than resolving silently.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_fireflies_user_served ON fireflies_users(served_id);
 
 CREATE TABLE IF NOT EXISTS group_members (

@@ -6,12 +6,14 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 
 import pytest
 
 from backlot import store
-from tests._helpers import crawl_hubspot, db_count, served_id, tiny_corpus
+from tests._helpers import crawl_hubspot, db_count, sent_as, served_id, tiny_corpus
 
 HUBSPOT_OBJECT_TYPES = ("companies", "contacts", "notes")
 
@@ -1165,6 +1167,124 @@ def test_hubspot_leaves_a_path_no_route_serves_to_the_router(client, admin_h, me
         method, "/hubspot/crm/v3/nonexistent-xyz", headers={**admin_h, "Accept": "text/html"}
     )
     assert r.status_code == 404
+
+
+#: The SHA-256 of real's 403 block page with its Ray ID read as `<RAY>` and the address it named
+#: as `<IP>`, the same for each of the 34 answers ``hubspot._BLOCK_PAGE`` was read from.
+_BLOCK_PAGE_SHA256 = "65d57c8fa13d6703177fef36fb7b88e9ac8fcda0d0c97ff92a491840569515b8"
+_BLOCK_HEADERS = {
+    "content-type": "text/html; charset=UTF-8",
+    "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, post-check=0, "
+    "pre-check=0",
+    "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+    "referrer-policy": "same-origin",
+    "x-frame-options": "SAMEORIGIN",
+    "connection": None,
+}
+
+
+def _blocked(r) -> tuple:
+    """``r``'s status, the headers of :data:`_BLOCK_HEADERS` and the SHA-256 of its body read as
+    :data:`_BLOCK_PAGE_SHA256` reads real's, the address being the one `sent_as` sends from."""
+    body = re.sub(
+        rb'(Cloudflare Ray ID: <strong class="font-semibold">)[0-9a-f]{16}(</strong>)',
+        rb"\1<RAY>\2",
+        r.content,
+    )
+    body = re.sub(
+        rb'(<span class="hidden" id="cf-footer-ip">)127\.0\.0\.1(</span>)', rb"\1<IP>\2", body
+    )
+    headers = {name: r.headers.get(name) for name in _BLOCK_HEADERS}
+    return r.status_code, headers, hashlib.sha256(body).hexdigest()
+
+
+# Each `X-Probe` value sent to api.hubapi.com on 2026-10-30 (UTC) with no credential on the
+# listing, and whether Cloudflare blocked it; where it did not, the route's 401 answered.
+_HEADER_VALUES = [
+    (b"a\xc2\x80b", False),
+    (b"a\xc2\xa0b", False),
+    (b"a\xc3\xa9b", False),
+    (b"a\xe2\x82\xacb", False),
+    (b"a\xf0\x9f\x98\x80b", False),
+    (b"a\xef\xbb\xbfb", False),
+    (b"a\xef\xbf\xbfb", False),
+    (b"a\xed\x9f\xbfb", False),
+    (b"a\xf4\x8f\xbf\xbfb", False),
+    (b"a\xc3\xa9\xc3\xa9b", False),
+    (b"a\xc3\xa9", False),
+    (b"a\xed\xa0\x80b", True),
+    (b"a\xc0\x80b", True),
+    (b"a\xc1\xbfb", True),
+    (b"a\xe0\x80\x80b", True),
+    (b"a\xf4\x90\x80\x80b", True),
+    (b"a\xf5\x80\x80\x80b", True),
+    (b"a\xf8\x88\x80\x80\x80b", True),
+    (b"a\xc3b", True),
+    (b"a\xe2\x82b", True),
+    (b"a\xc3", True),
+    (b"a\x80b", True),
+    (b"a\xbfb", True),
+    (b"a\xfeb", True),
+    (b"a\xffb", True),
+    (b"a\xc3\xa9\x80b", True),
+    (b"\xa0", True),
+]
+
+
+@pytest.mark.parametrize(
+    "value, blocked", _HEADER_VALUES, ids=lambda v: v.hex(" ") if isinstance(v, bytes) else None
+)
+def test_hubspot_answers_a_header_value_that_is_not_utf_8_with_cloudflares_block(
+    client, value, blocked
+):
+    r = sent_as(client, "GET", f"/hubspot{_LISTING}", [("X-Probe", value.decode("latin-1"))])
+    if blocked:
+        assert _blocked(r) == (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256)
+    else:
+        assert r.status_code == 401
+
+
+_HIGH = ("X-Probe", "a\x80b")
+_TWICE = [("Authorization", "Bearer x")] * 2
+
+# Requests carrying a value Cloudflare blocks, beside what real answered on api.hubapi.com on
+# 2026-10-30 (UTC): its block, or `without` where an answer of Cloudflare's own came ahead of the
+# block, which here is the answer to the same request with the byte 0x80 left out.
+_BLOCK_ROWS = [
+    pytest.param(
+        "GET", _LISTING, [_HIGH, ("Accept", "application/json")], None, "block", id="json"
+    ),
+    pytest.param("GET", _LISTING, [_HIGH, ("Accept", "text/html")], None, "block", id="html"),
+    pytest.param("HEAD", _LISTING, [_HIGH], None, "block", id="HEAD"),
+    pytest.param("POST", _LISTING, [_HIGH, ("Content-Type", "application/json")], b"{}", "block"),
+    pytest.param("OPTIONS", _LISTING, [_HIGH], None, "block", id="OPTIONS"),
+    pytest.param("GET", "/", [_HIGH], None, "block", id="root"),
+    pytest.param("POST", "/oauth/v1/token", [_HIGH], b"", "block", id="token"),
+    pytest.param("GET", "/nosuch", [_HIGH], None, "block", id="no route"),
+    pytest.param("GET", _LISTING, [("Authorization", "Bearer a\x80b")], None, "block"),
+    pytest.param("GET", _LISTING, [*_TWICE, _HIGH], None, "without", id="Authorization twice"),
+    pytest.param("TRACE", _LISTING, [_HIGH], None, "without", id="TRACE"),
+    pytest.param("CONNECT", _LISTING, [_HIGH], None, "without", id="CONNECT"),
+    pytest.param("PURGE", _LISTING, [_HIGH], None, "without", id="PURGE"),
+]
+
+
+@pytest.mark.parametrize("method, path, sent, body, answer", _BLOCK_ROWS)
+def test_hubspot_answers_cloudflares_block_after_cloudflares_own_answers(
+    client, method, path, sent, body, answer
+):
+    r = sent_as(client, method, f"/hubspot{path}", sent, content=body)
+    plain = [(name, value.replace("\x80", "")) for name, value in sent]
+    without = sent_as(client, method, f"/hubspot{path}", plain, content=body)
+    if answer == "without":
+        assert (r.status_code, r.content) == (without.status_code, without.content)
+        return
+    assert without.status_code != 403
+    if method == "HEAD":
+        get = sent_as(client, "GET", f"/hubspot{path}", sent)
+        assert (r.status_code, r.headers["content-length"]) == (403, get.headers["content-length"])
+        return
+    assert _blocked(r) == (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256)
 
 
 @pytest.mark.parametrize(

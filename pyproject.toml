@@ -256,5 +256,6 @@ backlot = [
     "data/*.json",
     "data/*.jsonl",
     "data/*.wadl",
+    "data/*.html",
     "fidelity/baseline/*.json",
 ]

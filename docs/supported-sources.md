@@ -322,6 +322,13 @@ is their text, one line each. A record that states only `content` is one plain p
 of it. Reading a file of the wrong type through any of the three editor APIs is refused, as real
 Google does, not reinterpreted.
 
+Google's front end reads a request ahead of the API, and Backlot answers what it refuses as it does.
+A `GET` or `HEAD` with a body is its `400` HTML page, with no body on a `HEAD`. On the five APIs'
+paths, a request body under a `Content-Encoding` other than `gzip` or `identity` is its `415`, which
+Docs, Sheets and Slides send with no body to a request no route serves; a body under `gzip` reaches
+the API decompressed when it is one whole gzip member, and one that decompresses past 134,217,728
+bytes is a `400`.
+
 #### OAuth and batch
 
 Two more Google-shaped routes, both at the **server root** rather than under the prefixes above,

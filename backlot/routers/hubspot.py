@@ -22,8 +22,10 @@ from __future__ import annotations
 import json
 import math
 import re
+import secrets
 import unicodedata
 from functools import lru_cache
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -259,6 +261,51 @@ def _error_page(request: Request, status: int, reason: str, headers: dict) -> Re
         status_code=status,
         headers=headers,
         media_type="text/html;charset=iso-8859-1",
+    )
+
+
+def blocks_a_header_value(headers: list[tuple[bytes, bytes]]) -> bool:
+    """Whether Cloudflare, in front of api.hubapi.com, answers a request carrying ``headers`` with
+    :func:`cloudflare_block`: one of their values is not UTF-8, as Python's codec reads it.
+
+    Measured on 2026-10-30 (UTC) with no credential and the value in `X-Probe` on
+    `GET /crm/v3/objects/contacts`: each well-formed UTF-8 value sent was served, and each other one
+    blocked, a lone byte past 0x7F, a sequence cut short, an overlong form, a surrogate and a code
+    point past U+10FFFF among them. `Bearer a<80>b` in `Authorization` was blocked too."""
+    for _, value in headers:
+        try:
+            value.decode("utf-8")
+        except UnicodeDecodeError:
+            return True
+    return False
+
+
+#: The page :func:`cloudflare_block` answers, with ``{ray}`` and ``{ip}`` where it puts the
+#: request's Ray ID and the client's address, the only bytes that differed across 34 of real's
+#: answers on 2026-10-30.
+_BLOCK_PAGE = (Path(__file__).parent.parent / "data" / "hubspot_block.html").read_bytes()
+
+
+def cloudflare_block(request: Request) -> Response:
+    """Cloudflare's 403 block page, titled `Attention Required! | Cloudflare`, on
+    `text/html; charset=UTF-8` with the headers below. Real's Ray ID was 16 lower-case hex digits in
+    each of the 34 answers :data:`_BLOCK_PAGE` was read from, a different one each time, and the
+    same as the `CF-RAY` header's up to its `-`; here it is 16 random ones. The address is the
+    client's as the server saw it, where real's was the address the probe sent from."""
+    ray = secrets.token_hex(8)
+    address = request.client.host if request.client else ""
+    body = _BLOCK_PAGE.replace(b"{ray}", ray.encode()).replace(b"{ip}", address.encode())
+    return Response(
+        body,
+        status_code=403,
+        headers={
+            "Content-Type": "text/html; charset=UTF-8",
+            "Cache-Control": "private, max-age=0, no-store, no-cache, must-revalidate, "
+            "post-check=0, pre-check=0",
+            "Expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+            "Referrer-Policy": "same-origin",
+            "X-Frame-Options": "SAMEORIGIN",
+        },
     )
 
 

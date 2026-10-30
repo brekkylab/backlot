@@ -8,13 +8,17 @@ splitting them would put two halves of the same contract in two places.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import csv
 import datetime
+import functools
+import gzip
 import io
 import json
 import re
 import unicodedata
+import zlib
 from unittest.mock import ANY
 from urllib.parse import parse_qsl, quote, urlencode
 
@@ -23,10 +27,11 @@ import jwt
 import pytest
 import yaml
 
-from backlot import gsheets, oauth, store, synth
+from backlot import gsheets, oauth, request_target, store, synth
 from backlot.config import Settings
 from backlot.errors import google as gerr
 from tests._helpers import (
+    Chunked,
     client_for,
     corpus_client,
     crawl_drive,
@@ -3369,10 +3374,11 @@ def test_every_google_operation_declares_the_system_parameters_and_reads_them(cl
                 if declared != _SYSTEM_PARAMETERS:
                     missing.append(f"{method.upper()} {path}")
                 url = re.sub(r"\{[^}]+\}", "dummy", path)
-                r = client.request(method.upper(), f"{url}?$.xgafv=0", json={})
+                body = None if method == "get" else {}
+                r = client.request(method.upper(), f"{url}?$.xgafv=0", json=body)
                 if r.status_code != 400 or "system query parameter" not in r.text:
                     unchecked.append(f"{method.upper()} {path} -> {r.status_code}")
-                r = client.request(method.upper(), f"{url}?access_token=ya29.x", json={})
+                r = client.request(method.upper(), f"{url}?access_token=ya29.x", json=body)
                 if r.headers.get("www-authenticate") != _CHALLENGED:
                     unchecked.append(f"{method.upper()} {path} access_token -> {r.status_code}")
             elif path.startswith("/batch") and declared:
@@ -4422,7 +4428,8 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
             if method not in ("get", "post", "put", "patch", "delete"):
                 continue
             url = re.sub(r"\{[^}]+\}", "dummy", path)
-            r = client.request(method.upper(), f"{url}?callback=a%20b", json={})
+            body = None if method == "get" else {}
+            r = client.request(method.upper(), f"{url}?callback=a%20b", json=body)
             refused = r.status_code == 200 and "Invalid JSONP callback name" in r.text
             if method == "get":
                 gets += 1
@@ -13596,6 +13603,18 @@ _OVERRIDE_ROWS = [
     ("/drive/v3/about", "", "", "fields=kind", "text/plain", "GET"),
     ("/drive/v3/about", "", "", '{"fields": "kind"}', "application/json", "GET"),
     ("/drive/v3/about", "fields=user", "fields=user", "fields=kind", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&x=%8B", "", b"fields=kind&x=\x8b", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%8Bnd", "", b"fields=ki\x8bnd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%8B", "", b"fields=kind&\x8b", _FORM, "GET"),
+    ("/drive/v3/about", "%8B&fields=kind", "", b"\x8b&fields=kind", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%C3%A9nd", "", b"fields=ki\xc3\xa9nd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%7F", "", b"fields=kind&\x7f", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%7Fnd", "", b"fields=ki\x7fnd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%80", "", b"fields=kind&\x80", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%80nd", "", b"fields=ki\x80nd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%FF", "", b"fields=kind&\xff", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%FFnd", "", b"fields=ki\xffnd", _FORM, "GET"),
+    ("/drive/v3/about", "", "", gzip.compress(b"fields=kind", mtime=0)[:-8], _FORM, "GET"),
 ]
 
 
@@ -13624,6 +13643,18 @@ _OVERRIDE_ROWS = [
         "text-plain",
         "json",
         "url-query-first",
+        "byte-0x8b-in-a-value",
+        "byte-0x8b-in-the-mask",
+        "byte-0x8b-as-a-name",
+        "byte-0x8b-as-the-first-name",
+        "utf-8-in-the-mask",
+        "byte-0x7f-as-a-name",
+        "byte-0x7f-in-the-mask",
+        "byte-0x80-as-a-name",
+        "byte-0x80-in-the-mask",
+        "byte-0xff-as-a-name",
+        "byte-0xff-in-the-mask",
+        "gzip-member-cut-short",
     ],
 )
 def test_google_read_sent_as_a_post_with_a_get_override_is_the_get(
@@ -13700,6 +13731,424 @@ def test_google_request_whose_override_is_not_read_goes_on_as_sent(
     posted = sent_as(client, method, url, named, content=b"fields=kind")
     control = sent_as(client, method, url, plain, content=b"fields=kind")
     assert (posted.status_code, posted.content) == (control.status_code, control.content)
+
+
+# --- The front end's reading of a request's body -------------------------------------------------
+
+_UNSUPPORTED = "Unsupported Content-Encoding; only identity/gzip are supported."
+_TOO_LARGE = "Request payload size exceeds the limit: 134217728 bytes."
+
+
+def _front_end_page(code: int, message: str, reason: str, status: str, listed: bool) -> bytes:
+    """A front-end error as real wrote it, two-space indented and ending in a newline, with
+    `errors[]` where ``listed``."""
+    error = {"code": code, "message": message}
+    if listed:
+        error["errors"] = [{"message": message, "domain": "global", "reason": reason}]
+    return (json.dumps({"error": {**error, "status": status}}, indent=2) + "\n").encode()
+
+
+_415 = _front_end_page(415, _UNSUPPORTED, "failedPrecondition", "FAILED_PRECONDITION", True)
+_415_BARE = _front_end_page(415, _UNSUPPORTED, "failedPrecondition", "FAILED_PRECONDITION", False)
+_413 = _front_end_page(400, _TOO_LARGE, "badRequest", "INVALID_ARGUMENT", True)
+_413_BARE = _front_end_page(400, _TOO_LARGE, "badRequest", "INVALID_ARGUMENT", False)
+_JSON_UTF8 = "application/json; charset=UTF-8"
+_JS = "text/javascript; charset=UTF-8"
+
+# The `Content-Encoding` values sent on 2026-10-30 (UTC) with no credential, each as its own header,
+# and whether real answered the 415 or the route's 401: a `GET` on Drive's `about` where the row
+# has no body, and a `POST` on `files` with the row's body.
+_GZIPPED = gzip.compress(b"{}")
+_CODINGS = [
+    (["br"], None, 415),
+    (["BR"], None, 415),
+    (["Br"], None, 415),
+    (["DEFLATE"], None, 415),
+    (["X-GZIP"], None, 415),
+    (["compress"], None, 415),
+    (["*"], None, 415),
+    ([" br"], None, 415),
+    (["br "], None, 415),
+    (["\tbr"], None, 415),
+    (["gzip, br"], None, 415),
+    (["br, gzip"], None, 415),
+    (["identity, br"], None, 415),
+    (["gzip", "br"], None, 415),
+    (["br", "gzip"], None, 415),
+    (["", "br"], None, 415),
+    (["br"], b"{}", 415),
+    (["deflate"], b"{}", 415),
+    (["x-gzip"], b"{}", 415),
+    (["foo"], b"{}", 415),
+    (["Gzip"], None, 401),
+    (["IDENTITY"], None, 401),
+    (["  "], None, 401),
+    (["gzip, gzip"], None, 401),
+    (["gzip, identity"], None, 401),
+    (["identity,identity"], None, 401),
+    (["gzip,"], None, 401),
+    (["gzip", "gzip"], None, 401),
+    ([], b"{}", 401),
+    (["gzip"], b"{}", 401),
+    (["gzip"], _GZIPPED, 401),
+    (["GZIP"], _GZIPPED, 401),
+    (["gzip"], b"\x1f\x8b" + b"garbage-not-deflate" * 3, 401),
+    (["gzip"], _GZIPPED[:-8], 401),
+    (["gzip"], _GZIPPED[:-4], 401),
+    (["gzip"], _GZIPPED[:-8] + b"\x00" * 4 + _GZIPPED[-4:], 401),
+    (["gzip"], _GZIPPED + b"\x00", 401),
+    (["gzip"], gzip.compress(b"{") + gzip.compress(b"}"), 401),
+    (["gzip"], b"\x1f\x8b", 401),
+    (["gzip"], b"\x1f{}", 401),
+    (["gzip"], gzip.compress(b""), 401),
+    (["gzip"], b"", 401),
+    (["identity"], b"{}", 401),
+    ([""], b"{}", 401),
+    (["\xa0gzip"], None, 415),
+    (["gzip\xa0"], None, 415),
+    (["\x85gzip"], None, 415),
+    (["gzip\x85"], None, 415),
+    (["\xa0"], None, 415),
+    (["\x85"], None, 415),
+]
+
+
+@pytest.mark.parametrize("values, body, status", _CODINGS)
+def test_google_refuses_a_coding_its_front_end_does_not_read(client, values, body, status):
+    headers = [("Content-Encoding", value) for value in values]
+    if body is None:
+        r = sent_as(client, "GET", "/drive/v3/about", headers)
+    else:
+        headers.append(("Content-Type", "application/json"))
+        r = sent_as(client, "POST", "/drive/v3/files", headers, content=body)
+    assert r.status_code == status
+    if status == 415:
+        assert (r.headers["content-type"], r.content) == ("application/json; charset=UTF-8", _415)
+
+
+# The `Content-Encoding` values and bodies a one-part batch was sent to Drive's batch endpoint with
+# on 2026-10-30 (UTC), with no credential, here `{}` in its place: gzipped, then cut, extended or
+# spoilt, or not gzipped. ``backlot.routers.google.inflated`` decompresses the body where the
+# endpoint split a gzipped batch, and reads it as sent where it split one that is not gzip or
+# answered a 400.
+_GZIP_READS = [
+    (["gzip"], _GZIPPED, True),
+    (["gzip, identity"], _GZIPPED, True),
+    (["identity, gzip"], _GZIPPED, True),
+    (["gzip,"], _GZIPPED, True),
+    (["gzip", "gzip"], _GZIPPED, True),
+    (["GZIP"], _GZIPPED, False),
+    (["Gzip"], _GZIPPED, False),
+    (["identity"], _GZIPPED, False),
+    ([""], _GZIPPED, False),
+    (["gzip"], b"{}", False),
+    (["gzip"], _GZIPPED + gzip.compress(b""), False),
+    (["gzip"], gzip.compress(b"{") + gzip.compress(b"}"), False),
+    (["gzip"], _GZIPPED + b"\x00", False),
+    (["gzip"], _GZIPPED + b"\x1f\x8b\x08" + b"\x00" * 7, False),
+    (["gzip"], _GZIPPED[:-8], False),
+    (["gzip"], _GZIPPED[:-4], False),
+    (["gzip"], _GZIPPED[:-8] + b"\x00" * 4 + _GZIPPED[-4:], False),
+    (["gzip"], _GZIPPED[:-4] + b"\x00" * 4, False),
+]
+
+
+@pytest.mark.parametrize("values, body, decompressed", _GZIP_READS)
+def test_google_decompresses_a_body_only_as_one_whole_gzip_member(values, body, decompressed):
+    from backlot.routers import google
+
+    assert google.inflated(body, values) == (b"{}" if decompressed else body)
+
+
+# Requests with `Content-Encoding: br` and no credential but where a row names one, beside what real
+# answered on 2026-10-30 (UTC): the status, `Content-Type` and body, the body's length the one real
+# sent, and for a `HEAD` its `Content-Length`; or `without` where the answer was the one real gives
+# the same request with no coding, which here is this server's answer to it.
+_CODING_ANSWERS = [
+    ("GET", "/drive/v3/about", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/gmail/v1/users/me/labels", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/docs/v1/documents/x", {}, 415, _JSON_UTF8, _415_BARE),
+    ("GET", "/sheets/v4/spreadsheets/x", {}, 415, _JSON_UTF8, _415_BARE),
+    ("GET", "/slides/v1/presentations/x", {}, 415, _JSON_UTF8, _415_BARE),
+    ("GET", "/drive/v3/about?%24.xgafv=2", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/sheets/v4/spreadsheets/x?%24.xgafv=1", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/sheets/v4/spreadsheets/x?%24.xgafv=2", {}, 415, _JSON_UTF8, _415_BARE),
+    ("GET", "/docs/v1/documents/x?%24.xgafv=1", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/gmail/v1/users/me/labels?%24.xgafv=2", {}, 415, _JSON_UTF8, _415_BARE),
+    ("GET", "/drive/v3/about?%24.xgafv=3", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about?alt=zzz", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about?prettyPrint=false", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about?access_token=ya29.x7q", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about", BAD_TOKEN, 415, _JSON_UTF8, _415),
+    ("POST", "/drive/v3/files", {"Accept": "text/html"}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about/", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/files/x", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about?callback=cb", {}, 200, _JS, b"// API callback\ncb(" + _415 + b");"),
+    ("GET", "/drive/v3/about?callback=a-b", {}, 200, _JS, b"// API callback\na-b(" + _415 + b");"),
+    (
+        "GET",
+        "/sheets/v4/spreadsheets/x?callback=cb",
+        {},
+        200,
+        _JS,
+        b"// API callback\ncb(" + _415_BARE + b");",
+    ),
+    ("HEAD", "/drive/v3/about", {}, 415, _JSON_UTF8, None),
+    ("HEAD", "/gmail/v1/users/me/labels", {}, 415, _JSON_UTF8, None),
+    ("HEAD", "/docs/v1/documents/x", {}, 415, "text/html", "0"),
+    ("HEAD", "/sheets/v4/spreadsheets/x", {}, 415, "text/html", "0"),
+    ("HEAD", "/slides/v1/presentations/x", {}, 415, "text/html", "0"),
+    ("HEAD", "/sheets/v4/nosuch", {}, 415, "text/html", "0"),
+    ("GET", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("POST", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("PUT", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("PATCH", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("DELETE", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("OPTIONS", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("GET", "/docs/v1/nosuch", {}, 415, "text/html", b""),
+    ("GET", "/slides/v1/nosuch", {}, 415, "text/html", b""),
+    ("PUT", "/sheets/v4/spreadsheets/x", {}, 415, "text/html", b""),
+    ("DELETE", "/sheets/v4/spreadsheets/x", {}, 415, "text/html", b""),
+    ("POST", "/sheets/v4/spreadsheets/x", {}, 415, "text/html", b""),
+    ("GET", "/drive/v3/nosuch", {}, "without", None, None),
+    ("POST", "/drive/v3/nosuch", {}, "without", None, None),
+    ("GET", "/gmail/v1/nosuch", {}, "without", None, None),
+    ("GET", "/drive/v3/about%2F", {}, "without", None, None),
+    ("PUT", "/drive/v3/about", {}, "without", None, None),
+    ("POST", "/drive/v3/about", {}, "without", None, None),
+    ("TRACE", "/drive/v3/about", {}, "without", None, None),
+]
+
+
+@pytest.mark.parametrize("method, url, headers, status, media_type, answer", _CODING_ANSWERS)
+def test_google_answers_a_coding_it_does_not_read_ahead_of_the_route(
+    client, method, url, headers, status, media_type, answer
+):
+    content = b"{}" if method in ("POST", "PUT", "PATCH") else None
+    sent = {**headers, "Content-Encoding": "br"}
+    if content is not None:
+        sent["Content-Type"] = "application/json"
+    r = client.request(method, url, headers=sent, content=content)
+    if status == "without":
+        without = client.request(
+            method, url, headers={k: v for k, v in sent.items() if k != "Content-Encoding"}
+        )
+        assert (r.status_code, r.content) == (without.status_code, without.content)
+        return
+    assert (r.status_code, r.headers["content-type"]) == (status, media_type)
+    if method == "HEAD":
+        assert r.headers.get("content-length") == answer
+    else:
+        assert r.content == answer
+
+
+# A `GET` or `HEAD` with a body, each with no credential but where a row names one, beside what real
+# answered on 2026-10-29 and 2026-10-30 (UTC): its front door's 400, or `without` where it was the
+# answer real gives the same request with no body, which here is this server's answer to it.
+_BODIES = [
+    ("GET", "/drive/v3/about", {}, b"x", "page"),
+    ("GET", "/drive/v3/about", {"Accept": "application/json"}, b"x", "page"),
+    ("GET", "/drive/v3/about", BAD_TOKEN, b"x", "page"),
+    ("GET", "/drive/v3/about", {"X-HTTP-Method-Override": "POST"}, b"x", "page"),
+    ("GET", "/drive/v3/about", {"Content-Encoding": "br"}, b"x", "page"),
+    ("GET", "/drive/v3/about", {"Content-Encoding": "gzip"}, b"x", "page"),
+    ("GET", "/gmail/v1/users/me/labels", {}, b"x", "page"),
+    ("GET", "/docs/v1/documents/x", {}, b"x", "page"),
+    ("GET", "/sheets/v4/spreadsheets/x", {}, b"x", "page"),
+    ("GET", "/slides/v1/presentations/x", {}, b"x", "page"),
+    ("GET", "/batch/drive/v3", {}, b"x", "page"),
+    ("HEAD", "/drive/v3/about", {}, b"x", "head"),
+    ("HEAD", "/gmail/v1/users/me/labels", {}, b"x", "head"),
+    ("HEAD", "/sheets/v4/spreadsheets/x", {}, b"x", "head"),
+    ("GET", "/drive/v3/about", {"Content-Length": "0"}, b"", "without"),
+    ("GET", "/drive/v3/about", {"Content-Length": "00"}, b"", "without"),
+    ("GET", "/drive/v3/about", {}, Chunked(b"x"), "without"),
+    ("OPTIONS", "/drive/v3/about", {}, b"x", "without"),
+    ("DELETE", "/drive/v3/files/x", {}, b"x", "without"),
+    ("GET", "/hubspot/crm/v3/objects/contacts", {}, b"x", "without"),
+]
+
+
+@pytest.mark.parametrize("method, url, headers, body, answer", _BODIES)
+def test_google_refuses_a_body_on_a_get_or_head_ahead_of_the_route(
+    client, method, url, headers, body, answer
+):
+    if isinstance(body, Chunked):
+        r = sent_as(client, method, url, headers, content=body.chunks())
+    else:
+        r = client.request(method, url, headers=headers, content=body or None)
+    if answer == "without":
+        without = client.request(method, url)
+        assert (r.status_code, r.content) == (without.status_code, without.content)
+        return
+    page = request_target.GOOGLE_PAGE_1555 if answer == "page" else b""
+    assert (r.status_code, r.headers["content-type"], r.content) == (
+        400,
+        "text/html; charset=UTF-8",
+        page,
+    )
+    assert r.headers["connection"] == "close"
+    assert r.headers.get("referrer-policy") == ("no-referrer" if answer == "page" else None)
+
+
+# A body under a coding, with the admin's token, beside what real answered on 2026-10-23 (UTC) with
+# a Workspace member's token: Sheets' `values:batchGetByDataFilter` with a JSON body, and Drive's
+# `about` with a form body under `X-HTTP-Method-Override: GET`. `plain` is the answer to the body
+# sent with no coding and not gzipped, a 200 on both, and `as sent` the answer to the same bytes
+# with no coding, a 400 on both. `gzipped and cut short` is the gzipped body without its last 8
+# bytes, measured on 2026-10-30.
+_BODY_CODINGS = [
+    ("sheets", "gzip", "gzipped", "plain"),
+    ("sheets", "gzip", "plain", "plain"),
+    ("sheets", "identity", "plain", "plain"),
+    ("sheets", "", "plain", "plain"),
+    ("sheets", "GZIP", "gzipped", "as sent"),
+    ("sheets", "deflate", "plain", 415),
+    ("sheets", "br", "plain", 415),
+    ("sheets", "x-gzip", "plain", 415),
+    ("about", "gzip", "gzipped", "plain"),
+    ("about", "gzip", "gzipped and cut short", "as sent"),
+    ("about", "deflate", "plain", 415),
+    ("about", "x-gzip", "plain", 415),
+    ("about", "foo", "plain", 415),
+]
+
+
+@pytest.mark.parametrize("route, coding, sent, answer", _BODY_CODINGS)
+def test_google_reads_a_body_under_its_coding_as_its_front_end_does(
+    client, admin_h, route, coding, sent, answer
+):
+    if route == "sheets":
+        sheet = _drive_find(client, admin_h, "Q1 Revenue Model")["id"]
+        url = f"/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter"
+        plain = json.dumps({"dataFilters": [{"a1Range": "A1"}]}).encode()
+        headers = {**admin_h, "Content-Type": "application/json"}
+    else:
+        url, plain = "/drive/v3/about", b"fields=kind"
+        headers = {**admin_h, "Content-Type": _FORM, "X-HTTP-Method-Override": "GET"}
+    gzipped = gzip.compress(plain)
+    body = {"plain": plain, "gzipped": gzipped, "gzipped and cut short": gzipped[:-8]}[sent]
+    r = client.post(url, headers={**headers, "Content-Encoding": coding}, content=body)
+    if answer == 415:
+        refusal = _415_BARE if route == "sheets" else _415
+        assert (r.status_code, r.content) == (415, refusal)
+        return
+    want = client.post(url, headers=headers, content=plain if answer == "plain" else body)
+    assert want.status_code == (200 if answer == "plain" else 400)
+    assert (r.status_code, r.content) == (want.status_code, want.content)
+
+
+@functools.cache
+def _gzipped_to(size: int) -> bytes:
+    """`{}` and spaces, gzipped to decompress to ``size`` bytes."""
+    deflater = zlib.compressobj(9, zlib.DEFLATED, 31)
+    return deflater.compress(b"{}" + b" " * (size - 2)) + deflater.flush()
+
+
+@pytest.mark.parametrize(
+    "path, headers, size, answer",
+    [
+        ("/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", {}, 134_217_728, None),
+        ("/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", {}, 134_217_729, _413_BARE),
+        ("/drive/v3/files", {}, 134_217_729, _413),
+        ("/drive/v3/nosuch", {}, 134_217_729, "without"),
+        ("/drive/v3/about", {}, 134_217_729, "without"),
+        (
+            "/drive/v3/about",
+            {"X-HTTP-Method-Override": "GET", "Content-Type": _FORM},
+            134_217_729,
+            _413,
+        ),
+        ("/sheets/v4/nosuch", {}, 134_217_729, "without"),
+    ],
+)
+def test_google_refuses_a_body_that_decompresses_past_its_front_ends_limit(
+    client, path, headers, size, answer
+):
+    """A body gzipped to decompress to ``size`` bytes, `POST`ed with ``headers`` and no credential:
+    real's 400 ahead of the credential on 2026-10-30 (UTC) where ``answer`` is one; the route's 401
+    where it is ``None``; and where it is `without`, the answer to the same `POST` with no body, as
+    real's was its answer to a path or method it does not route."""
+    sent = {"Content-Type": "application/json", "Content-Encoding": "gzip", **headers}
+    r = client.post(path, headers=sent, content=_gzipped_to(size))
+    if answer == "without":
+        without = client.post(path, headers={"Content-Type": "application/json"})
+        assert (r.status_code, r.content) == (without.status_code, without.content)
+    elif answer is None:
+        assert r.status_code == 401
+    else:
+        assert (r.status_code, r.content) == (400, answer)
+
+
+@pytest.mark.parametrize(
+    "incoming, read, statuses",
+    [
+        pytest.param(
+            [
+                {"type": "http.request", "body": _GZIPPED, "more_body": False},
+                {"type": "http.disconnect"},
+            ],
+            [
+                {"type": "http.request", "body": b"{}", "more_body": False},
+                {"type": "http.disconnect"},
+            ],
+            [204],
+            id="the route reads past the body",
+        ),
+        pytest.param(
+            [
+                {"type": "http.request", "body": _GZIPPED[:5], "more_body": True},
+                {"type": "http.disconnect"},
+            ],
+            [],
+            [],
+            id="the client leaves mid-body",
+        ),
+        pytest.param(
+            [{"type": "http.request", "body": _gzipped_to(134_217_729), "more_body": False}],
+            [],
+            [400],
+            id="a body past the limit",
+        ),
+    ],
+)
+def test_google_hands_the_route_the_body_it_read_and_nothing_once_it_has_answered(
+    incoming, read, statuses
+):
+    """A `POST` to Drive's `files` under `gzip` through the layer that reads the body, as the
+    server's messages ``incoming``, over a route that reads two messages and answers 204: what the
+    route read, and the status of each answer sent."""
+    from backlot import main as main_module
+
+    got, sent = [], []
+
+    async def route(scope, receive, send):
+        got.extend([await receive(), await receive()])
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def receive():
+        return incoming.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 50000),
+        "root_path": "",
+        "path": "/drive/v3/files",
+        "raw_path": b"/drive/v3/files",
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/json"), (b"content-encoding", b"gzip")],
+    }
+    asyncio.run(main_module._ReadAGoogleBodyUnderItsCoding(route)(scope, receive, send))
+    assert got == read
+    assert [m["status"] for m in sent if m["type"] == "http.response.start"] == statuses
 
 
 # --- Sheets `values` writes --------------------------------------------------------------------
@@ -14092,7 +14541,7 @@ def test_who_may_write_and_in_what_order_a_write_is_refused(
 )
 def test_a_sheets_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method, suffix, rpc):
     """No credential on these is a 401 whose ErrorInfo names the RPC."""
-    r = wc.request(method, f"{wbook}{suffix}", params=_RAW, json={})
+    r = wc.request(method, f"{wbook}{suffix}", params=_RAW, json=None if method == "GET" else {})
     assert r.status_code == 401
     assert r.json()["error"]["details"] == [
         {

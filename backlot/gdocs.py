@@ -466,3 +466,211 @@ class Body:
                 )
                 runs, p = [], p + 1
         return out
+
+
+# --- a body as Drive's `files.export` renders it --------------------------------------------------
+#
+# Measured against Drive v3 on 2026-10-30, as a Workspace member exporting 41 Docs it wrote through
+# `documents.batchUpdate` with every named style, mark and character a corpus may state.
+
+# The `#`s a paragraph of each named style opens with in Markdown.
+_MARKDOWN_LEVEL = {"TITLE": 1, "SUBTITLE": 2, **{f"HEADING_{n}": n for n in range(1, 7)}}
+
+# Each named style's own text style, which its paragraphs' runs take where they state nothing:
+# HEADING_6's italic is Markdown's `*`.
+_TEXT_STYLES = {s["namedStyleType"]: s["textStyle"] for s in _DEFAULTS["namedStyles"]["styles"]}
+
+# The space separators a plain export keeps: a figure space and a narrow no-break space. Every other
+# one, U+2028 and U+2029 among them, is a space.
+_KEPT_SPACES = "\u2007\u202f"
+
+# What a plain export trims from both ends: every character up to the space, as Java's `trim`.
+_TRIMMED = "".join(map(chr, range(0x21)))
+
+
+def _paragraph_runs(paragraph: dict) -> list[tuple[str, dict]]:
+    """A paragraph's runs without the newline that ends it."""
+    runs = [
+        (pe["textRun"]["content"], pe["textRun"].get("textStyle", {}))
+        for pe in paragraph["elements"]
+    ]
+    text, style = runs[-1]
+    runs[-1] = (text.removesuffix("\n"), style)
+    return [r for r in runs if r[0]]
+
+
+def _named(paragraph: dict) -> str:
+    return paragraph.get("paragraphStyle", {}).get("namedStyleType", "NORMAL_TEXT")
+
+
+def _plain_char(c: str) -> str:
+    if c == "\x0b":
+        return "\r\n"
+    if c == "\t":
+        return " " * 8
+    if unicodedata.category(c) in ("Zs", "Zl", "Zp") and c not in _KEPT_SPACES:
+        return " "
+    return c
+
+
+def plain_text(content: list[dict]) -> str:
+    """A body as `files.export` serves it as `text/plain`: a byte-order mark, then one line per
+    paragraph joined by CRLF, trimmed at both ends. A vertical tab is a CRLF, a tab eight spaces.
+    A paragraph holding nothing but vertical tabs, or nothing, takes one CRLF more; a HEADING_n
+    holding nothing is left out, and one ending in vertical tabs drops them."""
+    lines = []
+    for el in content:
+        if "paragraph" not in el:
+            continue
+        text = "".join(t for t, _ in _paragraph_runs(el["paragraph"]))
+        if _named(el["paragraph"]).startswith("HEADING_"):
+            if not text:
+                continue
+            text = text.rstrip("\x0b")
+        elif not text.strip("\x0b"):
+            text += "\x0b"
+        lines.append("".join(map(_plain_char, text)))
+    return "\ufeff" + "\r\n".join(lines).strip(_TRIMMED)
+
+
+# Markdown. A paragraph is a line, and two lines of NORMAL_TEXT are joined by a hard break (two
+# spaces and a newline), as a vertical tab is; a paragraph with a `#` heading stands apart by a
+# blank line. Two hard breaks in a row, or one beside a blank line, with nothing but empty
+# paragraphs between them, are one blank line.
+_BREAK, _BLOCK = object(), object()
+
+# Escaped wherever they stand. `+`, `-` and `=` are escaped at a word's start, after a space, a tab
+# or the start of a run; a run of digits there is escaped at the `.` or `)` that ends it before a
+# space; and the `:` of `http://`, `https://` or `ftp://` and the `.` of `www.`, in any case, at a
+# word's start or after `*`, `_`, `~`, `(` or `<`. A `&` is escaped before an ASCII letter.
+_ALWAYS = set("!#$*<>[\\]_`|~")
+_WORD_START = re.compile(r"(?<![^ \t])")
+_LIST_NUMBER = re.compile(r"(?<![^ \t])[0-9]+([.)])(?=[ \t]|$)")
+_AUTOLINK = re.compile(r"(?<![^ \t*_~(<])(?:(?:https?|ftp)(:)//|www(\.))", re.IGNORECASE)
+
+# A URL keeps every character but these: a space is `%20`, and the rest are backslash-escaped.
+_URL_ESCAPED = set("()<>\\`")
+
+# The marks Markdown spells, in the order marks starting at one character open: a link outermost.
+_MARK_ORDER = ("link", "italic", "bold", "strikethrough")
+_DELIMITER = {"italic": "*", "bold": "**", "strikethrough": "~~"}
+
+
+def _escape(text: str) -> list[str]:
+    """Each character of one run as Markdown writes it."""
+    out = [f"\\{c}" if c in _ALWAYS else c for c in text]
+    for i, c in enumerate(text):
+        if c in "+-=" and _WORD_START.match(text, i):
+            out[i] = f"\\{c}"
+        elif c == "&" and text[i + 1 : i + 2].isascii() and text[i + 1 : i + 2].isalpha():
+            out[i] = "\\&"
+    for pattern in (_LIST_NUMBER, _AUTOLINK):
+        for m in pattern.finditer(text):
+            at = next(m.start(g) for g in range(1, pattern.groups + 1) if m.start(g) >= 0)
+            out[at] = f"\\{text[at]}"
+    return out
+
+
+def _url(url: str) -> str:
+    return "".join("%20" if c == " " else f"\\{c}" if c in _URL_ESCAPED else c for c in url)
+
+
+def _marks(style: dict) -> frozenset:
+    out = {k for k in _DELIMITER if style.get(k)}
+    if style.get("link", {}).get("url") is not None:
+        out.add(("link", style["link"]["url"]))
+    return frozenset(out)
+
+
+def _inline(runs: list[tuple[str, dict]], named: dict) -> list:
+    """A paragraph's runs as Markdown: text and a `_BREAK` for each vertical tab. A mark leaves out
+    the spaces and tabs it starts or ends with, and a vertical tab closes every mark around it.
+    Marks starting at one character open in `_MARK_ORDER`, and closing one closes every mark opened
+    inside it, which then reopens. Measured on every pair of the four and on 18 sequences of three.
+    Where bold and strikethrough end together inside an italic or a link, real closes them in an
+    order that does not nest, and once reopened strikethrough in place of bold; this nests them."""
+    chars: list[tuple[str, str, set]] = []
+    for text, style in runs:
+        marks = _marks({**named, **style})
+        for piece in re.split("(\x0b)", text):
+            if piece == "\x0b":
+                chars.append(("\x0b", "", set()))
+            else:
+                chars += [(c, e, set(marks)) for c, e in zip(piece, _escape(piece))]
+    for mark in {m for *_, ms in chars for m in ms}:
+        at = 0
+        while at < len(chars):
+            if mark not in chars[at][2]:
+                at += 1
+                continue
+            end = at
+            while end < len(chars) and mark in chars[end][2]:
+                end += 1
+            span = range(at, end)
+            lead = next((i for i in span if chars[i][0] not in " \t"), end)
+            trail = next((i for i in reversed(span) if chars[i][0] not in " \t"), at - 1)
+            for i in span:
+                if not lead <= i <= trail:
+                    chars[i][2].discard(mark)
+            at = end
+    out: list = []
+    text = ""
+    stack: list = []
+
+    def kind(mark) -> str:
+        return mark[0] if isinstance(mark, tuple) else mark
+
+    def close(mark) -> str:
+        return f"]({_url(mark[1])})" if isinstance(mark, tuple) else _DELIMITER[mark]
+
+    for c, escaped, marks in [*chars, ("", "", set())]:
+        keep = 0
+        while keep < len(stack) and stack[keep] in marks:
+            keep += 1
+        for mark in reversed(stack[keep:]):
+            text += close(mark)
+        del stack[keep:]
+        for mark in sorted(marks - set(stack), key=lambda m: _MARK_ORDER.index(kind(m))):
+            stack.append(mark)
+            text += "[" if isinstance(mark, tuple) else _DELIMITER[mark]
+        if c == "\x0b":
+            out += [text, _BREAK]
+            text = ""
+        else:
+            text += escaped
+    return [*out, text]
+
+
+def markdown(content: list[dict]) -> str:
+    """A body as `files.export` serves it as `text/markdown` or `text/x-markdown`: TITLE as `#`,
+    SUBTITLE as `##` and HEADING_n as n `#`s, a heading's vertical tab a space; bold, italic,
+    strikethrough and links in a paragraph's named style or its runs' as `**`, `*`, `~~` and
+    `[text](url)`, underline as nothing. Nothing is trimmed, and nothing ends the last line."""
+    paragraphs = [el["paragraph"] for el in content if "paragraph" in el]
+    levels = [_MARKDOWN_LEVEL.get(_named(p)) for p in paragraphs]
+    tokens: list = []
+    for i, (paragraph, level) in enumerate(zip(paragraphs, levels)):
+        if i:
+            tokens.append(_BLOCK if level or levels[i - 1] else _BREAK)
+        runs = _paragraph_runs(paragraph)
+        named = _TEXT_STYLES.get(_named(paragraph), {})
+        if level:
+            runs = [(t.replace("\x0b", " "), s) for t, s in runs]
+            tokens.append("#" * level + " " + "".join(_inline(runs, named)))
+        else:
+            tokens += _inline(runs, named)
+    out, pending = "", []
+    for t in tokens:
+        if t is _BREAK or t is _BLOCK:
+            pending.append(t)
+        elif t:
+            out += _separator(pending) + t
+            pending = []
+    return out + _separator(pending)
+
+
+def _separator(breaks: list) -> str:
+    """What the breaks between two lines, with only empty paragraphs between them, are written as."""
+    if not breaks:
+        return ""
+    return "  \n" if breaks == [_BREAK] else "\n\n"

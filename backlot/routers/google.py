@@ -38,6 +38,7 @@ from starlette.routing import Match
 from backlot import (
     auth,
     collation,
+    gdocs,
     gsheets,
     protojson,
     store,
@@ -3822,6 +3823,13 @@ _DRIVE_EXPORT_FORMATS = {
     ],
 }
 
+# The formats a Doc exports to that are rendered from its body.
+_DOCS_TEXT_EXPORTS = {
+    "text/plain": gdocs.plain_text,
+    "text/markdown": gdocs.markdown,
+    "text/x-markdown": gdocs.markdown,
+}
+
 # Source type -> the native types Drive can convert it into on upload. Google's map is longer;
 # this is the part that covers every format Backlot's own corpus contains (native editor files,
 # Office files, PDFs, delimited text, images), so a client's lookup for a real file resolves.
@@ -4271,7 +4279,8 @@ async def drive_files_export(file_id: str, request: Request):
     target = requested.casefold()
     if target not in {f.casefold() for f in _DRIVE_EXPORT_FORMATS.get(native[0], ())}:
         raise gerr.unsupported_conversion()
-    # honor the requested target format; CSV/TSV serve the cells, others prefix the title.
+    # A Doc's text formats are rendered from its body (`gdocs.plain_text`, `gdocs.markdown`); CSV
+    # and TSV serve a spreadsheet's cells, and every other format the title and `content`.
     #
     # CSV needs no branch for either kind of document: a document that STATES a grid has its
     # `content` derived from the first sheet's CSV at import, and one that does not has the text it
@@ -4284,6 +4293,11 @@ async def drive_files_export(file_id: str, request: Request):
         if stored:
             grid = json.loads(stored[0]["grid"])
             return Response(gsheets.to_tsv(grid), headers={"content-type": requested})
+    render = _DOCS_TEXT_EXPORTS.get(target) if native[0] == DRIVE_DOC_MIME else None
+    if render is not None:
+        stored = store.gdrive_doc_body_for(conn, file_id)
+        content = stored if stored is not None else gdocs.from_text(row["content"] or "")
+        return Response(render(content), headers={"content-type": requested})
     plain = target in ("text/csv", "text/tab-separated-values")
     body = row["content"] if plain else f"{row['title']}\n\n{row['content']}"
     return Response(body, headers={"content-type": requested})

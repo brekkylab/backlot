@@ -103,8 +103,8 @@ def _drive_fs_class():
 
         def info(self, path, trashed=False):
             """`size` on a native file is the length of the stored content, but a read returns the
-            EXPORT of it, which is longer. Anything that trusts `size` to size a read — fsspec.fuse,
-            a range request — truncates the file unless the two agree.
+            EXPORT of it, whose length differs. Anything that trusts `size` to size a read —
+            fsspec.fuse, a range request — cuts the file short or pads it unless the two agree.
 
             Only here, not in `ls(detail=True)`: reconciling a whole listing would mean exporting
             every native file in the directory just to measure it. A bulk listing keeps Drive's own

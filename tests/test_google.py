@@ -846,16 +846,392 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
         )  # ...and match the bytes
 
 
-def test_drive_export_roundtrip(client, admin_h, ro_conn):
-    doc = ro_conn.execute("SELECT * FROM gdrive_files LIMIT 1").fetchone()
-    # The row's own `id`, not the corpus's identifier: hitting the route by the corpus id would
-    # stop exercising the id resolution path without the test noticing.
-    text = client.get(
-        f"/drive/v3/files/{doc['id']}/export",
-        headers=admin_h,
-        params={"mimeType": "text/plain"},
-    ).text
-    assert doc["content"] in text and text.startswith(doc["title"])
+# Real's `text/plain` and `text/markdown` exports of the Doc each record states, from the measurement
+# `backlot.gdocs`'s export section records. Real's `md_marks` and `nest` Docs had more paragraphs:
+# those where bold and strikethrough end together inside italic or a link, which `gdocs.markdown`
+# nests where real does not.
+_DOCS_EXPORTS = {
+    "chars": (
+        {
+            "content": "tab\there\x0bsoft\u2028ls nbsp\xa0x \U0001f600 \ufeffbom \u200bzw\n  lead and trail  \ne\u0301 \x7f del \x85 nel \u2029 ps"
+        },
+        "\ufefftab        here\r\nsoft ls nbsp x \U0001f600 \ufeffbom \u200bzw\r\n  lead and trail  \r\ne\u0301 \x7f del \x85 nel   ps",
+        "tab\there  \nsoft\u2028ls nbsp\xa0x \U0001f600 \ufeffbom \u200bzw  \n  lead and trail    \ne\u0301 \x7f del \x85 nel \u2029 ps",
+    ),
+    "md_prose": (
+        {"content": "a\nb\nc\n\nd\n\n\ne"},
+        "\ufeffa\r\nb\r\nc\r\n\r\n\r\nd\r\n\r\n\r\n\r\n\r\ne",
+        "a  \nb  \nc\n\nd\n\ne",
+    ),
+    "soft": (
+        {
+            "content": "\x0bstart\nend\x0b\n\x0b\ntwo\x0b\x0bbreaks\n\u2028\nsp\u2002\u2007\u202f\u3000x\nx"
+        },
+        "\ufeffstart\r\nend\r\n\r\n\r\n\r\n\r\ntwo\r\n\r\nbreaks\r\n \r\nsp \u2007\u202f x\r\nx",
+        "  \nstart  \nend\n\ntwo\n\nbreaks  \n\u2028  \nsp\u2002\u2007\u202f\u3000x  \nx",
+    ),
+    "trail_two": ({"content": "a\n\n"}, "\ufeffa", "a\n\n"),
+    "md_empty_lead": ({"content": "\n\na\nb"}, "\ufeffa\r\nb", "\n\na  \nb"),
+    "ws_plain": (
+        {"content": "a\n \nb\n\t\nc\n   \nd"},
+        "\ufeffa\r\n \r\nb\r\n        \r\nc\r\n   \r\nd",
+        "a  \n   \nb  \n\t  \nc  \n     \nd",
+    ),
+    "md_headings": (
+        {
+            "paragraphs": [
+                {"style": "TITLE", "runs": [{"text": "Title "}, {"text": "bold", "bold": True}]},
+                {"style": "SUBTITLE", "text": "Sub"},
+                {"style": "HEADING_1", "text": "H1"},
+                {"style": "HEADING_2", "text": "H2"},
+                {"text": "p"},
+                {"style": "HEADING_3", "text": ""},
+                {"style": "HEADING_4", "text": "H4 *x*"},
+                {"style": "HEADING_5", "text": "H5"},
+                {"style": "HEADING_6", "runs": [{"text": "H6 "}, {"text": "b", "bold": True}]},
+                {"text": "q"},
+                {"text": "r"},
+                {"style": "HEADING_1", "text": "# hashy"},
+                {"text": ""},
+                {"style": "HEADING_2", "text": "last"},
+            ]
+        },
+        "\ufeffTitle bold\r\nSub\r\nH1\r\nH2\r\np\r\nH4 *x*\r\nH5\r\nH6 b\r\nq\r\nr\r\n# hashy\r\n\r\n\r\nlast",
+        "# Title **bold**\n\n## Sub\n\n# H1\n\n## H2\n\np\n\n### \n\n#### H4 \\*x\\*\n\n##### H5\n\n###### *H6 **b***\n\nq  \nr\n\n# \\# hashy\n\n## last",
+    ),
+    "empty_head_mid": (
+        {
+            "paragraphs": [
+                {"text": "a"},
+                {"style": "HEADING_3", "text": ""},
+                {"text": "b"},
+                {"style": "HEADING_2", "text": ""},
+                {"text": ""},
+                {"text": "c"},
+                {"text": ""},
+                {"style": "TITLE", "text": ""},
+                {"text": ""},
+                {"text": "d"},
+            ]
+        },
+        "\ufeffa\r\nb\r\n\r\n\r\nc\r\n\r\n\r\n\r\n\r\n\r\n\r\nd",
+        "a\n\n### \n\nb\n\n## \n\nc\n\n# \n\nd",
+    ),
+    "subtitle_empty": (
+        {
+            "paragraphs": [
+                {"text": "a"},
+                {"style": "SUBTITLE", "text": ""},
+                {"text": "b"},
+                {"style": "HEADING_4", "text": "\x0b"},
+                {"text": "c"},
+                {"text": "\x0b\x0b"},
+                {"text": "d"},
+            ]
+        },
+        "\ufeffa\r\n\r\n\r\nb\r\n\r\nc\r\n\r\n\r\n\r\n\r\nd",
+        "a\n\n## \n\nb\n\n####  \n\nc\n\nd",
+    ),
+    "md_breaks": (
+        {
+            "paragraphs": [
+                {"text": "a"},
+                {"text": ""},
+                {"style": "HEADING_1", "text": "h"},
+                {"text": ""},
+                {"text": ""},
+                {"text": "b"},
+                {"text": "c\x0b"},
+                {"style": "HEADING_2", "text": "h2"},
+                {"text": "d\x0b"},
+                {"text": ""},
+                {"text": "e"},
+            ]
+        },
+        "\ufeffa\r\n\r\n\r\nh\r\n\r\n\r\n\r\n\r\nb\r\nc\r\n\r\nh2\r\nd\r\n\r\n\r\n\r\ne",
+        "a\n\n# h\n\nb  \nc\n\n## h2\n\nd\n\ne",
+    ),
+    "md_marks": (
+        {
+            "paragraphs": [
+                {"runs": [{"text": "x "}, {"text": "bold ", "bold": True}, {"text": "after"}]},
+                {"runs": [{"text": "x"}, {"text": " spaced ", "italic": True}, {"text": "y"}]},
+                {"runs": [{"text": "whole bold", "bold": True}]},
+                {
+                    "runs": [
+                        {"text": "a", "bold": True},
+                        {"text": "b", "italic": True},
+                        {"text": "c", "strikethrough": True},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "u "},
+                        {"text": "under", "underline": True},
+                        {"text": " "},
+                        {"text": "ub", "bold": True, "underline": True},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "see "},
+                        {"text": "link", "link": "https://example.com/a"},
+                        {"text": " and "},
+                        {"text": "bold link", "bold": True, "link": "https://example.com/b"},
+                        {"text": "."},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "odd "},
+                        {"text": "li]nk", "link": "https://example.com/p(a)r en"},
+                        {"text": " "},
+                        {"text": "mail", "link": "mailto:a@b.c"},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "*", "bold": True},
+                        {"text": "x"},
+                        {"text": "_y_", "italic": True},
+                    ]
+                },
+                {"runs": [{"text": "   ", "bold": True}, {"text": "sp"}]},
+                {"runs": [{"text": "mid"}, {"text": "dle", "bold": True}, {"text": "word"}]},
+                {
+                    "runs": [
+                        {"text": "part ", "bold": True},
+                        {"text": "bold", "bold": True, "italic": True},
+                        {"text": " more", "bold": True},
+                    ]
+                },
+                {"runs": [{"text": "http://example.com", "link": "http://example.com"}]},
+                {
+                    "runs": [
+                        {"text": "same", "link": "https://example.com/s"},
+                        {"text": "+bold", "bold": True, "link": "https://example.com/s"},
+                    ]
+                },
+            ]
+        },
+        "\ufeffx bold after\r\nx spaced y\r\nwhole bold\r\nabc\r\nu under ub\r\nsee link and bold link.\r\nodd li]nk mail\r\n*x_y_\r\n   sp\r\nmiddleword\r\npart bold more\r\nhttp://example.com\r\nsame+bold",
+        "x **bold** after  \nx *spaced* y  \n**whole bold**  \n**a***b*~~c~~  \nu under **ub**  \nsee [link](https://example.com/a) and [**bold link**](https://example.com/b).  \nodd [li\\]nk](https://example.com/p\\(a\\)r%20en) [mail](mailto:a@b.c)  \n**\\***x*\\_y\\_*  \n   sp  \nmid**dle**word  \n**part *bold* more**  \n[http\\://example.com](http://example.com)  \n[same**\\+bold**](https://example.com/s)",
+    ),
+    "nest": (
+        {
+            "paragraphs": [
+                {
+                    "runs": [
+                        {"text": "a", "strikethrough": True},
+                        {"text": "b", "bold": True, "strikethrough": True},
+                        {"text": "c", "bold": True},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "a", "bold": True},
+                        {"text": "b", "bold": True, "strikethrough": True},
+                        {"text": "c", "strikethrough": True},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "a", "italic": True},
+                        {"text": "b", "bold": True, "italic": True},
+                        {"text": "c", "bold": True},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "a", "bold": True},
+                        {"text": "b", "bold": True, "italic": True},
+                        {"text": "c", "italic": True},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "a", "bold": True, "italic": True},
+                        {"text": "b", "bold": True},
+                        {"text": "c"},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "a", "bold": True, "italic": True},
+                        {"text": "b", "italic": True},
+                        {"text": "c"},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "a", "bold": True, "italic": True, "strikethrough": True},
+                        {"text": "b", "italic": True},
+                        {"text": "c"},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "a", "italic": True, "strikethrough": True},
+                        {"text": "b", "bold": True, "italic": True, "strikethrough": True},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "a", "strikethrough": True},
+                        {"text": "b", "bold": True, "italic": True, "strikethrough": True},
+                        {"text": "c", "strikethrough": True},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "x"},
+                        {"text": "ib", "bold": True, "italic": True},
+                        {"text": "y"},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "l", "link": "https://e.com/1"},
+                        {"text": "m", "link": "https://e.com/2"},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "l", "bold": True, "link": "https://e.com/1"},
+                        {"text": "m", "bold": True},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "l", "bold": True},
+                        {"text": "m", "bold": True, "link": "https://e.com/1"},
+                        {"text": "n", "bold": True},
+                    ]
+                },
+                {
+                    "runs": [
+                        {"text": "l", "italic": True, "link": "https://e.com/1"},
+                        {"text": "m", "link": "https://e.com/1"},
+                    ]
+                },
+                {"runs": [{"text": "s", "strikethrough": True, "link": "https://e.com/1"}]},
+                {"runs": [{"text": "  sp  ", "bold": True}, {"text": "x"}]},
+                {
+                    "runs": [
+                        {"text": "x"},
+                        {"text": "  sp  ", "link": "https://e.com/1"},
+                        {"text": "x"},
+                    ]
+                },
+                {"runs": [{"text": "x"}, {"text": " ", "link": "https://e.com/1"}, {"text": "x"}]},
+                {"runs": [{"text": "x"}, {"text": "\tt\t", "italic": True}, {"text": "x"}]},
+            ]
+        },
+        "\ufeffabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nab\r\nabc\r\nxiby\r\nlm\r\nlm\r\nlmn\r\nlm\r\ns\r\n  sp  x\r\nx  sp  x\r\nx x\r\nx        t        x",
+        "~~a**b**~~**c**  \n**a~~b~~**~~c~~  \n*a**b*****c**  \n**a*b****c*  \n***a*****b**c  \n***a**b*c  \n***~~a~~**b*c  \n*~~a**b**~~*  \n~~a***b***c~~  \nx***ib***y  \n[l](https://e.com/1)[m](https://e.com/2)  \n[**l**](https://e.com/1)**m**  \n**l[m](https://e.com/1)n**  \n[*l*m](https://e.com/1)  \n[~~s~~](https://e.com/1)  \n  **sp**  x  \nx  [sp](https://e.com/1)  x  \nx x  \nx\t*t*\tx",
+    ),
+    "md_escape": (
+        {
+            "content": "*star* _under_ **x** __y__\n# not heading\n#hash\n1. not list\n2) paren\n- not list\n+ plus\n* star item\n> quote\n[x](y) ![i](j)\n<b>tag</b> & amp &lt;\nback\\slash `code` ``two``\npipe | table |\n~tilde~ ~~s~~\nunder_score_word snake_case\na  b double\n    four spaces\ntrailing space   \n===\n---\n***\n___\n!bang [ ] ( ) { }\n1\\. x\nhttp://example.com/a_b*c\n100% $5 @at ^up =eq"
+        },
+        "\ufeff*star* _under_ **x** __y__\r\n# not heading\r\n#hash\r\n1. not list\r\n2) paren\r\n- not list\r\n+ plus\r\n* star item\r\n> quote\r\n[x](y) ![i](j)\r\n<b>tag</b> & amp &lt;\r\nback\\slash `code` ``two``\r\npipe | table |\r\n~tilde~ ~~s~~\r\nunder_score_word snake_case\r\na  b double\r\n    four spaces\r\ntrailing space   \r\n===\r\n---\r\n***\r\n___\r\n!bang [ ] ( ) { }\r\n1\\. x\r\nhttp://example.com/a_b*c\r\n100% $5 @at ^up =eq",
+        "\\*star\\* \\_under\\_ \\*\\*x\\*\\* \\_\\_y\\_\\_  \n\\# not heading  \n\\#hash  \n1\\. not list  \n2\\) paren  \n\\- not list  \n\\+ plus  \n\\* star item  \n\\> quote  \n\\[x\\](y) \\!\\[i\\](j)  \n\\<b\\>tag\\</b\\> & amp \\&lt;  \nback\\\\slash \\`code\\` \\`\\`two\\`\\`  \npipe \\| table \\|  \n\\~tilde\\~ \\~\\~s\\~\\~  \nunder\\_score\\_word snake\\_case  \na  b double  \n    four spaces  \ntrailing space     \n\\===  \n\\---  \n\\*\\*\\*  \n\\_\\_\\_  \n\\!bang \\[ \\] ( ) { }  \n1\\\\. x  \nhttp\\://example.com/a\\_b\\*c  \n100% \\$5 @at ^up \\=eq",
+    ),
+    "esc_runs": (
+        {
+            "paragraphs": [
+                {"runs": [{"text": "a"}, {"text": "-b", "bold": True}]},
+                {"runs": [{"text": "a"}, {"text": "1. x", "bold": True}]},
+                {"runs": [{"text": "a&"}, {"text": "b", "bold": True}]},
+                {"text": "\t-x"},
+                {"text": "x\t-y"},
+                {"text": "\xa0-x"},
+                {"text": "x 1. y"},
+                {"text": "x 2) y"},
+                {"text": "HTTP://x"},
+                {"text": "Www.x"},
+                {"text": "xhttp://y"},
+                {"text": "x www.y"},
+                {"text": "xwww.y"},
+                {"text": "www."},
+                {"text": "http:/x"},
+                {"text": "https:x"},
+                {"runs": [{"text": "www.x", "link": "https://e.com/1"}]},
+                {"text": "&1"},
+                {"text": "&\xe9"},
+                {"text": "x&_"},
+                {"runs": [{"text": "http"}, {"text": "://x", "bold": True}]},
+                {"runs": [{"text": "www"}, {"text": ".x", "bold": True}]},
+                {"runs": [{"text": "1"}, {"text": ". x", "bold": True}]},
+                {"runs": [{"text": "a "}, {"text": "=b", "bold": True}]},
+                {"runs": [{"text": "a", "bold": True}, {"text": " +b"}]},
+                {"runs": [{"text": "x"}, {"text": "-", "bold": True}, {"text": "y"}]},
+                {"text": "\xe9-x"},
+                {"text": "x,-y"},
+                {"text": "(-x"},
+                {"text": "x/-y"},
+                {"text": "x\u3000-y"},
+                {"text": "Http://x Https://y FTP://z WWW.q"},
+                {"text": "http://"},
+                {"text": "mailto://x file://y"},
+            ]
+        },
+        "\ufeffa-b\r\na1. x\r\na&b\r\n        -x\r\nx        -y\r\n -x\r\nx 1. y\r\nx 2) y\r\nHTTP://x\r\nWww.x\r\nxhttp://y\r\nx www.y\r\nxwww.y\r\nwww.\r\nhttp:/x\r\nhttps:x\r\nwww.x\r\n&1\r\n&\xe9\r\nx&_\r\nhttp://x\r\nwww.x\r\n1. x\r\na =b\r\na +b\r\nx-y\r\n\xe9-x\r\nx,-y\r\n(-x\r\nx/-y\r\nx -y\r\nHttp://x Https://y FTP://z WWW.q\r\nhttp://\r\nmailto://x file://y",
+        "a**\\-b**  \na**1\\. x**  \na&**b**  \n\t\\-x  \nx\t\\-y  \n\xa0-x  \nx 1\\. y  \nx 2\\) y  \nHTTP\\://x  \nWww\\.x  \nxhttp://y  \nx www\\.y  \nxwww.y  \nwww\\.  \nhttp:/x  \nhttps:x  \n[www\\.x](https://e.com/1)  \n&1  \n&\xe9  \nx&\\_  \nhttp**://x**  \nwww**.x**  \n1**. x**  \na **\\=b**  \n**a** \\+b  \nx**\\-**y  \n\xe9-x  \nx,-y  \n(-x  \nx/-y  \nx\u3000-y  \nHttp\\://x Https\\://y FTP\\://z WWW\\.q  \nhttp\\://  \nmailto://x file://y",
+    ),
+    "loose": (
+        {
+            "paragraphs": [
+                {"runs": [{"text": "x"}, {"text": "\xa0b\xa0", "bold": True}, {"text": "y"}]},
+                {"runs": [{"text": "x"}, {"text": "\u3000b\u3000", "bold": True}, {"text": "y"}]},
+                {"runs": [{"text": "x"}, {"text": "\u2002b\u2002", "bold": True}, {"text": "y"}]},
+                {"runs": [{"text": "a"}, {"text": "-b", "underline": True}]},
+                {
+                    "runs": [
+                        {"text": "a", "underline": True},
+                        {"text": "-b", "bold": True, "underline": True},
+                    ]
+                },
+                {"text": "x1. y"},
+                {"text": "(http://x"},
+                {"runs": [{"text": "x", "link": "https://e.com/1"}, {"text": "-y"}]},
+            ]
+        },
+        "\ufeffx b y\r\nx b y\r\nx b y\r\na-b\r\na-b\r\nx1. y\r\n(http://x\r\nx-y",
+        "x**\xa0b\xa0**y  \nx**\u3000b\u3000**y  \nx**\u2002b\u2002**y  \na\\-b  \na**\\-b**  \nx1. y  \n(http\\://x  \n[x](https://e.com/1)\\-y",
+    ),
+}
+
+
+def test_a_docs_text_export_is_rendered_from_its_body_as_real_renders_it(tmp_path):
+    """`files.export` of a Doc as `text/plain`, `text/markdown` and `text/x-markdown` is what real
+    exported, byte for byte, for the Doc each record states as `content` or as `paragraphs`: no
+    title, a byte-order mark and CRLFs in plain text, and the named styles, marks and escapes of
+    `gdocs.markdown`."""
+    records = [
+        {
+            "source_type": "google_drive",
+            "doc_id": f"export-{name}",
+            "title": name,
+            "author_email": "owner@acme.com",
+            **fields,
+        }
+        for name, (fields, _, _) in _DOCS_EXPORTS.items()
+    ]
+    formats = ("text/plain", "text/markdown", "text/x-markdown")
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def export(name, mime):
+            fid = served_id("google_drive", f"export-{name}")
+            r = client.get(f"/drive/v3/files/{fid}/export", headers=h, params={"mimeType": mime})
+            return r.status_code, r.headers["content-type"], r.content.decode("utf-8")
+
+        got = {name: [export(name, mime) for mime in formats] for name in _DOCS_EXPORTS}
+    assert got == {
+        name: [(200, mime, text) for mime, text in zip(formats, (plain, md, md))]
+        for name, (_, plain, md) in _DOCS_EXPORTS.items()
+    }
 
 
 def test_drive_in_owners_query(client, admin_h, ro_conn):
@@ -16299,9 +16675,8 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
     assert f["modifiedTime"] > "2026-07-14T17:20:00.000Z"
     found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains 'ABell0'"})
     assert [x["id"] for x in found.json()["files"]] == [did]
-    assert wc.get(
-        f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"}
-    ).text.endswith("ABell0 w0rld\nSec0nd para")
+    exported = wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"})
+    assert exported.content.decode("utf-8") == "\ufeffABell0 w0rld\r\nSec0nd para"
 
 
 @pytest.mark.parametrize(

@@ -23,7 +23,7 @@ from backlot import synth
 # `documents.create` makes for a Workspace member whose account is in English. Of 43 Docs read,
 # 42 had these `namedStyles`, and 37 differed from this `documentStyle` in an A4 `pageSize` alone.
 _DEFAULTS = json.loads(
-    (Path(__file__).parent / "data" / "docs_defaults.json").read_text(encoding="utf-8")
+    (Path(__file__).parent / "data" / "gdocs_defaults.json").read_text(encoding="utf-8")
 )
 
 # `TextStyle`'s members in the order real serves them, in `namedStyles` and in every run read.

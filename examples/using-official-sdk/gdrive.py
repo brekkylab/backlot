@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Read Google Drive and Sheets, and write Sheets, through the official google-api-python-client — authenticating with a
-Google **service-account** credential, the way a real connector does, rather than a raw token.
-Self-contained.
+"""Read Google Drive and Sheets, write Sheets and create a Doc, through the official
+google-api-python-client — authenticating with a Google **service-account** credential, the way a
+real connector does, rather than a raw token. Self-contained.
 
     pip install -e ".[official-sdk]"
     python examples/using-official-sdk/gdrive.py                          # bare SA → admin, sees all
@@ -16,6 +16,7 @@ from pathlib import Path
 from google.api_core.client_options import ClientOptions
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from backlot import serve_or_connect
 
@@ -89,6 +90,17 @@ def sheets_as(credentials, base_url):
         # No `/v4` here, unlike Drive below: the Sheets discovery document carries the version in
         # its own servicePath, so the client appends it to whatever endpoint it is given.
         client_options=ClientOptions(api_endpoint=f"{base_url}/sheets"),
+    )
+
+
+def docs_as(credentials, base_url):
+    # Like Sheets, the Docs discovery document carries `v1` in its method paths.
+    return build(
+        "docs",
+        "v1",
+        credentials=credentials,
+        static_discovery=True,
+        client_options=ClientOptions(api_endpoint=f"{base_url}/docs"),
     )
 
 
@@ -171,3 +183,43 @@ with serve_or_connect(CORPUS, url=args.url) as s:
                 .execute()["values"][0]
             )
             print(f"  {render}: {row}")
+
+    # Docs v1 creates a Doc through the same service account, impersonating its author with a scope
+    # that may write. `documents.create` keeps the title alone and makes a blank Doc at the author's
+    # My Drive root, shared with nobody: the author reads it back, Drive lists it under the root,
+    # and anyone else is refused it.
+    author = service_account.Credentials.from_service_account_info(
+        sa_info,
+        scopes=[
+            "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ],
+        subject="mia@acme.com",
+    )
+    docs = docs_as(author, s.base_url)
+    made = docs.documents().create(body={"title": "Launch checklist"}).execute()
+    doc_id = made["documentId"]
+    print(f"\nCreated '{made['title']}' ({doc_id}) with {len(made['tabs'])} tab")
+    read = docs.documents().get(documentId=doc_id).execute()
+    text = "".join(
+        el["textRun"]["content"]
+        for se in read["body"]["content"]
+        if "paragraph" in se
+        for el in se["paragraph"]["elements"]
+    )
+    print(f"  read back: body {text!r}, same revision: {read['revisionId'] == made['revisionId']}")
+    drive_as_author = build(
+        "drive",
+        "v3",
+        credentials=author,
+        static_discovery=True,
+        client_options=ClientOptions(api_endpoint=f"{s.base_url}/drive/v3"),
+    )
+    roots = drive_as_author.files().list(q="'root' in parents", fields="files(id,name)").execute()
+    print(f"  in mia's My Drive root: {[f['name'] for f in roots['files'] if f['id'] == doc_id]}")
+    try:
+        docs_as(creds.with_subject("cfo@acme.com"), s.base_url).documents().get(
+            documentId=doc_id
+        ).execute()
+    except HttpError as err:
+        print(f"  cfo@acme.com reading it: {err.status_code} {err.reason}")

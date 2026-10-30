@@ -846,6 +846,9 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
         )  # ...and match the bytes
 
 
+# A paragraph long enough that a Markdown writer would wrap it, which real does not.
+_WORDS = " ".join(f"word{i}" for i in range(120))
+
 # Real's `text/plain` and `text/markdown` exports of the Doc each record states, from the measurement
 # `backlot.gdocs`'s export section records. Real's `md_marks` and `nest` Docs had more paragraphs:
 # those where bold and strikethrough end together inside italic or a link, which `gdocs.markdown`
@@ -1199,6 +1202,38 @@ _DOCS_EXPORTS = {
         },
         "\ufeffx b y\r\nx b y\r\nx b y\r\na-b\r\na-b\r\nx1. y\r\n(http://x\r\nx-y",
         "x**\xa0b\xa0**y  \nx**\u3000b\u3000**y  \nx**\u2002b\u2002**y  \na\\-b  \na**\\-b**  \nx1. y  \n(http\\://x  \n[x](https://e.com/1)\\-y",
+    ),
+    "heading_escapes": (
+        {
+            "paragraphs": [
+                {"text": _WORDS},
+                {"runs": [{"text": _WORDS[:300], "bold": True}, {"text": " tail " + _WORDS[:200]}]},
+                {"style": "HEADING_1", "text": "1. Introduction"},
+                {"style": "HEADING_2", "text": "- dash"},
+                {"style": "HEADING_3", "text": "+ plus"},
+                {"style": "TITLE", "text": "= eq"},
+                {"style": "SUBTITLE", "text": "2) paren"},
+                {"style": "HEADING_1", "text": "http://x.com www.y"},
+                {"style": "HEADING_2", "text": "  1. spaced"},
+                {"style": "HEADING_4", "text": "a & b &c"},
+                {"text": "\t1. tabbed"},
+                {"runs": [{"text": "x"}, {"text": "1. run", "bold": True}]},
+                {"text": "end"},
+            ]
+        },
+        "\ufeff"
+        + _WORDS
+        + "\r\n"
+        + _WORDS[:300]
+        + " tail "
+        + _WORDS[:200]
+        + "\r\n1. Introduction\r\n- dash\r\n+ plus\r\n= eq\r\n2) paren\r\nhttp://x.com www.y\r\n  1. spaced\r\na & b &c\r\n        1. tabbed\r\nx1. run\r\nend",
+        _WORDS
+        + "  \n**"
+        + _WORDS[:300]
+        + "** tail "
+        + _WORDS[:200]
+        + "\n\n# 1\\. Introduction\n\n## \\- dash\n\n### \\+ plus\n\n# \\= eq\n\n## 2\\) paren\n\n# http\\://x.com www\\.y\n\n##   1\\. spaced\n\n#### a & b \\&c\n\n\t1\\. tabbed  \nx**1\\. run**  \nend",
     ),
 }
 

@@ -317,13 +317,13 @@ A document has two shapes in the same way. A record that states `paragraphs` giv
 its named style and its runs bold, italic, underlined, struck through or linked, and its `content`
 is their text, one line each. A record that states only `content` is one plain paragraph per line
 of it. Either way `files.export` renders a document's text formats from those paragraphs as real
-does, without its title: `text/plain` as a byte-order mark and one line per paragraph ending in
+does, without its title: `text/plain` as a byte-order mark and one line per paragraph, joined by
 CRLF, and `text/markdown` and `text/x-markdown` with its named styles as `#` headings and its bold,
 italic, strikethrough and links in Markdown. Where bold and strikethrough end together inside an
 italic or a link, real closes them in an order that does not nest, and Backlot nests them. A
 document's other formats serve its title and `content`, not the file real makes. Reading a file of
-the wrong type through any of the three editor APIs is refused, as real
-Google does, not reinterpreted.
+the wrong type through any of the three editor APIs is refused, as real Google does, not
+reinterpreted.
 
 #### OAuth and batch
 

@@ -470,8 +470,9 @@ class Body:
 
 # --- a body as Drive's `files.export` renders it --------------------------------------------------
 #
-# Measured against Drive v3 on 2026-10-30, as a Workspace member exporting 41 Docs it wrote through
-# `documents.batchUpdate` with every named style, mark and character a corpus may state.
+# Measured against Drive v3 on 2026-10-30, as a Workspace member exporting 40 Docs it wrote through
+# `documents.batchUpdate`, each holding only what a corpus may state: named styles, marks, and the
+# characters each rule below names.
 
 # The `#`s a paragraph of each named style opens with in Markdown.
 _MARKDOWN_LEVEL = {"TITLE": 1, "SUBTITLE": 2, **{f"HEADING_{n}": n for n in range(1, 7)}}

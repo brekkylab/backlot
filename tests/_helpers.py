@@ -341,6 +341,31 @@ def read_answer(reader) -> tuple[int, dict[str, str], bytes] | None:
     return int(status_line.split()[1]), headers, body
 
 
+def raw_request(
+    method: str | bytes,
+    target: str | bytes,
+    authorization: str | bytes | None = None,
+    *,
+    times: int = 1,
+    headers: bytes = b"",
+    body: bytes | None = None,
+) -> bytes:
+    """An HTTP/1.1 request for :func:`raw_exchange`: ``target`` as written, `Host: x`, the
+    `Authorization` value ``times`` times, ``headers`` (whole lines), and with a ``body`` its
+    `Content-Type: application/json` and `Content-Length` ahead of it. A `str` is sent as its
+    latin-1 bytes."""
+    method, target, authorization = (
+        v.encode("latin-1") if isinstance(v, str) else v for v in (method, target, authorization)
+    )
+    request = b"%s %s HTTP/1.1\r\nHost: x\r\n" % (method, target)
+    if authorization is not None:
+        request += b"Authorization: %s\r\n" % authorization * times
+    request += headers
+    if body is not None:
+        request += b"Content-Type: application/json\r\nContent-Length: %d\r\n" % len(body)
+    return request + b"\r\n" + (body or b"")
+
+
 def raw_exchange(base_url: str, request: bytes) -> tuple[int, dict[str, str], bytes]:
     """``request`` written as it is to the server at ``base_url``, and its answer: for a target a
     client library would resolve, escape or refuse before sending it."""

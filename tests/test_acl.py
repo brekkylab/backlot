@@ -437,7 +437,7 @@ def test_fireflies_filters_do_not_leak_a_denied_meeting(sample_settings, tokens)
             'keyword: "Board pre-read", scope: "title"',
         ):
             q = "{ transcripts(%s, limit: 50) { title } }" % args
-            ava = _ff_gql(client, q, tokens["ava@acme.com"])["data"]["transcripts"]
+            ava = _ff_gql(client, q, tokens["ava@acme.com"])["data"]["transcripts"] or []
             assert "Board pre-read walkthrough" not in [t["title"] for t in ava], args
             hana = _ff_gql(client, q, tokens["hana@acme.com"])["data"]["transcripts"]
             assert "Board pre-read walkthrough" in [t["title"] for t in hana], args

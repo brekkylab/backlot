@@ -13603,6 +13603,18 @@ _OVERRIDE_ROWS = [
     ("/drive/v3/about", "", "", "fields=kind", "text/plain", "GET"),
     ("/drive/v3/about", "", "", '{"fields": "kind"}', "application/json", "GET"),
     ("/drive/v3/about", "fields=user", "fields=user", "fields=kind", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&x=%8B", "", b"fields=kind&x=\x8b", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%8Bnd", "", b"fields=ki\x8bnd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%8B", "", b"fields=kind&\x8b", _FORM, "GET"),
+    ("/drive/v3/about", "%8B&fields=kind", "", b"\x8b&fields=kind", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%C3%A9nd", "", b"fields=ki\xc3\xa9nd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%7F", "", b"fields=kind&\x7f", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%7Fnd", "", b"fields=ki\x7fnd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%80", "", b"fields=kind&\x80", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%80nd", "", b"fields=ki\x80nd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%FF", "", b"fields=kind&\xff", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%FFnd", "", b"fields=ki\xffnd", _FORM, "GET"),
+    ("/drive/v3/about", "", "", gzip.compress(b"fields=kind", mtime=0)[:-8], _FORM, "GET"),
 ]
 
 
@@ -13631,6 +13643,18 @@ _OVERRIDE_ROWS = [
         "text-plain",
         "json",
         "url-query-first",
+        "byte-0x8b-in-a-value",
+        "byte-0x8b-in-the-mask",
+        "byte-0x8b-as-a-name",
+        "byte-0x8b-as-the-first-name",
+        "utf-8-in-the-mask",
+        "byte-0x7f-as-a-name",
+        "byte-0x7f-in-the-mask",
+        "byte-0x80-as-a-name",
+        "byte-0x80-in-the-mask",
+        "byte-0xff-as-a-name",
+        "byte-0xff-in-the-mask",
+        "gzip-member-cut-short",
     ],
 )
 def test_google_read_sent_as_a_post_with_a_get_override_is_the_get(
@@ -13971,26 +13995,28 @@ def test_google_refuses_a_body_on_a_get_or_head_ahead_of_the_route(
 # a Workspace member's token: Sheets' `values:batchGetByDataFilter` with a JSON body, and Drive's
 # `about` with a form body under `X-HTTP-Method-Override: GET`. `plain` is the answer to the body
 # sent with no coding and not gzipped, a 200 on both, and `as sent` the answer to the same bytes
-# with no coding, a 400 on Sheets.
+# with no coding, a 400 on both. `gzipped and cut short` is the gzipped body without its last 8
+# bytes, measured on 2026-10-30.
 _BODY_CODINGS = [
-    ("sheets", "gzip", True, "plain"),
-    ("sheets", "gzip", False, "plain"),
-    ("sheets", "identity", False, "plain"),
-    ("sheets", "", False, "plain"),
-    ("sheets", "GZIP", True, "as sent"),
-    ("sheets", "deflate", False, 415),
-    ("sheets", "br", False, 415),
-    ("sheets", "x-gzip", False, 415),
-    ("about", "gzip", True, "plain"),
-    ("about", "deflate", False, 415),
-    ("about", "x-gzip", False, 415),
-    ("about", "foo", False, 415),
+    ("sheets", "gzip", "gzipped", "plain"),
+    ("sheets", "gzip", "plain", "plain"),
+    ("sheets", "identity", "plain", "plain"),
+    ("sheets", "", "plain", "plain"),
+    ("sheets", "GZIP", "gzipped", "as sent"),
+    ("sheets", "deflate", "plain", 415),
+    ("sheets", "br", "plain", 415),
+    ("sheets", "x-gzip", "plain", 415),
+    ("about", "gzip", "gzipped", "plain"),
+    ("about", "gzip", "gzipped and cut short", "as sent"),
+    ("about", "deflate", "plain", 415),
+    ("about", "x-gzip", "plain", 415),
+    ("about", "foo", "plain", 415),
 ]
 
 
-@pytest.mark.parametrize("route, coding, gzipped, answer", _BODY_CODINGS)
+@pytest.mark.parametrize("route, coding, sent, answer", _BODY_CODINGS)
 def test_google_reads_a_body_under_its_coding_as_its_front_end_does(
-    client, admin_h, route, coding, gzipped, answer
+    client, admin_h, route, coding, sent, answer
 ):
     if route == "sheets":
         sheet = _drive_find(client, admin_h, "Q1 Revenue Model")["id"]
@@ -14000,7 +14026,8 @@ def test_google_reads_a_body_under_its_coding_as_its_front_end_does(
     else:
         url, plain = "/drive/v3/about", b"fields=kind"
         headers = {**admin_h, "Content-Type": _FORM, "X-HTTP-Method-Override": "GET"}
-    body = gzip.compress(plain) if gzipped else plain
+    gzipped = gzip.compress(plain)
+    body = {"plain": plain, "gzipped": gzipped, "gzipped and cut short": gzipped[:-8]}[sent]
     r = client.post(url, headers={**headers, "Content-Encoding": coding}, content=body)
     if answer == 415:
         refusal = _415_BARE if route == "sheets" else _415
@@ -14019,24 +14046,30 @@ def _gzipped_to(size: int) -> bytes:
 
 
 @pytest.mark.parametrize(
-    "path, size, answer",
+    "path, headers, size, answer",
     [
-        ("/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", 134_217_728, None),
-        ("/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", 134_217_729, _413_BARE),
-        ("/drive/v3/files", 134_217_729, _413),
-        ("/drive/v3/nosuch", 134_217_729, "without"),
-        ("/drive/v3/about", 134_217_729, "without"),
-        ("/sheets/v4/nosuch", 134_217_729, "without"),
+        ("/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", {}, 134_217_728, None),
+        ("/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", {}, 134_217_729, _413_BARE),
+        ("/drive/v3/files", {}, 134_217_729, _413),
+        ("/drive/v3/nosuch", {}, 134_217_729, "without"),
+        ("/drive/v3/about", {}, 134_217_729, "without"),
+        (
+            "/drive/v3/about",
+            {"X-HTTP-Method-Override": "GET", "Content-Type": _FORM},
+            134_217_729,
+            _413,
+        ),
+        ("/sheets/v4/nosuch", {}, 134_217_729, "without"),
     ],
 )
 def test_google_refuses_a_body_that_decompresses_past_its_front_ends_limit(
-    client, path, size, answer
+    client, path, headers, size, answer
 ):
-    """A body gzipped to decompress to ``size`` bytes, `POST`ed with no credential: real's 400
-    ahead of the credential on 2026-10-30 (UTC) where ``answer`` is one; the route's 401 where it is
-    ``None``; and where it is `without`, the answer to the same `POST` with no body, as real's was
-    its answer to a path or method it does not route."""
-    sent = {"Content-Type": "application/json", "Content-Encoding": "gzip"}
+    """A body gzipped to decompress to ``size`` bytes, `POST`ed with ``headers`` and no credential:
+    real's 400 ahead of the credential on 2026-10-30 (UTC) where ``answer`` is one; the route's 401
+    where it is ``None``; and where it is `without`, the answer to the same `POST` with no body, as
+    real's was its answer to a path or method it does not route."""
+    sent = {"Content-Type": "application/json", "Content-Encoding": "gzip", **headers}
     r = client.post(path, headers=sent, content=_gzipped_to(size))
     if answer == "without":
         without = client.post(path, headers={"Content-Type": "application/json"})

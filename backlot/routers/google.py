@@ -539,9 +539,10 @@ def inflated(body: bytes, values: list[str]) -> bytes | None:
 
     Read off Drive's batch endpoint on 2026-10-30 (UTC), with no credential: it answers each part's
     401 for a body it can split and a 400 for one it cannot, and under `gzip, gzip` it did not split
-    a body gzipped twice. What real reads of a gzip body it does not decompress is not measured,
-    since only a credential gets a request past the 401 to the API that reads it; this server reads
-    it as sent."""
+    a body gzipped twice. With a credential the same day, Sheets' `values:batchGetByDataFilter`
+    and Drive's `about` read as sent the bodies sent that are not one whole member, but at some
+    lengths a member cut short, without its last 4 bytes among them, was the 400 of
+    :data:`PAYLOAD_LIMIT`, which this server does not answer."""
     if "gzip" not in _codings(values):
         return body
     inflater = zlib.decompressobj(31)

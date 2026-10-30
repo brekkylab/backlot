@@ -1618,6 +1618,7 @@ _GOOGLE_READ_OVERRIDES = {
 }
 _GOOGLE_OVERRIDE_IN_ANY_CASE = "/drive/v3"
 _FORM_MEDIA_TYPE = "application/x-www-form-urlencoded"
+_BYTE_PAST_0X7F = re.compile(rb"[\x80-\xff]")
 
 
 @_middleware(
@@ -1650,7 +1651,11 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
     answered each on `about` as it answers a `PUT` there, with its 404 page, and on 2026-10-25 so it
     answered a `PUT`, `PATCH` or `DELETE` naming `GET` there. The form body is read under its
     `Content-Encoding` as a route reads its own (``google.inflated``): on 2026-10-23 a gzipped one
-    on Drive's `about` was decompressed.
+    on Drive's `about` was decompressed. A byte past 0x7F in it is read as its percent-encoding:
+    on 2026-10-30 (UTC) real answered `about` with 0x80, 0x8B, 0xFF or `C3 A9` in the form body as
+    the GET with those bytes percent-encoded in its query, where 0x7F was read as sent, and a form
+    body gzipped and cut short as the GET with no `fields`, whether its `Content-Encoding` named
+    the coding or not.
 
     Registered inside ``answer_a_raw_byte_in_the_request_target``, whose refusals real gave such a
     POST on Drive's `about` on 2026-10-25 as it gives a GET, and inside
@@ -1667,6 +1672,7 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
         form = _FORM_MEDIA_TYPE in request.headers.get("content-type", "").lower()
         codings = request.headers.getlist("content-encoding")
         body = google.inflated(await request.body(), codings) if form else b""
+        body = _BYTE_PAST_0X7F.sub(lambda m: b"%%%02X" % m[0][0], body or b"")
         query = request.scope.get("query_string", b"")
         request.scope["method"] = "GET"
         request.scope["query_string"] = b"&".join(part for part in (query, body) if part)

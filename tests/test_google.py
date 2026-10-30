@@ -13949,10 +13949,8 @@ def test_google_refuses_a_body_on_a_get_or_head_ahead_of_the_route(
 ):
     if isinstance(body, Chunked):
         r = sent_as(client, method, url, headers, content=body.chunks())
-    elif "Content-Length" in headers:
-        r = sent_as(client, method, url, headers, bare=True)
     else:
-        r = client.request(method, url, headers=headers, content=body)
+        r = client.request(method, url, headers=headers, content=body or None)
     if answer == "without":
         without = client.request(method, url)
         assert (r.status_code, r.content) == (without.status_code, without.content)

@@ -368,6 +368,22 @@ def _not_in_team(context) -> GraphQLError:
     )
 
 
+def _channel_not_found(context) -> GraphQLError:
+    """Real's answer to a `transcripts(channel_id:)` id that names no channel: the null stands and
+    an ``object_not_found`` field error goes beside it, `Channel` in its metadata (api.fireflies.ai,
+    2026-10-27)."""
+    return GraphQLError(
+        "Channel not found",
+        extensions={
+            "code": "object_not_found",
+            "correlationId": _correlation_id(context),
+            "status": 404,
+            "metadata": {"objectType": "Channel"},
+            "helpUrls": ["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"],
+        },
+    )
+
+
 def _object_not_found(context) -> GraphQLError:
     """Real's answer to a `transcript` id that names nothing: the null stands and an
     ``object_not_found`` field error goes beside it, the object type in its metadata
@@ -586,6 +602,17 @@ def resolve_transcripts(
         from_ts = start if from_ts is None else max(from_ts, start)
         end = start + 86399
         to_ts = end if to_ts is None else min(to_ts, end)
+
+    # An empty `channel_id` is read as none: real answered `""` with the page it answers with no
+    # `channel_id` and `x` with `Channel not found`, but `x` beside `limit: 51` with the `limit`
+    # error (api.fireflies.ai, 2026-10-28) and beside a `date` past `_DATE_SERVED` with
+    # `_internal_error` (2026-10-30). A channel holding no meeting this caller can read draws
+    # `Channel not found` too, as a transcript the caller cannot read draws `Transcript not found`.
+    channel_id = channel_id or None
+    if channel_id is not None and not store.fireflies_channel_exists(
+        ctx["conn"], channel_id, ctx.get("visible_ids")
+    ):
+        raise _channel_not_found(ctx)
 
     rows = store.list_fireflies_transcripts(
         ctx["conn"],

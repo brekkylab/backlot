@@ -13802,9 +13802,11 @@ def test_google_refuses_a_coding_its_front_end_does_not_read(client, values, bod
         assert (r.headers["content-type"], r.content) == ("application/json; charset=UTF-8", _415)
 
 
-# ``backlot.routers.google.inflated``'s reading of `{}` gzipped and cut, extended or spoilt as the
-# bodies its docstring records the batch endpoint splitting or not: decompressed where one was
-# split.
+# The `Content-Encoding` values and bodies a one-part batch was sent to Drive's batch endpoint with
+# on 2026-10-30 (UTC), with no credential, here `{}` in its place: gzipped, then cut, extended or
+# spoilt, or not gzipped. ``backlot.routers.google.inflated`` decompresses the body where the
+# endpoint split a gzipped batch, and reads it as sent where it split one that is not gzip or
+# answered a 400.
 _GZIP_READS = [
     (["gzip"], _GZIPPED, True),
     (["gzip, identity"], _GZIPPED, True),

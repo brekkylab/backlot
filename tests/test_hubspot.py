@@ -1170,7 +1170,7 @@ def test_hubspot_leaves_a_path_no_route_serves_to_the_router(client, admin_h, me
 
 
 #: The SHA-256 of real's 403 block page with its Ray ID read as `<RAY>` and the address it named
-#: as `<IP>`, the same for each of the 34 answers ``hubspot.cloudflare_block`` counts.
+#: as `<IP>`, the same for each of the 34 answers ``hubspot._BLOCK_PAGE`` was read from.
 _BLOCK_PAGE_SHA256 = "65d57c8fa13d6703177fef36fb7b88e9ac8fcda0d0c97ff92a491840569515b8"
 _BLOCK_HEADERS = {
     "content-type": "text/html; charset=UTF-8",
@@ -1198,7 +1198,7 @@ def _blocked(r) -> tuple:
     return r.status_code, headers, hashlib.sha256(body).hexdigest()
 
 
-# Each `X-Probe` value ``hubspot.blocks_a_header_value`` records, sent with no credential on the
+# Each `X-Probe` value sent to api.hubapi.com on 2026-10-30 (UTC) with no credential on the
 # listing, and whether Cloudflare blocked it; where it did not, the route's 401 answered.
 _HEADER_VALUES = [
     (b"a\xc2\x80b", False),

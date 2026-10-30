@@ -527,12 +527,8 @@ def refuses_coding(values: list[str]) -> bool:
     """Whether real answers :func:`gerr.unsupported_coding` for a body under the `Content-Encoding`
     values ``values``: a member is something but `gzip`, `identity` or nothing, in any case.
 
-    Measured on 2026-10-30 (UTC) on Drive's `about` and `files` with no credential, the route's 401
-    where the coding was read: `br`, `BR`, `Br`, `deflate`, `DEFLATE`, `x-gzip`, `X-GZIP`,
-    `compress`, `foo`, `*`, `gzip, br`, `br, gzip`, `identity, br`, and `gzip` and `br` sent as two
-    headers in either order, or an empty one and `br`, were the 415; `Gzip`, `IDENTITY`,
-    `gzip, gzip`, `gzip, identity`, `identity,identity`, `gzip,`, two `gzip` headers and a value of
-    two spaces were the 401."""
+    Measured on 2026-10-30 (UTC) on Drive's `about` and `files` with no credential, where the
+    route's 401 answered a coding real read."""
     return any(member.lower() not in ("", "gzip", "identity") for member in _codings(values))
 
 
@@ -541,16 +537,11 @@ def inflated(body: bytes, values: list[str]) -> bytes | None:
     a member is `gzip` as spelt and ``body`` is one whole gzip member, its CRC and length checked,
     and as sent otherwise; ``None`` where it decompresses past :data:`PAYLOAD_LIMIT`.
 
-    Measured on 2026-10-30 (UTC) on Drive's batch endpoint with no credential, which answers each
-    part's 401 for a body it can split and a 400 for one it cannot: a gzipped body was split under
-    `gzip`, `gzip, identity`, `identity, gzip`, `gzip,`, `gzip, gzip` and two `gzip` headers, and
-    not under `GZIP`, `Gzip`, `identity` or an empty value; under `gzip, gzip` and two `gzip`
-    headers a body gzipped twice was not split; and a body that is not gzip was split under
-    `gzip`. A member followed by another member, by a NUL or by a gzip header, cut short or
-    carrying a wrong CRC or length was not split. On Sheets' `values:batchGetByDataFilter` with a
-    Workspace member's token on 2026-10-23, a JSON body that is not gzip was read under `gzip` as
-    sent. How real reads a gzip body it does not decompress is not measured past the batch
-    endpoint's 400; this server reads it as sent."""
+    Read off Drive's batch endpoint on 2026-10-30 (UTC), with no credential: it answers each part's
+    401 for a body it can split and a 400 for one it cannot, and under `gzip, gzip` it did not split
+    a body gzipped twice. What real reads of a gzip body it does not decompress is not measured,
+    since only a credential gets a request past the 401 to the API that reads it; this server reads
+    it as sent."""
     if "gzip" not in _codings(values):
         return body
     inflater = zlib.decompressobj(31)

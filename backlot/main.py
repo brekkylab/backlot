@@ -1035,9 +1035,10 @@ def _a_google_operation(scope: Scope) -> bool:
 
 
 def _front_end_error(scope: Scope, exc: errors.google.GoogleError) -> Response:
-    """``exc`` in its family's envelope, and on a `GET` under a `callback` the script that calls
-    it, whatever the name: real wrapped its 415 under `callback=a-b` on 2026-10-30 (UTC), a name a
-    route refuses (``errors.google.validate_system_parameters``)."""
+    """``exc`` in its family's envelope, as the script that calls it where
+    ``errors.google.jsonp_callback`` names a callback, whatever the name: real wrapped its 415 under
+    `callback=a-b` on 2026-10-30 (UTC), a name ``errors.google.validate_system_parameters`` refuses
+    on a route."""
     request = Request(scope)
     body = errors.google.http_body(request.url.path, exc, request.query_params)
     callback = errors.google.jsonp_callback(request)

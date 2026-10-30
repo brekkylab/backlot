@@ -268,14 +268,10 @@ def blocks_a_header_value(headers: list[tuple[bytes, bytes]]) -> bool:
     """Whether Cloudflare, in front of api.hubapi.com, answers a request carrying ``headers`` with
     :func:`cloudflare_block`: one of their values is not UTF-8, as Python's codec reads it.
 
-    Measured on 2026-10-30 (UTC) with no credential, `X-Probe: a<bytes>b` on
-    `GET /crm/v3/objects/contacts`. Served, the route's 401: `C2 80`, `C2 A0`, `C3 A9`,
-    `E2 82 AC`, `F0 9F 98 80`, `EF BB BF`, `EF BF BF`, `ED 9F BF`, `F4 8F BF BF`, `C3 A9 C3 A9` and
-    `C3 A9` ending the value. Blocked: `ED A0 80`, a surrogate; `C0 80`, `C1 BF` and `E0 80 80`,
-    overlong; `F4 90 80 80`, past U+10FFFF; `F5 80 80 80` and `F8 88 80 80 80`; `C3` and `E2 82`
-    cut short, and `C3` ending the value; `80`, `BF`, `FE` and `FF` alone; and `C3 A9 80`. A value
-    of `A0` alone and `Bearer a<80>b` in `Authorization` were blocked too, and `a<80>b` on a `HEAD`,
-    a `POST`, an `OPTIONS`, under `Accept: text/html`, on `/`, `/oauth/v1/token` and `/nosuch`."""
+    Measured on 2026-10-30 (UTC) with no credential and the value in `X-Probe` on
+    `GET /crm/v3/objects/contacts`: each well-formed UTF-8 value sent was served, and each other one
+    blocked, a lone byte past 0x7F, a sequence cut short, an overlong form, a surrogate and a code
+    point past U+10FFFF among them. `Bearer a<80>b` in `Authorization` was blocked too."""
     for _, value in headers:
         try:
             value.decode("utf-8")
@@ -292,10 +288,10 @@ _BLOCK_PAGE = (Path(__file__).parent.parent / "data" / "hubspot_block.html").rea
 
 def cloudflare_block(request: Request) -> Response:
     """Cloudflare's 403 block page, titled `Attention Required! | Cloudflare`, on
-    `text/html; charset=UTF-8` with the four headers below. Real's Ray ID was 16 lower-case hex
-    digits in each of those 34 answers, a different one each time, and the same as the `CF-RAY`
-    header's up to its `-`; here it is 16 random ones. The address is the client's as the server saw
-    it, where real's was the address the probe sent from."""
+    `text/html; charset=UTF-8` with the headers below. Real's Ray ID was 16 lower-case hex digits in
+    each of the 34 answers :data:`_BLOCK_PAGE` was read from, a different one each time, and the
+    same as the `CF-RAY` header's up to its `-`; here it is 16 random ones. The address is the
+    client's as the server saw it, where real's was the address the probe sent from."""
     ray = secrets.token_hex(8)
     address = request.client.host if request.client else ""
     body = _BLOCK_PAGE.replace(b"{ray}", ray.encode()).replace(b"{ip}", address.encode())

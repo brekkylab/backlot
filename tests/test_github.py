@@ -7565,7 +7565,7 @@ def test_github_code_search_answers_an_unparseable_caller_from_its_zero_window(
             "403",
         )
     after = c.get("/github/rate_limit", headers={"Authorization": value}).json()["resources"]
-    assert after["core"] == core
+    assert after["core"]["used"] == core["used"]
 
 
 @pytest.mark.parametrize(

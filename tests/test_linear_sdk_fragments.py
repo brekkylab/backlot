@@ -178,10 +178,38 @@ def test_linear_sdk_fragments_cannot_check_what_it_cannot_read(
     assert len(printed) == 1 and printed[0].startswith(line.format(path=path, tmp=tmp_path))
 
 
-def test_linear_sdk_fragments_runs_as_ci_runs_it(tmp_path):
+# (the schema, as in the first table; the exit code; the lines on stdout; the first line on stderr)
+@pytest.mark.parametrize(
+    "schema,code,out,err",
+    [
+        pytest.param(
+            None,
+            1,
+            [
+                "fragments: 1, checked: 1",
+                "fragment IssueLabel on IssueLabel selects what IssueLabel does not declare: nosuch",
+            ],
+            [],
+            id="a fragment named",
+        ),
+        pytest.param(
+            "type Query {",
+            2,
+            [],
+            ["Traceback (most recent call last):"],
+            id="a schema that does not build",
+        ),
+    ],
+)
+def test_linear_sdk_fragments_runs_as_ci_runs_it(tmp_path, schema, code, out, err):
     """The command line CI runs: the script by its path, its exit code the step's."""
     path = tmp_path / "index.mjs"
     path.write_text(_bundle("fragment IssueLabel on IssueLabel {\n  nosuch\n}"), encoding="utf-8")
-    script_path = REPO / "scripts" / "linear_sdk_fragments.py"
-    r = subprocess.run([sys.executable, str(script_path), str(path)], capture_output=True)
-    assert r.returncode == 1
+    argv = [sys.executable, str(REPO / "scripts" / "linear_sdk_fragments.py"), str(path)]
+    if schema is not None:
+        (tmp_path / "linear.graphql").write_text(schema, encoding="utf-8")
+        argv += ["--schema", str(tmp_path / "linear.graphql")]
+    r = subprocess.run(argv, capture_output=True, encoding="utf-8")
+    assert r.returncode == code
+    assert r.stdout.splitlines() == out
+    assert r.stderr.splitlines()[:1] == err

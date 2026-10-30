@@ -13,7 +13,8 @@ declare, or declares with ``id`` alone, is left out, since Backlot does not serv
 Prints how many fragments the bundle holds and how many were checked, then one line per fragment
 selecting an undeclared field. Exit 0 when none does, 1 when one does, 2 when the bundle or the
 schema cannot be read, or the bundle holds no fragment or one that does not parse, which a moved
-bundle or a changed string format would look like.
+bundle or a changed string format would look like. Run by its path, it exits 2 on any other
+exception too, the traceback on stderr, where Python would exit 1, the code of a fragment named.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import traceback
 from pathlib import Path
 
 from graphql import GraphQLError, GraphQLInterfaceType, GraphQLObjectType, build_schema, parse
@@ -107,4 +109,9 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        status = main(sys.argv[1:])
+    except Exception:
+        traceback.print_exc()
+        status = 2
+    sys.exit(status)

@@ -215,7 +215,9 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
                 vendor.headers = getattr(exc, "headers", None)
             exc = vendor
     headers = getattr(exc, "headers", None)
-    body = errors.http_body(request.url.path, exc, request.query_params)
+    # The path as routed: ``request.url.path`` drops what :data:`_REPARSED` matches, which would
+    # take `/github/rate_limit%0A` for the route it does not reach.
+    body = errors.http_body(request.scope["path"], exc, request.query_params)
     if body is None:
         body = {"detail": exc.detail}
     # A vendor may decide how the body reaches the wire as well as what is in it — Google's errors

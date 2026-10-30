@@ -230,12 +230,20 @@ _ESCAPES = [
 ]
 #: The hosts real was measured on with no credential, whose rows here send none.
 _UNCREDENTIALED = ("/gmail/", "/sheets/", "/docs/", "/slides/", "/s3/", "/msgraph/")
+#: A Signature Version 4 `Authorization` for an access key no account holds.
+_AWS_AUTHORIZATION = (
+    b"Authorization: AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20261030/us-east-1/s3/"
+    b"aws4_request, SignedHeaders=host, Signature=" + b"0" * 64 + b"\r\n"
+)
 
 # A `Host` in brackets that holds no IPv6 address (``backlot.bracketed_host`` dates the
-# measurement): (host, method, base, target after it, answer), "served" the answer to the request
-# with a `Host` of `x`. `[0:0]` on a path each vendor serves, the other `Host`s on GitHub's,
-# `[v1.x]` on each host behind Cloudflare and on Google's batch endpoint, and on S3, which serves
-# each as it serves its own `Host`, an IPv6 address in brackets and brackets left open.
+# measurement): (host, or ``None`` where the header lines carry it, method, base, target after it,
+# answer, header lines or none), "served" the answer to the request with a `Host` of `x`. `[0:0]`
+# on a path each vendor serves, at GitHub's root and after another header, the other `Host`s on
+# GitHub's path, `[v1.x]` on each host behind Cloudflare and on Google's batch endpoint,
+# Cloudflare's reading of an IPvFuture on Notion, and on S3, which serves each as it serves its own
+# `Host`, an IPv6 address in brackets, brackets left open, and `[0:0]` with an `Authorization` S3
+# cannot read.
 _HOSTS = [
     *(
         (b"[0:0]", method, base, rest, answer)
@@ -257,12 +265,14 @@ _HOSTS = [
             (b"GET", "/msgraph/v1.0/", b"me", "graph invalid hostname"),
             (b"GET", "/s3/", b"", "served"),
             (b"GET", "/s3/no-such-bucket/", b"x", "served"),
+            (b"GET", "/github", b"", "github"),
         )
     ),
     *(
         (host, b"GET", "/github/", b"rate_limit", "github")
         for host in (b"[0:0]:443", b"[x]", b"[1.2.3.4]", b"[v1.x]", b"[:]", b"[g::1]")
     ),
+    (None, b"GET", "/github/", b"rate_limit", "github", b"User-Agent: x\r\nHost: [0:0]\r\n"),
     *(
         (b"[v1.x]", method, base, rest, "cloudflare forbidden")
         for method, base, rest in (
@@ -274,9 +284,28 @@ _HOSTS = [
     ),
     (b"[v1.x]", b"POST", "/batch/drive/", b"v3", "google 1555 kept"),
     *(
+        (host, b"GET", "/notion/v1/", b"users", answer)
+        for host, answer in (
+            (b"[vF.x]", "cloudflare forbidden"),
+            (b"[v1.]", "cloudflare forbidden"),
+            (b"[v1.:]", "cloudflare forbidden"),
+            (b"[v1.x.y.z]", "cloudflare forbidden"),
+            (b"[v1.-.x]", "cloudflare forbidden"),
+            (b"[v1.x-.]", "cloudflare forbidden"),
+            (b"[vAb.x]", "cloudflare page"),
+            (b"[V1.x]", "cloudflare page"),
+            (b"[vx.y]", "cloudflare page"),
+            (b"[v1]", "cloudflare page"),
+            (b"[v1..]", "cloudflare page"),
+            (b"[v1.x..]", "cloudflare page"),
+            (b"[v1.~]", "cloudflare page"),
+        )
+    ),
+    *(
         (host, b"GET", "/s3/no-such-bucket/", b"x", "served")
         for host in (b"[::1]", b"[::1]:443", b"[::]", b"[ABCD::1]", b"[::ffff:1.2.3.4]", b"[0:0")
     ),
+    (b"[0:0]", b"GET", "/s3/no-such-bucket/", b"x", "served", _AWS_AUTHORIZATION),
 ]
 
 
@@ -325,10 +354,13 @@ def _rows():
         yield pytest.param(
             b"GET", base, rest, answer, authorizations, b"", b"x", id=f"{base} {rest!r}"
         )
-    for host, method, base, rest, answer in _HOSTS:
+    for host, method, base, rest, answer, *header in _HOSTS:
         authorizations = 0 if base.startswith(_UNCREDENTIALED) else 1
-        id = f"{host.decode()} {method.decode()} {base}{rest.decode()}"
-        yield pytest.param(method, base, rest, answer, authorizations, b"", host, id=id)
+        name = (host or b"(in the lines)").decode()
+        id = f"{name} {method.decode()} {base}{rest.decode()}" + " +header" * len(header)
+        yield pytest.param(
+            method, base, rest, answer, authorizations, *header or [b""], host, id=id
+        )
     # a read sent as a POST naming GET, which Google's API reads behind its front door
     override = b"X-HTTP-Method-Override: GET\r\n"
     for sent, answer in ((b"\x01", "google 54"), (b"\t", "google 1555"), (b"\x80", "encoded")):

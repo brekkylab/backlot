@@ -1035,8 +1035,6 @@ def method_name(path: str) -> str | None:
 #: What real drops off the end of a `/api/` path before it reads the path: a run of tabs, vertical
 #: tabs, CRs, spaces and `+`s, then one LF, either or both.
 _DROPPED_END = re.compile(r"[\t\x0b\r +]*\n?\Z")
-#: The same run as sent: each escaped, in either case, and a `+` escaped or not.
-_DROPPED_END_SENT = re.compile(rb"(?:\+|%(?:09|0[BbDd]|20|2[Bb]))*(?:%0[Aa])?\Z")
 #: Apache's 404 page, `text/html` with no charset, which real answers a `/api/` path holding an LF
 #: anywhere but at its end with.
 FILE_NOT_FOUND_PAGE = b"404 File Not Found"
@@ -1051,9 +1049,9 @@ def drops_an_end(path: str) -> bool:
 
 
 def drop_the_end(scope: Scope) -> Response | None:
-    """Take the run :data:`_DROPPED_END` matches off the end of a `/slack/api/` path, on the path
-    and as sent, and leave the rest to be read as it would be without it; or answer a path holding
-    an LF anywhere else with :data:`FILE_NOT_FOUND_PAGE`'s 404.
+    """Take the run :data:`_DROPPED_END` matches off the end of a `/slack/api/` path and leave the
+    rest to be read as it would be without it; or answer a path holding an LF anywhere else with
+    :data:`FILE_NOT_FOUND_PAGE`'s 404.
 
     Measured against slack.com/api on 2026-10-30 (UTC): `auth.test` followed by `%09`, `%0A`, `%0B`,
     `%0D`, `%20`, `%2B`, `+`, `%0D%0A`, `%0D%0D`, `%20%0A`, `%09%0D%0A`, `%2B%0A`, `++%0A` or
@@ -1067,7 +1065,6 @@ def drop_the_end(scope: Scope) -> Response | None:
     if "\n" in path[:-1]:
         return Response(FILE_NOT_FOUND_PAGE, status_code=404, headers={"Content-Type": "text/html"})
     scope["path"] = _DROPPED_END.sub("", path, 1)
-    scope["raw_path"] = _DROPPED_END_SENT.sub(b"", scope["raw_path"], 1)
     return None
 
 

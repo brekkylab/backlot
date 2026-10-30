@@ -11,13 +11,13 @@ where the `Host` does not parse, from 1.7.0.
 
 Measured on 2026-10-30 (UTC) over raw HTTP/1.1 on TLS sockets, on a path each host serves, with the
 vendors' credentials but Gmail's, the Docs editors', S3's and Graph's: `[0:0]`, `[0:0]:443`, `[x]`,
-`[1.2.3.4]`, `[v1.x]`, `[:]` and `[g::1]`, each answered as :func:`answer` says, and `[0:0]` and
-`[v1.x]` at Google's `/batch/drive/v3`. An IPv6 address
-in brackets (`[::1]`, `[::1]:443`, `[::]`, `[ABCD::1]`, `[::ffff:1.2.3.4]`) is how a client reaches
-a server on an IPv6 address, and is served here as any other `Host` is. Real's front doors answered
-it as they answered `example.com`, a host they do not serve, but for two: S3 answered it as it
-answers its own `Host`, and Graph refused it as it refuses the `Host`s above, where it served
-`example.com`.
+`[1.2.3.4]`, `[v1.x]`, `[:]` and `[g::1]`, each answered as :func:`answer` says, `[0:0]` and
+`[v1.x]` at Google's `/batch/drive/v3`, and `[0:0]` at GitHub's `/` and after a `User-Agent`. An
+IPv6 address in brackets (`[::1]`, `[::1]:443`, `[::]`, `[ABCD::1]`, `[::ffff:1.2.3.4]`) is how a
+client reaches a server on an IPv6 address, and is served here as any other `Host` is. Real's front
+doors answered it as they answered `example.com`, a host they do not serve, but for two: S3 answered
+it as it answers its own `Host`, and Graph refused it as it refuses the `Host`s above, where it
+served `example.com`.
 """
 
 from __future__ import annotations
@@ -33,9 +33,14 @@ from backlot import errors, request_target
 #: A `Host` in brackets, with a port after them or none.
 _BRACKETED = re.compile(r"\[(?P<inside>[^\]]*)\](?::[0-9]+)?")
 
-#: RFC 3986's IPvFuture, an address in brackets that is not IPv6's: Cloudflare read `[v1.x]` as a
-#: host it does not serve, where every other front door answered it as it answers `[x]`.
-_IPVFUTURE = re.compile(r"v[0-9A-Fa-f]+\..+")
+#: What Cloudflare reads as an address in brackets that is not IPv6's (RFC 3986's IPvFuture), a
+#: host it does not serve: a lower-case `v`, one hex digit, a `.`, then letters, digits, `-`, `_`
+#: and `:` in runs one `.` parts, with a `.` after them or none. It answered any other `Host` in
+#: brackets as it answers `[x]`, and so did every other front door `[v1.x]`. Measured on Notion with
+#: each byte from 0x21 to 0x7E but `]` after `[v1.`, after `[v1.x` and in place of the `.`, and on
+#: HubSpot, Linear and Fireflies with `[v1.]`, `[v1..]`, `[vAb.x]`, `[vF.x]`, `[v1.x.y.z]` and
+#: `[V1.x]`.
+_IPVFUTURE = re.compile(r"v[0-9A-Fa-f]\.(?:[-0-9:A-Z_a-z]+(?:\.[-0-9:A-Z_a-z]+)*\.?)?")
 
 #: Cloudflare's answer to a host it does not serve: `text/html` with no charset, 151 bytes.
 CLOUDFLARE_FORBIDDEN = (

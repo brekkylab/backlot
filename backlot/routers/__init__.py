@@ -26,13 +26,14 @@ def _to_the_end_of_the_path(compile_path):
     string, and its `path` parameter's `.*` stops at a newline. Real reads a `%0A` in a path as any
     other byte but on Slack, which drops one at the end (``slack.drop_the_end``): on 2026-10-19
     (UTC) a path a route here serves, with `%0A` after it, was the vendor's answer to a path no
-    route matches on Jira, Confluence, GitHub, Notion, Linear, Drive and Gmail, or where a route's
-    parameter takes the newline, that route's answer: Jira's `project/search%0A` its 404 for the
-    project key `search` and a newline, Notion's `users/me%0A` its 400 for a user id that is no
-    UUID; on 2026-10-30 one such path on each of those hosts drew the same answer with `%0D` in
-    place of the `%0A`. Patched here, ahead of every vendor router, because each route is compiled
-    when its router is built, and the copy FastAPI makes of it when the app includes the router is
-    compiled again (``fastapi.routing``'s own name for the function)."""
+    route matches on Jira, GitHub, Notion, Linear, Drive and Gmail, or where a route's parameter
+    takes the newline, that route's answer: Jira's `project/search%0A` its 404 for the project key
+    `search` and a newline, Notion's `users/me%0A` its 400 for a user id that is no UUID;
+    Confluence's was a 404 too. On 2026-10-30 one such path on each of those hosts drew the same
+    answer with `%0D` in place of the `%0A`, and Confluence's was its web app's page titled
+    `Page Not Found`, both ways. Patched here, ahead of every vendor router, because each route is
+    compiled when its router is built, and the copy FastAPI makes of it when the app includes the
+    router is compiled again (``fastapi.routing``'s own name for the function)."""
 
     @functools.wraps(compile_path)
     def compile_to_the_end(path: str):

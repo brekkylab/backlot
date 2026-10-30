@@ -87,6 +87,6 @@ with serve_or_connect(CORPUS, url=args.url) as s:
     else:
         page = confluence.get_page_by_id(pages[0]["id"], expand="body.storage")
         body = page["body"]["storage"]["value"]
-        print(f"{len(pages)} pages; first page:")
+        print(f"{len(pages)} page(s); first page:")
         print(f"  title: {page['title']}")
         print(f"  body:  {body[:80]}")

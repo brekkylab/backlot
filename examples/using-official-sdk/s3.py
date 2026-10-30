@@ -101,7 +101,7 @@ if __name__ == "__main__":
             objs = s3.list_objects_v2(Bucket=b).get("Contents", [])
             print(f"\ns3://{b}/ → {len(objs)} object(s):")
             for o in objs:
-                print(f"  - {o['Key']}  ({o['Size']} bytes, {o['ETag']})")
+                print(f"  - {o['Key']}  ({o['Size']} byte(s), {o['ETag']})")
 
         if buckets:
             first = s3.list_objects_v2(Bucket=buckets[0]).get("Contents", [])
@@ -110,6 +110,6 @@ if __name__ == "__main__":
                 body = s3.get_object(Bucket=buckets[0], Key=key)["Body"].read().decode()
                 print(f"\nget s3://{buckets[0]}/{key}:\n  " + body.replace("\n", "\n  "))
                 head = s3.head_object(Bucket=buckets[0], Key=key)
-                print(f"\nhead → {head['ContentType']}, {head['ContentLength']} bytes")
+                print(f"\nhead → {head['ContentType']}, {head['ContentLength']} byte(s)")
                 part = s3.get_object(Bucket=buckets[0], Key=key, Range="bytes=0-6")["Body"].read()
                 print(f"range bytes=0-6 → {part!r}")

@@ -144,7 +144,7 @@ def test_import_dry_run_validates_without_writing_a_db(tmp_path, monkeypatch, ca
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "data"))
 
     assert cli.main(["import", str(corpus), "--dry-run"]) == 0
-    assert "OK: 1 records valid." in plain(capsys.readouterr().out)
+    assert "OK: 1 record(s) valid." in plain(capsys.readouterr().out)
     assert not (tmp_path / "data" / "db.sqlite").exists()
 
 

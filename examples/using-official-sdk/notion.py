@@ -90,7 +90,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
     page = next((r for r in results if r["object"] == "page"), None)
     if page:
         blocks = notion.blocks.children.list(page["id"])["results"]
-        print(f"\npage body ({len(blocks)} blocks):")
+        print(f"\npage body ({len(blocks)} block(s)):")
         for b in blocks:
             rt = b[b["type"]].get("rich_text", [])
             print(f"  | {''.join(t['plain_text'] for t in rt)}")

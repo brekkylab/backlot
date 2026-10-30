@@ -4433,7 +4433,7 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
                 if refused:
                     wrong.append(f"{method.upper()} {path} refused where real ignores")
     assert wrong == []
-    assert gets and posts, f"both halves have to have run, got {gets} GETs and {posts} POSTs"
+    assert gets and posts, f"both halves have to have run, got {gets} GET(s) and {posts} POST(s)"
 
 
 def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_name(client):

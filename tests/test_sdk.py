@@ -45,7 +45,7 @@ def slack():
     check("Slack", "auth.test")(lambda: c.auth_test()["ok"] and "ok")
     chans = c.conversations_list(limit=200)["channels"]
     inc = next(x["id"] for x in chans if x["name"] == "incidents")
-    check("Slack", "conversations.list")(lambda: f"{len(chans)} channels")
+    check("Slack", "conversations.list")(lambda: f"{len(chans)} channel(s)")
     check("Slack", "conversations.info")(
         lambda: c.conversations_info(channel=inc)["channel"]["name"]
     )
@@ -59,12 +59,12 @@ def slack():
         lambda: f"{len(c.conversations_replies(channel=inc, ts=root['ts'])['messages'])} in thread"
     )
     check("Slack", "conversations.members")(
-        lambda: f"{len(c.conversations_members(channel=inc)['members'])} members"
+        lambda: f"{len(c.conversations_members(channel=inc)['members'])} member(s)"
     )
-    check("Slack", "users.list")(lambda: f"{len(c.users_list()['members'])} users")
+    check("Slack", "users.list")(lambda: f"{len(c.users_list()['members'])} user(s)")
     check("Slack", "search.messages")(
         lambda: (
-            f"{len(m)} matches"
+            f"{len(m)} match(es)"
             if (m := c.search_messages(query="gateway")["messages"]["matches"])
             else 1 / 0
         )
@@ -122,10 +122,10 @@ def gmail():
         lambda: svc.users().getProfile(userId="me").execute()["emailAddress"]
     )
     check("Gmail", "labels.list")(
-        lambda: f"{len(svc.users().labels().list(userId='me').execute()['labels'])} labels"
+        lambda: f"{len(svc.users().labels().list(userId='me').execute()['labels'])} label(s)"
     )
     msgs = svc.users().messages().list(userId="me", maxResults=50).execute().get("messages", [])
-    check("Gmail", "messages.list")(lambda: f"{len(msgs)} messages")
+    check("Gmail", "messages.list")(lambda: f"{len(msgs)} message(s)")
     # find the message that has an attachment
     full = None
     for stub in msgs:
@@ -157,10 +157,10 @@ def gmail():
     fres = svc.users().messages().list(userId="me", q="from:ceo").execute().get("messages", [])
     check("Gmail", "messages.list q (from:)")(lambda: f"{len(fres)} match" if fres else 1 / 0)
     threads = svc.users().threads().list(userId="me").execute().get("threads", [])
-    check("Gmail", "threads.list")(lambda: f"{len(threads)} threads" if threads else 1 / 0)
+    check("Gmail", "threads.list")(lambda: f"{len(threads)} thread(s)" if threads else 1 / 0)
     check("Gmail", "threads.get")(
         lambda: (
-            f"{len(svc.users().threads().get(userId='me', id=threads[0]['id']).execute()['messages'])} msgs"
+            f"{len(svc.users().threads().get(userId='me', id=threads[0]['id']).execute()['messages'])} msg(s)"
         )
     )
     # Served ids must look like Gmail's own: 16 lowercase hex under 2**63. A dsid would be
@@ -168,7 +168,7 @@ def gmail():
     # only discover that in production.
     check("Gmail", "ids are Gmail-shaped")(
         lambda: (
-            f"{len(msgs)} hex ids"
+            f"{len(msgs)} hex id(s)"
             if all(
                 # up to 16 digits and never zero-padded: real Gmail renders the integer
                 1 <= len(m["id"]) <= 16
@@ -212,7 +212,7 @@ def drive():
         .list(pageSize=100, fields="files(id,name,mimeType,capabilities,size)")
         .execute()["files"]
     )
-    check("Drive", "files.list")(lambda: f"{len(files)} files")
+    check("Drive", "files.list")(lambda: f"{len(files)} file(s)")
     by_mime = {f["mimeType"].rsplit(".", 1)[-1]: f for f in files}
     check("Drive", "doc/sheet/slide types")(lambda: ",".join(sorted(by_mime)[:3]))
     sheet = next(f for f in files if f["mimeType"].endswith("spreadsheet"))
@@ -229,7 +229,7 @@ def drive():
     )
     check("Drive", "permissions.list")(
         lambda: (
-            f"{len(svc.permissions().list(fileId=files[0]['id']).execute()['permissions'])} perms"
+            f"{len(svc.permissions().list(fileId=files[0]['id']).execute()['permissions'])} perm(s)"
         )
     )
     ftxt = (
@@ -298,7 +298,7 @@ def sheets():
     want = [[["month,revenue"]], [["month,revenue"], ["Jan,120000"], ["Feb,135000"]]]
     check("Sheets", "values.batchGet")(
         lambda: (
-            f"{len(batch['valueRanges'])} ranges"
+            f"{len(batch['valueRanges'])} range(s)"
             if [vr["values"] for vr in batch["valueRanges"]] == want
             else 1 / 0
         )
@@ -368,15 +368,17 @@ def github():
     repo = gh.get_repo("acme/gateway")  # the SAMPLE corpus is @acme.com; owner is echoed by Backlot
     check("GitHub", "get_repo")(lambda: repo.full_name)
     issues = list(repo.get_issues(state="all"))
-    check("GitHub", "get_issues (issues+PRs)")(lambda: f"{len(issues)} items")
+    check("GitHub", "get_issues (issues+PRs)")(lambda: f"{len(issues)} item(s)")
     check("GitHub", "PR marker on /issues")(
         lambda: "yes" if any(i.pull_request for i in issues) else 1 / 0
     )
     an_issue = next(i for i in issues if not i.pull_request)
-    check("GitHub", "issue.get_comments")(lambda: f"{len(list(an_issue.get_comments()))} comments")
+    check("GitHub", "issue.get_comments")(
+        lambda: f"{len(list(an_issue.get_comments()))} comment(s)"
+    )
     prs = list(repo.get_pulls(state="all"))
-    check("GitHub", "get_pulls")(lambda: f"{len(prs)} PRs")
-    check("GitHub", "pull.get_reviews")(lambda: f"{len(list(prs[0].get_reviews()))} reviews")
+    check("GitHub", "get_pulls")(lambda: f"{len(prs)} PR(s)")
+    check("GitHub", "pull.get_reviews")(lambda: f"{len(list(prs[0].get_reviews()))} review(s)")
 
     def missing_readme():
         # gateway holds no README, which is real's 404 (`backlot.routers.github.get_readme`)
@@ -389,7 +391,7 @@ def github():
 
     check("GitHub", "get_readme missing file")(missing_readme)
     sr = gh.search_issues(query="refill")
-    check("GitHub", "search_issues")(lambda: f"{sr.totalCount} hits" if sr.totalCount else 1 / 0)
+    check("GitHub", "search_issues")(lambda: f"{sr.totalCount} hit(s)" if sr.totalCount else 1 / 0)
     # what a client asks before a crawl: a 404 here raised UnknownObjectException before the first
     # real request, and the answer is the same windows the x-ratelimit-* headers report
     check("GitHub", "get_rate_limit")(
@@ -495,7 +497,7 @@ def jira():
 
     j = Jira(url=f"{BASE}/atlassian", username="svc@x", password=ADMIN)
     res = j.get("rest/api/3/search/jql", params={"jql": "project is not EMPTY", "maxResults": 50})
-    check("Jira", "search/jql")(lambda: f"{len(res['issues'])} issues")
+    check("Jira", "search/jql")(lambda: f"{len(res['issues'])} issue(s)")
     tres = j.get("rest/api/3/search/jql", params={"jql": 'text ~ "latency"'})
     check("Jira", "search/jql text~")(
         lambda: f"{len(tres['issues'])} match" if tres["issues"] else 1 / 0
@@ -503,14 +505,14 @@ def jira():
     key = next(i["key"] for i in res["issues"] if i["fields"]["summary"].startswith("SEV2"))
     iss = j.get(f"rest/api/3/issue/{key}")
     f = iss["fields"]
-    check("Jira", "issue comments")(lambda: f"{f['comment']['total']} comments")
-    check("Jira", "issue links")(lambda: f"{len(f['issuelinks'])} links")
-    check("Jira", "subtasks")(lambda: f"{len(f['subtasks'])} subtasks")
+    check("Jira", "issue comments")(lambda: f"{f['comment']['total']} comment(s)")
+    check("Jira", "issue links")(lambda: f"{len(f['issuelinks'])} link(s)")
+    check("Jira", "subtasks")(lambda: f"{len(f['subtasks'])} subtask(s)")
     check("Jira", "issue/{key}/comment")(
-        lambda: f"{j.get(f'rest/api/3/issue/{key}/comment')['total']} comments"
+        lambda: f"{j.get(f'rest/api/3/issue/{key}/comment')['total']} comment(s)"
     )
     check("Jira", "issueLinkType")(
-        lambda: f"{len(j.get('rest/api/3/issueLinkType')['issueLinkTypes'])} types"
+        lambda: f"{len(j.get('rest/api/3/issueLinkType')['issueLinkTypes'])} type(s)"
     )
 
 
@@ -520,23 +522,23 @@ def confluence():
 
     cf = Confluence(url=f"{BASE}/atlassian/wiki", username="svc@x", password=ADMIN)
     res = cf.get("rest/api/content", params={"limit": 50, "expand": "body.storage"})
-    check("Confluence", "content.list")(lambda: f"{len(res['results'])} pages")
+    check("Confluence", "content.list")(lambda: f"{len(res['results'])} page(s)")
     handbook = next(p for p in res["results"] if "Handbook" in p["title"])
     kids = cf.get(f"rest/api/content/{handbook['id']}/child/page")
     check("Confluence", "child/page")(lambda: f"{kids['size']} children")
     child = kids["results"][0]["id"]
     check("Confluence", "child/comment")(
-        lambda: f"{cf.get(f'rest/api/content/{child}/child/comment')['size']} comments"
+        lambda: f"{cf.get(f'rest/api/content/{child}/child/comment')['size']} comment(s)"
     )
     check("Confluence", "child/attachment")(
-        lambda: f"{cf.get_attachments_from_content(child)['size']} attachments"
+        lambda: f"{cf.get_attachments_from_content(child)['size']} attachment(s)"
     )
     check("Confluence", "content/{id}/label")(
         lambda: ",".join(x["name"] for x in cf.get(f"rest/api/content/{child}/label")["results"])
     )
     check("Confluence", "ancestors expand")(
         lambda: (
-            f"{len(cf.get(f'rest/api/content/{child}', params={'expand': 'ancestors'})['ancestors'])} ancestors"
+            f"{len(cf.get(f'rest/api/content/{child}', params={'expand': 'ancestors'})['ancestors'])} ancestor(s)"
         )
     )
 
@@ -549,12 +551,12 @@ def notion():
 
     c = Client(auth=ADMIN, base_url=f"{BASE}/notion")
     check("Notion", "search")(
-        lambda: f"{len(m)} hits" if (m := c.search(query="on-call")["results"]) else 1 / 0
+        lambda: f"{len(m)} hit(s)" if (m := c.search(query="on-call")["results"]) else 1 / 0
     )
     pid = synth.notion_id("nt-runbook")
     check("Notion", "pages.retrieve")(lambda: c.pages.retrieve(pid)["object"])
     blocks = c.blocks.children.list(pid)["results"]
-    check("Notion", "blocks.children.list")(lambda: f"{len(blocks)} blocks" if blocks else 1 / 0)
+    check("Notion", "blocks.children.list")(lambda: f"{len(blocks)} block(s)" if blocks else 1 / 0)
     did = synth.notion_id("nt-tasks-db")
     db = c.databases.retrieve(did)
     check("Notion", "databases.retrieve")(lambda: db["object"])
@@ -562,12 +564,12 @@ def notion():
     check("Notion", "data_sources.retrieve")(lambda: c.data_sources.retrieve(dsid)["object"])
     check("Notion", "data_sources.query")(
         lambda: (
-            f"{len(r)} rows"
+            f"{len(r)} row(s)"
             if (r := c.data_sources.query(data_source_id=dsid)["results"])
             else 1 / 0
         )
     )
-    check("Notion", "users.list")(lambda: f"{len(c.users.list()['results'])} users")
+    check("Notion", "users.list")(lambda: f"{len(c.users.list()['results'])} user(s)")
     check("Notion", "users.me")(lambda: c.users.me()["type"])
     check("Notion", "comments.list")(lambda: c.comments.list(block_id=pid)["results"][0]["object"])
 
@@ -609,7 +611,7 @@ async def _msteams_reads(graph):
 
     channels = await team.channels.get()
     by_name = {c.display_name: c for c in channels.value}
-    check("Teams", "channels")(lambda: f"{len(channels.value)} channels")
+    check("Teams", "channels")(lambda: f"{len(channels.value)} channel(s)")
     # The enum deserializes only if the served string is a member the schema declares.
     check("Teams", "channel.membershipType")(lambda: by_name["Platform"].membership_type.value)
 
@@ -624,7 +626,7 @@ async def _msteams_reads(graph):
     )
     posts = await incidents.messages.get(request_configuration=config)
     root = next(m for m in posts.value if "502s" in m.body.content)
-    check("Teams", "channel messages")(lambda: f"{posts.odata_count} roots")
+    check("Teams", "channel messages")(lambda: f"{posts.odata_count} root(s)")
     # The id is the creation time and the etag the last-modified time, both in epoch ms, as live.
     check("Teams", "id is createdDateTime")(
         lambda: round(root.created_date_time.timestamp() * 1000) == int(root.id) or 1 / 0
@@ -639,7 +641,7 @@ async def _msteams_reads(graph):
     replies = await incidents.messages.by_chat_message_id(root.id).replies.get()
     check("Teams", "message replies")(
         lambda: (
-            f"{len(replies.value)} replies"
+            f"replies: {len(replies.value)}"
             if all(r.reply_to_id == root.id for r in replies.value)
             else 1 / 0
         )
@@ -652,7 +654,7 @@ async def _msteams_reads(graph):
     check("Teams", "channel members")(lambda: ", ".join(sorted(m.email for m in members.value)))
 
     users = await graph.users.get()
-    check("Teams", "users")(lambda: f"{len(users.value)} users")
+    check("Teams", "users")(lambda: f"{len(users.value)} user(s)")
     got = await graph.users.by_user_id("ava@acme.com").get()
     check("Teams", "users/{upn}")(lambda: got.user_principal_name)
 

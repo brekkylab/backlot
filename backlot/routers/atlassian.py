@@ -4186,6 +4186,47 @@ def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Respo
     return _jaxrs_media_refusal(request, checks_type=checks_type)
 
 
+def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
+    """The empty 500 a Spring Confluence operation answers a charset Java cannot name
+    (``errors.atlassian.refuse_a_confluence_charset``), or None. Asked ahead of routing so a served
+    route, a published operation, an `OPTIONS` and a 405 answer it alike. JAX-RS paths
+    (:data:`_CONFLUENCE_JAXRS`, :data:`_CONFLUENCE_JAXRS_GETS`, the CQL search) and paths the
+    product's page answers (:func:`_confluence_serves_html`) are left alone. Measured on Confluence
+    Cloud on 2026-10-19.
+    """
+    path = request.scope["path"]
+    if not errors_atlassian.is_confluence(path):
+        return None
+    routed = re.sub("/{2,}", "/", path).rstrip("/")
+    if routed == errors_atlassian.PREFIX:
+        return None
+    vendor_path = _vendor_path(routed)
+    if not vendor_path.startswith("/wiki/rest/api"):
+        return None
+    if vendor_path == "/wiki/rest/api/search" or vendor_path.startswith("/wiki/rest/api/search/"):
+        return None
+    if _is(_CONFLUENCE_JAXRS, None, vendor_path) or _is(_CONFLUENCE_JAXRS_GETS, None, vendor_path):
+        return None
+    method = request.method
+    scope = (
+        request.scope
+        if routed == path
+        else {**request.scope, "path": routed, "raw_path": routed.encode()}
+    )
+    matched = any(route.matches(scope)[0] is not Match.NONE for route in router.routes)
+    spring = (
+        matched
+        or _is(_CONFLUENCE_PUBLISHED, method, vendor_path)
+        or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, method, vendor_path)
+    )
+    if not spring:
+        return None
+    refused = errors_atlassian.refuse_a_confluence_charset(request.headers)
+    if refused is None:
+        return None
+    return Response(refused.body, status_code=refused.status_code)
+
+
 def _published_answer(request: Request, vendor_path: str) -> Response | None:
     """What real answers before an operation it publishes at ``vendor_path`` and no route here
     serves runs for this caller, or None where it would run, which is where Backlot has nothing to

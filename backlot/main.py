@@ -1022,13 +1022,10 @@ async def refuse_a_head_on_the_google_editor_hosts(request: Request, call_next):
 
 
 def _a_google_operation(scope: Scope) -> bool:
-    """Whether real reads this request on a Google family's path as an operation: a `HEAD` on an
-    editor host, which that host refuses on any path (``errors.google.refuses_head``), or a method
-    and path a route here serves or Google publishes (``google.is_an_unserved_operation``), the
-    path's trailing slashes dropped (:func:`route_a_google_path_the_way_google_does`)."""
+    """Whether real reads this request on a Google family's path as an operation: a method and path
+    a route here serves or Google publishes (``google.is_an_unserved_operation``), the path's
+    trailing slashes dropped (:func:`route_a_google_path_the_way_google_does`)."""
     path = scope["path"]
-    if scope["method"] == "HEAD" and errors.google.refuses_head(path):
-        return True
     raw = scope.get("raw_path") or path.encode()
     slashes = len(raw) - len(raw.rstrip(b"/"))
     trimmed = {**scope, "path": path[: len(path) - slashes]}
@@ -1053,15 +1050,19 @@ class _ReadAGoogleBodyUnderItsCoding:
     the request as an operation (:func:`_a_google_operation`): a coding it does not read
     (``google.refuses_coding``) is ``errors.google.unsupported_coding``'s 415, and a body under
     `gzip` goes on as ``google.inflated`` reads it, or is ``errors.google.payload_too_large``'s 400.
+    On Docs, Sheets and Slides such a coding on any other request is a 415 on `text/html` with no
+    body.
 
     An ASGI layer rather than one of :func:`_middleware`'s, because the body it hands on is not the
     one that arrived. Registered just inside :func:`answer_head_as_the_get_without_its_body`, so a
     `HEAD` on Drive and Gmail reaches it as the GET, and outside
-    :func:`refuse_a_head_on_the_google_editor_hosts`: on 2026-10-30 (UTC) a `HEAD` with `br` on
-    Docs, Sheets and Slides was a 415 on `text/html` with no body, on a path no route serves too.
-    Real answered the 415 ahead of the credential, `$.xgafv=3` and `alt=zzz` that day, and wrapped
-    it under a `callback`; a path or method real does not route was its 404 page whatever the
-    coding.
+    :func:`refuse_a_head_on_the_google_editor_hosts`. Measured with `br` on 2026-10-30 (UTC): real
+    answered the 415 ahead of the credential, `$.xgafv=3` and `alt=zzz`, and wrapped it under a
+    `callback`. The editor hosts answered the one with no body to a `HEAD` on a routed path, and to
+    `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` and `HEAD` on `/v4/nosuch` on Sheets, `GET`
+    on `/v1/nosuch` on Docs and Slides, and `PUT`, `DELETE` and `POST` on a spreadsheet, where with
+    no coding each was the host's 400 page; Drive's and Gmail's host answered a path it does not
+    route with its 404 page whatever the coding.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -1072,15 +1073,20 @@ class _ReadAGoogleBodyUnderItsCoding:
             await self.app(scope, receive, send)
             return
         codings = Headers(scope=scope).getlist("content-encoding")
-        if not codings or not _a_google_operation(scope):
+        if not codings:
             await self.app(scope, receive, send)
             return
-        if google.refuses_coding(codings):
-            if scope["method"] == "HEAD":
-                answer = Response(status_code=415, headers={"Content-Type": "text/html"})
-            else:
+        operation = _a_google_operation(scope)
+        editor = errors.google.family(scope["path"]) == errors.google.EDITOR
+        if google.refuses_coding(codings) and (operation or editor):
+            if operation:
                 answer = _front_end_error(scope, errors.google.unsupported_coding())
+            else:
+                answer = Response(status_code=415, headers={"Content-Type": "text/html"})
             await answer(scope, receive, send)
+            return
+        if not operation:
+            await self.app(scope, receive, send)
             return
         body = b""
         more = True
@@ -1676,15 +1682,15 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
 async def refuse_a_body_on_a_google_get_or_head(request: Request, call_next):
     """Answer a `GET` or `HEAD` on a Google path whose `Content-Length` is past 0 as Google's front
     door does, ahead of the API: a `GET` with ``request_target.GOOGLE_PAGE_1555`` and
-    `Referrer-Policy: no-referrer`, a `HEAD` with no body, each a 400 on
-    `text/html; charset=UTF-8` after which the connection is closed.
+    `Referrer-Policy: no-referrer`, a `HEAD` with no body, each a 400 on `text/html; charset=UTF-8`
+    after which the connection is closed.
 
-    Measured with `Content-Length: 1` and the body `x` on 2026-10-29 and 2026-10-30 (UTC): on Drive's
-    `about`, Gmail's `labels`, `/batch/drive/v3`, Docs, Sheets and Slides, with no credential and
-    with `Bearer x`, under `Accept: application/json`, `X-HTTP-Method-Override: POST` and
-    `Content-Encoding: br` or `gzip`, and on a connection asked to stay open; `Content-Length: 5`
-    with no body sent was the same 400. `Content-Length: 0` and `00`, a chunked body, a `DELETE`
-    with a body and a `POST` naming `GET` in `X-HTTP-Method-Override` were served.
+    Measured with `Content-Length: 1` and the body `x` on 2026-10-29 and 2026-10-30 (UTC): on
+    Drive's `about`, Gmail's `labels`, `/batch/drive/v3`, Docs, Sheets and Slides, with no
+    credential and with `Bearer x`, under `Accept: application/json`, `X-HTTP-Method-Override: POST`
+    and `Content-Encoding: br` or `gzip`, and on a connection asked to stay open;
+    `Content-Length: 5` with no body sent was the same 400. `Content-Length: 0` and `00`, a chunked
+    body, a `DELETE` with a body and a `POST` naming `GET` in `X-HTTP-Method-Override` were served.
 
     Registered just inside :func:`answer_a_raw_byte_in_the_request_target`: real answered a
     control byte in the path beside a body with the 54-byte page, a space with the 1,555-byte one,

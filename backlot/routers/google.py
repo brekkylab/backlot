@@ -537,9 +537,9 @@ def refuses_coding(values: list[str]) -> bool:
 
 
 def inflated(body: bytes, values: list[str]) -> bytes | None:
-    """``body`` as real reads it under the `Content-Encoding` values ``values``: decompressed where a
-    member is `gzip` as spelt and ``body`` is one whole gzip member, its CRC and length checked, and
-    as sent otherwise; ``None`` where it decompresses past :data:`PAYLOAD_LIMIT`.
+    """``body`` as real reads it under the `Content-Encoding` values ``values``: decompressed where
+    a member is `gzip` as spelt and ``body`` is one whole gzip member, its CRC and length checked,
+    and as sent otherwise; ``None`` where it decompresses past :data:`PAYLOAD_LIMIT`.
 
     Measured on 2026-10-30 (UTC) on Drive's batch endpoint with no credential, which answers each
     part's 401 for a body it can split and a 400 for one it cannot: a gzipped body was split under

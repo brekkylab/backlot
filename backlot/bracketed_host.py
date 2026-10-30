@@ -34,12 +34,12 @@ from backlot import errors, request_target
 _BRACKETED = re.compile(r"\[(?P<inside>[^\]]*)\](?::[0-9]+)?")
 
 #: What Cloudflare reads as an address in brackets that is not IPv6's (RFC 3986's IPvFuture), a
-#: host it does not serve: a lower-case `v`, one hex digit, a `.`, then letters, digits, `-`, `_`
-#: and `:` in runs one `.` parts, with a `.` after them or none. It answered any other `Host` in
-#: brackets as it answers `[x]`, and so did every other front door `[v1.x]`. Measured on Notion with
-#: each byte from 0x21 to 0x7E but `]` after `[v1.`, after `[v1.x` and in place of the `.`, and on
-#: HubSpot, Linear and Fireflies with `[v1.]`, `[v1..]`, `[vAb.x]`, `[vF.x]`, `[v1.x.y.z]` and
-#: `[V1.x]`.
+#: host it does not serve: a lower-case `v`, one hex digit, a `.`, then runs of letters, digits,
+#: `-`, `_` and `:` that single `.`s separate, with a `.` after them or none. It answered any other
+#: `Host` in brackets as it answers `[x]`, and so did every other front door `[v1.x]`. Measured on
+#: 2026-10-30 (UTC) on Notion with each byte from 0x21 to 0x7E but `]` after `[v1.`, after `[v1.x`
+#: and in place of the `.`, and on HubSpot, Linear and Fireflies with `[v1.]`, `[v1..]`, `[vAb.x]`,
+#: `[vF.x]`, `[v1.x.y.z]` and `[V1.x]`.
 _IPVFUTURE = re.compile(r"v[0-9A-Fa-f]\.(?:[-0-9:A-Z_a-z]+(?:\.[-0-9:A-Z_a-z]+)*\.?)?")
 
 #: Cloudflare's answer to a host it does not serve: `text/html` with no charset, 151 bytes.

@@ -400,11 +400,12 @@ def answer(scope: Scope) -> Response | None:
 
 #: An escaped byte from 0x00 to 0x1F, or 0x7F, its hex digits in either case.
 _ESCAPED_CONTROL = re.compile(rb"%(?:[01][0-9A-Fa-f]|7[Ff])")
-#: Where Google's hosts refuse a `%00`: anywhere on the four with a host of their own, and on
-#: www.googleapis.com, which Drive and the batch endpoint share, under `/drive/v3/` or `/batch/`.
-#: That host answered `/drive/v3%00x`, `/drive%00x`, `/batch%00x` and `/nope%00x` with its 404 page
-#: on 2026-10-30 (UTC), where gmail.googleapis.com, sheets.googleapis.com, docs.googleapis.com and
-#: slides.googleapis.com refused `/gmail/v1%00x`, `/v4%00x`, `/v1%00x` and `/nope%00x`.
+#: The prefixes under which Google's front door refuses a `%00`: on each of the four hosts of their
+#: own, the API's; on www.googleapis.com, which Drive and the batch endpoint share, `/drive/v3/` and
+#: `/batch/`. On 2026-10-30 (UTC) the four refused `%00` right after the prefix (`/gmail/v1%00x`,
+#: `/v4%00x`, `/v1%00x`) and outside it (`/gmail%00x`, `/nope%00x`), where Backlot routes nothing,
+#: and www.googleapis.com answered `/drive/v3%00x`, `/drive%00x`, `/batch%00x` and `/nope%00x` with
+#: its 404 page and refused `/drive/v2/nope%00x`, under a version Backlot does not serve.
 _GOOGLE_NUL = ("/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1", "/drive/v3/", "/batch/")
 
 

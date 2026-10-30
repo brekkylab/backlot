@@ -34,7 +34,7 @@ from xml.sax.saxutils import escape
 
 from fastapi import HTTPException, Request, Response
 
-from backlot import java_timsort
+from backlot import java_timsort, utf8_escapes
 
 PREFIX = "/atlassian"
 WIKI = f"{PREFIX}/wiki"
@@ -2596,7 +2596,13 @@ def front_door(
     answered both with 200 (2026-10-13). Each layer's answer is the same whatever the credential,
     and the gateway's Connect-token 403 comes after all of them. Which product a path is the
     gateway's to decide, and it reads the path with each run of slashes as one:
-    `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
+    `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13). Jira answers Tomcat's 400
+    (:func:`tomcat_page`) for a path whose escapes do not decode to UTF-8
+    (``backlot.utf8_escapes.decodes``) anywhere outside `/wiki`, on its API and off it
+    (`/nope%80x`), where Confluence reads such a path on: measured on 2026-10-30 (UTC) for `GET`,
+    `HEAD`, which gets no body, `OPTIONS`, `POST`, `PUT` and `DELETE` with an API token, behind the
+    edge's `;` and the gateway's `PATCH` and beside an encoded backslash, and for a `GET` with no
+    token or under an `Accept` of `text/html`.
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
@@ -2622,10 +2628,14 @@ def front_door(
         page = _GATEWAY_PATCH_PAGE.format(status=status, phrase=phrase, server=server)
         return FrontDoor(status, "gateway", "text/html", page, {})
     if (
-        collapsed.startswith(f"{WIKI}/")
-        and not encoded.startswith(f"{WIKI}/spaces/")
-        and ("%2f" in encoded or "%5c" in encoded)
-    ) or (serves_the_jira_api(collapsed) and "%5c" in encoded):
+        (
+            collapsed.startswith(f"{WIKI}/")
+            and not encoded.startswith(f"{WIKI}/spaces/")
+            and ("%2f" in encoded or "%5c" in encoded)
+        )
+        or (serves_the_jira_api(collapsed) and "%5c" in encoded)
+        or (not confluence and not utf8_escapes.decodes(raw_path))
+    ):
         return FrontDoor(
             400, "gateway", TOMCAT_MEDIA_TYPE, tomcat_page(400), {"Content-Language": "en"}
         )

@@ -42,6 +42,7 @@ from backlot import (
     protojson,
     store,
     synth,
+    utf8_escapes,
 )
 from backlot.acl import Caller
 from backlot.config import get_settings
@@ -4178,7 +4179,8 @@ async def drive_files_get(file_id: str, request: Request):
     _drive_typed(request, "acknowledgeAbuse", "supportsAllDrives", "supportsTeamDrives")
     if download:
         caller = _require(request, download=True)
-    else:
+    _refuse_an_undecodable_path(request)
+    if not download:
         _drive_refuse_a_trailing_comma(request)
     # Measured 2026-10-04: before the lookup, so a file that does not exist is refused alike, and
     # before each `fields` refusal but `_drive_refuse_a_trailing_comma`'s. Inside a batch real
@@ -4255,6 +4257,7 @@ async def drive_files_export(file_id: str, request: Request):
         raise gerr.required("mimeType")
     if download:
         caller = _require(request, download=True)
+    _refuse_an_undecodable_path(request)
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -4300,6 +4303,7 @@ async def drive_files_permissions(file_id: str, request: Request):
     sizes = _drive_typed(
         request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
     )["pageSize"]
+    _refuse_an_undecodable_path(request)
     _drive_page_size_in_range(sizes, 100)
     _drive_refuse_a_trailing_comma(request)
     # Refused in real's order, measured by sending two bad values at once: the `pageToken`
@@ -4379,6 +4383,24 @@ _EDITOR_OFFICE_FAMILY = {
 _EDITOR_NATIVE = frozenset(_EDITOR_OFFICE_FAMILY)
 
 
+def _refuse_an_undecodable_path(request: Request) -> None:
+    """Refuse a path whose escapes do not decode to UTF-8 (``backlot.utf8_escapes.decodes``) as the
+    API behind it refuses it.
+
+    Measured on 2026-10-30 (UTC) with a Workspace member's token, the escape in the id of Drive's
+    files.get, files.export and permissions.list, of Docs' and Sheets' gets and of Sheets'
+    values.get and values.batchGet, and in a range values.get names (`A%80`, `A1%80:B2`). It came
+    after the credential, `alt`, a typed parameter and export's required `mimeType`, and after a
+    `fields` mask Docs or Sheets refuses; ahead of a `fields` mask Drive refuses, Drive's trailing
+    comma, `acknowledgeAbuse=true` and an export `mimeType`, `text/plain` or one Drive does not
+    convert to."""
+    if utf8_escapes.decodes(request.scope["raw_path"]):
+        return
+    if gerr.family(request.url.path) == gerr.DRIVE:
+        raise gerr.bad_request()
+    raise gerr.invalid_argument(EDITOR_INVALID_ARG)
+
+
 def _editor_doc(request: Request, file_id: str, *, expect: str):
     """The Drive row behind an editor read, or the error real Google gives for a mismatch.
 
@@ -4392,6 +4414,8 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     2026-10-17."""
     conn = auth.conn(request)
     caller = _require(request)
+    if expect != "presentation":
+        _refuse_an_undecodable_path(request)
     ids = auth.visible_ids(request, caller)
     # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has

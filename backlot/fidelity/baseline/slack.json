@@ -3,7 +3,7 @@
   "endpoints": [
     "https://docs.slack.dev/reference/methods.md"
   ],
-  "measured": "2026-10-29",
+  "measured": "2026-10-30",
   "operations": [
     {
       "operation": "admin.analytics.getFile",
@@ -2387,27 +2387,7 @@
       "id": "conversations.replies",
       "status": "implemented",
       "params": {
-        "cursor": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "include_all_metadata": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "inclusive": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "latest": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "limit": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oldest": {
           "kind": "missing_param",
           "severity": "gap"
         },

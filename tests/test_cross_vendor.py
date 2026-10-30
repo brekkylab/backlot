@@ -119,6 +119,10 @@ _ADVERTISED_PARAMS = [
     ("/github/search/issues", {"q", "page", "per_page"}),
     ("/slack/api/search.messages", {"query", "count", "page"}),
     ("/slack/api/conversations.history", {"channel", "limit", "cursor"}),
+    (
+        "/slack/api/conversations.replies",
+        {"channel", "ts", "limit", "cursor", "oldest", "latest", "inclusive"},
+    ),
     # `user_id` is the path param, asserted here so enrichment cannot drop it
     ("/gmail/v1/users/{user_id}/messages", {"q", "maxResults", "pageToken", "user_id"}),
     ("/drive/v3/files", {"q", "pageSize", "pageToken", "fields"}),

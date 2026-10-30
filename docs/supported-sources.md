@@ -910,7 +910,7 @@ Each method answers on `GET` and `POST` alike, as the real Web API does.
 | `conversations.list` | `types` defaults to `public_channel` as the real API does — pass `public_channel,private_channel` to crawl both. This corpus has no DMs, so `im`/`mpim` select nothing, and an unknown value is `invalid_types` |
 | `conversations.info` | |
 | `conversations.history` | `oldest`, `latest`, `inclusive` |
-| `conversations.replies` | |
+| `conversations.replies` | `oldest`, `latest`, `inclusive`, paginated |
 | `conversations.members` | Per-channel, paginated |
 | `users.list` | |
 | `users.info` | |

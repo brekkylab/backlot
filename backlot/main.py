@@ -407,7 +407,7 @@ async def refuse_an_unserved_hubspot_operation(request: Request, call_next):
     """An operation HubSpot publishes that no route here serves is refused for its credential as a
     served route refuses one, ahead of the router's 404 or 405
     (``backlot.routers.hubspot.refuse_an_unserved_operation``)."""
-    refusal = hubspot.refuse_an_unserved_operation(request)
+    refusal = await hubspot.refuse_an_unserved_operation(request)
     if refusal is not None:
         return refusal
     return await call_next(request)
@@ -773,6 +773,52 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     request.scope["path"] = trimmed
     request.scope["raw_path"] = trimmed.encode()
     return await call_next(request)
+
+
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def report_notion_cors(request: Request, call_next):
+    """Answer a `/notion` request as real's CORS layer does on the paths it sits in front of
+    (``notion.answers_cors``), and put a `vary` on each answer.
+
+    Measured against api.notion.com on 2026-10-27: on those paths a request whose `Origin` has a
+    value got ``notion.CORS_HEADERS`` on its answer, the URL's 400 and the body reader's
+    `invalid_json` and 415 among them, and each answer there with a `content-type` was
+    `vary: Origin, Accept-Encoding`, with `Origin` or without; an `OPTIONS` with
+    `Access-Control-Request-Method` beside that `Origin` (`POST`, `FOO` and an empty one alike) was
+    instead a 204 with no body and `vary: Origin`, ahead of the URL check. An `Origin` that is
+    empty, a space or a tab counted as none, and on 2026-10-28 an `Origin` sent twice or three
+    times counted when one of them had a value. On the other paths `Origin` changed nothing
+    (``notion.answers_cors`` has their `vary`). On 2026-10-28 the 304 an `If-None-Match: *` draws,
+    which carries no `content-type`, was `vary: Origin`, with the CORS headers as `Origin` asked.
+
+    Registered after ``serve_a_slashed_notion_path_as_the_path_without_it``,
+    ``read_a_notion_body_as_express_does`` and ``report_notion_etag``, which makes it the outer of
+    the four: it reads the path with its trailing slash as sent, answers a preflight before the
+    body is read, and puts its headers on a 304.
+    """
+    origin = any(value.strip(" \t") for value in request.headers.getlist("origin"))
+    raw_path = request.scope.get("raw_path") or request.url.path.encode()
+    if not notion.answers_cors(raw_path.decode("latin-1")):
+        response = await call_next(request)
+        response.headers["vary"] = "Accept-Encoding"
+        return response
+    if (
+        origin
+        and request.method == "OPTIONS"
+        and "access-control-request-method" in request.headers
+    ):
+        response = Response(status_code=204, headers={"vary": "Origin"})
+    else:
+        response = await call_next(request)
+        response.headers["vary"] = (
+            "Origin, Accept-Encoding" if "content-type" in response.headers else "Origin"
+        )
+    if origin:
+        for name, value in notion.CORS_HEADERS.items():
+            response.headers[name] = value
+    return response
 
 
 def _a_slashed_hubspot_path(scope: Scope) -> bool:
@@ -1270,6 +1316,63 @@ async def warn_slack_post_charset(request: Request, call_next):
         status_code=response.status_code,
         headers=headers,
     )
+
+
+#: Cloudflare's answer to each method it refuses in front of Linear and Fireflies, as
+#: api.linear.app and api.fireflies.ai answered each on `/graphql`, `/graphql/`, `/nosuch` and `/`
+#: on 2026-10-25 (UTC): a page with CRLF line ends, or a line of text, and the headers it puts on
+#: it. Both closed the connection after the `TRACE` answer and answered a second request on it after
+#: the other two (`/graphql`, 2026-10-26).
+_CLOUDFLARE_METHOD = {
+    "TRACE": (
+        405,
+        b"<html>\r\n<head><title>405 Not Allowed</title></head>\r\n<body>\r\n"
+        b"<center><h1>405 Not Allowed</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
+        b"</body>\r\n</html>\r\n",
+        {"content-type": "text/html", "connection": "close"},
+    ),
+    "CONNECT": (
+        400,
+        b"error code: 1045\n",
+        {
+            "content-type": "text/plain; charset=UTF-8",
+            "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, "
+            "post-check=0, pre-check=0",
+            "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+            "referrer-policy": "same-origin",
+            "x-frame-options": "SAMEORIGIN",
+        },
+    ),
+    "PURGE": (
+        400,
+        request_target.CLOUDFLARE_PAGE,
+        {
+            "content-type": "text/html; charset=UTF-8",
+            "x-frame-options": "SAMEORIGIN",
+            "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, "
+            "post-check=0, pre-check=0",
+            "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+            "referrer-policy": "same-origin",
+        },
+    ),
+}
+
+
+@_middleware(
+    lambda scope: (
+        scope["method"] in _CLOUDFLARE_METHOD
+        and _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
+    )
+)
+async def refuse_cloudflares_methods_on_linear_and_fireflies(request: Request, call_next):
+    """Answer a `/linear` or `/fireflies` request by one of :data:`_CLOUDFLARE_METHOD`'s methods
+    with Cloudflare's answer, ahead of the route and the credential. Registered before
+    :func:`refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot`, which answers first: a
+    `TRACE`, `CONNECT` or `PURGE` carrying `Authorization` twice drew its 400 from both vendors on
+    2026-10-25 (UTC), and one carrying `If-None-Match` or `If-Modified-Since` twice on
+    2026-10-28."""
+    status, body, headers = _CLOUDFLARE_METHOD[request.method]
+    return Response(body, status_code=status, headers=headers)
 
 
 @_middleware(

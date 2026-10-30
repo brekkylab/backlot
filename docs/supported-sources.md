@@ -16,13 +16,13 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `source_type` | Service | URL prefix | Endpoints | Record schema | What one record is |
 |---|---|---|---|---|---|
 | `confluence` | Confluence | `/atlassian/wiki/rest/api` | 10 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
-| `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one `POST`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
+| `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
 | `github` | GitHub | `/github` | 34 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
 | `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 21 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
-| `linear` | Linear | `/linear/graphql` | GraphQL (one `POST`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
+| `linear` | Linear | `/linear/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
 | `msteams` | Microsoft Teams | `/msgraph/v1.0` | 13 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
 | `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
 | `s3` | Amazon S3 | `/s3` | 5 | [`s3.schema.json`](../backlot/schemas/s3.schema.json) | An S3 object. |
@@ -87,7 +87,10 @@ what `search` answers a `GET` or `HEAD`, but for a 401 and a refusal of its `Acc
 
 ### Fireflies — `/fireflies/graphql`
 
-**GraphQL only**, one `POST`. Root `Query` fields:
+**GraphQL only**, one endpoint: a `POST` with a JSON or form body, or a `GET` with the query in its
+query string and a JSON `Content-Type` or none. Apollo Server serves a form, or a `GET` with no
+`Content-Type`, only beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its
+check that a browser preflighted the request. Root `Query` fields:
 
 | Query field | Notes |
 |---|---|
@@ -195,8 +198,12 @@ it cannot parse, and refused once that window is spent (2026-10-14); the two `Ba
 paragraph above counts in that window get their own 401 once it is spent, as with it fresh, when a
 space follows the scheme (2026-10-26). The refused request is not itself counted, which is why
 `used` holds at `limit` rather than climbing past it. The body differs by caller: two members
-(`message`, `documentation_url`) for a caller with no credential, three (`status` besides) for a
-token, each with its own `documentation_url`. `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal
+(`message`, `documentation_url`) with no `Authorization`, three (`status` besides) for a token, each
+with its own `documentation_url`, and three for an `Authorization` real cannot parse, the anonymous
+sentence followed by the token's, with the token's `documentation_url` but for a `Basic` value
+naming no token after a space, which names a third page (2026-10-26 and 2026-10-28). Such a value
+has a `code_search` window of its own at `limit: 0`, so code search answers a `Basic` value naming
+no token with that 403 at once (2026-10-26). `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal
 off (see [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does
 not count, and is never refused — the one route a client reads its way out of a spent window with;
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
@@ -577,7 +584,10 @@ operation's 415 carry the account id alone.
 
 ### Linear — `/linear/graphql`
 
-**GraphQL only**, one `POST`. Root `Query` fields:
+**GraphQL only**, one endpoint: a `POST` with a JSON body, or a `GET` with the query in its query
+string. Apollo Server serves a `GET` with no `Content-Type`, or a form or `text/plain` one, only
+beside an `apollo-require-preflight` or `x-apollo-operation-name` header, its check that a
+browser preflighted the request. Root `Query` fields:
 
 | Query field | Notes |
 |---|---|

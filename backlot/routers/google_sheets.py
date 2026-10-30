@@ -34,10 +34,12 @@ from backlot.routers.google import (
     _DRIVE_ROOT_FOLDER,
     _drive_owned_by,
     _editor_doc,
+    _gmask_apply,
+    _gmask_select,
+    _query_bool,
+    _query_enum,
     _require,
     _service_email,
-    _sheets_bool_value,
-    _sheets_enum_value,
     _typed_query,
     router,
 )
@@ -97,163 +99,6 @@ _P_SHEETS_STD = [
 ]
 
 
-def _sheets_types() -> dict[str, dict[str, str | None]]:
-    """The messages a Sheets read answers with and every message they reach, each as its fields and
-    the message each holds (`None` for a scalar, an enum, a map or a list of lists): the `types`
-    `backlot diff` records in the `google_drive` baseline from the discovery document. A field only
-    Backlot serves is not one a mask may name."""
-    types = json.loads((_BASELINES / "google_drive.json").read_text(encoding="utf-8"))["types"]
-
-    def held(type_: str) -> str | None:
-        name = type_.strip("[]")
-        return name if name in types else None
-
-    return {
-        name: {f: held(m["type"]) for f, m in entry.get("fields", {}).items() if "type" in m}
-        for name, entry in types.items()
-    }
-
-
-_SHEETS_FIELDS = _sheets_types()
-
-
-def _gmask_paths(mask: str) -> tuple[list[tuple[str, ...]], str]:
-    """The paths a ``fields`` mask names, in its order, each as its names, and the bracket it leaves
-    unpaired (``""`` for none).
-
-    Measured grammar: ``.`` and ``/`` both descend, ``a(b,c)`` groups a sub-selection, ``,``
-    separates siblings and a trailing comma is tolerated. A name is matched case-sensitively and is
-    not trimmed -- `` spreadsheetId`` with a leading space 400s. An empty group names nothing, not
-    even the name before it: measured 2026-10-22, `a()` answered the whole spreadsheet with no
-    refusal for `a`, and `spreadsheetId,sheets()` the `spreadsheetId` alone.
-
-    A bracket left unpaired is refused after the paths before it, a ``)`` where it stands and a
-    ``(`` at the end (`gerr.unbalanced_field_mask`): measured 2026-10-22, `a)` and
-    `bogus)spreadsheetId` named `a` and `bogus`, `spreadsheetId)bogus` was the `)` refusal, and
-    `sheets(properties/title,bogus` named `sheets.bogus` where `sheets(properties/title` was the
-    `(` one."""
-    paths: list[tuple[str, ...]] = []
-    # the prefix of each open group
-    stack: list[tuple[str, ...]] = []
-    prefix: tuple[str, ...] = ()
-    token = ""
-
-    def names(text: str) -> tuple[str, ...]:
-        return tuple(text.replace("/", ".").split("."))
-
-    for ch in mask:
-        if ch == "(":
-            stack.append(prefix)
-            prefix += names(token) if token else ()
-            token = ""
-        elif ch == ")":
-            if token:
-                paths.append(prefix + names(token))
-            if not stack:
-                return paths, ")"
-            prefix, token = stack.pop(), ""
-        elif ch == ",":
-            if token:
-                paths.append(prefix + names(token))
-            token = ""
-        else:
-            token += ch
-    if token:
-        paths.append(prefix + names(token))
-    return paths, "(" if stack else ""
-
-
-def _gmask_resolve(path: tuple[str, ...], message: str | None) -> dict | None:
-    """What ``path`` selects in ``message`` (`None` for a field that holds no message), or ``None``
-    when it names nothing there; ``{}`` is all of it.
-
-    A ``*`` stands for one name. Measured 2026-10-22: `sheets.*.title` is
-    `sheets.properties.title`, `*.*.title` the same, `*.*.rowCount` refused as naming nothing (the
-    row count is three names under `sheets`), and `*.data` is `sheets.data`. A ``*`` that ends a
-    path selects all of what it is under, a field holding no message included, and so does a run
-    of them: `spreadsheetId.*`, `spreadsheetId.*.*`, a map's `criteria.*` and `*.*.*` answered,
-    where `spreadsheetId.*.x` names nothing."""
-    if not path:
-        return {}
-    head, rest = path[0], path[1:]
-    if message is None:
-        return {} if all(name == "*" for name in path) else None
-    fields = _SHEETS_FIELDS[message]
-    if head == "*":
-        if not rest:
-            return {}
-        out = {}
-        for name, held in fields.items():
-            sub = _gmask_resolve(rest, held)
-            if sub is not None:
-                out[name] = sub
-        return out or None
-    if head not in fields:
-        return None
-    sub = _gmask_resolve(rest, fields[head])
-    return None if sub is None else {head: sub}
-
-
-# The messages a mask selects whole once any path names them whole, a narrower path beside it
-# notwithstanding. Measured 2026-10-27: `values(userEnteredValue,userEnteredValue.formulaValue)`
-# answered a string cell's `stringValue`, and so did the same for `effectiveValue`, an
-# `errorValue`'s `message` beside `errorValue.type`, a `backgroundColorStyle`'s `rgbColor` beside
-# `backgroundColorStyle.themeColor`, and `themeColors` whole beside `themeColors.colorType`.
-_GMASK_WHOLE = frozenset(
-    {"sheets.ExtendedValue", "sheets.ErrorValue", "sheets.ColorStyle", "sheets.ThemeColorPair"}
-)
-
-
-def _gmask_merge(into: dict, selection: dict, message: str | None) -> None:
-    """Merge one path's selection into the tree, a narrower selection replacing a wider one:
-    measured 2026-10-22, `spreadsheetId,*` answered `spreadsheetId` alone, and
-    `sheets,sheets.properties.title` and `sheets.*,sheets.properties.title` the title alone, and
-    on 2026-10-27 `effectiveFormat,effectiveFormat.numberFormat` and
-    `properties(defaultFormat,defaultFormat.numberFormat)` the narrower path alone, in either
-    order. A message in :data:`_GMASK_WHOLE` is the exception, kept whole."""
-    fields = _SHEETS_FIELDS.get(message, {}) if message else {}
-    for name, sub in selection.items():
-        held = fields.get(name)
-        if held in _GMASK_WHOLE and (sub == {} or into.get(name) == {}):
-            into[name] = {}
-        else:
-            _gmask_merge(into.setdefault(name, {}), sub, held)
-
-
-def _gmask_select(mask: str | None, message: str) -> tuple[dict | None, bool]:
-    """The selection tree a ``fields`` mask makes of a ``message`` response, ``{}`` at a leaf
-    meaning all of it, and whether the mask names a comment field. ``None`` for no mask, which an
-    empty one, an empty group and a ``*`` alone each are: measured 2026-10-22, `fields=*` answered
-    what no mask does, `includeGridData` deciding the grid.
-
-    A path that names nothing is refused, the first such in the mask's order (measured on
-    `sheets.properties.title,bogus2,sheets.bogus3`: `bogus2`), so a declared field the response
-    holds no value for answers 200 without it rather than the 400 a field it does not declare gets.
-    Checked against the whole schema, not against what this module builds: measured 2026-10-22,
-    `namedRanges`, `sheets(merges,conditionalFormats)` and a cell's `userEnteredFormat` each
-    answered 200 on a spreadsheet holding none. A bracket left unpaired is refused after the paths
-    before it (`_gmask_paths`).
-
-    A comment field is one a path reaches by naming something: measured 2026-10-22, `comments`,
-    `comments.*`, `*.commentId` and `*.headPost` were refused for asking after comments that
-    `commentsViewMode` did not request, and `*.*`, which reaches `comments` through ``*`` alone, was
-    answered."""
-    if not mask:
-        return None, False
-    tree: dict = {}
-    comments = False
-    paths, unpaired = _gmask_paths(mask)
-    for path in paths:
-        selection = _gmask_resolve(path, message)
-        if selection is None:
-            raise gerr.bad_field_mask(mask, ".".join(path))
-        comments |= "comments" in selection and any(name != "*" for name in path)
-        _gmask_merge(tree, selection, message)
-    if unpaired:
-        raise gerr.unbalanced_field_mask(mask, unpaired)
-    return (tree or None), comments
-
-
 def _gmask_wants_grid(tree: dict | None, include_grid_data: bool) -> bool:
     """Whether the cells are served: as `includeGridData` says with no mask, and otherwise when the
     mask reaches `sheets.data`.
@@ -267,60 +112,6 @@ def _gmask_wants_grid(tree: dict | None, include_grid_data: bool) -> bool:
         return include_grid_data
     under = tree.get("sheets")
     return under is not None and (not under or "data" in under)
-
-
-def _gmask_apply(tree: dict, value):
-    """Project ``value`` through a selection tree, mapping over a list rather than indexing it —
-    which is what lets ``sheets.properties.title`` reach into every sheet — and keeping the order
-    ``value`` has: measured 2026-10-22, `*.title,spreadsheetId` answered `spreadsheetId` first."""
-    if not tree:
-        return value
-    if isinstance(value, list):
-        return [_gmask_apply(tree, v) for v in value]
-    if not isinstance(value, dict):
-        return value
-    out = {name: _gmask_apply(tree[name], v) for name, v in value.items() if name in tree}
-    if "rowData" in out:
-        _gmask_trim_rows(out)
-    return out
-
-
-_CELL_FORMATS = frozenset({"userEnteredFormat", "effectiveFormat"})
-
-
-def _gmask_hollow(value) -> bool:
-    """Whether a projected message holds nothing but empty messages."""
-    return isinstance(value, dict) and all(_gmask_hollow(v) for v in value.values())
-
-
-def _gmask_trim_rows(block: dict) -> None:
-    """Cut a projected `GridData` block's rows the way `_sheets_grid_data` cuts them, a cell the
-    mask left empty counting as an empty cell. Measured 2026-10-22 over `D1:F4` holding `a` in D1
-    and `b` in F2: `rowData.values.userEnteredValue` answered
-    `[{"values": [{…}]}, {"values": [{}, {}, {…}]}]`, and `rowData.values.userEnteredFormat`, which
-    no cell held, no `rowData` at all.
-
-    A cell's format the mask leaves holding nothing is left out, where every other message is kept
-    empty. Measured 2026-10-27: `values(userEnteredValue,effectiveFormat.numberFormat)` served no
-    `effectiveFormat` on a string, a number or a boolean, and neither did
-    `effectiveFormat.textFormat.link`, while `effectiveValue.numberValue` served a string's
-    `effectiveValue` as `{}`, and `sheets.properties.tabColorStyle` and
-    `properties.defaultFormat.numberFormat` served `properties` and `defaultFormat` as `{}`."""
-    rows = []
-    for row in block["rowData"]:
-        values = [
-            {k: v for k, v in cell.items() if k not in _CELL_FORMATS or not _gmask_hollow(v)}
-            for cell in row.get("values", [])
-        ]
-        while values and not values[-1]:
-            values.pop()
-        rows.append({"values": values} if values else {})
-    while rows and not rows[-1]:
-        rows.pop()
-    if rows:
-        block["rowData"] = rows
-    else:
-        del block["rowData"]
 
 
 def _sheets_alt(request: Request) -> None:
@@ -339,7 +130,7 @@ def _sheets_alt(request: Request) -> None:
         )
 
 
-def _sheets_mask(request: Request, message: str) -> tuple[dict | None, bool]:
+def _sheets_mask(request: Request, message: str) -> tuple[dict | None, dict]:
     """`_gmask_select` over this request's ``fields``. A read checks it once its typed values and
     body are read and before the spreadsheet is looked up: measured 2026-10-22 on the five reads, a
     mask naming nothing answered its 400 ahead of a missing spreadsheet's 404, a range that does
@@ -398,16 +189,12 @@ _P_SHEETS_GET = [
 
 # The typed query values `spreadsheets.get` and `:getByDataFilter` read.
 _SHEETS_GET_FLAGS = {
-    "includeGridData": lambda raw: _sheets_bool_value(raw, "include_grid_data"),
-    "excludeTablesInBandedRanges": lambda raw: _sheets_bool_value(
-        raw, "exclude_tables_in_banded_ranges"
-    ),
+    "includeGridData": lambda raw: _query_bool(raw, "include_grid_data"),
+    "excludeTablesInBandedRanges": lambda raw: _query_bool(raw, "exclude_tables_in_banded_ranges"),
     # Read as `documents.get` reads its own (`_DOCS_COMMENTS_VIEW`), measured 2026-10-22: `03`,
     # `+1` and `comments_view_mode_included` read, `4`, `-1`, `BOGUS` and empty refused, and of
     # several the last decides.
-    "commentsViewMode": lambda raw: _sheets_enum_value(
-        raw, "comments_view_mode", _PJ_COMMENTS_VIEW
-    ),
+    "commentsViewMode": lambda raw: _query_enum(raw, "comments_view_mode", _PJ_COMMENTS_VIEW),
 }
 
 
@@ -425,11 +212,11 @@ async def sheets_get(spreadsheet_id: str, request: Request):
     _sheets_alt(request)
     caller = _require(request)
     flags = _typed_query(request, _SHEETS_GET_FLAGS)
-    tree, comments = _sheets_mask(request, "sheets.Spreadsheet")
+    tree, named = _sheets_mask(request, "sheets.Spreadsheet")
     row, sheets = _workbook(request, spreadsheet_id)
     mode = (flags["commentsViewMode"] or [_PJ_COMMENTS_VIEW.names[0]])[-1]
     owned = _drive_owned_by(row["author_email"], caller.email)
-    view = _sheets_comments_view(_PJ_COMMENTS_VIEW.names.index(mode), comments, owned)
+    view = _sheets_comments_view(_PJ_COMMENTS_VIEW.names.index(mode), "comments" in named, owned)
     # A mask that reaches the cells decides the grid, and `includeGridData` is then ignored rather
     # than consulted -- the vendor's own wording. Still parsed, so a bad value is still refused.
     grid = _gmask_wants_grid(tree, (flags["includeGridData"] or [False])[-1])
@@ -1252,18 +1039,16 @@ def _sheets_options(request: Request) -> tuple[str, str, str]:
     enums = _typed_query(
         request,
         {
-            "majorDimension": lambda raw: _sheets_enum_value(raw, "major_dimension", _PJ_DIMENSION),
+            "majorDimension": lambda raw: _query_enum(raw, "major_dimension", _PJ_DIMENSION),
             # Measured over typed cells: FORMATTED_VALUE gives the display string "12",
             # UNFORMATTED_VALUE the JSON number 12, and FORMULA the same raw value as
             # UNFORMATTED_VALUE for every cell that is not a formula. A spreadsheet whose cells are
             # lines of stored text has only strings, so all three agree on one; a spreadsheet that
             # STATES its grid does not.
-            "valueRenderOption": lambda raw: _sheets_enum_value(
-                raw, "value_render_option", _PJ_RENDER
-            ),
+            "valueRenderOption": lambda raw: _query_enum(raw, "value_render_option", _PJ_RENDER),
             # A date, time or date-time cell's serial number or its display string. Only a written
             # cell can be one: a corpus states no number formats.
-            "dateTimeRenderOption": lambda raw: _sheets_enum_value(
+            "dateTimeRenderOption": lambda raw: _query_enum(
                 raw, "date_time_render_option", _PJ_DATETIME
             ),
         },
@@ -1769,11 +1554,9 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     query, body = await _sheets_query_and_body(
         request,
         {
-            "majorDimension": lambda raw: _sheets_enum_value(raw, "major_dimension", _PJ_DIMENSION),
-            "valueRenderOption": lambda raw: _sheets_enum_value(
-                raw, "value_render_option", _PJ_RENDER
-            ),
-            "dateTimeRenderOption": lambda raw: _sheets_enum_value(
+            "majorDimension": lambda raw: _query_enum(raw, "major_dimension", _PJ_DIMENSION),
+            "valueRenderOption": lambda raw: _query_enum(raw, "value_render_option", _PJ_RENDER),
+            "dateTimeRenderOption": lambda raw: _query_enum(
                 raw, "date_time_render_option", _PJ_DATETIME
             ),
         },
@@ -1856,7 +1639,7 @@ async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
     _sheets_alt(request)
     caller = _require(request)
     query, body = await _sheets_query_and_body(request, _SHEETS_GET_FLAGS, _PJ_GET_BY_FILTER)
-    tree, comments = _sheets_mask(request, "sheets.Spreadsheet")
+    tree, named = _sheets_mask(request, "sheets.Spreadsheet")
     row, sheets = _workbook(request, spreadsheet_id)
     selections = _sheets_selections(body.get("data_filters", []), sheets, values_level=False)
     owned = _drive_owned_by(row["author_email"], caller.email)
@@ -1864,7 +1647,7 @@ async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
     mode = (
         body.get("comments_view_mode", 0) if mode is None else _PJ_COMMENTS_VIEW.names.index(mode)
     )
-    view = _sheets_comments_view(mode, comments, owned)
+    view = _sheets_comments_view(mode, "comments" in named, owned)
     # Filters that cover the same cells share one `data` block, placed where the first of them was
     # sent, measured 2026-10-04 on the pairs with cells `sheets_values_batch_get_by_data_filter`
     # lists and on one empty range sent twice. Two empty ranges in different places stay two
@@ -1964,26 +1747,18 @@ def _sheets_write_readers(*, append: bool = False) -> dict:
     gets it rather than its 403. ``append`` adds the `insertDataOption` only `values.append`
     declares."""
     extra = (
-        {
-            "insertDataOption": lambda raw: _sheets_enum_value(
-                raw, "insert_data_option", _PJ_INSERT_DATA
-            )
-        }
+        {"insertDataOption": lambda raw: _query_enum(raw, "insert_data_option", _PJ_INSERT_DATA)}
         if append
         else {}
     )
     return {
         **extra,
-        "valueInputOption": lambda raw: _sheets_enum_value(
-            raw, "value_input_option", _PJ_VALUE_INPUT
-        ),
-        "includeValuesInResponse": lambda raw: _sheets_bool_value(
-            raw, "include_values_in_response"
-        ),
-        "responseValueRenderOption": lambda raw: _sheets_enum_value(
+        "valueInputOption": lambda raw: _query_enum(raw, "value_input_option", _PJ_VALUE_INPUT),
+        "includeValuesInResponse": lambda raw: _query_bool(raw, "include_values_in_response"),
+        "responseValueRenderOption": lambda raw: _query_enum(
             raw, "response_value_render_option", _PJ_RENDER
         ),
-        "responseDateTimeRenderOption": lambda raw: _sheets_enum_value(
+        "responseDateTimeRenderOption": lambda raw: _query_enum(
             raw, "response_date_time_render_option", _PJ_DATETIME
         ),
     }

@@ -3372,10 +3372,11 @@ def test_every_google_operation_declares_the_system_parameters_and_reads_them(cl
                 if declared != _SYSTEM_PARAMETERS:
                     missing.append(f"{method.upper()} {path}")
                 url = re.sub(r"\{[^}]+\}", "dummy", path)
-                r = client.request(method.upper(), f"{url}?$.xgafv=0", json={})
+                body = None if method == "get" else {}
+                r = client.request(method.upper(), f"{url}?$.xgafv=0", json=body)
                 if r.status_code != 400 or "system query parameter" not in r.text:
                     unchecked.append(f"{method.upper()} {path} -> {r.status_code}")
-                r = client.request(method.upper(), f"{url}?access_token=ya29.x", json={})
+                r = client.request(method.upper(), f"{url}?access_token=ya29.x", json=body)
                 if r.headers.get("www-authenticate") != _CHALLENGED:
                     unchecked.append(f"{method.upper()} {path} access_token -> {r.status_code}")
             elif path.startswith("/batch") and declared:
@@ -4425,7 +4426,8 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
             if method not in ("get", "post", "put", "patch", "delete"):
                 continue
             url = re.sub(r"\{[^}]+\}", "dummy", path)
-            r = client.request(method.upper(), f"{url}?callback=a%20b", json={})
+            body = None if method == "get" else {}
+            r = client.request(method.upper(), f"{url}?callback=a%20b", json=body)
             refused = r.status_code == 200 and "Invalid JSONP callback name" in r.text
             if method == "get":
                 gets += 1
@@ -14367,7 +14369,7 @@ def test_who_may_write_and_in_what_order_a_write_is_refused(
 )
 def test_a_sheets_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method, suffix, rpc):
     """No credential on these is a 401 whose ErrorInfo names the RPC."""
-    r = wc.request(method, f"{wbook}{suffix}", params=_RAW, json={})
+    r = wc.request(method, f"{wbook}{suffix}", params=_RAW, json=None if method == "GET" else {})
     assert r.status_code == 401
     assert r.json()["error"]["details"] == [
         {

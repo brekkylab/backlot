@@ -913,40 +913,6 @@ def test_fireflies_transcript_content_round_trips_through_the_api(client, admin_
         assert synth.fireflies_transcript_text(t["sentences"]) == row["content"]
 
 
-def test_fireflies_transcripts_for_a_channel_no_channel_has_is_an_error_not_an_empty_page(
-    client, admin_h
-):
-    """Real answers `Channel not found`, not an empty page (#1107): measured against
-    api.fireflies.ai 2026-10-27, `transcripts(channel_id:)` with an id the workspace
-    holds no channel for answers 200 with `data.transcripts` null and an
-    `object_not_found` field error whose metadata names `Channel`, where Backlot's
-    channel filter matched nothing and answered an empty list."""
-    r = ff_gql(
-        client,
-        '{ transcripts(channel_id: "nope-channel", limit: 5) { id } }',
-        admin_h,
-    )
-    body = r.json()
-    assert r.status_code == 200
-    assert body["data"]["transcripts"] is None
-    (error,) = body["errors"]
-    assert error["message"] == "Channel not found"
-    assert error["path"] == ["transcripts"]
-    assert error["code"] == "object_not_found"
-    extensions = error["extensions"]
-    assert extensions["code"] == "object_not_found"
-    assert extensions["status"] == 404
-    assert extensions["metadata"] == {"objectType": "Channel"}
-    # a channel that exists still lists: `channels.id` feeds straight back in
-    real = ff_gql(client, "{ transcripts(limit: 1) { channels { id } } }", admin_h).json()
-    channel = real["data"]["transcripts"][0]["channels"][0]["id"]
-    listed = ff_gql(
-        client, '{ transcripts(channel_id: "%s", limit: 50) { id } }' % channel, admin_h
-    ).json()
-    assert "errors" not in listed
-    assert listed["data"]["transcripts"]
-
-
 def test_fireflies_serves_the_documented_metadata_surface(client, admin_h):
     r = ff_gql(
         client,
@@ -1079,9 +1045,12 @@ def test_fireflies_transcript_by_id_matches_the_listing(client, admin_h):
 
 
 def test_fireflies_limit_outside_measured_bounds_is_refused_over_http(client, admin_h):
-    body = ff_gql(client, "query($l:Int){ transcripts(limit:$l) { id } }", admin_h, l=51).json()
-    assert body["data"]["transcripts"] is None
-    assert body["errors"][0]["extensions"]["metadata"]["fields"][0]["name"] == "limit"
+    """Ahead of an unknown `channel_id` too (see `resolve_transcripts`)."""
+    for args in ("", ', channel_id: "nope"'):
+        query = "query($l:Int){ transcripts(limit:$l%s) { id } }" % args
+        body = ff_gql(client, query, admin_h, l=51).json()
+        assert body["data"]["transcripts"] is None
+        assert body["errors"][0]["extensions"]["metadata"]["fields"][0]["name"] == "limit"
 
 
 def test_fireflies_skip_pages_without_gaps_or_repeats(client, admin_h, ro_conn):
@@ -1224,10 +1193,11 @@ def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_y
 
 def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h, tokens_yaml):
     """Each query names nothing its caller can read and draws the bytes real answered it with, but
-    for the newline real ends them with: `data` null beside the error ``_not_in_team`` or
-    ``_object_not_found`` builds, its `correlationId` eight letters and digits. A transcript the
-    caller cannot see draws what one that does not exist draws, and `hana@acme.com`, who can see
-    it, reads it."""
+    for the newline real ends them with: `data` null beside the error ``_not_in_team``,
+    ``_object_not_found`` or ``_channel_not_found`` builds, its `correlationId` eight letters and
+    digits — but for an empty `channel_id`, which real reads as none. A transcript the caller
+    cannot see, or a channel holding only such transcripts, draws what one that does not exist
+    draws, and `hana@acme.com`, who can see it, reads it."""
     import re
 
     not_in_team = (
@@ -1245,12 +1215,22 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
         '["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"]}}],'
         '"data":{"transcript":null}}'
     )
+    channel_not_found = (
+        '{"errors":[{"friendly":true,"message":"Channel not found",'
+        '"locations":[{"line":1,"column":3}],"path":["transcripts"],"code":"object_not_found",'
+        '"extensions":{"code":"object_not_found","correlationId":"<8>","status":404,'
+        '"metadata":{"objectType":"Channel"},"helpUrls":'
+        '["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"]}}],'
+        '"data":{"transcripts":null}}'
+    )
     tokens = {u["email"]: u["token"] for u in tokens_yaml["users"]}
     listing = "{ transcripts(limit: 50) { id } }"
     every = ff_gql(client, listing, admin_h).json()["data"]["transcripts"]
     ava_h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
     seen = ff_gql(client, listing, ava_h).json()["data"]["transcripts"]
     (hidden,) = {t["id"] for t in every} - {t["id"] for t in seen}
+    held_in = ff_gql(client, '{ transcript(id: "%s") { channels { id } } }' % hidden, admin_h)
+    (channel,) = (c["id"] for c in held_in.json()["data"]["transcript"]["channels"])
     ava_id = ff_gql(client, "{ user { user_id } }", ava_h).json()["data"]["user"]["user_id"]
     wanted = {
         ("ava@acme.com", '{ user(id: "nope") { user_id } }'): not_in_team,
@@ -1265,6 +1245,14 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
         ),
         ("hana@acme.com", '{ transcript(id: "%s") { id } }' % hidden): (
             '{"data":{"transcript":{"id":"%s"}}}' % hidden
+        ),
+        ("ava@acme.com", '{ transcripts(channel_id: "nope") { id } }'): channel_not_found,
+        ("ava@acme.com", '{ transcripts(channel_id: "%s") { id } }' % channel): channel_not_found,
+        ("hana@acme.com", '{ transcripts(channel_id: "%s") { id } }' % channel): (
+            '{"data":{"transcripts":[{"id":"%s"}]}}' % hidden
+        ),
+        ("ava@acme.com", '{ transcripts(channel_id: "") { id } }'): (
+            ff_gql(client, "{ transcripts { id } }", ava_h).text
         ),
     }
     answered = {}

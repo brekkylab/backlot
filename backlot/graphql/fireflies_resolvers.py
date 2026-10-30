@@ -369,11 +369,9 @@ def _not_in_team(context) -> GraphQLError:
 
 
 def _channel_not_found(context) -> GraphQLError:
-    """Real's answer to a `transcripts(channel_id:)` id that names no channel in the
-    workspace: the null stands and an ``object_not_found`` field error goes beside it,
-    the object type in its metadata — the same shape as `_object_not_found`'s
-    Transcript, with the `Channel not found` message and `Channel` type measured against
-    api.fireflies.ai 2026-10-27."""
+    """Real's answer to a `transcripts(channel_id:)` id that names no channel: the null stands and
+    an ``object_not_found`` field error goes beside it, `Channel` in its metadata (api.fireflies.ai,
+    2026-10-27)."""
     return GraphQLError(
         "Channel not found",
         extensions={
@@ -571,12 +569,6 @@ def resolve_transcripts(
     _validate_transcripts(locals())
     ctx = _ctx(info)
 
-    # An id the workspace holds no channel for is the `Channel not found` error, not
-    # an empty page — a channel that exists lists (possibly nothing the caller can
-    # see) while one that does not names nothing at all (api.fireflies.ai, 2026-10-27).
-    if channel_id is not None and not store.fireflies_channel_exists(ctx["conn"], channel_id):
-        raise _channel_not_found(ctx)
-
     hosts = [host_email] if host_email else []
     # `mine` and `user_id` both mean "restrict to this user's own meetings". The caller's own
     # address is the only identity the server can vouch for, so an admin token (no caller_email)
@@ -610,6 +602,17 @@ def resolve_transcripts(
         from_ts = start if from_ts is None else max(from_ts, start)
         end = start + 86399
         to_ts = end if to_ts is None else min(to_ts, end)
+
+    # An empty `channel_id` is read as none: real answered `""` with the page it answers with no
+    # `channel_id` and `x` with `Channel not found`, but `x` beside `limit: 51` with the `limit`
+    # error (api.fireflies.ai, 2026-10-28) and beside a `date` past `_DATE_SERVED` with
+    # `_internal_error` (2026-10-30). A channel holding no meeting this caller can read draws
+    # `Channel not found` too, as a transcript the caller cannot read draws `Transcript not found`.
+    channel_id = channel_id or None
+    if channel_id is not None and not store.fireflies_channel_exists(
+        ctx["conn"], channel_id, ctx.get("visible_ids")
+    ):
+        raise _channel_not_found(ctx)
 
     rows = store.list_fireflies_transcripts(
         ctx["conn"],

@@ -5830,7 +5830,7 @@ def test_editing_a_corpus_message_leaves_one_search_hit(wclient, tokens, ro_conn
     assert stale["total"] == len(stale["matches"])
 
 
-def test_posting_with_thread_ts_replies_in_that_thread(wclient, tokens, ro_conn):
+def test_posting_with_thread_ts_replies_in_that_thread(wclient, tokens, admin_h, ro_conn):
     # Ignoring `thread_ts` gave an agent told to reply in a thread a top-level message and a
     # `200 ok` — a wrong answer with no error in it.
     root_ts = ro_conn.execute(
@@ -5875,6 +5875,63 @@ def test_posting_with_thread_ts_replies_in_that_thread(wclient, tokens, ro_conn)
     assert [m["ts"] for m in thread] == [alone, answered]
     assert thread[0]["thread_ts"] == alone and thread[0]["reply_count"] == 1
 
+    # `chat_post_message` records the measurement: chat.postMessage answers a reply with
+    # `parent_user_id` naming the thread's root author, whether replying to the root or to a reply
+    # in the thread, under a bot token or a user token, and conversations.replies lists it with
+    # the same parent_user_id. A top-level post carries no parent_user_id.
+    def post(headers, text, **extra):
+        return wclient.post(
+            "/slack/api/chat.postMessage",
+            headers=headers,
+            data={"channel": cid, "text": text, **extra},
+        ).json()
+
+    cases = [
+        (root_writer, reply_to_reply, broadcast)
+        for root_writer in ("admin", "ava@acme.com")
+        for reply_to_reply in (False, True)
+        for broadcast in (None, "", "false", "FALSE", "0")
+    ]
+    observed, expected = [], []
+    for root_writer, reply_to_reply, broadcast in cases:
+        root_h = admin_h if root_writer == "admin" else _uh(tokens, root_writer)
+        reply_h = _uh(tokens, "ava@acme.com") if root_writer == "admin" else admin_h
+        root = post(root_h, f"root by {root_writer}")
+        target = root["ts"]
+        if reply_to_reply:
+            target = post(reply_h, "intermediate reply", thread_ts=target)["ts"]
+        flags = {} if broadcast is None else {"reply_broadcast": broadcast}
+        posted_reply = post(reply_h, "plain reply", thread_ts=target, **flags)
+        listed = wclient.get(
+            "/slack/api/conversations.replies",
+            headers=reply_h,
+            params={"channel": cid, "ts": root["ts"]},
+        ).json()["messages"]
+        listed_reply = next(m for m in listed if m["ts"] == posted_reply["ts"])
+        observed.append(
+            (
+                root["ok"],
+                "parent_user_id" in root["message"],
+                posted_reply["ok"],
+                posted_reply["message"]["user"] != root["message"]["user"],
+                posted_reply["message"]["thread_ts"] == root["ts"],
+                posted_reply["message"].get("parent_user_id"),
+                listed_reply.get("parent_user_id"),
+            )
+        )
+        expected.append(
+            (
+                True,
+                False,
+                True,
+                True,
+                True,
+                root["message"]["user"],
+                root["message"]["user"],
+            )
+        )
+    assert observed == expected
+
 
 def test_replying_to_a_reply_lands_in_the_same_thread(wclient, tokens, ro_conn):
     # Slack threads under the ROOT, not under whichever message was named.
@@ -5894,6 +5951,8 @@ def test_replying_to_a_reply_lands_in_the_same_thread(wclient, tokens, ro_conn):
         "/slack/api/conversations.replies", headers=h, data={"channel": cid, "ts": root_ts}
     ).json()["messages"]
     assert posted["ts"] in [m["ts"] for m in thread]
+    root_user = next(m["user"] for m in thread if m["ts"] == root_ts)
+    assert posted["message"]["parent_user_id"] == root_user
 
 
 def test_a_thread_ts_naming_nothing_posts_top_level_and_an_unreadable_one_is_refused(
@@ -5911,6 +5970,7 @@ def test_a_thread_ts_naming_nothing_posts_top_level_and_an_unreadable_one_is_ref
         ).json()
         assert j["ok"] is True, value
         assert "thread_ts" not in j["message"], value
+        assert "parent_user_id" not in j["message"], value
     # Refused outside the window `_thread_ts_error` records, and the message carries the value
     # as real reads it, in microseconds.
     import time as _time

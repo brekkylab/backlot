@@ -2178,6 +2178,7 @@ async def chat_post_message(request: Request):
     parent = (
         store.document_by_key(conn, "slack", (name, wanted), ids) if wanted is not None else None
     )
+    parent_uid = None
     if parent is not None:
         # Slack threads a reply under the ROOT, not under whichever message was named: replying to
         # a reply puts it in the same thread. The corpus stores that as the root's own ts, which is
@@ -2190,6 +2191,16 @@ async def chat_post_message(request: Request):
             # `conversations.replies` answers the root alone and the message reads back with no
             # thread at all — a thread this API made and cannot show.
             store.patch_document(conn, "slack", (name, parent["ts"]), "thread_ts", thread_ts)
+            root_author = parent["author_email"]
+        elif parent["thread_ts"] == parent["ts"]:
+            root_author = parent["author_email"]
+        else:
+            root = store.document_by_key(conn, "slack", (name, thread_ts), ids)
+            root_author = root["author_email"] if root else None
+        # `chat.postMessage` answers a reply with `parent_user_id`: measured against slack.com on
+        # 2026-10-30 (issue 1162), each answer carries `parent_user_id` as the thread's root author,
+        # whether replying to the root or to a reply in the thread, matching conversations.replies.
+        parent_uid = _uid(root_author) if root_author else None
     now = int(time.time())
     ts = store.slack_next_ts(conn, name, now)
     store.insert_document(
@@ -2211,7 +2222,7 @@ async def chat_post_message(request: Request):
         "ok": True,
         "channel": synth.slack_channel_id(name),
         "ts": ts,
-        "message": _message(row),
+        "message": _message(row, parent_user_id=parent_uid),
     }
 
 

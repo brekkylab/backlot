@@ -29,6 +29,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from backlot import (
     auth,
+    bracketed_host,
     errors,
     express_http,
     openapi,
@@ -214,7 +215,9 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
                 vendor.headers = getattr(exc, "headers", None)
             exc = vendor
     headers = getattr(exc, "headers", None)
-    body = errors.http_body(request.url.path, exc, request.query_params)
+    # The path as routed: ``request.url.path`` drops what :data:`_REPARSED` matches, which would
+    # take `/github/rate_limit%0A` for the route it does not reach.
+    body = errors.http_body(request.scope["path"], exc, request.query_params)
     if body is None:
         body = {"detail": exc.detail}
     # A vendor may decide how the body reaches the wire as well as what is in it — Google's errors
@@ -1479,6 +1482,18 @@ async def merge_slashes_before_a_slack_method_name(request: Request, call_next):
     return await call_next(request)
 
 
+@_middleware(lambda scope: slack.drops_an_end(scope["path"]))
+async def drop_what_slack_drops_off_the_end_of_a_path(request: Request, call_next):
+    """Read a `/slack/api/` path as real does without the run at its end it drops, or answer one
+    holding an LF elsewhere with its 404 page (``slack.drop_the_end``, which has the measurement).
+    Registered after :func:`merge_slashes_before_a_slack_method_name`, which makes it the outer of
+    the two, so that a run of `/`s before the name is merged once the end is gone."""
+    answer = slack.drop_the_end(request.scope)
+    if answer is not None:
+        return answer
+    return await call_next(request)
+
+
 @_middleware(
     lambda scope: (
         _at_or_under(_url_path(scope), ("/notion", "/linear", "/fireflies", "/hubspot"))
@@ -1615,6 +1630,14 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
     return await call_next(request)
 
 
+@_middleware(lambda scope: request_target.escape_answer(scope) is not None)
+async def answer_an_escape_a_front_door_refuses(request: Request, call_next):
+    """Answer a path holding an escape the vendor's front door refuses as it does
+    (``backlot.request_target.escape_answer``), ahead of every vendor's middleware, as a front door
+    answers ahead of the API behind it."""
+    return request_target.escape_answer(request.scope)
+
+
 @_middleware(lambda scope: request_target.SENT in scope)
 async def answer_a_raw_byte_in_the_request_target(request: Request, call_next):
     """Answer a request whose target held a raw byte as the vendor's front door answers it
@@ -1646,13 +1669,13 @@ async def vendor_json_media_type(request: Request, call_next):
     key, and real's own spec says `application/json` there: the charset is a fact about the wire,
     not about the contract, and `backlot diff` compares the contract. Only a response that is
     exactly `application/json` is touched, so the raw, diff and text/plain answers keep their own
-    types. Registered last of the middlewares, which makes it the outermost, so a JSON body another
-    middleware returns (``refuse_a_bearer_jira_cannot_read``'s 403) passes through it too rather
-    than around it; the route handlers and the two exception handlers above are covered from either
-    position, those handlers because they run inside ``ExceptionMiddleware``. The status goes along
-    with the path because the answer can depend on it: code search's own 200 and 422 carry no
-    charset where the gateway's 401 on the same path does. An answer given in front of Jira is not
-    Jira's, and keeps the type its layer gives (the edge's `;` 400,
+    types. Registered after every middleware above it, which makes it outside each of them, so a
+    JSON body another middleware returns (``refuse_a_bearer_jira_cannot_read``'s 403) passes through
+    it too rather than around it; the route handlers and the two exception handlers above are
+    covered from either position, those handlers because they run inside ``ExceptionMiddleware``.
+    The status goes along with the path because the answer can depend on it: code search's own 200
+    and 422 carry no charset where the gateway's 401 on the same path does. An answer given in front
+    of Jira is not Jira's, and keeps the type its layer gives (the edge's `;` 400,
     ``errors.atlassian.front_door``).
     """
     response = await call_next(request)
@@ -1663,6 +1686,20 @@ async def vendor_json_media_type(request: Request, call_next):
         if media_type is not None:
             response.headers["content-type"] = media_type
     return response
+
+
+@_middleware(bracketed_host.holds_no_address)
+async def answer_a_host_in_brackets_that_holds_no_ipv6_address(request: Request, call_next):
+    """Answer a request whose `Host` ``backlot.bracketed_host.holds_no_address`` picks as the
+    vendor's front door answers it (``backlot.bracketed_host.answer``), or hand it on without its
+    `Host`, so that ``request.url`` is built from the server's address. Registered after every
+    middleware but telemetry's, which makes it outside each of them: those read ``request.url``,
+    which cannot be built from such a `Host` (``backlot.bracketed_host`` says why)."""
+    answer = bracketed_host.answer(request.scope)
+    if answer is not None:
+        return answer
+    request.scope["headers"] = [(k, v) for k, v in request.scope["headers"] if k != b"host"]
+    return await call_next(request)
 
 
 # Registered after every middleware above, which makes it the outermost: it sees every answer,

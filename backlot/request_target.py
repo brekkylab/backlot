@@ -142,8 +142,8 @@ CLOUDFLARE_PAGE = (
     b"</body>\r\n</html>\r\n"
 )
 
-#: Graph's two 400 pages, 324 and 311 bytes on `text/html; charset=us-ascii` (:func:`_graph` says
-#: which answers what).
+#: Graph's 400 pages, 324, 311 and 334 bytes on `text/html; charset=us-ascii` (:func:`_graph` says
+#: which of the first two answers what, ``backlot.bracketed_host`` what the third answers).
 _GRAPH_PAGE = (
     '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN""http://www.w3.org/TR/html4/strict.dtd">\r\n'
     "<HTML><HEAD><TITLE>Bad Request</TITLE>\r\n"
@@ -155,6 +155,9 @@ GRAPH_INVALID_URL = _GRAPH_PAGE.format(
 ).encode()
 GRAPH_BADLY_FORMED = _GRAPH_PAGE.format(
     title="Bad Request", detail="The request is badly formed."
+).encode()
+GRAPH_INVALID_HOSTNAME = _GRAPH_PAGE.format(
+    title="Bad Request - Invalid Hostname", detail="The request hostname is invalid."
 ).encode()
 
 
@@ -393,3 +396,48 @@ def answer(scope: Scope) -> Response | None:
     if _under(path, "/msgraph"):
         return _graph(scope, in_path, in_query)
     return _page(b"Invalid HTTP request received.", "text/plain; charset=utf-8")
+
+
+#: An escaped byte from 0x00 to 0x1F, or 0x7F, its hex digits in either case.
+_ESCAPED_CONTROL = re.compile(rb"%(?:[01][0-9A-Fa-f]|7[Ff])")
+#: The prefixes under which Google's front door refuses a `%00`: on each of the four hosts of their
+#: own, the API's; on www.googleapis.com, which Drive and the batch endpoint share, `/drive/v3/` and
+#: `/batch/`. On 2026-10-30 (UTC) the four refused `%00` right after the prefix (`/gmail/v1%00x`,
+#: `/v4%00x`, `/v1%00x`) and outside it (`/gmail%00x`, `/nope%00x`), where Backlot routes nothing,
+#: and www.googleapis.com answered `/drive/v3%00x`, `/drive%00x`, `/batch%00x` and `/nope%00x` with
+#: its 404 page and refused `/drive/v2/nope%00x`, under a version Backlot does not serve.
+_GOOGLE_NUL = ("/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1", "/drive/v3/", "/batch/")
+
+
+def escape_answer(scope: Scope) -> Response | None:
+    """The front door's answer to a path that holds `%00`, or on Graph any escape of
+    :data:`_ESCAPED_CONTROL`, or ``None`` where it reads the path on as the vendor's.
+
+    slack.com's empty 400; Google's 1,555-byte page where :data:`_GOOGLE_NUL` says, on a connection
+    that answers the next request; Cloudflare's page in front of Notion and HubSpot; S3's empty 400,
+    whose status line real words `400 Invalid URI`; and Graph's page naming the URL invalid.
+    Measured on 2026-10-30 (UTC) over raw HTTP/1.1 on TLS sockets, with the vendors' credentials
+    but Gmail's, the Docs editors', S3's and Graph's, for each escape from `%00` to `%1F` and `%7F`
+    at a path no route serves (`…/nope<escape>x`), and for `%00`, `%0A` and `%0D` at the end of one
+    a route serves: each of the others was read as the path's other bytes are, on every host but
+    Graph, and Graph refused the lower-case spellings `%0a`, `%0b`, `%0d`, `%1f` and `%7f` too. A
+    `%00` in the query was read as its other bytes are on each of those hosts but Confluence, which
+    answered Tomcat's 400 page. Jira Cloud's and Confluence's front door answers a `%00` in the
+    path with the CDN's page (``backlot.errors.atlassian.cdn_refusal``), Linear's and Fireflies'
+    with Cloudflare's (:func:`refused_path`), and api.github.com read it as any other byte."""
+    path, sent = scope["path"], scope["raw_path"]
+    if _under(path, "/msgraph"):
+        if _ESCAPED_CONTROL.search(sent) is None:
+            return None
+        return _page(GRAPH_INVALID_URL, "text/html; charset=us-ascii")
+    if b"%00" not in sent:
+        return None
+    if _under(path, "/slack"):
+        return _page(b"", None)
+    if path.startswith(_GOOGLE_NUL):
+        return _page(GOOGLE_PAGE_1555, "text/html; charset=UTF-8", close=False)
+    if any(_under(path, p) for p in ("/notion", "/hubspot")):
+        return _page(CLOUDFLARE_PAGE, "text/html")
+    if errors.s3.owns(path):
+        return _page(b"", None)
+    return None

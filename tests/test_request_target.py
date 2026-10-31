@@ -405,11 +405,12 @@ _PRINTABLE = [
     *(("/msgraph/v1.0/", rest, 401) for rest in (b'me?b="x', b"me?b=#x", b"me?b=%x")),
     ("/msgraph/v1.0/", b'nope\x01y"x', "graph invalid url"),
     ("/msgraph/v1.0/", b'nope"y\x01x', "graph invalid url"),
-    # S3: a `#` in the path one of its characters, and the empty 400 for a broken escape in the
-    # path, a `#` before it or after it, where one in the query is read on
+    # S3: a `#` one of the characters of the path or the query it stands in, and the empty 400 for a
+    # broken escape in the path, a `#` before it or after it, where one in the query is read on
     ("/s3/", b"nope#x", "as nope%23x"),
     ("/s3/", b"nope#x/key", "as nope%23x/key"),
     ("/s3/no-such-bucket/", b"nope#x", "as nope%23x"),
+    ("/s3/", b"no-such-bucket?max-keys=1#x", "as no-such-bucket?max-keys=1%23x"),
     *(
         ("/s3/", rest, "s3 empty")
         for rest in (b"nope%x", b"nope%zzx", b"nope%4x", b"nope%", b"nope%4", b"nope%y#x")
@@ -440,9 +441,10 @@ _PRINTABLE = [
             *(b"nope%?", b"nope%4?", b"nope%?#x", b"nope%#x"),
         )
     ),
-    ("/notion/v1/", b"nope%", 400),
-    ("/notion/v1/", b"nope%4", 400),
+    ("/notion/v1/", b"nope%", "notion undecodable"),
+    ("/notion/v1/", b"nope%4", "notion undecodable"),
     ("/notion/v1/", b"nope#y%x", "as nope"),
+    ("/notion/v1/", b"nope{x", "as nope%7Bx"),
     ("/notion/v1/", b"users?b=%x", 400),
     *(("/notion/v1/", rest, "cloudflare page") for rest in _BESIDE_A_RAW_BYTE),
     *(("/notion/v1/", rest, "cloudflare empty") for rest in _CUT_AFTER_A_RAW_BYTE),
@@ -488,7 +490,8 @@ _PRINTABLE = [
             *(b"nope\x01y{x", b"nope{y\x01x", b"nope\xc3\xa9y{x", b"nope{x?b=\x01"),
         )
     ),
-    # Google: a `\` in the path a `/`, and on Drive a `+` in the path a space
+    # Google: a `\` in the path a `/`, and on Drive a `+` in the path a space and a `#` the end of the
+    # target
     ("/drive/v3/files/", b"nope+x", "as nope%20x"),
     ("/drive/v3/files/", b"nope++x", "as nope%20%20x"),
     ("/drive/v3/files/", b"nope+x/permissions", "as nope%20x/permissions"),
@@ -496,7 +499,8 @@ _PRINTABLE = [
     ("/drive/v3", b"\\about", "as /about"),
     ("/drive", b"\\v3/about", "as /v3/about"),
     ("/drive/v3/files/", b"nope\\x", "as nope/x"),
-    ("/gmail/v1/users/me/", b"nope\\x", "as nope/x"),
+    ("/drive/v3/files/", b"nope#x", "as nope"),
+    ("/gmail/v1/users/me", b"\\profile", "as /profile"),
     ("/docs/v1", b"\\documents/x", "as /documents/x"),
     ("/docs/v1/documents", b"\\x", "as /x"),
     ("/docs/v1/documents/", b"nope\\x", "as nope/x"),
@@ -597,8 +601,8 @@ def _rows():
         ("/slack/api/", b"nope%x", "slack apache", b""),
         ("/slack/api/", b"auth.test?b=1#x", "slack empty", b""),
         ("/notion/v1/", b"nope%x", "cloudflare page", b""),
-        ("/notion/v1/", b"nope%", 400, b""),
-        ("/notion/v1/", b"nope%4", 400, b""),
+        ("/notion/v1/", b"nope%", "notion undecodable", b""),
+        ("/notion/v1/", b"nope%4", "notion undecodable", b""),
         ("/github/", b"rate_limit?b=1#x", "github", b""),
         ("/github/", b"nope%x#y", "github", b""),
         ("/github/", b"rate_limit?b=%x", 200, b""),
@@ -664,6 +668,7 @@ def _encoded(target: bytes, question_marks: bool = False) -> bytes:
 #: (``backlot.request_target._page``).
 _KEEPS_THE_CONNECTION = {
     "encoded",
+    "notion undecodable",
     "encoded, cut",
     "?",
     "cloudflare empty",
@@ -776,6 +781,10 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
         assert status == twin[0]
         assert _ids_left_out(base, body) == _ids_left_out(base, twin[2])
         return
+    if answer == "notion undecodable":
+        assert (status, headers["content-type"]) == (400, "application/json; charset=utf-8")
+        assert b'"message":"Failed to decode url."' in body
+        return
     if answer == "s3 505":
         assert (status, headers["content-type"]) == (505, "application/xml")
         assert b"<Code>HttpVersionNotSupported</Code>" in body
@@ -831,20 +840,27 @@ def test_a_record_an_outsider_cannot_read_is_a_made_up_id_however_the_front_door
 
 
 @pytest.mark.parametrize(
-    "line, encoded, sent",
+    "line, encoded, sent, fragment",
     [
-        (b"GET /a\x80b HTTP/1.1\r\n", b"GET /a%80b HTTP/1.1\r\n", b"/a\x80b"),
-        (b"GET /a\x80b HTTP/1.1\n", b"GET /a%80b HTTP/1.1\n", b"/a\x80b"),
-        (b"GET /a b?c d HTTP/1.1\r\n", b"GET /a%20b?c%20d HTTP/1.1\r\n", b"/a b?c d"),
-        (b"GET /a\rb HTTP/1.1\r\n", b"GET /a%0Db HTTP/1.1\r\n", b"/a\rb"),
-        (b"GET /a%20b HTTP/1.1\r\n", b"GET /a%20b HTTP/1.1\r\n", None),
-        (b"GET /a\x80b\r\n", b"GET /a\x80b\r\n", None),
-        (b"GET /a\x80b HTTQ/1.1\r\n", b"GET /a\x80b HTTQ/1.1\r\n", None),
-        (b" /a\x80b HTTP/1.1\r\n", b" /a\x80b HTTP/1.1\r\n", None),
+        (b"GET /a\x80b HTTP/1.1\r\n", b"GET /a%80b HTTP/1.1\r\n", b"/a\x80b", None),
+        (b"GET /a\x80b HTTP/1.1\n", b"GET /a%80b HTTP/1.1\n", b"/a\x80b", None),
+        (b"GET /a b?c d HTTP/1.1\r\n", b"GET /a%20b?c%20d HTTP/1.1\r\n", b"/a b?c d", None),
+        (b"GET /a\rb HTTP/1.1\r\n", b"GET /a%0Db HTTP/1.1\r\n", b"/a\rb", None),
+        (b"GET /a%20b HTTP/1.1\r\n", b"GET /a%20b HTTP/1.1\r\n", None, None),
+        (b"GET /a\x80b\r\n", b"GET /a\x80b\r\n", None, None),
+        (b"GET /a\x80b HTTQ/1.1\r\n", b"GET /a\x80b HTTQ/1.1\r\n", None, None),
+        (b" /a\x80b HTTP/1.1\r\n", b" /a\x80b HTTP/1.1\r\n", None, None),
+        (b"GET /a#b?c HTTP/1.1\r\n", b"GET /a#b?c HTTP/1.1\r\n", None, b"/a#b?c"),
+        (b"GET /a?b#c d HTTP/1.1\r\n", b"GET /a?b#c%20d HTTP/1.1\r\n", b"/a?b#c d", b"/a?b#c d"),
+        (b"GET /a#b\r\n", b"GET /a#b\r\n", None, None),
+        (b" /a#b HTTP/1.1\r\n", b" /a#b HTTP/1.1\r\n", None, None),
     ],
 )
-def test_the_target_is_what_lies_between_the_first_space_and_the_last(line, encoded, sent):
+def test_the_target_is_what_lies_between_the_first_space_and_the_last(
+    line, encoded, sent, fragment
+):
     assert request_target.encode_line(line) == (encoded, sent)
+    assert request_target.with_a_fragment(line) == fragment
 
 
 @pytest.mark.parametrize(

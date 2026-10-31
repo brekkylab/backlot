@@ -153,9 +153,11 @@ def gmail():
         )
     )
     qres = svc.users().messages().list(userId="me", q="board").execute().get("messages", [])
-    check("Gmail", "messages.list q (free text)")(lambda: f"{len(qres)} match" if qres else 1 / 0)
+    check("Gmail", "messages.list q (free text)")(
+        lambda: f"{len(qres)} match(es)" if qres else 1 / 0
+    )
     fres = svc.users().messages().list(userId="me", q="from:ceo").execute().get("messages", [])
-    check("Gmail", "messages.list q (from:)")(lambda: f"{len(fres)} match" if fres else 1 / 0)
+    check("Gmail", "messages.list q (from:)")(lambda: f"{len(fres)} match(es)" if fres else 1 / 0)
     threads = svc.users().threads().list(userId="me").execute().get("threads", [])
     check("Gmail", "threads.list")(lambda: f"{len(threads)} thread(s)" if threads else 1 / 0)
     check("Gmail", "threads.get")(
@@ -237,7 +239,9 @@ def drive():
         .list(q="fullText contains 'palette'", fields="files(id,name)")
         .execute()["files"]
     )
-    check("Drive", "files.list fullText contains")(lambda: f"{len(ftxt)} match" if ftxt else 1 / 0)
+    check("Drive", "files.list fullText contains")(
+        lambda: f"{len(ftxt)} match(es)" if ftxt else 1 / 0
+    )
     # about.get is usually a client's first call; the SDK builds it from the discovery doc, so this
     # proves the real request shape (fields + alt=json) reaches the route.
     about = svc.about().get(fields="user,storageQuota").execute()
@@ -500,7 +504,7 @@ def jira():
     check("Jira", "search/jql")(lambda: f"{len(res['issues'])} issue(s)")
     tres = j.get("rest/api/3/search/jql", params={"jql": 'text ~ "latency"'})
     check("Jira", "search/jql text~")(
-        lambda: f"{len(tres['issues'])} match" if tres["issues"] else 1 / 0
+        lambda: f"{len(tres['issues'])} match(es)" if tres["issues"] else 1 / 0
     )
     key = next(i["key"] for i in res["issues"] if i["fields"]["summary"].startswith("SEV2"))
     iss = j.get(f"rest/api/3/issue/{key}")
@@ -525,7 +529,7 @@ def confluence():
     check("Confluence", "content.list")(lambda: f"{len(res['results'])} page(s)")
     handbook = next(p for p in res["results"] if "Handbook" in p["title"])
     kids = cf.get(f"rest/api/content/{handbook['id']}/child/page")
-    check("Confluence", "child/page")(lambda: f"{kids['size']} children")
+    check("Confluence", "child/page")(lambda: f"children: {kids['size']}")
     child = kids["results"][0]["id"]
     check("Confluence", "child/comment")(
         lambda: f"{cf.get(f'rest/api/content/{child}/child/comment')['size']} comment(s)"

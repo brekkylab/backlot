@@ -1179,7 +1179,7 @@ def _acl_clause(
     elif len(cols) != len(key):
         raise ValueError(
             f"_acl_clause: {source_type!r} is identified by {len(key)} column(s) {key} but "
-            f"{len(cols)} were given ({cols}) — the two are matched positionally"
+            f"{len(cols)} given ({cols}) — the two are matched positionally"
         )
     if tbl is None:
         tbl = table(source_type)

@@ -495,8 +495,7 @@ async def echo_github_api_version(request: Request, call_next):
     (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
     ``DELETE /installation/token``'s 401 is the one of those that echoes, as a served route's does
     (:func:`github.refused_an_unserved_operation_reported`). Nor does anything on an agent path:
-    real reads the version header on none of the `/agents` answers
-    (``github.honours_api_version``).
+    real reads the version header on none of the `/agents` answers (``github.honours_api_version``).
     """
     response = await call_next(request)
     if (

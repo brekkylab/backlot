@@ -2713,9 +2713,9 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
 
     On the three refused rows under `/agents`, the version is read by no caller: a maintainer's
     live calls answered a token that resolves the same 404 with `1999-01-01` pinned as without it,
-    and no answer of the family carried the echo (see
-    `backlot.routers.github.honours_api_version`), so those rows' answers here carry no echo and
-    a pinned unknown version is no 400, the five `x-ratelimit-*` on the answers as before.
+    and no answer of the family carried the echo (see `backlot.routers.github.honours_api_version`),
+    so those rows' answers here carry no echo and a pinned unknown version is no 400, the five
+    `x-ratelimit-*` on the answers as before.
     """
     c, _ = gh_client
     url = path.format(org=gh_org)

@@ -627,10 +627,9 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     `1999-01-01` pinned as without it, and no answer of theirs carried the echo — the four being
     `GET /agents/automations/1/tasks`, a repository's automations one by id and its tasks, and an
     agent-merge `GET` (:func:`under_an_agent_family`'s note has the families). So
-    :func:`_validate_api_version` does not run here on an agent path
-    (:func:`honours_api_version` leaves it False for the whole of `/agents`), and the 404 the
-    router answers for the token carries no echo, nor does :func:`_require`'s 401 for a `Basic`
-    value that names no token.
+    :func:`_validate_api_version` does not run here on an agent path (:func:`honours_api_version`
+    leaves it False for the whole of `/agents`), and the 404 the router answers for the token
+    carries no echo, nor does :func:`_require`'s 401 for a `Basic` value that names no token.
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return

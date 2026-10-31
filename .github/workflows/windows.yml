@@ -6,8 +6,11 @@
 # pull request wherever a test reaches it; this job is the proof on the platform itself, with
 # PYTHONUTF8 unset, and it is too slow to run on every commit (on 2026-10-13 its pull-request run
 # took 5 minutes 25 seconds on windows-latest, and each Linux test job under 4). So it runs on a
-# pull request only once a maintainer adds the `windows` label, for a change to how Backlot opens
-# files, spawns processes or reads paths, and then on each push to it. A step before the tests
+# pull request once a maintainer adds the `windows` label, for a change to how Backlot opens files,
+# spawns processes or reads paths, and then on each push to it. It runs without the label on a pull
+# request that changes a script in scripts/ or a test file that runs one: a script can print a path
+# it was handed, Windows spells that path with backslashes, and a test expecting a forward slash
+# passes every Linux job. A step before the tests
 # refuses a runner whose locale, or Python's UTF-8 mode, is UTF-8, where every step after it would
 # pass without proving anything; for the same reason Python is pinned below 3.15, where UTF-8 mode
 # becomes the default (PEP 686).
@@ -35,11 +38,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  scripts:
+    # The test files that run a script in scripts/ (through `script_module`), and whether the pull
+    # request changes a script or one of them.
     if: >-
-      github.event_name != 'pull_request'
+      github.event_name == 'pull_request'
+      && (github.event.action != 'labeled' || github.event.label.name == 'windows')
+    runs-on: ubuntu-latest
+    outputs:
+      tests: ${{ steps.find.outputs.tests }}
+      changed: ${{ steps.find.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - id: find
+        # HEAD is the pull request merged into its base, and HEAD^1 that base.
+        run: |
+          git grep -l 'script_module(' -- 'tests/test_*.py' > "$RUNNER_TEMP/tests" || true
+          git diff --no-color --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed"
+          echo "tests=$(paste -sd ' ' "$RUNNER_TEMP/tests")" >> "$GITHUB_OUTPUT"
+          if grep -q '^scripts/' "$RUNNER_TEMP/changed" \
+            || grep -qxFf "$RUNNER_TEMP/tests" "$RUNNER_TEMP/changed"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    needs: scripts
+    # `!cancelled()` lets the job run on the schedule and on workflow_dispatch, where the scripts job
+    # is skipped. On a pull request where the scripts job fails, the job runs only with the label.
+    if: >-
+      (github.event_name != 'pull_request'
       || (contains(github.event.pull_request.labels.*.name, 'windows')
       && (github.event.action != 'labeled' || github.event.label.name == 'windows'))
+      || (github.event.action != 'labeled' && needs.scripts.outputs.changed == 'true'))
+      && !cancelled()
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
@@ -64,6 +97,15 @@ jobs:
           tests/test_cli.py tests/test_server.py tests/test_schema.py tests/test_docs.py
           tests/test_importer_erb.py tests/test_acl.py tests/test_fidelity.py
           tests/test_packaging.py
+      - name: The test files that run a script in scripts/
+        if: github.event_name == 'pull_request'
+        env:
+          TESTS: ${{ needs.scripts.outputs.tests }}
+        # With no file named, pytest would run the whole suite.
+        run: |
+          if (-not $env:TESTS) { "the scripts job named no test file"; exit 0 }
+          $tests = $env:TESTS -split ' '
+          uv run --no-sync pytest -rs @tests
       - name: The tests marked windows or xfail
         if: github.event_name == 'pull_request'
         # pytest exits 5 when the selection is empty, which is not a failure here.

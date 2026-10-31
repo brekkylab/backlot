@@ -3240,7 +3240,9 @@ def _drive_refuse_a_trailing_comma(request: Request) -> None:
     range refusals and ahead of the rest, measured 2026-10-20 beside a bad `pageToken`, `q` and
     `orderBy`, an `orderBy` naming a key twice or `starred` after another, `fullText` beside an
     `orderBy`, `includeItemsFromAllDrives` alone, `acknowledgeAbuse`, `useDomainAdminAccess`, a
-    repeated `pageSize` and a file that does not exist. A download read no mask."""
+    repeated `pageSize` and a file that does not exist. A download read no mask: on 2026-10-31
+    `alt=media` with `fields=id,` or `fields=nope(` was answered as `alt=media` alone, on a Doc and
+    on a file with content."""
     mask = gerr.first_repeat(request.query_params, "fields")
     if mask is not None and mask.rstrip(string.whitespace).endswith(","):
         raise gerr.invalid_parameter("fields", f"Invalid field selection {mask}")

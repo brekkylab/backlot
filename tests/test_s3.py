@@ -980,7 +980,8 @@ _NO_SUCH_BUCKET = ("NoSuchBucket", "The specified bucket does not exist")
 
 # Real's answer to a path it cannot read (``backlot.routers.s3.path_refusal``), each row sent with
 # no credential, and beside them buckets it reads on to their 404: code, message and the members
-# between the message and `<RequestId>`. A `HEAD` row's `None` is the status with no body.
+# between the message and `<RequestId>`. A `HEAD` row's `None` is the status with no body, framed
+# as ``backlot.routers.s3._head`` frames it.
 # fmt: off
 _PATH_REFUSAL_ROWS = [
     *[
@@ -1049,7 +1050,13 @@ def test_s3_a_path_real_cannot_read_is_refused_before_its_bucket(
     base_url, _ = live_server
     r = httpx.request(method, f"{base_url}/s3{path}")
     if error is None:
-        assert (r.status_code, r.content) == (status, b"")
+        framing = (r.headers.get("content-type"), r.headers.get("transfer-encoding"))
+        assert (r.status_code, r.content, "content-length" in r.headers, framing) == (
+            status,
+            b"",
+            False,
+            ("application/xml", "chunked"),
+        )
         return
     named = re.search(r"<Code>([^<]+)</Code><Message>([^<]*)</Message>(.*)<RequestId>", r.text)
     assert (r.status_code, (named[1], named[2]), named[3]) == (status, error, members)

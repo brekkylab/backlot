@@ -14,7 +14,6 @@ already gates that one command.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 import struct
@@ -27,6 +26,7 @@ import yaml
 from backlot.mcp import ICONS
 from backlot.openapi import SOURCE_PREFIXES
 from backlot.validation import SERVICE_SCHEMAS
+from tests._helpers import script_module
 
 REPO = Path(__file__).resolve().parent.parent
 SKILL_DIR = REPO / "skills" / "backlot"
@@ -37,19 +37,10 @@ _LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)")
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*$", re.M)
 
 
-def _gen_docs():
-    """The generator, loaded by path because scripts/ is not a package.
-
-    Its slug rule is imported rather than reimplemented. A copy of the rule here would agree with
-    the generator by construction, which reads as a second opinion and is not one — it would pass
-    on exactly the headings the generator gets wrong.
-    """
-    spec = importlib.util.spec_from_file_location(
-        "scripts.gen_docs", REPO / "scripts" / "gen_docs.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+# The generator, whose slug rule is imported rather than reimplemented. A copy of the rule here
+# would agree with the generator by construction, which reads as a second opinion and is not
+# one — it would pass on exactly the headings the generator gets wrong.
+gen_docs = script_module("gen_docs")
 
 
 def _frontmatter(md: Path) -> dict:
@@ -63,7 +54,7 @@ def _skill_markdown() -> list[Path]:
 
 
 def _anchors(md: Path) -> set[str]:
-    anchor = _gen_docs()._anchor
+    anchor = gen_docs._anchor
     return {anchor(h) for h in _HEADING_RE.findall(md.read_text(encoding="utf-8"))}
 
 
@@ -292,7 +283,7 @@ def test_the_anchor_rule_matches_github(heading, expected):
     the pair that delimits `_italic_`. Getting that backwards writes a link that resolves to the top
     of the page instead of to the section, which no link check can see.
     """
-    assert _gen_docs()._anchor(heading) == expected
+    assert gen_docs._anchor(heading) == expected
 
 
 def test_the_routing_table_names_every_openapi_slice_key_and_no_others():

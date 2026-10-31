@@ -15,6 +15,7 @@ import json
 import math
 import random
 import shutil
+import sqlite3
 import struct
 import subprocess
 import zlib
@@ -27,7 +28,7 @@ from graphql.type.scalars import coerce_id
 from starlette.testclient import TestClient
 
 from backlot import auth, pagination, store
-from backlot.graphql import apollo_http, engine, mcp_tools, v8_json
+from backlot.graphql import apollo_http, engine, mcp_tools, node_utf8, v8_json
 from backlot.graphql import body as request_body
 from tests._helpers import selected_fields
 
@@ -250,7 +251,7 @@ def _crashed(_root, _info):
             'query W($id: ID = "w1") { boom widget(id: $id) { name } }',
             {"id": None},
             False,
-            [1],
+            [0],
         ),
         # an operation on a root type the test schema has none of
         ("mutation { __typename }", None, False, [0]),
@@ -315,14 +316,22 @@ def test_context_is_visible_to_resolvers(gql):
 # --- request body (GraphQL over HTTP) -------------------------------------------
 
 
-def test_execute_payload_honours_variables_and_operation_name(gql):
-    r = gql.execute_payload(
+def _run_payload(gql, payload, context=None):
+    """``payload`` as a router hands it on: :meth:`~backlot.graphql.engine.Engine.resolve_payload`,
+    then :meth:`~backlot.graphql.engine.Engine.run` on the operation it chose."""
+    resolved = gql.resolve_payload(payload)
+    return resolved if isinstance(resolved, engine.Result) else gql.run(resolved, context=context)
+
+
+def test_a_payload_honours_its_variables_and_operation_name(gql):
+    r = _run_payload(
+        gql,
         {
             "query": 'query A { widget(id: "w1") { name } } '
             "query B($id: ID!) { widget(id: $id) { name } }",
             "variables": {"id": "w2"},
             "operationName": "B",
-        }
+        },
     )
     assert r.payload["data"] == {"widget": {"name": "Worker"}}
 
@@ -354,7 +363,7 @@ def test_a_body_is_read_as_node_reads_it(gql, body, served):
     those ``json.loads`` refuses or raises on among them."""
     if served:
         payload = request_body.parse(request_body.decode(body))
-        assert gql.execute_payload(payload).payload == {
+        assert _run_payload(gql, payload).payload == {
             "data": {"widgets": [{"id": "w1"}, {"id": "w2"}]}
         }
     else:
@@ -467,7 +476,7 @@ def test_a_variable_is_read_as_graphql_js_reads_it(type_, value, answer):
     :func:`backlot.graphql.js_words.coerce_variable_values`."""
     query = "query($x: %s) { %s }" % (type_, _ECHO_FIELDS[type_])
     body = '{"query": "%s", "variables": {"x": %s}}' % (query, value)
-    assert _ECHO.execute_payload(request_body.parse(body)).payload == answer
+    assert _run_payload(_ECHO, request_body.parse(body)).payload == answer
 
 
 def test_graphql_cores_id_scalar_is_left_as_graphql_core_has_it():
@@ -1032,7 +1041,7 @@ _APOLLO_CHECKS = [
 
 @pytest.mark.parametrize("payload, answer", _APOLLO_CHECKS)
 def test_apollo_server_reads_a_body_in_its_order(gql, payload, answer):
-    r = gql.execute_payload(payload)
+    r = _run_payload(gql, payload)
     assert (r.status, r.payload) == answer
 
 
@@ -1607,7 +1616,7 @@ def acme_client(db, acl):
             )
         context = {"conn": auth.conn(request), "visible_ids": auth.visible_ids(request, caller)}
         payload = request_body.parse(request_body.decode(await request.body()))
-        result = ACME.execute_payload(payload, context=context)
+        result = _run_payload(ACME, payload, context=context)
         return JSONResponse(result.payload, status_code=result.status)
 
     app.include_router(router)
@@ -2231,3 +2240,17 @@ _FORMS = [
 @pytest.mark.parametrize("text,fields", _FORMS)
 def test_a_form_is_read_as_fast_querystring_reads_it(text, fields):
     assert request_body.form_fields(text) == fields
+
+
+def test_a_statement_binds_a_lone_surrogate_as_u_fffd():
+    conn = node_utf8.Written(sqlite3.connect(":memory:"))
+    bound = {
+        "by position": conn.execute("SELECT ?, ?", ("a\ud800b", 1)).fetchone(),
+        "by name": conn.execute("SELECT :x, :n", {"x": "a\udfffb", "n": None}).fetchone(),
+        "a pair": conn.execute("SELECT ?", ("a\U0001f600b",)).fetchone(),
+    }
+    assert bound == {
+        "by position": ("a\ufffdb", 1),
+        "by name": ("a\ufffdb", None),
+        "a pair": ("a\U0001f600b",),
+    }

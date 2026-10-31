@@ -291,7 +291,10 @@ def test_configuration_page_names_exactly_the_settings():
     assert sorted(rows) == sorted(expected)
     stated = re.search(r"There are (\w+), and this page is all of them", page)
     assert stated, "the page no longer says how many settings there are"
-    words = "zero one two three four five six seven eight nine ten eleven twelve".split()
+    words = (
+        "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+        " fifteen sixteen seventeen eighteen nineteen twenty"
+    ).split()
     assert stated.group(1) == words[len(expected)], stated.group(1)
 
 

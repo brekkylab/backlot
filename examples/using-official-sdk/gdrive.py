@@ -199,7 +199,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
     docs = docs_as(author, s.base_url)
     made = docs.documents().create(body={"title": "Launch checklist"}).execute()
     doc_id = made["documentId"]
-    print(f"\nCreated '{made['title']}' ({doc_id}) with {len(made['tabs'])} tab")
+    print(f"\nCreated '{made['title']}' ({doc_id}) with {len(made['tabs'])} tab(s)")
     read = docs.documents().get(documentId=doc_id).execute()
     text = "".join(
         el["textRun"]["content"]

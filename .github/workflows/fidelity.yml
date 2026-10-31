@@ -105,9 +105,12 @@ jobs:
 
       # backlot/data/jira_unserved.json is written from Jira's documents, so a change to them makes
       # it stale, and that is this schedule's to find rather than a pull request's. The tests catch
-      # a baseline the file was not rewritten after, which needs no network. A stale table, its
-      # exit 1, goes on this source's issue below with the comparison's report. Its exit 2, a
-      # document it could not read, leaves the issue as it was.
+      # a baseline the file was not rewritten after, which needs no network. The check's exit 1, a
+      # stale file or an operation the documents, the baseline and the script's own lists disagree
+      # on, goes on this source's issue below with the comparison's report and fails the run. Its
+      # exit 2, a document it could not read, is a warning that writes nothing to the issue and
+      # leaves the run green. Its exit 3, any other exception, is the script's to fix rather than a
+      # blip, so it writes nothing to the issue and fails the run.
       - name: Check the table written from Jira's documents
         id: table
         if: matrix.source == 'jira'
@@ -139,15 +142,16 @@ jobs:
           cat report.txt
           exit 1
 
-      # On a divergence, a fragment the script above names, or a stale table. A run where the
-      # comparison, the script or the table check could not answer leaves the issue as it was,
-      # rather than rewrite the body without that one's findings.
+      # On a divergence, a fragment `scripts/linear_sdk_fragments.py` names, or the table check's
+      # exit 1. A run where the comparison or either script could not answer leaves the issue as it
+      # was, rather than rewrite the body without that one's findings.
       - name: Report the divergence on this source's issue
         if: >-
           (steps.diff.outputs.status == '1' || steps.fragments.outputs.status == '1' || steps.table.outputs.status == '1')
           && (steps.diff.outputs.status == '0' || steps.diff.outputs.status == '1')
           && steps.fragments.outputs.status != '2'
           && steps.table.outputs.status != '2'
+          && steps.table.outputs.status != '3'
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE: ${{ matrix.source }}
@@ -206,7 +210,7 @@ jobs:
             intro="\`scripts/linear_sdk_fragments.py\`, run over the newest \`@linear/sdk\`, names each fragment that selects a field the schema Backlot serves does not declare (its docstring says which fragments it checks). It keeps no baseline: a line goes away once \`backlot/graphql/linear.graphql\` declares the field. "
           fi
           if [ "$TABLE_STATUS" = 1 ]; then
-            intro="${intro}\`scripts/gen_jira_unserved.py --check\` reports when \`backlot/data/jira_unserved.json\` is stale; run \`python scripts/gen_jira_unserved.py\` to regenerate it. "
+            intro="${intro}\`scripts/gen_jira_unserved.py --check\` builds \`backlot/data/jira_unserved.json\` from Jira's documents and the baseline, and found the file stale or could not build it; what it printed, below, says which. "
           fi
           if [ "$DIFF_STATUS" = 1 ]; then
             intro="$intro\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge, or entries in it for divergences the vendor no longer has. Each new one is either a bug in Backlot or a deliberate gap; \`backlot diff --source $SOURCE --update-baseline\` writes the entry for a gap and drops a stale one, and a note saying why a gap is deliberate is added by hand in the review that follows. "
@@ -232,4 +236,5 @@ jobs:
           steps.diff.outputs.status == '1'
           || (steps.fragments.outputs.status != '' && steps.fragments.outputs.status != '0')
           || steps.table.outputs.status == '1'
+          || steps.table.outputs.status == '3'
         run: exit 1

@@ -624,7 +624,8 @@ def printable_reading(scope: Scope) -> dict[str, object] | None:
     list, where `objects;x/contacts/nope` was the gateway's 404 page; a `#` on S3's buckets, in the
     path and in the query, where `?max-keys=1#x` drew the 400 naming `1#x` that `?max-keys=1%23x`
     drew; and a broken escape in a name or a value of HubSpot's query, on `contacts`,
-    `contacts/nope` and `owners`."""
+    `contacts/nope` and `owners`, where one beside `Accept: text/plain` drew the 406 that `Accept`
+    draws."""
     path, raw = scope["path"], scope["raw_path"]
     reading: dict[str, object] = {}
     sent = scope.get(WITH_A_FRAGMENT)

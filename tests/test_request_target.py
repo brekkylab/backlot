@@ -490,8 +490,8 @@ _PRINTABLE = [
             *(b"nope\x01y{x", b"nope{y\x01x", b"nope\xc3\xa9y{x", b"nope{x?b=\x01"),
         )
     ),
-    # Google: a `\` in the path a `/`, and on Drive a `+` in the path a space and a `#` the end of the
-    # target
+    # Google: a `\` in the path a `/`, and on Drive a `+` in the path a space and a `#` the end of
+    # the target
     ("/drive/v3/files/", b"nope+x", "as nope%20x"),
     ("/drive/v3/files/", b"nope++x", "as nope%20%20x"),
     ("/drive/v3/files/", b"nope+x/permissions", "as nope%20x/permissions"),
@@ -598,6 +598,7 @@ def _rows():
         ("/hubspot/crm/v3/objects/contacts/", b"nope%x", "cloudflare page", b""),
         ("/hubspot/crm/v3/objects/contacts/", b"nope%", "hubspot error page", b""),
         ("/hubspot/crm/v3/objects/", b"contacts?b=%x", 401, b""),
+        ("/hubspot/crm/v3/objects/", b"contacts?b=%x", 406, b"Accept: text/plain\r\n"),
         ("/slack/api/", b"nope%x", "slack apache", b""),
         ("/slack/api/", b"auth.test?b=1#x", "slack empty", b""),
         ("/notion/v1/", b"nope%x", "cloudflare page", b""),

@@ -66,7 +66,7 @@ try:
         except Exception:  # noqa: BLE001
             time.sleep(0.1)
     health = json.loads(urllib.request.urlopen(f"{base}/health").read())
-    print(f"\nserving {health['documents']} docs at {base}")
+    print(f"\nserving {health['documents']} doc(s) at {base}")
     print(f"  by source: {health['by_source']}")
     print("\nPress Ctrl+C to stop.")
     proc.wait()  # keep serving until the server exits or Ctrl+C

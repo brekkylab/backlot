@@ -2711,11 +2711,9 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
     with no `x-ratelimit-*`.
 
-    On the three refused rows under `/agents`, the version is read by no caller: a maintainer's
-    live calls answered a token that resolves the same 404 with `1999-01-01` pinned as without it,
-    and no answer of the family carried the echo (see `backlot.routers.github.honours_api_version`),
-    so those rows' answers here carry no echo and a pinned unknown version is no 400, the five
-    `x-ratelimit-*` on the answers as before.
+    On the three refused rows under `/agents` no version is read
+    (`backlot.routers.github.honours_api_version`): their answers carry no echo, and a pinned
+    unknown version is no 400 and keeps the five `x-ratelimit-*`.
     """
     c, _ = gh_client
     url = path.format(org=gh_org)
@@ -2759,11 +2757,9 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert r.status_code == answered, headers
         assert any(name.startswith("x-ratelimit-") for name in r.headers), headers
         if agents:
-            # The version is read by nobody on the `/agents` answers (a maintainer's live calls:
-            # the same 404 with `1999-01-01` pinned as without it, and no echo on any of the
-            # family's answers — see `backlot.routers.github.honours_api_version`), so the echo
-            # is off here and a pinned unknown version is no 400: the answer is the same 404, the
-            # five `x-ratelimit-*` with it as before.
+            # No version is read on an `/agents` path
+            # (`backlot.routers.github.honours_api_version`): no echo, and a pinned unknown version
+            # is the same answer with the five `x-ratelimit-*`.
             assert "x-github-api-version-selected" not in r.headers, headers
             unversioned = c.request(method, url, headers={**headers, **bad_version})
             assert unversioned.status_code == answered, headers

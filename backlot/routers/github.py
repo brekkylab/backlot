@@ -207,11 +207,12 @@ def honours_api_version(request: Request) -> bool:
     same `1999-01-01` with no credential is a 400 on `/repos/psf/requests`, `/users/psf` and
     `/user/repos` (measured against api.github.com 2026-09-21, on cache-busted urls).
 
-    The agent paths read it from nobody: a maintainer's live calls of 2026-10-28 answered a token
-    that resolves the same 404 on four `/agents/...` operations with `1999-01-01` pinned as
-    without it, and carried `X-GitHub-Api-Version-Selected` on none of their answers, so no
-    `/agents` answer here echoes a version and the version's 400 does not run on one (see
-    :func:`_an_agent_path` for how much of the path space that is).
+    The agent paths read it from nobody: measured against api.github.com on 2026-10-28, a token
+    that resolves was answered the same 404 on four `/agents/...` operations,
+    `GET /agents/automations/1/tasks`, a repository's automations one by id and its tasks, and an
+    agent-merge `GET`, with `1999-01-01` pinned as without it, and none of their answers carried
+    `X-GitHub-Api-Version-Selected`. So no `/agents` answer here echoes a version and the version's
+    400 does not run on one (see :func:`_an_agent_path` for how much of the path space that is).
     """
     if _an_agent_path(request.scope["path"]):
         return False
@@ -622,14 +623,9 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     version: on 2026-10-25 the base64 of `x:ghp_<36 A>`, with and without `1999-01-01`, was that 401
     on ten operations, `DELETE /installation/token` and `PATCH /repos/{owner}/{repo}` among them.
 
-    On the agent paths the version runs for nobody it reaches: a maintainer's live calls of
-    2026-10-28 answered a token that resolves the same 404 on four `/agents/...` operations with
-    `1999-01-01` pinned as without it, and no answer of theirs carried the echo — the four being
-    `GET /agents/automations/1/tasks`, a repository's automations one by id and its tasks, and an
-    agent-merge `GET` (:func:`under_an_agent_family`'s note has the families). So
-    :func:`_validate_api_version` does not run here on an agent path (:func:`honours_api_version`
-    leaves it False for the whole of `/agents`), and the 404 the router answers for the token
-    carries no echo, nor does :func:`_require`'s 401 for a `Basic` value that names no token.
+    On an agent path no version is read (:func:`honours_api_version`), so
+    :func:`_validate_api_version` does not run here on one, and the 404 the router answers for a
+    token carries no echo, nor does :func:`_require`'s 401 for a `Basic` value that names no token.
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return

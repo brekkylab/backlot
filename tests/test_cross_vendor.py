@@ -773,6 +773,7 @@ _NEWLINE_ENDS = [
     ("GET", "/atlassian/wiki/rest/api/space", "", 404),
     ("GET", "/atlassian/wiki/rest/api/content", "", 404),
     ("GET", "/atlassian/wiki/rest/api/search", "cql=type%3Dpage", 404),
+    ("GET", "/atlassian/wiki/rest/api/search", "cql=space.key%3D%22a%27b%22", 404),
     ("GET", "/github/rate_limit", "", 404),
     ("GET", "/notion/v1/users", "", 400),
     ("POST", "/linear/graphql", "", 404),

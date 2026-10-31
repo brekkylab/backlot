@@ -31,9 +31,11 @@ def _to_the_end_of_the_path(compile_path):
     `search` and a newline, Notion's `users/me%0A` its 400 for a user id that is no UUID;
     Confluence's was a 404 too. On 2026-10-30 one such path on each of those hosts drew the same
     answer with `%0D` in place of the `%0A`, and Confluence's was its web app's page titled
-    `Page Not Found`, both ways. Patched here, ahead of every vendor router, because each route is
-    compiled when its router is built, and the copy FastAPI makes of it when the app includes the
-    router is compiled again (``fastapi.routing``'s own name for the function)."""
+    `Page Not Found`, both ways. On 2026-10-31 Confluence's `search%0A` was its JSON 404
+    `null for uri`, sent with a CQL the search reads or with one it refuses
+    (``errors.atlassian.cql_not_parsed``). Patched here, ahead of every vendor router, because each
+    route is compiled when its router is built, and the copy FastAPI makes of it when the app
+    includes the router is compiled again (``fastapi.routing``'s own name for the function)."""
 
     @functools.wraps(compile_path)
     def compile_to_the_end(path: str):

@@ -209,6 +209,8 @@ _WRONG_METHOD_ROWS = [
     ("OPTIONS", "/notion/v1/users/me", 400),
     ("TRACE", "/notion/v1/users/me", 405),
     ("TRACE", "/notion/v1/nope", 405),
+    ("TRACE", "/notion/v1/nope%80x", 405),
+    ("TRACE", "/notion/v1/nope%C3%A9x", 405),
 ]
 
 
@@ -312,8 +314,9 @@ def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, noti
     """Pins ``backlot.errors.notion.json_media_type``, ``backlot.express_http.weak_etag`` and
     ``backlot.routers.notion.APPLICATION_HEADERS`` on 200s and refusals, a `HEAD` among them: each
     carries the charset; each but the framework's 405 for `TRACE` the `ETag` over its body, a `HEAD`
-    its `GET`'s; and each but that 405 and a refusal of the body reader
-    (``backlot.routers.notion.front_door_body``) the headers, which a body that reader leaves unread
+    its `GET`'s; and each but that 405, a refusal of the body reader
+    (``backlot.routers.notion.front_door_body``) and the 400 for a path that does not decode
+    (``backlot.routers.notion.undecodable_url``) the headers, which a body that reader leaves unread
     gets too. The OpenAPI document and the app's own routes keep `application/json` and carry none
     of the headers."""
     # two answers real sent, kept whole, the second's length counted in bytes, not characters
@@ -385,6 +388,9 @@ def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, noti
             refused,
         ),
         ("POST", "/notion/v1/search", {**notion_h, "Content-Type": "text/plain"}, b"{", 200, app),
+        # ``backlot.routers.notion.undecodable_url``'s refusal
+        ("GET", "/notion/v1/nope%80x", notion_h, None, 400, refused),
+        ("GET", "/notion/v1/users/nope%80x", notion_h, None, 400, refused),
     ]
     for method, path, headers, body, status, sent in rows:
         r = client.request(method, path, headers=headers, content=body)
@@ -2257,6 +2263,9 @@ _TOO_LARGE = {
     "code": 413,
 }
 _INVALID_JSON = "Error parsing JSON body."
+_UNDECODABLE = "Failed to decode url."
+_BAD_URL = "Invalid request URL."
+_NO_TOKEN = {"Authorization": None}
 _JSON = {"Content-Type": "application/json"}
 _LONE_HIGH = chr(0xD83D)
 _EMOJI = "%F0%9F%98%80"
@@ -3215,6 +3224,30 @@ _REQUEST_ROWS = [
         _INVALID_JSON,
     ),
     ("invalid JSON on a GET", "GET", "/users", "", b"{", _JSON, 400, _INVALID_JSON),
+    # the path ``backlot.routers.notion.undecodable_url`` refuses, after the body and ahead of the
+    # credential, where one whose escapes decode is a URL like any other
+    *[
+        (f"undecodable {escape}", "GET", f"/nope{escape}x", "", None, {}, 400, _UNDECODABLE)
+        for escape in ("%80", "%e9", "%C3", "%C0%80", "%E2%82", "%ED%A0%80", "%F4%90%80%80")
+    ],
+    ("undecodable on a route", "GET", "/users%80", "", None, {}, 400, _UNDECODABLE),
+    ("undecodable in an id", "GET", "/users/nope%80x", "", None, {}, 400, _UNDECODABLE),
+    ("undecodable in a page id", "GET", "/pages/nope%80x", "", None, {}, 400, _UNDECODABLE),
+    ("undecodable beside %01", "GET", "/users/nope%01%80x", "", None, {}, 400, _UNDECODABLE),
+    *[
+        (f"undecodable {path}, no token", "GET", path, "", None, _NO_TOKEN, 400, _UNDECODABLE)
+        for path in ("/nope%80x", "/users/nope%80x")
+    ],
+    *[
+        (f"invalid JSON at {path}{who}", "POST", path, "", b"{", headers, 400, _INVALID_JSON)
+        for path, who, headers in [
+            ("/search%80", "", _JSON),
+            ("/nope%80x", ", no token", {**_JSON, **_NO_TOKEN}),
+            ("/nope%C3%A9x", "", _JSON),
+        ]
+    ],
+    ("a decoding escape", "GET", "/nope%C3%A9x", "", None, {}, 400, _BAD_URL),
+    ("a decoding escape on a route", "GET", "/users%C3%A9", "", None, {}, 400, _BAD_URL),
     (
         "invalid JSON ahead of an unknown data source",
         "POST",
@@ -4394,7 +4427,7 @@ def test_notion_reads_a_request_as_real_does(client, notion_h):
         "page": _RUNBOOK,
         "ds": synth.notion_data_source_id("nt-tasks-db"),
         "db": synth.notion_id("nt-tasks-db"),
-        "user": client.get("/notion/v1/users", headers=notion_h).json()["results"][0]["id"],
+        "user": synth.notion_user_id("ava@acme.com"),
         "rand": _RAND,
     }
     answered, wanted = {}, {}

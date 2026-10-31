@@ -974,6 +974,94 @@ def test_s3_an_unsigned_request_is_an_anonymous_caller_who_sees_no_bucket(
     assert signed.status_code == 200
 
 
+_INVALID_URI = ("InvalidURI", "Couldn't parse the specified URI.")
+_INVALID_BUCKET = ("InvalidBucketName", "The specified bucket is not valid.")
+_NO_SUCH_BUCKET = ("NoSuchBucket", "The specified bucket does not exist")
+
+# Real's answer to a path it cannot read (``backlot.routers.s3.path_refusal``), each row sent with
+# no credential, and beside them buckets it reads on to their 404: code, message and the members
+# between the message and `<RequestId>`. A `HEAD` row's `None` is the status with no body, framed
+# as ``backlot.routers.s3._head`` frames it.
+# fmt: off
+_PATH_REFUSAL_ROWS = [
+    *[
+        ("GET", f"/no-such-bucket/nope{escape}x", 400, _INVALID_URI,
+         f"<URI>/no-such-bucket/nope{escape}x</URI>")
+        for escape in ("%80", "%e9", "%C3", "%C0%80", "%E2%82", "%ED%A0%80", "%F4%90%80%80")
+    ],
+    ("GET", "/no-such-bucket/nope%01%80x", 400, _INVALID_URI,
+     "<URI>/no-such-bucket/nope%01%80x</URI>"),
+    ("GET", "/no-such-bucketnope%80x", 400, _INVALID_URI, "<URI>/no-such-bucketnope%80x</URI>"),
+    # A bucket refused and a key that does not decode: the key's refusal.
+    ("GET", "/nope%C3%A9x/k%80", 400, _INVALID_URI, "<URI>/nope%C3%A9x/k%80</URI>"),
+    ("GET", "/nope%C3%A9%80x", 400, _INVALID_URI, "<URI>/nope%C3%A9%80x</URI>"),
+    *[
+        (method, "/no-such-bucket/nope%80x", 400, _INVALID_URI,
+         "<URI>/no-such-bucket/nope%80x</URI>")
+        for method in ("PUT", "DELETE", "POST", "PATCH", "OPTIONS")
+    ],
+    ("HEAD", "/no-such-bucket/nope%80x", 400, None, None),
+    ("GET", "/nope%21x", 400, _INVALID_BUCKET, "<BucketName>nope!x</BucketName>"),
+    ("GET", "/nope!x/k", 400, _INVALID_BUCKET, "<BucketName>nope!x</BucketName>"),
+    ("GET", "/nope%2Bx", 400, _INVALID_BUCKET, "<BucketName>nope+x</BucketName>"),
+    ("GET", "/nope+x/k", 400, _INVALID_BUCKET, "<BucketName>nope x</BucketName>"),
+    ("GET", "/nope%25x", 400, _INVALID_BUCKET, "<BucketName>nope%x</BucketName>"),
+    ("GET", "/nope%26x", 400, _INVALID_BUCKET, "<BucketName>nope&amp;x</BucketName>"),
+    ("GET", "/nope%3Cx", 400, _INVALID_BUCKET, "<BucketName>nope&lt;x</BucketName>"),
+    ("GET", "/nope%3Fx", 400, _INVALID_BUCKET, "<BucketName>nope?x</BucketName>"),
+    ("GET", "/nope%2Cx/k", 400, _INVALID_BUCKET, "<BucketName>nope,x</BucketName>"),
+    ("GET", "/nope%C3%A9x", 400, _INVALID_BUCKET, "<BucketName>nope\u00e9x</BucketName>"),
+    ("GET", "/nope%C2%A0x", 400, _INVALID_BUCKET, "<BucketName>nope\u00a0x</BucketName>"),
+    *[
+        (method, "/nope%21x", 400, _INVALID_BUCKET, "<BucketName>nope!x</BucketName>")
+        for method in ("PUT", "DELETE", "POST", "PATCH", "OPTIONS")
+    ],
+    ("HEAD", "/nope%21x", 400, None, None),
+    ("HEAD", "/nope%C3%A9x", 400, None, None),
+    ("GET", "/nope%2Dx", 404, _NO_SUCH_BUCKET, "<BucketName>nope-x</BucketName>"),
+    ("GET", "/nope%2Ex", 404, _NO_SUCH_BUCKET, "<BucketName>nope.x</BucketName>"),
+    ("GET", "/nope%30x", 404, _NO_SUCH_BUCKET, "<BucketName>nope0x</BucketName>"),
+    ("GET", "/nope%39x", 404, _NO_SUCH_BUCKET, "<BucketName>nope9x</BucketName>"),
+    ("GET", "/nope%41x", 404, _NO_SUCH_BUCKET, "<BucketName>nopeAx</BucketName>"),
+    ("GET", "/nope%5Ax", 404, _NO_SUCH_BUCKET, "<BucketName>nopeZx</BucketName>"),
+    ("GET", "/nope%5Fx", 404, _NO_SUCH_BUCKET, "<BucketName>nope_x</BucketName>"),
+    ("GET", "/nope%61x", 404, _NO_SUCH_BUCKET, "<BucketName>nopeax</BucketName>"),
+    ("GET", "/nope%7Ax", 404, _NO_SUCH_BUCKET, "<BucketName>nopezx</BucketName>"),
+    ("GET", "/nope%2Fx", 404, _NO_SUCH_BUCKET, "<BucketName>nope</BucketName>"),
+    ("GET", "/no-such-bucket/nope%C3%A9x", 404, _NO_SUCH_BUCKET,
+     "<BucketName>no-such-bucket</BucketName>"),
+    ("GET", "/no-such-bucket/nope%3Fx", 404, _NO_SUCH_BUCKET,
+     "<BucketName>no-such-bucket</BucketName>"),
+]
+# fmt: on
+
+
+@pytest.mark.parametrize(
+    "method, path, status, error, members",
+    _PATH_REFUSAL_ROWS,
+    ids=[f"{r[0]}-{r[1]}" for r in _PATH_REFUSAL_ROWS],
+)
+def test_s3_a_path_real_cannot_read_is_refused_before_its_bucket(
+    live_server, method, path, status, error, members
+):
+    """Its own table for the method and the path each row varies, with no credential."""
+    import httpx
+
+    base_url, _ = live_server
+    r = httpx.request(method, f"{base_url}/s3{path}")
+    if error is None:
+        framing = (r.headers.get("content-type"), r.headers.get("transfer-encoding"))
+        assert (r.status_code, r.content, "content-length" in r.headers, framing) == (
+            status,
+            b"",
+            False,
+            ("application/xml", "chunked"),
+        )
+        return
+    named = re.search(r"<Code>([^<]+)</Code><Message>([^<]*)</Message>(.*)<RequestId>", r.text)
+    assert (r.status_code, (named[1], named[2]), named[3]) == (status, error, members)
+
+
 def test_s3_a_signature_mismatch_names_what_this_server_signed(live_server):
     """Real names the access key, the string it signed, the signature sent and the canonical
     request, the two strings as bytes too, in that order (measured 2026-09-29). Here they are what

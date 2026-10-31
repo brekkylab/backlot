@@ -701,6 +701,7 @@ _RUNS = [
             "report_notion_cors",
             "report_notion_etag",
             "read_a_notion_body_as_express_does",
+            "refuse_a_notion_path_that_does_not_decode",
             "report_notion_headers",
         ],
         id="notion",
@@ -729,10 +730,32 @@ _RUNS = [
         id="jira",
     ),
     pytest.param("GET", "/drive/v3/about", {}, [], id="drive"),
+    pytest.param("GET", "/drive/v3/about?fields=kind", {}, [], id="drive query"),
     pytest.param(
         "HEAD", "/drive/v3/about", {}, ["answer_head_as_the_get_without_its_body"], id="drive HEAD"
     ),
-    pytest.param("GET", "/s3/", {}, ["answer_s3_with_request_ids"], id="s3"),
+    pytest.param(
+        "GET",
+        "/drive/v3/about?fields=a%80b",
+        {},
+        ["read_a_drive_or_editor_query_as_google_does"],
+        id="drive escape",
+    ),
+    pytest.param(
+        "GET",
+        "/docs/v1/documents/nope?fields=a%80b",
+        {},
+        ["read_a_drive_or_editor_query_as_google_does"],
+        id="docs escape",
+    ),
+    pytest.param("GET", "/gmail/v1/users/me/profile?fields=a%80b", {}, [], id="gmail escape"),
+    pytest.param(
+        "GET",
+        "/s3/",
+        {},
+        ["answer_s3_with_request_ids", "refuse_an_s3_path_real_cannot_read"],
+        id="s3",
+    ),
     pytest.param("GET", "/hubspot/crm/v3/objects/contacts", {}, [], id="hubspot"),
     pytest.param("POST", "/linear/graphql", {}, [], id="linear"),
     pytest.param(

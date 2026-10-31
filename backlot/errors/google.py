@@ -228,6 +228,12 @@ def permission_denied() -> GoogleError:
     )
 
 
+def bad_request() -> GoogleError:
+    """Drive's 400 for a path it cannot read, which names nothing and carries no `status`: measured
+    on 2026-10-30, 199 bytes indented."""
+    return GoogleError(400, "Bad Request", reason="badRequest")
+
+
 def not_found_entity() -> GoogleError:
     """The not-found every API other than Drive gives: no id, no location."""
     return GoogleError(

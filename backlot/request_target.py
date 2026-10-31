@@ -544,16 +544,17 @@ def printable_answer(scope: Scope) -> Response | None:
     slack.com, where a `#` was refused in either (api.github.com's answer to a broken escape in the
     query is ``backlot.main.refuse_a_broken_escape_in_a_github_query``'s). Then each spelling of a
     broken escape, a `#` and a broken escape in either order, some of them beside `%00` or a raw
-    byte, and on slack.com, api.github.com, Notion and HubSpot some of them with no credential,
-    which drew the answer they drew with one; ``tests/test_request_target.py::_PRINTABLE`` holds the
-    cases. Notion reads nothing past a `#`, and slack.com answers `%00` beside a broken escape with
-    envoy's empty 400 (:func:`escape_answer`). On Notion and HubSpot, Cloudflare's page for a broken
-    escape or a `%00` comes ahead of its answer to a raw byte (:func:`answer`), but for a `%` or a
-    `%4` that ends the path after one, and on HubSpot a `{` beside one, which draw the raw byte's
-    empty 400; slack.com answers a raw `\\x01` ahead of a `#` or a broken escape beside it, Graph
-    gives a `\\x01` the page it gives a `"`, and S3 reads a raw byte on. The answers that do not
-    close the connection are Apache's, Jetty's and HubSpot's own: each of those was followed by an
-    answer to a second request on the same connection, and none of the others."""
+    byte, and on slack.com, Notion and HubSpot some of them with no credential, and on
+    api.github.com a `#` with none, each of which drew the answer it drew with one;
+    ``tests/test_request_target.py`` holds the cases. Notion reads nothing past a `#`, and slack.com
+    answers `%00` beside a broken escape with envoy's empty 400 (:func:`escape_answer`). On Notion
+    and HubSpot, Cloudflare's page for a broken escape or a `%00` comes ahead of its answer to a raw
+    byte (:func:`answer`), but for a `%` or a `%4` that ends the path after one, and on HubSpot a
+    `{` beside one, which draw the raw byte's empty 400; slack.com answers a raw `\\x01` ahead of a
+    `#` or a broken escape beside it, Graph gives a `\\x01` the page it gives a `"`, and S3 reads a
+    raw byte on. The answers that do not close the connection are Apache's, Jetty's and HubSpot's
+    own: each of those was followed by an answer to a second request on the same connection, and
+    none of the others."""
     path, raw_path = scope["path"], scope["raw_path"]
     sent = scope.get(WITH_A_FRAGMENT)
     sent_path = raw_path if sent is None else sent.partition(b"?")[0]

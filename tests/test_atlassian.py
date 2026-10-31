@@ -6997,7 +6997,7 @@ _OPERATION_REFUSALS = [
             ),
         )
     ),
-    # the charset Tomcat reads first (``errors.atlassian.refuse_a_confluence_media_type``)
+    # the charset Tomcat reads first (``errors.atlassian.refuse_a_confluence_charset``)
     *(
         ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, status, body)
         for ctype, status, body in (
@@ -7409,78 +7409,70 @@ def test_confluence_answers_an_operation_before_it_runs(client):
     assert _failures(_operation_refusal, _OPERATION_REFUSALS, client) == {}
 
 
-#: A charset Tomcat reads that Java cannot name, on Spring Confluence operations beyond the sixteen
-#: writes ``refuse_a_confluence_media_type`` already covers: each is the empty 500
-#: ``atlassian.refuse_a_spring_confluence_charset`` answers, ahead of the caller check, the 405 and
-#: `OPTIONS`, with a credential or without.
-_SPRING_CHARSET_500 = [
-    ("GET", "/wiki/rest/api/space", False),
-    ("GET", "/wiki/rest/api/space", True),
-    ("HEAD", "/wiki/rest/api/space", False),
-    ("OPTIONS", "/wiki/rest/api/space", False),
-    ("GET", "/wiki/rest/api/space/ENG", False),
-    ("GET", "/wiki/rest/api/content", False),
-    ("GET", "/wiki/rest/api/content", True),
-    ("GET", "/wiki/rest/api/user/current", False),
-    ("DELETE", "/wiki/rest/api/space", False),
-    ("POST", "/wiki/rest/api/space", False),
-    ("PUT", "/wiki/rest/api/space/ENG", False),
-    ("POST", "/wiki/rest/api/content/1/label", False),
+_EMPTY_CHARSET = "text/plain;charset="
+
+#: The status each kind of path answers a `Content-Type` whose charset Java cannot name
+#: (``errors.atlassian.refuse_a_confluence_charset``) with: the empty 500 wherever Confluence's
+#: Spring application answers (``atlassian.refuse_a_spring_confluence_charset``), whichever the
+#: method and with a credential or without one, and real's own answer where it does not fail the
+#: request. A ``ctype`` of two values sends the header twice, and ``"admin"`` is the admin's token.
+_SPRING_CHARSET = [
+    # a path a route serves, under its method, `HEAD`, `OPTIONS` and one it does not take
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "admin", 500),
+    ("HEAD", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("DELETE", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("POST", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/space/ENG", _EMPTY_CHARSET, None, 500),
+    ("PUT", "/wiki/rest/api/space/ENG", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/content", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/content", _EMPTY_CHARSET, "admin", 500),
+    ("POST", "/wiki/rest/api/content/1/label", _EMPTY_CHARSET, None, 500),
+    # a path an operation is published at and no route serves
+    ("GET", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    ("DELETE", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    # the product's page
+    ("GET", "/wiki/rest/api/space/ENG/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/", _EMPTY_CHARSET, None, 500),
+    # the header twice: a blank value left out, the others read joined
+    ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, ""), None, 500),
+    ("GET", "/wiki/rest/api/space", ("\t", _EMPTY_CHARSET), None, 500),
+    ("GET", "/wiki/rest/api/space", ('text/plain;charset="utf-8', '"'), None, 500),
+    ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, "text/plain"), None, 403),
+    ("GET", "/wiki/rest/api/space", ("\xa0", _EMPTY_CHARSET), None, 403),
+    # where real does not fail the request
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("POST", "/wiki/rest/api/space/abc123/permission", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api/nosuch", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/", _EMPTY_CHARSET, None, 400),
+    ("OPTIONS", "/wiki/rest/api/audit", _EMPTY_CHARSET, None, 400),
+    ("POST", "/wiki/rest/api/content/archive", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/longtask", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/nope", _EMPTY_CHARSET, None, 302),
+    ("GET", "/wiki/rest/api/search?cql=type%3Dpage", "application/json;charset=_x", None, 403),
+    ("PATCH", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 405),
+    ("GET", "/rest/api/3/serverInfo", _EMPTY_CHARSET, None, 200),
 ]
 
 
-def _spring_charset_500(client, admin_h, method, vendor_path, credential):
-    headers = {"Content-Type": "text/plain;charset="}
-    if credential:
-        headers = {**headers, **admin_h}
+def _spring_charset(client, admin_h, method, vendor_path, ctype, authorization, status):
+    ctypes = (ctype,) if isinstance(ctype, str) else ctype
+    headers = [("Content-Type", value) for value in ctypes]
+    if authorization is not None:
+        token = admin_h["Authorization"] if authorization == "admin" else authorization
+        headers.append(("Authorization", token))
     body = b"x" if method in ("POST", "PUT") else None
-    r = client.request(method, f"/atlassian{vendor_path}", headers=headers, content=body)
-    assert (r.status_code, r.content, r.headers.get("content-type")) == (500, b"", None)
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
+    assert r.status_code == status, r.text[:200]
+    if status == 500:
+        assert (r.content, r.headers.get("content-type")) == (b"", None)
 
 
-def test_confluence_spring_charset_java_cannot_name_is_empty_500(client, admin_h):
-    """Every Spring Confluence operation answers `text/plain;charset=` with the empty 500
-    ``errors.atlassian.refuse_a_confluence_charset`` names, not the caller check or a 405
-    (``atlassian.refuse_a_spring_confluence_charset``)."""
-    assert _failures(_spring_charset_500, _SPRING_CHARSET_500, client, admin_h) == {}
-
-
-_SPRING_CHARSET_LEFT_ALONE = [
-    ("PATCH", "/wiki/rest/api/space", "text/plain;charset=", False, 405, "gateway"),
-    (
-        "GET",
-        "/wiki/rest/api/search?cql=type%3Dpage",
-        "application/json;charset=_x",
-        False,
-        403,
-        "jaxrs",
-    ),
-    ("GET", "/wiki/rest/api/space/ENG/nope", "text/plain;charset=", False, 404, "html"),
-    ("GET", "/rest/api/3/serverInfo", "text/plain;charset=", False, 200, "jira"),
-]
-
-
-def _spring_charset_left_alone(
-    client, admin_h, method, vendor_path, ctype, credential, status, kind
-):
-    headers = {"Content-Type": ctype}
-    if credential or kind == "jira":
-        headers = {**headers, **admin_h}
-    r = client.request(method, f"/atlassian{vendor_path}", headers=headers)
-    assert r.status_code == status, (kind, r.status_code, r.text[:200])
-    if kind == "gateway":
-        assert "openresty" in r.text or "405" in r.text
-    elif kind == "jaxrs":
-        assert r.status_code == 403
-        assert r.content != b"" or r.headers.get("content-type") is not None
-    elif kind == "html":
-        assert r.text == errors_atlassian.HTML_NOT_FOUND
-    elif kind == "jira":
-        assert r.headers.get("content-type") is not None
-
-
-def test_confluence_spring_charset_leaves_jaxrs_html_gateway_and_jira(client, admin_h):
-    assert _failures(_spring_charset_left_alone, _SPRING_CHARSET_LEFT_ALONE, client, admin_h) == {}
+def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client, admin_h):
+    assert _failures(_spring_charset, _SPRING_CHARSET, client, admin_h) == {}
 
 
 @pytest.mark.parametrize(

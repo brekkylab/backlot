@@ -4187,39 +4187,39 @@ def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Respo
 
 
 def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
-    """The empty 500 a Spring Confluence operation answers a charset Java cannot name
-    (``errors.atlassian.refuse_a_confluence_charset``), or None. Asked ahead of routing so a served
-    route, a published operation, an `OPTIONS` and a 405 answer it alike. JAX-RS paths
-    (:data:`_CONFLUENCE_JAXRS`, :data:`_CONFLUENCE_JAXRS_GETS`, the CQL search) and paths the
-    product's page answers (:func:`_confluence_serves_html`) are left alone. Measured on Confluence
-    Cloud on 2026-10-19.
+    """The empty 500 Confluence answers a charset Java cannot name
+    (``errors.atlassian.refuse_a_confluence_charset``) wherever its Spring application answers the
+    path, or None. That is each path an operation is published at (the baseline's and
+    :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT`), whichever method reaches it (`OPTIONS` and the 405s
+    among them), and the product's page under `/wiki/rest/` (:func:`_confluence_serves_html`).
+    Jersey's paths (the CQL search, :data:`_CONFLUENCE_JAXRS`, :data:`_CONFLUENCE_JAXRS_GETS` and
+    its 404) answer the header with Tomcat's 400 page instead, and a Basic value Tomcat cannot read
+    is left alone, since real answers it with Tomcat's 401 first.
+
+    Measured on Confluence Cloud on 2026-10-31 with `text/plain;charset=` and no credential: of the
+    147 operations the baseline lists or :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT` names, the 102
+    Spring ones answered the 500 and the 45 JAX-RS ones the 400 page, and `OPTIONS` at each of
+    their 97 paths, and a method none of them publishes at the 95 paths that have one, answered as
+    the path's operations did. Of the paths no operation names, `space/{key}/nope`,
+    `content/{id}/nope`, `/wiki/rest/api`, `/wiki/rest/` and `/wiki/rest/nope` answered the 500, and
+    `/wiki/rest/api/` and `/wiki/rest/api/nosuch` the 400 page. With `Basic !!!` beside it, `GET`,
+    `HEAD`, `OPTIONS` and `DELETE` at `space`, `POST space/{key}/permission` and
+    `GET space/{key}/nope` answered the 401.
     """
-    path = request.scope["path"]
-    if not errors_atlassian.is_confluence(path):
-        return None
-    routed = re.sub("/{2,}", "/", path).rstrip("/")
-    if routed == errors_atlassian.PREFIX:
-        return None
-    vendor_path = _vendor_path(routed)
-    if not vendor_path.startswith("/wiki/rest/api"):
-        return None
-    if vendor_path == "/wiki/rest/api/search" or vendor_path.startswith("/wiki/rest/api/search/"):
+    vendor_path = _vendor_path(request.scope["path"])
+    # with its trailing slash, which the routed path has lost: `/wiki/rest/api/` is Jersey's 404
+    # where `/wiki/rest/api` is the page
+    sent = _vendor_path(_echoed_path(request))
+    if not sent.startswith("/wiki/rest/"):
         return None
     if _is(_CONFLUENCE_JAXRS, None, vendor_path) or _is(_CONFLUENCE_JAXRS_GETS, None, vendor_path):
         return None
-    method = request.method
-    scope = (
-        request.scope
-        if routed == path
-        else {**request.scope, "path": routed, "raw_path": routed.encode()}
-    )
-    matched = any(route.matches(scope)[0] is not Match.NONE for route in router.routes)
     spring = (
-        matched
-        or _is(_CONFLUENCE_PUBLISHED, method, vendor_path)
-        or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, method, vendor_path)
+        _is(_CONFLUENCE_PUBLISHED, None, vendor_path)
+        or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, None, vendor_path)
+        or _confluence_serves_html(sent)
     )
-    if not spring:
+    if not spring or auth.basic_credential_kind(request) == auth.BASIC_UNPARSEABLE:
         return None
     refused = errors_atlassian.refuse_a_confluence_charset(request.headers)
     if refused is None:

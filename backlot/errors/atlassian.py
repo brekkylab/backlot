@@ -973,7 +973,7 @@ def _invalid_mime_type(value: str) -> str | None:
     `text/plain;charset=nope`, and `text/plain;a b=c;charset=nope` named the space in `a b` first.
     On 2026-10-19 a no-break space (U+00A0) at either end of the header stayed part of it:
     `text/plain` and `text/plain;charset=nope` followed by one were named for it. Not read here: a
-    charset Tomcat reads that Java takes no name for, the 500 :func:`refuse_a_confluence_media_type`
+    charset Tomcat reads that Java takes no name for, the 500 :func:`refuse_a_confluence_charset`
     gives first.
     """
     index = value.find(";")
@@ -1080,16 +1080,23 @@ def _tomcat_charset(value: str) -> str | None:
 
 
 def refuse_a_confluence_charset(headers) -> AtlassianError | None:
-    """The empty 500 a Confluence Spring operation answers a `Content-Type` whose charset Tomcat
+    """The empty 500 Confluence's Spring application answers a `Content-Type` whose charset Tomcat
     reads (:func:`_tomcat_charset`) that is no name Java takes (:data:`_JAVA_CHARSET_NAME`), an
     empty one among them, or None where Tomcat reads none or Java takes the name. Measured on
     Confluence Cloud at `POST space/{key}/permission` with no credential, `text/plain;charset=` on
     2026-10-18 and 2026-10-19, and on 2026-10-19 `application/json;charset=`, `text/plain;Charset=`,
     `text/plain;charset`, `text/plain;charset=""`, `text/plain;charset=_x` and
     `text/plain;charset=utf-8;charset=` with it, where `text/plain;charset=;x=y` and `foo;charset=`
-    were each the 415; the same 500 on every other Spring operation on 2026-10-19.
+    were each the 415.
+
+    The header sent more than once is read as its values that are not blank, joined by commas. On
+    2026-10-31 at `GET space`, `text/plain;charset=` after an empty, a space or a tab value, or
+    before an empty or a space one, was the 500, and beside `text/plain`, `text/plain;charset=nope`
+    or itself the caller's 403; `text/plain;charset="utf-8` followed by `"` was the 500, the joined
+    value's quoted charset holding the comma.
     """
-    value = (headers.get("content-type") or "").strip(" \t")
+    values = [value for value in headers.getlist("content-type") if value.strip(" \t")]
+    value = ", ".join(values).strip(" \t")
     charset = _tomcat_charset(value)
     if charset is not None and _JAVA_CHARSET_NAME.fullmatch(charset) is None:
         return AtlassianError(500, b"")
@@ -1112,12 +1119,10 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     2026-10-18). The status and the code are the same. Only a parameter named `charset` in that
     case is a charset to it (`multipart/form-data; boundary=x; Charset=bogus` is read, 2026-10-13).
 
-    Ahead of all of it, :func:`refuse_a_confluence_charset` answers the charset Tomcat reads that
-    Java cannot name.
+    A charset Tomcat reads that Java cannot name never reaches this: real fails the request first,
+    which ``backlot.routers.atlassian.refuse_a_spring_confluence_charset`` answers ahead of
+    routing.
     """
-    refused = refuse_a_confluence_charset(headers)
-    if refused is not None:
-        return refused
     value = (headers.get("content-type") or "").strip(" \t")
     media_type = _parse_media_type(value, charset_in_any_case=False) if value else None
     if media_type is not None and _takes(consumes, media_type):

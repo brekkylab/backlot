@@ -1111,14 +1111,18 @@ def _spring_failure(scope: Scope):
     return None
 
 
-@_middleware(lambda scope: errors.atlassian.is_confluence(_url_path(scope)))
+@_middleware(lambda scope: errors.atlassian.is_confluence(re.sub("/{2,}", "/", _url_path(scope))))
 async def escape_past_the_bmp_in_a_confluence_answer(request: Request, call_next):
     """Write each character past U+FFFF in a Confluence 2xx JSON answer as its two surrogate
     escapes, as real writes every one (``errors.atlassian.escape_past_bmp``).
 
-    Middleware because the 200s are built by every Confluence route, through ``JSONResponse``,
+    Middleware because each Confluence route but the search builds its 200 with ``JSONResponse``,
     which writes such a character as its UTF-8 bytes. Registered before the `HEAD` rewrite below,
-    so a `HEAD` carries the `content-length` of the GET's escaped body.
+    so a `HEAD` carries the `content-length` of the GET's escaped body, as real's `HEAD` beside each
+    such 200 did. The path is read with each run of slashes as one, as the gateway routes it, since
+    the slash rewrite runs inside this one: `//wiki/rest/api/content/{id}` and
+    `///wiki/rest/api/content/{id}` answered the page with the escapes (Confluence Cloud,
+    2026-10-31).
     """
     response = await call_next(request)
     media_type = response.headers.get("content-type") or ""

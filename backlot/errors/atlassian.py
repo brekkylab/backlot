@@ -1707,16 +1707,14 @@ def confluence_refusal(
 
 
 #: A character past the Basic Multilingual Plane, which Confluence's JSON writer reaches only
-#: as a pair of UTF-16 surrogates (:func:`_confluence_json`).
+#: as a pair of UTF-16 surrogates (:func:`escape_past_bmp`).
 _PAST_BMP = re.compile(r"[\U00010000-\U0010FFFF]")
 
 
 def _confluence_json(body: dict) -> bytes:
     """The JSON bytes of a Confluence refusal or of the CQL search's answer, written the way real
     writes them: compact and unescaped, as ``JSONResponse`` writes them, but for a character past
-    U+FFFF, which goes out as two ``\\u`` escapes, its UTF-16 surrogates in upper-case hex, where
-    ``JSONResponse`` writes its UTF-8 bytes. Decoded, the two writings are one string, so the
-    escapes are made in the dumped text, where such a character can only stand inside a string.
+    U+FFFF, which goes out as :func:`escape_past_bmp` writes it.
 
     Measured on Confluence Cloud 2026-10-21: `é` (U+00E9) named in a refused space key went out as
     its UTF-8 bytes on `space/{key}`, `content` and the label and conversion refusals, and U+1F600
@@ -1739,7 +1737,11 @@ def escape_past_bmp(written: str) -> str:
     U+1F600 and U+1D7D3 in a page's and a child page's title and storage body, and in a comment's
     body, went out as `\\uD83D\\uDE00` and `\\uD835\\uDFD3` on `content/{id}` with and without
     `expand=body.storage`, `content?spaceKey=`, `content?title=`, `content/{id}/child/page`,
-    `content/{id}/child/comment` and the search, where `é` stayed its UTF-8 bytes."""
+    `content/{id}/child/comment` and the search, where `é` stayed its UTF-8 bytes. On 2026-10-31 a
+    label holding U+1F600 went out escaped on `content/{id}/label` and `expand=metadata.labels`, a
+    space's name on `space/{key}`, `space?spaceKey=` and `content?expand=space`, and U+10000 and
+    U+10FFFD in a body as `\\uD800\\uDC00` and `\\uDBFF\\uDFFD`, where U+FFFD, U+E000 and U+2028
+    stayed their UTF-8 bytes."""
 
     def escapes(match: re.Match[str]) -> str:
         past = ord(match.group()) - 0x10000

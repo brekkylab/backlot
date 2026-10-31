@@ -341,7 +341,7 @@ _BESIDE_A_RAW_BYTE = (
     *(b"nope\ty%zzx", b"nope%zzy\tx", b"nope\xe9y%zzx", b"nope%zzx?b=\x01", b"nope%zzx?b=\xc3\xa9"),
     *(b"nope\x01y%00x", b"nope%00y\x01x", b"nope\xc3\xa9y%00x"),
 )
-#: A `%` or a `%4` that ends the target after a raw byte, which Cloudflare answers as the byte.
+#: A `%` or a `%4` that ends the target after a raw byte (``request_target.printable_answer``).
 _CUT_AFTER_A_RAW_BYTE = (b"nope\x01y%", b"nope\x01y%4", b"nope\xc3\xa9y%", b"nope\xc3\xa9y%4")
 
 # A printable character the front door reads otherwise or refuses, sent as itself, among them a `%`

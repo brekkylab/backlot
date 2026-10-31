@@ -662,12 +662,30 @@ def prototype_poisoned(value: Any) -> bool:
     return False
 
 
+def _whole_numbers_as_ints(value: Any) -> Any:
+    """``value`` with each float holding a whole number below 2**53 as an ``int``, which ``json``
+    writes with the digits ``JSON.stringify`` gives that number, where a float goes out as `2.0`.
+    graphql-core serializes a Float field's ``2`` as ``2.0``; Linear wrote `cycleDuration` `2`,
+    `position` `0` to `4` and `sortOrder` down to `-3946`, and Fireflies `date` `1789711200000`,
+    each with no fraction, on 2026-10-23. From 2**53 the double is left as it is (:func:`_int`)."""
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and abs(value) < 2**53 else value
+    if isinstance(value, dict):
+        return {key: _whole_numbers_as_ints(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_whole_numbers_as_ints(item) for item in value]
+    return value
+
+
 def node_json(value: Any) -> bytes:
     """``value`` the way ``JSON.stringify`` writes it for Express's ``res.json`` and Apollo Server:
     compact, non-ASCII as itself, and a lone surrogate as a lower-case ``\\u`` escape, which UTF-8
     cannot carry otherwise. Linear quoted half a surrogate pair back so on 2026-10-18. Sent the next
     day as an ``operationName``, in upper case or lower, one half came back so from both vendors,
     and from Linear sent as an unknown field of an input object. A float that is not finite is
-    refused, as Starlette's ``JSONResponse`` refuses one."""
-    text = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    refused, as Starlette's ``JSONResponse`` refuses one. A whole number in a float goes out with
+    no fraction (:func:`_whole_numbers_as_ints`)."""
+    text = json.dumps(
+        _whole_numbers_as_ints(value), ensure_ascii=False, allow_nan=False, separators=(",", ":")
+    )
     return node_utf8.LONE_SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", text).encode("utf-8")

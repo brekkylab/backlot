@@ -755,6 +755,24 @@ def test_node_json_refuses_a_float_that_is_not_finite(value):
         request_body.node_json({"x": value})
 
 
+@pytest.mark.parametrize(
+    ("value", "written"),
+    [
+        (2.0, "2"),
+        (-0.0, "0"),
+        (-3946.0, "-3946"),
+        (1789711200000.0, "1789711200000"),
+        (-4274.98, "-4274.98"),
+        (121.08999633789062, "121.08999633789062"),
+        (2.0**53, "9007199254740992.0"),
+    ],
+)
+def test_node_json_writes_a_whole_float_below_2_53_with_no_fraction(value, written):
+    """As ``JSON.stringify`` writes the number, for the values Linear and Fireflies answered; a
+    double from 2**53 is left as it is, as ``body._int`` leaves it."""
+    assert request_body.node_json({"x": [value]}).decode() == f'{{"x":[{written}]}}'
+
+
 def _compressed():
     """Whole gzip and deflate streams, each also cut short, with a bit flipped, and followed by
     bytes that start another member or none, and the bytes of no stream, as (gzip?, bytes)."""

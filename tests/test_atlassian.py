@@ -5886,6 +5886,22 @@ _UNCLAIMED_SEGMENTS = [
     ("/atlassian/wiki/rest/api/nope%0Ax", "*/*", "xml", "nope%0Ax"),
     # an escaped `?` beside a real query: the query is the one sent, after the path's escape
     ("/atlassian/wiki/rest/api/nope%3Fx?_=1", "application/json", "json", "nope%3Fx?_=1"),
+    # a `%` two hex digits do not follow in the query, as ``errors.atlassian.echoed_query`` spells
+    # it, and two escapes it keeps
+    *(
+        (f"/atlassian/wiki/rest/api/nope?{query}", "application/json", "json", f"nope?{echoed}")
+        for query, echoed in (
+            ("b=%x", "b=%25x"),
+            ("b=%zz", "b=%25zz"),
+            ("b=%4x", "b=%254x"),
+            ("b=%", "b=%25"),
+            ("b=%4", "b=%254"),
+            ("b=%%41", "b=%25%41"),
+            ("%x=1", "%25x=1"),
+            ("b=%2fx", "b=%2fx"),
+            ("b=%e9x", "b=%e9x"),
+        )
+    ),
 ]
 
 
@@ -6696,6 +6712,24 @@ _FRONT_DOOR_ROWS = [
     ],
     ("GET", "/rest/api/3/issue/nope%5C%80x", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("GET", "/rest/api/3/issue/nope%80%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    # and on Confluence a `[` or a `]` in the path, at a route's path and at paths no route
+    # serves, and in a query value eight of the eleven characters it refuses there, the other
+    # three being ``tests.test_request_target._PRINTABLE``'s, which the test client escapes; a
+    # broken escape in the query beside one, and a `\` in the path, which reads as a `/`
+    *[
+        ("GET", path, 400, _TOMCAT_400, _TOMCAT_PAGE)
+        for path in (
+            *("/wiki/rest/api/nope[x", "/wiki/rest/api/nope]x", "/wiki/rest/api/space[x"),
+            *("/wiki/api/v2/nope[x", "/wiki/nope[x", "/wiki/spaces[x", "/wiki/home[x"),
+            *(f"/wiki/rest/api/nope?b={c}x" for c in "[\\]^`{|}"),
+            *("/wiki/rest/api/space?b=[x", "/wiki/rest/api/search?cql=type%3Dpage&b=[x"),
+            *("/wiki/rest/api/content?b=[x", "/wiki/api/v2/pages?b=[x", "/wiki/nope?b=[x"),
+            *("/wiki/x/abc?b=[x", "/wiki/display/X?b=[x", "/wiki/people?b=[x"),
+            *("/wiki/spaces?b=[x", "/wiki/rest/api/space?b=[x&c=%x"),
+            *("/wiki/rest/api/space?c=%x&b=[x", "/wiki/rest/api/nope[y\\x"),
+            "/wiki/rest/api/space%2Fx[x",
+        )
+    ],
     # the edge's 400 for a `;`, bare or escaped in either case, wherever it stands, a `..;` the
     # firewall lets through included (the shape `Accept` picks is
     # `test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks`)
@@ -6731,15 +6765,35 @@ _FRONT_DOOR_ROWS = [
     ("PROPFIND", "/rest/api/3/issue/nope%80x", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
     ("TRACE", "/rest/api/3/issue/nope%80x", 405, _CLOUDFRONT_405, _EDGE_PAGE),
     ("PATCH", "/rest/api/3/issue/nope%80x", 400, _NGINX_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope[y%zzx", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope%zzy[x", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope[y;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope;y[x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/space;x?b=[x&", 400, _EDGE_400, _EDGE_PAGE),
+    ("PATCH", "/wiki/rest/api/nope[x", 405, _OPENRESTY_405, _EDGE_PAGE),
+    ("PATCH", "/wiki/rest/api/space?b=[x", 405, _OPENRESTY_405, _EDGE_PAGE),
+    ("PROPFIND", "/wiki/nope[x", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
     # a `HEAD` is the page's status and length with no body
     ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
     ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("HEAD", "/rest/api/3/nope;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("HEAD", "/wiki/rest/api/space?b=[x", 400, _TOMCAT_400, _TOMCAT_PAGE),
     # what none of them refuses reaches the product: a tag the firewall does not name, a
     # closing tag but `script`'s, a name short of `!doctype`, a tag in the query, a `..\` there
     # that neither a `\` nor a `/` nor the end of the value follows, a `;` there, a step in a
-    # parameter's name, a broken escape in the query, Jira's decoded slash and the web app's
-    # `spaces/` in any case
+    # parameter's name, a broken escape in the query, Jira's decoded slash, the web app's
+    # `spaces/` in any case, Jira's query holding a `[`, and the web app's pages holding one in
+    # the query, and under `spaces/` in the path too
+    ("GET", "/rest/api/3/serverInfo?b=[x", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+    *[
+        ("GET", path, 404, None, "text/html;charset=UTF-8")
+        for path in (
+            *("/wiki?b=[x", "/wiki/?b=[x", "/wiki/home?b=[x", "/wiki/HOME?b=[x"),
+            *("/wiki/home/?b=[x", "/wiki/search?b=[x", "/wiki/Search?b=[x"),
+            *("/wiki/spaces/X?b=[x", "/wiki/SPACES/X?b=[x"),
+            *("/wiki/spaces/X[x", "/wiki/SPACES/X[x", "//wiki/spaces/X[x"),
+        )
+    ],
     ("GET", "/rest/api/3/nope<img>", 404, None, errors_atlassian.PROBLEM_JSON),
     ("GET", "/rest/api/3/nope</style>", 404, None, errors_atlassian.PROBLEM_JSON),
     ("GET", "/rest/api/3/nope<!doctyp>", 404, None, errors_atlassian.PROBLEM_JSON),

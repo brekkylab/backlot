@@ -1,10 +1,11 @@
-"""The raw bytes and the escapes ``backlot.request_target`` answers, and the `Host`s
-``backlot.bracketed_host`` answers, over a real uvicorn.
+"""The raw bytes, the escapes and the printable characters ``backlot.request_target`` answers, and
+the `Host`s ``backlot.bracketed_host`` answers, over a real uvicorn.
 
-A client library percent-encodes a raw byte or refuses to send it, and the TestClient would too, so
+A client library percent-encodes a raw byte or refuses to send it, and the TestClient would too;
+the TestClient also escapes a `"`, a `<` and a `>` and leaves out a `#` and what follows it. So
 each request here is written to a socket by hand, to the server ``live_server`` starts with
 ``backlot serve``. A single-byte row names the vendor host whose measured answer it holds; a row
-of `_TARGETS`, `_ESCAPES` or `_HOSTS` names its path, measured on the host that path is.
+of `_TARGETS`, `_ESCAPES`, `_HOSTS` or `_PRINTABLE` names its path, measured on that path's host.
 """
 
 from __future__ import annotations
@@ -17,8 +18,8 @@ import urllib.parse
 
 import pytest
 
-from backlot import bracketed_host, errors, request_target
-from tests._helpers import raw_exchange, raw_request, read_answer
+from backlot import bracketed_host, errors, request_target, store
+from tests._helpers import raw_exchange, raw_request, read_answer, served_id
 
 _UTF8, _LONE = b"\xc3\xa9", b"\x80"
 _UVICORN = b"Invalid HTTP request received."
@@ -333,6 +334,148 @@ _HOSTS = [
     (b"[0:0]", b"GET", "/s3/no-such-bucket/", b"x", "served", _AWS_AUTHORIZATION),
 ]
 
+# A printable character the front door reads otherwise or refuses, sent as itself, among them a `%`
+# two hex digits do not follow and a `#` (``request_target.printable_answer`` and
+# ``request_target.printable_reading`` date the measurements,
+# ``backlot.main.refuse_a_broken_escape_in_a_github_query`` GitHub's empty 400,
+# ``errors.atlassian.echoed_spelling`` Jira's and Confluence's echo, and
+# ``errors.atlassian.front_door`` Confluence's Tomcat): (base, target after it, answer),
+# `as <target>` the answer to the base with that target after it, which is how the front door reads
+# this one.
+_PRINTABLE = [
+    # Slack: Apache's page for a broken escape in the path, envoy's empty 400 for a `#` anywhere,
+    # ahead of a broken escape and behind a raw byte, and the one `%00` draws ahead of either
+    *(
+        ("/slack/api/", rest, "slack apache")
+        for rest in (b"nope%x", b"nope%zzx", b"nope%4x", b"nope%", b"nope%4", b"auth.test%zz")
+    ),
+    ("/slack/api/", b"auth.test?b=%x", 200),
+    *(
+        ("/slack/api/", rest, "slack empty")
+        for rest in (
+            *(b"auth.test#x", b"auth.test?b=1#", b"#", b"nope#y%x", b"nope%y#x"),
+            *(b"auth.test?b=#x%", b"nope%00y#x", b"nope#y%00x", b"nope%00y%x", b"nope%y%00x"),
+        )
+    ),
+    *(
+        ("/slack/api/", rest, "slack")
+        for rest in (b"nope\x01y#x", b"nope#y\x01x", b"nope\x01y%x", b"nope%y\x01x")
+    ),
+    ("/slack/api/", b"auth.test?b=\x01y#x", "slack"),
+    # GitHub: its page for a `#` anywhere, ahead of a broken escape; the empty 400 for a broken
+    # escape in the query of a path a route serves; a broken escape in the path read on
+    *(
+        ("/github/", rest, "github")
+        for rest in (b"rate_limit#x", b"#x", b"rate_limit?b=1#x", b"rate_limit?b=1#", b"nope#")
+    ),
+    ("/github/", b"nope#y%x", "github"),
+    ("/github/", b"nope%y#x", "github"),
+    *(
+        ("/github/", rest, "github empty")
+        for rest in (
+            *(b"rate_limit?b=%x", b"rate_limit?b=%", b"rate_limit?b=%4", b"rate_limit?b=%4x"),
+            *(b"rate_limit?b=%zz", b"rate_limit?%x=1", b"rate_limit?c=1&b=%"),
+            *(b"rate_limit?c=1&b=%4", b"repos/octocat/Hello-World?b=%x"),
+        )
+    ),
+    ("/github/", b"rate_limit?b=%25x", 200),
+    *(
+        ("/github/", rest, 404)
+        for rest in (b"nope?b=%x", b"nope%x", b"nope%zzx", b"nope%", b"nope%4", b"rate_limit%x")
+    ),
+    # Graph: its page for a broken escape, a `"`, a `#`, a `<` or a `>` in the path, each read on
+    # in the query
+    *(
+        ("/msgraph/v1.0/", rest, "graph invalid url")
+        for rest in (
+            *(b'nope"x', b"nope<x", b"nope>x", b"nope#x", b"nope%x", b"nope%zzx", b"nope%4x"),
+            *(b"nope%", b"nope%4", b'me"x', b"me#x"),
+        )
+    ),
+    *(("/msgraph/v1.0/", rest, 401) for rest in (b'me?b="x', b"me?b=#x", b"me?b=%x")),
+    # S3: a `#` in the path one of its characters, and the empty 400 for a broken escape in the
+    # path, a `#` before it or after it, where one in the query is read on
+    ("/s3/", b"nope#x", "as nope%23x"),
+    ("/s3/", b"nope#x/key", "as nope%23x/key"),
+    ("/s3/no-such-bucket/", b"nope#x", "as nope%23x"),
+    *(
+        ("/s3/", rest, "s3 empty")
+        for rest in (b"nope%x", b"nope%zzx", b"nope%4x", b"nope%", b"nope%4", b"nope%y#x")
+    ),
+    ("/s3/", b"nope#y%x", "s3 empty"),
+    *(("/s3/no-such-bucket/", rest, "s3 empty") for rest in (b"nope%x", b"nope%zzx", b"nope%")),
+    ("/s3/no-such-bucket/", b"x?b=%x", 404),
+    # Notion: Cloudflare's page for a broken escape in the path but where the end of the target
+    # cuts it short, which Notion reads itself, and nothing read past a `#`
+    *(
+        ("/notion/v1/", rest, "cloudflare page")
+        for rest in (b"nope%x", b"nope%zzx", b"nope%4x", b"users%zz", b"users/me%zz", b"nope%y#x")
+    ),
+    ("/notion/v1/", b"nope%", 400),
+    ("/notion/v1/", b"nope%4", 400),
+    ("/notion/v1/", b"nope#y%x", "as nope"),
+    ("/notion/v1/", b"users?b=%x", 400),
+    # HubSpot: Cloudflare's page for a broken escape in the path, HubSpot's where the end of the
+    # target cuts it short, Jetty's for a `{` or a `}` under `/crm/v3/objects/`, behind
+    # Cloudflare's; a `;` and what follows it up to the next `/` no part of the path; a broken
+    # escape in the query dropping the credential; a `\` read as itself
+    *(
+        ("/hubspot/crm/v3/objects/contacts/", rest, "cloudflare page")
+        for rest in (b"nope%x", b"nope%zzx", b"nope%4x", b"nope{y%x", b"nope%y{x")
+    ),
+    ("/hubspot/crm/v3/objects/contacts/", b"nope%", "hubspot error page"),
+    ("/hubspot/crm/v3/objects/contacts/", b"nope%4", "hubspot error page"),
+    *(
+        ("/hubspot/crm/v3/objects/", rest, "hubspot jetty")
+        for rest in (b"contacts/nope{x", b"contacts/nope}x", b"contacts{x", b"{x/contacts")
+    ),
+    ("/hubspot/crm/v3/objects/", b"contacts/nope{y;x", "hubspot jetty"),
+    ("/hubspot/crm/v3/objects/", b"contacts?b={x", 200),
+    ("/hubspot/crm/v3/objects/contacts/", b"nope;x", "as nope"),
+    ("/hubspot/crm/v3/objects/contacts/", b"nope;x;y", "as nope"),
+    ("/hubspot/crm/v3/objects/", b"contacts;x", "as contacts"),
+    ("/hubspot/crm/v3/objects/contacts/", b";x", "as "),
+    *(
+        ("/hubspot/crm/v3/objects/", rest, 401)
+        for rest in (
+            *(b"contacts?b=%x", b"contacts?b=%", b"contacts?b=%4", b"contacts?b=%zz"),
+            *(b"contacts?b=%4x", b"contacts?%x=1", b"contacts/nope?b=%x"),
+        )
+    ),
+    ("/hubspot/crm/v3/objects/contacts/", b"nope\\x", "as nope%5Cx"),
+    # Google: a `\` in the path a `/`, and on Drive a `+` in the path a space
+    ("/drive/v3/files/", b"nope+x", "as nope%20x"),
+    ("/drive/v3/files/", b"nope++x", "as nope%20%20x"),
+    ("/drive/v3/files/", b"nope+x/permissions", "as nope%20x/permissions"),
+    ("/drive/v3/", b"files\\nope", "as files/nope"),
+    ("/drive/v3", b"\\about", "as /about"),
+    ("/drive", b"\\v3/about", "as /v3/about"),
+    ("/drive/v3/files/", b"nope\\x", "as nope/x"),
+    ("/gmail/v1/users/me/", b"nope\\x", "as nope/x"),
+    ("/docs/v1", b"\\documents/x", "as /documents/x"),
+    ("/docs/v1/documents", b"\\x", "as /x"),
+    ("/docs/v1/documents/", b"nope\\x", "as nope/x"),
+    ("/sheets/v4", b"\\spreadsheets/x", "as /spreadsheets/x"),
+    ("/sheets/v4/spreadsheets", b"\\x", "as /x"),
+    ("/sheets/v4/spreadsheets/", b"nope\\x", "as nope/x"),
+    ("/slides/v1/presentations/", b"nope\\x", "as nope/x"),
+    # Jira and Confluence: a `\` in the path a `/`, and eight characters echoed as their escapes
+    ("/atlassian/rest/api/3/", b"nope\\x", "as nope/x"),
+    ("/atlassian/rest/api/3/", b"nope\\\\x", "as nope/x"),
+    ("/atlassian/rest/api/", b"3\\serverInfo", "as 3/serverInfo"),
+    ("/atlassian/rest/api", b"\\3/serverInfo", "as /3/serverInfo"),
+    ("/atlassian/wiki/rest/api", b"\\space", "as /space"),
+    ("/atlassian/wiki/rest/api/", b"nope\\x", "as nope/x"),
+    *(
+        (base, b"nope%cx" % c, "as nope%%%02Xx" % c)
+        for base in ("/atlassian/rest/api/3/", "/atlassian/wiki/rest/api/")
+        for c in b'"<>^`{|}'
+    ),
+    # Confluence's Tomcat: the three of the eleven characters it refuses in a query value that the
+    # test client escapes (``tests.test_atlassian._FRONT_DOOR_ROWS`` holds the other eight)
+    *(("/atlassian/wiki/rest/api/", b"nope?b=%cx" % c, "tomcat") for c in b'"<>'),
+]
+
 
 def _rows():
     for host, (base, path, query) in _MEASURED.items():
@@ -386,6 +529,33 @@ def _rows():
         yield pytest.param(
             method, base, rest, answer, authorizations, *header or [b""], host, id=id
         )
+    for base, rest, answer in _PRINTABLE:
+        authorizations = 0 if base.startswith(_UNCREDENTIALED) else 1
+        yield pytest.param(
+            b"GET", base, rest, answer, authorizations, b"", b"x", id=f"{base} {rest!r}"
+        )
+    # with no credential, and on GitHub with a token that names no one, which real reads on past a
+    # broken escape in the query
+    for base, rest, answer, header in (
+        ("/hubspot/crm/v3/objects/contacts/", b"nope{x", "hubspot jetty", b""),
+        ("/hubspot/crm/v3/objects/contacts/", b"nope%x", "cloudflare page", b""),
+        ("/hubspot/crm/v3/objects/contacts/", b"nope%", "hubspot error page", b""),
+        ("/hubspot/crm/v3/objects/", b"contacts?b=%x", 401, b""),
+        ("/slack/api/", b"nope%x", "slack apache", b""),
+        ("/slack/api/", b"auth.test?b=1#x", "slack empty", b""),
+        ("/notion/v1/", b"nope%x", "cloudflare page", b""),
+        ("/notion/v1/", b"nope%", 400, b""),
+        ("/notion/v1/", b"nope%4", 400, b""),
+        ("/github/", b"rate_limit?b=1#x", "github", b""),
+        ("/github/", b"nope%x#y", "github", b""),
+        ("/github/", b"rate_limit?b=%x", 200, b""),
+        ("/github/", b"user?b=%x", 401, b""),
+        ("/github/", b"rate_limit?b=%x", 401, b"Authorization: token nope\r\n"),
+    ):
+        kind = "a token that names no one" if header else "no credential"
+        yield pytest.param(
+            b"GET", base, rest, answer, 0, header, b"x", id=f"{base} {rest!r} {kind}"
+        )
     # a read sent as a POST naming GET, which Google's API reads behind its front door
     override = b"X-HTTP-Method-Override: GET\r\n"
     for sent, answer in ((b"\x01", "google 54"), (b"\t", "google 1555"), (b"\x80", "encoded")):
@@ -431,6 +601,11 @@ _KEEPS_THE_CONNECTION = {
     "cloudfront 403",
     "cloudflare forbidden",
     "served",
+    "slack apache",
+    "hubspot jetty",
+    "hubspot error page",
+    "github empty",
+    "tomcat",
 }
 
 
@@ -468,6 +643,15 @@ _PAGES = {
         request_target.GRAPH_BADLY_FORMED,
     ),
     "uvicorn": (400, "text/plain; charset=utf-8", _UVICORN),
+    "slack apache": (400, "text/html; charset=iso-8859-1", request_target.SLACK_APACHE_PAGE),
+    "hubspot jetty": (400, "text/html;charset=iso-8859-1", request_target.HUBSPOT_JETTY_PAGE),
+    "hubspot error page": (400, "text/html; charset=utf-8", request_target.HUBSPOT_ERROR_PAGE),
+    "github empty": (400, None, b""),
+    "tomcat": (
+        400,
+        errors.atlassian.TOMCAT_MEDIA_TYPE,
+        errors.atlassian.tomcat_page(400).encode(),
+    ),
 }
 
 
@@ -500,6 +684,16 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
         assert status == answer
         assert body not in {page for _, _, page in _PAGES.values() if page}
         return
+    if answer.startswith("as "):  # the target the front door reads this one as
+        twin_target = base.encode() + answer.removeprefix("as ").encode()
+        twin = _send(base_url, method, twin_target, admin, authorizations, header, host)
+        assert (status, headers.get("content-type"), headers.get("connection")) == (
+            twin[0],
+            twin[1].get("content-type"),
+            twin[1].get("connection"),
+        )
+        assert _ids_left_out(base, body) == _ids_left_out(base, twin[2])
+        return
     assert headers.get("connection") == (None if answer in _KEEPS_THE_CONNECTION else "close")
     reading = answer.removesuffix(" closed").removesuffix(" kept")
     if reading in ("encoded", "encoded, cut", "?", "served"):
@@ -516,14 +710,52 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
         return
     want_status, want_type, want_body = _page(reading, method, target)
     assert (status, headers.get("content-type"), body) == (want_status, want_type, want_body)
-    # the edge's page carries the edge's two headers beside its own, CloudFront's neither
+    if answer == "github empty":
+        assert headers["vary"] == "Accept-Encoding, Accept, X-Requested-With"
+        assert "x-github-request-id" in headers
+    # the edge's page carries the edge's two headers beside its own, Tomcat's behind it the two
+    # alone, CloudFront's neither
     edge = {"x-content-type-options": "nosniff", "x-xss-protection": "1; mode=block"}
-    if answer.startswith("edge "):
+    if answer.startswith("edge ") or answer == "tomcat":
+        allow_origin = "*" if answer.startswith("edge ") else None
         assert {k: headers.get(k) for k in [*edge, "access-control-allow-origin"]} == edge | {
-            "access-control-allow-origin": "*"
+            "access-control-allow-origin": allow_origin
         }
     else:
         assert not edge.keys() & headers.keys()
+
+
+@pytest.mark.parametrize(
+    "spelled, record, made_up, outsider",
+    [
+        ("/atlassian/wiki/rest/api/content\\{}", "cf-comp", "999999999", "ava@acme.com"),
+        ("/hubspot/crm/v3/objects/companies/{};x", "hs-co-secret", "999999999", "ava@acme.com"),
+        ("/drive/v3/files\\{}", "Q1 Revenue Model", "nope", "mia@acme.com"),
+    ],
+)
+def test_a_record_an_outsider_cannot_read_is_a_made_up_id_however_the_front_door_reads_it(
+    live_server, tokens, spelled, record, made_up, outsider
+):
+    """A record named in a spelling the front door reads as another path
+    (``request_target.printable_reading``) answers a caller who cannot read it what a made-up id in
+    the same spelling answers, status and body byte for byte but for the id where the body names
+    it. The admin's 200 on the same target is the control."""
+    base_url, settings = live_server
+    if record.startswith(("cf-", "hs-")):
+        source = "confluence" if record.startswith("cf-") else "hubspot"
+        id = str(served_id(source, record))
+    else:
+        conn = store.connect_ro(settings.db_path)
+        table = store.table("google_drive")
+        id = conn.execute(f"SELECT id FROM {table} WHERE title = ?", (record,)).fetchone()["id"]
+        conn.close()
+    target = spelled.format(id).encode()
+    assert _send(base_url, b"GET", target, settings.admin_token)[0] == 200
+    hidden = _send(base_url, b"GET", target, tokens[outsider])
+    unknown = _send(base_url, b"GET", spelled.format(made_up).encode(), tokens[outsider])
+    assert hidden[0] == unknown[0] == 404
+    assert hidden[1]["content-type"] == unknown[1]["content-type"]
+    assert hidden[2].replace(id.encode(), made_up.encode()) == unknown[2]
 
 
 @pytest.mark.parametrize(

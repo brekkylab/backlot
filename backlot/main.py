@@ -1607,12 +1607,17 @@ async def refuse_a_path_cloudflare_refuses_on_linear_and_fireflies(request: Requ
 )
 async def refuse_a_broken_escape_in_a_github_query(request: Request, call_next):
     """Answer a `/github` request a route serves, whose query holds a `%` two hex digits do not
-    follow, with real's empty 400, ahead of the route, the credential and every other `/github`
-    middleware but :func:`put_a_request_id_on_github_answers`, which wraps it. api.github.com
-    answered so on 2026-10-31 (UTC) `/rate_limit` with `?b=%`, `?b=%4`, `?b=%4x`, `?b=%zz` and
-    `?%x=1`, and `/user`, `/` and a repository with `?b=%x`, with no `Content-Type` and a `Vary`
-    and a request id among its headers, and answered a second request on the same connection; it
-    answered `/nope?b=%x`, which no route serves, with its JSON 404."""
+    follow and whose credential resolves (``backlot.auth.github_credential``), with real's empty
+    400, ahead of the route and every other `/github` middleware but
+    :func:`put_a_request_id_on_github_answers`, which wraps it. api.github.com answered so on
+    2026-10-31 (UTC), with a token it accepts, `/rate_limit` with `?b=%`, `?b=%4`, `?b=%4x`,
+    `?b=%zz` and `?%x=1`, and `/user`, `/` and a repository with `?b=%x`, with no `Content-Type`
+    and a `Vary` and a request id among its headers, and answered a second request on the same
+    connection; it answered `/nope?b=%x`, which no route serves, with its JSON 404. With no
+    credential, `/rate_limit?b=%x` was its 200 and `/user?b=%x` its 401, and with a token it does
+    not accept each was the 401 `Bad credentials`: the request is read on, as it is here."""
+    if auth.acl(request).resolve(auth.github_credential(request)) is None:
+        return await call_next(request)
     return Response(
         b"", status_code=400, headers={"Vary": "Accept-Encoding, Accept, X-Requested-With"}
     )

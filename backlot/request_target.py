@@ -545,10 +545,12 @@ def printable_answer(scope: Scope) -> Response | None:
     broken escape in either order, which drew the `#`'s answer on api.github.com and slack.com and
     the broken escape's on Notion, which reads neither past a `#`, and on S3; beside `%00`, which
     slack.com answers with the same empty 400 (:func:`escape_answer`); and on HubSpot `contacts{x`,
-    `{x/contacts`, a `{` beside a broken escape, which drew Cloudflare's page in either order,
-    beside a `;`, and with no credential. The answers that do not close the connection are Apache's,
-    Jetty's and HubSpot's own: each of those was followed by an answer to a second request on the
-    same connection, and none of the others."""
+    `{x/contacts`, a `{` beside a broken escape, which drew Cloudflare's page in either order, and
+    beside a `;`. With no credential, `nope%x` and `auth.test?b=1#x` on slack.com,
+    `rate_limit?b=1#x` and `nope%x#y` on api.github.com, `nope%x`, `nope%` and `nope%4` on Notion,
+    and `nope{x`, `nope%x` and `nope%` on HubSpot each drew the answer it drew with one. The answers
+    that do not close the connection are Apache's, Jetty's and HubSpot's own: each of those was
+    followed by an answer to a second request on the same connection, and none of the others."""
     path, raw_path = scope["path"], scope["raw_path"]
     sent = scope.get(WITH_A_FRAGMENT)
     sent_path = raw_path if sent is None else sent.partition(b"?")[0]

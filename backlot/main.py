@@ -313,8 +313,10 @@ def _some_github_route_matches(scope: Scope) -> bool:
 
 def _github_routes(scope: Scope) -> bool:
     """Whether real routes this scope: some mounted route matches its path, whatever the method
-    (:func:`_some_github_route_matches`), or its method and path are an operation GitHub publishes
-    and no route here serves (``backlot.routers.github.is_an_unserved_operation``).
+    (:func:`_some_github_route_matches`), its method and path are an operation GitHub publishes
+    and no route here serves (``backlot.routers.github.is_an_unserved_operation``), or its path is
+    under an agent family (``backlot.routers.github.under_an_agent_family``), which real's agents
+    backend answers itself.
 
     A 404 for a path real does not route carries no version echo, and carries the five
     `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the same
@@ -329,8 +331,10 @@ def _github_routes(scope: Scope) -> bool:
     so what real reads here is that a credential arrived, not that one resolved, where the same
     `Basic` value, which names no token, on a route that matches is served and counted.
     """
-    return _some_github_route_matches(scope) or github.is_an_unserved_operation(
-        scope["method"], scope["path"]
+    return (
+        _some_github_route_matches(scope)
+        or github.is_an_unserved_operation(scope["method"], scope["path"])
+        or github.under_an_agent_family(scope["path"])
     )
 
 
@@ -404,16 +408,14 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
     )
 )
 async def refuse_a_credential_on_an_agent_path(request: Request, call_next):
-    """A path of one of the agent families real gates a credential on is refused for it ahead of
-    the router's 404, on any path, published or not, and a caller whose credential resolves is
-    answered there with the plain-text 404 real answers a token with
-    (``backlot.routers.github.refuse_a_credential_on_an_agent_path``).
+    """A path under one of the agent families is answered ahead of the router as real's agents
+    backend answers it (``backlot.routers.github.refuse_a_credential_on_an_agent_path``), on any
+    path, published or not; an `OPTIONS` whose credential resolves goes on to the router.
 
     Registered after `refuse_an_unserved_github_operation`, which keeps the paths an operation of
-    the baseline publishes on a family — those it refuses itself, a token among them on to the
-    router's 404 — and before the version echo and the rate-limit headers, so the refusals leave
-    through them as an unserved operation's do: no echo, the five `x-ratelimit-*` by the state
-    :func:`github.refused_an_unserved_operation_uncounted` reads, which the refusal marks.
+    the baseline publishes on a family, and before the version echo and the rate-limit headers, so
+    the answers leave through them: no echo, and the five `x-ratelimit-*` as ``_github_routes``
+    and the state :func:`github.refused_an_unserved_operation_uncounted` reads give them.
     """
     try:
         answer = await github.refuse_a_credential_on_an_agent_path(request)

@@ -2654,8 +2654,9 @@ _COUNTED_TOKEN_SHAPED = [
 #: no operation, though a parsed URL ends the first at its decoded `#` and a `missing_param` row of
 #: the baseline spells the second's path; the next is a method GitHub does not publish on a path
 #: whose `PATCH` it does, which real answered a bad bearer with its 404; the two after it are paths
-#: under `/agents/automations/{}` that real answered 404 for every credential; and the last is no
-#: GitHub request at all.
+#: under `/agents/automations/{}` that real answered 404 for every credential; the six after them
+#: are paths outside the two agent families (`backlot.routers.github.under_an_agent_family`), which
+#: real answered 404 for every credential too; and the last two are no GitHub request at all.
 _UNSERVED_ROWS = [
     ("PATCH", "/github/repos/{org}/codebase", True, 405),
     ("DELETE", "/github/repos/{org}/codebase", True, 405),
@@ -2683,7 +2684,14 @@ _UNSERVED_ROWS = [
     ("PUT", "/github/orgs/{org}", False, 405),
     ("GET", "/github/agents/automations/1/nosuch", False, 404),
     ("GET", "/github/agents/automations/x/y/z", False, 404),
+    ("GET", "/github/agents//repos/{org}/codebase/nosuch", False, 404),
+    ("GET", "/github/agents/reposx/{org}/codebase", False, 404),
+    ("GET", "/github/agents/nosuchthing", False, 404),
+    ("GET", "/github/agents", False, 404),
+    ("GET", "/github/agentsx/repos/{org}/codebase/nosuch", False, 404),
+    ("GET", "/github/agents/tas\N{KELVIN SIGN}s/1/nosuch", False, 404),
     ("GET", "/zen", False, 404),
+    ("GET", "/agents/repos/{org}/codebase/nosuch", False, 404),
 ]
 
 
@@ -2768,75 +2776,101 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
 
 
-_AGENT_FAMILY_PATHS = [
-    "/github/agents/repos/{org}/codebase/nosuch",
-    "/github/agents/repos/{org}/codebase/automations/1/nosuch",
-    "/github/agents/tasks/1/nosuch",
+#: (method, path, whether a request with no `Authorization` header is counted) on the paths
+#: `backlot.routers.github.under_an_agent_family` takes, each as real answered it on 2026-10-30.
+_AGENT_FAMILY_ROWS = [
+    ("GET", "/github/agents/repos/{org}/codebase/nosuch", True),
+    ("GET", "/github/agents/repos/{org}/codebase/automations/1/nosuch", True),
+    ("GET", "/github/agents/tasks/1/nosuch", True),
+    ("GET", "/github/agents/repos/{org}/codebase", True),
+    ("GET", "/github/agents/repos/{org}/codebase/", True),
+    ("GET", "/github/agents/repos/{org}", True),
+    ("GET", "/github/agents/repos", True),
+    ("GET", "/github/agents/tasks/", True),
+    ("GET", "/github/agents/repos/{org}//nosuch", True),
+    ("GET", "/github/Agents/repos/{org}/codebase/nosuch", True),
+    ("GET", "/github/agents/REPOS/{org}/codebase/nosuch", True),
+    ("HEAD", "/github/agents/repos/{org}/codebase/nosuch", True),
+    ("POST", "/github/agents/repos/{org}/codebase/nosuch", True),
+    ("PUT", "/github/agents/repos/{org}/codebase/nosuch", False),
+    ("PATCH", "/github/agents/repos/{org}/codebase/nosuch", False),
+    ("DELETE", "/github/agents/repos/{org}/codebase/nosuch", False),
+    ("OPTIONS", "/github/agents/repos/{org}/codebase/nosuch", False),
 ]
 
 
-@pytest.mark.parametrize("path", _AGENT_FAMILY_PATHS)
+@pytest.mark.parametrize("method, path, counted", _AGENT_FAMILY_ROWS)
 def test_github_the_agent_families_ask_for_a_credential_on_any_path(
-    gh_client, gh_admin_h, gh_org, path
+    gh_client, gh_org, method, path, counted
 ):
-    """Any path of the two agent families real gates — a repository's and the task statuses' — is
-    refused for its credential before anything answers it, published or not: no credential, a
-    `Bearer nope` and a token were 401 "Requires authentication", 401 "Bad credentials" and a
-    plain-text `404 page not found` on each of the three paths, a maintainer's live calls, each
-    sent with `1999-01-01` pinned and without, the answers the same either way — the version is
-    read on no `/agents` answer (see `backlot.routers.github.honours_api_version`;
-    `backlot.routers.github.refuse_a_credential_on_an_agent_path` says where the five
-    `x-ratelimit-*` and the counting of the no-credential 401 come from: the unserved operation's
-    refusal and the 404 of a path real does not route, these paths' measured neighbors, both
-    answer a caller with no header that way).
-    """
+    """Each row is refused for its credential as
+    `backlot.routers.github.refuse_a_credential_on_an_agent_path` records of real, with
+    `1999-01-01` pinned and without."""
     c, _ = gh_client
     url = path.format(org=gh_org)
     bad_version = {"X-GitHub-Api-Version": "1999-01-01"}
-    for headers in ({}, bad_version):
-        anonymous = c.get(url, headers=headers)
-        assert (
-            anonymous.status_code,
-            anonymous.json()["message"],
-        ) == (401, "Requires authentication"), headers
-        assert "x-github-api-version-selected" not in anonymous.headers, headers
-        assert any(name.startswith("x-ratelimit-") for name in anonymous.headers), headers
+    no_credential = [({}, counted), (bad_version, counted)]
+    no_credential += [
+        ({"Authorization": value}, False)
+        for value in ("", "Digest x", "Bearer\tnope", "Basic Zm9vOmJhcg==")
+    ]
+    for headers, five in no_credential:
+        r = c.request(method, url, headers=headers)
+        assert (r.status_code, r.headers["content-type"]) == (
+            401,
+            "application/json; charset=utf-8",
+        ), headers
+        if method != "HEAD":
+            assert r.json()["message"] == "Requires authentication", headers
+        assert "x-github-api-version-selected" not in r.headers, headers
+        assert any(name.startswith("x-ratelimit-") for name in r.headers) == five, headers
     for headers in (
         {"Authorization": "Bearer nope"},
         {"Authorization": "Bearer nope", **bad_version},
     ):
-        bad = c.get(url, headers=headers)
-        assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials"), headers
-        assert "x-github-api-version-selected" not in bad.headers, headers
+        bad = c.request(method, url, headers=headers)
+        assert bad.status_code == 401, headers
+        if method != "HEAD":
+            assert bad.json()["message"] == "Bad credentials", headers
         assert not any(name.startswith("x-ratelimit-") for name in bad.headers), headers
-    for headers in (gh_admin_h, {**gh_admin_h, **bad_version}):
-        found = c.get(url, headers=headers)
-        assert (found.status_code, found.text) == (404, "404 page not found"), headers
-        assert found.headers["content-type"].startswith("text/plain"), headers
-        assert "x-github-api-version-selected" not in found.headers, headers
-        assert not any(name.startswith("x-ratelimit-") for name in found.headers), headers
 
 
-def test_github_the_agent_families_gate_their_own_paths_too(gh_client, gh_admin_h, gh_org):
-    """A family's own path is gated like the paths under it — `GET /agents/repos/{o}/{r}` is at
-    or under the repository's family the same as the paths below it are — though the calls of the
-    measurement name only deeper ones: `under_an_agent_family` reads any path the two families
-    cover. The paths an operation of the baseline does publish on a family keep their own
-    refusal (`test_github_an_unserved_operation_is_refused_for_its_credential_first`), which is
-    why the task statuses' id is not here: `GET /agents/tasks/{}` is one of the baseline's
-    `missing` operations.
-    """
+_COPILOT = (
+    b'{"code":"copilot_plan_required","error":"forbidden",'
+    b'"message":"This API requires a valid Copilot license."}\n'
+)
+_TEXT_404 = (404, "text/plain", b"404 page not found\n")
+
+
+#: (method, path, the status, media type and body a token that resolves is answered) on rows of
+#: `_AGENT_FAMILY_ROWS`, as real answered them on 2026-10-30.
+_AGENT_FAMILY_TOKEN_ROWS = [
+    *[(m, path, _TEXT_404) for m, path, _ in _AGENT_FAMILY_ROWS if m == "GET"],
+    *[
+        (m, "/github/agents/repos/{org}/codebase/nosuch", (403, "application/json", _COPILOT))
+        for m in ("POST", "PUT", "PATCH", "DELETE")
+    ],
+]
+
+
+@pytest.mark.parametrize("method, path, answer", _AGENT_FAMILY_TOKEN_ROWS)
+def test_github_a_token_on_an_agent_family_is_answered_by_its_backend(
+    gh_client, gh_admin_h, gh_org, method, path, answer
+):
+    """A token that resolves is answered as
+    `backlot.routers.github.refuse_a_credential_on_an_agent_path` records of real, the version
+    read by nobody, with the five `x-ratelimit-*` counted. Its own test, not columns of the one
+    above: `OPTIONS` and `HEAD` have no row here."""
     c, _ = gh_client
-    url = f"/github/agents/repos/{gh_org}/codebase"
-    anonymous = c.get(url)
-    assert (anonymous.status_code, anonymous.json()["message"]) == (
-        401,
-        "Requires authentication",
-    )
-    bad = c.get(url, headers={"Authorization": "Bearer nope"})
-    assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials")
-    found = c.get(url, headers=gh_admin_h)
-    assert (found.status_code, found.text) == (404, "404 page not found")
+    url = path.format(org=gh_org)
+    for headers in (gh_admin_h, {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}):
+        r = c.request(method, url, headers=headers)
+        media = r.headers["content-type"].split(";")[0]
+        assert (r.status_code, media, r.content) == answer, headers
+        assert "x-github-api-version-selected" not in r.headers, headers
+        assert r.headers["x-ratelimit-resource"] == "core", headers
+    used = int(c.request(method, url, headers=gh_admin_h).headers["x-ratelimit-used"])
+    assert int(c.request(method, url, headers=gh_admin_h).headers["x-ratelimit-used"]) == used + 1
 
 
 _NO_CREDENTIAL = "Requires authentication"

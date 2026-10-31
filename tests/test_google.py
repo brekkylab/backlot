@@ -2559,18 +2559,26 @@ _DRIVE_CHECK_ROWS = [
 
 @pytest.fixture(scope="module")
 def drive_check_ids(client, admin_h):
-    """The files `_DRIVE_CHECK_ROWS` names, and a page token `permissions.list` issued for {doc}."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
+    """The files `_DRIVE_CHECK_ROWS` names, found in one listing that sends no escape, and a page
+    token `permissions.list` issued for {doc}, or None where it issued none."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1000}).json()[
+        "files"
+    ]
+
+    def named(part):
+        return next(f["id"] for f in files if part in f["name"])
+
+    doc = named("Brand")
     issued = client.get(
         f"/drive/v3/files/{doc}/permissions", headers=admin_h, params={"pageSize": 1}
     )
     return {
         "doc": doc,
-        "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
-        "folder": _drive_ids(client, admin_h, q=f"mimeType='{FOLDER_MIME}'")[0],
-        "hidden": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
+        "pdf": named("Whitepaper"),
+        "folder": next(f["id"] for f in files if f["mimeType"] == FOLDER_MIME),
+        "hidden": named("Q1 Revenue Model"),
         "nope": "nosuchfile000",
-        "issued": issued.json()["nextPageToken"],
+        "issued": issued.json().get("nextPageToken"),
     }
 
 
@@ -8245,7 +8253,7 @@ def test_editor_apis_read_an_escape_as_real_reads_it(client, admin_h, document_i
     ]
     ids = {
         "doc": document_id,
-        "sheet": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
+        "sheet": next(f["id"] for f in files if "Q1 Revenue Model" in f["name"]),
         "deck": next(
             f["id"] for f in files if f["mimeType"] == "application/vnd.google-apps.presentation"
         ),

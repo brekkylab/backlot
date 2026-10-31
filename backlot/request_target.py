@@ -544,14 +544,13 @@ def printable_answer(scope: Scope) -> Response | None:
 
     On api.github.com its page for a `#` anywhere, and on slack.com envoy's empty 400; then on
     slack.com Apache's page (:data:`SLACK_APACHE_PAGE`) for a broken escape in the path; on Graph
-    :data:`GRAPH_INVALID_URL` for one, or for a `"`, a `#`, a `<` or a `>`, in the path; on S3,
-    which reads a `#` as one of the characters of the path or the query it stands in, an empty 400
-    for one in the path, whose status line real words `400 Invalid URI: EOF` where the path ends
-    fewer than two characters after the `%` and `400 Invalid URI: isHexDigit` otherwise; on Notion
-    and HubSpot Cloudflare's page for one in the path, but where the end of the target cuts it short
-    (:func:`cut_escape`), which HubSpot answers with :data:`HUBSPOT_ERROR_PAGE` and Notion reads on
-    (``notion.undecodable_url``); and on HubSpot Jetty's page for a `{` or a `}` in a path under
-    `/crm/v3/objects/`.
+    :data:`GRAPH_INVALID_URL` for one, or for a `"`, a `#`, a `<` or a `>`, in the path; on S3, an
+    empty 400 for one in the path, a `#` ahead of it included, whose status line real words
+    `400 Invalid URI: EOF` where the path ends fewer than two characters after the `%` and
+    `400 Invalid URI: isHexDigit` otherwise; on Notion and HubSpot Cloudflare's page for one in the
+    path, but where the end of the target cuts it short (:func:`cut_escape`), which HubSpot answers
+    with :data:`HUBSPOT_ERROR_PAGE` and Notion reads on (``notion.undecodable_url``); and on HubSpot
+    Jetty's page for a `{` or a `}` in a path under `/crm/v3/objects/`.
 
     Measured on 2026-10-31 (UTC) over raw HTTP/1.1 on TLS sockets, with the vendors' credentials but
     S3's and Graph's, for each byte from 0x21 to 0x7E sent as itself and as its escape at a path no
@@ -624,8 +623,7 @@ def printable_reading(scope: Scope) -> dict[str, object] | None:
     list, where `objects;x/contacts/nope` was the gateway's 404 page; a `#` on S3's buckets, in the
     path and in the query, where `?max-keys=1#x` drew the 400 naming `1#x` that `?max-keys=1%23x`
     drew; and a broken escape in a name or a value of HubSpot's query, on `contacts`,
-    `contacts/nope` and `owners`, where one beside `Accept: text/plain` drew the 406 that `Accept`
-    draws."""
+    `contacts/nope` and `owners`."""
     path, raw = scope["path"], scope["raw_path"]
     reading: dict[str, object] = {}
     sent = scope.get(WITH_A_FRAGMENT)

@@ -405,8 +405,8 @@ _PRINTABLE = [
     *(("/msgraph/v1.0/", rest, 401) for rest in (b'me?b="x', b"me?b=#x", b"me?b=%x")),
     ("/msgraph/v1.0/", b'nope\x01y"x', "graph invalid url"),
     ("/msgraph/v1.0/", b'nope"y\x01x', "graph invalid url"),
-    # S3: a `#` one of the characters of the path or the query it stands in, and the empty 400 for a
-    # broken escape in the path, a `#` before it or after it, where one in the query is read on
+    # S3: a `#` as ``request_target.printable_reading`` reads it, and the empty 400 for a broken
+    # escape in the path, a `#` before it or after it, where one in the query is read on
     ("/s3/", b"nope#x", "as nope%23x"),
     ("/s3/", b"nope#x/key", "as nope%23x/key"),
     ("/s3/no-such-bucket/", b"nope#x", "as nope%23x"),
@@ -490,8 +490,7 @@ _PRINTABLE = [
             *(b"nope\x01y{x", b"nope{y\x01x", b"nope\xc3\xa9y{x", b"nope{x?b=\x01"),
         )
     ),
-    # Google: a `\` in the path a `/`, and on Drive a `+` in the path a space and a `#` the end of
-    # the target
+    # Google: a `\` in the path a `/`, and on Drive a `+` in the path a space
     ("/drive/v3/files/", b"nope+x", "as nope%20x"),
     ("/drive/v3/files/", b"nope++x", "as nope%20%20x"),
     ("/drive/v3/files/", b"nope+x/permissions", "as nope%20x/permissions"),
@@ -499,7 +498,6 @@ _PRINTABLE = [
     ("/drive/v3", b"\\about", "as /about"),
     ("/drive", b"\\v3/about", "as /v3/about"),
     ("/drive/v3/files/", b"nope\\x", "as nope/x"),
-    ("/drive/v3/files/", b"nope#x", "as nope"),
     ("/gmail/v1/users/me", b"\\profile", "as /profile"),
     ("/docs/v1", b"\\documents/x", "as /documents/x"),
     ("/docs/v1/documents", b"\\x", "as /x"),
@@ -508,6 +506,8 @@ _PRINTABLE = [
     ("/sheets/v4/spreadsheets", b"\\x", "as /x"),
     ("/sheets/v4/spreadsheets/", b"nope\\x", "as nope/x"),
     ("/slides/v1/presentations/", b"nope\\x", "as nope/x"),
+    # Drive: what follows a `#` is no part of the target
+    ("/drive/v3/files/", b"nope#x", "as nope"),
     # Jira and Confluence: a `\` in the path a `/`, and eight characters echoed as their escapes
     ("/atlassian/rest/api/3/", b"nope\\x", "as nope/x"),
     ("/atlassian/rest/api/3/", b"nope\\\\x", "as nope/x"),

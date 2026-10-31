@@ -80,6 +80,14 @@ jobs:
           # The server the example starts is not anyone's use of Backlot.
           BACKLOT_TELEMETRY: "0"
         run: npx tsx index.ts
+      - name: Check the SDK's fragments against the schema Backlot serves
+        # Run after the example, whether or not it passed: a failure here neither stops the example
+        # nor changes its pass or fail. Once, on the matrix's first job, since the bundle and the
+        # schema are the same in every job.
+        if: ${{ !cancelled() && strategy.job-index == 0 }}
+        run: >-
+          uv run --no-sync python scripts/linear_sdk_fragments.py
+          examples/using-official-sdk/linear/node_modules/@linear/sdk/dist/index.mjs
 
   lint:
     runs-on: ubuntu-latest

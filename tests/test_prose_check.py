@@ -2,31 +2,16 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import shutil
 import subprocess
-from pathlib import Path
 from textwrap import dedent
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
+from tests._helpers import script_module
 
-
-def _check():
-    """`scripts/prose_check.py` as a module, since `scripts/` is not a package. Named under
-    `scripts` so that pyproject.toml's EncodingWarning filter, which goes by module name, reaches
-    it."""
-    spec = importlib.util.spec_from_file_location(
-        "scripts.prose_check", REPO / "scripts" / "prose_check.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-check = _check()
+check = script_module("prose_check")
 
 
 def _message(number: str) -> str:

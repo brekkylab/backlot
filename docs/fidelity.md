@@ -348,9 +348,10 @@ The surface takes the shape of the contract:
   message the document says it answers with.
 - **A Discovery document a walk reads** — `types` beside `operations`, keyed by the document's
   name and the message's (`sheets.Spreadsheet`): every message the responses of the methods the
-  walk reads reach, with every field and the `type` it holds, since a `fields` mask is read against
-  all of them and no served schema answers that offline. Which reads to make is the document's
-  `walk`, one of `backlot.fidelity.google_walks` (`sheets` for Sheets, `docs` for Docs). A message
+  walk reads reach, a map's values included, with every field and the `type` it holds, since a
+  `fields` mask is read against all of them, an editor create reads its body against them, and no
+  served schema answers either offline. Which reads to make is the document's
+  `walk`, one of `backlot.fidelity.google_walks` (`sheets` for Sheets, `gdocs` for Docs). A message
   one of its answers was is `implemented`, each field they carried `implemented`, each they did not
   `missing`, a gap, and each the message does not declare `extra`, breaking; a message none of
   them was is `missing`, with no finding. There is no `root`: the operations are under
@@ -449,6 +450,10 @@ when that report is not the one already there.
 Closing it closes the record. The body and the comments stay as the account of what was triaged,
 and a source still diverging the next morning gets a new issue that links back to the last one — a
 closed issue is never reopened and never written over.
+
+The Linear run also runs `scripts/linear_sdk_fragments.py` over the newest `@linear/sdk`, and a
+fragment it names goes on Linear's issue beside the comparison's report. That, or a bundle the run
+cannot install or read, turns the run red.
 
 ## Coverage
 

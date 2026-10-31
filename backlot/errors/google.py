@@ -585,10 +585,17 @@ _UNREGISTERED_CALLER_OPERATIONS = tuple(
 
 
 # The RPC each operation's missing-credential 401 names, by its HTTP method and path, measured
-# 2026-10-26 on `sheets.googleapis.com`, and on 2026-10-27 for the last three, which are not served
-# and answer this 401 all the same.
+# 2026-10-26 on `sheets.googleapis.com`, on 2026-10-27 for the last three, which are not served
+# and answer this 401 all the same, and on 2026-10-28 on `docs.googleapis.com`.
 _SHEETS_RPC = "google.apps.sheets.v4.SpreadsheetsService"
-_RPC_METHODS = tuple(
+_DOCS_RPC = "google.apps.docs.v1.DocumentsService"
+_RPC_METHODS = (
+    (
+        "POST",
+        re.compile(r"/docs/v1/documents"),
+        (f"{_DOCS_RPC}.CreateDocument", "docs.googleapis.com"),
+    ),
+) + tuple(
     (method, re.compile(pattern), (f"{_SHEETS_RPC}.{name}", "sheets.googleapis.com"))
     for method, pattern, name in (
         ("POST", r"/sheets/v4/spreadsheets", "CreateSpreadsheet"),

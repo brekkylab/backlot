@@ -15,7 +15,8 @@ from urllib.parse import quote
 import pytest
 
 from backlot import store, synth
-from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS, weak_etag
+from backlot.express_http import weak_etag
+from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS
 from backlot.routers.notion import router as notion_router
 from tests._helpers import client_for, sent_as, served_id, tiny_corpus, tok
 
@@ -308,7 +309,7 @@ def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
 
 
 def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, notion_h):
-    """Pins ``backlot.errors.notion.json_media_type``, ``backlot.routers.notion.weak_etag`` and
+    """Pins ``backlot.errors.notion.json_media_type``, ``backlot.express_http.weak_etag`` and
     ``backlot.routers.notion.APPLICATION_HEADERS`` on 200s and refusals, a `HEAD` among them: each
     carries the charset; each but the framework's 405 for `TRACE` the `ETag` over its body, a `HEAD`
     its `GET`'s; and each but that 405 and a refusal of the body reader
@@ -2017,6 +2018,13 @@ _PARENT_RECORDS = [
         "visibility": "public",
         "created": "2026-03-01T08:15:42Z",
         "updated": "2026-03-02T09:30:17Z",
+        "comments": [
+            {
+                "content": "Looks good.",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-03-02T10:20:33Z",
+            }
+        ],
     },
     {
         "source_type": "notion",
@@ -2132,8 +2140,8 @@ def test_notion_url_is_the_app_host_and_a_data_source_names_its_databases(client
 
 
 def test_notion_timestamps_follow_the_minute_and_the_database_its_version(parent_corpus):
-    """`_PARENT_RECORDS` dates its page and its database to the second, so the minute and the
-    second differ."""
+    """`_PARENT_RECORDS` dates its page, its comment and its database to the second, so the minute
+    and the second differ."""
     minute = ("2026-03-03T10:00:00.000Z", "2026-03-04T11:45:00.000Z")
     offset = ("2026-03-03T10:00:51.000+00:00", "2026-03-04T11:45:09.000+00:00")
     database = {
@@ -2157,6 +2165,12 @@ def test_notion_timestamps_follow_the_minute_and_the_database_its_version(parent
         for obj in answers:
             assert obj["created_time"] == "2026-03-01T08:15:00.000Z", obj["object"]
             assert obj["last_edited_time"] == "2026-03-02T09:30:00.000Z", obj["object"]
+        listed = client.get("/notion/v1/comments", params={"block_id": page}, headers=h).json()
+        (comment,) = listed["results"]
+        assert (comment["created_time"], comment["last_edited_time"]) == (
+            "2026-03-02T10:20:00.000Z",
+            "2026-03-02T10:20:00.000Z",
+        )
         source = client.get(
             f"/notion/v1/data_sources/{synth.notion_data_source_id('nf-db')}", headers=h
         ).json()
@@ -3409,6 +3423,26 @@ _REQUEST_ROWS = [
         {"Content-Type": "application/json; charset=utf-16le"},
         400,
         _absent("body", "foo", "1"),
+    ),
+    (
+        "utf-7, a run for 1",
+        "POST",
+        "/search",
+        "",
+        b'{"page_size":+ADE-}',
+        {"Content-Type": "application/json; charset=utf-7"},
+        200,
+        None,
+    ),
+    (
+        "utf-7, a run the body ends in holding two marks",
+        "POST",
+        "/search",
+        "",
+        b"+/v/+/w",
+        {"Content-Type": "application/json; charset=utf-7"},
+        400,
+        _INVALID_JSON,
     ),
     (
         "gzip",

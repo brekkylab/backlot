@@ -11,10 +11,13 @@ match whatever the case of their ASCII letters, with `-` read as `_`. The JSON i
 
 from __future__ import annotations
 
+import calendar
 import codecs
+import datetime
 import json
 import math
 import re
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import NamedTuple
 
@@ -29,11 +32,13 @@ class Enum(NamedTuple):
 
 
 class Field(NamedTuple):
-    """One field of a :class:`Message`. ``kind`` is ``int32``, ``double``, ``string``, ``bool``,
-    ``enum``, ``message``, ``rows`` (a repeated ``google.protobuf.ListValue``) or ``any`` (a
-    ``google.protobuf.Value`` or a map, kept as plain JSON) -- the last two read whole by
-    :meth:`_Writer.rows`; ``wrapper`` marks an ``Int32Value``/``StringValue`` field, whose scalar lives in a
-    ``value`` member that the error path names."""
+    """One field of a :class:`Message`. ``kind`` is ``int32``, ``int64``, ``float``, ``double``,
+    ``string``, ``bool``, ``enum``, ``message``, ``timestamp`` (a ``google.protobuf.Timestamp``),
+    ``rows`` (a repeated ``google.protobuf.ListValue``) or ``any`` (a ``google.protobuf.Value``,
+    kept as plain JSON) -- the last two read whole by :meth:`_Writer.rows`; ``wrapper`` marks an
+    ``Int32Value``, ``StringValue``, ``BoolValue`` or ``FloatValue`` field, whose scalar lives in a
+    ``value`` member that the error path names. A map is a repeated ``message`` field with ``map``
+    set, its message the entry (:func:`map_entry`)."""
 
     json_name: str
     name: str
@@ -43,16 +48,27 @@ class Field(NamedTuple):
     message: Message | None = None
     repeated: bool = False
     oneof: str | None = None
+    map: bool = False
 
 
 class Message(NamedTuple):
     type_url: str
-    fields: tuple[Field, ...]
+    fields: Sequence[Field]
 
     def find(self, name: str) -> Field | None:
         """A field by its JSON name or its proto name, the two spellings real accepts, matched
         exactly (`DataFilters` is an unknown name)."""
         return next((f for f in self.fields if name in (f.json_name, f.name)), None)
+
+
+def map_entry(holder: str, json_name: str, value: Field, key: str = "string") -> Message:
+    """The entry message of a map field of ``holder`` (a type URL): a ``key`` of kind ``key`` and
+    ``value``, named as protoc names it. Measured 2026-10-29 on Docs `documents.create`,
+    `{"headers": 5}` is refused naming ``google.apps.docs.v1.Document.HeadersEntry``."""
+    return Message(
+        f"{holder}.{json_name[:1].upper()}{json_name[1:]}Entry",
+        (Field("key", "key", key), value._replace(json_name="value", name="value")),
+    )
 
 
 class ConversionError(Exception):
@@ -92,9 +108,11 @@ def value_text(piece: tuple[str, object]) -> str:
 
 _ASCII_SPACE = " \t\n\v\f\r"
 _INT32 = (-(2**31), 2**31 - 1)
+_INT64 = (-(2**63), 2**63 - 1)
+_EPOCH_DAY = datetime.date(1970, 1, 1).toordinal()
 
 
-def _str_to_int32(text: str) -> int:
+def _str_to_int32(text: str, bounds: tuple[int, int] = _INT32) -> int:
     """``DataPiece::StringToNumber`` over ``safe_strto32``: a leading or trailing SPACE is refused
     outright, while any other ASCII whitespace around the digits is stripped; a sign and leading
     zeros are fine, and nothing but ASCII digits follows them."""
@@ -104,18 +122,19 @@ def _str_to_int32(text: str) -> int:
     if not re.fullmatch(r"[+-]?[0-9]+", body):
         raise ConversionError(f'"{text}"')
     number = int(body, 10)
-    if not _INT32[0] <= number <= _INT32[1]:
+    if not bounds[0] <= number <= bounds[1]:
         raise ConversionError(f'"{text}"')
     return number
 
 
-def to_int32(piece: tuple[str, object]) -> int:
+def to_int32(piece: tuple[str, object], bounds: tuple[int, int] = _INT32) -> int:
     kind, value = piece
+    low, high = bounds
     if kind == "string":
-        return _str_to_int32(value)  # type: ignore[arg-type]
-    if kind == "int" and _INT32[0] <= value <= _INT32[1]:  # type: ignore[operator]
+        return _str_to_int32(value, bounds)  # type: ignore[arg-type]
+    if kind == "int" and low <= value <= high:  # type: ignore[operator]
         return value  # type: ignore[return-value]
-    if kind == "double" and value == int(value) and _INT32[0] <= value <= _INT32[1]:  # type: ignore[arg-type]
+    if kind == "double" and value == int(value) and low <= value <= high:  # type: ignore[arg-type]
         return int(value)  # type: ignore[arg-type]
     raise ConversionError(value_text(piece))
 
@@ -132,6 +151,91 @@ def to_double(piece: tuple[str, object]) -> float:
         except ValueError:
             pass
     raise ConversionError(value_text(piece))
+
+
+# The largest finite `float`. Measured 2026-10-29 on a Docs `RgbColor.red`: `3.4e38` is read and
+# `1e39`, `-1e39` and `"1e39"` are refused, while `"NaN"`, `"Infinity"` and `1e-50` are read.
+_FLOAT_MAX = 3.4028234663852886e38
+
+
+def to_float(piece: tuple[str, object]) -> float:
+    """A proto3 JSON ``float``: a ``double`` that is not finite or fits a float."""
+    value = to_double(piece)
+    if math.isfinite(value) and abs(value) > _FLOAT_MAX:
+        raise ConversionError(value_text(piece))
+    return value
+
+
+# Measured 2026-10-29 and 2026-10-30 on Docs `documents.create`, the refusals below in the order
+# they are checked: no `Z` or `±hh:mm` offset under a day at the very end (`2026-10-29`, a
+# lower-case `z`, `+0900`, `+24:00`, a final newline); what precedes the zone and the fraction not
+# read as `%Y-%m-%dT%H:%M:%S`, the year an int64 but not `-` and zeros, each field after it one or
+# two digits in its range, space allowed around the whole (month 13, hour 24, `+2026`, `-0000`, a
+# lower-case `t`, no seconds); anything left after the seconds; a day past its month's last (30
+# February), or a time, offset not applied, past int64 seconds from the epoch
+# (`292277026596-12-04T15:30:08Z`); a fraction, what follows the last `.`, that is not an int32 or
+# is `-` and zeros (`1a`, `+1`, `1 `, twelve digits, `-0`); and a time outside 0001 to 9999 UTC once
+# the offset is applied, a negative fraction or a fraction past nine digits that is not zero. An
+# empty fraction, ten zeros, a year of two or six digits, a second of 60 and
+# `10000-01-01T00:00:00+01:00` are read.
+_TS_NO_ZONE = (
+    "Illegal timestamp format; timestamps must end with 'Z' or have a valid timezone offset."
+)
+_TS_UNPARSED = "Invalid time format: Failed to parse input"
+_TS_TRAILING = "Invalid time format: Illegal trailing data in input string"
+_TS_NO_SUCH_DAY = "Invalid time format: Out-of-range field"
+_TS_NANOS = "Invalid time format, failed to parse nano seconds"
+_TS_PAST_LIMITS = "Timestamp value exceeds limits"
+_TS_ZONE = re.compile(r"(?:Z|([+-])([01][0-9]|2[0-3]):([0-5][0-9]))\Z")
+_TS_FIELDS = re.compile(
+    r"(-?[0-9]+)-([0-9]{1,2})-([0-9]{1,2})T([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2})"
+)
+# 0001-01-01T00:00:00Z and 9999-12-31T23:59:59Z, in seconds since the epoch
+_TS_SECONDS = (-62_135_596_800, 253_402_300_799)
+
+
+def _timestamp_error(piece: tuple[str, object]) -> str | None:
+    """Why a ``google.protobuf.Timestamp`` refuses ``piece``, or None when it reads it: a string in
+    RFC 3339, and nothing but a string."""
+    kind, value = piece
+    if kind != "string":
+        return f"Invalid data type for timestamp, value is {value_text(piece)}"
+    zone = _TS_ZONE.search(value)  # type: ignore[arg-type]
+    if zone is None:
+        return _TS_NO_ZONE
+    text, dot, fraction = value[: zone.start()].rpartition(".")  # type: ignore[index]
+    if not dot:
+        text, fraction = fraction, ""
+    text = text.lstrip(_ASCII_SPACE)
+    parts = _TS_FIELDS.match(text)
+    if parts is None:
+        return _TS_UNPARSED
+    year, month, day, hour, minute, second = (int(p) for p in parts.groups())
+    if not (1 <= month <= 12 and 1 <= day <= 31 and hour < 24 and minute < 60 and second <= 60):
+        return _TS_UNPARSED
+    if not _INT64[0] <= year <= _INT64[1] or (parts[1].startswith("-") and not year):
+        return _TS_UNPARSED
+    if text[parts.end() :].strip(_ASCII_SPACE):
+        return _TS_TRAILING
+    if day > (29 if month == 2 and calendar.isleap(year) else calendar.mdays[month]):
+        return _TS_NO_SUCH_DAY
+    cycles, year_in_cycle = divmod(year - 1, 400)  # the calendar repeats every 400 years
+    days = cycles * 146_097 + datetime.date(year_in_cycle + 1, month, day).toordinal() - _EPOCH_DAY
+    seconds = days * 86_400 + hour * 3600 + minute * 60 + second
+    if not _INT64[0] <= seconds <= _INT64[1]:
+        return _TS_NO_SUCH_DAY
+    if fraction and re.fullmatch(r"-?[0-9]+", fraction) is None:
+        return _TS_NANOS
+    nanos = int(fraction or 0)
+    if not _INT32[0] <= nanos <= _INT32[1] or (fraction.startswith("-") and not nanos):
+        return _TS_NANOS
+    if nanos < 0 or (len(fraction) > 9 and nanos):
+        return _TS_PAST_LIMITS
+    if zone[1]:
+        seconds -= (int(zone[2]) * 60 + int(zone[3])) * 60 * (-1 if zone[1] == "-" else 1)
+    if not _TS_SECONDS[0] <= seconds <= _TS_SECONDS[1]:
+        return _TS_PAST_LIMITS
+    return None
 
 
 def to_string(piece: tuple[str, object]) -> str:
@@ -199,7 +303,7 @@ class _Frame:
     field name for a message (a key is present once its field was set, default value or not), a
     list for a repeated field."""
 
-    def __init__(self, parent, message, field, out, *, is_list=False, target=None):
+    def __init__(self, parent, message, field, out, *, is_list=False, target=None, is_map=False):
         self.parent = parent
         self.message = message
         self.field = field
@@ -209,6 +313,8 @@ class _Frame:
         # holds the wrapper field: ``(that message's dict, the field's proto name)``.
         self.target = target
         self.oneofs: set[str] = set()
+        # A map is filled as a list of its entries is, each member an entry keyed by its name.
+        self.is_map = is_map
         # An element of a repeated field counts itself on the list it sits in.
         if not is_list and field is not None and field.repeated and parent and parent.index >= 0:
             parent.index += 1
@@ -292,6 +398,21 @@ class _Writer:
         top.oneofs.add(field.oneof)
         return True
 
+    def _map_entry(self, top: _Frame, key: str) -> tuple[_Frame, Field]:
+        """An entry of the map ``top`` fills, counted on it, and its value field. A key its kind
+        cannot read is refused and its value read all the same, measured 2026-10-29 on Sheets'
+        `criteria`, whose keys are int32: `{"a": {"condition": 5}}` names `criteria[0].key` and
+        then `criteria[0].value.condition`."""
+        entry = _Frame(top, top.field.message, top.field, None)
+        key_field, value = top.field.message.fields
+        if key_field.kind != "string":
+            try:
+                _convert(key_field, ("string", key))
+            except ConversionError as exc:
+                at = _Frame(entry, None, key_field, None).location()
+                self._invalid_value(at, _type_name(key_field), exc.text)
+        return entry, value
+
     def rows(self, name: str, value) -> bool:
         """Read a ``rows`` field whole, and say whether ``name`` was one.
 
@@ -334,8 +455,22 @@ class _Writer:
             self.stack.append(_Frame(None, self.root, None, self.result))
             return
         top = self.stack[-1]
-        if top.is_list:
+        if top.is_map:
+            entry, value = self._map_entry(top, name)
             out: dict = {}
+            top.out[name] = out
+            self.stack.append(_Frame(entry, value.message, value, out))
+            return
+        if top.is_list:
+            if top.field.kind != "message":
+                # measured 2026-10-29 on Sheets `ranges` and Docs `positionedObjectIds`: `[{}]` is
+                # named by the list, with the field as its type
+                self._invalid_value(
+                    top.location(), top.field.name, "Starting an object on a scalar field"
+                )
+                self.invalid_depth += 1
+                return
+            out = {}
             top.out.append(out)
             self.stack.append(_Frame(top, top.field.message, top.field, out))
             return
@@ -343,12 +478,19 @@ class _Writer:
         if field is None:
             self.invalid_depth += 1
             return
-        if field.kind != "message" and not field.wrapper:
+        if field.kind not in ("message", "timestamp") and not field.wrapper:
             self._invalid_value(top.location(), field.name, "Starting an object on a scalar field")
             self.invalid_depth += 1
             return
         if not self._valid_oneof(top, field, name):
             self.invalid_depth += 1
+            return
+        if field.kind == "timestamp":  # an object is the message a Timestamp is
+            self.stack.append(_Frame(top, _TIMESTAMP, field, top.out.setdefault(field.name, {})))
+            return
+        if field.map:
+            out = top.out.setdefault(field.name, {})
+            self.stack.append(_Frame(top, None, field, out, is_list=True, is_map=True))
             return
         if field.wrapper:
             top.out.setdefault(field.name, _WRAPPER_DEFAULTS[field.kind])
@@ -378,11 +520,23 @@ class _Writer:
             self.invalid_depth += 1
             return
         top = self.stack[-1]
+        if top.is_map:
+            entry, value = self._map_entry(top, name)
+            at = _Frame(entry, None, value, None).location()
+            self._invalid_value(at, "Map", f"Cannot have repeated items ('{name}') within a map.")
+            self.invalid_depth += 1
+            return
         if top.is_list:  # a list inside a list: more elements of the same field
             self.stack.append(_Frame(top, None, top.field, top.out, is_list=True))
             return
         field = self._lookup(top, name)
         if field is None:
+            self.invalid_depth += 1
+            return
+        if field.map:
+            self._invalid_value(
+                top.location(), "Map", f"Cannot bind a list to map for field '{name}'."
+            )
             self.invalid_depth += 1
             return
         if not field.repeated:
@@ -405,17 +559,32 @@ class _Writer:
             self._invalid_name("", name, "Root element must be a message.")
             return
         top = self.stack[-1]
-        if top.is_list:  # an element of a list; a null one is skipped and not counted
+        if top.is_list:  # an element of a list or a map; a null one is skipped and not counted
             if piece[0] == "null":
                 return
-            # A frame counts itself on the list it is made in, so it is made for an element only.
-            at = _Frame(top, None, top.field, None).location()
+            if top.is_map:
+                entry, value = self._map_entry(top, name)
+                at = _Frame(entry, None, value, None).location()
+                if value.kind == "message":
+                    self._invalid_value(at, value.message.type_url, value_text(piece))
+                    return
+                try:
+                    top.out[name] = _convert(value, piece)
+                except ConversionError as exc:
+                    self._invalid_value(at, _type_name(value), exc.text)
+                return
             if top.field.kind != "message":  # a repeated scalar: `ranges` of a batch clear
                 try:
                     top.out.append(_convert(top.field, piece))
                 except ConversionError as exc:
+                    # Only a refused element is counted, measured 2026-10-29 on Sheets `ranges`
+                    # and Docs `positionedObjectIds`: `["A1", 5]` names `ranges[0]`, and
+                    # `[5, "A1", 6]` names `ranges[0]` and `ranges[1]`.
+                    at = _Frame(top, None, top.field, None).location()
                     self._invalid_value(at, _type_name(top.field), exc.text)
                 return
+            # A frame counts itself on the list it is made in, so it is made for an element only.
+            at = _Frame(top, None, top.field, None).location()
             self._invalid_value(at, top.field.message.type_url, value_text(piece))
             return
         field = self._lookup(top, name)
@@ -423,27 +592,54 @@ class _Writer:
         # `gridRange` answers the grid range, measured.
         if field is None or piece[0] == "null" or not self._valid_oneof(top, field, name):
             return
-        if field.kind == "message" or field.repeated:
+        if field.kind == "message":
             at = _Frame(top, None, field, None).location()
             self._invalid_value(at, field.message.type_url, value_text(piece))
             return
+        # A repeated scalar takes one value as its one element, named without an index, measured
+        # 2026-10-29: `"ranges": 5` is `Invalid value at 'ranges' (TYPE_STRING), 5`.
         element = _Frame(top, None, field, None)
         if field.wrapper:
             element = _Frame(element, None, Field("value", "value", field.kind), None)
-        try:
-            value = _convert(field, piece)
-        except ConversionError as exc:
-            self._invalid_value(element.location(), _type_name(field), exc.text)
-            return
+        if field.kind == "timestamp":
+            # named by the name the body gave it, `createTime` or `create_time`, measured
+            reason = _timestamp_error(piece)
+            if reason is not None:
+                self._invalid_value(
+                    element.location(), _TIMESTAMP.type_url, f"Field '{name}', {reason}"
+                )
+                return
+            value = piece[1]
+        else:
+            try:
+                value = _convert(field, piece)
+            except ConversionError as exc:
+                self._invalid_value(element.location(), _type_name(field), exc.text)
+                return
         if top.target is not None:
             holder, held = top.target
             holder[held] = value
+        elif field.repeated:
+            top.out.setdefault(field.name, []).append(value)
         else:
             top.out[field.name] = value
 
 
-_WRAPPER_DEFAULTS = {"int32": 0, "string": ""}
+_WRAPPER_DEFAULTS = {"int32": 0, "string": "", "bool": False, "float": 0.0}
+_WRAPPERS = {
+    "int32": "Int32Value",
+    "string": "StringValue",
+    "bool": "BoolValue",
+    "float": "FloatValue",
+}
 _LIST_VALUE = "type.googleapis.com/google.protobuf.ListValue"
+# What an object given for a Timestamp is read as, measured 2026-10-29:
+# `{"seconds": 1, "nanos": 2}` is read, `"seconds": "x"` is `TYPE_INT64` and an unknown name is
+# refused naming the field.
+_TIMESTAMP = Message(
+    "type.googleapis.com/google.protobuf.Timestamp",
+    (Field("seconds", "seconds", "int64"), Field("nanos", "nanos", "int32")),
+)
 
 
 def _plain(value):
@@ -563,8 +759,7 @@ def value_debug(value) -> str:
 def _wrapper(field: Field) -> Message:
     """The wrapper message a ``{...}`` opens: one ``value`` member of the field's own kind."""
     return Message(
-        "type.googleapis.com/google.protobuf."
-        + ("Int32Value" if field.kind == "int32" else "StringValue"),
+        f"type.googleapis.com/google.protobuf.{_WRAPPERS[field.kind]}",
         (Field("value", "value", field.kind),),
     )
 
@@ -572,14 +767,16 @@ def _wrapper(field: Field) -> Message:
 def _type_name(field: Field) -> str:
     if field.kind == "enum":
         return field.enum.type_url
-    if field.kind == "double":
-        return "TYPE_DOUBLE"
     return f"TYPE_{field.kind.upper()}"
 
 
 def _convert(field: Field, piece: tuple[str, object]):
     if field.kind == "int32":
         return to_int32(piece)
+    if field.kind == "int64":
+        return to_int32(piece, _INT64)
+    if field.kind == "float":
+        return to_float(piece)
     if field.kind == "double":
         return to_double(piece)
     if field.kind == "string":
@@ -667,6 +864,69 @@ codecs.register_error("backlot.protojson.space", _space_per_byte)
 
 _BOM = b"\xef\xbb\xbf"
 
+# How deep real's parser opens objects and lists, the root counted. Measured 2026-10-29 on Docs
+# `documents.create`: a root holding 99 nested lists or objects is read and 100 is refused, an
+# object as ``…reached for key '<the name it is under>'`` (`''` in a list) and a list as
+# ``…reached in array``, alone whatever else the body holds.
+_MAX_DEPTH = 100
+_TOO_DEEP = "Message too deep. Max recursion depth reached"
+_ROOT_NOT_A_MESSAGE = (
+    'Invalid JSON payload received. Unknown name "": Root element must be a message.'
+)
+
+
+def _too_deep(tree) -> str | None:
+    """The refusal of the first object or list in body order that opens past :data:`_MAX_DEPTH`."""
+    pending = [(tree, "", 1)]
+    while pending:
+        value, key, depth = pending.pop()
+        if isinstance(value, _Members):
+            if depth > _MAX_DEPTH:
+                return f"{_TOO_DEEP} for key '{key}'"
+            pending += [(v, _text(k), depth + 1) for k, v in reversed(value)]
+        elif isinstance(value, list):
+            if depth > _MAX_DEPTH:
+                return f"{_TOO_DEEP} in array"
+            pending += [(v, "", depth + 1) for v in reversed(value)]
+    return None
+
+
+def _too_deep_text(text: str) -> str | None:
+    """:func:`_too_deep` over text nested past what :func:`json.loads` can parse."""
+    opened: list[str] = []
+    key = last = ""
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < len(text) and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            last, i = text[i : j + 1], j + 1
+            continue
+        if c == ":":
+            try:
+                key = _text(json.loads(last))
+            except ValueError:
+                key = ""
+        elif c in "{[":
+            if len(opened) >= _MAX_DEPTH:
+                if c == "[":
+                    return f"{_TOO_DEEP} in array"
+                return f"{_TOO_DEEP} for key '{key if opened[-1] == '{' else ''}'"
+            opened.append(c)
+        elif c in "}]" and opened:
+            opened.pop()
+        i += 1
+    return None
+
+
+def whole(exc: gerr.GoogleError) -> bool:
+    """Whether a refusal :func:`read` gave is of the body as a whole: JSON it could not parse, or a
+    root that is not an object. Measured 2026-10-29 on Docs `documents.create` and Sheets
+    `values:batchGetByDataFilter`, real answers one alone, with no query refusal beside it."""
+    return exc.reason == "parseError" or gerr.field_violations(exc) == [(None, _ROOT_NOT_A_MESSAGE)]
+
 
 def read(body: bytes, message: Message, *, field: str | None = None) -> dict:
     """``body`` read into ``message``, as a dict keyed by proto field name, or a 400.
@@ -681,23 +941,27 @@ def read(body: bytes, message: Message, *, field: str | None = None) -> dict:
     ``Request contains an invalid argument.`` where those bytes would split a character, or, for a
     body cut short, the refusal of a value read before the cut. Measured 2026-10-04, real's parser
     also reads single quotes, bare keys, a trailing comma, `1.` and an escape JSON lacks, all
-    refused here; and measured 2026-10-06, it refuses a root object holding lists nested 100 deep
-    (``Message too deep. Max recursion depth reached in array``), which is read here."""
+    refused here. A body nested past :data:`_MAX_DEPTH` is refused as real refuses it."""
     if body.startswith(_BOM):
         body = body[len(_BOM) :]
     if not body:
         return {}
+    text = body.decode("utf-8", "backlot.protojson.space")
     try:
         tree = json.loads(
-            body.decode("utf-8", "backlot.protojson.space"),
+            text,
             object_pairs_hook=_Members,
             parse_int=lambda text: _number(text, integer=True),
             parse_float=lambda text: _number(text, integer=False),
             parse_constant=_refuse_constant,
             strict=False,
         )
-    except (ValueError, RecursionError):  # the latter for a body nested past Python's stack
+    except ValueError:
         raise gerr.invalid_json("Unexpected token.") from None
+    except RecursionError:  # a body nested past Python's stack
+        raise gerr.invalid_json(_too_deep_text(text) or "Unexpected token.") from None
+    if (deep := _too_deep(tree)) is not None:
+        raise gerr.invalid_json(deep)
     if field is not None and isinstance(tree, _Members):
         # A request whose body is one of its fields (`body: "data"` in the discovery document):
         # real names that field in every refusal, `Unknown name "bogus" at 'data'`.

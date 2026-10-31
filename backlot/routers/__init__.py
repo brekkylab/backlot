@@ -9,6 +9,15 @@ here is plumbing that is genuinely vendor-independent.
 from __future__ import annotations
 
 from fastapi import Request
+from starlette.types import Scope
+
+
+def sent_path(scope: Scope) -> str:
+    """The path a client sends the vendor's own host: this request's as it arrived, escapes and
+    all, with the first segment, which names the vendor here, taken off. A first segment with no
+    slash after it leaves `/`."""
+    raw = (scope.get("raw_path") or scope["path"].encode()).decode("latin-1")
+    return "/" + raw.partition("/")[2].partition("/")[2]
 
 
 async def json_body(request: Request) -> dict:

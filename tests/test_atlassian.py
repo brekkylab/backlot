@@ -1905,62 +1905,86 @@ def test_confluence_single_space_get(client, admin_h):
         }, sent
 
 
-def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(client, admin_h):
-    """Pins the bytes ``errors.atlassian._confluence_json`` writes, on the raw body, since
-    ``.json()`` decodes both writings to one string."""
-    emoji = "%F0%9F%98%80"  # U+1F600
-    for path, status, written in (
-        (
-            f"/atlassian/wiki/rest/api/space/{emoji}",
-            404,
-            rb'No space found with key : \uD83D\uDE00\""',
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content?spaceKey={emoji}",
-            404,
-            rb"No space with key : \uD83D\uDE00",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content?limit={emoji}",
-            400,
-            rb"For input string: \"\uD83D\uDE00\"",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content/229469/label?prefix={emoji}",
-            400,
-            rb"label prefixes :[\uD83D\uDE00]",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content?type={emoji}",
-            501,
-            rb"Cannot find custom content type : \uD83D\uDE00",
-        ),
-        (
-            "/atlassian/wiki/rest/api/content/%F0%9D%9F%93/child/page",
-            400,
-            rb"for value [\uD835\uDFD3]",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/search?cql=title~%22{emoji}x%22&limit=1",
-            200,
-            rb'\"\uD83D\uDE00x\""',
-        ),
-        (
-            f"/atlassian/wiki/rest/api/search?cql=label%3D%22{emoji}x%22",
-            200,
-            rb'\"\uD83D\uDE00x\""',
-        ),
-    ):
-        answer = client.get(path, headers=admin_h)
-        assert answer.status_code == status, path
-        assert written in answer.content, path
-        # and never the character's own UTF-8 bytes
-        assert "\U0001f600".encode() not in answer.content, path
-        assert "\U0001d7d3".encode() not in answer.content, path
-    # A character inside the plane is written as its UTF-8 bytes, unescaped.
-    inside = client.get("/atlassian/wiki/rest/api/space/%C3%A9", headers=admin_h)
-    assert inside.status_code == 404
-    assert "é".encode() in inside.content
+def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(tmp_path):
+    """Pins the bytes of Confluence's answers on the raw body, since ``.json()`` decodes both
+    writings to one string."""
+    e1, e2 = "\U0001f600", "\U0001d7d3"
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": f"eng{e1}",
+        "title": f"probe {e1}{e2} é",
+        "content": f"body {e1}{e2}",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "labels": [f"probe{e1}"],
+        "comments": [
+            {
+                "content": f"comment {e1}{e2}",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-10-02T09:00:00Z",
+            }
+        ],
+        "created": "2026-10-01T09:00:00Z",
+    }
+    child = {**page, "doc_id": "c", "parent": "p", "title": f"child {e1}{e2}", "comments": []}
+    settings = tiny_corpus(tmp_path, [page, child])
+    with client_for(settings) as client:
+        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        rows = client.get(f"{api}/content?expand=space", headers=admin_h).json()["results"]
+        ids = {r["title"]: r["id"] for r in rows}
+        pid, cid, key = ids[page["title"]], ids[child["title"]], rows[0]["space"]["key"]
+        emoji = "%F0%9F%98%80"  # U+1F600
+        title = rb"probe \uD83D\uDE00\uD835\uDFD3 " + "é".encode()
+        child_title = rb"child \uD83D\uDE00\uD835\uDFD3"
+        space_name = rb'"name":"eng\uD83D\uDE00"'
+        for path, status, written in (
+            (f"{api}/space/{emoji}", 404, rb'No space found with key : \uD83D\uDE00\""'),
+            (f"{api}/content?spaceKey={emoji}", 404, rb"No space with key : \uD83D\uDE00"),
+            (f"{api}/content?limit={emoji}", 400, rb"For input string: \"\uD83D\uDE00\""),
+            (f"{api}/content/{pid}/label?prefix={emoji}", 400, rb"label prefixes :[\uD83D\uDE00]"),
+            (
+                f"{api}/content?type={emoji}",
+                501,
+                rb"Cannot find custom content type : \uD83D\uDE00",
+            ),
+            (f"{api}/content/%F0%9D%9F%93/child/page", 400, rb"for value [\uD835\uDFD3]"),
+            (f"{api}/search?cql=title~%22{emoji}x%22&limit=1", 200, rb'\"\uD83D\uDE00x\""'),
+            (f"{api}/search?cql=label%3D%22{emoji}x%22", 200, rb'\"\uD83D\uDE00x\""'),
+            (f"{api}/search?cql=title~%22probe%22", 200, title),
+            (f"{api}/content/{pid}", 200, title),
+            (f"{api}/content/{pid}?expand=body.storage", 200, rb"body \uD83D\uDE00\uD835\uDFD3"),
+            (f"{api}/content/{cid}", 200, child_title),
+            (f"{api}/content?spaceKey={key}", 200, title),
+            (f"{api}/content?title={quote(page['title'])}&spaceKey={key}", 200, title),
+            (f"{api}/content/{pid}/child/page", 200, child_title),
+            (
+                f"{api}/content/{pid}/child/comment?expand=body.storage",
+                200,
+                rb"comment \uD83D\uDE00\uD835\uDFD3",
+            ),
+            (f"{api}/content/{pid}/label", 200, rb'"name":"probe\uD83D\uDE00"'),
+            (f"{api}/space/{key}", 200, space_name),
+            (f"{api}/space", 200, space_name),
+            (f"{api}/content/{pid}?expand=space", 200, space_name),
+            (f"/atlassian//wiki/rest/api/content/{pid}", 200, title),
+        ):
+            answer = client.get(path, headers=admin_h)
+            assert answer.status_code == status, path
+            assert written in answer.content, path
+            # and never the character's own UTF-8 bytes
+            assert e1.encode() not in answer.content, path
+            assert e2.encode() not in answer.content, path
+            assert answer.headers["content-length"] == str(len(answer.content)), path
+            head = client.head(path, headers=admin_h)
+            if "content-length" in head.headers:
+                assert head.headers["content-length"] == str(len(answer.content)), path
+        assert client.get(f"{api}/content/{pid}", headers=admin_h).json()["title"] == page["title"]
+        # A character inside the plane is written as its UTF-8 bytes, unescaped.
+        inside = client.get(f"{api}/space/%C3%A9", headers=admin_h)
+        assert inside.status_code == 404
+        assert "é".encode() in inside.content
 
 
 # --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------

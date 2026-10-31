@@ -1119,6 +1119,10 @@ _BATCH_ROWS = [
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values:batchGet?ranges=A1", None, None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _A1_FILTER, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents", '{"title": "x"}', None), 501, None, _UNIMPLEMENTED),
+    # a create's body and mask are refused ahead of the batch's 501
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents", '{"title": 5}', None), 400, 400, "Invalid value at 'title' (TYPE_STRING), 5"),
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents?fields=title,nope", '{"title": "x"}', None), 400, 400, "Request contains an invalid argument."),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1", None, None), 501, 404, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, 403, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/NoSuchSheet!A1", None, None), 501, 400, _UNIMPLEMENTED),
@@ -1896,16 +1900,17 @@ def test_drive_permissions_list_pages_a_file_with_three_permissions(three_reader
 
 
 @pytest.mark.parametrize(
-    "route, names",
+    "route, method, names",
     [
-        ("/drive/v3/files/{file_id}/permissions", {"pageSize", "pageToken", "fields"}),
-        ("/drive/v3/drives", {"q", "fields"}),
+        ("/drive/v3/files/{file_id}/permissions", "get", {"pageSize", "pageToken", "fields"}),
+        ("/drive/v3/drives", "get", {"q", "fields"}),
+        ("/docs/v1/documents", "post", {"fields"}),
     ],
 )
-def test_drive_listing_declares_the_parameters_it_reads(client, route, names):
+def test_a_google_route_declares_the_parameters_it_reads(client, route, method, names):
     """A parameter that shapes the answer is declared, so a client reading the OpenAPI document can
     find it, and `backlot diff --source google_drive` reports none of them as missing."""
-    op = client.app.openapi()["paths"][route]["get"]
+    op = client.app.openapi()["paths"][route][method]
     assert names <= {p["name"] for p in op["parameters"]}
 
 
@@ -8300,6 +8305,19 @@ _GRID = "Invalid value at 'include_grid_data' (TYPE_BOOL), "
             {"dataFilters": [{"a1Range": "Sheet1!A1"}], "includeGridData": "NOPE"},
             [("include_grid_data", _GRID + '"NOPE"')],
         ),
+        # a body that is not an object is refused alone (`protojson.whole`)
+        (
+            "POST",
+            "values_by_filter",
+            [("majorDimension", "NOPE")],
+            [],
+            [
+                (
+                    None,
+                    'Invalid JSON payload received. Unknown name "": Root element must be a message.',
+                )
+            ],
+        ),
     ],
 )
 def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
@@ -8325,7 +8343,7 @@ def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
     err = r.json()["error"]
     [bad_request] = err["details"]
     assert bad_request["@type"] == "type.googleapis.com/google.rpc.BadRequest"
-    got = [(v["field"], v["description"]) for v in bad_request["fieldViolations"]]
+    got = [(v.get("field"), v["description"]) for v in bad_request["fieldViolations"]]
     assert err["message"] == "\n".join(m for _, m in got)
     assert err["status"] == "INVALID_ARGUMENT"
 
@@ -12341,15 +12359,24 @@ _UNPARSED_BODIES = [
 @pytest.mark.parametrize("route", ["/values:batchGetByDataFilter", ":getByDataFilter"])
 def test_a_body_that_does_not_parse_is_refused_before_the_lookup(gc, gh, book, route):
     """The refusal `protojson.read` gives a body that does not parse, with a `parseError` entry at
-    `$.xgafv=1` (`gerr.invalid_json`), the same for a spreadsheet that does not exist. These are not
-    rows of `MEASURED_BY_FILTER`, since the sentence is not the one real gives."""
+    `$.xgafv=1` (`gerr.invalid_json`), the same for a spreadsheet that does not exist, and alone
+    where a query value is refused too, which a body read but refused is answered beside. These are
+    not rows of `MEASURED_BY_FILTER`, since the sentence is not the one real gives."""
+    params = {"$.xgafv": "1"}
+    beside = ""
+    if route.startswith("/values"):
+        params["majorDimension"] = "NOPE"
+        beside = (
+            "\nInvalid value at 'major_dimension' "
+            '(type.googleapis.com/google.apps.sheets.v4.Dimension), "NOPE"'
+        )
     answered = {}
     for spreadsheet in (book, "nosuchspreadsheet"):
         for body, _ in _UNPARSED_BODIES:
             r = gc.post(
                 f"/sheets/v4/spreadsheets/{spreadsheet}{route}",
                 headers=gh,
-                params={"$.xgafv": "1"},
+                params=params,
                 content=body,
             )
             err = _gerr(r)
@@ -12359,7 +12386,11 @@ def test_a_body_that_does_not_parse_is_refused_before_the_lookup(gc, gh, book, r
                 err["errors"][0]["reason"],
             )
     assert answered == {
-        (spreadsheet, body): (400, message, "parseError" if message == _NOT_JSON else "invalid")
+        (spreadsheet, body): (
+            (400, message, "parseError")
+            if message == _NOT_JSON
+            else (400, message + beside, "invalid")
+        )
         for spreadsheet in (book, "nosuchspreadsheet")
         for body, message in _UNPARSED_BODIES
     }
@@ -13745,7 +13776,7 @@ WRITE_RECORDS = [
         "author_email": "owner@acme.com",
         "content": "notes",
         "created": "2026-07-01T09:00:00Z",
-        "updated": "2026-07-14T17:20:00Z",
+        "updated": "2026-07-01T09:00:00Z",
     },
     {
         "source_type": "google_drive",
@@ -14074,6 +14105,7 @@ def test_who_may_write_and_in_what_order_a_write_is_refused(
 @pytest.mark.parametrize(
     "method,suffix,rpc",
     [
+        ("POST", "/docs/v1/documents", "docs.v1.DocumentsService.CreateDocument"),
         ("PUT", "/values/A1", "UpdateValues"),
         ("POST", "/values:batchUpdate", "BatchUpdateValues"),
         ("POST", "/values/A1:clear", "ClearValues"),
@@ -14090,9 +14122,12 @@ def test_who_may_write_and_in_what_order_a_write_is_refused(
         ("GET", "/developerMetadata/5", "GetDeveloperMetadata"),
     ],
 )
-def test_a_sheets_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method, suffix, rpc):
-    """No credential on these is a 401 whose ErrorInfo names the RPC."""
-    r = wc.request(method, f"{wbook}{suffix}", params=_RAW, json={})
+def test_an_editor_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method, suffix, rpc):
+    """No credential on these is a 401 whose ErrorInfo names the RPC: a Sheets one by its name on
+    the spreadsheet the path suffixes, any other by its path and its whole name."""
+    if "." not in rpc:
+        suffix, rpc = f"{wbook}{suffix}", f"sheets.v4.SpreadsheetsService.{rpc}"
+    r = wc.request(method, suffix, params=_RAW, json={})
     assert r.status_code == 401
     assert r.json()["error"]["details"] == [
         {
@@ -14100,8 +14135,8 @@ def test_a_sheets_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method
             "reason": "CREDENTIALS_MISSING",
             "domain": "googleapis.com",
             "metadata": {
-                "method": f"google.apps.sheets.v4.SpreadsheetsService.{rpc}",
-                "service": "sheets.googleapis.com",
+                "method": f"google.apps.{rpc}",
+                "service": f"{rpc.split('.')[0]}.googleapis.com",
             },
         }
     ]
@@ -14726,172 +14761,1299 @@ def test_a_created_spreadsheet_keeps_what_its_sheets_state(wc, wh):
         assert [x["properties"]["title"] for x in made["sheets"]] == list(pair)
 
 
-@pytest.mark.parametrize(
-    "body,message",
-    [
-        (
-            {
-                "sheets": [
-                    {"properties": {"title": "a", "sheetId": 7}},
-                    {"properties": {"title": "b", "sheetId": 7}},
-                ]
+_SHEETS_TITLE_5 = "Invalid value at 'spreadsheet.properties.title' (TYPE_STRING), 5"
+_SHEETS_CRITERIA_AT = "spreadsheet.sheets[0].basic_filter"
+
+
+def _criteria(criteria) -> dict:
+    """A `Spreadsheet` whose one sheet's basic filter states ``criteria``, and a title of 5."""
+    return {"sheets": [{"basicFilter": {"criteria": criteria}}], "properties": {"title": 5}}
+
+
+# What `spreadsheets.create` refuses, as `(body, message)`.
+_SHEETS_CREATE_REFUSALS = [
+    # a map is read as its entries, an int32 key typed
+    (
+        _criteria(5),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria' "
+        f"(type.googleapis.com/google.apps.sheets.v4.BasicFilter.CriteriaEntry), 5\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria([]),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}' (Map), Cannot bind a list to map for field "
+        f"'criteria'.\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria({"a": {"condition": 5}}),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].key' (TYPE_INT32), \"a\"\n"
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].value.condition' "
+        f"(type.googleapis.com/google.apps.sheets.v4.BooleanCondition), 5\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria({"0": []}),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].value' (Map), Cannot have repeated "
+        f"items ('0') within a map.\n{_SHEETS_TITLE_5}",
+    ),
+    (_criteria({"+1": {}, "2": None}), _SHEETS_TITLE_5),
+    (
+        {"sheets": [{"filterViews": [{"criteria": {"a": {}}}]}], "properties": {"title": 5}},
+        "Invalid value at 'spreadsheet.sheets[0].filter_views[0].criteria[0].key' (TYPE_INT32), "
+        f'"a"\n{_SHEETS_TITLE_5}',
+    ),
+    (
+        {
+            "sheets": [
+                {"data": [{"rowData": [{"values": [{"pivotTable": {"criteria": {"a": {}}}}]}]}]}
+            ],
+            "properties": {"title": 5},
+        },
+        "Invalid value at 'spreadsheet.sheets[0].data[0].row_data[0].values[0].pivot_table."
+        f'criteria[0].key\' (TYPE_INT32), "a"\n{_SHEETS_TITLE_5}',
+    ),
+    (
+        {
+            "sheets": [
+                {"properties": {"title": "a", "sheetId": 7}},
+                {"properties": {"title": "b", "sheetId": 7}},
+            ]
+        },
+        "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "a", "sheetId": -1}}]},
+        "Invalid sheets[0]: Sheet id must be non-negative.",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "Same"}}, {"properties": {"title": "same"}}]},
+        'Invalid sheets[1]: A sheet with the name "same" already exists. Please enter another name.',
+    ),
+    (
+        {"sheets": [{"properties": {"title": "x" * 101}}]},
+        "Invalid sheets[0]: The sheet name cannot be greater than 100 characters.",
+    ),
+    (
+        {"sheets": [{"properties": {"index": 3}}]},
+        "Invalid sheets: The new sheet index is too high.",
+    ),
+    (
+        {"sheets": [{"properties": {"hidden": True}}]},
+        "Invalid sheets[0]: You can't hide all the sheets in a document.",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"columnCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the columns on the sheet.",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"rowCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the rows on the sheet.",
+    ),
+    ({"spreadsheetId": "abc"}, "Invalid spreadsheet.spreadsheetId: The id is invalid."),
+    # two refusals at once: real names the one it checks first
+    (
+        {"spreadsheetId": "abc", "properties": {"locale": "xx_YY"}},
+        "Invalid properties: Unsupported locale: xx_YY",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "x" * 101, "sheetId": -1}}]},
+        "Invalid sheets[0]: Sheet id must be non-negative.",
+    ),
+    (
+        {
+            "sheets": [
+                {"properties": {"title": "a", "sheetId": 7}},
+                {"properties": {"title": "A", "sheetId": 7}},
+            ]
+        },
+        "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"rowCount": -1, "columnCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the rows on the sheet.",
+    ),
+    (
+        {"sheets": [{"properties": {"index": 3, "hidden": True}}]},
+        "Invalid sheets[0]: You can't hide all the sheets in a document.",
+    ),
+    (
+        {"bogus": 1},
+        "Invalid JSON payload received. Unknown name \"bogus\" at 'spreadsheet': Cannot find field.",
+    ),
+    ({"properties": {"locale": "xx_YY"}}, "Invalid properties: Unsupported locale: xx_YY"),
+    ({"properties": {"locale": "en_us"}}, "Invalid properties: Unsupported locale: en_us"),
+    (
+        {"sheets": [{"properties": {"title": "o", "sheetType": "OBJECT"}}]},
+        "Object sheets must have exactly one embedded object",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "data": [
+                        {
+                            "rowData": [
+                                {"values": [{"userEnteredValue": {"errorValue": {"type": "N_A"}}}]}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Cannot set cell to an error value",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"rowCount": 2, "columnCount": 2}},
+                    "data": [
+                        {
+                            "startRow": 3,
+                            "rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}]}],
+                        }
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: GridCoordinate.rowIndex[3] is after last row in grid[1]",
+    ),
+    # a block starting inside the grid and running past it says what it attempted
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"rowCount": 2}},
+                    "data": [
+                        {"rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}]}] * 3}
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Attempting to write row: 2, beyond the last requested row "
+        "of: 1",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"columnCount": 2}},
+                    "data": [
+                        {"rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}] * 3}]}
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Attempting to write column: 2, beyond the last requested "
+        "column of: 1",
+    ),
+    # titles collide as Java's equalsIgnoreCase compares them
+    (
+        {"sheets": [{"properties": {"title": "ſheet"}}, {"properties": {"title": "Sheet"}}]},
+        'Invalid sheets[1]: A sheet with the name "Sheet" already exists. Please enter another name.',
+    ),
+    (
+        {"sheets": [{"properties": {"title": "ς"}}, {"properties": {"title": "σ"}}]},
+        'Invalid sheets[1]: A sheet with the name "σ" already exists. Please enter another name.',
+    ),
+]
+
+
+def _create_doc(wc, h, body=None, **params):
+    r = wc.post("/docs/v1/documents", headers=h, params=params, json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh, monkeypatch):
+    """Measured: the answer is the owner's `documents.get` with `tabs` beside the flat members and
+    no `commentsViewMode`, its body a section break and one empty paragraph, and the next read
+    serves its `revisionId`; the Drive file sits at the creator's My Drive root with one
+    permission, the owner's, a `size` of 1 and `version` 1; anyone else gets the 403 and 404 a
+    hidden file gets. A new id is one no file has."""
+    h = wh[_OWNER]
+    doc = _create_doc(wc, h, {"title": "Fresh doc"})
+    did = doc["documentId"]
+    assert list(doc) == [
+        "title",
+        "body",
+        "documentStyle",
+        "namedStyles",
+        "revisionId",
+        "suggestionsViewMode",
+        "documentId",
+        "tabs",
+    ]
+    assert doc["body"]["content"] == [
+        {
+            "endIndex": 1,
+            "sectionBreak": {
+                "sectionStyle": {
+                    "columnSeparatorStyle": "NONE",
+                    "contentDirection": "LEFT_TO_RIGHT",
+                    "sectionType": "CONTINUOUS",
+                }
             },
-            "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
-        ),
-        (
-            {"sheets": [{"properties": {"title": "a", "sheetId": -1}}]},
-            "Invalid sheets[0]: Sheet id must be non-negative.",
-        ),
-        (
-            {"sheets": [{"properties": {"title": "Same"}}, {"properties": {"title": "same"}}]},
-            'Invalid sheets[1]: A sheet with the name "same" already exists. Please enter another name.',
-        ),
-        (
-            {"sheets": [{"properties": {"title": "x" * 101}}]},
-            "Invalid sheets[0]: The sheet name cannot be greater than 100 characters.",
-        ),
-        (
-            {"sheets": [{"properties": {"index": 3}}]},
-            "Invalid sheets: The new sheet index is too high.",
-        ),
-        (
-            {"sheets": [{"properties": {"hidden": True}}]},
-            "Invalid sheets[0]: You can't hide all the sheets in a document.",
-        ),
-        (
-            {"sheets": [{"properties": {"gridProperties": {"columnCount": -1}}}]},
-            "Invalid sheets[0]: You can't delete all the columns on the sheet.",
-        ),
-        (
-            {"sheets": [{"properties": {"gridProperties": {"rowCount": -1}}}]},
-            "Invalid sheets[0]: You can't delete all the rows on the sheet.",
-        ),
-        ({"spreadsheetId": "abc"}, "Invalid spreadsheet.spreadsheetId: The id is invalid."),
-        # two refusals at once: real names the one it checks first
-        (
-            {"spreadsheetId": "abc", "properties": {"locale": "xx_YY"}},
-            "Invalid properties: Unsupported locale: xx_YY",
-        ),
-        (
-            {"sheets": [{"properties": {"title": "x" * 101, "sheetId": -1}}]},
-            "Invalid sheets[0]: Sheet id must be non-negative.",
-        ),
-        (
-            {
-                "sheets": [
-                    {"properties": {"title": "a", "sheetId": 7}},
-                    {"properties": {"title": "A", "sheetId": 7}},
-                ]
-            },
-            "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
-        ),
-        (
-            {"sheets": [{"properties": {"gridProperties": {"rowCount": -1, "columnCount": -1}}}]},
-            "Invalid sheets[0]: You can't delete all the rows on the sheet.",
-        ),
-        (
-            {"sheets": [{"properties": {"index": 3, "hidden": True}}]},
-            "Invalid sheets[0]: You can't hide all the sheets in a document.",
-        ),
-        (
-            {"bogus": 1},
-            "Invalid JSON payload received. Unknown name \"bogus\" at 'spreadsheet': Cannot find field.",
-        ),
-        ({"properties": {"locale": "xx_YY"}}, "Invalid properties: Unsupported locale: xx_YY"),
-        ({"properties": {"locale": "en_us"}}, "Invalid properties: Unsupported locale: en_us"),
-        (
-            {"sheets": [{"properties": {"title": "o", "sheetType": "OBJECT"}}]},
-            "Object sheets must have exactly one embedded object",
-        ),
-        (
-            {
-                "sheets": [
+        },
+        {
+            "startIndex": 1,
+            "endIndex": 2,
+            "paragraph": {
+                "elements": [
                     {
-                        "data": [
-                            {
-                                "rowData": [
-                                    {
-                                        "values": [
-                                            {"userEnteredValue": {"errorValue": {"type": "N_A"}}}
-                                        ]
-                                    }
-                                ]
-                            }
-                        ]
+                        "startIndex": 1,
+                        "endIndex": 2,
+                        "textRun": {"content": "\n", "textStyle": {}},
                     }
-                ]
+                ],
+                "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT"},
             },
-            "Invalid sheets[0].data[0]: Cannot set cell to an error value",
+        },
+    ]
+    held = {k: doc[k] for k in ("body", "documentStyle", "namedStyles")}
+    assert doc["tabs"] == [{"tabProperties": _DOCS_TAB, "documentTab": held}]
+    read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+    flat = {k: v for k, v in doc.items() if k != "tabs"}
+    assert read == {**flat, "commentsViewMode": "COMMENTS_VIEW_MODE_OMITTED"}
+    fields = "name,mimeType,parents,shared,size,quotaBytesUsed,version,createdTime,modifiedTime"
+    f = wc.get(f"/drive/v3/files/{did}", headers=h, params={"fields": fields}).json()
+    assert f == {
+        "name": "Fresh doc",
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": [synth.drive_root_id(_OWNER)],
+        "shared": False,
+        "size": "1",
+        "quotaBytesUsed": "1",
+        "version": "1",
+        "createdTime": f["modifiedTime"],
+        "modifiedTime": f["modifiedTime"],
+    }
+    # a Doc with content is past version 1 whatever its two times say
+    notes = f"/drive/v3/files/{served_id('google_drive', 'wr-doc')}"
+    f = wc.get(notes, headers=h, params={"fields": fields}).json()
+    assert (f["size"], f["version"], f["createdTime"]) == ("1024", "2", f["modifiedTime"])
+    # and so is a spreadsheet with no cells, its version, size and quota as real's read together
+    # three seconds on
+    quota = {"fields": "storageQuota(usage)"}
+    used = int(wc.get("/drive/v3/about", headers=h, params=quota).json()["storageQuota"]["usage"])
+    r = wc.post("/sheets/v4/spreadsheets", headers=h, json={"properties": {"title": "Empty"}})
+    sheet = f"/drive/v3/files/{r.json()['spreadsheetId']}"
+    f = wc.get(sheet, headers=h, params={"fields": fields}).json()
+    assert (f["size"], f["quotaBytesUsed"], f["version"]) == ("1024", "1024", "2")
+    quota = wc.get("/drive/v3/about", headers=h, params=quota).json()["storageQuota"]
+    assert int(quota["usage"]) == used + 1024
+    roots = wc.get("/drive/v3/files", headers=h, params={"q": "'root' in parents"}).json()
+    assert did in [x["id"] for x in roots["files"]]
+    perms = wc.get(f"/drive/v3/files/{did}/permissions", headers=h).json()["permissions"]
+    assert [p["role"] for p in perms] == ["owner"]
+    other = wh["reader@acme.com"]
+    assert wc.get(f"/docs/v1/documents/{did}", headers=other).status_code == 403
+    assert wc.get(f"/drive/v3/files/{did}", headers=other).status_code == 404
+    # the admin token owns what its service account creates
+    admin = wh["admin"]
+    mine = _create_doc(wc, admin, {})["documentId"]
+    owned = wc.get("/drive/v3/files", headers=admin, params={"q": "'me' in owners"}).json()
+    assert [x["id"] for x in owned["files"]] == [mine]
+    minted = iter([did, "1fresh"])
+    monkeypatch.setattr(synth, "gdrive_file_id", lambda seed: next(minted))
+    assert _create_doc(wc, h)["documentId"] == "1fresh"
+
+
+def test_a_created_document_keeps_its_title_alone(wc, wh):
+    """Measured: of what a request states, only `title` is kept, from the body or, over it, the
+    query, whose last repeat is read; no title, `null` or an empty one is `Untitled document`."""
+    h = wh[_OWNER]
+    plain = _create_doc(wc, h, {"title": "t"})
+    stated = _create_doc(
+        wc,
+        h,
+        {
+            "title": "t",
+            "documentId": "abc",
+            "revisionId": "abc",
+            "suggestionsViewMode": "PREVIEW_WITHOUT_SUGGESTIONS",
+            "commentsViewMode": 3,
+            "body": {"content": [{"paragraph": {"elements": [{"textRun": {"content": "hi\n"}}]}}]},
+            "tabs": [{"tabProperties": {"title": "X"}}, {"tabProperties": {"title": "Y"}}],
+            "documentStyle": {"marginTop": {"magnitude": 10, "unit": "PT"}},
+            "namedStyles": {"styles": []},
+        },
+        suggestionsViewMode="PREVIEW_WITHOUT_SUGGESTIONS",
+        documentId="abc",
+    )
+    ignored = ("documentId", "revisionId")
+    assert {k: v for k, v in stated.items() if k not in ignored} == {
+        k: v for k, v in plain.items() if k not in ignored
+    }
+    assert stated["documentId"] not in ("abc", plain["documentId"])
+    # values of the right kind, each read and dropped
+    read = [
+        *(
+            _doc_style(paragraphStyle={"namedStyleType": v})
+            for v in (5, 999, -1, "heading_1", "HEADING-1", "1")
         ),
-        (
-            {
-                "sheets": [
-                    {
-                        "properties": {"gridProperties": {"rowCount": 2, "columnCount": 2}},
-                        "data": [
-                            {
-                                "startRow": 3,
-                                "rowData": [
-                                    {"values": [{"userEnteredValue": {"stringValue": "x"}}]}
-                                ],
-                            }
-                        ],
-                    }
-                ]
-            },
-            "Invalid sheets[0].data[0]: GridCoordinate.rowIndex[3] is after last row in grid[1]",
+        {"headers": None},
+        {"headers": {"h1": None}},
+        {"headers": {"h1": {"headerId": "x"}}},
+        *(
+            _doc_date(v)
+            for v in (
+                "2026-10-29T00:00:00Z",
+                "2026-10-29T00:00:00.123456789+09:00",
+                " 2026-10-29T00:00:00Z",
+                "2026-10-29T00:00:60Z",
+                {},
+                {"seconds": 1, "nanos": 2},
+                None,
+            )
         ),
-        # a block starting inside the grid and running past it says what it attempted
-        (
-            {
-                "sheets": [
-                    {
-                        "properties": {"gridProperties": {"rowCount": 2}},
-                        "data": [
-                            {
-                                "rowData": [
-                                    {"values": [{"userEnteredValue": {"stringValue": "x"}}]}
-                                ]
-                                * 3
-                            }
-                        ],
-                    }
-                ]
-            },
-            "Invalid sheets[0].data[0]: Attempting to write row: 2, beyond the last requested row "
-            "of: 1",
-        ),
-        (
-            {
-                "sheets": [
-                    {
-                        "properties": {"gridProperties": {"columnCount": 2}},
-                        "data": [
-                            {
-                                "rowData": [
-                                    {"values": [{"userEnteredValue": {"stringValue": "x"}}] * 3}
-                                ]
-                            }
-                        ],
-                    }
-                ]
-            },
-            "Invalid sheets[0].data[0]: Attempting to write column: 2, beyond the last requested "
-            "column of: 1",
-        ),
-        # titles collide as Java's equalsIgnoreCase compares them
-        (
-            {"sheets": [{"properties": {"title": "ſheet"}}, {"properties": {"title": "Sheet"}}]},
-            'Invalid sheets[1]: A sheet with the name "Sheet" already exists. Please enter another name.',
-        ),
-        (
-            {"sheets": [{"properties": {"title": "ς"}}, {"properties": {"title": "σ"}}]},
-            'Invalid sheets[1]: A sheet with the name "σ" already exists. Please enter another name.',
-        ),
-    ],
+        *(_doc_red(v) for v in ("NaN", "Infinity", 3.4e38, 1e-50)),
+        *(_doc_style(textStyle={"bold": v}) for v in ({"value": True}, {}, "true", 1)),
+        {"tabs": [{"tabProperties": {"index": "1"}}]},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": "x"}}]}},
+        _doc_tables(13),
+    ]
+    assert {_create_doc(wc, h, body)["title"] for body in read} == {"Untitled document"}
+    titles = [
+        ({}, {}),
+        (None, {}),
+        ({"title": None}, {}),
+        ({"title": ""}, {}),
+        ({"title": "   "}, {}),
+        ({"title": "body"}, {"title": "query"}),
+        ({"title": "body"}, {"title": ""}),
+        ({}, [("title", "first"), ("title", "last")]),
+    ]
+    assert [
+        wc.post("/docs/v1/documents", headers=h, params=params, json=body).json()["title"]
+        for body, params in titles
+    ] == [
+        "Untitled document",
+        "Untitled document",
+        "Untitled document",
+        "Untitled document",
+        "   ",
+        "query",
+        "Untitled document",
+        "last",
+    ]
+    masks = {
+        "documentId": ["documentId"],
+        "title,tabs": ["title", "tabs"],
+        "body": ["body"],
+        "*": list(plain),
+        "comments": [],
+    }
+    assert {mask: list(_create_doc(wc, h, {"title": "m"}, fields=mask)) for mask in masks} == masks
+    assert _create_doc(wc, h, {}, fields="*.tabProperties") == {
+        "tabs": [{"tabProperties": _DOCS_TAB}]
+    }
+
+
+_DOCS_TYPE = "type.googleapis.com/google.apps.docs.v1"
+_ROOT_NOT_A_MESSAGE = (
+    'Invalid JSON payload received. Unknown name "": Root element must be a message.'
 )
-def test_a_create_real_refuses_is_refused_with_reals_message(wc, wh, body, message):
-    r = wc.post("/sheets/v4/spreadsheets", headers=wh[_OWNER], json=body)
+
+
+def _doc_element(element: dict) -> dict:
+    """A `Document` whose body holds one paragraph holding ``element``."""
+    return {"body": {"content": [{"paragraph": {"elements": [element]}}]}}
+
+
+def _doc_style(**style) -> dict:
+    """A `Document` whose one named style states ``style``."""
+    return {"namedStyles": {"styles": [style]}}
+
+
+def _doc_date(value) -> dict:
+    return _doc_element({"dateElement": {"dateElementProperties": {"timestamp": value}}})
+
+
+def _doc_red(value) -> dict:
+    return {"documentStyle": {"background": {"color": {"color": {"rgbColor": {"red": value}}}}}}
+
+
+def _doc_tables(depth: int) -> dict:
+    """A `Document` whose body nests ``depth`` tables, each in the one cell of the last."""
+    cell: dict = {}
+    for _ in range(depth):
+        cell = {"table": {"tableRows": [{"tableCells": [{"content": [cell]}]}]}}
+    return {"body": {"content": [cell]}}
+
+
+def _nested(depth: int, value=1):
+    for _ in range(depth):
+        value = {"a": value}
+    return value
+
+
+def _deep(opening: bytes, leaf: bytes, closing: bytes, depth: int, at=(b'"nope": ', b"")):
+    """A body nesting ``leaf`` ``depth`` deep under a refused title, at ``at``'s opening and
+    closing, as raw JSON, since `json.dumps` cannot write it."""
+    head, tail = at
+    return lambda: b'{"title": 5, ' + head + opening * depth + leaf + closing * depth + tail + b"}"
+
+
+_DOCS_DATE_AT = "body.content[0].paragraph.elements[0].date_element.date_element_properties"
+_DOCS_TIMESTAMP = "type.googleapis.com/google.protobuf.Timestamp"
+_DOCS_TOO_DEEP = "Invalid JSON payload received. Message too deep. Max recursion depth reached"
+_DOCS_TOO_LONG = "Request contains an invalid argument."
+
+# What `documents.create` refuses, as `(params, body, message)`.
+_DOCS_CREATE_REFUSALS = [
+    ({}, {"title": 5}, "Invalid value at 'title' (TYPE_STRING), 5"),
+    ({}, {"title": True}, "Invalid value at 'title' (TYPE_STRING), true"),
+    (
+        {},
+        {"title": ["a"]},
+        'Invalid JSON payload received. Unknown name "title": Proto field is not repeating, '
+        "cannot start list.",
+    ),
+    ({}, {"title": {"a": 1}}, "Invalid value (title), Starting an object on a scalar field"),
+    ({}, [], _ROOT_NOT_A_MESSAGE),
+    ({}, "x", _ROOT_NOT_A_MESSAGE),
+    ({}, 5, _ROOT_NOT_A_MESSAGE),
+    (
+        {},
+        {"zap": 2, "title": "t", "nope": 1},
+        'Invalid JSON payload received. Unknown name "zap": Cannot find field.\n'
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    ),
+    (
+        {},
+        {"nope": 1, "title": 5},
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.\n'
+        "Invalid value at 'title' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"body": {"content": "x"}},
+        f"Invalid value at 'body.content' ({_DOCS_TYPE}.StructuralElement), \"x\"",
+    ),
+    (
+        {},
+        {"body": {"nope": 1}},
+        "Invalid JSON payload received. Unknown name \"nope\" at 'body': Cannot find field.",
+    ),
+    ({}, {"comments": 5}, f"Invalid value at 'comments' ({_DOCS_TYPE}.CommentThread), 5"),
+    (
+        {},
+        {"suggestionsViewMode": "NOPE"},
+        f"Invalid value at 'suggestions_view_mode' ({_DOCS_TYPE}.SuggestionsViewMode), \"NOPE\"",
+    ),
+    # the query's enums are refused beside the body's refusals, and ahead of the mask's
+    (
+        {"suggestionsViewMode": "NOPE"},
+        {"title": 5},
+        "Invalid value at 'title' (TYPE_STRING), 5\nInvalid value at 'suggestions_view_mode' "
+        f'({_DOCS_TYPE}.SuggestionsViewMode), "NOPE"',
+    ),
+    (
+        {"commentsViewMode": "NOPE", "fields": "nope"},
+        {},
+        f"Invalid value at 'comments_view_mode' ({_DOCS_TYPE}.CommentsViewMode), \"NOPE\"",
+    ),
+    ({"fields": "nope"}, [], _ROOT_NOT_A_MESSAGE),
+    ({"fields": "nope"}, {}, "Request contains an invalid argument."),
+    ({"fields": "tabs("}, {}, "Request contains an invalid argument."),
+    # a title past 10,000 UTF-16 code units, last
+    ({}, {"title": "x" * 10_001}, _DOCS_TOO_LONG),
+    ({}, {"title": "\U0001f600" * 5_001}, _DOCS_TOO_LONG),
+    ({"title": "x" * 10_001}, {}, _DOCS_TOO_LONG),
+    (
+        {},
+        {"title": "x" * 10_001, "nope": 1},
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    ),
+    # a body refused as a whole is answered alone
+    ({"suggestionsViewMode": "NOPE"}, [], _ROOT_NOT_A_MESSAGE),
+    # a map is read as its entries, each named by its count and `value`
+    ({}, {"headers": 5}, f"Invalid value at 'headers' ({_DOCS_TYPE}.Document.HeadersEntry), 5"),
+    (
+        {},
+        {"inlineObjects": []},
+        "Invalid value (Map), Cannot bind a list to map for field 'inlineObjects'.",
+    ),
+    (
+        {},
+        {"tabs": [{"documentTab": {"inlineObjects": []}}]},
+        "Invalid value at 'tabs[0].document_tab' (Map), Cannot bind a list to map for field "
+        "'inlineObjects'.",
+    ),
+    ({}, {"headers": {"h1": 5}}, f"Invalid value at 'headers[0].value' ({_DOCS_TYPE}.Header), 5"),
+    (
+        {},
+        {"headers": {"h1": []}},
+        "Invalid value at 'headers[0].value' (Map), Cannot have repeated items ('h1') within a "
+        "map.",
+    ),
+    (
+        {},
+        {"headers": {"a": {"headerId": "x"}, "b": {"headerId": 5}}},
+        "Invalid value at 'headers[1].value.header_id' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"lists": {"l1": {"nope": 1}}},
+        "Invalid JSON payload received. Unknown name \"nope\" at 'lists[0].value': Cannot find "
+        "field.",
+    ),
+    (
+        {},
+        {"lists": {"l": {"suggestedListPropertiesChanges": {"s": 5}}}},
+        "Invalid value at 'lists[0].value.suggested_list_properties_changes[0].value' "
+        f"({_DOCS_TYPE}.SuggestedListProperties), 5",
+    ),
+    # every enum is typed as its own, a number past int32 refused
+    (
+        {},
+        _doc_style(paragraphStyle={"namedStyleType": "BOGUS"}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.named_style_type' "
+        f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"',
+    ),
+    (
+        {},
+        _doc_style(paragraphStyle={"namedStyleType": 2**31}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.named_style_type' "
+        f"({_DOCS_TYPE}.NamedStyleType), 2147483648",
+    ),
+    (
+        {},
+        _doc_element({"autoText": {"type": "BOGUS"}}),
+        "Invalid value at 'body.content[0].paragraph.elements[0].auto_text.type' "
+        f'({_DOCS_TYPE}.AutoText.Type), "BOGUS"',
+    ),
+    # a wrapped value is named at `value`
+    (
+        {},
+        {"documentStyle": {"defaultHeaderId": 5}},
+        "Invalid value at 'document_style.default_header_id.value' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": {"value": "x"}}),
+        "Invalid value at 'named_styles.styles[0].text_style.bold.value' (TYPE_BOOL), \"x\"",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": 2}),
+        "Invalid value at 'named_styles.styles[0].text_style.bold.value' (TYPE_BOOL), 2",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": {"nope": 1}}),
+        'Invalid JSON payload received. Unknown name "nope" at '
+        "'named_styles.styles[0].text_style.bold': Cannot find field.",
+    ),
+    (
+        {},
+        _doc_style(paragraphStyle={"lineSpacing": 1e39}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.line_spacing.value' "
+        "(TYPE_FLOAT), 1e+39",
+    ),
+    (
+        {},
+        {"tabs": [{"tabProperties": {"index": {"value": "x"}}}]},
+        "Invalid value at 'tabs[0].tab_properties.index.value' (TYPE_INT32), \"x\"",
+    ),
+    # a float past a float's range
+    (
+        {},
+        _doc_red(1e39),
+        "Invalid value at 'document_style.background.color.color.rgb_color.red' (TYPE_FLOAT), "
+        "1e+39",
+    ),
+    (
+        {},
+        _doc_red("1e39"),
+        "Invalid value at 'document_style.background.color.color.rgb_color.red' (TYPE_FLOAT), "
+        '"1e39"',
+    ),
+    # a timestamp: a string in RFC 3339, or the message it is
+    (
+        {},
+        _doc_date(5),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid data type for timestamp, value is 5",
+    ),
+    (
+        {},
+        _doc_date("2026-10-29"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Illegal timestamp format; timestamps must end with 'Z' or have a valid timezone offset.",
+    ),
+    (
+        {},
+        _doc_date("2026-13-01T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid time format: Failed to parse input",
+    ),
+    (
+        {},
+        _doc_date("2026-02-30T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid time format: Out-of-range field",
+    ),
+    (
+        {},
+        _doc_date("0000-01-01T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Timestamp value exceeds limits",
+    ),
+    (
+        {},
+        _doc_date({"seconds": "x"}),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp.seconds' (TYPE_INT64), \"x\"",
+    ),
+    (
+        {},
+        {"suggestions": [{"replies": [{"create_time": 5}]}]},
+        f"Invalid value at 'suggestions[0].replies[0].create_time' ({_DOCS_TIMESTAMP}), Field "
+        "'create_time', Invalid data type for timestamp, value is 5",
+    ),
+    # a second member of a oneof
+    (
+        {},
+        _doc_element({"textRun": {}, "autoText": {}}),
+        "Invalid value at 'body.content[0].paragraph.elements[0]' (oneof), oneof field "
+        "'content' is already set. Cannot set 'autoText'",
+    ),
+    # a repeated string takes one value, and counts only the elements it refuses
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": 5}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": [5, "a", 6]}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids[0]' (TYPE_STRING), "
+        "5\nInvalid value at 'body.content[0].paragraph.positioned_object_ids[1]' "
+        "(TYPE_STRING), 6",
+    ),
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": [{}]}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids' "
+        "(positioned_object_ids), Starting an object on a scalar field",
+    ),
+    # nested past 100, alone whatever else is refused
+    ({}, {"title": 5, **_doc_tables(14)}, f"{_DOCS_TOO_DEEP} in array"),
+    ({}, {"title": 5, "nope": _nested(100)}, f"{_DOCS_TOO_DEEP} for key 'a'"),
+    # and past the depth Python's own parser reaches
+    ({}, _deep(b'{"a": ', b"1", b"}", 1_000_000), f"{_DOCS_TOO_DEEP} for key 'a'"),
+    ({}, _deep(b"[", b"1", b"]", 1_000_000), f"{_DOCS_TOO_DEEP} in array"),
+    ({}, _deep(b'[{"a": ', b"1", b"}]", 500_000), f"{_DOCS_TOO_DEEP} for key ''"),
+    (
+        {},
+        _deep(
+            b'{"a\\"": ',
+            b"1",
+            b"}",
+            1_000_000,
+            (b'"x": ' + b"[" * 99 + b"]" * 99 + b', "nope": ', b""),
+        ),
+        f"{_DOCS_TOO_DEEP} for key 'a\"'",
+    ),
+    # brackets inside a string, each run after a character that does not end it, are not counted
+    (
+        {},
+        _deep(
+            b'{"a": ',
+            b"1",
+            b"}",
+            1_000_000,
+            (
+                b'"s": "'
+                + b"".join(bytes([c]) + b"[" * 101 for c in b"'\t\n\r\x07\x08\x0c")
+                + b'\\"'
+                + b"[" * 101
+                + b'", "nope": ',
+                b"",
+            ),
+        ),
+        f"{_DOCS_TOO_DEEP} for key 'a'",
+    ),
+    (
+        {},
+        _deep(
+            b'{"table": {"tableRows": [{"tableCells": [{"content": [',
+            b"{}",
+            b"]}]}]}}",
+            20_000,
+            (b'"body": {"content": [', b"]}"),
+        ),
+        f"{_DOCS_TOO_DEEP} in array",
+    ),
+]
+
+
+def _doc_at(path: str, leaf: dict) -> dict:
+    """A `Document` holding ``leaf`` at ``path``, where `[]` is a list's one element and `{}` a
+    map's one entry."""
+    for step in reversed(path.split(".") if path else []):
+        name = step.rstrip("[]{}")
+        held = [leaf] if step.endswith("[]") else {"k": leaf} if step.endswith("{}") else leaf
+        leaf = {name: held}
+    return leaf
+
+
+def _doc_refused(path: str, refusals: list) -> str:
+    """Real's message refusing ``refusals`` of the message at ``path``, each a name under it
+    (none for the message itself) and the rest of its line."""
+    at = ".".join(
+        re.sub(r"(?<!^)(?=[A-Z])", "_", step.rstrip("[]{}")).lower()
+        + ("[0]" if step.endswith("[]") else "[0].value" if step.endswith("{}") else "")
+        for step in path.split(".")
+        if step
+    )
+    return "\n".join(
+        f"Invalid value at '{'.'.join(filter(None, (at, name)))}' {rest}" for name, rest in refusals
+    )
+
+
+# each field `backlot/data/gdocs_proto.json` types past the discovery document, given a value of
+# the wrong kind, and each oneof with every member set
+_DOCS_ANNOTATED = [
+    (
+        "body.content[].paragraph.elements[].autoText",
+        {"type": "BOGUS"},
+        [
+            ("type", f'({_DOCS_TYPE}.AutoText.Type), "BOGUS"'),
+        ],
+    ),
+    (
+        "comments[]",
+        {"status": "BOGUS"},
+        [
+            ("status", f'({_DOCS_TYPE}.CommentThread.Status), "BOGUS"'),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject.imageProperties.cropProperties",
+        {
+            "angle": "x",
+            "offsetLeft": "x",
+            "offsetTop": "x",
+            "offsetBottom": "x",
+            "offsetRight": "x",
+        },
+        [
+            ("angle", '(TYPE_FLOAT), "x"'),
+            ("offset_left", '(TYPE_FLOAT), "x"'),
+            ("offset_top", '(TYPE_FLOAT), "x"'),
+            ("offset_bottom", '(TYPE_FLOAT), "x"'),
+            ("offset_right", '(TYPE_FLOAT), "x"'),
+        ],
+    ),
+    (
+        "body.content[].paragraph.elements[].dateElement.dateElementProperties",
+        {"timestamp": 5, "dateFormat": "BOGUS", "timeFormat": "BOGUS"},
+        [
+            (
+                "timestamp",
+                f"({_DOCS_TIMESTAMP}), Field 'timestamp', Invalid data type for timestamp, value is 5",
+            ),
+            ("date_format", f'({_DOCS_TYPE}.DateFormat), "BOGUS"'),
+            ("time_format", f'({_DOCS_TYPE}.TimeFormat), "BOGUS"'),
+        ],
+    ),
+    (
+        "documentStyle.marginBottom",
+        {"unit": "BOGUS"},
+        [
+            ("unit", f'({_DOCS_TYPE}.Unit), "BOGUS"'),
+        ],
+    ),
+    (
+        "",
+        {"commentsViewMode": "BOGUS", "suggestionsViewMode": "BOGUS"},
+        [
+            ("comments_view_mode", f'({_DOCS_TYPE}.CommentsViewMode), "BOGUS"'),
+            ("suggestions_view_mode", f'({_DOCS_TYPE}.SuggestionsViewMode), "BOGUS"'),
+        ],
+    ),
+    (
+        "documentStyle.documentFormat",
+        {"documentMode": "BOGUS"},
+        [
+            ("document_mode", f'({_DOCS_TYPE}.DocumentMode), "BOGUS"'),
+        ],
+    ),
+    (
+        "documentStyle",
+        {
+            "firstPageFooterId": 5,
+            "evenPageHeaderId": 5,
+            "defaultHeaderId": 5,
+            "defaultFooterId": 5,
+            "evenPageFooterId": 5,
+            "firstPageHeaderId": 5,
+        },
+        [
+            ("first_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("even_page_header_id.value", "(TYPE_STRING), 5"),
+            ("default_header_id.value", "(TYPE_STRING), 5"),
+            ("default_footer_id.value", "(TYPE_STRING), 5"),
+            ("even_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("first_page_header_id.value", "(TYPE_STRING), 5"),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject.embeddedObjectBorder",
+        {"propertyState": "BOGUS", "dashStyle": "BOGUS"},
+        [
+            ("property_state", f'({_DOCS_TYPE}.PropertyState), "BOGUS"'),
+            ("dash_style", f'({_DOCS_TYPE}.DashStyle), "BOGUS"'),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject.imageProperties",
+        {"brightness": "x", "contrast": "x", "transparency": "x", "angle": "x"},
+        [
+            ("brightness", '(TYPE_FLOAT), "x"'),
+            ("contrast", '(TYPE_FLOAT), "x"'),
+            ("transparency", '(TYPE_FLOAT), "x"'),
+            ("angle", '(TYPE_FLOAT), "x"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[]",
+        {"namedStyleType": "BOGUS"},
+        [
+            ("named_style_type", f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"'),
+        ],
+    ),
+    (
+        "suggestedNamedStylesChanges{}.namedStylesSuggestionState.stylesSuggestionStates[]",
+        {"namedStyleType": "BOGUS"},
+        [
+            ("named_style_type", f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"'),
+        ],
+    ),
+    (
+        "lists{}.listProperties.nestingLevels[]",
+        {"glyphType": "BOGUS", "bulletAlignment": "BOGUS", "glyphSymbol": 5},
+        [
+            ("glyph_type", f'({_DOCS_TYPE}.NestingLevel.GlyphType), "BOGUS"'),
+            ("bullet_alignment", f'({_DOCS_TYPE}.NestingLevel.BulletAlignment), "BOGUS"'),
+            ("", "(oneof), oneof field 'glyph_kind' is already set. Cannot set 'glyphSymbol'"),
+        ],
+    ),
+    (
+        "namedStyles.styles[].paragraphStyle.borderBottom",
+        {"dashStyle": "BOGUS"},
+        [
+            ("dash_style", f'({_DOCS_TYPE}.DashStyle), "BOGUS"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[].paragraphStyle",
+        {
+            "lineSpacing": "x",
+            "spacingMode": "BOGUS",
+            "pageBreakBefore": "x",
+            "avoidWidowAndOrphan": "x",
+            "keepLinesTogether": "x",
+            "keepWithNext": "x",
+            "direction": "BOGUS",
+            "alignment": "BOGUS",
+            "namedStyleType": "BOGUS",
+        },
+        [
+            ("line_spacing.value", '(TYPE_FLOAT), "x"'),
+            ("spacing_mode", f'({_DOCS_TYPE}.ParagraphStyle.SpacingMode), "BOGUS"'),
+            ("page_break_before.value", '(TYPE_BOOL), "x"'),
+            ("avoid_widow_and_orphan.value", '(TYPE_BOOL), "x"'),
+            ("keep_lines_together.value", '(TYPE_BOOL), "x"'),
+            ("keep_with_next.value", '(TYPE_BOOL), "x"'),
+            ("direction", f'({_DOCS_TYPE}.ContentDirection), "BOGUS"'),
+            ("alignment", f'({_DOCS_TYPE}.ParagraphStyle.Alignment), "BOGUS"'),
+            ("named_style_type", f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"'),
+        ],
+    ),
+    (
+        "positionedObjects{}.positionedObjectProperties.positioning",
+        {"layout": "BOGUS"},
+        [
+            ("layout", f'({_DOCS_TYPE}.PositionedObjectLayout), "BOGUS"'),
+        ],
+    ),
+    (
+        "suggestions[].replies[]",
+        {"commentAction": "BOGUS", "updateTime": 5, "suggestionAction": "BOGUS", "createTime": 5},
+        [
+            ("comment_action", f'({_DOCS_TYPE}.Post.CommentActionType), "BOGUS"'),
+            (
+                "update_time",
+                f"({_DOCS_TIMESTAMP}), Field 'updateTime', Invalid data type for timestamp, value is 5",
+            ),
+            ("", "(oneof), oneof field 'action' is already set. Cannot set 'suggestionAction'"),
+            (
+                "create_time",
+                f"({_DOCS_TIMESTAMP}), Field 'createTime', Invalid data type for timestamp, value is 5",
+            ),
+        ],
+    ),
+    (
+        "namedRanges{}.namedRanges[].ranges[]",
+        {"endIndex": "x", "startIndex": "x"},
+        [
+            ("end_index.value", '(TYPE_INT32), "x"'),
+            ("start_index.value", '(TYPE_INT32), "x"'),
+        ],
+    ),
+    (
+        "documentStyle.background.color.color.rgbColor",
+        {"red": "x", "blue": "x", "green": "x"},
+        [
+            ("red", '(TYPE_FLOAT), "x"'),
+            ("blue", '(TYPE_FLOAT), "x"'),
+            ("green", '(TYPE_FLOAT), "x"'),
+        ],
+    ),
+    (
+        "body.content[].sectionBreak.sectionStyle",
+        {
+            "contentDirection": "BOGUS",
+            "columnSeparatorStyle": "BOGUS",
+            "evenPageFooterId": 5,
+            "firstPageHeaderId": 5,
+            "pageNumberStart": "x",
+            "evenPageHeaderId": 5,
+            "defaultFooterId": 5,
+            "firstPageFooterId": 5,
+            "defaultHeaderId": 5,
+            "flipPageOrientation": "x",
+            "sectionType": "BOGUS",
+            "useFirstPageHeaderFooter": "x",
+        },
+        [
+            ("content_direction", f'({_DOCS_TYPE}.ContentDirection), "BOGUS"'),
+            (
+                "column_separator_style",
+                f'({_DOCS_TYPE}.SectionStyle.ColumnSeparatorStyle), "BOGUS"',
+            ),
+            ("even_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("first_page_header_id.value", "(TYPE_STRING), 5"),
+            ("page_number_start.value", '(TYPE_INT32), "x"'),
+            ("even_page_header_id.value", "(TYPE_STRING), 5"),
+            ("default_footer_id.value", "(TYPE_STRING), 5"),
+            ("first_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("default_header_id.value", "(TYPE_STRING), 5"),
+            ("flip_page_orientation.value", '(TYPE_BOOL), "x"'),
+            ("section_type", f'({_DOCS_TYPE}.SectionStyle.SectionType), "BOGUS"'),
+            ("use_first_page_header_footer.value", '(TYPE_BOOL), "x"'),
+        ],
+    ),
+    (
+        "suggestions[]",
+        {"status": "BOGUS"},
+        [
+            ("status", f'({_DOCS_TYPE}.SuggestionThread.Status), "BOGUS"'),
+        ],
+    ),
+    (
+        "tabs[].tabProperties",
+        {"index": "x"},
+        [
+            ("index.value", '(TYPE_INT32), "x"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[].paragraphStyle.tabStops[]",
+        {"alignment": "BOGUS"},
+        [
+            ("alignment", f'({_DOCS_TYPE}.TabStop.TabStopAlignment), "BOGUS"'),
+        ],
+    ),
+    (
+        "body.content[].table.tableRows[].tableCells[].tableCellStyle.borderRight",
+        {"dashStyle": "BOGUS"},
+        [
+            ("dash_style", f'({_DOCS_TYPE}.DashStyle), "BOGUS"'),
+        ],
+    ),
+    (
+        "body.content[].table.tableRows[].tableCells[].tableCellStyle",
+        {"contentAlignment": "BOGUS"},
+        [
+            ("content_alignment", f'({_DOCS_TYPE}.ContentAlignment), "BOGUS"'),
+        ],
+    ),
+    (
+        "body.content[].table.tableStyle.tableColumnProperties[]",
+        {"widthType": "BOGUS"},
+        [
+            ("width_type", f'({_DOCS_TYPE}.TableColumnProperties.WidthType), "BOGUS"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[].textStyle",
+        {
+            "strikethrough": "x",
+            "bold": "x",
+            "baselineOffset": "BOGUS",
+            "underline": "x",
+            "smallCaps": "x",
+            "italic": "x",
+        },
+        [
+            ("strikethrough.value", '(TYPE_BOOL), "x"'),
+            ("bold.value", '(TYPE_BOOL), "x"'),
+            ("baseline_offset", f'({_DOCS_TYPE}.BaselineOffset), "BOGUS"'),
+            ("underline.value", '(TYPE_BOOL), "x"'),
+            ("small_caps.value", '(TYPE_BOOL), "x"'),
+            ("italic.value", '(TYPE_BOOL), "x"'),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject",
+        {"imageProperties": {}, "embeddedDrawingProperties": {}},
+        [
+            (
+                "",
+                "(oneof), oneof field 'properties' is already set. Cannot set 'embeddedDrawingProperties'",
+            ),
+        ],
+    ),
+    (
+        "namedStyles.styles[].textStyle.link",
+        {
+            "url": "x",
+            "headingId": "x",
+            "heading": {},
+            "bookmark": {},
+            "bookmarkId": "x",
+            "tabId": "x",
+        },
+        [
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'headingId'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'heading'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'bookmark'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'bookmarkId'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'tabId'"),
+        ],
+    ),
+    (
+        "lists{}.listProperties.nestingLevels[]",
+        {"glyphType": "NONE", "glyphSymbol": "x"},
+        [
+            ("", "(oneof), oneof field 'glyph_kind' is already set. Cannot set 'glyphSymbol'"),
+        ],
+    ),
+    (
+        "body.content[].paragraph.elements[]",
+        {
+            "dropdown": {},
+            "horizontalRule": {},
+            "pageBreak": {},
+            "equation": {},
+            "richLink": {},
+            "columnBreak": {},
+            "dateElement": {},
+            "inlineObjectElement": {},
+            "autoText": {},
+            "person": {},
+            "footnoteReference": {},
+            "textRun": {},
+        },
+        [
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'horizontalRule'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'pageBreak'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'equation'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'richLink'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'columnBreak'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'dateElement'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'inlineObjectElement'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'autoText'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'person'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'footnoteReference'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'textRun'"),
+        ],
+    ),
+    (
+        "suggestions[].replies[]",
+        {
+            "commentAction": "NO_COMMENT_ACTION_CHANGE",
+            "suggestionAction": "NO_SUGGESTION_ACTION_CHANGE",
+        },
+        [
+            ("", "(oneof), oneof field 'action' is already set. Cannot set 'suggestionAction'"),
+        ],
+    ),
+    (
+        "body.content[]",
+        {"sectionBreak": {}, "tableOfContents": {}, "table": {}, "paragraph": {}},
+        [
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'tableOfContents'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'table'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'paragraph'"),
+        ],
+    ),
+    # the members of a oneof the rows above set second, given a wrong kind alone
+    (
+        "lists{}.listProperties.nestingLevels[]",
+        {"glyphSymbol": 5},
+        [("glyph_symbol.value", "(TYPE_STRING), 5")],
+    ),
+    (
+        "suggestions[].replies[]",
+        {"suggestionAction": "BOGUS"},
+        [("suggestion_action", f'({_DOCS_TYPE}.Post.SuggestionActionType), "BOGUS"')],
+    ),
+]
+_DOCS_CREATE_REFUSALS += [
+    ({}, _doc_at(path, leaf), _doc_refused(path, refusals))
+    for path, leaf, refusals in _DOCS_ANNOTATED
+]
+
+_TS_UNPARSED = "Invalid time format: Failed to parse input"
+_TS_NO_SUCH_DAY = "Invalid time format: Out-of-range field"
+_TS_TRAILING = "Invalid time format: Illegal trailing data in input string"
+_TS_NANOS = "Invalid time format, failed to parse nano seconds"
+_TS_PAST_LIMITS = "Timestamp value exceeds limits"
+_TS_NO_ZONE = (
+    "Illegal timestamp format; timestamps must end with 'Z' or have a valid timezone offset."
+)
+# a timestamp string at each bound, beside a refused title so that one read creates nothing; None
+# where it is read
+_DOCS_TIMESTAMPS = [
+    ("2026-00-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-12-01T00:00:00Z", None),
+    ("2026-01-00T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-32T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-31T00:00:00Z", None),
+    ("2026-04-31T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("2025-02-29T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("2024-02-29T00:00:00Z", None),
+    ("2026-01-01T24:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T23:00:00Z", None),
+    ("2026-01-01T00:60:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:59:00Z", None),
+    ("2026-01-01T00:00:61Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:60Z", None),
+    ("2026-01-01T00:00:00.123456789Z", None),
+    ("2026-01-01T00:00:00.1234567890Z", _TS_PAST_LIMITS),
+    ("2026-13-01T00:00:00.1234567890Z", _TS_UNPARSED),
+    ("0000-02-30T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("0000-02-29T00:00:00Z", _TS_PAST_LIMITS),
+    ("0001-01-01T00:00:00Z", None),
+    ("9999-12-31T23:59:59Z", None),
+    ("2026-1-01T00:00:00Z", None),
+    ("2026-01-01 00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00+09:00", None),
+    ("2026-01-01T00:00:00+0900", _TS_NO_ZONE),
+    (" 2026-01-01T00:00:00Z", None),
+    ("2026-01-01T00:00:00.Z", None),
+    ("2026-01-1T1:2:3Z", None),
+    ("2026-001-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-1-1T00:00:00Z", None),
+    ("26-01-01T00:00:00Z", None),
+    ("1-01-01T00:00:00Z", None),
+    ("12026-01-01T00:00:00Z", _TS_PAST_LIMITS),
+    ("002026-01-01T00:00:00Z", None),
+    ("-2026-01-01T00:00:00Z", _TS_PAST_LIMITS),
+    ("+2026-01-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-+1-01T00:00:00Z", _TS_UNPARSED),
+    ("2026--1-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01t00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00Z ", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00 Z", None),
+    ("2026-02-30T00:00:00.1234567890Z", _TS_NO_SUCH_DAY),
+    ("0000-01-01T00:00:00.1234567890Z", _TS_PAST_LIMITS),
+    ("0000-01-01T00:00:00.Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00.000000000000000000001Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00.1.2Z", _TS_TRAILING),
+    ("2026-01-01T00:00:00+24:00", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00+23:59", None),
+    ("2026-01-01T00:00:00+09:60", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00-00:00", None),
+    ("\t2026-01-01T00:00:00Z", None),
+    ("\n2026-01-01T00:00:00Z", None),
+    ("2026-01-01T00:00:00Zz", _TS_NO_ZONE),
+    ("10000-01-01T00:00:00Z", _TS_PAST_LIMITS),
+    ("9999-12-31T23:59:59-01:00", _TS_PAST_LIMITS),
+    ("0001-01-01T00:00:00+01:00", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00+9:00", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00.1aZ", _TS_NANOS),
+    ("2026-01-01T00:00:00.-1Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00.+1Z", _TS_NANOS),
+    ("2026.5-01-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00. Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.1 Z", _TS_NANOS),
+    ("2026-01-01T00:00:00 .1Z", None),
+    ("2026-01-01T00:00:00..1Z", _TS_TRAILING),
+    ("9999-12-31T23:59:60Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00 +09:00", None),
+    ("2026-01-01T00:00:00.123456789123Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.1234567890", _TS_NO_ZONE),
+    ("2026-01-01 T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T 00:00:00Z", _TS_UNPARSED),
+    ("2026 -01-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:0.5Z", None),
+    ("2026-13-01T00:00:00+24:00", _TS_NO_ZONE),
+    ("0001-01-01T00:00:59+00:01", _TS_PAST_LIMITS),
+    ("0001-01-01T00:01:00+00:01", None),
+    ("9999-12-31T23:58:59-00:01", None),
+    ("9999-12-31T23:59:00-00:01", _TS_PAST_LIMITS),
+    ("10000-01-01T00:00:00+01:00", None),
+    ("2026-01-01T00:00:00Z\n", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00+09:00\n", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00.-0Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.-00Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.-0000000000Z", _TS_NANOS),
+    ("2026-02-30T00:00:00.-0Z", _TS_NO_SUCH_DAY),
+    ("10000-01-01T00:00:00.-0Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.0000000000Z", None),
+    ("2026-01-01T00:00:00.00000000000000Z", None),
+    ("9223372036854775807-01-01T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("9223372036854775808-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-9223372036854775808-01-01T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("-9223372036854775809-01-01T00:00:00Z", _TS_UNPARSED),
+    ("9223372036854775808-01-01T00:00:00 xZ", _TS_UNPARSED),
+    ("-0000-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-0-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-0000-01-01T00:00:00 xZ", _TS_UNPARSED),
+    ("-0000-02-30T00:00:00Z", _TS_UNPARSED),
+    ("292277026596-12-04T15:30:07Z", _TS_PAST_LIMITS),
+    ("292277026596-12-04T15:30:08Z", _TS_NO_SUCH_DAY),
+    ("292277026596-12-04T15:30:08+01:00", _TS_NO_SUCH_DAY),
+    ("-292277022657-01-27T08:29:52Z", _TS_PAST_LIMITS),
+    ("-292277022657-01-27T08:29:51Z", _TS_NO_SUCH_DAY),
+    ("292277026597-01-01T00:00:00 xZ", _TS_TRAILING),
+    ("292277026597-01-01T00:00:00.1aZ", _TS_NO_SUCH_DAY),
+    ("2024-01-31T00:00:00Z", None),
+    ("2026-13-01T00:00:00.1.2Z", _TS_UNPARSED),
+    ("2026-02-30T00:00:00.1.2Z", _TS_TRAILING),
+    ("2026-02-30T00:00:00.1aZ", _TS_NO_SUCH_DAY),
+]
+_DOCS_CREATE_REFUSALS += [
+    (
+        {},
+        {"title": 5, **_doc_date(value)},
+        "Invalid value at 'title' (TYPE_STRING), 5"
+        + (
+            f"\nInvalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', {error}"
+            if error
+            else ""
+        ),
+    )
+    for value, error in _DOCS_TIMESTAMPS
+]
+
+
+@pytest.mark.parametrize(
+    "route,params,body,message",
+    [("/sheets/v4/spreadsheets", {}, *row) for row in _SHEETS_CREATE_REFUSALS]
+    + [("/docs/v1/documents", *row) for row in _DOCS_CREATE_REFUSALS],
+)
+def test_a_create_real_refuses_is_refused_with_reals_message(wc, wh, route, params, body, message):
+    if callable(body):
+        h = {**wh[_OWNER], "Content-Type": "application/json"}
+        r = wc.post(route, headers=h, params=params, content=body())
+    else:
+        r = wc.post(route, headers=wh[_OWNER], params=params, json=body)
     assert (r.status_code, r.json()["error"]["message"]) == (400, message)
     assert wc.get("/_meta/overlay").json()["gdrive_files"] == []
 

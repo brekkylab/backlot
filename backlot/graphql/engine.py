@@ -2,17 +2,18 @@
 
 Knows nothing about any vendor and nothing about :mod:`backlot.store`. A vendor builds one
 :class:`Engine` at import time from its SDL and resolver map; its router reads the request body
-with :mod:`backlot.graphql.body` and hands it to :meth:`Engine.execute_payload`, along with a
-context dict (connection, caller, ``visible_ids``) that every resolver receives as
-``info.context``.
+with :mod:`backlot.graphql.body`, hands it to :meth:`Engine.resolve_payload`, and runs the
+operation it chooses with :meth:`Engine.run`, along with a context dict (connection, caller,
+``visible_ids``) that every resolver receives as ``info.context``.
 
 Both vendors serve GraphQL through Apollo Server over graphql-js, so the engine answers as that pair
 does: Apollo Server's checks of the body and of a persisted query come first, then graphql-js's
 parse, validation and choice of operation (:meth:`Engine.resolve_payload`), then the coercion of
 variables and the run itself (:meth:`Engine.run`), each refusal a :class:`Refusal` carrying Apollo
-Server's ``code`` and message. A router that reads the credential between the two stages calls them
-apart. A refusal made before execution carries no ``data`` entry; an error made as the operation
-runs comes back beside ``data``, at 200. Each router turns the refusals into its vendor's envelope.
+Server's ``code`` and message. Linear's router reads the credential between the two stages, and
+Fireflies' counts the root fields of the operation the first chose once the second has run. A
+refusal made before execution carries no ``data`` entry; an error made as the operation runs
+comes back beside ``data``, at 200. Each router turns the refusals into its vendor's envelope.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ from typing import Any, Callable, Mapping
 
 from graphql import (
     DocumentNode,
+    ExecutionResult,
+    FragmentDefinitionNode,
     GraphQLError,
     GraphQLID,
     GraphQLInputObjectType,
@@ -40,13 +43,17 @@ from graphql import (
     build_schema,
     execute_sync,
     get_operation_ast,
+    located_error,
     parse,
     type_from_ast,
     validate,
 )
+from graphql.execution.collect_fields import collect_fields
+from graphql.execution.values import get_argument_values, get_variable_values
+from graphql.type.introspection import TypeMetaFieldDef
 
 from backlot.graphql import body as request_body
-from backlot.graphql import js_words
+from backlot.graphql import js_words, node_utf8
 
 Resolver = Callable[..., Any]
 
@@ -212,9 +219,13 @@ def refused(*refusals: Refusal) -> Result:
 
 
 def _refusal(
-    message: str, code: str = BAD_REQUEST, status: int = 400, thrown: bool = False
+    message: str,
+    code: str = BAD_REQUEST,
+    status: int = 400,
+    thrown: bool = False,
+    headers: tuple[tuple[str, str], ...] = (),
 ) -> Result:
-    return refused(Refusal(message, code, status=status, thrown=thrown))
+    return refused(Refusal(message, code, status=status, headers=headers, thrown=thrown))
 
 
 def _js_truthy(value: Any) -> bool:
@@ -270,6 +281,9 @@ def body_refusal(payload: Any) -> Result | None:
 #: (UTC).
 PERSISTED_QUERY_VERSION = "Unsupported persisted query version"
 PERSISTED_QUERY_MISMATCH = "provided sha does not match query"
+#: The `Cache-Control` Apollo Server sets on ``PersistedQueryNotFound``, which both vendors sent
+#: with it on 2026-10-25 (UTC), by `POST` and on Linear by `GET`.
+PERSISTED_QUERY_NOT_FOUND_HEADERS = (("cache-control", "private, no-cache, must-revalidate"),)
 
 
 def _persisted_query(payload: dict) -> Any:
@@ -296,11 +310,16 @@ def persisted_query_refusal(payload: dict) -> Result | None:
         return _refusal(PERSISTED_QUERY_VERSION, INTERNAL_SERVER_ERROR)
     query = payload.get("query")
     if not isinstance(query, str):
-        return _refusal("PersistedQueryNotFound", PERSISTED_QUERY_NOT_FOUND, status=200)
+        return _refusal(
+            "PersistedQueryNotFound",
+            PERSISTED_QUERY_NOT_FOUND,
+            status=200,
+            headers=PERSISTED_QUERY_NOT_FOUND_HEADERS,
+        )
     # Both vendors hashed a query holding U+D800 as the same query with U+FFFD in its place on
-    # 2026-10-25 (UTC), the UTF-8 Node writes for a lone surrogate.
-    units = query.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
-    if persisted.get("sha256Hash") != hashlib.sha256(units.encode("utf-8")).hexdigest():
+    # 2026-10-25 (UTC).
+    written = node_utf8.written(query)
+    if persisted.get("sha256Hash") != hashlib.sha256(written.encode("utf-8")).hexdigest():
         return _refusal(PERSISTED_QUERY_MISMATCH, INTERNAL_SERVER_ERROR)
     return None
 
@@ -472,7 +491,9 @@ class Engine:
 
     def run(self, operation: Operation, *, context: Any = None) -> Result:
         """Coerce the variables of ``operation``, refused with Apollo Server's code, and run it
-        with ``context``."""
+        with ``context``, the errors of the root arguments graphql-js refuses
+        (:meth:`_refused_root_arguments`) ahead of the run's at the other root fields, or in its
+        place where one is a non-null field's."""
         variables = operation.variables
         coercion = js_words.coerce_variable_values(
             self.schema, list(operation.operation.variable_definitions), variables
@@ -502,13 +523,23 @@ class Engine:
         # A root type only `self._checked` has runs there, and one neither schema has is
         # graphql-core's refusal.
         on_a_root = getattr(self.schema, f"{operation.operation.operation.value}_type") is None
-        result = execute_sync(
-            self._checked if on_a_root else self.schema,
-            operation.document,
-            context_value=context,
-            variable_values=variables,
-            operation_name=operation.name,
+        argued, nulled = (
+            ([], False) if on_a_root else self._refused_root_arguments(operation, variables)
         )
+        if nulled:
+            result = ExecutionResult(None, argued)
+        else:
+            result = execute_sync(
+                self._checked if on_a_root else self.schema,
+                operation.document,
+                context_value=context,
+                variable_values=variables,
+                operation_name=operation.name,
+            )
+            if argued:
+                keys = {error.path[0] for error in argued}
+                ran = [e for e in result.errors or () if not e.path or e.path[0] not in keys]
+                result = ExecutionResult(result.data, [*argued, *ran])
         # api.fireflies.ai and api.linear.app open a response carrying a field error with "errors"
         # (2026-10-21), so the errors come first here. Each error's locations are graphql-js's. An
         # error graphql-core made itself is in graphql-js's words and carries the code Apollo Server
@@ -534,6 +565,53 @@ class Engine:
             assigned=frozenset(assigned),
         )
 
+    def _refused_root_arguments(
+        self, operation: Operation, variables: Any
+    ) -> tuple[list[GraphQLError], bool]:
+        """The errors of the root fields of ``operation`` whose arguments graphql-js refuses, in
+        the order the fields come, and whether the last is a non-null field's, which nulls the
+        data and ends them. graphql-js reads each query root field's arguments as it starts the
+        field, before any resolver's answer arrives, as Linear's resolvers answer asynchronously, so
+        these come ahead of every resolver's error. api.linear.app answered `Internal server error`
+        at a later `issue(id: $x)` sent `null`, ahead of an earlier `issue` it does not hold and of
+        an earlier `viewer`, and through a fragment, on 2026-10-21 and 2026-10-26 (UTC), and after
+        the same error at a `__type(name: $y)` sent `null` before it on 2026-10-26; and it answered
+        one or two `__type(name: $y)` sent `null` ahead of an earlier `issue` it does not hold, the
+        data null, and ahead of an `issue` before a served `__type`, on 2026-10-29. A refused
+        directive refuses none here, and the run answers it."""
+        root = self.schema.get_root_type(operation.operation.operation)
+        fragments = {
+            d.name.value: d
+            for d in operation.document.definitions
+            if isinstance(d, FragmentDefinitionNode)
+        }
+        coerced = get_variable_values(
+            self.schema, list(operation.operation.variable_definitions), variables or {}
+        )
+        try:
+            fields = collect_fields(
+                self.schema, fragments, coerced, root, operation.operation.selection_set
+            )
+        except GraphQLError:
+            return [], False
+        refused: list[GraphQLError] = []
+        for key, nodes in fields.items():
+            name = nodes[0].name.value
+            field = (
+                TypeMetaFieldDef
+                if name == "__type" and root is self.schema.query_type
+                else root.fields.get(name)
+            )
+            if field is None:
+                continue
+            try:
+                get_argument_values(field, nodes[0], coerced)
+            except GraphQLError as error:
+                refused.append(located_error(error, nodes, [key]))
+                if isinstance(field.type, GraphQLNonNull):
+                    return refused, True
+        return refused, False
+
     def execute(
         self,
         document: str,
@@ -544,18 +622,6 @@ class Engine:
     ) -> Result:
         """:meth:`resolve`, then :meth:`run` the operation it chose."""
         resolved = self.resolve(document, variables=variables, operation_name=operation_name)
-        return resolved if isinstance(resolved, Result) else self.run(resolved, context=context)
-
-    def execute_payload(
-        self,
-        payload: Any,
-        *,
-        context: Any = None,
-        on_document: Callable[[DocumentNode], Result | list[GraphQLError]] | None = None,
-        get: bool = False,
-    ) -> Result:
-        """:meth:`resolve_payload`, then :meth:`run` the operation it chose."""
-        resolved = self.resolve_payload(payload, on_document=on_document, get=get)
         return resolved if isinstance(resolved, Result) else self.run(resolved, context=context)
 
 

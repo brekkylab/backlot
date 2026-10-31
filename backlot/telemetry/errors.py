@@ -20,7 +20,7 @@ failure:
 |---|---|
 | ``unsupported`` | Backlot does not do this yet: the baseline records the operation as ``missing`` or ``refused``, or the GraphQL engine refused a filter |
 | ``internal`` | of a Backlot bug: its own failure, or a 5xx other than a vendor's answer (below) |
-| ``rate_limit`` | the vendor's rate limit was reached: a 429, or a 403 with ``x-ratelimit-remaining: 0`` as GitHub sends |
+| ``rate_limit`` | the vendor's rate limit was reached: a 429, a 403 with ``x-ratelimit-remaining: 0`` as GitHub sends, or ``_FIREFLIES_SPENT`` |
 | ``auth`` | the credential was missing, wrong, or not allowed: a 401 or 403, or one in ``_AUTH`` |
 | ``client`` | the request was wrong: any other failure |
 
@@ -188,6 +188,9 @@ _AUTH = frozenset(
     {("slack", "account_inactive"), ("slack", "invalid_auth"), ("slack", "not_authed")}
     | {("fireflies", "auth_failed")}
 )
+# Fireflies refuses a field past its key's budget with this at 200
+# (``backlot.routers.fireflies.Budget``).
+_FIREFLIES_SPENT = ("fireflies", "too_many_requests")
 # Each 5xx a vendor answers a wrong request with, by source and error code, and Backlot answers too:
 # Fireflies' 500 for a document graphql-depth-limit throws on
 # (`backlot.routers.fireflies._depth_limit`).
@@ -203,7 +206,7 @@ def error_class(
         return "internal"
     if support in ("missing", "refused") or code == "unsupported_filter":
         return "unsupported"
-    if status == 429 or (status == 403 and spent):
+    if status == 429 or (status == 403 and spent) or (source, code) == _FIREFLIES_SPENT:
         return "rate_limit"
     if status in (401, 403) or (source, code) in _AUTH:
         return "auth"

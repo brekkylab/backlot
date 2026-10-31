@@ -2607,9 +2607,10 @@ def test_drive_answers_every_other_check_with_reals_status_and_reason(
 ):
     """The rest of `_DRIVE_CHECK_ROWS`, each sent by the admin token, as ``{row: answer}``."""
     rows = [row for row in _DRIVE_CHECK_ROWS if "{hidden}" not in row[0]]
-    assert {
+    answers = {
         row[:2]: _drive_check(client, admin_h, drive_check_ids, *row[:2], row[3]) for row in rows
-    } == {row[:2]: row[3] for row in rows}
+    }
+    assert answers == {row[:2]: row[3] for row in rows}
 
 
 def test_reads_of_a_folder_the_caller_cannot_see(tmp_path):
@@ -8255,9 +8256,8 @@ def test_editor_apis_read_an_escape_as_real_reads_it(client, admin_h, document_i
         r = client.get(url, headers=admin_h)
         return (r.status_code, r.json())
 
-    assert {row[:2]: answer(*row[:2]) for row in _EDITOR_ESCAPE_ROWS} == {
-        row[:2]: row[2] for row in _EDITOR_ESCAPE_ROWS
-    }
+    answers = {row[:2]: answer(*row[:2]) for row in _EDITOR_ESCAPE_ROWS}
+    assert answers == {row[:2]: row[2] for row in _EDITOR_ESCAPE_ROWS}
 
 
 _DIM = "Invalid value at 'major_dimension' (type.googleapis.com/google.apps.sheets.v4.Dimension), "

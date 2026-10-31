@@ -730,6 +730,7 @@ _RUNS = [
         id="jira",
     ),
     pytest.param("GET", "/drive/v3/about", {}, [], id="drive"),
+    pytest.param("GET", "/drive/v3/about?fields=kind", {}, [], id="drive query"),
     pytest.param(
         "HEAD", "/drive/v3/about", {}, ["answer_head_as_the_get_without_its_body"], id="drive HEAD"
     ),

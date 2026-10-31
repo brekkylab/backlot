@@ -1042,39 +1042,49 @@ def test_confluence_content_answers_a_space_key_and_a_type_as_real_does(client, 
 
 
 @pytest.mark.parametrize(
-    "caller, space, want",
+    "caller, space, want, written",
     [
-        ("admin", "handbook", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "{handbook}", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "people-ops", ["Compensation Bands 2026"]),
-        ("admin", "{people-ops}", ["Compensation Bands 2026"]),
-        ("admin", "{handbook lower}", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "HANDBOOK", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "people-opſ", 404),
-        ("admin", "", ["Compensation Bands 2026", "Engineering Handbook", "On-call Runbook"]),
-        ("ava@acme.com", "handbook", ["Engineering Handbook", "On-call Runbook"]),
-        ("ava@acme.com", "people-ops", 404),
-        ("ava@acme.com", "{people-ops}", 404),
-        ("ava@acme.com", "{people-ops lower}", 404),
-        ("ava@acme.com", "PEOPLE-OPS", 404),
+        ("admin", "handbook", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("admin", "{handbook}", ["Engineering Handbook", "On-call Runbook"], "{handbook}"),
+        ("admin", "people-ops", ["Compensation Bands 2026"], "people-ops"),
+        ("admin", "{people-ops}", ["Compensation Bands 2026"], "{people-ops}"),
+        ("admin", "{handbook lower}", ["Engineering Handbook", "On-call Runbook"], "{handbook}"),
+        ("admin", "HANDBOOK", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("admin", "people-opſ", 404, "people-opſ"),
+        ("admin", "", ["Compensation Bands 2026", "Engineering Handbook", "On-call Runbook"], ""),
+        ("ava@acme.com", "handbook", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("ava@acme.com", "people-ops", 404, "people-ops"),
+        ("ava@acme.com", "{people-ops}", 404, "{people-ops}"),
+        ("ava@acme.com", "{people-ops lower}", 404, "{people-ops lower}"),
+        ("ava@acme.com", "PEOPLE-OPS", 404, "PEOPLE-OPS"),
+        ("hana@acme.com", "{people-ops lower}", ["Compensation Bands 2026"], "{people-ops}"),
+        ("hana@acme.com", "PEOPLE-OPS", ["Compensation Bands 2026"], "people-ops"),
     ],
 )
-def test_confluence_content_filtered_by_space_key(client, admin_h, tokens, caller, space, want):
+def test_confluence_content_filtered_by_space_key(
+    client, admin_h, tokens, caller, space, want, written
+):
     """A space key narrows the listing to that space under both spellings `_space_container_for_key`
     resolves, the name and `{the synthesized key}`, each in upper or lower case (`people-opſ` is no
     spelling of `people-ops`), and an empty one narrows nothing. ava reaches no page in
     `people-ops`, so to her its key is the 404 a key naming nothing gets (`_content_space`), in
-    upper or lower case."""
+    upper or lower case, where hana, who does, gets its page. ``written`` is the value the CQL
+    search writes back in ``cqlQuery`` for `space.key` with the same value and caller
+    (`_cql_space_key_spelling`)."""
     from backlot import synth
 
     keys = {n: synth.confluence_space_key(n) for n in ("handbook", "people-ops")}
-    key = space.format(**keys, **{f"{n} lower": k.lower() for n, k in keys.items()})
+    spell = {**keys, **{f"{n} lower": k.lower() for n, k in keys.items()}}
+    key = space.format(**spell)
     h = admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens[caller]}"}
     r = client.get("/atlassian/wiki/rest/api/content", headers=h, params={"spaceKey": key})
     if want == 404:
         assert (r.status_code, r.json()) == _no_space(key)
     else:
         assert sorted(x["title"] for x in r.json()["results"]) == want
+    cql = {"cql": f'space.key = "{key}"'}
+    found = client.get("/atlassian/wiki/rest/api/search", headers=h, params=cql)
+    assert found.json()["cqlQuery"] == f"space.key = '{written.format(**spell)}'"
 
 
 def test_confluence_space_names_that_differ_only_in_case_stay_two_spaces(tmp_path):
@@ -1393,6 +1403,10 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + f' and space.key in ("{eng}", NOSUCHKEY)', {"Guide", "Child", "Grand"}),
         (three + " and space.key = NOSUCHKEY", set()),
         (three + " and space.key in (NOSUCHKEY, NOPEKEY)", set()),
+        (three + f' and space.key = "{eng[0]}\\"{eng[1:]}"', {"Guide", "Child", "Grand"}),
+        (three + f" and space.key = '{eng[0]}\"{eng[1:]}'", {"Guide", "Child", "Grand"}),
+        (three + f' and space.key = "{eng[0]}\\{eng[1:]}"', set()),
+        (three + f' and space.key = "{eng[0]}\\"\\"{eng[1:]}"', set()),
         (three + " and id not in ({Guide})", {"Child", "Grand"}),
         (three + " and (id={Guide} or id not in ({Guide},{Child}))", {"Guide", "Grand"}),
         # beside a field this route does not read, which held for each of the three
@@ -8835,6 +8849,21 @@ _CQL_PARSE_ROWS = [
             ("SPACE.KEY=handbook", "SPACE.KEY = 'handbook'"),
             ('space.key != "handbook"', "space.key != 'handbook'"),
             ('space.key in ("handbook", handbook)', "space.key in ( 'handbook' , 'handbook' )"),
+            ('space.key="HANDBOOK"', "space.key = 'handbook'"),
+            ('space.key="han\\"dbook"', "space.key = 'handbook'"),
+            ('space.key="a\\"b"', "space.key = 'ab'"),
+            ("space.key='han\"dbook'", "space.key = 'handbook'"),
+            ('space.key="a\\"b\\"c"', "space.key = 'a\"b\"c'"),
+            ('space.key="a\\"b\\"c\\"d"', "space.key = 'a\"b\"cd'"),
+            ('space.key="han\\"\\"dbook"', "space.key = 'han\"\"dbook'"),
+            ('space.key="han\\dbook"', "space.key = 'han\\dbook'"),
+            ('space.key="poe6f613"', "space.key = 'POE6F613'"),
+            ('space.key != "HANDBOOK"', "space.key != 'handbook'"),
+            (
+                'space.key in ("HANDBOOK", "a\\"b")',
+                "space.key in ( 'handbook' , 'ab' )",
+            ),
+            ('space = "han\\"dbook"', 'space = "han\\"dbook"'),
             ('space = "handbook"', 'space = "handbook"'),
             ('created>now("-1d")', 'created > now ( "-1d" )'),
             ("created>startOfDay()", "created > startOfDay ( )"),
@@ -8858,6 +8887,20 @@ _CQL_PARSE_ROWS = [
         for cql, message in [
             ('"', _CQL_NOT_PARSED),
             ("   ", _CQL_NOT_PARSED),
+            ('space.key = "E\'NG"', _CQL_NOT_PARSED),
+            ("space.key = 'K\\'EY'", _CQL_NOT_PARSED),
+            ('space.key in ("a\'b", handbook)', _CQL_NOT_PARSED),
+            ('space.key = "a\'b" order by created', _CQL_NOT_PARSED),
+            ('space.key = "a\'b" b', "Unrecognised clause at : b"),
+            ('(space.key = "a\'b"', "Missing closing parenthesis near field (()"),
+            (
+                'space.key in ("a\'b"',
+                "Expecting a value for operator 'in' after field 'space.key' but got '('",
+            ),
+            (
+                'space.key = "a\'b" and title~',
+                "Expecting a value for operator '~' after field 'title'",
+            ),
             ("\U0001f600", _CQL_NOT_PARSED),
             ("type=page and", _CQL_NOT_PARSED),
             ("type=page or", _CQL_NOT_PARSED),

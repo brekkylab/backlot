@@ -226,9 +226,11 @@ _CUT_ESCAPE = re.compile(rb"%[0-9A-Fa-f]?\Z")
 
 def cut_escape(path: bytes, query: bytes | None) -> bool:
     """Whether ``path``, the vendor's path as sent, with ``query`` after a `?` or ``None`` where
-    none came, is one Cloudflare in front of Linear and Fireflies reads as cut short by the end of
-    the target (:data:`_CUT_ESCAPE`). ``backlot.main.refuse_a_cut_escape_on_linear_and_fireflies``
-    answers it, and :func:`refused_path` each other broken escape."""
+    none came, is one Cloudflare reads as cut short by the end of the target (:data:`_CUT_ESCAPE`)
+    and answers otherwise than each other broken escape: in front of Linear and Fireflies
+    ``backlot.main.refuse_a_cut_escape_on_linear_and_fireflies`` answers it and
+    :func:`refused_path` each other one, and in front of Notion and HubSpot :func:`answer` and
+    :func:`printable_answer` tell the two apart."""
     cut = _CUT_ESCAPE.search(path)
     return query is None and cut is not None and not _broken(path[: cut.start()])
 
@@ -416,6 +418,11 @@ def answer(scope: Scope) -> Response | None:
             _drop_the_cut(scope)
         return refused
     if any(_under(path, p) for p in ("/notion", "/hubspot")):
+        # Cloudflare's page for a broken escape or a `%00` comes ahead of the bytes
+        # (:func:`printable_answer`)
+        own = b"/" + sent_path.partition(b"/")[2].partition(b"/")[2]
+        if _broken(own) and not cut_escape(own, sent_query or None):
+            return _page(CLOUDFLARE_PAGE, "text/html")
         return _cloudflare(scope, in_path, in_query)
     if errors.s3.owns(path):
         return _s3(scope, in_path, in_query)
@@ -546,11 +553,21 @@ def printable_answer(scope: Scope) -> Response | None:
     the broken escape's on Notion, which reads neither past a `#`, and on S3; beside `%00`, which
     slack.com answers with the same empty 400 (:func:`escape_answer`); and on HubSpot `contacts{x`,
     `{x/contacts`, a `{` beside a broken escape, which drew Cloudflare's page in either order, and
-    beside a `;`. With no credential, `nope%x` and `auth.test?b=1#x` on slack.com,
-    `rate_limit?b=1#x` and `nope%x#y` on api.github.com, `nope%x`, `nope%` and `nope%4` on Notion,
-    and `nope{x`, `nope%x` and `nope%` on HubSpot each drew the answer it drew with one. The answers
-    that do not close the connection are Apache's, Jetty's and HubSpot's own: each of those was
-    followed by an answer to a second request on the same connection, and none of the others."""
+    beside a `;`. On Notion and HubSpot, Cloudflare's page for a broken escape or a `%00` comes
+    ahead of its answer to a raw byte (:func:`answer`): `%zz` in the path with `\\x01`, a tab,
+    `C3 A9` or `E9` before it or after it, or with `\\x01` or `C3 A9` in the query, and `%00` with
+    `\\x01` before it or after it or `C3 A9` before it, drew the page, where a `%` or a `%4` that
+    ends the path after a raw byte, and on HubSpot a `{` beside one, drew the raw byte's empty 400.
+    Beside a raw `\\x01` before the character or after it, slack.com answered the raw byte, with a
+    `#` or a broken escape in the path and with a `#` in the query; Graph gives a `\\x01` the page
+    it gives a `"`; and S3, which reads a raw byte on, answered a broken escape beside `\\x01` or
+    `C3 A9` as it answers one alone, and `nope\\x01y#x` and `nope#y\\x01x` with its 400
+    `InvalidBucketName` naming the bucket as sent, the `\\x01` as `&#1;`. With no credential,
+    `nope%x` and `auth.test?b=1#x` on slack.com, `rate_limit?b=1#x` and `nope%x#y` on
+    api.github.com, `nope%x`, `nope%` and `nope%4` on Notion, and `nope{x`, `nope%x` and `nope%` on
+    HubSpot each drew the answer it drew with one. The answers that do not close the connection are
+    Apache's, Jetty's and HubSpot's own: each of those was followed by an answer to a second request
+    on the same connection, and none of the others."""
     path, raw_path = scope["path"], scope["raw_path"]
     sent = scope.get(WITH_A_FRAGMENT)
     sent_path = raw_path if sent is None else sent.partition(b"?")[0]

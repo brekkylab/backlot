@@ -2636,10 +2636,12 @@ def front_door(
     route serves under `/wiki/rest/api/`, `/wiki/rest/api/content/`, `/wiki/api/v2/` and `/wiki/`,
     at `/wiki/x/abc`, `/wiki/display/X`, `/wiki/people`, `/wiki/spaces` and `/wiki/home[x`, behind
     the CDN's 400 for a broken escape in the path, before the `[` or after it, the edge's `;`, the
-    gateway's `PATCH` and a `PROPFIND`, and beside an encoded slash; and at `/wiki`, `/wiki/`,
-    `/wiki/home`, `/wiki/HOME`, `/wiki/home/`, `/wiki/search`, `/wiki/Search`, `/wiki/spaces/X` and
-    `/wiki/SPACES/X`, which answered 200 with a `[` in the query, and the last two with one in the
-    path. This server serves none of those pages, and answers them as it answers them with no `[`.
+    gateway's `PATCH`, a `PROPFIND` and the edge's page for a raw `\\x01` before the `[` or after
+    it, in the path or in the query, and beside an encoded slash and a raw `C3 A9`; and at `/wiki`,
+    `/wiki/`, `/wiki/home`, `/wiki/HOME`, `/wiki/home/`, `/wiki/search`, `/wiki/Search`,
+    `/wiki/spaces/X` and `/wiki/SPACES/X`, which answered 200 with a `[` in the query, and the last
+    two with one in the path. This server serves none of those pages, and answers them as it answers
+    them with no `[`.
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is

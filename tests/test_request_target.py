@@ -334,6 +334,16 @@ _HOSTS = [
     (b"[0:0]", b"GET", "/s3/no-such-bucket/", b"x", "served", _AWS_AUTHORIZATION),
 ]
 
+#: A broken escape or a `%00` in the path beside a raw byte, which Cloudflare in front of Notion
+#: and HubSpot answers with its page.
+_BESIDE_A_RAW_BYTE = (
+    *(b"nope\x01y%zzx", b"nope%zzy\x01x", b"nope\xc3\xa9y%zzx", b"nope%zzy\xc3\xa9x"),
+    *(b"nope\ty%zzx", b"nope%zzy\tx", b"nope\xe9y%zzx", b"nope%zzx?b=\x01", b"nope%zzx?b=\xc3\xa9"),
+    *(b"nope\x01y%00x", b"nope%00y\x01x", b"nope\xc3\xa9y%00x"),
+)
+#: A `%` or a `%4` that ends the path after a raw byte, which that Cloudflare answers as the byte.
+_CUT_AFTER_A_RAW_BYTE = (b"nope\x01y%", b"nope\x01y%4", b"nope\xc3\xa9y%", b"nope\xc3\xa9y%4")
+
 # A printable character the front door reads otherwise or refuses, sent as itself, among them a `%`
 # two hex digits do not follow and a `#` (``request_target.printable_answer`` and
 # ``request_target.printable_reading`` date the measurements,
@@ -393,6 +403,8 @@ _PRINTABLE = [
         )
     ),
     *(("/msgraph/v1.0/", rest, 401) for rest in (b'me?b="x', b"me?b=#x", b"me?b=%x")),
+    ("/msgraph/v1.0/", b'nope\x01y"x', "graph invalid url"),
+    ("/msgraph/v1.0/", b'nope"y\x01x', "graph invalid url"),
     # S3: a `#` in the path one of its characters, and the empty 400 for a broken escape in the
     # path, a `#` before it or after it, where one in the query is read on
     ("/s3/", b"nope#x", "as nope%23x"),
@@ -405,6 +417,13 @@ _PRINTABLE = [
     ("/s3/", b"nope#y%x", "s3 empty"),
     *(("/s3/no-such-bucket/", rest, "s3 empty") for rest in (b"nope%x", b"nope%zzx", b"nope%")),
     ("/s3/no-such-bucket/", b"x?b=%x", 404),
+    # beside a raw byte, read on
+    *(
+        ("/s3/", rest, "s3 empty")
+        for rest in (b"nope\x01y%x", b"nope%y\x01x", b"nope\xc3\xa9y%x", b"nope%y\xc3\xa9x")
+    ),
+    ("/s3/", b"nope\x01y#x", 400),
+    ("/s3/", b"nope#y\x01x", 400),
     # Notion: Cloudflare's page for a broken escape in the path but where the end of the target
     # cuts it short, which Notion reads itself, and nothing read past a `#`
     *(
@@ -415,6 +434,8 @@ _PRINTABLE = [
     ("/notion/v1/", b"nope%4", 400),
     ("/notion/v1/", b"nope#y%x", "as nope"),
     ("/notion/v1/", b"users?b=%x", 400),
+    *(("/notion/v1/", rest, "cloudflare page") for rest in _BESIDE_A_RAW_BYTE),
+    *(("/notion/v1/", rest, "cloudflare empty") for rest in _CUT_AFTER_A_RAW_BYTE),
     # HubSpot: Cloudflare's page for a broken escape in the path, HubSpot's where the end of the
     # target cuts it short, Jetty's for a `{` or a `}` under `/crm/v3/objects/`, behind
     # Cloudflare's; a `;` and what follows it up to the next `/` no part of the path; a broken
@@ -443,6 +464,17 @@ _PRINTABLE = [
         )
     ),
     ("/hubspot/crm/v3/objects/contacts/", b"nope\\x", "as nope%5Cx"),
+    *(
+        ("/hubspot/crm/v3/objects/contacts/", rest, "cloudflare page")
+        for rest in _BESIDE_A_RAW_BYTE
+    ),
+    *(
+        ("/hubspot/crm/v3/objects/contacts/", rest, "cloudflare empty")
+        for rest in (
+            *_CUT_AFTER_A_RAW_BYTE,
+            *(b"nope\x01y{x", b"nope{y\x01x", b"nope\xc3\xa9y{x", b"nope{x?b=\x01"),
+        )
+    ),
     # Google: a `\` in the path a `/`, and on Drive a `+` in the path a space
     ("/drive/v3/files/", b"nope+x", "as nope%20x"),
     ("/drive/v3/files/", b"nope++x", "as nope%20%20x"),
@@ -474,6 +506,15 @@ _PRINTABLE = [
     # Confluence's Tomcat: the three of the eleven characters it refuses in a query value that the
     # test client escapes (``tests.test_atlassian._FRONT_DOOR_ROWS`` holds the other eight)
     *(("/atlassian/wiki/rest/api/", b"nope?b=%cx" % c, "tomcat") for c in b'"<>'),
+    # behind the edge's page for a raw control byte, and beside a raw UTF-8 one
+    *(
+        ("/atlassian/wiki/rest/api/", rest, "edge invalid_characters")
+        for rest in (b"nope\x01y[x", b"nope[y\x01x", b"space?b=\x01y[x", b"space?b=[y\x01x")
+    ),
+    *(
+        ("/atlassian/wiki/rest/api/", rest, "tomcat")
+        for rest in (b"nope\xc3\xa9y[x", b"nope[y\xc3\xa9x", b"space?b=\xc3\xa9y[x")
+    ),
 ]
 
 

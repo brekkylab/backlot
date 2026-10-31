@@ -209,6 +209,8 @@ _WRONG_METHOD_ROWS = [
     ("OPTIONS", "/notion/v1/users/me", 400),
     ("TRACE", "/notion/v1/users/me", 405),
     ("TRACE", "/notion/v1/nope", 405),
+    ("TRACE", "/notion/v1/nope%80x", 405),
+    ("TRACE", "/notion/v1/nope%C3%A9x", 405),
 ]
 
 
@@ -386,7 +388,7 @@ def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, noti
             refused,
         ),
         ("POST", "/notion/v1/search", {**notion_h, "Content-Type": "text/plain"}, b"{", 200, app),
-        # the 400 for a path that does not decode
+        # ``backlot.routers.notion.undecodable_url``'s refusal
         ("GET", "/notion/v1/nope%80x", notion_h, None, 400, refused),
         ("GET", "/notion/v1/users/nope%80x", notion_h, None, 400, refused),
     ]

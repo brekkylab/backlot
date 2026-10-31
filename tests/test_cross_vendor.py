@@ -735,6 +735,21 @@ _RUNS = [
     ),
     pytest.param(
         "GET",
+        "/drive/v3/about?fields=a%80b",
+        {},
+        ["read_a_drive_or_editor_query_as_google_does"],
+        id="drive escape",
+    ),
+    pytest.param(
+        "GET",
+        "/docs/v1/documents/nope?fields=a%80b",
+        {},
+        ["read_a_drive_or_editor_query_as_google_does"],
+        id="docs escape",
+    ),
+    pytest.param("GET", "/gmail/v1/users/me/profile?fields=a%80b", {}, [], id="gmail escape"),
+    pytest.param(
+        "GET",
         "/s3/",
         {},
         ["answer_s3_with_request_ids", "refuse_an_s3_path_real_cannot_read"],

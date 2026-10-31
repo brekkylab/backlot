@@ -1604,12 +1604,18 @@ _GOOGLE_OVERRIDE_IN_ANY_CASE = "/drive/v3"
 _FORM_MEDIA_TYPE = "application/x-www-form-urlencoded"
 
 
-@_middleware(lambda scope: errors.google.owns(_url_path(scope)) and b"%" in scope["query_string"])
-async def read_a_google_query_as_google_does(request: Request, call_next):
-    """Spell each escape of a Google query value as Google reads it
-    (``backlot.utf8_escapes.google_query``). Registered before
-    ``answer_a_google_read_sent_as_a_post``, which makes it the inner of the two, so it reads the
-    form that one adds to the query too."""
+@_middleware(
+    lambda scope: (
+        errors.google.family(_url_path(scope)) in (errors.google.DRIVE, errors.google.EDITOR)
+        and b"%" in scope["query_string"]
+    )
+)
+async def read_a_drive_or_editor_query_as_google_does(request: Request, call_next):
+    """Spell each escape of a Drive, Docs, Sheets or Slides query value as those APIs read it
+    (``backlot.utf8_escapes.google_query``). Gmail's `fields` quoted a byte outside any UTF-8
+    sequence back as nothing on 2026-10-30 (UTC), `a%80b` as `ab`, so a Gmail query is left to the
+    router. Registered before ``answer_a_google_read_sent_as_a_post``, which makes it the inner of
+    the two, so it reads the form that one adds to the query too."""
     request.scope["query_string"] = utf8_escapes.google_query(request.scope["query_string"])
     return await call_next(request)
 

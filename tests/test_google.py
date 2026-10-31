@@ -2551,7 +2551,7 @@ _DRIVE_CHECK_ROWS = [
     ("/drive/v3/files/nope%80x/export", "", "admin", (400, "required", "mimeType", None)),
     ("/drive/v3/files/nope%C3%A9x", "", "admin", (404, "notFound", "fileId", None)),
     ("/drive/v3/files/nope%C3%A9x/permissions", "", "admin", (404, "notFound", "fileId", None)),
-    # a mask's escapes as Google reads them
+    # a mask's escapes as Drive reads them
     *[(_DOC, f"fields={mask}", "admin", _mask_refused(read)) for mask, read in _VALUE_ESCAPES],
 ]
 # fmt: on
@@ -8184,7 +8184,7 @@ _UNDECODED = ("%80", "%e9", "%C3", "%C0%80", "%E2%82", "%ED%A0%80", "%F4%90%80%8
 # A Docs, Sheets or Slides read per row, `{doc}`, `{sheet}` and `{deck}` files the admin token
 # reads, beside real's status and error: an undecodable path
 # (``backlot.routers.google._refuse_an_undecodable_path``) beside each refusal it was measured with,
-# a path whose escapes decode, and a query value's escapes as Google reads them.
+# a path whose escapes decode, and a query value's escapes as Docs and Sheets read them.
 # fmt: off
 _EDITOR_ESCAPE_ROWS = [
     *[(f"/docs/v1/documents/nope{escape}x", "", _EDITOR_PATH_400) for escape in _UNDECODED],

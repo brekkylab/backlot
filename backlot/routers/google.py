@@ -4391,11 +4391,11 @@ def _refuse_an_undecodable_path(request: Request) -> None:
 
     Measured on 2026-10-30 (UTC) with a Workspace member's token, the escape in the id of Drive's
     files.get, files.export and permissions.list, of Docs' and Sheets' gets and of Sheets'
-    values.get and values.batchGet, and in a range values.get names (`A%80`, `A1%80:B2`). It came
-    after the credential, `alt`, a typed parameter and export's required `mimeType`, and after a
-    `fields` mask Docs or Sheets refuses; ahead of a `fields` mask Drive refuses, Drive's trailing
-    comma, `acknowledgeAbuse=true` and an export `mimeType`, `text/plain` or one Drive does not
-    convert to."""
+    values.get and values.batchGet, and in a range values.get names (`A%80`, `A1%80:B2`); and on
+    2026-10-31 in the id of Slides' get. It came after the credential, `alt`, a typed parameter and
+    export's required `mimeType`, and after a `fields` mask Docs, Sheets or Slides refuses; ahead
+    of a `fields` mask Drive refuses, Drive's trailing comma, `acknowledgeAbuse=true` and an export
+    `mimeType`, `text/plain` or one Drive does not convert to."""
     if utf8_escapes.decodes(request.scope["raw_path"]):
         return
     if gerr.family(request.url.path) == gerr.DRIVE:
@@ -4416,8 +4416,7 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     2026-10-17."""
     conn = auth.conn(request)
     caller = _require(request)
-    if expect != "presentation":
-        _refuse_an_undecodable_path(request)
+    _refuse_an_undecodable_path(request)
     ids = auth.visible_ids(request, caller)
     # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has

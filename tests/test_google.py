@@ -3494,6 +3494,7 @@ _NO_CREDENTIAL_ROWS = [
     ("GET", "/drive/v3/files/nope%80x", 403, 400),
     ("GET", "/sheets/v4/spreadsheets/nope%80x", 403, 400),
     ("GET", "/docs/v1/documents/nope%80x", 401, 400),
+    ("GET", "/slides/v1/presentations/nope%80x", 401, 400),
 ]
 # fmt: on
 
@@ -8180,16 +8181,18 @@ _EDITOR_MASK = _editor_refused(
 )
 _UNDECODED = ("%80", "%e9", "%C3", "%C0%80", "%E2%82", "%ED%A0%80", "%F4%90%80%80")
 
-# A Docs or Sheets read per row, `{doc}` and `{sheet}` files the admin token reads, beside real's
-# status and error: an undecodable path (``backlot.routers.google._refuse_an_undecodable_path``)
-# beside each refusal it was measured with, a path whose escapes decode, and a query value's escapes
-# as Google reads them.
+# A Docs, Sheets or Slides read per row, `{doc}`, `{sheet}` and `{deck}` files the admin token
+# reads, beside real's status and error: an undecodable path
+# (``backlot.routers.google._refuse_an_undecodable_path``) beside each refusal it was measured with,
+# a path whose escapes decode, and a query value's escapes as Google reads them.
 # fmt: off
 _EDITOR_ESCAPE_ROWS = [
     *[(f"/docs/v1/documents/nope{escape}x", "", _EDITOR_PATH_400) for escape in _UNDECODED],
     *[(f"/sheets/v4/spreadsheets/nope{escape}x", "", _EDITOR_PATH_400) for escape in _UNDECODED],
+    *[(f"/slides/v1/presentations/nope{escape}x", "", _EDITOR_PATH_400) for escape in _UNDECODED],
     ("/docs/v1/documents/{doc}%80", "", _EDITOR_PATH_400),
     ("/sheets/v4/spreadsheets/{sheet}%80", "", _EDITOR_PATH_400),
+    ("/slides/v1/presentations/{deck}%80", "", _EDITOR_PATH_400),
     ("/sheets/v4/spreadsheets/nope%80x", "prettyPrint=nope", _EDITOR_PATH_400),
     ("/sheets/v4/spreadsheets/nope%80x/values/A1", "", _EDITOR_PATH_400),
     ("/sheets/v4/spreadsheets/nope%80x/values:batchGet", "ranges=A1", _EDITOR_PATH_400),
@@ -8213,8 +8216,10 @@ _EDITOR_ESCAPE_ROWS = [
      _invalid_value("major_dimension", f"{_SHEETS_TYPE}.Dimension", "nope")),
     ("/docs/v1/documents/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
     ("/sheets/v4/spreadsheets/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
+    ("/slides/v1/presentations/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
     ("/docs/v1/documents/{doc}%C3%A9", "", _EDITOR_NOT_FOUND),
     ("/sheets/v4/spreadsheets/{sheet}%C3%A9", "", _EDITOR_NOT_FOUND),
+    ("/slides/v1/presentations/{deck}%C3%A9", "", _EDITOR_NOT_FOUND),
     ("/sheets/v4/spreadsheets/{sheet}/values/A%C3%A9", "",
      _editor_refused(400, "Unable to parse range: A\u00e9", "INVALID_ARGUMENT")),
     *[
@@ -8234,7 +8239,16 @@ _EDITOR_ESCAPE_ROWS = [
 
 def test_editor_apis_read_an_escape_as_real_reads_it(client, admin_h, document_id):
     """The rows `_EDITOR_ESCAPE_ROWS` records, as ``{row: (status, body)}``."""
-    ids = {"doc": document_id, "sheet": _drive_find(client, admin_h, "Q1 Revenue Model")["id"]}
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1000}).json()[
+        "files"
+    ]
+    ids = {
+        "doc": document_id,
+        "sheet": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
+        "deck": next(
+            f["id"] for f in files if f["mimeType"] == "application/vnd.google-apps.presentation"
+        ),
+    }
 
     def answer(path, query):
         url = path.format(**ids) + (f"?{query}" if query else "")

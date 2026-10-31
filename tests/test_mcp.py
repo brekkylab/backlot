@@ -792,10 +792,10 @@ def test_mcp_graphql_bridge_round_trips_a_nested_filter(live_server):
     )
 
 
-def _revenue_model(settings) -> str:
+def _drive_file(settings, title: str) -> str:
     conn = store.connect_ro(settings.db_path)
     return conn.execute(
-        f"SELECT id FROM {store.table('google_drive')} WHERE title = 'Q1 Revenue Model'"
+        f"SELECT id FROM {store.table('google_drive')} WHERE title = ?", [title]
     ).fetchone()["id"]
 
 
@@ -843,13 +843,32 @@ def _revenue_model(settings) -> str:
             "cfo@acme.com",
             "sheets_values_update",
             lambda st: {
-                "spreadsheet_id": _revenue_model(st),
+                "spreadsheet_id": _drive_file(st, "Q1 Revenue Model"),
                 "a1_range": "A4:B4",
                 "valueInputOption": "RAW",
                 "values": [["Mar", 150000]],
             },
             lambda t: '"updatedCells": 2' in t or '"updatedCells":2' in t,
             id="sheets-values-update",
+        ),
+        # a match for nothing, so the shared server's Doc keeps its text
+        pytest.param(
+            "gdrive",
+            "mia@acme.com",
+            "docs_batch_update",
+            lambda st: {
+                "document_id": _drive_file(st, "Brand guidelines v3"),
+                "requests": [
+                    {
+                        "replaceAllText": {
+                            "containsText": {"text": "no such text"},
+                            "replaceText": "x",
+                        }
+                    }
+                ],
+            },
+            lambda t: '"replaceAllText"' in t,
+            id="docs-batch-update",
         ),
     ],
 )

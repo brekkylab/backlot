@@ -6,7 +6,7 @@
     "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
     "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest"
   ],
-  "measured": "2026-10-29",
+  "measured": "2026-10-30",
   "operations": [
     {
       "operation": "DELETE /drive/v3/drives/{}",
@@ -704,6 +704,7 @@
       "operation": "PATCH /drive/v3/drives/{}",
       "id": "drive.drives.update",
       "response": "drive.Drive",
+      "request": "drive.Drive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -712,6 +713,7 @@
       "operation": "PATCH /drive/v3/files/{}",
       "id": "drive.files.update",
       "response": "drive.File",
+      "request": "drive.File",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -720,6 +722,7 @@
       "operation": "PATCH /drive/v3/files/{}/comments/{}",
       "id": "drive.comments.update",
       "response": "drive.Comment",
+      "request": "drive.Comment",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -728,6 +731,7 @@
       "operation": "PATCH /drive/v3/files/{}/comments/{}/replies/{}",
       "id": "drive.replies.update",
       "response": "drive.Reply",
+      "request": "drive.Reply",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -736,6 +740,7 @@
       "operation": "PATCH /drive/v3/files/{}/permissions/{}",
       "id": "drive.permissions.update",
       "response": "drive.Permission",
+      "request": "drive.Permission",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -744,6 +749,7 @@
       "operation": "PATCH /drive/v3/files/{}/revisions/{}",
       "id": "drive.revisions.update",
       "response": "drive.Revision",
+      "request": "drive.Revision",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -752,6 +758,7 @@
       "operation": "PATCH /drive/v3/teamdrives/{}",
       "id": "drive.teamdrives.update",
       "response": "drive.TeamDrive",
+      "request": "drive.TeamDrive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -760,6 +767,7 @@
       "operation": "POST /drive/v3/changes/watch",
       "id": "drive.changes.watch",
       "response": "drive.Channel",
+      "request": "drive.Channel",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -767,6 +775,7 @@
     {
       "operation": "POST /drive/v3/channels/stop",
       "id": "drive.channels.stop",
+      "request": "drive.Channel",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -775,6 +784,7 @@
       "operation": "POST /drive/v3/drives",
       "id": "drive.drives.create",
       "response": "drive.Drive",
+      "request": "drive.Drive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -799,6 +809,7 @@
       "operation": "POST /drive/v3/files",
       "id": "drive.files.create",
       "response": "drive.File",
+      "request": "drive.File",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -806,6 +817,7 @@
     {
       "operation": "POST /drive/v3/files/{}/accessproposals/{}:resolve",
       "id": "drive.accessproposals.resolve",
+      "request": "drive.ResolveAccessProposalRequest",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -814,6 +826,7 @@
       "operation": "POST /drive/v3/files/{}/approvals/{}:approve",
       "id": "drive.approvals.approve",
       "response": "drive.Approval",
+      "request": "drive.ApproveApprovalRequest",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -822,6 +835,7 @@
       "operation": "POST /drive/v3/files/{}/approvals/{}:cancel",
       "id": "drive.approvals.cancel",
       "response": "drive.Approval",
+      "request": "drive.CancelApprovalRequest",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -830,6 +844,7 @@
       "operation": "POST /drive/v3/files/{}/approvals/{}:comment",
       "id": "drive.approvals.comment",
       "response": "drive.Approval",
+      "request": "drive.CommentApprovalRequest",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -838,6 +853,7 @@
       "operation": "POST /drive/v3/files/{}/approvals/{}:decline",
       "id": "drive.approvals.decline",
       "response": "drive.Approval",
+      "request": "drive.DeclineApprovalRequest",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -846,6 +862,7 @@
       "operation": "POST /drive/v3/files/{}/approvals/{}:reassign",
       "id": "drive.approvals.reassign",
       "response": "drive.Approval",
+      "request": "drive.ReassignApprovalRequest",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -854,6 +871,7 @@
       "operation": "POST /drive/v3/files/{}/approvals:start",
       "id": "drive.approvals.start",
       "response": "drive.Approval",
+      "request": "drive.StartApprovalRequest",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -862,6 +880,7 @@
       "operation": "POST /drive/v3/files/{}/comments",
       "id": "drive.comments.create",
       "response": "drive.Comment",
+      "request": "drive.Comment",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -870,6 +889,7 @@
       "operation": "POST /drive/v3/files/{}/comments/{}/replies",
       "id": "drive.replies.create",
       "response": "drive.Reply",
+      "request": "drive.Reply",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -878,6 +898,7 @@
       "operation": "POST /drive/v3/files/{}/copy",
       "id": "drive.files.copy",
       "response": "drive.File",
+      "request": "drive.File",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -894,6 +915,7 @@
       "operation": "POST /drive/v3/files/{}/modifyLabels",
       "id": "drive.files.modifyLabels",
       "response": "drive.ModifyLabelsResponse",
+      "request": "drive.ModifyLabelsRequest",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -902,6 +924,7 @@
       "operation": "POST /drive/v3/files/{}/permissions",
       "id": "drive.permissions.create",
       "response": "drive.Permission",
+      "request": "drive.Permission",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -910,6 +933,7 @@
       "operation": "POST /drive/v3/files/{}/watch",
       "id": "drive.files.watch",
       "response": "drive.Channel",
+      "request": "drive.Channel",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -918,6 +942,7 @@
       "operation": "POST /drive/v3/teamdrives",
       "id": "drive.teamdrives.create",
       "response": "drive.TeamDrive",
+      "request": "drive.TeamDrive",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -926,6 +951,7 @@
       "operation": "POST /v1/documents",
       "id": "docs.documents.create",
       "response": "docs.Document",
+      "request": "docs.Document",
       "status": "implemented",
       "params": {
         "alt": {
@@ -962,14 +988,44 @@
       "operation": "POST /v1/documents/{}:batchUpdate",
       "id": "docs.documents.batchUpdate",
       "response": "docs.BatchUpdateDocumentResponse",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "request": "docs.BatchUpdateDocumentRequest",
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "POST /v1/presentations",
       "id": "slides.presentations.create",
       "response": "slides.Presentation",
+      "request": "slides.Presentation",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -978,6 +1034,7 @@
       "operation": "POST /v1/presentations/{}:batchUpdate",
       "id": "slides.presentations.batchUpdate",
       "response": "slides.BatchUpdatePresentationResponse",
+      "request": "slides.BatchUpdatePresentationRequest",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -986,6 +1043,7 @@
       "operation": "POST /v4/spreadsheets",
       "id": "sheets.spreadsheets.create",
       "response": "sheets.Spreadsheet",
+      "request": "sheets.Spreadsheet",
       "status": "implemented",
       "params": {
         "key": {
@@ -1002,6 +1060,7 @@
       "operation": "POST /v4/spreadsheets/{}/developerMetadata:search",
       "id": "sheets.spreadsheets.developerMetadata.search",
       "response": "sheets.SearchDeveloperMetadataResponse",
+      "request": "sheets.SearchDeveloperMetadataRequest",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -1010,6 +1069,7 @@
       "operation": "POST /v4/spreadsheets/{}/sheets/{}:copyTo",
       "id": "sheets.spreadsheets.sheets.copyTo",
       "response": "sheets.SheetProperties",
+      "request": "sheets.CopySheetToAnotherSpreadsheetRequest",
       "status": "implemented",
       "params": {
         "key": {
@@ -1026,6 +1086,7 @@
       "operation": "POST /v4/spreadsheets/{}/values/{}:append",
       "id": "sheets.spreadsheets.values.append",
       "response": "sheets.AppendValuesResponse",
+      "request": "sheets.ValueRange",
       "status": "implemented",
       "params": {
         "key": {
@@ -1042,6 +1103,7 @@
       "operation": "POST /v4/spreadsheets/{}/values/{}:clear",
       "id": "sheets.spreadsheets.values.clear",
       "response": "sheets.ClearValuesResponse",
+      "request": "sheets.ClearValuesRequest",
       "status": "implemented",
       "params": {
         "key": {
@@ -1058,6 +1120,7 @@
       "operation": "POST /v4/spreadsheets/{}/values:batchClear",
       "id": "sheets.spreadsheets.values.batchClear",
       "response": "sheets.BatchClearValuesResponse",
+      "request": "sheets.BatchClearValuesRequest",
       "status": "implemented",
       "params": {
         "key": {
@@ -1074,6 +1137,7 @@
       "operation": "POST /v4/spreadsheets/{}/values:batchClearByDataFilter",
       "id": "sheets.spreadsheets.values.batchClearByDataFilter",
       "response": "sheets.BatchClearValuesByDataFilterResponse",
+      "request": "sheets.BatchClearValuesByDataFilterRequest",
       "status": "implemented",
       "params": {
         "key": {
@@ -1090,6 +1154,7 @@
       "operation": "POST /v4/spreadsheets/{}/values:batchGetByDataFilter",
       "id": "sheets.spreadsheets.values.batchGetByDataFilter",
       "response": "sheets.BatchGetValuesByDataFilterResponse",
+      "request": "sheets.BatchGetValuesByDataFilterRequest",
       "status": "implemented",
       "params": {
         "key": {
@@ -1106,6 +1171,7 @@
       "operation": "POST /v4/spreadsheets/{}/values:batchUpdate",
       "id": "sheets.spreadsheets.values.batchUpdate",
       "response": "sheets.BatchUpdateValuesResponse",
+      "request": "sheets.BatchUpdateValuesRequest",
       "status": "implemented",
       "params": {
         "key": {
@@ -1122,6 +1188,7 @@
       "operation": "POST /v4/spreadsheets/{}/values:batchUpdateByDataFilter",
       "id": "sheets.spreadsheets.values.batchUpdateByDataFilter",
       "response": "sheets.BatchUpdateValuesByDataFilterResponse",
+      "request": "sheets.BatchUpdateValuesByDataFilterRequest",
       "status": "implemented",
       "params": {
         "key": {
@@ -1138,6 +1205,7 @@
       "operation": "POST /v4/spreadsheets/{}:batchUpdate",
       "id": "sheets.spreadsheets.batchUpdate",
       "response": "sheets.BatchUpdateSpreadsheetResponse",
+      "request": "sheets.BatchUpdateSpreadsheetRequest",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -1146,6 +1214,7 @@
       "operation": "POST /v4/spreadsheets/{}:getByDataFilter",
       "id": "sheets.spreadsheets.getByDataFilter",
       "response": "sheets.Spreadsheet",
+      "request": "sheets.GetSpreadsheetByDataFilterRequest",
       "status": "implemented",
       "params": {
         "key": {
@@ -1162,6 +1231,7 @@
       "operation": "PUT /v4/spreadsheets/{}/values/{}",
       "id": "sheets.spreadsheets.values.update",
       "response": "sheets.UpdateValuesResponse",
+      "request": "sheets.ValueRange",
       "status": "implemented",
       "params": {
         "key": {
@@ -1210,6 +1280,64 @@
     ]
   },
   "types": {
+    "docs.AcceptSuggestionRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "suggestionId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.AddCommentReplyRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "commentId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "post": {
+          "status": "missing",
+          "type": "docs.Post"
+        },
+        "suggestionId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.AddCommentReplyResponse": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "post": {
+          "status": "missing",
+          "type": "docs.Post"
+        }
+      }
+    },
+    "docs.AddDocumentTabRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "tabProperties": {
+          "status": "missing",
+          "type": "docs.TabProperties"
+        }
+      }
+    },
+    "docs.AddDocumentTabResponse": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "tabProperties": {
+          "status": "missing",
+          "type": "docs.TabProperties"
+        }
+      }
+    },
     "docs.AutoText": {
       "type_kind": "object",
       "status": "missing",
@@ -1253,6 +1381,46 @@
         "backgroundColorSuggested": {
           "status": "missing",
           "type": "boolean"
+        }
+      }
+    },
+    "docs.BatchUpdateDocumentRequest": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "requests": {
+          "status": "implemented",
+          "type": "[docs.Request]"
+        },
+        "writeControl": {
+          "status": "implemented",
+          "type": "docs.WriteControl"
+        }
+      }
+    },
+    "docs.BatchUpdateDocumentResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "commentUpdateState": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "documentId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "replies": {
+          "status": "implemented",
+          "type": "[docs.Response]"
+        },
+        "suggestionResponses": {
+          "status": "implemented",
+          "type": "[docs.SuggestionResponse]"
+        },
+        "writeControl": {
+          "status": "implemented",
+          "type": "docs.WriteControl"
         }
       }
     },
@@ -1389,6 +1557,140 @@
         "status": {
           "status": "missing",
           "type": "string"
+        }
+      }
+    },
+    "docs.CreateDropdownDefinitionRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dropdownDefinition": {
+          "status": "missing",
+          "type": "docs.DropdownDefinition"
+        },
+        "tabId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.CreateDropdownDefinitionResponse": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dropdownDefinition": {
+          "status": "missing",
+          "type": "docs.DropdownDefinition"
+        }
+      }
+    },
+    "docs.CreateFooterRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "sectionBreakLocation": {
+          "status": "missing",
+          "type": "docs.Location"
+        },
+        "type": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.CreateFooterResponse": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "footerId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.CreateFootnoteRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "endOfSegmentLocation": {
+          "status": "missing",
+          "type": "docs.EndOfSegmentLocation"
+        },
+        "location": {
+          "status": "missing",
+          "type": "docs.Location"
+        }
+      }
+    },
+    "docs.CreateFootnoteResponse": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "footnoteId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.CreateHeaderRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "sectionBreakLocation": {
+          "status": "missing",
+          "type": "docs.Location"
+        },
+        "type": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.CreateHeaderResponse": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "headerId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.CreateNamedRangeRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "name": {
+          "status": "missing",
+          "type": "string"
+        },
+        "range": {
+          "status": "missing",
+          "type": "docs.Range"
+        }
+      }
+    },
+    "docs.CreateNamedRangeResponse": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "namedRangeId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.CreateParagraphBulletsRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "bulletPreset": {
+          "status": "missing",
+          "type": "string"
+        },
+        "range": {
+          "status": "missing",
+          "type": "docs.Range"
         }
       }
     },
@@ -1531,6 +1833,168 @@
         "timestampSuggested": {
           "status": "missing",
           "type": "boolean"
+        }
+      }
+    },
+    "docs.DeleteCommentReplyRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "commentId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "postId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "suggestionId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.DeleteCommentRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "commentId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.DeleteContentRangeRequest": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "range": {
+          "status": "implemented",
+          "type": "docs.Range"
+        }
+      }
+    },
+    "docs.DeleteDropdownDefinitionRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dropdownDefinitionId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tabId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.DeleteFooterRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "footerId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tabId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.DeleteHeaderRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "headerId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tabId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.DeleteNamedRangeRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "name": {
+          "status": "missing",
+          "type": "string"
+        },
+        "namedRangeId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tabsCriteria": {
+          "status": "missing",
+          "type": "docs.TabsCriteria"
+        }
+      }
+    },
+    "docs.DeleteParagraphBulletsRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "range": {
+          "status": "missing",
+          "type": "docs.Range"
+        }
+      }
+    },
+    "docs.DeletePositionedObjectRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "objectId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tabId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.DeleteSuggestionRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "suggestionId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.DeleteTabRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "tabId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.DeleteTableColumnRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "tableCellLocation": {
+          "status": "missing",
+          "type": "docs.TableCellLocation"
+        }
+      }
+    },
+    "docs.DeleteTableRowRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "tableCellLocation": {
+          "status": "missing",
+          "type": "docs.TableCellLocation"
         }
       }
     },
@@ -2222,6 +2686,20 @@
         }
       }
     },
+    "docs.EndOfSegmentLocation": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "segmentId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "tabId": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
     "docs.Equation": {
       "type_kind": "object",
       "status": "missing",
@@ -2484,6 +2962,262 @@
         }
       }
     },
+    "docs.InsertCommentRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "assigneeEmailAddress": {
+          "status": "missing",
+          "type": "string"
+        },
+        "content": {
+          "status": "missing",
+          "type": "string"
+        },
+        "range": {
+          "status": "missing",
+          "type": "docs.Range"
+        }
+      }
+    },
+    "docs.InsertCommentResponse": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "commentThread": {
+          "status": "missing",
+          "type": "docs.CommentThread"
+        }
+      }
+    },
+    "docs.InsertDateRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dateElementProperties": {
+          "status": "missing",
+          "type": "docs.DateElementProperties"
+        },
+        "endOfSegmentLocation": {
+          "status": "missing",
+          "type": "docs.EndOfSegmentLocation"
+        },
+        "location": {
+          "status": "missing",
+          "type": "docs.Location"
+        }
+      }
+    },
+    "docs.InsertDropdownRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dropdownDefinitionId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "endOfSegmentLocation": {
+          "status": "missing",
+          "type": "docs.EndOfSegmentLocation"
+        },
+        "location": {
+          "status": "missing",
+          "type": "docs.Location"
+        },
+        "selectedOptionId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.InsertDropdownResponse": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dropdown": {
+          "status": "missing",
+          "type": "docs.Dropdown"
+        }
+      }
+    },
+    "docs.InsertInlineImageRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "endOfSegmentLocation": {
+          "status": "missing",
+          "type": "docs.EndOfSegmentLocation"
+        },
+        "location": {
+          "status": "missing",
+          "type": "docs.Location"
+        },
+        "objectSize": {
+          "status": "missing",
+          "type": "docs.Size"
+        },
+        "uri": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.InsertInlineImageResponse": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "objectId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.InsertInlineSheetsChartResponse": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "objectId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.InsertPageBreakRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "endOfSegmentLocation": {
+          "status": "missing",
+          "type": "docs.EndOfSegmentLocation"
+        },
+        "location": {
+          "status": "missing",
+          "type": "docs.Location"
+        }
+      }
+    },
+    "docs.InsertPersonRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "endOfSegmentLocation": {
+          "status": "missing",
+          "type": "docs.EndOfSegmentLocation"
+        },
+        "location": {
+          "status": "missing",
+          "type": "docs.Location"
+        },
+        "personProperties": {
+          "status": "missing",
+          "type": "docs.PersonProperties"
+        }
+      }
+    },
+    "docs.InsertRichLinkRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "endOfSegmentLocation": {
+          "status": "missing",
+          "type": "docs.EndOfSegmentLocation"
+        },
+        "location": {
+          "status": "missing",
+          "type": "docs.Location"
+        },
+        "richLinkProperties": {
+          "status": "missing",
+          "type": "docs.RichLinkProperties"
+        }
+      }
+    },
+    "docs.InsertSectionBreakRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "endOfSegmentLocation": {
+          "status": "missing",
+          "type": "docs.EndOfSegmentLocation"
+        },
+        "location": {
+          "status": "missing",
+          "type": "docs.Location"
+        },
+        "sectionType": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.InsertTableColumnRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "insertRight": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "tableCellLocation": {
+          "status": "missing",
+          "type": "docs.TableCellLocation"
+        }
+      }
+    },
+    "docs.InsertTableRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columns": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "endOfSegmentLocation": {
+          "status": "missing",
+          "type": "docs.EndOfSegmentLocation"
+        },
+        "location": {
+          "status": "missing",
+          "type": "docs.Location"
+        },
+        "rows": {
+          "status": "missing",
+          "type": "integer"
+        }
+      }
+    },
+    "docs.InsertTableRowRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "insertBelow": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "tableCellLocation": {
+          "status": "missing",
+          "type": "docs.TableCellLocation"
+        }
+      }
+    },
+    "docs.InsertTextRequest": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "endOfSegmentLocation": {
+          "status": "implemented",
+          "type": "docs.EndOfSegmentLocation"
+        },
+        "location": {
+          "status": "implemented",
+          "type": "docs.Location"
+        },
+        "text": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
     "docs.Link": {
       "type_kind": "object",
       "status": "implemented",
@@ -2583,6 +3317,34 @@
         "nestingLevelsSuggestionStates": {
           "status": "missing",
           "type": "[docs.NestingLevelSuggestionState]"
+        }
+      }
+    },
+    "docs.Location": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "index": {
+          "status": "implemented",
+          "type": "integer"
+        },
+        "segmentId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "tabId": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
+    "docs.MergeTableCellsRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "tableRange": {
+          "status": "missing",
+          "type": "docs.TableRange"
         }
       }
     },
@@ -3172,6 +3934,20 @@
         }
       }
     },
+    "docs.PinTableHeaderRowsRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "pinnedHeaderRowsCount": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "tableStartLocation": {
+          "status": "missing",
+          "type": "docs.Location"
+        }
+      }
+    },
     "docs.PositionedObject": {
       "type_kind": "object",
       "status": "missing",
@@ -3344,23 +4120,499 @@
     },
     "docs.Range": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "endIndex": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "segmentId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "startIndex": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
+        },
+        "tabId": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
+    "docs.RejectSuggestionRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "suggestionId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.ReplaceAllTextRequest": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "containsText": {
+          "status": "implemented",
+          "type": "docs.SubstringMatchCriteria"
+        },
+        "replaceText": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "tabsCriteria": {
+          "status": "implemented",
+          "type": "docs.TabsCriteria"
+        }
+      }
+    },
+    "docs.ReplaceAllTextResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "occurrencesChanged": {
+          "status": "implemented",
+          "type": "integer"
+        }
+      }
+    },
+    "docs.ReplaceImageRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "imageObjectId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "imageReplaceMethod": {
+          "status": "missing",
+          "type": "string"
         },
         "tabId": {
           "status": "missing",
           "type": "string"
+        },
+        "uri": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.ReplaceNamedRangeContentRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "namedRangeId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "namedRangeName": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tabsCriteria": {
+          "status": "missing",
+          "type": "docs.TabsCriteria"
+        },
+        "text": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.Request": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "acceptSuggestion": {
+          "status": "missing",
+          "type": "docs.AcceptSuggestionRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "addCommentReply": {
+          "status": "missing",
+          "type": "docs.AddCommentReplyRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "addDocumentTab": {
+          "status": "missing",
+          "type": "docs.AddDocumentTabRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createDropdownDefinition": {
+          "status": "missing",
+          "type": "docs.CreateDropdownDefinitionRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createFooter": {
+          "status": "missing",
+          "type": "docs.CreateFooterRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createFootnote": {
+          "status": "missing",
+          "type": "docs.CreateFootnoteRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createHeader": {
+          "status": "missing",
+          "type": "docs.CreateHeaderRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createNamedRange": {
+          "status": "missing",
+          "type": "docs.CreateNamedRangeRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createParagraphBullets": {
+          "status": "missing",
+          "type": "docs.CreateParagraphBulletsRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deleteComment": {
+          "status": "missing",
+          "type": "docs.DeleteCommentRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deleteCommentReply": {
+          "status": "missing",
+          "type": "docs.DeleteCommentReplyRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deleteContentRange": {
+          "status": "implemented",
+          "type": "docs.DeleteContentRangeRequest"
+        },
+        "deleteDropdownDefinition": {
+          "status": "missing",
+          "type": "docs.DeleteDropdownDefinitionRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deleteFooter": {
+          "status": "missing",
+          "type": "docs.DeleteFooterRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deleteHeader": {
+          "status": "missing",
+          "type": "docs.DeleteHeaderRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deleteNamedRange": {
+          "status": "missing",
+          "type": "docs.DeleteNamedRangeRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deleteParagraphBullets": {
+          "status": "missing",
+          "type": "docs.DeleteParagraphBulletsRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deletePositionedObject": {
+          "status": "missing",
+          "type": "docs.DeletePositionedObjectRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deleteSuggestion": {
+          "status": "missing",
+          "type": "docs.DeleteSuggestionRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deleteTab": {
+          "status": "missing",
+          "type": "docs.DeleteTabRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deleteTableColumn": {
+          "status": "missing",
+          "type": "docs.DeleteTableColumnRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deleteTableRow": {
+          "status": "missing",
+          "type": "docs.DeleteTableRowRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertComment": {
+          "status": "missing",
+          "type": "docs.InsertCommentRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertDate": {
+          "status": "missing",
+          "type": "docs.InsertDateRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertDropdown": {
+          "status": "missing",
+          "type": "docs.InsertDropdownRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertInlineImage": {
+          "status": "missing",
+          "type": "docs.InsertInlineImageRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertPageBreak": {
+          "status": "missing",
+          "type": "docs.InsertPageBreakRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertPerson": {
+          "status": "missing",
+          "type": "docs.InsertPersonRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertRichLink": {
+          "status": "missing",
+          "type": "docs.InsertRichLinkRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertSectionBreak": {
+          "status": "missing",
+          "type": "docs.InsertSectionBreakRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertTable": {
+          "status": "missing",
+          "type": "docs.InsertTableRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertTableColumn": {
+          "status": "missing",
+          "type": "docs.InsertTableColumnRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertTableRow": {
+          "status": "missing",
+          "type": "docs.InsertTableRowRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertText": {
+          "status": "implemented",
+          "type": "docs.InsertTextRequest"
+        },
+        "mergeTableCells": {
+          "status": "missing",
+          "type": "docs.MergeTableCellsRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "pinTableHeaderRows": {
+          "status": "missing",
+          "type": "docs.PinTableHeaderRowsRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "rejectSuggestion": {
+          "status": "missing",
+          "type": "docs.RejectSuggestionRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "replaceAllText": {
+          "status": "implemented",
+          "type": "docs.ReplaceAllTextRequest"
+        },
+        "replaceImage": {
+          "status": "missing",
+          "type": "docs.ReplaceImageRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "replaceNamedRangeContent": {
+          "status": "missing",
+          "type": "docs.ReplaceNamedRangeContentRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "unmergeTableCells": {
+          "status": "missing",
+          "type": "docs.UnmergeTableCellsRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateCommentPost": {
+          "status": "missing",
+          "type": "docs.UpdateCommentPostRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateDocumentStyle": {
+          "status": "missing",
+          "type": "docs.UpdateDocumentStyleRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateDocumentTabProperties": {
+          "status": "missing",
+          "type": "docs.UpdateDocumentTabPropertiesRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateDropdownDefinitionProperties": {
+          "status": "missing",
+          "type": "docs.UpdateDropdownDefinitionPropertiesRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateDropdownProperties": {
+          "status": "missing",
+          "type": "docs.UpdateDropdownPropertiesRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateNamedStyle": {
+          "status": "missing",
+          "type": "docs.UpdateNamedStyleRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateParagraphStyle": {
+          "status": "missing",
+          "type": "docs.UpdateParagraphStyleRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateSectionStyle": {
+          "status": "missing",
+          "type": "docs.UpdateSectionStyleRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateTableCellStyle": {
+          "status": "missing",
+          "type": "docs.UpdateTableCellStyleRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateTableColumnProperties": {
+          "status": "missing",
+          "type": "docs.UpdateTableColumnPropertiesRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateTableRowStyle": {
+          "status": "missing",
+          "type": "docs.UpdateTableRowStyleRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updateTextStyle": {
+          "status": "missing",
+          "type": "docs.UpdateTextStyleRequest",
+          "kind": "missing_field",
+          "severity": "gap"
+        }
+      }
+    },
+    "docs.Response": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "addCommentReply": {
+          "status": "missing",
+          "type": "docs.AddCommentReplyResponse",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "addDocumentTab": {
+          "status": "missing",
+          "type": "docs.AddDocumentTabResponse",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createDropdownDefinition": {
+          "status": "missing",
+          "type": "docs.CreateDropdownDefinitionResponse",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createFooter": {
+          "status": "missing",
+          "type": "docs.CreateFooterResponse",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createFootnote": {
+          "status": "missing",
+          "type": "docs.CreateFootnoteResponse",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createHeader": {
+          "status": "missing",
+          "type": "docs.CreateHeaderResponse",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createNamedRange": {
+          "status": "missing",
+          "type": "docs.CreateNamedRangeResponse",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertComment": {
+          "status": "missing",
+          "type": "docs.InsertCommentResponse",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertDropdown": {
+          "status": "missing",
+          "type": "docs.InsertDropdownResponse",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertInlineImage": {
+          "status": "missing",
+          "type": "docs.InsertInlineImageResponse",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "insertInlineSheetsChart": {
+          "status": "missing",
+          "type": "docs.InsertInlineSheetsChartResponse",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "replaceAllText": {
+          "status": "implemented",
+          "type": "docs.ReplaceAllTextResponse"
         }
       }
     },
@@ -3690,6 +4942,24 @@
         }
       }
     },
+    "docs.SubstringMatchCriteria": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "matchCase": {
+          "status": "implemented",
+          "type": "boolean"
+        },
+        "searchByRegex": {
+          "status": "implemented",
+          "type": "boolean"
+        },
+        "text": {
+          "status": "implemented",
+          "type": "string"
+        }
+      }
+    },
     "docs.SuggestedBullet": {
       "type_kind": "object",
       "status": "missing",
@@ -3869,6 +5139,42 @@
         "textStyleSuggestionState": {
           "status": "missing",
           "type": "docs.TextStyleSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestionResponse": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "acceptedSuggestionIds": {
+          "status": "missing",
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "createdSuggestionIds": {
+          "status": "missing",
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "deletedSuggestionIds": {
+          "status": "missing",
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "rejectedSuggestionIds": {
+          "status": "missing",
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "updatedSummarySuggestionIds": {
+          "status": "missing",
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
         }
       }
     },
@@ -4054,6 +5360,24 @@
         }
       }
     },
+    "docs.TableCellLocation": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columnIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "rowIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "tableStartLocation": {
+          "status": "missing",
+          "type": "docs.Location"
+        }
+      }
+    },
     "docs.TableCellStyle": {
       "type_kind": "object",
       "status": "missing",
@@ -4194,6 +5518,24 @@
         }
       }
     },
+    "docs.TableRange": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columnSpan": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "rowSpan": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "tableCellLocation": {
+          "status": "missing",
+          "type": "docs.TableCellLocation"
+        }
+      }
+    },
     "docs.TableRow": {
       "type_kind": "object",
       "status": "missing",
@@ -4263,6 +5605,16 @@
         "tableColumnProperties": {
           "status": "missing",
           "type": "[docs.TableColumnProperties]"
+        }
+      }
+    },
+    "docs.TabsCriteria": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "tabIds": {
+          "status": "implemented",
+          "type": "[string]"
         }
       }
     },
@@ -4398,6 +5750,256 @@
         }
       }
     },
+    "docs.UnmergeTableCellsRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "tableRange": {
+          "status": "missing",
+          "type": "docs.TableRange"
+        }
+      }
+    },
+    "docs.UpdateCommentPostRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "commentId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "content": {
+          "status": "missing",
+          "type": "string"
+        },
+        "postId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "suggestionId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.UpdateDocumentStyleRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "documentStyle": {
+          "status": "missing",
+          "type": "docs.DocumentStyle"
+        },
+        "fields": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tabId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.UpdateDocumentTabPropertiesRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "fields": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tabProperties": {
+          "status": "missing",
+          "type": "docs.TabProperties"
+        }
+      }
+    },
+    "docs.UpdateDropdownDefinitionPropertiesRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dropdownDefinitionId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "dropdownDefinitionProperties": {
+          "status": "missing",
+          "type": "docs.DropdownDefinitionProperties"
+        },
+        "fields": {
+          "status": "missing",
+          "type": "string"
+        },
+        "selectedOptionIdReplacements": {
+          "status": "missing",
+          "type": "map<string, string>"
+        },
+        "tabId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.UpdateDropdownPropertiesRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dropdownId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "dropdownProperties": {
+          "status": "missing",
+          "type": "docs.DropdownProperties"
+        },
+        "fields": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tabId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.UpdateNamedStyleRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "fields": {
+          "status": "missing",
+          "type": "string"
+        },
+        "namedStyle": {
+          "status": "missing",
+          "type": "docs.NamedStyle"
+        },
+        "tabId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.UpdateParagraphStyleRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "fields": {
+          "status": "missing",
+          "type": "string"
+        },
+        "paragraphStyle": {
+          "status": "missing",
+          "type": "docs.ParagraphStyle"
+        },
+        "range": {
+          "status": "missing",
+          "type": "docs.Range"
+        }
+      }
+    },
+    "docs.UpdateSectionStyleRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "fields": {
+          "status": "missing",
+          "type": "string"
+        },
+        "range": {
+          "status": "missing",
+          "type": "docs.Range"
+        },
+        "sectionStyle": {
+          "status": "missing",
+          "type": "docs.SectionStyle"
+        }
+      }
+    },
+    "docs.UpdateTableCellStyleRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "fields": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tableCellStyle": {
+          "status": "missing",
+          "type": "docs.TableCellStyle"
+        },
+        "tableRange": {
+          "status": "missing",
+          "type": "docs.TableRange"
+        },
+        "tableStartLocation": {
+          "status": "missing",
+          "type": "docs.Location"
+        }
+      }
+    },
+    "docs.UpdateTableColumnPropertiesRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "columnIndices": {
+          "status": "missing",
+          "type": "[integer]"
+        },
+        "fields": {
+          "status": "missing",
+          "type": "string"
+        },
+        "tableColumnProperties": {
+          "status": "missing",
+          "type": "docs.TableColumnProperties"
+        },
+        "tableStartLocation": {
+          "status": "missing",
+          "type": "docs.Location"
+        }
+      }
+    },
+    "docs.UpdateTableRowStyleRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "fields": {
+          "status": "missing",
+          "type": "string"
+        },
+        "rowIndices": {
+          "status": "missing",
+          "type": "[integer]"
+        },
+        "tableRowStyle": {
+          "status": "missing",
+          "type": "docs.TableRowStyle"
+        },
+        "tableStartLocation": {
+          "status": "missing",
+          "type": "docs.Location"
+        }
+      }
+    },
+    "docs.UpdateTextStyleRequest": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "fields": {
+          "status": "missing",
+          "type": "string"
+        },
+        "range": {
+          "status": "missing",
+          "type": "docs.Range"
+        },
+        "textStyle": {
+          "status": "missing",
+          "type": "docs.TextStyle"
+        }
+      }
+    },
     "docs.WeightedFontFamily": {
       "type_kind": "object",
       "status": "implemented",
@@ -4409,6 +6011,24 @@
         "weight": {
           "status": "implemented",
           "type": "integer"
+        }
+      }
+    },
+    "docs.WriteControl": {
+      "type_kind": "object",
+      "status": "implemented",
+      "fields": {
+        "requiredRevisionId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "targetRevisionId": {
+          "status": "implemented",
+          "type": "string"
+        },
+        "writeMode": {
+          "status": "implemented",
+          "type": "string"
         }
       }
     },

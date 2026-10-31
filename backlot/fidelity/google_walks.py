@@ -11,7 +11,9 @@ first row and column, a second sheet for a grid range to name, and a prose sprea
 then writes to the grid, copies a sheet and creates a workbook, as its owner.
 
 `gdocs` reads a document stating a title, a heading and every run mark a corpus states, and a
-prose document beside it, flat and as their tabs, as their owner.
+prose document beside it, flat and as their tabs, as their owner; then creates a document and
+writes the first one with each request `documents.batchUpdate` applies, the body it sent recorded
+beside the answer.
 """
 
 from __future__ import annotations
@@ -88,9 +90,10 @@ GDOCS_CORPUS = [
 ]
 
 
-def gdocs(timeout: float) -> list[tuple[str, Any]]:
+def gdocs(timeout: float) -> list[tuple[Any, ...]]:
     """Each document read through `documents.get`, flat and as its tabs, as its owner: a reader is
-    served no `revisionId`; then one `documents.create`."""
+    served no `revisionId`; then one `documents.create`, and two `documents.batchUpdate` calls that
+    between them send every field it reads."""
     import backlot
     from backlot.server import meta_users
 
@@ -114,7 +117,62 @@ def gdocs(timeout: float) -> list[tuple[str, Any]]:
                 for q in ({}, {"includeTabsContent": "true"})
             ]
             created = _ok(client.post("/docs/v1/documents", json={"title": "Walk created doc"}))
-            return [*walked, ("docs.documents.create", created)]
+            doc = next(f["id"] for f in files if f["name"] == "Walk doc")
+            revision = _ok(client.get(f"/docs/v1/documents/{doc}"))["revisionId"]
+            writes = [
+                {
+                    "requests": [
+                        {
+                            "insertText": {
+                                "location": {"index": 1, "tabId": "t.0", "segmentId": ""},
+                                "text": "Walked ",
+                            }
+                        },
+                        {
+                            "deleteContentRange": {
+                                "range": {
+                                    "startIndex": 1,
+                                    "endIndex": 2,
+                                    "tabId": "t.0",
+                                    "segmentId": "",
+                                }
+                            }
+                        },
+                        {
+                            "replaceAllText": {
+                                "containsText": {
+                                    "text": "section",
+                                    "matchCase": False,
+                                    "searchByRegex": False,
+                                },
+                                "replaceText": "Part",
+                                "tabsCriteria": {"tabIds": ["t.0"]},
+                            }
+                        },
+                    ],
+                    "writeControl": {"requiredRevisionId": revision},
+                },
+                {
+                    "requests": [
+                        {
+                            "insertText": {
+                                "endOfSegmentLocation": {"tabId": "t.0", "segmentId": ""},
+                                "text": "!",
+                            }
+                        }
+                    ],
+                    "writeControl": {"targetRevisionId": revision, "writeMode": "EDIT"},
+                },
+            ]
+            written = [
+                (
+                    "docs.documents.batchUpdate",
+                    _ok(client.post(f"/docs/v1/documents/{doc}:batchUpdate", json=body)),
+                    body,
+                )
+                for body in writes
+            ]
+            return [*walked, ("docs.documents.create", created), *written]
 
 
 def sheets(timeout: float) -> list[tuple[str, Any]]:

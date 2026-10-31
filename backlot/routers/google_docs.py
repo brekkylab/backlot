@@ -1,4 +1,5 @@
-"""Google Docs v1 (``/docs/v1``): ``documents.get`` and ``documents.create``.
+"""Google Docs v1 (``/docs/v1``): ``documents.get``, ``documents.create`` and
+``documents.batchUpdate``.
 
 The routes are registered on `routers.google.router` as `routers.google_sheets` describes, and a
 ``fields`` mask is read as the Sheets routes read theirs (`routers.google._gmask_select`).
@@ -10,22 +11,32 @@ member it was shared with as a reader.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import functools
 import json
+import time
 from pathlib import Path
 
 from fastapi import Request
 
-from backlot import auth, gdocs, protojson, store, synth
+from backlot import auth, gdocs, protojson, store
 from backlot.errors import google as gerr
 from backlot.openapi import proto_body, qp
 from backlot.routers.google import (
     _BATCH_OUTER,
     _GOOGLE_FIELDS,
+    _GOOGLE_RECORDED,
     _drive_owned_by,
+    _drive_version,
+    _editor_batch,
     _editor_creator,
     _editor_doc,
     _editor_new_file_id,
+    _editor_requests,
     _editor_store,
+    _editor_writable,
+    _EditorRefused,
     _gmask_apply,
     _gmask_select,
     _pj_messages,
@@ -116,10 +127,31 @@ def _docs_tabs(content: dict) -> list[dict]:
     return [{"tabProperties": dict(_DOCS_TAB), "documentTab": content}]
 
 
-def _docs_revision(document_id: str) -> str:
-    """The `revisionId` the owner is served, the same from `documents.create` and every read
-    after it: measured 2026-10-26, a created Doc's next `documents.get` served its create's."""
-    return synth._digest(document_id)[:24]
+# Real's `revisionId` is `AHj4eM` and about a hundred characters of URL-safe base64 (measured
+# 2026-10-26). This one encodes the Doc and its revision, so a write can tell an id of another Doc
+# from one of no Doc at all, as real does (`docs_batch_update`).
+_DOCS_REVISION_PREFIX = "AHj4eM"
+
+
+def _docs_revision(document_id: str, revision: int = 0) -> str:
+    """The `revisionId` the owner is served after a Doc's ``revision``-th `documents.batchUpdate`:
+    measured 2026-10-26, a created Doc's next `documents.get` served its create's, and on
+    2026-10-29 each batchUpdate answered a new one, which the next read served."""
+    encoded = base64.urlsafe_b64encode(f"{revision}:{document_id}".encode()).decode()
+    return _DOCS_REVISION_PREFIX + encoded.rstrip("=")
+
+
+def _docs_revision_of(revision_id: str) -> tuple[str, int] | None:
+    """The Doc and revision a `revisionId` this server served names, or None for any other."""
+    if not revision_id.startswith(_DOCS_REVISION_PREFIX):
+        return None
+    encoded = revision_id[len(_DOCS_REVISION_PREFIX) :]
+    try:
+        text = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
+        revision, document_id = text.split(":", 1)
+        return document_id, int(revision)
+    except (ValueError, binascii.Error):
+        return None
 
 
 def _docs_refuse_suggestions() -> gerr.GoogleError:
@@ -214,9 +246,11 @@ async def docs_get(document_id: str, request: Request):
         "COMMENTS_VIEW_MODE_INCLUDED" if asks_comments and owned else "COMMENTS_VIEW_MODE_OMITTED"
     )
 
-    body = store.gdrive_doc_body_for(auth.conn(request), document_id)
+    conn = auth.conn(request)
+    body = store.gdrive_doc_body_for(conn, document_id)
     content = _docs_content(body if body is not None else gdocs.from_text(row["content"] or ""))
-    revision = {"revisionId": _docs_revision(document_id)} if owned else {}
+    written = store.gdrive_doc_revision(conn, document_id)
+    revision = {"revisionId": _docs_revision(document_id, written)} if owned else {}
     # Real's orders, measured 2026-10-16 on twelve Docs and 2026-10-26 on the tabbed answer, the
     # same under each mode and whatever order a mask names the members in. Real also serves
     # `headers` and `footers` after `body`, `lists` after `namedStyles` and `inlineObjects` before
@@ -279,13 +313,38 @@ for _message, _groups in _DOCS_PROTO["oneofs"].items():
         for _member in _members:
             _DOCS_SHAPES.setdefault((f"docs.{_message}", _member), {})["oneof"] = _group
 
+_DOCS_WRITE_MODE = protojson.Enum(
+    f"{_DOCS_VIEW}.WriteControl.WriteMode", ("WRITE_MODE_UNSPECIFIED", "EDIT", "SUGGEST")
+)
+# The oneofs of a `documents.batchUpdate` body, each named as real's refusal of a second member
+# names it: measured 2026-10-29, a request with two kinds was refused with
+# `Invalid value at 'requests[0]' (oneof), oneof field 'request' is already set.`, and likewise
+# `insertion_location` and `control`.
+for _key, _group in {
+    **{("docs.Request", kind): "request" for kind in _GOOGLE_RECORDED["docs.Request"]["fields"]},
+    ("docs.InsertTextRequest", "location"): "insertion_location",
+    ("docs.InsertTextRequest", "endOfSegmentLocation"): "insertion_location",
+    ("docs.WriteControl", "requiredRevisionId"): "control",
+    ("docs.WriteControl", "targetRevisionId"): "control",
+    ("docs.ReplaceAllTextRequest", "containsText"): "criteria",
+}.items():
+    _DOCS_SHAPES[_key] = {"oneof": _group}
+# A request is declared inside the body's message: `"requests": "x"` is refused naming
+# `….BatchUpdateDocumentRequest.Request`.
+_PJ_DOCS = _pj_messages(
+    _DOCS_VIEW,
+    {("docs.WriteControl", "writeMode"): _DOCS_WRITE_MODE},
+    _DOCS_SHAPES,
+    {"docs.Request": "BatchUpdateDocumentRequest.Request"},
+)
+
 # The request body is the `Document` itself, read against the recorded message
 # (`routers.google._pj_messages`) and `_DOCS_SHAPES`: measured 2026-10-28, an unknown name is
 # ``Unknown name "nope": Cannot find field.`` with no field path, a nested one names its message
 # (``at 'body'``), and a name the `Document` has is typed (``Invalid value at 'title' (TYPE_STRING),
 # 5``); and 2026-10-29, a number in any enum field is read whether or not the enum declares it,
 # and a map's entries are read as its value's message.
-_PJ_DOCUMENT = _pj_messages(_DOCS_VIEW, {}, _DOCS_SHAPES)("docs.Document")
+_PJ_DOCUMENT = _PJ_DOCS("docs.Document")
 
 # A query parameter binds to the `Document` field it names. Measured 2026-10-28: `title` names the
 # Doc over the body's, its last repeat read and an empty one naming none; the enums are read as
@@ -344,3 +403,265 @@ async def docs_create(request: Request):
         "tabs": _docs_tabs(content),
     }
     return doc if tree is None else _gmask_apply(tree, doc)
+
+
+# --- `documents.batchUpdate` ----------------------------------------------------------------------
+#
+# Measured against the live Docs v1 API on 2026-10-29, as a Workspace member writing a Doc it owns
+# and as a second member it was shared with as a reader. How each request changes the body is
+# `gdocs.Body`'s; this section is the request, its refusals and the answer.
+
+_PJ_BATCH_UPDATE = _PJ_DOCS("docs.BatchUpdateDocumentRequest")
+
+
+def _docs_target(where: dict) -> None:
+    """Refuse a location or range in a tab or segment the Doc does not have. A Doc here is its one
+    tab, `t.0`, with no header, footer or footnote; measured, the tab is checked before the
+    segment, and both before anything else the request states."""
+    if where.get("tab_id") not in (None, "", _DOCS_TAB["tabId"]):
+        raise _EditorRefused("Cannot apply request to an invalid tab ID.")
+    segment = where.get("segment_id")
+    if segment:
+        raise _EditorRefused(
+            f"Segment with ID {segment} was not found. If a segment ID is provided, it must be a "
+            "header, footer or footnote ID. Use an empty segment ID to reference the body."
+        )
+
+
+def _docs_negative(index: int) -> None:
+    if index < 0:
+        raise _EditorRefused("Index must be greater than or equal to 0.")
+
+
+def _docs_past_end(index: int, body: gdocs.Body) -> None:
+    if index >= body.end:
+        raise _EditorRefused(
+            f"Index {index} must be less than the end index of the referenced segment, {body.end}."
+        )
+
+
+def _docs_insert_text(body: gdocs.Body, req: dict) -> tuple[dict, bool]:
+    """``insertText``, in real's order of refusals, measured: no location, the tab, the segment, no
+    text, then the index -- below zero, at or past the body's end, the section break at 0, inside a
+    grapheme cluster. `endOfSegmentLocation` inserts before the body's last newline. The characters
+    `insertText` strips are dropped, and text that was nothing else inserts nothing and is taken.
+    Real fails on one that holds a character in `gdocs.UNWRITABLE` once every request is read."""
+    where = req.get("location", req.get("end_of_segment_location"))
+    if where is None:
+        raise _EditorRefused("No insertion location set.")
+    _docs_target(where)
+    text = req.get("text", "")
+    if not text:
+        raise _EditorRefused("Insert text requests must specify text to insert.")
+    if "location" in req:
+        index = where.get("index", 0)
+        _docs_negative(index)
+        _docs_past_end(index, body)
+        if index == 0:
+            raise _EditorRefused(
+                "The insertion index must be inside the bounds of an existing paragraph. You can "
+                "still create new paragraphs by inserting newlines."
+            )
+        pos = body.position(index)
+        if pos is None or body.splits_cluster(pos):
+            raise _EditorRefused("The insertion index cannot be within a grapheme cluster.")
+    else:
+        pos = len(body.chars) - 1
+    kept = gdocs.STRIPPED.sub("", text)
+    if kept:
+        body.insert(pos, kept)
+    return {}, bool(gdocs.UNWRITABLE.search(kept))
+
+
+def _docs_delete_content_range(body: gdocs.Body, req: dict) -> tuple[dict, bool]:
+    """``deleteContentRange``, in real's order of refusals, measured: no range, the tab, the
+    segment, an index missing (a `null` one included), the end before the start, an index below
+    zero, the start and then the end's last index at or past the body's end, an empty range, the
+    section break at 0, the body's last newline, and either end inside a surrogate pair. Deleting a
+    combining mark without the letter it sits on is taken."""
+    rng = req.get("range")
+    if rng is None:
+        raise _EditorRefused("Delete content range requests must include a range to delete.")
+    _docs_target(rng)
+    if "start_index" not in rng or "end_index" not in rng:
+        raise _EditorRefused("Invalid range: must contain a start and end index")
+    start, end = rng["start_index"], rng["end_index"]
+    if end < start:
+        raise _EditorRefused("Invalid range: end index cannot be less than start index")
+    _docs_negative(start)
+    _docs_past_end(start, body)
+    _docs_past_end(end - 1, body)
+    if start == end:
+        raise _EditorRefused("The range should not be empty.")
+    if start == 0:
+        raise _EditorRefused("Cannot operate on the first section break in the document.")
+    if end == body.end:
+        raise _EditorRefused(
+            "The range cannot include the newline character at the end of the segment."
+        )
+    first, last = body.position(start), body.position(end)
+    if first is None or last is None:
+        raise _EditorRefused("Invalid deletion range. Cannot delete the requested range.")
+    body.delete(first, last)
+    return {}, False
+
+
+def _docs_replace_all_text(body: gdocs.Body, req: dict) -> tuple[dict, bool]:
+    """``replaceAllText``: real fails on a replacement holding a character in `gdocs.UNWRITABLE`
+    that matched, and on a `tabsCriteria` naming a tab the Doc does not have, once every request
+    is read; measured, a zero-match replace by U+FDD0 was a 200. What matches is
+    `gdocs.Body.find`'s, and an empty or missing `replaceText` deletes it; the characters
+    `insertText` strips are stripped from it too. A `searchByRegex` replacement is the text as
+    sent: `$1` is not a group."""
+    criteria = req.get("contains_text") or {}
+    if not criteria.get("text"):
+        raise _EditorRefused("The substring match text should not be empty")
+    tabs = req.get("tabs_criteria", {}).get("tab_ids", [])
+    text = gdocs.STRIPPED.sub("", req.get("replace_text", ""))
+    matches = body.find(
+        criteria["text"],
+        match_case=criteria.get("match_case", False),
+        regex=criteria.get("search_by_regex", False),
+    )
+    body.replace(matches, text)
+    fails = any(t != _DOCS_TAB["tabId"] for t in tabs) or bool(
+        matches and gdocs.UNWRITABLE.search(text)
+    )
+    changed = {"occurrencesChanged": len(matches)} if matches else {}
+    return {"replaceAllText": changed}, fails
+
+
+# The requests applied here, by the proto name a read body carries each under; every other kind is
+# refused naming itself (`routers.google._editor_batch`).
+_DOCS_APPLY = {
+    "insert_text": _docs_insert_text,
+    "delete_content_range": _docs_delete_content_range,
+    "replace_all_text": _docs_replace_all_text,
+}
+_DOCS_KINDS = {
+    f.name: f.json_name
+    for f in next(f for f in _PJ_BATCH_UPDATE.fields if f.json_name == "requests").message.fields
+}
+# What the body's schema declares: the requests applied here, and the two revisions a write may
+# be pinned to, `SUGGEST` being refused (`docs_batch_update`).
+_DOCS_BATCH_KEPT = {
+    "requests": {_DOCS_KINDS[kind]: None for kind in _DOCS_APPLY},
+    "writeControl": {"requiredRevisionId": None, "targetRevisionId": None},
+}
+
+_P_DOCS_BATCH_UPDATE = [qp("fields")]
+
+
+@router.post(
+    "/docs/v1/documents/{document_id}:batchUpdate",
+    openapi_extra={
+        "parameters": _P_DOCS_BATCH_UPDATE,
+        **proto_body(_PJ_BATCH_UPDATE, keep=_DOCS_BATCH_KEPT),
+    },
+)
+async def docs_batch_update(document_id: str, request: Request):
+    """``documents.batchUpdate``: each request checked and applied in order against the body the
+    ones before it left, so a later request's indices count what an earlier one inserted, and all
+    of them or none kept (`backlot.gdocs.Body`). A document that states no structure has its line
+    reading stored by its first write.
+
+    The order real answers in, measured 2026-10-29: the credential, the body, the `fields` mask,
+    the lookup and a reader's 403, no requests or one with no kind set (`_editor_requests`), a
+    revision of another Doc, a `requiredRevisionId` that is not the Doc's latest or a
+    `targetRevisionId` that is no revision of it, then each request's refusal, the first one's
+    named alone. A 500 a request leads to (`gdocs.UNWRITABLE`, an unknown tab in `tabsCriteria`)
+    comes after every request is read, and keeps nothing. A kind other than the three applied here
+    is refused naming itself, and so is the `SUGGEST` write mode, which records the requests as
+    suggestions.
+
+    Every write, one that changed nothing included, moves the `revisionId`, answered as
+    `writeControl.requiredRevisionId` and served by the next read; real takes any recent revision as
+    `targetRevisionId` and merges the write into what collaborators did since, which here is
+    nothing. The Drive file's `modifiedTime` is the write's (`store.PATCHABLE`), and its `content`
+    the body's text, so search and export read what the write left. Inside a batch it is the 501
+    real's batch gives."""
+    _require(request)
+    _, body = await _query_and_body(request, {}, _PJ_BATCH_UPDATE)
+    tree, _ = _gmask_select(
+        gerr.first_repeat(request.query_params, "fields"), "docs.BatchUpdateDocumentResponse"
+    )
+    if _BATCH_OUTER.get() is not None:
+        raise gerr.unimplemented()
+    row = _editor_doc(request, document_id, expect="document")
+    _editor_writable(request, row)
+    requests = _editor_requests(body.get("requests", []))
+    control = body.get("write_control", {})
+    # The number as sent: measured, a `writeMode` of 7 or -1 applied the write as `EDIT` does.
+    if control.get("write_mode") == _DOCS_WRITE_MODE.names.index("SUGGEST"):
+        raise gerr.invalid_argument(
+            "'SUGGEST' is not served by Backlot: real Docs records each request as a suggestion, "
+            "and nothing here keeps one."
+        )
+    conn = auth.conn(request)
+    written = store.gdrive_doc_revision(conn, document_id)
+    for field in ("required_revision_id", "target_revision_id"):
+        stated = control.get(field, "")
+        named = _docs_revision_of(stated)
+        # measured 2026-10-29: `AHj4eMabc`, real's prefix on no revision, is a 500 as either
+        if named is None and stated.startswith(_DOCS_REVISION_PREFIX):
+            raise gerr.internal_error()
+        if named is not None and named[0] != document_id:
+            raise gerr.invalid_argument("The provided revision ID is invalid.")
+    if "required_revision_id" in control:
+        stated = control["required_revision_id"]
+        if stated != _docs_revision(document_id, written):
+            raise gerr.invalid_argument(
+                f"The required revision ID '{stated}' does not match the latest revision."
+            )
+    if "target_revision_id" in control:
+        stated = control["target_revision_id"]
+        named = _docs_revision_of(stated)
+        if named is None or named[1] > written:
+            raise gerr.invalid_argument(f"Invalid revision ID: {stated}")
+
+    stored = store.gdrive_doc_body_for(conn, document_id)
+    doc = gdocs.Body(
+        document_id,
+        stored if stored is not None else gdocs.from_text(row["content"] or ""),
+        written + 1,
+    )
+    replies = _editor_batch(
+        requests,
+        _DOCS_KINDS,
+        {kind: functools.partial(apply, doc) for kind, apply in _DOCS_APPLY.items()},
+        "Docs",
+    )
+
+    # Drive's `size` is what real stores, not the text: measured 2026-10-30, a Doc of 1024 stayed
+    # 1024 through 6,000 inserted characters, a blank Doc's 1 became 1024 on its first write, and
+    # of 55 Docs read, ones of 297 and 56,195 bytes of text were 2,562 and 51,253. `version` went
+    # from 1 to 2 with a blank Doc's first write, and climbs once per write here.
+    before = store.gdrive_doc_written(conn, document_id)
+    nbytes, version = before or (
+        max(store.drive_file_bytes(row["subtype"], row["content"]), store.DRIVE_NATIVE_MIN_BYTES),
+        int(_drive_version(row)),
+    )
+    store.replace_parts(
+        conn,
+        "google_drive",
+        (document_id,),
+        {
+            "gdrive_doc_bodies": [
+                {
+                    "body": json.dumps(doc.content(), ensure_ascii=False),
+                    "revision": written + 1,
+                    "bytes": nbytes,
+                    "version": version + 1,
+                }
+            ]
+        },
+        {"content": doc.text(), "updated_ts": int(time.time())},
+    )
+    answer = {
+        "replies": replies,
+        "writeControl": {"requiredRevisionId": _docs_revision(document_id, written + 1)},
+        "documentId": document_id,
+        "suggestionResponses": [{} for _ in requests],
+        "commentUpdateState": "NO_UPDATES_REQUESTED",
+    }
+    return answer if tree is None else _gmask_apply(tree, answer)

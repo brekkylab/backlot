@@ -575,8 +575,7 @@ def _rows():
         yield pytest.param(
             b"GET", base, rest, answer, authorizations, b"", b"x", id=f"{base} {rest!r}"
         )
-    # with no credential, and on GitHub with a token that names no one, which real reads on past a
-    # broken escape in the query
+    # with no credential, and on GitHub with an `Authorization` that names no one or no credential
     for base, rest, answer, header in (
         ("/hubspot/crm/v3/objects/contacts/", b"nope{x", "hubspot jetty", b""),
         ("/hubspot/crm/v3/objects/contacts/", b"nope%x", "cloudflare page", b""),
@@ -592,8 +591,27 @@ def _rows():
         ("/github/", b"rate_limit?b=%x", 200, b""),
         ("/github/", b"user?b=%x", 401, b""),
         ("/github/", b"rate_limit?b=%x", 401, b"Authorization: token nope\r\n"),
+        ("/github/", b"rate_limit?b=%x", "github empty", b"Authorization: nope\r\n"),
+        ("/github/", b"rate_limit?b=%x", "github empty", b"Authorization: Basic eDp5\r\n"),
+        ("/github/", b"repos/acme/pipeline?b=%x", "github empty", b""),
+        ("/github/", b"repos/acme/pipeline?b=%x", 401, b"Authorization: token nope\r\n"),
+        ("/github/", b"user/repos?b=%x", "github empty", b""),
+        ("/github/", b"repos/acme/pipeline/collaborators?b=%x", 401, b""),
+        (
+            "/github/",
+            b"repos/acme/pipeline/collaborators?b=%x",
+            401,
+            b"Authorization: Digest x\r\n",
+        ),
+        (
+            "/github/",
+            b"repos/acme/pipeline/collaborators?b=%x",
+            "github empty",
+            b"Authorization: Basic eDp5\r\n",
+        ),
+        ("/github/", b"search/code?q=x&b=%x", 401, b""),
     ):
-        kind = "a token that names no one" if header else "no credential"
+        kind = header.decode().strip() or "no credential"
         yield pytest.param(
             b"GET", base, rest, answer, 0, header, b"x", id=f"{base} {rest!r} {kind}"
         )

@@ -1607,16 +1607,30 @@ async def refuse_a_path_cloudflare_refuses_on_linear_and_fireflies(request: Requ
 )
 async def refuse_a_broken_escape_in_a_github_query(request: Request, call_next):
     """Answer a `/github` request a route serves, whose query holds a `%` two hex digits do not
-    follow and whose credential resolves (``backlot.auth.github_credential``), with real's empty
-    400, ahead of the route and every other `/github` middleware but
-    :func:`put_a_request_id_on_github_answers`, which wraps it. api.github.com answered so on
-    2026-10-31 (UTC), with a token it accepts, `/rate_limit` with `?b=%`, `?b=%4`, `?b=%4x`,
-    `?b=%zz` and `?%x=1`, and `/user`, `/` and a repository with `?b=%x`, with no `Content-Type`
-    and a `Vary` and a request id among its headers, and answered a second request on the same
-    connection; it answered `/nope?b=%x`, which no route serves, with its JSON 404. With no
-    credential, `/rate_limit?b=%x` was its 200 and `/user?b=%x` its 401, and with a token it does
-    not accept each was the 401 `Bad credentials`: the request is read on, as it is here."""
-    if auth.acl(request).resolve(auth.github_credential(request)) is None:
+    follow, with real's empty 400, ahead of the route and every other `/github` middleware but
+    :func:`put_a_request_id_on_github_answers`, which wraps it. Three are read on, to the route's
+    own answer: a credential that does not resolve
+    (``backlot.routers.github.refused_a_credential``), the 401 "Bad credentials"; a caller the route
+    refuses as anonymous ahead of everything
+    (``backlot.routers.github.refuses_an_anonymous_caller_first``), the 401
+    "Requires authentication"; and `/rate_limit` with no `Authorization`, its 200.
+
+    Measured on api.github.com on 2026-10-31 (UTC), each request on a URL of its own: with a token
+    it accepts, on `/rate_limit` with `?b=%`, `?b=%4`, `?b=%4x`, `?b=%zz` and `?%x=1`, and on
+    `/user`, `/` and a repository with `?b=%x`; with no `Authorization`, and with one naming no
+    credential (an empty one, `nope`, `Digest x`, `Foo bar` and `Basic eDp5` among them), on
+    `/rate_limit`, a repository, one that does not exist, its issues, `/user/repos`, an
+    organization, a user, a search and each route that refuses an anonymous caller first, which drew
+    the 400 for `Basic eDp5` alone; and with a token it does not accept, and the one it accepts sent
+    twice or beside one it does not. The 400 had no `Content-Type` and a `Vary` and a request id
+    among its headers, and a second request on the same connection was answered. `/nope?b=%x`, which
+    no route serves, was its JSON 404."""
+    route = next(r for r in github.router.routes if r.matches(request.scope)[0] is Match.FULL)
+    if (
+        github.refused_a_credential(request)
+        or github.refuses_an_anonymous_caller_first(request, route.path)
+        or (route.path == github.RATE_LIMIT_PATH and "authorization" not in request.headers)
+    ):
         return await call_next(request)
     return Response(
         b"", status_code=400, headers={"Vary": "Accept-Encoding, Accept, X-Requested-With"}

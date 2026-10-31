@@ -708,6 +708,14 @@ async def _refuse_an_anonymous_caller(request: Request) -> None:
         raise HTTPException(status_code=404, detail="Not Found")
 
 
+def refuses_an_anonymous_caller_first(request: Request, route: str) -> bool:
+    """Whether :func:`_refuse_an_anonymous_caller` refuses this request on ``route``, the path of
+    the route that serves it, with the 401 "Requires authentication"."""
+    return route in _REFUSE_AN_ANONYMOUS_CALLER_FIRST and (
+        "authorization" not in request.headers or _a_header_without_a_credential(request)
+    )
+
+
 #: The methods whose 401 for no credential at all, on an unserved operation, carries none of the
 #: five `x-ratelimit-*` (see :func:`refuse_an_unserved_operation`).
 _UNCOUNTED_METHODS = frozenset({"PATCH", "PUT", "DELETE"})

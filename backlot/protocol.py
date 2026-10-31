@@ -11,7 +11,9 @@ where ``backlot.main.answer_a_raw_byte_in_the_request_target`` answers it.
 
 httptools reads a `#` in the target as the start of a fragment, and the app sees the path and the
 query without it and what comes after it. :class:`Protocol` leaves a target holding one on the
-scope as sent too (:data:`backlot.request_target.WITH_A_FRAGMENT`).
+scope as sent too (:data:`backlot.request_target.WITH_A_FRAGMENT`), and marks each request whose
+target holds a `?` or a `#` after its path (:data:`backlot.request_target.FOLLOWED`), which the
+scope does not keep for a `?` with nothing after it.
 """
 
 from __future__ import annotations
@@ -66,6 +68,11 @@ class Protocol(HttpToolsProtocol):
         if self._with_a_fragment is not None:
             self.scope[request_target.WITH_A_FRAGMENT] = self._with_a_fragment  # type: ignore[literal-required]
             self._with_a_fragment = None
+
+    def on_headers_complete(self) -> None:
+        if b"?" in self.url or b"#" in self.url:
+            self.scope[request_target.FOLLOWED] = True  # type: ignore[literal-required]
+        super().on_headers_complete()
 
     def on_message_complete(self) -> None:
         super().on_message_complete()

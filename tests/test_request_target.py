@@ -341,7 +341,7 @@ _BESIDE_A_RAW_BYTE = (
     *(b"nope\ty%zzx", b"nope%zzy\tx", b"nope\xe9y%zzx", b"nope%zzx?b=\x01", b"nope%zzx?b=\xc3\xa9"),
     *(b"nope\x01y%00x", b"nope%00y\x01x", b"nope\xc3\xa9y%00x"),
 )
-#: A `%` or a `%4` that ends the path after a raw byte, which that Cloudflare answers as the byte.
+#: A `%` or a `%4` that ends the target after a raw byte, which Cloudflare answers as the byte.
 _CUT_AFTER_A_RAW_BYTE = (b"nope\x01y%", b"nope\x01y%4", b"nope\xc3\xa9y%", b"nope\xc3\xa9y%4")
 
 # A printable character the front door reads otherwise or refuses, sent as itself, among them a `%`
@@ -424,11 +424,21 @@ _PRINTABLE = [
     ),
     ("/s3/", b"nope\x01y#x", 400),
     ("/s3/", b"nope#y\x01x", 400),
+    # Linear and Fireflies: Cloudflare's page for a `%` the end of the path cuts short where a `?`
+    # or a `#` comes after it
+    *(
+        (base, rest, "cloudflare page")
+        for base in ("/linear/", "/fireflies/")
+        for rest in (b"a%2?", b"a%?", b"a%2?#x", b"a%2#x", b"a%#x")
+    ),
     # Notion: Cloudflare's page for a broken escape in the path but where the end of the target
     # cuts it short, which Notion reads itself, and nothing read past a `#`
     *(
         ("/notion/v1/", rest, "cloudflare page")
-        for rest in (b"nope%x", b"nope%zzx", b"nope%4x", b"users%zz", b"users/me%zz", b"nope%y#x")
+        for rest in (
+            *(b"nope%x", b"nope%zzx", b"nope%4x", b"users%zz", b"users/me%zz", b"nope%y#x"),
+            *(b"nope%?", b"nope%4?", b"nope%?#x", b"nope%#x"),
+        )
     ),
     ("/notion/v1/", b"nope%", 400),
     ("/notion/v1/", b"nope%4", 400),
@@ -442,7 +452,10 @@ _PRINTABLE = [
     # escape in the query dropping the credential; a `\` read as itself
     *(
         ("/hubspot/crm/v3/objects/contacts/", rest, "cloudflare page")
-        for rest in (b"nope%x", b"nope%zzx", b"nope%4x", b"nope{y%x", b"nope%y{x")
+        for rest in (
+            *(b"nope%x", b"nope%zzx", b"nope%4x", b"nope{y%x", b"nope%y{x"),
+            *(b"nope%?", b"nope%4?", b"nope%?#x", b"nope%#x"),
+        )
     ),
     ("/hubspot/crm/v3/objects/contacts/", b"nope%", "hubspot error page"),
     ("/hubspot/crm/v3/objects/contacts/", b"nope%4", "hubspot error page"),

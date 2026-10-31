@@ -1452,10 +1452,10 @@ _CLOUDFLARE_METHOD = {
 }
 
 
-def _sent(scope: Scope) -> tuple[bytes, bytes | None]:
-    """The vendor's path as sent and the query string, ``None`` where it is empty: the scope does
-    not keep a `?` with nothing after it."""
-    return sent_path(scope).encode("latin-1"), scope["query_string"] or None
+def _sent(scope: Scope) -> tuple[bytes, bool]:
+    """The vendor's path as sent, and whether it ends the target
+    (``request_target.path_ends_the_target``)."""
+    return sent_path(scope).encode("latin-1"), request_target.path_ends_the_target(scope)
 
 
 @_middleware(

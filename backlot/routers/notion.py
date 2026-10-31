@@ -512,7 +512,7 @@ def undecodable_url(request: Request) -> JSONResponse | None:
     the 400 carried none of :data:`APPLICATION_HEADERS`. On 2026-10-31 `/v1/nope<cache-buster>%`
     and `…%4`, by `GET` with a token, drew the same 400."""
     own = sent_path(request.scope).encode("latin-1")
-    cut = request_target.cut_escape(own, request.scope["query_string"] or None)
+    cut = request_target.cut_escape(own, request_target.path_ends_the_target(request.scope))
     if utf8_escapes.decodes(request.scope["raw_path"]) and not cut:
         return None
     return _error(request, 400, "invalid_request_url", "Failed to decode url.")

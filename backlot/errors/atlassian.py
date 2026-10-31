@@ -106,25 +106,42 @@ CONFLUENCE_NOT_PERMITTED_BODY = json.dumps(
 #: and Confluence's `%2F` and Jira's `%5B` and `%5D`, get another answer than an echo.
 _JIRA_ECHO_DECODES = "!$&'()*+,-./:=@_~"
 _CONFLUENCE_ECHO_DECODES = "-._~"
-_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+#: An escape, or one of the characters both products echo as their escape, the hex in upper case,
+#: where they arrive unescaped: read off `GET …/nope<byte>x` for every byte from 0x21 to 0x7E sent
+#: as itself, on Jira's 404 and Confluence's `null for uri:` 404 (2026-10-31). Each other one
+#: comes back as it was sent, but for `%`, `#`, `;`, `?` and `\`, which another layer reads, and
+#: `[` and `]`, which Confluence's Tomcat refuses (:func:`front_door`) and Jira answers with an HTML
+#: 404.
+_ESCAPE = re.compile(r'%([0-9A-Fa-f]{2})|(["<>^`{|}])')
 
 
 def echoed_spelling(raw_path: str, *, confluence: bool) -> str:
     """The path as Jira or Confluence echoes it in a refusal, from the path as it arrived.
 
-    Each escape is decoded or kept as the product's set above says, in one pass, so an escape a
-    decoded `%25` would form is not read again. Then a run of slashes is one, a decoded `%2F` among
-    them (Jira's `nope%2F%2Fx` comes back `nope/x`, 2026-10-17), and a trailing slash is kept.
+    Each escape is decoded or kept as the product's set above says, and each character
+    :data:`_ESCAPE` names is escaped, in one pass, so an escape a decoded `%25` would form is not
+    read again. Then a run of slashes is one, a decoded `%2F` among them (Jira's `nope%2F%2Fx` comes
+    back `nope/x`, 2026-10-17), and a trailing slash is kept.
     """
     decodes = _CONFLUENCE_ECHO_DECODES if confluence else _JIRA_ECHO_DECODES
 
     def one(match: re.Match[str]) -> str:
+        if match.group(2) is not None:
+            return f"%{ord(match.group(2)):02X}"
         char = chr(int(match.group(1), 16))
         if char.isascii() and (char.isalnum() or char in decodes):
             return char
         return match.group(0) if confluence else match.group(0).upper()
 
     return re.sub("/{2,}", "/", _ESCAPE.sub(one, raw_path))
+
+
+def echoed_query(query: str) -> str:
+    """The query as Confluence's `null for uri:` echoes it, from the query as it arrived: as sent,
+    but a `%` no two hex digits follow, which comes back as its escape `%25`. Measured on 2026-10-31
+    (UTC) at a path no route serves under `/wiki/rest/api/`, with `b=%x`, `b=%zz`, `b=%4x`, `b=%`,
+    `b=%4`, `b=%%41` and `%x=1`; `b=%2fx` and `b=%e9x` came back as sent."""
+    return re.sub("%(?![0-9A-Fa-f]{2})", "%25", query)
 
 
 def owns(path: str) -> bool:
@@ -2568,6 +2585,15 @@ def cdn_refusal(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
     return None
 
 
+#: The characters Confluence's Tomcat refuses in a query where they arrive unescaped
+#: (:func:`front_door`).
+_TOMCAT_REFUSED_IN_A_QUERY = re.compile(r'["<>\[\\\]^`{|}]')
+
+#: The web app's pages under `/wiki/` that leave those characters to the page, in lower case and
+#: with no slash at the end (:func:`front_door`).
+_WEB_APP_PAGES = (WIKI, f"{WIKI}/home", f"{WIKI}/search")
+
+
 def front_door(
     method: str, raw_path: str, raw_query: str, accept: str | None = None
 ) -> FrontDoor | None:
@@ -2602,7 +2628,18 @@ def front_door(
     (`/nope%80x`), where Confluence reads such a path on: measured on 2026-10-30 (UTC) for `GET`,
     `HEAD`, which gets no body, `OPTIONS`, `POST`, `PUT` and `DELETE` with an API token, behind the
     edge's `;` and the gateway's `PATCH` and beside an encoded backslash, and for a `GET` with no
-    token or under an `Accept` of `text/html`.
+    token or under an `Accept` of `text/html`. Confluence's Tomcat answers the same 400 for a `[` or
+    a `]` sent unescaped in the path and for one of :data:`_TOMCAT_REFUSED_IN_A_QUERY` in the query,
+    under `/wiki/` but on the web app's pages (:data:`_WEB_APP_PAGES` and paths under
+    `/wiki/spaces/`), which answered a `[` with 200, where Jira reads each of the eleven in a query
+    value on: measured on 2026-10-31 (UTC) at `/wiki/rest/api/space` and its search, at paths no
+    route serves under `/wiki/rest/api/`, `/wiki/rest/api/content/`, `/wiki/api/v2/` and `/wiki/`,
+    at `/wiki/x/abc`, `/wiki/display/X`, `/wiki/people`, `/wiki/spaces` and `/wiki/home[x`, behind
+    the CDN's 400 for a broken escape in the path, before the `[` or after it, the edge's `;`, the
+    gateway's `PATCH` and a `PROPFIND`, and beside an encoded slash; and at `/wiki`, `/wiki/`,
+    `/wiki/home`, `/wiki/HOME`, `/wiki/home/`, `/wiki/search`, `/wiki/Search`, `/wiki/spaces/X` and
+    `/wiki/SPACES/X`, which answered 200 with a `[` in the query, and the last two with one in the
+    path. This server serves none of those pages, and answers them as it answers them with no `[`.
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
@@ -2627,14 +2664,19 @@ def front_door(
         )
         page = _GATEWAY_PATCH_PAGE.format(status=status, phrase=phrase, server=server)
         return FrontDoor(status, "gateway", "text/html", page, {})
+    tomcat = collapsed.startswith(f"{WIKI}/") and not encoded.startswith(f"{WIKI}/spaces/")
     if (
-        (
-            collapsed.startswith(f"{WIKI}/")
-            and not encoded.startswith(f"{WIKI}/spaces/")
-            and ("%2f" in encoded or "%5c" in encoded)
-        )
+        (tomcat and ("%2f" in encoded or "%5c" in encoded))
         or (serves_the_jira_api(collapsed) and "%5c" in encoded)
         or (not confluence and not utf8_escapes.decodes(raw_path))
+        or (
+            tomcat
+            and encoded.removesuffix("/") not in _WEB_APP_PAGES
+            and (
+                re.search(r"[\[\]]", raw_path) is not None
+                or _TOMCAT_REFUSED_IN_A_QUERY.search(raw_query) is not None
+            )
+        )
     ):
         return FrontDoor(
             400, "gateway", TOMCAT_MEDIA_TYPE, tomcat_page(400), {"Content-Language": "en"}

@@ -1615,16 +1615,13 @@ async def refuse_a_broken_escape_in_a_github_query(request: Request, call_next):
     (``backlot.routers.github.refuses_an_anonymous_caller_first``), the 401
     "Requires authentication"; and `/rate_limit` with no `Authorization`, its 200.
 
-    Measured on api.github.com on 2026-10-31 (UTC), each request on a URL of its own: with a token
-    it accepts, on `/rate_limit` with `?b=%`, `?b=%4`, `?b=%4x`, `?b=%zz` and `?%x=1`, and on
-    `/user`, `/` and a repository with `?b=%x`; with no `Authorization`, and with one naming no
-    credential (an empty one, `nope`, `Digest x`, `Foo bar` and `Basic eDp5` among them), on
-    `/rate_limit`, a repository, one that does not exist, its issues, `/user/repos`, an
-    organization, a user, a search and each route that refuses an anonymous caller first, which drew
-    the 400 for `Basic eDp5` alone; and with a token it does not accept, and the one it accepts sent
-    twice or beside one it does not. The 400 had no `Content-Type` and a `Vary` and a request id
-    among its headers, and a second request on the same connection was answered. `/nope?b=%x`, which
-    no route serves, was its JSON 404."""
+    Measured on api.github.com on 2026-10-31 (UTC), each request on a URL of its own, on
+    `/rate_limit`, `/`, a repository, one that does not exist, its issues, `/user/repos`, an
+    organization, a user, a search and each route that refuses an anonymous caller first, under a
+    token it accepts, one it does not, no `Authorization` and one naming no credential
+    (``tests/test_request_target.py`` holds the cases): the 400 had no `Content-Type` and a `Vary`
+    and a request id among its headers, and a second request on the same connection was answered.
+    `/nope?b=%x`, which no route serves, was its JSON 404."""
     route = next(r for r in github.router.routes if r.matches(request.scope)[0] is Match.FULL)
     if (
         github.refused_a_credential(request)

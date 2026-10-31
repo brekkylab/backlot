@@ -2373,6 +2373,11 @@ def test_github_documentation_url_names_the_route_that_failed(gh_client, gh_admi
             f"{missing}/contents/src/ingest/consumer.py",
             "rest/repos/contents#get-repository-content",
         ),
+        *(
+            (f"/github/rate_limit{escape}", "rest")
+            for escape in ("%09", "%0D", "%0A", "%23", "%3F")
+        ),
+        (f"{missing}%0D", "rest/repos/repos#get-a-repository"),
     ):
         r = c.get(path, headers=gh_admin_h)
         assert r.status_code == 404, path

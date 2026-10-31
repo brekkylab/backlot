@@ -763,6 +763,49 @@ def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
     assert seen == ran
 
 
+# A path a route serves, with `%0A` after it: (method, path, query, real's status), with the
+# vendor's credential but Google's (``backlot.routers._to_the_end_of_the_path`` dates the
+# measurement).
+_NEWLINE_ENDS = [
+    ("GET", "/atlassian/rest/api/3/serverInfo", "", 404),
+    ("GET", "/atlassian/rest/api/3/search/jql", "jql=order%20by%20key", 404),
+    ("GET", "/atlassian/rest/api/3/project/search", "", 404),
+    ("GET", "/atlassian/wiki/rest/api/space", "", 404),
+    ("GET", "/atlassian/wiki/rest/api/content", "", 404),
+    ("GET", "/atlassian/wiki/rest/api/search", "cql=type%3Dpage", 404),
+    ("GET", "/atlassian/wiki/rest/api/search", "cql=space.key%3D%22a%27b%22", 404),
+    ("GET", "/github/rate_limit", "", 404),
+    ("GET", "/notion/v1/users", "", 400),
+    ("POST", "/linear/graphql", "", 404),
+    ("GET", "/drive/v3/about", "", 404),
+    ("GET", "/gmail/v1/users/me/profile", "", 404),
+]
+
+
+@pytest.mark.parametrize("method, path, query, status", _NEWLINE_ENDS)
+def test_a_newline_at_the_end_of_a_path_is_read_as_any_other_byte(
+    client, tokens_yaml, method, path, query, status
+):
+    """The path with `%0A` after it is answered as real answered it, and as the path with `%0D`
+    after it is (``backlot.routers._to_the_end_of_the_path``)."""
+    headers = {"Notion-Version": "2022-06-28"}
+    if not path.startswith(("/drive/", "/gmail/")):
+        headers["Authorization"] = _ADMIN.format(admin=tokens_yaml["admin_token"])
+    body = None
+    if method == "POST":  # Linear's, which takes its key with no `Bearer`
+        headers |= {"Authorization": tokens_yaml["admin_token"], "Content-Type": "application/json"}
+        body = _TYPENAME
+    newline, cr = (
+        client.request(method, f"{path}{end}?{query}", headers=headers, content=body)
+        for end in ("%0A", "%0D")
+    )
+    assert newline.status_code == status
+    assert (newline.status_code, newline.headers.get("content-type")) == (
+        cr.status_code,
+        cr.headers.get("content-type"),
+    )
+
+
 @pytest.mark.parametrize(
     "path, host",
     [

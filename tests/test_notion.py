@@ -234,12 +234,110 @@ def test_notion_one_trailing_slash_is_the_path_without_it_and_two_is_not(client,
     searched = client.post("/notion/v1/search/", json={}, headers=notion_h, follow_redirects=False)
     assert searched.status_code == 200
     assert searched.json() == client.post("/notion/v1/search", json={}, headers=notion_h).json()
-    twice = client.get("/notion/v1/users/me//", headers=notion_h, follow_redirects=False)
-    assert twice.status_code == 400 and twice.json()["code"] == "invalid_request_url"
-    root = client.get("/notion/", headers=notion_h, follow_redirects=False)
-    assert root.status_code == 400 and root.json()["code"] == "invalid_request_url"
-    bare = client.get("/notion", headers=notion_h, follow_redirects=False)
-    assert bare.status_code == 307 and bare.headers["location"].endswith("/notion/")
+    for twice in ("/notion/v1/users/me//", "/notion//", "/notion/%2F"):
+        r = client.get(twice, headers=notion_h, follow_redirects=False)
+        assert (r.status_code, r.json()["code"]) == (400, "invalid_request_url"), twice
+
+
+# The `Accept` lines of a request, none for the first row, and the type real's root answered
+# `GET`, `HEAD` and `POST` with them in, None for neither (``notion.root``).
+_ROOT_ACCEPT_ROWS = [
+    ((), "text/plain"),
+    (("",), "text/plain"),
+    ((" ",), "text/plain"),
+    (("\t",), "text/plain"),
+    ((" \t ",), "text/plain"),
+    (("\xa0",), None),
+    (("*/*",), "text/plain"),
+    (("text/plain",), "text/plain"),
+    (("text/html",), "text/html"),
+    (("application/json",), None),
+    (("application/xml",), None),
+    (("image/png",), None),
+    (("text/plain, text/html",), "text/plain"),
+    (("text/html, text/plain",), "text/html"),
+    (("text/html,,text/plain",), "text/html"),
+    (("text/html;q=0.5, text/plain;q=0.4",), "text/html"),
+    (("text/plain;q=.5, text/html;q=0.50",), "text/plain"),
+    (("text/plain;q=0.1, */*",), "text/html"),
+    (("text/html;q=0.5, */*",), "text/plain"),
+    (("application/json, */*;q=0.1",), "text/plain"),
+    (("TEXT/HTML",), "text/html"),
+    (("text/*",), "text/plain"),
+    (("*/html",), "text/html"),
+    (("image/html",), None),
+    (("foo/plain",), None),
+    (("text",), None),
+    (("text/plain;q=0",), None),
+    (("text/plain;q=0, text/html;q=0",), None),
+    (("*/*;q=0",), None),
+    (("text/html;level=1",), None),
+    (("text/plain; charset=utf-8",), None),
+    (("text/plain;, text/html",), "text/plain"),
+    (("text/html;charset=*",), "text/html"),
+    (("text/html;charset=",), "text/html"),
+    (("text/html;q=abc",), None),
+    (("text/html;q=0.5abc, text/plain;q=0.4",), "text/html"),
+    (("text/html;q=Infinity, text/plain;q=0.5",), "text/html"),
+    (("text/html;q=infinity, text/plain;q=0.5",), "text/plain"),
+    (("\xa0text/html",), "text/html"),
+    (("text/html\xa0",), "text/html"),
+    (("text/html\x85",), None),
+    (("application/json", "text/html"), "text/html"),
+    (("application/json", "application/xml"), None),
+]
+
+
+def test_notion_the_root_redirects_to_the_marketing_site_as_real_does(client, notion_h):
+    """``notion.root`` on each method, spelling and recorded Accept value."""
+    observed = []
+    expected = []
+    for headers in ({}, notion_h):
+        for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+            for path in ("/notion", "/notion/", "/notion?x=1", "/notion/?x=1"):
+                root = client.request(method, path, headers=headers, follow_redirects=False)
+                observed.append(
+                    (
+                        root.status_code,
+                        root.headers.get("location"),
+                        root.headers.get("content-type"),
+                        root.headers.get("vary"),
+                        root.headers.get("content-length"),
+                        "x-notion-request-id" in root.headers,
+                        root.content,
+                    )
+                )
+                expected.append(
+                    (
+                        302,
+                        "https://www.notion.so",
+                        "text/plain; charset=utf-8",
+                        "Accept, Accept-Encoding",
+                        "43",
+                        True,
+                        b"" if method == "HEAD" else b"Found. Redirecting to https://www.notion.so",
+                    )
+                )
+    assert observed == expected
+    bodies = {
+        "text/plain": b"Found. Redirecting to https://www.notion.so",
+        "text/html": b'<p>Found. Redirecting to <a href="https://www.notion.so">https://www.notion.so</a></p>',
+        None: b"",
+    }
+    for accepts, kind in _ROOT_ACCEPT_ROWS:
+        for method in ("GET", "HEAD", "POST"):
+            r = sent_as(client, method, "/notion/", [("accept", x) for x in accepts], bare=True)
+            assert (
+                r.status_code,
+                r.headers.get("content-type"),
+                r.headers.get("vary"),
+                r.content,
+            ) == (
+                302,
+                kind and f"{kind}; charset=utf-8",
+                "Accept, Accept-Encoding" if kind else "Accept",
+                b"" if method == "HEAD" else bodies[kind],
+            ), (method, accepts)
 
 
 def test_notion_a_slashed_path_is_acl_scoped_like_the_path_without_it(client, admin_h, tokens):
@@ -403,9 +501,9 @@ def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, noti
         r = client.get(path)
         got = {name: r.headers.get(name) for name in bare}
         assert (r.headers["content-type"], got) == ("application/json", bare), path
-    # the vendor root is the framework's redirect, with no JSON body, and real's 302 has no tag
+    # The root's non-JSON redirect carries no entity tag.
     root = client.get("/notion", headers=notion_h, follow_redirects=False)
-    assert (root.status_code, root.headers.get("etag")) == (307, None)
+    assert (root.status_code, root.headers.get("etag")) == (302, None)
 
 
 def test_notion_answers_an_if_none_match_of_a_star_as_real_does(client, notion_h):

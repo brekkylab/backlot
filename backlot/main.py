@@ -763,7 +763,7 @@ async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
 
 def _a_slashed_notion_path(scope: Scope) -> bool:
     path = _url_path(scope)
-    return path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion/")
+    return path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion//")
 
 
 @_middleware(_a_slashed_notion_path)
@@ -778,9 +778,8 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     otherwise claim every slashed spelling and answer 400 where real answers what the route
     answers.
 
-    The vendor root is not rewritten: `/notion/` is the URL's 400, and `/notion` is Starlette's own
-    307 to that, where real's `/` is a 302 to its marketing site — a page this server does not
-    serve at all.
+    The vendor root is not rewritten, and neither is `/notion//`: on 2026-10-31 real answered `//`
+    the URL's 400, where `/` is its redirect (``notion.root``).
 
     GitHub's trailing slash is the opposite rule and has its own middleware above; the two are
     measured separately because the vendors answer differently.
@@ -818,7 +817,9 @@ async def report_notion_cors(request: Request, call_next):
     raw_path = request.scope.get("raw_path") or request.url.path.encode()
     if not notion.answers_cors(raw_path.decode("latin-1")):
         response = await call_next(request)
-        response.headers["vary"] = "Accept-Encoding"
+        vary = response.headers.get("vary")
+        if "content-type" in response.headers:
+            response.headers["vary"] = f"{vary}, Accept-Encoding" if vary else "Accept-Encoding"
         return response
     if (
         origin

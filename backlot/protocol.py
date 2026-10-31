@@ -8,6 +8,10 @@ in the path or in the query, and uvicorn answers the refusal itself with a 400 r
 none of the ten ``set_dangerous_leniencies`` options lets one through). :class:`Protocol` hands
 the parser the line with those bytes percent-encoded and leaves the target as sent on the scope,
 where ``backlot.main.answer_a_raw_byte_in_the_request_target`` answers it.
+
+httptools reads a `#` in the target as the start of a fragment, and the app sees the path and the
+query without it and what comes after it. :class:`Protocol` leaves a target holding one on the
+scope as sent too (:data:`backlot.request_target.WITH_A_FRAGMENT`).
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ class Protocol(HttpToolsProtocol):
         self._between_requests = True
         self._held = b""
         self._sent: bytes | None = None
+        self._with_a_fragment: bytes | None = None
 
     def data_received(self, data: bytes) -> None:
         if self._between_requests:
@@ -43,6 +48,7 @@ class Protocol(HttpToolsProtocol):
             self._held = b""
             end = data.find(b"\n")
             if end >= 0:
+                self._with_a_fragment = request_target.with_a_fragment(data[: end + 1])
                 line, self._sent = request_target.encode_line(data[: end + 1])
                 data = line + data[end + 1 :]
             elif _starts_a_request_line(data):
@@ -57,6 +63,9 @@ class Protocol(HttpToolsProtocol):
         if self._sent is not None:
             self.scope[request_target.SENT] = self._sent  # type: ignore[literal-required]
             self._sent = None
+        if self._with_a_fragment is not None:
+            self.scope[request_target.WITH_A_FRAGMENT] = self._with_a_fragment  # type: ignore[literal-required]
+            self._with_a_fragment = None
 
     def on_message_complete(self) -> None:
         super().on_message_complete()

@@ -1598,6 +1598,26 @@ async def refuse_a_path_cloudflare_refuses_on_linear_and_fireflies(request: Requ
     )
 
 
+@_middleware(
+    lambda scope: (
+        _at_or_under(_url_path(scope), ("/github",))
+        and request_target.breaks_an_escape(scope["query_string"])
+        and _a_github_route_serves(scope)
+    )
+)
+async def refuse_a_broken_escape_in_a_github_query(request: Request, call_next):
+    """Answer a `/github` request a route serves, whose query holds a `%` two hex digits do not
+    follow, with real's empty 400, ahead of the route, the credential and every other `/github`
+    middleware but :func:`put_a_request_id_on_github_answers`, which wraps it. api.github.com
+    answered so on 2026-10-31 (UTC) `/rate_limit` with `?b=%`, `?b=%4`, `?b=%4x`, `?b=%zz` and
+    `?%x=1`, and `/user`, `/` and a repository with `?b=%x`, with no `Content-Type` and a `Vary`
+    and a request id among its headers, and answered a second request on the same connection; it
+    answered `/nope?b=%x`, which no route serves, with its JSON 404."""
+    return Response(
+        b"", status_code=400, headers={"Vary": "Accept-Encoding, Accept, X-Requested-With"}
+    )
+
+
 @_middleware(lambda scope: _url_path(scope).startswith("/github"))
 async def put_a_request_id_on_github_answers(request: Request, call_next):
     """Put an `x-github-request-id` on every `/github` answer the API gives, as real does on each
@@ -1698,6 +1718,27 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
         request.scope["method"] = "GET"
         request.scope["query_string"] = b"&".join(part for part in (query, body) if part)
     return await call_next(request)
+
+
+@_middleware(lambda scope: request_target.printable_reading(scope) is not None)
+async def read_a_printable_character_as_the_front_door_does(request: Request, call_next):
+    """Hand a request on as the vendor's front door reads a printable character in its target
+    (``backlot.request_target.printable_reading``). Registered after every vendor's middleware,
+    which makes it outside each of them, so each reads the path and the credential the front door
+    hands the API behind it."""
+    request.scope.update(request_target.printable_reading(request.scope))
+    return await call_next(request)
+
+
+@_middleware(lambda scope: request_target.printable_answer(scope) is not None)
+async def answer_a_printable_character_a_front_door_refuses(request: Request, call_next):
+    """Answer a target holding a printable character the vendor's front door refuses as it does
+    (``backlot.request_target.printable_answer``). Registered after
+    :func:`read_a_printable_character_as_the_front_door_does`, which makes it the outer of the two,
+    and before :func:`answer_an_escape_a_front_door_refuses`, which makes it the inner of those two:
+    on 2026-10-31 (UTC) slack.com answered `%00` and a broken escape, in either order, with the 400
+    `%00` alone gets."""
+    return request_target.printable_answer(request.scope)
 
 
 @_middleware(lambda scope: request_target.escape_answer(scope) is not None)

@@ -227,10 +227,7 @@ _CUT_ESCAPE = re.compile(rb"%[0-9A-Fa-f]?\Z")
 def cut_escape(path: bytes, query: bytes | None) -> bool:
     """Whether ``path``, the vendor's path as sent, with ``query`` after a `?` or ``None`` where
     none came, is one Cloudflare reads as cut short by the end of the target (:data:`_CUT_ESCAPE`)
-    and answers otherwise than each other broken escape: in front of Linear and Fireflies
-    ``backlot.main.refuse_a_cut_escape_on_linear_and_fireflies`` answers it and
-    :func:`refused_path` each other one, and in front of Notion and HubSpot :func:`answer` and
-    :func:`printable_answer` tell the two apart."""
+    and answers otherwise than each other broken escape."""
     cut = _CUT_ESCAPE.search(path)
     return query is None and cut is not None and not _broken(path[: cut.start()])
 
@@ -545,29 +542,18 @@ def printable_answer(scope: Scope) -> Response | None:
     route serves (`…/nope<byte>x`) and in a query value (`?b=<byte>x`): each broken escape and each
     character here was refused in the path and read on in the query, but on api.github.com and
     slack.com, where a `#` was refused in either (api.github.com's answer to a broken escape in the
-    query is ``backlot.main.refuse_a_broken_escape_in_a_github_query``'s). Then `%x`, `%zz`, `%4`
-    and a `%` or a `%4` that ends the path on slack.com, S3, Notion, HubSpot and Graph, and on
-    slack.com `auth.test%zz`; with a `#`, `/rate_limit#x`, `/#x` and `/nope#` on api.github.com,
-    `auth.test#x` and `/api/#` on slack.com, `me#x` on Graph and `nope#x/key` on S3; a `#` and a
-    broken escape in either order, which drew the `#`'s answer on api.github.com and slack.com and
-    the broken escape's on Notion, which reads neither past a `#`, and on S3; beside `%00`, which
-    slack.com answers with the same empty 400 (:func:`escape_answer`); and on HubSpot `contacts{x`,
-    `{x/contacts`, a `{` beside a broken escape, which drew Cloudflare's page in either order, and
-    beside a `;`. On Notion and HubSpot, Cloudflare's page for a broken escape or a `%00` comes
-    ahead of its answer to a raw byte (:func:`answer`): `%zz` in the path with `\\x01`, a tab,
-    `C3 A9` or `E9` before it or after it, or with `\\x01` or `C3 A9` in the query, and `%00` with
-    `\\x01` before it or after it or `C3 A9` before it, drew the page, where a `%` or a `%4` that
-    ends the path after a raw byte, and on HubSpot a `{` beside one, drew the raw byte's empty 400.
-    Beside a raw `\\x01` before the character or after it, slack.com answered the raw byte, with a
-    `#` or a broken escape in the path and with a `#` in the query; Graph gives a `\\x01` the page
-    it gives a `"`; and S3, which reads a raw byte on, answered a broken escape beside `\\x01` or
-    `C3 A9` as it answers one alone, and `nope\\x01y#x` and `nope#y\\x01x` with its 400
-    `InvalidBucketName` naming the bucket as sent, the `\\x01` as `&#1;`. With no credential,
-    `nope%x` and `auth.test?b=1#x` on slack.com, `rate_limit?b=1#x` and `nope%x#y` on
-    api.github.com, `nope%x`, `nope%` and `nope%4` on Notion, and `nope{x`, `nope%x` and `nope%` on
-    HubSpot each drew the answer it drew with one. The answers that do not close the connection are
-    Apache's, Jetty's and HubSpot's own: each of those was followed by an answer to a second request
-    on the same connection, and none of the others."""
+    query is ``backlot.main.refuse_a_broken_escape_in_a_github_query``'s). Then each spelling of a
+    broken escape, a `#` and a broken escape in either order, some of them beside `%00` or a raw
+    byte, and on slack.com, api.github.com, Notion and HubSpot some of them with no credential,
+    which drew the answer they drew with one; ``tests/test_request_target.py::_PRINTABLE`` holds the
+    cases. Notion reads nothing past a `#`, and slack.com answers `%00` beside a broken escape with
+    envoy's empty 400 (:func:`escape_answer`). On Notion and HubSpot, Cloudflare's page for a broken
+    escape or a `%00` comes ahead of its answer to a raw byte (:func:`answer`), but for a `%` or a
+    `%4` that ends the path after one, and on HubSpot a `{` beside one, which draw the raw byte's
+    empty 400; slack.com answers a raw `\\x01` ahead of a `#` or a broken escape beside it, Graph
+    gives a `\\x01` the page it gives a `"`, and S3 reads a raw byte on. The answers that do not
+    close the connection are Apache's, Jetty's and HubSpot's own: each of those was followed by an
+    answer to a second request on the same connection, and none of the others."""
     path, raw_path = scope["path"], scope["raw_path"]
     sent = scope.get(WITH_A_FRAGMENT)
     sent_path = raw_path if sent is None else sent.partition(b"?")[0]
@@ -614,17 +600,13 @@ def printable_reading(scope: Scope) -> dict[str, object] | None:
       credential.
 
     Measured on 2026-10-31 (UTC) over raw HTTP/1.1 on TLS sockets, with the sweep
-    :func:`printable_answer` names, each spelling below answered as the request it reads as. A `\\`:
-    Jira's `/rest/api/3\\serverInfo` and `/rest/api\\3/serverInfo`, served, and `nope\\x` and
-    `nope\\\\x`, echoed as `nope/x`; Confluence's `/wiki/rest/api\\space`, served; Drive's
-    `/drive/v3\\about` and `/drive\\v3/about`, the about route's 400, and `files\\nope`, its 404 for
-    the file `nope`; and Docs' `/v1\\documents/x` and Sheets' `/v4\\spreadsheets/x`, their 404. A
-    `+`: Drive's file, its permissions, comments and export, and a shared drive, each named `nope x`
-    in the 404 for `nope+x`, and `nope  x` for `nope++x`. A `;`: `contacts/nope;x` and
-    `contacts/nope;x;y` were the 404 for the id `nope`, and `contacts;x` and `contacts/;x` the list;
-    `objects;x/contacts/nope` was the gateway's 404 page. A `#`: `/nope#x` and `/nope#x/key` named
-    the bucket `nope#x`. A broken escape in HubSpot's query, in a name or a value, on `contacts`,
-    `contacts/nope` and `owners`: the 401 a request with no credential gets."""
+    :func:`printable_answer` names and then the spellings
+    ``tests/test_request_target.py::_PRINTABLE`` holds, each answered as the request it reads as: a
+    `\\` on Jira, Confluence, Drive, Gmail, Docs, Sheets and Slides; a `+` on Drive's files, their
+    permissions, comments and export, and a shared drive; a `;` on HubSpot's contacts and their
+    list, where `objects;x/contacts/nope` was the gateway's 404 page; a `#` on S3's buckets; and a
+    broken escape in a name or a value of HubSpot's query, on `contacts`, `contacts/nope` and
+    `owners`."""
     path, raw = scope["path"], scope["raw_path"]
     reading: dict[str, object] = {}
     sent = scope.get(WITH_A_FRAGMENT)

@@ -2640,8 +2640,8 @@ def front_door(
     it, in the path or in the query, and beside an encoded slash and a raw `C3 A9`; and at `/wiki`,
     `/wiki/`, `/wiki/home`, `/wiki/HOME`, `/wiki/home/`, `/wiki/search`, `/wiki/Search`,
     `/wiki/spaces/X` and `/wiki/SPACES/X`, which answered 200 with a `[` in the query, and the last
-    two with one in the path. This server serves none of those pages, and answers them as it answers
-    them with no `[`.
+    two with one in the path. This server does not serve those pages, and answers each as it answers
+    it with no `[`.
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is

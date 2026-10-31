@@ -502,7 +502,7 @@ def undecodable_url(request: Request) -> JSONResponse | None:
     """Notion's 400 for a path whose escapes do not decode to UTF-8
     (``backlot.utf8_escapes.decodes``), or that the end of the target cuts short in an escape
     (``backlot.request_target.cut_escape``), the one broken escape Cloudflare in front of it hands
-    on (``backlot.request_target.printable_answer``); or None.
+    on; or None.
 
     Measured on 2026-10-30 (UTC) on a path no route serves (`/v1/nope%80x`, `/nope%80x`), at a
     route's own (`/v1/users%80`, `/v1/users/nope%80x`, `/v1/pages/nope%80x`) and beside `%01`, on a

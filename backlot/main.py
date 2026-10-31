@@ -38,6 +38,7 @@ from backlot import (
     store,
     synth,
     telemetry,
+    utf8_escapes,
 )
 from backlot.acl import Acl
 from backlot.config import get_settings
@@ -528,6 +529,16 @@ async def echo_github_api_version(request: Request, call_next):
 
 
 @_middleware(lambda scope: errors.s3.owns(_url_path(scope)))
+async def refuse_an_s3_path_real_cannot_read(request: Request, call_next):
+    """Answer an `/s3` path whose escapes do not decode, or whose bucket holds a character no bucket
+    name holds, as real does (``s3.path_refusal``), ahead of the route and the credential.
+    Registered before ``answer_s3_with_request_ids``, which makes it the inner of the two, so the
+    refusal carries the request's ids."""
+    refusal = s3.path_refusal(request.method, request.scope["raw_path"])
+    return refusal if refusal is not None else await call_next(request)
+
+
+@_middleware(lambda scope: errors.s3.owns(_url_path(scope)))
 async def answer_s3_with_request_ids(request: Request, call_next):
     """Put `x-amz-request-id` and `x-amz-id-2` on every `/s3` answer, and hand the router the same
     pair for the body of an error.
@@ -689,6 +700,18 @@ async def report_notion_headers(request: Request, call_next):
     for name, value in notion.APPLICATION_HEADERS.items():
         response.headers[name] = value
     return response
+
+
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def refuse_a_notion_path_that_does_not_decode(request: Request, call_next):
+    """Answer a `/notion` path with ``notion.undecodable_url``'s 400 where it gives one. Registered
+    after ``report_notion_headers``, which makes it the outer of the two, so its 400 goes without
+    that one's headers, and before ``read_a_notion_body_as_express_does``, which makes it the inner
+    of those two, so a body Express refuses is refused first."""
+    refusal = notion.undecodable_url(request)
+    return refusal if refusal is not None else await call_next(request)
 
 
 @_middleware(lambda scope: errors.notion.owns(_url_path(scope)))
@@ -1610,6 +1633,22 @@ _GOOGLE_READ_OVERRIDES = {
 }
 _GOOGLE_OVERRIDE_IN_ANY_CASE = "/drive/v3"
 _FORM_MEDIA_TYPE = "application/x-www-form-urlencoded"
+
+
+@_middleware(
+    lambda scope: (
+        errors.google.family(_url_path(scope)) in (errors.google.DRIVE, errors.google.EDITOR)
+        and b"%" in scope["query_string"]
+    )
+)
+async def read_a_drive_or_editor_query_as_google_does(request: Request, call_next):
+    """Spell each escape of a Drive, Docs, Sheets or Slides query value as those APIs read it
+    (``backlot.utf8_escapes.google_query``). Gmail's `fields` quoted a byte outside any UTF-8
+    sequence back as nothing on 2026-10-30 (UTC), `a%80b` as `ab`, so a Gmail query is left to the
+    router. Registered before ``answer_a_google_read_sent_as_a_post``, which makes it the inner of
+    the two, so it reads the form that one adds to the query too."""
+    request.scope["query_string"] = utf8_escapes.google_query(request.scope["query_string"])
+    return await call_next(request)
 
 
 @_middleware(

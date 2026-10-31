@@ -48,7 +48,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, express_http, published, store, synth
+from backlot import auth, express_http, published, store, synth, utf8_escapes
 from backlot import notion_request as req
 from backlot.graphql import apollo_http
 from backlot.graphql import body as request_body
@@ -495,6 +495,21 @@ def _error_id(request: Request) -> str:
         f"notion-error:{request.method} {request.url.path}?{request.url.query}".encode()
     )
     return str(uuid.UUID(bytes=raw.digest(16), version=4))
+
+
+def undecodable_url(request: Request) -> JSONResponse | None:
+    """Notion's 400 for a path whose escapes do not decode to UTF-8
+    (``backlot.utf8_escapes.decodes``), or None.
+
+    Measured on 2026-10-30 (UTC) on a path no route serves (`/v1/nope%80x`, `/nope%80x`), at a
+    route's own (`/v1/users%80`, `/v1/users/nope%80x`, `/v1/pages/nope%80x`) and beside `%01`, on a
+    `GET` with a token and without one: `Failed to decode url.`, where a `%C3%A9` in the same place
+    was the URL's 400 (:func:`unmatched_path`) or the route's own refusal. A body Express refuses
+    (:func:`front_door_body`) was refused ahead of it, on a `POST` with a token and without one, and
+    the 400 carried none of :data:`APPLICATION_HEADERS`."""
+    if utf8_escapes.decodes(request.scope["raw_path"]):
+        return None
+    return _error(request, 400, "invalid_request_url", "Failed to decode url.")
 
 
 async def front_door_body(request: Request) -> JSONResponse | None:

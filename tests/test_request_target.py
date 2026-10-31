@@ -226,6 +226,25 @@ _ESCAPES = [
     ),
     ("/msgraph/v1.0/", b"me%0A", "graph invalid url"),
     ("/msgraph/v1.0/", b"me?b=%01x", 401),
+    # escapes past 0x7F, read as UTF-8 where they decode and byte by byte where they do not
+    # (``request_target._graph_refuses``)
+    *(
+        ("/msgraph/v1.0/", b"nope%s" % escape, "graph invalid url")
+        for escape in (
+            *(b"%81x", b"%8Dx", b"%8Fx", b"%90x", b"%9Dx", b"%C2%81x", b"%C2%9Dx", b"%81%C3%A9x"),
+            *(b"%C3%A9%81x", b"%F4%8Fx", b"%F4%90%80%80x", b"%F4%8F%BF%BEx", b"%F4%8F%BF%BFx"),
+        )
+    ),
+    *(
+        ("/msgraph/v1.0/", b"nope%s" % escape, 401)
+        for escape in (
+            *(b"%80x", b"%82x", b"%F4x", b"%ED%A0%80x", b"%C2%80x", b"%C3%81x", b"%E2%80%9Dx"),
+            *(b"%EF%BF%BEx", b"%EF%BF%BFx", b"%F4%8F%BF%BDx"),
+        )
+    ),
+    ("/msgraph/v1.0/", b"%81/nope", "graph invalid url"),
+    ("/msgraph/v1.0/", b"me?b=%81x", 401),
+    ("/msgraph/v1.0/", b"me?b=%F4%90%80%80x", 401),
     ("/github/", b"nope%00x", 404),
 ]
 #: The hosts real was measured on with no credential, whose rows here send none.

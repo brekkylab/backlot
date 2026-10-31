@@ -30,7 +30,7 @@ import urllib.parse
 from fastapi import Request, Response
 from starlette.types import Scope
 
-from backlot import auth, errors
+from backlot import auth, errors, utf8_escapes
 from backlot.routers import atlassian, s3
 
 #: The scope key :mod:`backlot.protocol` leaves the request target on, as sent, where it
@@ -407,11 +407,28 @@ _ESCAPED_CONTROL = re.compile(rb"%(?:[01][0-9A-Fa-f]|7[Ff])")
 #: and www.googleapis.com answered `/drive/v3%00x`, `/drive%00x`, `/batch%00x` and `/nope%00x` with
 #: its 404 page and refused `/drive/v2/nope%00x`, under a version Backlot does not serve.
 _GOOGLE_NUL = ("/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1", "/drive/v3/", "/batch/")
+#: The C1 controls Graph's front door refuses in a path once it has read the path's escapes.
+_GRAPH_REFUSED = frozenset("\x81\x8d\x8f\x90\x9d")
+
+
+def _graph_refuses(raw_path: bytes) -> bool:
+    """Whether Graph's front door refuses ``raw_path``: one holding a character of
+    :data:`_GRAPH_REFUSED` once its escapes are read, as UTF-8 where they decode to a string without
+    U+10FFFE or U+10FFFF and byte by byte otherwise. Measured on 2026-10-30 (UTC) for each escape
+    from `%80` to `%FF` alone, for `%C2` before each of `%80` to `%A0`, for sequences cut short,
+    overlong or past U+10FFFF, and for U+FFFE, U+FFFF, U+10FFFD, U+10FFFE and U+10FFFF sent as
+    UTF-8; a query holding `%80`, `%81`, `%ED%A0%80`, `%C3%A9` or `%F4%90%80%80` was read on."""
+    raw = urllib.parse.unquote_to_bytes(raw_path)
+    text = raw.decode("utf-8") if utf8_escapes.decodes(raw_path) else raw.decode("latin-1")
+    if "\U0010fffe" in text or "\U0010ffff" in text:
+        text = raw.decode("latin-1")
+    return not _GRAPH_REFUSED.isdisjoint(text)
 
 
 def escape_answer(scope: Scope) -> Response | None:
     """The front door's answer to a path that holds `%00`, or on Graph any escape of
-    :data:`_ESCAPED_CONTROL`, or ``None`` where it reads the path on as the vendor's.
+    :data:`_ESCAPED_CONTROL` or one :func:`_graph_refuses`, or ``None`` where it reads the path on
+    as the vendor's.
 
     slack.com's empty 400; Google's 1,555-byte page where :data:`_GOOGLE_NUL` says, on a connection
     that answers the next request; Cloudflare's page in front of Notion and HubSpot; S3's empty 400,
@@ -427,7 +444,7 @@ def escape_answer(scope: Scope) -> Response | None:
     with Cloudflare's (:func:`refused_path`), and api.github.com read it as any other byte."""
     path, sent = scope["path"], scope["raw_path"]
     if _under(path, "/msgraph"):
-        if _ESCAPED_CONTROL.search(sent) is None:
+        if _ESCAPED_CONTROL.search(sent) is None and not _graph_refuses(sent):
             return None
         return _page(GRAPH_INVALID_URL, "text/html; charset=us-ascii")
     if b"%00" not in sent:

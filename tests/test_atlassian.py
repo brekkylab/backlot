@@ -6681,6 +6681,21 @@ _FRONT_DOOR_ROWS = [
     ("GET", "/rest/api/3/nope%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("GET", "/rest/api/3/issue/A%5CB", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("GET", "/rest/api/3/issue/A%5CB/comment?maxResults=abc", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    # and on Jira, on its API and off it, an escape that does not decode to UTF-8, on each method
+    # Tomcat answers and beside a backslash
+    *[
+        ("GET", f"/rest/api/3/issue/nope{escape}x", 400, _TOMCAT_400, _TOMCAT_PAGE)
+        for escape in ("%80", "%e9", "%C3", "%C0%80", "%E2%82", "%ED%A0%80", "%F4%90%80%80")
+    ],
+    ("GET", "/rest/api/3/serverInfo%80", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/rest/agile/1.0/nope%80x", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/nope%80x", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    *[
+        (method, "/rest/api/3/issue/nope%80x", 400, _TOMCAT_400, _TOMCAT_PAGE)
+        for method in ("HEAD", "OPTIONS", "POST", "PUT", "DELETE")
+    ],
+    ("GET", "/rest/api/3/issue/nope%5C%80x", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/rest/api/3/issue/nope%80%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
     # the edge's 400 for a `;`, bare or escaped in either case, wherever it stands, a `..;` the
     # firewall lets through included (the shape `Accept` picks is
     # `test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks`)
@@ -6711,6 +6726,11 @@ _FRONT_DOOR_ROWS = [
     ("GET", "/rest/api/3/..;/nope;x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
     ("GET", "/wiki/rest/api/space/A%2FB;x", 400, _EDGE_400, _EDGE_PAGE),
     ("GET", "/rest/api/3/issue/A%5CB;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/issue/nope%80x;y", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/issue/nope%00%80x", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("PROPFIND", "/rest/api/3/issue/nope%80x", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
+    ("TRACE", "/rest/api/3/issue/nope%80x", 405, _CLOUDFRONT_405, _EDGE_PAGE),
+    ("PATCH", "/rest/api/3/issue/nope%80x", 400, _NGINX_400, _EDGE_PAGE),
     # a `HEAD` is the page's status and length with no body
     ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
     ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
@@ -6749,6 +6769,10 @@ _FRONT_DOOR_ROWS = [
     ("GET", "/rest/api/3/serverInfo?..%2F=1", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
     ("GET", "/rest/api/3/serverInfo?x=%zz", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
     ("GET", "/rest/api/3/issue/A%2FB", 404, None, errors_atlassian.PROBLEM_JSON),
+    # an escape that decodes to UTF-8, and on Confluence one that does not
+    ("GET", "/rest/api/3/issue/nope%C3%A9x", 404, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+    ("GET", "/rest/api/3/serverInfo%C3%A9", 404, None, errors_atlassian.PROBLEM_JSON),
+    ("GET", "/wiki/rest/api/space/nope%80x", 404, None, "application/json"),
     # the web app answers `spaces/` itself (real's single-page app at 200, which is not copied)
     ("GET", "/wiki/spaces/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
     ("GET", "/wiki/SPACES/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),

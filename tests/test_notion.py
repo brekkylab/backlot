@@ -4427,7 +4427,7 @@ def test_notion_reads_a_request_as_real_does(client, notion_h):
         "page": _RUNBOOK,
         "ds": synth.notion_data_source_id("nt-tasks-db"),
         "db": synth.notion_id("nt-tasks-db"),
-        "user": client.get("/notion/v1/users", headers=notion_h).json()["results"][0]["id"],
+        "user": synth.notion_user_id("ava@acme.com"),
         "rand": _RAND,
     }
     answered, wanted = {}, {}

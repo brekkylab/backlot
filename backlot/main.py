@@ -680,8 +680,8 @@ async def report_notion_headers(request: Request, call_next):
 async def refuse_a_notion_path_that_does_not_decode(request: Request, call_next):
     """Answer a `/notion` path with ``notion.undecodable_url``'s 400 where it gives one. Registered
     after ``report_notion_headers``, which makes it the outer of the two, so its 400 goes without
-    that one's headers, and before ``read_a_notion_body_as_express_does``, the inner of those two,
-    so a body Express refuses is refused first."""
+    that one's headers, and before ``read_a_notion_body_as_express_does``, which makes it the inner
+    of those two, so a body Express refuses is refused first."""
     refusal = notion.undecodable_url(request)
     return refusal if refusal is not None else await call_next(request)
 

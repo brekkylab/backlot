@@ -169,10 +169,12 @@ _REFUSED_LINES = [
     ("/github", "/repos/acme/docs-site\xc3\xa9", "github 400", "github 400"),
     ("/github", "/repos/acme/docs-site%zz", "github 414", "github 431"),
     ("/github", "/repos/acme/docs-site?q=\x01x", "github 400", "github 400"),
+    ("/github", "/repos/acme/docs-site?pad=" + "a" * 100 + "&q=\x01x", "github 400", "github 400"),
     ("/slack", "/api/api.test\xc3\xa9", "slack", "slack 400"),
     ("/slack", "/api/api.test\x00", "slack", "slack 400"),
     ("/slack", "/api/api.test%zz", "slack", "slack"),
     ("/slack", "/api/api.test?q=\x00x", "slack", "slack 400"),
+    ("/slack", "/api/api.test?pad=" + "a" * 100 + "&q=\x00x", "slack", "slack 400"),
     ("", "/drive/v3/files\x01", "google 400", "google 400"),
     ("", "/drive/v3/files\x00", "google 400", "google 400"),
     ("", "/drive/v3/files\t", "google", "google"),
@@ -183,6 +185,7 @@ _REFUSED_LINES = [
     ("/atlassian", "/rest/api/3/myself\x01", "jira 414", "jira 494"),
     ("/notion", "/v1/users%zz", "cloudflare 414", "cloudflare bad request"),
     ("/notion", "/v1/users\r", "cloudflare bad request", "cloudflare bad request"),
+    ("/notion", "/v1/x%2", "cloudflare 414", "cloudflare bad request"),
     ("/notion", "/v1/users\x01", "cloudflare 414", "cloudflare 400"),
     (
         "/hubspot",
@@ -198,6 +201,14 @@ _REFUSED_LINES = [
     ("/msgraph", "/v1.0/me?q=\tx", "graph badly formed", "graph badly formed"),
 ]
 _BOUND_OF = {mount: (bound, per_line) for mount, _, bound, per_line, _, _ in _BOUNDS}
+
+#: Ended request lines with no `?`, which the rows above cannot be sent as, before a header past the
+#: bound, and real's answer: the root of Slack's host, and on Notion a `%2` the end of the target
+#: cuts short, the bound's page where the same `%2` before a `?` draws Cloudflare's.
+_NO_QUERY = [
+    ("/slack", "", "slack"),
+    ("/notion", "/v1/x%2", "cloudflare 400"),
+]
 
 #: How a head that ends after a long header meets the bound: the prefix, the path, whether the bytes
 #: counted are the header line's, the most of them real read, and its answer to one byte more; on a
@@ -297,6 +308,19 @@ def test_a_head_that_ends_is_read_to_the_bound_real_read_it_to(
         c.sendall(head(read + 1))
         answer = _until_closed(c)
     assert _as_real(answer) == _REAL[refused]
+
+
+@pytest.mark.parametrize("mount, path, in_headers", _NO_QUERY)
+def test_a_line_with_no_query_is_answered_as_real_answered_it(live_server, mount, path, in_headers):
+    """The header part of the test above, for a line it would send with `?x=1`."""
+    base_url, _ = live_server
+    bound, per_line = _BOUND_OF[mount]
+    start = f"GET {mount}{path} HTTP/1.1\r\nHost: x\r\nX-A: "
+    counted = len("X-A: ") if per_line else len(start) - len(mount)
+    with _connect(base_url) as c:
+        c.sendall((start + "a" * (bound - counted)).encode())
+        answer = _until_closed(c)
+    assert _as_real(answer) == _REAL[in_headers]
 
 
 def test_the_request_line_of_a_path_no_vendor_owns_is_not_kept():

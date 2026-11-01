@@ -455,25 +455,30 @@ def refused_in_the_line(door: str, line: bytes, ended: bool) -> tuple[str, str, 
     """The status line, media type and body the front door ``door`` (:func:`front_door`'s name)
     refuses the request line ``line``, the bytes before its LF, with ahead of its head bound, or
     ``None`` where the bound's page answers; ``ended`` is whether the LF came, so that a header
-    rather than the line reached the bound. The target of a line that ended lies between its first
-    space and its last, as :func:`encode_line` reads it, and of one that has not, after its first.
+    rather than the line reached the bound; where the LF is itself the byte that reaches the bound,
+    which real was not measured at, the line has ended. The target of a line that ended lies between
+    its first space and its last, as :func:`encode_line` reads it, and of one that has not, after
+    its first.
 
     A front door refuses a raw byte in the target as it reads the line: GitHub one of any kind,
     Google a `nul` or a `control`, Jira Cloud's CDN and Cloudflare a `nul` or a `cr`, and Graph one
     of any kind but a `high` (:func:`_graph_page`). Once the line has ended, Slack refuses a raw
     byte of any kind, Jira Cloud's CDN a path :func:`_broken` holds, and Cloudflare, on each of its
-    four hosts, a path :func:`refused_path` holds. Each answer is the one the same line draws with a
-    short head.
+    four hosts, a path :func:`refused_path` holds. Each answer is the one real gave the same line
+    with a short head.
 
     Measured on 2026-11-01 (UTC) over raw HTTP/1.1 on TLS, each request cache-busted, on the paths
     of ``backlot.head_bounds``' measurement: one byte of each kind, with a byte after it, in the
     path and in the query, and `%zz` in the path, each sent with a short head, before a header past
-    the door's bound with no LF, and with the query run past the bound with no LF; on Jira Cloud and
-    behind Cloudflare also `%00`, `/a%zzb`, a `..` that climbs past the root, one that does not, and
-    a `%2` that ends the target, with a short head and before the long header. Every long request
-    the rules here do not name drew the bound's page but `/../rest/api/3/myself` on Jira Cloud,
-    which drew the CDN's 400 as it did with a short head; S3 answered each with an empty 400, which
-    its bound answers too."""
+    the door's bound with no LF, and with the query run past the bound with no LF; on Jira Cloud,
+    Notion, HubSpot and Linear also `%00`, `/a%zzb`, a `..` that climbs past the root, one that does
+    not, and a `%2` or `%` that ends the target, on Linear and Fireflies `/a%zz` and `/../graphql`,
+    and on Cloudflare's four hosts a `%2` or `%` before the `?`, with a short head and before the
+    long header; and on GitHub, Slack, Google, Jira Cloud, Notion, HubSpot, Linear and Graph a byte
+    each refuses 100 bytes into the query, which drew the answer the byte draws at the query's
+    start. Every long request the rules here do not name drew the bound's page but
+    `/../rest/api/3/myself` on Jira Cloud, which drew the CDN's 400 as it did with a short head; S3
+    answered each with an empty 400, which its bound answers too."""
     method, _, rest = line.partition(b" ")
     target = rest.rpartition(b" ")[0] if ended else rest
     path, mark, query = target.partition(b"?")

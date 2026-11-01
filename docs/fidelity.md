@@ -535,9 +535,8 @@ The tests are the record here (`tests/test_github.py`, the rate-limit test), not
 `x-github-request-id` is another: every `/github` answer the API gives carries it
 (`backlot.main.put_a_request_id_on_github_answers`), and
 `test_github_every_answer_carries_a_request_id` in the same file is its record. The answers given
-ahead of the API carry neither, as on real: the 400 for a raw byte in the target, the 414 for a
-target of 8,192 bytes or more (8,174 on code search) and the answer to a head past its front
-door's bound.
+ahead of the API carry neither, as on real; the GitHub section of `docs/supported-sources.md` names
+them.
 
 The `Allow` on S3's sub-resource 405s is another. A `HEAD` carrying a sub-resource selector is 405
 on both sides, and real names the methods that sub-resource takes where Backlot names only `GET`,

@@ -21,7 +21,7 @@ import urllib.parse
 import pytest
 import uvicorn
 
-from backlot import protocol
+from backlot import head_bounds, protocol
 
 #: Real's answer at each bound and to a request line refused ahead of one (``backlot.head_bounds``
 #: and ``backlot.request_target.refused_in_the_line`` have the measurements): the status line,
@@ -175,6 +175,10 @@ _REFUSED_LINES = [
     ("/slack", "/api/api.test%zz", "slack", "slack"),
     ("/slack", "/api/api.test?q=\x00x", "slack", "slack 400"),
     ("/slack", "/api/api.test?pad=" + "a" * 100 + "&q=\x00x", "slack", "slack 400"),
+    # The LF at the 49,152nd byte of the head real gets, the last of the third piece of
+    # ``backlot.head_bounds.PIECE`` bytes, and at the 49,153rd, in the piece that reaches the bound.
+    ("/slack", "/api/api.test?q=\x01x&pad=" + "a" * 49_110, "slack", "slack 400"),
+    ("/slack", "/api/api.test?q=\x01x&pad=" + "a" * 49_111, "slack", "slack"),
     ("", "/drive/v3/files\x01", "google 400", "google 400"),
     ("", "/drive/v3/files\x00", "google 400", "google 400"),
     ("", "/drive/v3/files\t", "google", "google"),
@@ -182,6 +186,8 @@ _REFUSED_LINES = [
     ("/atlassian", "/rest/api/3/myself\x00", "jira 400", "jira 400"),
     ("/atlassian", "/rest/api/3/myself\r", "jira 400", "jira 400"),
     ("/atlassian", "/rest/api/3/myself%zz", "jira 414", "jira 400"),
+    # A line of 20,000 bytes, which ends in the piece a head's 32,768th byte comes in.
+    ("/atlassian", "/rest/api/3/myself%zz?pad=" + "a" * 19_956, "jira 414", "jira 400"),
     ("/atlassian", "/rest/api/3/myself\x01", "jira 414", "jira 494"),
     ("/notion", "/v1/users%zz", "cloudflare 414", "cloudflare bad request"),
     ("/notion", "/v1/users\r", "cloudflare bad request", "cloudflare bad request"),
@@ -258,16 +264,25 @@ def _status(base_url: str, head: bytes) -> int:
         return int(c.makefile("rb").readline().split()[1])
 
 
+def _short_id(value: object) -> str | None:
+    """A path of more than 200 characters named by its first 40 and its length."""
+    if isinstance(value, str) and len(value) > 200:
+        return f"{value[:40]}...{len(value)}"
+    return None
+
+
 @pytest.mark.parametrize("part", ["line", "header"])
 @pytest.mark.parametrize(
     "mount, path, bound, per_line, in_line, in_headers",
     _BOUNDS + [(m, p, *_BOUND_OF[m], line, header) for m, p, line, header in _REFUSED_LINES],
+    ids=_short_id,
 )
 def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_it(
     live_server, mount, path, bound, per_line, in_line, in_headers, part
 ):
     """One byte short of the bound the head waits for more; the byte that reaches it is answered and
-    the connection closed. The first read ends inside the path, before it names a vendor."""
+    the connection closed. The first read ends inside the path, before it names a vendor, and the
+    second where the line's first bytes have named it, so the rest of the line comes after."""
     base_url, _ = live_server
     line = f"GET {mount}{path}?x="
     if part == "line":
@@ -276,11 +291,11 @@ def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_
         start = f"{line}1 HTTP/1.1\r\nHost: x\r\nX-A: "
         counted = len("X-A: ") if per_line else len(start) - len(mount)
         head = start + "a" * (bound - counted)
+    named = head_bounds.NAMED_WITHIN
     with _connect(base_url) as c:
-        c.sendall(head[:6].encode("latin-1"))
-        assert not select.select([c], [], [], 0.2)[0]
-        c.sendall(head[6:-1].encode("latin-1"))
-        assert not select.select([c], [], [], 0.5)[0]
+        for start, end, wait in ((0, 6, 0.2), (6, named, 0.2), (named, -1, 0.5)):
+            c.sendall(head[start:end].encode("latin-1"))
+            assert not select.select([c], [], [], wait)[0]
         c.sendall(head[-1:].encode("latin-1"))
         answer = _until_closed(c)
     assert _as_real(answer) == _REAL[in_line if part == "line" else in_headers]

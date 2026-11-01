@@ -451,34 +451,30 @@ def answer(scope: Scope) -> Response | None:
     return _page(b"Invalid HTTP request received.", "text/plain; charset=utf-8")
 
 
-def refused_in_the_line(door: str, line: bytes, ended: bool) -> tuple[str, str, bytes] | None:
+def refused_in_the_line(
+    door: str, line: bytes, ended: bool, ahead: bool
+) -> tuple[str, str, bytes] | None:
     """The status line, media type and body the front door ``door`` (:func:`front_door`'s name)
-    refuses the request line ``line``, the bytes before its LF, with ahead of its head bound, or
-    ``None`` where the bound's page answers; ``ended`` is whether the LF came, so that a header
-    rather than the line reached the bound; where the LF is itself the byte that reaches the bound,
-    which real was not measured at, the line has ended. The target of a line that ended lies between
-    its first space and its last, as :func:`encode_line` reads it, and of one that has not, after
-    its first.
+    refuses the request line ``line``, the bytes before its LF, with ahead of its bound, or
+    ``None`` where the bound's page answers. ``ended`` is whether the LF came, and ``ahead`` whether
+    it came in a piece of the head before the piece the bound is reached in. The target of a line
+    that ended lies between its first space and its last, as :func:`encode_line` reads it, and of
+    one that has not, after its first.
 
-    A front door refuses a raw byte in the target as it reads the line: GitHub one of any kind,
-    Google a `nul` or a `control`, Jira Cloud's CDN and Cloudflare a `nul` or a `cr`, and Graph one
-    of any kind but a `high` (:func:`_graph_page`). Once the line has ended, Slack refuses a raw
-    byte of any kind, Jira Cloud's CDN a path :func:`_broken` holds, and Cloudflare, on each of its
-    four hosts, a path :func:`refused_path` holds. Each answer is the one real gave the same line
-    with a short head.
+    A front door refuses a raw byte in the target as it reads the line, in whichever piece the byte
+    comes: GitHub one of any kind, Google a `nul` or a `control`, Jira Cloud's CDN and Cloudflare a
+    `nul` or a `cr`, and Graph one of any kind but a `high` (:func:`_graph_page`). Where the LF came
+    ahead, Slack refuses a raw byte of any kind, Jira Cloud's CDN a path :func:`_broken` holds, and
+    Cloudflare, on each of its four hosts, a path :func:`refused_path` holds; where it came in the
+    piece that reaches the bound, Slack answers with the bound's 431. Each refusal is the one real
+    gave the same line with a short head.
 
-    Measured on 2026-11-01 (UTC) over raw HTTP/1.1 on TLS, each request cache-busted, on the paths
-    of ``backlot.head_bounds``' measurement: one byte of each kind, with a byte after it, in the
-    path and in the query, and `%zz` in the path, each sent with a short head, before a header past
-    the door's bound with no LF, and with the query run past the bound with no LF; on Jira Cloud,
-    Notion, HubSpot and Linear also `%00`, `/a%zzb`, a `..` that climbs past the root, one that does
-    not, and a `%2` or `%` that ends the target, on Linear and Fireflies `/a%zz` and `/../graphql`,
-    and on Cloudflare's four hosts a `%2` or `%` before the `?`, with a short head and before the
-    long header; and on GitHub, Slack, Google, Jira Cloud, Notion, HubSpot, Linear and Graph a byte
-    each refuses 100 bytes into the query, which drew the answer the byte draws at the query's
-    start. Every long request the rules here do not name drew the bound's page but
-    `/../rest/api/3/myself` on Jira Cloud, which drew the CDN's 400 as it did with a short head; S3
-    answered each with an empty 400, which its bound answers too."""
+    Measured on 2026-11-01 (UTC) over raw HTTP/1.1 on TLS, each request cache-busted and its head
+    written at once in pieces of 16,384 bytes, on the paths of ``backlot.head_bounds``'
+    measurement; ``tests/test_head_bounds.py::_REFUSED_LINES`` holds the lines. Every long request
+    those rules do not name drew the bound's page but `/../rest/api/3/myself` on Jira Cloud, which
+    drew the CDN's 400 as it did with a short head; S3 answered each with an empty 400, which its
+    bound answers too."""
     method, _, rest = line.partition(b" ")
     target = rest.rpartition(b" ")[0] if ended else rest
     path, mark, query = target.partition(b"?")
@@ -487,18 +483,18 @@ def refused_in_the_line(door: str, line: bytes, ended: bool) -> tuple[str, str, 
     bad_request = "HTTP/1.1 400 Bad Request"
     if door == "github" and kinds:
         return bad_request, "text/html; charset=utf-8", GITHUB_PAGE
-    if door == "slack" and kinds and ended:
+    if door == "slack" and kinds and ahead:
         return bad_request, "text/plain", b"Bad Request"
     if door == "google" and every & {"nul", "control"}:
         return "HTTP/1.0 400 Bad Request", "text/html; charset=UTF-8", GOOGLE_PAGE_54
     if door == "graph" and (page := _graph_page(kinds)) is not None:
         return bad_request, "text/html; charset=us-ascii", page
-    if door == "atlassian" and (every & {"nul", "cr"} or ended and _broken(path)):
+    if door == "atlassian" and (every & {"nul", "cr"} or ahead and _broken(path)):
         raw_path = _RAW.sub(lambda m: b"%%%02X" % m[0][0], path).decode("latin-1")
         page = errors.atlassian.cdn_bad_request(method.decode("latin-1"), raw_path)
         return bad_request, "text/html", page.encode()
     if door == "cloudflare":
         own = b"/" + path.partition(b"/")[2].partition(b"/")[2]
-        if every & {"nul", "cr"} or ended and refused_path(own, query if mark else None):
+        if every & {"nul", "cr"} or ahead and refused_path(own, query if mark else None):
             return bad_request, "text/html", CLOUDFLARE_PAGE
     return None

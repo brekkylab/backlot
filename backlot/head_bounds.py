@@ -45,6 +45,10 @@ from backlot import errors, request_target
 #: (``backlot.request_target.front_door``) fit in it.
 NAMED_WITHIN = 64
 
+#: The most bytes one TLS record holds, and so the size of the pieces a head written at once
+#: reaches a front door in.
+PIECE = 16_384
+
 
 @dataclasses.dataclass(frozen=True)
 class Bound:
@@ -80,10 +84,15 @@ class Bound:
         return self.in_line if in_request_line else self.in_headers
 
     def refused(self, line: bytes, ended: bool) -> bytes | None:
-        """The front door's refusal of the request line ``line``, the bytes before its LF, where it
-        answers that ahead of the bound (``backlot.request_target.refused_in_the_line``), ``ended``
-        where the LF came; else ``None``."""
-        refused = request_target.refused_in_the_line(self.door, line, ended)
+        """``backlot.request_target.refused_in_the_line``'s answer to ``line`` at this bound, as
+        :func:`_answer` sends it, ``ended`` where its LF came. ``ahead`` holds where the bound is a
+        line's, which is longer than a :data:`PIECE`, and where a head bound falls in a later piece
+        than the LF, the pieces counted from the head's first byte as a head written at once is
+        cut."""
+        ahead = ended and (
+            self.per_line or (len(line) - self.mount) // PIECE < (self.limit - 1) // PIECE
+        )
+        refused = request_target.refused_in_the_line(self.door, line, ended, ahead)
         return None if refused is None else _answer(*refused)
 
 

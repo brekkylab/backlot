@@ -64,6 +64,11 @@ cells. `sheets.copyTo` copies a sheet into a workbook the caller may write, titl
 workbook's language. `values:batchUpdateByDataFilter` and `values:batchClearByDataFilter` write and
 clear what DataFilters match.
 
+`documents.create` makes a blank Doc the same way, at the caller's My Drive root and shared with
+nobody. As on real, only the `title` it states is kept, from the body or from a `title` query
+parameter, which wins; a body, tabs or styles it states are read, checked against the `Document`
+message and every message it holds, a map's entries included, and dropped.
+
 `values.append` finds the table it writes below the way real does: from the last cell in the range
 holding a value, row by row, grown through every cell in the row or column next to it, and
 the values go on the row under it from its first column. `INSERT_ROWS` inserts whole rows there,

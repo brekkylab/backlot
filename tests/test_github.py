@@ -2656,8 +2656,9 @@ _COUNTED_TOKEN_SHAPED = [
 #: no operation, though a parsed URL ends the first at its decoded `#` and a `missing_param` row of
 #: the baseline spells the second's path; the next is a method GitHub does not publish on a path
 #: whose `PATCH` it does, which real answered a bad bearer with its 404; the two after it are paths
-#: under `/agents/automations/{}` that real answered 404 for every credential; and the last is no
-#: GitHub request at all.
+#: under `/agents/automations/{}` that real answered 404 for every credential; the six after them
+#: are paths outside the two agent families (`backlot.routers.github.under_an_agent_family`), which
+#: real answered 404 for every credential too; and the last two are no GitHub request at all.
 _UNSERVED_ROWS = [
     ("PATCH", "/github/repos/{org}/codebase", True, 405),
     ("DELETE", "/github/repos/{org}/codebase", True, 405),
@@ -2685,7 +2686,14 @@ _UNSERVED_ROWS = [
     ("PUT", "/github/orgs/{org}", False, 405),
     ("GET", "/github/agents/automations/1/nosuch", False, 404),
     ("GET", "/github/agents/automations/x/y/z", False, 404),
+    ("GET", "/github/agents//repos/{org}/codebase/nosuch", False, 404),
+    ("GET", "/github/agents/reposx/{org}/codebase", False, 404),
+    ("GET", "/github/agents/nosuchthing", False, 404),
+    ("GET", "/github/agents", False, 404),
+    ("GET", "/github/agentsx/repos/{org}/codebase/nosuch", False, 404),
+    ("GET", "/github/agents/tas\N{KELVIN SIGN}s/1/nosuch", False, 404),
     ("GET", "/zen", False, 404),
+    ("GET", "/agents/repos/{org}/codebase/nosuch", False, 404),
 ]
 
 
@@ -2704,6 +2712,10 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     no answer of real's: a bearer after a tab that resolves was not sent on the three writes, and
     `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
     with no `x-ratelimit-*`.
+
+    On the three refused rows under `/agents` no version is read
+    (`backlot.routers.github.honours_api_version`): their answers carry no echo, and a pinned
+    unknown version is no 400 and keeps the five `x-ratelimit-*`.
     """
     c, _ = gh_client
     url = path.format(org=gh_org)
@@ -2741,14 +2753,122 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert "x-github-api-version-selected" not in bad.headers, headers
         assert not any(name.startswith("x-ratelimit-") for name in bad.headers), headers
     basic = {"Authorization": "Basic Zm9vOmJhcg=="}
+    agents = url.startswith("/github/agents")
     for headers, answered in ((gh_admin_h, status), (basic, 401)):
         r = c.request(method, url, headers=headers)
         assert r.status_code == answered, headers
-        assert r.headers["x-github-api-version-selected"] == "2022-11-28", headers
         assert any(name.startswith("x-ratelimit-") for name in r.headers), headers
+        if agents:
+            # No version is read on an `/agents` path
+            # (`backlot.routers.github.honours_api_version`): no echo, and a pinned unknown version
+            # is the same answer with the five `x-ratelimit-*`.
+            assert "x-github-api-version-selected" not in r.headers, headers
+            unversioned = c.request(method, url, headers={**headers, **bad_version})
+            assert unversioned.status_code == answered, headers
+            assert "x-github-api-version-selected" not in unversioned.headers, headers
+            assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
+            continue
+        assert r.headers["x-github-api-version-selected"] == "2022-11-28", headers
         unversioned = c.request(method, url, headers={**headers, **bad_version})
         assert (unversioned.status_code, unversioned.json()["message"]) == (400, "Bad Request")
         assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
+
+
+#: (method, path, whether a request with no `Authorization` header is counted) on the paths
+#: `backlot.routers.github.under_an_agent_family` takes, each as real answered it on 2026-10-30.
+_AGENT_FAMILY_ROWS = [
+    ("GET", "/github/agents/repos/{org}/codebase/nosuch", True),
+    ("GET", "/github/agents/repos/{org}/codebase/automations/1/nosuch", True),
+    ("GET", "/github/agents/tasks/1/nosuch", True),
+    ("GET", "/github/agents/repos/{org}/codebase", True),
+    ("GET", "/github/agents/repos/{org}/codebase/", True),
+    ("GET", "/github/agents/repos/{org}", True),
+    ("GET", "/github/agents/repos", True),
+    ("GET", "/github/agents/tasks/", True),
+    ("GET", "/github/agents/repos/{org}//nosuch", True),
+    ("GET", "/github/Agents/repos/{org}/codebase/nosuch", True),
+    ("GET", "/github/agents/REPOS/{org}/codebase/nosuch", True),
+    ("HEAD", "/github/agents/repos/{org}/codebase/nosuch", True),
+    ("POST", "/github/agents/repos/{org}/codebase/nosuch", True),
+    ("PUT", "/github/agents/repos/{org}/codebase/nosuch", False),
+    ("PATCH", "/github/agents/repos/{org}/codebase/nosuch", False),
+    ("DELETE", "/github/agents/repos/{org}/codebase/nosuch", False),
+    ("OPTIONS", "/github/agents/repos/{org}/codebase/nosuch", False),
+]
+
+
+@pytest.mark.parametrize("method, path, counted", _AGENT_FAMILY_ROWS)
+def test_github_the_agent_families_ask_for_a_credential_on_any_path(
+    gh_client, gh_org, method, path, counted
+):
+    """Each row is refused for its credential as
+    `backlot.routers.github.refuse_a_credential_on_an_agent_path` records of real, with
+    `1999-01-01` pinned and without."""
+    c, _ = gh_client
+    url = path.format(org=gh_org)
+    bad_version = {"X-GitHub-Api-Version": "1999-01-01"}
+    no_credential = [({}, counted), (bad_version, counted)]
+    no_credential += [
+        ({"Authorization": value}, False)
+        for value in ("", "Digest x", "Bearer\tnope", "Basic Zm9vOmJhcg==")
+    ]
+    for headers, five in no_credential:
+        r = c.request(method, url, headers=headers)
+        assert (r.status_code, r.headers["content-type"]) == (
+            401,
+            "application/json; charset=utf-8",
+        ), headers
+        if method != "HEAD":
+            assert r.json()["message"] == "Requires authentication", headers
+        assert "x-github-api-version-selected" not in r.headers, headers
+        assert any(name.startswith("x-ratelimit-") for name in r.headers) == five, headers
+    for headers in (
+        {"Authorization": "Bearer nope"},
+        {"Authorization": "Bearer nope", **bad_version},
+    ):
+        bad = c.request(method, url, headers=headers)
+        assert bad.status_code == 401, headers
+        if method != "HEAD":
+            assert bad.json()["message"] == "Bad credentials", headers
+        assert not any(name.startswith("x-ratelimit-") for name in bad.headers), headers
+
+
+_COPILOT = (
+    b'{"code":"copilot_plan_required","error":"forbidden",'
+    b'"message":"This API requires a valid Copilot license."}\n'
+)
+_TEXT_404 = (404, "text/plain", b"404 page not found\n")
+
+
+#: (method, path, the status, media type and body a token that resolves is answered) on rows of
+#: `_AGENT_FAMILY_ROWS`, as real answered them on 2026-10-30.
+_AGENT_FAMILY_TOKEN_ROWS = [
+    *[(m, path, _TEXT_404) for m, path, _ in _AGENT_FAMILY_ROWS if m == "GET"],
+    *[
+        (m, "/github/agents/repos/{org}/codebase/nosuch", (403, "application/json", _COPILOT))
+        for m in ("POST", "PUT", "PATCH", "DELETE")
+    ],
+]
+
+
+@pytest.mark.parametrize("method, path, answer", _AGENT_FAMILY_TOKEN_ROWS)
+def test_github_a_token_on_an_agent_family_is_answered_by_its_backend(
+    gh_client, gh_admin_h, gh_org, method, path, answer
+):
+    """A token that resolves is answered as
+    `backlot.routers.github.refuse_a_credential_on_an_agent_path` records of real, the version
+    read by nobody, with the five `x-ratelimit-*` counted. Its own test, not columns of the one
+    above: `OPTIONS` and `HEAD` have no row here."""
+    c, _ = gh_client
+    url = path.format(org=gh_org)
+    for headers in (gh_admin_h, {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}):
+        r = c.request(method, url, headers=headers)
+        media = r.headers["content-type"].split(";")[0]
+        assert (r.status_code, media, r.content) == answer, headers
+        assert "x-github-api-version-selected" not in r.headers, headers
+        assert r.headers["x-ratelimit-resource"] == "core", headers
+    used = int(c.request(method, url, headers=gh_admin_h).headers["x-ratelimit-used"])
+    assert int(c.request(method, url, headers=gh_admin_h).headers["x-ratelimit-used"]) == used + 1
 
 
 _NO_CREDENTIAL = "Requires authentication"
@@ -6853,10 +6973,9 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
     seconds, the same on every answer inside a window; `GET /rate_limit` 200 with
     `resources.core`, `.search`, `.code_search` each `{limit, used, remaining, reset}` and `rate`
     beside them under `2022-11-28` and not under `2026-03-10`, carrying the five itself and not
-    counting (two reads in a row both `used: 0`); a bad bearer on it the 401. What real's route
-    reports is a fresh window rather than the headers' (see the route's docstring); Backlot reports
-    the headers'. Past the limit, real refuses (403, `used` pinned at `limit`) — see
-    `rate_limit_refusal` for that measurement, taken 2026-09-17.
+    counting (two reads in a row both `used: 0`); a bad bearer on it the 401. The windows the route
+    reports are the headers' (see the route's docstring). Past the limit, real refuses (403, `used`
+    pinned at `limit`) — see `rate_limit_refusal` for that measurement, taken 2026-09-17.
 
     Five more answers measured 2026-09-21, each against the function that carries its measurement:
     `SEARCH_RATE_LIMIT_WINDOW`, `rate_limit_window`, `refused_a_credential`, `rate_limit_caller`
@@ -7179,6 +7298,73 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         code_refused = c.get("/github/search/code", headers=h, params={"q": "extension:md"})
         assert code_refused.status_code == 403
         assert _ratelimit(code_refused)["resource"] == "code_search"
+
+
+@pytest.mark.parametrize(
+    "authorization, counted, resource, used",
+    [
+        ("Bearer {admin}", "search/issues?q=x", "search", 1),
+        ("Digest x", "search/issues?q=x", "search", 1),
+        (None, "repos/{org}/codebase", "core", 1),
+        ("Basic eDp5", "search/code?q=x", "code_search", 0),
+    ],
+)
+def test_github_a_rate_limit_read_opens_no_window(
+    gh_client, gh_org, gh_user_tokens, authorization, counted, resource, used
+):
+    """Two reads before anything is counted each answer a full window from themselves, the request
+    after them, counted or refused, opens the window the next read counts down to, and a read once
+    that window's time is up opens no new one (`RateLimitWindows.status` and
+    `RateLimitWindows.opened` have the measurements)."""
+    from backlot.routers import github as gh
+
+    c, _ = gh_client
+    t = [2_000_000_000]
+    c.app.state.github_rate_limits = gh.RateLimitWindows(clock=lambda: t[0])
+    h = {}
+    if authorization is not None:
+        h["Authorization"] = authorization.format(admin=gh_user_tokens["admin"])
+    length = gh.RATE_LIMITS[resource].window
+
+    def read():
+        window = c.get("/github/rate_limit", headers=h).json()["resources"][resource]
+        return window["used"], window["reset"] - t[0]
+
+    assert read() == (0, length)
+    t[0] += 3
+    assert read() == (0, length)
+    t[0] += 3
+    five = _ratelimit(c.get(f"/github/{counted.format(org=gh_org)}", headers=h))
+    assert (five["used"], int(five["reset"]) - t[0]) == (str(used), length)
+    t[0] += 3
+    assert read() == (used, length - 3)
+    t[0] += length
+    assert read() == (0, length)
+    t[0] += 3
+    assert read() == (0, length)
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("DELETE", "installation/token"),
+        ("PATCH", "repos/{org}/codebase"),
+        ("PUT", "user/following/octocat"),
+    ],
+)
+def test_github_an_answer_that_counts_nothing_opens_no_window(gh_client, gh_org, method, path):
+    """The read after each still answers `core` a full window from itself (see
+    `RateLimitWindows.status`)."""
+    from backlot.routers import github as gh
+
+    c, _ = gh_client
+    t = [2_000_000_000]
+    c.app.state.github_rate_limits = gh.RateLimitWindows(clock=lambda: t[0])
+    h = {"Authorization": "Digest x"}
+    assert c.request(method, f"/github/{path.format(org=gh_org)}", headers=h).status_code == 401
+    t[0] += 3
+    core = c.get("/github/rate_limit", headers=h).json()["resources"]["core"]
+    assert (core["used"], core["reset"] - t[0]) == (0, gh.RATE_LIMIT_WINDOW)
 
 
 def test_github_rate_limit_refuses_an_anonymous_caller_too_and_the_switch_turns_it_off(
@@ -7593,7 +7779,7 @@ def test_github_code_search_answers_an_unparseable_caller_from_its_zero_window(
             "403",
         )
     after = c.get("/github/rate_limit", headers={"Authorization": value}).json()["resources"]
-    assert after["core"] == core
+    assert after["core"]["used"] == core["used"]
 
 
 @pytest.mark.parametrize(

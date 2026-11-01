@@ -46,6 +46,9 @@ dependencies = [
     # (`x-amz-checksum-xxhash64`, `-xxhash3`, `-xxhash128`), which real compares with the body; the
     # standard library has none of them.
     "xxhash>=3.0",
+    # Brotli, which Linear's `body-parser` 2.x decompresses a `Content-Encoding: br` body with
+    # (`backlot.graphql.body`); the standard library has no Brotli decoder.
+    "brotli>=1.2",
     # SigV4a's ECDSA over P-256 (`backlot.sigv4a`), which the standard library has none of either;
     # `pyjwt[crypto]` above installs it already, and this names the import the S3 router makes.
     "cryptography>=3.4",

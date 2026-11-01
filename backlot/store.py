@@ -2723,8 +2723,10 @@ def _drive_trash(sql: str, params: list, trash) -> str:
 
 # Real Drive never reports a native Docs-editors file (a Doc, Sheet or Slide deck) under 1024 bytes:
 # measured 2026-10-26 against Drive v3 across 80 native files, the smallest `size` was 1024 and an
-# empty spreadsheet reported 1024 too.
+# empty spreadsheet reported 1024 too. A blank Doc is the exception: measured 2026-10-29, a Doc
+# `documents.create` made reported a `size` and `quotaBytesUsed` of 1, 2 and 20 seconds on.
 DRIVE_NATIVE_MIN_BYTES = 1024
+DRIVE_BLANK_DOC_BYTES = 1
 # The subtypes that floor applies to, and the subtype a Drive row stored without one is served as.
 DRIVE_NATIVE_SUBTYPES = ("document", "spreadsheet", "presentation")
 DRIVE_DEFAULT_SUBTYPE = "document"
@@ -2732,10 +2734,13 @@ DRIVE_DEFAULT_SUBTYPE = "document"
 
 def drive_file_bytes(subtype: str | None, content: str | None) -> int:
     """The ``size`` and ``quotaBytesUsed`` a non-folder Drive file serves: its UTF-8 byte length,
-    floored at :data:`DRIVE_NATIVE_MIN_BYTES` for a native file. :func:`drive_usage_bytes` sums the
-    same in SQL."""
+    floored at :data:`DRIVE_NATIVE_MIN_BYTES` for a native file other than a blank Doc, which is
+    :data:`DRIVE_BLANK_DOC_BYTES`. :func:`drive_usage_bytes` sums the same in SQL."""
     nbytes = len((content or "").encode("utf-8"))
-    if (subtype or DRIVE_DEFAULT_SUBTYPE) in DRIVE_NATIVE_SUBTYPES:
+    subtype = subtype or DRIVE_DEFAULT_SUBTYPE
+    if subtype == "document" and not nbytes:
+        return DRIVE_BLANK_DOC_BYTES
+    if subtype in DRIVE_NATIVE_SUBTYPES:
         return max(nbytes, DRIVE_NATIVE_MIN_BYTES)
     return nbytes
 
@@ -2749,13 +2754,14 @@ def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
     Without the cast a corpus holding any non-ASCII text reports a quota smaller than the sum of
     the sizes the same caller reads out of ``files.list`` — a divergence no client could explain.
 
-    A native file counts at least :data:`DRIVE_NATIVE_MIN_BYTES`, the floor its ``size`` carries,
-    so the quota stays the sum of the sizes ``files.list`` serves."""
+    A native file counts what its ``size`` carries (:func:`drive_file_bytes`), so the quota stays
+    the sum of the sizes ``files.list`` serves."""
     raw = "COALESCE(length(CAST(content AS BLOB)), 0)"
+    subtype = f"COALESCE(NULLIF(subtype, ''), '{DRIVE_DEFAULT_SUBTYPE}')"
     native = ", ".join(f"'{s}'" for s in DRIVE_NATIVE_SUBTYPES)
     nbytes = (
-        f"(CASE WHEN COALESCE(NULLIF(subtype, ''), '{DRIVE_DEFAULT_SUBTYPE}') IN ({native}) "
-        f"THEN MAX({raw}, {DRIVE_NATIVE_MIN_BYTES}) ELSE {raw} END)"
+        f"(CASE WHEN {subtype} = 'document' AND {raw} = 0 THEN {DRIVE_BLANK_DOC_BYTES} "
+        f"WHEN {subtype} IN ({native}) THEN MAX({raw}, {DRIVE_NATIVE_MIN_BYTES}) ELSE {raw} END)"
     )
     sql = (
         f"SELECT COALESCE(SUM({nbytes}), 0), "
@@ -3045,6 +3051,13 @@ def fireflies_transcript_by_id(conn, transcript_id, visible_ids=None) -> sqlite3
     sql = "SELECT * FROM fireflies_transcripts WHERE id = ?"
     clause, cparams = _acl_clause("fireflies", visible_ids=visible_ids)
     return conn.execute(sql + clause, [transcript_id] + cparams).fetchone()
+
+
+def fireflies_channel_exists(conn, channel_id, visible_ids=None) -> bool:
+    """Whether channel ``channel_id`` holds a transcript ``visible_ids`` lets the caller read."""
+    clause, cparams = _acl_clause("fireflies", visible_ids=visible_ids)
+    sql = "SELECT 1 FROM fireflies_transcripts WHERE channel = ?"
+    return conn.execute(sql + clause + " LIMIT 1", [channel_id] + cparams).fetchone() is not None
 
 
 def fireflies_speakers(conn, transcript_ids) -> dict[str, list[sqlite3.Row]]:
@@ -3855,12 +3868,15 @@ def list_slack_top_level(
     *,
     newest_first=False,
 ) -> list[sqlite3.Row]:
-    """Top-level (thread-root/standalone) messages in a channel, oldest first unless
-    ``newest_first``. ``ts_lo``/``ts_hi`` bound ``created_ts`` for a time-windowed
+    """Top-level (thread-root/standalone) messages in a channel, and the replies also sent to it
+    (`thread_broadcast`), each at its own ts, oldest first unless ``newest_first``: measured
+    against slack.com on 2026-10-30, history listed a broadcast between its root and a later
+    post, on `limit=1` pages too, and a deleted one not at all, with no placeholder and its root
+    one reply fewer. ``ts_lo``/``ts_hi`` bound ``created_ts`` for a time-windowed
     conversations.history, so a day window is an indexed range rather than the whole channel
     filtered in Python. Widen the bounds by ±1s — the public ts carries a sub-second fraction — and
     re-check the exact float window in the caller."""
-    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
+    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND (thread_seq = 0 OR subtype = 'thread_broadcast')"
     params: list = [channel]
     if ts_lo is not None or ts_hi is not None:
         lo = ts_lo if ts_lo is not None else -(1 << 62)
@@ -3874,9 +3890,7 @@ def list_slack_top_level(
 
 
 def count_slack_top_level(conn, channel, visible_ids=None) -> int:
-    sql = (
-        f"SELECT COUNT(*) FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
-    )
+    sql = f"SELECT COUNT(*) FROM {merged_source(conn, 'slack')} WHERE channel = ? AND (thread_seq = 0 OR subtype = 'thread_broadcast')"
     params: list = [channel]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause

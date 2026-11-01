@@ -2,26 +2,13 @@
 
 from __future__ import annotations
 
-import importlib.util
 import re
-from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
+from tests._helpers import script_module
 
-
-def _wall():
-    """`scripts/contributors_svg.py`, imported by path since `scripts/` is no package."""
-    spec = importlib.util.spec_from_file_location(
-        "scripts.contributors_svg", REPO / "scripts" / "contributors_svg.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-wall = _wall()
+wall = script_module("contributors_svg")
 
 
 # Account ids in an order that is neither the logins' nor the commits'.

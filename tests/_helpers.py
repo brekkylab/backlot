@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import importlib.util
 import json
 import os
 import re
+import socket
 import sys
 import threading
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -268,6 +271,18 @@ def python_child_env(**extra: str) -> dict[str, str]:
     return {**os.environ, "PYTHONIOENCODING": "utf-8", **extra}
 
 
+def script_module(name: str):
+    """`scripts/<name>.py` as a module, loaded by path since `scripts/` is not a package. Named
+    `scripts.<name>` so that pyproject.toml's EncodingWarning filter, which goes by module name,
+    reaches it."""
+    spec = importlib.util.spec_from_file_location(
+        f"scripts.{name}", Path(__file__).resolve().parent.parent / "scripts" / f"{name}.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 # Delivering a POSIX signal, which Windows cannot: it has no SIGHUP and no `signal.pthread_kill`,
 # and its `Popen.send_signal` takes SIGTERM (sent as `Popen.terminate()`), CTRL_C_EVENT and
 # CTRL_BREAK_EVENT, and refuses the rest.
@@ -319,6 +334,60 @@ class WithTheKey(bytes):
         return self
 
 
+def read_answer(reader) -> tuple[int, dict[str, str], bytes] | None:
+    """One answer off ``reader``, by its `Content-Length` or its chunks, or ``None`` where the
+    connection closed ahead of it."""
+    if not (status_line := reader.readline()):
+        return None
+    headers = {}
+    while (line := reader.readline()) not in (b"\r\n", b""):
+        name, _, value = line.decode("latin-1").partition(":")
+        headers[name.strip().lower()] = value.strip()
+    if headers.get("transfer-encoding") == "chunked":
+        body = b""
+        while size := int(reader.readline().split(b";")[0], 16):
+            body += reader.read(size)
+            reader.readline()
+        reader.readline()
+    else:
+        body = reader.read(int(headers.get("content-length", 0)))
+    return int(status_line.split()[1]), headers, body
+
+
+def raw_request(
+    method: str | bytes,
+    target: str | bytes,
+    authorization: str | bytes | None = None,
+    *,
+    times: int = 1,
+    headers: bytes = b"",
+    body: bytes | None = None,
+) -> bytes:
+    """An HTTP/1.1 request for :func:`raw_exchange`: ``target`` as written, `Host: x`, the
+    `Authorization` value ``times`` times, ``headers`` (whole lines), and with a ``body`` its
+    `Content-Type: application/json` and `Content-Length` ahead of it. A `str` is sent as its
+    latin-1 bytes."""
+    method, target, authorization = (
+        v.encode("latin-1") if isinstance(v, str) else v for v in (method, target, authorization)
+    )
+    request = b"%s %s HTTP/1.1\r\nHost: x\r\n" % (method, target)
+    if authorization is not None:
+        request += b"Authorization: %s\r\n" % authorization * times
+    request += headers
+    if body is not None:
+        request += b"Content-Type: application/json\r\nContent-Length: %d\r\n" % len(body)
+    return request + b"\r\n" + (body or b"")
+
+
+def raw_exchange(base_url: str, request: bytes) -> tuple[int, dict[str, str], bytes]:
+    """``request`` written as it is to the server at ``base_url``, and its answer: for a target a
+    client library would resolve, escape or refuse before sending it."""
+    url = urllib.parse.urlsplit(base_url)
+    with socket.create_connection((url.hostname, url.port), timeout=10) as c:
+        c.sendall(request)
+        return read_answer(c.makefile("rb"))
+
+
 def sent_as(client, method: str, path: str, headers, content=None, bare: bool = False):
     """``method`` on ``path`` with each header's latin-1 bytes as sent, ``headers`` a mapping or a
     sequence of pairs, which can name a header twice. The TestClient re-encodes a header's bytes
@@ -346,6 +415,20 @@ def sent_as(client, method: str, path: str, headers, content=None, bare: bool = 
     return asyncio.run(send())
 
 
+class Matching:
+    """A header value a table expects by its shape: equal to each string ``pattern`` matches in
+    full, where the value is the vendor's own each time (an id, a count, a moment)."""
+
+    def __init__(self, pattern: str):
+        self.pattern = re.compile(pattern)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str) and self.pattern.fullmatch(other) is not None
+
+    def __repr__(self) -> str:
+        return f"Matching({self.pattern.pattern!r})"
+
+
 class Chunked(bytes):
     """A body :func:`sent_as` sends in chunks, with no `Content-Length`."""
 
@@ -355,7 +438,8 @@ class Chunked(bytes):
 
 def http_row(method, target, sent, body, credential, status, media_type, answer, id, answered=None):
     """A row of an HTTP layer's table: the request, the credential, and the answer, ``answered``
-    naming headers on it."""
+    naming headers on it. ``target`` is a path after the vendor's prefix where it starts with a
+    slash, and what follows the endpoint's path where it does not."""
     return pytest.param(
         method, target, sent, body, credential, status, media_type, answer, answered or {}, id=id
     )

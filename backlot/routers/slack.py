@@ -178,7 +178,12 @@ JSON_BODY_METHODS = frozenset(
 # The write surface. Each lists what Backlot actually READS, the way every other `_P_` here does:
 # a param the vendor documents but Backlot ignores stays an acknowledged gap in the fidelity
 # baseline rather than a declaration that promises behaviour it does not have.
-_P_POST_MESSAGE = [qp("channel", required=True), qp("text", required=True), qp("thread_ts")]
+_P_POST_MESSAGE = [
+    qp("channel", required=True),
+    qp("text", required=True),
+    qp("thread_ts"),
+    qp("reply_broadcast", "boolean"),
+]
 # `text` is NOT required here, where `chat.postMessage` requires it (`chat_post_ephemeral`).
 _P_POST_EPHEMERAL = [qp("channel", required=True), qp("user", required=True), qp("text")]
 _P_UPDATE = [qp("channel", required=True), qp("ts", required=True), qp("text", required=True)]
@@ -1494,7 +1499,7 @@ async def conversations_history(request: Request):
         # Measured against slack.com/api on 2026-10-18: only absent, empty, "0" and
         # case-insensitive "false" exclude the bound. Other strings, including "00", "no"
         # and whitespace-padded "false", include it. Repeated query values use the last one.
-        inclusive = (_param(request, "inclusive") or "").lower() not in ("", "0", "false")
+        inclusive = _flag(request, "inclusive")
 
         def _ts_to_us(ts_str: str) -> int:
             """Convert a Slack ts string "SSSSSSSSSS.MMMMMM" to total microseconds."""
@@ -1559,6 +1564,7 @@ async def conversations_history(request: Request):
                 subscribed=_subscribed(caller, r["author_email"], ru),
             )
         )
+        _with_root(conn, name, ids, caller, r, messages[-1])
     cursor = next_cursor(offset, len(rows), total)
     body = {
         "ok": True,
@@ -1652,6 +1658,8 @@ async def conversations_replies(request: Request):
         )
         for x in rows
     ]
+    for x, m in zip(rows, messages, strict=True):
+        _with_root(conn, name, ids, caller, x, m)
     return {"ok": True, "messages": messages, "has_more": False}
 
 
@@ -2150,10 +2158,9 @@ async def chat_post_message(request: Request):
     `blocks` the message reads back with are composed from its `text` (`synth.slack_blocks`), as
     a corpus message's are, rather than being the ones the caller sent. Arguments the vendor
     documents and Backlot ignores outright: `as_user`, `username`, `icon_emoji`, `icon_url`,
-    `reply_broadcast`, `unfurl_links`, `unfurl_media`, `parse`, `link_names`, `mrkdwn`.
-    `backlot diff` cannot see them -- it compares query parameters and Slack's spec declares
-    these as form fields (see `backlot/fidelity/operations.py`) -- so this list is the record
-    until that gap is closed.
+    `unfurl_links`, `unfurl_media`, `parse`, `link_names`, `mrkdwn`. `backlot diff` cannot see
+    them -- it compares query parameters and Slack's spec declares these as form fields (see
+    `backlot/fidelity/operations.py`) -- so this list is the record until that gap is closed.
     """
     conn = auth.conn(request)
     caller, err = _caller_or_error(request)
@@ -2203,7 +2210,12 @@ async def chat_post_message(request: Request):
             "created_ts": now,
             "thread_ts": thread_ts,
             "thread_seq": thread_seq,
-            "subtype": None,
+            # The flag counts beside any `thread_ts` sent: measured against slack.com on 2026-10-30,
+            # `0`, an empty one and one naming no message each posted the message top-level with
+            # this subtype all the same, and a post with no `thread_ts` had no subtype.
+            "subtype": "thread_broadcast"
+            if _param(request, "thread_ts") is not None and _flag(request, "reply_broadcast")
+            else None,
         },
     )
     row = store.document_by_key(conn, "slack", (name, ts))
@@ -2211,7 +2223,7 @@ async def chat_post_message(request: Request):
         "ok": True,
         "channel": synth.slack_channel_id(name),
         "ts": ts,
-        "message": _message(row),
+        "message": _with_root(conn, name, ids, caller, row, _message(row)),
     }
 
 
@@ -2349,26 +2361,30 @@ async def chat_update(request: Request):
     author = _writer(caller)
     store.patch_document(conn, "slack", (name, ts), "content", text)
     # Real Slack stamps an edited message with `edited: {user, ts}`, which is what a client renders
-    # "(edited)" from. `_message` already serves the column, so filling it is the whole of it.
+    # "(edited)" from. `_message` already serves the column, so filling it is the whole of it. A
+    # `thread_broadcast` gets none: measured against slack.com on 2026-10-30, an edited one
+    # carried no `edited` in the echo, in history or in replies, over a user and a bot token.
     #
     # The ADDRESS is stored, not the id: `_edited` renders one from the other when it serves the
     # message, so an id here would be rendered a second time — the same representation a corpus
     # states and `reactions.users` keeps.
-    store.patch_document(
-        conn,
-        "slack",
-        (name, ts),
-        "edited",
-        json.dumps(
-            {"user": author, "ts": synth.slack_fmt_ts(int(time.time()), f"edit:{name}:{ts}")}
-        ),
-    )
+    if row["subtype"] != "thread_broadcast":
+        store.patch_document(
+            conn,
+            "slack",
+            (name, ts),
+            "edited",
+            json.dumps(
+                {"user": author, "ts": synth.slack_fmt_ts(int(time.time()), f"edit:{name}:{ts}")}
+            ),
+        )
     updated = store.document_by_key(conn, "slack", (name, ts))
     # The message an edit echoes is not the message a read answers: measured against slack.com on
     # 2026-10-21, `chat.update` carried neither `ts` nor `reactions` for a threaded message with a
     # reaction, where `conversations.replies` answered the same message carrying both. `ts` is on
     # the answer beside it either way.
     echoed = {k: v for k, v in _message(updated).items() if k not in ("ts", "reactions")}
+    _with_root(conn, name, auth.visible_ids(request, caller), caller, updated, echoed)
     return {
         "ok": True,
         "channel": synth.slack_channel_id(name),
@@ -2749,8 +2765,8 @@ async def reactions_get(request: Request):
     Errors quoted from the spec's ``default`` response: `bad_timestamp`, `file_not_found`,
     `file_comment_not_found`, `message_not_found`, `no_item_specified`.
 
-    The message is built by `_message`, the same builder conversations.history uses, so a client
-    that reads a reaction here and the message there cannot get two shapes for one message.
+    The message is built by `_message` and `_with_root`, as conversations.history builds it, so a
+    client that reads a reaction here and the message there cannot get two shapes for one message.
     """
     conn = auth.conn(request)
     caller, err = _caller_or_error(request)
@@ -2761,6 +2777,7 @@ async def reactions_get(request: Request):
     )
     if err is not None:
         return err
+    message = _with_root(conn, name, auth.visible_ids(request, caller), caller, row, _message(row))
     return {
         "ok": True,
         "type": "message",
@@ -2769,7 +2786,7 @@ async def reactions_get(request: Request):
         # that answers one: measured against slack.com on 2026-10-21, `conversations.history` and
         # `conversations.replies` carry none. So it goes on at these two call sites rather than
         # in `_message`, which all of them share.
-        "message": _message(row) | {"permalink": _permalink(name, row)},
+        "message": message | {"permalink": _permalink(name, row)},
     }
 
 
@@ -2845,7 +2862,8 @@ async def reactions_list(request: Request):
             {
                 "type": "message",
                 "channel": synth.slack_channel_id(channel),
-                "message": _message(row) | {"permalink": _permalink(channel, row)},
+                "message": _with_root(conn, channel, ids, caller, row, _message(row))
+                | {"permalink": _permalink(channel, row)},
             }
         )
     page = items[offset : offset + limit]
@@ -3005,6 +3023,40 @@ def _member_count(request: Request, conn, name: str) -> int:
     return store.count_slack_channel_members(conn, name)
 
 
+def _flag(request: Request, key: str) -> bool:
+    """A boolean argument as `conversations_history` measured `inclusive`: absent, empty, `0` and
+    `false` in any case are off, and every other value is on. `reply_broadcast` read the same as a
+    form field on slack.com on 2026-10-30, `00`, `no`, `null` and ` false` among the values on."""
+    return (_param(request, key) or "").lower() not in ("", "0", "false")
+
+
+def _with_root(conn, name: str, ids, caller: Caller, row, m: dict) -> dict:
+    """Add `root` to a `thread_broadcast` in a thread: its thread's root, as history lists it.
+
+    Measured against slack.com on 2026-10-30: the `chat.postMessage` and `chat.update` echoes,
+    `conversations.history`, `conversations.replies`, `reactions.get` and `reactions.list` all
+    carry it, with the root's `reply_count`, `reply_users` and `latest_reply`, and a broadcast
+    posted top-level (`chat_post_message`) carries none. The broadcast is one of the root's
+    replies, so `reply_count` is at least 1 here.
+    """
+    if row["subtype"] != "thread_broadcast":
+        return m
+    root = store.document_by_key(conn, "slack", (name, row["thread_ts"]), ids)
+    if root is None:
+        return m
+    rc = store.slack_reply_count(conn, name, root["ts"], ids)
+    ru = store.slack_reply_authors(conn, name, root["ts"], ids)
+    m["root"] = _message(
+        root,
+        reply_count=rc,
+        latest_reply=store.slack_latest_reply_ts(conn, name, root["ts"], ids),
+        reply_users=[_uid(e) for e in ru[:5]],
+        reply_users_count=len(ru),
+        subscribed=_subscribed(caller, root["author_email"], ru),
+    )
+    return m
+
+
 def _subscribed(caller: Caller, root_author: str | None, reply_authors) -> bool:
     """Whether the CALLER follows this thread — Slack subscribes you to one you started or replied
     in. An admin/service token is not a person and follows nothing, the same reasoning that makes
@@ -3047,7 +3099,7 @@ def _message(
         # app is what posted it either way. It is not a subtype that says so: a bot-token post
         # has none. A corpus message stands for one a Slack client posted and carries none.
         m["bot_id"] = BOT_ID
-    if not row["subtype"]:
+    if row["subtype"] in (None, "thread_broadcast"):
         # `client_msg_id` is minted by the CLIENT that posted, and `blocks` is what that client
         # composed, so neither belongs on a message Slack itself generated — measured: a
         # channel_join carries only type/user/text/ts/subtype. `team` is left on both: it is
@@ -3089,6 +3141,12 @@ def _message(
         m["parent_user_id"] = SLACKBOT_ID
         m.pop("team", None)
         m.pop("bot_id", None)
+    broadcast = row["subtype"] == "thread_broadcast"
+    if broadcast:
+        # Measured against slack.com on 2026-10-30: a `thread_broadcast` carries no `team`, one
+        # posted top-level included, and a reply among them no `parent_user_id`, in each method
+        # `_with_root` names.
+        m.pop("team", None)
     if row["thread_ts"]:  # part of a thread
         m["thread_ts"] = row["thread_ts"]
         if row["thread_seq"] == 0 and reply_count > 0:  # thread root
@@ -3109,7 +3167,7 @@ def _message(
                     "is_locked": False,
                 }
             )
-        elif row["thread_seq"] > 0 and parent_user_id:  # a reply
+        elif row["thread_seq"] > 0 and parent_user_id and not broadcast:  # a reply
             m["parent_user_id"] = parent_user_id
     return m
 

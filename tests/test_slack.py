@@ -4286,6 +4286,7 @@ def _url_safe(raw: str) -> str:
         (lambda ts: _b64(b"next_ts: -1"), {"latest": 1}, 2, [5, 4]),
         (lambda ts: _b64(b"next_ts:-2"), {}, 2, []),
         (lambda ts: _b64(f"next_ts:{2**63 - 1}".encode()), {}, 2, []),
+        (lambda ts: _b64(f"next_ts:{2**64}".encode()), {}, 2, []),
         (lambda ts: _b64(b"next_ts:" + b"9" * 20), {}, 2, []),
         (lambda ts: _b64(b"next_ts:" + b"9" * 5000), {}, 2, []),
         (lambda ts: _b64(b"next_ts:-1"), {"oldest": 4}, 2, [1, 0]),

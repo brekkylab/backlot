@@ -87,6 +87,22 @@ jobs:
           backlot diff --source ${{ matrix.source }} 2>&1 | tee report.txt
           echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
+      # The newest @linear/sdk, which the Linear example's pin reaches only once someone moves it.
+      # A fragment the script names, its exit 1, goes on this source's issue below with the
+      # comparison's report. Its exit 2, which an install that fails is recorded as too, leaves the
+      # issue as it was. Either fails the run.
+      - name: Check the newest @linear/sdk's fragments
+        id: fragments
+        if: matrix.source == 'linear'
+        run: |
+          set +e
+          if ! npm install --prefix "$RUNNER_TEMP/linear-sdk" --no-save --ignore-scripts --no-audit --no-fund @linear/sdk@latest; then
+            echo "status=2" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python scripts/linear_sdk_fragments.py "$RUNNER_TEMP/linear-sdk/node_modules/@linear/sdk/dist/index.mjs" | tee fragments.txt
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
       # Exit 2 is "we could not ask" — an expired key, a vendor outage, a network blip. That is not
       # a fidelity finding and must not open a bug against Backlot.
       - name: Report an unreadable vendor contract
@@ -105,12 +121,20 @@ jobs:
           cat report.txt
           exit 1
 
+      # On a divergence or a fragment the script above names. A run where the comparison or the
+      # script could not answer leaves the issue as it was, rather than rewrite the body without
+      # that one's findings.
       - name: Report the divergence on this source's issue
-        if: steps.diff.outputs.status == '1'
+        if: >-
+          (steps.diff.outputs.status == '1' || steps.fragments.outputs.status == '1')
+          && (steps.diff.outputs.status == '0' || steps.diff.outputs.status == '1')
+          && steps.fragments.outputs.status != '2'
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE: ${{ matrix.source }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DIFF_STATUS: ${{ steps.diff.outputs.status }}
+          FRAGMENTS_STATUS: ${{ steps.fragments.outputs.status }}
         run: |
           PREFIX="Fidelity: $SOURCE diverges from its vendor"
           export PREFIX
@@ -132,19 +156,36 @@ jobs:
           closed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=closed&labels=fidelity&creator=github-actions%5Bbot%5D&per_page=100" \
             --jq '.[] | select(.pull_request == null and (.title | startswith(env.PREFIX))) | .number')
           previous=$(printf '%s\n' "$closed" | sort -n | tail -n 1)
+          # The script's lines after the count it prints first: the count changes whenever a
+          # release of the SDK adds or drops a fragment, and the body has to change only when the
+          # fragments named do. They go first, so the cap below falls on the comparison's report.
+          parts=()
+          if [ "$FRAGMENTS_STATUS" = 1 ]; then
+            parts+=("$(tail -n +2 fragments.txt)")
+          fi
+          if [ "$DIFF_STATUS" = 1 ]; then
+            parts+=("$(cat report.txt)")
+          fi
           # The API refuses a body over 65536 characters, and this step runs under `bash -e`, so
           # that refusal takes the step down: the job would go red with no issue filed and the
           # report only in the run log. A vendor restructuring its document turns a whole baseline
           # into new findings at once — measured against an empty baseline, jira's report is 135k
           # characters and github's 134k — so the report is capped well under the limit.
-          report=$(cat report.txt)
+          report=$(printf '%s\n\n' "${parts[@]}")
           if [ "${#report}" -gt 55000 ]; then
             # Sliced, not `head -c`: the test above counts characters, and cutting bytes leaves
             # half of a multibyte character at the seam — the report is full of `·` and `…`.
             report="$(printf '%s\n… truncated at 55000 of %d characters. The whole report is in the run log: %s' \
               "${report:0:55000}" "${#report}" "$RUN_URL")"
           fi
-          intro="\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge, or entries in it for divergences the vendor no longer has. Each new one is either a bug in Backlot or a deliberate gap; \`backlot diff --source $SOURCE --update-baseline\` writes the entry for a gap and drops a stale one, and a note saying why a gap is deliberate is added by hand in the review that follows. This body is the latest scheduled run's report, rewritten in place. Closing this issue keeps it as the account of what was triaged; a run that still diverges opens a new one."
+          intro=""
+          if [ "$FRAGMENTS_STATUS" = 1 ]; then
+            intro="\`scripts/linear_sdk_fragments.py\`, run over the newest \`@linear/sdk\`, names each fragment that selects a field the schema Backlot serves does not declare (its docstring says which fragments it checks). It keeps no baseline: a line goes away once \`backlot/graphql/linear.graphql\` declares the field. "
+          fi
+          if [ "$DIFF_STATUS" = 1 ]; then
+            intro="$intro\`backlot diff --source $SOURCE\` reports divergences the baseline does not acknowledge, or entries in it for divergences the vendor no longer has. Each new one is either a bug in Backlot or a deliberate gap; \`backlot diff --source $SOURCE --update-baseline\` writes the entry for a gap and drops a stale one, and a note saying why a gap is deliberate is added by hand in the review that follows. "
+          fi
+          intro="${intro}This body is the latest scheduled run's report, rewritten in place. Closing this issue keeps it as the account of what was triaged; a run that still diverges opens a new one."
           if [ -n "$previous" ]; then
             intro="$intro Previously reported in #$previous."
           fi
@@ -161,7 +202,9 @@ jobs:
           fi
 
       - name: Fail the run so the schedule shows red
-        if: steps.diff.outputs.status == '1'
+        if: >-
+          steps.diff.outputs.status == '1'
+          || (steps.fragments.outputs.status != '' && steps.fragments.outputs.status != '0')
         run: exit 1
 
       # backlot/data/jira_unserved.json is written from Jira's documents, so a change to them makes

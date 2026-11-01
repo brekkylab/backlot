@@ -20,14 +20,24 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.datastructures import URL, Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, DispatchFunction
 from starlette.routing import BaseRoute, Match
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from backlot import auth, errors, openapi, overlay, request_target, store, synth, telemetry
+from backlot import (
+    auth,
+    errors,
+    express_http,
+    openapi,
+    overlay,
+    request_target,
+    store,
+    synth,
+    telemetry,
+)
 from backlot.acl import Acl
 from backlot.config import get_settings
 from backlot.errors import msgraph as msgraph_errors
@@ -43,6 +53,7 @@ from backlot.routers import (
     notion,
     oauth,
     s3,
+    sent_path,
     slack,
 )
 from backlot.telemetry import naming, recorder
@@ -313,8 +324,10 @@ def _some_github_route_matches(scope: Scope) -> bool:
 
 def _github_routes(scope: Scope) -> bool:
     """Whether real routes this scope: some mounted route matches its path, whatever the method
-    (:func:`_some_github_route_matches`), or its method and path are an operation GitHub publishes
-    and no route here serves (``backlot.routers.github.is_an_unserved_operation``).
+    (:func:`_some_github_route_matches`), its method and path are an operation GitHub publishes
+    and no route here serves (``backlot.routers.github.is_an_unserved_operation``), or its path is
+    under an agent family (``backlot.routers.github.under_an_agent_family``), which real's agents
+    backend answers itself.
 
     A 404 for a path real does not route carries no version echo, and carries the five
     `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the same
@@ -329,8 +342,10 @@ def _github_routes(scope: Scope) -> bool:
     so what real reads here is that a credential arrived, not that one resolved, where the same
     `Basic` value, which names no token, on a route that matches is served and counted.
     """
-    return _some_github_route_matches(scope) or github.is_an_unserved_operation(
-        scope["method"], scope["path"]
+    return (
+        _some_github_route_matches(scope)
+        or github.is_an_unserved_operation(scope["method"], scope["path"])
+        or github.under_an_agent_family(scope["path"])
     )
 
 
@@ -395,6 +410,29 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
     except StarletteHTTPException as exc:
         return await _http_exception_handler(request, exc)
     return await call_next(request)
+
+
+@_middleware(
+    lambda scope: (
+        github.under_an_agent_family(scope["path"])
+        and not github.is_an_unserved_operation(scope["method"], scope["path"])
+    )
+)
+async def refuse_a_credential_on_an_agent_path(request: Request, call_next):
+    """A path under one of the agent families is answered ahead of the router as real's agents
+    backend answers it (``backlot.routers.github.refuse_a_credential_on_an_agent_path``), on any
+    path, published or not; an `OPTIONS` whose credential resolves goes on to the router.
+
+    Registered after `refuse_an_unserved_github_operation`, which keeps the paths an operation of
+    the baseline publishes on a family, and before the version echo and the rate-limit headers, so
+    the answers leave through them: no echo, and the five `x-ratelimit-*` as ``_github_routes``
+    and the state :func:`github.refused_an_unserved_operation_uncounted` reads give them.
+    """
+    try:
+        answer = await github.refuse_a_credential_on_an_agent_path(request)
+    except StarletteHTTPException as exc:
+        return await _http_exception_handler(request, exc)
+    return answer if answer is not None else await call_next(request)
 
 
 @_middleware(
@@ -467,7 +505,8 @@ async def echo_github_api_version(request: Request, call_next):
     caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
     (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
     ``DELETE /installation/token``'s 401 is the one of those that echoes, as a served route's does
-    (:func:`github.refused_an_unserved_operation_reported`).
+    (:func:`github.refused_an_unserved_operation_reported`). Nor does anything on an agent path:
+    real reads the version header on none of the `/agents` answers (``github.honours_api_version``).
     """
     response = await call_next(request)
     if (
@@ -663,17 +702,22 @@ async def read_a_notion_body_as_express_does(request: Request, call_next):
     lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
 )
 async def report_notion_etag(request: Request, call_next):
-    """Put ``notion.weak_etag``, computed over its body, on each JSON Notion answer, and answer a
-    request ``notion.not_modified`` finds fresh with a 304 that carries the tag and the answer's
-    headers but its body, `content-type` and `content-length`.
+    """Put ``express_http.weak_etag``, computed over its body, on each JSON Notion answer, and
+    answer a request ``notion.not_modified`` finds fresh with a 304 that carries the tag and the
+    answer's headers but its body, `content-type` and `content-length`.
+
+    Measured against api.notion.com on 2026-10-27: the 200s of `users/me`, `pages/{id}` and
+    `search`, the 401s (the OAuth client endpoints' among them), the 400s, a 404 and a 503, and
+    the body reader's 413 and 415 each carried the tag over its own body, a `HEAD` the tag of the
+    body its `GET` answers; the root's 302 and a CORS preflight's 204 carried none. The
+    computation was checked against the bodies kept whole.
 
     Registered after ``read_a_notion_body_as_express_does``, which makes it the outer of the
-    two, so a refusal that reader answers carries the tag too, as real's 413 and 415 do; and
-    long before the `HEAD` rewrite below, which makes it the inner of those two, so a `HEAD` is
-    tagged over the body of the `GET` it is rewritten to, as real's is. A method outside
-    ``notion.ROUTED_METHODS`` is left out, as ``report_notion_headers`` leaves it: its 405 is
-    the framework's, where real's front door answers with a page of its own. An answer that is
-    not a JSON body carries none either.
+    two, so a refusal that reader answers carries the tag too; and long before the `HEAD` rewrite
+    below, which makes it the inner of those two, so a `HEAD` is tagged over the body of the `GET`
+    it is rewritten to. A method outside ``notion.ROUTED_METHODS`` is left out, as
+    ``report_notion_headers`` leaves it: its 405 is the framework's, where real's front door answers
+    with a page of its own. An answer that is not a JSON body carries none either.
     """
     response = await call_next(request)
     if not response.headers.get("content-type", "").startswith("application/json"):
@@ -689,7 +733,7 @@ async def report_notion_etag(request: Request, call_next):
     else:
         tagged = Response(body, status_code=response.status_code)
         tagged.raw_headers = response.raw_headers
-    tagged.headers["etag"] = notion.weak_etag(body)
+    tagged.headers["etag"] = express_http.weak_etag(body)
     return tagged
 
 
@@ -747,7 +791,7 @@ async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
 
 def _a_slashed_notion_path(scope: Scope) -> bool:
     path = _url_path(scope)
-    return path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion/")
+    return path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion//")
 
 
 @_middleware(_a_slashed_notion_path)
@@ -762,9 +806,8 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     otherwise claim every slashed spelling and answer 400 where real answers what the route
     answers.
 
-    The vendor root is not rewritten: `/notion/` is the URL's 400, and `/notion` is Starlette's own
-    307 to that, where real's `/` is a 302 to its marketing site — a page this server does not
-    serve at all.
+    The vendor root is not rewritten, and neither is `/notion//`: on 2026-10-31 real answered `//`
+    the URL's 400, where `/` is its redirect (``notion.root``).
 
     GitHub's trailing slash is the opposite rule and has its own middleware above; the two are
     measured separately because the vendors answer differently.
@@ -790,8 +833,10 @@ async def report_notion_cors(request: Request, call_next):
     instead a 204 with no body and `vary: Origin`, ahead of the URL check. An `Origin` that is
     empty, a space or a tab counted as none, and on 2026-10-28 an `Origin` sent twice or three
     times counted when one of them had a value. On the other paths `Origin` changed nothing
-    (``notion.answers_cors`` has their `vary`). On 2026-10-28 the 304 an `If-None-Match: *` draws,
-    which carries no `content-type`, was `vary: Origin`, with the CORS headers as `Origin` asked.
+    (``notion.answers_cors`` has their `vary`), and on 2026-10-31 the root's `vary: Accept`
+    (``notion.root``) came first, with `Accept-Encoding` after it where the answer had a
+    `content-type`. On 2026-10-28 the 304 an `If-None-Match: *` draws, which carries no
+    `content-type`, was `vary: Origin`, with the CORS headers as `Origin` asked.
 
     Registered after ``serve_a_slashed_notion_path_as_the_path_without_it``,
     ``read_a_notion_body_as_express_does`` and ``report_notion_etag``, which makes it the outer of
@@ -802,7 +847,9 @@ async def report_notion_cors(request: Request, call_next):
     raw_path = request.scope.get("raw_path") or request.url.path.encode()
     if not notion.answers_cors(raw_path.decode("latin-1")):
         response = await call_next(request)
-        response.headers["vary"] = "Accept-Encoding"
+        vary = response.headers.get("vary")
+        if "content-type" in response.headers:
+            response.headers["vary"] = f"{vary}, Accept-Encoding" if vary else "Accept-Encoding"
         return response
     if (
         origin
@@ -844,6 +891,31 @@ async def serve_a_slashed_hubspot_path_as_the_path_without_it(request: Request, 
     trimmed = request.url.path.rstrip("/")
     request.scope["path"] = trimmed
     request.scope["raw_path"] = trimmed.encode()
+    return await call_next(request)
+
+
+_GRAPHQL_ENDPOINTS = ("/linear/graphql", "/fireflies/graphql")
+
+
+def _off_a_graphql_endpoint(scope: Scope) -> bool:
+    path = scope["path"]
+    return path.startswith(("/linear/", "/fireflies/")) and path not in _GRAPHQL_ENDPOINTS
+
+
+@_middleware(_off_a_graphql_endpoint)
+async def route_a_linear_or_fireflies_path_as_its_front_does(request: Request, call_next):
+    """Route a `/linear` or `/fireflies` path but the endpoint's own to the route that answers it as
+    the vendor's front does: a `/linear` path Express hands Apollo Server
+    (``linear.routes_to_apollo``) to ``linear.graphql``, and any other to the vendor's root route
+    (``linear.express``, ``fireflies.unrouted``), each of which reads the path as sent off the raw
+    path, which is left alone. Starlette's own routing is not asked: its pattern for the endpoint
+    takes a path with a newline after it (`/graphql%0A`), and its `path` convertor none with a
+    newline inside it, where each vendor's front reads both as another path."""
+    vendor = request.scope["path"].split("/")[1]
+    served = vendor == "linear" and linear.routes_to_apollo(
+        linear.express_path(sent_path(request.scope))
+    )
+    request.scope["path"] = f"/{vendor}/graphql" if served else f"/{vendor}/"
     return await call_next(request)
 
 
@@ -1318,6 +1390,16 @@ async def warn_slack_post_charset(request: Request, call_next):
     )
 
 
+#: The headers Cloudflare puts beside the `Content-Type` of its answers to a `CONNECT`, a `PURGE`
+#: and a cut escape in front of Linear and Fireflies.
+_CLOUDFLARE_PRIVATE = {
+    "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, "
+    "post-check=0, pre-check=0",
+    "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+    "referrer-policy": "same-origin",
+    "x-frame-options": "SAMEORIGIN",
+}
+
 #: Cloudflare's answer to each method it refuses in front of Linear and Fireflies, as
 #: api.linear.app and api.fireflies.ai answered each on `/graphql`, `/graphql/`, `/nosuch` and `/`
 #: on 2026-10-25 (UTC): a page with CRLF line ends, or a line of text, and the headers it puts on
@@ -1334,28 +1416,42 @@ _CLOUDFLARE_METHOD = {
     "CONNECT": (
         400,
         b"error code: 1045\n",
-        {
-            "content-type": "text/plain; charset=UTF-8",
-            "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, "
-            "post-check=0, pre-check=0",
-            "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
-            "referrer-policy": "same-origin",
-            "x-frame-options": "SAMEORIGIN",
-        },
+        {"content-type": "text/plain; charset=UTF-8", **_CLOUDFLARE_PRIVATE},
     ),
     "PURGE": (
         400,
         request_target.CLOUDFLARE_PAGE,
-        {
-            "content-type": "text/html; charset=UTF-8",
-            "x-frame-options": "SAMEORIGIN",
-            "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, "
-            "post-check=0, pre-check=0",
-            "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
-            "referrer-policy": "same-origin",
-        },
+        {"content-type": "text/html; charset=UTF-8", **_CLOUDFLARE_PRIVATE},
     ),
 }
+
+
+def _sent(scope: Scope) -> tuple[bytes, bytes | None]:
+    """The vendor's path as sent and the query string, ``None`` where it is empty: the scope does
+    not keep a `?` with nothing after it."""
+    return sent_path(scope).encode("latin-1"), scope["query_string"] or None
+
+
+@_middleware(
+    lambda scope: (
+        _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
+        and request_target.cut_escape(*_sent(scope))
+    )
+)
+async def refuse_a_cut_escape_on_linear_and_fireflies(request: Request, call_next):
+    """Answer a `/linear` or `/fireflies` request whose path the end cuts short in a `%`
+    (``request_target.cut_escape``) with Cloudflare's 400, ahead of the route and the credential
+    and behind :func:`refuse_cloudflares_methods_on_linear_and_fireflies`. api.linear.app and
+    api.fireflies.ai answered so `/a%2`, `/a%`, `/a%0`, `/a%F`, `/%`, `/nosucha%b`, `/a%2b%2`,
+    `/graphql%2` and `/graphql/%2` by `POST`, and `/a%2` by `GET`, `HEAD`, `OPTIONS` and `DELETE`,
+    on 2026-10-29 (UTC), and answered a second request on the connection after it. `TRACE`,
+    `CONNECT` and `PURGE` at `/a%2` drew their own answer, and so did `Authorization` or
+    `If-None-Match` sent twice. Linear's answer came in chunks and Fireflies' with a length."""
+    page = request_target.CLOUDFLARE_PAGE
+    headers = {"content-type": "text/html; charset=UTF-8", **_CLOUDFLARE_PRIVATE}
+    if _url_path(request.scope).startswith("/linear"):
+        return StreamingResponse(iter([page]), status_code=400, headers=headers)
+    return Response(page, status_code=400, headers=headers)
 
 
 @_middleware(
@@ -1370,9 +1466,16 @@ async def refuse_cloudflares_methods_on_linear_and_fireflies(request: Request, c
     :func:`refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot`, which answers first: a
     `TRACE`, `CONNECT` or `PURGE` carrying `Authorization` twice drew its 400 from both vendors on
     2026-10-25 (UTC), and one carrying `If-None-Match` or `If-Modified-Since` twice on
-    2026-10-28."""
+    2026-10-28. `nosniff` goes on Linear's `CONNECT` where ``backlot.routers.linear.slashes_alone``
+    holds."""
     status, body, headers = _CLOUDFLARE_METHOD[request.method]
-    return Response(body, status_code=status, headers=headers)
+    response = Response(body, status_code=status, headers=headers)
+    linear_root = request.scope["path"].startswith("/linear/") and linear.slashes_alone(
+        request.scope
+    )
+    if request.method == "CONNECT" and linear_root:
+        response.headers["x-content-type-options"] = "nosniff"
+    return response
 
 
 @_middleware(
@@ -1427,6 +1530,29 @@ async def refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot(
     on `POST /nosuch` and `POST /`. Both closed the connection after it (`GET /graphql`,
     2026-10-23). Which headers, on all four vendors, is
     :func:`backlot.auth.repeated_cloudflare_refused_header`'s."""
+    return Response(
+        request_target.CLOUDFLARE_PAGE,
+        status_code=400,
+        headers={"Content-Type": "text/html", "Connection": "close"},
+    )
+
+
+@_middleware(
+    lambda scope: (
+        _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
+        and request_target.refused_path(*_sent(scope))
+    )
+)
+async def refuse_a_path_cloudflare_refuses_on_linear_and_fireflies(request: Request, call_next):
+    """Answer a `/linear` or `/fireflies` request whose path Cloudflare refuses
+    (``request_target.refused_path``) with :data:`backlot.request_target.CLOUDFLARE_PAGE`'s 400,
+    ahead of :func:`refuse_cloudflares_methods_on_linear_and_fireflies`. api.linear.app and
+    api.fireflies.ai answered so `/a%zz` and `/a%00b` by each method of :data:`_CLOUDFLARE_METHOD`,
+    and `/graphql%zz` by `POST`, on 2026-10-25 (UTC), and `/../graphql` by `POST`, `GET` and each
+    method of :data:`_CLOUDFLARE_METHOD`, and `/a%2?x=1`, `/a%2/` and `/a%z` by `POST`, on
+    2026-10-29, and passed `?a=%zz`, `?a=%`, `?a=%2` and `?a=%00` after `/graphql` on to the
+    vendor. Both closed the connection after the 400 (`POST /graphql%zz`, `POST /a%00b`,
+    2026-10-26; `POST /../graphql`, `POST /a%2/`, 2026-10-29)."""
     return Response(
         request_target.CLOUDFLARE_PAGE,
         status_code=400,

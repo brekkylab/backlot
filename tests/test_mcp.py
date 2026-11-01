@@ -792,23 +792,80 @@ def test_mcp_graphql_bridge_round_trips_a_nested_filter(live_server):
     )
 
 
-def test_mcp_hubspot_bridge_search_tool(live_server):
-    """The polymorphic search operation reaches the bridge as a usable tool: filterGroups go through
-    as a request body, and `total` comes back."""
+def _revenue_model(settings) -> str:
+    conn = store.connect_ro(settings.db_path)
+    return conn.execute(
+        f"SELECT id FROM {store.table('google_drive')} WHERE title = 'Q1 Revenue Model'"
+    ).fetchone()["id"]
+
+
+@pytest.mark.parametrize(
+    "source, user, tool, build_args, ok",
+    [
+        pytest.param(
+            "hubspot",
+            None,
+            "search_objects",
+            lambda st: {
+                "object_type": "companies",
+                "filterGroups": [
+                    {
+                        "filters": [
+                            {"propertyName": "industry", "operator": "EQ", "value": "healthcare"}
+                        ]
+                    }
+                ],
+            },
+            lambda t: '"total"' in t and "Acme Health" in t,
+            id="hubspot-search",
+        ),
+        pytest.param(
+            "gdrive",
+            None,
+            "docs_create",
+            lambda st: {"title": "Bridge notes"},
+            lambda t: '"title": "Bridge notes"' in t or '"title":"Bridge notes"' in t,
+            id="docs-create",
+        ),
+        pytest.param(
+            "gdrive",
+            None,
+            "sheets_create",
+            lambda st: {
+                "properties": {"title": "Bridge book"},
+                "sheets": [{"properties": {"title": "Pipeline"}}],
+            },
+            lambda t: "Bridge book" in t and "Pipeline" in t,
+            id="sheets-create",
+        ),
+        pytest.param(
+            "gdrive",
+            "cfo@acme.com",
+            "sheets_values_update",
+            lambda st: {
+                "spreadsheet_id": _revenue_model(st),
+                "a1_range": "A4:B4",
+                "valueInputOption": "RAW",
+                "values": [["Mar", 150000]],
+            },
+            lambda t: '"updatedCells": 2' in t or '"updatedCells":2' in t,
+            id="sheets-values-update",
+        ),
+    ],
+)
+def test_mcp_bridge_sends_a_tools_request_body(live_server, source, user, tool, build_args, ok):
+    """A request body reaches the route through the bridge's tool: the fields of the body the
+    route declares are the tool's arguments, nested ones included, and what comes back shows the
+    route read them."""
     pytest.importorskip("fastmcp")
     base, settings = live_server
     assert _bridge_call(
         base,
-        "hubspot",
-        backlot_mcp.resolve(base, None),
-        tool_pred=lambda n: n.startswith("search_objects"),
-        args={
-            "object_type": "companies",
-            "filterGroups": [
-                {"filters": [{"propertyName": "industry", "operator": "EQ", "value": "healthcare"}]}
-            ],
-        },
-        ok_pred=lambda t: '"total"' in t and "Acme Health" in t,
+        source,
+        backlot_mcp.resolve(base, user),
+        tool_pred=lambda n: n == tool,
+        args=build_args(settings),
+        ok_pred=ok,
     )
 
 

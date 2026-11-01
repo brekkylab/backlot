@@ -291,12 +291,14 @@ def _next_ts(cursor: str | None) -> int | bool | None:
     microseconds: None for no cursor, False for one real answers `invalid_cursor`, and 0 for one
     that names no position.
 
-    Measured against slack.com/api on 2026-10-29 with cursors built by hand. Real takes base64
-    with `-_` for `+/` and with or without padding; one that decodes to anything other than
-    `next_ts:` and a value with no colon is refused, and so is a value that is empty, a space or
-    `0`. The value's leading ASCII digits, after spaces and one sign, are the position, held to a
-    signed 64-bit integer (`<ts>abc` is `<ts>`, twenty nines is 2**63 - 1), and one with no digit
-    right after the sign (`abc`, `+-1`, bytes that are not UTF-8) or with only zeros (`00`) is 0."""
+    Measured against slack.com/api on 2026-10-29 and 2026-11-01 with cursors built by hand. Real
+    takes base64 with `-_` for `+/` and with or without padding; one that decodes to anything other
+    than `next_ts:` and a value with no colon is refused, and so is a value that is `0` or holds
+    nothing but spaces, HTABs, LFs, CRs, NULs and VTs, an empty one among them (an FF alone, or an
+    HTAB and `0`, is 0). The value's leading ASCII digits, after any ASCII whitespace and one sign,
+    are the position, held to a signed 64-bit integer (`<ts>abc` is `<ts>`, twenty nines and 5,000
+    nines are 2**63 - 1), and one with no digit right after the sign (`abc`, `+-1`, a NUL and
+    `<ts>`, bytes that are not UTF-8) or with only zeros (`00`) is 0."""
     if not cursor:
         return None
     padded = cursor.rstrip("=").translate(str.maketrans("-_", "+/"))
@@ -305,10 +307,13 @@ def _next_ts(cursor: str | None) -> int | bool | None:
     except ValueError:
         return False
     value = _NEXT_TS.fullmatch(raw)
-    if value is None or value[1].strip() in (b"", b"0"):
+    if value is None or value[1] == b"0" or not value[1].strip(b" \t\n\r\x00\x0b"):
         return False
     digits = _NEXT_TS_DIGITS.match(value[1])
-    return max(-_INT64, min(_INT64 - 1, int(digits[1]))) if digits else 0
+    if not digits:
+        return 0
+    figures = int(digits[1].lstrip(b"+-").lstrip(b"0")[:20] or b"0")
+    return max(-_INT64, min(_INT64 - 1, -figures if digits[1].startswith(b"-") else figures))
 
 
 def _wrapped(n: int) -> int:
@@ -1708,8 +1713,10 @@ async def conversations_replies(request: Request):
     # reply 1, and one naming reply 1 beside `oldest` at reply 3 served replies 4 and 5; walking
     # forward from `oldest`, the cursor leaves out the reply it names, so `oldest` at reply 1 with
     # `limit=2` served 2 3, then 5 6 under a cursor naming 4, then 8 9 under one naming 7; and
-    # walking back, a cursor below zero counts as none: `next_ts:-1`, -2 and -2**63 beside `latest`
-    # at reply 5 served replies 2 3 4 at `limit=3`, as no cursor does.
+    # walking back, a cursor below zero, or at 2**63 - 1 or past it, counts as none: `next_ts:-1`,
+    # -2, -2**63, 2**63 - 1 and 2**63 beside `latest` at reply 5 served replies 2 3 4 at `limit=3`,
+    # as no cursor does, and 2**63 - 1, 2**63 and 5,000 nines with no bound served 28 29 30
+    # (2026-11-01 for the 5,000 nines).
     lo, hi = (
         v or None
         for v in (_slack_ts(_param(request, "oldest")), _slack_ts(_param(request, "latest")))

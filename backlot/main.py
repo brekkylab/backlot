@@ -1563,9 +1563,10 @@ async def refuse_a_path_cloudflare_refuses_on_linear_and_fireflies(request: Requ
 @_middleware(lambda scope: _url_path(scope).startswith("/github"))
 async def put_a_request_id_on_github_answers(request: Request, call_next):
     """Put an `x-github-request-id` on every `/github` answer the API gives, as real does on each
-    one measured. The front door's 400 for a raw byte in the target
-    (:func:`answer_a_raw_byte_in_the_request_target`) is outside it and carries none, as on real
-    (api.github.com, 2026-10-23).
+    one measured. The 400 for a raw byte in the target
+    (:func:`answer_a_raw_byte_in_the_request_target`) and the 414 for a long one
+    (:func:`answer_a_github_request_target_past_its_bound`) are outside it and carry none, as on
+    real (api.github.com, 2026-10-23 and 2026-10-29).
 
     Registered after the other `/github` middlewares but
     :func:`answer_a_github_request_target_past_its_bound`, so it wraps them and the refusals they
@@ -1588,7 +1589,7 @@ _GITHUB_TARGET_TOO_LONG = (
 
 @_middleware(lambda scope: _at_or_under(_url_path(scope), ("/github",)))
 async def answer_a_github_request_target_past_its_bound(request: Request, call_next):
-    """414 a `/github` request on any path and any method whose target is 8,192 characters or more
+    """414 a `/github` request on any path and any method whose target is 8,192 bytes or more
     (8,174 on code search), counted as ``backlot.routers.github._refuse_a_long_line_or_path``
     counts it, with :data:`_GITHUB_TARGET_TOO_LONG` on `application/json; charset=utf-8`, ahead of
     the route and its refusals, which a shorter target meets.

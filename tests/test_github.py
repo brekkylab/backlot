@@ -5043,8 +5043,8 @@ def test_github_go_printable_is_unicode_15_on_this_python():
 
 
 def test_github_every_answer_carries_a_request_id(gh_client, gh_admin_h, gh_org, monkeypatch):
-    """Real puts an `x-github-request-id` on every answer, served or refused, code search's
-    included, and its last field is the request's own second (the measurement is in
+    """Real puts an `x-github-request-id` on every answer its API gives, served or refused, code
+    search's included, and its last field is the request's own second (the measurement is in
     ``backlot.routers.github.request_id``, the answers below among it). A client that logs it for a
     support ticket has nothing to log without it."""
     from backlot.routers import github as gh
@@ -6959,7 +6959,7 @@ def test_github_type_visibility_sort_and_direction_on_the_repository_listings(tm
 def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit_reports_them(
     tmp_path, monkeypatch
 ):
-    """Real puts five `x-ratelimit-*` headers on every response it gives and serves
+    """Real puts five `x-ratelimit-*` headers on every response its API gives and serves
     `GET /rate_limit`; Backlot sent none of the five on any response and answered the route 404,
     so a client that paces by `remaining` and sleeps until `reset` never ran that path here, and
     PyGithub's `get_rate_limit()` raised before a crawl's first request.

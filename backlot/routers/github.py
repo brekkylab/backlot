@@ -1350,7 +1350,8 @@ router = APIRouter(
     # owner the path names — and the repo's spelling is resolved last, so never for a request that
     # fails one of the four ahead of it. A path no route matches is 404 ahead of the credential, the
     # version and the owner on real (measured 2026-09-17 on an unrouted path and on a nonexistent
-    # subresource), and a router-wide dependency does not run for one either.
+    # subresource) and ahead of a long request line (2026-10-29, a target of 8,191 bytes), and a
+    # router-wide dependency does not run for one either.
     dependencies=[
         Depends(_refuse_an_anonymous_caller),
         Depends(_validate_bad_credential),

@@ -3868,12 +3868,15 @@ def list_slack_top_level(
     *,
     newest_first=False,
 ) -> list[sqlite3.Row]:
-    """Top-level (thread-root/standalone) messages in a channel, oldest first unless
-    ``newest_first``. ``ts_lo``/``ts_hi`` bound ``created_ts`` for a time-windowed
+    """Top-level (thread-root/standalone) messages in a channel, and the replies also sent to it
+    (`thread_broadcast`), each at its own ts, oldest first unless ``newest_first``: measured
+    against slack.com on 2026-10-30, history listed a broadcast between its root and a later
+    post, on `limit=1` pages too, and a deleted one not at all, with no placeholder and its root
+    one reply fewer. ``ts_lo``/``ts_hi`` bound ``created_ts`` for a time-windowed
     conversations.history, so a day window is an indexed range rather than the whole channel
     filtered in Python. Widen the bounds by ±1s — the public ts carries a sub-second fraction — and
     re-check the exact float window in the caller."""
-    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
+    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND (thread_seq = 0 OR subtype = 'thread_broadcast')"
     params: list = [channel]
     if ts_lo is not None or ts_hi is not None:
         lo = ts_lo if ts_lo is not None else -(1 << 62)
@@ -3887,9 +3890,7 @@ def list_slack_top_level(
 
 
 def count_slack_top_level(conn, channel, visible_ids=None) -> int:
-    sql = (
-        f"SELECT COUNT(*) FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
-    )
+    sql = f"SELECT COUNT(*) FROM {merged_source(conn, 'slack')} WHERE channel = ? AND (thread_seq = 0 OR subtype = 'thread_broadcast')"
     params: list = [channel]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause

@@ -4,6 +4,7 @@
     "name": "brekkylab",
     "url": "https://github.com/brekkylab"
   },
+  "description": "brekkylab's plugins. Backlot emulates enterprise SaaS APIs over a corpus you supply, so a real client can be built and tested against them.",
   "plugins": [
     {
       "name": "backlot",

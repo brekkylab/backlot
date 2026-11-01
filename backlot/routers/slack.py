@@ -10,6 +10,7 @@ up — so ``_caller_or_error`` decides it once for every method here.
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import re
@@ -141,7 +142,7 @@ _P_HISTORY = [
     qp("latest"),
     qp("inclusive", "boolean"),
 ]
-_P_REPLIES = [qp("channel", required=True), qp("ts", required=True)]
+_P_REPLIES = [qp("channel", required=True), qp("ts", required=True)] + _P_HISTORY[1:]
 _P_USER = [qp("user", required=True)]
 _P_SEARCH = [
     qp("query", required=True),
@@ -262,6 +263,68 @@ def _slack_ts(value: str | None) -> str | None | bool:
     if not total:
         return False
     return f"{total // 1_000_000:010d}.{total % 1_000_000:06d}"
+
+
+def _us(ts: str) -> int:
+    """A Slack ts, `SSSSSSSSSS.MMMMMM`, in whole microseconds."""
+    seconds, micros = ts.split(".")
+    return int(seconds) * 1_000_000 + int(micros)
+
+
+def _inclusive(request: Request) -> bool:
+    """Whether `oldest` and `latest` take the message at their own ts, `inclusive` read as
+    :func:`_flag` reads it. Measured against slack.com/api on `conversations.history` on 2026-10-16:
+    a message whose ts equals `latest` is left out, as one at `oldest` is, and a page bounded by one
+    message's ts on both sides is empty, `inclusive=true` putting that message back alone."""
+    return _flag(request, "inclusive")
+
+
+# What a `conversations.history` or `conversations.replies` cursor holds: `next_ts:` and the
+# microseconds of the next message to serve (measured 2026-10-23 and 2026-10-29).
+_NEXT_TS = re.compile(rb"next_ts:([^:]*)")
+_NEXT_TS_DIGITS = re.compile(rb"\s*([+-]?[0-9]+)")
+_INT64 = 1 << 63
+
+
+def _next_ts(cursor: str | None) -> int | bool | None:
+    """The position a `conversations.history` or `conversations.replies` cursor names, in
+    microseconds: None for no cursor, False for one real answers `invalid_cursor`, and 0 for one
+    that names no position.
+
+    Measured against slack.com/api on 2026-10-29 and 2026-11-01 with cursors built by hand. Real
+    takes base64 with `-_` for `+/` and with or without padding; one that decodes to anything other
+    than `next_ts:` and a value with no colon is refused, and so is a value that is `0` or holds
+    nothing but spaces, HTABs, LFs, CRs, NULs and VTs, an empty one among them (an FF alone, or an
+    HTAB and `0`, is 0). The value's leading ASCII digits, after any ASCII whitespace and one sign,
+    are the position, held to a signed 64-bit integer (`<ts>abc` is `<ts>`, twenty nines and 5,000
+    nines are 2**63 - 1), and one with no digit right after the sign (`abc`, `+-1`, a NUL and
+    `<ts>`, bytes that are not UTF-8) or with only zeros (`00`) is 0."""
+    if not cursor:
+        return None
+    padded = cursor.rstrip("=").translate(str.maketrans("-_", "+/"))
+    try:
+        raw = base64.b64decode(padded + "=" * (-len(padded) % 4))
+    except ValueError:
+        return False
+    value = _NEXT_TS.fullmatch(raw)
+    if value is None or value[1] == b"0" or not value[1].strip(b" \t\n\r\x00\x0b"):
+        return False
+    digits = _NEXT_TS_DIGITS.match(value[1])
+    if not digits:
+        return 0
+    figures = int(digits[1].lstrip(b"+-").lstrip(b"0")[:20] or b"0")
+    return max(-_INT64, min(_INT64 - 1, -figures if digits[1].startswith(b"-") else figures))
+
+
+def _wrapped(n: int) -> int:
+    """``n`` wrapped to a signed 64-bit integer, as real's arithmetic on a cursor wraps it."""
+    return (n + _INT64) % (2 * _INT64) - _INT64
+
+
+def _cursor_at(ts: str) -> str:
+    """The cursor that names ``ts`` for :func:`_next_ts`, as real writes one: the ts without its
+    dot (`next_ts:1790153866825689`)."""
+    return base64.b64encode(f"next_ts:{_us(ts)}".encode()).decode()
 
 
 def _caller_or_error(request: Request) -> tuple[Caller | None, dict | None]:
@@ -1484,8 +1547,8 @@ async def conversations_history(request: Request):
         return _err("invalid_ts_latest")
     if lo is False:
         return _err("invalid_ts_oldest")
-    offset = decode_cursor_or_none(_param(request, "cursor"))
-    if offset is None:
+    at = _next_ts(_param(request, "cursor"))
+    if at is False:
         return _err("invalid_cursor")
     # Each page is newest first. The pages walk back in time from the newest message or from
     # `latest`, or forward from `oldest` when it is the only bound. Measured against slack.com/api
@@ -1495,59 +1558,31 @@ async def conversations_history(request: Request):
     # alone, or beside a `latest` of `0` or an empty one, the three just after it and then the
     # next three.
     from_oldest = lo is not None and hi is None
-    if lo is not None or hi is not None:  # time-bounded (e.g. a single day): filter, then paginate
-        # Measured against slack.com/api on 2026-10-18: only absent, empty, "0" and
-        # case-insensitive "false" exclude the bound. Other strings, including "00", "no"
-        # and whitespace-padded "false", include it. Repeated query values use the last one.
-        inclusive = _flag(request, "inclusive")
-
-        def _ts_to_us(ts_str: str) -> int:
-            """Convert a Slack ts string "SSSSSSSSSS.MMMMMM" to total microseconds."""
-            s, m = ts_str.split(".")
-            return int(s) * 1_000_000 + int(m)
-
-        def _in_window(r) -> bool:
-            ts_us = _ts_to_us(r["ts"])
-            # Both bounds are exclusive unless the `inclusive` read above includes them: measured
-            # against slack.com/api on 2026-10-16, a message whose ts equals `latest` is left out,
-            # as one at `oldest` is, and a page bounded by one message's ts on both sides is empty —
-            # `inclusive=true` puts that message back, alone.
-            if lo is not None:
-                lo_us = _ts_to_us(lo)
-                if ts_us < lo_us if inclusive else ts_us <= lo_us:
-                    return False
-            if hi is not None:
-                hi_us = _ts_to_us(hi)
-                if ts_us > hi_us if inclusive else ts_us >= hi_us:
-                    return False
-            return True
-
-        # SQL-narrow by created_ts (±1s to cover the sub-second fraction in a public ts), then apply
-        # the exact window in Python — so a day window scans the day, not the whole channel.
-        lo_sec = int(lo.split(".")[0]) - 1 if lo is not None else None
-        hi_sec = int(hi.split(".")[0]) + 1 if hi is not None else None
-        matched = [
-            r
-            for r in store.list_slack_top_level(
-                conn,
-                name,
-                ids,
-                limit=10**9,
-                ts_lo=lo_sec,
-                ts_hi=hi_sec,
-                newest_first=not from_oldest,
-            )
-            if _in_window(r)
-        ]
-        total = len(matched)
-        rows = matched[offset : offset + limit]
-        if from_oldest:
-            rows.reverse()
-    else:
-        total = store.count_slack_top_level(conn, name, ids)
-        rows = store.list_slack_top_level(
-            conn, name, ids, limit=limit, offset=offset, newest_first=True
-        )
+    inclusive = _inclusive(request)
+    after = None if lo is None else (_us(lo), inclusive)
+    before = None if hi is None else (_us(hi), inclusive)
+    # A cursor names the next message to serve and takes the place of the bound the pages walk
+    # from, the other one still applying. Measured against slack.com/api on 2026-10-29 on the same
+    # channel: a cursor naming message 200 served 200 199 198 beside `latest` at 150, 202 201 200
+    # beside `oldest` at 250, and 200 down to 196 beside `oldest` at 195 and `latest` at 250, and
+    # one naming no message served from the next one there is. In a private channel, a message
+    # posted between two pages left the second page where it was, and a cursor naming a message
+    # since deleted served from the next one. The bound a cursor makes is the one just past the
+    # message it names, in 64-bit arithmetic that wraps: `next_ts:-1` makes it 0, which is no
+    # bound, and served the newest page beside `latest` at 150; 2**63 - 1 wraps to the least value
+    # and served nothing, as -2, -1000000 and -2**63 did; and walking forward, -2**63 wraps the
+    # other way and served nothing, where -2**63 + 1 served from the first message.
+    if at and from_oldest:
+        after = (_wrapped(at - 1), False)
+    elif at:
+        end = _wrapped(at + 1)
+        before = (end, False) if end else None
+    rows = store.list_slack_top_level(
+        conn, name, ids, limit + 1, after=after, before=before, newest_first=not from_oldest
+    )
+    rows, more = rows[:limit], rows[limit:]
+    if from_oldest:
+        rows.reverse()
     messages = []
     for r in rows:
         rc = store.slack_reply_count(conn, name, r["ts"], ids) if r["thread_ts"] else 0
@@ -1565,11 +1600,10 @@ async def conversations_history(request: Request):
             )
         )
         _with_root(conn, name, ids, caller, r, messages[-1])
-    cursor = next_cursor(offset, len(rows), total)
     body = {
         "ok": True,
         "messages": messages,
-        "has_more": bool(cursor),
+        "has_more": bool(more),
         "pin_count": 0,
         # Channel actions (the workflow/action bar) are not something a corpus expresses, but the
         # real API sends both keys on every call rather than omitting them.
@@ -1581,8 +1615,8 @@ async def conversations_history(request: Request):
     # Omitted entirely on a last page, which is what the live API does here — NOT served with an
     # empty cursor. conversations.list is the other way round (it carries `{"next_cursor": ""}`
     # even with nothing more), so the two are not a shared convention to factor out.
-    if cursor:
-        body["response_metadata"] = {"next_cursor": cursor}
+    if more:
+        body["response_metadata"] = {"next_cursor": _cursor_at(more[0]["ts"])}
     return body
 
 
@@ -1599,6 +1633,9 @@ async def conversations_replies(request: Request):
         return err
     if err := _missing_argument(request, "channel", "ts"):
         return err
+    limit, err = _replies_limit(request)
+    if err is not None:
+        return err
     ts = _param(request, "ts")
     name = _channel_name(conn, _param(request, "channel") or "")
     ids = auth.visible_ids(request, caller)
@@ -1609,11 +1646,16 @@ async def conversations_replies(request: Request):
     # thread for a room the caller cannot open.
     if name is None or not _channel_visibility(request, conn, ids)(name):
         return _err("channel_not_found")
+    # A cursor is read after the channel and before the thread (measured 2026-10-12). Beside the
+    # ones `_next_ts` refuses, one that names no position is `invalid_cursor` here, where
+    # `conversations.history` serves its first page for it: measured 2026-10-29 with `next_ts:abc`.
+    at = _next_ts(_param(request, "cursor"))
+    if at is not None and not at:
+        return _err("invalid_cursor")
     if not ts:
         return _err("thread_not_found")
-    # Resolve the ts against ALL messages in the channel, not just roots: Slack accepts any in-thread
-    # ts here, and a client that got its ts from a search hit will often pass a REPLY's ts. Find the
-    # matched message, then return the thread it belongs to (its root's).
+    # Resolve the ts against ALL messages in the channel, not just roots: a client that got its ts
+    # from a search hit will often pass a REPLY's ts, which real answers with that reply alone.
     # Fast path: a ts's integer part IS the row's created_ts (see the importer's `_slack_ts`), so
     # narrow to that second instead of loading the whole channel (eng-ml is ~340k rows → ~4s).
     # The full scan stays as a fallback for a row with no created_ts, which that query cannot
@@ -1644,8 +1686,9 @@ async def conversations_replies(request: Request):
     ru = store.slack_reply_authors(conn, name, root["ts"], ids)
     ruids = [_uid(e) for e in ru[:5]]
     parent_uid = _uid(root["author_email"])
-    messages = [
-        _message(
+
+    def served(x):
+        m = _message(
             x,
             reply_count=(rc if x["thread_seq"] == 0 else 0),
             latest_reply=(latest if x["thread_seq"] == 0 else None),
@@ -1656,11 +1699,49 @@ async def conversations_replies(request: Request):
                 _subscribed(caller, root["author_email"], ru) if x["thread_seq"] == 0 else False
             ),
         )
-        for x in rows
-    ]
-    for x, m in zip(rows, messages, strict=True):
-        _with_root(conn, name, ids, caller, x, m)
-    return {"ok": True, "messages": messages, "has_more": False}
+        return _with_root(conn, name, ids, caller, x, m)
+
+    # A reply's ts is answered with that reply alone, beside a `limit` or a cursor too (measured
+    # 2026-10-12 and 2026-10-29).
+    if hit["thread_seq"] > 0:
+        return {"ok": True, "messages": [served(hit)], "has_more": False}
+    # The parent opens every page, and the replies page as `conversations.history` pages messages,
+    # with four differences. Measured against slack.com/api on 2026-10-29, on a public thread of 30
+    # replies and a private one of 5: each page lists its replies oldest first; the bounds are read
+    # as `_slack_ts` reads them, one it cannot read being no bound (2026-10-12) and the cursor
+    # applying beside both of them, so a cursor naming reply 30 beside `latest` at reply 2 served
+    # reply 1, and one naming reply 1 beside `oldest` at reply 3 served replies 4 and 5; walking
+    # forward from `oldest`, the cursor leaves out the reply it names, so `oldest` at reply 1 with
+    # `limit=2` served 2 3, then 5 6 under a cursor naming 4, then 8 9 under one naming 7; and
+    # walking back, a cursor below zero, or at 2**63 - 1 or past it, counts as none: `next_ts:-1`,
+    # -2, -2**63, 2**63 - 1 and 2**63 beside `latest` at reply 5 served replies 2 3 4 at `limit=3`,
+    # as no cursor does, and 2**63 - 1, 2**63 and 5,000 nines with no bound served 28 29 30
+    # (2026-11-01 for the 5,000 nines).
+    lo, hi = (
+        v or None
+        for v in (_slack_ts(_param(request, "oldest")), _slack_ts(_param(request, "latest")))
+    )
+    forward = lo is not None and hi is None
+    inclusive = _inclusive(request)
+
+    def inside(x) -> bool:
+        us = _us(x["ts"])
+        if lo is not None and (us < _us(lo) if inclusive else us <= _us(lo)):
+            return False
+        if hi is not None and (us > _us(hi) if inclusive else us >= _us(hi)):
+            return False
+        return not at or (us > at if forward else at < 0 or us <= at)
+
+    walk = [x for x in rows if x["thread_seq"] > 0 and inside(x)]
+    if not forward:
+        walk.reverse()
+    page, more = walk[:limit], walk[limit:]
+    if not forward:
+        page.reverse()
+    body = {"ok": True, "messages": [served(x) for x in [root, *page]], "has_more": bool(more)}
+    if more:
+        body["response_metadata"] = {"next_cursor": _cursor_at(more[0]["ts"])}
+    return body
 
 
 @router.api_route(
@@ -3024,9 +3105,11 @@ def _member_count(request: Request, conn, name: str) -> int:
 
 
 def _flag(request: Request, key: str) -> bool:
-    """A boolean argument as `conversations_history` measured `inclusive`: absent, empty, `0` and
-    `false` in any case are off, and every other value is on. `reply_broadcast` read the same as a
-    form field on slack.com on 2026-10-30, `00`, `no`, `null` and ` false` among the values on."""
+    """A boolean argument: absent, empty, `0` and `false` in any case are off, and every other value
+    is on. Measured against slack.com/api: `inclusive` on `conversations.history` on 2026-10-18,
+    `00`, `no` and whitespace-padded `false` among the values on and a repeated one read by its last
+    value, and `reply_broadcast` as a form field on 2026-10-30, `00`, `no`, `null` and ` false`
+    among them."""
     return (_param(request, key) or "").lower() not in ("", "0", "false")
 
 
@@ -3368,3 +3451,28 @@ def _limit(request: Request) -> tuple[int, JSONResponse | None]:
     default = get_settings().default_page_size
     values, err = _numbers(request, ("limit", default))
     return values["limit"] or default, err
+
+
+def _replies_limit(request: Request) -> tuple[int, JSONResponse | None]:
+    """`conversations.replies`' page size, and the refusal for a `limit` real does not read: 1000
+    replies when none is sent, the default Slack documents ("_Default:_ `1000`"), and otherwise a
+    whole number from 1 to 1000. Measured against slack.com/api on 2026-10-29 on a 30-reply thread,
+    `0`, `00`, `-1` and `-5` answer the "must be greater than 1" line, `1` being read, and `1001`
+    the "must be less than 1000" line. The same day, a missing `ts` was answered ahead of it and an
+    unknown channel after it."""
+    raw = _param(request, "limit")
+    if raw is None:
+        return 1000, None
+    n = _slack_number("limit", raw)
+    if n is None:
+        line = "must provide a number"
+    elif n < 1:
+        line = "must be greater than 1"
+    elif n > 1000:
+        line = "must be less than 1000"
+    else:
+        return n, None
+    messages = [f"[ERROR] {line} [json-pointer:/limit]"]
+    return 0, JSONResponse(
+        {"ok": False, "error": "invalid_arguments", "response_metadata": {"messages": messages}}
+    )

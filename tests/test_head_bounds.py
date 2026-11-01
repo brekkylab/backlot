@@ -162,14 +162,17 @@ _BOUNDS = [
 #: answer where the line reaches the bound and where a header after it does: the refusal where the
 #: front door refuses the line ahead of its bound (``backlot.request_target.refused_in_the_line``),
 #: its bound's page where it does not. The path is a row of :data:`_BOUNDS` with the bytes after it,
-#: each latin-1, so `\xc3\xa9` is the two bytes of a UTF-8 `é`.
+#: in the path or in a query before the test's own, each latin-1, so `\xc3\xa9` is the two bytes
+#: of a UTF-8 `é`.
 _REFUSED_LINES = [
     ("/github", "/repos/acme/docs-site\t", "github 400", "github 400"),
     ("/github", "/repos/acme/docs-site\xc3\xa9", "github 400", "github 400"),
     ("/github", "/repos/acme/docs-site%zz", "github 414", "github 431"),
+    ("/github", "/repos/acme/docs-site?q=\x01x", "github 400", "github 400"),
     ("/slack", "/api/api.test\xc3\xa9", "slack", "slack 400"),
     ("/slack", "/api/api.test\x00", "slack", "slack 400"),
     ("/slack", "/api/api.test%zz", "slack", "slack"),
+    ("/slack", "/api/api.test?q=\x00x", "slack", "slack 400"),
     ("", "/drive/v3/files\x01", "google 400", "google 400"),
     ("", "/drive/v3/files\x00", "google 400", "google 400"),
     ("", "/drive/v3/files\t", "google", "google"),
@@ -192,6 +195,7 @@ _REFUSED_LINES = [
     ("/msgraph", "/v1.0/me\x01", "graph invalid url", "graph invalid url"),
     ("/msgraph", "/v1.0/me x", "graph badly formed", "graph badly formed"),
     ("/msgraph", "/v1.0/me\xc3\xa9", "graph 414", "graph 400"),
+    ("/msgraph", "/v1.0/me?q=\tx", "graph badly formed", "graph badly formed"),
 ]
 _BOUND_OF = {mount: (bound, per_line) for mount, _, bound, per_line, _, _ in _BOUNDS}
 

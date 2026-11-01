@@ -140,8 +140,9 @@ class _Head:
         answer = self.bound.answer(self.size, self.line, self.in_request_line, self.ended)
         if answer is None:
             return None
-        line = bytes(self.request_line).removesuffix(b"\r")
-        return head_bounds.refused_line(line, not self.in_request_line) or answer
+        return (
+            head_bounds.refused_line(bytes(self.request_line), not self.in_request_line) or answer
+        )
 
 
 def _starts_a_request_line(held: bytes) -> bool:

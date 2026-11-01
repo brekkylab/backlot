@@ -272,13 +272,11 @@ def _us(ts: str) -> int:
 
 
 def _inclusive(request: Request) -> bool:
-    """Whether `oldest` and `latest` take the message at their own ts. Measured against
-    slack.com/api on `conversations.history`: on 2026-10-16, a message whose ts equals `latest` is
-    left out, as one at `oldest` is, and a page bounded by one message's ts on both sides is empty,
-    `inclusive=true` putting that message back alone; on 2026-10-18, only absent, empty, "0" and
-    case-insensitive "false" exclude the bound. Other strings, including "00", "no" and
-    whitespace-padded "false", include it. Repeated query values use the last one."""
-    return (_param(request, "inclusive") or "").lower() not in ("", "0", "false")
+    """Whether `oldest` and `latest` take the message at their own ts, `inclusive` read as
+    :func:`_flag` reads it. Measured against slack.com/api on `conversations.history` on 2026-10-16:
+    a message whose ts equals `latest` is left out, as one at `oldest` is, and a page bounded by one
+    message's ts on both sides is empty, `inclusive=true` putting that message back alone."""
+    return _flag(request, "inclusive")
 
 
 # What a `conversations.history` or `conversations.replies` cursor holds: `next_ts:` and the
@@ -1643,9 +1641,9 @@ async def conversations_replies(request: Request):
     # thread for a room the caller cannot open.
     if name is None or not _channel_visibility(request, conn, ids)(name):
         return _err("channel_not_found")
-    # A cursor is read after the channel and before the thread (measured 2026-10-12), and one that
-    # names no position is refused here, where `conversations.history` serves its first page:
-    # measured 2026-10-29, `next_ts:abc` and `next_ts:0` are both `invalid_cursor`.
+    # A cursor is read after the channel and before the thread (measured 2026-10-12). Beside the
+    # ones `_next_ts` refuses, one that names no position is `invalid_cursor` here, where
+    # `conversations.history` serves its first page for it: measured 2026-10-29 with `next_ts:abc`.
     at = _next_ts(_param(request, "cursor"))
     if at is not None and not at:
         return _err("invalid_cursor")
@@ -3100,9 +3098,11 @@ def _member_count(request: Request, conn, name: str) -> int:
 
 
 def _flag(request: Request, key: str) -> bool:
-    """A boolean argument as `conversations_history` measured `inclusive`: absent, empty, `0` and
-    `false` in any case are off, and every other value is on. `reply_broadcast` read the same as a
-    form field on slack.com on 2026-10-30, `00`, `no`, `null` and ` false` among the values on."""
+    """A boolean argument: absent, empty, `0` and `false` in any case are off, and every other value
+    is on. Measured against slack.com/api: `inclusive` on `conversations.history` on 2026-10-18,
+    `00`, `no` and whitespace-padded `false` among the values on and a repeated one read by its last
+    value, and `reply_broadcast` as a form field on 2026-10-30, `00`, `no`, `null` and ` false`
+    among them."""
     return (_param(request, key) or "").lower() not in ("", "0", "false")
 
 
@@ -3451,7 +3451,8 @@ def _replies_limit(request: Request) -> tuple[int, JSONResponse | None]:
     replies when none is sent, the default Slack documents ("_Default:_ `1000`"), and otherwise a
     whole number from 1 to 1000. Measured against slack.com/api on 2026-10-29 on a 30-reply thread,
     `0`, `00`, `-1` and `-5` answer the "must be greater than 1" line, `1` being read, and `1001`
-    the "must be less than 1000" line; the refusal comes where `_limit`'s does."""
+    the "must be less than 1000" line. The same day, a missing `ts` was answered ahead of it and an
+    unknown channel after it."""
     raw = _param(request, "limit")
     if raw is None:
         return 1000, None

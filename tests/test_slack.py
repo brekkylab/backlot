@@ -2139,7 +2139,7 @@ def test_thread_rooted_at_epoch_zero_stays_coherent(tmp_path):
 def test_slack_chronology_is_numeric_not_lexicographic(tmp_path):
     """A ts is TEXT (`"<seconds>.<fraction>"`, the spelling Slack's own API uses), so ordering by
     it compares digit by digit and puts second 9 after second 10. Every slack listing orders by
-    the integer second first, with the ts breaking ties so an offset page still cannot skip a row.
+    the integer second first, with the ts breaking ties so a page boundary cannot skip a row.
 
     Seconds 9 and 10 rather than something larger: a digit-count change is the whole failure, and
     the 1970 era where one happens is a corpus this project supports."""
@@ -4320,14 +4320,22 @@ def test_slack_history_reads_a_cursor_for_the_ts_it_names(
 
 @pytest.fixture
 def slack_thread(wclient, tokens):
-    """A parent and five replies posted to `incidents`, and the ts of each, the parent first."""
+    """A parent and five replies posted to `incidents`, the second a `thread_broadcast`, and the ts
+    of each, the parent first."""
     h = _uh(tokens, "ava@acme.com")
     cid = synth.slack_channel_id("incidents")
     post = "/slack/api/chat.postMessage"
     parent = wclient.post(post, headers=h, data={"channel": cid, "text": "P"}).json()["ts"]
     replies = [
         wclient.post(
-            post, headers=h, data={"channel": cid, "text": f"r{n}", "thread_ts": parent}
+            post,
+            headers=h,
+            data={
+                "channel": cid,
+                "text": f"r{n}",
+                "thread_ts": parent,
+                **({"reply_broadcast": "true"} if n == 2 else {}),
+            },
         ).json()["ts"]
         for n in range(1, 6)
     ]

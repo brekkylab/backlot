@@ -6047,6 +6047,7 @@ def test_a_thread_ts_naming_nothing_posts_top_level_and_an_unreadable_one_is_ref
             ).json()
             assert j["ok"] is True, value
             assert "thread_ts" not in j["message"] and "root" not in j["message"], value
+            assert "parent_user_id" not in j["message"], value
             assert (j["message"].get("subtype"), "team" in j["message"]) == (
                 subtype,
                 subtype is None,

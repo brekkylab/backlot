@@ -2240,7 +2240,9 @@ async def chat_post_message(request: Request):
         "ok": True,
         "channel": synth.slack_channel_id(name),
         "ts": ts,
-        "message": _with_root(conn, name, ids, caller, row, _message(row)),
+        "message": _with_root(
+            conn, name, ids, caller, row, _message(row, parent_user_id=parent_uid)
+        ),
     }
 
 

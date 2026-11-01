@@ -91,7 +91,7 @@ batch read, token exchange. A POST is not evidence of a write either way; the en
   already closes is closed (item 7).
 
   ```bash
-  gh issue list -R brekkylab/backlot --search "is:open no:assignee -linked:pr label:hacktoberfest"
+  gh issue list -R brekkylab/backlot --search 'is:open no:assignee -linked:pr label:"good first issue"'
   gh issue view N -R brekkylab/backlot --json closedByPullRequestsReferences,assignees
   ```
 

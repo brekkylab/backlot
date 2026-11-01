@@ -324,8 +324,10 @@ def _some_github_route_matches(scope: Scope) -> bool:
 
 def _github_routes(scope: Scope) -> bool:
     """Whether real routes this scope: some mounted route matches its path, whatever the method
-    (:func:`_some_github_route_matches`), or its method and path are an operation GitHub publishes
-    and no route here serves (``backlot.routers.github.is_an_unserved_operation``).
+    (:func:`_some_github_route_matches`), its method and path are an operation GitHub publishes
+    and no route here serves (``backlot.routers.github.is_an_unserved_operation``), or its path is
+    under an agent family (``backlot.routers.github.under_an_agent_family``), which real's agents
+    backend answers itself.
 
     A 404 for a path real does not route carries no version echo, and carries the five
     `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the same
@@ -340,8 +342,10 @@ def _github_routes(scope: Scope) -> bool:
     so what real reads here is that a credential arrived, not that one resolved, where the same
     `Basic` value, which names no token, on a route that matches is served and counted.
     """
-    return _some_github_route_matches(scope) or github.is_an_unserved_operation(
-        scope["method"], scope["path"]
+    return (
+        _some_github_route_matches(scope)
+        or github.is_an_unserved_operation(scope["method"], scope["path"])
+        or github.under_an_agent_family(scope["path"])
     )
 
 
@@ -406,6 +410,29 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
     except StarletteHTTPException as exc:
         return await _http_exception_handler(request, exc)
     return await call_next(request)
+
+
+@_middleware(
+    lambda scope: (
+        github.under_an_agent_family(scope["path"])
+        and not github.is_an_unserved_operation(scope["method"], scope["path"])
+    )
+)
+async def refuse_a_credential_on_an_agent_path(request: Request, call_next):
+    """A path under one of the agent families is answered ahead of the router as real's agents
+    backend answers it (``backlot.routers.github.refuse_a_credential_on_an_agent_path``), on any
+    path, published or not; an `OPTIONS` whose credential resolves goes on to the router.
+
+    Registered after `refuse_an_unserved_github_operation`, which keeps the paths an operation of
+    the baseline publishes on a family, and before the version echo and the rate-limit headers, so
+    the answers leave through them: no echo, and the five `x-ratelimit-*` as ``_github_routes``
+    and the state :func:`github.refused_an_unserved_operation_uncounted` reads give them.
+    """
+    try:
+        answer = await github.refuse_a_credential_on_an_agent_path(request)
+    except StarletteHTTPException as exc:
+        return await _http_exception_handler(request, exc)
+    return answer if answer is not None else await call_next(request)
 
 
 @_middleware(
@@ -478,7 +505,8 @@ async def echo_github_api_version(request: Request, call_next):
     caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
     (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
     ``DELETE /installation/token``'s 401 is the one of those that echoes, as a served route's does
-    (:func:`github.refused_an_unserved_operation_reported`).
+    (:func:`github.refused_an_unserved_operation_reported`). Nor does anything on an agent path:
+    real reads the version header on none of the `/agents` answers (``github.honours_api_version``).
     """
     response = await call_next(request)
     if (
@@ -763,7 +791,7 @@ async def read_a_graph_request_the_way_graph_does(request: Request, call_next):
 
 def _a_slashed_notion_path(scope: Scope) -> bool:
     path = _url_path(scope)
-    return path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion/")
+    return path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion//")
 
 
 @_middleware(_a_slashed_notion_path)
@@ -778,9 +806,8 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     otherwise claim every slashed spelling and answer 400 where real answers what the route
     answers.
 
-    The vendor root is not rewritten: `/notion/` is the URL's 400, and `/notion` is Starlette's own
-    307 to that, where real's `/` is a 302 to its marketing site — a page this server does not
-    serve at all.
+    The vendor root is not rewritten, and neither is `/notion//`: on 2026-10-31 real answered `//`
+    the URL's 400, where `/` is its redirect (``notion.root``).
 
     GitHub's trailing slash is the opposite rule and has its own middleware above; the two are
     measured separately because the vendors answer differently.
@@ -806,8 +833,10 @@ async def report_notion_cors(request: Request, call_next):
     instead a 204 with no body and `vary: Origin`, ahead of the URL check. An `Origin` that is
     empty, a space or a tab counted as none, and on 2026-10-28 an `Origin` sent twice or three
     times counted when one of them had a value. On the other paths `Origin` changed nothing
-    (``notion.answers_cors`` has their `vary`). On 2026-10-28 the 304 an `If-None-Match: *` draws,
-    which carries no `content-type`, was `vary: Origin`, with the CORS headers as `Origin` asked.
+    (``notion.answers_cors`` has their `vary`), and on 2026-10-31 the root's `vary: Accept`
+    (``notion.root``) came first, with `Accept-Encoding` after it where the answer had a
+    `content-type`. On 2026-10-28 the 304 an `If-None-Match: *` draws, which carries no
+    `content-type`, was `vary: Origin`, with the CORS headers as `Origin` asked.
 
     Registered after ``serve_a_slashed_notion_path_as_the_path_without_it``,
     ``read_a_notion_body_as_express_does`` and ``report_notion_etag``, which makes it the outer of
@@ -818,7 +847,9 @@ async def report_notion_cors(request: Request, call_next):
     raw_path = request.scope.get("raw_path") or request.url.path.encode()
     if not notion.answers_cors(raw_path.decode("latin-1")):
         response = await call_next(request)
-        response.headers["vary"] = "Accept-Encoding"
+        vary = response.headers.get("vary")
+        if "content-type" in response.headers:
+            response.headers["vary"] = f"{vary}, Accept-Encoding" if vary else "Accept-Encoding"
         return response
     if (
         origin
@@ -945,6 +976,20 @@ async def route_a_google_path_the_way_google_does(request: Request, call_next):
             return await _http_exception_handler(request, exc)
         if match is Match.NONE:
             return await _http_exception_handler(request, StarletteHTTPException(status_code=404))
+    return await call_next(request)
+
+
+@_middleware(lambda scope: errors.atlassian.is_confluence(_url_path(scope)))
+async def refuse_an_illegal_confluence_charset(request: Request, call_next):
+    """Answer a Spring Confluence request whose `Content-Type` carries a charset Java cannot name
+    with the empty 500 real answers (``atlassian.refuse_a_spring_confluence_charset``), ahead of
+    routing. Registered before the slash rewrite, which makes it the inner of the two, so it reads
+    the path that rewrite leaves and the spelling it keeps; the front door stays outside both, so
+    the gateway's `PATCH` 405 still comes first.
+    """
+    refused = atlassian.refuse_a_spring_confluence_charset(request)
+    if refused is not None:
+        return refused
     return await call_next(request)
 
 
@@ -1109,6 +1154,32 @@ def _spring_failure(scope: Scope):
     if errors.atlassian.quality_spring_cannot_copy(accept, reader=reader):
         return atlassian.spring_write_failure
     return None
+
+
+@_middleware(lambda scope: errors.atlassian.is_confluence(re.sub("/{2,}", "/", _url_path(scope))))
+async def escape_past_the_bmp_in_a_confluence_answer(request: Request, call_next):
+    """Write each character past U+FFFF in a Confluence 2xx JSON answer as its two surrogate
+    escapes, as real writes every one (``errors.atlassian.escape_past_bmp``).
+
+    Middleware because each Confluence route but the search builds its 200 with ``JSONResponse``,
+    which writes such a character as its UTF-8 bytes. Registered before the `HEAD` rewrite below,
+    so a `HEAD` carries the `content-length` of the GET's escaped body, as real's `HEAD` beside each
+    such 200 did. The path is read with each run of slashes as one, as the gateway routes it, since
+    the slash rewrite runs inside this one: `//wiki/rest/api/content/{id}` and
+    `///wiki/rest/api/content/{id}` answered the page with the escapes (Confluence Cloud,
+    2026-10-31).
+    """
+    response = await call_next(request)
+    media_type = response.headers.get("content-type") or ""
+    if not (200 <= response.status_code < 300 and media_type.startswith("application/json")):
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    written = errors.atlassian.escape_past_bmp(body.decode()).encode()
+    escaped = Response(written, status_code=response.status_code)
+    escaped.raw_headers = [
+        (name, value) for name, value in response.raw_headers if name != b"content-length"
+    ] + [(b"content-length", str(len(written)).encode())]
+    return escaped
 
 
 @_middleware(lambda scope: _spring_failure(scope) is not None)

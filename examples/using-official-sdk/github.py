@@ -131,7 +131,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
     else:
         repo = gh.get_repo(repos[0].full_name)
         issues = list(repo.get_issues(state="all")[:5])
-        print(f"{len(repos)} repos; {repo.name} has these issues/PRs:")
+        print(f"{len(repos)} repo(s); {repo.name} has these issues/PRs:")
         for issue in issues:
             kind = "PR" if issue.pull_request else "issue"
             print(f"  - #{issue.number} ({kind}) {issue.title}")
@@ -167,7 +167,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
         print(f"\n$ get_git_ref('heads/{repo.default_branch}') -> {head.object.sha[:12]}")
 
         tree = repo.get_git_tree(repo.default_branch, recursive=True)
-        print(f"\n{repo.name}@{repo.default_branch} tree ({len(tree.tree)} entries), a few paths:")
+        print(f"\n{repo.name}@{repo.default_branch} tree (entries: {len(tree.tree)}), a few paths:")
         for entry in tree.tree[:5]:
             print(f"  - {entry.type:4s} {entry.path}")
 
@@ -180,5 +180,5 @@ with serve_or_connect(CORPUS, url=args.url) as s:
             print("  " + snippet.replace("\n", "\n  "))
 
         readme = repo.get_readme()
-        print(f"\n$ get_readme() -> {readme.path} ({readme.size} bytes):")
+        print(f"\n$ get_readme() -> {readme.path} ({readme.size} byte(s)):")
         print("  " + readme.decoded_content.decode()[:200].replace("\n", "\n  "))

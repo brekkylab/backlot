@@ -87,7 +87,7 @@ def main(opts: dict) -> None:
     print(f"=== fs.ls('/') -> {buckets} ===")
     print(f"\n=== fs.find({bucket!r}) ===")
     for key in keys:
-        print(f"  {key}  ({fs.info(key)['size']} bytes)")
+        print(f"  {key}  ({fs.info(key)['size']} byte(s))")
 
     print("\n=== fsspec.open() — a plain file handle over an s3:// URL ===")
     prefer = [k for k in keys if k.endswith((".md", ".txt", ".tf", ".json"))]
@@ -104,7 +104,7 @@ def main(opts: dict) -> None:
     # fsspec, fsspec hands it to s3fs, and s3fs is the one holding the endpoint.
     print(f"\n=== pandas.read_csv('s3://{csvs[0]}') ===")
     first = pd.read_csv(f"s3://{csvs[0]}", storage_options=opts)
-    print(f"  {first.shape[0]} rows x {first.shape[1]} columns")
+    print(f"  {first.shape[0]} row(s) x {first.shape[1]} column(s)")
     print("  " + first.head().to_string(index=False).replace("\n", "\n  "))
 
     # Every CSV in the bucket that agrees with the first one's columns, as one frame. Real buckets
@@ -112,11 +112,11 @@ def main(opts: dict) -> None:
     same = [
         k for k in csvs if tuple(pd.read_csv(f"s3://{k}", storage_options=opts)) == tuple(first)
     ]
-    print(f"\n=== {len(same)} of {len(csvs)} CSVs share those columns — concatenated ===")
+    print(f"\n=== {len(same)} of {len(csvs)} CSV(s) share those columns — concatenated ===")
     everything = pd.concat(
         [pd.read_csv(f"s3://{k}", storage_options=opts) for k in same], ignore_index=True
     )
-    print(f"  {len(everything)} rows from {[k.rsplit('/', 1)[-1] for k in same]}")
+    print(f"  {len(everything)} row(s) from {[k.rsplit('/', 1)[-1] for k in same]}")
 
 
 def _parse_args() -> argparse.Namespace:

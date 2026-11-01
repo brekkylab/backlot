@@ -104,7 +104,7 @@ async def read(graph: GraphServiceClient) -> None:
         print("no channels visible to this identity")
         return
 
-    print(f"{teams.value[0].display_name}: {len(channels.value)} channels")
+    print(f"{teams.value[0].display_name}: {len(channels.value)} channel(s)")
     for channel in channels.value:
         messages = team.channels.by_channel_id(channel.id)
         # `$expand=replies` folds each post's replies into the same response, which is what saves a
@@ -116,7 +116,9 @@ async def read(graph: GraphServiceClient) -> None:
             )
         )
         posts = await messages.messages.get(request_configuration=config)
-        print(f"#{channel.display_name} ({channel.membership_type}) has {posts.odata_count} posts:")
+        print(
+            f"#{channel.display_name} ({channel.membership_type}) has {posts.odata_count} post(s):"
+        )
         for post in posts.value:
             sender = post.from_.user.display_name if post.from_ else "system"
             print(f"  - [{sender}] {post.body.content.splitlines()[0]}")

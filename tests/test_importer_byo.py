@@ -2823,7 +2823,7 @@ def test_verify_manifest_catches_a_tampered_shard(tmp_path):
     good = shard.read_bytes()
     shard.write_bytes(good + b"\x00")
     problems = byo.verify_manifest(out)
-    assert len(problems) == 1 and "bytes" in problems[0]
+    assert len(problems) == 1 and "byte(s)" in problems[0]
 
     # A swap that keeps the byte count is what the digest is FOR. The size check above answers the
     # other cases and returns early, so without this the sha256 comparison never runs in the suite.
@@ -5579,7 +5579,7 @@ def test_a_changed_path_matching_no_file_is_reported_and_loaded(tmp_path, capsys
 
     assert byo.run(corpus, dry_run=True) == 0  # a report, not a verdict on the corpus
     dry = capsys.readouterr()
-    assert "OK: 3 records valid." in dry.out
+    assert "OK: 3 record(s) valid." in dry.out
     assert "path reference" in dry.err and "line 3: src/typo.py" in dry.err
     assert "src/a.py" not in dry.err  # only the unresolved one is named
 

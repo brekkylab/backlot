@@ -1175,7 +1175,7 @@ def test_build_server_fetches_every_source_concurrently(monkeypatch):
     started = time.monotonic()
     backlot_mcp.build_server("http://backlot.invalid", creds, backlot_mcp.OPENAPI_SOURCES)
     elapsed = time.monotonic() - started
-    assert elapsed < 2.0, f"{elapsed:.2f}s for {len(backlot_mcp.OPENAPI_SOURCES)} sources"
+    assert elapsed < 2.0, f"{elapsed:.2f}s for {len(backlot_mcp.OPENAPI_SOURCES)} source(s)"
 
 
 def _initialised_mcp(*args, env=None):

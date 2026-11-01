@@ -61,7 +61,7 @@ def main() -> int:
         return 1
     with open(env_file, "a", encoding="utf-8") as handle:
         handle.writelines(line + "\n" for line in lines)
-    print(f"loop_env: {len(lines)} variables exported from {PREFIX}", file=sys.stderr)
+    print(f"loop_env: {len(lines)} variable(s) exported from {PREFIX}", file=sys.stderr)
     return 0
 
 

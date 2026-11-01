@@ -132,7 +132,7 @@ def main(argv: list[str]) -> int:
     faces = [(user["login"], _avatar(user["avatarUrl"])) for user in users]
     with open(argv[0], "w", encoding="utf-8") as handle:
         handle.write(render(faces))
-    print(f"{len(faces)} contributors drawn to {argv[0]}: {', '.join(u['login'] for u in users)}")
+    print(f"{len(faces)} contributor(s) drawn to {argv[0]}: {', '.join(u['login'] for u in users)}")
     return 0
 
 

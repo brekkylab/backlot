@@ -14,8 +14,10 @@ and none of the front door's other headers (`Server`, `Date`, `Via`, `Cache-Cont
 `Referrer-Policy`, `X-Cache`, `X-Amz-Cf-Pop` and the request ids).
 
 Bytes are counted as the client sent them but for the prefix a path starts with here and real never
-receives (``backlot.request_target.front_door``): the head real gets is that much shorter. The rest
-of the head is counted as sent, `Host` and all. A path no vendor owns has no bound.
+receives (``backlot.request_target.front_door``): the head real gets is that much shorter. Where the
+path is the prefix alone, real gets `/` in its place, and that byte is counted (Slack's `/`,
+measured on 2026-11-01). The rest of the head is counted as sent, `Host` and all. A path no vendor
+owns has no bound.
 
 Measured on 2026-10-29 with each request written to a TLS socket by hand and cache-busted: each sent
 exactly N bytes and then waited for an answer (six seconds, four on api.github.com, which closes a
@@ -64,7 +66,7 @@ class Bound:
     in_line: bytes
     #: The answer to a header that reaches it.
     in_headers: bytes
-    #: The bytes of the request line real never receives (``front_door``'s prefix).
+    #: The bytes of the request line real never receives (the module docstring says which).
     mount: int = 0
     #: The front door, as ``backlot.request_target.front_door`` names it.
     door: str = ""
@@ -224,10 +226,12 @@ def bound(start: bytes) -> Bound | None:
     page, 414 in the request line and 494 in the headers (``errors.atlassian.cdn_too_long``)."""
     method, _, target = start.partition(b" ")
     path = re.split(rb"[? ]", target, maxsplit=1)[0].decode("latin-1")
-    named = request_target.front_door(urllib.parse.unquote(path))
+    unquoted = urllib.parse.unquote(path)
+    named = request_target.front_door(unquoted)
     if named is None:
         return None
     door, prefix = named
+    mount = len(prefix) - 1 if prefix and unquoted == prefix else len(prefix)
     if door == "atlassian":
         line, headers = (
             _answer(
@@ -240,5 +244,5 @@ def bound(start: bytes) -> Bound | None:
                 (494, "HTTP/1.1 494 "),
             )
         )
-        return Bound(32_768, True, False, line, headers, len(prefix), door)
-    return dataclasses.replace(_BOUNDS[door], mount=len(prefix), door=door)
+        return Bound(32_768, True, False, line, headers, mount, door)
+    return dataclasses.replace(_BOUNDS[door], mount=mount, door=door)

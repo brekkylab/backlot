@@ -144,6 +144,7 @@ _REAL = {
 _BOUNDS = [
     ("/github", "/repos/acme/docs-site", 68_552, False, "github 414", "github 431"),
     ("/slack", "/api/api.test", 61_440, False, "slack", "slack"),
+    ("/slack", "", 61_440, False, "slack", "slack"),
     ("", "/drive/v3/files", 65_536, False, "google", "google"),
     ("", "/gmail/v1/users/me/profile", 65_536, False, "google", "google"),
     ("/docs", "/v1/documents/x", 65_536, False, "google", "google"),
@@ -230,6 +231,11 @@ _ENDED = [
 ]
 
 
+def _unseen(mount: str, path: str) -> int:
+    """The bytes of ``mount`` real never receives: with no ``path`` after it, real gets `/` there."""
+    return len(mount) - 1 if mount and not path else len(mount)
+
+
 def _connect(base_url: str) -> socket.socket:
     url = urllib.parse.urlsplit(base_url)
     return socket.create_connection((url.hostname, url.port), timeout=10)
@@ -286,10 +292,10 @@ def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_
     base_url, _ = live_server
     line = f"GET {mount}{path}?x="
     if part == "line":
-        head = line + "a" * (bound + len(mount) - len(line))
+        head = line + "a" * (bound + _unseen(mount, path) - len(line))
     else:
         start = f"{line}1 HTTP/1.1\r\nHost: x\r\nX-A: "
-        counted = len("X-A: ") if per_line else len(start) - len(mount)
+        counted = len("X-A: ") if per_line else len(start) - _unseen(mount, path)
         head = start + "a" * (bound - counted)
     named = head_bounds.NAMED_WITHIN
     with _connect(base_url) as c:
@@ -311,7 +317,7 @@ def test_a_head_that_ends_is_read_to_the_bound_real_read_it_to(
 
     def head(counted: int) -> bytes:
         start = f"GET {mount}{path}?x=1 HTTP/1.1\r\nHost: x\r\nX-A: "
-        fixed = len("X-A: \r") if per_line else len(start) + len("\r\n\r\n") - len(mount)
+        fixed = len("X-A: \r") if per_line else len(start) + len("\r\n\r\n") - _unseen(mount, path)
         return (start + "a" * (counted - fixed) + "\r\n\r\n").encode()
 
     short = f"GET {mount}{path}?x=1 HTTP/1.1\r\nHost: x\r\n\r\n".encode()
@@ -331,7 +337,7 @@ def test_a_line_with_no_query_is_answered_as_real_answered_it(live_server, mount
     base_url, _ = live_server
     bound, per_line = _BOUND_OF[mount]
     start = f"GET {mount}{path} HTTP/1.1\r\nHost: x\r\nX-A: "
-    counted = len("X-A: ") if per_line else len(start) - len(mount)
+    counted = len("X-A: ") if per_line else len(start) - _unseen(mount, path)
     with _connect(base_url) as c:
         c.sendall((start + "a" * (bound - counted)).encode())
         answer = _until_closed(c)

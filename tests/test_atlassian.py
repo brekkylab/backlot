@@ -7011,7 +7011,7 @@ _OPERATION_REFUSALS = [
             ),
         )
     ),
-    # the charset Tomcat reads first (``errors.atlassian.refuse_a_confluence_media_type``)
+    # the charset Tomcat reads first (``errors.atlassian.refuse_a_confluence_charset``)
     *(
         ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, status, body)
         for ctype, status, body in (
@@ -7421,6 +7421,72 @@ def _operation_refusal(client, method, vendor_path, authorization, ctype, status
 
 def test_confluence_answers_an_operation_before_it_runs(client):
     assert _failures(_operation_refusal, _OPERATION_REFUSALS, client) == {}
+
+
+_EMPTY_CHARSET = "text/plain;charset="
+
+#: The status each kind of path answers a `Content-Type` whose charset Java cannot name
+#: (``errors.atlassian.refuse_a_confluence_charset``) with: the empty 500 wherever Confluence's
+#: Spring application answers (``atlassian.refuse_a_spring_confluence_charset``), whichever the
+#: method and with a credential or without one, and real's own answer where it does not fail the
+#: request. A ``ctype`` of two values sends the header twice, and ``"admin"`` is the admin's token.
+_SPRING_CHARSET = [
+    # a path a route serves, under its method, `HEAD`, `OPTIONS` and one it does not take
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "admin", 500),
+    ("HEAD", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("DELETE", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("POST", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/space/ENG", _EMPTY_CHARSET, None, 500),
+    ("PUT", "/wiki/rest/api/space/ENG", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/content", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/content", _EMPTY_CHARSET, "admin", 500),
+    ("POST", "/wiki/rest/api/content/1/label", _EMPTY_CHARSET, None, 500),
+    # a path an operation is published at and no route serves
+    ("GET", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    ("DELETE", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    # the product's page
+    ("GET", "/wiki/rest/api/space/ENG/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/", _EMPTY_CHARSET, None, 500),
+    # the header twice: a blank value left out, the others read joined
+    ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, ""), None, 500),
+    ("GET", "/wiki/rest/api/space", ("\t", _EMPTY_CHARSET), None, 500),
+    ("GET", "/wiki/rest/api/space", ('text/plain;charset="utf-8', '"'), None, 500),
+    ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, "text/plain"), None, 403),
+    ("GET", "/wiki/rest/api/space", ("\xa0", _EMPTY_CHARSET), None, 403),
+    # where real does not fail the request
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("POST", "/wiki/rest/api/space/abc123/permission", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api/nosuch", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/", _EMPTY_CHARSET, None, 400),
+    ("OPTIONS", "/wiki/rest/api/audit", _EMPTY_CHARSET, None, 400),
+    ("POST", "/wiki/rest/api/content/archive", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/longtask", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/nope", _EMPTY_CHARSET, None, 302),
+    ("GET", "/wiki/rest/api/search?cql=type%3Dpage", "application/json;charset=_x", None, 403),
+    ("PATCH", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 405),
+    ("GET", "/rest/api/3/serverInfo", _EMPTY_CHARSET, None, 200),
+]
+
+
+def _spring_charset(client, admin_h, method, vendor_path, ctype, authorization, status):
+    ctypes = (ctype,) if isinstance(ctype, str) else ctype
+    headers = [("Content-Type", value) for value in ctypes]
+    if authorization is not None:
+        token = admin_h["Authorization"] if authorization == "admin" else authorization
+        headers.append(("Authorization", token))
+    body = b"x" if method in ("POST", "PUT") else None
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
+    assert r.status_code == status, r.text[:200]
+    if status == 500:
+        assert (r.content, r.headers.get("content-type")) == (b"", None)
+
+
+def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client, admin_h):
+    assert _failures(_spring_charset, _SPRING_CHARSET, client, admin_h) == {}
 
 
 @pytest.mark.parametrize(

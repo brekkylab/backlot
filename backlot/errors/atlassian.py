@@ -2551,8 +2551,8 @@ def cdn_bad_request(method: str, raw_path: str) -> str:
 
 
 def cdn_too_long(status: int, method: str, raw_path: str) -> str:
-    """The CDN's page with ``status`` in it, 414 for a request line it stops reading and 494 for a
-    header line (``backlot.head_bounds``), which say why as its 400 does."""
+    """The CDN's page with ``status`` in it and its 400's text (:data:`CDN_BAD_REQUEST`), 414 for a
+    request line it stops reading and 494 for a header line (``backlot.head_bounds``)."""
     return _cloudfront(status, CDN_BAD_REQUEST, method, raw_path)
 
 

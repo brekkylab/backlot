@@ -454,20 +454,20 @@ def answer(scope: Scope) -> Response | None:
 def refused_in_the_line(
     door: str, line: bytes, ended: bool, ahead: bool
 ) -> tuple[str, str, bytes] | None:
-    """The status line, media type and body the front door ``door`` (:func:`front_door`'s name)
-    refuses the request line ``line``, the bytes before its LF, with ahead of its bound, or
+    """The status line, media type and body with which the front door ``door`` (:func:`front_door`'s
+    name) refuses the request line ``line``, the bytes before its LF, ahead of its bound, or
     ``None`` where the bound's page answers. ``ended`` is whether the LF came, and ``ahead`` whether
     it came in a piece of the head before the piece the bound is reached in. The target of a line
     that ended lies between its first space and its last, as :func:`encode_line` reads it, and of
     one that has not, after its first.
 
-    A front door refuses a raw byte in the target as it reads the line, in whichever piece the byte
-    comes: GitHub one of any kind, Google a `nul` or a `control`, Jira Cloud's CDN and Cloudflare a
-    `nul` or a `cr`, and Graph one of any kind but a `high` (:func:`_graph_page`). Where the LF came
-    ahead, Slack refuses a raw byte of any kind, Jira Cloud's CDN a path :func:`_broken` holds, and
-    Cloudflare, on each of its four hosts, a path :func:`refused_path` holds; where it came in the
-    piece that reaches the bound, Slack answers with the bound's 431. Each refusal is the one real
-    gave the same line with a short head.
+    In whichever piece of the head the byte comes, GitHub refuses a raw byte in the target of any
+    kind, Google a `nul` or a `control`, Jira Cloud's CDN and Cloudflare a `nul` or a `cr`, and
+    Graph one of any kind but a `high` (:func:`_graph_page`). Where the LF came ahead, Slack refuses
+    a raw byte of any kind, Jira Cloud's CDN a path :func:`_broken` holds, and Cloudflare, on each
+    of its four hosts, a path :func:`refused_path` holds; where it came in the piece that reaches
+    the bound, Slack answers with the bound's 431. Each refusal is the one real gave the same line
+    with a short head.
 
     Measured on 2026-11-01 (UTC) over raw HTTP/1.1 on TLS, each request cache-busted and its head
     written at once in pieces of 16,384 bytes, on the paths of ``backlot.head_bounds``'

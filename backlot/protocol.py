@@ -126,10 +126,10 @@ class _Head:
         return None
 
     def _over(self) -> bytes | None:
-        """The answer once the head is past its bound, the front door's refusal of the request line
-        where it refuses the line ahead of the bound (:meth:`backlot.head_bounds.Bound.refused`).
-        The vendor is read off the request line once it ends or holds
-        :data:`backlot.head_bounds.NAMED_WITHIN` bytes."""
+        """The answer once the head has reached its bound, the front door's refusal of the request
+        line where it refuses the line ahead of the bound
+        (:meth:`backlot.head_bounds.Bound.refused`). The vendor is read off the request line once it
+        ends or holds :data:`backlot.head_bounds.NAMED_WITHIN` bytes."""
         if not self.named and (
             not self.in_request_line or len(self.request_line) >= head_bounds.NAMED_WITHIN
         ):

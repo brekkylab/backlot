@@ -232,7 +232,8 @@ _ENDED = [
 
 
 def _unseen(mount: str, path: str) -> int:
-    """The bytes of ``mount`` real never receives: with no ``path`` after it, real gets `/` there."""
+    """The bytes of ``mount`` real never receives: with no ``path`` after it, real gets `/`
+    there."""
     return len(mount) - 1 if mount and not path else len(mount)
 
 

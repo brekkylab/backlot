@@ -11,6 +11,8 @@ runs. Regenerate after the baseline gains or loses one; ``tests/test_atlassian.p
 then, and `.github/workflows/fidelity.yml` runs ``--check`` on its schedule, which is where a change
 to the documents shows. A ``missing_operation`` the documents no longer publish stops the script
 with exit 1 and nothing written, rather than being sorted as one they publish with no ``security``.
+Run by its path, it answers any other ``Exception`` with its traceback on stderr and exit 3, where
+Python would exit 1, the code ``--check`` gives a stale file, and 2 is a document it could not read.
 
 ``refused`` are the operations that refuse a caller with no credential they resolve with Jira's 401
 (``backlot.errors.atlassian.JIRA_UNAUTHENTICATED``), and ``run`` the rest, which run for that
@@ -47,6 +49,7 @@ import argparse
 import json
 import re
 import sys
+import traceback
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -273,4 +276,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        status = main()
+    except Exception:
+        traceback.print_exc()
+        status = 3
+    sys.exit(status)

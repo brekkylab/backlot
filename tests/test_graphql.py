@@ -764,12 +764,18 @@ def test_node_json_refuses_a_float_that_is_not_finite(value):
         (1789711200000.0, "1789711200000"),
         (-4274.98, "-4274.98"),
         (121.08999633789062, "121.08999633789062"),
-        (2.0**53, "9007199254740992.0"),
+        (0.1 + 0.2, "0.30000000000000004"),
+        (2.0**53, "9007199254740992"),
+        (2.0**60, "1152921504606847000"),
+        (1e16, "10000000000000000"),
+        (1e21, "1e+21"),
+        (1e-5, "0.00001"),
+        (1e-7, "1e-7"),
     ],
 )
-def test_node_json_writes_a_whole_float_below_2_53_with_no_fraction(value, written):
-    """As ``JSON.stringify`` writes the number, for the values Linear and Fireflies answered; a
-    double from 2**53 is left as it is, as ``body._int`` leaves it."""
+def test_node_json_writes_a_number_as_json_stringify_does(value, written):
+    """As Node 24.18.0's ``JSON.stringify`` writes each number, the values Linear and Fireflies
+    answered among them."""
     assert request_body.node_json({"x": [value]}).decode() == f'{{"x":[{written}]}}'
 
 

@@ -1480,13 +1480,17 @@ def test_fireflies_field_names_are_snake_case(fireflies_corpus):
 
 
 def test_fireflies_duration_is_minutes(fireflies_corpus):
-    """The API's unit. Serving seconds would make every meeting read as 60x too long."""
+    """The API's unit, written with no fraction as ``JSON.stringify`` writes a whole number.
+    Serving seconds would make every meeting read as 60x too long."""
     settings = fireflies_corpus
     with client_for(settings) as client:
-        t = _ff(client, settings, "{ transcripts(limit: 1) { duration } }")["data"]["transcripts"][
-            0
-        ]
-        assert t["duration"] == 45.0
+        r = gql(
+            client,
+            "/fireflies/graphql",
+            "{ transcripts(limit: 1) { duration } }",
+            f"Bearer {settings.admin_token}",
+        )
+        assert r.content == b'{"data":{"transcripts":[{"duration":45}]}}\n'
 
 
 def test_fireflies_action_items_are_a_newline_joined_string(fireflies_corpus):

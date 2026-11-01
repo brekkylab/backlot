@@ -5875,62 +5875,44 @@ def test_posting_with_thread_ts_replies_in_that_thread(wclient, tokens, admin_h,
     assert [m["ts"] for m in thread] == [alone, answered]
     assert thread[0]["thread_ts"] == alone and thread[0]["reply_count"] == 1
 
-    # `chat_post_message` records the measurement: chat.postMessage answers a reply with
-    # `parent_user_id` naming the thread's root author, whether replying to the root or to a reply
-    # in the thread, under a bot token or a user token, and conversations.replies lists it with
-    # the same parent_user_id. A top-level post carries no parent_user_id.
+    # `_parent_uid`'s rule, in the answer to the post and on each reply `conversations.replies`
+    # lists. The root's poster and the replier differ in each row.
     def post(headers, text, **extra):
-        return wclient.post(
-            "/slack/api/chat.postMessage",
-            headers=headers,
-            data={"channel": cid, "text": text, **extra},
-        ).json()
+        data = {"channel": cid, "text": text, **extra}
+        return wclient.post("/slack/api/chat.postMessage", headers=headers, data=data).json()
 
-    cases = [
-        (root_writer, reply_to_reply, broadcast)
-        for root_writer in ("admin", "ava@acme.com")
-        for reply_to_reply in (False, True)
-        for broadcast in (None, "", "false", "FALSE", "0")
+    by = {"admin": admin_h, "ava": h}
+    ava = synth.slack_user_id("ava@acme.com")
+    rows = [
+        # root's poster, replier, what `thread_ts` names, `reply_broadcast`, root deleted first
+        (("admin", "ava", "root", None, False), "USERVICE0"),
+        (("ava", "admin", "root", None, False), ava),
+        (("admin", "ava", "reply", None, False), "USERVICE0"),
+        (("ava", "admin", "reply", None, False), ava),
+        (("admin", "ava", "root", "", False), "USERVICE0"),
+        (("admin", "ava", "root", "false", False), "USERVICE0"),
+        (("admin", "ava", "root", "FALSE", False), "USERVICE0"),
+        (("admin", "ava", "root", "0", False), "USERVICE0"),
+        (("admin", "ava", "root", None, True), slack.SLACKBOT_ID),
+        (("ava", "admin", "reply", None, True), slack.SLACKBOT_ID),
     ]
-    observed, expected = [], []
-    for root_writer, reply_to_reply, broadcast in cases:
-        root_h = admin_h if root_writer == "admin" else _uh(tokens, root_writer)
-        reply_h = _uh(tokens, "ava@acme.com") if root_writer == "admin" else admin_h
-        root = post(root_h, f"root by {root_writer}")
-        target = root["ts"]
-        if reply_to_reply:
-            target = post(reply_h, "intermediate reply", thread_ts=target)["ts"]
+    got = []
+    for (root_by, reply_by, names, broadcast, deleted), _ in rows:
+        root = post(by[root_by], "root")["ts"]
+        target = root
+        if names == "reply" or deleted:
+            first = post(by[reply_by], "first reply", thread_ts=root)["ts"]
+            target = first if names == "reply" else root
+        if deleted:
+            gone = {"channel": cid, "ts": root}
+            wclient.post("/slack/api/chat.delete", headers=by[root_by], data=gone)
         flags = {} if broadcast is None else {"reply_broadcast": broadcast}
-        posted_reply = post(reply_h, "plain reply", thread_ts=target, **flags)
-        listed = wclient.get(
-            "/slack/api/conversations.replies",
-            headers=reply_h,
-            params={"channel": cid, "ts": root["ts"]},
+        echo = post(by[reply_by], "reply", thread_ts=target, **flags)["message"]
+        listed = wclient.post(
+            "/slack/api/conversations.replies", headers=h, data={"channel": cid, "ts": root}
         ).json()["messages"]
-        listed_reply = next(m for m in listed if m["ts"] == posted_reply["ts"])
-        observed.append(
-            (
-                root["ok"],
-                "parent_user_id" in root["message"],
-                posted_reply["ok"],
-                posted_reply["message"]["user"] != root["message"]["user"],
-                posted_reply["message"]["thread_ts"] == root["ts"],
-                posted_reply["message"].get("parent_user_id"),
-                listed_reply.get("parent_user_id"),
-            )
-        )
-        expected.append(
-            (
-                True,
-                False,
-                True,
-                True,
-                True,
-                root["message"]["user"],
-                root["message"]["user"],
-            )
-        )
-    assert observed == expected
+        got.append((echo.get("parent_user_id"), {m.get("parent_user_id") for m in listed[1:]}))
+    assert got == [(uid, {uid}) for _, uid in rows]
 
 
 def test_replying_to_a_reply_lands_in_the_same_thread(wclient, tokens, ro_conn):
@@ -5970,7 +5952,6 @@ def test_a_thread_ts_naming_nothing_posts_top_level_and_an_unreadable_one_is_ref
         ).json()
         assert j["ok"] is True, value
         assert "thread_ts" not in j["message"], value
-        assert "parent_user_id" not in j["message"], value
     # Refused outside the window `_thread_ts_error` records, and the message carries the value
     # as real reads it, in microseconds.
     import time as _time

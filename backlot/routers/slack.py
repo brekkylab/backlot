@@ -1216,6 +1216,19 @@ def _uid(email: str) -> str:
     return SERVICE_USER_ID if email == SERVICE_EMAIL else synth.slack_user_id(email)
 
 
+def _parent_uid(root) -> str:
+    """The `parent_user_id` a reply in ``root``'s thread carries: the `user` the root is served
+    with, which is ``USLACKBOT`` once the root is deleted with a reply still under it.
+
+    Measured against slack.com on 2026-10-30 and 2026-10-31, over a user and a bot token: the
+    `chat.postMessage` answer to a reply carries the root's poster whether `thread_ts` names the
+    root or a reply under it, and `conversations.replies` lists each reply with the same id. With
+    the root deleted, a reply posted to the placeholder or to a reply under it, and each reply
+    `conversations.replies` listed, carried ``USLACKBOT`` instead.
+    """
+    return SLACKBOT_ID if root["subtype"] == "tombstone" else _uid(root["author_email"])
+
+
 def _handle(email: str) -> str:
     """A corpus email as Slack's handle — the `name` a user object carries and the `user`
     `auth.test` reports for the same person."""
@@ -1637,7 +1650,7 @@ async def conversations_replies(request: Request):
     latest = store.slack_latest_reply_ts(conn, name, root["ts"], ids) if rc else None
     ru = store.slack_reply_authors(conn, name, root["ts"], ids)
     ruids = [_uid(e) for e in ru[:5]]
-    parent_uid = _uid(root["author_email"])
+    parent_uid = _parent_uid(root)
     messages = [
         _message(
             x,
@@ -2191,16 +2204,9 @@ async def chat_post_message(request: Request):
             # `conversations.replies` answers the root alone and the message reads back with no
             # thread at all — a thread this API made and cannot show.
             store.patch_document(conn, "slack", (name, parent["ts"]), "thread_ts", thread_ts)
-            root_author = parent["author_email"]
-        elif parent["thread_ts"] == parent["ts"]:
-            root_author = parent["author_email"]
-        else:
-            root = store.document_by_key(conn, "slack", (name, thread_ts), ids)
-            root_author = root["author_email"] if root else None
-        # `chat.postMessage` answers a reply with `parent_user_id`: measured against slack.com on
-        # 2026-10-30 (issue 1162), each answer carries `parent_user_id` as the thread's root author,
-        # whether replying to the root or to a reply in the thread, matching conversations.replies.
-        parent_uid = _uid(root_author) if root_author else None
+        root = store.document_by_key(conn, "slack", (name, thread_ts), ids)
+        if root is not None:
+            parent_uid = _parent_uid(root)
     now = int(time.time())
     ts = store.slack_next_ts(conn, name, now)
     store.insert_document(
@@ -2222,7 +2228,7 @@ async def chat_post_message(request: Request):
         "ok": True,
         "channel": synth.slack_channel_id(name),
         "ts": ts,
-        "message": _message(row, parent_user_id=parent_uid),
+        "message": _message(row),
     }
 
 

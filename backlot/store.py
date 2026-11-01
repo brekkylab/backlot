@@ -246,10 +246,11 @@ PATCHABLE = {
     # `subtype` is here because a deleted thread root becomes a `tombstone` rather than
     # disappearing (`chat_delete`), which is a change to the message real keeps serving.
     "slack": frozenset({"content", "reactions", "edited", "thread_ts", "subtype"}),
-    # A Sheets write changes a file's cells, which live in `gdrive_sheets` (see SATELLITES), and
-    # these two follow from them. `content` is the first sheet's CSV, which `files.export` and
-    # fullText search read: measured 2026-10-26, both reflect a `values.update` on real Drive.
-    # `updated_ts` is `modifiedTime`, which real moves to the write's own time.
+    # A Sheets write changes a file's cells, which live in `gdrive_sheets` (see SATELLITES), and a
+    # Docs write its body, in `gdrive_doc_bodies`; these two follow from them. `content` is the
+    # first sheet's CSV or the document's text, which `files.export` and fullText search read:
+    # measured 2026-10-26, both reflect a `values.update` on real Drive. `updated_ts` is
+    # `modifiedTime`, which real moves to the write's own time.
     "google_drive": frozenset({"content", "updated_ts"}),
 }
 
@@ -499,9 +500,12 @@ CREATE TABLE IF NOT EXISTS gdrive_spreadsheets (
     file_id TEXT PRIMARY KEY, properties TEXT NOT NULL
 );
 
--- A document's stored body (`backlot.gdocs`).
+-- A document's stored body (`backlot.gdocs`), and how many `documents.batchUpdate` calls it has
+-- taken, which its `revisionId` is drawn from: none for a corpus's. A written one also keeps the
+-- Drive `size` and `version` it serves from then on (`gdrive_doc_written`).
 CREATE TABLE IF NOT EXISTS gdrive_doc_bodies (
-    file_id TEXT PRIMARY KEY, body TEXT NOT NULL
+    file_id TEXT PRIMARY KEY, body TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
+    bytes INTEGER, version INTEGER
 );
 
 -- `path` names the file THIS row is (only kind='file' rows have one). `changed_paths` is the other
@@ -2756,17 +2760,24 @@ def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
 
     A native file counts what its ``size`` carries (:func:`drive_file_bytes`), so the quota stays
     the sum of the sizes ``files.list`` serves."""
+    from backlot import overlay
+
     raw = "COALESCE(length(CAST(content AS BLOB)), 0)"
     subtype = f"COALESCE(NULLIF(subtype, ''), '{DRIVE_DEFAULT_SUBTYPE}')"
     native = ", ".join(f"'{s}'" for s in DRIVE_NATIVE_SUBTYPES)
+    # a written document's own `size` (`gdrive_doc_written`), which only a write stores
+    written, join = "", ""
+    if overlay.is_attached(conn):
+        written = "WHEN _written.bytes IS NOT NULL THEN _written.bytes "
+        join = " LEFT JOIN ov.gdrive_doc_bodies AS _written ON _written.file_id = gdrive_files.id"
     nbytes = (
-        f"(CASE WHEN {subtype} = 'document' AND {raw} = 0 THEN {DRIVE_BLANK_DOC_BYTES} "
+        f"(CASE {written}WHEN {subtype} = 'document' AND {raw} = 0 THEN {DRIVE_BLANK_DOC_BYTES} "
         f"WHEN {subtype} IN ({native}) THEN MAX({raw}, {DRIVE_NATIVE_MIN_BYTES}) ELSE {raw} END)"
     )
     sql = (
         f"SELECT COALESCE(SUM({nbytes}), 0), "
         f"COALESCE(SUM(CASE WHEN COALESCE(trashed, 0) = 1 THEN {nbytes} ELSE 0 END), 0) "
-        f"FROM {merged_source(conn, 'google_drive')} WHERE 1=1"
+        f"FROM {merged_source(conn, 'google_drive')}{join} WHERE 1=1"
     )
     clause, params = _acl_clause("google_drive", visible_ids=visible_ids)
     total, trashed = conn.execute(sql + clause, params).fetchone()
@@ -2813,6 +2824,21 @@ def gdrive_doc_body_for(conn, file_id: str) -> list | None:
     clause, for the reason :func:`gdrive_sheets_for` gives."""
     rows = parts_for(conn, "google_drive", "gdrive_doc_bodies", (file_id,), order_by="file_id")
     return json.loads(rows[0]["body"]) if rows else None
+
+
+def gdrive_doc_revision(conn, file_id: str) -> int:
+    """How many `documents.batchUpdate` calls a document has taken: 0 until its first."""
+    rows = parts_for(conn, "google_drive", "gdrive_doc_bodies", (file_id,), order_by="file_id")
+    return rows[0]["revision"] if rows else 0
+
+
+def gdrive_doc_written(conn, file_id: str) -> tuple[int, int] | None:
+    """The Drive ``size`` and ``version`` a document serves once `documents.batchUpdate` has
+    written it, or None before its first write."""
+    rows = parts_for(conn, "google_drive", "gdrive_doc_bodies", (file_id,), order_by="file_id")
+    if not rows or rows[0]["bytes"] is None:
+        return None
+    return rows[0]["bytes"], rows[0]["version"]
 
 
 def gdrive_replace_doc_body(conn, file_id: str, body: list | None) -> None:

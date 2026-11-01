@@ -69,6 +69,19 @@ nobody. As on real, only the `title` it states is kept, from the body or from a 
 parameter, which wins; a body, tabs or styles it states are read, checked against the `Document`
 message and every message it holds, a map's entries included, and dropped.
 
+`documents.batchUpdate` writes a Doc's text with `insertText`, `deleteContentRange` and
+`replaceAllText`, each request applied to the body the ones before it left, and all of them or none
+kept. Inserted text takes the style of the text beside it as real gives it, a heading a newline
+splits gives the new part a `headingId` of its own, and every write moves the Doc's `revisionId`,
+which `requiredRevisionId` is checked against. A Doc whose corpus record states only `content`
+reads as one paragraph per line, and its first write stores that reading. `replaceAllText`
+compares text as real folds it (a letter with a mark as its base letter, `æ` as `ae`, `ß` as
+`ss`), and reads a regular expression as `java.util.regex` does; an insert inside a grapheme
+cluster, by Unicode's text segmentation, is refused. Drive reads what the write left:
+`files.export` and fullText search see the new text, `modifiedTime` moves to the write's time, and
+`version` moves by one while `size` stays what it was, a blank Doc's first write taking it from 1
+to 1024 as real's does.
+
 `values.append` finds the table it writes below the way real does: from the last cell in the range
 holding a value, row by row, grown through every cell in the row or column next to it, and
 the values go on the row under it from its first column. `INSERT_ROWS` inserts whole rows there,
@@ -108,10 +121,10 @@ A user token writes as that person. The admin/service token writes as `USERVICE0
 `auth.test` already reports it as — and its messages carry the `bot_message` subtype real Slack
 gives an app-posted message.
 
-A spreadsheet is written by its owner alone. Every grant a corpus states makes a reader, and a
-reader's write is the 403 real gives one, `The caller does not have permission`; so is the
-admin/service token's, which owns only the spreadsheets its service account created, and is
-answered as their owner by Drive too.
+A spreadsheet or a Doc is written by its owner alone. Every grant a corpus states makes a reader,
+and a reader's write is the 403 real gives one, `The caller does not have permission`; so is the
+admin/service token's, which owns only the files its service account created, and is answered as
+their owner by Drive too.
 
 ## What is not modelled
 
@@ -139,6 +152,20 @@ field list, so the ordering divergence below has no entry to live in and is stat
   data sources, and every cell format but a number format are read and not kept.
 - **`spreadsheets.batchUpdate`.** Not served, so a workbook's sheets change only by
   `spreadsheets.create` and `sheets.copyTo`.
+- **Docs requests past the text ones.** `documents.batchUpdate` applies `insertText`,
+  `deleteContentRange` and `replaceAllText`. Every other request kind, and the `SUGGEST` write
+  mode, is refused naming itself, where real applies it.
+- **Collaborators.** A `targetRevisionId` naming any revision of the Doc is taken. Real refuses one
+  too far behind, and merges the write into what collaborators did since it, which here is nothing.
+- **A replacement's newline.** When `replaceText` holds a newline, real ends the paragraph it
+  splits off with a newline in the style of the text before the match, where Backlot keeps that
+  newline's own style. The text is real's.
+- **A fold's match after a character outside the BMP.** A match of the first letter of `æ` or
+  another two-letter fold takes the character before it too, as real's does, but after an emoji
+  real leaves a space where the emoji was and Backlot removes it whole.
+- **Drive's timing.** Real's `version` also climbs with no write, about once a minute, and its
+  `modifiedTime` shows at most one write in a couple of minutes, later writes appearing a minute
+  or two on or not at all. Backlot moves both on every write, at once.
 - **Rate limits.** Real Sheets refuses a user's writes past 60 a minute with 429
   `RESOURCE_EXHAUSTED`. Backlot does not count them.
 

@@ -79,6 +79,39 @@ def _under(path: str, prefix: str) -> bool:
     return path == prefix or path.startswith(f"{prefix}/")
 
 
+#: The prefix each vendor real serves from its host's root is mounted under here, and the front
+#: door :func:`front_door` names for it.
+_MOUNTS = (
+    ("/github", "github"),
+    ("/slack", "slack"),
+    (errors.atlassian.PREFIX, "atlassian"),
+    ("/notion", "cloudflare"),
+    ("/hubspot", "cloudflare"),
+    ("/linear", "cloudflare"),
+    ("/fireflies", "cloudflare"),
+    ("/s3", "s3"),
+    ("/msgraph", "graph"),
+)
+
+#: The Google families served from a host of their own, whose name is the first segment of the
+#: path here: `docs.googleapis.com/v1/documents/…` is `/docs/v1/documents/…`.
+_GOOGLE_HOSTS = ("/docs", "/sheets", "/slides")
+
+
+def front_door(path: str) -> tuple[str, str] | None:
+    """The front door a request for ``path`` reaches, `github`, `slack`, `google`, `atlassian`,
+    `cloudflare` (in front of Notion, HubSpot, Linear and Fireflies), `s3` or `graph`, and the
+    part of ``path`` real never receives: the prefix the vendor is mounted under, or on Google the
+    segment naming the host (:data:`_GOOGLE_HOSTS`), empty on Drive and Gmail, whose paths are
+    real's own, and on `/batch`. ``None`` for a path of Backlot's own."""
+    for prefix, door in _MOUNTS:
+        if _under(path, prefix):
+            return door, prefix
+    if errors.google.owns(path) or _under(path, "/batch"):
+        return "google", next((h for h in _GOOGLE_HOSTS if path.startswith(f"{h}/")), "")
+    return None
+
+
 #: GitHub's answer to every kind, in the path and in the query: 400, `text/html; charset=utf-8`,
 #: 1,440 bytes.
 GITHUB_PAGE = (
@@ -107,13 +140,20 @@ GITHUB_PAGE = (
     b"      </div>\r\n    </div>\r\n  </body>\r\n</html>\r\n"
 )
 
-#: Google's two 400 pages, the same on each of its five hosts, both `text/html; charset=UTF-8`
-#: (:func:`_google` says which answers what).
-GOOGLE_PAGE_54 = b"<html><title>Error 400 (Bad Request)!!1</title></html>"
-GOOGLE_PAGE_1555 = (
-    b"<!DOCTYPE html>\n<html lang=en>\n  <meta charset=utf-8>\n"
-    b'  <meta name=viewport content="initial-scale=1, minimum-scale=1, width=device-width">\n'
-    b"  <title>Error 400 (Bad Request)!!1</title>\n  <style>\n"
+
+def google_page(status: int, reason: str, rest: bytes) -> bytes:
+    """Google's error page, `text/html; charset=UTF-8` on each of its five hosts: the status and
+    ``reason`` in the title and the first line, then ``rest``, what the page says after it."""
+    return (
+        b"<!DOCTYPE html>\n<html lang=en>\n  <meta charset=utf-8>\n"
+        b'  <meta name=viewport content="initial-scale=1, minimum-scale=1, width=device-width">\n'
+        b"  <title>Error %d (%s)!!1</title>\n  <style>\n%s"
+        b"  <a href=//www.google.com/><span id=logo aria-label=Google></span></a>\n"
+        b"  <p><b>%d.</b> <ins>That\xe2\x80\x99s an error.</ins>\n  <p>%s"
+    ) % (status, reason.encode(), _GOOGLE_STYLE, status, rest)
+
+
+_GOOGLE_STYLE = (
     b"    *{margin:0;padding:0}html,code{font:15px/22px arial,sans-serif}html{background:#fff;"
     b"color:#222;padding:15px}body{margin:7% auto 0;max-width:390px;min-height:180px;"
     b"padding:30px 0 15px}* > body{background:url(//www.google.com/images/errors/robot.png) "
@@ -128,10 +168,16 @@ GOOGLE_PAGE_1555 = (
     b"{#logo{background:url(//www.google.com/images/branding/googlelogo/2x/"
     b"googlelogo_color_150x54dp.png) no-repeat;-webkit-background-size:100% 100%}}#logo{display:"
     b"inline-block;height:54px;width:150px}\n  </style>\n"
-    b"  <a href=//www.google.com/><span id=logo aria-label=Google></span></a>\n"
-    b"  <p><b>400.</b> <ins>That\xe2\x80\x99s an error.</ins>\n"
-    b"  <p>Your client has issued a malformed or illegal request.  "
-    b"<ins>That\xe2\x80\x99s all we know.</ins>\n"
+)
+
+#: Google's two 400 pages, the same on each of its five hosts, both `text/html; charset=UTF-8`
+#: (:func:`_google` says which answers what).
+GOOGLE_PAGE_54 = b"<html><title>Error 400 (Bad Request)!!1</title></html>"
+GOOGLE_PAGE_1555 = google_page(
+    400,
+    "Bad Request",
+    b"Your client has issued a malformed or illegal request.  "
+    b"<ins>That\xe2\x80\x99s all we know.</ins>\n",
 )
 
 #: The page Cloudflare, in front of Notion, HubSpot, Linear and Fireflies, answers several requests
@@ -142,20 +188,23 @@ CLOUDFLARE_PAGE = (
     b"</body>\r\n</html>\r\n"
 )
 
-#: Graph's two 400 pages, 324 and 311 bytes on `text/html; charset=us-ascii` (:func:`_graph` says
-#: which answers what).
-_GRAPH_PAGE = (
-    '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN""http://www.w3.org/TR/html4/strict.dtd">\r\n'
-    "<HTML><HEAD><TITLE>Bad Request</TITLE>\r\n"
-    '<META HTTP-EQUIV="Content-Type" Content="text/html; charset=us-ascii"></HEAD>\r\n'
-    "<BODY><h2>{title}</h2>\r\n<hr><p>HTTP Error 400. {detail}</p>\r\n</BODY></HTML>\r\n"
+
+def graph_page(status: int, name: str, title: str, detail: str) -> bytes:
+    """A page of Graph's front end, `text/html; charset=us-ascii`: ``name`` in the head's title and
+    ``title`` over the line `HTTP Error <status>. <detail>`."""
+    return (
+        '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN""http://www.w3.org/TR/html4/strict.dtd">'
+        f"\r\n<HTML><HEAD><TITLE>{name}</TITLE>\r\n"
+        '<META HTTP-EQUIV="Content-Type" Content="text/html; charset=us-ascii"></HEAD>\r\n'
+        f"<BODY><h2>{title}</h2>\r\n<hr><p>HTTP Error {status}. {detail}</p>\r\n</BODY></HTML>\r\n"
+    ).encode()
+
+
+#: Graph's two 400 pages, 324 and 311 bytes (:func:`_graph` says which answers what).
+GRAPH_INVALID_URL = graph_page(
+    400, "Bad Request", "Bad Request - Invalid URL", "The request URL is invalid."
 )
-GRAPH_INVALID_URL = _GRAPH_PAGE.format(
-    title="Bad Request - Invalid URL", detail="The request URL is invalid."
-).encode()
-GRAPH_BADLY_FORMED = _GRAPH_PAGE.format(
-    title="Bad Request", detail="The request is badly formed."
-).encode()
+GRAPH_BADLY_FORMED = graph_page(400, "Bad Request", "Bad Request", "The request is badly formed.")
 
 
 def _page(
@@ -338,15 +387,22 @@ def _graph(scope: Scope, path_kinds: list[str], query_kinds: list[str]) -> Respo
     target picks the page: :data:`GRAPH_INVALID_URL` for the first two, :data:`GRAPH_BADLY_FORMED`
     for the other three. With none of them, a path whose `high` bytes are not UTF-8 is an empty 400,
     and every other `high` is read as its percent-encoding."""
-    for kind in path_kinds + query_kinds:
-        if kind in ("nul", "control"):
-            return _page(GRAPH_INVALID_URL, "text/html; charset=us-ascii")
-        if kind in ("tab", "cr", "space"):
-            return _page(GRAPH_BADLY_FORMED, "text/html; charset=us-ascii")
+    if (page := _graph_page(path_kinds + query_kinds)) is not None:
+        return _page(page, "text/html; charset=us-ascii")
     try:
         scope[SENT].partition(b"?")[0].decode("utf-8")
     except UnicodeDecodeError:
         return _page(b"", None, close=False)
+    return None
+
+
+def _graph_page(kinds: list[str]) -> bytes | None:
+    """Graph's page for a target whose raw bytes are of ``kinds``, in the order they come."""
+    for kind in kinds:
+        if kind in ("nul", "control"):
+            return GRAPH_INVALID_URL
+        if kind in ("tab", "cr", "space"):
+            return GRAPH_BADLY_FORMED
     return None
 
 
@@ -366,18 +422,18 @@ def answer(scope: Scope) -> Response | None:
 
     Any other path, `/oauth2/token` and `/_meta` among them, gets the 400 uvicorn's own protocol
     answers such a target with."""
-    path = scope["path"]
+    door, prefix = front_door(scope["path"]) or (None, None)
     sent_path, mark, sent_query = scope[SENT].partition(b"?")
     in_path, in_query = _kinds(sent_path), _kinds(sent_query)
-    if _under(path, "/github"):
+    if door == "github":
         return _github()
-    if _under(path, "/slack"):
+    if door == "slack":
         return _slack()
-    if errors.google.owns(path) or _under(path, "/batch"):
+    if door == "google":
         return _google(in_path, in_query)
-    if errors.atlassian.owns(path):
+    if door == "atlassian":
         return _atlassian(scope, in_path, in_query)
-    if any(_under(path, p) for p in ("/linear", "/fireflies")):
+    if door == "cloudflare" and prefix in ("/linear", "/fireflies"):
         own = b"/" + sent_path.partition(b"/")[2].partition(b"/")[2]
         query = sent_query if mark else None
         if refused_path(own, query):
@@ -386,10 +442,59 @@ def answer(scope: Scope) -> Response | None:
         if refused is None and cut_escape(own, query):
             _drop_the_cut(scope)
         return refused
-    if any(_under(path, p) for p in ("/notion", "/hubspot")):
+    if door == "cloudflare":
         return _cloudflare(scope, in_path, in_query)
-    if errors.s3.owns(path):
+    if door == "s3":
         return _s3(scope, in_path, in_query)
-    if _under(path, "/msgraph"):
+    if door == "graph":
         return _graph(scope, in_path, in_query)
     return _page(b"Invalid HTTP request received.", "text/plain; charset=utf-8")
+
+
+def refused_in_the_line(
+    door: str, line: bytes, ended: bool, ahead: bool
+) -> tuple[str, str, bytes] | None:
+    """The status line, media type and body with which the front door ``door`` (:func:`front_door`'s
+    name) refuses the request line ``line``, the bytes before its LF, ahead of its bound, or
+    ``None`` where the bound's page answers. ``ended`` is whether the LF came, and ``ahead`` whether
+    it came in a piece of the head before the piece the bound is reached in. The target of a line
+    that ended lies between its first space and its last, as :func:`encode_line` reads it, and of
+    one that has not, after its first.
+
+    In whichever piece of the head the byte comes, GitHub refuses a raw byte in the target of any
+    kind, Google a `nul` or a `control`, Jira Cloud's CDN and Cloudflare a `nul` or a `cr`, and
+    Graph one of any kind but a `high` (:func:`_graph_page`). Where the LF came ahead, Slack refuses
+    a raw byte of any kind, Jira Cloud's CDN a path :func:`_broken` holds, and Cloudflare, on each
+    of its four hosts, a path :func:`refused_path` holds; where it came in the piece that reaches
+    the bound, Slack answers with the bound's 431. Each refusal is the one real gave the same line
+    with a short head.
+
+    Measured on 2026-11-01 (UTC) over raw HTTP/1.1 on TLS, each request cache-busted and its head
+    written at once in pieces of 16,384 bytes, on the paths of ``backlot.head_bounds``'
+    measurement; ``tests/test_head_bounds.py::_REFUSED_LINES`` holds the lines. Every long request
+    those rules do not name drew the bound's page but `/../rest/api/3/myself` on Jira Cloud, which
+    drew the CDN's 400 as it did with a short head; S3 answered each with an empty 400, which its
+    bound answers too."""
+    method, _, rest = line.partition(b" ")
+    target = rest.rpartition(b" ")[0] if ended else rest
+    path, mark, query = target.partition(b"?")
+    kinds = _kinds(path) + _kinds(query)
+    every = set(kinds)
+    bad_request = "HTTP/1.1 400 Bad Request"
+    if door == "github" and kinds:
+        return bad_request, "text/html; charset=utf-8", GITHUB_PAGE
+    if door == "slack" and kinds and ahead:
+        return bad_request, "text/plain", b"Bad Request"
+    if door == "google" and every & {"nul", "control"}:
+        return "HTTP/1.0 400 Bad Request", "text/html; charset=UTF-8", GOOGLE_PAGE_54
+    if door == "graph" and (page := _graph_page(kinds)) is not None:
+        return bad_request, "text/html; charset=us-ascii", page
+    if door == "atlassian" and (every & {"nul", "cr"} or ahead and _broken(path)):
+        raw_path = _RAW.sub(lambda m: b"%%%02X" % m[0][0], path).decode("latin-1")
+        page = errors.atlassian.cdn_bad_request(method.decode("latin-1"), raw_path)
+        return bad_request, "text/html", page.encode()
+    if door == "cloudflare":
+        own = b"/" + path.partition(b"/")[2].partition(b"/")[2]
+        if every & {"nul", "cr"} or ahead and refused_path(own, query if mark else None):
+            return bad_request, "text/html", CLOUDFLARE_PAGE
+    return None

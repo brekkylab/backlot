@@ -201,6 +201,13 @@ def _rows():
             )
     for base, rest, answer in _TARGETS:
         yield pytest.param(b"GET", base, rest, answer, 1, b"", id=f"{base} {rest!r}")
+    # GitHub's page for the byte ahead of the 414 the target's length or its path's draws
+    for sent in (b"\x80", b" "):
+        for length in (8_180, 8_192):
+            rest = b"?b=" + sent + b"1" * (length - 4)
+            yield pytest.param(b"GET", "/github", rest, "github", 1, b"", id=f"{sent!r} {length}")
+    rest = b"/repos/acme/docs-site/issues/" + b"1" * 4_067 + b"\x80"
+    yield pytest.param(b"GET", "/github", rest, "github", 1, b"", id="a path of 4,097")
     for method, base, rest, answer in _CDN_METHODS:
         yield pytest.param(
             method, base, rest, answer, 1, b"", id=f"{method.decode()} {base} {rest!r}"

@@ -527,13 +527,16 @@ answers in with a 406 ahead of most of their other refusals, and send several re
 it asks for (`backlot.errors.atlassian.not_acceptable` and `rendered`). Neither description declares
 a 406, nor that a refusal's media type follows `Accept`, so `tests/test_atlassian.py` is the record.
 
-The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them but
-the ones `backlot.main.report_github_rate_limit` names, and the comparison reads parameters and
-operations off the two documents and never a response header; real's description declares three of
-the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none. The tests are the
-record here (`tests/test_github.py`, the rate-limit test), not the baseline. `x-github-request-id`
-is another: every `/github` answer carries it (`backlot.main.put_a_request_id_on_github_answers`),
-and `test_github_every_answer_carries_a_request_id` in the same file is its record.
+The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer the API gives
+carries them but the ones `backlot.main.report_github_rate_limit` names, and the comparison reads
+parameters and operations off the two documents and never a response header; real's description
+declares three of the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none.
+The tests are the record here (`tests/test_github.py`, the rate-limit test), not the baseline.
+`x-github-request-id` is another: every `/github` answer the API gives carries it
+(`backlot.main.put_a_request_id_on_github_answers`), and
+`test_github_every_answer_carries_a_request_id` in the same file is its record. The answers given
+ahead of the API carry neither, as on real; the GitHub section of `docs/supported-sources.md` names
+them.
 
 The `Allow` on S3's sub-resource 405s is another. A `HEAD` carrying a sub-resource selector is 405
 on both sides, and real names the methods that sub-resource takes where Backlot names only `GET`,

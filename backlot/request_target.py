@@ -451,12 +451,12 @@ def answer(scope: Scope) -> Response | None:
     return _page(b"Invalid HTTP request received.", "text/plain; charset=utf-8")
 
 
-def refused_in_the_line(line: bytes, ended: bool) -> tuple[str, str, bytes] | None:
-    """The status line, media type and body a front door refuses the request line ``line``, the
-    bytes before its LF, with ahead of its head bound, or ``None`` where the bound's page answers;
-    ``ended`` is whether the LF came, so that a header rather than the line reached the bound. The
-    target of a line that ended is what :func:`encode_line` reads as one, and of one that has not,
-    all of it after the method.
+def refused_in_the_line(door: str, line: bytes, ended: bool) -> tuple[str, str, bytes] | None:
+    """The status line, media type and body the front door ``door`` (:func:`front_door`'s name)
+    refuses the request line ``line``, the bytes before its LF, with ahead of its head bound, or
+    ``None`` where the bound's page answers; ``ended`` is whether the LF came, so that a header
+    rather than the line reached the bound. The target of a line that ended lies between its first
+    space and its last, as :func:`encode_line` reads it, and of one that has not, after its first.
 
     A front door refuses a raw byte in the target as it reads the line: GitHub one of any kind,
     Google a `nul` or a `control`, Jira Cloud's CDN and Cloudflare a `nul` or a `cr`, and Graph one
@@ -475,14 +475,8 @@ def refused_in_the_line(line: bytes, ended: bool) -> tuple[str, str, bytes] | No
     which drew the CDN's 400 as it did with a short head; S3 answered each with an empty 400, which
     its bound answers too."""
     method, _, rest = line.partition(b" ")
-    target, _, version = rest.rpartition(b" ") if ended else (rest, b"", b"")
-    if not method or ended and not version.startswith(b"HTTP/"):
-        return None
+    target = rest.rpartition(b" ")[0] if ended else rest
     path, mark, query = target.partition(b"?")
-    named = front_door(urllib.parse.unquote(path.decode("latin-1")))
-    if named is None:
-        return None
-    door, _ = named
     kinds = _kinds(path) + _kinds(query)
     every = set(kinds)
     bad_request = "HTTP/1.1 400 Bad Request"

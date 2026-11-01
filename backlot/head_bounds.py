@@ -6,7 +6,7 @@ A front door bounds either the whole head, every byte of it that has arrived, or
 the bytes before the line's LF with the CR among them (:attr:`Bound.per_line`). Once that many have
 arrived it answers and closes the connection, with a page that turns on whether the bound was
 reached in the request line or in the headers, or with its refusal of a request line it refuses
-ahead of the bound (:func:`refused_line`). A head whose last byte, the LF that ends it, is the
+ahead of the bound (:meth:`Bound.refused`). A head whose last byte, the LF that ends it, is the
 bound's last gets past a head bound unless :attr:`Bound.refuses_its_end`; a line bound counts no LF,
 so a line holding that many bytes is refused whether its LF follows or not. The answer here is the
 front door's status line, `Content-Type` and body, with `Content-Length` and `Connection: close`,
@@ -62,6 +62,8 @@ class Bound:
     in_headers: bytes
     #: The bytes of the request line real never receives (``front_door``'s prefix).
     mount: int = 0
+    #: The front door, as ``backlot.request_target.front_door`` names it.
+    door: str = ""
 
     def answer(self, size: int, line: int, in_request_line: bool, ended: bool) -> bytes | None:
         """The answer to a head of which ``size`` bytes have arrived, ``line`` of them in the line
@@ -76,6 +78,13 @@ class Bound:
         if read < self.limit:
             return None
         return self.in_line if in_request_line else self.in_headers
+
+    def refused(self, line: bytes, ended: bool) -> bytes | None:
+        """The front door's refusal of the request line ``line``, the bytes before its LF, where it
+        answers that ahead of the bound (``backlot.request_target.refused_in_the_line``), ``ended``
+        where the LF came; else ``None``."""
+        refused = request_target.refused_in_the_line(self.door, line, ended)
+        return None if refused is None else _answer(*refused)
 
 
 def _answer(status_line: str, media_type: str | None, body: bytes) -> bytes:
@@ -200,14 +209,6 @@ _BOUNDS = {
 }
 
 
-def refused_line(line: bytes, ended: bool) -> bytes | None:
-    """The front door's refusal of the request line ``line``, the bytes before its LF, where it
-    answers that ahead of its bound (``backlot.request_target.refused_in_the_line``), ``ended``
-    where the LF came; else ``None``."""
-    refused = request_target.refused_in_the_line(line, ended)
-    return None if refused is None else _answer(*refused)
-
-
 def bound(start: bytes) -> Bound | None:
     """The bound on a head whose request line starts ``start``, read off the path in it, or
     ``None`` where no vendor owns the path. Jira Cloud's is a line bound of 32,768 with the CDN's
@@ -230,5 +231,5 @@ def bound(start: bytes) -> Bound | None:
                 (494, "HTTP/1.1 494 "),
             )
         )
-        return Bound(32_768, True, False, line, headers, len(prefix))
-    return dataclasses.replace(_BOUNDS[door], mount=len(prefix))
+        return Bound(32_768, True, False, line, headers, len(prefix), door)
+    return dataclasses.replace(_BOUNDS[door], mount=len(prefix), door=door)

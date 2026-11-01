@@ -299,6 +299,16 @@ def test_a_head_that_ends_is_read_to_the_bound_real_read_it_to(
     assert _as_real(answer) == _REAL[refused]
 
 
+def test_the_request_line_of_a_path_no_vendor_owns_is_not_kept():
+    """Once its first bytes name no vendor, a request line is not kept for a bound to read: a read
+    of 1 MiB after them leaves the line as they were."""
+    head = protocol._Head()
+    start = b"GET /_meta/openapi" + b"a" * 100
+    assert head.read(start) is None
+    assert head.read(b"a" * 2**20) is None
+    assert bytes(head.request_line) == start
+
+
 def test_each_request_on_a_connection_is_counted_from_its_own_start(live_server):
     """Two heads of 10,000 bytes on one connection, past S3's bound of 16,384 together: the second
     is read as the first was, and waits for its end like any head within the bound; a third that

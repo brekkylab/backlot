@@ -973,7 +973,7 @@ def _invalid_mime_type(value: str) -> str | None:
     `text/plain;charset=nope`, and `text/plain;a b=c;charset=nope` named the space in `a b` first.
     On 2026-10-19 a no-break space (U+00A0) at either end of the header stayed part of it:
     `text/plain` and `text/plain;charset=nope` followed by one were named for it. Not read here: a
-    charset Tomcat reads that Java takes no name for, the 500 :func:`refuse_a_confluence_media_type`
+    charset Tomcat reads that Java takes no name for, the 500 :func:`refuse_a_confluence_charset`
     gives first.
     """
     index = value.find(";")
@@ -1079,6 +1079,30 @@ def _tomcat_charset(value: str) -> str | None:
     return None if found is False else charset
 
 
+def refuse_a_confluence_charset(headers) -> AtlassianError | None:
+    """The empty 500 Confluence's Spring application answers a `Content-Type` whose charset Tomcat
+    reads (:func:`_tomcat_charset`) that is no name Java takes (:data:`_JAVA_CHARSET_NAME`), an
+    empty one among them, or None where Tomcat reads none or Java takes the name. Measured on
+    Confluence Cloud at `POST space/{key}/permission` with no credential, `text/plain;charset=` on
+    2026-10-18 and 2026-10-19, and on 2026-10-19 `application/json;charset=`, `text/plain;Charset=`,
+    `text/plain;charset`, `text/plain;charset=""`, `text/plain;charset=_x` and
+    `text/plain;charset=utf-8;charset=` with it, where `text/plain;charset=;x=y` and `foo;charset=`
+    were each the 415.
+
+    The header sent more than once is read as its values that are not blank, joined by commas. On
+    2026-10-31 at `GET space`, `text/plain;charset=` after an empty, a space or a tab value, or
+    before an empty or a space one, was the 500, and beside `text/plain`, `text/plain;charset=nope`
+    or itself the caller's 403; `text/plain;charset="utf-8` followed by `"` was the 500, the joined
+    value's quoted charset holding the comma.
+    """
+    values = [value for value in headers.getlist("content-type") if value.strip(" \t")]
+    value = ", ".join(values).strip(" \t")
+    charset = _tomcat_charset(value)
+    if charset is not None and _JAVA_CHARSET_NAME.fullmatch(charset) is None:
+        return AtlassianError(500, b"")
+    return None
+
+
 def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> AtlassianError | None:
     """Confluence's 415 for a request whose `Content-Type` an operation that ``consumes`` those
     types does not take, or None where it takes it.
@@ -1095,19 +1119,11 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     2026-10-18). The status and the code are the same. Only a parameter named `charset` in that
     case is a charset to it (`multipart/form-data; boundary=x; Charset=bogus` is read, 2026-10-13).
 
-    Ahead of all of it, a charset Tomcat reads (:func:`_tomcat_charset`) that is no name Java takes
-    (:data:`_JAVA_CHARSET_NAME`), an empty one among them, is a 500 with no body and no
-    `content-type`, whether the operation takes the type or not. Measured on Confluence Cloud at
-    `POST space/{key}/permission` with no credential, `text/plain;charset=` on 2026-10-18 and
-    2026-10-19, and on 2026-10-19 `application/json;charset=`, `text/plain;Charset=`,
-    `text/plain;charset`, `text/plain;charset=""`, `text/plain;charset=_x` and
-    `text/plain;charset=utf-8;charset=` with it, where `text/plain;charset=;x=y` and `foo;charset=`
-    were each the 415.
+    A charset Tomcat reads that Java cannot name never reaches this: real fails the request first,
+    which ``backlot.routers.atlassian.refuse_a_spring_confluence_charset`` answers ahead of
+    routing.
     """
     value = (headers.get("content-type") or "").strip(" \t")
-    charset = _tomcat_charset(value)
-    if charset is not None and _JAVA_CHARSET_NAME.fullmatch(charset) is None:
-        return AtlassianError(500, b"")
     media_type = _parse_media_type(value, charset_in_any_case=False) if value else None
     if media_type is not None and _takes(consumes, media_type):
         return None
@@ -1707,16 +1723,14 @@ def confluence_refusal(
 
 
 #: A character past the Basic Multilingual Plane, which Confluence's JSON writer reaches only
-#: as a pair of UTF-16 surrogates (:func:`_confluence_json`).
+#: as a pair of UTF-16 surrogates (:func:`escape_past_bmp`).
 _PAST_BMP = re.compile(r"[\U00010000-\U0010FFFF]")
 
 
 def _confluence_json(body: dict) -> bytes:
     """The JSON bytes of a Confluence refusal or of the CQL search's answer, written the way real
     writes them: compact and unescaped, as ``JSONResponse`` writes them, but for a character past
-    U+FFFF, which goes out as two ``\\u`` escapes, its UTF-16 surrogates in upper-case hex, where
-    ``JSONResponse`` writes its UTF-8 bytes. Decoded, the two writings are one string, so the
-    escapes are made in the dumped text, where such a character can only stand inside a string.
+    U+FFFF, which goes out as :func:`escape_past_bmp` writes it.
 
     Measured on Confluence Cloud 2026-10-21: `é` (U+00E9) named in a refused space key went out as
     its UTF-8 bytes on `space/{key}`, `content` and the label and conversion refusals, and U+1F600
@@ -1726,12 +1740,30 @@ def _confluence_json(body: dict) -> bytes:
     `cqlQuery` as `\\uD83D\\uDE00` for a `title~` and a `label=` query alike.
     """
 
+    written = json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    return escape_past_bmp(written).encode()
+
+
+def escape_past_bmp(written: str) -> str:
+    """JSON text with each character past U+FFFF as Confluence writes it: two ``\\u`` escapes, its
+    UTF-16 surrogates in upper-case hex. Such a character can stand only inside a JSON string, so
+    the text decodes to the same value either way.
+
+    Real writes every 200 so, not only the CQL search's: measured on Confluence Cloud 2026-10-23,
+    U+1F600 and U+1D7D3 in a page's and a child page's title and storage body, and in a comment's
+    body, went out as `\\uD83D\\uDE00` and `\\uD835\\uDFD3` on `content/{id}` with and without
+    `expand=body.storage`, `content?spaceKey=`, `content?title=`, `content/{id}/child/page`,
+    `content/{id}/child/comment` and the search, where `é` stayed its UTF-8 bytes. On 2026-10-31 a
+    label holding U+1F600 went out escaped on `content/{id}/label` and `expand=metadata.labels`, a
+    space's name on `space/{key}`, `space?spaceKey=` and `content?expand=space`, and U+10000 and
+    U+10FFFD in a body as `\\uD800\\uDC00` and `\\uDBFF\\uDFFD`, where U+FFFD, U+E000 and U+2028
+    stayed their UTF-8 bytes."""
+
     def escapes(match: re.Match[str]) -> str:
         past = ord(match.group()) - 0x10000
         return f"\\u{0xD800 + (past >> 10):04X}\\u{0xDC00 + (past & 0x3FF):04X}"
 
-    written = json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-    return _PAST_BMP.sub(escapes, written).encode()
+    return _PAST_BMP.sub(escapes, written)
 
 
 def rendered(request, status_code: int, body, headers=None) -> Response | None:

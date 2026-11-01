@@ -48,11 +48,12 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, express_http, published, store, synth, utf8_escapes
+from backlot import auth, express_http, published, request_target, store, synth, utf8_escapes
 from backlot import notion_request as req
 from backlot.graphql import apollo_http
 from backlot.graphql import body as request_body
 from backlot.openapi import qp
+from backlot.routers import sent_path
 
 router = APIRouter(prefix="/notion/v1", tags=["notion"])
 # Everything under `/notion` that no route above answers. Mounted after `router` in
@@ -499,15 +500,20 @@ def _error_id(request: Request) -> str:
 
 def undecodable_url(request: Request) -> JSONResponse | None:
     """Notion's 400 for a path whose escapes do not decode to UTF-8
-    (``backlot.utf8_escapes.decodes``), or None.
+    (``backlot.utf8_escapes.decodes``), or that the end of the target cuts short in an escape
+    (``backlot.request_target.cut_escape``), the one broken escape Cloudflare in front of it hands
+    on; or None.
 
     Measured on 2026-10-30 (UTC) on a path no route serves (`/v1/nope%80x`, `/nope%80x`), at a
     route's own (`/v1/users%80`, `/v1/users/nope%80x`, `/v1/pages/nope%80x`) and beside `%01`, on a
     `GET` with a token and without one: `Failed to decode url.`, where a `%C3%A9` in the same place
     was the URL's 400 (:func:`unmatched_path`) or the route's own refusal. A body Express refuses
     (:func:`front_door_body`) was refused ahead of it, on a `POST` with a token and without one, and
-    the 400 carried none of :data:`APPLICATION_HEADERS`."""
-    if utf8_escapes.decodes(request.scope["raw_path"]):
+    the 400 carried none of :data:`APPLICATION_HEADERS`. On 2026-10-31 `/v1/nope<cache-buster>%`
+    and `…%4`, by `GET` with a token, drew the same 400."""
+    own = sent_path(request.scope).encode("latin-1")
+    cut = request_target.cut_escape(own, request_target.path_ends_the_target(request.scope))
+    if utf8_escapes.decodes(request.scope["raw_path"]) and not cut:
         return None
     return _error(request, 400, "invalid_request_url", "Failed to decode url.")
 

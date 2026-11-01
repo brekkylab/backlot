@@ -41,24 +41,50 @@ SENT = "raw_request_target"
 #: the connection after answering it (:func:`_s3`).
 CLOSE = "raw_request_target_closes"
 
+#: The scope key :mod:`backlot.protocol` leaves the request target on, as sent, where it holds a
+#: `#`. uvicorn's parser reads a `#` as the start of a fragment and leaves it out of the path and
+#: the query, with what comes after it, a `?` among that (:func:`printable_answer`).
+WITH_A_FRAGMENT = "request_target_with_a_fragment"
+
+#: The scope key :mod:`backlot.protocol` sets where a `?` or a `#` comes after the path in the
+#: request target. The scope's `query_string` is empty for a `?` with nothing after it as for none,
+#: and holds no `#` (:func:`path_ends_the_target`).
+FOLLOWED = "request_target_path_followed"
+
 _RAW = re.compile(rb"[\x00-\x20\x7f-\xff]")
 
 
-def encode_line(line: bytes) -> tuple[bytes, bytes | None]:
-    """``line``, a request line ending in its LF, with each byte of :data:`_RAW` in its target
-    percent-encoded, and the target as sent; or ``line`` and ``None`` where the target holds none
-    of them or the line is not `METHOD target HTTP/x.y`.
+def _parts(line: bytes) -> tuple[bytes, bytes, bytes] | None:
+    """The method, the target and the version of ``line``, a request line ending in its LF, or
+    ``None`` where it is not `METHOD target HTTP/x.y`.
 
     The target is what lies between the first space and the last one, so a space inside it is
     one of its bytes, and the version after the last one keeps the CR of a CRLF."""
     method, _, rest = line[:-1].partition(b" ")
     target, _, version = rest.rpartition(b" ")
     if not (method and version.startswith(b"HTTP/")):
+        return None
+    return method, target, version
+
+
+def with_a_fragment(line: bytes) -> bytes | None:
+    """The target of ``line`` as sent (:func:`_parts`) where it holds a `#`, or ``None``."""
+    parts = _parts(line)
+    return parts[1] if parts is not None and b"#" in parts[1] else None
+
+
+def encode_line(line: bytes) -> tuple[bytes, bytes | None]:
+    """``line``, a request line ending in its LF, with each byte of :data:`_RAW` in its target
+    (:func:`_parts`) percent-encoded, and the target as sent; or ``line`` and ``None`` where the
+    target holds none of them or the line is not `METHOD target HTTP/x.y`."""
+    parts = _parts(line)
+    if parts is None:
         return line, None
-    encoded = _RAW.sub(lambda m: b"%%%02X" % m[0][0], target)
-    if encoded == target:
+    method, sent, version = parts
+    encoded = _RAW.sub(lambda m: b"%%%02X" % m[0][0], sent)
+    if encoded == sent:
         return line, None
-    return b"%s %s %s\n" % (method, encoded, version), target
+    return b"%s %s %s\n" % (method, encoded, version), sent
 
 
 def _kind(byte: int) -> str:
@@ -203,27 +229,41 @@ _BROKEN_ESCAPE = re.compile(rb"%(?![0-9A-Fa-f]{2})")
 _CUT_ESCAPE = re.compile(rb"%[0-9A-Fa-f]?\Z")
 
 
-def cut_escape(path: bytes, query: bytes | None) -> bool:
-    """Whether ``path``, the vendor's path as sent, with ``query`` after a `?` or ``None`` where
-    none came, is one Cloudflare in front of Linear and Fireflies reads as cut short by the end of
-    the target (:data:`_CUT_ESCAPE`). ``backlot.main.refuse_a_cut_escape_on_linear_and_fireflies``
-    answers it, and :func:`refused_path` each other broken escape."""
+def path_ends_the_target(scope: Scope) -> bool:
+    """Whether the path ends the request target as sent, no `?` or `#` coming after it
+    (:data:`FOLLOWED`)."""
+    return not (scope["query_string"] or scope.get(FOLLOWED))
+
+
+def cut_escape(path: bytes, ends_the_target: bool) -> bool:
+    """Whether ``path``, the vendor's path as sent, is one Cloudflare reads as cut short by the end
+    of the target (:data:`_CUT_ESCAPE`) and answers otherwise than each other broken escape, where
+    the path ``ends_the_target`` (:func:`path_ends_the_target`). A `?` or a `#` after the `%` is no
+    end: on 2026-10-31 (UTC) a `?` there, with a `#` after it or none, and a `#` drew
+    :data:`CLOUDFLARE_PAGE` on Linear, Fireflies, Notion and HubSpot
+    (``tests/test_request_target.py`` holds the cases)."""
     cut = _CUT_ESCAPE.search(path)
-    return query is None and cut is not None and not _broken(path[: cut.start()])
+    return ends_the_target and cut is not None and not _broken(path[: cut.start()])
 
 
-def refused_path(path: bytes, query: bytes | None) -> bool:
-    """Whether Cloudflare in front of Linear and Fireflies refuses ``path`` with ``query`` after it,
-    ``None`` where no `?` came, with :data:`CLOUDFLARE_PAGE`: the path holds a `..` segment that
-    climbs past the root (:func:`_climbs_past_the_root`), which both hosts refused so ahead of a cut
-    escape after it (`/../a%2`, 2026-10-29, UTC), or it holds `%00` or a `%` two hex digits do not
-    follow, but where :func:`cut_escape` holds. The page comes ahead of Cloudflare's answer to a raw
-    byte: on 2026-10-26 (UTC) both hosts drew it for `/a%zz` with a raw `é` before or after it or
-    `\\x01` before it, and for `/a%00` after a raw `é`, and on 2026-10-29 for `/../a` with a raw `é`
-    or a space after it, where a raw `é` alone drew the empty 400."""
+def breaks_an_escape(part: bytes) -> bool:
+    """Whether ``part`` holds a `%` two hex digits do not follow (:data:`_BROKEN_ESCAPE`)."""
+    return _BROKEN_ESCAPE.search(part) is not None
+
+
+def refused_path(path: bytes, ends_the_target: bool) -> bool:
+    """Whether Cloudflare in front of Linear and Fireflies refuses ``path``, which
+    ``ends_the_target`` or not (:func:`path_ends_the_target`), with :data:`CLOUDFLARE_PAGE`: the
+    path holds a `..` segment that climbs past the root (:func:`_climbs_past_the_root`), which both
+    hosts refused so ahead of a cut escape after it (`/../a%2`, 2026-10-29, UTC), or it holds `%00`
+    or a `%` two hex digits do not follow, but where :func:`cut_escape` holds. The page comes ahead
+    of Cloudflare's answer to a raw byte: on 2026-10-26 (UTC) both hosts drew it for `/a%zz` with a
+    raw `é` before or after it or `\\x01` before it, and for `/a%00` after a raw `é`, and on
+    2026-10-29 for `/../a` with a raw `é` or a space after it, where a raw `é` alone drew the empty
+    400."""
     if _climbs_past_the_root(path):
         return True
-    return _broken(path) and not cut_escape(path, query)
+    return _broken(path) and not cut_escape(path, ends_the_target)
 
 
 def _broken(path: bytes) -> bool:
@@ -370,7 +410,7 @@ def answer(scope: Scope) -> Response | None:
     Any other path, `/oauth2/token` and `/_meta` among them, gets the 400 uvicorn's own protocol
     answers such a target with."""
     path = scope["path"]
-    sent_path, mark, sent_query = scope[SENT].partition(b"?")
+    sent_path, _, sent_query = scope[SENT].partition(b"?")
     in_path, in_query = _kinds(sent_path), _kinds(sent_query)
     if _under(path, "/github"):
         return _github()
@@ -382,14 +422,19 @@ def answer(scope: Scope) -> Response | None:
         return _atlassian(scope, in_path, in_query)
     if any(_under(path, p) for p in ("/linear", "/fireflies")):
         own = b"/" + sent_path.partition(b"/")[2].partition(b"/")[2]
-        query = sent_query if mark else None
-        if refused_path(own, query):
+        ends = path_ends_the_target(scope)
+        if refused_path(own, ends):
             return _page(CLOUDFLARE_PAGE, "text/html")
         refused = _cloudflare(scope, in_path, in_query)
-        if refused is None and cut_escape(own, query):
+        if refused is None and cut_escape(own, ends):
             _drop_the_cut(scope)
         return refused
     if any(_under(path, p) for p in ("/notion", "/hubspot")):
+        # Cloudflare's page for a broken escape or a `%00` comes ahead of the bytes
+        # (:func:`printable_answer`)
+        own = b"/" + sent_path.partition(b"/")[2].partition(b"/")[2]
+        if _broken(own) and not cut_escape(own, path_ends_the_target(scope)):
+            return _page(CLOUDFLARE_PAGE, "text/html")
         return _cloudflare(scope, in_path, in_query)
     if errors.s3.owns(path):
         return _s3(scope, in_path, in_query)
@@ -458,3 +503,145 @@ def escape_answer(scope: Scope) -> Response | None:
     if errors.s3.owns(path):
         return _page(b"", None)
     return None
+
+
+#: Apache's 400 page in front of Slack's API: `text/html; charset=iso-8859-1`, 226 bytes.
+SLACK_APACHE_PAGE = (
+    b'<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">\n<html><head>\n'
+    b"<title>400 Bad Request</title>\n</head><body>\n<h1>Bad Request</h1>\n"
+    b"<p>Your browser sent a request that this server could not understand.<br />\n</p>\n"
+    b"</body></html>\n"
+)
+
+#: Jetty's 400 page behind HubSpot's front door: `text/html;charset=iso-8859-1`, 215 bytes.
+HUBSPOT_JETTY_PAGE = (
+    b'<html>\n<head>\n<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>\n'
+    b"<title>Error 400 Bad Request</title>\n</head>\n<body><h2>HTTP ERROR 400</h2>\n"
+    b"<p>Reason:\n<pre>    Bad Request</pre></p>\n</body>\n</html>\n"
+)
+
+#: HubSpot's own 400 page. Real's is 19,237 bytes of `text/html; charset=utf-8`, most of them a
+#: style sheet and an inline image; the stub here keeps its title, its words and its status code.
+HUBSPOT_ERROR_PAGE = (
+    b"<!DOCTYPE html> <html lang=en><meta charset=utf-8><title>Error</title>"
+    b"<header><h4>Something went wrong</h4><p>There was an error loading the page.</p></header>"
+    b"<div class=status-code>400</div>\n"
+)
+
+#: The printable characters but `%` that Graph's front door refuses in a path.
+_GRAPH_REFUSED_PRINTABLE = re.compile(rb'["#<>]')
+#: The path under which HubSpot's Jetty reads a `{` and a `;` (:func:`printable_answer`,
+#: :func:`printable_reading`).
+_HUBSPOT_OBJECTS = b"/hubspot/crm/v3/objects/"
+#: The mounts under which a `\` in the path is read as a `/` (:func:`printable_reading`).
+_BACKSLASH_MOUNTS = (b"/atlassian/", b"/drive/", b"/gmail/", b"/docs/", b"/sheets/", b"/slides/")
+
+
+def printable_answer(scope: Scope) -> Response | None:
+    """The front door's answer to a target holding a `#` (:data:`WITH_A_FRAGMENT`), a `%` two hex
+    digits do not follow (:data:`_BROKEN_ESCAPE`), or on Graph and HubSpot another printable
+    character it refuses, or ``None`` where it reads the target on.
+
+    On api.github.com its page for a `#` anywhere, and on slack.com envoy's empty 400; then on
+    slack.com Apache's page (:data:`SLACK_APACHE_PAGE`) for a broken escape in the path; on Graph
+    :data:`GRAPH_INVALID_URL` for one, or for a `"`, a `#`, a `<` or a `>`, in the path; on S3, an
+    empty 400 for one in the path, a `#` ahead of it included, whose status line real words
+    `400 Invalid URI: EOF` where the path ends fewer than two characters after the `%` and
+    `400 Invalid URI: isHexDigit` otherwise; on Notion and HubSpot Cloudflare's page for one in the
+    path, but where the end of the target cuts it short (:func:`cut_escape`), which HubSpot answers
+    with :data:`HUBSPOT_ERROR_PAGE` and Notion reads on (``notion.undecodable_url``); and on HubSpot
+    Jetty's page for a `{` or a `}` in a path under `/crm/v3/objects/`.
+
+    Measured on 2026-10-31 (UTC) over raw HTTP/1.1 on TLS sockets, with the vendors' credentials but
+    S3's and Graph's, for each byte from 0x21 to 0x7E sent as itself and as its escape at a path no
+    route serves (`…/nope<byte>x`) and in a query value (`?b=<byte>x`): each broken escape and each
+    character here was refused in the path and read on in the query, but on api.github.com and
+    slack.com, where a `#` was refused in either (api.github.com's answer to a broken escape in the
+    query is ``backlot.main.refuse_a_broken_escape_in_a_github_query``'s). Then each spelling of a
+    broken escape, a `#` and a broken escape in either order, some of them beside `%00` or a raw
+    byte, and on slack.com, Notion and HubSpot some of them with no credential, and on
+    api.github.com a `#` with none, each of which drew the answer it drew with one;
+    ``tests/test_request_target.py`` holds the cases. Notion reads nothing past a `#`, and slack.com
+    answers `%00` beside a broken escape with envoy's empty 400 (:func:`escape_answer`). On Notion
+    and HubSpot, Cloudflare's page for a broken escape or a `%00` comes ahead of its answer to a raw
+    byte (:func:`answer`), but for a `%` or a `%4` that ends the target after one, and on HubSpot a
+    `{` beside one, which draw the raw byte's empty 400; slack.com answers a raw `\\x01` ahead of a
+    `#` or a broken escape beside it, Graph gives a `\\x01` the page it gives a `"`, and S3 reads a
+    raw byte on. The answers that do not close the connection are Apache's, Jetty's and HubSpot's
+    own: each of those was followed by an answer to a second request on the same connection, and
+    none of the others."""
+    path, raw_path = scope["path"], scope["raw_path"]
+    sent = scope.get(WITH_A_FRAGMENT)
+    sent_path = raw_path if sent is None else sent.partition(b"?")[0]
+    if _under(path, "/github"):
+        return _github() if sent is not None else None
+    if _under(path, "/slack"):
+        if sent is not None:
+            return _page(b"", None)
+        if _BROKEN_ESCAPE.search(raw_path):
+            return _page(SLACK_APACHE_PAGE, "text/html; charset=iso-8859-1", close=False)
+        return None
+    if _under(path, "/msgraph"):
+        if _BROKEN_ESCAPE.search(sent_path) or _GRAPH_REFUSED_PRINTABLE.search(sent_path):
+            return _page(GRAPH_INVALID_URL, "text/html; charset=us-ascii")
+        return None
+    if errors.s3.owns(path):
+        return _page(b"", None) if _BROKEN_ESCAPE.search(sent_path) else None
+    if any(_under(path, p) for p in ("/notion", "/hubspot")):
+        own = b"/" + raw_path.partition(b"/")[2].partition(b"/")[2]
+        if cut_escape(own, path_ends_the_target(scope)):
+            if _under(path, "/notion"):
+                return None
+            return _page(HUBSPOT_ERROR_PAGE, "text/html; charset=utf-8", close=False)
+        if _BROKEN_ESCAPE.search(own):
+            return _page(CLOUDFLARE_PAGE, "text/html")
+        if raw_path.startswith(_HUBSPOT_OBJECTS) and (b"{" in raw_path or b"}" in raw_path):
+            return _page(HUBSPOT_JETTY_PAGE, "text/html;charset=iso-8859-1", close=False)
+    return None
+
+
+def printable_reading(scope: Scope) -> dict[str, object] | None:
+    """The scope keys a front door reads otherwise where the target holds one of these printable
+    characters, each with the value it reads, or ``None`` where it reads none of them otherwise:
+
+    - a `\\` in a path under `/atlassian/` or a Google mount (:data:`_BACKSLASH_MOUNTS`) is a `/`,
+      where `%5C` stays a backslash;
+    - a `+` in a path under `/drive/v3/` is a space, where `%2B` stays a plus; in the path alone,
+      because ``backlot.routers.google._drive_batch_redirect`` reads the raw path as sent;
+    - in a path under HubSpot's `/crm/v3/objects/`, a `;` and what comes after it up to the next
+      `/` are no part of the path, where `%3B` is;
+    - on S3, a `#` is one of the characters of the path or the query it stands in, and the query
+      begins at the first `?`;
+    - on HubSpot, a query holding a broken escape (:data:`_BROKEN_ESCAPE`) comes with no
+      credential.
+
+    Measured on 2026-10-31 (UTC) over raw HTTP/1.1 on TLS sockets, with the sweep
+    :func:`printable_answer` names and then the spellings
+    ``tests/test_request_target.py::_PRINTABLE`` holds, each answered as the request it reads as: a
+    `\\` on Jira, Confluence, Drive, Gmail, Docs, Sheets and Slides; a `+` on Drive's files, their
+    permissions, comments and export, and a shared drive; a `;` on HubSpot's contacts and their
+    list, where `objects;x/contacts/nope` was the gateway's 404 page; a `#` on S3's buckets, in the
+    path and in the query, where `?max-keys=1#x` drew the 400 naming `1#x` that `?max-keys=1%23x`
+    drew; and a broken escape in a name or a value of HubSpot's query, on `contacts`,
+    `contacts/nope` and `owners`."""
+    path, raw = scope["path"], scope["raw_path"]
+    reading: dict[str, object] = {}
+    sent = scope.get(WITH_A_FRAGMENT)
+    if sent is not None and errors.s3.owns(path):
+        raw, _, reading["query_string"] = sent.partition(b"?")
+    slashed = raw.replace(b"\\", b"/")
+    if slashed.startswith(_BACKSLASH_MOUNTS):
+        raw = slashed
+    if raw.startswith(_HUBSPOT_OBJECTS):
+        segments = raw.removeprefix(_HUBSPOT_OBJECTS).split(b"/")
+        raw = _HUBSPOT_OBJECTS + b"/".join(s.partition(b";")[0] for s in segments)
+    if raw != scope["raw_path"]:
+        reading["raw_path"] = raw
+        reading["path"] = urllib.parse.unquote(raw.decode("latin-1"))
+    if raw.startswith(b"/drive/v3/") and b"+" in raw:
+        reading["path"] = urllib.parse.unquote(raw.replace(b"+", b" ").decode("latin-1"))
+    if _under(path, "/hubspot") and _BROKEN_ESCAPE.search(scope["query_string"]):
+        headers = [(name, value) for name, value in scope["headers"] if name != b"authorization"]
+        if len(headers) < len(scope["headers"]):
+            reading["headers"] = headers
+    return reading or None

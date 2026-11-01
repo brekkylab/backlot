@@ -2383,8 +2383,14 @@ async def chat_update(request: Request):
     # 2026-10-21, `chat.update` carried neither `ts` nor `reactions` for a threaded message with a
     # reaction, where `conversations.replies` answered the same message carrying both. `ts` is on
     # the answer beside it either way.
-    echoed = {k: v for k, v in _message(updated).items() if k not in ("ts", "reactions")}
-    _with_root(conn, name, auth.visible_ids(request, caller), caller, updated, echoed)
+    ids = auth.visible_ids(request, caller)
+    parent = _parent_user_id(conn, name, ids, updated)
+    echoed = {
+        k: v
+        for k, v in _message(updated, parent_user_id=parent).items()
+        if k not in ("ts", "reactions")
+    }
+    _with_root(conn, name, ids, caller, updated, echoed)
     return {
         "ok": True,
         "channel": synth.slack_channel_id(name),
@@ -2777,7 +2783,9 @@ async def reactions_get(request: Request):
     )
     if err is not None:
         return err
-    message = _with_root(conn, name, auth.visible_ids(request, caller), caller, row, _message(row))
+    ids = auth.visible_ids(request, caller)
+    parent = _parent_user_id(conn, name, ids, row)
+    message = _with_root(conn, name, ids, caller, row, _message(row, parent_user_id=parent))
     return {
         "ok": True,
         "type": "message",
@@ -2862,7 +2870,14 @@ async def reactions_list(request: Request):
             {
                 "type": "message",
                 "channel": synth.slack_channel_id(channel),
-                "message": _with_root(conn, channel, ids, caller, row, _message(row))
+                "message": _with_root(
+                    conn,
+                    channel,
+                    ids,
+                    caller,
+                    row,
+                    _message(row, parent_user_id=_parent_user_id(conn, channel, ids, row)),
+                )
                 | {"permalink": _permalink(channel, row)},
             }
         )
@@ -3028,6 +3043,20 @@ def _flag(request: Request, key: str) -> bool:
     `false` in any case are off, and every other value is on. `reply_broadcast` read the same as a
     form field on slack.com on 2026-10-30, `00`, `no`, `null` and ` false` among the values on."""
     return (_param(request, key) or "").lower() not in ("", "0", "false")
+
+
+def _parent_user_id(conn, name: str, ids, row) -> str | None:
+    """The `parent_user_id` of a reply a method answers by itself: the `user` of its thread's root.
+
+    Measured against slack.com on 2026-10-31: the `chat.update` echo, the `message` of
+    `reactions.get` and its `reactions.list` item each carried it on a reply, a reply to a reply
+    included, with a bot token and a user token. A thread whose root was deleted was not measured
+    on these three, and a root this server cannot find answers None.
+    """
+    if not row["thread_ts"] or row["thread_seq"] == 0:
+        return None
+    root = store.document_by_key(conn, "slack", (name, row["thread_ts"]), ids)
+    return _uid(root["author_email"]) if root is not None else None
 
 
 def _with_root(conn, name: str, ids, caller: Caller, row, m: dict) -> dict:

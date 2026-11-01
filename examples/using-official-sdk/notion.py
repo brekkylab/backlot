@@ -98,8 +98,8 @@ with serve_or_connect(CORPUS, url=args.url) as s:
         for c in comments:
             print(f"  💬 {''.join(t['plain_text'] for t in c['rich_text'])}")
 
-    # list data sources via a type-filtered search, then query one for its rows; under 2025-09-03
-    # the search takes "page" or "data_source", and rows live under a data source
+    # list data sources via a type-filtered search (under 2025-09-03 its filter takes "page" or
+    # "data_source"), then query the first for its rows
     sources = notion.search(filter={"property": "object", "value": "data_source"})["results"]
     ds = sources[0] if sources else None
     if ds:

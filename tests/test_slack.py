@@ -6105,3 +6105,68 @@ def test_a_bot_messages_author_resolves_through_users_info(wclient, admin_h):
     assert j["ok"] is True
     assert j["user"]["id"] == uid
     assert j["user"]["is_bot"] is True
+
+
+def test_a_reply_a_method_answers_by_itself_carries_parent_user_id(client, admin_h):
+    """`chat.update`, `reactions.get` and `reactions.list` carry `parent_user_id` on a reply, as
+    `conversations.replies` does, and none on the thread's root (`_parent_user_id`)."""
+    api = "/slack/api"
+    channel = client.get(f"{api}/conversations.list", headers=admin_h).json()["channels"][0]["id"]
+
+    def post(**data):
+        return client.post(
+            f"{api}/chat.postMessage", headers=admin_h, data={"channel": channel, **data}
+        ).json()
+
+    root = post(text="root")
+    reply = post(text="reply", thread_ts=root["ts"])
+    nested = post(text="reply to the reply", thread_ts=reply["ts"])
+    poster = root["message"]["user"]
+    for ts in (reply["ts"], nested["ts"], root["ts"]):
+        want = None if ts == root["ts"] else poster
+        at = {"channel": channel, "timestamp": ts}
+        edit = {"channel": channel, "ts": ts, "text": "edited"}
+        edited = client.post(f"{api}/chat.update", headers=admin_h, data=edit).json()["message"]
+        assert edited.get("parent_user_id") == want
+        client.post(f"{api}/reactions.add", headers=admin_h, data={**at, "name": "eyes"})
+        got = client.get(f"{api}/reactions.get", headers=admin_h, params=at).json()["message"]
+        assert got.get("parent_user_id") == want
+        items = client.get(f"{api}/reactions.list", headers=admin_h, params={"limit": 100}).json()
+        item = next(i["message"] for i in items["items"] if i["message"]["ts"] == ts)
+        assert item.get("parent_user_id") == want
+
+
+def test_parent_user_id_names_the_root_author_not_the_replier(tmp_path):
+    """`reactions.get` and `reactions.list` on a reply name the thread's root author, where the
+    reply is someone else's."""
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "slack",
+                "channel": "general",
+                "content": "root",
+                "author_email": "bob@x.com",
+                "visibility": "public",
+                "created": "2026-03-01T09:00:00Z",
+                "replies": [{"content": "reply", "author_email": "ava@x.com"}],
+            }
+        ],
+    )
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/slack/api"
+        channel = c.get(f"{api}/conversations.list", headers=h).json()["channels"][0]["id"]
+        root = c.get(f"{api}/conversations.history", headers=h, params={"channel": channel})
+        root_ts = root.json()["messages"][0]["ts"]
+        thread = {"channel": channel, "ts": root_ts}
+        reply = c.get(f"{api}/conversations.replies", headers=h, params=thread).json()["messages"][
+            1
+        ]
+        assert reply["user"] == synth.slack_user_id("ava@x.com")
+        at = {"channel": channel, "timestamp": reply["ts"]}
+        c.post(f"{api}/reactions.add", headers=h, data={**at, "name": "eyes"})
+        got = c.get(f"{api}/reactions.get", headers=h, params=at).json()["message"]
+        item = c.get(f"{api}/reactions.list", headers=h).json()["items"][0]["message"]
+        bob = synth.slack_user_id("bob@x.com")
+        assert got["parent_user_id"] == item["parent_user_id"] == reply["parent_user_id"] == bob

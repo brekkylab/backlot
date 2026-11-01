@@ -17,7 +17,9 @@ renames each operation to its route's own name (``search_messages``, not
 operations sharing a name to one (prefer GET, then fewest path params, then the lexicographically
 greatest path — so Jira's ``/rest/api/3`` alias survives over ``/rest/api/2``). Served at
 ``GET /_meta/openapi/{source}`` so a bridge (``backlot.mcp``) consumes it directly — no client-side
-spec surgery. HEAD goes first, before anything is renamed (:func:`drop_head_operations`).
+spec surgery; the bridge renames only the arguments the Anthropic API refuses
+(:func:`backlot.mcp.argument_name`). HEAD goes first, before anything is renamed
+(:func:`drop_head_operations`).
 """
 
 from __future__ import annotations

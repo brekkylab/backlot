@@ -910,7 +910,7 @@ def test_mcp_notion_tools_take_the_version_every_request_carries(live_server):
 
 # The pattern `backlot.mcp.ARGUMENT_NAME` quotes from the Anthropic API's 400, written out here so a
 # change to that constant is a failure rather than a new expectation.
-_ANTHROPIC_KEY = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+_ANTHROPIC_KEY = re.compile(r"[a-zA-Z0-9_.-]{1,64}")
 
 
 @pytest.mark.parametrize(
@@ -1082,7 +1082,11 @@ def test_backlot_mcp_serves_every_source_namespaced(live_server):
     refused = {
         t.name: bad
         for t in tools
-        if (bad := [a for a in t.input_schema.get("properties", {}) if not _ANTHROPIC_KEY.match(a)])
+        if (
+            bad := [
+                a for a in t.input_schema.get("properties", {}) if not _ANTHROPIC_KEY.fullmatch(a)
+            ]
+        )
     }
     assert not refused, refused
     by_source = collections.defaultdict(set)

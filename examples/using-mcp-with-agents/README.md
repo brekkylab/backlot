@@ -216,7 +216,7 @@ selection depth. The code is `backlot/mcp.py`.
 These sources have no vendor MCP server that accepts a base-URL override (see "Why these need
 the bridge" below). Instead of a vendor server, each launcher runs `backlot mcp --source <name>`
 (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess. The bridge is deliberately thin —
-Backlot does the spec work:
+Backlot does the spec work, and the bridge adds one rename:
 
 - Backlot serves an **MCP-ready spec per source** at **`GET /_meta/openapi/<source>`** — its own
   typed `/openapi.json` (the routers declare query params and response models) sliced to that

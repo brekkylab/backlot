@@ -304,9 +304,7 @@ def _with_argument_names(tool):
 def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict | None = None):
     """A FastMCP server for one REST source: the MCP-ready spec, served over a client whose base
     URL is Backlot and which carries ``creds`` on every call — as a header for the bearer sources,
-    as a per-request signature for S3. ``spec`` is that spec when the caller already fetched it.
-    Each argument goes by :func:`argument_name`'s name for its parameter, and each call reaches the
-    route under the spec's."""
+    as a per-request signature for S3. ``spec`` is that spec when the caller already fetched it."""
     import httpx2
     from fastmcp import FastMCP
     from fastmcp.server.transforms import Transform

@@ -6,7 +6,7 @@
     "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
     "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest"
   ],
-  "measured": "2026-10-26",
+  "measured": "2026-10-29",
   "operations": [
     {
       "operation": "DELETE /drive/v3/drives/{}",
@@ -926,9 +926,37 @@
       "operation": "POST /v1/documents",
       "id": "docs.documents.create",
       "response": "docs.Document",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented",
+      "params": {
+        "alt": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "callback": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "key": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "prettyPrint": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "quotaUser": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "uploadType": {
+          "kind": "missing_param",
+          "severity": "gap"
+        },
+        "upload_protocol": {
+          "kind": "missing_param",
+          "severity": "gap"
+        }
+      }
     },
     {
       "operation": "POST /v1/documents/{}:batchUpdate",
@@ -1218,6 +1246,16 @@
         }
       }
     },
+    "docs.BackgroundSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "backgroundColorSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
     "docs.Body": {
       "type_kind": "object",
       "status": "implemented",
@@ -1260,6 +1298,24 @@
         }
       }
     },
+    "docs.BulletSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "listIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "nestingLevelSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "textStyleSuggestionState": {
+          "status": "missing",
+          "type": "docs.TextStyleSuggestionState"
+        }
+      }
+    },
     "docs.Color": {
       "type_kind": "object",
       "status": "implemented",
@@ -1292,6 +1348,20 @@
         }
       }
     },
+    "docs.CommentAnchor": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "anchorId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "ranges": {
+          "status": "missing",
+          "type": "[docs.Range]"
+        }
+      }
+    },
     "docs.CommentThread": {
       "type_kind": "object",
       "status": "missing",
@@ -1319,6 +1389,58 @@
         "status": {
           "status": "missing",
           "type": "string"
+        }
+      }
+    },
+    "docs.CropProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "angle": {
+          "status": "missing",
+          "type": "number"
+        },
+        "offsetBottom": {
+          "status": "missing",
+          "type": "number"
+        },
+        "offsetLeft": {
+          "status": "missing",
+          "type": "number"
+        },
+        "offsetRight": {
+          "status": "missing",
+          "type": "number"
+        },
+        "offsetTop": {
+          "status": "missing",
+          "type": "number"
+        }
+      }
+    },
+    "docs.CropPropertiesSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "angleSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "offsetBottomSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "offsetLeftSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "offsetRightSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "offsetTopSuggested": {
+          "status": "missing",
+          "type": "boolean"
         }
       }
     },
@@ -1383,6 +1505,32 @@
         "timestamp": {
           "status": "missing",
           "type": "string"
+        }
+      }
+    },
+    "docs.DateElementPropertiesSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dateFormatSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "localeSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "timeFormatSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "timeZoneIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "timestampSuggested": {
+          "status": "missing",
+          "type": "boolean"
         }
       }
     },
@@ -1622,6 +1770,88 @@
         }
       }
     },
+    "docs.DocumentStyleSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "backgroundSuggestionState": {
+          "status": "missing",
+          "type": "docs.BackgroundSuggestionState"
+        },
+        "defaultFooterIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "defaultHeaderIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "evenPageFooterIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "evenPageHeaderIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "firstPageFooterIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "firstPageHeaderIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "flipPageOrientationSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "marginBottomSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "marginFooterSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "marginHeaderSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "marginLeftSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "marginRightSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "marginTopSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "pageNumberStartSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "pageSizeSuggestionState": {
+          "status": "missing",
+          "type": "docs.SizeSuggestionState"
+        },
+        "useCustomHeaderFooterMarginsSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "useEvenPageHeaderFooterSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "useFirstPageHeaderFooterSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
     "docs.DocumentTab": {
       "type_kind": "object",
       "status": "implemented",
@@ -1740,6 +1970,78 @@
         }
       }
     },
+    "docs.DropdownDefinition": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dropdownDefinitionId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "dropdownDefinitionProperties": {
+          "status": "missing",
+          "type": "docs.DropdownDefinitionProperties"
+        },
+        "suggestedDeletionId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "suggestedDropdownDefinitionPropertiesChanges": {
+          "status": "missing",
+          "type": "map<string, docs.SuggestedDropdownDefinitionProperties>"
+        },
+        "suggestedInsertionId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.DropdownDefinitionProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "options": {
+          "status": "missing",
+          "type": "[docs.DropdownOption]"
+        },
+        "title": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.DropdownDefinitionPropertiesSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "optionsSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "titleSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "docs.DropdownOption": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "displayValue": {
+          "status": "missing",
+          "type": "string"
+        },
+        "optionId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "textStyle": {
+          "status": "missing",
+          "type": "docs.TextStyle"
+        }
+      }
+    },
     "docs.DropdownProperties": {
       "type_kind": "object",
       "status": "missing",
@@ -1758,6 +2060,168 @@
         }
       }
     },
+    "docs.DropdownPropertiesSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "selectedOptionIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "docs.EmbeddedDrawingProperties": {
+      "type_kind": "object",
+      "status": "missing"
+    },
+    "docs.EmbeddedDrawingPropertiesSuggestionState": {
+      "type_kind": "object",
+      "status": "missing"
+    },
+    "docs.EmbeddedObject": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "description": {
+          "status": "missing",
+          "type": "string"
+        },
+        "embeddedDrawingProperties": {
+          "status": "missing",
+          "type": "docs.EmbeddedDrawingProperties"
+        },
+        "embeddedObjectBorder": {
+          "status": "missing",
+          "type": "docs.EmbeddedObjectBorder"
+        },
+        "imageProperties": {
+          "status": "missing",
+          "type": "docs.ImageProperties"
+        },
+        "linkedContentReference": {
+          "status": "missing",
+          "type": "docs.LinkedContentReference"
+        },
+        "marginBottom": {
+          "status": "missing",
+          "type": "docs.Dimension"
+        },
+        "marginLeft": {
+          "status": "missing",
+          "type": "docs.Dimension"
+        },
+        "marginRight": {
+          "status": "missing",
+          "type": "docs.Dimension"
+        },
+        "marginTop": {
+          "status": "missing",
+          "type": "docs.Dimension"
+        },
+        "size": {
+          "status": "missing",
+          "type": "docs.Size"
+        },
+        "title": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.EmbeddedObjectBorder": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "color": {
+          "status": "missing",
+          "type": "docs.OptionalColor"
+        },
+        "dashStyle": {
+          "status": "missing",
+          "type": "string"
+        },
+        "propertyState": {
+          "status": "missing",
+          "type": "string"
+        },
+        "width": {
+          "status": "missing",
+          "type": "docs.Dimension"
+        }
+      }
+    },
+    "docs.EmbeddedObjectBorderSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "colorSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "dashStyleSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "propertyStateSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "widthSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "docs.EmbeddedObjectSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "descriptionSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "embeddedDrawingPropertiesSuggestionState": {
+          "status": "missing",
+          "type": "docs.EmbeddedDrawingPropertiesSuggestionState"
+        },
+        "embeddedObjectBorderSuggestionState": {
+          "status": "missing",
+          "type": "docs.EmbeddedObjectBorderSuggestionState"
+        },
+        "imagePropertiesSuggestionState": {
+          "status": "missing",
+          "type": "docs.ImagePropertiesSuggestionState"
+        },
+        "linkedContentReferenceSuggestionState": {
+          "status": "missing",
+          "type": "docs.LinkedContentReferenceSuggestionState"
+        },
+        "marginBottomSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "marginLeftSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "marginRightSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "marginTopSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "sizeSuggestionState": {
+          "status": "missing",
+          "type": "docs.SizeSuggestionState"
+        },
+        "titleSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
     "docs.Equation": {
       "type_kind": "object",
       "status": "missing",
@@ -1769,6 +2233,34 @@
         "suggestedInsertionIds": {
           "status": "missing",
           "type": "[string]"
+        }
+      }
+    },
+    "docs.Footer": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "content": {
+          "status": "missing",
+          "type": "[docs.StructuralElement]"
+        },
+        "footerId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.Footnote": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "content": {
+          "status": "missing",
+          "type": "[docs.StructuralElement]"
+        },
+        "footnoteId": {
+          "status": "missing",
+          "type": "string"
         }
       }
     },
@@ -1799,6 +2291,20 @@
         "textStyle": {
           "status": "missing",
           "type": "docs.TextStyle"
+        }
+      }
+    },
+    "docs.Header": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "content": {
+          "status": "missing",
+          "type": "[docs.StructuralElement]"
+        },
+        "headerId": {
+          "status": "missing",
+          "type": "string"
         }
       }
     },
@@ -1838,6 +2344,100 @@
         }
       }
     },
+    "docs.ImageProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "angle": {
+          "status": "missing",
+          "type": "number"
+        },
+        "brightness": {
+          "status": "missing",
+          "type": "number"
+        },
+        "contentUri": {
+          "status": "missing",
+          "type": "string"
+        },
+        "contrast": {
+          "status": "missing",
+          "type": "number"
+        },
+        "cropProperties": {
+          "status": "missing",
+          "type": "docs.CropProperties"
+        },
+        "sourceUri": {
+          "status": "missing",
+          "type": "string"
+        },
+        "transparency": {
+          "status": "missing",
+          "type": "number"
+        }
+      }
+    },
+    "docs.ImagePropertiesSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "angleSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "brightnessSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "contentUriSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "contrastSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "cropPropertiesSuggestionState": {
+          "status": "missing",
+          "type": "docs.CropPropertiesSuggestionState"
+        },
+        "sourceUriSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "transparencySuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "docs.InlineObject": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "inlineObjectProperties": {
+          "status": "missing",
+          "type": "docs.InlineObjectProperties"
+        },
+        "objectId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "suggestedDeletionIds": {
+          "status": "missing",
+          "type": "[string]"
+        },
+        "suggestedInlineObjectPropertiesChanges": {
+          "status": "missing",
+          "type": "map<string, docs.SuggestedInlineObjectProperties>"
+        },
+        "suggestedInsertionId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
     "docs.InlineObjectElement": {
       "type_kind": "object",
       "status": "missing",
@@ -1861,6 +2461,26 @@
         "textStyle": {
           "status": "missing",
           "type": "docs.TextStyle"
+        }
+      }
+    },
+    "docs.InlineObjectProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "embeddedObject": {
+          "status": "missing",
+          "type": "docs.EmbeddedObject"
+        }
+      }
+    },
+    "docs.InlineObjectPropertiesSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "embeddedObjectSuggestionState": {
+          "status": "missing",
+          "type": "docs.EmbeddedObjectSuggestionState"
         }
       }
     },
@@ -1904,6 +2524,100 @@
         }
       }
     },
+    "docs.LinkedContentReference": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "sheetsChartReference": {
+          "status": "missing",
+          "type": "docs.SheetsChartReference"
+        }
+      }
+    },
+    "docs.LinkedContentReferenceSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "sheetsChartReferenceSuggestionState": {
+          "status": "missing",
+          "type": "docs.SheetsChartReferenceSuggestionState"
+        }
+      }
+    },
+    "docs.List": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "listProperties": {
+          "status": "missing",
+          "type": "docs.ListProperties"
+        },
+        "suggestedDeletionIds": {
+          "status": "missing",
+          "type": "[string]"
+        },
+        "suggestedInsertionId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "suggestedListPropertiesChanges": {
+          "status": "missing",
+          "type": "map<string, docs.SuggestedListProperties>"
+        }
+      }
+    },
+    "docs.ListProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "nestingLevels": {
+          "status": "missing",
+          "type": "[docs.NestingLevel]"
+        }
+      }
+    },
+    "docs.ListPropertiesSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "nestingLevelsSuggestionStates": {
+          "status": "missing",
+          "type": "[docs.NestingLevelSuggestionState]"
+        }
+      }
+    },
+    "docs.NamedRange": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "name": {
+          "status": "missing",
+          "type": "string"
+        },
+        "namedRangeId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "ranges": {
+          "status": "missing",
+          "type": "[docs.Range]"
+        }
+      }
+    },
+    "docs.NamedRanges": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "name": {
+          "status": "missing",
+          "type": "string"
+        },
+        "namedRanges": {
+          "status": "missing",
+          "type": "[docs.NamedRange]"
+        }
+      }
+    },
     "docs.NamedStyle": {
       "type_kind": "object",
       "status": "implemented",
@@ -1922,6 +2636,24 @@
         }
       }
     },
+    "docs.NamedStyleSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "namedStyleType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "paragraphStyleSuggestionState": {
+          "status": "missing",
+          "type": "docs.ParagraphStyleSuggestionState"
+        },
+        "textStyleSuggestionState": {
+          "status": "missing",
+          "type": "docs.TextStyleSuggestionState"
+        }
+      }
+    },
     "docs.NamedStyles": {
       "type_kind": "object",
       "status": "implemented",
@@ -1929,6 +2661,102 @@
         "styles": {
           "status": "implemented",
           "type": "[docs.NamedStyle]"
+        }
+      }
+    },
+    "docs.NamedStylesSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "stylesSuggestionStates": {
+          "status": "missing",
+          "type": "[docs.NamedStyleSuggestionState]"
+        }
+      }
+    },
+    "docs.NestingLevel": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "bulletAlignment": {
+          "status": "missing",
+          "type": "string"
+        },
+        "glyphFormat": {
+          "status": "missing",
+          "type": "string"
+        },
+        "glyphSymbol": {
+          "status": "missing",
+          "type": "string"
+        },
+        "glyphType": {
+          "status": "missing",
+          "type": "string"
+        },
+        "indentFirstLine": {
+          "status": "missing",
+          "type": "docs.Dimension"
+        },
+        "indentStart": {
+          "status": "missing",
+          "type": "docs.Dimension"
+        },
+        "startNumber": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "textStyle": {
+          "status": "missing",
+          "type": "docs.TextStyle"
+        }
+      }
+    },
+    "docs.NestingLevelSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "bulletAlignmentSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "glyphFormatSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "glyphSymbolSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "glyphTypeSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "indentFirstLineSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "indentStartSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "startNumberSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "textStyleSuggestionState": {
+          "status": "missing",
+          "type": "docs.TextStyleSuggestionState"
+        }
+      }
+    },
+    "docs.ObjectReferences": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "objectIds": {
+          "status": "missing",
+          "type": "[string]"
         }
       }
     },
@@ -2210,6 +3038,96 @@
         }
       }
     },
+    "docs.ParagraphStyleSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "alignmentSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "avoidWidowAndOrphanSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "borderBetweenSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "borderBottomSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "borderLeftSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "borderRightSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "borderTopSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "directionSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "headingIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "indentEndSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "indentFirstLineSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "indentStartSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "keepLinesTogetherSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "keepWithNextSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "lineSpacingSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "namedStyleTypeSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "pageBreakBeforeSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "shadingSuggestionState": {
+          "status": "missing",
+          "type": "docs.ShadingSuggestionState"
+        },
+        "spaceAboveSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "spaceBelowSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "spacingModeSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
     "docs.Person": {
       "type_kind": "object",
       "status": "missing",
@@ -2251,6 +3169,96 @@
         "name": {
           "status": "missing",
           "type": "string"
+        }
+      }
+    },
+    "docs.PositionedObject": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "objectId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "positionedObjectProperties": {
+          "status": "missing",
+          "type": "docs.PositionedObjectProperties"
+        },
+        "suggestedDeletionIds": {
+          "status": "missing",
+          "type": "[string]"
+        },
+        "suggestedInsertionId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "suggestedPositionedObjectPropertiesChanges": {
+          "status": "missing",
+          "type": "map<string, docs.SuggestedPositionedObjectProperties>"
+        }
+      }
+    },
+    "docs.PositionedObjectPositioning": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "layout": {
+          "status": "missing",
+          "type": "string"
+        },
+        "leftOffset": {
+          "status": "missing",
+          "type": "docs.Dimension"
+        },
+        "topOffset": {
+          "status": "missing",
+          "type": "docs.Dimension"
+        }
+      }
+    },
+    "docs.PositionedObjectPositioningSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "layoutSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "leftOffsetSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "topOffsetSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "docs.PositionedObjectProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "embeddedObject": {
+          "status": "missing",
+          "type": "docs.EmbeddedObject"
+        },
+        "positioning": {
+          "status": "missing",
+          "type": "docs.PositionedObjectPositioning"
+        }
+      }
+    },
+    "docs.PositionedObjectPropertiesSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "embeddedObjectSuggestionState": {
+          "status": "missing",
+          "type": "docs.EmbeddedObjectSuggestionState"
+        },
+        "positioningSuggestionState": {
+          "status": "missing",
+          "type": "docs.PositionedObjectPositioningSuggestionState"
         }
       }
     },
@@ -2329,6 +3337,28 @@
           "type": "boolean"
         },
         "user": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.Range": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "endIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "segmentId": {
+          "status": "missing",
+          "type": "string"
+        },
+        "startIndex": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "tabId": {
           "status": "missing",
           "type": "string"
         }
@@ -2560,6 +3590,44 @@
         }
       }
     },
+    "docs.ShadingSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "backgroundColorSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "docs.SheetsChartReference": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "chartId": {
+          "status": "missing",
+          "type": "integer"
+        },
+        "spreadsheetId": {
+          "status": "missing",
+          "type": "string"
+        }
+      }
+    },
+    "docs.SheetsChartReferenceSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "chartIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "spreadsheetIdSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
     "docs.Size": {
       "type_kind": "object",
       "status": "implemented",
@@ -2571,6 +3639,20 @@
         "width": {
           "status": "implemented",
           "type": "docs.Dimension"
+        }
+      }
+    },
+    "docs.SizeSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "heightSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "widthSuggested": {
+          "status": "missing",
+          "type": "boolean"
         }
       }
     },
@@ -2605,6 +3687,188 @@
           "type": "docs.TableOfContents",
           "kind": "missing_field",
           "severity": "gap"
+        }
+      }
+    },
+    "docs.SuggestedBullet": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "bullet": {
+          "status": "missing",
+          "type": "docs.Bullet"
+        },
+        "bulletSuggestionState": {
+          "status": "missing",
+          "type": "docs.BulletSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedDateElementProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dateElementProperties": {
+          "status": "missing",
+          "type": "docs.DateElementProperties"
+        },
+        "dateElementPropertiesSuggestionState": {
+          "status": "missing",
+          "type": "docs.DateElementPropertiesSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedDocumentStyle": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "documentStyle": {
+          "status": "missing",
+          "type": "docs.DocumentStyle"
+        },
+        "documentStyleSuggestionState": {
+          "status": "missing",
+          "type": "docs.DocumentStyleSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedDropdownDefinitionProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dropdownDefinitionProperties": {
+          "status": "missing",
+          "type": "docs.DropdownDefinitionProperties"
+        },
+        "dropdownDefinitionPropertiesSuggestionState": {
+          "status": "missing",
+          "type": "docs.DropdownDefinitionPropertiesSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedDropdownProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "dropdownProperties": {
+          "status": "missing",
+          "type": "docs.DropdownProperties"
+        },
+        "dropdownPropertiesSuggestionState": {
+          "status": "missing",
+          "type": "docs.DropdownPropertiesSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedInlineObjectProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "inlineObjectProperties": {
+          "status": "missing",
+          "type": "docs.InlineObjectProperties"
+        },
+        "inlineObjectPropertiesSuggestionState": {
+          "status": "missing",
+          "type": "docs.InlineObjectPropertiesSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedListProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "listProperties": {
+          "status": "missing",
+          "type": "docs.ListProperties"
+        },
+        "listPropertiesSuggestionState": {
+          "status": "missing",
+          "type": "docs.ListPropertiesSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedNamedStyles": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "namedStyles": {
+          "status": "missing",
+          "type": "docs.NamedStyles"
+        },
+        "namedStylesSuggestionState": {
+          "status": "missing",
+          "type": "docs.NamedStylesSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedParagraphStyle": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "paragraphStyle": {
+          "status": "missing",
+          "type": "docs.ParagraphStyle"
+        },
+        "paragraphStyleSuggestionState": {
+          "status": "missing",
+          "type": "docs.ParagraphStyleSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedPositionedObjectProperties": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "positionedObjectProperties": {
+          "status": "missing",
+          "type": "docs.PositionedObjectProperties"
+        },
+        "positionedObjectPropertiesSuggestionState": {
+          "status": "missing",
+          "type": "docs.PositionedObjectPropertiesSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedTableCellStyle": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "tableCellStyle": {
+          "status": "missing",
+          "type": "docs.TableCellStyle"
+        },
+        "tableCellStyleSuggestionState": {
+          "status": "missing",
+          "type": "docs.TableCellStyleSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedTableRowStyle": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "tableRowStyle": {
+          "status": "missing",
+          "type": "docs.TableRowStyle"
+        },
+        "tableRowStyleSuggestionState": {
+          "status": "missing",
+          "type": "docs.TableRowStyleSuggestionState"
+        }
+      }
+    },
+    "docs.SuggestedTextStyle": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "textStyle": {
+          "status": "missing",
+          "type": "docs.TextStyle"
+        },
+        "textStyleSuggestionState": {
+          "status": "missing",
+          "type": "docs.TextStyleSuggestionState"
         }
       }
     },
@@ -2844,6 +4108,60 @@
         }
       }
     },
+    "docs.TableCellStyleSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "backgroundColorSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "borderBottomSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "borderLeftSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "borderRightSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "borderTopSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "columnSpanSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "contentAlignmentSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "paddingBottomSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "paddingLeftSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "paddingRightSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "paddingTopSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "rowSpanSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
     "docs.TableColumnProperties": {
       "type_kind": "object",
       "status": "missing",
@@ -2923,6 +4241,16 @@
           "type": "boolean"
         },
         "tableHeader": {
+          "status": "missing",
+          "type": "boolean"
+        }
+      }
+    },
+    "docs.TableRowStyleSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "minRowHeightSuggested": {
           "status": "missing",
           "type": "boolean"
         }
@@ -3017,6 +4345,56 @@
         "weightedFontFamily": {
           "status": "implemented",
           "type": "docs.WeightedFontFamily"
+        }
+      }
+    },
+    "docs.TextStyleSuggestionState": {
+      "type_kind": "object",
+      "status": "missing",
+      "fields": {
+        "backgroundColorSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "baselineOffsetSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "boldSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "fontSizeSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "foregroundColorSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "italicSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "linkSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "smallCapsSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "strikethroughSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "underlineSuggested": {
+          "status": "missing",
+          "type": "boolean"
+        },
+        "weightedFontFamilySuggested": {
+          "status": "missing",
+          "type": "boolean"
         }
       }
     },

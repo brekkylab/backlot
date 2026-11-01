@@ -206,7 +206,16 @@ def honours_api_version(request: Request) -> bool:
     `resources` alone with the echo and the 400. The route is the whole of the exception — that
     same `1999-01-01` with no credential is a 400 on `/repos/psf/requests`, `/users/psf` and
     `/user/repos` (measured against api.github.com 2026-09-21, on cache-busted urls).
+
+    The agent paths read it from nobody: measured against api.github.com on 2026-10-28, a token
+    that resolves was answered the same 404 on four `/agents/...` operations,
+    `GET /agents/automations/1/tasks`, a repository's automations one by id and its tasks, and an
+    agent-merge `GET`, with `1999-01-01` pinned as without it, and none of their answers carried
+    `X-GitHub-Api-Version-Selected`. So no `/agents` answer here echoes a version and the version's
+    400 does not run on one (see :func:`_an_agent_path` for how much of the path space that is).
     """
+    if _an_agent_path(request.scope["path"]):
+        return False
     if request.url.path == CODE_SEARCH_PATH:
         return False
     return request.url.path != RATE_LIMIT_PATH or "authorization" in request.headers
@@ -613,6 +622,10 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     that resolves to no one is "Bad credentials" with neither the echo nor the five, ahead of the
     version: on 2026-10-25 the base64 of `x:ghp_<36 A>`, with and without `1999-01-01`, was that 401
     on ten operations, `DELETE /installation/token` and `PATCH /repos/{owner}/{repo}` among them.
+
+    On an agent path no version is read (:func:`honours_api_version`), so
+    :func:`_validate_api_version` does not run here on one, and the 404 the router answers for a
+    token carries no echo, nor does :func:`_require`'s 401 for a `Basic` value that names no token.
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return
@@ -723,9 +736,104 @@ def is_an_unserved_operation(method: str, path: str) -> bool:
     )
 
 
+def _an_agent_path(path: str) -> bool:
+    """Whether the path is an `/agents` one, the `/github` prefix aside and `agents` compared
+    ignoring ASCII case, as :func:`under_an_agent_family` compares it: the prefix the agent
+    families share, and the one real reads no API version on (see :func:`honours_api_version`)."""
+    head = path.removeprefix("/github")[: len("/agents/")]
+    return head.isascii() and head.lower() == "/agents/"
+
+
+#: The second segment of the two agent families, as :func:`under_an_agent_family` compares it.
+_AGENT_FAMILIES = frozenset({"repos", "tasks"})
+
+
+def under_an_agent_family(path: str) -> bool:
+    """Whether the `/github` path is at or under `/agents/repos` or `/agents/tasks`, the two agent
+    families real asks a credential on before anything else answers them, published or not: the
+    two segments compared ignoring ASCII case, with anything after them, nothing or an empty
+    segment included.
+
+    Measured against api.github.com on 2026-10-28 and 2026-10-30, each request on its own
+    cache-busted URL, with no credential, `Bearer nope` and a token: `/agents/repos`,
+    `/agents/repos/{o}`, `/agents/repos/{o}/`, `/agents/repos/{o}/{r}`, `/agents/repos/{o}/{r}/`,
+    `/agents/repos/{o}//nosuch`, `/agents/repos/{o}/{r}/nosuch`, `/agents/tasks/`,
+    `/agents/tasks/1/nosuch`, `/Agents/repos/{o}/{r}/nosuch` and `/agents/REPOS/{o}/{r}/nosuch` were
+    answered as :func:`refuse_a_credential_on_an_agent_path` answers. With `Bearer nope` and a
+    token, `/agents//repos/{o}/{r}/nosuch`, `/agents/reposx/{o}/{r}`, `/agents/repo/{o}/{r}`,
+    `/agents/tasksx`, `/agents/nosuchthing`, and `tasks` and `repos` spelt with a KELVIN SIGN and a
+    LONG S, were the 404 of a path real does not route, and so were the paths under
+    `/agents/automations/` that no operation of the baseline names (see
+    :data:`_ROUTED_UNPUBLISHED`'s note).
+
+    The paths an operation of the baseline publishes on a family keep their own refusal
+    (:func:`refuse_an_unserved_operation`); ``backlot.main`` asks this and
+    :func:`is_an_unserved_operation` together to draw that line.
+    """
+    if not path.startswith("/github/"):
+        return False
+    parts = path.removeprefix("/github").split("/", 3)
+    return (
+        len(parts) > 2
+        and parts[1].isascii()
+        and parts[1].lower() == "agents"
+        and parts[2].isascii()
+        and parts[2].lower() in _AGENT_FAMILIES
+    )
+
+
+#: Real's answer to a write on an agent family path whose token resolves, for an account with no
+#: Copilot license (see :func:`refuse_a_credential_on_an_agent_path`).
+_COPILOT_PLAN_REQUIRED = (
+    b'{"code":"copilot_plan_required","error":"forbidden",'
+    b'"message":"This API requires a valid Copilot license."}\n'
+)
+
+
+async def refuse_a_credential_on_an_agent_path(request: Request) -> Response | None:
+    """Answer a request whose path :func:`under_an_agent_family` names as real answers it, ahead of
+    the router: no `Authorization` header, or one that carries no credential
+    (:func:`_a_header_without_a_credential`), is the 401 "Requires authentication"; a credential
+    that arrived and did not resolve is the 401 "Bad credentials"
+    (:func:`_validate_bad_credential`); a `Basic` value that names no token is :func:`_require`'s
+    401, where real answered 403 "API rate limit exceeded" for the caller's address. A token that
+    resolves is answered the text `404 page not found` on a `GET`, which a `HEAD` arrives here as,
+    and :data:`_COPILOT_PLAN_REQUIRED` on a `POST`, `PUT`, `PATCH` or `DELETE`; an `OPTIONS` goes on
+    to the router, though real answered it a 204 with the `access-control-*` headers. No version is
+    read on the way (:func:`honours_api_version`).
+
+    Measured against api.github.com on 2026-10-30, each request on its own cache-busted URL, on
+    `/agents/repos/{o}/{r}/nosuch`, `/agents/tasks/1/nosuch` and `/agents/repos/{o}/{r}` with each
+    of those methods, a token and `Bearer nope`. With no credential the 401 carried the five
+    `x-ratelimit-*` and counted on a `GET`, a `HEAD` and a `POST`, and carried none and moved no
+    window on a `PUT`, a `PATCH`, a `DELETE` and an `OPTIONS` (every method on the first path;
+    `GET`, `POST`, `PUT` and `OPTIONS` on the second; `GET` on the third). On the first, an empty
+    value, `Digest x` and `Bearer<TAB>nope` were that 401 with none of the five, and so was the
+    `Basic` value's 403. The token's 404 and 403 carried the five (`x-ratelimit-resource: core`) and
+    counted, which ``backlot.main._github_routes`` gives them, and "Bad credentials" carried none.
+    """
+    if "authorization" not in request.headers:
+        counted = request.method not in _UNCOUNTED_METHODS and request.method != "OPTIONS"
+        request.state.github_unserved_refusal = "counted" if counted else "uncounted"
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    if _a_header_without_a_credential(request):
+        request.state.github_unserved_refusal = "uncounted"
+        raise HTTPException(status_code=401, detail="Requires authentication")
+    await _validate_bad_credential(request)
+    if auth.github_credential(request) is None:
+        request.state.github_unserved_refusal = "uncounted"
+        _require(request)
+    if request.method == "GET":
+        return PlainTextResponse("404 page not found\n", status_code=404)
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        return Response(_COPILOT_PLAN_REQUIRED, status_code=403, media_type="application/json")
+    return None
+
+
 def refused_an_unserved_operation(request: Request) -> bool:
     """Whether :func:`refuse_an_unserved_operation` refused this request with no credential: no
-    `Authorization` header, or one that carries none."""
+    `Authorization` header, or one that carries none. The refusal the agent families get
+    (:func:`refuse_a_credential_on_an_agent_path`) marks the same state."""
     return getattr(request.state, "github_unserved_refusal", None) is not None
 
 
@@ -844,8 +952,8 @@ def rate_limit_resource(path: str, status_code: int, unparseable: bool = False) 
 class RateLimitWindows:
     """The requests counted so far, per credential and per resource, each in its resource's window.
 
-    A window opens at the first request counted or reported under a `(credential, resource)` and
-    closes its resource's length later — an hour for `core`, a minute for the two search resources
+    A window opens at the first request counted or refused in a `(credential, resource)` and closes
+    its resource's length later — an hour for `core`, a minute for the two search resources
     (:data:`SEARCH_RATE_LIMIT_WINDOW`); `reset` is its closing second, the same on every answer
     inside it. The windows measured stayed put across the requests inside them and differed between
     credentials and between resources (an anonymous caller's `core` and `search` resets 1552 seconds
@@ -874,7 +982,34 @@ class RateLimitWindows:
         return self._status(window, resource, limit)
 
     def status(self, key: str, resource: str, limit: int) -> dict[str, int]:
-        """The window as it stands, nothing counted."""
+        """The window as it stands, nothing counted and nothing opened: a window nothing has opened
+        yet, or whose time is up, reads as one this read opened.
+
+        Measured against api.github.com 2026-10-30, each request on its own cache-busted URL four or
+        five seconds after the one before: under a token, two reads answered `search` at `used: 0`
+        with `reset` 60 and 59 seconds after their `Date`, a `/search/issues` opened the window 59
+        seconds out, and the read after it answered 55; under `Digest x`, a read answered 60, a
+        `/search/issues` opened the window 60 seconds out, and the read after it answered 55; with
+        no `Authorization`, four reads answered `core`'s `reset` 3601 seconds after their `Date`, a
+        `GET /repos/psf/requests` opened the window 3600 seconds out, and the read after it answered
+        3596. Under `Digest x`, `core` still read 3600 after `DELETE /installation/token`, which
+        reports it without counting, and after the uncounted 401s of `PATCH /repos/psf/requests`
+        and `PUT /user/following/octocat`.
+        """
+        now = int(self.clock())
+        window = self._windows.get((key, resource))
+        if window is None or now >= window[0] + RATE_LIMITS[resource].window:
+            window = [now, 0]
+        return self._status(window, resource, limit)
+
+    def opened(self, key: str, resource: str, limit: int) -> dict[str, int]:
+        """The window as it stands, nothing counted, opened now if nothing had opened it.
+
+        Real's 403 on code search for a `code_search` window at `limit: 0` opens that window: with
+        `Basic eDp5`, a read answered its `reset` 60 seconds after the read's `Date`, a 403 five
+        seconds later 60 as well, and a 403 and a read four and eight seconds after that 56 and 52
+        (measured against api.github.com 2026-10-30, each request on its own cache-busted URL).
+        """
         return self._status(self._window(key, resource), resource, limit)
 
     @staticmethod
@@ -1135,9 +1270,9 @@ def rate_limit_refusal(request: Request) -> Response | None:
         return None
     counted, limit = rate_limit_window(resource, authenticated, unparseable)
     windows = _rate_limit_windows(request.app)
-    status = windows.status(key, counted, limit)
-    if status["used"] < limit:
+    if windows.status(key, counted, limit)["used"] < limit:
         return None
+    status = windows.opened(key, counted, limit)
     headers = {
         "x-ratelimit-limit": str(status["limit"]),
         "x-ratelimit-remaining": str(status["remaining"]),
@@ -2423,12 +2558,10 @@ async def get_rate_limit(request: Request):
     that does not resolve is real's 401 (measured — see :func:`_validate_bad_credential`, which
     answers it router-wide before this handler runs).
 
-    Which window real's route reports is not the one its headers had just reported: a minute after
-    answers carrying `remaining: 4994`, `used: 6`, `reset: 1789020007`, the route answered
-    `remaining: 5000`, `used: 0`, `reset: 1789020728`, on 2026-09-10 as on 2026-09-09. The docs
-    page says the route is how a client checks "your current rate limit status", and a client asks
-    it to learn what the headers would say, so this reports the headers' window; the fresh window
-    real answered could only be reproduced by reporting a window nothing counts against.
+    Under a token, real's route reports the windows its headers report: a read three seconds after a
+    `GET /repos/psf/requests` that carried `used: 34` answered `core` at `used: 34` with the same
+    `reset` (measured against api.github.com 2026-10-30). :meth:`RateLimitWindows.status` has the
+    reads before and after the request that opens a window.
     """
     key, authenticated = rate_limit_caller(request)
     unparseable = key.startswith("unparseable:")

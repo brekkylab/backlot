@@ -1522,10 +1522,6 @@
           "kind": "missing_param",
           "severity": "gap"
         },
-        "reply_broadcast": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "token": {
           "kind": "missing_param",
           "severity": "gap"

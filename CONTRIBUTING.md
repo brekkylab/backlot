@@ -93,8 +93,9 @@ uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 (`.[all]` names the same set for anyone installing Backlot from PyPI rather than a checkout.)
 
 CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request (see
-`.github/workflows/ci.yml`). On a pull request it also runs `scripts/prose_check.py`, whose findings
-show as warnings on the lines they name and do not fail the run. CI's `test` jobs set
+`.github/workflows/ci.yml`), and runs `scripts/linear_sdk_fragments.py` over the `@linear/sdk` that
+example pins. On a pull request it also runs `scripts/prose_check.py`, whose findings show as
+warnings on the lines they name and do not fail the run. CI's `test` jobs set
 `BACKLOT_TEST_REQUIRE_DOCKER=1`, under which the Atlassian MCP test fails where a local run without
 Docker skips it (`_require_linux_docker` in `tests/test_mcp.py`).
 
@@ -130,7 +131,15 @@ the marketplace when you are done — uninstalling leaves the cache directory be
 
 1. Fork and create a topic branch off `main`.
 2. Keep changes focused; one logical change per PR.
-3. Add or update tests — a bug fix should come with a test that fails without it.
+3. Add or update tests — a bug fix should come with a test that fails without it. A new assertion
+   on a state an existing test already sets up goes into that test, and a new test function is for
+   a state no existing test sets up. A new case for a request an existing test already sends is
+   another row of that test's table, and a test that sends a single request becomes a table with
+   that request as its first row: one test that sends every row, records each answer and compares
+   them all with the expected answers once, after the loop, rather than a `parametrize` case per
+   row. Two new tests that differ only by their input, such as a refused request and the one that
+   succeeds on the same URL, are one table of that shape. A case that proves which principal may
+   read something stays a parametrized case of its own.
 4. Make sure `pytest` and `ruff check . && ruff format --check .` pass locally before opening the
    PR, since CI's first run on your first pull request waits for a maintainer to approve it.
 5. Title the PR with one sentence saying what Backlot does once it is merged. A PR that closes a

@@ -979,6 +979,20 @@ async def route_a_google_path_the_way_google_does(request: Request, call_next):
     return await call_next(request)
 
 
+@_middleware(lambda scope: errors.atlassian.is_confluence(_url_path(scope)))
+async def refuse_an_illegal_confluence_charset(request: Request, call_next):
+    """Answer a Spring Confluence request whose `Content-Type` carries a charset Java cannot name
+    with the empty 500 real answers (``atlassian.refuse_a_spring_confluence_charset``), ahead of
+    routing. Registered before the slash rewrite, which makes it the inner of the two, so it reads
+    the path that rewrite leaves and the spelling it keeps; the front door stays outside both, so
+    the gateway's `PATCH` 405 still comes first.
+    """
+    refused = atlassian.refuse_a_spring_confluence_charset(request)
+    if refused is not None:
+        return refused
+    return await call_next(request)
+
+
 @_middleware(lambda scope: scope["path"].startswith(f"{errors.atlassian.PREFIX}/"))
 async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next):
     """Route an `/atlassian` path the way the real gateway does: runs of slashes are one, and a
@@ -1140,6 +1154,32 @@ def _spring_failure(scope: Scope):
     if errors.atlassian.quality_spring_cannot_copy(accept, reader=reader):
         return atlassian.spring_write_failure
     return None
+
+
+@_middleware(lambda scope: errors.atlassian.is_confluence(re.sub("/{2,}", "/", _url_path(scope))))
+async def escape_past_the_bmp_in_a_confluence_answer(request: Request, call_next):
+    """Write each character past U+FFFF in a Confluence 2xx JSON answer as its two surrogate
+    escapes, as real writes every one (``errors.atlassian.escape_past_bmp``).
+
+    Middleware because each Confluence route but the search builds its 200 with ``JSONResponse``,
+    which writes such a character as its UTF-8 bytes. Registered before the `HEAD` rewrite below,
+    so a `HEAD` carries the `content-length` of the GET's escaped body, as real's `HEAD` beside each
+    such 200 did. The path is read with each run of slashes as one, as the gateway routes it, since
+    the slash rewrite runs inside this one: `//wiki/rest/api/content/{id}` and
+    `///wiki/rest/api/content/{id}` answered the page with the escapes (Confluence Cloud,
+    2026-10-31).
+    """
+    response = await call_next(request)
+    media_type = response.headers.get("content-type") or ""
+    if not (200 <= response.status_code < 300 and media_type.startswith("application/json")):
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    written = errors.atlassian.escape_past_bmp(body.decode()).encode()
+    escaped = Response(written, status_code=response.status_code)
+    escaped.raw_headers = [
+        (name, value) for name, value in response.raw_headers if name != b"content-length"
+    ] + [(b"content-length", str(len(written)).encode())]
+    return escaped
 
 
 @_middleware(lambda scope: _spring_failure(scope) is not None)

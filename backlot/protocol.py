@@ -85,14 +85,14 @@ class Protocol(HttpToolsProtocol):
 
 class _Head:
     """The head of one request as it arrives, read only as far as :mod:`backlot.head_bounds` needs:
-    how many bytes it holds, how many the line it is in holds before its LF, and the request
-    line's first bytes, which name the vendor."""
+    how many bytes it holds, how many the line it is in holds before its LF, and the request line,
+    whose first bytes name the vendor and which is kept only where one does."""
 
     def __init__(self) -> None:
         self.size = 0
         self.line = 0
         self.first = b""
-        self.start = b""
+        self.request_line = bytearray()
         self.in_request_line = True
         self.ended = False
         self.bound: head_bounds.Bound | None = None
@@ -107,8 +107,8 @@ class _Head:
             end = len(data) if lf < 0 else lf
             if self.line == 0:
                 self.first = data[pos : pos + 1]
-            if self.in_request_line:
-                self.start += data[pos:end][: head_bounds.NAMED_WITHIN - len(self.start)]
+            if self.in_request_line and (not self.named or self.bound is not None):
+                self.request_line += data[pos:end]
             self.line += end - pos
             self.size += end - pos
             if (answer := self._over()) is not None or lf < 0:
@@ -126,16 +126,22 @@ class _Head:
         return None
 
     def _over(self) -> bytes | None:
-        """The answer once the head is past its bound. The vendor is read off the request line once
-        it ends or holds :data:`backlot.head_bounds.NAMED_WITHIN` bytes."""
+        """The answer once the head is past its bound, the front door's refusal of the request line
+        where it refuses the line ahead of the bound (:func:`backlot.head_bounds.refused_line`).
+        The vendor is read off the request line once it ends or holds
+        :data:`backlot.head_bounds.NAMED_WITHIN` bytes."""
         if not self.named and (
-            not self.in_request_line or len(self.start) >= head_bounds.NAMED_WITHIN
+            not self.in_request_line or len(self.request_line) >= head_bounds.NAMED_WITHIN
         ):
             self.named = True
-            self.bound = head_bounds.bound(self.start)
+            self.bound = head_bounds.bound(bytes(self.request_line[: head_bounds.NAMED_WITHIN]))
         if self.bound is None:
             return None
-        return self.bound.answer(self.size, self.line, self.in_request_line, self.ended)
+        answer = self.bound.answer(self.size, self.line, self.in_request_line, self.ended)
+        if answer is None:
+            return None
+        line = bytes(self.request_line).removesuffix(b"\r")
+        return head_bounds.refused_line(line, not self.in_request_line) or answer
 
 
 def _starts_a_request_line(held: bytes) -> bool:

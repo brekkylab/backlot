@@ -5,7 +5,8 @@ gives for the path its request line names.
 A front door bounds either the whole head, every byte of it that has arrived, or each line of it,
 the bytes before the line's LF with the CR among them (:attr:`Bound.per_line`). Once that many have
 arrived it answers and closes the connection, with a page that turns on whether the bound was
-reached in the request line or in the headers. A head whose last byte, the LF that ends it, is the
+reached in the request line or in the headers, or with its refusal of a request line it refuses
+ahead of the bound (:func:`refused_line`). A head whose last byte, the LF that ends it, is the
 bound's last gets past a head bound unless :attr:`Bound.refuses_its_end`; a line bound counts no LF,
 so a line holding that many bytes is refused whether its LF follows or not. The answer here is the
 front door's status line, `Content-Type` and body, with `Content-Length` and `Connection: close`,
@@ -197,6 +198,14 @@ _BOUNDS = {
         ),
     ),
 }
+
+
+def refused_line(line: bytes, ended: bool) -> bytes | None:
+    """The front door's refusal of the request line ``line``, the bytes before its LF, where it
+    answers that ahead of its bound (``backlot.request_target.refused_in_the_line``), ``ended``
+    where the LF came; else ``None``."""
+    refused = request_target.refused_in_the_line(line, ended)
+    return None if refused is None else _answer(*refused)
 
 
 def bound(start: bytes) -> Bound | None:

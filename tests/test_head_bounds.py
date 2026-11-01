@@ -23,7 +23,8 @@ import uvicorn
 
 from backlot import protocol
 
-#: Real's answer at each bound (``backlot.head_bounds`` has the measurement): the status line,
+#: Real's answer at each bound and to a request line refused ahead of one (``backlot.head_bounds``
+#: and ``backlot.request_target.refused_in_the_line`` have the measurements): the status line,
 #: `Content-Type` (``None`` where it sent none), and the body's length and SHA-256, with the
 #: `Request ID` line of CloudFront's page emptied.
 _REAL = {
@@ -93,6 +94,48 @@ _REAL = {
         346,
         "437f2e5f4e6aef7dae3d4e4894234596f579f2bf85a7a20a8482fdbfafd33c56",
     ),
+    "github 400": (
+        "HTTP/1.1 400 Bad Request",
+        "text/html; charset=utf-8",
+        1440,
+        "06538877fab513379b1d448af80c1f1a8dcfe237ed50df3bb3824e4b66535873",
+    ),
+    "slack 400": (
+        "HTTP/1.1 400 Bad Request",
+        "text/plain",
+        11,
+        "7c41b898c5da0cfa4aa049b65ef50248bce9a72d24bef4c723786431921b75aa",
+    ),
+    "google 400": (
+        "HTTP/1.0 400 Bad Request",
+        "text/html; charset=UTF-8",
+        54,
+        "0fbc74daf7e1cd0368a530244c856bbd18eea886cfce777ee20c13728b1bbcea",
+    ),
+    "jira 400": (
+        "HTTP/1.1 400 Bad Request",
+        "text/html",
+        859,
+        "277e596aea250866337726f97b3ed1b95807a3bc122ea8a215c8b2c6ab4e75ee",
+    ),
+    "cloudflare bad request": (
+        "HTTP/1.1 400 Bad Request",
+        "text/html",
+        155,
+        "efca0895b4d88b27a94249f8e7ac0083eff0a4ff3ac37c2841b3f6d7e11c1905",
+    ),
+    "graph invalid url": (
+        "HTTP/1.1 400 Bad Request",
+        "text/html; charset=us-ascii",
+        324,
+        "14c08afc15e276b96c48de6598e86fcc933f3b105a2a18667d395d82c1ea97d5",
+    ),
+    "graph badly formed": (
+        "HTTP/1.1 400 Bad Request",
+        "text/html; charset=us-ascii",
+        311,
+        "1e47d302a6bb3d7706f196affb399da5e6d0fe9b589f53cb09d03f5a3677c2b0",
+    ),
 }
 
 #: Each front door's bound on a head that has not ended: the prefix real never receives, the path
@@ -114,6 +157,43 @@ _BOUNDS = [
     ("/s3", "/", 16_384, False, "s3", "s3"),
     ("/msgraph", "/v1.0/me", 40_960, False, "graph 414", "graph 400"),
 ]
+
+#: A request line holding a byte, a broken escape or a `..` the front door refuses, and real's
+#: answer where the line reaches the bound and where a header after it does: the refusal where the
+#: front door refuses the line ahead of its bound (``backlot.request_target.refused_in_the_line``),
+#: its bound's page where it does not. The path is a row of :data:`_BOUNDS` with the bytes after it,
+#: each latin-1, so `\xc3\xa9` is the two bytes of a UTF-8 `é`.
+_REFUSED_LINES = [
+    ("/github", "/repos/acme/docs-site\t", "github 400", "github 400"),
+    ("/github", "/repos/acme/docs-site\xc3\xa9", "github 400", "github 400"),
+    ("/github", "/repos/acme/docs-site%zz", "github 414", "github 431"),
+    ("/slack", "/api/api.test\xc3\xa9", "slack", "slack 400"),
+    ("/slack", "/api/api.test\x00", "slack", "slack 400"),
+    ("/slack", "/api/api.test%zz", "slack", "slack"),
+    ("", "/drive/v3/files\x01", "google 400", "google 400"),
+    ("", "/drive/v3/files\x00", "google 400", "google 400"),
+    ("", "/drive/v3/files\t", "google", "google"),
+    ("", "/drive/v3/files\r", "google", "google"),
+    ("/atlassian", "/rest/api/3/myself\x00", "jira 400", "jira 400"),
+    ("/atlassian", "/rest/api/3/myself\r", "jira 400", "jira 400"),
+    ("/atlassian", "/rest/api/3/myself%zz", "jira 414", "jira 400"),
+    ("/atlassian", "/rest/api/3/myself\x01", "jira 414", "jira 494"),
+    ("/notion", "/v1/users%zz", "cloudflare 414", "cloudflare bad request"),
+    ("/notion", "/v1/users\r", "cloudflare bad request", "cloudflare bad request"),
+    ("/notion", "/v1/users\x01", "cloudflare 414", "cloudflare 400"),
+    (
+        "/hubspot",
+        "/crm/v3/objects/contacts\x00",
+        "cloudflare bad request",
+        "cloudflare bad request",
+    ),
+    ("/linear", "/../graphql", "cloudflare 414", "cloudflare bad request"),
+    ("/msgraph", "/v1.0/me\t", "graph badly formed", "graph badly formed"),
+    ("/msgraph", "/v1.0/me\x01", "graph invalid url", "graph invalid url"),
+    ("/msgraph", "/v1.0/me x", "graph badly formed", "graph badly formed"),
+    ("/msgraph", "/v1.0/me\xc3\xa9", "graph 414", "graph 400"),
+]
+_BOUND_OF = {mount: (bound, per_line) for mount, _, bound, per_line, _, _ in _BOUNDS}
 
 #: How a head that ends after a long header meets the bound: the prefix, the path, whether the bytes
 #: counted are the header line's, the most of them real read, and its answer to one byte more; on a
@@ -164,7 +244,10 @@ def _status(base_url: str, head: bytes) -> int:
 
 
 @pytest.mark.parametrize("part", ["line", "header"])
-@pytest.mark.parametrize("mount, path, bound, per_line, in_line, in_headers", _BOUNDS)
+@pytest.mark.parametrize(
+    "mount, path, bound, per_line, in_line, in_headers",
+    _BOUNDS + [(m, p, *_BOUND_OF[m], line, header) for m, p, line, header in _REFUSED_LINES],
+)
 def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_it(
     live_server, mount, path, bound, per_line, in_line, in_headers, part
 ):
@@ -179,11 +262,11 @@ def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_
         counted = len("X-A: ") if per_line else len(start) - len(mount)
         head = start + "a" * (bound - counted)
     with _connect(base_url) as c:
-        c.sendall(head[:6].encode())
+        c.sendall(head[:6].encode("latin-1"))
         assert not select.select([c], [], [], 0.2)[0]
-        c.sendall(head[6:-1].encode())
+        c.sendall(head[6:-1].encode("latin-1"))
         assert not select.select([c], [], [], 0.5)[0]
-        c.sendall(head[-1:].encode())
+        c.sendall(head[-1:].encode("latin-1"))
         answer = _until_closed(c)
     assert _as_real(answer) == _REAL[in_line if part == "line" else in_headers]
 

@@ -961,9 +961,8 @@ def test_a_renamed_argument_reaches_the_route_under_the_vendors_name(
 
 
 def test_a_tool_the_bridge_does_not_serve_is_unknown(live_server):
-    """A call names a tool before the bridge knows it has one, so the renaming steps aside for a
-    name the source has no tool by, and the client hears that the tool is unknown rather than an
-    internal error."""
+    """A call to a name the source has no tool by finds no tool to rename, and the client hears that
+    the tool is unknown rather than an internal error."""
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 

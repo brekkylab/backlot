@@ -1009,8 +1009,9 @@ class RateLimitWindows:
         anonymous `/search/issues` that answered `x-ratelimit-used` 1 and 2, the next two reads
         answered `used: 0`, `remaining: 10` and `reset` 61 and 60 seconds after their `Date`
         (measured against api.github.com 2026-11-02, each request on its own cache-busted URL,
-        three to six seconds apart). A token's read and an `Authorization` real cannot parse report
-        the count (:meth:`status`).
+        three to six seconds apart). Ten such searches spend the window, and a read right after an
+        eleventh was refused its 403 answered the same `used: 0` and `remaining: 10` (2026-11-02). A
+        token's read and an `Authorization` real cannot parse report the count (:meth:`status`).
         """
         return self._status([int(self.clock()), 0], resource, limit)
 

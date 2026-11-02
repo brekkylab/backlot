@@ -7091,11 +7091,6 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert _ratelimit(c.get("/github/search/issues/extra-zz"))["resource"] == "search"
         assert _ratelimit(c.get("/github/search/issues/"))["resource"] == "core"
         assert _ratelimit(c.get("/github/search/nonexistent-zz"))["resource"] == "core"
-        # the search just counted is not in what the next read reports for that caller, where the
-        # admin's read above reports its two (see `RateLimitWindows.unused`)
-        search = c.get("/github/rate_limit").json()["resources"]["search"]
-        assert (search["limit"], search["used"], search["remaining"]) == (10, 0, 10)
-        assert abs(search["reset"] - int(time.time()) - gh.SEARCH_RATE_LIMIT_WINDOW) <= 1
 
         # the route reads the version header from any request carrying an `Authorization`, one
         # real reads as no credential included, and from no other
@@ -7212,21 +7207,24 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
 
 
 @pytest.mark.parametrize(
-    "authorization, counted, resource, used",
+    "authorization, counted, resource, used, after",
     [
-        ("Bearer {admin}", "search/issues?q=x", "search", 1),
-        ("Digest x", "search/issues?q=x", "search", 1),
-        (None, "repos/{org}/codebase", "core", 1),
-        ("Basic eDp5", "search/code?q=x", "code_search", 0),
+        ("Bearer {admin}", "search/issues?q=x", "search", 1, (1, 57)),
+        ("Digest x", "search/issues?q=x", "search", 1, (1, 57)),
+        (None, "repos/{org}/codebase", "core", 1, (1, 3597)),
+        ("Basic eDp5", "search/code?q=x", "code_search", 0, (0, 57)),
+        (None, "search/issues?q=x", "search", 1, (0, 60)),
     ],
 )
 def test_github_a_rate_limit_read_opens_no_window(
-    gh_client, gh_org, gh_user_tokens, authorization, counted, resource, used
+    gh_client, gh_org, gh_user_tokens, authorization, counted, resource, used, after
 ):
     """Two reads before anything is counted each answer a full window from themselves, the request
-    after them, counted or refused, opens the window the next read counts down to, and a read once
-    that window's time is up opens no new one (`RateLimitWindows.status` and
-    `RateLimitWindows.opened` have the measurements)."""
+    after them, counted or refused, opens the window the next read counts down to, but for a search
+    with no `Authorization`, which that read does not report, and a read once that window's time is
+    up opens no new one. ``after`` is the `used` and the seconds to `reset` of the read three
+    seconds after the request (`RateLimitWindows.status`, `RateLimitWindows.opened` and
+    `RateLimitWindows.unused` have the measurements)."""
     from backlot.routers import github as gh
 
     c, _ = gh_client
@@ -7248,7 +7246,7 @@ def test_github_a_rate_limit_read_opens_no_window(
     five = _ratelimit(c.get(f"/github/{counted.format(org=gh_org)}", headers=h))
     assert (five["used"], int(five["reset"]) - t[0]) == (str(used), length)
     t[0] += 3
-    assert read() == (used, length - 3)
+    assert read() == after
     t[0] += length
     assert read() == (0, length)
     t[0] += 3

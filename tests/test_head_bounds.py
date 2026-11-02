@@ -480,13 +480,26 @@ _CHUNKED = (
     b"6\r\na\r\n\r\nb\r\n0\r\n\r\n"
 )
 _LENGTH = b"POST /s3/b/k HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\n\r\n\r\nx"
+_GITHUB_CLOSE = b"GET /github/repos/acme/docs-site HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+_GITHUB_REFUSED = b"GET /github/repos/acme/docs-site HTTP/1.1\r\nHost: x\r\nBad Header\r\n\r\n"
+_MARKDOWN_LENGTH = (
+    b"POST /github/markdown HTTP/1.1\r\nHost: x\r\nContent-Length: 12\r\nX-A: chunked\r\n\r\n"
+    b'{"text":"x"}'
+)
+_MARKDOWN_CHUNKED = (
+    b"POST /github/markdown HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nX-B: b\r\n\r\n"
+    b'c\r\n{"text":"x"}\r\n0\r\n\r\n'
+)
 
 #: A name for a connection, its reads, and what the app is handed, the answers written after each
 #: read and whether the connection closes. Each request after the first starts in a read of its own
 #: or in the read the one before it ends in, after a head or after a body framed by its length or
-#: chunked, a CRLF CRLF in each, and its head ends within its bound, reaches it in the line or in a
-#: header, or holds a raw byte in its target, which the scope then carries as sent; a head that
-#: reaches its bound is answered after each answer ahead of it.
+#: chunked, and its head ends within its bound, reaches it in the line or in a header, or holds a
+#: raw byte in its target, which the scope then carries as sent; a head that reaches its bound is
+#: answered after each answer ahead of it. Of the bodies, one of each framing holds a CRLF CRLF, one
+#: framed by its length has a header reading `chunked`, and one chunked has a header after its
+#: `Transfer-Encoding`. Nothing after a request that closes the connection or one the parser refuses
+#: is answered, as on api.github.com (2026-11-02).
 _CONNECTIONS = [
     (
         "s3 heads in reads of their own",
@@ -570,6 +583,34 @@ _CONNECTIONS = [
         [_GITHUB + _GITHUB_HEADER[:30], _GITHUB_HEADER[30:] + b"\r\n\r\n"],
         ["GET /github/repos/acme/docs-site 0 False"],
         [["HTTP/1.1 200 OK"], ["github 431"]],
+        True,
+    ),
+    (
+        "github a header past the bound behind a request that closes the connection",
+        [_GITHUB_CLOSE + _GITHUB_HEADER + b"\r\n\r\n"],
+        ["GET /github/repos/acme/docs-site 0 False"],
+        [["HTTP/1.1 200 OK"]],
+        True,
+    ),
+    (
+        "github a request behind one the parser refuses in the same read",
+        [_GITHUB_REFUSED + _GITHUB],
+        [],
+        [["HTTP/1.1 400 Bad Request"]],
+        True,
+    ),
+    (
+        "github a header past the bound after a body by its length, a header reading chunked",
+        [_MARKDOWN_LENGTH + _GITHUB_HEADER + b"\r\n\r\n"],
+        ["POST /github/markdown 12 False"],
+        [["HTTP/1.1 200 OK", "github 431"]],
+        True,
+    ),
+    (
+        "github a header past the bound after a chunked body, a header after its coding",
+        [_MARKDOWN_CHUNKED + _GITHUB_HEADER + b"\r\n\r\n"],
+        ["POST /github/markdown 12 False"],
+        [["HTTP/1.1 200 OK", "github 431"]],
         True,
     ),
     (

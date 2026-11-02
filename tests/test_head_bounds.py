@@ -211,9 +211,9 @@ _REFUSED_LINES = [
 ]
 _BOUND_OF = {mount: (bound, per_line) for mount, _, bound, per_line, _, _ in _BOUNDS}
 
-#: Ended request lines with no `?`, which the rows above cannot be sent as, before a header past the
-#: bound, and real's answer: the root of Slack's host, and on Notion a `%2` the end of the target
-#: cuts short, the bound's page where the same `%2` before a `?` draws Cloudflare's.
+#: Ended request lines with no `?`, before a header past the bound, and real's answer: the root of
+#: Slack's host, and on Notion a `%2` the end of the target cuts short, the bound's page where the
+#: same `%2` before a `?` draws Cloudflare's.
 _NO_QUERY = [
     ("/slack", "", "slack"),
     ("/notion", "/v1/x%2", "cloudflare 400"),
@@ -280,24 +280,30 @@ def _short_id(value: object) -> str | None:
     return None
 
 
-@pytest.mark.parametrize("part", ["line", "header"])
-@pytest.mark.parametrize(
-    "mount, path, bound, per_line, in_line, in_headers",
-    _BOUNDS + [(m, p, *_BOUND_OF[m], line, header) for m, p, line, header in _REFUSED_LINES],
-    ids=_short_id,
-)
+#: Each case of the test below: the part the bound is reached in, the row's prefix and path, what
+#: follows the path in the request line, the bound and whether it is a line's, and real's answer.
+#: A row of :data:`_NO_QUERY` is a case in a header only, its line ending at the path.
+_CASES = [
+    (part, mount, path, "?x=", bound, per_line, in_line if part == "line" else in_headers)
+    for mount, path, bound, per_line, in_line, in_headers in _BOUNDS
+    + [(m, p, *_BOUND_OF[m], line, header) for m, p, line, header in _REFUSED_LINES]
+    for part in ("line", "header")
+] + [("header", m, p, "", *_BOUND_OF[m], in_headers) for m, p, in_headers in _NO_QUERY]
+
+
+@pytest.mark.parametrize("part, mount, path, query, bound, per_line, real", _CASES, ids=_short_id)
 def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_it(
-    live_server, mount, path, bound, per_line, in_line, in_headers, part
+    live_server, part, mount, path, query, bound, per_line, real
 ):
     """One byte short of the bound the head waits for more; the byte that reaches it is answered and
     the connection closed. The first read ends inside the path, before it names a vendor, and the
     second where the line's first bytes have named it, so the rest of the line comes after."""
     base_url, _ = live_server
-    line = f"GET {mount}{path}?x="
+    line = f"GET {mount}{path}{query}"
     if part == "line":
         head = line + "a" * (bound + _unseen(mount, path) - len(line))
     else:
-        start = f"{line}1 HTTP/1.1\r\nHost: x\r\nX-A: "
+        start = f"{line}{'1' if query else ''} HTTP/1.1\r\nHost: x\r\nX-A: "
         counted = len("X-A: ") if per_line else len(start) - _unseen(mount, path)
         head = start + "a" * (bound - counted)
     named = head_bounds.NAMED_WITHIN
@@ -307,7 +313,7 @@ def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_
             assert not select.select([c], [], [], wait)[0]
         c.sendall(head[-1:].encode("latin-1"))
         answer = _until_closed(c)
-    assert _as_real(answer) == _REAL[in_line if part == "line" else in_headers]
+    assert _as_real(answer) == _REAL[real]
 
 
 @pytest.mark.parametrize("mount, path, per_line, read, refused", _ENDED)
@@ -332,19 +338,6 @@ def test_a_head_that_ends_is_read_to_the_bound_real_read_it_to(
         c.sendall(head(read + 1))
         answer = _until_closed(c)
     assert _as_real(answer) == _REAL[refused]
-
-
-@pytest.mark.parametrize("mount, path, in_headers", _NO_QUERY)
-def test_a_line_with_no_query_is_answered_as_real_answered_it(live_server, mount, path, in_headers):
-    """The header part of the test above, for a line it would send with `?x=1`."""
-    base_url, _ = live_server
-    bound, per_line = _BOUND_OF[mount]
-    start = f"GET {mount}{path} HTTP/1.1\r\nHost: x\r\nX-A: "
-    counted = len("X-A: ") if per_line else len(start) - _unseen(mount, path)
-    with _connect(base_url) as c:
-        c.sendall((start + "a" * (bound - counted)).encode())
-        answer = _until_closed(c)
-    assert _as_real(answer) == _REAL[in_headers]
 
 
 def test_the_request_line_of_a_path_no_vendor_owns_is_not_kept():

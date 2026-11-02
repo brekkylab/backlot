@@ -280,35 +280,65 @@ def _short_id(value: object) -> str | None:
     return None
 
 
-#: Each case of the test below: the part the bound is reached in, the row's prefix and path, what
-#: follows the path in the request line, the bound and whether it is a line's, and real's answer.
-#: A row of :data:`_NO_QUERY` is a case in a header only, its line ending at the path.
-_CASES = [
-    (part, mount, path, "?x=", bound, per_line, in_line if part == "line" else in_headers)
-    for mount, path, bound, per_line, in_line, in_headers in _BOUNDS
-    + [(m, p, *_BOUND_OF[m], line, header) for m, p, line, header in _REFUSED_LINES]
-    for part in ("line", "header")
-] + [("header", m, p, "", *_BOUND_OF[m], in_headers) for m, p, in_headers in _NO_QUERY]
+#: A CRLF ahead of the request line, before a header past the bound: the prefix, the path, and
+#: whether its two bytes count against the bound, where the bound is the head's; a line bound counts
+#: the request line alone. Measured on 2026-11-02 (UTC) as ``backlot.head_bounds`` measured the
+#: bounds: with the CRLF, a head two bytes short of the bound was refused on GitHub, Graph and S3
+#: and three short waited, and on Slack and Google one byte short waited and the bound's was
+#: refused, as on Jira Cloud and Notion.
+_BLANK_AHEAD = [
+    ("/github", "/repos/acme/docs-site", True),
+    ("/slack", "/api/api.test", False),
+    ("", "/drive/v3/files", False),
+    ("/s3", "/", True),
+    ("/msgraph", "/v1.0/me", True),
+    ("/atlassian", "/rest/api/3/myself", None),
+    ("/notion", "/v1/users", None),
+]
+_IN_HEADERS = {(mount, path): header for mount, path, *_, header in _BOUNDS}
+
+#: Each case of the test below: the part the bound is reached in, what comes ahead of the request
+#: line and whether the bound counts it, the row's prefix and path, what follows the path in the
+#: request line, the bound and whether it is a line's, and real's answer. A row of :data:`_NO_QUERY`
+#: is a case in a header only, its line ending at the path, and so is a row of :data:`_BLANK_AHEAD`.
+_CASES = (
+    [
+        (part, "", None, mount, path, "?x=", bound, per_line, line if part == "line" else header)
+        for mount, path, bound, per_line, line, header in _BOUNDS
+        + [(m, p, *_BOUND_OF[m], line, header) for m, p, line, header in _REFUSED_LINES]
+        for part in ("line", "header")
+    ]
+    + [("header", "", None, m, p, "", *_BOUND_OF[m], header) for m, p, header in _NO_QUERY]
+    + [
+        ("header", "\r\n", counts, m, p, "?x=", *_BOUND_OF[m], _IN_HEADERS[m, p])
+        for m, p, counts in _BLANK_AHEAD
+    ]
+)
 
 
-@pytest.mark.parametrize("part, mount, path, query, bound, per_line, real", _CASES, ids=_short_id)
+@pytest.mark.parametrize(
+    "part, lead, counts, mount, path, query, bound, per_line, real", _CASES, ids=_short_id
+)
 def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_it(
-    live_server, part, mount, path, query, bound, per_line, real
+    live_server, part, lead, counts, mount, path, query, bound, per_line, real
 ):
     """One byte short of the bound the head waits for more; the byte that reaches it is answered and
     the connection closed. The first read ends inside the path, before it names a vendor, and the
     second where the line's first bytes have named it, so the rest of the line comes after."""
     base_url, _ = live_server
     line = f"GET {mount}{path}{query}"
+    ahead = len(lead) if counts else 0
     if part == "line":
         head = line + "a" * (bound + _unseen(mount, path) - len(line))
     else:
         start = f"{line}{'1' if query else ''} HTTP/1.1\r\nHost: x\r\nX-A: "
-        counted = len("X-A: ") if per_line else len(start) - _unseen(mount, path)
+        counted = len("X-A: ") if per_line else len(start) - _unseen(mount, path) + ahead
         head = start + "a" * (bound - counted)
-    named = head_bounds.NAMED_WITHIN
+    head = lead + head
+    named = len(lead) + head_bounds.NAMED_WITHIN
+    six = len(lead) + 6
     with _connect(base_url) as c:
-        for start, end, wait in ((0, 6, 0.2), (6, named, 0.2), (named, -1, 0.5)):
+        for start, end, wait in ((0, six, 0.2), (six, named, 0.2), (named, -1, 0.5)):
             c.sendall(head[start:end].encode("latin-1"))
             assert not select.select([c], [], [], wait)[0]
         c.sendall(head[-1:].encode("latin-1"))

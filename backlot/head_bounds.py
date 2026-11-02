@@ -66,21 +66,26 @@ class Bound:
     in_line: bytes
     #: The answer to a header that reaches it.
     in_headers: bytes
+    #: Whether the empty lines ahead of the request line count against a head's :attr:`limit`.
+    counts_blank: bool = True
     #: The bytes of the request line real never receives (the module docstring says which).
     mount: int = 0
     #: The front door, as ``backlot.request_target.front_door`` names it.
     door: str = ""
 
-    def answer(self, size: int, line: int, in_request_line: bool, ended: bool) -> bytes | None:
-        """The answer to a head of which ``size`` bytes have arrived, ``line`` of them in the line
-        they end in and before its LF, ``ended`` where the last is the LF that ends the head; or
-        ``None`` while it is within the bound."""
+    def answer(
+        self, size: int, blank: int, line: int, in_request_line: bool, ended: bool
+    ) -> bytes | None:
+        """The answer to a head of which ``size`` bytes have arrived, ``blank`` of them in empty
+        lines ahead of the request line and ``line`` in the line they end in and before its LF,
+        ``ended`` where the last is the LF that ends the head; or ``None`` while it is within the
+        bound."""
         if self.per_line:
             read = line - self.mount if in_request_line else line
         elif ended and not self.refuses_its_end:
             return None
         else:
-            read = size - self.mount
+            read = size - self.mount - (0 if self.counts_blank else blank)
         if read < self.limit:
             return None
         return self.in_line if in_request_line else self.in_headers
@@ -173,6 +178,7 @@ _BOUNDS = {
         refuses_its_end=False,
         in_line=_SLACK_431,
         in_headers=_SLACK_431,
+        counts_blank=False,
     ),
     "google": Bound(
         65_536,
@@ -180,6 +186,7 @@ _BOUNDS = {
         refuses_its_end=False,
         in_line=_GOOGLE_413,
         in_headers=_GOOGLE_413,
+        counts_blank=False,
     ),
     "cloudflare": Bound(
         131_072,
@@ -244,5 +251,5 @@ def bound(start: bytes) -> Bound | None:
                 (494, "HTTP/1.1 494 "),
             )
         )
-        return Bound(32_768, True, False, line, headers, mount, door)
+        return Bound(32_768, True, False, line, headers, mount=mount, door=door)
     return dataclasses.replace(_BOUNDS[door], mount=mount, door=door)

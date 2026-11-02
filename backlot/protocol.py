@@ -165,8 +165,9 @@ class _Body:
 
 class _Head:
     """The head of one request as it arrives, read only as far as :mod:`backlot.head_bounds` needs:
-    how many bytes it holds, how many the line it is in holds before its LF, and the request line,
-    whose first bytes name the vendor and which is kept only where one does."""
+    how many bytes it holds, how many the line it is in holds before its LF, how many of them are
+    the empty lines ahead of the request line, which httptools skips, and the request line, whose
+    first bytes name the vendor and which is kept only where one does."""
 
     def __init__(self) -> None:
         self.size = 0
@@ -174,6 +175,7 @@ class _Head:
         self.first = b""
         self.request_line = bytearray()
         self.in_request_line = True
+        self.blank = 0
         self.ended = False
         self.bound: head_bounds.Bound | None = None
         self.named = False
@@ -199,7 +201,10 @@ class _Head:
             empty = self.line == 0 or (self.line == 1 and self.first == b"\r")
             self.size += 1
             self.line = 0
-            if self.in_request_line:
+            if self.in_request_line and empty:
+                self.blank = self.size
+                self.request_line = bytearray()
+            elif self.in_request_line:
                 self.in_request_line = False
             elif empty:
                 self.ended = True
@@ -222,7 +227,9 @@ class _Head:
             self.bound = head_bounds.bound(bytes(self.request_line[: head_bounds.NAMED_WITHIN]))
         if self.bound is None:
             return None
-        answer = self.bound.answer(self.size, self.line, self.in_request_line, self.ended)
+        answer = self.bound.answer(
+            self.size, self.blank, self.line, self.in_request_line, self.ended
+        )
         if answer is None:
             return None
         return self.bound.refused(bytes(self.request_line), not self.in_request_line) or answer

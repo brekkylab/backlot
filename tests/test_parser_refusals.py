@@ -20,6 +20,7 @@ import uvicorn
 from uvicorn.server import ServerState
 
 from backlot import protocol
+from tests._helpers import RecordingTransport
 
 #: Real's answer to each request below (``backlot.parser_refusals`` has the measurement), as its
 #: status line and `Content-Type`, each ``None`` where real sent none, the size and SHA-256 of its
@@ -393,27 +394,6 @@ async def _refused(scope, receive, send):
     raise AssertionError("a request httptools refuses reached the app")
 
 
-class _Transport(asyncio.Transport):
-    """A connection that keeps what the protocol writes to it."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.written = b""
-        self.closed = False
-
-    def get_extra_info(self, name, default=None):
-        return default
-
-    def write(self, data) -> None:
-        self.written += data
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-
 def _answer(base_url: str, reads: list[bytes]) -> bytes:
     if len(reads) > 1:
         loop = asyncio.new_event_loop()
@@ -422,7 +402,7 @@ def _answer(base_url: str, reads: list[bytes]) -> bytes:
                 _refused, http=protocol.Protocol, lifespan="off", log_config=None
             )
             served = protocol.Protocol(config, ServerState(), {}, _loop=loop)
-            transport = _Transport()
+            transport = RecordingTransport()
             served.connection_made(transport)
             for read in reads:
                 if not transport.closed:

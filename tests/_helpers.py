@@ -12,6 +12,7 @@ injected per test. ``tests/conftest.py`` still owns the fixtures over the shared
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import importlib
 import importlib.util
@@ -386,6 +387,34 @@ def raw_exchange(base_url: str, request: bytes) -> tuple[int, dict[str, str], by
     with socket.create_connection((url.hostname, url.port), timeout=10) as c:
         c.sendall(request)
         return read_answer(c.makefile("rb"))
+
+
+class RecordingTransport(asyncio.Transport):
+    """A connection that keeps what a protocol run in this process writes to it, and whether the
+    protocol closed it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.written = b""
+        self.closed = False
+
+    def get_extra_info(self, name, default=None):
+        return default
+
+    def write(self, data) -> None:
+        self.written += data
+
+    def close(self) -> None:
+        self.closed = True
+
+    def is_closing(self) -> bool:
+        return self.closed
+
+    def pause_reading(self) -> None:
+        pass
+
+    def resume_reading(self) -> None:
+        pass
 
 
 def sent_as(client, method: str, path: str, headers, content=None, bare: bool = False):

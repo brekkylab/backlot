@@ -24,6 +24,7 @@ import uvicorn
 from uvicorn.server import ServerState
 
 from backlot import head_bounds, protocol, request_target
+from tests._helpers import RecordingTransport
 
 #: Real's answer at each bound and to a request line refused ahead of one (``backlot.head_bounds``
 #: and ``backlot.request_target.refused_in_the_line`` have the measurements): the status line,
@@ -377,33 +378,6 @@ def test_the_request_line_of_a_path_no_vendor_owns_is_not_kept():
     assert bytes(head.request_line) == start
 
 
-class _Transport(asyncio.Transport):
-    """A connection that keeps what the protocol writes to it."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.written = b""
-        self.closed = False
-
-    def get_extra_info(self, name, default=None):
-        return default
-
-    def write(self, data) -> None:
-        self.written += data
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-    def pause_reading(self) -> None:
-        pass
-
-    def resume_reading(self) -> None:
-        pass
-
-
 def _connection(reads: list[bytes]) -> tuple[list[str], list[list[str]], bool]:
     """``reads`` handed to ``backlot.protocol.Protocol`` in this process, a ``data_received`` call
     each and the app's tasks run as far as they go after each, in front of an app that answers each
@@ -430,7 +404,7 @@ def _connection(reads: list[bytes]) -> tuple[list[str], list[list[str]], bool]:
         config = uvicorn.Config(app, http=protocol.Protocol, lifespan="off", log_config=None)
         state = ServerState()
         served = protocol.Protocol(config, state, {}, _loop=loop)
-        transport = _Transport()
+        transport = RecordingTransport()
         served.connection_made(transport)
         for read in reads:
             before = len(transport.written)

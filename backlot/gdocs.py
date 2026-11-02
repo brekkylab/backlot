@@ -470,9 +470,9 @@ class Body:
 
 # --- a body as Drive's `files.export` renders it --------------------------------------------------
 #
-# Measured against Drive v3 on 2026-10-30, as a Workspace member exporting 40 Docs it wrote through
-# `documents.batchUpdate`, each holding only what a corpus may state: named styles, marks, and the
-# characters each rule below names.
+# Measured against Drive v3 from 2026-10-30 to 2026-11-01, as a Workspace member exporting Docs it
+# wrote through `documents.batchUpdate`, each holding only what a corpus may state: named styles,
+# marks, and the characters each rule below names.
 
 # The `#`s a paragraph of each named style opens with in Markdown.
 _MARKDOWN_LEVEL = {"TITLE": 1, "SUBTITLE": 2, **{f"HEADING_{n}": n for n in range(1, 7)}}
@@ -500,6 +500,23 @@ def _paragraph_runs(paragraph: dict) -> list[tuple[str, dict]]:
     return [r for r in runs if r[0]]
 
 
+def _spans(paragraph: dict) -> list[tuple[str, dict]]:
+    """A paragraph's runs with neighbours of one text style joined. A `documents.batchUpdate`
+    insert beside a link leaves two such runs, and Markdown escapes them as one. A text style the
+    paragraph's named style sets to the same value (HEADING_6's italic) is left out first, as
+    real's body leaves it out: on 2026-11-01 an unstyled space and an italic tab in a HEADING_6
+    read back as one unstyled run."""
+    named = _TEXT_STYLES.get(_named(paragraph), {})
+    out: list[tuple[str, dict]] = []
+    for text, style in _paragraph_runs(paragraph):
+        style = {k: v for k, v in style.items() if named.get(k) != v}
+        if out and out[-1][1] == style:
+            out[-1] = (out[-1][0] + text, style)
+        else:
+            out.append((text, style))
+    return out
+
+
 def _named(paragraph: dict) -> str:
     return paragraph.get("paragraphStyle", {}).get("namedStyleType", "NORMAL_TEXT")
 
@@ -514,22 +531,57 @@ def _plain_char(c: str) -> str:
     return c
 
 
+def _after_break(text: str) -> str:
+    """One run's text without the separator right after each of its vertical tabs: a space, line or
+    paragraph separator but a no-break one. Measured 2026-10-31: U+0020, U+1680, U+2002, U+200A,
+    U+205F, U+3000, U+2028 and U+2029 dropped, one at a time; U+00A0, U+2007, U+202F, a tab, U+200B,
+    U+FEFF and U+0085 kept, and so is a separator starting the next run, of one text style or
+    not."""
+    return "".join(
+        c
+        for i, c in enumerate(text)
+        if not (i and text[i - 1] == "\x0b" and _plain_char(c) == " " and c != "\xa0")
+    )
+
+
+def _lead_breaks(paragraph: dict) -> int:
+    """The CRLFs a plain export adds for the runs a paragraph starts with that hold nothing but
+    vertical tabs once `_after_break` drops the separators after them: one for each such run another
+    run follows, and one for each such run that is a link. Real's answers on 2026-11-01 match it on
+    paragraphs starting with one to three runs of vertical tabs, before text or alone, in
+    NORMAL_TEXT, TITLE and SUBTITLE, and on ones starting with runs of a vertical tab and a space,
+    U+3000, a tab, U+00A0 or two spaces, or a space and a vertical tab; a HEADING_n takes none."""
+    spans = _spans(paragraph)
+    n = 0
+    for i, (text, style) in enumerate(spans):
+        if _after_break(text).strip("\x0b"):
+            break
+        n += i + 1 < len(spans)
+        n += "link" in style
+    return n
+
+
 def plain_text(content: list[dict]) -> str:
     """A body as `files.export` serves it as `text/plain`: a byte-order mark, then one line per
-    paragraph joined by CRLF, trimmed at both ends. A vertical tab is a CRLF, a tab eight spaces.
-    A paragraph holding nothing but vertical tabs, or nothing, takes one CRLF more; a HEADING_n
-    holding nothing is left out, and one ending in vertical tabs drops them."""
+    paragraph joined by CRLF, trimmed at both ends. A vertical tab is a CRLF and drops the separator
+    after it (`_after_break`), a tab is eight spaces. A paragraph holding nothing but vertical tabs,
+    or nothing, takes one CRLF more, and one other than a HEADING_n that starts with vertical tabs
+    takes the CRLFs `_lead_breaks` counts; a HEADING_n holding nothing is left out, and one holding
+    only vertical tabs is a CRLF fewer than them."""
     lines = []
     for el in content:
         if "paragraph" not in el:
             continue
-        text = "".join(t for t, _ in _paragraph_runs(el["paragraph"]))
+        text = "".join(_after_break(t) for t, _ in _paragraph_runs(el["paragraph"]))
         if _named(el["paragraph"]).startswith("HEADING_"):
             if not text:
                 continue
-            text = text.rstrip("\x0b")
-        elif not text.strip("\x0b"):
-            text += "\x0b"
+            if not text.strip("\x0b"):
+                text = text[1:]
+        else:
+            if not text.strip("\x0b"):
+                text += "\x0b"
+            text = "\x0b" * _lead_breaks(el["paragraph"]) + text
         lines.append("".join(map(_plain_char, text)))
     return "\ufeff" + "\r\n".join(lines).strip(_TRIMMED)
 
@@ -540,19 +592,26 @@ def plain_text(content: list[dict]) -> str:
 # paragraphs between them, are one blank line.
 _BREAK, _BLOCK = object(), object()
 
+# A paragraph of exactly two spaces before a heading: written as nothing, and the breaks on both
+# sides of it as three newlines (real's answers on 2026-11-01).
+_GAP = object()
+
 # Escaped wherever they stand. `+`, `-` and `=` are escaped at a word's start, after a space, a tab
 # or the start of a run; a run of digits there is escaped at the `.` or `)` that ends it before a
-# space; and the `:` of `http://`, `https://` or `ftp://` and the `.` of `www.`, in any case, at a
-# word's start or after `*`, `_`, `~`, `(` or `<`. A `&` is escaped before an ASCII letter.
+# space; and the `:` of `http://`, `https://` or `ftp://` and the `.` of `www.`, in any case (U+017F
+# `ſ` reading as `s`), where `_word_before` finds no word character before them in the run. A `&` is
+# escaped before an ASCII letter. A run is a span of one text style (`_spans`).
 _ALWAYS = set("!#$*<>[\\]_`|~")
 _WORD_START = re.compile(r"(?<![^ \t])")
 _LIST_NUMBER = re.compile(r"(?<![^ \t])[0-9]+([.)])(?=[ \t]|$)")
-_AUTOLINK = re.compile(r"(?<![^ \t*_~(<])(?:(?:https?|ftp)(:)//|www(\.))", re.IGNORECASE)
+_AUTOLINK = re.compile(r"(?:https?|ftp)(:)//|www(\.)", re.IGNORECASE)
 
-# A URL keeps every character but these: a space is `%20`, and the rest are backslash-escaped.
+# A URL keeps every character but these: a space, a tab, LF and CR are `%` and their code in two
+# columns (`%20`, `% 9`), and the rest are backslash-escaped.
 _URL_ESCAPED = set("()<>\\`")
 
-# The marks Markdown spells, in the order marks starting at one character open: a link outermost.
+# The marks Markdown spells, by rank: a link 0, italic 1, bold 2, strikethrough 3. Marks opening at
+# one character open in rank order, a link outermost.
 _MARK_ORDER = ("link", "italic", "bold", "strikethrough")
 _DELIMITER = {"italic": "*", "bold": "**", "strikethrough": "~~"}
 
@@ -565,15 +624,48 @@ def _escape(text: str) -> list[str]:
             out[i] = f"\\{c}"
         elif c == "&" and text[i + 1 : i + 2].isascii() and text[i + 1 : i + 2].isalpha():
             out[i] = "\\&"
-    for pattern in (_LIST_NUMBER, _AUTOLINK):
-        for m in pattern.finditer(text):
-            at = next(m.start(g) for g in range(1, pattern.groups + 1) if m.start(g) >= 0)
-            out[at] = f"\\{text[at]}"
+    for m in _LIST_NUMBER.finditer(text):
+        out[m.start(1)] = f"\\{text[m.start(1)]}"
+    at = 0
+    while m := _AUTOLINK.search(text, at):
+        at = m.start() + 1
+        if not _word_before(text, m.start()):
+            g = m.start(1) if m.start(1) >= 0 else m.start(2)
+            out[g] = f"\\{text[g]}"
+            at = m.end()
     return out
 
 
+def _word_before(text: str, at: int) -> bool:
+    """Whether a word character stands before `text[at]` in a run, as `java.util.regex`'s `\\b`
+    reads one: an ASCII letter, digit or `_`, or a nonspacing mark (Mn) after a letter or digit of
+    any script with only nonspacing marks between. A character past U+FFFF ends that walk as no
+    letter, since Java steps back one UTF-16 unit and reads the low surrogate. Real's answers on
+    2026-11-01 match it with `0`, `A`, `e`, `w`, `é`, `α`, `_`, a space and `-` before each of
+    U+00AD, U+0301, U+0345, U+034F, U+0903, U+1160, U+200C, U+200D, U+2060, U+20DD, U+3099, U+FE0F,
+    U+FE20, U+1F3FB, U+E0100 and U+0301 U+0302."""
+    if not at:
+        return False
+    c = text[at - 1]
+    if c.isascii() and (c.isalnum() or c == "_"):
+        return True
+    if unicodedata.category(c) != "Mn":
+        return False
+    for c in reversed(text[:at]):
+        if ord(c) > 0xFFFF:
+            return False
+        kind = unicodedata.category(c)
+        if kind in ("Lu", "Ll", "Lt", "Lm", "Lo", "Nd"):
+            return True
+        if kind != "Mn":
+            return False
+    return False
+
+
 def _url(url: str) -> str:
-    return "".join("%20" if c == " " else f"\\{c}" if c in _URL_ESCAPED else c for c in url)
+    return "".join(
+        f"%{ord(c):2X}" if c in " \t\n\r" else f"\\{c}" if c in _URL_ESCAPED else c for c in url
+    )
 
 
 def _marks(style: dict) -> frozenset:
@@ -583,63 +675,230 @@ def _marks(style: dict) -> frozenset:
     return frozenset(out)
 
 
-def _inline(runs: list[tuple[str, dict]], named: dict) -> list:
-    """A paragraph's runs as Markdown: text and a `_BREAK` for each vertical tab. A mark leaves out
-    the spaces and tabs it starts or ends with, and a vertical tab closes every mark around it.
-    Marks starting at one character open in `_MARK_ORDER`, and closing one closes every mark opened
-    inside it, which then reopens. Measured on every pair of the four and on 18 sequences of three.
-    Where bold and strikethrough end together inside an italic or a link, real closes them in an
-    order that does not nest, and once reopened strikethrough in place of bold; this nests them."""
-    chars: list[tuple[str, str, set]] = []
+def _rank(mark) -> int:
+    return _MARK_ORDER.index(mark[0] if isinstance(mark, tuple) else mark)
+
+
+def _delimiter(mark, closing: bool = False) -> str:
+    if isinstance(mark, tuple):
+        return f"]({_url(mark[1])})" if closing else "["
+    return _DELIMITER[mark]
+
+
+# Real's Markdown writer, read off its answers on 2026-10-31 and 2026-11-01 (Google documents none of
+# it). Its delimiters do not nest: where marks end, the lowest-rank ending mark closes with every
+# mark opened above it, in rounds; the marks that continue reopen in an order read off a copy of the
+# stack, and a new mark of lower rank than a closing one takes a closer's place. An opener waits out
+# spaces and tabs, and a closer that meets a waiting opener cancels it.
+
+
+def _rounds(stack: list, marks: set) -> list:
+    """The rounds that close `stack`'s ending marks, each (index, inner, target): the lowest-rank
+    ending mark is the target, every mark above it the inner, and the next round runs below it."""
+    rest, rounds = list(stack), []
+    while ending := [m for m in rest if m not in marks]:
+        target = min(ending, key=_rank)
+        at = rest.index(target)
+        rounds.append((at, rest[at + 1 :], target))
+        rest = rest[:at]
+    return rounds
+
+
+def _transition(stack: list, marks: set, end: dict, now: int) -> tuple:
+    """Where the marks open, `stack` (bottom first), give way to the next run's `marks`: the marks
+    closed, the marks opened, the stack after, the rounds, and the (new mark, closer's mark) a
+    substitution made. `end[m]` is the first later run without the mark m, `now` this run.
+
+    A round prints the part not printed yet of one close list of its inner and the earlier rounds',
+    sorted by (end, rank) with an ending mark's end `now`, then its target. The continuing marks
+    reopen read off a copy of the stack from which the ending marks are swap-removed, highest rank
+    first, each found from the copy's end; where link 1 gives way to link 2, link 2 enters the copy
+    between the first two removals when the first is the stack's top and the second is not a link
+    and not on top after it."""
+    new = sorted((m for m in marks if m not in stack), key=_rank)
+    rounds = _rounds(stack, marks)
+    if not rounds:
+        return [], new, stack + new, rounds, None
+    base = stack[: rounds[-1][0]]
+    ends = [m for m in stack if m not in marks]
+
+    def key(m) -> tuple:
+        return (end[m] if m in marks else now, _rank(m))
+
+    sub = at_round = dropped = None
+    for k, (_, inner, target) in enumerate(rounds):
+        lower = [n for n in new if _rank(n) < _rank(target)]
+        if lower and any(key(m) < key(max(lower, key=key)) for m in inner):
+            sub, at_round = max(lower, key=key), k
+            break
+    closes, closed = [], []
+    for k, (_, inner, target) in enumerate(rounds):
+        printed = len(closes)
+        closes = sorted(closes + inner, key=key)
+        if k == at_round:
+            dropped = next(m for m in closes if m in inner)
+            closes = sorted([m for m in closes if m != dropped] + [sub], key=key)
+        closed += closes[printed:] + [target]
+    lead = [t for _, inner, t in itertools.takewhile(lambda r: not r[1], rounds)]
+    copy, size = list(stack), len(stack)
+    if dropped is not None:
+        copy[stack.index(dropped)] = sub
+    for m in lead:
+        at = copy[:size].index(m)
+        copy[at], size = copy[size - 1], size - 1
+    removed = sorted((m for m in ends if m not in lead and m != dropped), key=lambda m: -_rank(m))
+    link2 = [n for n in new if isinstance(n, tuple)]
+    push = sub is None and link2 and any(isinstance(m, tuple) for m in ends) and len(removed) > 1
+    push = push and removed[0] == stack[-1] and not isinstance(removed[1], tuple)
+    for i, m in enumerate(removed):
+        if push and i == 1 and copy[size - 1] != m:
+            copy[size : size + 1], size = link2[:1], size + 1
+        at = max(j for j, c in enumerate(copy) if c == m)
+        copy[at], size = copy[size - 1], size - 1
+    targets = {t for *_, t in rounds}
+    slots = [i for i in range(rounds[-1][0] + 1, len(stack)) if stack[i] not in targets]
+    top = max(map(_rank, ends))
+    low = [n for n in new if _rank(n) < top]
+    high = [n for n in new if _rank(n) >= top]
+    if sub is not None:
+        mid = []
+        for j, m in enumerate(m for m in reversed(stack) if m in marks and m not in base):
+            read = copy[slots[-1 - j]] if j < len(slots) else m
+            mid.append(read if m != dropped else dropped if read == sub else sub)
+        opened = low[::-1] + mid + high
+    else:
+        reads = [copy[slots[i]] for i in reversed(range(len(closes))) if closes[i] in marks]
+        if any(m not in marks for m in reads):
+            opened = reads + low[::-1] + high
+        elif len(set(reads)) == len(reads):
+            opened = low[::-1] + reads + high
+        else:
+            opened = reads[:1] + low[::-1] + reads[1:] + high
+    after = base + [m for m in stack[len(base) :] if m in marks] + new
+    return closed, opened, after, rounds, (sub, dropped) if sub is not None else None
+
+
+def _commit_at(rounds, closed, held, before, after, swap) -> int | None:
+    """The round before which a transition writes the pending spaces and tabs and the `held`
+    openers ([mark, anchors] pairs), or None to keep holding them."""
+    if not held:
+        return None
+    new, ended = after - before, before - after
+    low = min(map(_rank, new), default=None)
+    below = (
+        None if low is None else next((k for k, r in enumerate(rounds) if low < _rank(r[2])), None)
+    )
+    took = min(len(closed), len(held))
+    if any(anchors for _, anchors in held[len(held) - took :]):
+        return 0
+    if new and (not ended or low < min(map(_rank, ended))):
+        return below
+    marks = [m for m, _ in held]
+    if any(m in marks for m in rounds[-1][1]):
+        return 0 if any(r[1] for r in rounds[:-1]) else below
+    if took < len(closed):
+        end = 0
+        for k, (_, inner, _) in enumerate(rounds):
+            end += len(inner) + 1
+            if took < end:
+                break
+        if k <= 1:
+            pairs = list(zip(closed, reversed(marks)))[:took]
+            mixed = pairs[0][0] == pairs[0][1] and any(c != m for c, m in pairs[1:])
+            if mixed and isinstance(rounds[0][2], tuple):
+                return below
+            return 0 if swap is not None and swap[0] in marks[len(marks) - took :] else None
+        if not rounds[0][1]:
+            return 0 if new and low <= _rank("italic") else None
+    return 0 if rounds[0][1] else below
+
+
+def _stretch(pieces: list[tuple[frozenset, str, list[str]]]) -> str:
+    """One stretch of a paragraph (the runs between two vertical tabs) as Markdown, from its
+    (marks, text, escaped text) pieces. At each change of marks a closer takes the last held opener,
+    else the opener written last, else is written, and before the round `_commit_at` picks the
+    pending spaces and tabs and the held openers are written; the new openers are then held. A held
+    opener's anchors count the changes it stayed held across that opened marks or took two openers."""
+    sets = [m for i, (m, *_) in enumerate(pieces) if m != (pieces[i - 1][0] if i else frozenset())]
+    sets.append(frozenset())
+    out: list[tuple[str, bool]] = []
+    held: list[list] = []
+    pending, stack = "", []
+
+    def commit() -> None:
+        nonlocal pending
+        out.extend([(pending, False)] if pending else [])
+        out.extend((_delimiter(m), True) for m, _ in held)
+        pending = ""
+        held.clear()
+
+    def transition(now: int, before: frozenset) -> None:
+        nonlocal stack
+        after = sets[now]
+        end = {m: next(j for j in range(now, len(sets)) if m not in sets[j]) for m in after}
+        closed, opened, stack_after, rounds, swap = _transition(stack, set(after), end, now)
+        at = _commit_at(rounds, closed, held, before, after, swap)
+        took = start = 0
+        for k, (_, inner, _) in enumerate(rounds):
+            if k == at:
+                commit()
+            for m in closed[start : start + len(inner) + 1]:
+                if held or (out and out[-1][1]):
+                    (held or out).pop()
+                    took += 1
+                else:
+                    out.append((_delimiter(m, closing=True), False))
+            start += len(inner) + 1
+        for h in held:
+            h[1] += bool(opened) or took >= 2
+        held.extend([m, 0] for m in opened)
+        stack = stack_after
+
+    step, now = -1, frozenset()
+    for marks, text, escaped in pieces:
+        if marks != now:
+            step += 1
+            transition(step, now)
+            now = marks
+        core = [i for i, c in enumerate(text) if c not in " \t"]
+        if not core:
+            pending += "".join(escaped)
+            continue
+        pending += "".join(escaped[: core[0]])
+        commit()
+        out.append(("".join(escaped[core[0] : core[-1] + 1]), False))
+        pending = "".join(escaped[core[-1] + 1 :])
+    transition(step + 1, now)
+    commit()
+    return "".join(text for text, _ in out)
+
+
+def _inline(runs: list[tuple[str, dict]], named: dict, heading: bool = False) -> list:
+    """A paragraph's runs as Markdown: text and a `_BREAK` for each vertical tab, or in a heading a
+    space. A vertical tab closes every mark; each stretch between two is `_stretch`, where runs
+    whose marks are equal, as for text styles that part on underline alone, meet without a
+    transition, each escaped as a run of its own. On 2026-11-01 real wrote such runs so, among them
+    three italic, strikethrough runs (two spaces, a space and a tab, a tab and `a`) with the outer
+    two underlined, as their spaces and tabs and then `*~~a~~*`."""
+    stretches: list[list] = [[]]
     for text, style in runs:
         marks = _marks({**named, **style})
         for piece in re.split("(\x0b)", text):
             if piece == "\x0b":
-                chars.append(("\x0b", "", set()))
-            else:
-                chars += [(c, e, set(marks)) for c, e in zip(piece, _escape(piece))]
-    for mark in {m for *_, ms in chars for m in ms}:
-        at = 0
-        while at < len(chars):
-            if mark not in chars[at][2]:
-                at += 1
-                continue
-            end = at
-            while end < len(chars) and mark in chars[end][2]:
-                end += 1
-            span = range(at, end)
-            lead = next((i for i in span if chars[i][0] not in " \t"), end)
-            trail = next((i for i in reversed(span) if chars[i][0] not in " \t"), at - 1)
-            for i in span:
-                if not lead <= i <= trail:
-                    chars[i][2].discard(mark)
-            at = end
+                stretches.append([])
+            elif piece:
+                stretches[-1].append((marks, piece, _escape(piece)))
     out: list = []
-    text = ""
-    stack: list = []
-
-    def kind(mark) -> str:
-        return mark[0] if isinstance(mark, tuple) else mark
-
-    def close(mark) -> str:
-        return f"]({_url(mark[1])})" if isinstance(mark, tuple) else _DELIMITER[mark]
-
-    for c, escaped, marks in [*chars, ("", "", set())]:
-        keep = 0
-        while keep < len(stack) and stack[keep] in marks:
-            keep += 1
-        for mark in reversed(stack[keep:]):
-            text += close(mark)
-        del stack[keep:]
-        for mark in sorted(marks - set(stack), key=lambda m: _MARK_ORDER.index(kind(m))):
-            stack.append(mark)
-            text += "[" if isinstance(mark, tuple) else _DELIMITER[mark]
-        if c == "\x0b":
-            out += [text, _BREAK]
-            text = ""
-        else:
-            text += escaped
-    return [*out, text]
+    line = ""
+    for n, stretch in enumerate(stretches):
+        line += _stretch(stretch)
+        if n < len(stretches) - 1:
+            if heading:
+                line += " "
+                continue
+            out += [line, _BREAK]
+            line = ""
+    return [*out, line]
 
 
 def markdown(content: list[dict]) -> str:
@@ -653,16 +912,19 @@ def markdown(content: list[dict]) -> str:
     for i, (paragraph, level) in enumerate(zip(paragraphs, levels)):
         if i:
             tokens.append(_BLOCK if level or levels[i - 1] else _BREAK)
-        runs = _paragraph_runs(paragraph)
+        runs = _spans(paragraph)
         named = _TEXT_STYLES.get(_named(paragraph), {})
         if level:
-            runs = [(t.replace("\x0b", " "), s) for t, s in runs]
-            tokens.append("#" * level + " " + "".join(_inline(runs, named)))
+            tokens.append("#" * level + " " + "".join(_inline(runs, named, heading=True)))
+            continue
+        line = _inline(runs, named)
+        if line == ["  "] and i + 1 < len(paragraphs) and levels[i + 1]:
+            tokens.append(_GAP)
         else:
-            tokens += _inline(runs, named)
+            tokens += line
     out, pending = "", []
     for t in tokens:
-        if t is _BREAK or t is _BLOCK:
+        if t is _BREAK or t is _BLOCK or t is _GAP:
             pending.append(t)
         elif t:
             out += _separator(pending) + t
@@ -671,7 +933,10 @@ def markdown(content: list[dict]) -> str:
 
 
 def _separator(breaks: list) -> str:
-    """What the breaks between two lines, with only empty paragraphs between them, are written as."""
+    """What the breaks between two lines, with only empty paragraphs between them, are
+    written as."""
     if not breaks:
         return ""
+    if _GAP in breaks:
+        return "\n\n\n"
     return "  \n" if breaks == [_BREAK] else "\n\n"

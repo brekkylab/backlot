@@ -4296,7 +4296,7 @@ async def drive_files_export(file_id: str, request: Request):
     render = _DOCS_TEXT_EXPORTS.get(target) if native[0] == DRIVE_DOC_MIME else None
     if render is not None:
         stored = store.gdrive_doc_body_for(conn, file_id)
-        content = stored if stored is not None else gdocs.from_text(row["content"] or "")
+        content = stored if stored is not None else gdocs.from_text(row["content"])
         return Response(render(content), headers={"content-type": requested})
     plain = target in ("text/csv", "text/tab-separated-values")
     body = row["content"] if plain else f"{row['title']}\n\n{row['content']}"

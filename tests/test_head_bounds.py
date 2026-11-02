@@ -10,6 +10,7 @@ question, to ``recording_server``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import select
@@ -20,8 +21,9 @@ import urllib.parse
 
 import pytest
 import uvicorn
+from uvicorn.server import ServerState
 
-from backlot import head_bounds, protocol
+from backlot import head_bounds, protocol, request_target
 
 #: Real's answer at each bound and to a request line refused ahead of one (``backlot.head_bounds``
 #: and ``backlot.request_target.refused_in_the_line`` have the measurements): the status line,
@@ -355,33 +357,201 @@ def test_the_request_line_of_a_path_no_vendor_owns_is_not_kept():
     assert bytes(head.request_line) == start
 
 
-def test_each_request_on_a_connection_is_counted_from_its_own_start(live_server):
-    """Two heads of 10,000 bytes on one connection, past S3's bound of 16,384 together: the second
-    is read as the first was, and waits for its end like any head within the bound; a third that
-    reaches the bound on its own draws real's answer at it."""
-    base_url, _ = live_server
-    start = "GET /s3/no-such-bucket/nope HTTP/1.1\r\nHost: x\r\nX-A: "
-    value = "a" * (10_000 - len(start) - len("\r\n\r\n") + len("/s3"))
-    with _connect(base_url) as c:
-        reader = c.makefile("rb")
+class _Transport(asyncio.Transport):
+    """A connection that keeps what the protocol writes to it."""
 
-        def served() -> None:
-            assert reader.readline().startswith(b"HTTP/1.1 404")
-            length = 0
-            while (line := reader.readline()) not in (b"\r\n", b""):
-                if line.lower().startswith(b"content-length:"):
-                    length = int(line.split(b":")[1])
-            reader.read(length)
+    def __init__(self) -> None:
+        super().__init__()
+        self.written = b""
+        self.closed = False
 
-        c.sendall(f"{start}{value}\r\n\r\n".encode())
-        served()
-        c.sendall(f"{start}{value}".encode())
-        assert not select.select([c], [], [], 0.5)[0]
-        c.sendall(b"\r\n\r\n")
-        served()
-        c.sendall(f"{start}{'a' * (16_384 - len(start) + len('/s3'))}".encode())
-        answer = _until_closed(c)
-    assert _as_real(answer) == _REAL["s3"]
+    def get_extra_info(self, name, default=None):
+        return default
+
+    def write(self, data) -> None:
+        self.written += data
+
+    def close(self) -> None:
+        self.closed = True
+
+    def is_closing(self) -> bool:
+        return self.closed
+
+    def pause_reading(self) -> None:
+        pass
+
+    def resume_reading(self) -> None:
+        pass
+
+
+def _connection(reads: list[bytes]) -> tuple[list[str], list[list[str]], bool]:
+    """``reads`` handed to ``backlot.protocol.Protocol`` in this process, a ``data_received`` call
+    each and the app's tasks run as far as they go after each, in front of an app that answers each
+    request it is handed with an empty 200: each request the app was handed (its method, path, body
+    length and whether its target as sent is on the scope), the answers written after each read
+    (a status line, or the :data:`_REAL` entry the answer is), and whether the connection closed."""
+    seen = []
+
+    async def app(scope, receive, send):
+        body = b""
+        while (message := await receive())["type"] == "http.request":
+            body += message.get("body", b"")
+            if not message.get("more_body"):
+                break
+        sent = request_target.SENT in scope
+        seen.append(f"{scope['method']} {scope['path']} {len(body)} {sent}")
+        headers = [(b"content-length", b"0")]
+        await send({"type": "http.response.start", "status": 200, "headers": headers})
+        await send({"type": "http.response.body", "body": b""})
+
+    loop = asyncio.new_event_loop()
+    answers = []
+    try:
+        config = uvicorn.Config(app, http=protocol.Protocol, lifespan="off", log_config=None)
+        state = ServerState()
+        served = protocol.Protocol(config, state, {}, _loop=loop)
+        transport = _Transport()
+        served.connection_made(transport)
+        for read in reads:
+            before = len(transport.written)
+            served.data_received(read)
+            for _ in range(100):
+                loop.run_until_complete(asyncio.sleep(0))
+            written = transport.written[before:]
+            starts = [m.start() for m in re.finditer(rb"HTTP/1\.[01] \d{3}", written)]
+            answers.append(
+                [_named(written[a:b]) for a, b in zip(starts, [*starts[1:], len(written)])]
+            )
+    finally:
+        for task in state.tasks:
+            task.cancel()
+        loop.run_until_complete(asyncio.sleep(0))
+        loop.close()
+    return seen, answers, transport.closed
+
+
+def _named(answer: bytes) -> str:
+    """The :data:`_REAL` entry ``answer`` is, or its status line."""
+    head, _, body = answer.partition(b"\r\n\r\n")
+    status_line, *lines = head.decode("latin-1").split("\r\n")
+    headers = {}
+    for line in lines:
+        name, _, value = line.partition(":")
+        headers[name.strip().lower()] = value.strip()
+    if "connection" in headers:
+        shape = _as_real((status_line, headers, body))
+        return next((name for name, real in _REAL.items() if real == shape), status_line)
+    return status_line
+
+
+def _s3(counted: int, ended: bool = True, method: str = "GET") -> bytes:
+    """A head on S3 of which real gets ``counted`` bytes, its `X-A` header padded to that, ended
+    with its CRLF and the empty line or not."""
+    start = f"{method} /s3/b/k HTTP/1.1\r\nHost: x\r\nX-A: "
+    end = "\r\n\r\n" if ended else ""
+    return (start + "a" * (counted + len("/s3") - len(start) - len(end)) + end).encode()
+
+
+_GITHUB = b"GET /github/repos/acme/docs-site HTTP/1.1\r\nHost: x\r\n\r\n"
+_GITHUB_LINE = b"GET /github/repos/acme/docs-site?x=" + b"a" * 68_552
+_GITHUB_HEADER = b"GET /github/repos/acme/docs-site HTTP/1.1\r\nHost: x\r\nX-A: " + b"a" * 70_000
+_CHUNKED = (
+    b"POST /s3/b/k HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+    b"6\r\na\r\n\r\nb\r\n0\r\n\r\n"
+)
+_LENGTH = b"POST /s3/b/k HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\n\r\n\r\nx"
+
+#: The reads of one connection, and what the app is handed, the answers written after each read
+#: and whether the connection closes: S3's bound is 16,384 bytes of the head and GitHub's 68,552,
+#: and the second request starts in a read of its own or in the first one's, its head ending or
+#: not, and after a body framed by its length or chunked, a CRLF CRLF in each.
+_CONNECTIONS = [
+    (
+        [_s3(10_000), _s3(10_000, ended=False), b"\r\n\r\n", _s3(16_384, ended=False)],
+        ["GET /s3/b/k 0 False"] * 2,
+        [["HTTP/1.1 200 OK"], [], ["HTTP/1.1 200 OK"], ["s3"]],
+        True,
+    ),
+    (
+        [_s3(10_000) + _s3(10_000)],
+        ["GET /s3/b/k 0 False"] * 2,
+        [["HTTP/1.1 200 OK"] * 2],
+        False,
+    ),
+    (
+        [_s3(10_000) + _s3(16_384)[:30], _s3(16_384)[30:]],
+        ["GET /s3/b/k 0 False"] * 2,
+        [["HTTP/1.1 200 OK"], ["HTTP/1.1 200 OK"]],
+        False,
+    ),
+    (
+        [_s3(100) + _s3(20_000)[:30], _s3(20_000)[30:]],
+        ["GET /s3/b/k 0 False"],
+        [["HTTP/1.1 200 OK"], ["s3"]],
+        True,
+    ),
+    ([_s3(100) + _s3(20_000)], ["GET /s3/b/k 0 False"], [["HTTP/1.1 200 OK", "s3"]], True),
+    (
+        [_s3(100) + _s3(20_000, ended=False)],
+        ["GET /s3/b/k 0 False"],
+        [["HTTP/1.1 200 OK", "s3"]],
+        True,
+    ),
+    (
+        [_s3(100) + _s3(100) + _s3(20_000, ended=False)],
+        ["GET /s3/b/k 0 False"] * 2,
+        [["HTTP/1.1 200 OK"] * 2 + ["s3"]],
+        True,
+    ),
+    (
+        [_LENGTH + _s3(20_000, ended=False)],
+        ["POST /s3/b/k 5 False"],
+        [["HTTP/1.1 200 OK", "s3"]],
+        True,
+    ),
+    (
+        [_CHUNKED + _s3(20_000, ended=False)],
+        ["POST /s3/b/k 6 False"],
+        [["HTTP/1.1 200 OK", "s3"]],
+        True,
+    ),
+    (
+        [_CHUNKED[:-1], _CHUNKED[-1:] + _s3(20_000, ended=False)],
+        ["POST /s3/b/k 6 False"],
+        [[], ["HTTP/1.1 200 OK", "s3"]],
+        True,
+    ),
+    (
+        [_GITHUB + _GITHUB_LINE],
+        ["GET /github/repos/acme/docs-site 0 False"],
+        [["HTTP/1.1 200 OK", "github 414"]],
+        True,
+    ),
+    (
+        [_GITHUB + _GITHUB_HEADER[:30], _GITHUB_HEADER[30:] + b"\r\n\r\n"],
+        ["GET /github/repos/acme/docs-site 0 False"],
+        [["HTTP/1.1 200 OK"], ["github 431"]],
+        True,
+    ),
+    (
+        [_GITHUB + b"GET /github/repos/acme/docs-site?q=\x01 HTTP/1.1\r\nHost: x\r\n\r\n"],
+        [
+            "GET /github/repos/acme/docs-site 0 False",
+            "GET /github/repos/acme/docs-site 0 True",
+        ],
+        [["HTTP/1.1 200 OK"] * 2],
+        False,
+    ),
+]
+
+
+def test_each_request_on_a_connection_is_counted_from_its_own_start():
+    """Each request's head is counted from its own first byte, whether it starts a read or starts in
+    the read the request before it ends in, after a head or after a body. A head within its bound
+    waits for its end; a head that reaches it is answered after each answer ahead of it, and the
+    app is never handed it."""
+    got = [_connection(reads) for reads, *_ in _CONNECTIONS]
+    assert got == [tuple(expected) for _, *expected in _CONNECTIONS]
 
 
 #: A body longer than the bound after a head that ends, on Graph, whose bound refuses a head at its

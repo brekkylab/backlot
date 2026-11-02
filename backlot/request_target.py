@@ -456,25 +456,18 @@ def refused_in_the_line(
 ) -> tuple[str, str, bytes] | None:
     """The status line, media type and body with which the front door ``door`` (:func:`front_door`'s
     name) refuses the request line ``line``, the bytes before its LF, ahead of its bound, or
-    ``None`` where the bound's page answers. ``ended`` is whether the LF came, and ``ahead`` whether
-    it came in a piece of the head before the piece the bound is reached in. The target of a line
-    that ended lies between its first space and its last, as :func:`encode_line` reads it, and of
-    one that has not, after its first.
-
-    In whichever piece of the head the byte comes, GitHub refuses a raw byte in the target of any
-    kind, Google a `nul` or a `control`, Jira Cloud's CDN and Cloudflare a `nul` or a `cr`, and
-    Graph one of any kind but a `high` (:func:`_graph_page`). Where the LF came ahead, Slack refuses
-    a raw byte of any kind, Jira Cloud's CDN a path :func:`_broken` holds, and Cloudflare, on each
-    of its four hosts, a path :func:`refused_path` holds; where it came in the piece that reaches
-    the bound, Slack answers with the bound's 431. Each refusal is the one real gave the same line
-    with a short head.
+    ``None``, where the caller sends the bound's page. ``ended`` is whether the LF came, and
+    ``ahead`` whether it came in a piece of the head before the piece the bound is reached in. The
+    target of a line that ended lies between its first space and its last, as :func:`encode_line`
+    reads it, and of one that has not, after its first. Each refusal is the one real gave the same
+    line with a short head.
 
     Measured on 2026-11-01 (UTC) over raw HTTP/1.1 on TLS, each request cache-busted and its head
     written at once in pieces of 16,384 bytes, on the paths of ``backlot.head_bounds``'
     measurement; ``tests/test_head_bounds.py::_REFUSED_LINES`` holds the lines. Every long request
-    those rules do not name drew the bound's page but `/../rest/api/3/myself` on Jira Cloud, which
-    drew the CDN's 400 as it did with a short head; S3 answered each with an empty 400, which its
-    bound answers too."""
+    the branches below do not refuse drew the bound's page but `/../rest/api/3/myself` on Jira
+    Cloud, which drew the CDN's 400 as it did with a short head, and which is not given here; S3
+    answered each with an empty 400, which its bound answers too."""
     method, _, rest = line.partition(b" ")
     target = rest.rpartition(b" ")[0] if ended else rest
     path, mark, query = target.partition(b"?")

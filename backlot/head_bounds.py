@@ -95,7 +95,9 @@ class Bound:
         :func:`_answer` sends it, ``ended`` where its LF came. ``ahead`` holds where the bound is a
         line's, which is longer than a :data:`PIECE`, and where a head bound falls in a later piece
         than the LF, the pieces counted from the head's first byte as a head written at once is
-        cut."""
+        cut. Only a head written at once is read so: real reads the pieces a client wrote, and on
+        Slack, with the LF at byte 49,153, a head written in writes of 1,000 or 4,000 bytes drew the
+        line's 400 where one written at once drew the bound's 431 (2026-11-02, twice each)."""
         ahead = ended and (
             self.per_line or (len(line) - self.mount) // PIECE < (self.limit - 1) // PIECE
         )
@@ -229,8 +231,8 @@ _BOUNDS = {
 
 def bound(start: bytes) -> Bound | None:
     """The bound on a head whose request line starts ``start``, read off the path in it, or
-    ``None`` where no vendor owns the path. Jira Cloud's is a line bound of 32,768 with the CDN's
-    page, 414 in the request line and 494 in the headers (``errors.atlassian.cdn_too_long``)."""
+    ``None`` where no vendor owns the path. Jira Cloud's is built here, its page naming the
+    request."""
     method, _, target = start.partition(b" ")
     path = re.split(rb"[? ]", target, maxsplit=1)[0].decode("latin-1")
     unquoted = urllib.parse.unquote(path)

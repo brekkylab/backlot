@@ -1640,8 +1640,7 @@ async def answer_a_github_request_target_past_its_bound(request: Request, call_n
     `/search/code` 8,174 was this 414 and 8,173 the 200, twice each. A bad token was this 414, and a
     raw byte in the target was the front door's 400
     (:func:`answer_a_raw_byte_in_the_request_target`) ahead of it. Real's status line reads
-    `414 Request-URI Too Large` and the answer carries no `x-github-request-id` and no rate
-    limit."""
+    `414 Request-URI Too Large`, and the answer carries no rate limit."""
     query = request.scope["query_string"]
     target = request.scope["raw_path"][len("/github") :] + (b"?" + query if query else b"")
     bound = 8_174 if request.scope["path"] == "/github/search/code" else 8_192

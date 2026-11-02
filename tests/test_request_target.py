@@ -628,6 +628,11 @@ def _rows():
             b"Authorization: Basic eDp5\r\n",
         ),
         ("/github/", b"search/code?q=x&b=%x", 401, b""),
+        # a charset Java cannot name, on a path Confluence's front door reads a `\` in as a `/`
+        *(
+            ("/atlassian/wiki", rest, 500, b"Content-Type: text/plain;charset=\r\n")
+            for rest in (b"\\rest/api/space", b"/rest/api\\space", b"/rest/api/content\\nope")
+        ),
     ):
         kind = header.decode().strip() or "no credential"
         yield pytest.param(

@@ -4256,76 +4256,104 @@ def _url_safe(raw: str) -> str:
     return standard.translate(str.maketrans("+/", "-_"))
 
 
-@pytest.mark.parametrize(
-    "cursor, bounds, limit, served",
-    [
-        (lambda ts: _next_ts_of(ts[3]), {}, 2, [3, 2]),
-        (lambda ts: _between(ts[0], ts[1]), {}, 2, [0]),
-        (lambda ts: _between(ts[0], ts[1]), {"oldest": "1"}, 2, [2, 1]),
-        (lambda ts: _b64(f"next_ts:{ts[3]}".encode()), {}, 2, []),
-        (lambda ts: _b64(f"next_ts: {ts[3].replace('.', '')}".encode()), {}, 2, [3, 2]),
-        (lambda ts: _b64(f"next_ts:+{ts[3].replace('.', '')}".encode()), {}, 2, [3, 2]),
-        (lambda ts: _b64(f"next_ts:{ts[3].replace('.', '')}abc".encode()), {}, 2, [3, 2]),
-        (lambda ts: _b64(f"next_ts:{ts[3].replace('.', '')}\n".encode()), {}, 2, [3, 2]),
-        (lambda ts: _b64(f"next_ts:\x0b{ts[3].replace('.', '')}".encode()), {}, 2, [3, 2]),
-        (lambda ts: _b64(f"next_ts:\x0c{ts[3].replace('.', '')}".encode()), {}, 2, [3, 2]),
-        (lambda ts: _next_ts_of(ts[3]).rstrip("="), {}, 2, [3, 2]),
-        (lambda ts: _next_ts_of(ts[3]) + "==", {}, 2, [3, 2]),
-        (lambda ts: _url_safe(f"next_ts:{ts[3].replace('.', '')}aa?aa>"), {}, 2, [3, 2]),
-        (lambda ts: _b64(b"next_ts:abc"), {}, 2, [5, 4]),
-        (lambda ts: _b64(b"next_ts:abc"), {"oldest": 0}, 2, [2, 1]),
-        (lambda ts: _b64(b"next_ts:00"), {}, 2, [5, 4]),
-        (lambda ts: _b64(b"next_ts:-1"), {}, 2, [5, 4]),
-        (lambda ts: _b64(b"next_ts:\xff\xfe"), {}, 2, [5, 4]),
-        (lambda ts: _b64(f"next_ts:\x00{ts[3].replace('.', '')}".encode()), {}, 2, [5, 4]),
-        (lambda ts: _b64(b"next_ts:\x0c"), {}, 2, [5, 4]),
-        (lambda ts: _b64(b"next_ts:\t0"), {}, 2, [5, 4]),
-        (lambda ts: _b64(b"next_ts:+-1"), {"latest": 4}, 2, [3, 2]),
-        # values below zero and at the ends of the 64-bit range
-        (lambda ts: _b64(b"next_ts:-1"), {"latest": 1}, 2, [5, 4]),
-        (lambda ts: _b64(b"next_ts: -1"), {"latest": 1}, 2, [5, 4]),
-        (lambda ts: _b64(b"next_ts:-2"), {}, 2, []),
-        (lambda ts: _b64(f"next_ts:{2**63 - 1}".encode()), {}, 2, []),
-        (lambda ts: _b64(f"next_ts:{2**64}".encode()), {}, 2, []),
-        (lambda ts: _b64(b"next_ts:" + b"9" * 20), {}, 2, []),
-        (lambda ts: _b64(b"next_ts:" + b"9" * 5000), {}, 2, []),
-        (lambda ts: _b64(b"next_ts:-1"), {"oldest": 4}, 2, [1, 0]),
-        (lambda ts: _b64(f"next_ts:{1 - 2**63}".encode()), {"oldest": 4}, 2, [1, 0]),
-        (lambda ts: _b64(f"next_ts:{-(2**63)}".encode()), {"oldest": 4}, 2, []),
-        (lambda ts: _b64(b"next_ts:-" + b"9" * 20), {"oldest": 4}, 2, []),
-        (lambda ts: _b64(b"next_ts:-" + b"9" * 5000), {"oldest": 4}, 2, []),
-        # a cursor beside a bound
-        (lambda ts: _next_ts_of(ts[3]), {"latest": 1}, 2, [3, 2]),
-        (lambda ts: _next_ts_of(ts[3]), {"oldest": 4}, 2, [4, 3]),
-        (lambda ts: _next_ts_of(ts[3]), {"oldest": 1, "latest": 5}, 10, [3, 2]),
-        (lambda ts: _b64(b"next_ts:"), {}, 2, "invalid_cursor"),
-        (lambda ts: _b64(b"next_ts: "), {}, 2, "invalid_cursor"),
-        (lambda ts: _b64(b"next_ts:\t"), {}, 2, "invalid_cursor"),
-        (lambda ts: _b64(b"next_ts:\x00"), {}, 2, "invalid_cursor"),
-        (lambda ts: _b64(b"next_ts:0"), {}, 2, "invalid_cursor"),
-        (lambda ts: _b64(b"o:2"), {}, 2, "invalid_cursor"),
-        (lambda ts: _b64(f"NEXT_TS:{ts[3].replace('.', '')}".encode()), {}, 2, "invalid_cursor"),
-        (lambda ts: _b64(f"next_ts:{ts[3].replace('.', '')}:x".encode()), {}, 2, "invalid_cursor"),
-        (lambda ts: f"next_ts:{ts[3].replace('.', '')}", {}, 2, "invalid_cursor"),
-        (lambda ts: "zzz", {}, 2, "invalid_cursor"),
-    ],
-)
-def test_slack_history_reads_a_cursor_for_the_ts_it_names(
-    wclient, tokens, cursor, bounds, limit, served
-):
-    """A cursor built by hand, as `slack._next_ts` reads one, beside each bound: ``served`` is the
-    page, by index oldest first, or the error."""
+def _naming(fmt: str):
+    """A row's cursor: ``fmt``, with message 3's ts in place of ``{}`` and without its dot, in
+    base64."""
+    return lambda ts: _b64(fmt.format(ts[3].replace(".", "")).encode())
+
+
+# Each row is a cursor built by hand, as `slack._next_ts` reads one, by its name and as it is built,
+# the bounds beside it and `limit`; ``served`` is the page, by index oldest first, or the error. In
+# a name, `<3>` is message 3's ts without its dot.
+_HISTORY_CURSOR_ROWS = [
+    ("next_ts:<3>", lambda ts: _next_ts_of(ts[3]), {}, 2, [3, 2]),
+    ("between <0> and <1>", lambda ts: _between(ts[0], ts[1]), {}, 2, [0]),
+    ("between <0> and <1>", lambda ts: _between(ts[0], ts[1]), {"oldest": "1"}, 2, [2, 1]),
+    ("next_ts:<3 with its dot>", lambda ts: _b64(f"next_ts:{ts[3]}".encode()), {}, 2, []),
+    ("next_ts: <3>", _naming("next_ts: {}"), {}, 2, [3, 2]),
+    ("next_ts:+<3>", _naming("next_ts:+{}"), {}, 2, [3, 2]),
+    ("next_ts:<3>abc", _naming("next_ts:{}abc"), {}, 2, [3, 2]),
+    ("next_ts:<3>LF", _naming("next_ts:{}\n"), {}, 2, [3, 2]),
+    ("next_ts:VT<3>", _naming("next_ts:\x0b{}"), {}, 2, [3, 2]),
+    ("next_ts:FF<3>", _naming("next_ts:\x0c{}"), {}, 2, [3, 2]),
+    ("next_ts:<3>, unpadded", lambda ts: _next_ts_of(ts[3]).rstrip("="), {}, 2, [3, 2]),
+    ("next_ts:<3>, padded twice", lambda ts: _next_ts_of(ts[3]) + "==", {}, 2, [3, 2]),
+    (
+        "next_ts:<3>aa?aa>, URL-safe",
+        lambda ts: _url_safe(f"next_ts:{ts[3].replace('.', '')}aa?aa>"),
+        {},
+        2,
+        [3, 2],
+    ),
+    ("next_ts:abc", lambda ts: _b64(b"next_ts:abc"), {}, 2, [5, 4]),
+    ("next_ts:abc", lambda ts: _b64(b"next_ts:abc"), {"oldest": 0}, 2, [2, 1]),
+    ("next_ts:00", lambda ts: _b64(b"next_ts:00"), {}, 2, [5, 4]),
+    ("next_ts:-1", lambda ts: _b64(b"next_ts:-1"), {}, 2, [5, 4]),
+    ("next_ts:<not UTF-8>", lambda ts: _b64(b"next_ts:\xff\xfe"), {}, 2, [5, 4]),
+    ("next_ts:NUL<3>", _naming("next_ts:\x00{}"), {}, 2, [5, 4]),
+    ("next_ts:FF", lambda ts: _b64(b"next_ts:\x0c"), {}, 2, [5, 4]),
+    ("next_ts:HTAB0", lambda ts: _b64(b"next_ts:\t0"), {}, 2, [5, 4]),
+    ("next_ts:+-1", lambda ts: _b64(b"next_ts:+-1"), {"latest": 4}, 2, [3, 2]),
+    # values below zero and at the ends of the 64-bit range
+    ("next_ts:-1", lambda ts: _b64(b"next_ts:-1"), {"latest": 1}, 2, [5, 4]),
+    ("next_ts: -1", lambda ts: _b64(b"next_ts: -1"), {"latest": 1}, 2, [5, 4]),
+    ("next_ts:-2", lambda ts: _b64(b"next_ts:-2"), {}, 2, []),
+    ("next_ts:2**63 - 1", lambda ts: _b64(f"next_ts:{2**63 - 1}".encode()), {}, 2, []),
+    ("next_ts:2**64", lambda ts: _b64(f"next_ts:{2**64}".encode()), {}, 2, []),
+    ("next_ts:20 nines", lambda ts: _b64(b"next_ts:" + b"9" * 20), {}, 2, []),
+    ("next_ts:5,000 nines", lambda ts: _b64(b"next_ts:" + b"9" * 5000), {}, 2, []),
+    ("next_ts:-1", lambda ts: _b64(b"next_ts:-1"), {"oldest": 4}, 2, [1, 0]),
+    (
+        "next_ts:1 - 2**63",
+        lambda ts: _b64(f"next_ts:{1 - 2**63}".encode()),
+        {"oldest": 4},
+        2,
+        [1, 0],
+    ),
+    ("next_ts:-2**63", lambda ts: _b64(f"next_ts:{-(2**63)}".encode()), {"oldest": 4}, 2, []),
+    ("next_ts:-(20 nines)", lambda ts: _b64(b"next_ts:-" + b"9" * 20), {"oldest": 4}, 2, []),
+    ("next_ts:-(5,000 nines)", lambda ts: _b64(b"next_ts:-" + b"9" * 5000), {"oldest": 4}, 2, []),
+    # a cursor beside a bound
+    ("next_ts:<3>", lambda ts: _next_ts_of(ts[3]), {"latest": 1}, 2, [3, 2]),
+    ("next_ts:<3>", lambda ts: _next_ts_of(ts[3]), {"oldest": 4}, 2, [4, 3]),
+    ("next_ts:<3>", lambda ts: _next_ts_of(ts[3]), {"oldest": 1, "latest": 5}, 10, [3, 2]),
+    ("next_ts:", lambda ts: _b64(b"next_ts:"), {}, 2, "invalid_cursor"),
+    ("next_ts:SP", lambda ts: _b64(b"next_ts: "), {}, 2, "invalid_cursor"),
+    ("next_ts:HTAB", lambda ts: _b64(b"next_ts:\t"), {}, 2, "invalid_cursor"),
+    ("next_ts:NUL", lambda ts: _b64(b"next_ts:\x00"), {}, 2, "invalid_cursor"),
+    ("next_ts:0", lambda ts: _b64(b"next_ts:0"), {}, 2, "invalid_cursor"),
+    ("o:2", lambda ts: _b64(b"o:2"), {}, 2, "invalid_cursor"),
+    ("NEXT_TS:<3>", _naming("NEXT_TS:{}"), {}, 2, "invalid_cursor"),
+    ("next_ts:<3>:x", _naming("next_ts:{}:x"), {}, 2, "invalid_cursor"),
+    (
+        "next_ts:<3>, not encoded",
+        lambda ts: f"next_ts:{ts[3].replace('.', '')}",
+        {},
+        2,
+        "invalid_cursor",
+    ),
+    ("zzz", lambda ts: "zzz", {}, 2, "invalid_cursor"),
+]
+
+
+def test_slack_history_reads_a_cursor_for_the_ts_it_names(wclient, tokens):
+    """Each row of `_HISTORY_CURSOR_ROWS` sent to `conversations.history` over six messages, a
+    bound given as an int being the index of a message, oldest first."""
     h = _uh(tokens, "ava@acme.com")
     cid = synth.slack_channel_id("incidents")
     ts = _six_messages(wclient, h, cid)
-    sent = {k: ts[v] if isinstance(v, int) else v for k, v in bounds.items()}
-    body = wclient.post(
-        "/slack/api/conversations.history",
-        headers=h,
-        data={"channel": cid, "limit": limit, "cursor": cursor(ts), **sent},
-    ).json()
-    got = body.get("error") or [ts.index(m["ts"]) for m in body["messages"]]
-    assert got == served
+    got, expected = {}, {}
+    for name, cursor, bounds, limit, served in _HISTORY_CURSOR_ROWS:
+        sent = {k: ts[v] if isinstance(v, int) else v for k, v in bounds.items()}
+        body = wclient.post(
+            "/slack/api/conversations.history",
+            headers=h,
+            data={"channel": cid, "limit": limit, "cursor": cursor(ts), **sent},
+        ).json()
+        key = (name, urllib.parse.urlencode(bounds), limit)
+        got[key] = body.get("error") or [ts.index(m["ts"]) for m in body["messages"]]
+        expected[key] = served
+    assert got == expected
 
 
 @pytest.fixture
@@ -4355,95 +4383,115 @@ def slack_thread(wclient, tokens):
 _GREATER = ["[ERROR] must be greater than 1 [json-pointer:/limit]"]
 
 
-@pytest.mark.parametrize(
-    "params, served, then",
-    [
-        ({}, [0, 1, 2, 3, 4, 5], None),
-        ({"limit": 1}, [0, 5], 4),
-        ({"limit": 2}, [0, 4, 5], 3),
-        ({"limit": 2, "cursor": 3}, [0, 2, 3], 1),
-        ({"limit": 2, "cursor": 1}, [0, 1], None),
-        ({"limit": 3}, [0, 3, 4, 5], 2),
-        ({"limit": 1000}, [0, 1, 2, 3, 4, 5], None),
-        ({"limit": 2, "oldest": 1}, [0, 2, 3], 4),
-        ({"limit": 2, "oldest": 1, "cursor": 4}, [0, 5], None),
-        ({"limit": 2, "latest": 5}, [0, 3, 4], 2),
-        ({"limit": 2, "latest": 5, "cursor": 2}, [0, 1, 2], None),
-        ({"limit": 2, "oldest": 1, "latest": 5}, [0, 3, 4], 2),
-        ({"latest": 0}, [0], None),
-        ({"oldest": 5}, [0], None),
-        ({"latest": 1, "inclusive": "true"}, [0, 1], None),
-        ({"oldest": 1, "inclusive": "true"}, [0, 1, 2, 3, 4, 5], None),
-        ({"latest": "abc", "oldest": "nan"}, [0, 1, 2, 3, 4, 5], None),
-        # a cursor beside a bound
-        ({"limit": 2, "latest": 2, "cursor": 5}, [0, 1], None),
-        ({"limit": 2, "oldest": 3, "cursor": 1}, [0, 4, 5], None),
-        ({"limit": 2, "cursor": 0}, [0], None),
-        ({"cursor": _b64(b"next_ts:1")}, [0], None),
-        # values below zero and past the 64-bit range
-        ({"limit": 2, "cursor": _b64(b"next_ts:-1")}, [0, 4, 5], 3),
-        ({"limit": 2, "latest": 5, "cursor": _b64(b"next_ts:-1")}, [0, 3, 4], 2),
-        ({"limit": 2, "oldest": 1, "cursor": _b64(b"next_ts:-1")}, [0, 2, 3], 4),
-        ({"limit": 2, "cursor": _b64(f"next_ts:{2**63}".encode())}, [0, 4, 5], 3),
-        ({"limit": 2, "cursor": _b64(b"next_ts:" + b"9" * 5000)}, [0, 4, 5], 3),
-        ({"limit": 2, "oldest": 1, "cursor": _b64(b"next_ts:-" + b"9" * 5000)}, [0, 2, 3], 4),
-        ({"limit": 2, "oldest": 1, "cursor": _b64(f"next_ts:{2**63}".encode())}, [0], None),
-        # a reply's ts is that reply
-        ({"ts": 2, "limit": 1}, [2], None),
-        ({"ts": 2, "cursor": 4}, [2], None),
-        ({"limit": "0"}, ("invalid_arguments", _GREATER), None),
-        ({"limit": "00"}, ("invalid_arguments", _GREATER), None),
-        ({"limit": "-1"}, ("invalid_arguments", _GREATER), None),
-        (
-            {"limit": "1001"},
-            ("invalid_arguments", ["[ERROR] must be less than 1000 [json-pointer:/limit]"]),
-            None,
-        ),
-        (
-            {"ts": 2, "limit": "abc"},
-            ("invalid_arguments", ["[ERROR] must provide a number [json-pointer:/limit]"]),
-            None,
-        ),
-        ({"cursor": _b64(b"next_ts:abc")}, ("invalid_cursor", None), None),
-        ({"cursor": _b64(b"next_ts:0")}, ("invalid_cursor", None), None),
-        ({"ts": 2, "cursor": "zzz"}, ("invalid_cursor", None), None),
-        ({"cursor": _b64(b"next_ts:-+1")}, ("invalid_cursor", None), None),
-        # the order the refusals come in: `limit`, the channel, the cursor, then the thread
-        ({"channel": "C_NOPE", "limit": "0"}, ("invalid_arguments", _GREATER), None),
-        ({"channel": "C_NOPE", "cursor": "zzz"}, ("channel_not_found", None), None),
-        ({"ts": "1.0", "cursor": "zzz"}, ("invalid_cursor", None), None),
-        ({"ts": "", "cursor": "zzz"}, ("invalid_cursor", None), None),
-        (
-            {"ts": None, "limit": "abc"},
-            ("invalid_arguments", ["[ERROR] missing required field: ts"]),
-            None,
-        ),
-    ],
-)
-def test_slack_replies_page_a_thread(wclient, slack_thread, params, served, then):
-    """`conversations_replies` on a parent and five replies, as its comments record real. An int
-    ts, bound or cursor is the place of a message in the thread, the parent 0; ``served`` is the
-    messages by place, or the error and its lines, and ``then`` the place the next cursor names. A
-    parameter given as None is not sent."""
+# Each row is what `conversations.replies` is sent beside `channel` and the parent's `ts`, a
+# value of None not being sent; the messages it serves by place in the thread, the parent 0, or
+# the error and its lines; and the place its next cursor names. An int `ts`, bound or cursor is the
+# place of a message, and a bytes cursor is sent in base64.
+_REPLIES_ROWS = [
+    ({}, [0, 1, 2, 3, 4, 5], None),
+    ({"limit": 1}, [0, 5], 4),
+    ({"limit": 2}, [0, 4, 5], 3),
+    ({"limit": 2, "cursor": 3}, [0, 2, 3], 1),
+    ({"limit": 2, "cursor": 1}, [0, 1], None),
+    ({"limit": 3}, [0, 3, 4, 5], 2),
+    ({"limit": 1000}, [0, 1, 2, 3, 4, 5], None),
+    ({"limit": 2, "oldest": 1}, [0, 2, 3], 4),
+    ({"limit": 2, "oldest": 1, "cursor": 4}, [0, 5], None),
+    ({"limit": 2, "latest": 5}, [0, 3, 4], 2),
+    ({"limit": 2, "latest": 5, "cursor": 2}, [0, 1, 2], None),
+    ({"limit": 2, "oldest": 1, "latest": 5}, [0, 3, 4], 2),
+    ({"latest": 0}, [0], None),
+    ({"oldest": 5}, [0], None),
+    ({"latest": 1, "inclusive": "true"}, [0, 1], None),
+    ({"oldest": 1, "inclusive": "true"}, [0, 1, 2, 3, 4, 5], None),
+    ({"latest": "abc", "oldest": "nan"}, [0, 1, 2, 3, 4, 5], None),
+    # a cursor beside a bound
+    ({"limit": 2, "latest": 2, "cursor": 5}, [0, 1], None),
+    ({"limit": 2, "oldest": 3, "cursor": 1}, [0, 4, 5], None),
+    ({"limit": 2, "cursor": 0}, [0], None),
+    ({"cursor": b"next_ts:1"}, [0], None),
+    # values below zero and past the 64-bit range
+    ({"limit": 2, "cursor": b"next_ts:-1"}, [0, 4, 5], 3),
+    ({"limit": 2, "latest": 5, "cursor": b"next_ts:-1"}, [0, 3, 4], 2),
+    ({"limit": 2, "oldest": 1, "cursor": b"next_ts:-1"}, [0, 2, 3], 4),
+    ({"limit": 2, "cursor": f"next_ts:{2**63}".encode()}, [0, 4, 5], 3),
+    ({"limit": 2, "cursor": b"next_ts:" + b"9" * 5000}, [0, 4, 5], 3),
+    ({"limit": 2, "oldest": 1, "cursor": b"next_ts:-" + b"9" * 5000}, [0, 2, 3], 4),
+    ({"limit": 2, "oldest": 1, "cursor": f"next_ts:{2**63}".encode()}, [0], None),
+    # a reply's ts is that reply
+    ({"ts": 2, "limit": 1}, [2], None),
+    ({"ts": 2, "cursor": 4}, [2], None),
+    ({"limit": "0"}, ("invalid_arguments", _GREATER), None),
+    ({"limit": "00"}, ("invalid_arguments", _GREATER), None),
+    ({"limit": "-1"}, ("invalid_arguments", _GREATER), None),
+    (
+        {"limit": "1001"},
+        ("invalid_arguments", ["[ERROR] must be less than 1000 [json-pointer:/limit]"]),
+        None,
+    ),
+    (
+        {"ts": 2, "limit": "abc"},
+        ("invalid_arguments", ["[ERROR] must provide a number [json-pointer:/limit]"]),
+        None,
+    ),
+    ({"cursor": b"next_ts:abc"}, ("invalid_cursor", None), None),
+    ({"cursor": b"next_ts:0"}, ("invalid_cursor", None), None),
+    ({"ts": 2, "cursor": "zzz"}, ("invalid_cursor", None), None),
+    ({"cursor": b"next_ts:-+1"}, ("invalid_cursor", None), None),
+    # the order the refusals come in: `limit`, the channel, the cursor, then the thread
+    ({"channel": "C_NOPE", "limit": "0"}, ("invalid_arguments", _GREATER), None),
+    ({"channel": "C_NOPE", "cursor": "zzz"}, ("channel_not_found", None), None),
+    ({"ts": "1.0", "cursor": "zzz"}, ("invalid_cursor", None), None),
+    ({"ts": "", "cursor": "zzz"}, ("invalid_cursor", None), None),
+    (
+        {"ts": None, "limit": "abc"},
+        ("invalid_arguments", ["[ERROR] missing required field: ts"]),
+        None,
+    ),
+]
+
+
+def _shown(value) -> str:
+    """A value as a row of `_REPLIES_ROWS` is named by: as written, and a long one by its start and
+    length."""
+    text = repr(value)
+    return text if len(text) <= 40 else f"{text[:24]}... ({len(value)} long)"
+
+
+def test_slack_replies_page_a_thread(wclient, slack_thread):
+    """`conversations_replies` on a parent and five replies, as its comments record real: each row
+    of `_REPLIES_ROWS`, with ``then`` the place the next cursor names."""
     h, cid, ts = slack_thread
 
     def at(k, v):
+        if isinstance(v, bytes):
+            return _b64(v)
         if not isinstance(v, int) or k == "limit":
             return v
         return _next_ts_of(ts[v]) if k == "cursor" else ts[v]
 
-    sent = {"channel": cid, "ts": ts[0], **{k: at(k, v) for k, v in params.items()}}
-    sent = {k: v for k, v in sent.items() if v is not None}
-    body = wclient.post("/slack/api/conversations.replies", headers=h, data=sent).json()
-    if isinstance(served, tuple):
+    got, expected = {}, {}
+    for params, served, then in _REPLIES_ROWS:
+        sent = {"channel": cid, "ts": ts[0], **{k: at(k, v) for k, v in params.items()}}
+        sent = {k: v for k, v in sent.items() if v is not None}
+        body = wclient.post("/slack/api/conversations.replies", headers=h, data=sent).json()
+        key = " ".join(f"{k}={_shown(v)}" for k, v in params.items()) or "nothing"
         lines = body.get("response_metadata", {}).get("messages")
-        assert (body["ok"], body["error"], lines) == (False, *served)
-        return
-    assert [ts.index(m["ts"]) for m in body["messages"]] == served
-    assert body["has_more"] is (then is not None)
-    assert body.get("response_metadata") == (
-        None if then is None else {"next_cursor": _next_ts_of(ts[then])}
-    )
+        if isinstance(served, tuple):
+            got[key] = (body["ok"], body.get("error"), lines)
+            expected[key] = (False, *served)
+            continue
+        got[key] = (
+            [ts.index(m["ts"]) for m in body.get("messages", [])],
+            body.get("has_more"),
+            body.get("response_metadata"),
+        )
+        expected[key] = (
+            served,
+            then is not None,
+            None if then is None else {"next_cursor": _next_ts_of(ts[then])},
+        )
+    assert got == expected
 
 
 def test_only_post_message_takes_a_channel_by_name(wclient, tokens):

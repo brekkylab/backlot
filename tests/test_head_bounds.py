@@ -294,10 +294,9 @@ _BLANK_AHEAD = [
 ]
 _IN_HEADERS = {(mount, path): header for mount, path, *_, header in _BOUNDS}
 
-#: Empty lines ahead of a request line Slack refuses, the line's LF at the last byte of a piece
-#: written and at the first of the next (``backlot.head_bounds.Bound.refused``): a CRLF or an LF,
-#: the LF at the 49,152nd byte and the 49,153rd, and 4,200 bytes of CRLFs, at the 65,536th and the
-#: 65,537th. What comes ahead, the number of `a` in the line's `pad`, and real's answer.
+#: Empty lines ahead of a request line Slack refuses, its LF on each side of the edge of the bound's
+#: piece (``backlot.head_bounds.Bound.refused``): what comes ahead, the number of `a` in the line's
+#: `pad`, and real's answer.
 _REFUSED_BEHIND_A_BLANK = [
     ("\r\n", 49_108, "slack 400"),
     ("\r\n", 49_109, "slack"),
@@ -529,7 +528,7 @@ _MARKDOWN_CHUNKED = (
 #: framed by its length has a header reading `chunked`, one chunked has a header after its
 #: `Transfer-Encoding`, and one is framed by `gzip, chunked`, which Graph read as chunked on
 #: 2026-11-02. A header line of one byte, or one a CR leads, does not end a head: Slack answered a
-#: header past the bound behind either with its 431 on 2026-11-02. Nothing after a request that
+#: header past the bound behind either at its bound on 2026-11-02. Nothing after a request that
 #: closes the connection or one the parser refuses is answered, as on api.github.com (2026-11-02).
 _CONNECTIONS = [
     (

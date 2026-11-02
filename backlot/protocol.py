@@ -47,7 +47,7 @@ class Protocol(HttpToolsProtocol):
     short one on the same connection drew the short one's answer and then the bound's, written in
     the same write as the short one, in a write of its own, or with its first 30 bytes in the short
     one's write. What :class:`_Head` has read of a head when httptools refuses it names the refusal
-    (:meth:`_cause`).
+    (:meth:`_cause`), and the front door's answer to that refusal waits the same way.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -131,7 +131,8 @@ class Protocol(HttpToolsProtocol):
 
     def send_400_response(self, msg: str) -> None:
         """The front door's answer to what httptools refused (``backlot.parser_refusals``) where it
-        has one, else uvicorn's 400. uvicorn calls this as it handles the parser's refusal, which
+        has one, held as the bound's is until the answer ahead of it on the connection has gone
+        out, else uvicorn's 400. uvicorn calls this as it handles the parser's refusal, which
         :func:`sys.exception` gives."""
         cause = self._cause(str(sys.exception()))
         answer = None
@@ -147,8 +148,9 @@ class Protocol(HttpToolsProtocol):
         if answer is None:
             super().send_400_response(msg)
             return
-        self.transport.write(answer)
-        self.transport.close()
+        self._refusal = answer
+        if self.cycle is None or self.cycle.response_complete:
+            self._refuse()
 
     def _cause(self, reason: str) -> parser_refusals.Cause | None:
         """Which of ``backlot.parser_refusals.Cause`` httptools refused the request for, read off

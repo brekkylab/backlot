@@ -16556,6 +16556,10 @@ _SEARCH_ROWS = [
     ("a1", "\\P{L}", _RE, "aRR", 2),
     ("AB", "\\x{41}", _RE, "RB", 1),
     ("AB", "\\x41", _RE, "RB", 1),
+    ("aA", "\\x{0041}", _RE, "aR", 1),
+    ("aA", "\\x{10FFFF}|a", _RE, "RA", 1),
+    ("\U0001f600a", "\\uD83D\\uDE00", _RE, "Ra", 1),
+    ("\U0001f600a", "\\uD83D", _RE, "\U0001f600a", 0),
     ("ab", "\\N{LATIN SMALL LETTER A}", _RE, "Rb", 1),
     ("a\nb", "\\cJ", _RE, "aRbR", 2),
     ("a-b", "[\\w]", _RE, "R-R", 2),
@@ -16592,6 +16596,10 @@ _SEARCH_ROWS = [
             ("a\\", "ab"),
             ("(", "a(b"),
         ]
+    ),
+    *(
+        ("aA", pattern, _RE, "aA", 0)
+        for pattern in ("\\x{}", "\\x{zz}", "\\x{+41}", "\\x{110000}", "a|\\x{}", "[\\x{}a]")
     ),
     ("a b", "(?x)[ a]", _RE, "R b", 1),
     ("a#b", "(?x)[#a]", _RE, "a#b", 0),

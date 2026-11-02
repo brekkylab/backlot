@@ -366,7 +366,14 @@ _JAVA_FLAGS = regex.compile(r"\(\?([idmsuxU]*)(?:-([idmsuxU]*))?([:)])")
 _JAVA_NAMED = regex.compile(r"\(\?<([a-zA-Z][a-zA-Z0-9]*)>")
 _JAVA_COUNT = regex.compile(r"\{\d+(?:,\d*)?\}")
 _JAVA_OCTAL = regex.compile(r"[0-3][0-7]{2}|[0-7]{1,2}")
-_JAVA_HEX = {"x": regex.compile(r"[0-9a-fA-F]{2}"), "u": regex.compile(r"[0-9a-fA-F]{4}")}
+# Measured: `\x{}`, `\x{zz}`, `\x{+41}` and `\x{110000}` matched nothing, `\x{10FFFF}` and
+# `\x{0041}` compiled, and `\uD83D\uDE00` matched an emoji that `\uD83D` alone missed.
+_JAVA_HEX = {
+    "x": regex.compile(r"[0-9a-fA-F]{2}"),
+    "u": regex.compile(r"[0-9a-fA-F]{4}"),
+    "{": regex.compile(r"\{([0-9a-fA-F]+)\}"),
+}
+_JAVA_LOW = regex.compile(r"\\u([dD][c-fC-F][0-9a-fA-F]{2})")
 
 
 def _java_property(name: str, ascii_classes: bool) -> str | None:
@@ -449,17 +456,22 @@ def _java_pattern(java: str, match_case: bool) -> str | None:
                 out.append(literal(chr(int(digits[0], 8))))
                 i = digits.end()
             elif e == "x" and java[i : i + 1] == "{":
-                end = java.find("}", i)
-                if end < 0:
+                digits = _JAVA_HEX["{"].match(java, i)
+                if not digits or int(digits[1], 16) > 0x10FFFF:
                     return None
-                out.append(literal(chr(int(java[i + 1 : end], 16))))
-                i = end + 1
+                out.append(literal(chr(int(digits[1], 16))))
+                i = digits.end()
             elif e in "xu":
                 digits = _JAVA_HEX[e].match(java, i)
                 if not digits:
                     return None
-                out.append(literal(chr(int(digits[0], 16))))
+                code = int(digits[0], 16)
                 i = digits.end()
+                low = _JAVA_LOW.match(java, i) if 0xD800 <= code < 0xDC00 else None
+                if low:
+                    code = 0x10000 + (code - 0xD800) * 0x400 + int(low[1], 16) - 0xDC00
+                    i = low.end()
+                out.append(literal(chr(code)))
             elif e == "c" and i < len(java):
                 out.append(literal(chr(ord(java[i]) ^ 64)))
                 i += 1

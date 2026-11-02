@@ -279,8 +279,6 @@ def _inclusive(request: Request) -> bool:
     return _flag(request, "inclusive")
 
 
-# What a `conversations.history` or `conversations.replies` cursor holds: `next_ts:` and the
-# microseconds of the next message to serve (measured 2026-10-23 and 2026-10-29).
 _NEXT_TS = re.compile(rb"next_ts:([^:]*)")
 _NEXT_TS_DIGITS = re.compile(rb"\s*([+-]?[0-9]+)")
 _INT64 = 1 << 63
@@ -322,8 +320,8 @@ def _wrapped(n: int) -> int:
 
 
 def _cursor_at(ts: str) -> str:
-    """The cursor that names ``ts`` for :func:`_next_ts`, as real writes one: the ts without its
-    dot (`next_ts:1790153866825689`)."""
+    """The cursor that names ``ts`` for :func:`_next_ts`, as real writes one (measured 2026-10-23):
+    the ts without its dot (`next_ts:1790153866825689`)."""
     return base64.b64encode(f"next_ts:{_us(ts)}".encode()).decode()
 
 
@@ -1574,17 +1572,11 @@ async def conversations_history(request: Request):
     inclusive = _inclusive(request)
     after = None if lo is None else (_us(lo), inclusive)
     before = None if hi is None else (_us(hi), inclusive)
-    # A cursor names the next message to serve and takes the place of the bound the pages walk
-    # from, the other one still applying. Measured against slack.com/api on 2026-10-29 on the same
-    # channel: a cursor naming message 200 served 200 199 198 beside `latest` at 150, 202 201 200
-    # beside `oldest` at 250, and 200 down to 196 beside `oldest` at 195 and `latest` at 250, and
-    # one naming no message served from the next one there is. In a private channel, a message
-    # posted between two pages left the second page where it was, and a cursor naming a message
-    # since deleted served from the next one. The bound a cursor makes is the one just past the
-    # message it names, in 64-bit arithmetic that wraps: `next_ts:-1` makes it 0, which is no
-    # bound, and served the newest page beside `latest` at 150; 2**63 - 1 wraps to the least value
-    # and served nothing, as -2, -1000000 and -2**63 did; and walking forward, -2**63 wraps the
-    # other way and served nothing, where -2**63 + 1 served from the first message.
+    # A cursor names the next message to serve and replaces the bound the pages walk from; the
+    # other bound still applies. Its bound is the one just past that message, in 64-bit arithmetic
+    # that wraps. Measured against slack.com/api on 2026-10-29: walking back, `next_ts:-1` made it
+    # 0, which is no bound, and 2**63 - 1 wrapped to the least value and served nothing; walking
+    # forward, -2**63 wrapped to the greatest and served nothing.
     if at and from_oldest:
         after = (_wrapped(at - 1), False)
     elif at:
@@ -1668,7 +1660,8 @@ async def conversations_replies(request: Request):
     if not ts:
         return _err("thread_not_found")
     # Resolve the ts against ALL messages in the channel, not just roots: a client that got its ts
-    # from a search hit will often pass a REPLY's ts, which real answers with that reply alone.
+    # from a search hit will often pass a REPLY's ts.
+    #
     # Fast path: a ts's integer part IS the row's created_ts (see the importer's `_slack_ts`), so
     # narrow to that second instead of loading the whole channel (eng-ml is ~340k rows → ~4s).
     # The full scan stays as a fallback for a row with no created_ts, which that query cannot

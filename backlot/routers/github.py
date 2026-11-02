@@ -146,30 +146,40 @@ _LONG_LINE_PAGE = (
 )
 
 
+#: An escape of a letter, a digit, `-`, `.`, `_` or `~`, in either case of hex, which real's path
+#: 414 counts as the one character (:func:`_refuse_a_long_line_or_path`).
+_UNRESERVED_ESCAPE = re.compile(rb"%(?:2[DEde]|3[0-9]|[46][1-9A-Fa-f]|[57][0-9Aa]|5[Ff]|7[Ee])")
+
+
 async def _refuse_a_long_line_or_path(request: Request) -> None:
     """414 a request line of 8,192 bytes or more before its LF with :data:`_LONG_LINE_PAGE`, and
-    then a path of 4,097 characters or more once decoded with an empty body, on every route but
+    then a path of 4,097 characters or more with an empty body, on every route but
     :data:`_SERVED_HOWEVER_LONG`. Both count from after `/github`, which real never receives; the
     line is counted as `<method> <target> HTTP/1.1` and its CR, the target as sent but for a `?`
-    with nothing after it, which the scope does not hold. A bad token, and no credential on a route
+    with nothing after it, which the scope does not hold; the path as sent but for each
+    :data:`_UNRESERVED_ESCAPE`, which is one character. A bad token, and no credential on a route
     :func:`_refuse_an_anonymous_caller` names, is answered ahead of both, and an unsupported
     `X-GitHub-Api-Version` after them.
 
     Measured against api.github.com on 2026-10-29 with a cache-buster on each request, on each of
     the 34 routes here with the path filled by each of its parameters in turn and with a long query;
-    ``tests/test_github.py::_LONG_TARGET_ROWS`` holds the cases. Real frames the path's empty 414
-    with `Transfer-Encoding: chunked` where a token came and with `Content-Length: 0` where none
-    did; it is the second here."""
+    ``tests/test_github.py::_LONG_TARGET_ROWS`` holds the cases. The escapes were measured on
+    2026-11-02, each of `%00` to `%FF` in upper and in lower hex 100 times in an `issues/{number}`
+    path of 4,096 and 4,097 characters counted each way: the 66 bytes above drew the 404 and then
+    the 414 counted as one, each other byte but `%00` counted as sent, and so did the two escapes
+    of `é`. Real frames the path's empty 414 with `Transfer-Encoding: chunked` where a token came
+    and with `Content-Length: 0` where none did; it is the second here."""
     if request.scope["route"].path in _SERVED_HOWEVER_LONG:
         return
     method = "HEAD" if getattr(request.state, "answering_head", False) else request.method
     query = request.scope["query_string"]
-    target = request.scope["raw_path"][len(router.prefix) :] + (b"?" + query if query else b"")
+    path = request.scope["raw_path"][len(router.prefix) :]
+    target = path + (b"?" + query if query else b"")
     if len(method) + len(target) + len(" HTTP/1.1\r") + 1 >= 8_192:
         exc = HTTPException(status_code=414, headers={"Content-Type": "text/html"})
         exc.github_body = _LONG_LINE_PAGE
         raise exc
-    if len(request.scope["path"]) - len(router.prefix) >= 4_097:
+    if len(_UNRESERVED_ESCAPE.sub(b"x", path)) >= 4_097:
         exc = HTTPException(status_code=414)
         exc.github_body = b""
         raise exc

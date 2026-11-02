@@ -11,8 +11,9 @@ import base64
 import hashlib
 import json
 import re
+import string
 import time
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 
 import pytest
 import yaml
@@ -4791,20 +4792,17 @@ _TARGET_JSON_414 = (
 )
 
 #: A request whose `{pad}` is filled with `1`s to ``length`` characters after `/github`, counted on
-#: the path decoded or on the target as sent; who sends it; and the answer: a status, or one of the
-#: three 414s (``backlot.routers.github._refuse_a_long_line_or_path``,
+#: the path as real counts it (:func:`_as_real_counts_a_path`) or on the target as sent; who sends
+#: it; and the answer: a status, or one of the three 414s
+#: (``backlot.routers.github._refuse_a_long_line_or_path``,
 #: ``backlot.main.answer_a_github_request_target_past_its_bound``).
 _LONG_TARGET_ROWS = [
     ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_096, "admin", 404),
     ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_097, "admin", "path"),
-    ("GET", "/repos/{org}/gateway/issues/" + "%31" * 1_000 + "{pad}", "path", 4_096, "admin", 404),
-    (
-        "GET",
-        "/repos/{org}/gateway/issues/" + "%31" * 1_000 + "{pad}",
-        "path",
-        4_097,
-        "admin",
-        "path",
+    *(
+        ("GET", "/repos/{org}/gateway/issues/" + escape * 100 + "{pad}", "path", n, "admin", a)
+        for escape in ("%31", "%7e", "%20", "%25", "%C3%A9", "%c3%a9")
+        for n, a in ((4_096, 404), (4_097, "path"))
     ),
     ("GET", "/repos/{org}/{pad}", "path", 4_097, "admin", "path"),
     ("GET", "/repos/{org}/gateway/pulls/{pad}", "path", 4_097, "admin", 404),
@@ -4837,6 +4835,18 @@ _LONG_TARGET_ROWS = [
 ]
 
 
+def _as_real_counts_a_path(target: str) -> int:
+    """The length real's path 414 reads in ``target``'s path: an escape of a letter, a digit, `-`,
+    `.`, `_` or `~` is one character, any other escape the three sent."""
+    path = target.partition("?")[0]
+    unreserved = string.ascii_letters + string.digits + "-._~"
+    return len(
+        re.sub(
+            r"%([0-9A-Fa-f]{2})", lambda m: "x" if chr(int(m[1], 16)) in unreserved else m[0], path
+        )
+    )
+
+
 @pytest.mark.parametrize("method, target, counted, length, sender, answer", _LONG_TARGET_ROWS)
 def test_github_a_long_path_or_target_is_answered_as_real_answers_it(
     gh_client, gh_admin_h, gh_org, method, target, counted, length, sender, answer
@@ -4844,7 +4854,7 @@ def test_github_a_long_path_or_target_is_answered_as_real_answers_it(
     c, _ = gh_client
     target = target.replace("{org}", gh_org)
     filled = target.replace("{pad}", "")
-    have = len(unquote(filled.partition("?")[0])) if counted == "path" else len(filled)
+    have = _as_real_counts_a_path(filled) if counted == "path" else len(filled)
     target = target.replace("{pad}", "1" * (length - have))
     headers = {
         "admin": gh_admin_h,

@@ -30,6 +30,9 @@ import yaml
 # (which inherit this environment) sends usage telemetry. tests/test_telemetry.py turns it back on
 # for its own app, with the export pointed somewhere local.
 os.environ["BACKLOT_TELEMETRY"] = "0"
+# A test file sends Fireflies far more than the 30 a minute a Free key's budget allows; the tests of
+# `backlot.routers.fireflies.Budget` turn its refusal back on where they pin it.
+os.environ["BACKLOT_FIREFLIES_ENFORCE_RATE_LIMITS"] = "false"
 
 import backlot
 from backlot import store

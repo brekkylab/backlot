@@ -347,20 +347,49 @@ def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
 
 
 # A request to Linear or Fireflies that Cloudflare answers itself, `{key}` standing for the vendor's
-# own spelling of the admin token, and the status, media type, length, `Connection` and body of the
-# answer, as `backlot.main.refuse_cloudflares_methods_on_linear_and_fireflies` and the
-# repeated-header middleware it names record them. The last three rows are the control: one header
-# reaches the vendor, and a path that only starts with the vendor's name is not the vendor's.
+# own spelling of the admin token, and the status, headers and body of the answer, as
+# `backlot.main.refuse_cloudflares_methods_on_linear_and_fireflies`, the repeated-header middleware
+# it names, `backlot.main.refuse_a_path_cloudflare_refuses_on_linear_and_fireflies` and
+# `backlot.main.refuse_a_cut_escape_on_linear_and_fireflies` record them, or by each vendor where
+# they part. The rows answered with a status alone are the control: one header reaches the vendor,
+# a path that only starts with the vendor's name is not the vendor's, with a broken escape in it or
+# without, a broken escape in the query string is not one in the path, and a `..` that ends the
+# path is passed on to the vendor.
 _TYPENAME = b'{"query":"{ __typename }"}'
 _CLOUDFLARE = 400
 _PAGE = (
     b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
     b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
 )
-_TWICE = (_CLOUDFLARE, "text/html", "155", "close", _PAGE % ((b"400 Bad Request",) * 2))
-_NOT_ALLOWED = (405, "text/html", "155", "close", _PAGE % ((b"405 Not Allowed",) * 2))
-_ERROR_1045 = (400, "text/plain; charset=UTF-8", "17", None, b"error code: 1045\n")
-_PURGED = (400, "text/html; charset=UTF-8", "155", None, _PAGE % ((b"400 Bad Request",) * 2))
+_PRIVATE = {
+    "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, post-check=0, "
+    "pre-check=0",
+    "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+    "referrer-policy": "same-origin",
+    "x-frame-options": "SAMEORIGIN",
+}
+_NOT_PRIVATE = dict.fromkeys(_PRIVATE)
+
+
+def _answer(status, media_type, length, connection, private, body):
+    headers = {"content-type": media_type, "content-length": length, "connection": connection}
+    return status, headers | (_PRIVATE if private else _NOT_PRIVATE), body
+
+
+_BAD_REQUEST = _answer(
+    _CLOUDFLARE, "text/html", "155", "close", False, _PAGE % ((b"400 Bad Request",) * 2)
+)
+_NOT_ALLOWED = _answer(405, "text/html", "155", "close", False, _PAGE % ((b"405 Not Allowed",) * 2))
+_ERROR_1045 = _answer(400, "text/plain; charset=UTF-8", "17", None, True, b"error code: 1045\n")
+_PURGED = _answer(
+    400, "text/html; charset=UTF-8", "155", None, True, _PAGE % ((b"400 Bad Request",) * 2)
+)
+_CUT = {
+    vendor: _answer(
+        400, "text/html; charset=UTF-8", length, None, True, _PAGE % ((b"400 Bad Request",) * 2)
+    )
+    for vendor, length in (("linear", None), ("fireflies", "155"))
+}
 
 
 def _auth(*values: str) -> tuple:
@@ -369,37 +398,79 @@ def _auth(*values: str) -> tuple:
 
 _ETAG_TWICE = (("If-None-Match", '"x"'),) * 2
 _CLOUDFLARE_FIRST = [
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}", "{key}"), _TWICE, id="two keys"),
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}", "nope"), _TWICE, id="a key, nope"),
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("nope", "{key}"), _TWICE, id="nope, a key"),
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}", ""), _TWICE, id="a key, empty"),
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("", ""), _TWICE, id="two empty"),
-    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}") * 3, _TWICE, id="three keys"),
-    pytest.param("POST", "/graphql", b"", _auth("{key}", "nope"), _TWICE, id="no bytes"),
-    pytest.param("POST", "/graphql", b"{", _auth("{key}", "nope"), _TWICE, id="{"),
-    pytest.param("POST", "/graphql", None, _auth("{key}", "nope"), _TWICE, id="past the limit"),
-    pytest.param("GET", "/graphql", b"", _auth("{key}", "nope"), _TWICE, id="GET"),
-    pytest.param("HEAD", "/graphql", b"", _auth("{key}", "nope"), _TWICE, id="HEAD"),
-    pytest.param("POST", "/nosuch", _TYPENAME, _auth("{key}", "nope"), _TWICE, id="another path"),
-    pytest.param("POST", "", _TYPENAME, _auth("{key}", "nope"), _TWICE, id="the root"),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", "{key}"), _BAD_REQUEST, id="two keys"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="a key, nope"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("nope", "{key}"), _BAD_REQUEST, id="nope, a key"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", ""), _BAD_REQUEST, id="a key, empty"
+    ),
+    pytest.param("POST", "/graphql", _TYPENAME, _auth("", ""), _BAD_REQUEST, id="two empty"),
+    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}") * 3, _BAD_REQUEST, id="three keys"),
+    pytest.param("POST", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="no bytes"),
+    pytest.param("POST", "/graphql", b"{", _auth("{key}", "nope"), _BAD_REQUEST, id="{"),
+    pytest.param(
+        "POST", "/graphql", None, _auth("{key}", "nope"), _BAD_REQUEST, id="past the limit"
+    ),
+    pytest.param("GET", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="GET"),
+    pytest.param("HEAD", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="HEAD"),
+    pytest.param(
+        "POST", "/nosuch", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="another path"
+    ),
+    pytest.param("POST", "", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="the root"),
     *(
         pytest.param(m, path, b"", _auth("{key}"), answer, id=f"{m} {path or '/'}")
         for m, answer in (("TRACE", _NOT_ALLOWED), ("CONNECT", _ERROR_1045), ("PURGE", _PURGED))
-        for path in ("/graphql/", "/nosuch", "")
+        for path in ("/graphql/", "/nosuch", "", "/a%2")
     ),
     *(
-        pytest.param(m, "/graphql", b"", _auth("{key}", "{key}"), _TWICE, id=f"{m}, two keys")
+        pytest.param(m, "/graphql", b"", _auth("{key}", "{key}"), _BAD_REQUEST, id=f"{m}, two keys")
         for m in ("CONNECT", "PURGE")
     ),
     *(
         pytest.param(
-            m, "/graphql", b"", (*_auth("{key}"), *_ETAG_TWICE), _TWICE, id=f"{m}, ETag twice"
+            m, "/graphql", b"", (*_auth("{key}"), *_ETAG_TWICE), _BAD_REQUEST, id=f"{m}, ETag twice"
         )
         for m in ("TRACE", "CONNECT", "PURGE")
+    ),
+    pytest.param("POST", "/a%2", _TYPENAME, _auth("{key}"), _CUT, id="%2 at the end"),
+    pytest.param("POST", "/nosucha%b", b"{}", (), _CUT, id="% before b"),
+    pytest.param("POST", "/graphql%", _TYPENAME, (), _CUT, id="% at the end"),
+    pytest.param("HEAD", "/a%2", b"", (), _CUT, id="HEAD, %2 at the end"),
+    pytest.param(
+        "POST", "/a%2", _TYPENAME, _auth("{key}", "{key}"), _BAD_REQUEST, id="%2, two keys"
+    ),
+    pytest.param("POST", "/a%2?x=1", _TYPENAME, (), _BAD_REQUEST, id="%2 before a query"),
+    pytest.param("POST", "/a%2/", _TYPENAME, (), _BAD_REQUEST, id="%2 before a slash"),
+    pytest.param("POST", "/a%zz/b%2", _TYPENAME, (), _BAD_REQUEST, id="%zz before a %2 at the end"),
+    pytest.param(
+        "POST", "/%2e%2e/a%2", _TYPENAME, (), _BAD_REQUEST, id="%2 at the end past the root"
+    ),
+    pytest.param("POST", "/graphql%zz", _TYPENAME, (), _BAD_REQUEST, id="%zz"),
+    *(
+        pytest.param(m, p, b"", (), _BAD_REQUEST, id=f"{m} {p}")
+        for m in ("TRACE", "CONNECT", "PURGE")
+        for p in ("/a%zz", "/a%00b", "/%2e%2e/graphql")
+    ),
+    *(
+        pytest.param("POST", p, _TYPENAME, _auth("{key}"), _BAD_REQUEST, id=f"POST {p}")
+        for p in ("/%2e%2e/graphql", "/..%2Fgraphql", "/x//%2e%2e/%2e%2e/graphql", "/%2e%2e/")
     ),
     pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}"), 200, id="one key"),
     pytest.param("POST", "x/graphql", _TYPENAME, _auth("{key}", "nope"), 404, id="a longer name"),
     pytest.param("TRACE", "x/graphql", b"", _auth("{key}"), 404, id="TRACE, a longer name"),
+    pytest.param("POST", "x/a%zz", _TYPENAME, _auth("{key}"), 404, id="%zz under a longer name"),
+    pytest.param("POST", "x/a%2", _TYPENAME, _auth("{key}"), 404, id="%2 under a longer name"),
+    pytest.param("POST", "/graphql?a=%zz", _TYPENAME, _auth("{key}"), 200, id="%zz in the query"),
+    pytest.param("POST", "/graphql?a=%2", _TYPENAME, _auth("{key}"), 200, id="%2 in the query"),
+    pytest.param(
+        "POST", "/%2e%2e", _TYPENAME, _auth("{key}"), {"linear": 404, "fireflies": 400}, id="/.."
+    ),
 ]
 
 
@@ -410,6 +481,8 @@ def test_cloudflare_answers_ahead_of_linear_and_fireflies(client, tokens_yaml, v
     answered, expected = {}, {}
     for row in _CLOUDFLARE_FIRST:
         method, path, body, sent, answer = row.values
+        if isinstance(answer, dict):
+            answer = answer[vendor]
         if body is None:
             body = padded_query({"linear": 10 * 2**20, "fireflies": 2**20}[vendor] + 1)
         headers = [("Content-Type", "application/json")]
@@ -429,14 +502,9 @@ def test_cloudflare_answers_ahead_of_linear_and_fireflies(client, tokens_yaml, v
                 {"data": {"__typename": "Query"}} if answer == 200 else None,
             )
             continue
-        answered[row.id] = (
-            r.status_code,
-            r.headers.get("content-type"),
-            r.headers.get("content-length"),
-            r.headers.get("connection"),
-            r.content,
-        )
-        expected[row.id] = (*answer[:4], b"" if method == "HEAD" else answer[4])
+        status, named, page = answer
+        answered[row.id] = (r.status_code, {name: r.headers.get(name) for name in named}, r.content)
+        expected[row.id] = (status, named, b"" if method == "HEAD" else page)
     assert answered == expected
 
 

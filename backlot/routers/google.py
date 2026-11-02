@@ -1,7 +1,7 @@
 """Google APIs: Gmail (``/gmail/v1``), Drive (``/drive/v3``), and the Workspace editor APIs — Docs
 (``/docs/v1``, in `routers.google_docs`), Sheets (``/sheets/v4``, in `routers.google_sheets`),
-Slides (``/slides/v1``) — for clients that read native docs structurally instead of via Drive
-export.
+Slides (``/slides/v1``) — for clients that read a Doc, Sheet or Slide deck structurally instead
+of via Drive export.
 
 Client base-URL override: point the Gmail client at ``http://<host>/gmail`` and the
 Drive client at ``http://<host>/drive`` (google-api-python-client ``api_endpoint``).
@@ -18,7 +18,9 @@ import json
 import quopri
 import re
 import string
+import time
 import xml.parsers.expat
+from collections.abc import Callable
 from contextvars import ContextVar
 from email.parser import BytesParser
 from email.utils import formataddr, getaddresses
@@ -36,6 +38,7 @@ from starlette.routing import Match
 from backlot import (
     auth,
     collation,
+    gdocs,
     gsheets,
     protojson,
     store,
@@ -155,7 +158,7 @@ class _BatchOuter(NamedTuple):
 # part reaches see what `batch` set.
 _BATCH_OUTER: ContextVar[_BatchOuter | None] = ContextVar("google_batch_outer", default=None)
 # The service account an admin/service caller stands for, which `_require` sets: what it creates
-# is its own (`routers.google_sheets._sheets_creator`, `_drive_owned_by`).
+# is its own (`_editor_creator`, `_drive_owned_by`).
 _ADMIN_OWNER: ContextVar[str | None] = ContextVar("google_admin_owner", default=None)
 
 
@@ -3820,9 +3823,16 @@ _DRIVE_EXPORT_FORMATS = {
     ],
 }
 
+# The formats a Doc exports to that are rendered from its body.
+_DOCS_TEXT_EXPORTS = {
+    "text/plain": gdocs.plain_text,
+    "text/markdown": gdocs.markdown,
+    "text/x-markdown": gdocs.markdown,
+}
+
 # Source type -> the native types Drive can convert it into on upload. Google's map is longer;
-# this is the part that covers every format Backlot's own corpus contains (native docs, Office
-# files, PDFs, delimited text, images), so a client's lookup for a real file resolves.
+# this is the part that covers every format Backlot's own corpus contains (native editor files,
+# Office files, PDFs, delimited text, images), so a client's lookup for a real file resolves.
 _DRIVE_IMPORT_FORMATS = {
     "application/pdf": [DRIVE_DOC_MIME],
     "application/rtf": [DRIVE_DOC_MIME],
@@ -4269,7 +4279,8 @@ async def drive_files_export(file_id: str, request: Request):
     target = requested.casefold()
     if target not in {f.casefold() for f in _DRIVE_EXPORT_FORMATS.get(native[0], ())}:
         raise gerr.unsupported_conversion()
-    # honor the requested target format; CSV/TSV serve the cells, others prefix the title.
+    # A Doc's text formats are rendered from its body (`gdocs.plain_text`, `gdocs.markdown`); CSV
+    # and TSV serve a spreadsheet's cells, and every other format the title and `content`.
     #
     # CSV needs no branch for either kind of document: a document that STATES a grid has its
     # `content` derived from the first sheet's CSV at import, and one that does not has the text it
@@ -4282,6 +4293,11 @@ async def drive_files_export(file_id: str, request: Request):
         if stored:
             grid = json.loads(stored[0]["grid"])
             return Response(gsheets.to_tsv(grid), headers={"content-type": requested})
+    render = _DOCS_TEXT_EXPORTS.get(target) if native[0] == DRIVE_DOC_MIME else None
+    if render is not None:
+        stored = store.gdrive_doc_body_for(conn, file_id)
+        content = stored if stored is not None else gdocs.from_text(row["content"])
+        return Response(render(content), headers={"content-type": requested})
     plain = target in ("text/csv", "text/tab-separated-values")
     body = row["content"] if plain else f"{row['title']}\n\n{row['content']}"
     return Response(body, headers={"content-type": requested})
@@ -4338,7 +4354,7 @@ async def drive_files_permissions(file_id: str, request: Request):
 
 # --- Google Workspace editors read APIs (Docs / Sheets / Slides) ------------------
 #
-# Drive `files.export` renders a native doc to text, but editor-aware clients (e.g. mirage)
+# Drive `files.export` renders a native editor file to text, but editor-aware clients (mirage)
 # read the *structured* document straight from the Docs/Sheets/Slides APIs instead. These
 # endpoints serve the corpus content shaped into each API's read response, keyed on the same
 # Drive file id, and enforce the same ACL as Drive.
@@ -4416,6 +4432,114 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     raise gerr.invalid_argument(EDITOR_INVALID_ARG)
 
 
+def _editor_writable(request: Request, row) -> None:
+    """Refuse a write to a file the caller may only read. Only its owner may write a file here (the
+    admin's being what its service account created, `_drive_owned_by`): every grant makes a reader
+    (`_drive_file_capabilities`), and a reader's write is the 403 ``The caller does not have
+    permission``, measured on Sheets' update, batchUpdate, clear, batchClear and append."""
+    if not _drive_owned_by(row["author_email"], _require(request).email):
+        raise gerr.permission_denied()
+
+
+def _editor_creator(request: Request, caller: Caller) -> str:
+    """Who a created file belongs to: the caller, or for the admin/service token the service
+    account, which on real owns what it creates."""
+    return caller.email or _service_email(request)
+
+
+def _editor_new_file_id(conn, owner: str) -> str:
+    """A Drive file id no stored file has, minted as the importer mints one (`synth.gdrive_file_id`)
+    from a seed only this creation has."""
+    while True:
+        file_id = synth.gdrive_file_id(f"created:{owner}:{time.time_ns()}")
+        if store.gdrive_by_id(conn, file_id) is None:
+            return file_id
+
+
+def _editor_store(
+    conn, file_id: str, owner: str, title: str, subtype: str, content: str, parts=None
+) -> None:
+    """A created editor file, stored at its owner's My Drive root and granted to the owner alone:
+    measured on `spreadsheets.create` 2026-10-26 and `documents.create` 2026-10-28, the Drive file's
+    ``parents`` is the creator's root, listed under ``'root' in parents``, its one permission the
+    owner's, and anyone else is answered as for a file nobody shared with them."""
+    now = int(time.time())
+    store.insert_document(
+        conn,
+        "google_drive",
+        {
+            "id": file_id,
+            "folder": _DRIVE_ROOT_FOLDER,
+            "author_email": owner,
+            "title": title,
+            "content": content,
+            "subtype": subtype,
+            "parents": json.dumps([synth.drive_root_id(owner)]),
+            "created_ts": now,
+            "updated_ts": now,
+            "trashed": 0,
+            "title_fold": store.drive_name_fold(title),
+        },
+        grants=[("user", owner)],
+        parts=parts,
+    )
+
+
+class _EditorRefused(Exception):
+    """One request of an editor's `batchUpdate` refused, worded as real words what follows
+    ``Invalid requests[i].<kind>: ``."""
+
+
+def _editor_requests(requests: list[dict]) -> list[dict]:
+    """An editor `batchUpdate`'s requests, refused when there are none or one sets no kind: measured
+    2026-10-29 on Docs, ``Must specify at least one request.`` and then
+    ``Invalid requests[i]: No request set.``, both ahead of a revision the write is pinned to and
+    of any other request's refusal."""
+    if not requests:
+        raise gerr.invalid_argument("Must specify at least one request.")
+    for i, req in enumerate(requests):
+        if not req:
+            raise gerr.invalid_argument(f"Invalid requests[{i}]: No request set.")
+    return requests
+
+
+def _editor_batch(
+    requests: list[dict],
+    kinds: dict[str, str],
+    apply: dict[str, Callable[[dict], tuple[dict, bool]]],
+    product: str,
+) -> list[dict]:
+    """The replies to an editor's `batchUpdate` requests, each checked and applied in order by
+    ``apply``'s function for its kind, which answers its reply and whether real fails on it once
+    every request has been read. ``kinds`` gives each kind's JSON name by the proto name a read
+    body carries it under, and ``product`` names the editor.
+
+    Every request sets a kind (`_editor_requests`). Measured 2026-10-29 on Docs'
+    `documents.batchUpdate`: a refusal names its request and kind and only the first is answered,
+    and a 500 a request leads to comes after the refusals of every request behind it. A kind
+    ``apply`` lacks is refused naming itself. The caller keeps what the functions changed only
+    once this returns."""
+    replies = []
+    fails = False
+    for i, req in enumerate(requests):
+        kind = next(iter(req))
+        name = kinds[kind]
+        try:
+            if kind not in apply:
+                raise _EditorRefused(
+                    f"'{name}' is not served by Backlot: real {product} applies it, and nothing "
+                    "here keeps what it changes."
+                )
+            reply, failed = apply[kind](req[kind])
+        except _EditorRefused as refused:
+            raise gerr.invalid_argument(f"Invalid requests[{i}].{name}: {refused}") from None
+        replies.append(reply)
+        fails |= failed
+    if fails:
+        raise gerr.internal_error()
+    return replies
+
+
 def _enum_error(field: str, enum: protojson.Enum, value: str) -> str:
     """Google's own wording for a bad read enum — it names the proto field and message type, e.g.
     ``Invalid value at 'major_dimension' (…sheets.v4.Dimension), "DIAGONAL"``. Measured, because a
@@ -4476,6 +4600,69 @@ def _google_types() -> dict[str, dict[str, str | None]]:
 
 
 _GOOGLE_FIELDS = _google_types()
+
+# A request body that is a whole editor message (`spreadsheets.create`'s `Spreadsheet`,
+# `documents.create`'s `Document`) is read with a `protojson.Message` generated from the message the
+# `google_drive` baseline records from the discovery document (`backlot diff` keeps it current), so
+# a name the vendor's message lacks is refused where real refuses it and every name it has is read.
+_GOOGLE_RECORDED = json.loads((_BASELINES / "google_drive.json").read_text(encoding="utf-8"))[
+    "types"
+]
+_PJ_SCALAR_KINDS = {"integer": "int32", "number": "double", "boolean": "bool", "string": "string"}
+
+
+def _pj_messages(
+    package: str, enums: dict, shapes: dict | None = None, nested: dict | None = None
+) -> Callable[[str], protojson.Message]:
+    """A reader of the recorded messages of one editor API: ``package`` is its type URL prefix
+    (``type.googleapis.com/google.apps.sheets.v4``), ``enums`` the `protojson.Enum` of each enum
+    field by ``(message, field)``, the baseline recording an enum as `string`, and ``shapes`` what
+    else the baseline cannot say of a field, by the same key: the `protojson.Field` members
+    (``kind``, ``wrapper``, ``oneof``) that differ from what its recorded type gives, or for a map
+    the ``key`` kind, `string` when unsaid. Nor does it say which message is declared inside
+    another, which ``nested`` spells for its type URL by name."""
+    built: dict[str, protojson.Message] = {}
+    shapes, nested = shapes or {}, nested or {}
+
+    def field(name: str, json_name: str, proto: str, type_: str) -> protojson.Field:
+        repeated = type_.startswith("[")
+        inner = type_[1:-1] if repeated else type_
+        enum = enums.get((name, json_name))
+        shape = shapes.get((name, json_name), {})
+        if enum is not None:
+            made = protojson.Field(json_name, proto, "enum", enum=enum, repeated=repeated)
+        elif type_.startswith("map<string, "):
+            value = field("", json_name, proto, type_[len("map<string, ") : -1])
+            key = shape.get("key", "string")
+            entry = protojson.map_entry(built[name].type_url, json_name, value, key)
+            return protojson.Field(
+                json_name, proto, "message", message=entry, repeated=True, map=True
+            )
+        elif inner in _GOOGLE_RECORDED:
+            made = protojson.Field(
+                json_name, proto, "message", message=message(inner), repeated=repeated
+            )
+        elif inner in _PJ_SCALAR_KINDS:
+            made = protojson.Field(json_name, proto, _PJ_SCALAR_KINDS[inner], repeated=repeated)
+        else:  # a bare JSON value: kept as sent
+            made = protojson.Field(json_name, proto, "any")
+        return made._replace(**shape)
+
+    def message(name: str) -> protojson.Message:
+        if name in built:
+            return built[name]
+        fields: list[protojson.Field] = []
+        # kept before its fields are read, for a message that holds itself: a Docs table cell
+        # holds the structural elements that hold the table
+        built[name] = protojson.Message(
+            f"{package}.{nested.get(name, name.split('.', 1)[1])}", fields
+        )
+        for json_name, member in _GOOGLE_RECORDED[name].get("fields", {}).items():
+            proto = re.sub(r"(?<!^)(?=[A-Z])", "_", json_name).lower()
+            fields.append(field(name, json_name, proto, member.get("type", "any")))
+        return built[name]
+
+    return message
 
 
 def _gmask_paths(mask: str) -> tuple[list[tuple[str, ...]], str]:
@@ -4730,7 +4917,7 @@ _NATIVE = {
 
 
 def _native(row):
-    """Return the _NATIVE tuple for this doc, or None if it's a binary (non-native) file."""
+    """Return the _NATIVE tuple for this file, or None if it's a binary (non-native) file."""
     return _NATIVE.get(row["subtype"] or store.DRIVE_DEFAULT_SUBTYPE)
 
 
@@ -4820,6 +5007,16 @@ def _drive_file_capabilities(is_folder: bool, owned: bool) -> dict:
     }
 
 
+def _drive_version(row) -> str:
+    """A file's ``version``: 2 once it states a modification, and 1 for a blank Doc -- measured
+    2026-10-29, a Doc `documents.create` made was version 1 at 2, 20, 60 and 150 seconds, and a
+    Doc converted from a text upload was 4 as the upload answered and 6 three seconds on."""
+    if not row["updated_ts"]:
+        return "1"
+    blank = row["subtype"] == "document" and not row["content"]
+    return "1" if blank else "2"
+
+
 def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) -> dict:
     """The served ``files`` resource for a stored row. ``me`` is the caller's email, which decides
     the per-caller ``ownedByMe`` (None for the admin/service token, which owns nothing)."""
@@ -4828,6 +5025,8 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     author = row["author_email"]
     native = _native(row)
     mime = _drive_mime(row)
+    # a Doc `documents.batchUpdate` wrote serves the `size` and `version` it stored
+    written = store.gdrive_doc_written(conn, row["id"]) if mime == DRIVE_DOC_MIME else None
     if native is not None:
         seg = native[1]
         view = (
@@ -4835,10 +5034,10 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
             if seg
             else f"https://drive.google.com/drive/folders/{row['id']}"
         )
-    else:  # binary file (PDF, image, office doc)
+    else:  # binary file (PDF, image, Office file)
         view = f"https://drive.google.com/file/d/{row['id']}/view"
     is_folder = row["subtype"] == "folder"
-    # "shared" = visible to anyone besides the owner — true for org/group/multi-reader docs.
+    # "shared" = visible to anyone besides the owner — true for org/group/multi-reader files.
     # In a list the caller passes it in (batch-computed); for a single get, look it up here.
     if shared is None:
         shared = bool(store.gdrive_shared(conn, [row["id"]]))
@@ -4862,7 +5061,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "ownedByMe": owned,
         **_modified_by_me(author, me, modified),
         **_shared_with_me_time(author, me, created),
-        "version": str(2 if row["updated_ts"] else 1),
+        "version": str(written[1]) if written else _drive_version(row),
         "spaces": ["drive"],
         "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
@@ -4876,7 +5075,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     # both measured 2026-10-21/25. A native file's `size` never goes under
     # `store.DRIVE_NATIVE_MIN_BYTES`, where the measurement is recorded.
     if not is_folder:
-        nbytes = store.drive_file_bytes(row["subtype"], row["content"])
+        nbytes = written[0] if written else store.drive_file_bytes(row["subtype"], row["content"])
         f["size"] = str(nbytes)
         f["quotaBytesUsed"] = str(nbytes)
     if native is not None and not is_folder:
@@ -5033,6 +5232,35 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
     if refused:
         raise gerr.invalid_field_values([v for group in refused.values() for v in group])
     return parsed
+
+
+async def _query_and_body(
+    request: Request, readers: dict, message: protojson.Message, *, field: str | None = None
+) -> tuple[dict, dict]:
+    """``(query, body)`` of an editor POST or PUT: each typed query parameter in ``readers`` by
+    its last repeat (``None`` when absent), and the body read into ``message``.
+
+    A query parameter names a field of the request, and real reads both. Measured 2026-10-27 on
+    Sheets' update, append, batchUpdate, batchUpdateByDataFilter, batchGetByDataFilter and
+    getByDataFilter, and 2026-10-28 on Docs' create: with both refused, one 400 lists the body's
+    refusals and then the query's -- ``Invalid value at 'data.values' (…), "x"`` then
+    ``Invalid value at 'include_values_in_response' (TYPE_BOOL), "on"`` -- an unknown body name
+    among them; with both set, the query's value is the one used. A body refused as a whole
+    (`protojson.whole`) is answered alone."""
+    raw = await request.body()
+    try:
+        parsed = _typed_query(request, readers)
+    except gerr.GoogleError as exc:
+        refused = gerr.field_violations(exc)
+        try:
+            protojson.read(raw, message, field=field)
+        except gerr.GoogleError as body_exc:
+            if protojson.whole(body_exc):
+                raise body_exc from None
+            raise gerr.invalid_field_values(gerr.field_violations(body_exc) + refused) from None
+        raise
+    query = {name: (values[-1] if values else None) for name, values in parsed.items()}
+    return query, protojson.read(raw, message, field=field)
 
 
 # The typed booleans each Drive method Backlot serves declares, as the proto field its refusal

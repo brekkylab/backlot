@@ -5,25 +5,16 @@ The titles are taken, or edited, from ones pull requests here were opened with.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
 
+from tests._helpers import script_module
+
 REPO = Path(__file__).resolve().parent.parent
 
 
-def _gate():
-    """The script as a module, loaded the way `_gen_docs` in `tests/test_skills.py` is."""
-    spec = importlib.util.spec_from_file_location(
-        "scripts.pr_gate", REPO / "scripts" / "pr_gate.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-gate = _gate()
+gate = script_module("pr_gate")
 
 TEMPLATE = (REPO / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
 FILLED = TEMPLATE + "\nCloses #412.\n"

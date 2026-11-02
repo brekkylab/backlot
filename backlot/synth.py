@@ -89,10 +89,13 @@ def rfc3339_millis(ts: int) -> str:
 
 
 def rfc3339_minute(ts: int) -> str:
-    """e.g. 2024-04-05T17:00:00.000Z for a moment at 17:00:51 (Notion page/block/data source).
+    """e.g. 2024-04-05T17:00:00.000Z for a moment at 17:00:51 (Notion page/block/data source/comment).
 
     Measured against api.notion.com on 2026-10-20: a page, a row, their blocks and a data source
-    answer the minute, with zero seconds and milliseconds, whatever second the corpus stores."""
+    answer the minute, with zero seconds and milliseconds, whatever second the corpus stores. A
+    comment answers its minute in `created_time` and `last_edited_time` alike: one posted at
+    18:23:52 on 2026-10-28 was listed at 18:23:00.000Z under 2022-06-28, 2025-09-03 and
+    2026-03-11."""
     return utc_datetime(int(ts) // 60 * 60).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 

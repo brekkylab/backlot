@@ -39,18 +39,18 @@ Object mapping: a Notion *page* is one doc (``subtype='page'``); a *database* is
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import re
 import uuid
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, published, store, synth
+from backlot import auth, express_http, published, store, synth
 from backlot import notion_request as req
+from backlot.graphql import apollo_http
 from backlot.graphql import body as request_body
 from backlot.openapi import qp
 
@@ -112,32 +112,12 @@ CORS_HEADERS = {
 }
 
 
-def weak_etag(body: bytes) -> str:
-    """The `ETag` real puts on a Notion answer: a weak tag holding the body's length in bytes, in
-    hex, and the first 27 characters of the base64 SHA-1 of the body, the form Express's `etag`
-    writes.
-
-    Measured against api.notion.com on 2026-10-27: the 200s of `users/me`, `pages/{id}` and
-    `search`, the 401s (the OAuth client endpoints' among them), the 400s, a 404 and a 503, and
-    the body reader's 413 and 415 each carried one over its own body, a `HEAD` the tag of the
-    body its `GET` answers; the root's 302 and a CORS preflight's 204 carried none. The
-    computation was checked against the bodies kept whole.
-    """
-    digest = base64.b64encode(hashlib.sha1(body).digest()).decode("ascii")[:27]
-    return f'W/"{len(body):x}-{digest}"'
-
-
-#: ``fresh``'s test for `no-cache` among the comma-separated parts of a request's `Cache-Control`,
-#: its `\s` written out as the characters JavaScript's `\s` holds in latin-1, which a header value
-#: is read as.
-_NO_CACHE = re.compile(r"(?:^|,)[\t\n\v\f\r \xa0]*?no-cache[\t\n\v\f\r \xa0]*?(?:,|$)")
-
-
 def not_modified(request: Request, status_code: int) -> bool:
     """Whether real answers ``request`` with a 304 in place of its answer of ``status_code``: the
     freshness check Express runs on a `GET`'s 2xx (``fresh`` 0.5.2), which finds `If-None-Match: *`
-    fresh unless a non-empty `If-Modified-Since`, or `no-cache` in `Cache-Control`, goes with it. A
-    `HEAD` reaches this as the `GET` it is rewritten to.
+    fresh unless a non-empty `If-Modified-Since`, or `no-cache` in `Cache-Control`
+    (:data:`backlot.express_http.NO_CACHE`), goes with it. A `HEAD` reaches this as the `GET` it is
+    rewritten to.
 
     Measured against api.notion.com on 2026-10-27: `If-None-Match: *`, with or without spaces or a
     tab around it, drew a 304 on a `GET` and a `HEAD` of `users/me`, and on a `GET` of `users`,
@@ -156,7 +136,7 @@ def not_modified(request: Request, status_code: int) -> bool:
         return False
     if request.headers.get("if-modified-since", "").strip(" \t"):
         return False
-    if _NO_CACHE.search(", ".join(request.headers.getlist("cache-control"))):
+    if express_http.NO_CACHE.search(", ".join(request.headers.getlist("cache-control"))):
         return False
     return request.headers.get("if-none-match", "").strip(" \t") == "*"
 
@@ -1449,8 +1429,8 @@ async def list_comments(request: Request):
             "id": synth.notion_id(c["id"]),
             "parent": {"type": "page_id", "page_id": parent_id},
             "discussion_id": synth.notion_id(f"disc:{row['id']}"),
-            "created_time": synth.rfc3339(c["created_ts"]),
-            "last_edited_time": synth.rfc3339(c["created_ts"]),
+            "created_time": synth.rfc3339_minute(c["created_ts"]),
+            "last_edited_time": synth.rfc3339_minute(c["created_ts"]),
             "created_by": _user_obj(conn, c["author_email"]),
             "rich_text": synth.notion_rich_text(c["body"]),
         }
@@ -1507,6 +1487,47 @@ def _invalid_client(request: Request) -> JSONResponse:
 ROUTED_METHODS = ("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS")
 
 
+_MARKETING_SITE = "https://www.notion.so"
+#: The types `res.redirect` writes its body in, in the order it asks `req.accepts` for them.
+_REDIRECTS = ("text/plain", "text/html")
+
+
+@unmatched_router.api_route("", methods=list(ROUTED_METHODS))
+@unmatched_router.api_route("/", methods=list(ROUTED_METHODS))
+async def root(request: Request) -> Response:
+    """Real's root: Express's `res.redirect` to its marketing site, a 302 with `vary: Accept` and
+    the request's id. Its body is in the type `Accept` takes first of `text/plain` and `text/html`,
+    `text/plain` where there is no `Accept`, and empty with no `content-type` where `Accept` takes
+    neither.
+
+    Measured against api.notion.com on 2026-10-31: `/` and `/?x=1` answered that 302 to `HEAD` and
+    each of the six methods, with a token and a `Notion-Version` and with neither, and to a
+    preflight; a body the body reader refuses was its refusal instead.
+
+    Real's Express is read off its answers; Notion does not say which it runs. Its HTML body carries
+    the link Express 4.19.2 writes and 4.20.0 leaves out, and each `Accept` sent on 2026-10-31 drew
+    the type `negotiator` 0.6.3 picks, which 4.19.2 asks through `accepts` 1.3.8 and whose
+    `mediaType` reads `Accept` as 1.0.0's does (``apollo_http.preferred_media_type``)."""
+    accept = apollo_http.headers_seen(request.headers.raw).get("accept")
+    media_type = apollo_http.preferred_media_type(accept, _REDIRECTS) if accept else _REDIRECTS[0]
+    body = ""
+    if media_type == "text/plain":
+        body = f"Found. Redirecting to {_MARKETING_SITE}"
+    elif media_type == "text/html":
+        body = f'<p>Found. Redirecting to <a href="{_MARKETING_SITE}">{_MARKETING_SITE}</a></p>'
+    request_id = _request_id(request)
+    return Response(
+        body,
+        status_code=302,
+        headers={
+            "location": _MARKETING_SITE,
+            "vary": "Accept",
+            "x-notion-request-id": request_id,
+        },
+        media_type=media_type,
+    )
+
+
 @unmatched_router.api_route("/{rest:path}", methods=list(ROUTED_METHODS))
 async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     """Notion's answer for a URL no route here serves: the credential's refusal where Notion
@@ -1542,13 +1563,11 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     before routing, so a slashed spelling of a served path does not land here
     (`backlot.main.serve_a_slashed_notion_path_as_the_path_without_it`).
 
-    Not reproduced here: real's own root, `/`, a 302 to the marketing site, a page Backlot does not
-    serve; a path in another case, which real routes as the lower-case one (`GET /V1/USERS/ME`
-    and `PATCH /v1/Pages/{id}` were each the format's 401 on 2026-09-28) and this answers the URL's
-    400; and a method outside the six that the front door passes on to the API, `PROPFIND` and
-    `QUERY` among them, which real answered the URL's 400 on 2026-09-28 and this answers the
-    framework's 405. `/notion/` gets the URL's 400, and `/notion` is Starlette's 307 to it — the one
-    path under `/notion` where its slash redirect fires, since this route matches every other.
+    Not reproduced here: a path in another case, which real routes as the lower-case one
+    (`GET /V1/USERS/ME` and `PATCH /v1/Pages/{id}` were each the format's 401 on 2026-09-28) and
+    this answers the URL's 400; and a method outside the six that the front door passes on to the
+    API, `PROPFIND` and `QUERY` among them, which real answered the URL's 400 on 2026-09-28 and the
+    root's redirect on 2026-10-31 (:func:`root`), and this answers the framework's 405.
     """
     path = request.url.path.removeprefix("/notion")
     if published.includes(_PUBLISHED_NOT_SERVED, request.method, path):

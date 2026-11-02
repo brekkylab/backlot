@@ -1042,39 +1042,49 @@ def test_confluence_content_answers_a_space_key_and_a_type_as_real_does(client, 
 
 
 @pytest.mark.parametrize(
-    "caller, space, want",
+    "caller, space, want, written",
     [
-        ("admin", "handbook", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "{handbook}", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "people-ops", ["Compensation Bands 2026"]),
-        ("admin", "{people-ops}", ["Compensation Bands 2026"]),
-        ("admin", "{handbook lower}", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "HANDBOOK", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "people-opſ", 404),
-        ("admin", "", ["Compensation Bands 2026", "Engineering Handbook", "On-call Runbook"]),
-        ("ava@acme.com", "handbook", ["Engineering Handbook", "On-call Runbook"]),
-        ("ava@acme.com", "people-ops", 404),
-        ("ava@acme.com", "{people-ops}", 404),
-        ("ava@acme.com", "{people-ops lower}", 404),
-        ("ava@acme.com", "PEOPLE-OPS", 404),
+        ("admin", "handbook", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("admin", "{handbook}", ["Engineering Handbook", "On-call Runbook"], "{handbook}"),
+        ("admin", "people-ops", ["Compensation Bands 2026"], "people-ops"),
+        ("admin", "{people-ops}", ["Compensation Bands 2026"], "{people-ops}"),
+        ("admin", "{handbook lower}", ["Engineering Handbook", "On-call Runbook"], "{handbook}"),
+        ("admin", "HANDBOOK", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("admin", "people-opſ", 404, "people-opſ"),
+        ("admin", "", ["Compensation Bands 2026", "Engineering Handbook", "On-call Runbook"], ""),
+        ("ava@acme.com", "handbook", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("ava@acme.com", "people-ops", 404, "people-ops"),
+        ("ava@acme.com", "{people-ops}", 404, "{people-ops}"),
+        ("ava@acme.com", "{people-ops lower}", 404, "{people-ops lower}"),
+        ("ava@acme.com", "PEOPLE-OPS", 404, "PEOPLE-OPS"),
+        ("hana@acme.com", "{people-ops lower}", ["Compensation Bands 2026"], "{people-ops}"),
+        ("hana@acme.com", "PEOPLE-OPS", ["Compensation Bands 2026"], "people-ops"),
     ],
 )
-def test_confluence_content_filtered_by_space_key(client, admin_h, tokens, caller, space, want):
+def test_confluence_content_filtered_by_space_key(
+    client, admin_h, tokens, caller, space, want, written
+):
     """A space key narrows the listing to that space under both spellings `_space_container_for_key`
     resolves, the name and `{the synthesized key}`, each in upper or lower case (`people-opſ` is no
     spelling of `people-ops`), and an empty one narrows nothing. ava reaches no page in
     `people-ops`, so to her its key is the 404 a key naming nothing gets (`_content_space`), in
-    upper or lower case."""
+    upper or lower case, where hana, who does, gets its page. ``written`` is the value the CQL
+    search writes back in ``cqlQuery`` for `space.key` with the same value and caller
+    (`_cql_space_key_spelling`)."""
     from backlot import synth
 
     keys = {n: synth.confluence_space_key(n) for n in ("handbook", "people-ops")}
-    key = space.format(**keys, **{f"{n} lower": k.lower() for n, k in keys.items()})
+    spell = {**keys, **{f"{n} lower": k.lower() for n, k in keys.items()}}
+    key = space.format(**spell)
     h = admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens[caller]}"}
     r = client.get("/atlassian/wiki/rest/api/content", headers=h, params={"spaceKey": key})
     if want == 404:
         assert (r.status_code, r.json()) == _no_space(key)
     else:
         assert sorted(x["title"] for x in r.json()["results"]) == want
+    cql = {"cql": f'space.key = "{key}"'}
+    found = client.get("/atlassian/wiki/rest/api/search", headers=h, params=cql)
+    assert found.json()["cqlQuery"] == f"space.key = '{written.format(**spell)}'"
 
 
 def test_confluence_space_names_that_differ_only_in_case_stay_two_spaces(tmp_path):
@@ -1393,6 +1403,10 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + f' and space.key in ("{eng}", NOSUCHKEY)', {"Guide", "Child", "Grand"}),
         (three + " and space.key = NOSUCHKEY", set()),
         (three + " and space.key in (NOSUCHKEY, NOPEKEY)", set()),
+        (three + f' and space.key = "{eng[0]}\\"{eng[1:]}"', {"Guide", "Child", "Grand"}),
+        (three + f" and space.key = '{eng[0]}\"{eng[1:]}'", {"Guide", "Child", "Grand"}),
+        (three + f' and space.key = "{eng[0]}\\{eng[1:]}"', set()),
+        (three + f' and space.key = "{eng[0]}\\"\\"{eng[1:]}"', set()),
         (three + " and id not in ({Guide})", {"Child", "Grand"}),
         (three + " and (id={Guide} or id not in ({Guide},{Child}))", {"Guide", "Grand"}),
         # beside a field this route does not read, which held for each of the three
@@ -1891,62 +1905,86 @@ def test_confluence_single_space_get(client, admin_h):
         }, sent
 
 
-def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(client, admin_h):
-    """Pins the bytes ``errors.atlassian._confluence_json`` writes, on the raw body, since
-    ``.json()`` decodes both writings to one string."""
-    emoji = "%F0%9F%98%80"  # U+1F600
-    for path, status, written in (
-        (
-            f"/atlassian/wiki/rest/api/space/{emoji}",
-            404,
-            rb'No space found with key : \uD83D\uDE00\""',
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content?spaceKey={emoji}",
-            404,
-            rb"No space with key : \uD83D\uDE00",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content?limit={emoji}",
-            400,
-            rb"For input string: \"\uD83D\uDE00\"",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content/229469/label?prefix={emoji}",
-            400,
-            rb"label prefixes :[\uD83D\uDE00]",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content?type={emoji}",
-            501,
-            rb"Cannot find custom content type : \uD83D\uDE00",
-        ),
-        (
-            "/atlassian/wiki/rest/api/content/%F0%9D%9F%93/child/page",
-            400,
-            rb"for value [\uD835\uDFD3]",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/search?cql=title~%22{emoji}x%22&limit=1",
-            200,
-            rb'\"\uD83D\uDE00x\""',
-        ),
-        (
-            f"/atlassian/wiki/rest/api/search?cql=label%3D%22{emoji}x%22",
-            200,
-            rb'\"\uD83D\uDE00x\""',
-        ),
-    ):
-        answer = client.get(path, headers=admin_h)
-        assert answer.status_code == status, path
-        assert written in answer.content, path
-        # and never the character's own UTF-8 bytes
-        assert "\U0001f600".encode() not in answer.content, path
-        assert "\U0001d7d3".encode() not in answer.content, path
-    # A character inside the plane is written as its UTF-8 bytes, unescaped.
-    inside = client.get("/atlassian/wiki/rest/api/space/%C3%A9", headers=admin_h)
-    assert inside.status_code == 404
-    assert "é".encode() in inside.content
+def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(tmp_path):
+    """Pins the bytes of Confluence's answers on the raw body, since ``.json()`` decodes both
+    writings to one string."""
+    e1, e2 = "\U0001f600", "\U0001d7d3"
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": f"eng{e1}",
+        "title": f"probe {e1}{e2} é",
+        "content": f"body {e1}{e2}",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "labels": [f"probe{e1}"],
+        "comments": [
+            {
+                "content": f"comment {e1}{e2}",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-10-02T09:00:00Z",
+            }
+        ],
+        "created": "2026-10-01T09:00:00Z",
+    }
+    child = {**page, "doc_id": "c", "parent": "p", "title": f"child {e1}{e2}", "comments": []}
+    settings = tiny_corpus(tmp_path, [page, child])
+    with client_for(settings) as client:
+        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        rows = client.get(f"{api}/content?expand=space", headers=admin_h).json()["results"]
+        ids = {r["title"]: r["id"] for r in rows}
+        pid, cid, key = ids[page["title"]], ids[child["title"]], rows[0]["space"]["key"]
+        emoji = "%F0%9F%98%80"  # U+1F600
+        title = rb"probe \uD83D\uDE00\uD835\uDFD3 " + "é".encode()
+        child_title = rb"child \uD83D\uDE00\uD835\uDFD3"
+        space_name = rb'"name":"eng\uD83D\uDE00"'
+        for path, status, written in (
+            (f"{api}/space/{emoji}", 404, rb'No space found with key : \uD83D\uDE00\""'),
+            (f"{api}/content?spaceKey={emoji}", 404, rb"No space with key : \uD83D\uDE00"),
+            (f"{api}/content?limit={emoji}", 400, rb"For input string: \"\uD83D\uDE00\""),
+            (f"{api}/content/{pid}/label?prefix={emoji}", 400, rb"label prefixes :[\uD83D\uDE00]"),
+            (
+                f"{api}/content?type={emoji}",
+                501,
+                rb"Cannot find custom content type : \uD83D\uDE00",
+            ),
+            (f"{api}/content/%F0%9D%9F%93/child/page", 400, rb"for value [\uD835\uDFD3]"),
+            (f"{api}/search?cql=title~%22{emoji}x%22&limit=1", 200, rb'\"\uD83D\uDE00x\""'),
+            (f"{api}/search?cql=label%3D%22{emoji}x%22", 200, rb'\"\uD83D\uDE00x\""'),
+            (f"{api}/search?cql=title~%22probe%22", 200, title),
+            (f"{api}/content/{pid}", 200, title),
+            (f"{api}/content/{pid}?expand=body.storage", 200, rb"body \uD83D\uDE00\uD835\uDFD3"),
+            (f"{api}/content/{cid}", 200, child_title),
+            (f"{api}/content?spaceKey={key}", 200, title),
+            (f"{api}/content?title={quote(page['title'])}&spaceKey={key}", 200, title),
+            (f"{api}/content/{pid}/child/page", 200, child_title),
+            (
+                f"{api}/content/{pid}/child/comment?expand=body.storage",
+                200,
+                rb"comment \uD83D\uDE00\uD835\uDFD3",
+            ),
+            (f"{api}/content/{pid}/label", 200, rb'"name":"probe\uD83D\uDE00"'),
+            (f"{api}/space/{key}", 200, space_name),
+            (f"{api}/space", 200, space_name),
+            (f"{api}/content/{pid}?expand=space", 200, space_name),
+            (f"/atlassian//wiki/rest/api/content/{pid}", 200, title),
+        ):
+            answer = client.get(path, headers=admin_h)
+            assert answer.status_code == status, path
+            assert written in answer.content, path
+            # and never the character's own UTF-8 bytes
+            assert e1.encode() not in answer.content, path
+            assert e2.encode() not in answer.content, path
+            assert answer.headers["content-length"] == str(len(answer.content)), path
+            head = client.head(path, headers=admin_h)
+            if "content-length" in head.headers:
+                assert head.headers["content-length"] == str(len(answer.content)), path
+        assert client.get(f"{api}/content/{pid}", headers=admin_h).json()["title"] == page["title"]
+        # A character inside the plane is written as its UTF-8 bytes, unescaped.
+        inside = client.get(f"{api}/space/%C3%A9", headers=admin_h)
+        assert inside.status_code == 404
+        assert "é".encode() in inside.content
 
 
 # --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------
@@ -6997,7 +7035,7 @@ _OPERATION_REFUSALS = [
             ),
         )
     ),
-    # the charset Tomcat reads first (``errors.atlassian.refuse_a_confluence_media_type``)
+    # the charset Tomcat reads first (``errors.atlassian.refuse_a_confluence_charset``)
     *(
         ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, status, body)
         for ctype, status, body in (
@@ -7407,6 +7445,72 @@ def _operation_refusal(client, method, vendor_path, authorization, ctype, status
 
 def test_confluence_answers_an_operation_before_it_runs(client):
     assert _failures(_operation_refusal, _OPERATION_REFUSALS, client) == {}
+
+
+_EMPTY_CHARSET = "text/plain;charset="
+
+#: The status each kind of path answers a `Content-Type` whose charset Java cannot name
+#: (``errors.atlassian.refuse_a_confluence_charset``) with: the empty 500 wherever Confluence's
+#: Spring application answers (``atlassian.refuse_a_spring_confluence_charset``), whichever the
+#: method and with a credential or without one, and real's own answer where it does not fail the
+#: request. A ``ctype`` of two values sends the header twice, and ``"admin"`` is the admin's token.
+_SPRING_CHARSET = [
+    # a path a route serves, under its method, `HEAD`, `OPTIONS` and one it does not take
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "admin", 500),
+    ("HEAD", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("DELETE", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("POST", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/space/ENG", _EMPTY_CHARSET, None, 500),
+    ("PUT", "/wiki/rest/api/space/ENG", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/content", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/content", _EMPTY_CHARSET, "admin", 500),
+    ("POST", "/wiki/rest/api/content/1/label", _EMPTY_CHARSET, None, 500),
+    # a path an operation is published at and no route serves
+    ("GET", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    ("DELETE", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    # the product's page
+    ("GET", "/wiki/rest/api/space/ENG/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/", _EMPTY_CHARSET, None, 500),
+    # the header twice: a blank value left out, the others read joined
+    ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, ""), None, 500),
+    ("GET", "/wiki/rest/api/space", ("\t", _EMPTY_CHARSET), None, 500),
+    ("GET", "/wiki/rest/api/space", ('text/plain;charset="utf-8', '"'), None, 500),
+    ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, "text/plain"), None, 403),
+    ("GET", "/wiki/rest/api/space", ("\xa0", _EMPTY_CHARSET), None, 403),
+    # where real does not fail the request
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("POST", "/wiki/rest/api/space/abc123/permission", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api/nosuch", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/", _EMPTY_CHARSET, None, 400),
+    ("OPTIONS", "/wiki/rest/api/audit", _EMPTY_CHARSET, None, 400),
+    ("POST", "/wiki/rest/api/content/archive", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/longtask", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/nope", _EMPTY_CHARSET, None, 302),
+    ("GET", "/wiki/rest/api/search?cql=type%3Dpage", "application/json;charset=_x", None, 403),
+    ("PATCH", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 405),
+    ("GET", "/rest/api/3/serverInfo", _EMPTY_CHARSET, None, 200),
+]
+
+
+def _spring_charset(client, admin_h, method, vendor_path, ctype, authorization, status):
+    ctypes = (ctype,) if isinstance(ctype, str) else ctype
+    headers = [("Content-Type", value) for value in ctypes]
+    if authorization is not None:
+        token = admin_h["Authorization"] if authorization == "admin" else authorization
+        headers.append(("Authorization", token))
+    body = b"x" if method in ("POST", "PUT") else None
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
+    assert r.status_code == status, r.text[:200]
+    if status == 500:
+        assert (r.content, r.headers.get("content-type")) == (b"", None)
+
+
+def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client, admin_h):
+    assert _failures(_spring_charset, _SPRING_CHARSET, client, admin_h) == {}
 
 
 @pytest.mark.parametrize(
@@ -8835,6 +8939,21 @@ _CQL_PARSE_ROWS = [
             ("SPACE.KEY=handbook", "SPACE.KEY = 'handbook'"),
             ('space.key != "handbook"', "space.key != 'handbook'"),
             ('space.key in ("handbook", handbook)', "space.key in ( 'handbook' , 'handbook' )"),
+            ('space.key="HANDBOOK"', "space.key = 'handbook'"),
+            ('space.key="han\\"dbook"', "space.key = 'handbook'"),
+            ('space.key="a\\"b"', "space.key = 'ab'"),
+            ("space.key='han\"dbook'", "space.key = 'handbook'"),
+            ('space.key="a\\"b\\"c"', "space.key = 'a\"b\"c'"),
+            ('space.key="a\\"b\\"c\\"d"', "space.key = 'a\"b\"cd'"),
+            ('space.key="han\\"\\"dbook"', "space.key = 'han\"\"dbook'"),
+            ('space.key="han\\dbook"', "space.key = 'han\\dbook'"),
+            ('space.key="poe6f613"', "space.key = 'POE6F613'"),
+            ('space.key != "HANDBOOK"', "space.key != 'handbook'"),
+            (
+                'space.key in ("HANDBOOK", "a\\"b")',
+                "space.key in ( 'handbook' , 'ab' )",
+            ),
+            ('space = "han\\"dbook"', 'space = "han\\"dbook"'),
             ('space = "handbook"', 'space = "handbook"'),
             ('created>now("-1d")', 'created > now ( "-1d" )'),
             ("created>startOfDay()", "created > startOfDay ( )"),
@@ -8858,6 +8977,20 @@ _CQL_PARSE_ROWS = [
         for cql, message in [
             ('"', _CQL_NOT_PARSED),
             ("   ", _CQL_NOT_PARSED),
+            ('space.key = "E\'NG"', _CQL_NOT_PARSED),
+            ("space.key = 'K\\'EY'", _CQL_NOT_PARSED),
+            ('space.key in ("a\'b", handbook)', _CQL_NOT_PARSED),
+            ('space.key = "a\'b" order by created', _CQL_NOT_PARSED),
+            ('space.key = "a\'b" b', "Unrecognised clause at : b"),
+            ('(space.key = "a\'b"', "Missing closing parenthesis near field (()"),
+            (
+                'space.key in ("a\'b"',
+                "Expecting a value for operator 'in' after field 'space.key' but got '('",
+            ),
+            (
+                'space.key = "a\'b" and title~',
+                "Expecting a value for operator '~' after field 'title'",
+            ),
             ("\U0001f600", _CQL_NOT_PARSED),
             ("type=page and", _CQL_NOT_PARSED),
             ("type=page or", _CQL_NOT_PARSED),

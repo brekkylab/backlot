@@ -99,11 +99,10 @@ _GOOGLE_HOSTS = ("/docs", "/sheets", "/slides")
 
 
 def front_door(path: str) -> tuple[str, str] | None:
-    """The front door a request for ``path`` reaches, `github`, `slack`, `google`, `atlassian`,
-    `cloudflare` (in front of Notion, HubSpot, Linear and Fireflies), `s3` or `graph`, and the
-    part of ``path`` real never receives: the prefix the vendor is mounted under, or on Google the
-    segment naming the host (:data:`_GOOGLE_HOSTS`), empty on Drive and Gmail, whose paths are
-    real's own, and on `/batch`. ``None`` for a path of Backlot's own."""
+    """The front door a request for ``path`` reaches, named as :data:`_MOUNTS` names it or
+    `google`, and the part of ``path`` real never receives: the prefix the vendor is mounted under,
+    or on Google the segment naming the host (:data:`_GOOGLE_HOSTS`), empty on Drive and Gmail,
+    whose paths are real's own, and on `/batch`. ``None`` for a path of Backlot's own."""
     for prefix, door in _MOUNTS:
         if _under(path, prefix):
             return door, prefix
@@ -243,6 +242,58 @@ def _google(path_kinds: list[str], query_kinds: list[str]) -> Response | None:
     return None
 
 
+#: A `%` with fewer than two hex digits after it.
+_BROKEN_ESCAPE = re.compile(rb"%(?![0-9A-Fa-f]{2})")
+#: A `%` that ends the path with one hex digit after it or none.
+_CUT_ESCAPE = re.compile(rb"%[0-9A-Fa-f]?\Z")
+
+
+def cut_escape(path: bytes, query: bytes | None) -> bool:
+    """Whether ``path``, the vendor's path as sent, with ``query`` after a `?` or ``None`` where
+    none came, is one Cloudflare in front of Linear and Fireflies reads as cut short by the end of
+    the target (:data:`_CUT_ESCAPE`). ``backlot.main.refuse_a_cut_escape_on_linear_and_fireflies``
+    answers it, and :func:`refused_path` each other broken escape."""
+    cut = _CUT_ESCAPE.search(path)
+    return query is None and cut is not None and not _broken(path[: cut.start()])
+
+
+def refused_path(path: bytes, query: bytes | None) -> bool:
+    """Whether Cloudflare in front of Linear and Fireflies refuses ``path`` with ``query`` after it,
+    ``None`` where no `?` came, with :data:`CLOUDFLARE_PAGE`: the path holds a `..` segment that
+    climbs past the root (:func:`_climbs_past_the_root`), which both hosts refused so ahead of a cut
+    escape after it (`/../a%2`, 2026-10-29, UTC), or it holds `%00` or a `%` two hex digits do not
+    follow, but where :func:`cut_escape` holds. The page comes ahead of Cloudflare's answer to a raw
+    byte: on 2026-10-26 (UTC) both hosts drew it for `/a%zz` with a raw `é` before or after it or
+    `\\x01` before it, and for `/a%00` after a raw `é`, and on 2026-10-29 for `/../a` with a raw `é`
+    or a space after it, where a raw `é` alone drew the empty 400."""
+    if _climbs_past_the_root(path):
+        return True
+    return _broken(path) and not cut_escape(path, query)
+
+
+def _broken(path: bytes) -> bool:
+    return b"%00" in path or _BROKEN_ESCAPE.search(path) is not None
+
+
+def _climbs_past_the_root(path: bytes) -> bool:
+    """Whether, once each escape in ``path`` is decoded and each run of slashes is one, a `..`
+    segment with a segment after it has no segment before it to take away. Both hosts refused
+    `/../graphql`, `/x/../../`, `//../graphql`, `/x//../../graphql`, `/./../graphql`,
+    `/%2e%2e/graphql`, `/.%2e/graphql` and `/..%2Fgraphql` on 2026-10-29 (UTC), and passed `/..`,
+    `/x/../..`, `/x/..%2F..` and `/..?x=1` on to the vendor, and `/..\\graphql`, where a backslash
+    is no slash to Cloudflare."""
+    segments = re.sub(rb"/{2,}", b"/", urllib.parse.unquote_to_bytes(path)).split(b"/")[1:]
+    depth = 0
+    for at, segment in enumerate(segments, 1):
+        if segment == b".." and depth == 0 and at < len(segments):
+            return True
+        if segment == b"..":
+            depth = max(depth - 1, 0)
+        elif segment != b".":
+            depth += 1
+    return False
+
+
 def _cloudflare(scope: Scope, path_kinds: list[str], query_kinds: list[str]) -> Response | None:
     """:data:`CLOUDFLARE_PAGE` where a `nul` or a `cr` is anywhere, and where `Authorization` or
     one of the five conditional headers comes more than once
@@ -340,16 +391,33 @@ def _graph(scope: Scope, path_kinds: list[str], query_kinds: list[str]) -> Respo
     target picks the page: :data:`GRAPH_INVALID_URL` for the first two, :data:`GRAPH_BADLY_FORMED`
     for the other three. With none of them, a path whose `high` bytes are not UTF-8 is an empty 400,
     and every other `high` is read as its percent-encoding."""
-    for kind in path_kinds + query_kinds:
-        if kind in ("nul", "control"):
-            return _page(GRAPH_INVALID_URL, "text/html; charset=us-ascii")
-        if kind in ("tab", "cr", "space"):
-            return _page(GRAPH_BADLY_FORMED, "text/html; charset=us-ascii")
+    if (page := _graph_page(path_kinds + query_kinds)) is not None:
+        return _page(page, "text/html; charset=us-ascii")
     try:
         scope[SENT].partition(b"?")[0].decode("utf-8")
     except UnicodeDecodeError:
         return _page(b"", None, close=False)
     return None
+
+
+def _graph_page(kinds: list[str]) -> bytes | None:
+    """Graph's page for a target whose raw bytes are of ``kinds``, in the order they come."""
+    for kind in kinds:
+        if kind in ("nul", "control"):
+            return GRAPH_INVALID_URL
+        if kind in ("tab", "cr", "space"):
+            return GRAPH_BADLY_FORMED
+    return None
+
+
+def _drop_the_cut(scope: Scope) -> None:
+    """Take the `%` that ends the scope's path, and the hex digit after it, off the path, as
+    Cloudflare in front of Linear does where it reads a path with a space in it as its
+    percent-encoding (:func:`_cloudflare`): Express's 404 behind it quoted `/a b%2`, `/a b%` and
+    `/a b%0` as `/a%20b` on 2026-10-29 (UTC)."""
+    cut = _CUT_ESCAPE.search(scope["raw_path"])
+    scope["raw_path"] = scope["raw_path"][: cut.start()]
+    scope["path"] = scope["path"][: cut.start() - cut.end()]
 
 
 def answer(scope: Scope) -> Response | None:
@@ -358,8 +426,8 @@ def answer(scope: Scope) -> Response | None:
 
     Any other path, `/oauth2/token` and `/_meta` among them, gets the 400 uvicorn's own protocol
     answers such a target with."""
-    door = (front_door(scope["path"]) or (None,))[0]
-    sent_path, _, sent_query = scope[SENT].partition(b"?")
+    door, prefix = front_door(scope["path"]) or (None, None)
+    sent_path, mark, sent_query = scope[SENT].partition(b"?")
     in_path, in_query = _kinds(sent_path), _kinds(sent_query)
     if door == "github":
         return _github()
@@ -369,6 +437,15 @@ def answer(scope: Scope) -> Response | None:
         return _google(in_path, in_query)
     if door == "atlassian":
         return _atlassian(scope, in_path, in_query)
+    if door == "cloudflare" and prefix in ("/linear", "/fireflies"):
+        own = b"/" + sent_path.partition(b"/")[2].partition(b"/")[2]
+        query = sent_query if mark else None
+        if refused_path(own, query):
+            return _page(CLOUDFLARE_PAGE, "text/html")
+        refused = _cloudflare(scope, in_path, in_query)
+        if refused is None and cut_escape(own, query):
+            _drop_the_cut(scope)
+        return refused
     if door == "cloudflare":
         return _cloudflare(scope, in_path, in_query)
     if door == "s3":
@@ -376,3 +453,45 @@ def answer(scope: Scope) -> Response | None:
     if door == "graph":
         return _graph(scope, in_path, in_query)
     return _page(b"Invalid HTTP request received.", "text/plain; charset=utf-8")
+
+
+def refused_in_the_line(
+    door: str, line: bytes, ended: bool, ahead: bool
+) -> tuple[str, str, bytes] | None:
+    """The status line, media type and body with which the front door ``door`` (:func:`front_door`'s
+    name) refuses the request line ``line``, the bytes before its LF, ahead of its bound, or
+    ``None``, where the caller sends the bound's page. ``ended`` is whether the LF came, and
+    ``ahead`` whether it came in a piece of the head before the piece the bound is reached in. The
+    target of a line that ended lies between its first space and its last, as :func:`encode_line`
+    reads it, and of one that has not, after its first. Each refusal is the one real gave the same
+    line with a short head.
+
+    Measured on 2026-11-01 (UTC) over raw HTTP/1.1 on TLS, each request cache-busted and its head
+    written at once in pieces of 16,384 bytes, on the paths of ``backlot.head_bounds``'
+    measurement; ``tests/test_head_bounds.py::_REFUSED_LINES`` holds the lines. Every long request
+    the branches below do not refuse drew the bound's page but `/../rest/api/3/myself` on Jira
+    Cloud, which drew the CDN's 400 as it did with a short head, and which is not given here; S3
+    answered each with an empty 400, which its bound answers too."""
+    method, _, rest = line.partition(b" ")
+    target = rest.rpartition(b" ")[0] if ended else rest
+    path, mark, query = target.partition(b"?")
+    kinds = _kinds(path) + _kinds(query)
+    every = set(kinds)
+    bad_request = "HTTP/1.1 400 Bad Request"
+    if door == "github" and kinds:
+        return bad_request, "text/html; charset=utf-8", GITHUB_PAGE
+    if door == "slack" and kinds and ahead:
+        return bad_request, "text/plain", b"Bad Request"
+    if door == "google" and every & {"nul", "control"}:
+        return "HTTP/1.0 400 Bad Request", "text/html; charset=UTF-8", GOOGLE_PAGE_54
+    if door == "graph" and (page := _graph_page(kinds)) is not None:
+        return bad_request, "text/html; charset=us-ascii", page
+    if door == "atlassian" and (every & {"nul", "cr"} or ahead and _broken(path)):
+        raw_path = _RAW.sub(lambda m: b"%%%02X" % m[0][0], path).decode("latin-1")
+        page = errors.atlassian.cdn_bad_request(method.decode("latin-1"), raw_path)
+        return bad_request, "text/html", page.encode()
+    if door == "cloudflare":
+        own = b"/" + path.partition(b"/")[2].partition(b"/")[2]
+        if every & {"nul", "cr"} or ahead and refused_path(own, query if mark else None):
+            return bad_request, "text/html", CLOUDFLARE_PAGE
+    return None

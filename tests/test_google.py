@@ -14742,7 +14742,7 @@ _JS = "text/javascript; charset=UTF-8"
 # The `Content-Encoding` values sent on 2026-10-30 (UTC) with no credential, each as its own header,
 # and whether real answered the 415 or the route's 401: a `GET` on Drive's `about` where the row
 # has no body, and a `POST` on `files` with the row's body.
-_GZIPPED = gzip.compress(b"{}")
+_GZIPPED = gzip.compress(b"{}", mtime=0)
 _CODINGS = [
     (["br"], None, 415),
     (["BR"], None, 415),
@@ -14781,10 +14781,10 @@ _CODINGS = [
     (["gzip"], _GZIPPED[:-4], 401),
     (["gzip"], _GZIPPED[:-8] + b"\x00" * 4 + _GZIPPED[-4:], 401),
     (["gzip"], _GZIPPED + b"\x00", 401),
-    (["gzip"], gzip.compress(b"{") + gzip.compress(b"}"), 401),
+    (["gzip"], gzip.compress(b"{", mtime=0) + gzip.compress(b"}", mtime=0), 401),
     (["gzip"], b"\x1f\x8b", 401),
     (["gzip"], b"\x1f{}", 401),
-    (["gzip"], gzip.compress(b""), 401),
+    (["gzip"], gzip.compress(b"", mtime=0), 401),
     (["gzip"], b"", 401),
     (["identity"], b"{}", 401),
     ([""], b"{}", 401),
@@ -14826,8 +14826,8 @@ _GZIP_READS = [
     (["identity"], _GZIPPED, False),
     ([""], _GZIPPED, False),
     (["gzip"], b"{}", False),
-    (["gzip"], _GZIPPED + gzip.compress(b""), False),
-    (["gzip"], gzip.compress(b"{") + gzip.compress(b"}"), False),
+    (["gzip"], _GZIPPED + gzip.compress(b"", mtime=0), False),
+    (["gzip"], gzip.compress(b"{", mtime=0) + gzip.compress(b"}", mtime=0), False),
     (["gzip"], _GZIPPED + b"\x00", False),
     (["gzip"], _GZIPPED + b"\x1f\x8b\x08" + b"\x00" * 7, False),
     (["gzip"], _GZIPPED[:-8], False),

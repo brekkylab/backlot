@@ -119,7 +119,7 @@
           "items": {
             "$ref": "#/$defs/tab"
           },
-          "description": "The tab's child tabs, in order."
+          "description": "The tab's child tabs, in order; tabs nest three levels deep at most."
         }
       }
     }

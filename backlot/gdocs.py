@@ -180,7 +180,7 @@ def _section_break() -> dict:
 
 def blank_segment(footnote: bool = False) -> list[dict]:
     """A header or footer as `createHeader` and `createFooter` make it, one empty paragraph, or a
-    footnote as `createFootnote` makes it, a space in 10 PT: measured 2026-11-02."""
+    footnote as `createFootnote` makes it (`_FOOTNOTE_TEXT`)."""
     if footnote:
         return [
             _paragraph(
@@ -438,8 +438,9 @@ def indexed(content: list[dict], numbers: dict[str, str] | None = None) -> list[
 
 
 def document_tab(tab: dict) -> dict:
-    """A stored tab as real serves its `documentTab`, and a one-tab Doc its flat members: the body,
-    then the header, footer and footnotes it has, then its styles (measured 2026-11-02)."""
+    """A stored tab as real serves its `documentTab`, and as a Doc's flat members when it is the
+    first tab: the body, then the header, footer and footnotes it has, then its styles (measured
+    2026-11-02)."""
     numbers = footnote_numbers(tab)
     out: dict = {"body": {"content": indexed(tab["body"], numbers)}}
     for kind, key in (

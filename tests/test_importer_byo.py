@@ -6165,6 +6165,29 @@ def test_a_file_that_is_not_a_doc_may_hold_what_insert_text_refuses(tmp_path):
             "icon",
         ),
         ("prose", {"content": None, "tabs": [{"paragraphs": [{"text": "a\nb"}]}]}, "holds none"),
+        (
+            "prose",
+            {
+                "content": None,
+                "tabs": [
+                    {
+                        "paragraphs": [{"text": "a"}],
+                        "tabs": [
+                            {
+                                "paragraphs": [{"text": "b"}],
+                                "tabs": [
+                                    {
+                                        "paragraphs": [{"text": "c"}],
+                                        "tabs": [{"paragraphs": [{"text": "d"}]}],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+            "three levels deep",
+        ),
     ],
 )
 def test_a_structure_a_record_cannot_mean_is_refused(

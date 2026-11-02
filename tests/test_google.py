@@ -17497,6 +17497,11 @@ def _pb(index):
     return {"insertPageBreak": {"location": {"index": index}}}
 
 
+def _add_g() -> dict:
+    """A tab under `wr-tabs`' `Kid`, at `nestingLevel` 2; the first tab a write makes is `$NEW0`."""
+    return {"addDocumentTab": {"tabProperties": {"title": "G", "parentTabId": "$KID"}}}
+
+
 def _upd(props: dict, fields: str | None) -> dict:
     return {
         "updateDocumentTabProperties": {
@@ -18015,6 +18020,18 @@ _TAB_WRITES = [
         [_TABS_START[0], "Second: two", *_TABS_START[2:]],
         None,
     ),
+    # `fields` names trimmed, in any case or `snake_case`, an empty one dropped
+    (
+        [
+            _upd(
+                {"tabId": "$T3", "title": "T", "index": 0, "iconEmoji": "\u2b50"},
+                " TITLE , index,icon_emoji,",
+            )
+        ],
+        ["T \u2b50: zz three", *_TABS_START[:3]],
+        None,
+    ),
+    ([_upd({"tabId": "$T2", "title": "x"}, " , ")], _TABS_START, None),
     (
         [
             _upd(
@@ -18496,6 +18513,11 @@ _DOCS_TAB_REFUSALS = [
             ([{"createHeader": {"type": "DEFAULT"}}], "Default header already exists.", 0),
             ([{"createHeader": {}}], "Header type not specified.", 0),
             (
+                [{"createHeader": {"sectionBreakLocation": {"tabId": "t.nope"}}}],
+                "Cannot apply request to an invalid tab ID.",
+                0,
+            ),
+            (
                 [{"createHeader": {"type": "HEADER_FOOTER_TYPE_UNSPECIFIED"}}],
                 "Header type not specified.",
                 0,
@@ -18611,6 +18633,51 @@ _DOCS_TAB_REFUSALS = [
             ([_pb(-1)], "Index must be greater than or equal to 0.", 0),
         ],
     ),
+    # an index below zero comes before the segment, an index past the end after it
+    *(
+        (
+            [{kind: {where: {"index": -1, "segmentId": "kix.nope"}, **extra}}],
+            400,
+            _tab_refusal(kind, "Index must be greater than or equal to 0."),
+        )
+        for kind, where, extra in [
+            ("insertText", "location", {"text": "x"}),
+            ("createFootnote", "location", {}),
+            ("insertPageBreak", "location", {}),
+        ]
+    ),
+    (
+        [
+            {
+                "deleteContentRange": {
+                    "range": {"startIndex": -1, "endIndex": 3, "segmentId": "kix.nope"}
+                }
+            }
+        ],
+        400,
+        _tab_refusal("deleteContentRange", "Index must be greater than or equal to 0."),
+    ),
+    (
+        [{"deleteContentRange": {"range": {"endIndex": 3, "segmentId": "kix.nope"}}}],
+        400,
+        _tab_refusal("deleteContentRange", "Invalid range: must contain a start and end index"),
+    ),
+    (
+        [
+            {
+                "deleteContentRange": {
+                    "range": {"startIndex": 50, "endIndex": 60, "segmentId": "kix.nope"}
+                }
+            }
+        ],
+        400,
+        _tab_refusal("deleteContentRange", _NO_SEGMENT),
+    ),
+    (
+        [{"insertText": {"location": {"index": -1, "segmentId": "kix.nope"}}}],
+        400,
+        _tab_refusal("insertText", "Insert text requests must specify text to insert."),
+    ),
     (
         [{"createFootnote": {"location": {"index": 1}, "endOfSegmentLocation": {}}}],
         400,
@@ -18625,6 +18692,11 @@ _DOCS_TAB_REFUSALS = [
         "deleteHeader",
         [
             ([{"deleteHeader": {}}], "Header ID can not be empty.", 0),
+            (
+                [{"deleteHeader": {"tabId": "t.nope"}}],
+                "Cannot apply request to an invalid tab ID.",
+                0,
+            ),
             ([{"deleteHeader": {"headerId": "$F"}}], "Header does not exist.", 0),
             (
                 [{"deleteHeader": {"headerId": "$H", "tabId": "t.nope"}}],
@@ -18753,7 +18825,7 @@ _DOCS_TAB_REFUSALS = [
                 "Not a valid emoji input.",
                 0,
             ),
-            # the order: a stated id, the title, the parent, the icon, the index
+            # the order: a stated id, the title, the icon, the parent, its depth, the index
             (
                 [{"addDocumentTab": {"tabProperties": {"tabId": "t.x", "parentTabId": "t.nope"}}}],
                 "Tab ID should not be specified in the properties when adding a tab.",
@@ -18778,6 +18850,51 @@ _DOCS_TAB_REFUSALS = [
                 [{"addDocumentTab": {"tabProperties": {"index": 99, "iconEmoji": "a"}}}],
                 "Not a valid emoji input.",
                 0,
+            ),
+            (
+                [
+                    {
+                        "addDocumentTab": {
+                            "tabProperties": {"parentTabId": "t.nope", "iconEmoji": "a"}
+                        }
+                    }
+                ],
+                "Not a valid emoji input.",
+                0,
+            ),
+            # three levels of tabs at most, a fourth refused before its index
+            (
+                [_add_g(), {"addDocumentTab": {"tabProperties": {"parentTabId": "$NEW0"}}}],
+                "Tab nesting level cannot exceed 3.",
+                1,
+            ),
+            (
+                [
+                    _add_g(),
+                    {"addDocumentTab": {"tabProperties": {"parentTabId": "$NEW0", "index": 5}}},
+                ],
+                "Tab nesting level cannot exceed 3.",
+                1,
+            ),
+            (
+                [
+                    _add_g(),
+                    {
+                        "addDocumentTab": {
+                            "tabProperties": {"parentTabId": "$NEW0", "iconEmoji": "a"}
+                        }
+                    },
+                ],
+                "Not a valid emoji input.",
+                1,
+            ),
+            (
+                [
+                    {"deleteTab": {"tabId": "t.0"}},
+                    {"addDocumentTab": {"tabProperties": {"parentTabId": "t.0"}}},
+                ],
+                'A parent tab with ID "" does not exist.',
+                1,
             ),
         ],
     ),
@@ -18866,6 +18983,64 @@ _DOCS_TAB_REFUSALS = [
                 "Index must be less than or equal to the number of tabs within the specified parent tab.",
                 0,
             ),
+            # `fields` read as real reads it
+            (
+                [_upd({"tabId": "$T2", "title": "x"}, ",")],
+                "At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2", "title": "x"}, "tabProperties.title")],
+                "Invalid field: tab_properties",
+                0,
+            ),
+            ([_upd({"tabId": "$T2", "title": "x"}, "title.x")], "Invalid field: title.x", 0),
+            ([_upd({"tabId": "$T2", "title": "x"}, "*,title")], "Invalid field: *", 0),
+            # a gone `t.0` named as nothing, but for `At tab`
+            (
+                [
+                    {"deleteTab": {"tabId": "t.0"}},
+                    _upd({"tabId": "$T2", "parentTabId": "t.0"}, "parentTabId"),
+                ],
+                'A parent tab with ID "" does not exist.',
+                1,
+            ),
+            (
+                [{"deleteTab": {"tabId": "t.0"}}, _upd({"tabId": "t.0"}, "parentTabId")],
+                "A tab with ID  does not exist.",
+                1,
+            ),
+            (
+                [{"deleteTab": {"tabId": "t.0"}}, _upd({"tabId": "t.0", "title": "x"}, "title")],
+                "At tab with ID t.0 does not exist.",
+                1,
+            ),
+            # the depth of the tab, then an index below zero, itself, its children, their depth
+            (
+                [
+                    _add_g(),
+                    _upd(
+                        {"tabId": "$T3", "parentTabId": "$NEW0", "index": -1}, "parentTabId,index"
+                    ),
+                ],
+                "Tab nesting level cannot exceed 3.",
+                1,
+            ),
+            (
+                [_add_g(), _upd({"tabId": "$NEW0", "parentTabId": "$NEW0"}, "parentTabId")],
+                "Tab nesting level cannot exceed 3.",
+                1,
+            ),
+            (
+                [_upd({"tabId": "$T2", "parentTabId": "$T2", "index": -1}, "parentTabId,index")],
+                "Index must be non-negative.",
+                0,
+            ),
+            (
+                [_add_g(), _upd({"tabId": "$T2", "parentTabId": "$T3"}, "parentTabId")],
+                "Moving this tab will cause child tabs to exceed the tab nesting level. Tab nesting level cannot exceed 3.",
+                1,
+            ),
         ],
     ),
 ]
@@ -18880,13 +19055,14 @@ def _tab_ids(did: str) -> dict[str, str]:
         "$T2": gdocs.tab_id(did, "1"),
         "$KID": gdocs.tab_id(did, "2"),
         "$T3": gdocs.tab_id(did, "3"),
+        "$NEW0": gdocs.tab_id(did, "r1.0"),
     }
 
 
 def _with_tab_ids(value, did: str):
     """``value`` with `wr-tabs`' ids in place of their names, and `$ANY` matching any value."""
     text = json.dumps(value)
-    for name, real in _tab_ids(did).items():
+    for name, real in sorted(_tab_ids(did).items(), key=lambda kv: -len(kv[0])):
         text = text.replace(name, real)
 
     def any_of(v):

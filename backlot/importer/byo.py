@@ -1115,6 +1115,8 @@ def _paragraphs_pairing_errors(rec: dict) -> list[str]:
         if not isinstance(tab, dict):
             continue
         prefix = f"{path}." if path else ""
+        if path.count(".tabs") > 2:
+            msgs.append(f"{path}: real nests tabs three levels deep at most")
         title = tab.get("title")
         if isinstance(title, str):
             if gdocs.utf16_len(title) > 50:

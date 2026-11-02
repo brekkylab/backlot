@@ -1629,10 +1629,9 @@ _GITHUB_TARGET_TOO_LONG = (
 
 @_middleware(lambda scope: _at_or_under(_url_path(scope), ("/github",)))
 async def answer_a_github_request_target_past_its_bound(request: Request, call_next):
-    """414 a `/github` request on any path and any method whose target is 8,192 bytes or more
-    (8,174 on code search), counted as ``backlot.routers.github._refuse_a_long_line_or_path``
-    counts it, with :data:`_GITHUB_TARGET_TOO_LONG` on `application/json; charset=utf-8`, ahead of
-    the route and its refusals, which a shorter target meets.
+    """414 a `/github` request on any path and any method whose target is too long for real, ahead
+    of the route and its refusals, which a shorter target meets. The target is counted as
+    ``backlot.routers.github._refuse_a_long_line_or_path`` counts the request line's.
 
     On api.github.com, 2026-10-29, each request cache-busted: on `/repos/{owner}/{repo}` a `GET`, a
     `HEAD` and a `POST` with a target of 8,192 were this 414, and so were a `GET` on a path no route

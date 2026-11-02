@@ -16,8 +16,12 @@ and none of the front door's other headers (`Server`, `Date`, `Via`, `Cache-Cont
 Bytes are counted as the client sent them but for the prefix a path starts with here and real never
 receives (``backlot.request_target.front_door``): the head real gets is that much shorter. Where the
 path is the prefix alone, real gets `/` in its place, and that byte is counted (Slack's `/`,
-measured on 2026-11-01). The rest of the head is counted as sent, `Host` and all. A path no vendor
-owns has no bound.
+measured on 2026-11-01). The rest of the head is counted as sent, `Host` and all, and so are the
+empty lines ahead of the request line, which httptools skips, but on Slack and Google
+(:attr:`Bound.counts_blank`). With a CRLF there, measured on 2026-11-02 as the bounds below were, a
+request line and headers two bytes short of the bound were refused on GitHub, Graph and S3 and three
+short waited; on Slack and Google, and on Jira Cloud and Notion, whose bound is a line's, a byte
+short waited and the bound's length was refused. A path no vendor owns has no bound.
 
 Measured on 2026-10-29 with each request written to a TLS socket by hand and cache-busted: each sent
 exactly N bytes and then waited for an answer (six seconds, four on api.github.com, which closes a
@@ -92,12 +96,12 @@ class Bound:
 
     def refused(self, line: bytes, ended: bool) -> bytes | None:
         """``backlot.request_target.refused_in_the_line``'s answer to ``line`` at this bound, as
-        :func:`_answer` sends it, ``ended`` where its LF came. ``ahead`` holds where the bound is a
-        line's, which is longer than a :data:`PIECE`, and where a head bound falls in a later piece
-        than the LF, the pieces counted from the head's first byte as a head written at once is
-        cut. Only a head written at once is read so: real reads the pieces a client wrote, and on
-        Slack, with the LF at byte 49,153, a head written in writes of 1,000 or 4,000 bytes drew the
-        line's 400 where one written at once drew the bound's 431 (2026-11-02, twice each)."""
+        :func:`_answer` sends it, ``ended`` where its LF came. ``ahead`` is read off the pieces a
+        head written at once is cut into, from its first byte; a line bound, longer than a
+        :data:`PIECE`, is reached in a later piece than the LF of the line before. Only a head
+        written at once is read so: real reads the pieces a client wrote, and on Slack, with the LF
+        at byte 49,153, a head written in writes of 1,000 or 4,000 bytes drew the line's 400 where
+        one written at once drew the bound's 431 (2026-11-02, twice each)."""
         ahead = ended and (
             self.per_line or (len(line) - self.mount) // PIECE < (self.limit - 1) // PIECE
         )
@@ -163,7 +167,7 @@ _GOOGLE_413 = _answer(
 )
 _S3_400 = _answer("HTTP/1.1 400 Bad Request", None, b"")
 
-#: Each front door's bound but Jira Cloud's, whose page names the request (:func:`bound`).
+#: Each front door's bound but Jira Cloud's (:func:`bound`).
 _BOUNDS = {
     "github": Bound(
         68_552,

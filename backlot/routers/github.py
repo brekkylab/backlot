@@ -138,7 +138,7 @@ _SERVED_HOWEVER_LONG = frozenset(
     }
 )
 
-#: The page real answers a request line of 8,192 bytes with, `text/html` with no charset.
+#: Real's page for a request line too long for it (:func:`_refuse_a_long_line_or_path`).
 _LONG_LINE_PAGE = (
     b"<html>\r\n<head><title>414 Request-URI Too Large</title></head>\r\n<body>\r\n"
     b"<center><h1>414 Request-URI Too Large</h1></center>\r\n<hr><center>nginx</center>\r\n"
@@ -152,23 +152,21 @@ _UNRESERVED_ESCAPE = re.compile(rb"%(?:2[DEde]|3[0-9]|[46][1-9A-Fa-f]|[57][0-9Aa
 
 
 async def _refuse_a_long_line_or_path(request: Request) -> None:
-    """414 a request line of 8,192 bytes or more before its LF with :data:`_LONG_LINE_PAGE`, and
-    then a path of 4,097 characters or more with an empty body, on every route but
-    :data:`_SERVED_HOWEVER_LONG`. Both count from after `/github`, which real never receives; the
-    line is counted as `<method> <target> HTTP/1.1` and its CR, the target as sent but for a `?`
-    with nothing after it, which the scope does not hold; the path as sent but for each
-    :data:`_UNRESERVED_ESCAPE`, which is one character. A bad token, and no credential on a route
-    :func:`_refuse_an_anonymous_caller` names, is answered ahead of both, and an unsupported
-    `X-GitHub-Api-Version` after them.
+    """414 a request line or a path too long for real, the line with :data:`_LONG_LINE_PAGE` and the
+    path with an empty body, on every route but :data:`_SERVED_HOWEVER_LONG`. Both are counted from
+    after `/github`, which real never receives, and the line as sent but for a `?` with nothing
+    after it, which the scope does not hold.
 
     Measured against api.github.com on 2026-10-29 with a cache-buster on each request, on each of
     the 34 routes here with the path filled by each of its parameters in turn and with a long query;
-    ``tests/test_github.py::_LONG_TARGET_ROWS`` holds the cases. The escapes were measured on
-    2026-11-02, each of `%00` to `%FF` in upper and in lower hex 100 times in an `issues/{number}`
-    path of 4,096 and 4,097 characters counted each way: the 66 bytes above drew the 404 and then
-    the 414 counted as one, each other byte but `%00` counted as sent, and so did the two escapes
-    of `é`. Real frames the path's empty 414 with `Transfer-Encoding: chunked` where a token came
-    and with `Content-Length: 0` where none did; it is the second here."""
+    ``tests/test_github.py::_LONG_TARGET_ROWS`` holds the cases. A line of 8,192 bytes before its
+    LF, the method, the spaces and the CR among them, was the page, and a path of 4,097 characters
+    the empty 414. The escapes were measured on 2026-11-02, each of `%00` to `%FF` in upper and in
+    lower hex 100 times in an `issues/{number}` path of 4,096 and 4,097 characters counted each
+    way: those :data:`_UNRESERVED_ESCAPE` matches drew the 404 and then the 414 counted as one
+    character, each other but `%00` counted as sent, and so did the two escapes of `é`. Real frames
+    the path's empty 414 with `Transfer-Encoding: chunked` where a token came and with
+    `Content-Length: 0` where none did; it is the second here."""
     if request.scope["route"].path in _SERVED_HOWEVER_LONG:
         return
     method = "HEAD" if getattr(request.state, "answering_head", False) else request.method

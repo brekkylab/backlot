@@ -201,8 +201,7 @@ def http_body(path: str, exc, query=None) -> dict | bytes | None:
     ``/commits/{sha}`` 422 of ``_no_commit_for_sha``, whose ``documentation_url`` is the route's
     own). Everything else is the three-member envelope over the exception's own detail, whose
     wording is already real's ("Not Found", "Bad credentials") because the routers were written
-    against measured responses; only the shape around it was FastAPI's. A ``github_body`` of
-    ``bytes`` is returned for :func:`rendered` to send as it is.
+    against measured responses; only the shape around it was FastAPI's.
 
     A 405 is the exception, and keeps FastAPI's ``detail``. Every route here declares GET, so a
     wrong method that reaches the router is refused by Starlette with

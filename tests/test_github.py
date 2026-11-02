@@ -4779,9 +4779,7 @@ def test_github_backend_version_error_order(gh_client, path):
     assert "X-GitHub-Api-Version-Selected" not in response.headers
 
 
-#: Each of the two 414 pages real sends a long request: nginx's where the request line holds 8,192
-#: bytes or more (as sent, with the method, the spaces and the CR), and the JSON where the target
-#: does.
+#: Real's 414 pages for a request line and for a target too long for it.
 _LINE_PAGE_414 = (
     b"<html>\r\n<head><title>414 Request-URI Too Large</title></head>\r\n<body>\r\n"
     b"<center><h1>414 Request-URI Too Large</h1></center>\r\n<hr><center>nginx</center>\r\n"
@@ -4836,8 +4834,8 @@ _LONG_TARGET_ROWS = [
 
 
 def _as_real_counts_a_path(target: str) -> int:
-    """The length real's path 414 reads in ``target``'s path: an escape of a letter, a digit, `-`,
-    `.`, `_` or `~` is one character, any other escape the three sent."""
+    """The length of ``target``'s path as real's path 414 counts it
+    (``backlot.routers.github._refuse_a_long_line_or_path``)."""
     path = target.partition("?")[0]
     unreserved = string.ascii_letters + string.digits + "-._~"
     return len(

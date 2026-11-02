@@ -281,11 +281,8 @@ def _short_id(value: object) -> str | None:
 
 
 #: A CRLF ahead of the request line, before a header past the bound: the prefix, the path, and
-#: whether its two bytes count against the bound, where the bound is the head's; a line bound counts
-#: the request line alone. Measured on 2026-11-02 (UTC) as ``backlot.head_bounds`` measured the
-#: bounds: with the CRLF, a head two bytes short of the bound was refused on GitHub, Graph and S3
-#: and three short waited, and on Slack and Google one byte short waited and the bound's was
-#: refused, as on Jira Cloud and Notion.
+#: whether its two bytes count against the bound (``backlot.head_bounds`` has the measurement),
+#: ``None`` where the bound is a line's, which counts the request line alone.
 _BLANK_AHEAD = [
     ("/github", "/repos/acme/docs-site", True),
     ("/slack", "/api/api.test", False),
@@ -485,9 +482,11 @@ _CHUNKED = (
 _LENGTH = b"POST /s3/b/k HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\n\r\n\r\nx"
 
 #: The reads of one connection, and what the app is handed, the answers written after each read
-#: and whether the connection closes: S3's bound is 16,384 bytes of the head and GitHub's 68,552,
-#: and the second request starts in a read of its own or in the first one's, its head ending or
-#: not, and after a body framed by its length or chunked, a CRLF CRLF in each.
+#: and whether the connection closes. The second request starts in a read of its own or in the
+#: first one's, after a head or after a body framed by its length or chunked, a CRLF CRLF in each,
+#: and its head ends within its bound, reaches it in the line or in a header, or holds a raw byte in
+#: its target, which the scope then carries as sent; a head that reaches its bound is answered after
+#: each answer ahead of it.
 _CONNECTIONS = [
     (
         [_s3(10_000), _s3(10_000, ended=False), b"\r\n\r\n", _s3(16_384, ended=False)],
@@ -569,10 +568,6 @@ _CONNECTIONS = [
 
 
 def test_each_request_on_a_connection_is_counted_from_its_own_start():
-    """Each request's head is counted from its own first byte, whether it starts a read or starts in
-    the read the request before it ends in, after a head or after a body. A head within its bound
-    waits for its end; a head that reaches it is answered after each answer ahead of it, and the
-    app is never handed it."""
     got = [_connection(reads) for reads, *_ in _CONNECTIONS]
     assert got == [tuple(expected) for _, *expected in _CONNECTIONS]
 

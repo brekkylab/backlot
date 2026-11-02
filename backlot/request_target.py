@@ -99,11 +99,10 @@ _GOOGLE_HOSTS = ("/docs", "/sheets", "/slides")
 
 
 def front_door(path: str) -> tuple[str, str] | None:
-    """The front door a request for ``path`` reaches, `github`, `slack`, `google`, `atlassian`,
-    `cloudflare` (in front of Notion, HubSpot, Linear and Fireflies), `s3` or `graph`, and the
-    part of ``path`` real never receives: the prefix the vendor is mounted under, or on Google the
-    segment naming the host (:data:`_GOOGLE_HOSTS`), empty on Drive and Gmail, whose paths are
-    real's own, and on `/batch`. ``None`` for a path of Backlot's own."""
+    """The front door a request for ``path`` reaches, named as :data:`_MOUNTS` names it or
+    `google`, and the part of ``path`` real never receives: the prefix the vendor is mounted under,
+    or on Google the segment naming the host (:data:`_GOOGLE_HOSTS`), empty on Drive and Gmail,
+    whose paths are real's own, and on `/batch`. ``None`` for a path of Backlot's own."""
     for prefix, door in _MOUNTS:
         if _under(path, prefix):
             return door, prefix

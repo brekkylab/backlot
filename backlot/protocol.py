@@ -28,19 +28,17 @@ from backlot import head_bounds, request_target
 class Protocol(HttpToolsProtocol):
     """uvicorn's httptools protocol, reading each request's head before its parser does.
 
-    Each read is handed to the parser as far as the end of the request it is in, and what follows
-    is read as the start of the next request, so a request that starts in the same read as the end
-    of the one before it is read as one that starts a read is. Where a request ends is where its
-    head ends, or for a body after it, the end :class:`_Body` gives for the head's framing headers.
+    A request that starts in the same read as the end of the one before it is read as one that
+    starts a read is (:meth:`_read`).
 
     A request's line is read before the parser reads it. A read with no LF is held for the reads
     after it while :func:`_starts_a_request_line` holds for what is held. Once it does not, the
     held bytes go to the parser as they came, which refuses them, and uvicorn answers its 400 at
     once: `hello` with no LF is answered so.
 
-    Each request's head is counted by :class:`_Head` from its first byte. Where it reaches its
-    bound, the parser is handed nothing more, and the front door's answer goes out with the close
-    once each request ahead of it on the connection has been answered.
+    Each request's head is counted by :class:`_Head` from its own first byte, and the front door's
+    answer to one that reaches its bound goes out once each request ahead of it on the connection
+    has been answered.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -57,8 +55,9 @@ class Protocol(HttpToolsProtocol):
             data = self._read(data)
 
     def _read(self, data: bytes) -> bytes:
-        """Hand the parser ``data`` as far as the end of the request it is in, and return the bytes
-        after that end."""
+        """Hand the parser ``data`` as far as the end of the request it is in, where its head ends
+        or, for a body after it, where :class:`_Body` says the body ends, and return the bytes after
+        that end."""
         if self._body is not None:
             start = 0
             for end in self._body.ends(data):
@@ -164,10 +163,9 @@ class _Body:
 
 
 class _Head:
-    """The head of one request as it arrives, read only as far as :mod:`backlot.head_bounds` needs:
-    how many bytes it holds, how many the line it is in holds before its LF, how many of them are
-    the empty lines ahead of the request line, which httptools skips, and the request line, whose
-    first bytes name the vendor and which is kept only where one does."""
+    """The head of one request as it arrives, counted as :meth:`backlot.head_bounds.Bound.answer`
+    reads it, and its request line, whose first bytes name the vendor and which is kept only where
+    they name one."""
 
     def __init__(self) -> None:
         self.size = 0
@@ -218,8 +216,7 @@ class _Head:
     def _over(self) -> bytes | None:
         """The answer once the head has reached its bound, the front door's refusal of the request
         line where it refuses the line ahead of the bound
-        (:meth:`backlot.head_bounds.Bound.refused`). The vendor is read off the request line once it
-        ends or holds :data:`backlot.head_bounds.NAMED_WITHIN` bytes."""
+        (:meth:`backlot.head_bounds.Bound.refused`)."""
         if not self.named and (
             not self.in_request_line or len(self.request_line) >= head_bounds.NAMED_WITHIN
         ):

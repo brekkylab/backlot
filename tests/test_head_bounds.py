@@ -438,7 +438,7 @@ def _connection(reads: list[bytes]) -> tuple[list[str], list[list[str]], bool]:
             for _ in range(100):
                 loop.run_until_complete(asyncio.sleep(0))
             written = transport.written[before:]
-            starts = [m.start() for m in re.finditer(rb"HTTP/1\.[01] \d{3}", written)]
+            starts = [m.start() for m in re.finditer(rb"HTTP/1\.(?:0|1) \d{3}", written)]
             answers.append(
                 [_named(written[a:b]) for a, b in zip(starts, [*starts[1:], len(written)])]
             )

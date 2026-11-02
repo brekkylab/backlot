@@ -164,9 +164,11 @@ def _doc_id(rec: dict) -> str:
     # ordinary -- resolve to one id, and the row-level upsert leaves only the later one.
     if rec.get("sheets") is not None:
         seed += _j(rec["sheets"])
-    # Likewise a structured document's `content` is its text alone, without the styles.
-    if rec.get("paragraphs") is not None:
-        seed += _j(rec["paragraphs"])
+    # Likewise a structured document's `content` is its text alone, without the styles, its
+    # header, footer and footnotes or its tabs' titles.
+    for key in ("paragraphs", "header", "footer", "tabs"):
+        if rec.get(key) is not None:
+            seed += _j(rec[key])
     return "dsid_" + hashlib.sha256(seed.encode()).hexdigest()[:32]
 
 
@@ -1075,40 +1077,109 @@ def _sheets_pairing_errors(rec: dict) -> list[str]:
 
 
 def _paragraphs_pairing_errors(rec: dict) -> list[str]:
-    """What a `google_drive` record's `paragraphs` may not sit beside, and what a paragraph may not
-    say, returned for the reason :func:`_sheets_pairing_errors` gives."""
-    paragraphs = rec.get("paragraphs")
-    if not isinstance(paragraphs, list):
-        return []
+    """What a `google_drive` record's `paragraphs`, `header`, `footer` and `tabs` may not sit
+    beside, and what a paragraph, run or tab may not say, returned for the reason
+    :func:`_sheets_pairing_errors` gives."""
+    stated = [k for k in ("paragraphs", "tabs") if rec.get(k) is not None]
     msgs = []
+    if not stated:
+        return [
+            f"'{k}' needs 'paragraphs' to be the document's body"
+            for k in ("header", "footer")
+            if rec.get(k) is not None
+        ]
+    if len(stated) == 2:
+        msgs.append("state the document as 'paragraphs' or as 'tabs', not both")
+    if rec.get("tabs") is not None:
+        msgs += [
+            f"'{k}' belongs to a tab once the document states 'tabs'"
+            for k in ("header", "footer")
+            if rec.get(k) is not None
+        ]
     if rec.get("content") is not None:
         msgs.append(
-            "'paragraphs' and 'content' state the same document two ways; drop 'content' — it is "
-            "derived from the paragraphs at import, one line each"
+            f"'{stated[0]}' and 'content' state the same document two ways; drop 'content' — it "
+            "is derived from the paragraphs at import, one line each"
         )
     subtype = rec.get("subtype") or "document"
     if subtype != "document":
-        msgs.append(f"'paragraphs' needs subtype 'document' (this is {subtype!r})")
+        msgs.append(f"'{stated[0]}' needs subtype 'document' (this is {subtype!r})")
+    tabs = rec.get("tabs")
+    if not isinstance(tabs, list):
+        tabs = [{k: rec[k] for k in ("paragraphs", "header", "footer") if k in rec}]
+        where = ""
+    else:
+        where = "tabs"
+    titles: dict[str, str] = {}
+    for path, tab in _stated_tabs(tabs, where):
+        if not isinstance(tab, dict):
+            continue
+        prefix = f"{path}." if path else ""
+        title = tab.get("title")
+        if isinstance(title, str):
+            if gdocs.utf16_len(title) > 50:
+                msgs.append(f"{prefix}title: longer than the 50 UTF-16 code units real takes")
+            if title in titles:
+                msgs.append(
+                    f"{prefix}title: {titles[title]} has it too, and real takes a title once"
+                )
+            titles.setdefault(title, path)
+        icon = tab.get("icon")
+        if isinstance(icon, str) and not gdocs.is_icon(icon):
+            msgs.append(f"{prefix}icon: not one emoji real takes as a tab's icon")
+        for kind in ("paragraphs", "header", "footer"):
+            msgs += _paragraph_errors(tab.get(kind), f"{prefix}{kind}", kind == "paragraphs")
+    return msgs
+
+
+def _stated_tabs(tabs: list, path: str):
+    """Each stated tab with where it is in the record, depth first."""
+    for i, tab in enumerate(tabs):
+        here = f"{path}[{i}]" if path else ""
+        yield here, tab
+        if isinstance(tab, dict) and isinstance(tab.get("tabs"), list):
+            yield from _stated_tabs(tab["tabs"], f"{here}.tabs")
+
+
+def _paragraph_errors(paragraphs, path: str, body: bool) -> list[str]:
+    """What a stated body, header, footer or footnote's paragraphs may not say. Only a body holds
+    a footnote or a page break: real refuses `createFootnote` and `insertPageBreak` anywhere else."""
+    if not isinstance(paragraphs, list):
+        return []
+    msgs = []
     for i, para in enumerate(paragraphs):
         if not isinstance(para, dict):
             continue
+        at = f"{path}[{i}]"
         if ("text" in para) == ("runs" in para):
-            msgs.append(f"paragraphs[{i}]: state its text as one of 'text' or 'runs'")
-        texts = [para.get("text")] + [
-            r.get("text") for r in para.get("runs") or [] if isinstance(r, dict)
-        ]
+            msgs.append(f"{at}: state its text as one of 'text' or 'runs'")
+        runs = [r for r in para.get("runs") or [] if isinstance(r, dict)]
+        for j, run in enumerate(runs):
+            kinds = [k for k in ("text", "footnote", "pageBreak") if k in run]
+            if len(kinds) != 1:
+                msgs.append(
+                    f"{at}.runs[{j}]: state exactly one of 'text', 'footnote' and 'pageBreak'"
+                )
+            if ("footnote" in run or "pageBreak" in run) and not body:
+                msgs.append(
+                    f"{at}.runs[{j}]: a footnote or a page break stands in a body alone, as real's "
+                    "`createFootnote` and `insertPageBreak` refuse one in a header, footer or footnote"
+                )
+            if "footnote" in run and body:
+                msgs += _paragraph_errors(run["footnote"], f"{at}.runs[{j}].footnote", False)
+        texts = [para.get("text")] + [r.get("text") for r in runs]
         if any(isinstance(t, str) and "\n" in t for t in texts):
             msgs.append(
-                f"paragraphs[{i}]: a newline ends a paragraph, so a paragraph's text holds none; "
+                f"{at}: a newline ends a paragraph, so a paragraph's text holds none; "
                 "state the next line as the next paragraph"
             )
         if any(isinstance(t, str) and gdocs.STRIPPED.search(t) for t in texts):
             msgs.append(
-                f"paragraphs[{i}]: holds a character real strips from a document's text "
+                f"{at}: holds a character real strips from a document's text "
                 "(U+0000-U+0008, U+000C-U+001F or U+E000-U+F8FF)"
             )
         if any(isinstance(t, str) and gdocs.UNWRITABLE.search(t) for t in texts):
-            msgs.append(f"paragraphs[{i}]: {_UNWRITABLE}")
+            msgs.append(f"{at}: {_UNWRITABLE}")
     return msgs
 
 
@@ -2052,11 +2123,12 @@ class _Loader:
                 **rec,
                 "content": gsheets.to_csv(gsheets.normalise_grid(drive_sheets[0]["grid"])),
             }
-        # And stated paragraphs are the document, its `content` their text, for the same reason.
-        drive_paragraphs = None
-        if src == "google_drive" and rec.get("paragraphs") is not None:
-            drive_paragraphs = rec["paragraphs"]
-            rec = {**rec, "content": gdocs.text_of(drive_paragraphs)}
+        # And stated paragraphs or tabs are the document, its `content` their text, for the same
+        # reason.
+        drive_document = None
+        if src == "google_drive" and (rec.get("paragraphs") or rec.get("tabs")) is not None:
+            drive_document = rec
+            rec = {**rec, "content": gdocs.record_text(rec)}
 
         doc_id = _doc_id(rec)
         # Recorded, not deduplicated: `seen` answers "is this document in the corpus" for the
@@ -2623,10 +2695,10 @@ class _Loader:
             file_id = self.keys[(src, doc_id)][0]
             rows = _sheet_rows(file_id, drive_sheets) if drive_sheets is not None else []
             store.gdrive_replace_sheets(conn, file_id, rows)
-            body = None
-            if drive_paragraphs is not None:
-                body = gdocs.from_paragraphs(file_id, drive_paragraphs)
-            store.gdrive_replace_doc_body(conn, file_id, body)
+            document = None
+            if drive_document is not None:
+                document = gdocs.from_record(file_id, drive_document)
+            store.gdrive_replace_doc(conn, file_id, document)
 
         if src in THREADED_REPLIES:
             # The root has landed, so its id is settled — every reply below points at it. Both

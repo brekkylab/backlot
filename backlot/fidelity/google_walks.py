@@ -10,10 +10,11 @@ baseline records.
 first row and column, a second sheet for a grid range to name, and a prose spreadsheet beside it,
 then writes to the grid, copies a sheet and creates a workbook, as its owner.
 
-`gdocs` reads a document stating a title, a heading and every run mark a corpus states, and a
-prose document beside it, flat and as their tabs, as their owner; then creates a document and
-writes the first one with each request `documents.batchUpdate` applies, the body it sent recorded
-beside the answer.
+`gdocs` reads a document stating a title, a heading and every run mark a corpus states, one
+stating tabs, a child tab, a header, a footer, a footnote and a page break, and a prose document
+beside them, flat and as their tabs, as their owner; then creates a document and writes the first
+one with each request `documents.batchUpdate` applies, the body it sent recorded beside the
+answer.
 """
 
 from __future__ import annotations
@@ -75,6 +76,26 @@ GDOCS_CORPUS = [
                     {"text": "link", "link": "https://example.com/"},
                 ]
             },
+        ],
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "walk-doc-tabs",
+        "title": "Walk tabs",
+        "folder": "walk",
+        "author_email": "walker@acme.com",
+        "created": "2026-01-10T08:00:00Z",
+        "updated": "2026-01-11T08:00:00Z",
+        "tabs": [
+            {
+                "paragraphs": [
+                    {"runs": [{"text": "cited"}, {"footnote": [{"text": "source"}]}]},
+                    {"runs": [{"pageBreak": True}]},
+                ],
+                "header": [{"text": "head"}],
+                "footer": [{"text": "foot"}],
+                "tabs": [{"title": "Child", "icon": "\U0001f4cc", "paragraphs": [{"text": "c"}]}],
+            }
         ],
     },
     {
@@ -172,7 +193,65 @@ def gdocs(timeout: float) -> list[tuple[Any, ...]]:
                 )
                 for body in writes
             ]
+            written += _gdocs_structure(client, doc)
             return [*walked, ("docs.documents.create", created), *written]
+
+
+def _gdocs_structure(client: httpx.Client, doc: str) -> list[tuple[Any, ...]]:
+    """The requests that make and remove a header, a footer, a footnote, a page break and a tab,
+    each field they read sent: the second body names what the first made."""
+    here = {"tabId": "t.0", "segmentId": ""}
+    made = {
+        "requests": [
+            {"createHeader": {"type": "DEFAULT", "sectionBreakLocation": {"index": 0, **here}}},
+            {"createFooter": {"type": "DEFAULT", "sectionBreakLocation": {"index": 0, **here}}},
+            {"createFootnote": {"location": {"index": 1, **here}}},
+            {"createFootnote": {"endOfSegmentLocation": here}},
+            {"insertPageBreak": {"location": {"index": 1, **here}}},
+            {"insertPageBreak": {"endOfSegmentLocation": here}},
+            {
+                "addDocumentTab": {
+                    "tabProperties": {
+                        "title": "Walked tab",
+                        "parentTabId": "t.0",
+                        "index": 0,
+                        "iconEmoji": "\U0001f4cc",
+                    }
+                }
+            },
+        ]
+    }
+    replies = _ok(client.post(f"/docs/v1/documents/{doc}:batchUpdate", json=made))["replies"]
+    header, footer = replies[0]["createHeader"]["headerId"], replies[1]["createFooter"]["footerId"]
+    tab = replies[-1]["addDocumentTab"]["tabProperties"]["tabId"]
+    removed = {
+        "requests": [
+            {
+                "updateDocumentTabProperties": {
+                    "tabProperties": {
+                        "tabId": tab,
+                        "title": "Moved tab",
+                        "parentTabId": "",
+                        "index": 1,
+                        "nestingLevel": 0,
+                        "iconEmoji": "",
+                    },
+                    "fields": "*",
+                }
+            },
+            {"deleteHeader": {"headerId": header, "tabId": "t.0"}},
+            {"deleteFooter": {"footerId": footer, "tabId": "t.0"}},
+            {"deleteTab": {"tabId": tab}},
+        ]
+    }
+    return [
+        ("docs.documents.batchUpdate", {"replies": replies}, made),
+        (
+            "docs.documents.batchUpdate",
+            _ok(client.post(f"/docs/v1/documents/{doc}:batchUpdate", json=removed)),
+            removed,
+        ),
+    ]
 
 
 def sheets(timeout: float) -> list[tuple[str, Any]]:

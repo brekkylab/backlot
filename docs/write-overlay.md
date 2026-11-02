@@ -70,8 +70,13 @@ parameter, which wins; a body, tabs or styles it states are read, checked agains
 message and every message it holds, a map's entries included, and dropped.
 
 `documents.batchUpdate` writes a Doc's text with `insertText`, `deleteContentRange` and
-`replaceAllText`, each request applied to the body the ones before it left, and all of them or none
-kept. Inserted text takes the style of the text beside it as real gives it, a heading a newline
+`replaceAllText`, its headers, footers, footnotes and page breaks with `createHeader`,
+`createFooter`, `createFootnote`, `deleteHeader`, `deleteFooter` and `insertPageBreak`, and its
+tabs with `addDocumentTab`, `deleteTab` and `updateDocumentTabProperties`, each request applied to
+the Doc the ones before it left, and all of them or none kept. A location or range names its tab
+and its header, footer or footnote as real's do, the first tab when it names none, and
+`replaceAllText` replaces in every tab and every segment of each unless `tabsCriteria` lists the
+tabs. Inserted text takes the style of the text beside it as real gives it, a heading a newline
 splits gives the new part a `headingId` of its own, and every write moves the Doc's `revisionId`,
 which `requiredRevisionId` is checked against. A Doc whose corpus record states only `content`
 reads as one paragraph per line, and its first write stores that reading. `replaceAllText`
@@ -153,9 +158,11 @@ field list, so the ordering divergence below has no entry to live in and is stat
   data sources, and every cell format but a number format are read and not kept.
 - **`spreadsheets.batchUpdate`.** Not served, so a workbook's sheets change only by
   `spreadsheets.create` and `sheets.copyTo`.
-- **Docs requests past the text ones.** `documents.batchUpdate` applies `insertText`,
-  `deleteContentRange` and `replaceAllText`. Every other request kind, and the `SUGGEST` write
-  mode, is refused naming itself, where real applies it.
+- **Docs requests past text, segments and tabs.** `documents.batchUpdate` applies the text,
+  header, footer, footnote, page-break and tab requests above. Every other request kind, and the
+  `SUGGEST` write mode, is refused naming itself, where real applies it.
+- **A tab's icon.** `iconEmoji` is checked by a rule fitted to 67 of real's answers; it takes any
+  two regional indicators as a flag, where real refused `🇦🇦`.
 - **Collaborators.** A `targetRevisionId` naming any revision of the Doc is taken. Real refuses one
   too far behind, and merges the write into what collaborators did since it, which here is nothing.
 - **A replacement's newline.** When `replaceText` holds a newline, real ends the paragraph it

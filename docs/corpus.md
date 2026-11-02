@@ -133,7 +133,21 @@ A paragraph's `style` is one of `NORMAL_TEXT` (the default), `TITLE`, `SUBTITLE`
 the next line is the next paragraph. Nor does it hold a character real strips from a document's
 text (U+0000–U+0008, U+000C–U+001F, U+E000–U+F8FF), and a `link` carries its scheme. Neither a
 paragraph nor a document's `content` holds a character `insertText` refuses (U+FDD0–U+FDEF).
-Lists, tables, headers, footers and tabs have no representation yet.
+
+A run may be a `footnote` reference, its footnote's paragraphs, or a `pageBreak`, in place of
+`text`; both stand in a document's body alone. A record stating `paragraphs` may state a `header`
+and a `footer`, each as paragraphs, and a document with more than its one tab states `tabs`
+instead: each with its `title`, an `icon`, its body as `paragraphs`, its own `header` and `footer`,
+and its child `tabs`. The first tab is `t.0`, as in a Doc real makes, an untitled one is `Tab n` by
+its place, and no two tabs share a title.
+
+```json
+{"source_type": "google_drive", "title": "Q1 board pack", "folder": "finance", "author_email": "cfo@acme.com", "created": "2026-01-25T08:00:00Z", "updated": "2026-01-26T08:00:00Z", "tabs": [{"title": "Summary", "paragraphs": [{"runs": [{"text": "Revenue up 12%"}, {"footnote": [{"text": "Unaudited."}]}, {"text": " on Q4."}, {"pageBreak": true}]}], "header": [{"text": "Board only"}], "tabs": [{"title": "Appendix", "paragraphs": [{"text": "Pipeline by region."}]}]}, {"title": "Risks", "paragraphs": [{"text": "EU residency."}]}]}
+```
+
+`documents.get` serves the footnote as real serves one, opening with a space in 10 PT and numbered
+by its reference's place in the tab, and `content` is every tab's text, depth first. Lists and
+tables have no representation yet.
 
 ## Load a public dataset
 

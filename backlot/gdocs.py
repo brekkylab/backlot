@@ -19,7 +19,7 @@ import json
 import re
 import unicodedata
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 # `regex` asks `locale.getpreferredencoding()` as it compiles each new pattern, which warns under
@@ -63,9 +63,31 @@ UNWRITABLE = re.compile("[\ufdd0-\ufdef]")
 # The colour a link gives its run, through the editor or `updateTextStyle` alike.
 _LINK_COLOR = {"color": {"rgbColor": {"red": 0.06666667, "green": 0.33333334, "blue": 0.8}}}
 
+# The characters `replaceAllText` reads a footnote reference and a page break as: measured
+# 2026-11-02, a regular expression's class found U+001B where a reference stood and U+000C where a
+# page break did, `.` matched either, and `xy` did not match across one. Both are characters
+# `insertText` strips, so no text holds them, and here each stands for its element in a body.
+FOOTNOTE = "\x1b"
+PAGE_BREAK = "\x0c"
+_ELEMENTS = FOOTNOTE + PAGE_BREAK
 
-def document_style() -> dict:
-    return copy.deepcopy(_DEFAULTS["documentStyle"])
+# A footnote's runs and paragraphs, as `createFootnote` makes one and the editor writes into it:
+# measured 2026-11-02, its content opens with a space, every run is 10 PT and every paragraph has
+# a `lineSpacing` of 100.
+_FOOTNOTE_TEXT = {"fontSize": {"magnitude": 10, "unit": "PT"}}
+
+
+def document_style(header: str | None = None, footer: str | None = None) -> dict:
+    """A tab's `documentStyle`: the defaults, and its header's and footer's ids after
+    `background`, where real serves them (measured 2026-10-26 and 2026-11-02)."""
+    style = copy.deepcopy(_DEFAULTS["documentStyle"])
+    ids = {k: v for k, v in (("defaultHeaderId", header), ("defaultFooterId", footer)) if v}
+    out: dict = {}
+    for key, value in style.items():
+        out[key] = value
+        if key == "background":
+            out |= ids
+    return out
 
 
 def named_styles() -> dict:
@@ -95,74 +117,293 @@ def _newline_style(marks: dict) -> dict:
     return text_style({k: v for k, v in marks.items() if k != "link"})
 
 
-def heading_id(file_id: str, ordinal: int | str) -> str:
-    """A heading paragraph's `headingId`: ``h.`` and twelve base-36 characters, the length 262 of
-    281 measured ids have (the rest are one or two shorter). Real gave one to every TITLE,
-    SUBTITLE and HEADING_n paragraph in all but one Doc read, and none to NORMAL_TEXT."""
-    n = synth.hnum(f"{file_id}\0{ordinal}", length=16)
+def _base36(seed: str) -> str:
+    n = synth.hnum(seed, length=16)
     digits = "0123456789abcdefghijklmnopqrstuvwxyz"
     out = ""
     for _ in range(12):
         n, r = divmod(n, 36)
         out += digits[r]
-    return "h." + out
+    return out
 
 
-def _paragraph(runs: list[tuple[str, dict]], newline: dict, style: str, hid: str | None) -> dict:
+def heading_id(file_id: str, ordinal: int | str) -> str:
+    """A heading paragraph's `headingId`: ``h.`` and twelve base-36 characters, the length 262 of
+    281 measured ids have (the rest are one or two shorter). Real gave one to every TITLE,
+    SUBTITLE and HEADING_n paragraph in all but one Doc read, and none to NORMAL_TEXT."""
+    return "h." + _base36(f"{file_id}\0{ordinal}")
+
+
+def segment_id(file_id: str, seed: str) -> str:
+    """A header's, footer's or footnote's id: ``kix.`` and twelve base-36 characters, as real's
+    `createHeader`, `createFooter` and `createFootnote` answered (measured 2026-11-02; a few ids
+    were one shorter)."""
+    return "kix." + _base36(f"{file_id}\0kix\0{seed}")
+
+
+def tab_id(file_id: str, seed: str) -> str:
+    """A tab's id past the first, `t.0`: ``t.`` and twelve base-36 characters, as real's
+    `addDocumentTab` answered (measured 2026-11-02; a few ids were one shorter)."""
+    return "t." + _base36(f"{file_id}\0tab\0{seed}")
+
+
+def _paragraph(
+    runs: list[tuple[str, dict] | dict], newline: dict, pstyle: dict, hid: str | None = None
+) -> dict:
     """One `paragraph` structural element, adjacent runs of one style merged as real merges them
-    and the newline joined to the last run when its style matches."""
+    and the newline joined to the last run when its style matches. A run given as a dict is a
+    footnote reference or a page break, an element of its own."""
     elements: list[dict] = []
-    for text, ts in [*runs, ("\n", newline)]:
+    for run in [*runs, ("\n", newline)]:
+        if isinstance(run, dict):
+            elements.append(run)
+            continue
+        text, ts = run
         if not text:
             continue
-        if elements and elements[-1]["textRun"]["textStyle"] == ts:
+        if elements and elements[-1].get("textRun", {}).get("textStyle") == ts:
             elements[-1]["textRun"]["content"] += text
         else:
             elements.append({"textRun": {"content": text, "textStyle": ts}})
-    pstyle = {"headingId": hid} if hid else {}
-    pstyle |= {"namedStyleType": style, "direction": "LEFT_TO_RIGHT"}
-    return {"paragraph": {"elements": elements, "paragraphStyle": pstyle}}
+    head = {"headingId": hid} if hid else {}
+    return {"paragraph": {"elements": elements, "paragraphStyle": head | pstyle}}
+
+
+def _paragraph_style(named: str, footnote: bool = False) -> dict:
+    spacing = {"lineSpacing": 100} if footnote else {}
+    return {"namedStyleType": named, **spacing, "direction": "LEFT_TO_RIGHT"}
 
 
 def _section_break() -> dict:
     return {"sectionBreak": {"sectionStyle": copy.deepcopy(_DEFAULTS["sectionStyle"])}}
 
 
-def from_paragraphs(file_id: str, paragraphs: list[dict]) -> list[dict]:
-    """A corpus's `paragraphs` as a stored body: the section break every body opens with, then one
-    `paragraph` per entry. A heading's `headingId` is drawn here, once."""
-    content = [_section_break()]
+def blank_segment(footnote: bool = False) -> list[dict]:
+    """A header or footer as `createHeader` and `createFooter` make it, one empty paragraph, or a
+    footnote as `createFootnote` makes it, a space in 10 PT: measured 2026-11-02."""
+    if footnote:
+        return [
+            _paragraph(
+                [(" ", dict(_FOOTNOTE_TEXT))],
+                dict(_FOOTNOTE_TEXT),
+                _paragraph_style("NORMAL_TEXT", footnote=True),
+            )
+        ]
+    return [_paragraph([], {}, _paragraph_style("NORMAL_TEXT"))]
+
+
+def _stated(
+    file_id: str, paragraphs: list[dict], seed: str, notes: dict | None, footnote: bool = False
+) -> list[dict]:
+    """A corpus's paragraphs as stored content, a heading's `headingId` drawn here, once, from
+    ``seed`` and its position. A stated footnote is added to ``notes``, a footnote's runs are
+    10 PT and its first opens with the space real's footnote opens with."""
+    content = []
     for i, p in enumerate(paragraphs):
-        style = p.get("style") or "NORMAL_TEXT"
+        named = p.get("style") or "NORMAL_TEXT"
         stated = p["runs"] if "runs" in p else [{"text": p.get("text", "")}]
-        runs = [(r["text"], text_style(r)) for r in stated]
-        newline = _newline_style(stated[-1])
-        hid = heading_id(file_id, i) if style != "NORMAL_TEXT" else None
-        content.append(_paragraph(runs, newline, style, hid))
+        if footnote and i == 0:
+            stated = [{"text": " "}, *stated]
+        runs: list[tuple[str, dict] | dict] = []
+        for j, r in enumerate(stated):
+            ts = text_style(r) | (_FOOTNOTE_TEXT if footnote else {})
+            ts = {k: ts[k] for k in _TEXT_STYLE_ORDER if k in ts}
+            if "footnote" in r:
+                fid = segment_id(file_id, f"{seed}{i}.{j}")
+                notes[fid] = _stated(file_id, r["footnote"], f"{seed}{i}.{j}.", None, True)
+                runs.append({"footnoteReference": {"footnoteId": fid, "textStyle": ts}})
+            elif r.get("pageBreak"):
+                runs.append({"pageBreak": {"textStyle": ts}})
+            else:
+                runs.append((r["text"], ts))
+        newline = _newline_style(stated[-1]) | (_FOOTNOTE_TEXT if footnote else {})
+        newline = {k: newline[k] for k in _TEXT_STYLE_ORDER if k in newline}
+        hid = heading_id(file_id, f"{seed}{i}") if named != "NORMAL_TEXT" else None
+        content.append(_paragraph(runs, newline, _paragraph_style(named, footnote), hid))
     return content
+
+
+def from_paragraphs(
+    file_id: str, paragraphs: list[dict], seed: str = "", notes: dict | None = None
+) -> list[dict]:
+    """A corpus's `paragraphs` as a stored body: the section break every body opens with, then one
+    `paragraph` per entry. A stated footnote is added to ``notes``."""
+    return [_section_break(), *_stated(file_id, paragraphs, seed, notes)]
 
 
 def from_text(text: str) -> list[dict]:
     """A document that states no structure: one unstyled paragraph per line of its text, read as
     `insertText` would write it, so without the characters it strips."""
     return [_section_break()] + [
-        _paragraph([(STRIPPED.sub("", line), {})], {}, "NORMAL_TEXT", None)
+        _paragraph([(STRIPPED.sub("", line), {})], {}, _paragraph_style("NORMAL_TEXT"))
         for line in text.split("\n")
     ]
 
 
 def text_of(paragraphs: list[dict]) -> str:
-    """A corpus's `paragraphs` as the text Drive's search and export read: one line each."""
+    """A corpus's `paragraphs` as the text Drive's search reads: one line each, without its
+    footnotes and page breaks."""
     return "\n".join(
-        "".join(r["text"] for r in p["runs"]) if "runs" in p else p.get("text", "")
+        "".join(r.get("text", "") for r in p["runs"]) if "runs" in p else p.get("text", "")
         for p in paragraphs
     )
 
 
-def indexed(content: list[dict]) -> list[dict]:
-    """A stored body as real serves it, each structural element and paragraph element carrying
-    its `startIndex` and `endIndex` in UTF-16 code units, those two first. The body opens at 0,
-    and a zero `startIndex` is left out, as proto3 leaves out every zero."""
+# The characters a tab icon may be, fitted to real's answers on 2026-11-02 to 67 candidates: one
+# grapheme cluster holding a pictograph, a keycap, a flag of regional indicators or of tag
+# characters, and no U+FE0E. A pictograph with text presentation by default was taken, but for
+# the arrows, `‼` and `⁉` without U+FE0F, and `©`, `®` and `™` with or without it. A ZWJ that ends
+# the cluster, one regional indicator alone and `🇦🇦` were refused; this server takes any two.
+_ICON_REFUSED = frozenset("\u00a9\u00ae\u2122")
+_ICON_BARE = frozenset("\u203c\u2049")
+_ICON_KEYCAP = regex.compile("[0-9#*]\ufe0f?\u20e3")
+_ICON_FLAG = regex.compile(
+    "\\p{Regional_Indicator}{2}|\U0001f3f4[\U000e0020-\U000e007e]+\U000e007f"
+)
+_ICON_PICTOGRAPH = regex.compile("\\p{Extended_Pictographic}|\\p{Emoji_Modifier}")
+_ICON_PRESENTED = regex.compile("\\p{Emoji_Presentation}")
+
+
+def is_icon(text: str) -> bool:
+    if len(_CLUSTER.findall(text)) != 1 or "\ufe0e" in text or text.endswith("\u200d"):
+        return False
+    if _ICON_KEYCAP.fullmatch(text) or _ICON_FLAG.fullmatch(text):
+        return True
+    first = text[0]
+    if not _ICON_PICTOGRAPH.match(first) or first in _ICON_REFUSED:
+        return False
+    if "\ufe0f" in text or _ICON_PRESENTED.match(first):
+        return True
+    return first not in _ICON_BARE and "ARROW" not in unicodedata.name(first, "")
+
+
+# --- a document: its tabs, and in each a body, a header, a footer and footnotes ------------------
+#
+# Stored as ``{"tabs": [tab, ...]}``, each tab ``{"tabProperties": {tabId, title, iconEmoji?},
+# "body": [...], "headers": {id: [...]}, "footers": {...}, "footnotes": {...}, "childTabs": [...]}``,
+# its contents as real serves them without indices or footnote numbers. A tab's index, parent and
+# depth are its place in the tree, read where it is served.
+
+
+def new_tab(tab_id: str, title: str, body: list[dict] | None = None) -> dict:
+    """A tab holding ``body``, or the empty paragraph a blank Doc and `addDocumentTab` make: measured
+    2026-11-02, a new tab's `documentStyle`, `namedStyles` and section style are a blank Doc's."""
+    return {
+        "tabProperties": {"tabId": tab_id, "title": title},
+        "body": body if body is not None else from_text(""),
+        "headers": {},
+        "footers": {},
+        "footnotes": {},
+        "childTabs": [],
+    }
+
+
+def from_prose(text: str) -> dict:
+    """A document that states no structure: its one tab, `t.0`, holding `from_text`."""
+    return {"tabs": [new_tab("t.0", "Tab 1", from_text(text))]}
+
+
+def walk(tabs: list[dict], parent: dict | None = None, depth: int = 0):
+    """Each tab, depth first as real lists them, with its parent and depth."""
+    for tab in tabs:
+        yield tab, parent, depth
+        yield from walk(tab["childTabs"], tab, depth + 1)
+
+
+def default_title(titles: Iterable[str], count: int) -> str:
+    """The title real gives a tab that states none: ``Tab n`` for the ``count`` tabs the Doc then
+    has, n climbing past each title already taken. Measured 2026-11-02: a Doc's eighth tab was
+    `Tab 8`, and with `Tab 7` and `Tab 9` taken the next three were `Tab 8`, `Tab 10` and
+    `Tab 11`; `TAB 7` took nothing."""
+    taken = set(titles)
+    while f"Tab {count}" in taken:
+        count += 1
+    return f"Tab {count}"
+
+
+def from_record(file_id: str, rec: dict) -> dict:
+    """A corpus record's `tabs`, or its `paragraphs`, `header` and `footer` as its one tab."""
+    stated = rec.get("tabs") or [
+        {k: rec[k] for k in ("paragraphs", "header", "footer") if rec.get(k) is not None}
+    ]
+    titles = [t["title"] for t in _stated_tabs(stated) if t.get("title")]
+
+    def build(tab: dict, n: int) -> dict:
+        seed = "" if n == 0 else f"t{n}."
+        tid = "t.0" if n == 0 else tab_id(file_id, str(n))
+        title = tab.get("title") or default_title(titles, n + 1)
+        titles.append(title)
+        notes: dict = {}
+        out = new_tab(tid, title, from_paragraphs(file_id, tab["paragraphs"], seed, notes))
+        if tab.get("icon"):
+            out["tabProperties"]["iconEmoji"] = tab["icon"]
+        for kind in ("header", "footer"):
+            if tab.get(kind) is not None:
+                sid = segment_id(file_id, f"{seed}{kind}")
+                out[f"{kind}s"][sid] = _stated(file_id, tab[kind], f"{seed}{kind}.", None)
+        out["footnotes"] = notes
+        return out
+
+    ordinals = itertools.count()
+
+    def tree(tabs: list[dict]) -> list[dict]:
+        out = []
+        for tab in tabs:
+            built = build(tab, next(ordinals))
+            built["childTabs"] = tree(tab.get("tabs") or [])
+            out.append(built)
+        return out
+
+    return {"tabs": tree(stated)}
+
+
+def _stated_tabs(tabs: list[dict]):
+    for tab in tabs:
+        yield tab
+        yield from _stated_tabs(tab.get("tabs") or [])
+
+
+def record_text(rec: dict) -> str:
+    """A corpus record's text as Drive's search reads it: each tab's paragraphs, depth first."""
+    stated = rec.get("tabs") or [{"paragraphs": rec["paragraphs"]}]
+    return "\n".join(text_of(t["paragraphs"]) for t in _stated_tabs(stated))
+
+
+def document_text(doc: dict) -> str:
+    """A stored document's text as Drive's search reads it: each tab's body, depth first, one line
+    per paragraph, without its footnote references and page breaks."""
+    return "\n".join(
+        "".join(
+            pe["textRun"]["content"]
+            for el in tab["body"]
+            if "paragraph" in el
+            for pe in el["paragraph"]["elements"]
+            if "textRun" in pe
+        )[:-1]
+        for tab, *_ in walk(doc["tabs"])
+    )
+
+
+def footnote_numbers(tab: dict) -> dict[str, str]:
+    """Each footnote's `footnoteNumber`, by its reference's place in the tab's body: measured
+    2026-11-02, a footnote made before another's reference became `1` and the other `2`, and a
+    second tab's first footnote was `1`."""
+    refs = [
+        pe["footnoteReference"]["footnoteId"]
+        for el in tab["body"]
+        if "paragraph" in el
+        for pe in el["paragraph"]["elements"]
+        if "footnoteReference" in pe
+    ]
+    return {fid: str(n) for n, fid in enumerate(refs, 1)}
+
+
+def indexed(content: list[dict], numbers: dict[str, str] | None = None) -> list[dict]:
+    """Stored content as real serves it, each structural element and paragraph element carrying
+    its `startIndex` and `endIndex` in UTF-16 code units, those two first, and a footnote
+    reference its `footnoteNumber`. Content opens at 0, a body with its section break and a header,
+    footer or footnote with its first paragraph, and a zero `startIndex` is left out, as proto3
+    leaves out every zero."""
     out = []
     at = 0
     for el in content:
@@ -173,7 +414,19 @@ def indexed(content: list[dict]) -> list[dict]:
         start = at
         elements = []
         for pe in el["paragraph"]["elements"]:
-            end = at + utf16_len(pe["textRun"]["content"])
+            if "textRun" in pe:
+                end = at + utf16_len(pe["textRun"]["content"])
+            else:
+                end = at + 1
+            if "footnoteReference" in pe:
+                ref = pe["footnoteReference"]
+                pe = {
+                    "footnoteReference": {
+                        "footnoteId": ref["footnoteId"],
+                        "footnoteNumber": (numbers or {}).get(ref["footnoteId"], ""),
+                        "textStyle": ref["textStyle"],
+                    }
+                }
             elements.append(_span(at, end) | pe)
             at = end
         paragraph = {
@@ -181,6 +434,25 @@ def indexed(content: list[dict]) -> list[dict]:
             **{k: v for k, v in el["paragraph"].items() if k != "elements"},
         }
         out.append(_span(start, at) | {"paragraph": paragraph})
+    return out
+
+
+def document_tab(tab: dict) -> dict:
+    """A stored tab as real serves its `documentTab`, and a one-tab Doc its flat members: the body,
+    then the header, footer and footnotes it has, then its styles (measured 2026-11-02)."""
+    numbers = footnote_numbers(tab)
+    out: dict = {"body": {"content": indexed(tab["body"], numbers)}}
+    for kind, key in (
+        ("headers", "headerId"),
+        ("footers", "footerId"),
+        ("footnotes", "footnoteId"),
+    ):
+        if tab[kind]:
+            out[kind] = {sid: {key: sid, "content": indexed(c)} for sid, c in tab[kind].items()}
+    out["documentStyle"] = document_style(
+        next(iter(tab["headers"]), None), next(iter(tab["footers"]), None)
+    )
+    out["namedStyles"] = named_styles()
     return out
 
 
@@ -581,11 +853,17 @@ def _join_runs(left: tuple[str, dict, int], chunks: Iterable[tuple[list, int]]) 
     """The run that starts ``chunks`` (lists of characters in body order, each from an index)
     relabelled as the run of ``left``, the character before it, when the two are of one style: a
     delete that brings them together joins them. Only as far as the paragraph's newline, since a
-    run is served per paragraph and a later delete of that newline joins what follows it anew."""
+    run is served per paragraph and a later delete of that newline joins what follows it anew. A
+    footnote reference or page break joins nothing: measured 2026-11-02, deleting a reference
+    joined the runs either side of it."""
+    if left[0] in _ELEMENTS:
+        return
     right = None
     for chunk, begin in chunks:
         for i in range(begin, len(chunk)):
             c, style, run = chunk[i]
+            if c in _ELEMENTS:
+                return
             if right is None:
                 if style != left[1]:
                     return
@@ -604,41 +882,54 @@ _REGEX_CASELESS = regex.IGNORECASE
 
 
 class Body:
-    """A document's body opened for a write: each character with the `TextStyle` of the run it sits
-    in and that run, and each paragraph's `paragraphStyle`, every paragraph ending at a newline. A
-    write changes it in memory, and :meth:`content` is what is stored back.
+    """A body, header, footer or footnote opened for a write: each character with the `TextStyle`
+    of the run it sits in and that run, and each paragraph's `paragraphStyle`, every paragraph
+    ending at a newline. A footnote reference is the character `FOOTNOTE` and a page break
+    `PAGE_BREAK`, and :attr:`footnotes` holds the footnote of each reference in order. A write
+    changes it in memory, and :meth:`content` is what is stored back.
 
     A run is kept apart from its neighbour of the same style until a delete brings the two
     together (`_run_at` says when an insert starts one): measured, deleting a bold run joined the
     unstyled runs either side of it.
 
     Positions here count characters; :meth:`position` turns a request's index, in UTF-16 code
-    units, into one. The checks a request's refusal names are the router's (`routers.google_docs`),
-    which asks :meth:`position` and :meth:`splits_cluster`."""
+    units, into one. A body opens with its section break, at index 0, and its first character
+    is at 1; a header, footer or footnote has none, and its first character is at 0. The checks a
+    request's refusal names are the router's (`routers.google_docs`), which asks :meth:`position`
+    and :meth:`splits_cluster`."""
 
     def __init__(self, file_id: str, content: list[dict], revision: int):
         self.file_id = file_id
         self.revision = revision
-        self._section = content[0]
+        self._section = content[0] if "sectionBreak" in content[0] else None
+        self.base = 1 if self._section else 0
         self._runs = itertools.count()
         self.chars: list[tuple[str, dict, int]] = []
         self.paragraphs: list[dict] = []
-        for el in content[1:]:
+        self.footnotes: list[str] = []
+        for el in content[self.base :]:
             for pe in el["paragraph"]["elements"]:
-                run, n = pe["textRun"], next(self._runs)
-                self.chars += [(c, run.get("textStyle", {}), n) for c in run["content"]]
+                n = next(self._runs)
+                if "textRun" in pe:
+                    run = pe["textRun"]
+                    self.chars += [(c, run.get("textStyle", {}), n) for c in run["content"]]
+                elif "footnoteReference" in pe:
+                    self.chars.append((FOOTNOTE, pe["footnoteReference"]["textStyle"], n))
+                    self.footnotes.append(pe["footnoteReference"]["footnoteId"])
+                else:
+                    self.chars.append((PAGE_BREAK, pe["pageBreak"]["textStyle"], n))
             self.paragraphs.append(el["paragraph"].get("paragraphStyle", {}))
         self._split = 0
 
     @property
     def end(self) -> int:
-        """The body's end index: one past its last newline."""
-        return 1 + sum(utf16_len(c) for c, *_ in self.chars)
+        """The end index: one past the last newline."""
+        return self.base + sum(utf16_len(c) for c, *_ in self.chars)
 
     def position(self, index: int) -> int | None:
-        """The character a body index falls before, or None when it falls between the two halves
-        of a surrogate pair. ``index`` is at least 1 and at most :attr:`end`."""
-        at = 1
+        """The character an index falls before, or None when it falls between the two halves
+        of a surrogate pair. ``index`` is at least :attr:`base` and at most :attr:`end`."""
+        at = self.base
         for pos, (c, *_) in enumerate(self.chars):
             if at == index:
                 return pos
@@ -697,7 +988,9 @@ class Body:
         a struck-through newline, and an unstyled character replaced after a bold one each stayed a
         run of their own, while text at the start of a heading, of an empty paragraph and of a bold
         paragraph after an unstyled newline, and a bold character replaced after an unstyled one,
-        joined the run after it."""
+        joined the run after it. A footnote reference or page break is no run to join: measured
+        2026-11-02, text inserted right after a reference joined the run after it, and right
+        before one the run before it."""
         before = self.chars[pos - 1] if pos else None
         return self._run_between(before, self.chars[pos], style, self._starts_paragraph(pos))
 
@@ -710,9 +1003,10 @@ class Body:
     ) -> int:
         if before is not None and not before[1].keys() <= style.keys():
             return next(self._runs)
-        if not at_start and before is not None and before[1] == style:
-            return before[2]
-        if after[1] == style:
+        if not at_start and before is not None and before[0] not in _ELEMENTS:
+            if before[1] == style:
+                return before[2]
+        if after[0] not in _ELEMENTS and after[1] == style:
             return after[2]
         return next(self._runs)
 
@@ -741,6 +1035,28 @@ class Body:
         if made:
             self.paragraphs[p : p + 1] = [*made, own] if at_start else [own, *made]
 
+    def insert_footnote(self, pos: int, footnote_id: str) -> None:
+        """A reference to ``footnote_id`` before the character at ``pos``, in the style text
+        inserted there takes: measured 2026-11-02, a reference made inside a bold run, and right
+        after one, was bold, and one after an unstyled space was not."""
+        self.footnotes.insert(self._footnotes_before(pos), footnote_id)
+        self.insert(pos, FOOTNOTE, self._style_at(pos, FOOTNOTE))
+
+    def _footnotes_before(self, pos: int) -> int:
+        return sum(1 for c, *_ in self.chars[:pos] if c == FOOTNOTE)
+
+    def _drop_footnotes(self, spans: list[tuple[int, int]]) -> None:
+        """Forget the footnote of each reference inside ``spans``, which a write is about to
+        remove: measured 2026-11-02, a reference deleted or replaced took its footnote with it."""
+        kept, k = [], 0
+        for pos, (c, *_) in enumerate(self.chars):
+            if c != FOOTNOTE:
+                continue
+            if not any(start <= pos < end for start, end in spans):
+                kept.append(self.footnotes[k])
+            k += 1
+        self.footnotes = kept
+
     def delete(self, start: int, end: int) -> None:
         """The characters in ``[start, end)``. The paragraphs a deleted newline joins take the first
         one's style, or, when the range starts at that paragraph's start, the last one's. Measured
@@ -749,6 +1065,7 @@ class Body:
         first = self._paragraph_of(start)
         joined = sum(1 for c, *_ in self.chars[start:end] if c == "\n")
         keep = first + joined if self._starts_paragraph(start) else first
+        self._drop_footnotes([(start, end)])
         del self.chars[start:end]
         if joined:
             self.paragraphs[first : first + joined + 1] = [self.paragraphs[keep]]
@@ -816,6 +1133,8 @@ class Body:
                 if text:
                     self.insert(start, text, style)
             return
+        last = len(self.chars) - 1
+        self._drop_footnotes([(start, min(end, last)) for start, end in matches])
         newlines = list(itertools.accumulate((c == "\n" for c, *_ in self.chars), initial=0))
         cut = len(self.chars)
         tail: list[list[tuple[str, dict, int]]] = []  # chunks, the last one first in the body
@@ -849,27 +1168,138 @@ class Body:
         self.chars = [c for chunk in reversed(tail) for c in chunk]
         self.paragraphs = tail_paragraphs[::-1]
 
-    def text(self) -> str:
-        """The body as the text Drive's search and export read: one line per paragraph."""
-        return "".join(c for c, *_ in self.chars)[:-1]
-
     def content(self) -> list[dict]:
-        """The body as it is stored, one `textRun` per run in each paragraph."""
-        out = [self._section]
-        runs: list[tuple[str, dict, int]] = []
+        """What is stored back, one `textRun` per run in each paragraph and an element of its own
+        for each footnote reference and page break."""
+        out = [self._section] if self._section else []
+        elements: list[dict] = []
+        notes = iter(self.footnotes)
+        held = None  # the run the last text element is
         p = 0
         for c, style, run in self.chars:
-            if runs and runs[-1][2] == run:
-                runs[-1] = (runs[-1][0] + c, style, run)
+            if c == FOOTNOTE:
+                ref = {"footnoteId": next(notes), "textStyle": style}
+                elements.append({"footnoteReference": ref})
+                held = None
+            elif c == PAGE_BREAK:
+                elements.append({"pageBreak": {"textStyle": style}})
+                held = None
+            elif held == run:
+                elements[-1]["textRun"]["content"] += c
             else:
-                runs.append((c, style, run))
+                elements.append({"textRun": {"content": c, "textStyle": style}})
+                held = run
             if c == "\n":
-                elements = [{"textRun": {"content": t, "textStyle": s}} for t, s, _ in runs]
                 out.append(
                     {"paragraph": {"elements": elements, "paragraphStyle": self.paragraphs[p]}}
                 )
-                runs, p = [], p + 1
+                elements, held, p = [], None, p + 1
         return out
+
+
+class Document:
+    """A stored document opened for a write: its tab tree, and each body, header, footer or
+    footnote a request reaches opened as a :class:`Body` once and kept open until :meth:`stored`
+    writes them back."""
+
+    def __init__(self, file_id: str, stored: dict, revision: int):
+        self.file_id = file_id
+        self.revision = revision
+        self.tabs: list[dict] = copy.deepcopy(stored["tabs"])
+        self._open: dict[tuple[str, str], Body] = {}
+        self._made = itertools.count()
+
+    def flat(self) -> list[dict]:
+        return [tab for tab, *_ in walk(self.tabs)]
+
+    def tab(self, tab_id: str | None) -> dict | None:
+        """The tab ``tab_id`` names, the first tab for none (measured 2026-11-02: a location with
+        no or an empty `tabId` wrote the first tab, whatever its id)."""
+        if not tab_id:
+            return self.tabs[0]
+        return next((t for t in self.flat() if t["tabProperties"]["tabId"] == tab_id), None)
+
+    def kind(self, tab: dict, segment: str) -> str | None:
+        """Whether ``segment`` names the tab's ``header``, ``footer`` or a ``footnote``, ``body``
+        for the empty id, or None for none of them."""
+        if not segment:
+            return "body"
+        for kind in ("header", "footer", "footnote"):
+            if segment in tab[f"{kind}s"]:
+                return kind
+        return None
+
+    def open(self, tab: dict, segment: str = "") -> Body:
+        key = (tab["tabProperties"]["tabId"], segment)
+        if key not in self._open:
+            kind = self.kind(tab, segment)
+            content = tab["body"] if kind == "body" else tab[f"{kind}s"][segment]
+            self._open[key] = Body(self.file_id, content, self.revision)
+        return self._open[key]
+
+    def segments(self, tab: dict) -> list[Body]:
+        """The tab's body, header, footer and footnotes, each opened."""
+        ids = [""] + [sid for kind in ("headers", "footers", "footnotes") for sid in tab[kind]]
+        return [self.open(tab, sid) for sid in ids]
+
+    def settle(self) -> None:
+        """Drop each footnote whose reference a write removed, so a later request in the batch no
+        longer finds it."""
+        for tab in self.flat():
+            key = (tab["tabProperties"]["tabId"], "")
+            if key not in self._open:
+                continue
+            kept = set(self._open[key].footnotes)
+            for fid in [f for f in tab["footnotes"] if f not in kept]:
+                del tab["footnotes"][fid]
+                self._open.pop((key[0], fid), None)
+
+    def new_id(self, make) -> str:
+        """An id ``make`` draws from this write, one no tab, header, footer or footnote has."""
+        taken = {t["tabProperties"]["tabId"] for t in self.flat()}
+        taken |= {s for t in self.flat() for k in ("headers", "footers", "footnotes") for s in t[k]}
+        while (made := make(self.file_id, f"r{self.revision}.{next(self._made)}")) in taken:
+            pass
+        return made
+
+    def parent(self, tab: dict) -> dict | None:
+        return next((p for t, p, _ in walk(self.tabs) if t is tab), None)
+
+    def siblings(self, parent: dict | None) -> list[dict]:
+        return parent["childTabs"] if parent else self.tabs
+
+    def place(self, tab: dict, parent: dict | None, index: int | None, new: bool = False) -> None:
+        """Put ``tab`` under ``parent`` (None for the root) before the sibling now at ``index``,
+        or last. Measured 2026-11-02: a root tab moved from 0 to 4 among four became the last and
+        from 1 to 2 stayed where it was."""
+        siblings = self.siblings(parent)
+        if not new:
+            old = self.siblings(self.parent(tab))
+            at = next(i for i, t in enumerate(old) if t is tab)
+            old.pop(at)
+            if old is siblings and index is not None and index > at:
+                index -= 1
+        siblings.insert(len(siblings) if index is None else min(index, len(siblings)), tab)
+
+    def remove(self, tab: dict) -> None:
+        """Take ``tab`` out of the tree, its child tabs with it."""
+        gone = {t["tabProperties"]["tabId"] for t, *_ in walk([tab])}
+        siblings = self.siblings(self.parent(tab))
+        siblings.pop(next(i for i, t in enumerate(siblings) if t is tab))
+        for key in [k for k in self._open if k[0] in gone]:
+            del self._open[key]
+
+    def stored(self) -> dict:
+        for tab in self.flat():
+            for (tid, sid), body in self._open.items():
+                if tid != tab["tabProperties"]["tabId"]:
+                    continue
+                kind = self.kind(tab, sid)
+                if kind == "body":
+                    tab["body"] = body.content()
+                elif kind is not None:
+                    tab[f"{kind}s"][sid] = body.content()
+        return {"tabs": self.tabs}
 
 
 # --- a body as Drive's `files.export` renders it --------------------------------------------------
@@ -893,26 +1323,35 @@ _KEPT_SPACES = "\u2007\u202f"
 _TRIMMED = "".join(map(chr, range(0x21)))
 
 
-def _paragraph_runs(paragraph: dict) -> list[tuple[str, dict]]:
-    """A paragraph's runs without the newline that ends it."""
-    runs = [
-        (pe["textRun"]["content"], pe["textRun"].get("textStyle", {}))
-        for pe in paragraph["elements"]
-    ]
+def _paragraph_runs(paragraph: dict, note=None) -> list[tuple[str, dict]]:
+    """A paragraph's runs without the newline that ends it, a page break as `PAGE_BREAK` and a
+    footnote reference as ``note`` writes its footnote's id, or as `FOOTNOTE`."""
+    runs = []
+    for pe in paragraph["elements"]:
+        if "textRun" in pe:
+            runs.append((pe["textRun"]["content"], pe["textRun"].get("textStyle", {})))
+        elif "footnoteReference" in pe:
+            ref = pe["footnoteReference"]
+            runs.append((note(ref["footnoteId"]) if note else FOOTNOTE, ref["textStyle"]))
+        else:
+            runs.append((PAGE_BREAK, pe["pageBreak"]["textStyle"]))
     text, style = runs[-1]
     runs[-1] = (text.removesuffix("\n"), style)
     return [r for r in runs if r[0]]
 
 
 def _spans(paragraph: dict) -> list[tuple[str, dict]]:
-    """A paragraph's runs with neighbours of one text style joined. A `documents.batchUpdate`
-    insert beside a link leaves two such runs, and Markdown escapes them as one. A text style the
-    paragraph's named style sets to the same value (HEADING_6's italic) is left out first, as
-    real's body leaves it out: on 2026-11-01 an unstyled space and an italic tab in a HEADING_6
-    read back as one unstyled run."""
+    """A paragraph's runs with neighbours of one text style joined, its page breaks left out. A
+    `documents.batchUpdate` insert beside a link leaves two such runs, and Markdown escapes them as
+    one. A text style the paragraph's named style sets to the same value (HEADING_6's italic) is
+    left out first, as real's body leaves it out: on 2026-11-01 an unstyled space and an italic tab
+    in a HEADING_6 read back as one unstyled run."""
     named = _TEXT_STYLES.get(_named(paragraph), {})
     out: list[tuple[str, dict]] = []
     for text, style in _paragraph_runs(paragraph):
+        text = text.replace(PAGE_BREAK, "")
+        if not text:
+            continue
         style = {k: v for k, v in style.items() if named.get(k) != v}
         if out and out[-1][1] == style:
             out[-1] = (out[-1][0] + text, style)
@@ -965,28 +1404,93 @@ def _lead_breaks(paragraph: dict) -> int:
     return n
 
 
-def plain_text(content: list[dict]) -> str:
-    """A body as `files.export` serves it as `text/plain`: a byte-order mark, then one line per
-    paragraph joined by CRLF, trimmed at both ends. A vertical tab is a CRLF and drops the separator
-    after it (`_after_break`), a tab is eight spaces. A paragraph holding nothing but vertical tabs,
-    or nothing, takes one CRLF more, and one other than a HEADING_n that starts with vertical tabs
-    takes the CRLFs `_lead_breaks` counts; a HEADING_n holding nothing is left out, and one holding
-    only vertical tabs is a CRLF fewer than them."""
+# What a plain export writes for a page break, on a line of its own, and before the footnotes.
+_RULE = "_" * 16
+
+
+def _page_breaks(text: str, bare: str) -> str:
+    """A paragraph's text with each page break a `_RULE` line: measured 2026-11-02, `ab`, a page
+    break and `cd` were `ab`, the rule and `cd` on three lines; a page break opening a paragraph
+    starts no line before it, and one closing a paragraph that holds text ends none after it,
+    while a paragraph holding a page break alone is the rule and two CRLFs."""
+    out = ""
+    for i, piece in enumerate(text.split(PAGE_BREAK)):
+        if i:
+            out += ("\x0b" if out else "") + _RULE + ("\x0b" if piece or not bare else "")
+        out += piece
+    return out
+
+
+def _plain_lines(content: list[dict], note) -> list[str]:
+    """Stored content as `files.export` writes it as `text/plain`, a line per paragraph. A vertical
+    tab is a CRLF and drops the separator after it (`_after_break`), a tab is eight spaces, a page
+    break is `_page_breaks`' and a footnote reference ``note``'s. A paragraph holding nothing but
+    vertical tabs, or nothing, takes one CRLF more, and one other than a HEADING_n that starts with
+    vertical tabs takes the CRLFs `_lead_breaks` counts; a HEADING_n holding nothing is left out,
+    and one holding only vertical tabs is a CRLF fewer than them."""
     lines = []
     for el in content:
         if "paragraph" not in el:
             continue
-        text = "".join(_after_break(t) for t, _ in _paragraph_runs(el["paragraph"]))
+        text = "".join(_after_break(t) for t, _ in _paragraph_runs(el["paragraph"], note))
+        bare = text.replace(PAGE_BREAK, "")
+        if PAGE_BREAK in text:
+            text = _page_breaks(text, bare)
         if _named(el["paragraph"]).startswith("HEADING_"):
             if not text:
                 continue
             if not text.strip("\x0b"):
                 text = text[1:]
         else:
-            if not text.strip("\x0b"):
+            if not bare.strip("\x0b"):
                 text += "\x0b"
             text = "\x0b" * _lead_breaks(el["paragraph"]) + text
         lines.append("".join(map(_plain_char, text)))
+    return lines
+
+
+def _export_parts(doc: dict) -> tuple[list[dict], list[dict], list[dict], dict, list]:
+    """What an export renders of a document: every tab's body one after another, depth first, the
+    first tab's header and footer, and the footnotes numbered across the tabs by their references,
+    each footnote's id with its content. Measured 2026-11-02: a second tab's body followed the
+    first's with no title, its header and footer were left out, and its first footnote was `[2]`
+    after the first tab's `[1]`."""
+    tabs = [tab for tab, *_ in walk(doc["tabs"])]
+    body = [el for tab in tabs for el in tab["body"]]
+    first = doc["tabs"][0]
+    header = next(iter(first["headers"].values()), [])
+    footer = next(iter(first["footers"].values()), [])
+    notes = [
+        (
+            pe["footnoteReference"]["footnoteId"],
+            tab["footnotes"][pe["footnoteReference"]["footnoteId"]],
+        )
+        for tab in tabs
+        for el in tab["body"]
+        if "paragraph" in el
+        for pe in el["paragraph"]["elements"]
+        if "footnoteReference" in pe
+    ]
+    numbers = {fid: n for n, (fid, _) in enumerate(notes, 1)}
+    return body, header, footer, numbers, notes
+
+
+def plain_text(doc: dict) -> str:
+    """A document as `files.export` serves it as `text/plain`: a byte-order mark, then the first
+    tab's header, every tab's body, the first tab's footer, and when there are footnotes a
+    `_RULE` and each footnote after its number in brackets, the number its reference is written
+    as too (`_plain_lines`), all joined by CRLF and trimmed at both ends. Measured 2026-11-02."""
+    body, header, footer, numbers, notes = _export_parts(doc)
+
+    def note(fid: str) -> str:
+        return f"[{numbers[fid]}]"
+
+    lines = _plain_lines(header, note) + _plain_lines(body, note) + _plain_lines(footer, note)
+    if notes:
+        lines.append(_RULE)
+        lines += [
+            f"[{n}]" + "\r\n".join(_plain_lines(c, note)) for n, (_, c) in enumerate(notes, 1)
+        ]
     return "\ufeff" + "\r\n".join(lines).strip(_TRIMMED)
 
 
@@ -1020,9 +1524,10 @@ _MARK_ORDER = ("link", "italic", "bold", "strikethrough")
 _DELIMITER = {"italic": "*", "bold": "**", "strikethrough": "~~"}
 
 
-def _escape(text: str) -> list[str]:
-    """Each character of one run as Markdown writes it."""
-    out = [f"\\{c}" if c in _ALWAYS else c for c in text]
+def _escape(text: str, notes: Iterator[int]) -> list[str]:
+    """Each character of one run as Markdown writes it, a footnote reference as `[^n]` with the
+    next of ``notes``."""
+    out = [f"[^{next(notes)}]" if c == FOOTNOTE else f"\\{c}" if c in _ALWAYS else c for c in text]
     for i, c in enumerate(text):
         if c in "+-=" and _WORD_START.match(text, i):
             out[i] = f"\\{c}"
@@ -1278,7 +1783,7 @@ def _stretch(pieces: list[tuple[frozenset, str, list[str]]]) -> str:
     return "".join(text for text, _ in out)
 
 
-def _inline(runs: list[tuple[str, dict]], named: dict, heading: bool = False) -> list:
+def _inline(runs: list[tuple[str, dict]], named: dict, notes: Iterator[int], heading=False) -> list:
     """A paragraph's runs as Markdown: text and a `_BREAK` for each vertical tab, or in a heading a
     space. A vertical tab closes every mark; each stretch between two is `_stretch`, where runs
     whose marks are equal, as for text styles that part on underline alone, meet without a
@@ -1292,7 +1797,7 @@ def _inline(runs: list[tuple[str, dict]], named: dict, heading: bool = False) ->
             if piece == "\x0b":
                 stretches.append([])
             elif piece:
-                stretches[-1].append((marks, piece, _escape(piece)))
+                stretches[-1].append((marks, piece, _escape(piece, notes)))
     out: list = []
     line = ""
     for n, stretch in enumerate(stretches):
@@ -1306,11 +1811,26 @@ def _inline(runs: list[tuple[str, dict]], named: dict, heading: bool = False) ->
     return [*out, line]
 
 
-def markdown(content: list[dict]) -> str:
-    """A body as `files.export` serves it as `text/markdown` or `text/x-markdown`: TITLE as `#`,
-    SUBTITLE as `##` and HEADING_n as n `#`s, a heading's vertical tab a space; bold, italic,
-    strikethrough and links in a paragraph's named style or its runs' as `**`, `*`, `~~` and
-    `[text](url)`, underline as nothing. Nothing is trimmed, and nothing ends the last line."""
+def markdown(doc: dict) -> str:
+    """A document as `files.export` serves it as `text/markdown` or `text/x-markdown`: every tab's
+    body one after another (`_export_parts`), and then each footnote as `[^n]: ` and its content,
+    the lines after its first indented four spaces, each two apart by a blank line. Measured
+    2026-11-02: a page break wrote nothing, a reference `[^n]` inside the marks around it, and no
+    header or footer was written."""
+    body, _, _, _, notes = _export_parts(doc)
+    refs = iter(range(1, len(notes) + 1))
+    out = _markdown(body, refs)
+    for n, (_, content) in enumerate(notes, 1):
+        lines = _markdown(content, refs).split("\n")
+        out += f"\n\n[^{n}]: " + "\n".join([lines[0]] + [f"    {x}" if x else x for x in lines[1:]])
+    return out
+
+
+def _markdown(content: list[dict], notes: Iterator[int]) -> str:
+    """Stored content as Markdown: TITLE as `#`, SUBTITLE as `##` and HEADING_n as n `#`s, a
+    heading's vertical tab a space; bold, italic, strikethrough and links in a paragraph's named
+    style or its runs' as `**`, `*`, `~~` and `[text](url)`, underline as nothing. Nothing is
+    trimmed, and nothing ends the last line."""
     paragraphs = [el["paragraph"] for el in content if "paragraph" in el]
     levels = [_MARKDOWN_LEVEL.get(_named(p)) for p in paragraphs]
     tokens: list = []
@@ -1320,9 +1840,9 @@ def markdown(content: list[dict]) -> str:
         runs = _spans(paragraph)
         named = _TEXT_STYLES.get(_named(paragraph), {})
         if level:
-            tokens.append("#" * level + " " + "".join(_inline(runs, named, heading=True)))
+            tokens.append("#" * level + " " + "".join(_inline(runs, named, notes, heading=True)))
             continue
-        line = _inline(runs, named)
+        line = _inline(runs, named, notes)
         if line == ["  "] and i + 1 < len(paragraphs) and levels[i + 1]:
             tokens.append(_GAP)
         else:

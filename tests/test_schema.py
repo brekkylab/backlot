@@ -1691,10 +1691,11 @@ def test_content_is_required_only_when_no_grid_or_paragraphs_are_stated():
     supplying `content` to every drive test in the suite."""
     assert record_errors(_drive()) == [
         "Q3 pipeline: 'content' is a required property when sheets is absent and paragraphs is "
-        "absent"
+        "absent and tabs is absent"
     ]
     assert record_errors(_drive(subtype="spreadsheet", sheets=[{"grid": [["a"]]}])) == []
     assert record_errors(_drive(paragraphs=[{"text": "a"}])) == []
+    assert record_errors(_drive(tabs=[{"paragraphs": [{"text": "a"}]}])) == []
 
 
 _LONE = "holds a lone surrogate, a `\\ud800`-style escape that pairs with nothing"

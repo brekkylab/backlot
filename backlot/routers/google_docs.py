@@ -84,10 +84,6 @@ _DOCS_LEGACY = frozenset(_GOOGLE_FIELDS["docs.Document"]) & frozenset(
     _GOOGLE_FIELDS["docs.DocumentTab"]
 )
 
-# A corpus states no tabs, so a Doc is the one tab every Doc starts with: measured 2026-10-09 on a
-# one-tab Doc and 2026-10-26 on one `documents.create` made.
-_DOCS_TAB = {"tabId": "t.0", "title": "Tab 1", "index": 0}
-
 _P_DOCS_GET = [
     qp("suggestionsViewMode"),
     qp("includeTabsContent", "boolean"),
@@ -114,17 +110,38 @@ def _docs_comment_fields(named: dict) -> bool:
     return "comments" in named or "suggestions" in named or anchored(named.get("tabs", {}))
 
 
-def _docs_content(body: list[dict]) -> dict:
-    """What a Doc and its one tab both hold: ``body`` (`backlot.gdocs`) and the default styles."""
-    return {
-        "body": {"content": gdocs.indexed(body)},
-        "documentStyle": gdocs.document_style(),
-        "namedStyles": gdocs.named_styles(),
-    }
+def _docs_stored(conn, row) -> dict:
+    """A Doc as `backlot.gdocs` stores it, or its line reading when it states no structure."""
+    stored = store.gdrive_doc_for(conn, row["id"])
+    return stored if stored is not None else gdocs.from_prose(row["content"] or "")
 
 
-def _docs_tabs(content: dict) -> list[dict]:
-    return [{"tabProperties": dict(_DOCS_TAB), "documentTab": content}]
+def _docs_tab_properties(tab: dict, parent: dict | None, index: int, depth: int) -> dict:
+    """A tab's `tabProperties` in real's order, its parent, index and depth read off the tree:
+    measured 2026-11-02, a root tab has no `parentTabId` and no `nestingLevel`, and the first tab
+    serves `index` 0."""
+    props = tab["tabProperties"]
+    out = {"tabId": props["tabId"], "title": props["title"]}
+    if parent is not None:
+        out["parentTabId"] = parent["tabProperties"]["tabId"]
+    out["index"] = index
+    if depth:
+        out["nestingLevel"] = depth
+    if props.get("iconEmoji"):
+        out["iconEmoji"] = props["iconEmoji"]
+    return out
+
+
+def _docs_tabs(tabs: list[dict], parent: dict | None = None, depth: int = 0) -> list[dict]:
+    """The `tabs` real serves: each tab's properties, its child tabs and then its contents."""
+    out = []
+    for i, tab in enumerate(tabs):
+        served = {"tabProperties": _docs_tab_properties(tab, parent, i, depth)}
+        if tab["childTabs"]:
+            served["childTabs"] = _docs_tabs(tab["childTabs"], tab, depth + 1)
+        served["documentTab"] = gdocs.document_tab(tab)
+        out.append(served)
+    return out
 
 
 # Real's `revisionId` is `AHj4eM` and about a hundred characters of URL-safe base64 (measured
@@ -165,8 +182,9 @@ def _docs_refuse_suggestions() -> gerr.GoogleError:
 
 @router.get("/docs/v1/documents/{document_id}", openapi_extra={"parameters": _P_DOCS_GET})
 async def docs_get(document_id: str, request: Request):
-    """The document as Docs structural elements: its stored body, or one ``paragraph`` per line of
-    its text when it states none (`backlot.gdocs`), flat or as its one tab.
+    """The document as Docs structural elements: its stored tabs, or one tab holding a
+    ``paragraph`` per line of its text when it states none (`backlot.gdocs`), flat as its first
+    tab or as all of them. Measured 2026-11-02, the flat answer is the first tab's whatever its id.
 
     The order real answers in, measured 2026-10-26: the credential, the typed values, the mask
     (`fields=nope` on an id that does not exist is its 400), the lookup, a reader's suggestions
@@ -247,27 +265,26 @@ async def docs_get(document_id: str, request: Request):
     )
 
     conn = auth.conn(request)
-    body = store.gdrive_doc_body_for(conn, document_id)
-    content = _docs_content(body if body is not None else gdocs.from_text(row["content"] or ""))
+    stored = _docs_stored(conn, row)
     written = store.gdrive_doc_revision(conn, document_id)
     revision = {"revisionId": _docs_revision(document_id, written)} if owned else {}
     # Real's orders, measured 2026-10-16 on twelve Docs and 2026-10-26 on the tabbed answer, the
     # same under each mode and whatever order a mask names the members in. Real also serves
-    # `headers` and `footers` after `body`, `lists` after `namedStyles` and `inlineObjects` before
-    # `documentId` when a Doc has them; this server serves none of the four.
+    # `lists` after `namedStyles` and `inlineObjects` before `documentId` when a Doc has them; this
+    # server serves neither.
     if tabs:
         doc = {
             "title": row["title"],
             **revision,
             "suggestionsViewMode": suggestions,
             "documentId": document_id,
-            "tabs": _docs_tabs(content),
+            "tabs": _docs_tabs(stored["tabs"]),
             "commentsViewMode": view,
         }
     else:
         doc = {
             "title": row["title"],
-            **content,
+            **gdocs.document_tab(stored["tabs"][0]),
             **revision,
             "suggestionsViewMode": suggestions,
             "documentId": document_id,
@@ -324,16 +341,29 @@ for _key, _group in {
     **{("docs.Request", kind): "request" for kind in _GOOGLE_RECORDED["docs.Request"]["fields"]},
     ("docs.InsertTextRequest", "location"): "insertion_location",
     ("docs.InsertTextRequest", "endOfSegmentLocation"): "insertion_location",
+    ("docs.InsertPageBreakRequest", "location"): "insertion_location",
+    ("docs.InsertPageBreakRequest", "endOfSegmentLocation"): "insertion_location",
+    ("docs.CreateFootnoteRequest", "location"): "footnote_reference_location",
+    ("docs.CreateFootnoteRequest", "endOfSegmentLocation"): "footnote_reference_location",
     ("docs.WriteControl", "requiredRevisionId"): "control",
     ("docs.WriteControl", "targetRevisionId"): "control",
     ("docs.ReplaceAllTextRequest", "containsText"): "criteria",
 }.items():
     _DOCS_SHAPES[_key] = {"oneof": _group}
+# `createHeader`'s and `createFooter`'s `type`, by the discovery document: measured 2026-11-02,
+# `1` was read as `DEFAULT`.
+_DOCS_HEADER_FOOTER = protojson.Enum(
+    f"{_DOCS_VIEW}.HeaderFooterType", ("HEADER_FOOTER_TYPE_UNSPECIFIED", "DEFAULT")
+)
 # A request is declared inside the body's message: `"requests": "x"` is refused naming
 # `….BatchUpdateDocumentRequest.Request`.
 _PJ_DOCS = _pj_messages(
     _DOCS_VIEW,
-    {("docs.WriteControl", "writeMode"): _DOCS_WRITE_MODE},
+    {
+        ("docs.WriteControl", "writeMode"): _DOCS_WRITE_MODE,
+        ("docs.CreateHeaderRequest", "type"): _DOCS_HEADER_FOOTER,
+        ("docs.CreateFooterRequest", "type"): _DOCS_HEADER_FOOTER,
+    },
     _DOCS_SHAPES,
     {"docs.Request": "BatchUpdateDocumentRequest.Request"},
 )
@@ -393,39 +423,44 @@ async def docs_create(request: Request):
     owner = _editor_creator(request, caller)
     file_id = _editor_new_file_id(conn, owner)
     _editor_store(conn, file_id, owner, title, "document", "")
-    content = _docs_content(gdocs.from_text(""))
+    blank = gdocs.from_prose("")
     doc = {
         "title": title,
-        **content,
+        **gdocs.document_tab(blank["tabs"][0]),
         "revisionId": _docs_revision(file_id),
         "suggestionsViewMode": "SUGGESTIONS_INLINE",
         "documentId": file_id,
-        "tabs": _docs_tabs(content),
+        "tabs": _docs_tabs(blank["tabs"]),
     }
     return doc if tree is None else _gmask_apply(tree, doc)
 
 
 # --- `documents.batchUpdate` ----------------------------------------------------------------------
 #
-# Measured against the live Docs v1 API on 2026-10-29, as a Workspace member writing a Doc it owns
-# and as a second member it was shared with as a reader. How each request changes the body is
-# `gdocs.Body`'s; this section is the request, its refusals and the answer.
+# Measured against the live Docs v1 API on 2026-10-29 and 2026-11-02, as a Workspace member writing
+# a Doc it owns and as a second member it was shared with as a reader. How each request changes
+# the document is `gdocs.Body`'s and `gdocs.Document`'s; this section is the request, its refusals
+# and the answer.
 
 _PJ_BATCH_UPDATE = _PJ_DOCS("docs.BatchUpdateDocumentRequest")
 
 
-def _docs_target(where: dict) -> None:
-    """Refuse a location or range in a tab or segment the Doc does not have. A Doc here is its one
-    tab, `t.0`, with no header, footer or footnote; measured, the tab is checked before the
-    segment, and both before anything else the request states."""
-    if where.get("tab_id") not in (None, "", _DOCS_TAB["tabId"]):
+def _docs_target(doc: gdocs.Document, where: dict) -> tuple[dict, str, str]:
+    """The tab, the kind of segment (`gdocs.Document.kind`) and the segment id a location or range
+    names, refused when the Doc has no such tab or the tab no such header, footer or footnote:
+    measured, the tab is checked before the segment, and both before anything else the request
+    states. No `tabId` names the first tab, and a header's id names nothing in another tab."""
+    tab = doc.tab(where.get("tab_id"))
+    if tab is None:
         raise _EditorRefused("Cannot apply request to an invalid tab ID.")
-    segment = where.get("segment_id")
-    if segment:
+    segment = where.get("segment_id", "")
+    kind = doc.kind(tab, segment)
+    if kind is None:
         raise _EditorRefused(
             f"Segment with ID {segment} was not found. If a segment ID is provided, it must be a "
             "header, footer or footnote ID. Use an empty segment ID to reference the body."
         )
+    return tab, kind, segment
 
 
 def _docs_negative(index: int) -> None:
@@ -440,16 +475,25 @@ def _docs_past_end(index: int, body: gdocs.Body) -> None:
         )
 
 
-def _docs_insert_text(body: gdocs.Body, req: dict) -> tuple[dict, bool]:
+def _docs_cluster(body: gdocs.Body, index: int) -> int:
+    pos = body.position(index)
+    if pos is None or body.splits_cluster(pos):
+        raise _EditorRefused("The insertion index cannot be within a grapheme cluster.")
+    return pos
+
+
+def _docs_insert_text(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``insertText``, in real's order of refusals, measured: no location, the tab, the segment, no
-    text, then the index -- below zero, at or past the body's end, the section break at 0, inside a
-    grapheme cluster. `endOfSegmentLocation` inserts before the body's last newline. The characters
-    `insertText` strips are dropped, and text that was nothing else inserts nothing and is taken.
-    Real fails on one that holds a character in `gdocs.UNWRITABLE` once every request is read."""
+    text, then the index -- below zero, at or past the segment's end, a body's section break at 0,
+    inside a grapheme cluster. A header, footer or footnote opens at 0 with its first character.
+    `endOfSegmentLocation` inserts before the segment's last newline. The characters `insertText`
+    strips are dropped, and text that was nothing else inserts nothing and is taken. Real fails on
+    one that holds a character in `gdocs.UNWRITABLE` once every request is read."""
     where = req.get("location", req.get("end_of_segment_location"))
     if where is None:
         raise _EditorRefused("No insertion location set.")
-    _docs_target(where)
+    tab, _, segment = _docs_target(doc, where)
+    body = doc.open(tab, segment)
     text = req.get("text", "")
     if not text:
         raise _EditorRefused("Insert text requests must specify text to insert.")
@@ -457,14 +501,12 @@ def _docs_insert_text(body: gdocs.Body, req: dict) -> tuple[dict, bool]:
         index = where.get("index", 0)
         _docs_negative(index)
         _docs_past_end(index, body)
-        if index == 0:
+        if index < body.base:
             raise _EditorRefused(
                 "The insertion index must be inside the bounds of an existing paragraph. You can "
                 "still create new paragraphs by inserting newlines."
             )
-        pos = body.position(index)
-        if pos is None or body.splits_cluster(pos):
-            raise _EditorRefused("The insertion index cannot be within a grapheme cluster.")
+        pos = _docs_cluster(body, index)
     else:
         pos = len(body.chars) - 1
     kept = gdocs.STRIPPED.sub("", text)
@@ -473,16 +515,18 @@ def _docs_insert_text(body: gdocs.Body, req: dict) -> tuple[dict, bool]:
     return {}, bool(gdocs.UNWRITABLE.search(kept))
 
 
-def _docs_delete_content_range(body: gdocs.Body, req: dict) -> tuple[dict, bool]:
+def _docs_delete_content_range(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``deleteContentRange``, in real's order of refusals, measured: no range, the tab, the
     segment, an index missing (a `null` one included), the end before the start, an index below
-    zero, the start and then the end's last index at or past the body's end, an empty range, the
-    section break at 0, the body's last newline, and either end inside a surrogate pair. Deleting a
-    combining mark without the letter it sits on is taken."""
+    zero, the start and then the end's last index at or past the segment's end, an empty range, a
+    body's section break at 0, the segment's last newline, and either end inside a surrogate pair.
+    Deleting a combining mark without the letter it sits on is taken, and deleting a footnote
+    reference deletes its footnote."""
     rng = req.get("range")
     if rng is None:
         raise _EditorRefused("Delete content range requests must include a range to delete.")
-    _docs_target(rng)
+    tab, _, segment = _docs_target(doc, rng)
+    body = doc.open(tab, segment)
     if "start_index" not in rng or "end_index" not in rng:
         raise _EditorRefused("Invalid range: must contain a start and end index")
     start, end = rng["start_index"], rng["end_index"]
@@ -493,7 +537,7 @@ def _docs_delete_content_range(body: gdocs.Body, req: dict) -> tuple[dict, bool]
     _docs_past_end(end - 1, body)
     if start == end:
         raise _EditorRefused("The range should not be empty.")
-    if start == 0:
+    if start < body.base:
         raise _EditorRefused("Cannot operate on the first section break in the document.")
     if end == body.end:
         raise _EditorRefused(
@@ -506,29 +550,287 @@ def _docs_delete_content_range(body: gdocs.Body, req: dict) -> tuple[dict, bool]
     return {}, False
 
 
-def _docs_replace_all_text(body: gdocs.Body, req: dict) -> tuple[dict, bool]:
-    """``replaceAllText``: real fails on a replacement holding a character in `gdocs.UNWRITABLE`
-    that matched, and on a `tabsCriteria` naming a tab the Doc does not have, once every request
-    is read; measured, a zero-match replace by U+FDD0 was a 200. What matches is
-    `gdocs.Body.find`'s, and an empty or missing `replaceText` deletes it; the characters
-    `insertText` strips are stripped from it too. A `searchByRegex` replacement is the text as
-    sent: `$1` is not a group."""
+def _docs_replace_all_text(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``replaceAllText``: in every tab, or only in those a `tabsCriteria` lists, in each tab's
+    body, header, footer and footnotes. Measured 2026-11-02: with no `tabsCriteria` a child tab
+    was replaced in too, one listing no tab replaced nothing, a tab listed twice counted once, and
+    a match in a header, a footer and a footnote each counted. Real fails on a replacement holding
+    a character in `gdocs.UNWRITABLE` that matched, and on a `tabsCriteria` naming a tab the Doc
+    does not have, once every request is read; measured, a zero-match replace by U+FDD0 was a 200.
+    What matches is `gdocs.Body.find`'s, and an empty or missing `replaceText` deletes it; the
+    characters `insertText` strips are stripped from it too. A `searchByRegex` replacement is the
+    text as sent: `$1` is not a group."""
     criteria = req.get("contains_text") or {}
     if not criteria.get("text"):
         raise _EditorRefused("The substring match text should not be empty")
-    tabs = req.get("tabs_criteria", {}).get("tab_ids", [])
+    tabs = doc.flat()
+    unknown = False
+    if "tabs_criteria" in req:
+        named = req["tabs_criteria"].get("tab_ids", [])
+        unknown = any(not any(t["tabProperties"]["tabId"] == n for t in tabs) for n in named)
+        tabs = [t for t in tabs if t["tabProperties"]["tabId"] in named]
     text = gdocs.STRIPPED.sub("", req.get("replace_text", ""))
-    matches = body.find(
-        criteria["text"],
-        match_case=criteria.get("match_case", False),
-        regex=criteria.get("search_by_regex", False),
-    )
-    body.replace(matches, text)
-    fails = any(t != _DOCS_TAB["tabId"] for t in tabs) or bool(
-        matches and gdocs.UNWRITABLE.search(text)
-    )
-    changed = {"occurrencesChanged": len(matches)} if matches else {}
-    return {"replaceAllText": changed}, fails
+    found = 0
+    for tab in tabs:
+        for body in doc.segments(tab):
+            matches = body.find(
+                criteria["text"],
+                match_case=criteria.get("match_case", False),
+                regex=criteria.get("search_by_regex", False),
+            )
+            body.replace(matches, text)
+            found += len(matches)
+    fails = unknown or bool(found and gdocs.UNWRITABLE.search(text))
+    return {"replaceAllText": {"occurrencesChanged": found} if found else {}}, fails
+
+
+def _docs_insert_element(doc: gdocs.Document, req: dict, what: str) -> tuple[dict, gdocs.Body, int]:
+    """Where a footnote reference or a page break goes, in real's order of refusals, measured
+    2026-11-02: no location, the tab, the segment, an index below zero or at or past the
+    segment's end, a header, footer or footnote, then 0 and inside a grapheme cluster.
+    `endOfSegmentLocation` is before the body's last newline."""
+    where = req.get("location", req.get("end_of_segment_location"))
+    if where is None:
+        raise _EditorRefused(
+            "No footnote location set." if what == "footnote" else "No insertion location set."
+        )
+    tab, kind, segment = _docs_target(doc, where)
+    body = doc.open(tab, segment)
+    index = where.get("index", 0)
+    if "location" in req:
+        _docs_negative(index)
+        _docs_past_end(index, body)
+    if kind != "body":
+        if what == "footnote":
+            raise _EditorRefused(f"Cannot insert a footnote reference in a {kind}.")
+        raise _EditorRefused(f"Cannot insert page break in a {kind}.")
+    if "location" not in req:
+        return tab, body, len(body.chars) - 1
+    if index == 0:
+        raise _EditorRefused(
+            "The insertion index must be inside the bounds of an existing paragraph."
+        )
+    return tab, body, _docs_cluster(body, index)
+
+
+def _docs_create_footnote(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``createFootnote``: a reference in the body (`_docs_insert_element`) to a new footnote of a
+    space in 10 PT (`gdocs.blank_segment`), answered with its id."""
+    tab, body, pos = _docs_insert_element(doc, req, "footnote")
+    footnote = doc.new_id(gdocs.segment_id)
+    tab["footnotes"][footnote] = gdocs.blank_segment(footnote=True)
+    body.insert_footnote(pos, footnote)
+    return {"createFootnote": {"footnoteId": footnote}}, False
+
+
+def _docs_insert_page_break(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``insertPageBreak``: a page break and a newline in the body (`_docs_insert_element`), which
+    ends the paragraph after the break as an inserted newline does. Measured 2026-11-02: inside a
+    bold run both were bold, and at the end of a heading the heading's newline was left a
+    paragraph of its own."""
+    _, body, pos = _docs_insert_element(doc, req, "page break")
+    body.insert(pos, gdocs.PAGE_BREAK + "\n")
+    return {}, False
+
+
+def _docs_create_segment(kind: str):
+    """``createHeader`` or ``createFooter``: the tab's header or footer, one empty paragraph,
+    answered with its id, its id served as the tab's `documentStyle`'s default. Measured
+    2026-11-02: no `type` or `HEADER_FOOTER_TYPE_UNSPECIFIED` is refused, then the tab of a
+    `sectionBreakLocation`; one at any index but the first section break's, 0, is a 500, whatever
+    segment it names, and a tab holding one already is refused."""
+    name = kind.capitalize()
+
+    def create(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+        if not req.get("type"):
+            raise _EditorRefused(f"{name} type not specified.")
+        where = req.get("section_break_location") or {}
+        tab = doc.tab(where.get("tab_id"))
+        if tab is None:
+            raise _EditorRefused("Cannot apply request to an invalid tab ID.")
+        if where.get("index", 0) != 0:
+            return {}, True
+        if tab[f"{kind}s"]:
+            raise _EditorRefused(f"Default {kind} already exists.")
+        made = doc.new_id(gdocs.segment_id)
+        tab[f"{kind}s"][made] = gdocs.blank_segment()
+        return {f"create{name}": {f"{kind}Id": made}}, False
+
+    return create
+
+
+def _docs_delete_segment(kind: str):
+    """``deleteHeader`` or ``deleteFooter``: the header or footer the id names in the tab the
+    request names, the first for none. Measured 2026-11-02: an empty id is refused, then the tab,
+    then an id that is no header of that tab, a footer's or another tab's among them."""
+    name = kind.capitalize()
+
+    def delete(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+        made = req.get(f"{kind}_id")
+        if not made:
+            raise _EditorRefused(f"{name} ID can not be empty.")
+        tab = doc.tab(req.get("tab_id"))
+        if tab is None:
+            raise _EditorRefused("Cannot apply request to an invalid tab ID.")
+        if made not in tab[f"{kind}s"]:
+            raise _EditorRefused(f"{name} does not exist.")
+        del tab[f"{kind}s"][made]
+        return {}, False
+
+    return delete
+
+
+# The longest tab title, in UTF-16 code units: measured 2026-11-02, 50 `y` or 25 `😀` were taken
+# and 51 `y`, 26 `😀` or 25 `é` spelled with a combining mark and a `z` refused.
+_DOCS_TAB_TITLE_UNITS = 50
+
+
+def _docs_find_tab(doc: gdocs.Document, tab_id: str) -> dict | None:
+    return next((t for t in doc.flat() if t["tabProperties"]["tabId"] == tab_id), None)
+
+
+def _docs_title(doc: gdocs.Document, title: str, own: dict | None = None) -> None:
+    """Refuse a title too long, or one another tab has: measured 2026-11-02, the same string is
+    taken anywhere in the tree, while one differing in case, in a trailing space, in width or in
+    normalization form is not."""
+    if gdocs.utf16_len(title) > _DOCS_TAB_TITLE_UNITS:
+        raise _EditorRefused("The tab title cannot be longer than 50 characters.")
+    if any(t is not own and t["tabProperties"]["title"] == title for t in doc.flat()):
+        raise _EditorRefused("Tab title must be unique")
+
+
+def _docs_add_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``addDocumentTab``: a blank tab (`gdocs.new_tab`) under the parent it names, before the
+    sibling at its index, or last, answered with its properties. A title it does not state is
+    `gdocs.default_title`'s and a `nestingLevel` is ignored. The order of refusals, measured
+    2026-11-02: a `tabId` stated, the title's length, a title another tab has, the parent, the
+    icon, then the index."""
+    props = req.get("tab_properties", {})
+    if props.get("tab_id"):
+        raise _EditorRefused("Tab ID should not be specified in the properties when adding a tab.")
+    title = props.get("title", "")
+    if title:
+        _docs_title(doc, title)
+    parent = None
+    if props.get("parent_tab_id"):
+        parent = _docs_find_tab(doc, props["parent_tab_id"])
+        if parent is None:
+            raise _EditorRefused(f'A parent tab with ID "{props["parent_tab_id"]}" does not exist.')
+    if props.get("icon_emoji") and not gdocs.is_icon(props["icon_emoji"]):
+        raise _EditorRefused("Not a valid emoji input.")
+    index = props.get("index")
+    if index is not None:
+        _docs_tab_index(doc, index, parent, len(doc.siblings(parent)))
+    tabs = doc.flat()
+    title = title or gdocs.default_title((t["tabProperties"]["title"] for t in tabs), len(tabs) + 1)
+    tab = gdocs.new_tab(doc.new_id(gdocs.tab_id), title)
+    if props.get("icon_emoji"):
+        tab["tabProperties"]["iconEmoji"] = props["icon_emoji"]
+    doc.place(tab, parent, index, new=True)
+    return {"addDocumentTab": {"tabProperties": _docs_placed(doc, tab)}}, False
+
+
+def _docs_tab_index(doc: gdocs.Document, index: int, parent: dict | None, count: int) -> None:
+    if index < 0:
+        raise _EditorRefused("Index must be non-negative.")
+    if index > count:
+        raise _EditorRefused(
+            "Index must be less than or equal to the number of tabs within the specified parent "
+            "tab."
+            if parent is not None
+            else "Index must be less than or equal to the number of unnested tabs."
+        )
+
+
+def _docs_placed(doc: gdocs.Document, tab: dict) -> dict:
+    parent, depth = next((p, d) for t, p, d in gdocs.walk(doc.tabs) if t is tab)
+    index = next(i for i, t in enumerate(doc.siblings(parent)) if t is tab)
+    return _docs_tab_properties(tab, parent, index, depth)
+
+
+def _docs_delete_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``deleteTab``: the tab and its child tabs. Measured 2026-11-02: a Doc's only tab is refused,
+    while deleting the only root tab, children and all, left a blank tab titled `Tab 1` under a new
+    id. A `t.0` the Doc no longer has is refused naming no id at all."""
+    named = req.get("tab_id")
+    if not named:
+        raise _EditorRefused("Tab ID not specified.")
+    tab = _docs_find_tab(doc, named)
+    if tab is None:
+        raise _EditorRefused(f"A tab with ID {'' if named == 't.0' else named} does not exist.")
+    if len(doc.flat()) == 1:
+        raise _EditorRefused("Cannot delete the only tab in a document.")
+    doc.remove(tab)
+    if not doc.tabs:
+        doc.tabs.append(gdocs.new_tab(doc.new_id(gdocs.tab_id), gdocs.default_title((), 1)))
+    return {}, False
+
+
+# What `fields` may name of `TabProperties`, `*` naming every one: measured 2026-11-02, a
+# `nestingLevel` or `tabId` named was taken and changed nothing.
+_DOCS_TAB_FIELDS = ("tabId", "title", "parentTabId", "index", "nestingLevel", "iconEmoji")
+
+
+def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``updateDocumentTabProperties``: the properties `fields` names, in real's order of
+    refusals, measured 2026-11-02: no field, a field `TabProperties` lacks, no `tabId`, a tab the
+    Doc lacks, the title (missing, too long or another tab's), the icon, the parent (none such,
+    the tab itself, or one of its own children), then the index.
+
+    A parent named puts the tab last under it, the root for none, and an index stated moves it
+    before the sibling there (`gdocs.Document.place`): measured, `*` with no index moved a tab to
+    the root's end, and with no title was refused for the title. An empty icon removes it."""
+    fields = req.get("fields", "")
+    if not fields:
+        raise _EditorRefused(
+            "At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"
+        )
+    names = _DOCS_TAB_FIELDS if fields == "*" else fields.split(",")
+    for name in names:
+        if name not in _DOCS_TAB_FIELDS:
+            raise _EditorRefused(f"Invalid field: {name}")
+    props = req.get("tab_properties", {})
+    if not props.get("tab_id"):
+        raise _EditorRefused("Tab ID must be specified in the properties.")
+    tab = _docs_find_tab(doc, props["tab_id"])
+    if tab is None:
+        # sic: measured 2026-11-02, `At` unless the fields name `parentTabId`, `*` among them
+        article = "A" if "parentTabId" in names else "At"
+        raise _EditorRefused(f"{article} tab with ID {props['tab_id']} does not exist.")
+    if "title" in names:
+        if not props.get("title"):
+            raise _EditorRefused(
+                "Invalid `tabProperties.title`. Must provide a valid non-empty string."
+            )
+        _docs_title(doc, props["title"], own=tab)
+    emoji = props.get("icon_emoji", "")
+    if "iconEmoji" in names and emoji and not gdocs.is_icon(emoji):
+        raise _EditorRefused("Not a valid emoji input.")
+    parent = doc.parent(tab)
+    if "parentTabId" in names:
+        named = props.get("parent_tab_id", "")
+        parent = _docs_find_tab(doc, named) if named else None
+        if named and parent is None:
+            raise _EditorRefused(f'A parent tab with ID "{named}" does not exist.')
+        if parent is tab:
+            raise _EditorRefused("Cannot make a tab a child of itself.")
+        if parent is not None and any(t is parent for t, *_ in gdocs.walk(tab["childTabs"])):
+            raise _EditorRefused(
+                "Cannot move a parent tab to be nested under one of its own child tabs."
+            )
+    index = props.get("index") if "index" in names else None
+    if index is not None:
+        siblings = doc.siblings(parent)
+        _docs_tab_index(doc, index, parent, len(siblings))
+    if "title" in names:
+        tab["tabProperties"]["title"] = props["title"]
+    if "iconEmoji" in names:
+        tab["tabProperties"].pop("iconEmoji", None)
+        if emoji:
+            tab["tabProperties"]["iconEmoji"] = emoji
+    if "parentTabId" in names or index is not None:
+        doc.place(tab, parent, index)
+    return {}, False
 
 
 # The requests applied here, by the proto name a read body carries each under; every other kind is
@@ -537,6 +839,15 @@ _DOCS_APPLY = {
     "insert_text": _docs_insert_text,
     "delete_content_range": _docs_delete_content_range,
     "replace_all_text": _docs_replace_all_text,
+    "create_header": _docs_create_segment("header"),
+    "create_footer": _docs_create_segment("footer"),
+    "create_footnote": _docs_create_footnote,
+    "delete_header": _docs_delete_segment("header"),
+    "delete_footer": _docs_delete_segment("footer"),
+    "insert_page_break": _docs_insert_page_break,
+    "add_document_tab": _docs_add_tab,
+    "delete_tab": _docs_delete_tab,
+    "update_document_tab_properties": _docs_update_tab,
 }
 _DOCS_KINDS = {
     f.name: f.json_name
@@ -552,6 +863,14 @@ _DOCS_BATCH_KEPT = {
 _P_DOCS_BATCH_UPDATE = [qp("fields")]
 
 
+def _docs_settled(apply, doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """One request applied, and the footnotes whose references it removed dropped, so the next
+    request no longer finds them (measured 2026-11-02)."""
+    answer = apply(doc, req)
+    doc.settle()
+    return answer
+
+
 @router.post(
     "/docs/v1/documents/{document_id}:batchUpdate",
     openapi_extra={
@@ -560,26 +879,27 @@ _P_DOCS_BATCH_UPDATE = [qp("fields")]
     },
 )
 async def docs_batch_update(document_id: str, request: Request):
-    """``documents.batchUpdate``: each request checked and applied in order against the body the
-    ones before it left, so a later request's indices count what an earlier one inserted, and all
-    of them or none kept (`backlot.gdocs.Body`). A document that states no structure has its line
-    reading stored by its first write.
+    """``documents.batchUpdate``: each request checked and applied in order against the document
+    the ones before it left, so a later request's indices count what an earlier one inserted and a
+    later request finds a tab or header an earlier one made, and all of them or none kept
+    (`backlot.gdocs.Document`). A document that states no structure has its line reading stored
+    by its first write.
 
     The order real answers in, measured 2026-10-29: the credential, the body, the `fields` mask,
     the lookup and a reader's 403, no requests or one with no kind set (`_editor_requests`), a
     revision of another Doc, a `requiredRevisionId` that is not the Doc's latest or a
     `targetRevisionId` that is no revision of it, then each request's refusal, the first one's
-    named alone. A 500 a request leads to (`gdocs.UNWRITABLE`, an unknown tab in `tabsCriteria`)
-    comes after every request is read, and keeps nothing. A kind other than the three applied here
-    is refused naming itself, and so is the `SUGGEST` write mode, which records the requests as
-    suggestions.
+    named alone. A 500 a request leads to (`gdocs.UNWRITABLE`, an unknown tab in `tabsCriteria`, a
+    header at an index past the first section break) comes after every request is read, and keeps
+    nothing. A kind other than those applied here is refused naming itself, and so is the
+    `SUGGEST` write mode, which records the requests as suggestions.
 
     Every write, one that changed nothing included, moves the `revisionId`, answered as
     `writeControl.requiredRevisionId` and served by the next read; real takes any recent revision as
     `targetRevisionId` and merges the write into what collaborators did since, which here is
     nothing. The Drive file's `modifiedTime` is the write's (`store.PATCHABLE`), and its `content`
-    the body's text, so search and export read what the write left. Inside a batch it is the 501
-    real's batch gives."""
+    the tabs' text (`gdocs.document_text`), so search reads what the write left. Inside a batch it
+    is the 501 real's batch gives."""
     _require(request)
     _, body = await _query_and_body(request, {}, _PJ_BATCH_UPDATE)
     tree, _ = _gmask_select(
@@ -619,16 +939,11 @@ async def docs_batch_update(document_id: str, request: Request):
         if named is None or named[1] > written:
             raise gerr.invalid_argument(f"Invalid revision ID: {stated}")
 
-    stored = store.gdrive_doc_body_for(conn, document_id)
-    doc = gdocs.Body(
-        document_id,
-        stored if stored is not None else gdocs.from_text(row["content"] or ""),
-        written + 1,
-    )
+    doc = gdocs.Document(document_id, _docs_stored(conn, row), written + 1)
     replies = _editor_batch(
         requests,
         _DOCS_KINDS,
-        {kind: functools.partial(apply, doc) for kind, apply in _DOCS_APPLY.items()},
+        {kind: functools.partial(_docs_settled, apply, doc) for kind, apply in _DOCS_APPLY.items()},
         "Docs",
     )
 
@@ -641,6 +956,7 @@ async def docs_batch_update(document_id: str, request: Request):
         max(store.drive_file_bytes(row["subtype"], row["content"]), store.DRIVE_NATIVE_MIN_BYTES),
         int(_drive_version(row)),
     )
+    stored = doc.stored()
     store.replace_parts(
         conn,
         "google_drive",
@@ -648,14 +964,14 @@ async def docs_batch_update(document_id: str, request: Request):
         {
             "gdrive_doc_bodies": [
                 {
-                    "body": json.dumps(doc.content(), ensure_ascii=False),
+                    "document": json.dumps(stored, ensure_ascii=False),
                     "revision": written + 1,
                     "bytes": nbytes,
                     "version": version + 1,
                 }
             ]
         },
-        {"content": doc.text(), "updated_ts": int(time.time())},
+        {"content": gdocs.document_text(stored), "updated_ts": int(time.time())},
     )
     answer = {
         "replies": replies,

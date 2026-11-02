@@ -500,11 +500,12 @@ CREATE TABLE IF NOT EXISTS gdrive_spreadsheets (
     file_id TEXT PRIMARY KEY, properties TEXT NOT NULL
 );
 
--- A document's stored body (`backlot.gdocs`), and how many `documents.batchUpdate` calls it has
--- taken, which its `revisionId` is drawn from: none for a corpus's. A written one also keeps the
--- Drive `size` and `version` it serves from then on (`gdrive_doc_written`).
+-- A document's stored tabs, each with its body, header, footer and footnotes (`backlot.gdocs`),
+-- and how many `documents.batchUpdate` calls it has taken, which its `revisionId` is drawn from:
+-- none for a corpus's. A written one also keeps the Drive `size` and `version` it serves from then
+-- on (`gdrive_doc_written`).
 CREATE TABLE IF NOT EXISTS gdrive_doc_bodies (
-    file_id TEXT PRIMARY KEY, body TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
+    file_id TEXT PRIMARY KEY, document TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
     bytes INTEGER, version INTEGER
 );
 
@@ -2819,11 +2820,11 @@ def gdrive_replace_sheets(conn, file_id: str, rows) -> None:
     )
 
 
-def gdrive_doc_body_for(conn, file_id: str) -> list | None:
-    """A document's stored body (`backlot.gdocs`), or None when it states no structure. No ACL
+def gdrive_doc_for(conn, file_id: str) -> dict | None:
+    """A document as `backlot.gdocs` stores it, or None when it states no structure. No ACL
     clause, for the reason :func:`gdrive_sheets_for` gives."""
     rows = parts_for(conn, "google_drive", "gdrive_doc_bodies", (file_id,), order_by="file_id")
-    return json.loads(rows[0]["body"]) if rows else None
+    return json.loads(rows[0]["document"]) if rows else None
 
 
 def gdrive_doc_revision(conn, file_id: str) -> int:
@@ -2841,14 +2842,14 @@ def gdrive_doc_written(conn, file_id: str) -> tuple[int, int] | None:
     return rows[0]["bytes"], rows[0]["version"]
 
 
-def gdrive_replace_doc_body(conn, file_id: str, body: list | None) -> None:
-    """Set a file's stored body to ``body``, or to none, so a re-import that stops stating
-    paragraphs stops serving them."""
+def gdrive_replace_doc(conn, file_id: str, document: dict | None) -> None:
+    """Set a file's stored document to ``document``, or to none, so a re-import that stops stating
+    its structure stops serving it."""
     conn.execute("DELETE FROM gdrive_doc_bodies WHERE file_id = ?", [file_id])
-    if body is not None:
+    if document is not None:
         conn.execute(
-            "INSERT INTO gdrive_doc_bodies (file_id, body) VALUES (?, ?)",
-            [file_id, json.dumps(body, ensure_ascii=False)],
+            "INSERT INTO gdrive_doc_bodies (file_id, document) VALUES (?, ?)",
+            [file_id, json.dumps(document, ensure_ascii=False)],
         )
 
 

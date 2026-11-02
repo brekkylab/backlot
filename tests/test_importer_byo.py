@@ -6017,7 +6017,7 @@ def test_reimporting_a_structured_file_as_prose_drops_its_structure(tmp_path, st
     row = conn.execute("SELECT id, content FROM gdrive_files").fetchone()
     assert row["content"] == "now prose"
     assert store.gdrive_sheets_for(conn, row["id"]) == []
-    assert store.gdrive_doc_body_for(conn, row["id"]) is None
+    assert store.gdrive_doc_for(conn, row["id"]) is None
 
 
 def test_a_file_that_is_not_a_doc_may_hold_what_insert_text_refuses(tmp_path):
@@ -6110,6 +6110,61 @@ def test_a_file_that_is_not_a_doc_may_hold_what_insert_text_refuses(tmp_path):
         ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\ufdef"}]}]}, "insertText refuses"),
         ("prose", {"content": "a\ufdd0"}, "insertText refuses"),
         ("prose", {"content": "a\ud800b"}, "lone surrogate"),
+        # a body's runs, header and footer, and tabs: real takes a title of 50 UTF-16 code units
+        # and only once, a footnote and a page break in a body alone (`routers.google_docs`)
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "pageBreak": True}]}]},
+            "exactly one",
+        ),
+        ("paragraphs", {"paragraphs": [{"runs": [{"bold": True}]}]}, "exactly one"),
+        ("paragraphs", {"header": [{"runs": [{"pageBreak": True}]}]}, "in a body alone"),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"footnote": [{"runs": [{"footnote": [{"text": "x"}]}]}]}]}]},
+            "in a body alone",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"footnote": [{"text": "a\rb"}]}]}]},
+            "real strips",
+        ),
+        ("paragraphs", {"tabs": [{"paragraphs": [{"text": "a"}]}]}, "not both"),
+        ("prose", {"header": [{"text": "a"}]}, "needs 'paragraphs'"),
+        (
+            "prose",
+            {"content": None, "tabs": [{"paragraphs": [{"text": "a"}]}], "footer": [{"text": "b"}]},
+            "belongs to a tab",
+        ),
+        ("prose", {"tabs": [{"paragraphs": [{"text": "a"}]}]}, "drop 'content'"),
+        (
+            "prose",
+            {
+                "content": None,
+                "tabs": [{"title": "x" * 26 + "\U0001f600" * 13, "paragraphs": [{"text": "a"}]}],
+            },
+            "50 UTF-16 code units",
+        ),
+        (
+            "prose",
+            {
+                "content": None,
+                "tabs": [
+                    {"title": "Plan", "paragraphs": [{"text": "a"}]},
+                    {
+                        "paragraphs": [{"text": "b"}],
+                        "tabs": [{"title": "Plan", "paragraphs": [{"text": "c"}]}],
+                    },
+                ],
+            },
+            "tabs[0] has it too",
+        ),
+        (
+            "prose",
+            {"content": None, "tabs": [{"icon": "\u2122", "paragraphs": [{"text": "a"}]}]},
+            "icon",
+        ),
+        ("prose", {"content": None, "tabs": [{"paragraphs": [{"text": "a\nb"}]}]}, "holds none"),
     ],
 )
 def test_a_structure_a_record_cannot_mean_is_refused(
@@ -6123,7 +6178,8 @@ def test_a_structure_a_record_cannot_mean_is_refused(
     loader's, so a rule reaches it only by being wired into that pass as well."""
     prose = {**{k: v for k, v in PARAS_REC.items() if k != "paragraphs"}, "content": "x"}
     record = {"sheets": GRID_REC, "paragraphs": PARAS_REC, "prose": prose}[structure]
-    corpus = _write(tmp_path, [{**record, **overrides}])
+    record = {k: v for k, v in {**record, **overrides}.items() if v is not None}
+    corpus = _write(tmp_path, [record])
     with pytest.raises(SystemExit) as e:
         load(corpus, Settings(data_dir=tmp_path))
     assert fragment in str(e.value)
@@ -6248,9 +6304,10 @@ PARAS_REC = {
 
 def test_stated_paragraphs_are_the_body_and_their_text_is_the_content(tmp_path):
     """The body is stored in real's shape with its indices left out, and `content` is the
-    paragraphs' text, one line each, which Drive's export and search read. Two documents with one
-    text and different styles are two documents, so the paragraphs reach the id; one that states
-    none stores no body."""
+    paragraphs' text, one line each, which Drive's search reads. Two documents with one text and
+    different styles are two documents, so the paragraphs reach the id; one that states none
+    stores nothing. A document stating tabs stores each, its header, footer and footnotes beside
+    its body, and its `content` is every tab's text, depth first."""
     restyled = {
         **PARAS_REC,
         "doc_id": "gd-restyled",
@@ -6262,10 +6319,32 @@ def test_stated_paragraphs_are_the_body_and_their_text_is_the_content(tmp_path):
         "doc_id": "gd-prose",
         "content": "Goals\nShip it\n",
     }
-    conn = _load_grid(tmp_path, [*unnamed, prose])
+    tabbed = {
+        **{k: v for k, v in PARAS_REC.items() if k != "paragraphs"},
+        "doc_id": "gd-tabs",
+        "tabs": [
+            {
+                "title": "Plan",
+                "paragraphs": [{"runs": [{"text": "Goals"}, {"footnote": [{"text": "Q3"}]}]}],
+                "header": [{"text": "Draft"}],
+                "tabs": [{"paragraphs": [{"text": "Ship it"}]}],
+            },
+            {"paragraphs": [{"runs": [{"text": "Notes"}, {"pageBreak": True}]}]},
+        ],
+    }
+    conn = _load_grid(tmp_path, [*unnamed, prose, tabbed])
     rows = conn.execute("SELECT id, content FROM gdrive_files ORDER BY rowid").fetchall()
-    assert [r["content"] for r in rows] == ["Goals\nShip it\n"] * 3
-    body = store.gdrive_doc_body_for(conn, rows[0]["id"])
+    assert [r["content"] for r in rows] == ["Goals\nShip it\n"] * 3 + ["Goals\nShip it\nNotes"]
+    body = store.gdrive_doc_for(conn, rows[0]["id"])["tabs"][0]["body"]
     assert [el.keys() for el in body] == [{"sectionBreak"}] + [{"paragraph"}] * 3
-    assert store.gdrive_doc_body_for(conn, rows[1]["id"]) != body
-    assert store.gdrive_doc_body_for(conn, rows[2]["id"]) is None
+    assert store.gdrive_doc_for(conn, rows[1]["id"]) != store.gdrive_doc_for(conn, rows[0]["id"])
+    assert store.gdrive_doc_for(conn, rows[2]["id"]) is None
+    plan, notes = store.gdrive_doc_for(conn, rows[3]["id"])["tabs"]
+    assert [plan["tabProperties"]["tabId"], plan["tabProperties"]["title"]] == ["t.0", "Plan"]
+    assert [t["tabProperties"]["title"] for t in (plan["childTabs"][0], notes)] == [
+        "Tab 2",
+        "Tab 3",
+    ]
+    assert [len(plan[k]) for k in ("headers", "footers", "footnotes")] == [1, 0, 1]
+    (footnote,) = plan["footnotes"].values()
+    assert footnote[0]["paragraph"]["elements"][0]["textRun"]["content"] == " Q3\n"

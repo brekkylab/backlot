@@ -6,7 +6,7 @@
     "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
     "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest"
   ],
-  "measured": "2026-10-30",
+  "measured": "2026-11-02",
   "operations": [
     {
       "operation": "DELETE /drive/v3/drives/{}",
@@ -1320,20 +1320,20 @@
     },
     "docs.AddDocumentTabRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "tabProperties": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TabProperties"
         }
       }
     },
     "docs.AddDocumentTabResponse": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "tabProperties": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TabProperties"
         }
       }
@@ -1586,72 +1586,72 @@
     },
     "docs.CreateFooterRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "sectionBreakLocation": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Location"
         },
         "type": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
     },
     "docs.CreateFooterResponse": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "footerId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
     },
     "docs.CreateFootnoteRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "endOfSegmentLocation": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.EndOfSegmentLocation"
         },
         "location": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Location"
         }
       }
     },
     "docs.CreateFootnoteResponse": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "footnoteId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
     },
     "docs.CreateHeaderRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "sectionBreakLocation": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Location"
         },
         "type": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
     },
     "docs.CreateHeaderResponse": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "headerId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
@@ -1890,28 +1890,28 @@
     },
     "docs.DeleteFooterRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "footerId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "tabId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
     },
     "docs.DeleteHeaderRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "headerId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "tabId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
@@ -1970,10 +1970,10 @@
     },
     "docs.DeleteTabRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "tabId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
@@ -2039,22 +2039,16 @@
           "type": "docs.DocumentStyle"
         },
         "footers": {
-          "status": "missing",
-          "type": "map<string, docs.Footer>",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "map<string, docs.Footer>"
         },
         "footnotes": {
-          "status": "missing",
-          "type": "map<string, docs.Footnote>",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "map<string, docs.Footnote>"
         },
         "headers": {
-          "status": "missing",
-          "type": "map<string, docs.Header>",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "map<string, docs.Header>"
         },
         "inlineObjects": {
           "status": "missing",
@@ -2139,16 +2133,12 @@
           "type": "docs.Background"
         },
         "defaultFooterId": {
-          "status": "missing",
-          "type": "string",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "string"
         },
         "defaultHeaderId": {
-          "status": "missing",
-          "type": "string",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "string"
         },
         "documentFormat": {
           "status": "implemented",
@@ -2341,22 +2331,16 @@
           "severity": "gap"
         },
         "footers": {
-          "status": "missing",
-          "type": "map<string, docs.Footer>",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "map<string, docs.Footer>"
         },
         "footnotes": {
-          "status": "missing",
-          "type": "map<string, docs.Footnote>",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "map<string, docs.Footnote>"
         },
         "headers": {
-          "status": "missing",
-          "type": "map<string, docs.Header>",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "map<string, docs.Header>"
         },
         "inlineObjects": {
           "status": "missing",
@@ -2744,30 +2728,36 @@
     },
     "docs.FootnoteReference": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "footnoteId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "footnoteNumber": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "suggestedDeletionIds": {
           "status": "missing",
-          "type": "[string]"
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "suggestedInsertionIds": {
           "status": "missing",
-          "type": "[string]"
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "suggestedTextStyleChanges": {
           "status": "missing",
-          "type": "map<string, docs.SuggestedTextStyle>"
+          "type": "map<string, docs.SuggestedTextStyle>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "textStyle": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TextStyle"
         }
       }
@@ -3084,14 +3074,14 @@
     },
     "docs.InsertPageBreakRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "endOfSegmentLocation": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.EndOfSegmentLocation"
         },
         "location": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Location"
         }
       }
@@ -3534,22 +3524,28 @@
     },
     "docs.PageBreak": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "suggestedDeletionIds": {
           "status": "missing",
-          "type": "[string]"
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "suggestedInsertionIds": {
           "status": "missing",
-          "type": "[string]"
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "suggestedTextStyleChanges": {
           "status": "missing",
-          "type": "map<string, docs.SuggestedTextStyle>"
+          "type": "map<string, docs.SuggestedTextStyle>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "textStyle": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TextStyle"
         }
       }
@@ -3659,10 +3655,8 @@
           "severity": "gap"
         },
         "footnoteReference": {
-          "status": "missing",
-          "type": "docs.FootnoteReference",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.FootnoteReference"
         },
         "horizontalRule": {
           "status": "missing",
@@ -3677,10 +3671,8 @@
           "severity": "gap"
         },
         "pageBreak": {
-          "status": "missing",
-          "type": "docs.PageBreak",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.PageBreak"
         },
         "person": {
           "status": "missing",
@@ -4239,10 +4231,8 @@
           "severity": "gap"
         },
         "addDocumentTab": {
-          "status": "missing",
-          "type": "docs.AddDocumentTabRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.AddDocumentTabRequest"
         },
         "createDropdownDefinition": {
           "status": "missing",
@@ -4251,22 +4241,16 @@
           "severity": "gap"
         },
         "createFooter": {
-          "status": "missing",
-          "type": "docs.CreateFooterRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.CreateFooterRequest"
         },
         "createFootnote": {
-          "status": "missing",
-          "type": "docs.CreateFootnoteRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.CreateFootnoteRequest"
         },
         "createHeader": {
-          "status": "missing",
-          "type": "docs.CreateHeaderRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.CreateHeaderRequest"
         },
         "createNamedRange": {
           "status": "missing",
@@ -4303,16 +4287,12 @@
           "severity": "gap"
         },
         "deleteFooter": {
-          "status": "missing",
-          "type": "docs.DeleteFooterRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.DeleteFooterRequest"
         },
         "deleteHeader": {
-          "status": "missing",
-          "type": "docs.DeleteHeaderRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.DeleteHeaderRequest"
         },
         "deleteNamedRange": {
           "status": "missing",
@@ -4339,10 +4319,8 @@
           "severity": "gap"
         },
         "deleteTab": {
-          "status": "missing",
-          "type": "docs.DeleteTabRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.DeleteTabRequest"
         },
         "deleteTableColumn": {
           "status": "missing",
@@ -4381,10 +4359,8 @@
           "severity": "gap"
         },
         "insertPageBreak": {
-          "status": "missing",
-          "type": "docs.InsertPageBreakRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.InsertPageBreakRequest"
         },
         "insertPerson": {
           "status": "missing",
@@ -4479,10 +4455,8 @@
           "severity": "gap"
         },
         "updateDocumentTabProperties": {
-          "status": "missing",
-          "type": "docs.UpdateDocumentTabPropertiesRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.UpdateDocumentTabPropertiesRequest"
         },
         "updateDropdownDefinitionProperties": {
           "status": "missing",
@@ -4551,10 +4525,8 @@
           "severity": "gap"
         },
         "addDocumentTab": {
-          "status": "missing",
-          "type": "docs.AddDocumentTabResponse",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.AddDocumentTabResponse"
         },
         "createDropdownDefinition": {
           "status": "missing",
@@ -4563,22 +4535,16 @@
           "severity": "gap"
         },
         "createFooter": {
-          "status": "missing",
-          "type": "docs.CreateFooterResponse",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.CreateFooterResponse"
         },
         "createFootnote": {
-          "status": "missing",
-          "type": "docs.CreateFootnoteResponse",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.CreateFootnoteResponse"
         },
         "createHeader": {
-          "status": "missing",
-          "type": "docs.CreateHeaderResponse",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.CreateHeaderResponse"
         },
         "createNamedRange": {
           "status": "missing",
@@ -5213,10 +5179,8 @@
       "status": "implemented",
       "fields": {
         "childTabs": {
-          "status": "missing",
-          "type": "[docs.Tab]",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "[docs.Tab]"
         },
         "documentTab": {
           "status": "implemented",
@@ -5233,26 +5197,20 @@
       "status": "implemented",
       "fields": {
         "iconEmoji": {
-          "status": "missing",
-          "type": "string",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "string"
         },
         "index": {
           "status": "implemented",
           "type": "integer"
         },
         "nestingLevel": {
-          "status": "missing",
-          "type": "integer",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "integer"
         },
         "parentTabId": {
-          "status": "missing",
-          "type": "string",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "string"
         },
         "tabId": {
           "status": "implemented",
@@ -5802,14 +5760,14 @@
     },
     "docs.UpdateDocumentTabPropertiesRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "fields": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "tabProperties": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TabProperties"
         }
       }

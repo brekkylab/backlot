@@ -4405,6 +4405,11 @@ _REPLIES_ROWS = [
     ({"oldest": 5}, [0], None),
     ({"latest": 1, "inclusive": "true"}, [0, 1], None),
     ({"oldest": 1, "inclusive": "true"}, [0, 1, 2, 3, 4, 5], None),
+    ({"latest": 0, "inclusive": "true"}, [0], None),
+    ({"limit": 2, "oldest": 0, "inclusive": "true"}, [0, 1, 2], 3),
+    ({"oldest": 3, "latest": 3, "inclusive": "true"}, [0, 3], None),
+    ({"oldest": 2, "latest": 5, "inclusive": "true"}, [0, 2, 3, 4, 5], None),
+    ({"limit": 2, "oldest": 2, "latest": 5, "inclusive": "true"}, [0, 4, 5], 3),
     ({"latest": "abc", "oldest": "nan"}, [0, 1, 2, 3, 4, 5], None),
     # a cursor beside a bound
     ({"limit": 2, "latest": 2, "cursor": 5}, [0, 1], None),

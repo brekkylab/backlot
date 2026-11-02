@@ -635,7 +635,7 @@ async def docs_batch_update(document_id: str, request: Request):
     # Drive's `size` is what real stores, not the text: measured 2026-10-30, a Doc of 1024 stayed
     # 1024 through 6,000 inserted characters, a blank Doc's 1 became 1024 on its first write, and
     # of 55 Docs read, ones of 297 and 56,195 bytes of text were 2,562 and 51,253. `version` went
-    # from 1 to 2 with a blank Doc's first write, and climbs once per write here.
+    # from 1 to 2 or 3 with a blank Doc's first write, and here climbs once per write.
     before = store.gdrive_doc_written(conn, document_id)
     nbytes, version = before or (
         max(store.drive_file_bytes(row["subtype"], row["content"]), store.DRIVE_NATIVE_MIN_BYTES),

@@ -16440,71 +16440,149 @@ _STYLED_ROWS = [
 ]
 
 
+_SEARCH_ROWS = [
+    # a letter with a mark and 104 others compare as `gdocs._FOLD` folds them, case or not, and a
+    # match of part of a fold reaches as `gdocs._unfold` says
+    ("ßs", "s", {}, "RR"),
+    ("sßs", "ss", {}, "RR"),
+    ("xæ y", "a", {"matchCase": True}, "R y"),
+    ("xæ y", "xa", {"matchCase": True}, "Ræ y"),
+    ("x\næ y", "a", {"matchCase": True}, "xR y"),
+    ("aæ y", "a", {"matchCase": True}, "R y"),
+    ("e\u0301 x", "e", {}, "R x"),
+    ("ete é", "é", {"matchCase": True}, "RtR R"),
+    ("Résumé resume", "resume", {}, "R R"),
+    ("ı I i", "I", {}, "R R R"),
+    ("ǅ dž", "Ǆ", {}, "R R"),
+    ("ſ s", "s", {"matchCase": True}, "ſ R"),
+    ("ľ l L", "L", {"matchCase": True}, "R l R"),
+    ("ﬁx fix", "FI", {}, "ﬁx Rx"),
+    ("ß x", "ẞ", {}, "ß x"),
+    ("ά α", "α", {}, "ά R"),
+    # a regular expression is `java.util.regex`'s, over the folded text
+    ("été x", "e", {"searchByRegex": True}, "RtR x"),
+    ("café", "[a-z]+", _RE, "R"),
+    ("ß", "^..$", _RE, "R"),
+    ("a1 b٣ c１", "\\d", _RE, "aR b٣ c１"),
+    ("a\u00a0b c\u2003d", "\\s", _RE, "a\u00a0bRc\u2003dR"),
+    ("aé_1 ж", "\\w", _RE, "RRRR ж"),
+    ("жa", "(?U)\\w", _RE, "RR"),
+    ("ab1", "\\p{L}", _RE, "RR1"),
+    ("ab1ж", "\\p{Alpha}", _RE, "RR1ж"),
+    ("aB", "a(?i)b", _RE, "R"),
+    ("Ж", "(?i)ж", _RE, "Ж"),
+    ("aab", "(?<n>a)\\k<n>", _RE, "Rb"),
+    ("a.b axb", "\\Qa.b\\E", _RE, "R axb"),
+    ("ab", "b\\Z", _RE, "aR"),
+    ("ab", "b\\z", _RE, "ab"),
+    ("A", "\\0101", _RE, "R"),
+    ("abc", "[a-c&&[^b]]", _RE, "RbR"),
+    ("abcx", "[a-c[x]]", _RE, "RRRR"),
+    ("a:", "[[:alpha:]]", _RE, "RR"),
+    ("aaa", "a++a", _RE, "aaa"),
+    ("aaaa", "a{,2}", _RE, "aaaa"),
+    ("a", "a(?#c)", _RE, "a"),
+    # a combining mark folds into the character before it, whatever it is, and alone matches
+    # nothing; one that starts the text moves every match one character on
+    ("ж\u0301 ж", "ж", {"matchCase": True}, "R R", 2),
+    ("1\u0301 1", "1", {"matchCase": True}, "R R", 2),
+    ("x \u0301a", "\u0301", {"matchCase": True}, "x \u0301a", 0),
+    ("x \u0301a", " ", {"matchCase": True}, "xRa", 1),
+    ("\u0301abc", "b", {"matchCase": True}, "\u0301abR", 1),
+    ("cat CAT", "CAT", {"matchCase": True}, "cat R", 1),
+    ("cat CAT", "CAT", {}, "R R", 2),
+    ("ſt st", "s", {}, "Rt Rt", 2),
+    ("\u212a k", "k", {}, "R R", 2),
+    ("ſt st", "s", {"searchByRegex": True}, "Rt Rt", 2),
+    # Java's classes and properties: ASCII classes that keep their case, `\p{...}` whatever the
+    # case flags, and the names Java gives a property
+    ("ſ \u212a s k", "\\w", {"searchByRegex": True}, "ſ \u212a R R", 2),
+    ("ſ \u212a s k", "\\p{Alpha}", {"searchByRegex": True}, "ſ \u212a R R", 2),
+    ("ſ \u212a s k", "[a-z]", {"searchByRegex": True}, "R R R R", 4),
+    ("Привет мир ab", "\\p{L}+", _RE, "R R R", 3),
+    ("Ωmega ΔΣ Ab", "\\p{Lu}", _RE, "Rmega RR Rb", 4),
+    ("aБ", "(?i)\\p{Lu}", _RE, "RR", 2),
+    ("Привет мир ab", "\\p{IsCyrillic}+", _RE, "R R ab", 2),
+    ("ab 12 c.", "\\p{IsLetter}+", {"searchByRegex": True}, "R 12 R.", 2),
+    ("a.b,c", "\\p{IsPunctuation}", {"searchByRegex": True}, "aRbRc", 2),
+    ("a b", "\\p{IsWhiteSpace}", _RE, "aRbR", 2),
+    ("abC d", "\\p{javaLowerCase}+", _RE, "RC R", 2),
+    ("a b\u00a0c\td", "\\p{javaWhitespace}", _RE, "aRb\u00a0cRdR", 3),
+    ("a1-b", "\\p{javaLetterOrDigit}+", _RE, "R-R", 2),
+    ("abж", "\\p{InBasicLatin}+", _RE, "RжR", 2),
+    ("abж", "\\p{sc=Latin}+", _RE, "Rж", 1),
+    ("1x2", "[\\p{IsDigit}x]+", _RE, "R", 1),
+    ("a", "\\p{isletter}", _RE, "a", 0),
+    ("abж", "\\p{Latin}+", _RE, "abж", 0),
+    # an empty match moves the search on one character
+    ("aa", "a??", _RE, "RRR", 3),
+    ("ab", "|a", _RE, "RRR", 3),
+    ("a b", "\\s*?", _RE, "RRRR", 4),
+    ("ab", "$", _RE, "abR", 1),
+    ("baab", "a*", _RE, "RRRR", 4),
+    # syntax Java refuses, or reads otherwise, and malformed escapes match nothing
+    *(
+        (seed, pattern, {"searchByRegex": True}, seed, 0)
+        for pattern, seed in [
+            ("(?R)", "abc"),
+            ("a\\Kb", "abc"),
+            ("(?P<n>a)", "ab"),
+            ("(?<n>a)|(?<n>b)", "ab"),
+            ("(?1)(a)", "aa"),
+            ("(?&n)(?<n>a)", "aa"),
+            ("(?|(a)|(b))", "ab"),
+            ("(?(1)a|b)", "ab"),
+            ("a(?-1)", "aa"),
+            ("\\m", "m"),
+            ("\\0", "a0b"),
+            ("\\x{41", "A{41"),
+            ("\\k<a", "ab"),
+            ("\\p{L", "ab"),
+            ("\\N{LATIN", "ab"),
+            ("a\\", "ab"),
+            ("(", "a(b"),
+        ]
+    ),
+    ("a b", "(?x)[ a]", _RE, "R b", 1),
+    ("a#b", "(?x)[#a]", _RE, "a#b", 0),
+    ("aaa", "a{2}", _RE, "Ra", 1),
+    ("abab x", "(?:ab)+", _RE, "R x", 1),
+]
+
+
 @pytest.mark.parametrize(
-    "doc,requests,runs",
+    "doc,requests,runs,changed",
     [
-        *(("wr-styled", *row) for row in _STYLED_ROWS),
+        *(("wr-styled", *row, None) for row in _STYLED_ROWS),
         # at a link's end, the next character's style; text starting with a newline inside a link
         # is unstyled
-        ("wr-links", [_ins(3, "X")], ["N bL:BL|X| t\n", *_LINKS[1:]]),
-        ("wr-links", [_ins(8, "X")], [_LINKS[0], "N bL:BL|b:X|b: t\n", *_LINKS[2:]]),
-        ("wr-links", [_ins(12, "\nX")], [*_LINKS[:2], "N bL:l|\n", "N X|bL:nk| t\n", *_LINKS[3:]]),
-        ("wr-links", [_ins(20, "X")], [*_LINKS[:4], "N u:Xcd\n", _LINKS[5]]),
-        ("wr-links", [_ins(20, "\n")], [*_LINKS[:4], "N u:\n", "N u:cd\n", _LINKS[5]]),
-        ("wr-links", [_rep("YZ", "Q", matchCase=True)], [*_LINKS[:5], "N x|b:Q\n"]),
-        # a letter with a mark and 102 others compare as `gdocs._FOLD` folds them, case or not,
-        # and a match of part of a fold reaches as `gdocs._unfold` says
+        ("wr-links", [_ins(3, "X")], ["N bL:BL|X| t\n", *_LINKS[1:]], None),
+        ("wr-links", [_ins(8, "X")], [_LINKS[0], "N bL:BL|b:X|b: t\n", *_LINKS[2:]], None),
+        (
+            "wr-links",
+            [_ins(12, "\nX")],
+            [*_LINKS[:2], "N bL:l|\n", "N X|bL:nk| t\n", *_LINKS[3:]],
+            None,
+        ),
+        ("wr-links", [_ins(20, "X")], [*_LINKS[:4], "N u:Xcd\n", _LINKS[5]], None),
+        ("wr-links", [_ins(20, "\n")], [*_LINKS[:4], "N u:\n", "N u:cd\n", _LINKS[5]], None),
+        ("wr-links", [_rep("YZ", "Q", matchCase=True)], [*_LINKS[:5], "N x|b:Q\n"], None),
+        # what `replaceAllText` matches, each row a seed, a search, its criteria, the text left
+        # and, where measured, the matches it counted
         *(
-            ("wr-text", _searched(seed, _rep(text, "R", **criteria)), [f"N {after}\n"])
-            for seed, text, criteria, after in [
-                ("ßs", "s", {}, "RR"),
-                ("sßs", "ss", {}, "RR"),
-                ("xæ y", "a", {"matchCase": True}, "R y"),
-                ("xæ y", "xa", {"matchCase": True}, "Ræ y"),
-                ("x\næ y", "a", {"matchCase": True}, "xR y"),
-                ("aæ y", "a", {"matchCase": True}, "R y"),
-                ("e\u0301 x", "e", {}, "R x"),
-                ("ete é", "é", {"matchCase": True}, "RtR R"),
-                ("Résumé resume", "resume", {}, "R R"),
-                ("ı I i", "I", {}, "R R R"),
-                ("ǅ dž", "Ǆ", {}, "R R"),
-                ("ſ s", "s", {"matchCase": True}, "ſ R"),
-                ("ľ l L", "L", {"matchCase": True}, "R l R"),
-                ("ﬁx fix", "FI", {}, "ﬁx Rx"),
-                ("ß x", "ẞ", {}, "ß x"),
-                ("ά α", "α", {}, "ά R"),
-                # a regular expression is `java.util.regex`'s, over the folded text
-                ("été x", "e", {"searchByRegex": True}, "RtR x"),
-                ("café", "[a-z]+", _RE, "R"),
-                ("ß", "^..$", _RE, "R"),
-                ("a1 b٣ c１", "\\d", _RE, "aR b٣ c１"),
-                ("a\u00a0b c\u2003d", "\\s", _RE, "a\u00a0bRc\u2003dR"),
-                ("aé_1 ж", "\\w", _RE, "RRRR ж"),
-                ("жa", "(?U)\\w", _RE, "RR"),
-                ("ab1", "\\p{L}", _RE, "RR1"),
-                ("ab1ж", "\\p{Alpha}", _RE, "RR1ж"),
-                ("aB", "a(?i)b", _RE, "R"),
-                ("Ж", "(?i)ж", _RE, "Ж"),
-                ("aab", "(?<n>a)\\k<n>", _RE, "Rb"),
-                ("a.b axb", "\\Qa.b\\E", _RE, "R axb"),
-                ("ab", "b\\Z", _RE, "aR"),
-                ("ab", "b\\z", _RE, "ab"),
-                ("A", "\\0101", _RE, "R"),
-                ("abc", "[a-c&&[^b]]", _RE, "RbR"),
-                ("abcx", "[a-c[x]]", _RE, "RRRR"),
-                ("a:", "[[:alpha:]]", _RE, "RR"),
-                ("aaa", "a++a", _RE, "aaa"),
-                ("aaaa", "a{,2}", _RE, "aaaa"),
-                ("a", "a(?#c)", _RE, "a"),
-            ]
+            ("wr-text", _searched(seed, _rep(text, "R", **criteria)), [f"N {after}\n"], *changed)
+            for seed, text, criteria, after, *changed in [(*row, None)[:5] for row in _SEARCH_ROWS]
         ),
     ],
 )
-def test_a_write_styles_what_it_inserts_as_real_does(wc, wh, doc, requests, runs):
+def test_a_write_styles_what_it_inserts_as_real_does(wc, wh, doc, requests, runs, changed):
     h = wh[_OWNER]
     r = _docs_write(wc, h, doc, {"requests": requests})
     assert r.status_code == 200, r.text
     assert _docs_runs(wc, h, doc) == runs
+    if changed is not None:
+        count = {"occurrencesChanged": changed} if changed else {}
+        assert r.json()["replies"][-1] == {"replaceAllText": count}
 
 
 _GRAPHEME = (

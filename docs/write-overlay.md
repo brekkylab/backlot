@@ -76,8 +76,9 @@ splits gives the new part a `headingId` of its own, and every write moves the Do
 which `requiredRevisionId` is checked against. A Doc whose corpus record states only `content`
 reads as one paragraph per line, and its first write stores that reading. `replaceAllText`
 compares text as real folds it (a letter with a mark as its base letter, `æ` as `ae`, `ß` as
-`ss`), and reads a regular expression as `java.util.regex` does; an insert inside a grapheme
-cluster, by Unicode's text segmentation, is refused. Drive reads what the write left:
+`ss`), and reads a regular expression with `java.util.regex`'s syntax, classes and properties,
+refusing what Java refuses; an insert inside a grapheme cluster, by Unicode's text segmentation,
+is refused. Drive reads what the write left:
 `files.export` and fullText search see the new text, `modifiedTime` moves to the write's time, and
 `version` moves by one while `size` stays what it was, a blank Doc's first write taking it from 1
 to 1024 as real's does.
@@ -163,9 +164,14 @@ field list, so the ordering divergence below has no entry to live in and is stat
 - **A fold's match after a character outside the BMP.** A match of the first letter of `æ` or
   another two-letter fold takes the character before it too, as real's does, but after an emoji
   real leaves a space where the emoji was and Backlot removes it whole.
-- **Drive's timing.** Real's `version` also climbs with no write, about once a minute, and its
-  `modifiedTime` shows at most one write in a couple of minutes, later writes appearing a minute
-  or two on or not at all. Backlot moves both on every write, at once.
+- **Drive's timing.** Real's `version` also climbs with no write, minutes apart and often by two,
+  and a blank Doc's `size` became 1024 ten minutes on with no write; its `modifiedTime` shows at
+  most one write in a couple of minutes, later writes appearing a minute or two on or not at all.
+  Backlot moves `version` and `modifiedTime` on every write, at once, and `size` only on a
+  write.
+- **A regular expression's case inside a class.** Without `matchCase`, `[\w]` and a POSIX class
+  inside brackets take `ſ` and the Kelvin sign, which Java's do not; with `matchCase`, an ASCII-only
+  `(?i)` still folds a non-ASCII letter inside brackets.
 - **Rate limits.** Real Sheets refuses a user's writes past 60 a minute with 429
   `RESOURCE_EXHAUSTED`. Backlot does not count them.
 

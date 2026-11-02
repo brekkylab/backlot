@@ -96,6 +96,8 @@ class OperationEntry:
     id: str = ""
     # The vendor's message it answers with, for a Google source: the `types` entry its answer is.
     response: str = ""
+    # The vendor's message its body is, for a Google source.
+    request: str = ""
 
 
 @dataclass(frozen=True)
@@ -210,6 +212,8 @@ class OperationSurface:
                 entry["id"] = e.id
             if e.response:
                 entry["response"] = e.response
+            if e.request:
+                entry["request"] = e.request
             entry["status"] = e.status
             entry |= _accepted(own.pop(e.operation, None))
             if diverging := params.pop(e.operation, None):
@@ -241,7 +245,13 @@ class OperationSurface:
                 raise ValueError(f"{e['operation']} is listed twice: an operation is one entry")
             seen.add(e["operation"])
             entries.append(
-                OperationEntry(e["operation"], e["status"], e.get("id", ""), e.get("response", ""))
+                OperationEntry(
+                    e["operation"],
+                    e["status"],
+                    e.get("id", ""),
+                    e.get("response", ""),
+                    e.get("request", ""),
+                )
             )
             findings += _read(e, e["operation"])
             for name, p in (e.get("params") or {}).items():

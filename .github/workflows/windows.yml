@@ -55,21 +55,21 @@ jobs:
         # HEAD is the pull request merged into its base, and HEAD^1 that base. A script's name is
         # its entry in scripts/ without the extension, and a file names it where it stands as a word.
         run: |
+          T=$RUNNER_TEMP
           names() { sed -n 's|^scripts/\([^/]*\).*|\1|p' | sed -e 's|\.[^.]*$||' -e '/^$/d'; }
-          git ls-tree --name-only HEAD scripts/ | names > "$RUNNER_TEMP/scripts"
-          git diff --no-color --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed"
-          names < "$RUNNER_TEMP/changed" > "$RUNNER_TEMP/changed-scripts"
-          : > "$RUNNER_TEMP/tests"
-          if [ -s "$RUNNER_TEMP/changed-scripts" ]; then
-            git grep -lwFf "$RUNNER_TEMP/changed-scripts" -- 'tests/test_*.py' \
-              >> "$RUNNER_TEMP/tests" || true
+          git ls-tree --name-only HEAD scripts/ | names > "$T/scripts"
+          git diff --no-color --name-only HEAD^1 HEAD > "$T/changed"
+          names < "$T/changed" > "$T/changed-scripts"
+          : > "$T/tests"
+          if [ -s "$T/changed-scripts" ]; then
+            git grep -lwFf "$T/changed-scripts" -- 'tests/test_*.py' >> "$T/tests" || true
           fi
-          if [ -s "$RUNNER_TEMP/tests" ]; then
+          if [ -s "$T/tests" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
-          git grep -lwFf "$RUNNER_TEMP/scripts" -- 'tests/test_*.py' > "$RUNNER_TEMP/naming" || true
-          grep -xFf "$RUNNER_TEMP/changed" "$RUNNER_TEMP/naming" >> "$RUNNER_TEMP/tests" || true
-          echo "tests=$(sort -u "$RUNNER_TEMP/tests" | paste -sd ' ')" >> "$GITHUB_OUTPUT"
+          git grep -lwFf "$T/scripts" -- 'tests/test_*.py' > "$T/naming" || true
+          grep -xFf "$T/changed" "$T/naming" >> "$T/tests" || true
+          echo "tests=$(sort -u "$T/tests" | paste -sd ' ')" >> "$GITHUB_OUTPUT"
 
   test:
     needs: scripts

@@ -108,7 +108,9 @@ DEPTH: dict[str, int] = {"linear": 1}
 
 # The argument names the Anthropic Messages API takes, as its 400 states the rule (2026-10-29):
 # "Property keys should match pattern '^[a-zA-Z0-9_.-]{1,64}$'". One name outside it in any tool
-# refuses the whole request, so an agent on that API cannot start against a source that has one.
+# refuses the whole request, so an agent on that API cannot start against a source that has one. At
+# its edges on 2026-11-02, an empty key and a 65-character one drew that 400 and a 64-character one
+# was answered.
 ARGUMENT_NAME = re.compile(r"[a-zA-Z0-9_.-]{1,64}")
 
 
@@ -268,23 +270,35 @@ def openapi_spec(base_url: str, source: str) -> dict:
 
 
 def argument_name(name: str) -> str:
-    """The name a tool argument goes by for the parameter the spec names ``name``: ``name`` itself
-    when :data:`ARGUMENT_NAME` takes it, and otherwise ``name`` without the characters it refuses
-    and the dots and dashes that would then lead it, so ``$select`` is ``select`` and ``$.xgafv``
-    is ``xgafv``."""
+    """The tool argument name for the spec parameter ``name``: ``name`` itself when
+    :data:`ARGUMENT_NAME` takes it, else stripped to what it takes, so ``$select`` is ``select``
+    and ``$.xgafv`` is ``xgafv``. A name that is still refused, such as ``$`` or one too long,
+    raises :class:`ValueError` naming the parameter."""
     if ARGUMENT_NAME.fullmatch(name):
         return name
-    return re.sub(r"[^a-zA-Z0-9_.-]", "", name).lstrip(".-")
+    renamed = re.sub(r"[^a-zA-Z0-9_.-]", "", name).lstrip(".-")
+    if not ARGUMENT_NAME.fullmatch(renamed):
+        raise ValueError(f"parameter {name!r} has no argument name the Anthropic API takes")
+    return renamed
 
 
 def _with_argument_names(tool):
     """``tool`` with each argument :func:`argument_name` renames under its new name, the old one
-    still the name the call is sent under."""
+    still the name the call is sent under. Two arguments that would go by one name raise
+    :class:`ValueError` naming the tool and both parameters."""
     from fastmcp.tools import Tool
     from fastmcp.tools.tool_transform import ArgTransform
 
     properties = tool.parameters.get("properties", {})
-    renames = {old: argument_name(old) for old in properties if argument_name(old) != old}
+    named: dict[str, str] = {}
+    for old in properties:
+        new = argument_name(old)
+        if new in named:
+            raise ValueError(
+                f"tool {tool.name!r}: parameters {named[new]!r} and {old!r} both go by {new!r}"
+            )
+        named[new] = old
+    renames = {old: new for new, old in named.items() if new != old}
     if not renames:
         return tool
     return Tool.from_tool(

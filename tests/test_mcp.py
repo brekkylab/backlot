@@ -932,36 +932,62 @@ def test_mcp_notion_tools_take_the_version_every_request_carries(live_server):
 _ANTHROPIC_KEY = re.compile(r"[a-zA-Z0-9_.-]{1,64}")
 
 
-@pytest.mark.parametrize(
-    "source, tool, args, renamed, answer",
-    [
-        # Graph's `$select` trims the user to the properties it names.
-        (
-            "msteams",
-            "me",
-            {"select": "displayName"},
-            "select",
-            lambda text: ("displayName" in json.loads(text), "givenName" in json.loads(text)),
-        ),
-        # Google's error format (`backlot.errors.google.has_errors_array`).
-        (
-            "gmail",
-            "gmail_label_get",
-            {"user_id": "me", "label_id": "no-such-label", "xgafv": "2"},
-            "xgafv",
-            lambda text: ("NOT_FOUND" in text, "'errors'" in text),
-        ),
-    ],
-    ids=["msteams-select", "gmail-xgafv"],
-)
-def test_a_renamed_argument_reaches_the_route_under_the_vendors_name(
-    live_server, source, tool, args, renamed, answer
+def _graph_user(text):
+    """Whether the user has ``displayName``, and ``givenName``, which only the default has."""
+    user = json.loads(text)
+    return "displayName" in user, "givenName" in user
+
+
+def _google_not_found(text):
+    """Whether the answer is the 404, and whether it has an ``errors`` list."""
+    return "NOT_FOUND" in text, "'errors'" in text
+
+
+# One call each through its source's bridge: (id, source, tool, arguments, read, is_error, answer),
+# the answer being what `read` makes of the call's text. Graph's `$select` trims the user to the
+# properties it names, and Gmail's 404 under `$.xgafv` set to 2 has no `errors` list
+# (`backlot.errors.google.has_errors_array`). The rows of a source are next to each other, since
+# the test opens one session per source.
+_CALL_ROWS = [
+    (
+        "msteams-select",
+        "msteams",
+        "me",
+        {"select": "displayName"},
+        _graph_user,
+        False,
+        (True, False),
+    ),
+    ("msteams-default", "msteams", "me", {}, _graph_user, False, (True, True)),
+    (
+        "gmail-xgafv",
+        "gmail",
+        "gmail_label_get",
+        {"user_id": "me", "label_id": "no-such-label", "xgafv": "2"},
+        _google_not_found,
+        True,
+        (True, False),
+    ),
+    (
+        "gmail-default",
+        "gmail",
+        "gmail_label_get",
+        {"user_id": "me", "label_id": "no-such-label"},
+        _google_not_found,
+        True,
+        (True, True),
+    ),
+    ("gmail-unknown-tool", "gmail", "no_such_tool", {}, str, True, "Unknown tool: 'no_such_tool'"),
+]
+
+
+def test_a_call_reaches_its_route_under_the_vendors_names_or_hears_its_tool_is_unknown(
+    live_server,
 ):
     """An argument renamed for the Anthropic API still reaches the route as the parameter the
-    vendor names: ``answer`` reads a call's text as whether the route answered it and whether the
-    answer has what only the route's default has, and only the call that sends the argument lacks
-    the latter. A separate function from ``_BRIDGE_CASES``, which compares two callers on one call
-    rather than one caller on two."""
+    vendor names, and a call to a name the source has no tool by hears that the tool is unknown
+    rather than an internal error. Its own function, not rows of ``_BRIDGE_CASES``, which compare
+    two callers on one call."""
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -969,54 +995,67 @@ def test_a_renamed_argument_reaches_the_route_under_the_vendors_name(
     creds = backlot_mcp.resolve(base, None)
 
     async def _go():
-        async with Client(backlot_mcp.openapi_server(base, creds, source)) as c:
-            out = []
-            for call in (args, {k: v for k, v in args.items() if k != renamed}):
-                res = await c.call_tool(tool, call, raise_on_error=False)
-                out.append(answer("".join(getattr(b, "text", "") for b in res.content)))
-            return out
+        answered = {}
+        for source in dict.fromkeys(row[1] for row in _CALL_ROWS):
+            async with Client(backlot_mcp.openapi_server(base, creds, source)) as c:
+                for row_id, row_source, tool, arguments, read, _, _ in _CALL_ROWS:
+                    if row_source == source:
+                        # an error the session raises, or `read` does, is the row's answer
+                        try:
+                            res = await c.call_tool(tool, arguments, raise_on_error=False)
+                            text = "".join(getattr(b, "text", "") for b in res.content)
+                            answered[row_id] = (res.is_error, read(text))
+                        except Exception as e:
+                            answered[row_id] = (type(e).__name__, str(e))
+        return answered
 
-    assert asyncio.run(_go()) == [(True, False), (True, True)]
-
-
-def test_a_tool_the_bridge_does_not_serve_is_unknown(live_server):
-    """A call to a name the source has no tool by finds no tool to rename, and the client hears that
-    the tool is unknown rather than an internal error."""
-    pytest.importorskip("fastmcp")
-    from fastmcp import Client
-
-    base, _ = live_server
-
-    async def _go():
-        server = backlot_mcp.openapi_server(base, backlot_mcp.resolve(base, None), "gmail")
-        async with Client(server) as c:
-            res = await c.call_tool("no_such_tool", {}, raise_on_error=False)
-            return res.is_error, "".join(getattr(b, "text", "") for b in res.content)
-
-    assert asyncio.run(_go()) == (True, "Unknown tool: 'no_such_tool'")
+    answered = asyncio.run(_go())
+    expected = {row_id: (is_error, answer) for row_id, *_, is_error, answer in _CALL_ROWS}
+    assert answered == expected
 
 
-@pytest.mark.parametrize(
-    "properties, arguments",
-    [
-        (
-            {"$select": {"description": "Comma-separated properties to return."}, "user_id": {}},
-            [
-                ("select", "Comma-separated properties to return. Sent as `$select`."),
-                ("user_id", None),
-            ],
-        ),
-        ({"$.xgafv": {}}, [("xgafv", "Sent as `$.xgafv`.")]),
-        ({"user_id": {}}, [("user_id", None)]),
-        # a name the pattern takes keeps even a leading dot, the character a rename strips there
-        ({".x": {}}, [(".x", None)]),
-    ],
-    ids=["select", "xgafv", "unchanged", "leading-dot"],
-)
-def test_an_argument_the_pattern_refuses_is_renamed(properties, arguments):
+# (id, properties, the arguments the tool lists for them or the error `_with_argument_names` raises)
+_RENAME_ROWS = [
+    (
+        "select",
+        {"$select": {"description": "Comma-separated properties to return."}, "user_id": {}},
+        [("select", "Comma-separated properties to return. Sent as `$select`."), ("user_id", None)],
+    ),
+    ("xgafv", {"$.xgafv": {}}, [("xgafv", "Sent as `$.xgafv`.")]),
+    ("leading-dash", {"$-x": {}}, [("x", "Sent as `$-x`.")]),
+    ("unchanged", {"user_id": {}}, [("user_id", None)]),
+    # a name the pattern takes keeps even a leading dot, the character a rename strips there
+    ("leading-dot", {".x": {}}, [(".x", None)]),
+    ("only-a-dot", {".": {}}, [(".", None)]),
+    ("64-characters", {"a" * 64: {}}, [("a" * 64, None)]),
+    # the length the pattern reads is the stripped name's
+    ("64-once-stripped", {"$" + "a" * 64: {}}, [("a" * 64, f"Sent as `${'a' * 64}`.")]),
+    (
+        "65-characters",
+        {"a" * 65: {}},
+        f"parameter {'a' * 65!r} has no argument name the Anthropic API takes",
+    ),
+    ("nothing-left", {"$": {}}, "parameter '$' has no argument name the Anthropic API takes"),
+    ("a-dot-left", {"$.": {}}, "parameter '$.' has no argument name the Anthropic API takes"),
+    ("non-ascii", {"ééé": {}}, "parameter 'ééé' has no argument name the Anthropic API takes"),
+    (
+        "renamed-onto-a-name",
+        {"$filter": {}, "filter": {}},
+        "tool 't': parameters '$filter' and 'filter' both go by 'filter'",
+    ),
+    (
+        "two-renamed-onto-one",
+        {"$filter": {}, "$.filter": {}},
+        "tool 't': parameters '$filter' and '$.filter' both go by 'filter'",
+    ),
+]
+
+
+def test_an_argument_the_pattern_refuses_is_renamed_or_named_in_an_error():
     """Each argument the pattern refuses goes by the name :func:`backlot.mcp.argument_name` gives
     it, its description naming what the call is sent as, and each argument the pattern takes keeps
-    its name."""
+    its name. A tool with an argument no such name can be made of, or with two that would go by one
+    name, is refused with an error that names them."""
     pytest.importorskip("fastmcp")
     from fastmcp.tools import Tool
 
@@ -1024,9 +1063,16 @@ def test_an_argument_the_pattern_refuses_is_renamed(properties, arguments):
         async def run(self, arguments):
             return None
 
-    tool = _Tool(name="t", parameters={"type": "object", "properties": properties})
-    listed = backlot_mcp._with_argument_names(tool).parameters["properties"]
-    assert [(name, p.get("description")) for name, p in listed.items()] == arguments
+    answered = {}
+    for row_id, properties, _ in _RENAME_ROWS:
+        tool = _Tool(name="t", parameters={"type": "object", "properties": properties})
+        try:
+            listed = backlot_mcp._with_argument_names(tool).parameters["properties"]
+        except ValueError as e:
+            answered[row_id] = str(e)
+        else:
+            answered[row_id] = [(name, p.get("description")) for name, p in listed.items()]
+    assert answered == {row_id: expected for row_id, _, expected in _RENAME_ROWS}
 
 
 # ------------------------------------------------------------------ `backlot mcp` over stdio

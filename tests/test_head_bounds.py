@@ -294,10 +294,21 @@ _BLANK_AHEAD = [
 ]
 _IN_HEADERS = {(mount, path): header for mount, path, *_, header in _BOUNDS}
 
+#: A CRLF or an LF ahead of a request line Slack refuses, the line's LF at the 49,152nd byte
+#: written and at the 49,153rd (``backlot.head_bounds.Bound.refused``): what comes ahead, the
+#: number of `a` in the line's `pad`, and real's answer.
+_REFUSED_BEHIND_A_BLANK = [
+    ("\r\n", 49_108, "slack 400"),
+    ("\r\n", 49_109, "slack"),
+    ("\n", 49_109, "slack 400"),
+    ("\n", 49_110, "slack"),
+]
+
 #: Each case of the test below: the part the bound is reached in, what comes ahead of the request
 #: line and whether the bound counts it, the row's prefix and path, what follows the path in the
-#: request line, the bound and whether it is a line's, and real's answer. A row of :data:`_NO_QUERY`
-#: is a case in a header only, its line ending at the path, and so is a row of :data:`_BLANK_AHEAD`.
+#: request line, the bound and whether it is a line's, and real's answer. A row of
+#: :data:`_NO_QUERY`, :data:`_BLANK_AHEAD` or :data:`_REFUSED_BEHIND_A_BLANK` is a case in a header
+#: only, the first's line ending at the path.
 _CASES = (
     [
         (part, "", None, mount, path, "?x=", bound, per_line, line if part == "line" else header)
@@ -309,6 +320,11 @@ _CASES = (
     + [
         ("header", "\r\n", counts, m, p, "?x=", *_BOUND_OF[m], _IN_HEADERS[m, p])
         for m, p, counts in _BLANK_AHEAD
+    ]
+    + [
+        ("header", lead, False, "/slack", f"/api/api.test?q=\x01x&pad={'a' * pad}", "?x=")
+        + (*_BOUND_OF["/slack"], real)
+        for lead, pad, real in _REFUSED_BEHIND_A_BLANK
     ]
 )
 
@@ -486,6 +502,14 @@ _MARKDOWN_LENGTH = (
     b"POST /github/markdown HTTP/1.1\r\nHost: x\r\nContent-Length: 12\r\nX-A: chunked\r\n\r\n"
     b'{"text":"x"}'
 )
+_GRAPH_CHUNKED = (
+    b"POST /msgraph/v1.0/me/sendMail HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+    b'c\r\n{"text":"x"}\r\n0\r\n\r\n'
+)
+_GRAPH_HEADER = b"GET /msgraph/v1.0/me HTTP/1.1\r\nHost: x\r\nX-A: " + b"a" * 45_000 + b"\r\n\r\n"
+_SLACK = b"GET /slack/api/api.test HTTP/1.1\r\nHost: x\r\n"
+_RAW = b"GET /github/repos/acme/docs-site?q=\x01 HTTP/1.1\r\nHost: x\r\n\r\n"
+_SLACK_HEADER = b"X-A: " + b"a" * 62_000 + b"\r\n\r\n"
 _MARKDOWN_CHUNKED = (
     b"POST /github/markdown HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nX-B: b\r\n\r\n"
     b'c\r\n{"text":"x"}\r\n0\r\n\r\n'
@@ -496,10 +520,14 @@ _MARKDOWN_CHUNKED = (
 #: or in the read the one before it ends in, after a head or after a body framed by its length or
 #: chunked, and its head ends within its bound, reaches it in the line or in a header, or holds a
 #: raw byte in its target, which the scope then carries as sent; a head that reaches its bound is
-#: answered after each answer ahead of it. Of the bodies, one of each framing holds a CRLF CRLF, one
-#: framed by its length has a header reading `chunked`, and one chunked has a header after its
-#: `Transfer-Encoding`. Nothing after a request that closes the connection or one the parser refuses
-#: is answered, as on api.github.com (2026-11-02).
+#: answered after each answer ahead of it. A first request a CRLF leads, its line in one read or in
+#: two, has its raw byte carried as sent: api.github.com and Slack answered such a request as they
+#: answer one with no CRLF (2026-11-02). Of the bodies, one of each framing holds a CRLF CRLF, one
+#: framed by its length has a header reading `chunked`, one chunked has a header after its
+#: `Transfer-Encoding`, and one is framed by `gzip, chunked`, which Graph read as chunked on
+#: 2026-11-02. A header line of one byte, or one a CR leads, does not end a head: Slack answered a
+#: header past the bound behind either with its 431 on 2026-11-02. Nothing after a request that
+#: closes the connection or one the parser refuses is answered, as on api.github.com (2026-11-02).
 _CONNECTIONS = [
     (
         "s3 heads in reads of their own",
@@ -614,13 +642,48 @@ _CONNECTIONS = [
         True,
     ),
     (
+        "graph a header past the bound after a chunked body framed by gzip, chunked",
+        [_GRAPH_CHUNKED + _GRAPH_HEADER],
+        ["POST /msgraph/v1.0/me/sendMail 12 False"],
+        [["HTTP/1.1 200 OK", "graph 400"]],
+        True,
+    ),
+    (
+        "slack a header past the bound behind a header line of one byte",
+        [_SLACK + b"x\n" + _SLACK_HEADER],
+        [],
+        [["slack"]],
+        True,
+    ),
+    (
+        "slack a header past the bound behind a header line a CR leads",
+        [_SLACK + b"\rx\r\n" + _SLACK_HEADER],
+        [],
+        [["slack"]],
+        True,
+    ),
+    (
         "github a raw byte in the target in the same read",
-        [_GITHUB + b"GET /github/repos/acme/docs-site?q=\x01 HTTP/1.1\r\nHost: x\r\n\r\n"],
+        [_GITHUB + _RAW],
         [
             "GET /github/repos/acme/docs-site 0 False",
             "GET /github/repos/acme/docs-site 0 True",
         ],
         [["HTTP/1.1 200 OK"] * 2],
+        False,
+    ),
+    (
+        "github a raw byte in the target behind a CRLF",
+        [b"\r\n" + _RAW],
+        ["GET /github/repos/acme/docs-site 0 True"],
+        [["HTTP/1.1 200 OK"]],
+        False,
+    ),
+    (
+        "github a raw byte in the target behind a CRLF, the line in two reads",
+        [b"\r\n" + _RAW[:40], _RAW[40:]],
+        ["GET /github/repos/acme/docs-site 0 True"],
+        [[], ["HTTP/1.1 200 OK"]],
         False,
     ),
 ]

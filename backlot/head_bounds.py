@@ -94,16 +94,20 @@ class Bound:
             return None
         return self.in_line if in_request_line else self.in_headers
 
-    def refused(self, line: bytes, ended: bool) -> bytes | None:
+    def refused(self, line: bytes, ended: bool, blank: int) -> bytes | None:
         """``backlot.request_target.refused_in_the_line``'s answer to ``line`` at this bound, as
-        :func:`_answer` sends it, ``ended`` where its LF came. ``ahead`` is read off the pieces a
-        head written at once is cut into, from its first byte; a line bound, longer than a
-        :data:`PIECE`, is reached in a later piece than the LF of the line before. Only a head
-        written at once is read so: real reads the pieces a client wrote, and on Slack, with the LF
-        at byte 49,153, a head written in writes of 1,000 or 4,000 bytes drew the line's 400 where
-        one written at once drew the bound's 431 (2026-11-02, twice each)."""
+        :func:`_answer` sends it, ``ended`` where its LF came and ``blank`` the bytes of the empty
+        lines ahead of it. ``ahead`` is read off the pieces a head written at once is cut into, from
+        the first byte written, the empty lines' included: on Slack, with a CRLF or an LF ahead of
+        the line, its LF at the 49,152nd byte written drew the line's 400 and at the 49,153rd the
+        bound's 431 (2026-11-02, twice each). A line bound, longer than a :data:`PIECE`, is reached
+        in a later piece than the LF of the line before. Only a head written at once is read so:
+        real reads the pieces a client wrote, and on Slack, with the LF at byte 49,153, a head
+        written in writes of 1,000 or 4,000 bytes drew the line's 400 where one written at once drew
+        the bound's 431 (2026-11-02, twice each)."""
+        reached = self.limit - 1 + (0 if self.counts_blank else blank)
         ahead = ended and (
-            self.per_line or (len(line) - self.mount) // PIECE < (self.limit - 1) // PIECE
+            self.per_line or (blank + len(line) - self.mount) // PIECE < reached // PIECE
         )
         refused = request_target.refused_in_the_line(self.door, line, ended, ahead)
         return None if refused is None else _answer(*refused)

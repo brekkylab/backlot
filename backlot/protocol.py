@@ -31,7 +31,8 @@ class Protocol(HttpToolsProtocol):
     A request that starts in the same read as the end of the one before it is read as one that
     starts a read is (:meth:`_read`).
 
-    A request's line is read before the parser reads it. A read with no LF is held for the reads
+    A request's line is read before the parser reads it. The CRs and LFs ahead of it go to the
+    parser, which skips them, and the rest of a read with no LF after them is held for the reads
     after it while :func:`_starts_a_request_line` holds for what is held. Once it does not, the
     held bytes go to the parser as they came, which refuses them, and uvicorn answers its 400 at
     once: `hello` with no LF is answered so.
@@ -80,14 +81,14 @@ class Protocol(HttpToolsProtocol):
         if self._between_requests:
             data = self._held + data
             self._held = b""
-            end = data.find(b"\n")
+            at = len(data) - len(data.lstrip(b"\r\n"))
+            end = data.find(b"\n", at)
             if end >= 0:
-                line, self._sent = request_target.encode_line(data[: end + 1])
-                data = line + data[end + 1 :]
-            elif _starts_a_request_line(data):
-                self._held = data
+                line, self._sent = request_target.encode_line(data[at : end + 1])
+                data = data[:at] + line + data[end + 1 :]
+            elif _starts_a_request_line(data[at:]):
+                data, self._held = data[:at], data[at:]
                 self._unset_keepalive_if_required()
-                return b""
         super().data_received(data)
         if self.parser is None or self.parser.should_upgrade():
             return b""
@@ -231,7 +232,8 @@ class _Head:
         )
         if answer is None:
             return None
-        return self.bound.refused(bytes(self.request_line), not self.in_request_line) or answer
+        line = bytes(self.request_line)
+        return self.bound.refused(line, not self.in_request_line, self.blank) or answer
 
 
 def _starts_a_request_line(held: bytes) -> bool:

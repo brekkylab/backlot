@@ -102,11 +102,12 @@ Docker skips it (`_require_linux_docker` in `tests/test_mcp.py`).
 Windows, where the default text encoding is the locale's code page (cp1252 on `windows-latest`)
 rather than UTF-8, has its own workflow (`.github/workflows/windows.yml`). It runs on a pull request
 once a maintainer adds the `windows` label, or without it when the pull request changes a script in
-`scripts/` or a test file that runs one: the README's first command, the test files that read and
-write Backlot's own files, the test files that run a script in `scripts/`, and the tests marked
-`windows` or xfail. On `main` it runs the whole suite of a `dev` and `mcp` install once a day. A
-test that fails on Windows for a known, deterministic reason is marked `xfail(strict=True)` there
-and `windows`, so the pull request that fixes it removes the first mark and that run keeps the test.
+`scripts/` that a test file names: the README's first command, the test files that read and write
+Backlot's own files, the test files that name a script the pull request changes and the test files
+it changes that name a script, and the tests marked `windows` or xfail. On `main` it runs the whole
+suite of a `dev` and `mcp` install once a day. A test that fails on Windows for a known,
+deterministic reason is marked `xfail(strict=True)` there and `windows`, so the pull request that
+fixes it removes the first mark and that run keeps the test.
 
 Every file Backlot ships, writes and reads back is UTF-8, so a text file (and a text-mode subprocess
 pipe, with `PYTHONIOENCODING=utf-8` for a Python child) is always opened with `encoding="utf-8"`.
@@ -114,7 +115,8 @@ Ruff (`PLW1514`) and the suite run as CI runs it, under `PYTHONWARNDEFAULTENCODI
 `EncodingWarning` is then an error), refuse one opened without it.
 
 A test that expects a path in a script's output builds it from a `Path` rather than joining its
-parts with `/`, since Windows spells a path with backslashes.
+parts with `/`, since Windows spells a path with backslashes. A pull request that changes such a
+test and no script runs on Windows only with the label.
 
 ### Testing the agent skill
 

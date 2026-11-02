@@ -172,6 +172,7 @@ field list, so the ordering divergence below has no entry to live in and is stat
 - **A regular expression's case inside a class.** Without `matchCase`, `[\w]` and a POSIX class
   inside brackets take `ſ` and the Kelvin sign, which Java's do not; with `matchCase`, an ASCII-only
   `(?i)` still folds a non-ASCII letter inside brackets.
+- **Java's grapheme boundary.** `\b{g}` matches nothing here; real reads it.
 - **Rate limits.** Real Sheets refuses a user's writes past 60 a minute with 429
   `RESOURCE_EXHAUSTED`. Backlot does not count them.
 

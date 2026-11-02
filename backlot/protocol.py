@@ -125,26 +125,27 @@ class Protocol(HttpToolsProtocol):
 class _Body:
     """Where the body after a request's head can end, as its framing headers say: after its
     `Content-Length`, or for a chunked one, after a CRLF CRLF, which ends the last chunk or the
-    trailer after it. A body framed neither way is not read here."""
+    trailer after it."""
 
-    def __init__(self, length: int | None, chunked: bool) -> None:
+    def __init__(self, length: int | None) -> None:
         self.left = length
-        self.chunked = chunked
         self.tail = b""
 
     @classmethod
-    def framed_by(cls, headers: list[tuple[bytes, bytes]]) -> _Body:
-        """The body after a head with ``headers`` as the parser read them, names in lower case."""
+    def framed_by(cls, headers: list[tuple[bytes, bytes]]) -> _Body | None:
+        """The body after a head with ``headers`` as the parser read them, names in lower case, or
+        ``None`` for a head that frames none: the parser ends such a request at its head or refuses
+        it. httptools refuses a `Content-Length` that is not digits, and a second one, before it
+        hands the head on."""
         length, chunked = None, False
         for name, value in headers:
             if name == b"content-length":
-                try:
-                    length = int(value)
-                except ValueError:
-                    length = None
+                length = int(value)
             elif name == b"transfer-encoding":
                 chunked = value.rpartition(b",")[2].strip().lower() == b"chunked"
-        return cls(None if chunked else length, chunked)
+        if chunked:
+            return cls(None)
+        return None if length is None else cls(length)
 
     def ends(self, data: bytes):
         """The offsets in ``data``, the body's next bytes, at which it can end, in order."""
@@ -152,8 +153,6 @@ class _Body:
             left, self.left = self.left, max(self.left - len(data), 0)
             if left <= len(data):
                 yield left
-            return
-        if not self.chunked:
             return
         joined = self.tail + data
         before = len(self.tail)

@@ -17962,6 +17962,20 @@ _TAB_WRITES = [
     # a new tab is a blank one, `Tab n` when untitled, last or at its index, under its parent
     ([{"addDocumentTab": {}}], [*_TABS_START, "Tab 5: "], [_tab_props("Tab 5", 3)]),
     (
+        [{"addDocumentTab": {"tabProperties": {"iconEmoji": "\U0001f1ea\U0001f1fa"}}}],
+        [*_TABS_START, "Tab 5 \U0001f1ea\U0001f1fa: "],
+        [
+            {
+                "addDocumentTab": {
+                    "tabProperties": {
+                        **_tab_props("Tab 5", 3)["addDocumentTab"]["tabProperties"],
+                        "iconEmoji": "\U0001f1ea\U0001f1fa",
+                    }
+                }
+            }
+        ],
+    ),
+    (
         [{"addDocumentTab": {"tabProperties": {"title": "Z", "index": 0}}}],
         ["Z: ", *_TABS_START],
         [_tab_props("Z", 0)],
@@ -18862,6 +18876,20 @@ _DOCS_TAB_REFUSALS = [
                 "Not a valid emoji input.",
                 0,
             ),
+            # a flag is an icon when it is an RGI flag before Emoji 18.0
+            *(
+                (
+                    [{"addDocumentTab": {"tabProperties": {"iconEmoji": flag}}}],
+                    "Not a valid emoji input.",
+                    0,
+                )
+                for flag in (
+                    "\U0001f1ff\U0001f1ff",
+                    "\U0001f1e6\U0001f1e7",
+                    "\U0001f1e8\U0001f1f6",
+                    "\U0001f3f4\U000e0075\U000e0073\U000e0074\U000e0078\U000e007f",
+                )
+            ),
             # three levels of tabs at most, a fourth refused before its index
             (
                 [_add_g(), {"addDocumentTab": {"tabProperties": {"parentTabId": "$NEW0"}}}],
@@ -18983,7 +19011,20 @@ _DOCS_TAB_REFUSALS = [
                 "Index must be less than or equal to the number of tabs within the specified parent tab.",
                 0,
             ),
-            # `fields` read as real reads it
+            # `fields` read as real reads it: each name by its `snake_case`, then each path
+            *(
+                ([_upd({"tabId": "$T2", "title": "x"}, fields)], f"Invalid field: {named}", 0)
+                for fields, named in [
+                    ("_title", "_title"),
+                    ("ti_tle", "ti_tle"),
+                    ("PARENTTABID", "parenttabid"),
+                    ("NOPE", "nope"),
+                    ("fooBar", "foo_bar"),
+                    ("title.x,nope", "nope"),
+                    ("icon_emoji.x", "iconEmoji.x"),
+                    ("TITLE.x", "title.x"),
+                ]
+            ),
             (
                 [_upd({"tabId": "$T2", "title": "x"}, ",")],
                 "At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)",
@@ -19015,7 +19056,16 @@ _DOCS_TAB_REFUSALS = [
                 "At tab with ID t.0 does not exist.",
                 1,
             ),
-            # the depth of the tab, then an index below zero, itself, its children, their depth
+            # the depth of the tab, then an index below zero, itself, its children, the index past
+            # its siblings, then its children's depth
+            (
+                [
+                    _add_g(),
+                    _upd({"tabId": "$T2", "parentTabId": "$T3", "index": 9}, "parentTabId,index"),
+                ],
+                "Index must be less than or equal to the number of tabs within the specified parent tab.",
+                1,
+            ),
             (
                 [
                     _add_g(),

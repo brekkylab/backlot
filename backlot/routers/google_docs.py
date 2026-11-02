@@ -447,9 +447,8 @@ _PJ_BATCH_UPDATE = _PJ_DOCS("docs.BatchUpdateDocumentRequest")
 
 
 def _docs_tab(doc: gdocs.Document, where: dict) -> dict:
-    """The tab a location or range names, the first for none, refused when the Doc has no such tab
-    (a header's or footnote's id names nothing in another tab). Measured, the tab is checked before
-    anything else the location or range states."""
+    """The tab a location or range names, the first for none, refused when the Doc has no such tab.
+    Measured, the tab is checked before anything else the location or range states."""
     tab = doc.tab(where.get("tab_id"))
     if tab is None:
         raise _EditorRefused("Cannot apply request to an invalid tab ID.")
@@ -458,7 +457,8 @@ def _docs_tab(doc: gdocs.Document, where: dict) -> dict:
 
 def _docs_segment(doc: gdocs.Document, tab: dict, where: dict) -> tuple[str, gdocs.Body]:
     """The kind of segment (`gdocs.Document.kind`) a location or range names in ``tab``, and the
-    segment opened, refused when the tab has no such header, footer or footnote."""
+    segment opened, refused when the tab has no such header, footer or footnote (a header's or
+    footnote's id names nothing in another tab)."""
     segment = where.get("segment_id", "")
     kind = doc.kind(tab, segment)
     if kind is None:
@@ -783,7 +783,7 @@ def _docs_placed(doc: gdocs.Document, tab: dict) -> dict:
 def _docs_delete_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``deleteTab``: the tab and its child tabs. Measured 2026-11-02: a Doc's only tab is refused,
     while deleting the only root tab, children and all, left a blank tab titled `Tab 1` under a new
-    id. A `t.0` the Doc no longer has is refused naming no id at all."""
+    id."""
     named = req.get("tab_id")
     if not named:
         raise _EditorRefused("Tab ID not specified.")
@@ -806,10 +806,11 @@ _DOCS_TAB_FIELDS = ("tabId", "title", "parentTabId", "index", "nestingLevel", "i
 def _docs_tab_fields(fields: str) -> list[str]:
     """The `TabProperties` fields a `fields` mask names, read as real reads it, measured
     2026-11-02: `*` alone names every field; names are split at commas, trimmed, and empty ones
-    dropped, so `title,` and ` , ` are read while `,` names nothing; a name matches in either
-    case and as `snake_case` (`TITLE`, `icon_emoji`). A name that is not a field is refused, and so
-    is a path into one, by its first name in `snake_case` (`tabProperties.title` is
-    `tab_properties`) unless that name is a field, when the path is named whole (`title.x`)."""
+    dropped, so `title,` and ` , ` are read while `,` is refused as naming no field. A name is read
+    as `_docs_snake` spells it and must then be a field's `snake_case` name (`TITLE`, `icon_emoji`
+    and `Parent_Tab_Id` were taken, `_title`, `ti_tle` and `PARENTTABID` refused), and is refused by
+    that spelling (`fooBar` as `foo_bar`). Every name is checked before any path into a field,
+    which is refused by the field's name and the rest as sent (`icon_emoji.x` as `iconEmoji.x`)."""
     if fields == "*":
         return list(_DOCS_TAB_FIELDS)
     parts = fields.split(",")
@@ -817,19 +818,25 @@ def _docs_tab_fields(fields: str) -> list[str]:
         raise _EditorRefused(
             "At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"
         )
-    known = {f.lower(): f for f in _DOCS_TAB_FIELDS}
-    names = []
+    known = {_docs_snake(f): f for f in _DOCS_TAB_FIELDS}
+    read = []
     for part in (p.strip() for p in parts):
         if not part:
             continue
-        head, _, rest = part.partition(".")
-        field = known.get(head.replace("_", "").lower())
-        if field is None:
-            raise _EditorRefused(f"Invalid field: {re.sub(r'(?<!^)(?=[A-Z])', '_', head).lower()}")
+        head, dot, rest = part.partition(".")
+        if _docs_snake(head) not in known:
+            raise _EditorRefused(f"Invalid field: {_docs_snake(head)}")
+        read.append((known[_docs_snake(head)], dot + rest))
+    for field, rest in read:
         if rest:
-            raise _EditorRefused(f"Invalid field: {part}")
-        names.append(field)
-    return names
+            raise _EditorRefused(f"Invalid field: {field}{rest}")
+    return [field for field, _ in read]
+
+
+def _docs_snake(name: str) -> str:
+    """A field name as real reads one in a mask: `_` before each capital that follows a small
+    letter or a digit, then lower case (`tabProperties` as `tab_properties`, `NOPE` as `nope`)."""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
 
 
 def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
@@ -837,8 +844,8 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     real's order of refusals, measured 2026-11-02: no field, a field `TabProperties` lacks, no
     `tabId`, a tab the Doc lacks, the title (missing, too long or another tab's), the icon, a
     parent the Doc lacks, a parent too deep for the tab (`_DOCS_TAB_DEPTH`), an index below zero,
-    the tab itself as its parent, one of its own children, a parent too deep for its children,
-    then an index past its siblings.
+    the tab itself as its parent, one of its own children, an index past its siblings, then a
+    parent too deep for its children.
 
     A parent named puts the tab last under it, the root for none, and an index stated moves it
     before the sibling there (`gdocs.Document.place`): measured, `*` with no index moved a tab to
@@ -885,13 +892,12 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
             raise _EditorRefused(
                 "Cannot move a parent tab to be nested under one of its own child tabs."
             )
-        if _docs_depth(doc, parent) + _docs_height(tab) > _DOCS_TAB_DEPTH:
-            raise _EditorRefused(
-                f"Moving this tab will cause child tabs to exceed the tab nesting level. "
-                f"{_DOCS_TOO_DEEP}"
-            )
     if index is not None:
         _docs_tab_index(doc, index, parent, len(doc.siblings(parent)))
+    if "parentTabId" in names and _docs_depth(doc, parent) + _docs_height(tab) > _DOCS_TAB_DEPTH:
+        raise _EditorRefused(
+            f"Moving this tab will cause child tabs to exceed the tab nesting level. {_DOCS_TOO_DEEP}"
+        )
     if "title" in names:
         tab["tabProperties"]["title"] = props["title"]
     if "iconEmoji" in names:

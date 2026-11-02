@@ -249,17 +249,44 @@ def text_of(paragraphs: list[dict]) -> str:
     )
 
 
-# The characters a tab icon may be, fitted to real's answers on 2026-11-02 to 67 candidates: one
-# grapheme cluster holding a pictograph, a keycap, a flag of regional indicators or of tag
-# characters, and no U+FE0E. A pictograph with text presentation by default was taken, but for
-# the arrows, `‼` and `⁉` without U+FE0F, and `©`, `®` and `™` with or without it. A ZWJ that ends
-# the cluster, one regional indicator alone and `🇦🇦` were refused; this server takes any two.
+# The characters a tab icon may be, fitted to real's answers on 2026-11-02 to 82 candidates: one
+# grapheme cluster holding a pictograph, a keycap or a flag, and no U+FE0E. A pictograph with text
+# presentation by default was taken, but for the arrows, `‼` and `⁉` without U+FE0F, and `©`, `®`
+# and `™` with or without it. A ZWJ that ends the cluster and one regional indicator alone were
+# refused.
 _ICON_REFUSED = frozenset("\u00a9\u00ae\u2122")
 _ICON_BARE = frozenset("\u203c\u2049")
 _ICON_KEYCAP = regex.compile("[0-9#*]\ufe0f?\u20e3")
-_ICON_FLAG = regex.compile(
-    "\\p{Regional_Indicator}{2}|\U0001f3f4[\U000e0020-\U000e007e]+\U000e007f"
+# The flags real takes: the RGI flag sequences of Unicode's emoji-sequences.txt before Emoji 18.0,
+# measured 2026-11-02 on 21 flags. `🇿🇿`, `🇦🇧`, `🇦🇦`, a tag flag that is no RGI one and Emoji
+# 18.0's `🇨🇶` were refused; `🇺🇸`, `🇪🇺`, `🇺🇳`, `🇦🇨`, `🇧🇻`, `🇪🇦`, `🇩🇬`, `🇺🇲` and Scotland taken.
+_ICON_REGIONS = frozenset(
+    (
+        "AC AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN "
+        "BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CP CR CU CV CW CX CY CZ "
+        "DE DG DJ DK DM DO DZ EA EC EE EG EH ER ES ET EU FI FJ FK FM FO FR GA GB GD GE GF GG GH "
+        "GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU IC ID IE IL IM IN IO IQ IR IS IT "
+        "JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD "
+        "ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP "
+        "NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE "
+        "SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TA TC TD TF TG TH TJ TK TL TM TN TO TR "
+        "TT TV TW TZ UA UG UM UN US UY UZ VA VC VE VG VI VN VU WF WS XK YE YT ZA ZM ZW "
+    ).split()
 )
+_ICON_TAG_FLAGS = frozenset(("gbeng", "gbsct", "gbwls"))
+
+
+def _icon_flag(text: str) -> bool | None:
+    """Whether a flag is one real takes as an icon, or None for text that is no flag."""
+    if all(0x1F1E6 <= ord(c) <= 0x1F1FF for c in text):
+        regions = "".join(chr(ord(c) - 0x1F1E6 + 65) for c in text)
+        return regions in _ICON_REGIONS
+    if text[0] == "\U0001f3f4" and len(text) > 1 and 0xE0020 <= ord(text[1]) <= 0xE007F:
+        tags = "".join(chr(ord(c) - 0xE0000) for c in text[1:-1])
+        return text[-1] == "\U000e007f" and tags in _ICON_TAG_FLAGS
+    return None
+
+
 _ICON_PICTOGRAPH = regex.compile("\\p{Extended_Pictographic}|\\p{Emoji_Modifier}")
 _ICON_PRESENTED = regex.compile("\\p{Emoji_Presentation}")
 
@@ -267,8 +294,10 @@ _ICON_PRESENTED = regex.compile("\\p{Emoji_Presentation}")
 def is_icon(text: str) -> bool:
     if len(_CLUSTER.findall(text)) != 1 or "\ufe0e" in text or text.endswith("\u200d"):
         return False
-    if _ICON_KEYCAP.fullmatch(text) or _ICON_FLAG.fullmatch(text):
+    if _ICON_KEYCAP.fullmatch(text):
         return True
+    if (flag := _icon_flag(text)) is not None:
+        return flag
     first = text[0]
     if not _ICON_PICTOGRAPH.match(first) or first in _ICON_REFUSED:
         return False

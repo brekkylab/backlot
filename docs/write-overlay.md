@@ -161,8 +161,6 @@ field list, so the ordering divergence below has no entry to live in and is stat
 - **Docs requests past text, segments and tabs.** `documents.batchUpdate` applies the text,
   header, footer, footnote, page-break and tab requests above. Every other request kind, and the
   `SUGGEST` write mode, is refused naming itself, where real applies it.
-- **A tab's icon.** `iconEmoji` is checked by a rule fitted to 67 of real's answers; it takes any
-  two regional indicators as a flag, where real refused `🇦🇦`.
 - **Collaborators.** A `targetRevisionId` naming any revision of the Doc is taken. Real refuses one
   too far behind, and merges the write into what collaborators did since it, which here is nothing.
 - **A replacement's newline.** When `replaceText` holds a newline, real ends the paragraph it

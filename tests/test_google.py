@@ -8191,11 +8191,24 @@ _EDITOR_MASK = _editor_refused(
     [("nope(", "Invalid FieldMask 'nope('. Cannot find matching ')' for all '('.")],
 )
 _UNDECODED = ("%80", "%e9", "%C3", "%C0%80", "%E2%82", "%ED%A0%80", "%F4%90%80%80")
+_DOCS_INSERT = '{"requests": [{"insertText": {"text": "a", "location": {"index": 1}}}]}'
+_UNKNOWN_NOPE = _editor_refused(
+    400,
+    'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    "INVALID_ARGUMENT",
+)
+_UNKNOWN_NOPE[1]["error"]["details"] = [
+    {
+        "@type": "type.googleapis.com/google.rpc.BadRequest",
+        "fieldViolations": [{"description": _UNKNOWN_NOPE[1]["error"]["message"]}],
+    }
+]
 
 # A Docs, Sheets or Slides read per row, `{doc}`, `{sheet}` and `{deck}` files the admin token
 # reads, beside real's status and error: an undecodable path
 # (``backlot.routers.google._refuse_an_undecodable_path``) beside each refusal it was measured with,
-# a path whose escapes decode, and a query value's escapes as Docs and Sheets read them.
+# a path whose escapes decode, and a query value's escapes as Docs and Sheets read them. A row with
+# a fourth value is a Docs batchUpdate that POSTs it as the body.
 # fmt: off
 _EDITOR_ESCAPE_ROWS = [
     *[(f"/docs/v1/documents/nope{escape}x", "", _EDITOR_PATH_400) for escape in _UNDECODED],
@@ -8225,6 +8238,11 @@ _EDITOR_ESCAPE_ROWS = [
      _invalid_value("value_render_option", f"{_SHEETS_TYPE}.ValueRenderOption", "nope")),
     ("/sheets/v4/spreadsheets/{sheet}/values/A1%80", "majorDimension=nope",
      _invalid_value("major_dimension", f"{_SHEETS_TYPE}.Dimension", "nope")),
+    ("/docs/v1/documents/nope%80:batchUpdate", "", _EDITOR_PATH_400, _DOCS_INSERT),
+    ("/docs/v1/documents/nope%80:batchUpdate", "", _EDITOR_PATH_400, '{"requests": []}'),
+    ("/docs/v1/documents/nope%80:batchUpdate", "fields=nope(", _EDITOR_MASK, _DOCS_INSERT),
+    ("/docs/v1/documents/nope%80:batchUpdate", "", _UNKNOWN_NOPE, '{"nope": 1}'),
+    ("/docs/v1/documents/nope:batchUpdate", "", _EDITOR_NOT_FOUND, _DOCS_INSERT),
     ("/docs/v1/documents/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
     ("/sheets/v4/spreadsheets/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
     ("/slides/v1/presentations/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
@@ -8261,13 +8279,17 @@ def test_editor_apis_read_an_escape_as_real_reads_it(client, admin_h, document_i
         ),
     }
 
-    def answer(path, query):
+    def answer(path, query, body=None):
         url = path.format(**ids) + (f"?{query}" if query else "")
-        r = client.get(url, headers=admin_h)
+        if body is None:
+            r = client.get(url, headers=admin_h)
+        else:
+            headers = {**admin_h, "Content-Type": "application/json"}
+            r = client.post(url, headers=headers, content=body)
         return (r.status_code, r.json())
 
-    answers = {row[:2]: answer(*row[:2]) for row in _EDITOR_ESCAPE_ROWS}
-    assert answers == {row[:2]: row[2] for row in _EDITOR_ESCAPE_ROWS}
+    answers = {(*row[:2], *row[3:]): answer(*row[:2], *row[3:]) for row in _EDITOR_ESCAPE_ROWS}
+    assert answers == {(*row[:2], *row[3:]): row[2] for row in _EDITOR_ESCAPE_ROWS}
 
 
 _DIM = "Invalid value at 'major_dimension' (type.googleapis.com/google.apps.sheets.v4.Dimension), "

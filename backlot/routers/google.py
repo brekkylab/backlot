@@ -4387,15 +4387,12 @@ _EDITOR_NATIVE = frozenset(_EDITOR_OFFICE_FAMILY)
 
 def _refuse_an_undecodable_path(request: Request) -> None:
     """Refuse a path whose escapes do not decode to UTF-8 (``backlot.utf8_escapes.decodes``) as the
-    API behind it refuses it.
-
-    Measured on 2026-10-30 (UTC) with a Workspace member's token, the escape in the id of Drive's
-    files.get, files.export and permissions.list, of Docs' and Sheets' gets and of Sheets'
-    values.get and values.batchGet, and in a range values.get names (`A%80`, `A1%80:B2`); and on
-    2026-10-31 in the id of Slides' get. It came after the credential, `alt`, a typed parameter and
-    export's required `mimeType`, and after a `fields` mask Docs, Sheets or Slides refuses; ahead
-    of a `fields` mask Drive refuses, Drive's trailing comma, `acknowledgeAbuse=true` and an export
-    `mimeType`, `text/plain` or one Drive does not convert to."""
+    API behind it refuses it, after the credential, `alt`, a typed parameter, export's required
+    `mimeType`, a body batchUpdate refuses and a `fields` mask Docs, Sheets or Slides refuses, and
+    ahead of a `fields` mask Drive refuses, Drive's trailing comma, `acknowledgeAbuse=true` and an
+    export `mimeType`, `text/plain` or one Drive does not convert to. Measured on Drive, Docs and
+    Sheets on 2026-10-30 (UTC), on Slides on 2026-10-31 and on Docs' batchUpdate on 2026-11-02,
+    each with a Workspace member's token."""
     if utf8_escapes.decodes(request.scope["raw_path"]):
         return
     if gerr.family(request.url.path) == gerr.DRIVE:

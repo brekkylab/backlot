@@ -250,8 +250,7 @@ PATCHABLE = {
     # Docs write its body, in `gdrive_doc_bodies`; these two follow from them. `content` is the
     # first sheet's CSV or the document's text, which `files.export` and fullText search read:
     # measured 2026-10-26, both reflect a `values.update` on real Drive. `updated_ts` is
-    # `modifiedTime`, which real moves to the write's own time, a Docs write's within two seconds
-    # (measured 2026-10-29).
+    # `modifiedTime`, which real moves to the write's own time.
     "google_drive": frozenset({"content", "updated_ts"}),
 }
 
@@ -502,9 +501,11 @@ CREATE TABLE IF NOT EXISTS gdrive_spreadsheets (
 );
 
 -- A document's stored body (`backlot.gdocs`), and how many `documents.batchUpdate` calls it has
--- taken, which its `revisionId` is drawn from: none for a corpus's.
+-- taken, which its `revisionId` is drawn from: none for a corpus's. A written one also keeps the
+-- Drive `size` and `version` it serves from then on (`gdrive_doc_written`).
 CREATE TABLE IF NOT EXISTS gdrive_doc_bodies (
-    file_id TEXT PRIMARY KEY, body TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0
+    file_id TEXT PRIMARY KEY, body TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
+    bytes INTEGER, version INTEGER
 );
 
 -- `path` names the file THIS row is (only kind='file' rows have one). `changed_paths` is the other
@@ -2759,17 +2760,24 @@ def drive_usage_bytes(conn, visible_ids=None) -> tuple[int, int]:
 
     A native file counts what its ``size`` carries (:func:`drive_file_bytes`), so the quota stays
     the sum of the sizes ``files.list`` serves."""
+    from backlot import overlay
+
     raw = "COALESCE(length(CAST(content AS BLOB)), 0)"
     subtype = f"COALESCE(NULLIF(subtype, ''), '{DRIVE_DEFAULT_SUBTYPE}')"
     native = ", ".join(f"'{s}'" for s in DRIVE_NATIVE_SUBTYPES)
+    # a written document's own `size` (`gdrive_doc_written`), which only a write stores
+    written, join = "", ""
+    if overlay.is_attached(conn):
+        written = "WHEN _written.bytes IS NOT NULL THEN _written.bytes "
+        join = " LEFT JOIN ov.gdrive_doc_bodies AS _written ON _written.file_id = gdrive_files.id"
     nbytes = (
-        f"(CASE WHEN {subtype} = 'document' AND {raw} = 0 THEN {DRIVE_BLANK_DOC_BYTES} "
+        f"(CASE {written}WHEN {subtype} = 'document' AND {raw} = 0 THEN {DRIVE_BLANK_DOC_BYTES} "
         f"WHEN {subtype} IN ({native}) THEN MAX({raw}, {DRIVE_NATIVE_MIN_BYTES}) ELSE {raw} END)"
     )
     sql = (
         f"SELECT COALESCE(SUM({nbytes}), 0), "
         f"COALESCE(SUM(CASE WHEN COALESCE(trashed, 0) = 1 THEN {nbytes} ELSE 0 END), 0) "
-        f"FROM {merged_source(conn, 'google_drive')} WHERE 1=1"
+        f"FROM {merged_source(conn, 'google_drive')}{join} WHERE 1=1"
     )
     clause, params = _acl_clause("google_drive", visible_ids=visible_ids)
     total, trashed = conn.execute(sql + clause, params).fetchone()
@@ -2822,6 +2830,15 @@ def gdrive_doc_revision(conn, file_id: str) -> int:
     """How many `documents.batchUpdate` calls a document has taken: 0 until its first."""
     rows = parts_for(conn, "google_drive", "gdrive_doc_bodies", (file_id,), order_by="file_id")
     return rows[0]["revision"] if rows else 0
+
+
+def gdrive_doc_written(conn, file_id: str) -> tuple[int, int] | None:
+    """The Drive ``size`` and ``version`` a document serves once `documents.batchUpdate` has
+    written it, or None before its first write."""
+    rows = parts_for(conn, "google_drive", "gdrive_doc_bodies", (file_id,), order_by="file_id")
+    if not rows or rows[0]["bytes"] is None:
+        return None
+    return rows[0]["bytes"], rows[0]["version"]
 
 
 def gdrive_replace_doc_body(conn, file_id: str, body: list | None) -> None:
@@ -3877,12 +3894,15 @@ def list_slack_top_level(
     *,
     newest_first=False,
 ) -> list[sqlite3.Row]:
-    """Top-level (thread-root/standalone) messages in a channel, oldest first unless
-    ``newest_first``. ``ts_lo``/``ts_hi`` bound ``created_ts`` for a time-windowed
+    """Top-level (thread-root/standalone) messages in a channel, and the replies also sent to it
+    (`thread_broadcast`), each at its own ts, oldest first unless ``newest_first``: measured
+    against slack.com on 2026-10-30, history listed a broadcast between its root and a later
+    post, on `limit=1` pages too, and a deleted one not at all, with no placeholder and its root
+    one reply fewer. ``ts_lo``/``ts_hi`` bound ``created_ts`` for a time-windowed
     conversations.history, so a day window is an indexed range rather than the whole channel
     filtered in Python. Widen the bounds by ±1s — the public ts carries a sub-second fraction — and
     re-check the exact float window in the caller."""
-    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
+    sql = f"SELECT * FROM {merged_source(conn, 'slack')} WHERE channel = ? AND (thread_seq = 0 OR subtype = 'thread_broadcast')"
     params: list = [channel]
     if ts_lo is not None or ts_hi is not None:
         lo = ts_lo if ts_lo is not None else -(1 << 62)
@@ -3896,9 +3916,7 @@ def list_slack_top_level(
 
 
 def count_slack_top_level(conn, channel, visible_ids=None) -> int:
-    sql = (
-        f"SELECT COUNT(*) FROM {merged_source(conn, 'slack')} WHERE channel = ? AND thread_seq = 0"
-    )
+    sql = f"SELECT COUNT(*) FROM {merged_source(conn, 'slack')} WHERE channel = ? AND (thread_seq = 0 OR subtype = 'thread_broadcast')"
     params: list = [channel]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
     sql += clause

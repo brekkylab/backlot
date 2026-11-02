@@ -502,8 +502,8 @@ def test_jira_compares_both_rest_versions_against_their_own_documents():
 def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatch):
     """A discovery document describes operations under `resources`, a batch endpoint in its
     top-level `batchPath` and, for a document a walk reads, the messages its methods answer with
-    under `schemas` (`google_discovery_diff.types_measure`), and a Google source reads it once for
-    all three."""
+    under `schemas` (`google_discovery_diff.types_measure`), with the request message of a method
+    the walk sends a body to, and a Google source reads it once for all three."""
     URL = "https://gmail.invalid/rest"
     doc = {
         "id": "gmail:v1",
@@ -517,7 +517,14 @@ def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatc
                         "path": "gmail/v1/users/{userId}/profile",
                         "httpMethod": "GET",
                         "response": {"$ref": "Profile"},
-                    }
+                    },
+                    "update": {
+                        "id": "gmail.users.update",
+                        "path": "gmail/v1/users/{userId}/profile",
+                        "httpMethod": "PUT",
+                        "request": {"$ref": "Settings"},
+                        "response": {"$ref": "Profile"},
+                    },
                 }
             }
         },
@@ -533,6 +540,7 @@ def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatc
             "Label": {"properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
             "History": {"properties": {"id": {"type": "string"}}},
             "Keyed": {"properties": {"x": {"type": "string"}}},
+            "Settings": {"properties": {"theme": {"type": "string"}, "lang": {"type": "string"}}},
         },
     }
     fetched = []
@@ -545,7 +553,7 @@ def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatc
 
     def walk(timeout):
         profile = {"emailAddress": "a@b", "labels": [{"id": "1"}], "nickname": "a"}
-        return [("gmail.users.getProfile", profile)]
+        return [("gmail.users.getProfile", profile), ("gmail.users.update", {}, {"theme": "x"})]
 
     c = comparisons.GoogleDiscoveryComparison(
         name="gmail",
@@ -566,10 +574,14 @@ def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatc
         ("missing_field", "gmail.Label.name"),
         ("missing_field", "gmail.Profile.byKey"),
         ("missing_field", "gmail.Profile.history"),
+        ("missing_field", "gmail.Settings.lang"),
     ]
     written = measured.surface.to_json(found)
     profile = next(e for e in written["operations"] if e.get("id") == "gmail.users.getProfile")
     assert profile["response"] == "gmail.Profile"
+    update = next(e for e in written["operations"] if e.get("id") == "gmail.users.update")
+    assert (update["request"], update["response"]) == ("gmail.Settings", "gmail.Profile")
+    assert written["types"]["gmail.Settings"]["fields"]["theme"]["status"] == "implemented"
     assert "root" not in written
     assert written["types"]["gmail.Profile"]["status"] == "implemented"
     assert written["types"]["gmail.Profile"]["fields"] == {

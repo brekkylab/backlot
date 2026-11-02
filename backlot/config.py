@@ -73,6 +73,18 @@ class Settings(BaseSettings):
     # has what the switch does and when to flip it.
     github_enforce_rate_limits: bool = True
 
+    # --- fireflies ---
+    # On by default: a mock more permissive than the vendor hides the refusal a client meets in
+    # production (see ``backlot.routers.fireflies.Budget``). docs/configuration.md's Fireflies
+    # section has what the switches do and when to flip them.
+    fireflies_enforce_rate_limits: bool = True
+    # The root fields a key may run resolvers for in a minute and in a calendar day in UTC, a Free
+    # plan's: the `x-ratelimit-limit-api_burst` and `x-ratelimit-limit-api` api.fireflies.ai sent
+    # the key measured with on 2026-10-26 and 2026-10-29 (UTC), and the "30 requests" and "500
+    # requests" its limits page gives the plan.
+    fireflies_per_minute: int = 30
+    fireflies_per_day: int = 500
+
     # --- usage telemetry (backlot.telemetry; docs/telemetry.md says what is sent) ---
     telemetry: bool = True
     # The `DO_NOT_TRACK` convention many developer tools honour, read without the prefix, from the

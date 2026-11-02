@@ -184,14 +184,19 @@ def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
 
 
 def _gql(client, query, token, via="POST"):
-    return _sent(client, "/linear/graphql", query, token, via).json()
+    """``query`` sent as ``via`` names it, a method and a path after `/linear` where not
+    `/graphql`: another path Express hands Apollo Server (`backlot.routers.linear.routes_to_apollo`)
+    reaches the resolvers too."""
+    method, _, path = via.partition(" ")
+    return _sent(client, f"/linear{path or '/graphql'}", query, token, method).json()
 
 
-@pytest.mark.parametrize("via", ["POST", "GET"])
+@pytest.mark.parametrize("via", ["POST", "GET", "POST /GRAPHQL/"])
 def test_linear_by_id_roots_do_not_leak_entities_off_hidden_issues(sample_settings, tokens, via):
     """`blackops` is granted to hana only, so its "Triage" state, in no other team, must fail for
     ava exactly as an absent id would — and must still work for hana and the admin, proving the id
-    is real and the difference is the ACL, whichever way the document is sent."""
+    is real and the difference is the ACL, whichever way and to whichever path the document is
+    sent."""
     from backlot import synth
 
     with client_for(sample_settings) as client:

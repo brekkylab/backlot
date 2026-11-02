@@ -380,7 +380,8 @@ def types_measure(spec: TypesTarget, doc: Mapping[str, Any], *, timeout: float) 
                         "missing_field",
                         GAP,
                         f"{name}.{field}",
-                        f"the vendor declares it ({type_}); no answer the walk read, nor body it sent, carried it",
+                        f"the vendor declares it ({type_}); no answer the walk read, "
+                        "nor body it sent, carried it",
                     )
                 )
         for field in sorted((carried or set()) - set(types[name])):

@@ -208,8 +208,6 @@ _P_REACTION_LIST = [
 ]
 
 
-
-
 def _err(error: str) -> JSONResponse:
     return JSONResponse({"ok": False, "error": error})
 
@@ -1475,7 +1473,6 @@ async def conversations_history(request: Request):
     # may read this channel; it happens to be empty", which is the opposite of what is true.
     if name is None or not _channel_visibility(request, conn, ids)(name):
         return _err("channel_not_found")
-
 
     # Slack history returns only top-level messages (thread roots + standalone);
     # replies live under conversations.replies.

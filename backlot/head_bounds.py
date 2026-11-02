@@ -96,7 +96,7 @@ class Bound:
 
     def refused(self, line: bytes, ended: bool) -> bytes | None:
         """``backlot.request_target.refused_in_the_line``'s answer to ``line`` at this bound, as
-        :func:`_answer` sends it, ``ended`` where its LF came. ``ahead`` is read off the pieces a
+        :func:`written` sends it, ``ended`` where its LF came. ``ahead`` is read off the pieces a
         head written at once is cut into, from its first byte; a line bound, longer than a
         :data:`PIECE`, is reached in a later piece than the LF of the line before. Only a head
         written at once is read so: real reads the pieces a client wrote, and on Slack, with the LF
@@ -106,7 +106,7 @@ class Bound:
             self.per_line or (len(line) - self.mount) // PIECE < (self.limit - 1) // PIECE
         )
         refused = request_target.refused_in_the_line(self.door, line, ended, ahead)
-        return None if refused is None else _answer(*refused)
+        return None if refused is None else written(*refused)
 
 
 def written(

@@ -129,48 +129,6 @@ class Protocol(HttpToolsProtocol):
             if not self.transport.is_closing():
                 self._refuse()
 
-
-class _Body:
-    """Where the body after a request's head can end, as its framing headers say: after its
-    `Content-Length`, or for a chunked one, after a CRLF CRLF, which ends the last chunk or the
-    trailer after it."""
-
-    def __init__(self, length: int | None) -> None:
-        self.left = length
-        self.tail = b""
-
-    @classmethod
-    def framed_by(cls, headers: list[tuple[bytes, bytes]]) -> _Body | None:
-        """The body after a head with ``headers`` as the parser read them, names in lower case, or
-        ``None`` for a head that frames none: the parser ends such a request at its head or refuses
-        it. httptools refuses a `Content-Length` that is not digits, and a second one, before it
-        hands the head on."""
-        length, chunked = None, False
-        for name, value in headers:
-            if name == b"content-length":
-                length = int(value)
-            elif name == b"transfer-encoding":
-                chunked = value.rpartition(b",")[2].strip().lower() == b"chunked"
-        if chunked:
-            return cls(None)
-        return None if length is None else cls(length)
-
-    def ends(self, data: bytes):
-        """The offsets in ``data``, the body's next bytes, at which it can end, in order."""
-        if self.left is not None:
-            left, self.left = self.left, max(self.left - len(data), 0)
-            if left <= len(data):
-                yield left
-            return
-        joined = self.tail + data
-        before = len(self.tail)
-        self.tail = joined[-3:]
-        at = joined.find(b"\r\n\r\n")
-        while at >= 0:
-            if at + 4 > before:
-                yield at + 4 - before
-            at = joined.find(b"\r\n\r\n", at + 1)
-
     def send_400_response(self, msg: str) -> None:
         """The front door's answer to what httptools refused (``backlot.parser_refusals``) where it
         has one, else uvicorn's 400. uvicorn calls this as it handles the parser's refusal, which
@@ -215,6 +173,48 @@ class _Body:
         if head.coding_after_length and head.codings[-1:] == [b""]:
             return "blank"
         return None
+
+
+class _Body:
+    """Where the body after a request's head can end, as its framing headers say: after its
+    `Content-Length`, or for a chunked one, after a CRLF CRLF, which ends the last chunk or the
+    trailer after it."""
+
+    def __init__(self, length: int | None) -> None:
+        self.left = length
+        self.tail = b""
+
+    @classmethod
+    def framed_by(cls, headers: list[tuple[bytes, bytes]]) -> _Body | None:
+        """The body after a head with ``headers`` as the parser read them, names in lower case, or
+        ``None`` for a head that frames none: the parser ends such a request at its head or refuses
+        it. httptools refuses a `Content-Length` that is not digits, and a second one, before it
+        hands the head on."""
+        length, chunked = None, False
+        for name, value in headers:
+            if name == b"content-length":
+                length = int(value)
+            elif name == b"transfer-encoding":
+                chunked = value.rpartition(b",")[2].strip().lower() == b"chunked"
+        if chunked:
+            return cls(None)
+        return None if length is None else cls(length)
+
+    def ends(self, data: bytes):
+        """The offsets in ``data``, the body's next bytes, at which it can end, in order."""
+        if self.left is not None:
+            left, self.left = self.left, max(self.left - len(data), 0)
+            if left <= len(data):
+                yield left
+            return
+        joined = self.tail + data
+        before = len(self.tail)
+        self.tail = joined[-3:]
+        at = joined.find(b"\r\n\r\n")
+        while at >= 0:
+            if at + 4 > before:
+                yield at + 4 - before
+            at = joined.find(b"\r\n\r\n", at + 1)
 
 
 class _Head:

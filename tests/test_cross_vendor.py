@@ -733,7 +733,13 @@ _RUNS = [
         "HEAD", "/drive/v3/about", {}, ["answer_head_as_the_get_without_its_body"], id="drive HEAD"
     ),
     pytest.param("GET", "/s3/", {}, ["answer_s3_with_request_ids"], id="s3"),
-    pytest.param("GET", "/hubspot/crm/v3/objects/contacts", {}, [], id="hubspot"),
+    pytest.param(
+        "GET",
+        "/hubspot/crm/v3/objects/contacts",
+        {},
+        ["put_a_correlation_id_on_hubspot_answers"],
+        id="hubspot",
+    ),
     pytest.param("POST", "/linear/graphql", {}, [], id="linear"),
     pytest.param(
         "GET", "/msgraph/v1.0/me", {}, ["read_a_graph_request_the_way_graph_does"], id="teams"

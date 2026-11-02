@@ -345,15 +345,17 @@ The surface takes the shape of the contract:
   answer, under `fields`. A Google source adds `batch`: each
   document's declared `batchPath` with whether a route answers it, and each of Backlot's batch
   routes with whether a document selects it. Each Google operation carries its `response`, the
-  message the document says it answers with.
+  message the document says it answers with, and its `request`, the message its body is.
 - **A Discovery document a walk reads** — `types` beside `operations`, keyed by the document's
   name and the message's (`sheets.Spreadsheet`): every message the responses of the methods the
   walk reads reach, a map's values included, with every field and the `type` it holds, since a
   `fields` mask is read against all of them, an editor create reads its body against them, and no
-  served schema answers either offline. Which reads to make is the document's
-  `walk`, one of `backlot.fidelity.google_walks` (`sheets` for Sheets, `gdocs` for Docs). A message
-  one of its answers was is `implemented`, each field they carried `implemented`, each they did not
-  `missing`, a gap, and each the message does not declare `extra`, breaking; a message none of
+  served schema answers either offline. A write the walk sends with its body adds its request
+  message and every message that reaches (`docs.BatchUpdateDocumentRequest`), which a route reads
+  its body against. Which reads to make is the document's `walk`, one of
+  `backlot.fidelity.google_walks` (`sheets` for Sheets, `gdocs` for Docs). A message one of its
+  answers or sent bodies was is `implemented`, each field they carried `implemented`, each they did
+  not `missing`, a gap, and each the message does not declare `extra`, breaking; a message none of
   them was is `missing`, with no finding. There is no `root`: the operations are under
   `operations`.
 - **A GraphQL schema** — `types`, every type Backlot declares with every field, enum value and

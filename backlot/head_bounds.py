@@ -70,7 +70,7 @@ class Bound:
     in_line: bytes
     #: The answer to a header that reaches it.
     in_headers: bytes
-    #: Whether the empty lines ahead of the request line count against a head's :attr:`limit`.
+    #: Whether :attr:`limit` counts the CRLFs and LFs a client sends before a request line.
     counts_blank: bool = True
     #: The bytes of the request line real never receives (the module docstring says which).
     mount: int = 0

@@ -4185,62 +4185,69 @@ def _next_ts_of(ts: str) -> str:
     return _b64(f"next_ts:{ts.replace('.', '')}".encode())
 
 
-@pytest.mark.parametrize(
-    "bounds, forward, late",
-    [
-        ({}, False, False),
-        ({"oldest": "0"}, False, False),
-        ({"latest": 4}, False, False),
-        ({"oldest": 1, "latest": 5}, False, False),
-        ({"oldest": 1}, True, False),
-        ({"oldest": 1, "latest": "0"}, True, False),
-        ({"oldest": 1, "latest": ""}, True, False),
-        ({"oldest": "", "latest": 4}, False, False),
-        ({}, False, True),
-        ({"latest": "1999999999"}, False, True),
-        ({"oldest": 1}, True, True),
-    ],
-)
-def test_slack_history_pages_newest_first_away_from_its_bound(
-    wclient, tokens, bounds, forward, late
-):
-    """The pages `conversations_history` serves under each bound, as its comment records them, and
-    the cursor each page carries. An int bound is the index of a message, oldest first; a string is
-    sent as is. A `late` row posts one more message once the first page is served, which a walk
-    back from the newest message never reaches and a walk forward reaches last."""
+# Each row is the bounds `conversations.history` is sent, an int being the index of one of
+# `_six_messages`, oldest first, and a string sent as is; whether its pages walk forward; and
+# whether it posts one more message once its first page is served.
+_HISTORY_PAGE_ROWS = [
+    ({}, False, False),
+    ({"oldest": "0"}, False, False),
+    ({"latest": 4}, False, False),
+    ({"oldest": 1, "latest": 5}, False, False),
+    ({"oldest": 1}, True, False),
+    ({"oldest": 1, "latest": "0"}, True, False),
+    ({"oldest": 1, "latest": ""}, True, False),
+    ({"oldest": "", "latest": 4}, False, False),
+    ({}, False, True),
+    ({"latest": "1999999999"}, False, True),
+    ({"oldest": 1}, True, True),
+]
+
+
+def test_slack_history_pages_newest_first_away_from_its_bound(wclient, tokens):
+    """The pages `conversations_history` serves under each row of `_HISTORY_PAGE_ROWS`, as its
+    comment records them, and the cursor each page carries. A message a row posts once its first
+    page is served is one a walk back from the newest message never reaches and a walk forward
+    reaches last; the rows after it page over it as over any other."""
     h = _uh(tokens, "ava@acme.com")
     cid = synth.slack_channel_id("incidents")
     history = "/slack/api/conversations.history"
-    oldest_first = _six_messages(wclient, h, cid)
+    six = _six_messages(wclient, h, cid)
+    present = list(six)
+    got, expected = {}, {}
+    for bounds, forward, late in _HISTORY_PAGE_ROWS:
+        sent = {k: six[v] if isinstance(v, int) else v for k, v in bounds.items()}
+        before = list(present)
+        pages, cursors, cursor = [], [], ""
+        while len(pages) <= len(present):
+            body = wclient.post(
+                history, headers=h, data={"channel": cid, "limit": 2, "cursor": cursor, **sent}
+            ).json()
+            pages.append([m["ts"] for m in body["messages"]])
+            if late and len(pages) == 1:
+                present.append(
+                    wclient.post(
+                        "/slack/api/chat.postMessage",
+                        headers=h,
+                        data={"channel": cid, "text": "late"},
+                    ).json()["ts"]
+                )
+            cursor = body.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+            cursors.append(cursor)
 
-    sent = {k: oldest_first[v] if isinstance(v, int) else v for k, v in bounds.items()}
-    pages, cursors, cursor = [], [], ""
-    while True:
-        body = wclient.post(
-            history, headers=h, data={"channel": cid, "limit": 2, "cursor": cursor, **sent}
-        ).json()
-        pages.append([m["ts"] for m in body["messages"]])
-        assert len(pages) <= len(oldest_first), pages
-        if late and len(pages) == 1:
-            oldest_first.append(
-                wclient.post(
-                    "/slack/api/chat.postMessage",
-                    headers=h,
-                    data={"channel": cid, "text": "late"},
-                ).json()["ts"]
-            )
-        cursor = body.get("response_metadata", {}).get("next_cursor")
-        if not cursor:
-            break
-        cursors.append(cursor)
-
-    lo, hi = bounds.get("oldest"), bounds.get("latest")
-    reached = oldest_first if forward else oldest_first[:6]
-    window = reached[lo + 1 if isinstance(lo, int) else 0 : hi if isinstance(hi, int) else None]
-    walk = window if forward else window[::-1]
-    chunks = [walk[i : i + 2] for i in range(0, len(walk), 2)]
-    assert pages == [chunk[::-1] if forward else chunk for chunk in chunks]
-    assert cursors == [_next_ts_of(chunk[0]) for chunk in chunks[1:]]
+        lo, hi = bounds.get("oldest"), bounds.get("latest")
+        reached = present if forward else before
+        window = reached[lo + 1 if isinstance(lo, int) else 0 : hi if isinstance(hi, int) else None]
+        walk = window if forward else window[::-1]
+        chunks = [walk[i : i + 2] for i in range(0, len(walk), 2)]
+        key = (urllib.parse.urlencode(bounds) or "no bound") + (", late" if late else "")
+        got[key] = (pages, cursors)
+        expected[key] = (
+            [chunk[::-1] if forward else chunk for chunk in chunks],
+            [_next_ts_of(chunk[0]) for chunk in chunks[1:]],
+        )
+    assert got == expected
 
 
 def _between(older: str, newer: str) -> str:

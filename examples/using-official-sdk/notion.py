@@ -98,13 +98,13 @@ with serve_or_connect(CORPUS, url=args.url) as s:
         for c in comments:
             print(f"  💬 {''.join(t['plain_text'] for t in c['rich_text'])}")
 
-    # list databases via a type-filtered search, then query one for its rows
-    dbs = notion.search(filter={"property": "object", "value": "database"})["results"]
-    db = dbs[0] if dbs else None
-    if db:
-        dsid = db["data_sources"][0]["id"]  # 2025-09-03: rows live under a data source
-        rows = notion.data_sources.query(data_source_id=dsid)["results"]
-        print(f"\ndatabase '{db['title'][0]['plain_text']}' → {len(rows)} row(s):")
+    # list data sources via a type-filtered search (under 2025-09-03 its filter takes "page" or
+    # "data_source"), then query the first for its rows
+    sources = notion.search(filter={"property": "object", "value": "data_source"})["results"]
+    ds = sources[0] if sources else None
+    if ds:
+        rows = notion.data_sources.query(data_source_id=ds["id"])["results"]
+        print(f"\ndata source '{ds['title'][0]['plain_text']}' → {len(rows)} row(s):")
         for row in rows:
             name = row["properties"]["title"]["title"][0]["plain_text"]
             status = row["properties"].get("Status", {}).get("select", {}).get("name", "-")

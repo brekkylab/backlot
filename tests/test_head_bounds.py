@@ -481,81 +481,99 @@ _CHUNKED = (
 )
 _LENGTH = b"POST /s3/b/k HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\n\r\n\r\nx"
 
-#: The reads of one connection, and what the app is handed, the answers written after each read
-#: and whether the connection closes. The second request starts in a read of its own or in the
-#: first one's, after a head or after a body framed by its length or chunked, a CRLF CRLF in each,
-#: and its head ends within its bound, reaches it in the line or in a header, or holds a raw byte in
-#: its target, which the scope then carries as sent; a head that reaches its bound is answered after
-#: each answer ahead of it.
+#: A name for a connection, its reads, and what the app is handed, the answers written after each
+#: read and whether the connection closes. Each request after the first starts in a read of its own
+#: or in the read the one before it ends in, after a head or after a body framed by its length or
+#: chunked, a CRLF CRLF in each, and its head ends within its bound, reaches it in the line or in a
+#: header, or holds a raw byte in its target, which the scope then carries as sent; a head that
+#: reaches its bound is answered after each answer ahead of it.
 _CONNECTIONS = [
     (
+        "s3 heads in reads of their own",
         [_s3(10_000), _s3(10_000, ended=False), b"\r\n\r\n", _s3(16_384, ended=False)],
         ["GET /s3/b/k 0 False"] * 2,
         [["HTTP/1.1 200 OK"], [], ["HTTP/1.1 200 OK"], ["s3"]],
         True,
     ),
     (
+        "s3 two heads in one read",
         [_s3(10_000) + _s3(10_000)],
         ["GET /s3/b/k 0 False"] * 2,
         [["HTTP/1.1 200 OK"] * 2],
         False,
     ),
     (
+        "s3 a head at the bound starting in the read before",
         [_s3(10_000) + _s3(16_384)[:30], _s3(16_384)[30:]],
         ["GET /s3/b/k 0 False"] * 2,
         [["HTTP/1.1 200 OK"], ["HTTP/1.1 200 OK"]],
         False,
     ),
     (
+        "s3 a head past the bound starting in the read before",
         [_s3(100) + _s3(20_000)[:30], _s3(20_000)[30:]],
         ["GET /s3/b/k 0 False"],
         [["HTTP/1.1 200 OK"], ["s3"]],
         True,
     ),
-    ([_s3(100) + _s3(20_000)], ["GET /s3/b/k 0 False"], [["HTTP/1.1 200 OK", "s3"]], True),
     (
+        "s3 a head past the bound in the same read",
+        [_s3(100) + _s3(20_000)],
+        ["GET /s3/b/k 0 False"],
+        [["HTTP/1.1 200 OK", "s3"]],
+        True,
+    ),
+    (
+        "s3 a head past the bound in the same read, not ended",
         [_s3(100) + _s3(20_000, ended=False)],
         ["GET /s3/b/k 0 False"],
         [["HTTP/1.1 200 OK", "s3"]],
         True,
     ),
     (
+        "s3 a head past the bound behind two",
         [_s3(100) + _s3(100) + _s3(20_000, ended=False)],
         ["GET /s3/b/k 0 False"] * 2,
         [["HTTP/1.1 200 OK"] * 2 + ["s3"]],
         True,
     ),
     (
+        "s3 a head past the bound after a body by its length",
         [_LENGTH + _s3(20_000, ended=False)],
         ["POST /s3/b/k 5 False"],
         [["HTTP/1.1 200 OK", "s3"]],
         True,
     ),
     (
+        "s3 a head past the bound after a chunked body",
         [_CHUNKED + _s3(20_000, ended=False)],
         ["POST /s3/b/k 6 False"],
         [["HTTP/1.1 200 OK", "s3"]],
         True,
     ),
     (
+        "s3 a head past the bound after a chunked body's last byte",
         [_CHUNKED[:-1], _CHUNKED[-1:] + _s3(20_000, ended=False)],
         ["POST /s3/b/k 6 False"],
         [[], ["HTTP/1.1 200 OK", "s3"]],
         True,
     ),
     (
+        "github a line past the bound in the same read",
         [_GITHUB + _GITHUB_LINE],
         ["GET /github/repos/acme/docs-site 0 False"],
         [["HTTP/1.1 200 OK", "github 414"]],
         True,
     ),
     (
+        "github a header past the bound starting in the read before",
         [_GITHUB + _GITHUB_HEADER[:30], _GITHUB_HEADER[30:] + b"\r\n\r\n"],
         ["GET /github/repos/acme/docs-site 0 False"],
         [["HTTP/1.1 200 OK"], ["github 431"]],
         True,
     ),
     (
+        "github a raw byte in the target in the same read",
         [_GITHUB + b"GET /github/repos/acme/docs-site?q=\x01 HTTP/1.1\r\nHost: x\r\n\r\n"],
         [
             "GET /github/repos/acme/docs-site 0 False",
@@ -568,8 +586,8 @@ _CONNECTIONS = [
 
 
 def test_each_request_on_a_connection_is_counted_from_its_own_start():
-    got = [_connection(reads) for reads, *_ in _CONNECTIONS]
-    assert got == [tuple(expected) for _, *expected in _CONNECTIONS]
+    got = {label: _connection(reads) for label, reads, *_ in _CONNECTIONS}
+    assert got == {label: tuple(expected) for label, _, *expected in _CONNECTIONS}
 
 
 #: A body longer than the bound after a head that ends, on Graph, whose bound refuses a head at its

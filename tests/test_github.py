@@ -4862,33 +4862,36 @@ def test_github_a_long_path_or_target_is_answered_as_real_answers_it(gh_client, 
         "an unsupported version": {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"},
         "no credential": {},
     }
-    got, expected = [], []
+    got, expected = {}, {}
     for method, target, counted, length, sender, answer in _LONG_TARGET_ROWS:
+        row = f"{method} {_short(target)} {counted} {length} {sender}"
         target = target.replace("{org}", gh_org)
         filled = target.replace("{pad}", "")
         have = _as_real_counts_a_path(filled) if counted == "path" else len(filled)
         target = target.replace("{pad}", "1" * (length - have))
         r = c.request(method, f"/github{target}", headers=senders[sender])
-        row = (method, target[:50], counted, length, sender)
         if isinstance(answer, int):
-            got.append((*row, r.status_code))
-            expected.append((*row, answer))
+            got[row], expected[row] = r.status_code, answer
             continue
         body, media_type, carries = _THE_414S[answer]
-        got.append(
-            (
-                *row,
-                r.status_code,
-                r.headers.get("content-type"),
-                r.content,
-                r.headers["content-length"],
-                "x-ratelimit-limit" in r.headers,
-                "x-github-request-id" in r.headers,
-            )
+        got[row] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            r.content,
+            r.headers["content-length"],
+            "x-ratelimit-limit" in r.headers,
+            "x-github-request-id" in r.headers,
         )
         sent = b"" if method == "HEAD" else body
-        expected.append((*row, 414, media_type, sent, str(len(body)), carries, carries))
+        expected[row] = (414, media_type, sent, str(len(body)), carries, carries)
     assert got == expected
+
+
+def _short(target: str) -> str:
+    """``target`` with an escape sent many times in a row written once, with the count."""
+    return re.sub(
+        r"((?:%[0-9A-Fa-f]{2})+?)\1+", lambda m: f"{m[1]}*{len(m[0]) // len(m[1])}", target
+    )
 
 
 def _sent_raw(client, path: str, headers: dict[str, bytes]):

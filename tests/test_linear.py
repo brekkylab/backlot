@@ -926,6 +926,17 @@ def test_linear_content_round_trips_verbatim(client, admin_h, ro_conn):
     assert served == stored
 
 
+def test_linear_writes_a_whole_float_with_no_fraction(client, admin_h):
+    """`number`, `priority` and a state's `position` are Float fields holding whole numbers, which
+    Linear writes with no fraction."""
+    r = gql(
+        client, "{ issues(first: 1) { nodes { number priority state { position } } } }", admin_h
+    )
+    assert r.content == (
+        b'{"data":{"issues":{"nodes":[{"number":102,"priority":1,"state":{"position":3}}]}}}\n'
+    )
+
+
 def test_linear_crawl_reaches_every_document(client, admin_h, ro_conn):
     """The completeness assertion the REST crawls make, in Relay form: page with `first`/`after`
     to exhaustion and land on exactly the stored row count."""

@@ -4793,7 +4793,7 @@ _TARGET_JSON_414 = (
 
 #: A request whose `{pad}` is filled with `1`s to ``length`` characters after `/github`, counted on
 #: the path as real counts it (:func:`_as_real_counts_a_path`) or on the target as sent; who sends
-#: it; and the answer: a status, or one of the three 414s
+#: it; and the answer: a status, or one of :data:`_THE_414S`
 #: (``backlot.routers.github._refuse_a_long_line_or_path``,
 #: ``backlot.main.answer_a_github_request_target_past_its_bound``).
 _LONG_TARGET_ROWS = [
@@ -4847,37 +4847,50 @@ def _as_real_counts_a_path(target: str) -> int:
     )
 
 
-@pytest.mark.parametrize("method, target, counted, length, sender, answer", _LONG_TARGET_ROWS)
-def test_github_a_long_path_or_target_is_answered_as_real_answers_it(
-    gh_client, gh_admin_h, gh_org, method, target, counted, length, sender, answer
-):
+#: Each of real's three 414s: its body, its `Content-Type`, and whether it carries the
+#: `x-ratelimit-*` headers and an `x-github-request-id`.
+_THE_414S = {
+    "path": (b"", None, True),
+    "line": (_LINE_PAGE_414, "text/html", True),
+    "json": (_TARGET_JSON_414, "application/json; charset=utf-8", False),
+}
+
+
+def test_github_a_long_path_or_target_is_answered_as_real_answers_it(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
-    target = target.replace("{org}", gh_org)
-    filled = target.replace("{pad}", "")
-    have = _as_real_counts_a_path(filled) if counted == "path" else len(filled)
-    target = target.replace("{pad}", "1" * (length - have))
-    headers = {
+    senders = {
         "admin": gh_admin_h,
         "a bad token": {"Authorization": "Bearer nope"},
         "an unsupported version": {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"},
         "no credential": {},
-    }[sender]
-    r = c.request(method, f"/github{target}", headers=headers)
-    if isinstance(answer, int):
-        assert r.status_code == answer
-        return
-    body, media_type, counted_headers = {
-        "path": (b"", None, True),
-        "line": (_LINE_PAGE_414, "text/html", True),
-        "json": (_TARGET_JSON_414, "application/json; charset=utf-8", False),
-    }[answer]
-    assert (r.status_code, r.headers.get("content-type")) == (414, media_type)
-    assert r.content == (b"" if method == "HEAD" else body)
-    assert r.headers["content-length"] == str(len(body))
-    assert ("x-ratelimit-limit" in r.headers, "x-github-request-id" in r.headers) == (
-        counted_headers,
-        counted_headers,
-    )
+    }
+    got, expected = [], []
+    for method, target, counted, length, sender, answer in _LONG_TARGET_ROWS:
+        target = target.replace("{org}", gh_org)
+        filled = target.replace("{pad}", "")
+        have = _as_real_counts_a_path(filled) if counted == "path" else len(filled)
+        target = target.replace("{pad}", "1" * (length - have))
+        r = c.request(method, f"/github{target}", headers=senders[sender])
+        row = (method, target[:50], counted, length, sender)
+        if isinstance(answer, int):
+            got.append((*row, r.status_code))
+            expected.append((*row, answer))
+            continue
+        body, media_type, carries = _THE_414S[answer]
+        got.append(
+            (
+                *row,
+                r.status_code,
+                r.headers.get("content-type"),
+                r.content,
+                r.headers["content-length"],
+                "x-ratelimit-limit" in r.headers,
+                "x-github-request-id" in r.headers,
+            )
+        )
+        sent = b"" if method == "HEAD" else body
+        expected.append((*row, 414, media_type, sent, str(len(body)), carries, carries))
+    assert got == expected
 
 
 def _sent_raw(client, path: str, headers: dict[str, bytes]):

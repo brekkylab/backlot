@@ -3,7 +3,7 @@
   "endpoints": [
     "https://docs.slack.dev/reference/methods.md"
   ],
-  "measured": "2026-10-30",
+  "measured": "2026-11-02",
   "operations": [
     {
       "operation": "admin.analytics.getFile",
@@ -1553,6 +1553,12 @@
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "Measured against slack.com on 2026-10-22: a plain-text post over a user token and over a bot token both carried `blocks`, in the echo and in `conversations.history`, as did the messages `reactions.get` and `reactions.list` answer. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.parent_user_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-11-02: real answers this field on this method. A user-token post and a threaded reply to it in one direct message, the reply's echo carried `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `thread_ts`, `ts`, `type`, `user` and `parent_user_id`, the root author's id, and the root's echo carried no `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "message.subtype": {
           "kind": "missing_field",

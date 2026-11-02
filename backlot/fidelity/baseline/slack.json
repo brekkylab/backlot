@@ -3,7 +3,7 @@
   "endpoints": [
     "https://docs.slack.dev/reference/methods.md"
   ],
-  "measured": "2026-10-29",
+  "measured": "2026-10-30",
   "operations": [
     {
       "operation": "admin.analytics.getFile",
@@ -1519,10 +1519,6 @@
           "severity": "gap"
         },
         "parse": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "reply_broadcast": {
           "kind": "missing_param",
           "severity": "gap"
         },

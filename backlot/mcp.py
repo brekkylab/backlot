@@ -322,8 +322,7 @@ def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict
             yield request
 
     class _ArgumentNames(Transform):
-        # The tools' arguments are renamed and the spec is not: the spec's parameter name is the
-        # name the request carries, and the route reads the vendor's spelling.
+        # Renames the tools' arguments, not the spec: the request carries the spec's names.
         async def list_tools(self, tools):
             return [_with_argument_names(tool) for tool in tools]
 

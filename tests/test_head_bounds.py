@@ -294,14 +294,17 @@ _BLANK_AHEAD = [
 ]
 _IN_HEADERS = {(mount, path): header for mount, path, *_, header in _BOUNDS}
 
-#: A CRLF or an LF ahead of a request line Slack refuses, the line's LF at the 49,152nd byte
-#: written and at the 49,153rd (``backlot.head_bounds.Bound.refused``): what comes ahead, the
-#: number of `a` in the line's `pad`, and real's answer.
+#: Empty lines ahead of a request line Slack refuses, the line's LF at the last byte of a piece
+#: written and at the first of the next (``backlot.head_bounds.Bound.refused``): a CRLF or an LF,
+#: the LF at the 49,152nd byte and the 49,153rd, and 4,200 bytes of CRLFs, at the 65,536th and the
+#: 65,537th. What comes ahead, the number of `a` in the line's `pad`, and real's answer.
 _REFUSED_BEHIND_A_BLANK = [
     ("\r\n", 49_108, "slack 400"),
     ("\r\n", 49_109, "slack"),
     ("\n", 49_109, "slack 400"),
     ("\n", 49_110, "slack"),
+    ("\r\n" * 2_100, 61_294, "slack 400"),
+    ("\r\n" * 2_100, 61_295, "slack"),
 ]
 
 #: Each case of the test below: the part the bound is reached in, what comes ahead of the request

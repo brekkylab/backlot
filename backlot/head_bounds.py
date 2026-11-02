@@ -100,11 +100,12 @@ class Bound:
         lines ahead of it. ``ahead`` is read off the pieces a head written at once is cut into, from
         the first byte written, the empty lines' included: on Slack, with a CRLF or an LF ahead of
         the line, its LF at the 49,152nd byte written drew the line's 400 and at the 49,153rd the
-        bound's 431 (2026-11-02, twice each). A line bound, longer than a :data:`PIECE`, is reached
-        in a later piece than the LF of the line before. Only a head written at once is read so:
-        real reads the pieces a client wrote, and on Slack, with the LF at byte 49,153, a head
-        written in writes of 1,000 or 4,000 bytes drew the line's 400 where one written at once drew
-        the bound's 431 (2026-11-02, twice each)."""
+        bound's 431, and with 4,200 bytes of CRLFs ahead, which Slack's bound does not count, at the
+        65,536th and the 65,537th (2026-11-02, twice each). A line bound, longer than a
+        :data:`PIECE`, is reached in a later piece than the LF of the line before. Only a head
+        written at once is read so: real reads the pieces a client wrote, and on Slack, with the LF
+        at byte 49,153, a head written in writes of 1,000 or 4,000 bytes drew the line's 400 where
+        one written at once drew the bound's 431 (2026-11-02, twice each)."""
         reached = self.limit - 1 + (0 if self.counts_blank else blank)
         ahead = ended and (
             self.per_line or (blank + len(line) - self.mount) // PIECE < reached // PIECE

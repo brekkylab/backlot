@@ -99,13 +99,14 @@ class Bound:
         :func:`written` sends it, ``ended`` where its LF came and ``blank`` as :meth:`answer` takes
         it. ``ahead`` is read off the pieces a head written at once is cut into, from the first byte
         written, the empty lines' included, and a bound that does not count those lines is reached
-        that many bytes later: on Slack, with a CRLF, an LF or 4,200 bytes of CRLFs ahead of the
-        line, its LF at the last byte of the piece before the bound's drew the line's 400 and at the
-        first byte of the bound's piece the bound's 431 (2026-11-02, twice each). A line bound,
-        longer than a :data:`PIECE`, is reached in a piece after the one holding the LF of the line
-        before. Only a head written at once is read so: real reads the pieces a client wrote, and on
-        Slack, with the LF at byte 49,153, a head written in writes of 1,000 or 4,000 bytes drew the
-        line's 400 where one written at once drew the bound's 431 (2026-11-02, twice each)."""
+        that many bytes later: on Slack, with a CRLF, an LF, or 4,096 or 4,200 bytes of CRLFs ahead
+        of the line, its LF at the last byte of the piece before the bound's drew the line's 400 and
+        at the first byte of the bound's piece the bound's 431 (2026-11-02, twice each). A line
+        bound, longer than a :data:`PIECE`, is reached in a piece after the one holding the LF of
+        the line before. Only a head written at once is read so: real reads the pieces a client
+        wrote, and on Slack, with the LF at byte 49,153, a head written in writes of 1,000 or 4,000
+        bytes drew the line's 400 where one written at once drew the bound's 431 (2026-11-02, twice
+        each)."""
         reached = self.limit - 1 + (0 if self.counts_blank else blank)
         ahead = ended and (
             self.per_line or (blank + len(line) - self.mount) // PIECE < reached // PIECE

@@ -287,7 +287,8 @@ _JAVA_POSIX = {
     "Space": " \\t\\n\\x0b\\f\\r",
 }
 # Java's property names past a general category, each as the members of a class: an `Is` binary
-# property (its name in any case, with or without `_`), and a `java` method of `Character`.
+# property (its name in any case, with or without `_`), a `java` method of `Character`, and `all`,
+# `L1` and `LD`.
 # Measured: `\p{IsLetter}`, `\p{IsWhiteSpace}`, `\p{javaLowerCase}` and `\p{javaWhitespace}`
 # took Java's characters, and `\p{isletter}`, `\p{Latin}` and `\p{Lowercase}` matched nothing.
 _JAVA_CATEGORIES = frozenset(
@@ -330,6 +331,23 @@ _JAVA_METHODS = {
     "javaWhitespace": "[\\t\\n\\x0b\\f\\r\\x1c-\\x1f\\p{Z}]--[\\xa0\\u2007\\u202f]",
     "javaISOControl": "\\x00-\\x1f\\x7f-\\x9f",
     "javaMirrored": "\\p{Bidi_Mirrored}",
+    "javaJavaIdentifierStart": "\\p{L}\\p{Nl}\\p{Sc}\\p{Pc}",
+    "javaJavaIdentifierPart": (
+        "\\p{L}\\p{Nl}\\p{Sc}\\p{Pc}\\p{Nd}\\p{Mn}\\p{Mc}\\x00-\\x08\\x0e-\\x1b\\x7f-\\x9f\\p{Cf}"
+    ),
+    "javaUnicodeIdentifierStart": "\\p{ID_Start}",
+    "javaUnicodeIdentifierPart": "\\p{ID_Continue}\\x00-\\x08\\x0e-\\x1b\\x7f-\\x9f\\p{Cf}",
+    "javaIdentifierIgnorable": "\\x00-\\x08\\x0e-\\x1b\\x7f-\\x9f\\p{Cf}",
+    "all": "\\x00-\\U0010ffff",
+    "L1": "\\x00-\\xff",
+    "LD": "\\p{L}\\p{Nd}",
+}
+# `\p{Lower}` and `\p{Upper}` under a case-insensitive flag take both ASCII cases, and never `ſ`
+# or the Kelvin sign: measured, without `matchCase` `\p{Upper}` took `a` and `B`, and
+# `\p{Lower}` neither `ſ` nor the Kelvin sign.
+_JAVA_CASED = {
+    "Lower": "(?:(?-i:[a-z])|(?=(?-i:[A-Z]))[a-z])",
+    "Upper": "(?:(?-i:[A-Z])|(?=(?-i:[a-z]))[A-Z])",
 }
 _JAVA_KEYS = {
     "script": "Script",
@@ -348,6 +366,7 @@ _JAVA_FLAGS = regex.compile(r"\(\?([idmsuxU]*)(?:-([idmsuxU]*))?([:)])")
 _JAVA_NAMED = regex.compile(r"\(\?<([a-zA-Z][a-zA-Z0-9]*)>")
 _JAVA_COUNT = regex.compile(r"\{\d+(?:,\d*)?\}")
 _JAVA_OCTAL = regex.compile(r"[0-3][0-7]{2}|[0-7]{1,2}")
+_JAVA_HEX = {"x": regex.compile(r"[0-9a-fA-F]{2}"), "u": regex.compile(r"[0-9a-fA-F]{4}")}
 
 
 def _java_property(name: str, ascii_classes: bool) -> str | None:
@@ -373,11 +392,12 @@ def _java_property(name: str, ascii_classes: bool) -> str | None:
 def _java_pattern(java: str, match_case: bool) -> str | None:
     """A `java.util.regex` pattern as the `regex` module reads it in its version-1 syntax, or None
     for one Java does not compile. With ``match_case``, a `(?i)` with no `u` or `U` flag beside it
-    folds ASCII's case alone, so a non-ASCII letter outside a class keeps its case: measured,
-    `(?i)ж` missed `Ж`, `(?iu)ж` matched it, and `(?i)\\p{Lu}` took `a` and `Б`. Measured: `{,2}`, `(?#c)`, `(?R)`, `(?1)`, `(?&n)`, `(?P<n>`,
-    `(?|`, `(?(1)`, `\\K`, `\\m` and a group name used twice matched nothing, `[[:alpha:]]` matched
-    `:`, `\\0101` matched `A`, and under `(?x)` a class drops its spaces and `[#a]` is a comment
-    left open."""
+    folds ASCII's case alone, so a non-ASCII letter outside a class keeps its case, written as
+    itself or as an escape: measured, `(?i)ж`, `(?i)\\x{436}` and `(?i)\\Qж\\E` missed `Ж`,
+    `(?iu)ж` matched it, and `(?i)\\p{Lu}` took `a` and `Б`. Measured too: `{,2}`, `(?#c)`, `(?R)`,
+    `(?1)`, `(?&n)`, `(?P<n>`, `(?|`, `(?(1)`, `\\K`, `\\m` and a group name used twice matched
+    nothing, `[[:alpha:]]` matched `:`, `\\0101` matched `A`, and under `(?x)` a class drops its
+    spaces and `[#a]` is a comment left open."""
     named = [m[1] for m in _JAVA_FLAGS.finditer(java)]
     ascii_classes = not any("U" in n for n in named)
     ascii_case = (
@@ -389,6 +409,12 @@ def _java_pattern(java: str, match_case: bool) -> str | None:
     out: list[str] = []
     depth = 0
     spaced = False
+
+    def literal(ch: str) -> str:
+        if ascii_case and not depth and not ch.isascii() and ch.lower() != ch.upper():
+            return f"(?-i:{regex.escape(ch)})"
+        return regex.escape(ch)
+
     i = 0
     while i < len(java):
         c = java[i]
@@ -401,9 +427,9 @@ def _java_pattern(java: str, match_case: bool) -> str | None:
                 return None
             if e == "Q":
                 end = java.find("\\E", i)
-                literal = java[i:] if end < 0 else java[i:end]
+                quoted = java[i:] if end < 0 else java[i:end]
                 i = len(java) if end < 0 else end + 2
-                out.append(regex.escape(literal))
+                out.append("".join(map(literal, quoted)))
             elif e in "hHvV" or (ascii_classes and e in "dDsSwW"):
                 members = _JAVA_CLASSES[e.lower()]
                 made = f"[{'^' if e.isupper() else ''}{members}]"
@@ -420,16 +446,22 @@ def _java_pattern(java: str, match_case: bool) -> str | None:
                 digits = _JAVA_OCTAL.match(java, i)
                 if not digits:
                     return None
-                out.append(regex.escape(chr(int(digits[0], 8))))
+                out.append(literal(chr(int(digits[0], 8))))
                 i = digits.end()
             elif e == "x" and java[i : i + 1] == "{":
                 end = java.find("}", i)
                 if end < 0:
                     return None
-                out.append(regex.escape(chr(int(java[i + 1 : end], 16))))
+                out.append(literal(chr(int(java[i + 1 : end], 16))))
                 i = end + 1
+            elif e in "xu":
+                digits = _JAVA_HEX[e].match(java, i)
+                if not digits:
+                    return None
+                out.append(literal(chr(int(digits[0], 16))))
+                i = digits.end()
             elif e == "c" and i < len(java):
-                out.append(regex.escape(chr(ord(java[i]) ^ 64)))
+                out.append(literal(chr(ord(java[i]) ^ 64)))
                 i += 1
             elif e == "e":
                 out.append("\\x1b")
@@ -446,13 +478,21 @@ def _java_pattern(java: str, match_case: bool) -> str | None:
                 name = java[i + 1 : end]
                 i = end + 1
                 if e == "N":
-                    out.append(f"\\N{{{name}}}")
+                    try:
+                        out.append(literal(unicodedata.lookup(name)))
+                    except KeyError:
+                        return None
                     continue
                 members = _java_property(name, ascii_classes)
                 if members is None:
                     return None
                 made = f"[{'^' if e == 'P' else ''}{members}]"
-                out.append(made if depth or name not in _JAVA_POSIX else f"(?-i:{made})")
+                if not depth and ascii_classes and name in _JAVA_CASED:
+                    cased = _JAVA_CASED[name]
+                    made = cased if e == "p" else f"(?:(?!{cased})[\\s\\S])"
+                elif not depth and ascii_classes and name in _JAVA_POSIX:
+                    made = f"(?-i:{made})"
+                out.append(made)
             else:
                 out.append("\\" + e)
             continue

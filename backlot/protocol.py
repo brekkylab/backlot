@@ -38,7 +38,10 @@ class Protocol(HttpToolsProtocol):
 
     Each request's head is counted by :class:`_Head` from its own first byte, and the front door's
     answer to one that reaches its bound goes out once each request ahead of it on the connection
-    has been answered.
+    has been answered. On api.github.com and on S3 (2026-11-02), a request past the bound behind a
+    short one on the same connection drew the short one's answer and then the bound's, written in
+    the same write as the short one, in a write of its own, or with its first 30 bytes in the short
+    one's write.
     """
 
     def __init__(self, *args, **kwargs) -> None:

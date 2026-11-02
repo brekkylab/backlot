@@ -1004,14 +1004,14 @@ _DOCS_EXPORTS = {
             _runs("H1", style="HEADING_1"),
             _runs("H2", style="HEADING_2"),
             _runs("p"),
-            _runs("", style="HEADING_3"),
+            {"style": "HEADING_3", "text": ""},
             _runs("H4 *x*", style="HEADING_4"),
             _runs("H5", style="HEADING_5"),
             _runs("H6 ", ("b", "b"), style="HEADING_6"),
             _runs("q"),
             _runs("r"),
             _runs("# hashy", style="HEADING_1"),
-            _runs(""),
+            {"text": ""},
             _runs("last", style="HEADING_2"),
         ]
         },
@@ -1022,14 +1022,14 @@ _DOCS_EXPORTS = {
         {
             "paragraphs": [
             _runs("a"),
-            _runs("", style="HEADING_3"),
+            {"style": "HEADING_3", "text": ""},
             _runs("b"),
-            _runs("", style="HEADING_2"),
-            _runs(""),
+            {"style": "HEADING_2", "text": ""},
+            {"text": ""},
             _runs("c"),
-            _runs(""),
-            _runs("", style="TITLE"),
-            _runs(""),
+            {"text": ""},
+            {"style": "TITLE", "text": ""},
+            {"text": ""},
             _runs("d"),
         ]
         },
@@ -1040,7 +1040,7 @@ _DOCS_EXPORTS = {
         {
             "paragraphs": [
             _runs("a"),
-            _runs("", style="SUBTITLE"),
+            {"style": "SUBTITLE", "text": ""},
             _runs("b"),
             _runs("\x0b", style="HEADING_4"),
             _runs("c"),
@@ -1055,15 +1055,15 @@ _DOCS_EXPORTS = {
         {
             "paragraphs": [
             _runs("a"),
-            _runs(""),
+            {"text": ""},
             _runs("h", style="HEADING_1"),
-            _runs(""),
-            _runs(""),
+            {"text": ""},
+            {"text": ""},
             _runs("b"),
             _runs("c\x0b"),
             _runs("h2", style="HEADING_2"),
             _runs("d\x0b"),
-            _runs(""),
+            {"text": ""},
             _runs("e"),
         ]
         },
@@ -1779,6 +1779,13 @@ def test_a_docs_text_export_is_rendered_from_its_body_as_real_renders_it(tmp_pat
         }
         for name, (fields, _, _) in _DOCS_EXPORTS.items()
     ]
+    deck = {
+        "doc_id": "export-deck",
+        "title": "Deck",
+        "content": "a\n\nb",
+        "subtype": "presentation",
+    }
+    records.append({"source_type": "google_drive", "author_email": "owner@acme.com", **deck})
     formats = ("text/plain", "text/markdown", "text/x-markdown")
     with corpus_client(tmp_path, records) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
@@ -1789,6 +1796,8 @@ def test_a_docs_text_export_is_rendered_from_its_body_as_real_renders_it(tmp_pat
             return r.status_code, r.headers["content-type"], r.content.decode("utf-8")
 
         got = {name: [export(name, mime) for mime in formats] for name in _DOCS_EXPORTS}
+        # A Slides deck's `text/plain` is not rendered as a Doc's.
+        assert export("deck", "text/plain") == (200, "text/plain", "Deck\n\na\n\nb")
     assert got == {
         name: [(200, mime, text) for mime, text in zip(formats, (plain, md, md))]
         for name, (_, plain, md) in _DOCS_EXPORTS.items()

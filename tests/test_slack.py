@@ -4381,6 +4381,7 @@ def slack_thread(wclient, tokens):
 
 
 _GREATER = ["[ERROR] must be greater than 1 [json-pointer:/limit]"]
+_LESS = ["[ERROR] must be less than 1000 [json-pointer:/limit]"]
 
 
 # Each row is what `conversations.replies` is sent beside `channel` and the parent's `ts`, a
@@ -4421,14 +4422,19 @@ _REPLIES_ROWS = [
     # a reply's ts is that reply
     ({"ts": 2, "limit": 1}, [2], None),
     ({"ts": 2, "cursor": 4}, [2], None),
-    ({"limit": "0"}, ("invalid_arguments", _GREATER), None),
-    ({"limit": "00"}, ("invalid_arguments", _GREATER), None),
-    ({"limit": "-1"}, ("invalid_arguments", _GREATER), None),
-    (
-        {"limit": "1001"},
-        ("invalid_arguments", ["[ERROR] must be less than 1000 [json-pointer:/limit]"]),
-        None,
+    # `limit`, read as a double and held to 1 to 1000 before its integer part is served
+    *(
+        ({"limit": v}, ("invalid_arguments", _GREATER), None)
+        for v in ("0", "00", "-1", "-5", "0.9", "0.9999999999999999", "-1e400")
     ),
+    *(
+        ({"limit": v}, ("invalid_arguments", _LESS), None)
+        for v in ("1001", "1000.5", "1000.000000000001", "1e19", "9223372036854775808", "1e400")
+    ),
+    ({"limit": "1.5"}, [0, 5], 4),
+    ({"limit": "0.99999999999999999"}, [0, 5], 4),
+    ({"limit": "999.9"}, [0, 1, 2, 3, 4, 5], None),
+    ({"limit": "1000.0000000000000001"}, [0, 1, 2, 3, 4, 5], None),
     (
         {"ts": 2, "limit": "abc"},
         ("invalid_arguments", ["[ERROR] must provide a number [json-pointer:/limit]"]),

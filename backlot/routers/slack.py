@@ -3474,23 +3474,28 @@ def _limit(request: Request) -> tuple[int, JSONResponse | None]:
 
 def _replies_limit(request: Request) -> tuple[int, JSONResponse | None]:
     """`conversations.replies`' page size, and the refusal for a `limit` real does not read: 1000
-    replies when none is sent, the default Slack documents ("_Default:_ `1000`"), and otherwise a
-    whole number from 1 to 1000. Measured against slack.com/api on 2026-10-29 on a 30-reply thread,
-    `0`, `00`, `-1` and `-5` answer the "must be greater than 1" line, `1` being read, and `1001`
-    the "must be less than 1000" line. The same day, a missing `ts` was answered ahead of it and an
-    unknown channel after it."""
+    replies when none is sent, the default Slack documents ("_Default:_ `1000`"), and otherwise the
+    integer part of a value `_SLACK_NUMBER` takes, once that value, read as a double, is from 1 to
+    1000.
+
+    Measured against slack.com/api on a 30-reply thread. On 2026-10-29, `0`, `00`, `-1` and `-5`
+    answered the "must be greater than 1" line and `1001` the "must be less than 1000" line, a
+    missing `ts` was answered ahead of either and an unknown channel after it. On 2026-11-02, `0.9`,
+    `0.9999999999999999` and `-1e400` answered the first line, `1000.5`, `1000.000000000001`,
+    `1e19`, `9223372036854775808` and `1e400` the second, `1.5` served one reply and `999.9` all 30,
+    and `0.99999999999999999` and `1000.0000000000000001`, which a double holds as 1 and 1000, one
+    reply and all 30."""
     raw = _param(request, "limit")
     if raw is None:
         return 1000, None
-    n = _slack_number("limit", raw)
-    if n is None:
+    if not _SLACK_NUMBER.fullmatch(raw):
         line = "must provide a number"
-    elif n < 1:
+    elif (value := float(raw)) < 1:
         line = "must be greater than 1"
-    elif n > 1000:
+    elif value > 1000:
         line = "must be less than 1000"
     else:
-        return n, None
+        return int(value), None
     messages = [f"[ERROR] {line} [json-pointer:/limit]"]
     return 0, JSONResponse(
         {"ok": False, "error": "invalid_arguments", "response_metadata": {"messages": messages}}

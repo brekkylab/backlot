@@ -7,6 +7,7 @@ or call the response builder directly.
 from __future__ import annotations
 
 import json
+import uuid
 
 import pytest
 
@@ -14,6 +15,16 @@ from backlot import store
 from tests._helpers import crawl_hubspot, db_count, served_id, tiny_corpus
 
 HUBSPOT_OBJECT_TYPES = ("companies", "contacts", "notes")
+
+
+def _body(r):
+    """``r``'s JSON body less the `correlationId` an error body carries, once it is checked to be the
+    answer's `x-hubspot-correlation-id`; where it goes in the body is
+    ``test_hubspot_names_every_answer_by_a_correlation_id``'s."""
+    body = r.json()
+    if isinstance(body, dict) and "correlationId" in body:
+        assert body.pop("correlationId") == r.headers["x-hubspot-correlation-id"]
+    return body
 
 
 def test_admin_hubspot_crawls_all(client, admin_h, ro_conn):
@@ -148,7 +159,7 @@ def test_hubspot_archived_listing_refuses_unsupported_types(client, admin_h):
         r = client.get(url, headers=admin_h, params={"archived": "true"})
         answered[object_type] = (
             r.status_code,
-            r.json(),
+            _body(r),
             client.get(url, headers=admin_h).status_code,
         )
     assert answered == {
@@ -189,9 +200,9 @@ def test_hubspot_meetings_refuses_or_lists_by_the_parsed_flag(client, admin_h):
     answered = {}
     for params, _ in _MEETINGS_FLAGS:
         r = client.get(url, headers=admin_h, params=params)
-        answered[str(params)] = (r.status_code, r.json())
+        answered[str(params)] = (r.status_code, _body(r))
     assert answered == {
-        str(params): (400 if refused else 200, answers[refused].json())
+        str(params): (400 if refused else 200, _body(answers[refused]))
         for params, refused in _MEETINGS_FLAGS
     }
 
@@ -205,7 +216,7 @@ def test_hubspot_archived_refusal_follows_authentication_and_cursor_validation(
     r = client.get(url, headers=h, params={"archived": "true", "after": "abc"})
     control = client.get(url, headers=h, params={"after": "abc"})
     assert r.status_code == control.status_code == (400 if h else 401)
-    assert r.json() == control.json()
+    assert _body(r) == _body(control)
 
 
 def test_hubspot_list_cursor_pages_without_overlap(client, admin_h):
@@ -313,7 +324,7 @@ def test_hubspot_unknown_object_type_is_400(client, admin_h):
     objectTypeId gets a message of its own."""
     r = client.get("/hubspot/crm/v3/objects/widgets", headers=admin_h)
     assert r.status_code == 400
-    assert r.json() == {"status": "error", "message": "Unable to infer object type from: widgets"}
+    assert _body(r) == {"status": "error", "message": "Unable to infer object type from: widgets"}
     for r in (
         client.post("/hubspot/crm/v3/objects/widgets/search", headers=admin_h, json={}),
         client.post(
@@ -621,13 +632,121 @@ def test_hubspot_refuses_an_unserved_operation_for_its_credential(client, author
     answered = {}
     for method, path in operations:
         r = client.request(method, path, headers=headers, json={})
-        answered[(method, path)] = (r.status_code, r.json())
+        answered[(method, path)] = (r.status_code, _body(r))
     refusal = {
         "status": "error",
-        "message": "Authentication credentials not found.",
+        "message": "Authentication credentials not found. This API supports OAuth 2.0 authentication "
+        "and you can find more details at "
+        "https://developers.hubspot.com/docs/methods/auth/oauth-overview",
         "category": "INVALID_AUTHENTICATION",
     }
     assert answered == {operation: (401, refusal) for operation in operations}
+
+
+_JSON = "application/json;charset=utf-8"
+_PAGE = "text/html;charset=iso-8859-1"
+_ID = "x-hubspot-correlation-id"
+_AUTH_FAILURE = "x-hubspot-auth-failure"
+_NOT_FOUND = "x-hubspot-notfound"
+
+# (method, path, credential, body, status, content type, x-hubspot headers), as `correlate`, `_unauthenticated`, `_record_id`,
+# `_missing_record` and `put_a_correlation_id_on_hubspot_answers` record them.
+_CORRELATED = [
+    ("GET", "/crm/v3/objects/contacts?limit=1", "key", None, 200, _JSON, {_ID}),
+    ("POST", "/crm/v3/objects/contacts/search", "key", {}, 200, _JSON, {_ID}),
+    (
+        "POST",
+        "/crm/v3/objects/contacts/batch/read",
+        "key",
+        {"inputs": [{"id": "1"}]},
+        207,
+        _JSON,
+        {_ID},
+    ),
+    ("GET", "/crm/v3/objects/contacts", None, None, 401, _JSON, {_ID, _AUTH_FAILURE}),
+    (
+        "GET",
+        "/crm/v3/objects/contacts",
+        "Bearer nope",
+        None,
+        401,
+        _JSON,
+        {_ID, _AUTH_FAILURE},
+    ),
+    (
+        "GET",
+        "/crm/v3/objects/contacts",
+        "bearer",
+        None,
+        401,
+        _JSON,
+        {_ID, _AUTH_FAILURE},
+    ),
+    ("PATCH", "/crm/v3/objects/contacts/1", None, {}, 401, _JSON, {_ID, _AUTH_FAILURE}),
+    ("GET", "/crm/v3/objects/contacts/abc", "key", None, 404, _JSON, {_ID, _NOT_FOUND}),
+    ("GET", "/crm/v3/objects/contacts/-1", "key", None, 404, _JSON, {_ID, _NOT_FOUND}),
+    (
+        "GET",
+        "/crm/v4/objects/contacts/abc/associations/companies",
+        "key",
+        None,
+        404,
+        _JSON,
+        {_ID, _NOT_FOUND},
+    ),
+    ("GET", "/crm/v3/objects/contacts/1", "key", None, 404, _PAGE, {_ID, _NOT_FOUND}),
+    ("GET", "/crm/v3/objects/nosuch/1", "key", None, 400, _JSON, {_ID}),
+    ("GET", "/crm/v3/objects/contacts?after=bogus", "key", None, 400, _JSON, {_ID}),
+    ("PATCH", "/crm/v3/objects/contacts/1", "key", {}, 403, _JSON, {_ID}),
+    ("PUT", "/crm/v3/objects/contacts/1", "key", None, 405, None, {_ID}),
+    ("GET", "/crm/v3/nosuch", "key", None, 404, "application/json", set()),
+    ("GET", "/CRM/v3/objects/contacts", "key", None, 404, "application/json", set()),
+]
+
+
+def test_hubspot_names_every_answer_by_a_correlation_id(client, admin_h):
+    """Each row is an answer of real's: every one carries `x-hubspot-correlation-id` but the 404 its
+    front gives a path no route serves, a JSON one comes under `application/json;charset=utf-8`, a
+    401 carries `x-hubspot-auth-failure` and a 404 about a record id `x-hubspot-notfound`. An error
+    body carries the id as `correlationId`, right after `message`; a 200's and a 207's carry none.
+    The 404 for an unserved path stays as it was, `{"detail": "Not Found"}` where real's front
+    answers its own page. One request asked twice gets one id, and each is a version 7 UUID."""
+    key = admin_h["Authorization"].removeprefix("Bearer ")
+    credentials = {"key": f"Bearer {key}", "bearer": f"bearer {key}"}
+    answered, expected, ids = {}, {}, {}
+    for method, path, credential, body, status, content_type, headers in _CORRELATED:
+        authorization = credentials.get(credential, credential)
+        sent = {"Authorization": authorization} if authorization else {}
+        r = client.request(method, f"/hubspot{path}", headers=sent, json=body)
+        members = None
+        if r.headers.get("content-type") == _JSON and r.status_code >= 400:
+            members = list(r.json())[:3]
+            assert r.json()["correlationId"] == r.headers[_ID], (method, path)
+        elif r.headers.get("content-type") == _JSON:
+            assert "correlationId" not in r.json(), (method, path)
+        named = {k for k in r.headers if k.startswith("x-hubspot")}
+        answered[(method, path, credential)] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            named,
+            members,
+        )
+        error = content_type == _JSON and status >= 400
+        expected[(method, path, credential)] = (
+            status,
+            content_type,
+            headers,
+            ["status", "message", "correlationId"] if error else None,
+        )
+        if _ID in r.headers:
+            ids[(method, path, credential)] = r.headers[_ID]
+    assert answered == expected
+    for rid in ids.values():
+        parsed = uuid.UUID(rid)
+        assert (parsed.version, parsed.variant) == (7, uuid.RFC_4122)
+    again = client.get("/hubspot/crm/v3/objects/contacts?limit=1", headers=admin_h)
+    assert again.headers[_ID] == ids[("GET", "/crm/v3/objects/contacts?limit=1", "key")]
+    assert len(set(ids.values())) == len({(m, p) for m, p, _ in ids})
 
 
 _CONTACT_SCOPES = [
@@ -679,8 +798,8 @@ def test_hubspot_refuses_a_record_write_for_the_scopes_of_its_type(
     record: the scopes come before the record is looked up."""
     r = client.request(method, f"/hubspot/crm/v3/objects/{object_type}/1", headers=admin_h)
     assert r.status_code == 403
-    assert list(r.json()) == ["status", "message", "errors", "links", "category"]
-    assert r.json() == {
+    assert list(r.json()) == ["status", "message", "correlationId", "errors", "links", "category"]
+    assert _body(r) == {
         "status": "error",
         "message": "This app hasn't been granted all required scopes to make this call. "
         "Read more about required scopes here: https://developers.hubspot.com/scopes.",
@@ -709,7 +828,7 @@ def test_hubspot_checks_a_record_writes_type_before_its_scopes(
     """With a key that resolves, a type real can't resolve is its 400 ahead of the scopes
     (`refuse_an_unserved_operation` in `backlot.routers.hubspot`)."""
     r = client.request(method, f"/hubspot/crm/v3/objects/{object_type}/1", headers=admin_h)
-    assert (r.status_code, r.json()) == (status, body)
+    assert (r.status_code, _body(r)) == (status, body)
 
 
 _COMPANY_SCOPES = [
@@ -866,7 +985,7 @@ def test_hubspot_answers_a_keyed_write_with_no_body_and_no_content_type(
     """Each row is what `refuse_an_unserved_operation` in `backlot.routers.hubspot` records."""
     headers = {**admin_h, **({} if content_type is None else {"Content-Type": content_type})}
     r = client.request(method, f"/hubspot{path}", headers=headers, content=content)
-    assert (r.status_code, r.json()) == (status, body)
+    assert (r.status_code, _body(r)) == (status, body)
 
 
 @pytest.mark.parametrize(
@@ -886,7 +1005,7 @@ def test_hubspot_checks_a_keyed_writes_types_before_its_body_and_scopes(
     """A type real can't resolve, on either side of a v4 pair, is its 400 ahead of the body and the
     scopes (`refuse_an_unserved_operation` in `backlot.routers.hubspot`)."""
     r = client.request(method, f"/hubspot{path}", headers=admin_h)
-    assert (r.status_code, r.json()) == (
+    assert (r.status_code, _body(r)) == (
         400,
         {"status": "error", "message": f"Unable to infer object type from: {name}"},
     )
@@ -921,7 +1040,7 @@ def test_hubspot_refuses_a_high_usage_report_for_its_user_id(client, admin_h, us
         headers={**admin_h, "Content-Type": "application/json"},
         content="{",
     )
-    assert (r.status_code, r.json()) == (400, {"status": "error", "message": message})
+    assert (r.status_code, _body(r)) == (400, {"status": "error", "message": message})
 
 
 @pytest.mark.parametrize(
@@ -1030,7 +1149,7 @@ def test_hubspot_refuses_options_for_its_own_credentials(client, admin_h, ava, p
     sent = {"key": admin_h, "none": {}}.get(headers) if isinstance(headers, str) else headers
     r = client.options("/hubspot" + path.format(ava=ava), headers=sent)
     assert r.status_code == 401
-    assert list(r.json()) == ["status", "message", "engagement"]
+    assert list(r.json()) == ["status", "message", "correlationId", "engagement"]
     assert r.json()["message"] == "Any of the listed authentication credentials are missing"
     assert list(r.json()["engagement"]) == ["service-to-service", "internal-cookie", "app-cookie"]
     assert not {"allow", "access-control-allow-origin", "access-control-allow-methods"} & set(
@@ -1348,11 +1467,11 @@ def test_hubspot_object_types_resolve_as_real_resolves_them(client, admin_h, ava
             expected[path] = (status, "text/html;charset=iso-8859-1", want)
             continue
         if isinstance(want, str):
-            control = client.get("/hubspot" + want.format(ava=ava), headers=admin_h).json()
-            answered[path] = (r.status_code, list(r.json().items()), control != _EMPTY)
+            control = _body(client.get("/hubspot" + want.format(ava=ava), headers=admin_h))
+            answered[path] = (r.status_code, list(_body(r).items()), control != _EMPTY)
             expected[path] = (status, list(control.items()), True)
         else:
-            answered[path] = (r.status_code, list(r.json().items()))
+            answered[path] = (r.status_code, list(_body(r).items()))
             expected[path] = (status, list(want.items()))
     assert answered == expected
 
@@ -1777,7 +1896,7 @@ def test_hubspot_search_reads_a_filter_operator_as_real_does(client, admin_h):
         content = raw if isinstance(raw, bytes) else raw.encode()
         r = client.post(url, headers=headers, content=content)
         if isinstance(want, dict):
-            answered[row.id], expected[row.id] = (r.status_code, r.json()), (400, want)
+            answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
         elif isinstance(want, tuple):
             control = client.post(url, headers=headers, content=want[1].encode()).json()["results"]
             answered[row.id], expected[row.id] = (
@@ -1993,7 +2112,7 @@ def test_hubspot_batch_read_refuses_more_than_100_ids(client, admin_h, inputs, s
     )
     assert r.status_code == status, r.text
     if status == 400:
-        assert r.json() == {
+        assert _body(r) == {
             "status": "error",
             "message": "The maximum number of inputs supported in a batch is 100. "
             "Please reduce the number of items and try again",
@@ -2156,7 +2275,7 @@ def test_hubspot_batch_read_refuses_a_body_real_cannot_read(client, admin_h):
         url = f"/hubspot/crm/v3/objects/{object_type}/batch/read"
         r = client.post(url, headers=headers, content=raw.encode())
         if isinstance(want, dict):
-            answered[row.id], expected[row.id] = (r.status_code, r.json()), (400, want)
+            answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
         else:
             answered[row.id], expected[row.id] = r.status_code, want
     assert answered == expected
@@ -2344,7 +2463,7 @@ def test_hubspot_refuses_a_non_standard_number_token(client, admin_h):
         content = raw if isinstance(raw, bytes) else raw.encode()
         r = client.post(url, headers=headers, content=content)
         if isinstance(want, dict):
-            answered[row.id], expected[row.id] = (r.status_code, r.json()), (400, want)
+            answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
         else:
             answered[row.id], expected[row.id] = r.status_code, want
     assert answered == expected

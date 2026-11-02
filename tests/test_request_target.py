@@ -239,11 +239,11 @@ _AWS_AUTHORIZATION = (
 # A `Host` in brackets that holds no IPv6 address (``backlot.bracketed_host`` dates the
 # measurement): (host, or ``None`` where the header lines carry it, method, base, target after it,
 # answer, header lines or none), "served" the answer to the request with a `Host` of `x`. `[0:0]`
-# on a path each vendor serves and on Confluence's search with a CQL it refuses, at GitHub's root
-# and after another header, the other `Host`s on GitHub's path, `[v1.x]` on each host behind
-# Cloudflare and on Google's batch endpoint, Cloudflare's reading of an IPvFuture on Notion, and on
-# S3, which serves each as it serves its own `Host`, an IPv6 address in brackets, brackets left
-# open, and `[0:0]` with an `Authorization` S3 cannot read.
+# on a path each vendor serves and on Confluence's search with a CQL it refuses and beside a charset
+# Java cannot name, at GitHub's root and after another header, the other `Host`s on GitHub's path,
+# `[v1.x]` on each host behind Cloudflare and on Google's batch endpoint, Cloudflare's reading of an
+# IPvFuture on Notion, and on S3, which serves each as it serves its own `Host`, an IPv6 address in
+# brackets, brackets left open, and `[0:0]` with an `Authorization` S3 cannot read.
 _HOSTS = [
     *(
         (b"[0:0]", method, base, rest, answer)
@@ -279,6 +279,14 @@ _HOSTS = [
         for host in (b"[0:0]:443", b"[x]", b"[1.2.3.4]", b"[v1.x]", b"[:]", b"[g::1]")
     ),
     (None, b"GET", "/github/", b"rate_limit", "github", b"User-Agent: x\r\nHost: [0:0]\r\n"),
+    (
+        b"[0:0]",
+        b"GET",
+        "/atlassian/wiki/rest/api/",
+        b"space",
+        "cloudfront 403",
+        b"Content-Type: text/plain;charset=\r\n",
+    ),
     *(
         (b"[v1.x]", method, base, rest, "cloudflare forbidden")
         for method, base, rest in (

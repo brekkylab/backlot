@@ -14,11 +14,14 @@ the bucket list or a bucket that does not exist), with the vendors' credentials 
 Docs editors', S3's and Graph's: `[0:0]`, `[0:0]:443`, `[x]`, `[1.2.3.4]`, `[v1.x]`, `[:]` and
 `[g::1]`, each answered as :func:`answer` says, `[0:0]` and `[v1.x]` at Google's `/batch/drive/v3`,
 and `[0:0]` at GitHub's `/` and after a `User-Agent`. On 2026-10-31 `[0:0]` at Confluence's search
-drew the CDN's 403 under a CQL the search parses and under one it refuses. An IPv6 address in
-brackets (`[::1]`, `[::1]:443`, `[::]`, `[ABCD::1]`, `[::ffff:1.2.3.4]`) is how a client reaches a
-server on an IPv6 address, and is served here as any other `Host` is. Real's front doors answered it
-as they answered `example.com`, a host they do not serve, but for two: S3 answered it as it answers
-its own `Host`, and Graph refused it as it refuses the `Host`s above, where it served `example.com`.
+drew the CDN's 403 under a CQL the search parses and under one it refuses, and on 2026-11-02 `[0:0]`
+and `[v1.x]` at Confluence's space list and Jira's `serverInfo` drew it beside
+`Content-Type: text/plain;charset=`, which draws Confluence's empty 500 under the tenant's own
+`Host`. An IPv6 address in brackets (`[::1]`, `[::1]:443`, `[::]`, `[ABCD::1]`, `[::ffff:1.2.3.4]`)
+is how a client reaches a server on an IPv6 address, and is served here as any other `Host` is.
+Real's front doors answered it as they answered `example.com`, a host they do not serve, but for
+two: S3 answered it as it answers its own `Host`, and Graph refused it as it refuses the `Host`s
+above, where it served `example.com`.
 """
 
 from __future__ import annotations

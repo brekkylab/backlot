@@ -1054,8 +1054,8 @@ _RENAME_ROWS = [
 def test_an_argument_the_pattern_refuses_is_renamed_or_named_in_an_error():
     """Each argument the pattern refuses goes by the name :func:`backlot.mcp.argument_name` gives
     it, its description naming what the call is sent as, and each argument the pattern takes keeps
-    its name. A tool with an argument no such name can be made of, or with two that would go by one
-    name, is refused with an error that names them."""
+    its name. A tool with an argument no name the pattern takes can be made of, or with two that
+    would go by one name, is refused with an error that names them."""
     pytest.importorskip("fastmcp")
     from fastmcp.tools import Tool
 

@@ -1760,6 +1760,11 @@ _DOCS_EXPORTS = {
             "p005"
         ),
     ),
+    "vt_links": (
+        {"paragraphs": [_runs("p000"), _runs(("\x0b", "1")), _runs("p001")]},
+        "﻿p000\r\n\r\n\r\n\r\n\r\np001",
+        "p000\n\np001",
+    ),
 }
 # fmt: on
 

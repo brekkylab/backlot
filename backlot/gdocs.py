@@ -1089,8 +1089,8 @@ def _delimiter(mark, closing: bool = False) -> str:
     return _DELIMITER[mark]
 
 
-# Real's Markdown writer, read off its answers on 2026-10-31 and 2026-11-01 (Google documents none of
-# it). Its delimiters do not nest: where marks end, the lowest-rank ending mark closes with every
+# Real's Markdown writer, read off its answers on 2026-10-31 and 2026-11-01 (Google documents none
+# of it). Its delimiters do not nest: where marks end, the lowest-rank ending mark closes with every
 # mark opened above it, in rounds; the marks that continue reopen in an order read off a copy of the
 # stack, and a new mark of lower rank than a closing one takes a closer's place. An opener waits out
 # spaces and tabs, and a closer that meets a waiting opener cancels it.
@@ -1222,7 +1222,8 @@ def _stretch(pieces: list[tuple[frozenset, str, list[str]]]) -> str:
     (marks, text, escaped text) pieces. At each change of marks a closer takes the last held opener,
     else the opener written last, else is written, and before the round `_commit_at` picks the
     pending spaces and tabs and the held openers are written; the new openers are then held. A held
-    opener's anchors count the changes it stayed held across that opened marks or took two openers."""
+    opener's anchors count the changes it stayed held across that opened marks or took two or more
+    openers."""
     sets = [m for i, (m, *_) in enumerate(pieces) if m != (pieces[i - 1][0] if i else frozenset())]
     sets.append(frozenset())
     out: list[tuple[str, bool]] = []

@@ -1,7 +1,6 @@
 """The HTTP/1.1 protocol `backlot serve` hands uvicorn: uvicorn's own httptools protocol, which
 counts each request head against its front door's bound as it arrives (:mod:`backlot.head_bounds`)
-and reads a request line that starts a read from the socket before its parser does
-(:class:`Protocol` says which).
+and reads each request line before its parser does (:class:`Protocol`).
 
 httptools reads a header of 262,144 bytes and hands its request to the app, where each front door
 has answered at its bound, which is shorter, and closed the connection. :class:`Protocol` answers
@@ -32,24 +31,23 @@ from backlot import head_bounds, parser_refusals, request_target
 
 
 class Protocol(HttpToolsProtocol):
-    """uvicorn's httptools protocol, reading a request line before its parser does.
+    """uvicorn's httptools protocol, reading each request's head before its parser does.
 
-    The line is read where a request starts a read from the socket: the first request on the
-    connection, and each one after a request that has been read to its end. That is every request a
-    client sends after the answer to the one before; a request that rides in the same read as the
-    end of the one before it goes to the parser as it came.
+    A request that starts in the same read as the end of the one before it is read as one that
+    starts a read is (:meth:`_read`).
 
-    A read with no LF is held for the reads after it while :func:`_starts_a_request_line` holds for
-    what is held. Once it does not, the held bytes go to the parser as they came, which refuses
-    them, and uvicorn answers its 400 at once: `hello` with no LF is answered so.
+    A request's line is read before the parser reads it. A read with no LF is held for the reads
+    after it while :func:`_starts_a_request_line` holds for what is held. Once it does not, the
+    held bytes go to the parser as they came, which refuses them, and uvicorn answers its 400 at
+    once: `hello` with no LF is answered so.
 
-    Each read is counted by :class:`_Head` first, whatever it holds, against the head of the request
-    it carries: from the connection's first byte, and from the first read after a request that has
-    been read to its end. A read that takes the head to its bound draws the front door's answer and
-    the close, after which the transport reads nothing more. What :class:`_Head` has read of a head
-    when httptools refuses it names the refusal (:meth:`_cause`); a request whose head it has not
-    read, one that rides in the same read as the end of the one before it, is answered uvicorn's
-    400.
+    Each request's head is counted by :class:`_Head` from its own first byte, and the front door's
+    answer to one that reaches its bound goes out once each request ahead of it on the connection
+    has been answered. On api.github.com and on S3 (2026-11-02), a request past the bound behind a
+    short one on the same connection drew the short one's answer and then the bound's, written in
+    the same write as the short one, in a write of its own, or with its first 30 bytes in the short
+    one's write. What :class:`_Head` has read of a head when httptools refuses it names the refusal
+    (:meth:`_cause`), and the front door's answer to that refusal waits the same way.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -59,13 +57,33 @@ class Protocol(HttpToolsProtocol):
         self._sent: bytes | None = None
         self._no_version = False
         self._head = _Head()
+        self._body: _Body | None = None
+        self._refusal: bytes | None = None
 
     def data_received(self, data: bytes) -> None:
+        while data and self._refusal is None and not self.transport.is_closing():
+            data = self._read(data)
+
+    def _read(self, data: bytes) -> bytes:
+        """Hand the parser ``data`` as far as the end of the request it is in, where its head ends
+        or, for a body after it, where :class:`_Body` says the body ends, and return the bytes after
+        that end."""
+        if self._body is not None:
+            start = 0
+            for end in self._body.ends(data):
+                super().data_received(data[start:end])
+                start = end
+                if self._body is None:
+                    return data[end:]
+            super().data_received(data[start:])
+            return b""
         answer = self._head.read(data)
         if answer is not None:
-            self.transport.write(answer)
-            self.transport.close()
-            return
+            self._refusal = answer
+            if self.cycle is None or self.cycle.response_complete:
+                self._refuse()
+            return b""
+        data, rest = data[: self._head.read_to], data[self._head.read_to :]
         if self._between_requests:
             data = self._held + data
             self._held = b""
@@ -77,8 +95,16 @@ class Protocol(HttpToolsProtocol):
             elif _starts_a_request_line(data):
                 self._held = data
                 self._unset_keepalive_if_required()
-                return
+                return b""
         super().data_received(data)
+        if self.parser is None or self.parser.should_upgrade():
+            return b""
+        return rest
+
+    def _refuse(self) -> None:
+        self._unset_keepalive_if_required()
+        self.transport.write(self._refusal)
+        self.transport.close()
 
     def on_message_begin(self) -> None:
         super().on_message_begin()
@@ -87,14 +113,26 @@ class Protocol(HttpToolsProtocol):
             self.scope[request_target.SENT] = self._sent  # type: ignore[literal-required]
             self._sent = None
 
+    def on_headers_complete(self) -> None:
+        super().on_headers_complete()
+        self._body = _Body.framed_by(self.headers)
+
     def on_message_complete(self) -> None:
         super().on_message_complete()
         self._between_requests = True
         self._head = _Head()
+        self._body = None
+
+    def on_response_complete(self) -> None:
+        super().on_response_complete()
+        if self._refusal is not None and self.cycle.response_complete:
+            if not self.transport.is_closing():
+                self._refuse()
 
     def send_400_response(self, msg: str) -> None:
         """The front door's answer to what httptools refused (``backlot.parser_refusals``) where it
-        has one, else uvicorn's 400. uvicorn calls this as it handles the parser's refusal, which
+        has one, held as the bound's is until the answer ahead of it on the connection has gone
+        out, else uvicorn's 400. uvicorn calls this as it handles the parser's refusal, which
         :func:`sys.exception` gives."""
         cause = self._cause(str(sys.exception()))
         answer = None
@@ -110,8 +148,9 @@ class Protocol(HttpToolsProtocol):
         if answer is None:
             super().send_400_response(msg)
             return
-        self.transport.write(answer)
-        self.transport.close()
+        self._refusal = answer
+        if self.cycle is None or self.cycle.response_complete:
+            self._refuse()
 
     def _cause(self, reason: str) -> parser_refusals.Cause | None:
         """Which of ``backlot.parser_refusals.Cause`` httptools refused the request for, read off
@@ -138,18 +177,60 @@ class Protocol(HttpToolsProtocol):
         return None
 
 
+class _Body:
+    """Where the body after a request's head can end, as its framing headers say: after its
+    `Content-Length`, or for a chunked one, after a CRLF CRLF, which ends the last chunk or the
+    trailer after it."""
+
+    def __init__(self, length: int | None) -> None:
+        self.left = length
+        self.tail = b""
+
+    @classmethod
+    def framed_by(cls, headers: list[tuple[bytes, bytes]]) -> _Body | None:
+        """The body after a head with ``headers`` as the parser read them, names in lower case, or
+        ``None`` for a head that frames none: the parser ends such a request at its head or refuses
+        it. httptools refuses a `Content-Length` that is not digits, and a second one, before it
+        hands the head on."""
+        length, chunked = None, False
+        for name, value in headers:
+            if name == b"content-length":
+                length = int(value)
+            elif name == b"transfer-encoding":
+                chunked = value.rpartition(b",")[2].strip().lower() == b"chunked"
+        if chunked:
+            return cls(None)
+        return None if length is None else cls(length)
+
+    def ends(self, data: bytes):
+        """The offsets in ``data``, the body's next bytes, at which it can end, in order."""
+        if self.left is not None:
+            left, self.left = self.left, max(self.left - len(data), 0)
+            if left <= len(data):
+                yield left
+            return
+        joined = self.tail + data
+        before = len(self.tail)
+        self.tail = joined[-3:]
+        at = joined.find(b"\r\n\r\n")
+        while at >= 0:
+            if at + 4 > before:
+                yield at + 4 - before
+            at = joined.find(b"\r\n\r\n", at + 1)
+
+
 class _Head:
-    """The head of one request as it arrives, read only as far as :mod:`backlot.head_bounds` and
-    :data:`backlot.parser_refusals.Cause` need: how many bytes it holds, how many the line it is in
-    holds before its LF, the request line's first bytes, which name the vendor, and of the header
-    lines what :meth:`_read_header` keeps."""
+    """The head of one request as it arrives, counted as :meth:`backlot.head_bounds.Bound.answer`
+    reads it, its request line, whose first bytes name the vendor and which is kept only where
+    they name one, and of the header lines what :meth:`_read_header` keeps."""
 
     def __init__(self) -> None:
         self.size = 0
         self.line = 0
         self.first = b""
-        self.start = b""
+        self.request_line = bytearray()
         self.in_request_line = True
+        self.blank = 0
         self.ended = False
         self.bound: head_bounds.Bound | None = None
         self.named = False
@@ -160,19 +241,22 @@ class _Head:
         self.codings: list[bytes] = []
         self.coding_after_length = False
         self.nul = False
+        self.read_to = 0
 
     def read(self, data: bytes) -> bytes | None:
         """The vendor's answer where ``data`` takes the head to its front door's bound, else None.
-        Nothing after the empty line that ends the head is read."""
+        Nothing after the empty line that ends the head is read: :attr:`read_to` is how many bytes
+        of ``data`` were."""
         pos = 0
+        self.read_to = len(data)
         while not self.ended and pos < len(data):
             lf = data.find(b"\n", pos)
             end = len(data) if lf < 0 else lf
             if self.line == 0:
                 self.first = data[pos : pos + 1]
-            if self.in_request_line:
-                self.start += data[pos:end][: head_bounds.NAMED_WITHIN - len(self.start)]
-            else:
+            if self.in_request_line and (not self.named or self.bound is not None):
+                self.request_line += data[pos:end]
+            elif not self.in_request_line:
                 self._read_header(data[pos:end])
             self.line += end - pos
             self.size += end - pos
@@ -183,13 +267,18 @@ class _Head:
             self.line = 0
             if not self.in_request_line:
                 self._end_header()
-            if self.in_request_line:
+            if self.in_request_line and empty:
+                self.blank = self.size
+                self.request_line = bytearray()
+            elif self.in_request_line:
                 self.in_request_line = False
             elif empty:
                 self.ended = True
             if (answer := self._over()) is not None:
                 return answer
             pos = lf + 1
+        if self.ended:
+            self.read_to = pos
         return None
 
     def _read_header(self, part: bytes) -> None:
@@ -223,16 +312,22 @@ class _Head:
         self.value = b""
 
     def _over(self) -> bytes | None:
-        """The answer once the head is past its bound. The vendor is read off the request line once
-        it ends or holds :data:`backlot.head_bounds.NAMED_WITHIN` bytes."""
+        """The answer once the head has reached its bound, the front door's refusal of the request
+        line where it refuses the line ahead of the bound
+        (:meth:`backlot.head_bounds.Bound.refused`)."""
         if not self.named and (
-            not self.in_request_line or len(self.start) >= head_bounds.NAMED_WITHIN
+            not self.in_request_line or len(self.request_line) >= head_bounds.NAMED_WITHIN
         ):
             self.named = True
-            self.bound = head_bounds.bound(self.start)
+            self.bound = head_bounds.bound(bytes(self.request_line[: head_bounds.NAMED_WITHIN]))
         if self.bound is None:
             return None
-        return self.bound.answer(self.size, self.line, self.in_request_line, self.ended)
+        answer = self.bound.answer(
+            self.size, self.blank, self.line, self.in_request_line, self.ended
+        )
+        if answer is None:
+            return None
+        return self.bound.refused(bytes(self.request_line), not self.in_request_line) or answer
 
 
 #: How much of a header line's name, and of a `Transfer-Encoding`'s value, :class:`_Head` keeps:

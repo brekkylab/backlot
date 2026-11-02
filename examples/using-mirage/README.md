@@ -27,7 +27,7 @@ of driving it in-process (see [FUSE mode](#fuse-mode---fuse) below).
 |---|---|---|---|
 | `slack.py` | `SlackVFS` | `/slack` | `ls` channels → dated `chat.jsonl`; `cat` + scoped `grep` |
 | `gmail.py` | `GmailVFS` | `/gmail` | `ls` labels → dates → messages; `cat` + `jq .subject` |
-| `gdrive.py` | `GoogleDriveVFS` | `/gdrive` | `ls -F` folders → files; `cat` a native Google doc |
+| `gdrive.py` | `GoogleDriveVFS` | `/gdrive` | `ls -F` folders → files; `cat` a native Google doc; in-process, `gws docs documents create` a Doc that the next `ls` lists |
 | `notion.py` | `NotionVFS` | `/notion` | `ls` `pages/` + `databases/`; `cat` a `page.json` / `database.json` |
 | `s3.py` | `S3VFS` | `/s3` | `ls` recursively → `cat` an object; `grep -r` across the bucket |
 | `github.py` | `GitHubVFS` | `/github` | `ls` a repo's file tree → `cat` a source file; `grep -r` across it |

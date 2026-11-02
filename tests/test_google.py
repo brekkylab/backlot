@@ -27,7 +27,7 @@ import jwt
 import pytest
 import yaml
 
-from backlot import gsheets, oauth, request_target, store, synth
+from backlot import gdocs, gsheets, oauth, request_target, store, synth
 from backlot.config import Settings
 from backlot.errors import google as gerr
 from tests._helpers import (
@@ -851,16 +851,967 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
         )  # ...and match the bytes
 
 
-def test_drive_export_roundtrip(client, admin_h, ro_conn):
-    doc = ro_conn.execute("SELECT * FROM gdrive_files LIMIT 1").fetchone()
-    # The row's own `id`, not the corpus's identifier: hitting the route by the corpus id would
-    # stop exercising the id resolution path without the test noticing.
-    text = client.get(
-        f"/drive/v3/files/{doc['id']}/export",
-        headers=admin_h,
-        params={"mimeType": "text/plain"},
-    ).text
-    assert doc["content"] in text and text.startswith(doc["title"])
+# A paragraph long enough that a Markdown writer would wrap it, which real does not.
+_WORDS = " ".join(f"word{i}" for i in range(120))
+
+
+def _runs(*runs: str | tuple[str, str] | dict, style: str | None = None) -> dict:
+    """A paragraph as a record's `paragraphs` states it, from `runs`: each a text, a (text, marks)
+    pair, or a run as `paragraphs` states it. In marks, `i`, `b`, `s` and `u` are italic, bold,
+    strikethrough and underline, and a digit n is a link to `https://e.com/n`."""
+    out = []
+    for run in runs:
+        if isinstance(run, str):
+            run = (run, "")
+        if isinstance(run, tuple):
+            text, marks = run
+            names = {"i": "italic", "b": "bold", "s": "strikethrough", "u": "underline"}
+            run = {"text": text, **{names[c]: True for c in marks if c in names}}
+            run.update({"link": f"https://e.com/{c}" for c in marks if c.isdigit()})
+        out.append(run)
+    return {"runs": out, **({"style": style} if style else {})}
+
+
+# Paragraphs of real's Docs, as one Doc, for the mark writer of `gdocs.markdown` and for
+# `gdocs.plain_text`.
+# fmt: off
+_MD_WRITER = [
+    _runs("z", ("a", "s"), (" ", "b"), (" ", "i2"), (" ", "bs"), (" ", "i"), (" ", "is1"), (" ", "ib"), (" ", "i"), (" ", "ibs2"), ("b", "b2"), "d"),
+    _runs(("  ", "s"), ("http://y", "2"), ("\u01c5", "ib1"), (" ", "is2"), (" a", "ib"), ("x y", "b1"), ("a", "ibs"), ("x y", "ibs"), ("\u4e2d\u6587", "i1"), (" ", "s"), "b", ("-a", "ib"), ("\xa0", "ib"), (" a", "b"), ("\xe9www.x", "ib"), (" a", "b2"), ("a", "ibs"), ("\xa0", "s")),
+    _runs("q 0\ufe0fwww.x"),
+    _runs("q _\ufe0fhttp://x"),
+    _runs("z", ("a", "b"), ("b", "bs"), ("c", "bs1"), ("d", "ibs1"), ("e", "s2"), ("f", "2"), "g"),
+    _runs(("999. \u3000 10 <-", "u"), ("<", "ibu"), ("~ #", "is"), {"text": "\"Foo_*Zed\U0001f600", "bold": True, "link": "https://e.com/back\\s"}, ("999.", "ib"), style="HEADING_5"),
+    _runs("q \u03b1\U000e0100http://x"),
+    _runs("z", ("a", "i"), ("b", "is"), ("c", "is1"), ("d", "ibs1"), ("e", "s2"), ("f", "2"), "g"),
+    _runs("z", ("a", "bs"), (" ", "is"), (" ", "ibs"), (" ", "is"), (" ", "s"), (" ", "is1"), ("b", "bs1"), "d"),
+    _runs("z", ("a", "s"), (" ", "is"), (" ", "bs1"), (" ", "ibs1"), (" ", "bs1"), (" ", "is"), " ", ("b", "is"), "d"),
+    _runs(("\x0b", "ib"), "x"),
+    _runs(("\x0b", "b"), ("x", "b"), "y"),
+    _runs("\x0b\x0b \x0b", style="HEADING_2"),
+    _runs("_https://x"),
+    _runs(" \x0b\t\x0b", style="HEADING_2"),
+    _runs("\x0b\xa0h"),
+    _runs("q A\ufe0fhttp://x"),
+    _runs("q \u03b1\u034fhttp://x"),
+    _runs("\u01c5\u0301www.x \u01c5\u0301http://y"),
+    _runs("\u4e2d\u0301www.x \u4e2d\u0301http://y"),
+    _runs("  "),
+    {"text": ""},
+    _runs(("\u4e2d\u02b0\u0301http://x", "1"), ("a", "ibs"), "www.x-"),
+    _runs("z", ("a", "1"), (" ", "ibs"), (" ", "ibs1"), ("b", "b"), "d"),
+    _runs("z", ("a", "1"), (" ", "ibs1"), (" ", "i1"), ("b", "is"), "d"),
+    _runs("z", ("a", "1"), ("b", "i1"), ("c", "ib1"), ("d", "ibs1"), ("e", "i2"), "f"),
+    _runs("z", ("a", "ibs1"), (" ", "is"), (" ", "is"), (" ", "ib1"), (" ", "ibs1"), (" ", "i1"), (" ", "is1"), ("b", "s"), "d"),
+    _runs("  ", style="NORMAL_TEXT"),
+    _runs({"text": "=", "strikethrough": True, "link": "https://e.com/q r"}, "`\tb", ("@12.q", "iu"), ("\u2022 3.", "i"), ("999.\t&1\t  \t^\t.\t\u3000", "iu"), style="HEADING_4"),
+    _runs((" ", "bs1"), ("*", "is2"), ("  ", "b2"), ("1. a", "i"), (" \t", "i1"), (" \t", "s2"), ("\u4e2d\u6587", "i"), "def", ("1. a", "b2"), ("a ", "s1"), (" ", "b")),
+    _runs(("\xe9\u01c5", "s"), ("\u0301http://xwww.x", "s"), ("\u0301", "b")),
+    _runs("\x0b \t\x0b", style="TITLE"),
+    _runs(("b", "is"), ("a", "ibs2"), ("-a", "2"), "a", ("\u4e2d\u6587", "ibs"), ("b", "1"), ("  ", "ibs2"), ("\u4e2d\u6587", "b1"), (" \t", "1"), " ", ("x y", "is"), (" ", "b"), (" \t", "s"), ("a", "bs"), "a", "a_b", (" \t", "ibs2"), ("e\u0301", "2"), ("bc", "i"), (" ", "is2")),
+    _runs("z", ("a", "is"), (" ", "ib"), (" ", "s1"), ("b", "s1"), "d"),
+    _runs((" ", "b1"), (" ", "bs2"), (" ", "b"), ("  ", "i"), ("x y", "s"), ("  ", "ibs"), (" ", "bs1"), ("\u4e2d\u6587", "i"), (" \t", "is1"), ("a ", "b1")),
+    _runs("z", ("a", "s"), (" ", "bs1"), (" ", "s1"), (" ", "s1"), (" ", "ibs1"), (" ", "s"), " ", " ", ("b", "bs1"), "d"),
+    _runs(("_\u01c5\u4e2d", "bs2"), ("_www.x\u01c5\xe9", "b"), ("\u02b0\U0001f600*http://x", "i")),
+    _runs("z", ("a", "bs1"), (" ", "is1"), (" ", "is1"), ("b", "ib1"), "d"),
+    _runs("z", ("a", "b3"), (" \t", "3"), ("   ", "s2"), ("b", "is1"), (" \t", "is2"), ("c", "b"), "d"),
+    _runs("z", ("a", "s"), (" \t", "bs2"), ("\t", "ibs2"), ("\t", "bs1"), ("   ", "ib2"), ("\t", "is2"), (" \t", "is"), ("b", "is"), "d"),
+    _runs((" a", "2"), ("-", "i2"), style="HEADING_6"),
+    _runs((" \x0b", "s"), ("\U0001f600_", "1")),
+    _runs("z", ("a", "is"), (" ", "is1"), (" ", "2"), ("b", "bs1"), "d"),
+    _runs(("  ", "ibs"), ("\u4e2d\u0301\u4e2d", "ibs2"), ("www.x\U0001f600", "s"), ("a_b", "ib"), "*\u0301http://x", "~", ("def", "bs"), ("\x0b ", "i"), style="HEADING_3"),
+    _runs((" ", "1"), "*-\x0ba", ("x y", "is"), ("~", "b"), ("a", "i2"), ("\u4e2d\x0b\xe9", "is1"), ("\U0001f600 1. ", "bs"), (" ", "b1"), style="HEADING_4"),
+    _runs("z", ("a", "bs2"), " \t", (" ", "s1"), ("b", "bs2"), ("  ", "ibs1"), ("c", "1"), "d"),
+    _runs("z", ("a", "is2"), (" ", "s2"), ("b", "ibs3"), (" ", "ibs3"), (" \t", "is2"), ("\t", "ib1"), ("c", "i1"), "d"),
+    _runs("z", (" ", "i2"), ("a", "ibs1"), ("  ", "is1"), ("c", "i2"), ("   ", "ibs3"), ("b", "i"), (" \t", "i3"), "d"),
+    _runs((" a", "bs1"), "http://xhttp://xhttp://x", ("\u02b0", "2"), ("\u4e2d\u6587", "is"), ("~", "b2"), "-a", ("bc", "ibs3"), ("\t", "ib1"), ("\t", "bs"), ("b", "ib1"), ("  ", "ibs3")),
+    _runs("z", ("a", "ibs3"), (" ", "is2"), ("   ", "i3"), ("\t", "i"), (" ", "i1"), ("\t", "ibs1"), (" \t", "i3"), (" \t", "i"), ("  ", "b"), ("b", "ib2"), "d"),
+    _runs("q \u03b1\u3099www.x"),
+    _runs("\x0b   ", style="HEADING_2"),
+    _runs("x"),
+    _runs("\u3000\u3000"),
+    {"text": ""},
+    _runs(("-\U0001f600a", "s"), ("\t", "ibs4"), ("e\u0301", "i3"), (" \t", "4")),
+    _runs("z", ("a", "bs"), (" ", "b"), (" ", "ibs"), ("b", "s1"), "d"),
+    _runs("z", ("a", "bs"), (" ", "is1"), (" ", "i1"), ("b", "b"), "d"),
+    _runs("  "),
+    _runs("z", ("a", "ib"), (" ", "is"), ("\t", "ib1"), (" ", "bs2"), ("   ", "b2"), ("b", "i2"), "d"),
+    _runs("z", ("a", "b"), (" ", "ibs1"), (" ", "s1"), " ", (" ", "bs"), " ", ("b", "bs1"), "d"),
+    _runs("z", ("a", "bs1"), "\t", (" \t", "bs1"), ("b", "s"), ("  ", "ibs2"), ("\t", "is1"), ("c", "b1"), "d"),
+    _runs(("  ", "s2"), ("\t", "ibs"), ("\t", "is2"), ("\u02b0\u4e2dwww.x", "1"), ("   ", "i1"), ("a_b", "i"), ("_\u4e2de", "b2"), " ", (" ", "i2"), (" ", "s")),
+    _runs("1."),
+    _runs("1.\tx"),
+    _runs("1.\xa0x"),
+    _runs("\u0661. x"),
+    _runs("\uff11. x"),
+    _runs("1.", ("x", "b")),
+    _runs("1.\x0bx"),
+    _runs("\thttp://x"),
+    _runs("*http://x"),
+    _runs("_http://x"),
+    _runs("~http://x"),
+    _runs("<http://x"),
+    _runs("http\u017f://x"),
+    _runs({"text": "a", "link": "https://e.com/a<b"}),
+    _runs({"text": "a", "link": "https://e.com/a>b"}),
+    _runs({"text": "a", "link": "https://e.com/a`b"}),
+    _runs({"text": "a", "link": "https://e.com/a\\b"}),
+    _runs({"text": "a", "link": "https://e.com/a(b)c"}),
+    _runs(("a\x0bb", "b")),
+    _runs(("a\x0bb", "1")),
+    _runs("a"),
+    _runs("abc  ", style="HEADING_1"),
+    _runs("b"),
+    _runs("\x0babc", style="HEADING_1"),
+    _runs("c"),
+    _runs("abc\t", style="HEADING_1"),
+    _runs("d"),
+    _runs("q e", ("\u0301www.x", "u")),
+    _runs("q e", ("\u0301http://x", "u")),
+]
+# fmt: on
+
+# Real's `text/plain` and `text/markdown` exports of the Doc each record states, from the
+# measurement `backlot.gdocs`'s export section records; `md_writer` is `_MD_WRITER`.
+# fmt: off
+_DOCS_EXPORTS = {
+    "chars": (
+        {
+            "content": "tab\there\x0bsoft\u2028ls nbsp\xa0x \U0001f600 \ufeffbom \u200bzw\n  lead and trail  \ne\u0301 \x7f del \x85 nel \u2029 ps"
+        },
+        "\ufefftab        here\r\nsoft ls nbsp x \U0001f600 \ufeffbom \u200bzw\r\n  lead and trail  \r\ne\u0301 \x7f del \x85 nel   ps",
+        "tab\there  \nsoft\u2028ls nbsp\xa0x \U0001f600 \ufeffbom \u200bzw  \n  lead and trail    \ne\u0301 \x7f del \x85 nel \u2029 ps",
+    ),
+    "md_prose": (
+        {"content": "a\nb\nc\n\nd\n\n\ne"},
+        "\ufeffa\r\nb\r\nc\r\n\r\n\r\nd\r\n\r\n\r\n\r\n\r\ne",
+        "a  \nb  \nc\n\nd\n\ne",
+    ),
+    "soft": (
+        {
+            "content": "\x0bstart\nend\x0b\n\x0b\ntwo\x0b\x0bbreaks\n\u2028\nsp\u2002\u2007\u202f\u3000x\nx"
+        },
+        "\ufeffstart\r\nend\r\n\r\n\r\n\r\n\r\ntwo\r\n\r\nbreaks\r\n \r\nsp \u2007\u202f x\r\nx",
+        "  \nstart  \nend\n\ntwo\n\nbreaks  \n\u2028  \nsp\u2002\u2007\u202f\u3000x  \nx",
+    ),
+    "trail_two": ({"content": "a\n\n"}, "\ufeffa", "a\n\n"),
+    "md_empty_lead": ({"content": "\n\na\nb"}, "\ufeffa\r\nb", "\n\na  \nb"),
+    "ws_plain": (
+        {"content": "a\n \nb\n\t\nc\n   \nd"},
+        "\ufeffa\r\n \r\nb\r\n        \r\nc\r\n   \r\nd",
+        "a  \n   \nb  \n\t  \nc  \n     \nd",
+    ),
+    "md_headings": (
+        {
+            "paragraphs": [
+            _runs("Title ", ("bold", "b"), style="TITLE"),
+            _runs("Sub", style="SUBTITLE"),
+            _runs("H1", style="HEADING_1"),
+            _runs("H2", style="HEADING_2"),
+            _runs("p"),
+            {"style": "HEADING_3", "text": ""},
+            _runs("H4 *x*", style="HEADING_4"),
+            _runs("H5", style="HEADING_5"),
+            _runs("H6 ", ("b", "b"), style="HEADING_6"),
+            _runs("q"),
+            _runs("r"),
+            _runs("# hashy", style="HEADING_1"),
+            {"text": ""},
+            _runs("last", style="HEADING_2"),
+        ]
+        },
+        "\ufeffTitle bold\r\nSub\r\nH1\r\nH2\r\np\r\nH4 *x*\r\nH5\r\nH6 b\r\nq\r\nr\r\n# hashy\r\n\r\n\r\nlast",
+        "# Title **bold**\n\n## Sub\n\n# H1\n\n## H2\n\np\n\n### \n\n#### H4 \\*x\\*\n\n##### H5\n\n###### *H6 **b***\n\nq  \nr\n\n# \\# hashy\n\n## last",
+    ),
+    "empty_head_mid": (
+        {
+            "paragraphs": [
+            _runs("a"),
+            {"style": "HEADING_3", "text": ""},
+            _runs("b"),
+            {"style": "HEADING_2", "text": ""},
+            {"text": ""},
+            _runs("c"),
+            {"text": ""},
+            {"style": "TITLE", "text": ""},
+            {"text": ""},
+            _runs("d"),
+        ]
+        },
+        "\ufeffa\r\nb\r\n\r\n\r\nc\r\n\r\n\r\n\r\n\r\n\r\n\r\nd",
+        "a\n\n### \n\nb\n\n## \n\nc\n\n# \n\nd",
+    ),
+    "subtitle_empty": (
+        {
+            "paragraphs": [
+            _runs("a"),
+            {"style": "SUBTITLE", "text": ""},
+            _runs("b"),
+            _runs("\x0b", style="HEADING_4"),
+            _runs("c"),
+            _runs("\x0b\x0b"),
+            _runs("d"),
+        ]
+        },
+        "\ufeffa\r\n\r\n\r\nb\r\n\r\nc\r\n\r\n\r\n\r\n\r\nd",
+        "a\n\n## \n\nb\n\n####  \n\nc\n\nd",
+    ),
+    "md_breaks": (
+        {
+            "paragraphs": [
+            _runs("a"),
+            {"text": ""},
+            _runs("h", style="HEADING_1"),
+            {"text": ""},
+            {"text": ""},
+            _runs("b"),
+            _runs("c\x0b"),
+            _runs("h2", style="HEADING_2"),
+            _runs("d\x0b"),
+            {"text": ""},
+            _runs("e"),
+        ]
+        },
+        "\ufeffa\r\n\r\n\r\nh\r\n\r\n\r\n\r\n\r\nb\r\nc\r\n\r\nh2\r\nd\r\n\r\n\r\n\r\ne",
+        "a\n\n# h\n\nb  \nc\n\n## h2\n\nd\n\ne",
+    ),
+    "md_marks": (
+        {
+            "paragraphs": [
+            _runs("x ", ("bold ", "b"), "after"),
+            _runs("x", (" spaced ", "i"), "y"),
+            _runs(("whole bold", "b")),
+            _runs(("a", "b"), ("b", "i"), ("c", "s")),
+            _runs("u ", ("under", "u"), " ", ("ub", "bu")),
+            _runs("see ", {"text": "link", "link": "https://example.com/a"}, " and ", {"text": "bold link", "bold": True, "link": "https://example.com/b"}, "."),
+            _runs("odd ", {"text": "li]nk", "link": "https://example.com/p(a)r en"}, " ", {"text": "mail", "link": "mailto:a@b.c"}),
+            _runs(("*", "b"), "x", ("_y_", "i")),
+            _runs(("   ", "b"), "sp"),
+            _runs("mid", ("dle", "b"), "word"),
+            _runs(("part ", "b"), ("bold", "ib"), (" more", "b")),
+            _runs({"text": "http://example.com", "link": "http://example.com"}),
+            _runs({"text": "same", "link": "https://example.com/s"}, {"text": "+bold", "bold": True, "link": "https://example.com/s"}),
+        ]
+        },
+        "\ufeffx bold after\r\nx spaced y\r\nwhole bold\r\nabc\r\nu under ub\r\nsee link and bold link.\r\nodd li]nk mail\r\n*x_y_\r\n   sp\r\nmiddleword\r\npart bold more\r\nhttp://example.com\r\nsame+bold",
+        "x **bold** after  \nx *spaced* y  \n**whole bold**  \n**a***b*~~c~~  \nu under **ub**  \nsee [link](https://example.com/a) and [**bold link**](https://example.com/b).  \nodd [li\\]nk](https://example.com/p\\(a\\)r%20en) [mail](mailto:a@b.c)  \n**\\***x*\\_y\\_*  \n   sp  \nmid**dle**word  \n**part *bold* more**  \n[http\\://example.com](http://example.com)  \n[same**\\+bold**](https://example.com/s)",
+    ),
+    "nest": (
+        {
+            "paragraphs": [
+            _runs(("a", "s"), ("b", "bs"), ("c", "b")),
+            _runs(("a", "b"), ("b", "bs"), ("c", "s")),
+            _runs(("a", "i"), ("b", "ib"), ("c", "b")),
+            _runs(("a", "b"), ("b", "ib"), ("c", "i")),
+            _runs(("a", "ib"), ("b", "b"), "c"),
+            _runs(("a", "ib"), ("b", "i"), "c"),
+            _runs(("a", "ibs"), ("b", "i"), "c"),
+            _runs(("a", "is"), ("b", "ibs")),
+            _runs(("a", "s"), ("b", "ibs"), ("c", "s")),
+            _runs("x", ("ib", "ib"), "y"),
+            _runs(("l", "1"), ("m", "2")),
+            _runs(("l", "b1"), ("m", "b")),
+            _runs(("l", "b"), ("m", "b1"), ("n", "b")),
+            _runs(("l", "i1"), ("m", "1")),
+            _runs(("s", "s1")),
+            _runs(("  sp  ", "b"), "x"),
+            _runs("x", ("  sp  ", "1"), "x"),
+            _runs("x", (" ", "1"), "x"),
+            _runs("x", ("\tt\t", "i"), "x"),
+        ]
+        },
+        "\ufeffabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nab\r\nabc\r\nxiby\r\nlm\r\nlm\r\nlmn\r\nlm\r\ns\r\n  sp  x\r\nx  sp  x\r\nx x\r\nx        t        x",
+        "~~a**b**~~**c**  \n**a~~b~~**~~c~~  \n*a**b*****c**  \n**a*b****c*  \n***a*****b**c  \n***a**b*c  \n***~~a~~**b*c  \n*~~a**b**~~*  \n~~a***b***c~~  \nx***ib***y  \n[l](https://e.com/1)[m](https://e.com/2)  \n[**l**](https://e.com/1)**m**  \n**l[m](https://e.com/1)n**  \n[*l*m](https://e.com/1)  \n[~~s~~](https://e.com/1)  \n  **sp**  x  \nx  [sp](https://e.com/1)  x  \nx x  \nx\t*t*\tx",
+    ),
+    "md_escape": (
+        {
+            "content": "*star* _under_ **x** __y__\n# not heading\n#hash\n1. not list\n2) paren\n- not list\n+ plus\n* star item\n> quote\n[x](y) ![i](j)\n<b>tag</b> & amp &lt;\nback\\slash `code` ``two``\npipe | table |\n~tilde~ ~~s~~\nunder_score_word snake_case\na  b double\n    four spaces\ntrailing space   \n===\n---\n***\n___\n!bang [ ] ( ) { }\n1\\. x\nhttp://example.com/a_b*c\n100% $5 @at ^up =eq"
+        },
+        "\ufeff*star* _under_ **x** __y__\r\n# not heading\r\n#hash\r\n1. not list\r\n2) paren\r\n- not list\r\n+ plus\r\n* star item\r\n> quote\r\n[x](y) ![i](j)\r\n<b>tag</b> & amp &lt;\r\nback\\slash `code` ``two``\r\npipe | table |\r\n~tilde~ ~~s~~\r\nunder_score_word snake_case\r\na  b double\r\n    four spaces\r\ntrailing space   \r\n===\r\n---\r\n***\r\n___\r\n!bang [ ] ( ) { }\r\n1\\. x\r\nhttp://example.com/a_b*c\r\n100% $5 @at ^up =eq",
+        "\\*star\\* \\_under\\_ \\*\\*x\\*\\* \\_\\_y\\_\\_  \n\\# not heading  \n\\#hash  \n1\\. not list  \n2\\) paren  \n\\- not list  \n\\+ plus  \n\\* star item  \n\\> quote  \n\\[x\\](y) \\!\\[i\\](j)  \n\\<b\\>tag\\</b\\> & amp \\&lt;  \nback\\\\slash \\`code\\` \\`\\`two\\`\\`  \npipe \\| table \\|  \n\\~tilde\\~ \\~\\~s\\~\\~  \nunder\\_score\\_word snake\\_case  \na  b double  \n    four spaces  \ntrailing space     \n\\===  \n\\---  \n\\*\\*\\*  \n\\_\\_\\_  \n\\!bang \\[ \\] ( ) { }  \n1\\\\. x  \nhttp\\://example.com/a\\_b\\*c  \n100% \\$5 @at ^up \\=eq",
+    ),
+    "esc_runs": (
+        {
+            "paragraphs": [
+            _runs("a", ("-b", "b")),
+            _runs("a", ("1. x", "b")),
+            _runs("a&", ("b", "b")),
+            _runs("\t-x"),
+            _runs("x\t-y"),
+            _runs("\xa0-x"),
+            _runs("x 1. y"),
+            _runs("x 2) y"),
+            _runs("HTTP://x"),
+            _runs("Www.x"),
+            _runs("xhttp://y"),
+            _runs("x www.y"),
+            _runs("xwww.y"),
+            _runs("www."),
+            _runs("http:/x"),
+            _runs("https:x"),
+            _runs(("www.x", "1")),
+            _runs("&1"),
+            _runs("&\xe9"),
+            _runs("x&_"),
+            _runs("http", ("://x", "b")),
+            _runs("www", (".x", "b")),
+            _runs("1", (". x", "b")),
+            _runs("a ", ("=b", "b")),
+            _runs(("a", "b"), " +b"),
+            _runs("x", ("-", "b"), "y"),
+            _runs("\xe9-x"),
+            _runs("x,-y"),
+            _runs("(-x"),
+            _runs("x/-y"),
+            _runs("x\u3000-y"),
+            _runs("Http://x Https://y FTP://z WWW.q"),
+            _runs("http://"),
+            _runs("mailto://x file://y"),
+        ]
+        },
+        "\ufeffa-b\r\na1. x\r\na&b\r\n        -x\r\nx        -y\r\n -x\r\nx 1. y\r\nx 2) y\r\nHTTP://x\r\nWww.x\r\nxhttp://y\r\nx www.y\r\nxwww.y\r\nwww.\r\nhttp:/x\r\nhttps:x\r\nwww.x\r\n&1\r\n&\xe9\r\nx&_\r\nhttp://x\r\nwww.x\r\n1. x\r\na =b\r\na +b\r\nx-y\r\n\xe9-x\r\nx,-y\r\n(-x\r\nx/-y\r\nx -y\r\nHttp://x Https://y FTP://z WWW.q\r\nhttp://\r\nmailto://x file://y",
+        "a**\\-b**  \na**1\\. x**  \na&**b**  \n\t\\-x  \nx\t\\-y  \n\xa0-x  \nx 1\\. y  \nx 2\\) y  \nHTTP\\://x  \nWww\\.x  \nxhttp://y  \nx www\\.y  \nxwww.y  \nwww\\.  \nhttp:/x  \nhttps:x  \n[www\\.x](https://e.com/1)  \n&1  \n&\xe9  \nx&\\_  \nhttp**://x**  \nwww**.x**  \n1**. x**  \na **\\=b**  \n**a** \\+b  \nx**\\-**y  \n\xe9-x  \nx,-y  \n(-x  \nx/-y  \nx\u3000-y  \nHttp\\://x Https\\://y FTP\\://z WWW\\.q  \nhttp\\://  \nmailto://x file://y",
+    ),
+    "loose": (
+        {
+            "paragraphs": [
+            _runs("x", ("\xa0b\xa0", "b"), "y"),
+            _runs("x", ("\u3000b\u3000", "b"), "y"),
+            _runs("x", ("\u2002b\u2002", "b"), "y"),
+            _runs("a", ("-b", "u")),
+            _runs(("a", "u"), ("-b", "bu")),
+            _runs("x1. y"),
+            _runs("(http://x"),
+            _runs(("x", "1"), "-y"),
+        ]
+        },
+        "\ufeffx b y\r\nx b y\r\nx b y\r\na-b\r\na-b\r\nx1. y\r\n(http://x\r\nx-y",
+        "x**\xa0b\xa0**y  \nx**\u3000b\u3000**y  \nx**\u2002b\u2002**y  \na\\-b  \na**\\-b**  \nx1. y  \n(http\\://x  \n[x](https://e.com/1)\\-y",
+    ),
+    "heading_escapes": (
+        {
+            "paragraphs": [
+                {"text": _WORDS},
+                {"runs": [{"text": _WORDS[:300], "bold": True}, {"text": " tail " + _WORDS[:200]}]},
+                {"style": "HEADING_1", "text": "1. Introduction"},
+                {"style": "HEADING_2", "text": "- dash"},
+                {"style": "HEADING_3", "text": "+ plus"},
+                {"style": "TITLE", "text": "= eq"},
+                {"style": "SUBTITLE", "text": "2) paren"},
+                {"style": "HEADING_1", "text": "http://x.com www.y"},
+                {"style": "HEADING_2", "text": "  1. spaced"},
+                {"style": "HEADING_4", "text": "a & b &c"},
+                {"text": "\t1. tabbed"},
+                {"runs": [{"text": "x"}, {"text": "1. run", "bold": True}]},
+                {"text": "end"},
+            ]
+        },
+        "\ufeff"
+        + _WORDS
+        + "\r\n"
+        + _WORDS[:300]
+        + " tail "
+        + _WORDS[:200]
+        + "\r\n1. Introduction\r\n- dash\r\n+ plus\r\n= eq\r\n2) paren\r\nhttp://x.com www.y\r\n  1. spaced\r\na & b &c\r\n        1. tabbed\r\nx1. run\r\nend",
+        _WORDS
+        + "  \n**"
+        + _WORDS[:300]
+        + "** tail "
+        + _WORDS[:200]
+        + "\n\n# 1\\. Introduction\n\n## \\- dash\n\n### \\+ plus\n\n# \\= eq\n\n## 2\\) paren\n\n# http\\://x.com www\\.y\n\n##   1\\. spaced\n\n#### a & b \\&c\n\n\t1\\. tabbed  \nx**1\\. run**  \nend",
+    ),
+    "md_writer": (
+        {"paragraphs": _MD_WRITER},
+        (
+            "\ufeffza        bd\r\n"
+            "  http://y\u01c5  ax yax y\u4e2d\u6587 b-a  a\xe9www.x aa \r\n"
+            "q 0\ufe0fwww.x\r\n"
+            "q _\ufe0fhttp://x\r\n"
+            "zabcdefg\r\n"
+            '999.   10 <-<~ #"Foo_*Zed\U0001f600999.\r\n'
+            "q \u03b1\U000e0100http://x\r\n"
+            "zabcdefg\r\n"
+            "za     bd\r\n"
+            "za      bd\r\n"
+            "\r\n"
+            "\r\n"
+            "x\r\n"
+            "\r\n"
+            "xy\r\n"
+            "\r\n"
+            "\r\n"
+            "\r\n"
+            "_https://x\r\n"
+            " \r\n"
+            "        \r\n"
+            "\r\n"
+            "\r\n"
+            " h\r\n"
+            "q A\ufe0fhttp://x\r\n"
+            "q \u03b1\u034fhttp://x\r\n"
+            "\u01c5\u0301www.x \u01c5\u0301http://y\r\n"
+            "\u4e2d\u0301www.x \u4e2d\u0301http://y\r\n"
+            "  \r\n"
+            "\r\n"
+            "\r\n"
+            "\u4e2d\u02b0\u0301http://xawww.x-\r\n"
+            "za  bd\r\n"
+            "za  bd\r\n"
+            "zabcdef\r\n"
+            "za      bd\r\n"
+            "  \r\n"
+            "=`        b@12.q\u2022 3.999.        &1                  ^        .         \r\n"
+            " *  1. a                  \u4e2d\u6587def1. aa  \r\n"
+            "\xe9\u01c5\u0301http://xwww.x\u0301\r\n"
+            "\r\n"
+            "        \r\n"
+            "\r\n"
+            "ba-aa\u4e2d\u6587b  \u4e2d\u6587          x y          aaa_b         e\u0301bc \r\n"
+            "za  bd\r\n"
+            "     x y   \u4e2d\u6587         a \r\n"
+            "za       bd\r\n"
+            "_\u01c5\u4e2d_www.x\u01c5\xe9\u02b0\U0001f600*http://x\r\n"
+            "za  bd\r\n"
+            "za            b         cd\r\n"
+            "za                                             bd\r\n"
+            " a-\r\n"
+            " \r\n"
+            "\U0001f600_\r\n"
+            "za  bd\r\n"
+            "  \u4e2d\u0301\u4e2dwww.x\U0001f600a_b*\u0301http://x~def\r\n"
+            "\r\n"
+            " *-\r\n"
+            "ax y~a\u4e2d\r\n"
+            "\xe9\U0001f600 1.  \r\n"
+            "za          b  cd\r\n"
+            "za b                  cd\r\n"
+            "z a  c   b         d\r\n"
+            " ahttp://xhttp://xhttp://x\u02b0\u4e2d\u6587~-abc                b  \r\n"
+            "za                                         bd\r\n"
+            "q \u03b1\u3099www.x\r\n"
+            "\r\n"
+            "  \r\n"
+            "x\r\n"
+            "  \r\n"
+            "\r\n"
+            "\r\n"
+            "-\U0001f600a        e\u0301         \r\n"
+            "za  bd\r\n"
+            "za  bd\r\n"
+            "  \r\n"
+            "za             bd\r\n"
+            "za     bd\r\n"
+            "za                 b          cd\r\n"
+            "                  \u02b0\u4e2dwww.x   a_b_\u4e2de   \r\n"
+            "1.\r\n"
+            "1.        x\r\n"
+            "1. x\r\n"
+            "\u0661. x\r\n"
+            "\uff11. x\r\n"
+            "1.x\r\n"
+            "1.\r\n"
+            "x\r\n"
+            "        http://x\r\n"
+            "*http://x\r\n"
+            "_http://x\r\n"
+            "~http://x\r\n"
+            "<http://x\r\n"
+            "http\u017f://x\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "b\r\n"
+            "a\r\n"
+            "b\r\n"
+            "a\r\n"
+            "abc  \r\n"
+            "b\r\n"
+            "\r\n"
+            "abc\r\n"
+            "c\r\n"
+            "abc        \r\n"
+            "d\r\n"
+            "q e\u0301www.x\r\n"
+            "q e\u0301http://x"
+        ),
+        (
+            "z~~a~~        ~~**b**](https://e.com/2)d  \n"
+            "  [http\\://y](https://e.com/2)[***\u01c5***](https://e.com/1)  ****a***[**x y](https://e.com/1)*~~ax y](https://e.com/1)***[[\u4e2d\u6587](https://e.com/1)* b***\\-a\xa0*** **a*\xe9www\\.x* [a](https://e.com/2)*~~a~~***~~\xa0~~  \n"
+            "q 0\ufe0fwww.x  \n"
+            "q \\_\ufe0fhttp\\://x  \n"
+            "z**a~~b[c*d*](https://e.com/1)](https://e.com/2)**[~~e](https://e.com/2)~~[f](https://e.com/2)g\n"
+            "\n"
+            '##### 999\\. \u3000 10 \\<-***\\<**~~\\~ \\#](https://e.com/back\\\\s)***["Foo\\_\\*Zed\U0001f600**](https://e.com/back\\\\s)***999\\.***\n'
+            "\n"
+            "q \u03b1\U000e0100http\\://x  \n"
+            "z*a~~b[c**d**](https://e.com/1)](https://e.com/2)*[[e](https://e.com/2)~~[f](https://e.com/2)g  \n"
+            "z**~~a~~**   *  [**b**](https://e.com/1)~~d  \n"
+            "z~~a    ~~  *~~b~~*d\n"
+            "\n"
+            "x\n"
+            "\n"
+            "**x**y\n"
+            "\n"
+            "##     \n"
+            "\n"
+            "\\_https://x\n"
+            "\n"
+            "##   \t \n"
+            "\n"
+            "\xa0h  \n"
+            "q A\ufe0fhttp://x  \n"
+            "q \u03b1\u034fhttp://x  \n"
+            "\u01c5\u0301www.x \u01c5\u0301http://y  \n"
+            "\u4e2d\u0301www.x \u4e2d\u0301http://y  \n"
+            "  \n"
+            "\n"
+            "[\u4e2d\u02b0\u0301http://x](https://e.com/1)***~~a**~~*www\\.x-  \n"
+            "z[a](https://e.com/1)  ~~b**d  \n"
+            "z[a  ](https://e.com/1)*~~b~~*d  \n"
+            "z[a*b**c~~d**~~*](https://e.com/1)~~[e](https://e.com/2)*f  \n"
+            "z[***~~a**~~*](https://e.com/1)  ~~  *  ~~b~~d\n"
+            "\n"
+            "\n"
+            "#### [~~\\=~~](https://e.com/q%20r)\\`\tb*@12.q\u2022 3\\.999\\.\t&1\t  \t^\t.\t\u3000*\n"
+            "\n"
+            " *[~~\\****~~  *1\\. a* \t \t*\u4e2d\u6587*def[**1\\. a**](https://e.com/2)[~~a~~](https://e.com/1)    \n"
+            "~~\xe9\u01c5\u0301http://xwww.x~~**\u0301**\n"
+            "\n"
+            "#   \t \n"
+            "\n"
+            "*~~b[**a**~~](https://e.com/2)*[\\-a](https://e.com/2)a***~~\u4e2d\u6587~~](https://e.com/1)*[b](https://e.com/1)  [[\u4e2d\u6587](https://e.com/1)** \t *~~x y~~*  \t~~**a**~~aa\\_b \t[e\u0301](https://e.com/2)*bc*   \n"
+            "z*~~a~~ * [~~b~~](https://e.com/1)d  \n"
+            "     ~~x y   ~~*\u4e2d\u6587* \t~~**a**](https://e.com/1)   \n"
+            "z~~a    ~~   [**~~b**~~](https://e.com/1)d  \n"
+            "[**~~\\_\u01c5\u4e2d~~**](https://e.com/2)~~\\_www.x\u01c5\xe9***\u02b0\U0001f600\\*http\\://x*  \n"
+            "z[**~~a***  ***b***](https://e.com/1)d  \n"
+            "z[**a**](https://e.com/3) \t   ~~[*b*](https://e.com/1)~~ \t**c**d  \n"
+            "z~~a \t\t\t~~   \t \t~~*b~~*d\n"
+            "\n"
+            "######  [*a-*](https://e.com/2)\n"
+            "\n"
+            "   \n"
+            "[\U0001f600\\_](https://e.com/1)  \n"
+            "z*~~a](https://e.com/2)*  [**~~b**~~](https://e.com/1)d\n"
+            "\n"
+            "###   ***~~[\u4e2d\u0301\u4e2d](https://e.com/2)**~~*~~www\\.x\U0001f600~~***a\\_b***\\*\u0301http\\://x\\~**~~def~~**  \n"
+            "\n"
+            "####  \\*- a*~~x y~~***\\~***[a*](https://e.com/2)*[~~\u4e2d~~](https://e.com/1)* [*~~\xe9*~~](https://e.com/1)~~**\U0001f600 1\\.**~~  \n"
+            "\n"
+            "z[**~~a**~~](https://e.com/2) \t ~~[**b**](https://e.com/2)~~  [c](https://e.com/1)d  \n"
+            "z[*~~a~~*](https://e.com/2) ~~[***b***](https://e.com/3)  \t~~\t**[c](https://e.com/1)*d  \n"
+            "z *[**~~a~~**](https://e.com/1)  [c](https://e.com/2)   b* \td  \n"
+            " [**~~a**~~](https://e.com/1)http\\://xhttp://xhttp://x[\u02b0](https://e.com/2)*~~\u4e2d\u6587](https://e.com/2)***[\\~**](https://e.com/2)\\-a[***~~bc~~***](https://e.com/3)\t\t***[b*](https://e.com/1)  **  \n"
+            "z[***~~a**~~*](https://e.com/3) ~~   \t \t* \t \t  **[*b*](https://e.com/2)**d  \n"
+            "q \u03b1\u3099www.x\n"
+            "\n"
+            "##     \n"
+            "\n"
+            "x  \n"
+            "\u3000\u3000\n"
+            "\n"
+            "~~\\-\U0001f600a~~\t[*e\u0301](https://e.com/3)* \t  \n"
+            "z**~~a~~  **[~~b](https://e.com/1)~~d  \n"
+            "z**~~a***  **b**d  \n"
+            "    \n"
+            "z***a** *\t    *[b*](https://e.com/2)d  \n"
+            "z**a **    [**~~b**~~](https://e.com/1)d  \n"
+            "z[**~~a**~~](https://e.com/1)\t \t~~b~~  \t**[c**](https://e.com/1)d  \n"
+            "  \t\t[\u02b0\u4e2dwww\\.x](https://e.com/1)   *a\\_b*[**\\_\u4e2de**](https://e.com/2)     \n"
+            "1\\.  \n"
+            "1\\.\tx  \n"
+            "1.\xa0x  \n"
+            "\u0661. x  \n"
+            "\uff11. x  \n"
+            "1\\.**x**  \n"
+            "1\\.  \n"
+            "x  \n"
+            "\thttp\\://x  \n"
+            "\\*http\\://x  \n"
+            "\\_http://x  \n"
+            "\\~http\\://x  \n"
+            "\\<http\\://x  \n"
+            "http\u017f\\://x  \n"
+            "[a](https://e.com/a\\<b)  \n"
+            "[a](https://e.com/a\\>b)  \n"
+            "[a](https://e.com/a\\`b)  \n"
+            "[a](https://e.com/a\\\\b)  \n"
+            "[a](https://e.com/a\\(b\\)c)  \n"
+            "**a**  \n"
+            "**b**  \n"
+            "[a](https://e.com/1)  \n"
+            "[b](https://e.com/1)  \n"
+            "a\n"
+            "\n"
+            "# abc  \n"
+            "\n"
+            "b\n"
+            "\n"
+            "#  abc\n"
+            "\n"
+            "c\n"
+            "\n"
+            "# abc\t\n"
+            "\n"
+            "d  \n"
+            "q e\u0301www\\.x  \n"
+            "q e\u0301http\\://x"
+        ),
+    ),
+    "md_tail": (
+        {
+            "paragraphs": [
+                _runs(
+                    "z",
+                    ("a", "ibs"),
+                    (" ", "is1"),
+                    (" ", "bs"),
+                    (" ", "bs"),
+                    (" ", "ib1"),
+                    ("b", "ibs1"),
+                    "d",
+                ),
+                _runs("  "),
+            ]
+        },
+        "\ufeffza    bd",
+        "z***~~a~~***    *[**~~b*~~](https://e.com/1)**d  \n  ",
+    ),
+    "md_kept": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs(
+                    ("a", "b2"),
+                    ("a ", "ibs"),
+                    (" ", "bs1"),
+                    (" a", "i"),
+                    (" ", "is2"),
+                    ("  ", "ibs"),
+                    ("a ", "i"),
+                    (" \t", "bs1"),
+                    (" ", "ib"),
+                ),
+                _runs("p001"),
+                _runs(
+                    ("a", "is"),
+                    ("  ", "ib"),
+                    (" ", "ibs"),
+                    (" ", "ib1"),
+                    (" ", "ibs2"),
+                    (" ", "ibs"),
+                    ("  ", "is"),
+                    (" ", "s"),
+                    "b",
+                ),
+                _runs("p002"),
+            ]
+        },
+        "\ufeffp000\r\naa   a   a           \r\np001\r\na         b\r\np002",
+        (
+            "p000  \n"
+            "[**a**](https://e.com/2)***~~a~~*  ** *a   a*  \t   \n"
+            "p001  \n"
+            "*~~a~~   *      b  \n"
+            "p002"
+        ),
+    ),
+    "md_named": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs(
+                    ("a\x0b\x0b", "s"),
+                    ("  ", "i1"),
+                    " ",
+                    ("\t", "i"),
+                    ("b\x0b", "2"),
+                    style="HEADING_6",
+                ),
+                _runs("p001"),
+                _runs(("*a", "is"), ("_\U0001f600-\x0b", "i"), (" 1. ", "i")),
+                _runs("p002"),
+                _runs(("\x0b\x0ba", "i2"), "\t", (" ", "i"), ("b", "ibs"), style="HEADING_6"),
+                _runs("p003"),
+                _runs(("a", "ib2"), ("\x0b  ", "b1"), ("b", "is")),
+                _runs("p004"),
+                _runs(
+                    ("\x0b\x0ba", "b"),
+                    (" ", "b"),
+                    ("  ", "bs"),
+                    (" ", "2"),
+                    (" \x0b\x0b", "i1"),
+                    (" ", "i"),
+                    " ",
+                    ("b", "s2"),
+                    style="HEADING_6",
+                ),
+                _runs("p005"),
+                _runs(
+                    " a",
+                    "  \x0b\x0b",
+                    ("b", "b"),
+                    (" \t", "i1"),
+                    ("\x0bx y", "i"),
+                    ("\t", "s"),
+                    ("\x0b\x0b\xa0", "is"),
+                    style="SUBTITLE",
+                ),
+                _runs("p006"),
+                _runs(
+                    (" \t", "s2"),
+                    (" \t", "i"),
+                    (" \t", "i1"),
+                    ("x y", "i"),
+                    "x y",
+                    (" ", "is"),
+                    "\t",
+                    style="TITLE",
+                ),
+                _runs("p007"),
+            ]
+        },
+        (
+            "\ufeffp000\r\n"
+            "a\r\n"
+            "\r\n"
+            "           b\r\n"
+            "\r\n"
+            "p001\r\n"
+            "*a_\U0001f600-\r\n"
+            "1. \r\n"
+            "p002\r\n"
+            "\r\n"
+            "\r\n"
+            "a         b\r\n"
+            "p003\r\n"
+            "a\r\n"
+            " b\r\n"
+            "p004\r\n"
+            "\r\n"
+            "\r\n"
+            "a     \r\n"
+            "\r\n"
+            "  b\r\n"
+            "p005\r\n"
+            " a  \r\n"
+            "\r\n"
+            "b         \r\n"
+            "x y        \r\n"
+            "\r\n"
+            " \r\n"
+            "p006\r\n"
+            "                           x yx y         \r\n"
+            "p007"
+        ),
+        (
+            "p000\n"
+            "\n"
+            "###### *~~a~~*     \t*[b](https://e.com/2)* \n"
+            "\n"
+            "p001  \n"
+            "*~~\\*a~~\\_\U0001f600-*  \n"
+            " *1\\.*   \n"
+            "p002\n"
+            "\n"
+            "######   [*a*](https://e.com/2)\t ***~~b**~~*\n"
+            "\n"
+            "p003  \n"
+            "[***a***](https://e.com/2)  \n"
+            "  *~~b~~*  \n"
+            "p004\n"
+            "\n"
+            "######   ***a   ***      *[~~b~~](https://e.com/2)*\n"
+            "\n"
+            "p005\n"
+            "\n"
+            "##  a    **b** \t *x y*\t  *~~\xa0~~*\n"
+            "\n"
+            "p006\n"
+            "\n"
+            "#  \t \t \t*x y*x y \t\n"
+            "\n"
+            "p007"
+        ),
+    ),
+    "md_pieces": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs(("\xe9", "i"), ("1. a", "iu")),
+                _runs("p001"),
+                _runs(("  ", "isu"), (" \t", "is"), ("\ta", "isu")),
+                _runs("p002"),
+                _runs(("\t", "i"), (" y", "iu")),
+                _runs("p003"),
+                _runs(("\x0b ", "i"), "x"),
+                _runs("p004"),
+                _runs(("\x0b ", "1"), "x"),
+                _runs("p005"),
+                _runs(("\x0b\t", "i"), "x"),
+                _runs("p006"),
+                _runs(("\x0b ", "i"), "x", style="HEADING_2"),
+                _runs("p007"),
+                _runs(("\x0b  ", "i"), "x"),
+                _runs("p008"),
+            ]
+        },
+        (
+            "\ufeffp000\r\n"
+            "\xe91. a\r\n"
+            "p001\r\n"
+            "                   a\r\n"
+            "p002\r\n"
+            "         y\r\n"
+            "p003\r\n"
+            "\r\n"
+            "\r\n"
+            "x\r\n"
+            "p004\r\n"
+            "\r\n"
+            "\r\n"
+            "\r\n"
+            "x\r\n"
+            "p005\r\n"
+            "\r\n"
+            "        x\r\n"
+            "p006\r\n"
+            "\r\n"
+            "x\r\n"
+            "p007\r\n"
+            "\r\n"
+            " x\r\n"
+            "p008"
+        ),
+        (
+            "p000  \n"
+            "*\xe91\\. a*  \n"
+            "p001  \n"
+            "   \t\t*~~a~~*  \n"
+            "p002  \n"
+            "\t *y*  \n"
+            "p003\n"
+            "\n"
+            " x  \n"
+            "p004\n"
+            "\n"
+            " x  \n"
+            "p005\n"
+            "\n"
+            "\tx  \n"
+            "p006\n"
+            "\n"
+            "##   x\n"
+            "\n"
+            "p007\n"
+            "\n"
+            "  x  \n"
+            "p008"
+        ),
+    ),
+    "md_h6": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs("ww", ("w.x", "i"), style="HEADING_6"),
+                _runs("p001"),
+                _runs("a", ("_b", "i"), style="HEADING_6"),
+                _runs("p002"),
+                _runs(("www.", "i"), "x", style="HEADING_6"),
+                _runs("p003"),
+                _runs("x", (" ", "i"), "y", style="HEADING_6"),
+                _runs("p004"),
+                _runs(("w", "i"), ("ww.x", "b"), style="HEADING_6"),
+                _runs("p005"),
+            ]
+        },
+        (
+            "\ufeffp000\r\n"
+            "www.x\r\n"
+            "p001\r\n"
+            "a_b\r\n"
+            "p002\r\n"
+            "www.x\r\n"
+            "p003\r\n"
+            "x y\r\n"
+            "p004\r\n"
+            "www.x\r\n"
+            "p005"
+        ),
+        (
+            "p000\n"
+            "\n"
+            "###### *www\\.x*\n"
+            "\n"
+            "p001\n"
+            "\n"
+            "###### *a\\_b*\n"
+            "\n"
+            "p002\n"
+            "\n"
+            "###### *www\\.x*\n"
+            "\n"
+            "p003\n"
+            "\n"
+            "###### *x y*\n"
+            "\n"
+            "p004\n"
+            "\n"
+            "###### *w**ww.x***\n"
+            "\n"
+            "p005"
+        ),
+    ),
+    "vt_links": (
+        {"paragraphs": [_runs("p000"), _runs(("\x0b", "1")), _runs("p001")]},
+        "﻿p000\r\n\r\n\r\n\r\n\r\np001",
+        "p000\n\np001",
+    ),
+}
+# fmt: on
+
+
+def test_a_docs_text_export_is_rendered_from_its_body_as_real_renders_it(tmp_path):
+    """`files.export` of a Doc as `text/plain`, `text/markdown` and `text/x-markdown` is what real
+    exported, byte for byte, for the Doc each record states as `content` or as `paragraphs`: no
+    title, a byte-order mark and CRLFs in plain text, and the named styles, marks and escapes of
+    `gdocs.markdown`."""
+    records = [
+        {
+            "source_type": "google_drive",
+            "doc_id": f"export-{name}",
+            "title": name,
+            "author_email": "owner@acme.com",
+            **fields,
+        }
+        for name, (fields, _, _) in _DOCS_EXPORTS.items()
+    ]
+    deck = {
+        "doc_id": "export-deck",
+        "title": "Deck",
+        "content": "a\n\nb",
+        "subtype": "presentation",
+    }
+    records.append({"source_type": "google_drive", "author_email": "owner@acme.com", **deck})
+    formats = ("text/plain", "text/markdown", "text/x-markdown")
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def export(name, mime):
+            fid = served_id("google_drive", f"export-{name}")
+            r = client.get(f"/drive/v3/files/{fid}/export", headers=h, params={"mimeType": mime})
+            return r.status_code, r.headers["content-type"], r.content.decode("utf-8")
+
+        got = {name: [export(name, mime) for mime in formats] for name in _DOCS_EXPORTS}
+        # A Slides deck's `text/plain` is not rendered as a Doc's.
+        assert export("deck", "text/plain") == (200, "text/plain", "Deck\n\na\n\nb")
+    assert got == {
+        name: [(200, mime, text) for mime, text in zip(formats, (plain, md, md))]
+        for name, (_, plain, md) in _DOCS_EXPORTS.items()
+    }
 
 
 def test_drive_in_owners_query(client, admin_h, ro_conn):
@@ -1124,6 +2075,11 @@ _BATCH_ROWS = [
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values:batchGet?ranges=A1", None, None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _A1_FILTER, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents", '{"title": "x"}', None), 501, None, _UNIMPLEMENTED),
+    # a create's body and mask are refused ahead of the batch's 501
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents", '{"title": 5}', None), 400, 400, "Invalid value at 'title' (TYPE_STRING), 5"),
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents?fields=title,nope", '{"title": "x"}', None), 400, 400, "Request contains an invalid argument."),
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents/{doc}:batchUpdate", '{"requests": []}', None), 501, None, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1", None, None), 501, 404, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, 403, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/NoSuchSheet!A1", None, None), 501, 400, _UNIMPLEMENTED),
@@ -1901,16 +2857,17 @@ def test_drive_permissions_list_pages_a_file_with_three_permissions(three_reader
 
 
 @pytest.mark.parametrize(
-    "route, names",
+    "route, method, names",
     [
-        ("/drive/v3/files/{file_id}/permissions", {"pageSize", "pageToken", "fields"}),
-        ("/drive/v3/drives", {"q", "fields"}),
+        ("/drive/v3/files/{file_id}/permissions", "get", {"pageSize", "pageToken", "fields"}),
+        ("/drive/v3/drives", "get", {"q", "fields"}),
+        ("/docs/v1/documents", "post", {"fields"}),
     ],
 )
-def test_drive_listing_declares_the_parameters_it_reads(client, route, names):
+def test_a_google_route_declares_the_parameters_it_reads(client, route, method, names):
     """A parameter that shapes the answer is declared, so a client reading the OpenAPI document can
     find it, and `backlot diff --source google_drive` reports none of them as missing."""
-    op = client.app.openapi()["paths"][route]["get"]
+    op = client.app.openapi()["paths"][route][method]
     assert names <= {p["name"] for p in op["parameters"]}
 
 
@@ -3420,6 +4377,8 @@ _NO_CREDENTIAL_ROWS = [
     ("POST", "/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", 401, 404),
     ("POST", "/sheets/v4/spreadsheets/x:getByDataFilter", 401, 404),
     ("GET", "/docs/v1/documents/x", 401, 404),
+    # the admin's body, a data filter, is refused before the lookup
+    ("POST", "/docs/v1/documents/x:batchUpdate", 401, 400),
     ("GET", "/slides/v1/presentations/x", 401, 404),
     ("GET", "/gmail/v1/users/me/profile", 401, 200),
     ("GET", "/gmail/v1/users/me/labels", 401, 200),
@@ -3441,7 +4400,6 @@ _NO_CREDENTIAL_ROWS = [
     ("POST", "/drive/v3/files/{doc}/copy", 401, 404),
     ("GET", "/sheets/v4/spreadsheets/x/developerMetadata/1", 401, 404),
     ("POST", "/sheets/v4/spreadsheets/x:batchUpdate", 401, 405),
-    ("POST", "/docs/v1/documents/x:batchUpdate", 401, 405),
     ("GET", "/slides/v1/presentations/x/pages/p1", 401, 404),
     ("POST", "/gmail/v1/users/me/messages/send", 401, 405),
     ("GET", "/gmail/v1/users/me/drafts", 401, 404),
@@ -8307,6 +9265,19 @@ _GRID = "Invalid value at 'include_grid_data' (TYPE_BOOL), "
             {"dataFilters": [{"a1Range": "Sheet1!A1"}], "includeGridData": "NOPE"},
             [("include_grid_data", _GRID + '"NOPE"')],
         ),
+        # a body that is not an object is refused alone (`protojson.whole`)
+        (
+            "POST",
+            "values_by_filter",
+            [("majorDimension", "NOPE")],
+            [],
+            [
+                (
+                    None,
+                    'Invalid JSON payload received. Unknown name "": Root element must be a message.',
+                )
+            ],
+        ),
     ],
 )
 def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
@@ -8332,7 +9303,7 @@ def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
     err = r.json()["error"]
     [bad_request] = err["details"]
     assert bad_request["@type"] == "type.googleapis.com/google.rpc.BadRequest"
-    got = [(v["field"], v["description"]) for v in bad_request["fieldViolations"]]
+    got = [(v.get("field"), v["description"]) for v in bad_request["fieldViolations"]]
     assert err["message"] == "\n".join(m for _, m in got)
     assert err["status"] == "INVALID_ARGUMENT"
 
@@ -12348,15 +13319,24 @@ _UNPARSED_BODIES = [
 @pytest.mark.parametrize("route", ["/values:batchGetByDataFilter", ":getByDataFilter"])
 def test_a_body_that_does_not_parse_is_refused_before_the_lookup(gc, gh, book, route):
     """The refusal `protojson.read` gives a body that does not parse, with a `parseError` entry at
-    `$.xgafv=1` (`gerr.invalid_json`), the same for a spreadsheet that does not exist. These are not
-    rows of `MEASURED_BY_FILTER`, since the sentence is not the one real gives."""
+    `$.xgafv=1` (`gerr.invalid_json`), the same for a spreadsheet that does not exist, and alone
+    where a query value is refused too, which a body read but refused is answered beside. These are
+    not rows of `MEASURED_BY_FILTER`, since the sentence is not the one real gives."""
+    params = {"$.xgafv": "1"}
+    beside = ""
+    if route.startswith("/values"):
+        params["majorDimension"] = "NOPE"
+        beside = (
+            "\nInvalid value at 'major_dimension' "
+            '(type.googleapis.com/google.apps.sheets.v4.Dimension), "NOPE"'
+        )
     answered = {}
     for spreadsheet in (book, "nosuchspreadsheet"):
         for body, _ in _UNPARSED_BODIES:
             r = gc.post(
                 f"/sheets/v4/spreadsheets/{spreadsheet}{route}",
                 headers=gh,
-                params={"$.xgafv": "1"},
+                params=params,
                 content=body,
             )
             err = _gerr(r)
@@ -12366,7 +13346,11 @@ def test_a_body_that_does_not_parse_is_refused_before_the_lookup(gc, gh, book, r
                 err["errors"][0]["reason"],
             )
     assert answered == {
-        (spreadsheet, body): (400, message, "parseError" if message == _NOT_JSON else "invalid")
+        (spreadsheet, body): (
+            (400, message, "parseError")
+            if message == _NOT_JSON
+            else (400, message + beside, "invalid")
+        )
         for spreadsheet in (book, "nosuchspreadsheet")
         for body, message in _UNPARSED_BODIES
     }
@@ -14194,6 +15178,84 @@ WRITE_RECORDS = [
         "author_email": "owner@acme.com",
         "content": "notes",
         "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-01T09:00:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-text",
+        "subtype": "document",
+        "title": "Text",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "content": "Hello world\nSecond para",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-styled",
+        "subtype": "document",
+        "title": "Styled",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "paragraphs": [
+            {"style": "HEADING_1", "text": "Title line"},
+            {"runs": [{"text": "plain "}, {"text": "BOLD", "bold": True}, {"text": " tail"}]},
+            {"runs": [{"text": "link", "link": "https://example.com/"}, {"text": " here"}]},
+            {"runs": [{"text": "struck", "strikethrough": True}]},
+            {"runs": [{"text": "BOLDSTART", "italic": True}, {"text": " x"}]},
+            {"text": ""},
+            {"text": "last"},
+        ],
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-links",
+        "subtype": "document",
+        "title": "Links",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "paragraphs": [
+            {
+                "runs": [
+                    {"text": "BL", "bold": True, "link": "https://example.com/"},
+                    {"text": " t"},
+                ]
+            },
+            {
+                "runs": [
+                    {"text": "BL", "bold": True, "link": "https://example.com/"},
+                    {"text": " t", "bold": True},
+                ]
+            },
+            {
+                "runs": [
+                    {"text": "lnk", "bold": True, "link": "https://example.com/"},
+                    {"text": " t"},
+                ]
+            },
+            {"text": "ab"},
+            {"runs": [{"text": "cd", "underline": True}]},
+            {"runs": [{"text": "x"}, {"text": "YZ", "bold": True}]},
+        ],
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-hidden",
+        "subtype": "document",
+        "title": "Hidden",
+        "folder": "hr",
+        "visibility": "private",
+        "author_email": "reader@acme.com",
+        "content": "not yours",
+        "created": "2026-07-01T09:00:00Z",
         "updated": "2026-07-14T17:20:00Z",
     },
     {
@@ -14508,6 +15570,88 @@ def test_a_write_real_refuses_is_refused_with_reals_message(wc, wh, wbook, rng, 
             "Invalid value at 'value_input_option' "
             '(type.googleapis.com/google.apps.sheets.v4.ValueInputOption), "BOGUS"',
         ),
+        # a Doc's batchUpdate (`<doc>:batchUpdate`): the body and the mask before the lookup, a
+        # reader's 403 before the body's emptiness, a Doc the caller cannot see before its indices
+        (
+            "reader@acme.com",
+            "wr-text:batchUpdate",
+            {},
+            {"requests": []},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            "reader@acme.com",
+            "wr-text:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 0}, "text": "x"}}]},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            "admin",
+            "wr-text:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 1}, "text": "x"}}]},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            _OWNER,
+            "wr-hidden:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 0}, "text": "x"}}]},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 0}, "text": "x"}}]},
+            404,
+            "Requested entity was not found.",
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {},
+            {"requests": [{}]},
+            404,
+            "Requested entity was not found.",
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {},
+            {"requests": [], "nope": 1},
+            400,
+            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {"fields": "nope"},
+            {"requests": []},
+            400,
+            "Request contains an invalid argument.",
+        ),
+        (
+            _OWNER,
+            "wr-text:batchUpdate",
+            {"fields": "nope"},
+            {"nope": 1},
+            400,
+            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+        ),
+        (
+            _OWNER,
+            "wr-book:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 1}, "text": "x"}}]},
+            404,
+            "Requested entity was not found.",
+        ),
     ],
 )
 def test_who_may_write_and_in_what_order_a_write_is_refused(
@@ -14515,14 +15659,25 @@ def test_who_may_write_and_in_what_order_a_write_is_refused(
 ):
     from tests._helpers import served_id
 
-    path = f"/sheets/v4/spreadsheets/{served_id('google_drive', book)}/values/A1"
-    r = wc.put(path, headers=wh[who], params=params, json=body)
+    book, _, method = book.partition(":")
+    fid = served_id("google_drive", book) if book != "nope" else "1nope" + "0" * 38
+    if method:
+        r = wc.post(f"/docs/v1/documents/{fid}:{method}", headers=wh[who], params=params, json=body)
+    else:
+        path = f"/sheets/v4/spreadsheets/{fid}/values/A1"
+        r = wc.put(path, headers=wh[who], params=params, json=body)
     assert (r.status_code, r.json()["error"]["message"]) == (status, message)
 
 
 @pytest.mark.parametrize(
     "method,suffix,rpc",
     [
+        ("POST", "/docs/v1/documents", "docs.v1.DocumentsService.CreateDocument"),
+        (
+            "POST",
+            "/docs/v1/documents/1nope:batchUpdate",
+            "docs.v1.DocumentsService.BatchUpdateDocument",
+        ),
         ("PUT", "/values/A1", "UpdateValues"),
         ("POST", "/values:batchUpdate", "BatchUpdateValues"),
         ("POST", "/values/A1:clear", "ClearValues"),
@@ -14539,9 +15694,12 @@ def test_who_may_write_and_in_what_order_a_write_is_refused(
         ("GET", "/developerMetadata/5", "GetDeveloperMetadata"),
     ],
 )
-def test_a_sheets_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method, suffix, rpc):
-    """No credential on these is a 401 whose ErrorInfo names the RPC."""
-    r = wc.request(method, f"{wbook}{suffix}", params=_RAW, json=None if method == "GET" else {})
+def test_an_editor_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method, suffix, rpc):
+    """No credential on these is a 401 whose ErrorInfo names the RPC: a Sheets one by its name on
+    the spreadsheet the path suffixes, any other by its path and its whole name."""
+    if "." not in rpc:
+        suffix, rpc = f"{wbook}{suffix}", f"sheets.v4.SpreadsheetsService.{rpc}"
+    r = wc.request(method, suffix, params=_RAW, json=None if method == "GET" else {})
     assert r.status_code == 401
     assert r.json()["error"]["details"] == [
         {
@@ -14549,8 +15707,8 @@ def test_a_sheets_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method
             "reason": "CREDENTIALS_MISSING",
             "domain": "googleapis.com",
             "metadata": {
-                "method": f"google.apps.sheets.v4.SpreadsheetsService.{rpc}",
-                "service": "sheets.googleapis.com",
+                "method": f"google.apps.{rpc}",
+                "service": f"{rpc.split('.')[0]}.googleapis.com",
             },
         }
     ]
@@ -15175,174 +16333,2081 @@ def test_a_created_spreadsheet_keeps_what_its_sheets_state(wc, wh):
         assert [x["properties"]["title"] for x in made["sheets"]] == list(pair)
 
 
+_SHEETS_TITLE_5 = "Invalid value at 'spreadsheet.properties.title' (TYPE_STRING), 5"
+_SHEETS_CRITERIA_AT = "spreadsheet.sheets[0].basic_filter"
+
+
+def _criteria(criteria) -> dict:
+    """A `Spreadsheet` whose one sheet's basic filter states ``criteria``, and a title of 5."""
+    return {"sheets": [{"basicFilter": {"criteria": criteria}}], "properties": {"title": 5}}
+
+
+# What `spreadsheets.create` refuses, as `(body, message)`.
+_SHEETS_CREATE_REFUSALS = [
+    # a map is read as its entries, an int32 key typed
+    (
+        _criteria(5),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria' "
+        f"(type.googleapis.com/google.apps.sheets.v4.BasicFilter.CriteriaEntry), 5\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria([]),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}' (Map), Cannot bind a list to map for field "
+        f"'criteria'.\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria({"a": {"condition": 5}}),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].key' (TYPE_INT32), \"a\"\n"
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].value.condition' "
+        f"(type.googleapis.com/google.apps.sheets.v4.BooleanCondition), 5\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria({"0": []}),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].value' (Map), Cannot have repeated "
+        f"items ('0') within a map.\n{_SHEETS_TITLE_5}",
+    ),
+    (_criteria({"+1": {}, "2": None}), _SHEETS_TITLE_5),
+    (
+        {"sheets": [{"filterViews": [{"criteria": {"a": {}}}]}], "properties": {"title": 5}},
+        "Invalid value at 'spreadsheet.sheets[0].filter_views[0].criteria[0].key' (TYPE_INT32), "
+        f'"a"\n{_SHEETS_TITLE_5}',
+    ),
+    (
+        {
+            "sheets": [
+                {"data": [{"rowData": [{"values": [{"pivotTable": {"criteria": {"a": {}}}}]}]}]}
+            ],
+            "properties": {"title": 5},
+        },
+        "Invalid value at 'spreadsheet.sheets[0].data[0].row_data[0].values[0].pivot_table."
+        f'criteria[0].key\' (TYPE_INT32), "a"\n{_SHEETS_TITLE_5}',
+    ),
+    (
+        {
+            "sheets": [
+                {"properties": {"title": "a", "sheetId": 7}},
+                {"properties": {"title": "b", "sheetId": 7}},
+            ]
+        },
+        "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "a", "sheetId": -1}}]},
+        "Invalid sheets[0]: Sheet id must be non-negative.",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "Same"}}, {"properties": {"title": "same"}}]},
+        'Invalid sheets[1]: A sheet with the name "same" already exists. Please enter another name.',
+    ),
+    (
+        {"sheets": [{"properties": {"title": "x" * 101}}]},
+        "Invalid sheets[0]: The sheet name cannot be greater than 100 characters.",
+    ),
+    (
+        {"sheets": [{"properties": {"index": 3}}]},
+        "Invalid sheets: The new sheet index is too high.",
+    ),
+    (
+        {"sheets": [{"properties": {"hidden": True}}]},
+        "Invalid sheets[0]: You can't hide all the sheets in a document.",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"columnCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the columns on the sheet.",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"rowCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the rows on the sheet.",
+    ),
+    ({"spreadsheetId": "abc"}, "Invalid spreadsheet.spreadsheetId: The id is invalid."),
+    # two refusals at once: real names the one it checks first
+    (
+        {"spreadsheetId": "abc", "properties": {"locale": "xx_YY"}},
+        "Invalid properties: Unsupported locale: xx_YY",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "x" * 101, "sheetId": -1}}]},
+        "Invalid sheets[0]: Sheet id must be non-negative.",
+    ),
+    (
+        {
+            "sheets": [
+                {"properties": {"title": "a", "sheetId": 7}},
+                {"properties": {"title": "A", "sheetId": 7}},
+            ]
+        },
+        "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"rowCount": -1, "columnCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the rows on the sheet.",
+    ),
+    (
+        {"sheets": [{"properties": {"index": 3, "hidden": True}}]},
+        "Invalid sheets[0]: You can't hide all the sheets in a document.",
+    ),
+    (
+        {"bogus": 1},
+        "Invalid JSON payload received. Unknown name \"bogus\" at 'spreadsheet': Cannot find field.",
+    ),
+    ({"properties": {"locale": "xx_YY"}}, "Invalid properties: Unsupported locale: xx_YY"),
+    ({"properties": {"locale": "en_us"}}, "Invalid properties: Unsupported locale: en_us"),
+    (
+        {"sheets": [{"properties": {"title": "o", "sheetType": "OBJECT"}}]},
+        "Object sheets must have exactly one embedded object",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "data": [
+                        {
+                            "rowData": [
+                                {"values": [{"userEnteredValue": {"errorValue": {"type": "N_A"}}}]}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Cannot set cell to an error value",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"rowCount": 2, "columnCount": 2}},
+                    "data": [
+                        {
+                            "startRow": 3,
+                            "rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}]}],
+                        }
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: GridCoordinate.rowIndex[3] is after last row in grid[1]",
+    ),
+    # a block starting inside the grid and running past it says what it attempted
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"rowCount": 2}},
+                    "data": [
+                        {"rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}]}] * 3}
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Attempting to write row: 2, beyond the last requested row "
+        "of: 1",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"columnCount": 2}},
+                    "data": [
+                        {"rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}] * 3}]}
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Attempting to write column: 2, beyond the last requested "
+        "column of: 1",
+    ),
+    # titles collide as Java's equalsIgnoreCase compares them
+    (
+        {"sheets": [{"properties": {"title": "ſheet"}}, {"properties": {"title": "Sheet"}}]},
+        'Invalid sheets[1]: A sheet with the name "Sheet" already exists. Please enter another name.',
+    ),
+    (
+        {"sheets": [{"properties": {"title": "ς"}}, {"properties": {"title": "σ"}}]},
+        'Invalid sheets[1]: A sheet with the name "σ" already exists. Please enter another name.',
+    ),
+]
+
+
+def _create_doc(wc, h, body=None, **params):
+    r = wc.post("/docs/v1/documents", headers=h, params=params, json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh, monkeypatch):
+    """Measured: the answer is the owner's `documents.get` with `tabs` beside the flat members and
+    no `commentsViewMode`, its body a section break and one empty paragraph, and the next read
+    serves its `revisionId`; the Drive file sits at the creator's My Drive root with one
+    permission, the owner's, a `size` of 1 and `version` 1; anyone else gets the 403 and 404 a
+    hidden file gets. A new id is one no file has."""
+    h = wh[_OWNER]
+    doc = _create_doc(wc, h, {"title": "Fresh doc"})
+    did = doc["documentId"]
+    assert list(doc) == [
+        "title",
+        "body",
+        "documentStyle",
+        "namedStyles",
+        "revisionId",
+        "suggestionsViewMode",
+        "documentId",
+        "tabs",
+    ]
+    assert doc["body"]["content"] == [
+        {
+            "endIndex": 1,
+            "sectionBreak": {
+                "sectionStyle": {
+                    "columnSeparatorStyle": "NONE",
+                    "contentDirection": "LEFT_TO_RIGHT",
+                    "sectionType": "CONTINUOUS",
+                }
+            },
+        },
+        {
+            "startIndex": 1,
+            "endIndex": 2,
+            "paragraph": {
+                "elements": [
+                    {
+                        "startIndex": 1,
+                        "endIndex": 2,
+                        "textRun": {"content": "\n", "textStyle": {}},
+                    }
+                ],
+                "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT"},
+            },
+        },
+    ]
+    held = {k: doc[k] for k in ("body", "documentStyle", "namedStyles")}
+    assert doc["tabs"] == [{"tabProperties": _DOCS_TAB, "documentTab": held}]
+    read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+    flat = {k: v for k, v in doc.items() if k != "tabs"}
+    assert read == {**flat, "commentsViewMode": "COMMENTS_VIEW_MODE_OMITTED"}
+    fields = "name,mimeType,parents,shared,size,quotaBytesUsed,version,createdTime,modifiedTime"
+    f = wc.get(f"/drive/v3/files/{did}", headers=h, params={"fields": fields}).json()
+    assert f == {
+        "name": "Fresh doc",
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": [synth.drive_root_id(_OWNER)],
+        "shared": False,
+        "size": "1",
+        "quotaBytesUsed": "1",
+        "version": "1",
+        "createdTime": f["modifiedTime"],
+        "modifiedTime": f["modifiedTime"],
+    }
+    # a Doc with content is past version 1 whatever its two times say
+    notes = f"/drive/v3/files/{served_id('google_drive', 'wr-doc')}"
+    f = wc.get(notes, headers=h, params={"fields": fields}).json()
+    assert (f["size"], f["version"], f["createdTime"]) == ("1024", "2", f["modifiedTime"])
+    # and so is a spreadsheet with no cells, its version, size and quota as real's read together
+    # three seconds on
+    quota = {"fields": "storageQuota(usage)"}
+    used = int(wc.get("/drive/v3/about", headers=h, params=quota).json()["storageQuota"]["usage"])
+    r = wc.post("/sheets/v4/spreadsheets", headers=h, json={"properties": {"title": "Empty"}})
+    sheet = f"/drive/v3/files/{r.json()['spreadsheetId']}"
+    f = wc.get(sheet, headers=h, params={"fields": fields}).json()
+    assert (f["size"], f["quotaBytesUsed"], f["version"]) == ("1024", "1024", "2")
+    quota = wc.get("/drive/v3/about", headers=h, params=quota).json()["storageQuota"]
+    assert int(quota["usage"]) == used + 1024
+    roots = wc.get("/drive/v3/files", headers=h, params={"q": "'root' in parents"}).json()
+    assert did in [x["id"] for x in roots["files"]]
+    perms = wc.get(f"/drive/v3/files/{did}/permissions", headers=h).json()["permissions"]
+    assert [p["role"] for p in perms] == ["owner"]
+    other = wh["reader@acme.com"]
+    assert wc.get(f"/docs/v1/documents/{did}", headers=other).status_code == 403
+    assert wc.get(f"/drive/v3/files/{did}", headers=other).status_code == 404
+    # the admin token owns what its service account creates
+    admin = wh["admin"]
+    mine = _create_doc(wc, admin, {})["documentId"]
+    owned = wc.get("/drive/v3/files", headers=admin, params={"q": "'me' in owners"}).json()
+    assert [x["id"] for x in owned["files"]] == [mine]
+    minted = iter([did, "1fresh"])
+    monkeypatch.setattr(synth, "gdrive_file_id", lambda seed: next(minted))
+    assert _create_doc(wc, h)["documentId"] == "1fresh"
+
+
+def test_a_created_document_keeps_its_title_alone(wc, wh):
+    """Measured: of what a request states, only `title` is kept, from the body or, over it, the
+    query, whose last repeat is read; no title, `null` or an empty one is `Untitled document`."""
+    h = wh[_OWNER]
+    plain = _create_doc(wc, h, {"title": "t"})
+    stated = _create_doc(
+        wc,
+        h,
+        {
+            "title": "t",
+            "documentId": "abc",
+            "revisionId": "abc",
+            "suggestionsViewMode": "PREVIEW_WITHOUT_SUGGESTIONS",
+            "commentsViewMode": 3,
+            "body": {"content": [{"paragraph": {"elements": [{"textRun": {"content": "hi\n"}}]}}]},
+            "tabs": [{"tabProperties": {"title": "X"}}, {"tabProperties": {"title": "Y"}}],
+            "documentStyle": {"marginTop": {"magnitude": 10, "unit": "PT"}},
+            "namedStyles": {"styles": []},
+        },
+        suggestionsViewMode="PREVIEW_WITHOUT_SUGGESTIONS",
+        documentId="abc",
+    )
+    ignored = ("documentId", "revisionId")
+    assert {k: v for k, v in stated.items() if k not in ignored} == {
+        k: v for k, v in plain.items() if k not in ignored
+    }
+    assert stated["documentId"] not in ("abc", plain["documentId"])
+    # values of the right kind, each read and dropped
+    read = [
+        *(
+            _doc_style(paragraphStyle={"namedStyleType": v})
+            for v in (5, 999, -1, "heading_1", "HEADING-1", "1")
+        ),
+        {"headers": None},
+        {"headers": {"h1": None}},
+        {"headers": {"h1": {"headerId": "x"}}},
+        *(
+            _doc_date(v)
+            for v in (
+                "2026-10-29T00:00:00Z",
+                "2026-10-29T00:00:00.123456789+09:00",
+                " 2026-10-29T00:00:00Z",
+                "2026-10-29T00:00:60Z",
+                {},
+                {"seconds": 1, "nanos": 2},
+                None,
+            )
+        ),
+        *(_doc_red(v) for v in ("NaN", "Infinity", 3.4e38, 1e-50)),
+        *(_doc_style(textStyle={"bold": v}) for v in ({"value": True}, {}, "true", 1)),
+        {"tabs": [{"tabProperties": {"index": "1"}}]},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": "x"}}]}},
+        _doc_tables(13),
+    ]
+    assert {_create_doc(wc, h, body)["title"] for body in read} == {"Untitled document"}
+    titles = [
+        ({}, {}),
+        (None, {}),
+        ({"title": None}, {}),
+        ({"title": ""}, {}),
+        ({"title": "   "}, {}),
+        ({"title": "body"}, {"title": "query"}),
+        ({"title": "body"}, {"title": ""}),
+        ({}, [("title", "first"), ("title", "last")]),
+    ]
+    assert [
+        wc.post("/docs/v1/documents", headers=h, params=params, json=body).json()["title"]
+        for body, params in titles
+    ] == [
+        "Untitled document",
+        "Untitled document",
+        "Untitled document",
+        "Untitled document",
+        "   ",
+        "query",
+        "Untitled document",
+        "last",
+    ]
+    masks = {
+        "documentId": ["documentId"],
+        "title,tabs": ["title", "tabs"],
+        "body": ["body"],
+        "*": list(plain),
+        "comments": [],
+    }
+    assert {mask: list(_create_doc(wc, h, {"title": "m"}, fields=mask)) for mask in masks} == masks
+    assert _create_doc(wc, h, {}, fields="*.tabProperties") == {
+        "tabs": [{"tabProperties": _DOCS_TAB}]
+    }
+
+
+_DOCS_TYPE = "type.googleapis.com/google.apps.docs.v1"
+_ROOT_NOT_A_MESSAGE = (
+    'Invalid JSON payload received. Unknown name "": Root element must be a message.'
+)
+
+
+def _doc_element(element: dict) -> dict:
+    """A `Document` whose body holds one paragraph holding ``element``."""
+    return {"body": {"content": [{"paragraph": {"elements": [element]}}]}}
+
+
+def _doc_style(**style) -> dict:
+    """A `Document` whose one named style states ``style``."""
+    return {"namedStyles": {"styles": [style]}}
+
+
+def _doc_date(value) -> dict:
+    return _doc_element({"dateElement": {"dateElementProperties": {"timestamp": value}}})
+
+
+def _doc_red(value) -> dict:
+    return {"documentStyle": {"background": {"color": {"color": {"rgbColor": {"red": value}}}}}}
+
+
+def _doc_tables(depth: int) -> dict:
+    """A `Document` whose body nests ``depth`` tables, each in the one cell of the last."""
+    cell: dict = {}
+    for _ in range(depth):
+        cell = {"table": {"tableRows": [{"tableCells": [{"content": [cell]}]}]}}
+    return {"body": {"content": [cell]}}
+
+
+def _nested(depth: int, value=1):
+    for _ in range(depth):
+        value = {"a": value}
+    return value
+
+
+def _deep(opening: bytes, leaf: bytes, closing: bytes, depth: int, at=(b'"nope": ', b"")):
+    """A body nesting ``leaf`` ``depth`` deep under a refused title, at ``at``'s opening and
+    closing, as raw JSON, since `json.dumps` cannot write it."""
+    head, tail = at
+    return lambda: b'{"title": 5, ' + head + opening * depth + leaf + closing * depth + tail + b"}"
+
+
+_DOCS_DATE_AT = "body.content[0].paragraph.elements[0].date_element.date_element_properties"
+_DOCS_TIMESTAMP = "type.googleapis.com/google.protobuf.Timestamp"
+_DOCS_TOO_DEEP = "Invalid JSON payload received. Message too deep. Max recursion depth reached"
+_DOCS_TOO_LONG = "Request contains an invalid argument."
+
+# What `documents.create` refuses, as `(params, body, message)`.
+_DOCS_CREATE_REFUSALS = [
+    ({}, {"title": 5}, "Invalid value at 'title' (TYPE_STRING), 5"),
+    ({}, {"title": True}, "Invalid value at 'title' (TYPE_STRING), true"),
+    (
+        {},
+        {"title": ["a"]},
+        'Invalid JSON payload received. Unknown name "title": Proto field is not repeating, '
+        "cannot start list.",
+    ),
+    ({}, {"title": {"a": 1}}, "Invalid value (title), Starting an object on a scalar field"),
+    ({}, [], _ROOT_NOT_A_MESSAGE),
+    ({}, "x", _ROOT_NOT_A_MESSAGE),
+    ({}, 5, _ROOT_NOT_A_MESSAGE),
+    (
+        {},
+        {"zap": 2, "title": "t", "nope": 1},
+        'Invalid JSON payload received. Unknown name "zap": Cannot find field.\n'
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    ),
+    (
+        {},
+        {"nope": 1, "title": 5},
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.\n'
+        "Invalid value at 'title' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"body": {"content": "x"}},
+        f"Invalid value at 'body.content' ({_DOCS_TYPE}.StructuralElement), \"x\"",
+    ),
+    (
+        {},
+        {"body": {"nope": 1}},
+        "Invalid JSON payload received. Unknown name \"nope\" at 'body': Cannot find field.",
+    ),
+    ({}, {"comments": 5}, f"Invalid value at 'comments' ({_DOCS_TYPE}.CommentThread), 5"),
+    (
+        {},
+        {"suggestionsViewMode": "NOPE"},
+        f"Invalid value at 'suggestions_view_mode' ({_DOCS_TYPE}.SuggestionsViewMode), \"NOPE\"",
+    ),
+    # the query's enums are refused beside the body's refusals, and ahead of the mask's
+    (
+        {"suggestionsViewMode": "NOPE"},
+        {"title": 5},
+        "Invalid value at 'title' (TYPE_STRING), 5\nInvalid value at 'suggestions_view_mode' "
+        f'({_DOCS_TYPE}.SuggestionsViewMode), "NOPE"',
+    ),
+    (
+        {"commentsViewMode": "NOPE", "fields": "nope"},
+        {},
+        f"Invalid value at 'comments_view_mode' ({_DOCS_TYPE}.CommentsViewMode), \"NOPE\"",
+    ),
+    ({"fields": "nope"}, [], _ROOT_NOT_A_MESSAGE),
+    ({"fields": "nope"}, {}, "Request contains an invalid argument."),
+    ({"fields": "tabs("}, {}, "Request contains an invalid argument."),
+    # a title past 10,000 UTF-16 code units, last
+    ({}, {"title": "x" * 10_001}, _DOCS_TOO_LONG),
+    ({}, {"title": "\U0001f600" * 5_001}, _DOCS_TOO_LONG),
+    ({"title": "x" * 10_001}, {}, _DOCS_TOO_LONG),
+    (
+        {},
+        {"title": "x" * 10_001, "nope": 1},
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    ),
+    # a body refused as a whole is answered alone
+    ({"suggestionsViewMode": "NOPE"}, [], _ROOT_NOT_A_MESSAGE),
+    # a map is read as its entries, each named by its count and `value`
+    ({}, {"headers": 5}, f"Invalid value at 'headers' ({_DOCS_TYPE}.Document.HeadersEntry), 5"),
+    (
+        {},
+        {"inlineObjects": []},
+        "Invalid value (Map), Cannot bind a list to map for field 'inlineObjects'.",
+    ),
+    (
+        {},
+        {"tabs": [{"documentTab": {"inlineObjects": []}}]},
+        "Invalid value at 'tabs[0].document_tab' (Map), Cannot bind a list to map for field "
+        "'inlineObjects'.",
+    ),
+    ({}, {"headers": {"h1": 5}}, f"Invalid value at 'headers[0].value' ({_DOCS_TYPE}.Header), 5"),
+    (
+        {},
+        {"headers": {"h1": []}},
+        "Invalid value at 'headers[0].value' (Map), Cannot have repeated items ('h1') within a "
+        "map.",
+    ),
+    (
+        {},
+        {"headers": {"a": {"headerId": "x"}, "b": {"headerId": 5}}},
+        "Invalid value at 'headers[1].value.header_id' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"lists": {"l1": {"nope": 1}}},
+        "Invalid JSON payload received. Unknown name \"nope\" at 'lists[0].value': Cannot find "
+        "field.",
+    ),
+    (
+        {},
+        {"lists": {"l": {"suggestedListPropertiesChanges": {"s": 5}}}},
+        "Invalid value at 'lists[0].value.suggested_list_properties_changes[0].value' "
+        f"({_DOCS_TYPE}.SuggestedListProperties), 5",
+    ),
+    # every enum is typed as its own, a number past int32 refused
+    (
+        {},
+        _doc_style(paragraphStyle={"namedStyleType": "BOGUS"}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.named_style_type' "
+        f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"',
+    ),
+    (
+        {},
+        _doc_style(paragraphStyle={"namedStyleType": 2**31}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.named_style_type' "
+        f"({_DOCS_TYPE}.NamedStyleType), 2147483648",
+    ),
+    (
+        {},
+        _doc_element({"autoText": {"type": "BOGUS"}}),
+        "Invalid value at 'body.content[0].paragraph.elements[0].auto_text.type' "
+        f'({_DOCS_TYPE}.AutoText.Type), "BOGUS"',
+    ),
+    # a wrapped value is named at `value`
+    (
+        {},
+        {"documentStyle": {"defaultHeaderId": 5}},
+        "Invalid value at 'document_style.default_header_id.value' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": {"value": "x"}}),
+        "Invalid value at 'named_styles.styles[0].text_style.bold.value' (TYPE_BOOL), \"x\"",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": 2}),
+        "Invalid value at 'named_styles.styles[0].text_style.bold.value' (TYPE_BOOL), 2",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": {"nope": 1}}),
+        'Invalid JSON payload received. Unknown name "nope" at '
+        "'named_styles.styles[0].text_style.bold': Cannot find field.",
+    ),
+    (
+        {},
+        _doc_style(paragraphStyle={"lineSpacing": 1e39}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.line_spacing.value' "
+        "(TYPE_FLOAT), 1e+39",
+    ),
+    (
+        {},
+        {"tabs": [{"tabProperties": {"index": {"value": "x"}}}]},
+        "Invalid value at 'tabs[0].tab_properties.index.value' (TYPE_INT32), \"x\"",
+    ),
+    # a float past a float's range
+    (
+        {},
+        _doc_red(1e39),
+        "Invalid value at 'document_style.background.color.color.rgb_color.red' (TYPE_FLOAT), "
+        "1e+39",
+    ),
+    (
+        {},
+        _doc_red("1e39"),
+        "Invalid value at 'document_style.background.color.color.rgb_color.red' (TYPE_FLOAT), "
+        '"1e39"',
+    ),
+    # a timestamp: a string in RFC 3339, or the message it is
+    (
+        {},
+        _doc_date(5),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid data type for timestamp, value is 5",
+    ),
+    (
+        {},
+        _doc_date("2026-10-29"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Illegal timestamp format; timestamps must end with 'Z' or have a valid timezone offset.",
+    ),
+    (
+        {},
+        _doc_date("2026-13-01T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid time format: Failed to parse input",
+    ),
+    (
+        {},
+        _doc_date("2026-02-30T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid time format: Out-of-range field",
+    ),
+    (
+        {},
+        _doc_date("0000-01-01T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Timestamp value exceeds limits",
+    ),
+    (
+        {},
+        _doc_date({"seconds": "x"}),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp.seconds' (TYPE_INT64), \"x\"",
+    ),
+    (
+        {},
+        {"suggestions": [{"replies": [{"create_time": 5}]}]},
+        f"Invalid value at 'suggestions[0].replies[0].create_time' ({_DOCS_TIMESTAMP}), Field "
+        "'create_time', Invalid data type for timestamp, value is 5",
+    ),
+    # a second member of a oneof
+    (
+        {},
+        _doc_element({"textRun": {}, "autoText": {}}),
+        "Invalid value at 'body.content[0].paragraph.elements[0]' (oneof), oneof field "
+        "'content' is already set. Cannot set 'autoText'",
+    ),
+    # a repeated string takes one value, and counts only the elements it refuses
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": 5}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": [5, "a", 6]}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids[0]' (TYPE_STRING), "
+        "5\nInvalid value at 'body.content[0].paragraph.positioned_object_ids[1]' "
+        "(TYPE_STRING), 6",
+    ),
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": [{}]}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids' "
+        "(positioned_object_ids), Starting an object on a scalar field",
+    ),
+    # nested past 100, alone whatever else is refused
+    ({}, {"title": 5, **_doc_tables(14)}, f"{_DOCS_TOO_DEEP} in array"),
+    ({}, {"title": 5, "nope": _nested(100)}, f"{_DOCS_TOO_DEEP} for key 'a'"),
+    # and past the depth Python's own parser reaches
+    ({}, _deep(b'{"a": ', b"1", b"}", 1_000_000), f"{_DOCS_TOO_DEEP} for key 'a'"),
+    ({}, _deep(b"[", b"1", b"]", 1_000_000), f"{_DOCS_TOO_DEEP} in array"),
+    ({}, _deep(b'[{"a": ', b"1", b"}]", 500_000), f"{_DOCS_TOO_DEEP} for key ''"),
+    (
+        {},
+        _deep(
+            b'{"a\\"": ',
+            b"1",
+            b"}",
+            1_000_000,
+            (b'"x": ' + b"[" * 99 + b"]" * 99 + b', "nope": ', b""),
+        ),
+        f"{_DOCS_TOO_DEEP} for key 'a\"'",
+    ),
+    # brackets inside a string, each run after a character that does not end it, are not counted
+    (
+        {},
+        _deep(
+            b'{"a": ',
+            b"1",
+            b"}",
+            1_000_000,
+            (
+                b'"s": "'
+                + b"".join(bytes([c]) + b"[" * 101 for c in b"'\t\n\r\x07\x08\x0c")
+                + b'\\"'
+                + b"[" * 101
+                + b'", "nope": ',
+                b"",
+            ),
+        ),
+        f"{_DOCS_TOO_DEEP} for key 'a'",
+    ),
+    (
+        {},
+        _deep(
+            b'{"table": {"tableRows": [{"tableCells": [{"content": [',
+            b"{}",
+            b"]}]}]}}",
+            20_000,
+            (b'"body": {"content": [', b"]}"),
+        ),
+        f"{_DOCS_TOO_DEEP} in array",
+    ),
+]
+
+
+def _doc_at(path: str, leaf: dict) -> dict:
+    """A `Document` holding ``leaf`` at ``path``, where `[]` is a list's one element and `{}` a
+    map's one entry."""
+    for step in reversed(path.split(".") if path else []):
+        name = step.rstrip("[]{}")
+        held = [leaf] if step.endswith("[]") else {"k": leaf} if step.endswith("{}") else leaf
+        leaf = {name: held}
+    return leaf
+
+
+def _doc_refused(path: str, refusals: list) -> str:
+    """Real's message refusing ``refusals`` of the message at ``path``, each a name under it
+    (none for the message itself) and the rest of its line."""
+    at = ".".join(
+        re.sub(r"(?<!^)(?=[A-Z])", "_", step.rstrip("[]{}")).lower()
+        + ("[0]" if step.endswith("[]") else "[0].value" if step.endswith("{}") else "")
+        for step in path.split(".")
+        if step
+    )
+    return "\n".join(
+        f"Invalid value at '{'.'.join(filter(None, (at, name)))}' {rest}" for name, rest in refusals
+    )
+
+
+# each field `backlot/data/gdocs_proto.json` types past the discovery document, given a value of
+# the wrong kind, and each oneof with every member set
+_DOCS_ANNOTATED = [
+    (
+        "body.content[].paragraph.elements[].autoText",
+        {"type": "BOGUS"},
+        [
+            ("type", f'({_DOCS_TYPE}.AutoText.Type), "BOGUS"'),
+        ],
+    ),
+    (
+        "comments[]",
+        {"status": "BOGUS"},
+        [
+            ("status", f'({_DOCS_TYPE}.CommentThread.Status), "BOGUS"'),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject.imageProperties.cropProperties",
+        {
+            "angle": "x",
+            "offsetLeft": "x",
+            "offsetTop": "x",
+            "offsetBottom": "x",
+            "offsetRight": "x",
+        },
+        [
+            ("angle", '(TYPE_FLOAT), "x"'),
+            ("offset_left", '(TYPE_FLOAT), "x"'),
+            ("offset_top", '(TYPE_FLOAT), "x"'),
+            ("offset_bottom", '(TYPE_FLOAT), "x"'),
+            ("offset_right", '(TYPE_FLOAT), "x"'),
+        ],
+    ),
+    (
+        "body.content[].paragraph.elements[].dateElement.dateElementProperties",
+        {"timestamp": 5, "dateFormat": "BOGUS", "timeFormat": "BOGUS"},
+        [
+            (
+                "timestamp",
+                f"({_DOCS_TIMESTAMP}), Field 'timestamp', Invalid data type for timestamp, value is 5",
+            ),
+            ("date_format", f'({_DOCS_TYPE}.DateFormat), "BOGUS"'),
+            ("time_format", f'({_DOCS_TYPE}.TimeFormat), "BOGUS"'),
+        ],
+    ),
+    (
+        "documentStyle.marginBottom",
+        {"unit": "BOGUS"},
+        [
+            ("unit", f'({_DOCS_TYPE}.Unit), "BOGUS"'),
+        ],
+    ),
+    (
+        "",
+        {"commentsViewMode": "BOGUS", "suggestionsViewMode": "BOGUS"},
+        [
+            ("comments_view_mode", f'({_DOCS_TYPE}.CommentsViewMode), "BOGUS"'),
+            ("suggestions_view_mode", f'({_DOCS_TYPE}.SuggestionsViewMode), "BOGUS"'),
+        ],
+    ),
+    (
+        "documentStyle.documentFormat",
+        {"documentMode": "BOGUS"},
+        [
+            ("document_mode", f'({_DOCS_TYPE}.DocumentMode), "BOGUS"'),
+        ],
+    ),
+    (
+        "documentStyle",
+        {
+            "firstPageFooterId": 5,
+            "evenPageHeaderId": 5,
+            "defaultHeaderId": 5,
+            "defaultFooterId": 5,
+            "evenPageFooterId": 5,
+            "firstPageHeaderId": 5,
+        },
+        [
+            ("first_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("even_page_header_id.value", "(TYPE_STRING), 5"),
+            ("default_header_id.value", "(TYPE_STRING), 5"),
+            ("default_footer_id.value", "(TYPE_STRING), 5"),
+            ("even_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("first_page_header_id.value", "(TYPE_STRING), 5"),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject.embeddedObjectBorder",
+        {"propertyState": "BOGUS", "dashStyle": "BOGUS"},
+        [
+            ("property_state", f'({_DOCS_TYPE}.PropertyState), "BOGUS"'),
+            ("dash_style", f'({_DOCS_TYPE}.DashStyle), "BOGUS"'),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject.imageProperties",
+        {"brightness": "x", "contrast": "x", "transparency": "x", "angle": "x"},
+        [
+            ("brightness", '(TYPE_FLOAT), "x"'),
+            ("contrast", '(TYPE_FLOAT), "x"'),
+            ("transparency", '(TYPE_FLOAT), "x"'),
+            ("angle", '(TYPE_FLOAT), "x"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[]",
+        {"namedStyleType": "BOGUS"},
+        [
+            ("named_style_type", f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"'),
+        ],
+    ),
+    (
+        "suggestedNamedStylesChanges{}.namedStylesSuggestionState.stylesSuggestionStates[]",
+        {"namedStyleType": "BOGUS"},
+        [
+            ("named_style_type", f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"'),
+        ],
+    ),
+    (
+        "lists{}.listProperties.nestingLevels[]",
+        {"glyphType": "BOGUS", "bulletAlignment": "BOGUS", "glyphSymbol": 5},
+        [
+            ("glyph_type", f'({_DOCS_TYPE}.NestingLevel.GlyphType), "BOGUS"'),
+            ("bullet_alignment", f'({_DOCS_TYPE}.NestingLevel.BulletAlignment), "BOGUS"'),
+            ("", "(oneof), oneof field 'glyph_kind' is already set. Cannot set 'glyphSymbol'"),
+        ],
+    ),
+    (
+        "namedStyles.styles[].paragraphStyle.borderBottom",
+        {"dashStyle": "BOGUS"},
+        [
+            ("dash_style", f'({_DOCS_TYPE}.DashStyle), "BOGUS"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[].paragraphStyle",
+        {
+            "lineSpacing": "x",
+            "spacingMode": "BOGUS",
+            "pageBreakBefore": "x",
+            "avoidWidowAndOrphan": "x",
+            "keepLinesTogether": "x",
+            "keepWithNext": "x",
+            "direction": "BOGUS",
+            "alignment": "BOGUS",
+            "namedStyleType": "BOGUS",
+        },
+        [
+            ("line_spacing.value", '(TYPE_FLOAT), "x"'),
+            ("spacing_mode", f'({_DOCS_TYPE}.ParagraphStyle.SpacingMode), "BOGUS"'),
+            ("page_break_before.value", '(TYPE_BOOL), "x"'),
+            ("avoid_widow_and_orphan.value", '(TYPE_BOOL), "x"'),
+            ("keep_lines_together.value", '(TYPE_BOOL), "x"'),
+            ("keep_with_next.value", '(TYPE_BOOL), "x"'),
+            ("direction", f'({_DOCS_TYPE}.ContentDirection), "BOGUS"'),
+            ("alignment", f'({_DOCS_TYPE}.ParagraphStyle.Alignment), "BOGUS"'),
+            ("named_style_type", f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"'),
+        ],
+    ),
+    (
+        "positionedObjects{}.positionedObjectProperties.positioning",
+        {"layout": "BOGUS"},
+        [
+            ("layout", f'({_DOCS_TYPE}.PositionedObjectLayout), "BOGUS"'),
+        ],
+    ),
+    (
+        "suggestions[].replies[]",
+        {"commentAction": "BOGUS", "updateTime": 5, "suggestionAction": "BOGUS", "createTime": 5},
+        [
+            ("comment_action", f'({_DOCS_TYPE}.Post.CommentActionType), "BOGUS"'),
+            (
+                "update_time",
+                f"({_DOCS_TIMESTAMP}), Field 'updateTime', Invalid data type for timestamp, value is 5",
+            ),
+            ("", "(oneof), oneof field 'action' is already set. Cannot set 'suggestionAction'"),
+            (
+                "create_time",
+                f"({_DOCS_TIMESTAMP}), Field 'createTime', Invalid data type for timestamp, value is 5",
+            ),
+        ],
+    ),
+    (
+        "namedRanges{}.namedRanges[].ranges[]",
+        {"endIndex": "x", "startIndex": "x"},
+        [
+            ("end_index.value", '(TYPE_INT32), "x"'),
+            ("start_index.value", '(TYPE_INT32), "x"'),
+        ],
+    ),
+    (
+        "documentStyle.background.color.color.rgbColor",
+        {"red": "x", "blue": "x", "green": "x"},
+        [
+            ("red", '(TYPE_FLOAT), "x"'),
+            ("blue", '(TYPE_FLOAT), "x"'),
+            ("green", '(TYPE_FLOAT), "x"'),
+        ],
+    ),
+    (
+        "body.content[].sectionBreak.sectionStyle",
+        {
+            "contentDirection": "BOGUS",
+            "columnSeparatorStyle": "BOGUS",
+            "evenPageFooterId": 5,
+            "firstPageHeaderId": 5,
+            "pageNumberStart": "x",
+            "evenPageHeaderId": 5,
+            "defaultFooterId": 5,
+            "firstPageFooterId": 5,
+            "defaultHeaderId": 5,
+            "flipPageOrientation": "x",
+            "sectionType": "BOGUS",
+            "useFirstPageHeaderFooter": "x",
+        },
+        [
+            ("content_direction", f'({_DOCS_TYPE}.ContentDirection), "BOGUS"'),
+            (
+                "column_separator_style",
+                f'({_DOCS_TYPE}.SectionStyle.ColumnSeparatorStyle), "BOGUS"',
+            ),
+            ("even_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("first_page_header_id.value", "(TYPE_STRING), 5"),
+            ("page_number_start.value", '(TYPE_INT32), "x"'),
+            ("even_page_header_id.value", "(TYPE_STRING), 5"),
+            ("default_footer_id.value", "(TYPE_STRING), 5"),
+            ("first_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("default_header_id.value", "(TYPE_STRING), 5"),
+            ("flip_page_orientation.value", '(TYPE_BOOL), "x"'),
+            ("section_type", f'({_DOCS_TYPE}.SectionStyle.SectionType), "BOGUS"'),
+            ("use_first_page_header_footer.value", '(TYPE_BOOL), "x"'),
+        ],
+    ),
+    (
+        "suggestions[]",
+        {"status": "BOGUS"},
+        [
+            ("status", f'({_DOCS_TYPE}.SuggestionThread.Status), "BOGUS"'),
+        ],
+    ),
+    (
+        "tabs[].tabProperties",
+        {"index": "x"},
+        [
+            ("index.value", '(TYPE_INT32), "x"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[].paragraphStyle.tabStops[]",
+        {"alignment": "BOGUS"},
+        [
+            ("alignment", f'({_DOCS_TYPE}.TabStop.TabStopAlignment), "BOGUS"'),
+        ],
+    ),
+    (
+        "body.content[].table.tableRows[].tableCells[].tableCellStyle.borderRight",
+        {"dashStyle": "BOGUS"},
+        [
+            ("dash_style", f'({_DOCS_TYPE}.DashStyle), "BOGUS"'),
+        ],
+    ),
+    (
+        "body.content[].table.tableRows[].tableCells[].tableCellStyle",
+        {"contentAlignment": "BOGUS"},
+        [
+            ("content_alignment", f'({_DOCS_TYPE}.ContentAlignment), "BOGUS"'),
+        ],
+    ),
+    (
+        "body.content[].table.tableStyle.tableColumnProperties[]",
+        {"widthType": "BOGUS"},
+        [
+            ("width_type", f'({_DOCS_TYPE}.TableColumnProperties.WidthType), "BOGUS"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[].textStyle",
+        {
+            "strikethrough": "x",
+            "bold": "x",
+            "baselineOffset": "BOGUS",
+            "underline": "x",
+            "smallCaps": "x",
+            "italic": "x",
+        },
+        [
+            ("strikethrough.value", '(TYPE_BOOL), "x"'),
+            ("bold.value", '(TYPE_BOOL), "x"'),
+            ("baseline_offset", f'({_DOCS_TYPE}.BaselineOffset), "BOGUS"'),
+            ("underline.value", '(TYPE_BOOL), "x"'),
+            ("small_caps.value", '(TYPE_BOOL), "x"'),
+            ("italic.value", '(TYPE_BOOL), "x"'),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject",
+        {"imageProperties": {}, "embeddedDrawingProperties": {}},
+        [
+            (
+                "",
+                "(oneof), oneof field 'properties' is already set. Cannot set 'embeddedDrawingProperties'",
+            ),
+        ],
+    ),
+    (
+        "namedStyles.styles[].textStyle.link",
+        {
+            "url": "x",
+            "headingId": "x",
+            "heading": {},
+            "bookmark": {},
+            "bookmarkId": "x",
+            "tabId": "x",
+        },
+        [
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'headingId'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'heading'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'bookmark'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'bookmarkId'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'tabId'"),
+        ],
+    ),
+    (
+        "lists{}.listProperties.nestingLevels[]",
+        {"glyphType": "NONE", "glyphSymbol": "x"},
+        [
+            ("", "(oneof), oneof field 'glyph_kind' is already set. Cannot set 'glyphSymbol'"),
+        ],
+    ),
+    (
+        "body.content[].paragraph.elements[]",
+        {
+            "dropdown": {},
+            "horizontalRule": {},
+            "pageBreak": {},
+            "equation": {},
+            "richLink": {},
+            "columnBreak": {},
+            "dateElement": {},
+            "inlineObjectElement": {},
+            "autoText": {},
+            "person": {},
+            "footnoteReference": {},
+            "textRun": {},
+        },
+        [
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'horizontalRule'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'pageBreak'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'equation'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'richLink'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'columnBreak'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'dateElement'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'inlineObjectElement'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'autoText'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'person'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'footnoteReference'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'textRun'"),
+        ],
+    ),
+    (
+        "suggestions[].replies[]",
+        {
+            "commentAction": "NO_COMMENT_ACTION_CHANGE",
+            "suggestionAction": "NO_SUGGESTION_ACTION_CHANGE",
+        },
+        [
+            ("", "(oneof), oneof field 'action' is already set. Cannot set 'suggestionAction'"),
+        ],
+    ),
+    (
+        "body.content[]",
+        {"sectionBreak": {}, "tableOfContents": {}, "table": {}, "paragraph": {}},
+        [
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'tableOfContents'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'table'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'paragraph'"),
+        ],
+    ),
+    # the members of a oneof the rows above set second, given a wrong kind alone
+    (
+        "lists{}.listProperties.nestingLevels[]",
+        {"glyphSymbol": 5},
+        [("glyph_symbol.value", "(TYPE_STRING), 5")],
+    ),
+    (
+        "suggestions[].replies[]",
+        {"suggestionAction": "BOGUS"},
+        [("suggestion_action", f'({_DOCS_TYPE}.Post.SuggestionActionType), "BOGUS"')],
+    ),
+]
+_DOCS_CREATE_REFUSALS += [
+    ({}, _doc_at(path, leaf), _doc_refused(path, refusals))
+    for path, leaf, refusals in _DOCS_ANNOTATED
+]
+
+_TS_UNPARSED = "Invalid time format: Failed to parse input"
+_TS_NO_SUCH_DAY = "Invalid time format: Out-of-range field"
+_TS_TRAILING = "Invalid time format: Illegal trailing data in input string"
+_TS_NANOS = "Invalid time format, failed to parse nano seconds"
+_TS_PAST_LIMITS = "Timestamp value exceeds limits"
+_TS_NO_ZONE = (
+    "Illegal timestamp format; timestamps must end with 'Z' or have a valid timezone offset."
+)
+# a timestamp string at each bound, beside a refused title so that one read creates nothing; None
+# where it is read
+_DOCS_TIMESTAMPS = [
+    ("2026-00-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-12-01T00:00:00Z", None),
+    ("2026-01-00T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-32T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-31T00:00:00Z", None),
+    ("2026-04-31T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("2025-02-29T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("2024-02-29T00:00:00Z", None),
+    ("2026-01-01T24:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T23:00:00Z", None),
+    ("2026-01-01T00:60:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:59:00Z", None),
+    ("2026-01-01T00:00:61Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:60Z", None),
+    ("2026-01-01T00:00:00.123456789Z", None),
+    ("2026-01-01T00:00:00.1234567890Z", _TS_PAST_LIMITS),
+    ("2026-13-01T00:00:00.1234567890Z", _TS_UNPARSED),
+    ("0000-02-30T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("0000-02-29T00:00:00Z", _TS_PAST_LIMITS),
+    ("0001-01-01T00:00:00Z", None),
+    ("9999-12-31T23:59:59Z", None),
+    ("2026-1-01T00:00:00Z", None),
+    ("2026-01-01 00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00+09:00", None),
+    ("2026-01-01T00:00:00+0900", _TS_NO_ZONE),
+    (" 2026-01-01T00:00:00Z", None),
+    ("2026-01-01T00:00:00.Z", None),
+    ("2026-01-1T1:2:3Z", None),
+    ("2026-001-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-1-1T00:00:00Z", None),
+    ("26-01-01T00:00:00Z", None),
+    ("1-01-01T00:00:00Z", None),
+    ("12026-01-01T00:00:00Z", _TS_PAST_LIMITS),
+    ("002026-01-01T00:00:00Z", None),
+    ("-2026-01-01T00:00:00Z", _TS_PAST_LIMITS),
+    ("+2026-01-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-+1-01T00:00:00Z", _TS_UNPARSED),
+    ("2026--1-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01t00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00Z ", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00 Z", None),
+    ("2026-02-30T00:00:00.1234567890Z", _TS_NO_SUCH_DAY),
+    ("0000-01-01T00:00:00.1234567890Z", _TS_PAST_LIMITS),
+    ("0000-01-01T00:00:00.Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00.000000000000000000001Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00.1.2Z", _TS_TRAILING),
+    ("2026-01-01T00:00:00+24:00", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00+23:59", None),
+    ("2026-01-01T00:00:00+09:60", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00-00:00", None),
+    ("\t2026-01-01T00:00:00Z", None),
+    ("\n2026-01-01T00:00:00Z", None),
+    ("2026-01-01T00:00:00Zz", _TS_NO_ZONE),
+    ("10000-01-01T00:00:00Z", _TS_PAST_LIMITS),
+    ("9999-12-31T23:59:59-01:00", _TS_PAST_LIMITS),
+    ("0001-01-01T00:00:00+01:00", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00+9:00", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00.1aZ", _TS_NANOS),
+    ("2026-01-01T00:00:00.-1Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00.+1Z", _TS_NANOS),
+    ("2026.5-01-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00. Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.1 Z", _TS_NANOS),
+    ("2026-01-01T00:00:00 .1Z", None),
+    ("2026-01-01T00:00:00..1Z", _TS_TRAILING),
+    ("9999-12-31T23:59:60Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00 +09:00", None),
+    ("2026-01-01T00:00:00.123456789123Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.1234567890", _TS_NO_ZONE),
+    ("2026-01-01 T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T 00:00:00Z", _TS_UNPARSED),
+    ("2026 -01-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:0.5Z", None),
+    ("2026-13-01T00:00:00+24:00", _TS_NO_ZONE),
+    ("0001-01-01T00:00:59+00:01", _TS_PAST_LIMITS),
+    ("0001-01-01T00:01:00+00:01", None),
+    ("9999-12-31T23:58:59-00:01", None),
+    ("9999-12-31T23:59:00-00:01", _TS_PAST_LIMITS),
+    ("10000-01-01T00:00:00+01:00", None),
+    ("2026-01-01T00:00:00Z\n", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00+09:00\n", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00.-0Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.-00Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.-0000000000Z", _TS_NANOS),
+    ("2026-02-30T00:00:00.-0Z", _TS_NO_SUCH_DAY),
+    ("10000-01-01T00:00:00.-0Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.0000000000Z", None),
+    ("2026-01-01T00:00:00.00000000000000Z", None),
+    ("9223372036854775807-01-01T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("9223372036854775808-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-9223372036854775808-01-01T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("-9223372036854775809-01-01T00:00:00Z", _TS_UNPARSED),
+    ("9223372036854775808-01-01T00:00:00 xZ", _TS_UNPARSED),
+    ("-0000-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-0-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-0000-01-01T00:00:00 xZ", _TS_UNPARSED),
+    ("-0000-02-30T00:00:00Z", _TS_UNPARSED),
+    ("292277026596-12-04T15:30:07Z", _TS_PAST_LIMITS),
+    ("292277026596-12-04T15:30:08Z", _TS_NO_SUCH_DAY),
+    ("292277026596-12-04T15:30:08+01:00", _TS_NO_SUCH_DAY),
+    ("-292277022657-01-27T08:29:52Z", _TS_PAST_LIMITS),
+    ("-292277022657-01-27T08:29:51Z", _TS_NO_SUCH_DAY),
+    ("292277026597-01-01T00:00:00 xZ", _TS_TRAILING),
+    ("292277026597-01-01T00:00:00.1aZ", _TS_NO_SUCH_DAY),
+    ("2024-01-31T00:00:00Z", None),
+    ("2026-13-01T00:00:00.1.2Z", _TS_UNPARSED),
+    ("2026-02-30T00:00:00.1.2Z", _TS_TRAILING),
+    ("2026-02-30T00:00:00.1aZ", _TS_NO_SUCH_DAY),
+]
+_DOCS_CREATE_REFUSALS += [
+    (
+        {},
+        {"title": 5, **_doc_date(value)},
+        "Invalid value at 'title' (TYPE_STRING), 5"
+        + (
+            f"\nInvalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', {error}"
+            if error
+            else ""
+        ),
+    )
+    for value, error in _DOCS_TIMESTAMPS
+]
+
+
 @pytest.mark.parametrize(
-    "body,message",
+    "route,params,body,message",
+    [("/sheets/v4/spreadsheets", {}, *row) for row in _SHEETS_CREATE_REFUSALS]
+    + [("/docs/v1/documents", *row) for row in _DOCS_CREATE_REFUSALS],
+)
+def test_a_create_real_refuses_is_refused_with_reals_message(wc, wh, route, params, body, message):
+    if callable(body):
+        h = {**wh[_OWNER], "Content-Type": "application/json"}
+        r = wc.post(route, headers=h, params=params, content=body())
+    else:
+        r = wc.post(route, headers=wh[_OWNER], params=params, json=body)
+    assert (r.status_code, r.json()["error"]["message"]) == (400, message)
+    assert wc.get("/_meta/overlay").json()["gdrive_files"] == []
+
+
+# --- `documents.batchUpdate` ----------------------------------------------------------------------
+#
+# `wr-text` is the prose `Hello world\nSecond para`, end index 25. `wr-links` states, by index: a
+# bold link `BL` [1, 3) and ` t` [3, 5); the same with ` t` bold [6, 11); a bold link `lnk`
+# [11, 14) and ` t` [14, 16); `ab` [17, 19); underlined `cd` [20, 22); `x` and bold `YZ` [23, 26).
+# `wr-styled` states, by index:
+# a HEADING_1 `Title line` [1, 12); `plain ` [12, 18), bold `BOLD` [18, 22), ` tail` [22, 28); a
+# link `link` [28, 32), ` here` [32, 38); struck `struck` [38, 45), its newline struck too; italic
+# `BOLDSTART` [45, 54), ` x` [54, 57); an empty paragraph [57, 58); `last` [58, 63).
+
+
+def _docs_write(wc, h, doc, body, **params):
+    from tests._helpers import served_id
+
+    path = f"/docs/v1/documents/{served_id('google_drive', doc)}:batchUpdate"
+    return wc.post(path, headers=h, params=params, json=body)
+
+
+def _docs_runs(wc, h, doc) -> list[str]:
+    """A Doc's paragraphs as `<style><headingId> <runs>`: the style `H1` or `N`, the headingId
+    `#orig` when it is the one `wr-styled` starts with and `#new` otherwise, and each run as its
+    marks (`b`, `i`, `u`, `s`, `L` for a link with its underline and colour) before its text, runs
+    joined by `|`."""
+    from tests._helpers import served_id
+
+    did = served_id("google_drive", doc)
+    content = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["body"]["content"]
+    marks = {"bold": "b", "italic": "i", "underline": "u", "strikethrough": "s", "link": "L"}
+    out = []
+    for el in content[1:]:
+        p = el["paragraph"]
+        style = p["paragraphStyle"]
+        tag = "H1" if style["namedStyleType"] == "HEADING_1" else "N"
+        if "headingId" in style:
+            orig = gdocs.heading_id(did, 0)
+            tag += "#orig" if style["headingId"] == orig else "#new"
+        runs = []
+        for pe in p["elements"]:
+            run = pe["textRun"]
+            style = run["textStyle"]
+            m = "".join(
+                v
+                for k, v in marks.items()
+                if k in style and (k != "underline" or "link" not in style)
+            )
+            runs.append(f"{m}:{run['content']}" if m else run["content"])
+        out.append(f"{tag} {'|'.join(runs)}")
+    return out
+
+
+_STYLED = [
+    "H1#orig Title line\n",
+    "N plain |b:BOLD| tail\n",
+    "N L:link| here\n",
+    "N s:struck\n",
+    "N i:BOLDSTART| x\n",
+    "N \n",
+    "N last\n",
+]
+
+
+def _ins(index, text):
+    return {"insertText": {"location": {"index": index}, "text": text}}
+
+
+def _del(start, end):
+    return {"deleteContentRange": {"range": {"startIndex": start, "endIndex": end}}}
+
+
+def _rep(text, by, **criteria):
+    return {"replaceAllText": {"containsText": {"text": text, **criteria}, "replaceText": by}}
+
+
+def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left(wc, wh):
+    """Measured: each request's indices count what the ones before it inserted, the answer is one
+    reply and one suggestion response per request with `replaceAllText`'s count left out at zero,
+    every write moves the `revisionId` the next read serves, and Drive reads the written text,
+    with `modifiedTime` the write's, and `size` and `version` as `docs_batch_update` stores
+    them."""
+    from tests._helpers import served_id
+
+    h = wh[_OWNER]
+    did = served_id("google_drive", "wr-text")
+    before = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
+    r = _docs_write(wc, h, "wr-text", {"requests": [_ins(1, "A"), _ins(2, "B"), _del(3, 4)]})
+    assert r.status_code == 200, r.text
+    answer = r.json()
+    revision = answer["writeControl"]["requiredRevisionId"]
+    assert answer == {
+        "replies": [{}, {}, {}],
+        "writeControl": {"requiredRevisionId": revision},
+        "documentId": did,
+        "suggestionResponses": [{}, {}, {}],
+        "commentUpdateState": "NO_UPDATES_REQUESTED",
+    }
+    assert revision != before
+    assert _docs_runs(wc, h, "wr-text") == ["N ABello world\n", "N Second para\n"]
+    read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+    assert read["revisionId"] == revision
+    assert [e["endIndex"] for e in read["body"]["content"]] == [1, 14, 26]
+    replaced = _docs_write(
+        wc, h, "wr-text", {"requests": [_rep("o", "0"), _rep("zzz", "y")]}, fields="replies"
+    ).json()
+    assert replaced == {
+        "replies": [{"replaceAllText": {"occurrencesChanged": 3}}, {"replaceAllText": {}}]
+    }
+    unchanged = _docs_write(wc, h, "wr-text", {"requests": [_rep("zzz", "y")]}).json()
+    assert unchanged["writeControl"]["requiredRevisionId"] not in (before, revision)
+    fields = {"fields": "modifiedTime,version,size,quotaBytesUsed"}
+    f = wc.get(f"/drive/v3/files/{did}", headers=h, params=fields).json()
+    assert f["modifiedTime"] > "2026-07-14T17:20:00.000Z"
+    # `version` moves once per write and `size` stays, but a blank Doc's first write takes it from
+    # 1 to 1024, which the quota counts as well
+    assert (f["version"], f["size"], f["quotaBytesUsed"]) == ("5", "1024", "1024")
+    about = {"fields": "storageQuota"}
+
+    def quota():
+        return int(
+            wc.get("/drive/v3/about", headers=h, params=about).json()["storageQuota"]["usage"]
+        )
+
+    used = quota()
+    blank = wc.post("/docs/v1/documents", headers=h, json={"title": "Blank"}).json()["documentId"]
+    assert quota() == used + 1
+    write = {"requests": [_ins(1, "x" * 3000)]}
+    assert (
+        wc.post(f"/docs/v1/documents/{blank}:batchUpdate", headers=h, json=write).status_code == 200
+    )
+    f = wc.get(f"/drive/v3/files/{blank}", headers=h, params=fields).json()
+    assert (f["version"], f["size"], quota()) == ("2", "1024", used + 1024)
+    found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains 'ABell0'"})
+    assert [x["id"] for x in found.json()["files"]] == [did]
+    exported = wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"})
+    assert exported.content.decode("utf-8") == "\ufeffABell0 w0rld\r\nSec0nd para"
+
+
+def _searched(seed, *replace):
+    """`wr-text` rewritten to ``seed`` alone, then replaced in as ``replace`` says."""
+    return [_del(1, 24), _ins(1, seed), *replace]
+
+
+_LINKS = [
+    "N bL:BL| t\n",
+    "N bL:BL|b: t\n",
+    "N bL:lnk| t\n",
+    "N ab\n",
+    "N u:cd\n",
+    "N x|b:YZ\n",
+]
+_RE = {"searchByRegex": True, "matchCase": True}
+
+
+_STYLED_ROWS = [
+    # a newline splits a heading into two, the new one with a headingId of its own: after the
+    # one it was cut from, or before it at the heading's start
+    ([_ins(6, "\n")], ["H1#orig Title\n", "H1#new  line\n", *_STYLED[1:]]),
+    (
+        [_ins(1, "a\nb\nc")],
+        ["H1#new a\n", "H1#new b\n", "H1#orig cTitle line\n", *_STYLED[1:]],
+    ),
+    # inserted text takes the style of the character before it, joining its run
+    ([_ins(18, "X")], [_STYLED[0], "N plain X|b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_ins(22, "X")], [_STYLED[0], "N plain |b:BOLDX| tail\n", *_STYLED[2:]]),
+    (
+        [_ins(22, "X\nY")],
+        [_STYLED[0], "N plain |b:BOLDX\n", "N b:Y| tail\n", *_STYLED[2:]],
+    ),
+    # a link only inside it; after it the text is unstyled, and a run of its own
+    ([_ins(30, "X")], [*_STYLED[:2], "N L:liXnk| here\n", *_STYLED[3:]]),
+    ([_ins(32, "X")], [*_STYLED[:2], "N L:link|X| here\n", *_STYLED[3:]]),
+    # at a paragraph's start, the first character's; a run of its own after a newline with a
+    # member it lacks (struck here)
+    ([_ins(45, "X")], [*_STYLED[:4], "N i:X|i:BOLDSTART| x\n", *_STYLED[5:]]),
+    # ... and joins its run after an unstyled newline: `BOLD` starts the paragraph once
+    # `plain ` is gone
+    ([_del(12, 18), _ins(12, "X")], [_STYLED[0], "N b:XBOLD| tail\n", *_STYLED[2:]]),
+    ([_ins(57, "X")], [*_STYLED[:5], "N X\n", _STYLED[6]]),
+    (
+        [{"insertText": {"endOfSegmentLocation": {}, "text": "Z"}}],
+        [*_STYLED[:6], "N lastZ\n"],
+    ),
+    # joined paragraphs take the first one's style, or the last one's when the range starts at
+    # the first one's start; a delete joins the runs it brings together
+    ([_del(11, 12)], ["H1#orig Title lineplain |b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_del(1, 14)], ["N ain |b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_del(1, 12)], _STYLED[1:]),
+    ([_del(18, 22)], [_STYLED[0], "N plain  tail\n", *_STYLED[2:]]),
+    # a replacement takes its match's first character's style, and the body's last newline
+    # stays
+    (
+        [_rep("n BO", "##", matchCase=True)],
+        [_STYLED[0], "N plai##|b:LD| tail\n", *_STYLED[2:]],
+    ),
+    (
+        [_rep("LD t", "##", matchCase=True)],
+        [_STYLED[0], "N plain |b:BO##|ail\n", *_STYLED[2:]],
+    ),
+    ([_rep("line\nplain", "Z")], ["H1#orig Title Z |b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_rep("last\n", "L")], [*_STYLED[:6], "N L\n"]),
+    # matching folds case fully; a regular expression's `$1` is text
+    ([_ins(58, "straße "), _rep("STRASSE", "R")], [*_STYLED[:6], "N R last\n"]),
+    (
+        [_rep("(pl)ain", "$1X", searchByRegex=True)],
+        [_STYLED[0], "N $1X |b:BOLD| tail\n", *_STYLED[2:]],
+    ),
+    ([_rep("^la", "R", searchByRegex=True)], [*_STYLED[:6], "N Rst\n"]),
+]
+
+
+_SEARCH_ROWS = [
+    # a letter with a mark and 104 others compare as `gdocs._FOLD` folds them, case or not, and a
+    # match of part of a fold reaches as `gdocs._unfold` says
+    ("ßs", "s", {}, "RR"),
+    ("sßs", "ss", {}, "RR"),
+    ("xæ y", "a", {"matchCase": True}, "R y"),
+    ("xæ y", "xa", {"matchCase": True}, "Ræ y"),
+    ("x\næ y", "a", {"matchCase": True}, "xR y"),
+    ("aæ y", "a", {"matchCase": True}, "R y"),
+    ("e\u0301 x", "e", {}, "R x"),
+    ("ete é", "é", {"matchCase": True}, "RtR R"),
+    ("Résumé resume", "resume", {}, "R R"),
+    ("ı I i", "I", {}, "R R R"),
+    ("ǅ dž", "Ǆ", {}, "R R"),
+    ("ſ s", "s", {"matchCase": True}, "ſ R"),
+    ("ľ l L", "L", {"matchCase": True}, "R l R"),
+    ("ﬁx fix", "FI", {}, "ﬁx Rx"),
+    ("ß x", "ẞ", {}, "ß x"),
+    ("ά α", "α", {}, "ά R"),
+    # a regular expression is `java.util.regex`'s, over the folded text
+    ("été x", "e", {"searchByRegex": True}, "RtR x"),
+    ("café", "[a-z]+", _RE, "R"),
+    ("ß", "^..$", _RE, "R"),
+    ("a1 b٣ c１", "\\d", _RE, "aR b٣ c１"),
+    ("a\u00a0b c\u2003d", "\\s", _RE, "a\u00a0bRc\u2003dR"),
+    ("aé_1 ж", "\\w", _RE, "RRRR ж"),
+    ("жa", "(?U)\\w", _RE, "RR"),
+    ("ab1", "\\p{L}", _RE, "RR1"),
+    ("ab1ж", "\\p{Alpha}", _RE, "RR1ж"),
+    ("aB", "a(?i)b", _RE, "R"),
+    ("Ж", "(?i)ж", _RE, "Ж"),
+    ("aab", "(?<n>a)\\k<n>", _RE, "Rb"),
+    ("a.b axb", "\\Qa.b\\E", _RE, "R axb"),
+    ("ab", "b\\Z", _RE, "aR"),
+    ("ab", "b\\z", _RE, "ab"),
+    ("A", "\\0101", _RE, "R"),
+    ("abc", "[a-c&&[^b]]", _RE, "RbR"),
+    ("abcx", "[a-c[x]]", _RE, "RRRR"),
+    ("a:", "[[:alpha:]]", _RE, "RR"),
+    ("aaa", "a++a", _RE, "aaa"),
+    ("aaaa", "a{,2}", _RE, "aaaa"),
+    ("a", "a(?#c)", _RE, "a"),
+    # a combining mark folds into the character before it, whatever it is, and alone matches
+    # nothing; one that starts the text moves every match one character on
+    ("ж\u0301 ж", "ж", {"matchCase": True}, "R R", 2),
+    ("1\u0301 1", "1", {"matchCase": True}, "R R", 2),
+    ("x \u0301a", "\u0301", {"matchCase": True}, "x \u0301a", 0),
+    ("x \u0301a", " ", {"matchCase": True}, "xRa", 1),
+    ("\u0301abc", "b", {"matchCase": True}, "\u0301abR", 1),
+    ("cat CAT", "CAT", {"matchCase": True}, "cat R", 1),
+    ("cat CAT", "CAT", {}, "R R", 2),
+    ("ſt st", "s", {}, "Rt Rt", 2),
+    ("\u212a k", "k", {}, "R R", 2),
+    ("ſt st", "s", {"searchByRegex": True}, "Rt Rt", 2),
+    # Java's classes and properties: ASCII classes that keep their case, `\p{...}` whatever the
+    # case flags, and the names Java gives a property
+    ("ſ \u212a s k", "\\w", {"searchByRegex": True}, "ſ \u212a R R", 2),
+    ("ſ \u212a s k", "\\p{Alpha}", {"searchByRegex": True}, "ſ \u212a R R", 2),
+    ("ſ \u212a s k", "[a-z]", {"searchByRegex": True}, "R R R R", 4),
+    ("Привет мир ab", "\\p{L}+", _RE, "R R R", 3),
+    ("Ωmega ΔΣ Ab", "\\p{Lu}", _RE, "Rmega RR Rb", 4),
+    ("aБ", "(?i)\\p{Lu}", _RE, "RR", 2),
+    ("Привет мир ab", "\\p{IsCyrillic}+", _RE, "R R ab", 2),
+    ("ab 12 c.", "\\p{IsLetter}+", {"searchByRegex": True}, "R 12 R.", 2),
+    ("a.b,c", "\\p{IsPunctuation}", {"searchByRegex": True}, "aRbRc", 2),
+    ("a b", "\\p{IsWhiteSpace}", _RE, "aRbR", 2),
+    ("abC d", "\\p{javaLowerCase}+", _RE, "RC R", 2),
+    ("a b\u00a0c\td", "\\p{javaWhitespace}", _RE, "aRb\u00a0cRdR", 3),
+    ("a1-b", "\\p{javaLetterOrDigit}+", _RE, "R-R", 2),
+    ("abж", "\\p{InBasicLatin}+", _RE, "RжR", 2),
+    ("abж", "\\p{sc=Latin}+", _RE, "Rж", 1),
+    ("1x2", "[\\p{IsDigit}x]+", _RE, "R", 1),
+    ("a", "\\p{isletter}", _RE, "a", 0),
+    ("abж", "\\p{Latin}+", _RE, "abж", 0),
+    # `\p{Lower}` and `\p{Upper}` take both ASCII cases under a case-insensitive flag, and a
+    # non-ASCII letter keeps its case under an ASCII-only `(?i)`, however it is written
+    ("aB cD", "\\p{Upper}", {"searchByRegex": True}, "RR RR", 4),
+    ("aB cD", "\\P{Lower}", {"searchByRegex": True}, "aBRcDR", 2),
+    ("aB cD", "(?i)\\p{Upper}", _RE, "RR RR", 4),
+    ("aB cD", "\\p{Upper}", _RE, "aR cR", 2),
+    ("aB ſ \u212a sk", "\\p{Lower}", {"searchByRegex": True}, "RR ſ \u212a RR", 4),
+    ("aB ж Ж", "(?U)\\p{Lower}", _RE, "RB R Ж", 2),
+    *(
+        ("жЖ aA", pattern, _RE, after, changed)
+        for pattern, after, changed in [
+            ("(?i)\\x{436}", "RЖ aA", 1),
+            ("(?i)\\Qж\\E", "RЖ aA", 1),
+            ("(?i)\\u0436", "RЖ aA", 1),
+            ("(?i)\\N{CYRILLIC SMALL LETTER ZHE}", "RЖ aA", 1),
+            ("(?iu)ж", "RR aA", 2),
+            ("(?i)\\x{41}", "жЖ RR", 2),
+        ]
+    ),
+    ("жЖ", "(?i)ж", {"searchByRegex": True}, "RR", 2),
+    ("ab", "\\p{all}", _RE, "RRR", 3),
+    ("aé ж", "\\p{L1}+", _RE, "RжR", 2),
+    ("a1-b", "\\p{LD}+", _RE, "R-R", 2),
+    ("a1 $", "\\p{javaJavaIdentifierStart}", _RE, "R1 R", 2),
+    ("a1 $_", "\\p{javaJavaIdentifierPart}+", _RE, "R R", 2),
+    ("a1 _", "\\p{javaUnicodeIdentifierStart}", _RE, "R1 _", 1),
+    ("a1 _", "\\p{javaUnicodeIdentifierPart}+", _RE, "R R", 2),
+    ("a\u200bb", "\\p{javaIdentifierIgnorable}", _RE, "aRb", 1),
+    ("Noe", "\\p{Nope}", _RE, "Noe", 0),
+    # what the rest of Java's syntax reads
+    ("a.b axb", "a\\.b", _RE, "R axb", 1),
+    ("ab ac", "a(?=b)", _RE, "Rb ac", 1),
+    ("ab cb", "(?<=a)b", _RE, "aR cb", 1),
+    ("ab cb", "(?<!a)b", _RE, "ab cR", 1),
+    ("ab", "(?>a)b", _RE, "R", 1),
+    ("ab", "(?!a).", _RE, "aR", 1),
+    ("a b", "\\W", _RE, "aRbR", 2),
+    ("a1", "\\D", _RE, "R1R", 2),
+    ("a b", "\\S", _RE, "R R", 2),
+    ("a1", "\\P{L}", _RE, "aRR", 2),
+    ("AB", "\\x{41}", _RE, "RB", 1),
+    ("AB", "\\x41", _RE, "RB", 1),
+    ("aA", "\\x{0041}", _RE, "aR", 1),
+    ("aA", "\\x{10FFFF}|a", _RE, "RA", 1),
+    ("\U0001f600a", "\\uD83D\\uDE00", _RE, "Ra", 1),
+    ("\U0001f600a", "\\uD83D", _RE, "\U0001f600a", 0),
+    ("ab", "\\N{LATIN SMALL LETTER A}", _RE, "Rb", 1),
+    ("a\nb", "\\cJ", _RE, "aRbR", 2),
+    ("a-b", "[\\w]", _RE, "R-R", 2),
+    ("a1", "[\\p{Alpha}]", _RE, "R1", 1),
+    ("aж1", "(?U)\\p{Alpha}", _RE, "RR1", 2),
+    ("a b", "[ a]", _RE, "RRb", 2),
+    ("a#b", "[#a]", _RE, "RRb", 2),
+    ("ſs k", "\\b", {"searchByRegex": True}, "ſRRRR", 4),
+    # an empty match moves the search on one character
+    ("aa", "a??", _RE, "RRR", 3),
+    ("ab", "|a", _RE, "RRR", 3),
+    ("a b", "\\s*?", _RE, "RRRR", 4),
+    ("ab", "$", _RE, "abR", 1),
+    ("baab", "a*", _RE, "RRRR", 4),
+    # syntax Java refuses, or reads otherwise, and malformed escapes match nothing
+    *(
+        (seed, pattern, {"searchByRegex": True}, seed, 0)
+        for pattern, seed in [
+            ("(?R)", "abc"),
+            ("a\\Kb", "abc"),
+            ("(?P<n>a)", "ab"),
+            ("(?<n>a)|(?<n>b)", "ab"),
+            ("(?1)(a)", "aa"),
+            ("(?&n)(?<n>a)", "aa"),
+            ("(?|(a)|(b))", "ab"),
+            ("(?(1)a|b)", "ab"),
+            ("a(?-1)", "aa"),
+            ("\\m", "m"),
+            ("\\0", "a0b"),
+            ("\\x{41", "A{41"),
+            ("\\k<a", "ab"),
+            ("\\p{L", "ab"),
+            ("\\N{LATIN", "ab"),
+            ("a\\", "ab"),
+            ("(", "a(b"),
+        ]
+    ),
+    *(
+        ("aA", pattern, _RE, "aA", 0)
+        for pattern in ("\\x{}", "\\x{zz}", "\\x{+41}", "\\x{110000}", "a|\\x{}", "[\\x{}a]")
+    ),
+    ("a b", "(?x)[ a]", _RE, "R b", 1),
+    ("a#b", "(?x)[#a]", _RE, "a#b", 0),
+    ("aaa", "a{2}", _RE, "Ra", 1),
+    ("abab x", "(?:ab)+", _RE, "R x", 1),
+]
+
+
+@pytest.mark.parametrize(
+    "doc,requests,runs,changed",
     [
+        *(("wr-styled", *row, None) for row in _STYLED_ROWS),
+        # at a link's end, the next character's style; text starting with a newline inside a link
+        # is unstyled
+        ("wr-links", [_ins(3, "X")], ["N bL:BL|X| t\n", *_LINKS[1:]], None),
+        ("wr-links", [_ins(8, "X")], [_LINKS[0], "N bL:BL|b:X|b: t\n", *_LINKS[2:]], None),
         (
-            {
-                "sheets": [
-                    {"properties": {"title": "a", "sheetId": 7}},
-                    {"properties": {"title": "b", "sheetId": 7}},
-                ]
-            },
-            "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
+            "wr-links",
+            [_ins(12, "\nX")],
+            [*_LINKS[:2], "N bL:l|\n", "N X|bL:nk| t\n", *_LINKS[3:]],
+            None,
         ),
-        (
-            {"sheets": [{"properties": {"title": "a", "sheetId": -1}}]},
-            "Invalid sheets[0]: Sheet id must be non-negative.",
-        ),
-        (
-            {"sheets": [{"properties": {"title": "Same"}}, {"properties": {"title": "same"}}]},
-            'Invalid sheets[1]: A sheet with the name "same" already exists. Please enter another name.',
-        ),
-        (
-            {"sheets": [{"properties": {"title": "x" * 101}}]},
-            "Invalid sheets[0]: The sheet name cannot be greater than 100 characters.",
-        ),
-        (
-            {"sheets": [{"properties": {"index": 3}}]},
-            "Invalid sheets: The new sheet index is too high.",
-        ),
-        (
-            {"sheets": [{"properties": {"hidden": True}}]},
-            "Invalid sheets[0]: You can't hide all the sheets in a document.",
-        ),
-        (
-            {"sheets": [{"properties": {"gridProperties": {"columnCount": -1}}}]},
-            "Invalid sheets[0]: You can't delete all the columns on the sheet.",
-        ),
-        (
-            {"sheets": [{"properties": {"gridProperties": {"rowCount": -1}}}]},
-            "Invalid sheets[0]: You can't delete all the rows on the sheet.",
-        ),
-        ({"spreadsheetId": "abc"}, "Invalid spreadsheet.spreadsheetId: The id is invalid."),
-        # two refusals at once: real names the one it checks first
-        (
-            {"spreadsheetId": "abc", "properties": {"locale": "xx_YY"}},
-            "Invalid properties: Unsupported locale: xx_YY",
-        ),
-        (
-            {"sheets": [{"properties": {"title": "x" * 101, "sheetId": -1}}]},
-            "Invalid sheets[0]: Sheet id must be non-negative.",
-        ),
-        (
-            {
-                "sheets": [
-                    {"properties": {"title": "a", "sheetId": 7}},
-                    {"properties": {"title": "A", "sheetId": 7}},
-                ]
-            },
-            "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
-        ),
-        (
-            {"sheets": [{"properties": {"gridProperties": {"rowCount": -1, "columnCount": -1}}}]},
-            "Invalid sheets[0]: You can't delete all the rows on the sheet.",
-        ),
-        (
-            {"sheets": [{"properties": {"index": 3, "hidden": True}}]},
-            "Invalid sheets[0]: You can't hide all the sheets in a document.",
-        ),
-        (
-            {"bogus": 1},
-            "Invalid JSON payload received. Unknown name \"bogus\" at 'spreadsheet': Cannot find field.",
-        ),
-        ({"properties": {"locale": "xx_YY"}}, "Invalid properties: Unsupported locale: xx_YY"),
-        ({"properties": {"locale": "en_us"}}, "Invalid properties: Unsupported locale: en_us"),
-        (
-            {"sheets": [{"properties": {"title": "o", "sheetType": "OBJECT"}}]},
-            "Object sheets must have exactly one embedded object",
-        ),
-        (
-            {
-                "sheets": [
-                    {
-                        "data": [
-                            {
-                                "rowData": [
-                                    {
-                                        "values": [
-                                            {"userEnteredValue": {"errorValue": {"type": "N_A"}}}
-                                        ]
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ]
-            },
-            "Invalid sheets[0].data[0]: Cannot set cell to an error value",
-        ),
-        (
-            {
-                "sheets": [
-                    {
-                        "properties": {"gridProperties": {"rowCount": 2, "columnCount": 2}},
-                        "data": [
-                            {
-                                "startRow": 3,
-                                "rowData": [
-                                    {"values": [{"userEnteredValue": {"stringValue": "x"}}]}
-                                ],
-                            }
-                        ],
-                    }
-                ]
-            },
-            "Invalid sheets[0].data[0]: GridCoordinate.rowIndex[3] is after last row in grid[1]",
-        ),
-        # a block starting inside the grid and running past it says what it attempted
-        (
-            {
-                "sheets": [
-                    {
-                        "properties": {"gridProperties": {"rowCount": 2}},
-                        "data": [
-                            {
-                                "rowData": [
-                                    {"values": [{"userEnteredValue": {"stringValue": "x"}}]}
-                                ]
-                                * 3
-                            }
-                        ],
-                    }
-                ]
-            },
-            "Invalid sheets[0].data[0]: Attempting to write row: 2, beyond the last requested row "
-            "of: 1",
-        ),
-        (
-            {
-                "sheets": [
-                    {
-                        "properties": {"gridProperties": {"columnCount": 2}},
-                        "data": [
-                            {
-                                "rowData": [
-                                    {"values": [{"userEnteredValue": {"stringValue": "x"}}] * 3}
-                                ]
-                            }
-                        ],
-                    }
-                ]
-            },
-            "Invalid sheets[0].data[0]: Attempting to write column: 2, beyond the last requested "
-            "column of: 1",
-        ),
-        # titles collide as Java's equalsIgnoreCase compares them
-        (
-            {"sheets": [{"properties": {"title": "ſheet"}}, {"properties": {"title": "Sheet"}}]},
-            'Invalid sheets[1]: A sheet with the name "Sheet" already exists. Please enter another name.',
-        ),
-        (
-            {"sheets": [{"properties": {"title": "ς"}}, {"properties": {"title": "σ"}}]},
-            'Invalid sheets[1]: A sheet with the name "σ" already exists. Please enter another name.',
+        ("wr-links", [_ins(20, "X")], [*_LINKS[:4], "N u:Xcd\n", _LINKS[5]], None),
+        ("wr-links", [_ins(20, "\n")], [*_LINKS[:4], "N u:\n", "N u:cd\n", _LINKS[5]], None),
+        ("wr-links", [_rep("YZ", "Q", matchCase=True)], [*_LINKS[:5], "N x|b:Q\n"], None),
+        # what `replaceAllText` matches, each row a seed, a search, its criteria, the text left
+        # and, where measured, the matches it counted
+        *(
+            ("wr-text", _searched(seed, _rep(text, "R", **criteria)), [f"N {after}\n"], *changed)
+            for seed, text, criteria, after, *changed in [(*row, None)[:5] for row in _SEARCH_ROWS]
         ),
     ],
 )
-def test_a_create_real_refuses_is_refused_with_reals_message(wc, wh, body, message):
-    r = wc.post("/sheets/v4/spreadsheets", headers=wh[_OWNER], json=body)
-    assert (r.status_code, r.json()["error"]["message"]) == (400, message)
-    assert wc.get("/_meta/overlay").json()["gdrive_files"] == []
+def test_a_write_styles_what_it_inserts_as_real_does(wc, wh, doc, requests, runs, changed):
+    h = wh[_OWNER]
+    r = _docs_write(wc, h, doc, {"requests": requests})
+    assert r.status_code == 200, r.text
+    assert _docs_runs(wc, h, doc) == runs
+    if changed is not None:
+        count = {"occurrencesChanged": changed} if changed else {}
+        assert r.json()["replies"][-1] == {"replaceAllText": count}
+
+
+_GRAPHEME = (
+    "Invalid requests[1].insertText: The insertion index cannot be within a grapheme cluster."
+)
+_IN_PARAGRAPH = (
+    "Invalid requests[0].insertText: The insertion index must be inside the bounds of an existing "
+    "paragraph. You can still create new paragraphs by inserting newlines."
+)
+_PAST_END = "must be less than the end index of the referenced segment, 25."
+_NO_SEGMENT = (
+    "Segment with ID kix.nope was not found. If a segment ID is provided, it must be a header, "
+    "footer or footnote ID. Use an empty segment ID to reference the body."
+)
+_DOCS_BATCH_REFUSALS = [
+    ([], 400, "Must specify at least one request."),
+    ({"requests": None}, 400, "Must specify at least one request."),
+    ([{}], 400, "Invalid requests[0]: No request set."),
+    ([{"insertText": None}], 400, "Invalid requests[0]: No request set."),
+    # the first refusal is named alone, and what came before it is not kept
+    ([_ins(0, "x"), _del(3, 2)], 400, _IN_PARAGRAPH),
+    (
+        [_ins(1, "ZZ"), _del(3, 2)],
+        400,
+        "Invalid requests[1].deleteContentRange: Invalid range: end index cannot be less than start index",
+    ),
+    (
+        [{"insertText": {"text": "x"}}],
+        400,
+        "Invalid requests[0].insertText: No insertion location set.",
+    ),
+    ([{"insertText": {}}], 400, "Invalid requests[0].insertText: No insertion location set."),
+    (
+        [{"insertText": {"location": {"index": 1}}}],
+        400,
+        "Invalid requests[0].insertText: Insert text requests must specify text to insert.",
+    ),
+    (
+        [{"insertText": {"location": {"index": 0}}}],
+        400,
+        "Invalid requests[0].insertText: Insert text requests must specify text to insert.",
+    ),
+    (
+        [_ins(1, "")],
+        400,
+        "Invalid requests[0].insertText: Insert text requests must specify text to insert.",
+    ),
+    (
+        [{"insertText": {"location": {"index": 1, "tabId": "t.nope", "segmentId": "kix.nope"}}}],
+        400,
+        "Invalid requests[0].insertText: Cannot apply request to an invalid tab ID.",
+    ),
+    (
+        [{"insertText": {"location": {"index": 1000, "segmentId": "kix.nope"}, "text": "x"}}],
+        400,
+        f"Invalid requests[0].insertText: {_NO_SEGMENT}",
+    ),
+    (
+        [{"insertText": {"endOfSegmentLocation": {"tabId": "t.nope"}, "text": "x"}}],
+        400,
+        "Invalid requests[0].insertText: Cannot apply request to an invalid tab ID.",
+    ),
+    (
+        [_ins(-1, "x")],
+        400,
+        "Invalid requests[0].insertText: Index must be greater than or equal to 0.",
+    ),
+    ([_ins(25, "x")], 400, f"Invalid requests[0].insertText: Index 25 {_PAST_END}"),
+    ([_ins(1000, "x")], 400, f"Invalid requests[0].insertText: Index 1000 {_PAST_END}"),
+    ([_ins(0, "x")], 400, _IN_PARAGRAPH),
+    ([{"insertText": {"location": {}, "text": "x"}}], 400, _IN_PARAGRAPH),
+    ([_ins(1, "\U0001f600"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "é"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "\U0001f44d\U0001f3fd"), _ins(3, "x")], 400, _GRAPHEME),
+    ([_ins(1, "\U0001f1f0\U0001f1f7"), _ins(3, "x")], 400, _GRAPHEME),
+    ([_ins(1, "가"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "❤️"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "\U0001f468‍\U0001f469"), _ins(3, "x")], 400, _GRAPHEME),
+    # where Unicode's extended grapheme clusters have no boundary
+    *(
+        ([_ins(1, seed), _ins(at, "x")], 400, _GRAPHEME)
+        for seed, at in [
+            ("a\u200cb", 2),
+            ("\U0001f408\u200d\u2b1b", 3),
+            ("\U0001f408\u200d\u2b1b", 4),
+            ("\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f", 3),
+            ("\u0600\u0661", 2),
+            ("a\u200d\U0001f600", 2),
+            ("\U0001f1f0\U0001f1f7\U0001f1fa", 3),
+            ("\U0001f1f0\U0001f1f7\U0001f1fa\U0001f1f8", 7),
+            ("\u1100\u1100", 2),
+            ("\u1100가", 2),
+            ("\u1161\u11a8", 2),
+            ("\u11a8\u11a8", 2),
+            ("가\u11a8", 2),
+            ("각\u11a8", 2),
+            ("\ua960\u1161", 2),
+            ("\u1100\ud7b0\ud7cb", 3),
+            ("क\u093e", 2),
+            ("a\u20dd", 2),
+            ("a\U0001f3fb", 2),
+            ("\U0001f600\u093e", 3),
+            ("\U0001f1f0\u0301", 3),
+        ]
+    ),
+    (
+        [{"deleteContentRange": {}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Delete content range requests must include a range to delete.",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"endIndex": 3}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: must contain a start and end index",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"startIndex": None, "endIndex": 3}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: must contain a start and end index",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"startIndex": 3}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: must contain a start and end index",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"startIndex": 2, "endIndex": 2, "tabId": "t.nope"}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Cannot apply request to an invalid tab ID.",
+    ),
+    (
+        [
+            {
+                "deleteContentRange": {
+                    "range": {"startIndex": 2, "endIndex": 3, "segmentId": "kix.nope"}
+                }
+            }
+        ],
+        400,
+        f"Invalid requests[0].deleteContentRange: {_NO_SEGMENT}",
+    ),
+    (
+        [_del(5, -1)],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: end index cannot be less than start index",
+    ),
+    (
+        [_del(-1, -1)],
+        400,
+        "Invalid requests[0].deleteContentRange: Index must be greater than or equal to 0.",
+    ),
+    ([_del(30, 30)], 400, f"Invalid requests[0].deleteContentRange: Index 30 {_PAST_END}"),
+    ([_del(0, 30)], 400, f"Invalid requests[0].deleteContentRange: Index 29 {_PAST_END}"),
+    ([_del(0, 0)], 400, "Invalid requests[0].deleteContentRange: The range should not be empty."),
+    *(
+        (
+            [_del(0, end)],
+            400,
+            "Invalid requests[0].deleteContentRange: Cannot operate on the first section break in the document.",
+        )
+        for end in (2, 25)
+    ),
+    *(
+        (
+            [_del(start, 25)],
+            400,
+            "Invalid requests[0].deleteContentRange: The range cannot include the newline character at the end of the segment.",
+        )
+        for start in (1, 24)
+    ),
+    *(
+        (
+            [_ins(1, "\U0001f600b"), _del(start, end)],
+            400,
+            "Invalid requests[1].deleteContentRange: Invalid deletion range. Cannot delete the requested range.",
+        )
+        for start, end in ((1, 2), (2, 4))
+    ),
+    (
+        [{"replaceAllText": {"replaceText": "x"}}],
+        400,
+        "Invalid requests[0].replaceAllText: The substring match text should not be empty",
+    ),
+    (
+        [_rep("", "x")],
+        400,
+        "Invalid requests[0].replaceAllText: The substring match text should not be empty",
+    ),
+    # a 500 a request leads to comes after every refusal, and keeps nothing either
+    ([_ins(1, "﷐"), _ins(0, "a")], 400, _IN_PARAGRAPH.replace("[0]", "[1]")),
+    ([_ins(1, "a"), _ins(1, "﷐")], 500, "Internal error encountered."),
+    ([_rep("world", "﷐")], 500, "Internal error encountered."),
+    (
+        [
+            {
+                "replaceAllText": {
+                    "containsText": {"text": "zzz"},
+                    "replaceText": "x",
+                    "tabsCriteria": {"tabIds": ["t.0", "t.nope"]},
+                }
+            }
+        ],
+        500,
+        "Internal error encountered.",
+    ),
+    # what is not served here names itself
+    (
+        [{"updateTextStyle": {}}],
+        400,
+        "Invalid requests[0].updateTextStyle: 'updateTextStyle' is not served by Backlot: real Docs applies it, and nothing here keeps what it changes.",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"writeMode": "SUGGEST"}},
+        400,
+        "'SUGGEST' is not served by Backlot: real Docs records each request as a suggestion, and nothing here keeps one.",
+    ),
+    # the body is read as the proto layer reads it
+    (
+        [{**_ins(1, "x"), **_del(2, 3)}],
+        400,
+        "Invalid value at 'requests[0]' (oneof), oneof field 'request' is already set. Cannot set 'deleteContentRange'",
+    ),
+    (
+        [{"insertText": {"location": {"index": 1}, "endOfSegmentLocation": {}, "text": "x"}}],
+        400,
+        "Invalid value at 'requests[0].insert_text' (oneof), oneof field 'insertion_location' is already set. Cannot set 'endOfSegmentLocation'",
+    ),
+    (
+        {
+            "requests": [_ins(1, "x")],
+            "writeControl": {"requiredRevisionId": "a", "targetRevisionId": "a"},
+        },
+        400,
+        "Invalid value at 'write_control' (oneof), oneof field 'control' is already set. Cannot set 'targetRevisionId'",
+    ),
+    (
+        [{"insertFoo": {}}],
+        400,
+        "Invalid JSON payload received. Unknown name \"insertFoo\" at 'requests[0]': Cannot find field.",
+    ),
+    (
+        [_ins("a", "x")],
+        400,
+        "Invalid value at 'requests[0].insert_text.location.index' (TYPE_INT32), \"a\"",
+    ),
+    (
+        [_del("a", 3)],
+        400,
+        "Invalid value at 'requests[0].delete_content_range.range.start_index.value' (TYPE_INT32), \"a\"",
+    ),
+    (
+        {"requests": "x"},
+        400,
+        f"Invalid value at 'requests' ({_DOCS_TYPE}.BatchUpdateDocumentRequest.Request), \"x\"",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"writeMode": "BOGUS"}},
+        400,
+        f"Invalid value at 'write_control.write_mode' ({_DOCS_TYPE}.WriteControl.WriteMode), \"BOGUS\"",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "nope": 1},
+        400,
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    ),
+    ([1], 400, _ROOT_NOT_A_MESSAGE),
+    # `requests` before the revision, the revision before the requests' own refusals
+    (
+        {"requests": [], "writeControl": {"requiredRevisionId": "abc"}},
+        400,
+        "Must specify at least one request.",
+    ),
+    (
+        {"requests": [{}], "writeControl": {"requiredRevisionId": "abc"}},
+        400,
+        "Invalid requests[0]: No request set.",
+    ),
+    (
+        {"requests": [_ins(0, "x")], "writeControl": {"requiredRevisionId": "abc"}},
+        400,
+        "The required revision ID 'abc' does not match the latest revision.",
+    ),
+    (
+        {"requests": [_ins(0, "x")], "writeControl": {"targetRevisionId": "abc"}},
+        400,
+        "Invalid revision ID: abc",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"requiredRevisionId": "AHj4eMabc"}},
+        500,
+        "Internal error encountered.",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"targetRevisionId": "AHj4eMabc"}},
+        500,
+        "Internal error encountered.",
+    ),
+]
+
+
+@pytest.mark.parametrize("body,status,message", _DOCS_BATCH_REFUSALS)
+def test_a_batch_update_real_refuses_is_refused_with_reals_message(wc, wh, body, status, message):
+    body = {"requests": body} if isinstance(body, list) and body != [1] else body
+    r = _docs_write(wc, wh[_OWNER], "wr-text", body)
+    assert (r.status_code, r.json()["error"]["message"]) == (status, message)
+    assert wc.get("/_meta/overlay").json()["gdrive_doc_bodies"] == []
+
+
+def test_a_batch_update_takes_what_real_takes(wc, wh):
+    """Measured: text that is only characters `insertText` strips is taken and inserts nothing,
+    as is the one tab by its id and an empty `tabsCriteria`; `requests` as one object is a list of
+    it; a range may end inside a letter's combining mark; a `requiredRevisionId` must be the latest,
+    a `targetRevisionId` may be any earlier one, and another Doc's is refused as either."""
+    from tests._helpers import served_id
+
+    h = wh[_OWNER]
+    did = served_id("google_drive", "wr-text")
+    first = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
+    taken = [
+        [_ins(1, "\x01\r")],
+        [{"insertText": {"location": {"index": 1, "tabId": "t.0"}, "text": "x"}}],
+        [
+            {
+                "replaceAllText": {
+                    "containsText": {"text": "zzz"},
+                    "replaceText": "x",
+                    "tabsCriteria": {"tabIds": []},
+                }
+            }
+        ],
+        _ins(1, "y"),
+        [_ins(1, "é"), _del(2, 3)],
+        [_rep("zzz", "\ufdd0")],
+        [{"insertText": {"location": {"index": 1, "tabId": ""}, "text": "t"}}],
+        [{"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 2, "tabId": ""}}}],
+        # a cluster's boundary: after a ZWNJ, between a ZWJ that follows a letter and an emoji,
+        # after a flag's pair, between a syllable and a leading jamo
+        [_ins(1, "a\u200cb"), _ins(3, "x")],
+        [_ins(1, "a\u200d\U0001f600"), _ins(3, "x")],
+        [_ins(1, "\U0001f1f0\U0001f1f7\U0001f1fa"), _ins(5, "x")],
+        [_ins(1, "가\u1100"), _ins(2, "x")],
+    ]
+    for requests in taken:
+        assert _docs_write(wc, h, "wr-text", {"requests": requests}).status_code == 200
+    # a `writeMode` is its number, and only `SUGGEST`'s is refused
+    for mode in (7, -1, "1"):
+        body = {"requests": [_ins(1, "m")], "writeControl": {"writeMode": mode}}
+        assert _docs_write(wc, h, "wr-text", body).status_code == 200
+    assert _docs_runs(wc, h, "wr-text") == [
+        "N mmm가xᄀ\U0001f1f0\U0001f1f7x\U0001f1faa\u200dx\U0001f600a\u200cxbeyxHello world\n",
+        "N Second para\n",
+    ]
+    latest = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
+    pinned = {"requests": [_ins(1, "z")], "writeControl": {"requiredRevisionId": latest}}
+    assert _docs_write(wc, h, "wr-text", pinned).status_code == 200
+    assert _docs_write(wc, h, "wr-text", pinned).status_code == 400
+    late = {"requests": [_ins(1, "w")], "writeControl": {"targetRevisionId": first}}
+    assert _docs_write(wc, h, "wr-text", late).status_code == 200
+    # another Doc's revision is neither, as either
+    other = served_id("google_drive", "wr-doc")
+    theirs = wc.get(f"/docs/v1/documents/{other}", headers=h).json()["revisionId"]
+    for field in ("requiredRevisionId", "targetRevisionId"):
+        body = {"requests": [_ins(1, "v")], "writeControl": {field: theirs}}
+        r = _docs_write(wc, h, "wr-text", body)
+        assert (r.status_code, r.json()["error"]["message"]) == (
+            400,
+            "The provided revision ID is invalid.",
+        )
 
 
 def test_copy_to_adds_a_copy_named_in_the_destinations_language(wc, wh, wbook):

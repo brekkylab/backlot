@@ -2,24 +2,17 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
+from tests._helpers import script_module
+
 REPO = Path(__file__).resolve().parent.parent
 
 
-def _invariance():
-    """`scripts/invariance.py` as a module, since `scripts/` is not a package."""
-    spec = importlib.util.spec_from_file_location("invariance", REPO / "scripts" / "invariance.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-invariance = _invariance()
+invariance = script_module("invariance")
 
 
 def _run(

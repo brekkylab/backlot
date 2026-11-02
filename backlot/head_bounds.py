@@ -5,7 +5,8 @@ gives for the path its request line names.
 A front door bounds either the whole head, every byte of it that has arrived, or each line of it,
 the bytes before the line's LF with the CR among them (:attr:`Bound.per_line`). Once that many have
 arrived it answers and closes the connection, with a page that turns on whether the bound was
-reached in the request line or in the headers. A head whose last byte, the LF that ends it, is the
+reached in the request line or in the headers, or with its refusal of a request line it refuses
+ahead of the bound (:meth:`Bound.refused`). A head whose last byte, the LF that ends it, is the
 bound's last gets past a head bound unless :attr:`Bound.refuses_its_end`; a line bound counts no LF,
 so a line holding that many bytes is refused whether its LF follows or not. The answer here is the
 front door's status line, `Content-Type` and body, with `Content-Length` and `Connection: close`,
@@ -13,8 +14,14 @@ and none of the front door's other headers (`Server`, `Date`, `Via`, `Cache-Cont
 `Referrer-Policy`, `X-Cache`, `X-Amz-Cf-Pop` and the request ids).
 
 Bytes are counted as the client sent them but for the prefix a path starts with here and real never
-receives (``backlot.request_target.front_door``): the head real gets is that much shorter. The rest
-of the head is counted as sent, `Host` and all. A path no vendor owns has no bound.
+receives (``backlot.request_target.front_door``): the head real gets is that much shorter. Where the
+path is the prefix alone, real gets `/` in its place, and that byte is counted (Slack's `/`,
+measured on 2026-11-01). The rest of the head is counted as sent, `Host` and all, and so are the
+empty lines ahead of the request line, which httptools skips, but on Slack and Google
+(:attr:`Bound.counts_blank`). With a CRLF there, measured on 2026-11-02 as the bounds below were, a
+request line and headers two bytes short of the bound were refused on GitHub, Graph and S3 and three
+short waited; on Slack and Google, and on Jira Cloud and Notion, whose bound is a line's, a byte
+short waited and the bound's length was refused. A path no vendor owns has no bound.
 
 Measured on 2026-10-29 with each request written to a TLS socket by hand and cache-busted: each sent
 exactly N bytes and then waited for an answer (six seconds, four on api.github.com, which closes a
@@ -44,6 +51,10 @@ from backlot import errors, request_target
 #: (``backlot.request_target.front_door``) fit in it.
 NAMED_WITHIN = 64
 
+#: The most bytes one TLS record holds, and so the size of the pieces a head written at once
+#: reaches a front door in.
+PIECE = 16_384
+
 
 @dataclasses.dataclass(frozen=True)
 class Bound:
@@ -59,22 +70,43 @@ class Bound:
     in_line: bytes
     #: The answer to a header that reaches it.
     in_headers: bytes
-    #: The bytes of the request line real never receives (``front_door``'s prefix).
+    #: Whether :attr:`limit` counts the CRLFs and LFs a client sends before a request line.
+    counts_blank: bool = True
+    #: The bytes of the request line real never receives (the module docstring says which).
     mount: int = 0
+    #: The front door, as ``backlot.request_target.front_door`` names it.
+    door: str = ""
 
-    def answer(self, size: int, line: int, in_request_line: bool, ended: bool) -> bytes | None:
-        """The answer to a head of which ``size`` bytes have arrived, ``line`` of them in the line
-        they end in and before its LF, ``ended`` where the last is the LF that ends the head; or
-        ``None`` while it is within the bound."""
+    def answer(
+        self, size: int, blank: int, line: int, in_request_line: bool, ended: bool
+    ) -> bytes | None:
+        """The answer to a head of which ``size`` bytes have arrived, ``blank`` of them in empty
+        lines ahead of the request line and ``line`` in the line they end in and before its LF,
+        ``ended`` where the last is the LF that ends the head; or ``None`` while it is within the
+        bound."""
         if self.per_line:
             read = line - self.mount if in_request_line else line
         elif ended and not self.refuses_its_end:
             return None
         else:
-            read = size - self.mount
+            read = size - self.mount - (0 if self.counts_blank else blank)
         if read < self.limit:
             return None
         return self.in_line if in_request_line else self.in_headers
+
+    def refused(self, line: bytes, ended: bool) -> bytes | None:
+        """``backlot.request_target.refused_in_the_line``'s answer to ``line`` at this bound, as
+        :func:`written` sends it, ``ended`` where its LF came. ``ahead`` is read off the pieces a
+        head written at once is cut into, from its first byte; a line bound, longer than a
+        :data:`PIECE`, is reached in a later piece than the LF of the line before. Only a head
+        written at once is read so: real reads the pieces a client wrote, and on Slack, with the LF
+        at byte 49,153, a head written in writes of 1,000 or 4,000 bytes drew the line's 400 where
+        one written at once drew the bound's 431 (2026-11-02, twice each)."""
+        ahead = ended and (
+            self.per_line or (len(line) - self.mount) // PIECE < (self.limit - 1) // PIECE
+        )
+        refused = request_target.refused_in_the_line(self.door, line, ended, ahead)
+        return None if refused is None else written(*refused)
 
 
 def written(
@@ -141,7 +173,7 @@ _GOOGLE_413 = written(
 )
 _S3_400 = written("HTTP/1.1 400 Bad Request", None, b"")
 
-#: Each front door's bound but Jira Cloud's, whose page names the request (:func:`bound`).
+#: Each front door's bound but Jira Cloud's (:func:`bound`).
 _BOUNDS = {
     "github": Bound(
         68_552,
@@ -158,6 +190,7 @@ _BOUNDS = {
         refuses_its_end=False,
         in_line=_SLACK_431,
         in_headers=_SLACK_431,
+        counts_blank=False,
     ),
     "google": Bound(
         65_536,
@@ -165,6 +198,7 @@ _BOUNDS = {
         refuses_its_end=False,
         in_line=_GOOGLE_413,
         in_headers=_GOOGLE_413,
+        counts_blank=False,
     ),
     "cloudflare": Bound(
         131_072,
@@ -207,14 +241,16 @@ _BOUNDS = {
 
 def bound(start: bytes) -> Bound | None:
     """The bound on a head whose request line starts ``start``, read off the path in it, or
-    ``None`` where no vendor owns the path. Jira Cloud's is a line bound of 32,768 with the CDN's
-    page, 414 in the request line and 494 in the headers (``errors.atlassian.cdn_page``)."""
+    ``None`` where no vendor owns the path. Jira Cloud's is built here, its page naming the
+    request."""
     method, _, target = start.partition(b" ")
     path = re.split(rb"[? ]", target, maxsplit=1)[0].decode("latin-1")
-    named = request_target.front_door(urllib.parse.unquote(path))
+    unquoted = urllib.parse.unquote(path)
+    named = request_target.front_door(unquoted)
     if named is None:
         return None
     door, prefix = named
+    mount = len(prefix) - 1 if prefix and unquoted == prefix else len(prefix)
     if door == "atlassian":
         line, headers = (
             written(
@@ -227,5 +263,5 @@ def bound(start: bytes) -> Bound | None:
                 (494, "HTTP/1.1 494 "),
             )
         )
-        return Bound(32_768, True, False, line, headers, len(prefix))
-    return dataclasses.replace(_BOUNDS[door], mount=len(prefix))
+        return Bound(32_768, True, False, line, headers, mount=mount, door=door)
+    return dataclasses.replace(_BOUNDS[door], mount=mount, door=door)

@@ -20,6 +20,7 @@ import uvicorn
 from uvicorn.server import ServerState
 
 from backlot import protocol
+from tests._helpers import RecordingTransport
 
 #: Real's answer to each request below (``backlot.parser_refusals`` has the measurement), as its
 #: status line and `Content-Type`, each ``None`` where real sent none, the size and SHA-256 of its
@@ -399,27 +400,6 @@ async def _refused(scope, receive, send):
     raise AssertionError("a request httptools refuses reached the app")
 
 
-class _Transport(asyncio.Transport):
-    """A connection that keeps what the protocol writes to it."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.written = b""
-        self.closed = False
-
-    def get_extra_info(self, name, default=None):
-        return default
-
-    def write(self, data) -> None:
-        self.written += data
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-
 def _answer(base_url: str, reads: list[bytes]) -> bytes:
     if len(reads) > 1:
         loop = asyncio.new_event_loop()
@@ -428,7 +408,7 @@ def _answer(base_url: str, reads: list[bytes]) -> bytes:
                 _refused, http=protocol.Protocol, lifespan="off", log_config=None
             )
             served = protocol.Protocol(config, ServerState(), {}, _loop=loop)
-            transport = _Transport()
+            transport = RecordingTransport()
             served.connection_made(transport)
             for read in reads:
                 if not transport.closed:
@@ -498,16 +478,23 @@ def test_a_refusal_no_rule_answers_keeps_uvicorns_400(live_server, mount, path, 
     assert _shape(answer) == _UVICORN
 
 
-def test_a_refused_request_in_the_read_that_ends_the_one_before_it_keeps_uvicorns_400(
-    live_server,
-):
-    """The protocol has read none of the second request's head, which rides in the read that ends
-    the first, so the `Content-Length` it sends is not seen and Slack's 501 for a blank coding with
-    none is not written."""
-    base_url, _ = live_server
-    first = b"GET /slack/api/api.test HTTP/1.1\r\nHost: x\r\n\r\n"
-    second = b"POST /slack/api/api.test HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: \r\n" + (
-        f"{_LENGTH}\r\n\r\n".encode() + _BODY
-    )
-    answer = _answer(base_url, [first + second])
-    assert _shape(answer[answer.index(b"HTTP/1.1 400") :]) == _UVICORN
+#: A GET, then in the same write a request real's front door refused, and real's answer to the
+#: second, which came after the GET's 200 (slack.com and api.github.com, 2026-11-02, twice each).
+_BEHIND = [
+    ("/slack/api/api.test", *_SLACK, "blank coding", "slack 400"),
+    ("/github/rate_limit", *_GITHUB, "nul", "github page"),
+    ("/github/rate_limit", *_GITHUB, "blank coding", "github page"),
+]
+
+
+def test_a_refused_request_behind_one_not_yet_answered_is_answered_after_it(live_server):
+    base_url, settings = live_server
+    got = {}
+    for first, mount, path, kind, _ in _BEHIND:
+        (second,) = _request(mount, path, kind, settings.admin_token)
+        line = f"GET {first} HTTP/1.1\r\nHost: x\r\nUser-Agent: probe\r\n\r\n".encode()
+        answer = _answer(base_url, [line + second])
+        got[first, kind] = (answer[:17], _shape(answer[answer.find(b"HTTP/1.1 400") :]))
+    assert got == {
+        (first, kind): (b"HTTP/1.1 200 OK\r\n", _REAL[real]) for first, _, _, kind, real in _BEHIND
+    }

@@ -345,14 +345,17 @@ The surface takes the shape of the contract:
   answer, under `fields`. A Google source adds `batch`: each
   document's declared `batchPath` with whether a route answers it, and each of Backlot's batch
   routes with whether a document selects it. Each Google operation carries its `response`, the
-  message the document says it answers with.
+  message the document says it answers with, and its `request`, the message its body is.
 - **A Discovery document a walk reads** — `types` beside `operations`, keyed by the document's
   name and the message's (`sheets.Spreadsheet`): every message the responses of the methods the
-  walk reads reach, with every field and the `type` it holds, since a `fields` mask is read against
-  all of them and no served schema answers that offline. Which reads to make is the document's
-  `walk`, one of `backlot.fidelity.google_walks` (`sheets` for Sheets, `docs` for Docs). A message
-  one of its answers was is `implemented`, each field they carried `implemented`, each they did not
-  `missing`, a gap, and each the message does not declare `extra`, breaking; a message none of
+  walk reads reach, a map's values included, with every field and the `type` it holds, since a
+  `fields` mask is read against all of them, an editor create reads its body against them, and no
+  served schema answers either offline. A write the walk sends with its body adds its request
+  message and every message that reaches (`docs.BatchUpdateDocumentRequest`), which a route reads
+  its body against. Which reads to make is the document's `walk`, one of
+  `backlot.fidelity.google_walks` (`sheets` for Sheets, `gdocs` for Docs). A message one of its
+  answers or sent bodies was is `implemented`, each field they carried `implemented`, each they did
+  not `missing`, a gap, and each the message does not declare `extra`, breaking; a message none of
   them was is `missing`, with no finding. There is no `root`: the operations are under
   `operations`.
 - **A GraphQL schema** — `types`, every type Backlot declares with every field, enum value and
@@ -450,6 +453,10 @@ Closing it closes the record. The body and the comments stay as the account of w
 and a source still diverging the next morning gets a new issue that links back to the last one — a
 closed issue is never reopened and never written over.
 
+The Linear run also runs `scripts/linear_sdk_fragments.py` over the newest `@linear/sdk`, and a
+fragment it names goes on Linear's issue beside the comparison's report. That, or a bundle the run
+cannot install or read, turns the run red.
+
 ## Coverage
 
 Sources are named the way the rest of Backlot names them — the `source_type` a BYO record carries,
@@ -522,13 +529,16 @@ answers in with a 406 ahead of most of their other refusals, and send several re
 it asks for (`backlot.errors.atlassian.not_acceptable` and `rendered`). Neither description declares
 a 406, nor that a refusal's media type follows `Accept`, so `tests/test_atlassian.py` is the record.
 
-The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer carries them but
-the ones `backlot.main.report_github_rate_limit` names, and the comparison reads parameters and
-operations off the two documents and never a response header; real's description declares three of
-the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none. The tests are the
-record here (`tests/test_github.py`, the rate-limit test), not the baseline. `x-github-request-id`
-is another: every `/github` answer carries it (`backlot.main.put_a_request_id_on_github_answers`),
-and `test_github_every_answer_carries_a_request_id` in the same file is its record.
+The five `x-ratelimit-*` headers are the same kind of gap. Every `/github` answer the API gives
+carries them but the ones `backlot.main.report_github_rate_limit` names, and the comparison reads
+parameters and operations off the two documents and never a response header; real's description
+declares three of the five, on `GET /rate_limit`'s 200 alone, and Backlot's document declares none.
+The tests are the record here (`tests/test_github.py`, the rate-limit test), not the baseline.
+`x-github-request-id` is another: every `/github` answer the API gives carries it
+(`backlot.main.put_a_request_id_on_github_answers`), and
+`test_github_every_answer_carries_a_request_id` in the same file is its record. The answers given
+ahead of the API carry neither, as on real; the GitHub section of `docs/supported-sources.md` names
+them.
 
 The `Allow` on S3's sub-resource 405s is another. A `HEAD` carrying a sub-resource selector is 405
 on both sides, and real names the methods that sub-resource takes where Backlot names only `GET`,

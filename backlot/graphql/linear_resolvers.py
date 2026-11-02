@@ -20,6 +20,7 @@ import unicodedata
 from graphql import GraphQLError
 
 from backlot import pagination, store, synth
+from backlot.graphql import node_utf8
 from backlot.graphql.linear_filters import (
     SCALARS,
     UUID_SHAPE,
@@ -1122,7 +1123,9 @@ def resolve_search_issues(
     and for a ``teamId`` that is not a UUID (a team key included), an empty page for an unknown
     UUID, and with ``includeComments`` absent matched a word found only in a comment, as with
     ``true``, where ``false`` did not (measured 2026-10-22). ``orderBy`` replaces the relevance
-    order with the newest first."""
+    order with the newest first. A term holding a lone surrogate is
+    :func:`_search_backend_failed`, checked after ``teamId``, :func:`_slice` and the filter, the
+    refusals Backlot makes."""
     ctx = _ctx(info)
     conn = ctx["conn"]
     if not term:
@@ -1139,6 +1142,8 @@ def resolve_search_issues(
         team = store.linear_team_by_served_id(conn, teamId.lower()) or "\x00none"
     _slice(first, after, last, before)
     prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
+    if node_utf8.holds_a_lone_surrogate(term):
+        raise _search_backend_failed()
     hits, total = store.search_linear_issues(
         conn,
         term,
@@ -1173,6 +1178,23 @@ def resolve_documents(_root, info, first=None, after=None, last=None, before=Non
     """Always empty: a corpus carries no Linear documents. A workspace without any answered this
     page, its cursors null (measured 2026-10-22)."""
     return _list_page([], first, after, last, before)
+
+
+def _search_backend_failed() -> GraphQLError:
+    """Linear's error for a ``searchIssues`` term holding a lone surrogate. On 2026-10-27 (UTC)
+    api.linear.app answered ``a\\ud800b`` and ``a\\udc00b`` so, and ``a\\ufffdb`` with a page of
+    issues; beside such a term, a ``teamId`` or filter ``id`` that is not a UUID, a ``first`` of 0,
+    ``first`` with ``last`` and an ``after`` that is no cursor were each
+    `Argument Validation Error`."""
+    return GraphQLError(
+        "Failed to query search backend",
+        extensions={
+            "type": "internal error",
+            "code": "EXTERNAL_SERVICE_ERROR",
+            "statusCode": 500,
+            "userError": False,
+        },
+    )
 
 
 def _not_found(entity: str) -> GraphQLError:

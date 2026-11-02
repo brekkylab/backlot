@@ -1,0 +1,350 @@
+{
+  "enums": {
+    "AutoText.Type": [
+      "TYPE_UNSPECIFIED",
+      "PAGE_NUMBER",
+      "PAGE_COUNT"
+    ],
+    "BaselineOffset": [
+      "BASELINE_OFFSET_UNSPECIFIED",
+      "NONE",
+      "SUPERSCRIPT",
+      "SUBSCRIPT"
+    ],
+    "CommentThread.Status": [
+      "STATUS_UNSPECIFIED",
+      "OPEN",
+      "RESOLVED"
+    ],
+    "CommentsViewMode": [
+      "COMMENTS_VIEW_MODE_UNSPECIFIED",
+      "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+      "COMMENTS_VIEW_MODE_OMITTED",
+      "COMMENTS_VIEW_MODE_INCLUDED"
+    ],
+    "ContentAlignment": [
+      "CONTENT_ALIGNMENT_UNSPECIFIED",
+      "CONTENT_ALIGNMENT_UNSUPPORTED",
+      "TOP",
+      "MIDDLE",
+      "BOTTOM"
+    ],
+    "ContentDirection": [
+      "CONTENT_DIRECTION_UNSPECIFIED",
+      "LEFT_TO_RIGHT",
+      "RIGHT_TO_LEFT"
+    ],
+    "DashStyle": [
+      "DASH_STYLE_UNSPECIFIED",
+      "SOLID",
+      "DOT",
+      "DASH"
+    ],
+    "DateFormat": [
+      "DATE_FORMAT_UNSPECIFIED",
+      "DATE_FORMAT_CUSTOM",
+      "DATE_FORMAT_MONTH_DAY_ABBREVIATED",
+      "DATE_FORMAT_MONTH_DAY_FULL",
+      "DATE_FORMAT_MONTH_DAY_YEAR_ABBREVIATED",
+      "DATE_FORMAT_ISO8601"
+    ],
+    "DocumentMode": [
+      "DOCUMENT_MODE_UNSPECIFIED",
+      "PAGES",
+      "PAGELESS"
+    ],
+    "NamedStyleType": [
+      "NAMED_STYLE_TYPE_UNSPECIFIED",
+      "NORMAL_TEXT",
+      "TITLE",
+      "SUBTITLE",
+      "HEADING_1",
+      "HEADING_2",
+      "HEADING_3",
+      "HEADING_4",
+      "HEADING_5",
+      "HEADING_6"
+    ],
+    "NestingLevel.BulletAlignment": [
+      "BULLET_ALIGNMENT_UNSPECIFIED",
+      "START",
+      "CENTER",
+      "END"
+    ],
+    "NestingLevel.GlyphType": [
+      "GLYPH_TYPE_UNSPECIFIED",
+      "NONE",
+      "DECIMAL",
+      "ZERO_DECIMAL",
+      "UPPER_ALPHA",
+      "ALPHA",
+      "UPPER_ROMAN",
+      "ROMAN"
+    ],
+    "ParagraphStyle.Alignment": [
+      "ALIGNMENT_UNSPECIFIED",
+      "START",
+      "CENTER",
+      "END",
+      "JUSTIFIED"
+    ],
+    "ParagraphStyle.SpacingMode": [
+      "SPACING_MODE_UNSPECIFIED",
+      "NEVER_COLLAPSE",
+      "COLLAPSE_LISTS"
+    ],
+    "PositionedObjectLayout": [
+      "POSITIONED_OBJECT_LAYOUT_UNSPECIFIED",
+      "WRAP_TEXT",
+      "BREAK_LEFT",
+      "BREAK_RIGHT",
+      "BREAK_LEFT_RIGHT",
+      "IN_FRONT_OF_TEXT",
+      "BEHIND_TEXT"
+    ],
+    "Post.CommentActionType": [
+      "COMMENT_ACTION_TYPE_UNSPECIFIED",
+      "NO_COMMENT_ACTION_CHANGE",
+      "RESOLVE",
+      "REOPEN"
+    ],
+    "Post.SuggestionActionType": [
+      "SUGGESTION_ACTION_TYPE_UNSPECIFIED",
+      "NO_SUGGESTION_ACTION_CHANGE",
+      "ACCEPT",
+      "REJECT"
+    ],
+    "PropertyState": [
+      "RENDERED",
+      "NOT_RENDERED"
+    ],
+    "SectionStyle.ColumnSeparatorStyle": [
+      "COLUMN_SEPARATOR_STYLE_UNSPECIFIED",
+      "NONE",
+      "BETWEEN_EACH_COLUMN"
+    ],
+    "SectionStyle.SectionType": [
+      "SECTION_TYPE_UNSPECIFIED",
+      "CONTINUOUS",
+      "NEXT_PAGE"
+    ],
+    "SuggestionThread.Status": [
+      "STATUS_UNSPECIFIED",
+      "OPEN",
+      "ACCEPTED",
+      "REJECTED"
+    ],
+    "SuggestionsViewMode": [
+      "DEFAULT_FOR_CURRENT_ACCESS",
+      "SUGGESTIONS_INLINE",
+      "PREVIEW_SUGGESTIONS_ACCEPTED",
+      "PREVIEW_WITHOUT_SUGGESTIONS"
+    ],
+    "TabStop.TabStopAlignment": [
+      "TAB_STOP_ALIGNMENT_UNSPECIFIED",
+      "START",
+      "CENTER",
+      "END"
+    ],
+    "TableColumnProperties.WidthType": [
+      "WIDTH_TYPE_UNSPECIFIED",
+      "EVENLY_DISTRIBUTED",
+      "FIXED_WIDTH"
+    ],
+    "TimeFormat": [
+      "TIME_FORMAT_UNSPECIFIED",
+      "TIME_FORMAT_DISABLED",
+      "TIME_FORMAT_HOUR_MINUTE",
+      "TIME_FORMAT_HOUR_MINUTE_TIMEZONE"
+    ],
+    "Unit": [
+      "UNIT_UNSPECIFIED",
+      "PT"
+    ]
+  },
+  "fields": {
+    "AutoText": {
+      "type": "enum AutoText.Type"
+    },
+    "CommentThread": {
+      "status": "enum CommentThread.Status"
+    },
+    "CropProperties": {
+      "angle": "float",
+      "offsetLeft": "float",
+      "offsetTop": "float",
+      "offsetBottom": "float",
+      "offsetRight": "float"
+    },
+    "DateElementProperties": {
+      "timestamp": "timestamp",
+      "dateFormat": "enum DateFormat",
+      "timeFormat": "enum TimeFormat"
+    },
+    "Dimension": {
+      "unit": "enum Unit"
+    },
+    "Document": {
+      "commentsViewMode": "enum CommentsViewMode",
+      "suggestionsViewMode": "enum SuggestionsViewMode"
+    },
+    "DocumentFormat": {
+      "documentMode": "enum DocumentMode"
+    },
+    "DocumentStyle": {
+      "firstPageFooterId": "StringValue",
+      "evenPageHeaderId": "StringValue",
+      "defaultHeaderId": "StringValue",
+      "defaultFooterId": "StringValue",
+      "evenPageFooterId": "StringValue",
+      "firstPageHeaderId": "StringValue"
+    },
+    "EmbeddedObjectBorder": {
+      "propertyState": "enum PropertyState",
+      "dashStyle": "enum DashStyle"
+    },
+    "ImageProperties": {
+      "brightness": "float",
+      "contrast": "float",
+      "transparency": "float",
+      "angle": "float"
+    },
+    "NamedStyle": {
+      "namedStyleType": "enum NamedStyleType"
+    },
+    "NamedStyleSuggestionState": {
+      "namedStyleType": "enum NamedStyleType"
+    },
+    "NestingLevel": {
+      "glyphType": "enum NestingLevel.GlyphType",
+      "bulletAlignment": "enum NestingLevel.BulletAlignment",
+      "glyphSymbol": "StringValue"
+    },
+    "ParagraphBorder": {
+      "dashStyle": "enum DashStyle"
+    },
+    "ParagraphStyle": {
+      "lineSpacing": "FloatValue",
+      "spacingMode": "enum ParagraphStyle.SpacingMode",
+      "pageBreakBefore": "BoolValue",
+      "avoidWidowAndOrphan": "BoolValue",
+      "keepLinesTogether": "BoolValue",
+      "keepWithNext": "BoolValue",
+      "direction": "enum ContentDirection",
+      "alignment": "enum ParagraphStyle.Alignment",
+      "namedStyleType": "enum NamedStyleType"
+    },
+    "PositionedObjectPositioning": {
+      "layout": "enum PositionedObjectLayout"
+    },
+    "Post": {
+      "commentAction": "enum Post.CommentActionType",
+      "updateTime": "timestamp",
+      "suggestionAction": "enum Post.SuggestionActionType",
+      "createTime": "timestamp"
+    },
+    "Range": {
+      "endIndex": "Int32Value",
+      "startIndex": "Int32Value"
+    },
+    "RgbColor": {
+      "red": "float",
+      "blue": "float",
+      "green": "float"
+    },
+    "SectionStyle": {
+      "contentDirection": "enum ContentDirection",
+      "columnSeparatorStyle": "enum SectionStyle.ColumnSeparatorStyle",
+      "evenPageFooterId": "StringValue",
+      "firstPageHeaderId": "StringValue",
+      "pageNumberStart": "Int32Value",
+      "evenPageHeaderId": "StringValue",
+      "defaultFooterId": "StringValue",
+      "firstPageFooterId": "StringValue",
+      "defaultHeaderId": "StringValue",
+      "flipPageOrientation": "BoolValue",
+      "sectionType": "enum SectionStyle.SectionType",
+      "useFirstPageHeaderFooter": "BoolValue"
+    },
+    "SuggestionThread": {
+      "status": "enum SuggestionThread.Status"
+    },
+    "TabProperties": {
+      "index": "Int32Value"
+    },
+    "TabStop": {
+      "alignment": "enum TabStop.TabStopAlignment"
+    },
+    "TableCellBorder": {
+      "dashStyle": "enum DashStyle"
+    },
+    "TableCellStyle": {
+      "contentAlignment": "enum ContentAlignment"
+    },
+    "TableColumnProperties": {
+      "widthType": "enum TableColumnProperties.WidthType"
+    },
+    "TextStyle": {
+      "strikethrough": "BoolValue",
+      "bold": "BoolValue",
+      "baselineOffset": "enum BaselineOffset",
+      "underline": "BoolValue",
+      "smallCaps": "BoolValue",
+      "italic": "BoolValue"
+    }
+  },
+  "oneofs": {
+    "EmbeddedObject": {
+      "properties": [
+        "imageProperties",
+        "embeddedDrawingProperties"
+      ]
+    },
+    "Link": {
+      "destination": [
+        "url",
+        "headingId",
+        "heading",
+        "bookmark",
+        "bookmarkId",
+        "tabId"
+      ]
+    },
+    "NestingLevel": {
+      "glyph_kind": [
+        "glyphType",
+        "glyphSymbol"
+      ]
+    },
+    "ParagraphElement": {
+      "content": [
+        "dropdown",
+        "horizontalRule",
+        "pageBreak",
+        "equation",
+        "richLink",
+        "columnBreak",
+        "dateElement",
+        "inlineObjectElement",
+        "autoText",
+        "person",
+        "footnoteReference",
+        "textRun"
+      ]
+    },
+    "Post": {
+      "action": [
+        "commentAction",
+        "suggestionAction"
+      ]
+    },
+    "StructuralElement": {
+      "content": [
+        "sectionBreak",
+        "tableOfContents",
+        "table",
+        "paragraph"
+      ]
+    }
+  }
+}

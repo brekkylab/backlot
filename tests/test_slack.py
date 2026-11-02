@@ -6147,3 +6147,62 @@ def test_a_bot_messages_author_resolves_through_users_info(wclient, admin_h):
     assert j["ok"] is True
     assert j["user"]["id"] == uid
     assert j["user"]["is_bot"] is True
+
+
+def test_slack_conversations_history_large_limits(tmp_path):
+    """A channel of 330 messages served by conversations.history:
+    - limits from 201 to 1000 are served as sent (201 -> 201, 330/1000/1000.5 -> 330)
+    - limits past 1000 (1001, 2000) are served as the default of 100 (fixes #1193).
+    """
+    records = [
+        {
+            "source_type": "slack",
+            "channel": "general",
+            "content": f"msg {n}",
+            "author_email": "ava@x.com",
+            "visibility": "public",
+            "created": f"2026-01-{(n // 24) + 1:02d}T{n % 24:02d}:00:00Z",
+        }
+        for n in range(330)
+    ]
+    s = tiny_corpus(tmp_path, records)
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+        channels = c.get("/slack/api/conversations.list", headers=h).json()["channels"]
+        cid = next(ch["id"] for ch in channels if ch["name"] == "general")
+
+        # 201 -> 201 messages, has_more True
+        r201 = c.get("/slack/api/conversations.history", headers=h, params={"channel": cid, "limit": "201"}).json()
+        assert r201["ok"] is True
+        assert len(r201["messages"]) == 201
+        assert r201["has_more"] is True
+
+        # 330 -> 330 messages, has_more False
+        r330 = c.get("/slack/api/conversations.history", headers=h, params={"channel": cid, "limit": "330"}).json()
+        assert r330["ok"] is True
+        assert len(r330["messages"]) == 330
+        assert r330["has_more"] is False
+
+        # 1000 -> 330 messages, has_more False
+        r1000 = c.get("/slack/api/conversations.history", headers=h, params={"channel": cid, "limit": "1000"}).json()
+        assert r1000["ok"] is True
+        assert len(r1000["messages"]) == 330
+        assert r1000["has_more"] is False
+
+        # 1000.5 -> 330 messages, has_more False
+        r1000_5 = c.get("/slack/api/conversations.history", headers=h, params={"channel": cid, "limit": "1000.5"}).json()
+        assert r1000_5["ok"] is True
+        assert len(r1000_5["messages"]) == 330
+        assert r1000_5["has_more"] is False
+
+        # 1001 -> past 1000, serves default 100 messages, has_more True
+        r1001 = c.get("/slack/api/conversations.history", headers=h, params={"channel": cid, "limit": "1001"}).json()
+        assert r1001["ok"] is True
+        assert len(r1001["messages"]) == 100
+        assert r1001["has_more"] is True
+
+        # 2000 -> past 1000, serves default 100 messages, has_more True
+        r2000 = c.get("/slack/api/conversations.history", headers=h, params={"channel": cid, "limit": "2000"}).json()
+        assert r2000["ok"] is True
+        assert len(r2000["messages"]) == 100
+        assert r2000["has_more"] is True

@@ -207,9 +207,7 @@ _P_REACTION_LIST = [
     qp("user"),
 ]
 
-# conversations.history page cap (thread roots). Slack recommends limit<=200; capping here bounds
-# how many authors a client resolves per call so history stays fast even with a small users.list.
-_HISTORY_MAX_ROOTS = 200
+
 
 
 def _err(error: str) -> JSONResponse:
@@ -1478,11 +1476,7 @@ async def conversations_history(request: Request):
     if name is None or not _channel_visibility(request, conn, ids)(name):
         return _err("channel_not_found")
 
-    # Cap the page at a Slack-realistic size: the real API recommends limit<=200 and often returns
-    # fewer than requested. A client that asks for 1000 (korotovsky) would make the client resolve
-    # ~1000 roots x their authors/reply_users via users.info — slow. has_more/next_cursor still let
-    # it paginate for more.
-    limit = min(limit, _HISTORY_MAX_ROOTS)
+
     # Slack history returns only top-level messages (thread roots + standalone);
     # replies live under conversations.replies.
     lo, hi = _slack_ts(_param(request, "oldest")), _slack_ts(_param(request, "latest"))
@@ -3354,7 +3348,8 @@ def _numbers(
         if n is None:
             messages.append(f"[ERROR] must provide a number [json-pointer:/{key}]")
             n = default
-        values[key] = min(n, get_settings().max_page_size)
+        max_size = get_settings().max_page_size
+        values[key] = default if key == "limit" and n > max_size else min(n, max_size)
     if sort_dir_ok is not None:
         value = _param(request, "sort_dir")
         if value is not None and value not in _SORT_DIRS and not (sort_dir_ok and value == ""):

@@ -7091,6 +7091,11 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         assert _ratelimit(c.get("/github/search/issues/extra-zz"))["resource"] == "search"
         assert _ratelimit(c.get("/github/search/issues/"))["resource"] == "core"
         assert _ratelimit(c.get("/github/search/nonexistent-zz"))["resource"] == "core"
+        # the search just counted is not in what the next read reports for that caller, where the
+        # admin's read above reports its two (see `RateLimitWindows.unused`)
+        search = c.get("/github/rate_limit").json()["resources"]["search"]
+        assert (search["limit"], search["used"], search["remaining"]) == (10, 0, 10)
+        assert abs(search["reset"] - int(time.time()) - gh.SEARCH_RATE_LIMIT_WINDOW) <= 1
 
         # the route reads the version header from any request carrying an `Authorization`, one
         # real reads as no credential included, and from no other

@@ -184,6 +184,9 @@ _P_EXPAND = {"parameters": [qp("expand")]}
 _P_JIRA_COMMENTS = {
     "parameters": [qp("startAt", "integer"), qp("maxResults", "integer"), qp("orderBy")]
 }
+_P_JIRA_PROJECT_SEARCH = {
+    "parameters": [qp("startAt", "integer"), qp("maxResults", "integer")]
+}
 _P_CQL = {
     "parameters": [
         qp("cql", required=True),
@@ -498,8 +501,12 @@ def _jira_project_order(raw: str) -> None:
     )
 
 
-@router.get("/rest/api/3/project/search")
+@router.get("/rest/api/3/project/search", openapi_extra=_P_JIRA_PROJECT_SEARCH)
 async def jira_project_search(request: Request):
+    # Jira converts these before validating orderBy. startAt is a long, while maxResults is
+    # constrained to the inclusive range 1..100 after conversion.
+    start = max(0, _int_param(request, "startAt", 0, width=JAVA_LONG))
+    limit = min(100, max(1, _int_param(request, "maxResults", 50)))
     # Read for the refusal above. The sort itself is not served, so `orderBy` stays undeclared:
     # `qp` is for a parameter Backlot honours, and advertising this one would offer a client an
     # order the listing never applies. `backlot diff --source jira` keeps the gap.
@@ -525,7 +532,38 @@ async def jira_project_search(request: Request):
                 "self": f"{_site(request)}/rest/api/3/project/{key}",
             }
         )
-    return {"values": values, "maxResults": 50, "startAt": 0, "total": len(values), "isLast": True}
+    total = len(values)
+    page = values[start : start + limit]
+    answer = {"self": _jira_project_search_link(request, start, limit)}
+    if start + len(page) < total:
+        answer["nextPage"] = _jira_project_search_link(request, start + limit, limit)
+    return answer | {
+        "values": page,
+        "maxResults": limit,
+        "startAt": start,
+        "total": total,
+        "isLast": start + len(page) >= total,
+    }
+
+
+def _jira_project_search_link(request: Request, start: int, limit: int) -> str:
+    """Build a Jira project-search link while retaining unrelated query values as sent."""
+    params: dict[str, list[str]] = {}
+    for item in request.scope["query_string"].decode("latin-1").split("&"):
+        name, separator, value = item.partition("=")
+        if not separator:
+            value = ""
+        if not name:
+            name, value = value, ""
+        if name and name not in ("startAt", "maxResults"):
+            params.setdefault(name, []).append(value)
+
+    params["maxResults"] = [str(limit)]
+    params["startAt"] = [str(start)]
+    query = "&".join(
+        f"{name}={value}" for name in sorted(params) for value in params[name]
+    )
+    return f"{_site(request)}/rest/api/3/project/search?{query}"
 
 
 def _jira_project_id(container: str) -> str:

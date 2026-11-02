@@ -298,7 +298,10 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
     )
     if refused is None:
         assert r.status_code == 200, r.text
-        assert r.json() == listing.json()
+        ignored = {"self", "nextPage"}
+        assert {k: v for k, v in r.json().items() if k not in ignored} == {
+            k: v for k, v in listing.json().items() if k not in ignored
+        }
         return
     assert r.status_code == 400, r.text
     assert r.json() == {
@@ -309,6 +312,71 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
         ],
         "errors": {},
     }
+
+
+@pytest.mark.parametrize(
+    "query, start, limit",
+    [
+        ({}, 0, 50),
+        ({"startAt": "1"}, 1, 50),
+        ({"startAt": "-1"}, 0, 50),
+        ({"maxResults": "0"}, 0, 1),
+        ({"maxResults": "101"}, 0, 100),
+        ({"startAt": "1", "maxResults": "1"}, 1, 1),
+    ],
+)
+def test_jira_project_search_pages(tmp_path, query, start, limit):
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": f"issue-{i}",
+                "project": name,
+                "key": f"{name.upper()}-1",
+                "title": name,
+                "content": "Issue",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            }
+            for i, name in enumerate(("payments", "orders"))
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        response = client.get(
+            "/atlassian/rest/api/3/project/search",
+            params=query,
+            headers={"Authorization": "******"},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["startAt"] == start
+        assert body["maxResults"] == limit
+        assert body["total"] == 2
+        is_last = start + len(body["values"]) >= body["total"]
+        assert ("nextPage" in body) is (not is_last)
+        assert body["isLast"] is is_last
+
+
+@pytest.mark.parametrize(
+    "query, name, value",
+    [
+        ([("startAt", "abc")], "startAt", "abc"),
+        ([("startAt", "1.5")], "startAt", "1.5"),
+        ([("maxResults", "abc")], "maxResults", "abc"),
+        ([("startAt", "abc"), ("orderBy", "bogus")], "startAt", "abc"),
+        ([("maxResults", "abc"), ("orderBy", "bogus")], "maxResults", "abc"),
+    ],
+)
+def test_jira_project_search_rejects_non_integer_pages(client, admin_h, query, name, value):
+    response = client.get(
+        "/atlassian/rest/api/3/project/search",
+        params=query,
+        headers=admin_h,
+    )
+    assert response.status_code == 400
+    assert response.headers["content-type"] == "application/problem+json;charset=UTF-8"
+    assert response.json()["detail"] == f"Failed to convert '{name}' with value: '{value}'"
 
 
 @pytest.mark.parametrize("headers", UNRESOLVABLE)

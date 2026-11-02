@@ -846,16 +846,967 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
         )  # ...and match the bytes
 
 
-def test_drive_export_roundtrip(client, admin_h, ro_conn):
-    doc = ro_conn.execute("SELECT * FROM gdrive_files LIMIT 1").fetchone()
-    # The row's own `id`, not the corpus's identifier: hitting the route by the corpus id would
-    # stop exercising the id resolution path without the test noticing.
-    text = client.get(
-        f"/drive/v3/files/{doc['id']}/export",
-        headers=admin_h,
-        params={"mimeType": "text/plain"},
-    ).text
-    assert doc["content"] in text and text.startswith(doc["title"])
+# A paragraph long enough that a Markdown writer would wrap it, which real does not.
+_WORDS = " ".join(f"word{i}" for i in range(120))
+
+
+def _runs(*runs: str | tuple[str, str] | dict, style: str | None = None) -> dict:
+    """A paragraph as a record's `paragraphs` states it, from `runs`: each a text, a (text, marks)
+    pair, or a run as `paragraphs` states it. In marks, `i`, `b`, `s` and `u` are italic, bold,
+    strikethrough and underline, and a digit n is a link to `https://e.com/n`."""
+    out = []
+    for run in runs:
+        if isinstance(run, str):
+            run = (run, "")
+        if isinstance(run, tuple):
+            text, marks = run
+            names = {"i": "italic", "b": "bold", "s": "strikethrough", "u": "underline"}
+            run = {"text": text, **{names[c]: True for c in marks if c in names}}
+            run.update({"link": f"https://e.com/{c}" for c in marks if c.isdigit()})
+        out.append(run)
+    return {"runs": out, **({"style": style} if style else {})}
+
+
+# Paragraphs of real's Docs, as one Doc, for the mark writer of `gdocs.markdown` and for
+# `gdocs.plain_text`.
+# fmt: off
+_MD_WRITER = [
+    _runs("z", ("a", "s"), (" ", "b"), (" ", "i2"), (" ", "bs"), (" ", "i"), (" ", "is1"), (" ", "ib"), (" ", "i"), (" ", "ibs2"), ("b", "b2"), "d"),
+    _runs(("  ", "s"), ("http://y", "2"), ("\u01c5", "ib1"), (" ", "is2"), (" a", "ib"), ("x y", "b1"), ("a", "ibs"), ("x y", "ibs"), ("\u4e2d\u6587", "i1"), (" ", "s"), "b", ("-a", "ib"), ("\xa0", "ib"), (" a", "b"), ("\xe9www.x", "ib"), (" a", "b2"), ("a", "ibs"), ("\xa0", "s")),
+    _runs("q 0\ufe0fwww.x"),
+    _runs("q _\ufe0fhttp://x"),
+    _runs("z", ("a", "b"), ("b", "bs"), ("c", "bs1"), ("d", "ibs1"), ("e", "s2"), ("f", "2"), "g"),
+    _runs(("999. \u3000 10 <-", "u"), ("<", "ibu"), ("~ #", "is"), {"text": "\"Foo_*Zed\U0001f600", "bold": True, "link": "https://e.com/back\\s"}, ("999.", "ib"), style="HEADING_5"),
+    _runs("q \u03b1\U000e0100http://x"),
+    _runs("z", ("a", "i"), ("b", "is"), ("c", "is1"), ("d", "ibs1"), ("e", "s2"), ("f", "2"), "g"),
+    _runs("z", ("a", "bs"), (" ", "is"), (" ", "ibs"), (" ", "is"), (" ", "s"), (" ", "is1"), ("b", "bs1"), "d"),
+    _runs("z", ("a", "s"), (" ", "is"), (" ", "bs1"), (" ", "ibs1"), (" ", "bs1"), (" ", "is"), " ", ("b", "is"), "d"),
+    _runs(("\x0b", "ib"), "x"),
+    _runs(("\x0b", "b"), ("x", "b"), "y"),
+    _runs("\x0b\x0b \x0b", style="HEADING_2"),
+    _runs("_https://x"),
+    _runs(" \x0b\t\x0b", style="HEADING_2"),
+    _runs("\x0b\xa0h"),
+    _runs("q A\ufe0fhttp://x"),
+    _runs("q \u03b1\u034fhttp://x"),
+    _runs("\u01c5\u0301www.x \u01c5\u0301http://y"),
+    _runs("\u4e2d\u0301www.x \u4e2d\u0301http://y"),
+    _runs("  "),
+    {"text": ""},
+    _runs(("\u4e2d\u02b0\u0301http://x", "1"), ("a", "ibs"), "www.x-"),
+    _runs("z", ("a", "1"), (" ", "ibs"), (" ", "ibs1"), ("b", "b"), "d"),
+    _runs("z", ("a", "1"), (" ", "ibs1"), (" ", "i1"), ("b", "is"), "d"),
+    _runs("z", ("a", "1"), ("b", "i1"), ("c", "ib1"), ("d", "ibs1"), ("e", "i2"), "f"),
+    _runs("z", ("a", "ibs1"), (" ", "is"), (" ", "is"), (" ", "ib1"), (" ", "ibs1"), (" ", "i1"), (" ", "is1"), ("b", "s"), "d"),
+    _runs("  ", style="NORMAL_TEXT"),
+    _runs({"text": "=", "strikethrough": True, "link": "https://e.com/q r"}, "`\tb", ("@12.q", "iu"), ("\u2022 3.", "i"), ("999.\t&1\t  \t^\t.\t\u3000", "iu"), style="HEADING_4"),
+    _runs((" ", "bs1"), ("*", "is2"), ("  ", "b2"), ("1. a", "i"), (" \t", "i1"), (" \t", "s2"), ("\u4e2d\u6587", "i"), "def", ("1. a", "b2"), ("a ", "s1"), (" ", "b")),
+    _runs(("\xe9\u01c5", "s"), ("\u0301http://xwww.x", "s"), ("\u0301", "b")),
+    _runs("\x0b \t\x0b", style="TITLE"),
+    _runs(("b", "is"), ("a", "ibs2"), ("-a", "2"), "a", ("\u4e2d\u6587", "ibs"), ("b", "1"), ("  ", "ibs2"), ("\u4e2d\u6587", "b1"), (" \t", "1"), " ", ("x y", "is"), (" ", "b"), (" \t", "s"), ("a", "bs"), "a", "a_b", (" \t", "ibs2"), ("e\u0301", "2"), ("bc", "i"), (" ", "is2")),
+    _runs("z", ("a", "is"), (" ", "ib"), (" ", "s1"), ("b", "s1"), "d"),
+    _runs((" ", "b1"), (" ", "bs2"), (" ", "b"), ("  ", "i"), ("x y", "s"), ("  ", "ibs"), (" ", "bs1"), ("\u4e2d\u6587", "i"), (" \t", "is1"), ("a ", "b1")),
+    _runs("z", ("a", "s"), (" ", "bs1"), (" ", "s1"), (" ", "s1"), (" ", "ibs1"), (" ", "s"), " ", " ", ("b", "bs1"), "d"),
+    _runs(("_\u01c5\u4e2d", "bs2"), ("_www.x\u01c5\xe9", "b"), ("\u02b0\U0001f600*http://x", "i")),
+    _runs("z", ("a", "bs1"), (" ", "is1"), (" ", "is1"), ("b", "ib1"), "d"),
+    _runs("z", ("a", "b3"), (" \t", "3"), ("   ", "s2"), ("b", "is1"), (" \t", "is2"), ("c", "b"), "d"),
+    _runs("z", ("a", "s"), (" \t", "bs2"), ("\t", "ibs2"), ("\t", "bs1"), ("   ", "ib2"), ("\t", "is2"), (" \t", "is"), ("b", "is"), "d"),
+    _runs((" a", "2"), ("-", "i2"), style="HEADING_6"),
+    _runs((" \x0b", "s"), ("\U0001f600_", "1")),
+    _runs("z", ("a", "is"), (" ", "is1"), (" ", "2"), ("b", "bs1"), "d"),
+    _runs(("  ", "ibs"), ("\u4e2d\u0301\u4e2d", "ibs2"), ("www.x\U0001f600", "s"), ("a_b", "ib"), "*\u0301http://x", "~", ("def", "bs"), ("\x0b ", "i"), style="HEADING_3"),
+    _runs((" ", "1"), "*-\x0ba", ("x y", "is"), ("~", "b"), ("a", "i2"), ("\u4e2d\x0b\xe9", "is1"), ("\U0001f600 1. ", "bs"), (" ", "b1"), style="HEADING_4"),
+    _runs("z", ("a", "bs2"), " \t", (" ", "s1"), ("b", "bs2"), ("  ", "ibs1"), ("c", "1"), "d"),
+    _runs("z", ("a", "is2"), (" ", "s2"), ("b", "ibs3"), (" ", "ibs3"), (" \t", "is2"), ("\t", "ib1"), ("c", "i1"), "d"),
+    _runs("z", (" ", "i2"), ("a", "ibs1"), ("  ", "is1"), ("c", "i2"), ("   ", "ibs3"), ("b", "i"), (" \t", "i3"), "d"),
+    _runs((" a", "bs1"), "http://xhttp://xhttp://x", ("\u02b0", "2"), ("\u4e2d\u6587", "is"), ("~", "b2"), "-a", ("bc", "ibs3"), ("\t", "ib1"), ("\t", "bs"), ("b", "ib1"), ("  ", "ibs3")),
+    _runs("z", ("a", "ibs3"), (" ", "is2"), ("   ", "i3"), ("\t", "i"), (" ", "i1"), ("\t", "ibs1"), (" \t", "i3"), (" \t", "i"), ("  ", "b"), ("b", "ib2"), "d"),
+    _runs("q \u03b1\u3099www.x"),
+    _runs("\x0b   ", style="HEADING_2"),
+    _runs("x"),
+    _runs("\u3000\u3000"),
+    {"text": ""},
+    _runs(("-\U0001f600a", "s"), ("\t", "ibs4"), ("e\u0301", "i3"), (" \t", "4")),
+    _runs("z", ("a", "bs"), (" ", "b"), (" ", "ibs"), ("b", "s1"), "d"),
+    _runs("z", ("a", "bs"), (" ", "is1"), (" ", "i1"), ("b", "b"), "d"),
+    _runs("  "),
+    _runs("z", ("a", "ib"), (" ", "is"), ("\t", "ib1"), (" ", "bs2"), ("   ", "b2"), ("b", "i2"), "d"),
+    _runs("z", ("a", "b"), (" ", "ibs1"), (" ", "s1"), " ", (" ", "bs"), " ", ("b", "bs1"), "d"),
+    _runs("z", ("a", "bs1"), "\t", (" \t", "bs1"), ("b", "s"), ("  ", "ibs2"), ("\t", "is1"), ("c", "b1"), "d"),
+    _runs(("  ", "s2"), ("\t", "ibs"), ("\t", "is2"), ("\u02b0\u4e2dwww.x", "1"), ("   ", "i1"), ("a_b", "i"), ("_\u4e2de", "b2"), " ", (" ", "i2"), (" ", "s")),
+    _runs("1."),
+    _runs("1.\tx"),
+    _runs("1.\xa0x"),
+    _runs("\u0661. x"),
+    _runs("\uff11. x"),
+    _runs("1.", ("x", "b")),
+    _runs("1.\x0bx"),
+    _runs("\thttp://x"),
+    _runs("*http://x"),
+    _runs("_http://x"),
+    _runs("~http://x"),
+    _runs("<http://x"),
+    _runs("http\u017f://x"),
+    _runs({"text": "a", "link": "https://e.com/a<b"}),
+    _runs({"text": "a", "link": "https://e.com/a>b"}),
+    _runs({"text": "a", "link": "https://e.com/a`b"}),
+    _runs({"text": "a", "link": "https://e.com/a\\b"}),
+    _runs({"text": "a", "link": "https://e.com/a(b)c"}),
+    _runs(("a\x0bb", "b")),
+    _runs(("a\x0bb", "1")),
+    _runs("a"),
+    _runs("abc  ", style="HEADING_1"),
+    _runs("b"),
+    _runs("\x0babc", style="HEADING_1"),
+    _runs("c"),
+    _runs("abc\t", style="HEADING_1"),
+    _runs("d"),
+    _runs("q e", ("\u0301www.x", "u")),
+    _runs("q e", ("\u0301http://x", "u")),
+]
+# fmt: on
+
+# Real's `text/plain` and `text/markdown` exports of the Doc each record states, from the
+# measurement `backlot.gdocs`'s export section records; `md_writer` is `_MD_WRITER`.
+# fmt: off
+_DOCS_EXPORTS = {
+    "chars": (
+        {
+            "content": "tab\there\x0bsoft\u2028ls nbsp\xa0x \U0001f600 \ufeffbom \u200bzw\n  lead and trail  \ne\u0301 \x7f del \x85 nel \u2029 ps"
+        },
+        "\ufefftab        here\r\nsoft ls nbsp x \U0001f600 \ufeffbom \u200bzw\r\n  lead and trail  \r\ne\u0301 \x7f del \x85 nel   ps",
+        "tab\there  \nsoft\u2028ls nbsp\xa0x \U0001f600 \ufeffbom \u200bzw  \n  lead and trail    \ne\u0301 \x7f del \x85 nel \u2029 ps",
+    ),
+    "md_prose": (
+        {"content": "a\nb\nc\n\nd\n\n\ne"},
+        "\ufeffa\r\nb\r\nc\r\n\r\n\r\nd\r\n\r\n\r\n\r\n\r\ne",
+        "a  \nb  \nc\n\nd\n\ne",
+    ),
+    "soft": (
+        {
+            "content": "\x0bstart\nend\x0b\n\x0b\ntwo\x0b\x0bbreaks\n\u2028\nsp\u2002\u2007\u202f\u3000x\nx"
+        },
+        "\ufeffstart\r\nend\r\n\r\n\r\n\r\n\r\ntwo\r\n\r\nbreaks\r\n \r\nsp \u2007\u202f x\r\nx",
+        "  \nstart  \nend\n\ntwo\n\nbreaks  \n\u2028  \nsp\u2002\u2007\u202f\u3000x  \nx",
+    ),
+    "trail_two": ({"content": "a\n\n"}, "\ufeffa", "a\n\n"),
+    "md_empty_lead": ({"content": "\n\na\nb"}, "\ufeffa\r\nb", "\n\na  \nb"),
+    "ws_plain": (
+        {"content": "a\n \nb\n\t\nc\n   \nd"},
+        "\ufeffa\r\n \r\nb\r\n        \r\nc\r\n   \r\nd",
+        "a  \n   \nb  \n\t  \nc  \n     \nd",
+    ),
+    "md_headings": (
+        {
+            "paragraphs": [
+            _runs("Title ", ("bold", "b"), style="TITLE"),
+            _runs("Sub", style="SUBTITLE"),
+            _runs("H1", style="HEADING_1"),
+            _runs("H2", style="HEADING_2"),
+            _runs("p"),
+            {"style": "HEADING_3", "text": ""},
+            _runs("H4 *x*", style="HEADING_4"),
+            _runs("H5", style="HEADING_5"),
+            _runs("H6 ", ("b", "b"), style="HEADING_6"),
+            _runs("q"),
+            _runs("r"),
+            _runs("# hashy", style="HEADING_1"),
+            {"text": ""},
+            _runs("last", style="HEADING_2"),
+        ]
+        },
+        "\ufeffTitle bold\r\nSub\r\nH1\r\nH2\r\np\r\nH4 *x*\r\nH5\r\nH6 b\r\nq\r\nr\r\n# hashy\r\n\r\n\r\nlast",
+        "# Title **bold**\n\n## Sub\n\n# H1\n\n## H2\n\np\n\n### \n\n#### H4 \\*x\\*\n\n##### H5\n\n###### *H6 **b***\n\nq  \nr\n\n# \\# hashy\n\n## last",
+    ),
+    "empty_head_mid": (
+        {
+            "paragraphs": [
+            _runs("a"),
+            {"style": "HEADING_3", "text": ""},
+            _runs("b"),
+            {"style": "HEADING_2", "text": ""},
+            {"text": ""},
+            _runs("c"),
+            {"text": ""},
+            {"style": "TITLE", "text": ""},
+            {"text": ""},
+            _runs("d"),
+        ]
+        },
+        "\ufeffa\r\nb\r\n\r\n\r\nc\r\n\r\n\r\n\r\n\r\n\r\n\r\nd",
+        "a\n\n### \n\nb\n\n## \n\nc\n\n# \n\nd",
+    ),
+    "subtitle_empty": (
+        {
+            "paragraphs": [
+            _runs("a"),
+            {"style": "SUBTITLE", "text": ""},
+            _runs("b"),
+            _runs("\x0b", style="HEADING_4"),
+            _runs("c"),
+            _runs("\x0b\x0b"),
+            _runs("d"),
+        ]
+        },
+        "\ufeffa\r\n\r\n\r\nb\r\n\r\nc\r\n\r\n\r\n\r\n\r\nd",
+        "a\n\n## \n\nb\n\n####  \n\nc\n\nd",
+    ),
+    "md_breaks": (
+        {
+            "paragraphs": [
+            _runs("a"),
+            {"text": ""},
+            _runs("h", style="HEADING_1"),
+            {"text": ""},
+            {"text": ""},
+            _runs("b"),
+            _runs("c\x0b"),
+            _runs("h2", style="HEADING_2"),
+            _runs("d\x0b"),
+            {"text": ""},
+            _runs("e"),
+        ]
+        },
+        "\ufeffa\r\n\r\n\r\nh\r\n\r\n\r\n\r\n\r\nb\r\nc\r\n\r\nh2\r\nd\r\n\r\n\r\n\r\ne",
+        "a\n\n# h\n\nb  \nc\n\n## h2\n\nd\n\ne",
+    ),
+    "md_marks": (
+        {
+            "paragraphs": [
+            _runs("x ", ("bold ", "b"), "after"),
+            _runs("x", (" spaced ", "i"), "y"),
+            _runs(("whole bold", "b")),
+            _runs(("a", "b"), ("b", "i"), ("c", "s")),
+            _runs("u ", ("under", "u"), " ", ("ub", "bu")),
+            _runs("see ", {"text": "link", "link": "https://example.com/a"}, " and ", {"text": "bold link", "bold": True, "link": "https://example.com/b"}, "."),
+            _runs("odd ", {"text": "li]nk", "link": "https://example.com/p(a)r en"}, " ", {"text": "mail", "link": "mailto:a@b.c"}),
+            _runs(("*", "b"), "x", ("_y_", "i")),
+            _runs(("   ", "b"), "sp"),
+            _runs("mid", ("dle", "b"), "word"),
+            _runs(("part ", "b"), ("bold", "ib"), (" more", "b")),
+            _runs({"text": "http://example.com", "link": "http://example.com"}),
+            _runs({"text": "same", "link": "https://example.com/s"}, {"text": "+bold", "bold": True, "link": "https://example.com/s"}),
+        ]
+        },
+        "\ufeffx bold after\r\nx spaced y\r\nwhole bold\r\nabc\r\nu under ub\r\nsee link and bold link.\r\nodd li]nk mail\r\n*x_y_\r\n   sp\r\nmiddleword\r\npart bold more\r\nhttp://example.com\r\nsame+bold",
+        "x **bold** after  \nx *spaced* y  \n**whole bold**  \n**a***b*~~c~~  \nu under **ub**  \nsee [link](https://example.com/a) and [**bold link**](https://example.com/b).  \nodd [li\\]nk](https://example.com/p\\(a\\)r%20en) [mail](mailto:a@b.c)  \n**\\***x*\\_y\\_*  \n   sp  \nmid**dle**word  \n**part *bold* more**  \n[http\\://example.com](http://example.com)  \n[same**\\+bold**](https://example.com/s)",
+    ),
+    "nest": (
+        {
+            "paragraphs": [
+            _runs(("a", "s"), ("b", "bs"), ("c", "b")),
+            _runs(("a", "b"), ("b", "bs"), ("c", "s")),
+            _runs(("a", "i"), ("b", "ib"), ("c", "b")),
+            _runs(("a", "b"), ("b", "ib"), ("c", "i")),
+            _runs(("a", "ib"), ("b", "b"), "c"),
+            _runs(("a", "ib"), ("b", "i"), "c"),
+            _runs(("a", "ibs"), ("b", "i"), "c"),
+            _runs(("a", "is"), ("b", "ibs")),
+            _runs(("a", "s"), ("b", "ibs"), ("c", "s")),
+            _runs("x", ("ib", "ib"), "y"),
+            _runs(("l", "1"), ("m", "2")),
+            _runs(("l", "b1"), ("m", "b")),
+            _runs(("l", "b"), ("m", "b1"), ("n", "b")),
+            _runs(("l", "i1"), ("m", "1")),
+            _runs(("s", "s1")),
+            _runs(("  sp  ", "b"), "x"),
+            _runs("x", ("  sp  ", "1"), "x"),
+            _runs("x", (" ", "1"), "x"),
+            _runs("x", ("\tt\t", "i"), "x"),
+        ]
+        },
+        "\ufeffabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nab\r\nabc\r\nxiby\r\nlm\r\nlm\r\nlmn\r\nlm\r\ns\r\n  sp  x\r\nx  sp  x\r\nx x\r\nx        t        x",
+        "~~a**b**~~**c**  \n**a~~b~~**~~c~~  \n*a**b*****c**  \n**a*b****c*  \n***a*****b**c  \n***a**b*c  \n***~~a~~**b*c  \n*~~a**b**~~*  \n~~a***b***c~~  \nx***ib***y  \n[l](https://e.com/1)[m](https://e.com/2)  \n[**l**](https://e.com/1)**m**  \n**l[m](https://e.com/1)n**  \n[*l*m](https://e.com/1)  \n[~~s~~](https://e.com/1)  \n  **sp**  x  \nx  [sp](https://e.com/1)  x  \nx x  \nx\t*t*\tx",
+    ),
+    "md_escape": (
+        {
+            "content": "*star* _under_ **x** __y__\n# not heading\n#hash\n1. not list\n2) paren\n- not list\n+ plus\n* star item\n> quote\n[x](y) ![i](j)\n<b>tag</b> & amp &lt;\nback\\slash `code` ``two``\npipe | table |\n~tilde~ ~~s~~\nunder_score_word snake_case\na  b double\n    four spaces\ntrailing space   \n===\n---\n***\n___\n!bang [ ] ( ) { }\n1\\. x\nhttp://example.com/a_b*c\n100% $5 @at ^up =eq"
+        },
+        "\ufeff*star* _under_ **x** __y__\r\n# not heading\r\n#hash\r\n1. not list\r\n2) paren\r\n- not list\r\n+ plus\r\n* star item\r\n> quote\r\n[x](y) ![i](j)\r\n<b>tag</b> & amp &lt;\r\nback\\slash `code` ``two``\r\npipe | table |\r\n~tilde~ ~~s~~\r\nunder_score_word snake_case\r\na  b double\r\n    four spaces\r\ntrailing space   \r\n===\r\n---\r\n***\r\n___\r\n!bang [ ] ( ) { }\r\n1\\. x\r\nhttp://example.com/a_b*c\r\n100% $5 @at ^up =eq",
+        "\\*star\\* \\_under\\_ \\*\\*x\\*\\* \\_\\_y\\_\\_  \n\\# not heading  \n\\#hash  \n1\\. not list  \n2\\) paren  \n\\- not list  \n\\+ plus  \n\\* star item  \n\\> quote  \n\\[x\\](y) \\!\\[i\\](j)  \n\\<b\\>tag\\</b\\> & amp \\&lt;  \nback\\\\slash \\`code\\` \\`\\`two\\`\\`  \npipe \\| table \\|  \n\\~tilde\\~ \\~\\~s\\~\\~  \nunder\\_score\\_word snake\\_case  \na  b double  \n    four spaces  \ntrailing space     \n\\===  \n\\---  \n\\*\\*\\*  \n\\_\\_\\_  \n\\!bang \\[ \\] ( ) { }  \n1\\\\. x  \nhttp\\://example.com/a\\_b\\*c  \n100% \\$5 @at ^up \\=eq",
+    ),
+    "esc_runs": (
+        {
+            "paragraphs": [
+            _runs("a", ("-b", "b")),
+            _runs("a", ("1. x", "b")),
+            _runs("a&", ("b", "b")),
+            _runs("\t-x"),
+            _runs("x\t-y"),
+            _runs("\xa0-x"),
+            _runs("x 1. y"),
+            _runs("x 2) y"),
+            _runs("HTTP://x"),
+            _runs("Www.x"),
+            _runs("xhttp://y"),
+            _runs("x www.y"),
+            _runs("xwww.y"),
+            _runs("www."),
+            _runs("http:/x"),
+            _runs("https:x"),
+            _runs(("www.x", "1")),
+            _runs("&1"),
+            _runs("&\xe9"),
+            _runs("x&_"),
+            _runs("http", ("://x", "b")),
+            _runs("www", (".x", "b")),
+            _runs("1", (". x", "b")),
+            _runs("a ", ("=b", "b")),
+            _runs(("a", "b"), " +b"),
+            _runs("x", ("-", "b"), "y"),
+            _runs("\xe9-x"),
+            _runs("x,-y"),
+            _runs("(-x"),
+            _runs("x/-y"),
+            _runs("x\u3000-y"),
+            _runs("Http://x Https://y FTP://z WWW.q"),
+            _runs("http://"),
+            _runs("mailto://x file://y"),
+        ]
+        },
+        "\ufeffa-b\r\na1. x\r\na&b\r\n        -x\r\nx        -y\r\n -x\r\nx 1. y\r\nx 2) y\r\nHTTP://x\r\nWww.x\r\nxhttp://y\r\nx www.y\r\nxwww.y\r\nwww.\r\nhttp:/x\r\nhttps:x\r\nwww.x\r\n&1\r\n&\xe9\r\nx&_\r\nhttp://x\r\nwww.x\r\n1. x\r\na =b\r\na +b\r\nx-y\r\n\xe9-x\r\nx,-y\r\n(-x\r\nx/-y\r\nx -y\r\nHttp://x Https://y FTP://z WWW.q\r\nhttp://\r\nmailto://x file://y",
+        "a**\\-b**  \na**1\\. x**  \na&**b**  \n\t\\-x  \nx\t\\-y  \n\xa0-x  \nx 1\\. y  \nx 2\\) y  \nHTTP\\://x  \nWww\\.x  \nxhttp://y  \nx www\\.y  \nxwww.y  \nwww\\.  \nhttp:/x  \nhttps:x  \n[www\\.x](https://e.com/1)  \n&1  \n&\xe9  \nx&\\_  \nhttp**://x**  \nwww**.x**  \n1**. x**  \na **\\=b**  \n**a** \\+b  \nx**\\-**y  \n\xe9-x  \nx,-y  \n(-x  \nx/-y  \nx\u3000-y  \nHttp\\://x Https\\://y FTP\\://z WWW\\.q  \nhttp\\://  \nmailto://x file://y",
+    ),
+    "loose": (
+        {
+            "paragraphs": [
+            _runs("x", ("\xa0b\xa0", "b"), "y"),
+            _runs("x", ("\u3000b\u3000", "b"), "y"),
+            _runs("x", ("\u2002b\u2002", "b"), "y"),
+            _runs("a", ("-b", "u")),
+            _runs(("a", "u"), ("-b", "bu")),
+            _runs("x1. y"),
+            _runs("(http://x"),
+            _runs(("x", "1"), "-y"),
+        ]
+        },
+        "\ufeffx b y\r\nx b y\r\nx b y\r\na-b\r\na-b\r\nx1. y\r\n(http://x\r\nx-y",
+        "x**\xa0b\xa0**y  \nx**\u3000b\u3000**y  \nx**\u2002b\u2002**y  \na\\-b  \na**\\-b**  \nx1. y  \n(http\\://x  \n[x](https://e.com/1)\\-y",
+    ),
+    "heading_escapes": (
+        {
+            "paragraphs": [
+                {"text": _WORDS},
+                {"runs": [{"text": _WORDS[:300], "bold": True}, {"text": " tail " + _WORDS[:200]}]},
+                {"style": "HEADING_1", "text": "1. Introduction"},
+                {"style": "HEADING_2", "text": "- dash"},
+                {"style": "HEADING_3", "text": "+ plus"},
+                {"style": "TITLE", "text": "= eq"},
+                {"style": "SUBTITLE", "text": "2) paren"},
+                {"style": "HEADING_1", "text": "http://x.com www.y"},
+                {"style": "HEADING_2", "text": "  1. spaced"},
+                {"style": "HEADING_4", "text": "a & b &c"},
+                {"text": "\t1. tabbed"},
+                {"runs": [{"text": "x"}, {"text": "1. run", "bold": True}]},
+                {"text": "end"},
+            ]
+        },
+        "\ufeff"
+        + _WORDS
+        + "\r\n"
+        + _WORDS[:300]
+        + " tail "
+        + _WORDS[:200]
+        + "\r\n1. Introduction\r\n- dash\r\n+ plus\r\n= eq\r\n2) paren\r\nhttp://x.com www.y\r\n  1. spaced\r\na & b &c\r\n        1. tabbed\r\nx1. run\r\nend",
+        _WORDS
+        + "  \n**"
+        + _WORDS[:300]
+        + "** tail "
+        + _WORDS[:200]
+        + "\n\n# 1\\. Introduction\n\n## \\- dash\n\n### \\+ plus\n\n# \\= eq\n\n## 2\\) paren\n\n# http\\://x.com www\\.y\n\n##   1\\. spaced\n\n#### a & b \\&c\n\n\t1\\. tabbed  \nx**1\\. run**  \nend",
+    ),
+    "md_writer": (
+        {"paragraphs": _MD_WRITER},
+        (
+            "\ufeffza        bd\r\n"
+            "  http://y\u01c5  ax yax y\u4e2d\u6587 b-a  a\xe9www.x aa \r\n"
+            "q 0\ufe0fwww.x\r\n"
+            "q _\ufe0fhttp://x\r\n"
+            "zabcdefg\r\n"
+            '999.   10 <-<~ #"Foo_*Zed\U0001f600999.\r\n'
+            "q \u03b1\U000e0100http://x\r\n"
+            "zabcdefg\r\n"
+            "za     bd\r\n"
+            "za      bd\r\n"
+            "\r\n"
+            "\r\n"
+            "x\r\n"
+            "\r\n"
+            "xy\r\n"
+            "\r\n"
+            "\r\n"
+            "\r\n"
+            "_https://x\r\n"
+            " \r\n"
+            "        \r\n"
+            "\r\n"
+            "\r\n"
+            " h\r\n"
+            "q A\ufe0fhttp://x\r\n"
+            "q \u03b1\u034fhttp://x\r\n"
+            "\u01c5\u0301www.x \u01c5\u0301http://y\r\n"
+            "\u4e2d\u0301www.x \u4e2d\u0301http://y\r\n"
+            "  \r\n"
+            "\r\n"
+            "\r\n"
+            "\u4e2d\u02b0\u0301http://xawww.x-\r\n"
+            "za  bd\r\n"
+            "za  bd\r\n"
+            "zabcdef\r\n"
+            "za      bd\r\n"
+            "  \r\n"
+            "=`        b@12.q\u2022 3.999.        &1                  ^        .         \r\n"
+            " *  1. a                  \u4e2d\u6587def1. aa  \r\n"
+            "\xe9\u01c5\u0301http://xwww.x\u0301\r\n"
+            "\r\n"
+            "        \r\n"
+            "\r\n"
+            "ba-aa\u4e2d\u6587b  \u4e2d\u6587          x y          aaa_b         e\u0301bc \r\n"
+            "za  bd\r\n"
+            "     x y   \u4e2d\u6587         a \r\n"
+            "za       bd\r\n"
+            "_\u01c5\u4e2d_www.x\u01c5\xe9\u02b0\U0001f600*http://x\r\n"
+            "za  bd\r\n"
+            "za            b         cd\r\n"
+            "za                                             bd\r\n"
+            " a-\r\n"
+            " \r\n"
+            "\U0001f600_\r\n"
+            "za  bd\r\n"
+            "  \u4e2d\u0301\u4e2dwww.x\U0001f600a_b*\u0301http://x~def\r\n"
+            "\r\n"
+            " *-\r\n"
+            "ax y~a\u4e2d\r\n"
+            "\xe9\U0001f600 1.  \r\n"
+            "za          b  cd\r\n"
+            "za b                  cd\r\n"
+            "z a  c   b         d\r\n"
+            " ahttp://xhttp://xhttp://x\u02b0\u4e2d\u6587~-abc                b  \r\n"
+            "za                                         bd\r\n"
+            "q \u03b1\u3099www.x\r\n"
+            "\r\n"
+            "  \r\n"
+            "x\r\n"
+            "  \r\n"
+            "\r\n"
+            "\r\n"
+            "-\U0001f600a        e\u0301         \r\n"
+            "za  bd\r\n"
+            "za  bd\r\n"
+            "  \r\n"
+            "za             bd\r\n"
+            "za     bd\r\n"
+            "za                 b          cd\r\n"
+            "                  \u02b0\u4e2dwww.x   a_b_\u4e2de   \r\n"
+            "1.\r\n"
+            "1.        x\r\n"
+            "1. x\r\n"
+            "\u0661. x\r\n"
+            "\uff11. x\r\n"
+            "1.x\r\n"
+            "1.\r\n"
+            "x\r\n"
+            "        http://x\r\n"
+            "*http://x\r\n"
+            "_http://x\r\n"
+            "~http://x\r\n"
+            "<http://x\r\n"
+            "http\u017f://x\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "b\r\n"
+            "a\r\n"
+            "b\r\n"
+            "a\r\n"
+            "abc  \r\n"
+            "b\r\n"
+            "\r\n"
+            "abc\r\n"
+            "c\r\n"
+            "abc        \r\n"
+            "d\r\n"
+            "q e\u0301www.x\r\n"
+            "q e\u0301http://x"
+        ),
+        (
+            "z~~a~~        ~~**b**](https://e.com/2)d  \n"
+            "  [http\\://y](https://e.com/2)[***\u01c5***](https://e.com/1)  ****a***[**x y](https://e.com/1)*~~ax y](https://e.com/1)***[[\u4e2d\u6587](https://e.com/1)* b***\\-a\xa0*** **a*\xe9www\\.x* [a](https://e.com/2)*~~a~~***~~\xa0~~  \n"
+            "q 0\ufe0fwww.x  \n"
+            "q \\_\ufe0fhttp\\://x  \n"
+            "z**a~~b[c*d*](https://e.com/1)](https://e.com/2)**[~~e](https://e.com/2)~~[f](https://e.com/2)g\n"
+            "\n"
+            '##### 999\\. \u3000 10 \\<-***\\<**~~\\~ \\#](https://e.com/back\\\\s)***["Foo\\_\\*Zed\U0001f600**](https://e.com/back\\\\s)***999\\.***\n'
+            "\n"
+            "q \u03b1\U000e0100http\\://x  \n"
+            "z*a~~b[c**d**](https://e.com/1)](https://e.com/2)*[[e](https://e.com/2)~~[f](https://e.com/2)g  \n"
+            "z**~~a~~**   *  [**b**](https://e.com/1)~~d  \n"
+            "z~~a    ~~  *~~b~~*d\n"
+            "\n"
+            "x\n"
+            "\n"
+            "**x**y\n"
+            "\n"
+            "##     \n"
+            "\n"
+            "\\_https://x\n"
+            "\n"
+            "##   \t \n"
+            "\n"
+            "\xa0h  \n"
+            "q A\ufe0fhttp://x  \n"
+            "q \u03b1\u034fhttp://x  \n"
+            "\u01c5\u0301www.x \u01c5\u0301http://y  \n"
+            "\u4e2d\u0301www.x \u4e2d\u0301http://y  \n"
+            "  \n"
+            "\n"
+            "[\u4e2d\u02b0\u0301http://x](https://e.com/1)***~~a**~~*www\\.x-  \n"
+            "z[a](https://e.com/1)  ~~b**d  \n"
+            "z[a  ](https://e.com/1)*~~b~~*d  \n"
+            "z[a*b**c~~d**~~*](https://e.com/1)~~[e](https://e.com/2)*f  \n"
+            "z[***~~a**~~*](https://e.com/1)  ~~  *  ~~b~~d\n"
+            "\n"
+            "\n"
+            "#### [~~\\=~~](https://e.com/q%20r)\\`\tb*@12.q\u2022 3\\.999\\.\t&1\t  \t^\t.\t\u3000*\n"
+            "\n"
+            " *[~~\\****~~  *1\\. a* \t \t*\u4e2d\u6587*def[**1\\. a**](https://e.com/2)[~~a~~](https://e.com/1)    \n"
+            "~~\xe9\u01c5\u0301http://xwww.x~~**\u0301**\n"
+            "\n"
+            "#   \t \n"
+            "\n"
+            "*~~b[**a**~~](https://e.com/2)*[\\-a](https://e.com/2)a***~~\u4e2d\u6587~~](https://e.com/1)*[b](https://e.com/1)  [[\u4e2d\u6587](https://e.com/1)** \t *~~x y~~*  \t~~**a**~~aa\\_b \t[e\u0301](https://e.com/2)*bc*   \n"
+            "z*~~a~~ * [~~b~~](https://e.com/1)d  \n"
+            "     ~~x y   ~~*\u4e2d\u6587* \t~~**a**](https://e.com/1)   \n"
+            "z~~a    ~~   [**~~b**~~](https://e.com/1)d  \n"
+            "[**~~\\_\u01c5\u4e2d~~**](https://e.com/2)~~\\_www.x\u01c5\xe9***\u02b0\U0001f600\\*http\\://x*  \n"
+            "z[**~~a***  ***b***](https://e.com/1)d  \n"
+            "z[**a**](https://e.com/3) \t   ~~[*b*](https://e.com/1)~~ \t**c**d  \n"
+            "z~~a \t\t\t~~   \t \t~~*b~~*d\n"
+            "\n"
+            "######  [*a-*](https://e.com/2)\n"
+            "\n"
+            "   \n"
+            "[\U0001f600\\_](https://e.com/1)  \n"
+            "z*~~a](https://e.com/2)*  [**~~b**~~](https://e.com/1)d\n"
+            "\n"
+            "###   ***~~[\u4e2d\u0301\u4e2d](https://e.com/2)**~~*~~www\\.x\U0001f600~~***a\\_b***\\*\u0301http\\://x\\~**~~def~~**  \n"
+            "\n"
+            "####  \\*- a*~~x y~~***\\~***[a*](https://e.com/2)*[~~\u4e2d~~](https://e.com/1)* [*~~\xe9*~~](https://e.com/1)~~**\U0001f600 1\\.**~~  \n"
+            "\n"
+            "z[**~~a**~~](https://e.com/2) \t ~~[**b**](https://e.com/2)~~  [c](https://e.com/1)d  \n"
+            "z[*~~a~~*](https://e.com/2) ~~[***b***](https://e.com/3)  \t~~\t**[c](https://e.com/1)*d  \n"
+            "z *[**~~a~~**](https://e.com/1)  [c](https://e.com/2)   b* \td  \n"
+            " [**~~a**~~](https://e.com/1)http\\://xhttp://xhttp://x[\u02b0](https://e.com/2)*~~\u4e2d\u6587](https://e.com/2)***[\\~**](https://e.com/2)\\-a[***~~bc~~***](https://e.com/3)\t\t***[b*](https://e.com/1)  **  \n"
+            "z[***~~a**~~*](https://e.com/3) ~~   \t \t* \t \t  **[*b*](https://e.com/2)**d  \n"
+            "q \u03b1\u3099www.x\n"
+            "\n"
+            "##     \n"
+            "\n"
+            "x  \n"
+            "\u3000\u3000\n"
+            "\n"
+            "~~\\-\U0001f600a~~\t[*e\u0301](https://e.com/3)* \t  \n"
+            "z**~~a~~  **[~~b](https://e.com/1)~~d  \n"
+            "z**~~a***  **b**d  \n"
+            "    \n"
+            "z***a** *\t    *[b*](https://e.com/2)d  \n"
+            "z**a **    [**~~b**~~](https://e.com/1)d  \n"
+            "z[**~~a**~~](https://e.com/1)\t \t~~b~~  \t**[c**](https://e.com/1)d  \n"
+            "  \t\t[\u02b0\u4e2dwww\\.x](https://e.com/1)   *a\\_b*[**\\_\u4e2de**](https://e.com/2)     \n"
+            "1\\.  \n"
+            "1\\.\tx  \n"
+            "1.\xa0x  \n"
+            "\u0661. x  \n"
+            "\uff11. x  \n"
+            "1\\.**x**  \n"
+            "1\\.  \n"
+            "x  \n"
+            "\thttp\\://x  \n"
+            "\\*http\\://x  \n"
+            "\\_http://x  \n"
+            "\\~http\\://x  \n"
+            "\\<http\\://x  \n"
+            "http\u017f\\://x  \n"
+            "[a](https://e.com/a\\<b)  \n"
+            "[a](https://e.com/a\\>b)  \n"
+            "[a](https://e.com/a\\`b)  \n"
+            "[a](https://e.com/a\\\\b)  \n"
+            "[a](https://e.com/a\\(b\\)c)  \n"
+            "**a**  \n"
+            "**b**  \n"
+            "[a](https://e.com/1)  \n"
+            "[b](https://e.com/1)  \n"
+            "a\n"
+            "\n"
+            "# abc  \n"
+            "\n"
+            "b\n"
+            "\n"
+            "#  abc\n"
+            "\n"
+            "c\n"
+            "\n"
+            "# abc\t\n"
+            "\n"
+            "d  \n"
+            "q e\u0301www\\.x  \n"
+            "q e\u0301http\\://x"
+        ),
+    ),
+    "md_tail": (
+        {
+            "paragraphs": [
+                _runs(
+                    "z",
+                    ("a", "ibs"),
+                    (" ", "is1"),
+                    (" ", "bs"),
+                    (" ", "bs"),
+                    (" ", "ib1"),
+                    ("b", "ibs1"),
+                    "d",
+                ),
+                _runs("  "),
+            ]
+        },
+        "\ufeffza    bd",
+        "z***~~a~~***    *[**~~b*~~](https://e.com/1)**d  \n  ",
+    ),
+    "md_kept": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs(
+                    ("a", "b2"),
+                    ("a ", "ibs"),
+                    (" ", "bs1"),
+                    (" a", "i"),
+                    (" ", "is2"),
+                    ("  ", "ibs"),
+                    ("a ", "i"),
+                    (" \t", "bs1"),
+                    (" ", "ib"),
+                ),
+                _runs("p001"),
+                _runs(
+                    ("a", "is"),
+                    ("  ", "ib"),
+                    (" ", "ibs"),
+                    (" ", "ib1"),
+                    (" ", "ibs2"),
+                    (" ", "ibs"),
+                    ("  ", "is"),
+                    (" ", "s"),
+                    "b",
+                ),
+                _runs("p002"),
+            ]
+        },
+        "\ufeffp000\r\naa   a   a           \r\np001\r\na         b\r\np002",
+        (
+            "p000  \n"
+            "[**a**](https://e.com/2)***~~a~~*  ** *a   a*  \t   \n"
+            "p001  \n"
+            "*~~a~~   *      b  \n"
+            "p002"
+        ),
+    ),
+    "md_named": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs(
+                    ("a\x0b\x0b", "s"),
+                    ("  ", "i1"),
+                    " ",
+                    ("\t", "i"),
+                    ("b\x0b", "2"),
+                    style="HEADING_6",
+                ),
+                _runs("p001"),
+                _runs(("*a", "is"), ("_\U0001f600-\x0b", "i"), (" 1. ", "i")),
+                _runs("p002"),
+                _runs(("\x0b\x0ba", "i2"), "\t", (" ", "i"), ("b", "ibs"), style="HEADING_6"),
+                _runs("p003"),
+                _runs(("a", "ib2"), ("\x0b  ", "b1"), ("b", "is")),
+                _runs("p004"),
+                _runs(
+                    ("\x0b\x0ba", "b"),
+                    (" ", "b"),
+                    ("  ", "bs"),
+                    (" ", "2"),
+                    (" \x0b\x0b", "i1"),
+                    (" ", "i"),
+                    " ",
+                    ("b", "s2"),
+                    style="HEADING_6",
+                ),
+                _runs("p005"),
+                _runs(
+                    " a",
+                    "  \x0b\x0b",
+                    ("b", "b"),
+                    (" \t", "i1"),
+                    ("\x0bx y", "i"),
+                    ("\t", "s"),
+                    ("\x0b\x0b\xa0", "is"),
+                    style="SUBTITLE",
+                ),
+                _runs("p006"),
+                _runs(
+                    (" \t", "s2"),
+                    (" \t", "i"),
+                    (" \t", "i1"),
+                    ("x y", "i"),
+                    "x y",
+                    (" ", "is"),
+                    "\t",
+                    style="TITLE",
+                ),
+                _runs("p007"),
+            ]
+        },
+        (
+            "\ufeffp000\r\n"
+            "a\r\n"
+            "\r\n"
+            "           b\r\n"
+            "\r\n"
+            "p001\r\n"
+            "*a_\U0001f600-\r\n"
+            "1. \r\n"
+            "p002\r\n"
+            "\r\n"
+            "\r\n"
+            "a         b\r\n"
+            "p003\r\n"
+            "a\r\n"
+            " b\r\n"
+            "p004\r\n"
+            "\r\n"
+            "\r\n"
+            "a     \r\n"
+            "\r\n"
+            "  b\r\n"
+            "p005\r\n"
+            " a  \r\n"
+            "\r\n"
+            "b         \r\n"
+            "x y        \r\n"
+            "\r\n"
+            " \r\n"
+            "p006\r\n"
+            "                           x yx y         \r\n"
+            "p007"
+        ),
+        (
+            "p000\n"
+            "\n"
+            "###### *~~a~~*     \t*[b](https://e.com/2)* \n"
+            "\n"
+            "p001  \n"
+            "*~~\\*a~~\\_\U0001f600-*  \n"
+            " *1\\.*   \n"
+            "p002\n"
+            "\n"
+            "######   [*a*](https://e.com/2)\t ***~~b**~~*\n"
+            "\n"
+            "p003  \n"
+            "[***a***](https://e.com/2)  \n"
+            "  *~~b~~*  \n"
+            "p004\n"
+            "\n"
+            "######   ***a   ***      *[~~b~~](https://e.com/2)*\n"
+            "\n"
+            "p005\n"
+            "\n"
+            "##  a    **b** \t *x y*\t  *~~\xa0~~*\n"
+            "\n"
+            "p006\n"
+            "\n"
+            "#  \t \t \t*x y*x y \t\n"
+            "\n"
+            "p007"
+        ),
+    ),
+    "md_pieces": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs(("\xe9", "i"), ("1. a", "iu")),
+                _runs("p001"),
+                _runs(("  ", "isu"), (" \t", "is"), ("\ta", "isu")),
+                _runs("p002"),
+                _runs(("\t", "i"), (" y", "iu")),
+                _runs("p003"),
+                _runs(("\x0b ", "i"), "x"),
+                _runs("p004"),
+                _runs(("\x0b ", "1"), "x"),
+                _runs("p005"),
+                _runs(("\x0b\t", "i"), "x"),
+                _runs("p006"),
+                _runs(("\x0b ", "i"), "x", style="HEADING_2"),
+                _runs("p007"),
+                _runs(("\x0b  ", "i"), "x"),
+                _runs("p008"),
+            ]
+        },
+        (
+            "\ufeffp000\r\n"
+            "\xe91. a\r\n"
+            "p001\r\n"
+            "                   a\r\n"
+            "p002\r\n"
+            "         y\r\n"
+            "p003\r\n"
+            "\r\n"
+            "\r\n"
+            "x\r\n"
+            "p004\r\n"
+            "\r\n"
+            "\r\n"
+            "\r\n"
+            "x\r\n"
+            "p005\r\n"
+            "\r\n"
+            "        x\r\n"
+            "p006\r\n"
+            "\r\n"
+            "x\r\n"
+            "p007\r\n"
+            "\r\n"
+            " x\r\n"
+            "p008"
+        ),
+        (
+            "p000  \n"
+            "*\xe91\\. a*  \n"
+            "p001  \n"
+            "   \t\t*~~a~~*  \n"
+            "p002  \n"
+            "\t *y*  \n"
+            "p003\n"
+            "\n"
+            " x  \n"
+            "p004\n"
+            "\n"
+            " x  \n"
+            "p005\n"
+            "\n"
+            "\tx  \n"
+            "p006\n"
+            "\n"
+            "##   x\n"
+            "\n"
+            "p007\n"
+            "\n"
+            "  x  \n"
+            "p008"
+        ),
+    ),
+    "md_h6": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs("ww", ("w.x", "i"), style="HEADING_6"),
+                _runs("p001"),
+                _runs("a", ("_b", "i"), style="HEADING_6"),
+                _runs("p002"),
+                _runs(("www.", "i"), "x", style="HEADING_6"),
+                _runs("p003"),
+                _runs("x", (" ", "i"), "y", style="HEADING_6"),
+                _runs("p004"),
+                _runs(("w", "i"), ("ww.x", "b"), style="HEADING_6"),
+                _runs("p005"),
+            ]
+        },
+        (
+            "\ufeffp000\r\n"
+            "www.x\r\n"
+            "p001\r\n"
+            "a_b\r\n"
+            "p002\r\n"
+            "www.x\r\n"
+            "p003\r\n"
+            "x y\r\n"
+            "p004\r\n"
+            "www.x\r\n"
+            "p005"
+        ),
+        (
+            "p000\n"
+            "\n"
+            "###### *www\\.x*\n"
+            "\n"
+            "p001\n"
+            "\n"
+            "###### *a\\_b*\n"
+            "\n"
+            "p002\n"
+            "\n"
+            "###### *www\\.x*\n"
+            "\n"
+            "p003\n"
+            "\n"
+            "###### *x y*\n"
+            "\n"
+            "p004\n"
+            "\n"
+            "###### *w**ww.x***\n"
+            "\n"
+            "p005"
+        ),
+    ),
+    "vt_links": (
+        {"paragraphs": [_runs("p000"), _runs(("\x0b", "1")), _runs("p001")]},
+        "﻿p000\r\n\r\n\r\n\r\n\r\np001",
+        "p000\n\np001",
+    ),
+}
+# fmt: on
+
+
+def test_a_docs_text_export_is_rendered_from_its_body_as_real_renders_it(tmp_path):
+    """`files.export` of a Doc as `text/plain`, `text/markdown` and `text/x-markdown` is what real
+    exported, byte for byte, for the Doc each record states as `content` or as `paragraphs`: no
+    title, a byte-order mark and CRLFs in plain text, and the named styles, marks and escapes of
+    `gdocs.markdown`."""
+    records = [
+        {
+            "source_type": "google_drive",
+            "doc_id": f"export-{name}",
+            "title": name,
+            "author_email": "owner@acme.com",
+            **fields,
+        }
+        for name, (fields, _, _) in _DOCS_EXPORTS.items()
+    ]
+    deck = {
+        "doc_id": "export-deck",
+        "title": "Deck",
+        "content": "a\n\nb",
+        "subtype": "presentation",
+    }
+    records.append({"source_type": "google_drive", "author_email": "owner@acme.com", **deck})
+    formats = ("text/plain", "text/markdown", "text/x-markdown")
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def export(name, mime):
+            fid = served_id("google_drive", f"export-{name}")
+            r = client.get(f"/drive/v3/files/{fid}/export", headers=h, params={"mimeType": mime})
+            return r.status_code, r.headers["content-type"], r.content.decode("utf-8")
+
+        got = {name: [export(name, mime) for mime in formats] for name in _DOCS_EXPORTS}
+        # A Slides deck's `text/plain` is not rendered as a Doc's.
+        assert export("deck", "text/plain") == (200, "text/plain", "Deck\n\na\n\nb")
+    assert got == {
+        name: [(200, mime, text) for mime, text in zip(formats, (plain, md, md))]
+        for name, (_, plain, md) in _DOCS_EXPORTS.items()
+    }
 
 
 def test_drive_in_owners_query(client, admin_h, ro_conn):
@@ -16362,9 +17313,8 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
     assert (f["version"], f["size"], quota()) == ("2", "1024", used + 1024)
     found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains 'ABell0'"})
     assert [x["id"] for x in found.json()["files"]] == [did]
-    assert wc.get(
-        f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"}
-    ).text.endswith("ABell0 w0rld\nSec0nd para")
+    exported = wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"})
+    assert exported.content.decode("utf-8") == "\ufeffABell0 w0rld\r\nSec0nd para"
 
 
 def _searched(seed, *replace):

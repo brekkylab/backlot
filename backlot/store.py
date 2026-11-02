@@ -3888,7 +3888,6 @@ def list_slack_top_level(
     channel,
     visible_ids=None,
     limit=100,
-    offset=0,
     *,
     after=None,
     before=None,
@@ -3914,18 +3913,9 @@ def list_slack_top_level(
         sql += f" AND created_ts <= ? AND {us} {'<=' if before[1] else '<'} ?"
         params += [before[0] // 1_000_000 + 1, before[0]]
     clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
-    sql += clause + f" ORDER BY {_order_by('slack', desc=newest_first)} LIMIT ? OFFSET ?"
-    params += cparams + [limit, offset]
+    sql += clause + f" ORDER BY {_order_by('slack', desc=newest_first)} LIMIT ?"
+    params += cparams + [limit]
     return conn.execute(sql, params).fetchall()
-
-
-def count_slack_top_level(conn, channel, visible_ids=None) -> int:
-    sql = f"SELECT COUNT(*) FROM {merged_source(conn, 'slack')} WHERE channel = ? AND (thread_seq = 0 OR subtype = 'thread_broadcast')"
-    params: list = [channel]
-    clause, cparams = _acl_clause("slack", visible_ids=visible_ids)
-    sql += clause
-    params += cparams
-    return conn.execute(sql, params).fetchone()[0]
 
 
 def list_slack_channel_messages(conn, channel, visible_ids=None) -> list[sqlite3.Row]:

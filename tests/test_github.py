@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import re
+import string
 import time
 from urllib.parse import quote
 
@@ -2599,8 +2600,9 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
     """A path number that is not an integer (`²` included), or one outside 64 bits (see
     store.github_by_number), gets the 404 an unknown number gets on that route, byte for byte, as
     real answers both; `²` was measured on all eleven routes. A number of 4,301 digits, one more
-    than `int()` converts, gets that 404 too, where real answers a path that long with a 414 on
-    `issues/{number}` and the git refs, and with a 404 on `pulls/{number}`.
+    than `int()` converts, makes a path real answers with its empty 414 on each route but
+    `pulls/{number}`, which answers the 404
+    (``backlot.routers.github._refuse_a_long_line_or_path``).
 
     The routes that declare the number an `int` match `notanint` and then fail to validate it, and
     that has to be the route's 404 rather than a 422: `{"detail": [...]}` would announce itself as
@@ -2618,7 +2620,8 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
         for label, number in numbers.items()
         for r in [c.get(base + route.format(number=number), headers=gh_admin_h)]
     }
-    assert answers == dict.fromkeys(numbers, (404, unknown.content))
+    long = (404, unknown.content) if route == "pulls/{number}" else (414, b"")
+    assert answers == dict.fromkeys(numbers, (404, unknown.content)) | {"4301 digits": long}
 
 
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
@@ -4776,6 +4779,121 @@ def test_github_backend_version_error_order(gh_client, path):
     assert "X-GitHub-Api-Version-Selected" not in response.headers
 
 
+#: Real's 414 pages for a request line and for a target too long for it.
+_LINE_PAGE_414 = (
+    b"<html>\r\n<head><title>414 Request-URI Too Large</title></head>\r\n<body>\r\n"
+    b"<center><h1>414 Request-URI Too Large</h1></center>\r\n<hr><center>nginx</center>\r\n"
+    b"</body>\r\n</html>\r\n"
+)
+_TARGET_JSON_414 = (
+    b'{"message": "We received a Request-URL that is too long from your client."}\r\n'
+)
+
+#: A request whose `{pad}` is filled with `1`s to ``length`` characters after `/github`, counted on
+#: the path as real counts it (:func:`_as_real_counts_a_path`) or on the target as sent; who sends
+#: it; and the answer: a status, or one of :data:`_THE_414S`
+#: (``backlot.routers.github._refuse_a_long_line_or_path``,
+#: ``backlot.main.answer_a_github_request_target_past_its_bound``).
+_LONG_TARGET_ROWS = [
+    ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_096, "admin", 404),
+    ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_097, "admin", "path"),
+    *(
+        ("GET", "/repos/{org}/gateway/issues/" + escape * 100 + "{pad}", "path", n, "admin", a)
+        for escape in ("%31", "%7e", "%20", "%25", "%C3%A9", "%c3%a9")
+        for n, a in ((4_096, 404), (4_097, "path"))
+    ),
+    ("GET", "/repos/{org}/{pad}", "path", 4_097, "admin", "path"),
+    ("GET", "/repos/{org}/gateway/pulls/{pad}", "path", 4_097, "admin", 404),
+    ("GET", "/repos/{org}/gateway/contents/{pad}", "path", 4_097, "admin", 404),
+    ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 8_180, "admin", "line"),
+    ("GET", "/repos/{org}/gateway/issues/{pad}", "target", 8_177, "admin", "path"),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_177, "admin", 200),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_178, "admin", "line"),
+    ("HEAD", "/repos/{org}/gateway?x={pad}", "target", 8_176, "admin", 200),
+    ("HEAD", "/repos/{org}/gateway?x={pad}", "target", 8_177, "admin", "line"),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_191, "admin", "line"),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_192, "admin", "json"),
+    ("HEAD", "/repos/{org}/gateway?x={pad}", "target", 8_192, "admin", "json"),
+    ("POST", "/repos/{org}/gateway?x={pad}", "target", 8_192, "admin", "json"),
+    ("GET", "/repos/{org}/gateway/pulls/1?x={pad}", "target", 8_191, "admin", 404),
+    ("GET", "/repos/{org}/gateway/contents?x={pad}", "target", 8_191, "admin", 200),
+    ("GET", "/repos/{org}/gateway/contents/{pad}", "target", 8_191, "admin", 404),
+    ("GET", "/repos/{org}/gateway/contents/{pad}", "target", 8_192, "admin", "json"),
+    ("GET", "/nope?x={pad}", "target", 8_191, "admin", 404),
+    ("GET", "/nope?x={pad}", "target", 8_192, "admin", "json"),
+    ("GET", "/search/code?q=a&x={pad}", "target", 8_173, "admin", 200),
+    ("GET", "/search/code?q=a&x={pad}", "target", 8_174, "admin", "json"),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_180, "a bad token", 401),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_192, "a bad token", "json"),
+    ("GET", "/repos/{org}/gateway?x={pad}", "target", 8_180, "an unsupported version", "line"),
+    ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_097, "an unsupported version", "path"),
+    ("GET", "/repos/{org}/{pad}/collaborators", "path", 4_097, "no credential", 401),
+    ("GET", "/repos/{org}/gateway/collaborators?x={pad}", "target", 8_180, "no credential", 401),
+    ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_097, "no credential", "path"),
+]
+
+
+def _as_real_counts_a_path(target: str) -> int:
+    """The length of ``target``'s path as real's path 414 counts it
+    (``backlot.routers.github._refuse_a_long_line_or_path``)."""
+    path = target.partition("?")[0]
+    unreserved = string.ascii_letters + string.digits + "-._~"
+    return len(
+        re.sub(
+            r"%([0-9A-Fa-f]{2})", lambda m: "x" if chr(int(m[1], 16)) in unreserved else m[0], path
+        )
+    )
+
+
+#: Each of real's three 414s: its body, its `Content-Type`, and whether it carries the
+#: `x-ratelimit-*` headers and an `x-github-request-id`.
+_THE_414S = {
+    "path": (b"", None, True),
+    "line": (_LINE_PAGE_414, "text/html", True),
+    "json": (_TARGET_JSON_414, "application/json; charset=utf-8", False),
+}
+
+
+def test_github_a_long_path_or_target_is_answered_as_real_answers_it(gh_client, gh_admin_h, gh_org):
+    c, _ = gh_client
+    senders = {
+        "admin": gh_admin_h,
+        "a bad token": {"Authorization": "Bearer nope"},
+        "an unsupported version": {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"},
+        "no credential": {},
+    }
+    got, expected = {}, {}
+    for method, target, counted, length, sender, answer in _LONG_TARGET_ROWS:
+        row = f"{method} {_short(target)} {counted} {length} {sender}"
+        target = target.replace("{org}", gh_org)
+        filled = target.replace("{pad}", "")
+        have = _as_real_counts_a_path(filled) if counted == "path" else len(filled)
+        target = target.replace("{pad}", "1" * (length - have))
+        r = c.request(method, f"/github{target}", headers=senders[sender])
+        if isinstance(answer, int):
+            got[row], expected[row] = r.status_code, answer
+            continue
+        body, media_type, carries = _THE_414S[answer]
+        got[row] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            r.content,
+            r.headers["content-length"],
+            "x-ratelimit-limit" in r.headers,
+            "x-github-request-id" in r.headers,
+        )
+        sent = b"" if method == "HEAD" else body
+        expected[row] = (414, media_type, sent, str(len(body)), carries, carries)
+    assert got == expected
+
+
+def _short(target: str) -> str:
+    """``target`` with an escape sent many times in a row written once, with the count."""
+    return re.sub(
+        r"((?:%[0-9A-Fa-f]{2})+?)\1+", lambda m: f"{m[1]}*{len(m[0]) // len(m[1])}", target
+    )
+
+
 def _sent_raw(client, path: str, headers: dict[str, bytes]):
     """A GET on ``path`` with each header's bytes as they are, which ``tests._helpers.sent_as``
     says why the TestClient does not."""
@@ -4949,8 +5067,8 @@ def test_github_go_printable_is_unicode_15_on_this_python():
 
 
 def test_github_every_answer_carries_a_request_id(gh_client, gh_admin_h, gh_org, monkeypatch):
-    """Real puts an `x-github-request-id` on every answer, served or refused, code search's
-    included, and its last field is the request's own second (the measurement is in
+    """Real puts an `x-github-request-id` on every answer its API gives, served or refused, code
+    search's included, and its last field is the request's own second (the measurement is in
     ``backlot.routers.github.request_id``, the answers below among it). A client that logs it for a
     support ticket has nothing to log without it."""
     from backlot.routers import github as gh
@@ -6865,7 +6983,7 @@ def test_github_type_visibility_sort_and_direction_on_the_repository_listings(tm
 def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit_reports_them(
     tmp_path, monkeypatch
 ):
-    """Real puts five `x-ratelimit-*` headers on every response it gives and serves
+    """Real puts five `x-ratelimit-*` headers on every response its API gives and serves
     `GET /rate_limit`; Backlot sent none of the five on any response and answered the route 404,
     so a client that paces by `remaining` and sleeps until `reset` never ran that path here, and
     PyGithub's `get_rate_limit()` raised before a crawl's first request.
@@ -7207,21 +7325,24 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
 
 
 @pytest.mark.parametrize(
-    "authorization, counted, resource, used",
+    "authorization, counted, resource, used, after",
     [
-        ("Bearer {admin}", "search/issues?q=x", "search", 1),
-        ("Digest x", "search/issues?q=x", "search", 1),
-        (None, "repos/{org}/codebase", "core", 1),
-        ("Basic eDp5", "search/code?q=x", "code_search", 0),
+        ("Bearer {admin}", "search/issues?q=x", "search", 1, (1, 57)),
+        ("Digest x", "search/issues?q=x", "search", 1, (1, 57)),
+        (None, "repos/{org}/codebase", "core", 1, (1, 3597)),
+        ("Basic eDp5", "search/code?q=x", "code_search", 0, (0, 57)),
+        (None, "search/issues?q=x", "search", 1, (0, 60)),
     ],
 )
 def test_github_a_rate_limit_read_opens_no_window(
-    gh_client, gh_org, gh_user_tokens, authorization, counted, resource, used
+    gh_client, gh_org, gh_user_tokens, authorization, counted, resource, used, after
 ):
     """Two reads before anything is counted each answer a full window from themselves, the request
-    after them, counted or refused, opens the window the next read counts down to, and a read once
-    that window's time is up opens no new one (`RateLimitWindows.status` and
-    `RateLimitWindows.opened` have the measurements)."""
+    after them, counted or refused, opens the window the next read counts down to, but for a search
+    with no `Authorization`, which that read does not report, and a read once that window's time is
+    up opens no new one. ``after`` is the `used` and the seconds to `reset` of the read three
+    seconds after the request (`RateLimitWindows.status`, `RateLimitWindows.opened` and
+    `RateLimitWindows.unused` have the measurements)."""
     from backlot.routers import github as gh
 
     c, _ = gh_client
@@ -7243,7 +7364,7 @@ def test_github_a_rate_limit_read_opens_no_window(
     five = _ratelimit(c.get(f"/github/{counted.format(org=gh_org)}", headers=h))
     assert (five["used"], int(five["reset"]) - t[0]) == (str(used), length)
     t[0] += 3
-    assert read() == (used, length - 3)
+    assert read() == after
     t[0] += length
     assert read() == (0, length)
     t[0] += 3

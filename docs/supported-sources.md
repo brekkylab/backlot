@@ -226,7 +226,9 @@ naming no token after a space, which names a third page (2026-10-26 and 2026-10-
 has a `code_search` window of its own at `limit: 0`, so code search answers a `Basic` value naming
 no token with that 403 at once (2026-10-26). `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal
 off (see [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does
-not count, and is never refused — the one route a client reads its way out of a spent window with;
+not count, and is never refused — the one route a client reads its way out of a spent window with,
+but not out of `search` for a caller with no `Authorization`, which it reports unused whatever that
+address has searched, even after its searches have spent the window and been refused (2026-11-02);
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
 none of the five and counts nowhere, spent window or not (2026-09-23). Four answers carry none of
 the five and count nowhere, as real's do not: a credential that does not resolve, unless a tab sets
@@ -239,9 +241,11 @@ an `Authorization` that carries no credential and the 401 for none at all on a `
 answered before a route runs included: five uppercase hex fields joined by colons, the last being
 the second the request arrived (measured 2026-09-22, 2026-09-23 and 2026-10-18), and a token's
 spent-window 403 quotes it and that second in its `message`. The front door's 400 for a raw byte in
-the request target carries neither it nor the five `x-ratelimit-*`, on real (2026-10-23) as here.
-Real's `Date` is the second its answer left, the id's or one past it; under `backlot serve` it is
-uvicorn's, which reads the clock once a second, so it can be one behind the id's.
+the request target (2026-10-23), its JSON 414 for a target of 8,192 bytes or more (8,174 on code
+search) and its 414 and 431 for a head that has not ended by its 68,552nd byte (2026-10-29) carry
+neither it nor the five `x-ratelimit-*`, on real as here. Real's `Date` is the second its answer
+left, the id's or one past it; under `backlot serve` it is uvicorn's, which reads the clock once a
+second, so it can be one behind the id's.
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository
@@ -784,9 +788,10 @@ here takes the 32-hex form), paging of a standard channel's members (live pages 
 shorter than `$top`; here all of the directory is one page), which unknown message ids live answers
 `403`, `404` or `400` (it depends on the number's range; here every unknown id is a `403`), the beta
 version and the service document at `/v1.0`, the request URI length past which the front end answers
-`414`, chats, writes, and real tenant authorization. Imported reply times must advance by a whole
-second, and at most 1,000 ids fit one channel-second, both because an id is a creation millisecond;
-an edit must not precede its message.
+`414` to a request line that ends (one that has not ended by its 40,960th byte is answered as real
+answers it), chats, writes, and real tenant authorization. Imported reply times must advance by a
+whole second, and at most 1,000 ids fit one channel-second, both because an id is a creation
+millisecond; an edit must not precede its message.
 
 ### Notion — `/notion/v1`
 
@@ -960,7 +965,7 @@ Each method answers on `GET` and `POST` alike, as the real Web API does.
 | `conversations.list` | `types` defaults to `public_channel` as the real API does — pass `public_channel,private_channel` to crawl both. This corpus has no DMs, so `im`/`mpim` select nothing, and an unknown value is `invalid_types` |
 | `conversations.info` | |
 | `conversations.history` | `oldest`, `latest`, `inclusive` |
-| `conversations.replies` | |
+| `conversations.replies` | `oldest`, `latest`, `inclusive`, paginated |
 | `conversations.members` | Per-channel, paginated |
 | `users.list` | |
 | `users.info` | |

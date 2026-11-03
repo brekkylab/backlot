@@ -738,7 +738,7 @@ def verify_manifest(source) -> list[str]:
                 continue
             if p.stat().st_size != shard["bytes"]:
                 problems.append(
-                    f"{shard['path']}: {p.stat().st_size} bytes, manifest says {shard['bytes']}"
+                    f"{shard['path']}: {p.stat().st_size} byte(s), manifest says {shard['bytes']}"
                 )
                 continue
             h = hashlib.sha256()
@@ -756,7 +756,7 @@ def verify_manifest(source) -> list[str]:
         if not rp.exists():
             problems.append(f"{r['path']}: missing")
         elif rp.stat().st_size != r["bytes"]:
-            problems.append(f"{r['path']}: {rp.stat().st_size} bytes, manifest says {r['bytes']}")
+            problems.append(f"{r['path']}: {rp.stat().st_size} byte(s), manifest says {r['bytes']}")
         elif hashlib.sha256(rp.read_bytes()).hexdigest() != r["sha256"]:
             problems.append(f"{r['path']}: sha256 mismatch")
     return problems
@@ -4022,7 +4022,7 @@ def run(
             for where, path in unresolved:
                 print(f"  {where}: {path}", file=sys.stderr)
         if not problems:
-            print(f"OK: {n} records valid.")
+            print(f"OK: {n} record(s) valid.")
             return 0
         print(f"INVALID: {len(problems)} problem(s) in {corpus}", file=sys.stderr)
         for lineno, msg in problems:
@@ -4042,12 +4042,12 @@ def run(
         roster = corpus / "roster.yaml"
         print(f"using the artifact's own roster: {roster}", file=sys.stderr)
     res = load(corpus, settings, reset=not append, roster=roster, id_map=id_map)
-    print(f"Loaded {res['total']} documents into {settings.db_path}")
+    print(f"Loaded {res['total']} document(s) into {settings.db_path}")
     if id_map is not None:
         print(f"Id map written to {id_map}")
     for src, n in sorted(res["counts"].items()):
         print(f"  {src:14s} {n}")
-    print(f"Principals: {res['users']} users, {res['groups']} groups")
+    print(f"Principals: {res['users']} user(s), {res['groups']} group(s)")
     print(f"Tokens written to {settings.tokens_path}")
     return 0
 

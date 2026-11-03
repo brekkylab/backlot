@@ -927,6 +927,154 @@ def test_mcp_notion_tools_take_the_version_every_request_carries(live_server):
         assert '"object": "page"' in text or '"object":"page"' in text, (name, text[:200])
 
 
+# The pattern `backlot.mcp.ARGUMENT_NAME` quotes from the Anthropic API's 400, written out here so a
+# change to that constant is a failure rather than a new expectation.
+_ANTHROPIC_KEY = re.compile(r"[a-zA-Z0-9_.-]{1,64}")
+
+
+def _graph_user(text):
+    """Whether the user has ``displayName``, and ``givenName``, which only the default has."""
+    user = json.loads(text)
+    return "displayName" in user, "givenName" in user
+
+
+def _google_not_found(text):
+    """Whether the answer is the 404, and whether it has an ``errors`` list."""
+    return "NOT_FOUND" in text, "'errors'" in text
+
+
+# One call each through its source's bridge: (id, source, tool, arguments, read, is_error, answer),
+# the answer being what `read` makes of the call's text. Graph's `$select` trims the user to the
+# properties it names, and Gmail's 404 under `$.xgafv` set to 2 has no `errors` list
+# (`backlot.errors.google.has_errors_array`). The rows of a source are next to each other, since
+# the test opens one session per source.
+_CALL_ROWS = [
+    (
+        "msteams-select",
+        "msteams",
+        "me",
+        {"select": "displayName"},
+        _graph_user,
+        False,
+        (True, False),
+    ),
+    ("msteams-default", "msteams", "me", {}, _graph_user, False, (True, True)),
+    (
+        "gmail-xgafv",
+        "gmail",
+        "gmail_label_get",
+        {"user_id": "me", "label_id": "no-such-label", "xgafv": "2"},
+        _google_not_found,
+        True,
+        (True, False),
+    ),
+    (
+        "gmail-default",
+        "gmail",
+        "gmail_label_get",
+        {"user_id": "me", "label_id": "no-such-label"},
+        _google_not_found,
+        True,
+        (True, True),
+    ),
+    ("gmail-unknown-tool", "gmail", "no_such_tool", {}, str, True, "Unknown tool: 'no_such_tool'"),
+]
+
+
+def test_a_call_reaches_its_route_under_the_vendors_names_or_hears_its_tool_is_unknown(
+    live_server,
+):
+    """An argument renamed for the Anthropic API still reaches the route as the parameter the
+    vendor names, and a call to a name the source has no tool by hears that the tool is unknown
+    rather than an internal error. Its own function, not rows of ``_BRIDGE_CASES``, which compare
+    two callers on one call."""
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    base, _ = live_server
+    creds = backlot_mcp.resolve(base, None)
+
+    async def _go():
+        answered = {}
+        for source in dict.fromkeys(row[1] for row in _CALL_ROWS):
+            async with Client(backlot_mcp.openapi_server(base, creds, source)) as c:
+                for row_id, row_source, tool, arguments, read, _, _ in _CALL_ROWS:
+                    if row_source == source:
+                        # an error the session raises, or `read` does, is the row's answer
+                        try:
+                            res = await c.call_tool(tool, arguments, raise_on_error=False)
+                            text = "".join(getattr(b, "text", "") for b in res.content)
+                            answered[row_id] = (res.is_error, read(text))
+                        except Exception as e:
+                            answered[row_id] = (type(e).__name__, str(e))
+        return answered
+
+    answered = asyncio.run(_go())
+    expected = {row_id: (is_error, answer) for row_id, *_, is_error, answer in _CALL_ROWS}
+    assert answered == expected
+
+
+# (id, properties, the arguments the tool lists for them or the error `_with_argument_names` raises)
+_RENAME_ROWS = [
+    (
+        "select",
+        {"$select": {"description": "Comma-separated properties to return."}, "user_id": {}},
+        [("select", "Comma-separated properties to return. Sent as `$select`."), ("user_id", None)],
+    ),
+    ("xgafv", {"$.xgafv": {}}, [("xgafv", "Sent as `$.xgafv`.")]),
+    ("leading-dash", {"$-x": {}}, [("x", "Sent as `$-x`.")]),
+    ("unchanged", {"user_id": {}}, [("user_id", None)]),
+    # a name the pattern takes keeps even a leading dot, the character a rename strips there
+    ("leading-dot", {".x": {}}, [(".x", None)]),
+    ("only-a-dot", {".": {}}, [(".", None)]),
+    ("64-characters", {"a" * 64: {}}, [("a" * 64, None)]),
+    # the length the pattern reads is the stripped name's
+    ("64-once-stripped", {"$" + "a" * 64: {}}, [("a" * 64, f"Sent as `${'a' * 64}`.")]),
+    (
+        "65-characters",
+        {"a" * 65: {}},
+        f"parameter {'a' * 65!r} has no argument name the Anthropic API takes",
+    ),
+    ("nothing-left", {"$": {}}, "parameter '$' has no argument name the Anthropic API takes"),
+    ("a-dot-left", {"$.": {}}, "parameter '$.' has no argument name the Anthropic API takes"),
+    ("non-ascii", {"ééé": {}}, "parameter 'ééé' has no argument name the Anthropic API takes"),
+    (
+        "renamed-onto-a-name",
+        {"$filter": {}, "filter": {}},
+        "tool 't': parameters '$filter' and 'filter' both go by 'filter'",
+    ),
+    (
+        "two-renamed-onto-one",
+        {"$filter": {}, "$.filter": {}},
+        "tool 't': parameters '$filter' and '$.filter' both go by 'filter'",
+    ),
+]
+
+
+def test_an_argument_the_pattern_refuses_is_renamed_or_named_in_an_error():
+    """Each argument the pattern refuses goes by the name :func:`backlot.mcp.argument_name` gives
+    it, its description naming what the call is sent as, and each argument the pattern takes keeps
+    its name. A tool with an argument no name the pattern takes can be made of, or with two that
+    would go by one name, is refused with an error that names them."""
+    pytest.importorskip("fastmcp")
+    from fastmcp.tools import Tool
+
+    class _Tool(Tool):
+        async def run(self, arguments):
+            return None
+
+    answered = {}
+    for row_id, properties, _ in _RENAME_ROWS:
+        tool = _Tool(name="t", parameters={"type": "object", "properties": properties})
+        try:
+            listed = backlot_mcp._with_argument_names(tool).parameters["properties"]
+        except ValueError as e:
+            answered[row_id] = str(e)
+        else:
+            answered[row_id] = [(name, p.get("description")) for name, p in listed.items()]
+    assert answered == {row_id: expected for row_id, _, expected in _RENAME_ROWS}
+
+
 # ------------------------------------------------------------------ `backlot mcp` over stdio
 # The command an MCP client runs. The in-memory tests above prove each source's bridge; these prove
 # the process around it: the stdio transport, the per-source namespace, the server it starts when
@@ -947,10 +1095,10 @@ def _icons(server_info) -> list[dict]:
     return [i.model_dump(mode="json", by_alias=True, exclude_none=True) for i in server_info.icons]
 
 
-async def _tools_and_instructions(params, errlog=None) -> tuple[list[str], str | None]:
-    """The tool names a session lists, and the ``instructions`` it advertised alongside them — a
-    client feeds the latter to the model, so the two have to agree about which sources exist. Also
-    asserts that ``initialize`` reported Backlot's version and icons."""
+async def _tools_and_instructions(params, errlog=None) -> tuple[list, str | None]:
+    """The tools a session lists, and the ``instructions`` it advertised alongside them — a client
+    feeds the latter to the model, so the two have to agree about which sources exist. Also asserts
+    that ``initialize`` reported Backlot's version and icons."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
@@ -959,13 +1107,12 @@ async def _tools_and_instructions(params, errlog=None) -> tuple[list[str], str |
             init = await sess.initialize()
             assert init.server_info.version == metadata.version("backlot")
             assert _icons(init.server_info) == list(backlot_mcp.ICONS)
-            names = [t.name for t in (await sess.list_tools()).tools]
-            return names, init.instructions
+            return (await sess.list_tools()).tools, init.instructions
 
 
 async def _tool_names(params, errlog=None) -> list[str]:
-    names, _ = await _tools_and_instructions(params, errlog=errlog)
-    return names
+    tools, _ = await _tools_and_instructions(params, errlog=errlog)
+    return [t.name for t in tools]
 
 
 def _served_tool_ids(base: str, source: str) -> set[str]:
@@ -992,9 +1139,20 @@ def test_backlot_mcp_serves_one_source_under_its_own_tool_names(live_server):
 def test_backlot_mcp_serves_every_source_namespaced(live_server):
     """No `--source` is all of them in one server, each tool prefixed with its source so two
     vendors' same-named operations cannot collide — and none long enough for an MCP client's
-    64-character cap to truncate."""
+    64-character cap to truncate. Nor does any tool take an argument `_ANTHROPIC_KEY` refuses."""
     base, _ = live_server
-    names = asyncio.run(_tool_names(_mcp_params("--url", base)))
+    tools, _ = asyncio.run(_tools_and_instructions(_mcp_params("--url", base)))
+    names = [t.name for t in tools]
+    refused = {
+        t.name: bad
+        for t in tools
+        if (
+            bad := [
+                a for a in t.input_schema.get("properties", {}) if not _ANTHROPIC_KEY.fullmatch(a)
+            ]
+        )
+    }
+    assert not refused, refused
     by_source = collections.defaultdict(set)
     for name in names:
         source, _, tool = name.partition("_")
@@ -1194,7 +1352,7 @@ def test_build_server_fetches_every_source_concurrently(monkeypatch):
     started = time.monotonic()
     backlot_mcp.build_server("http://backlot.invalid", creds, backlot_mcp.OPENAPI_SOURCES)
     elapsed = time.monotonic() - started
-    assert elapsed < 2.0, f"{elapsed:.2f}s for {len(backlot_mcp.OPENAPI_SOURCES)} sources"
+    assert elapsed < 2.0, f"{elapsed:.2f}s for {len(backlot_mcp.OPENAPI_SOURCES)} source(s)"
 
 
 def _initialised_mcp(*args, env=None):
@@ -1444,10 +1602,10 @@ def test_backlot_mcp_advertises_only_the_sources_it_mounted(live_server):
     `--source` run's missing sources are there to call, and it would read every tool-not-found as
     its own mistake."""
     base, _ = live_server
-    names, instructions = asyncio.run(
+    tools, instructions = asyncio.run(
         _tools_and_instructions(_mcp_params("--source", "slack", "--source", "s3", "--url", base))
     )
-    assert {n.partition("_")[0] for n in names} == {"slack", "s3"}
+    assert {t.name.partition("_")[0] for t in tools} == {"slack", "s3"}
     assert "slack_*" in instructions and "s3_*" in instructions
     for absent in ("gmail_*", "notion_*", "linear_*", "atlassian_*"):
         assert absent not in instructions, instructions

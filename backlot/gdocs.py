@@ -1385,50 +1385,70 @@ def _after_break(text: str) -> str:
     )
 
 
-def _lead_breaks(paragraph: dict) -> int:
+def _lead_breaks(paragraph: dict) -> list[tuple[int, int]]:
     """The CRLFs a plain export adds for the runs a paragraph starts with that hold nothing but
-    vertical tabs once `_after_break` drops the separators after them: one for each such run another
-    run follows, and one for each such run that is a link. Real's answers on 2026-11-01 match it on
-    paragraphs starting with one to three runs of vertical tabs, before text or alone, in
-    NORMAL_TEXT, TITLE and SUBTITLE, and on ones starting with runs of a vertical tab and a space,
-    U+3000, a tab, U+00A0 or two spaces, or a space and a vertical tab; a HEADING_n takes none. A
-    footnote reference is a run of its own, measured 2026-11-03: a vertical tab and then a reference
-    of one text style took the CRLF of two runs."""
-    spans = [
-        (piece, style)
-        for text, style in _spans(paragraph)
-        for piece in re.split(f"({FOOTNOTE})", text)
-        if piece
-    ]
-    n = 0
-    for i, (text, style) in enumerate(spans):
+    vertical tabs once `_after_break` drops the separators after them, each as the count of the
+    paragraph's vertical tabs it follows and how many: one for each such run another run follows,
+    and one for each such run that is a link. Real's answers on 2026-11-01 match it on paragraphs
+    starting with one to three runs of vertical tabs, before text or alone, in NORMAL_TEXT, TITLE
+    and SUBTITLE, and on ones starting with runs of a vertical tab and a space, U+3000, a tab,
+    U+00A0 or two spaces, or a space and a vertical tab; a HEADING_n takes none. A footnote
+    reference and a page break are runs of their own, and a page break is no run that follows,
+    measured 2026-11-03: a vertical tab then a reference of one text style took the CRLF of two
+    runs, a vertical tab then a page break none, and a vertical-tab link then a page break its
+    link's one, before the rule."""
+    named = _TEXT_STYLES.get(_named(paragraph), {})
+    runs: list[tuple[str, dict]] = []
+    for text, style in _paragraph_runs(paragraph):
+        style = {k: v for k, v in style.items() if named.get(k) != v}
+        if runs and runs[-1][1] == style and {text, runs[-1][0]}.isdisjoint(_ELEMENTS):
+            runs[-1] = (runs[-1][0] + text, style)
+        else:
+            runs.append((text, style))
+    out, tabs = [], 0
+    for i, (text, style) in enumerate(runs):
+        if text == PAGE_BREAK:
+            continue
         if _after_break(text).strip("\x0b"):
             break
-        n += i + 1 < len(spans)
-        n += "link" in style
-    return n
+        tabs += text.count("\x0b")
+        follows = i + 1 < len(runs) and runs[i + 1][0] != PAGE_BREAK
+        if follows or "link" in style:
+            out.append((tabs, follows + ("link" in style)))
+    return out
+
+
+def _with_lead_breaks(text: str, leads: list[tuple[int, int]]) -> str:
+    """``text`` with each of `_lead_breaks`' CRLFs after the vertical tab it counts."""
+    out, tabs = "", 0
+    for c in text:
+        out += c
+        tabs += c == "\x0b"
+        while leads and leads[0][0] == tabs:
+            out += "\x0b" * leads.pop(0)[1]
+    return out
 
 
 # What a plain export writes for a page break, on a line of its own, and before the footnotes.
 _RULE = "_" * 16
-# The vertical tabs and page breaks a paragraph opens with, which `_lead_breaks`' CRLFs follow:
-# measured 2026-11-03, a page break, a vertical tab and a reference were the rule, then them.
-_LEAD = re.compile(f"(?:\x0b|{_RULE})*")
 
 
-def _page_breaks(text: str, bare: str) -> str:
+def _page_breaks(text: str, bare: str, heading: bool) -> str:
     """A paragraph's text with each page break a `_RULE` line: measured 2026-11-02, `ab`, a page
     break and `cd` were `ab`, the rule and `cd` on three lines; a page break opening a paragraph
     starts no line before it, and one closing a paragraph that holds text ends none after it,
     while the last of a paragraph holding page breaks alone ends a line after it, which
     `_plain_lines` doubles outside a HEADING_n and drops in one; measured 2026-11-03, two page
-    breaks alone were two rules with no line between them."""
+    breaks alone were two rules with no line between them. In a HEADING_n a page break after only
+    vertical tabs starts no line either: measured 2026-11-03, a vertical tab, a page break and `cd`
+    in a HEADING_2 were a CRLF, the rule and `cd`."""
     out = ""
     pieces = text.split(PAGE_BREAK)
     for i, piece in enumerate(pieces):
         if i:
             last = not bare and i == len(pieces) - 1
-            out += ("\x0b" if out else "") + _RULE + ("\x0b" if piece or last else "")
+            start = out and not (heading and i == 1 and not out.strip("\x0b"))
+            out += ("\x0b" if start else "") + _RULE + ("\x0b" if piece or last else "")
         out += piece
     return out
 
@@ -1438,29 +1458,29 @@ def _plain_lines(content: list[dict], note) -> list[str]:
     tab is a CRLF and drops the separator after it (`_after_break`), a tab is eight spaces, a page
     break is `_page_breaks`' and a footnote reference ``note``'s. A paragraph holding no text but
     vertical tabs or page breaks, or nothing, takes one CRLF more, and one other than a HEADING_n
-    takes the CRLFs `_lead_breaks` counts after the vertical tabs and page breaks it opens with
-    (`_LEAD`); a HEADING_n holding nothing is left out, and one holding no text but vertical tabs or
-    page breaks is a CRLF fewer, from its end if it ends with one, else from its start (measured
-    2026-11-03: a page break alone in HEADING_1 to HEADING_6 was the rule alone, and a page break
-    then a vertical tab in a HEADING_2 the rule and one CRLF)."""
+    takes the CRLFs `_lead_breaks` counts; a HEADING_n holding nothing is left out, and one holding
+    no text but vertical tabs or page breaks that ends with a CRLF is one fewer (measured 2026-11-03:
+    a page break alone in HEADING_1 to HEADING_6 was the rule alone, and a page break then a
+    vertical tab in a HEADING_2 the rule and one CRLF)."""
     lines = []
     for el in content:
         if "paragraph" not in el:
             continue
         text = "".join(_after_break(t) for t, _ in _paragraph_runs(el["paragraph"], note))
         bare = text.replace(PAGE_BREAK, "")
+        heading = _named(el["paragraph"]).startswith("HEADING_")
+        if not heading:
+            text = _with_lead_breaks(text, _lead_breaks(el["paragraph"]))
         if PAGE_BREAK in text:
-            text = _page_breaks(text, bare)
-        if _named(el["paragraph"]).startswith("HEADING_"):
+            text = _page_breaks(text, bare, heading)
+        if heading:
             if not text:
                 continue
             if not bare.strip("\x0b"):
-                text = text[:-1] if text.endswith("\x0b") else text[1:]
+                text = text.removesuffix("\x0b")
         else:
             if not bare.strip("\x0b"):
                 text += "\x0b"
-            lead = _LEAD.match(text).end()
-            text = text[:lead] + "\x0b" * _lead_breaks(el["paragraph"]) + text[lead:]
         lines.append("".join(map(_plain_char, text)))
     return lines
 
@@ -1832,7 +1852,7 @@ def markdown(doc: dict) -> str:
     body one after another (`_export_parts`), and then each footnote as `[^n]: ` and its content,
     the lines after its first indented four spaces, each two apart by a blank line. Measured
     2026-11-02: a page break wrote nothing, a reference `[^n]` inside the marks around it, and no
-    header or footer was written; measured 2026-11-03, a body ending in that blank line, after two
+    header or footer was written; measured 2026-11-03, a body ending in a blank line, after two
     or more empty paragraphs, took no second one before the first footnote."""
     body, _, _, _, notes = _export_parts(doc)
     refs = iter(range(1, len(notes) + 1))

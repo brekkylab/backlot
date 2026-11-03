@@ -446,6 +446,8 @@ _HOSTS = [
         )
     ),
     (b"[0:0]", b"GET", "/s3/no-such-bucket/", b"x", "served", _AWS_AUTHORIZATION),
+    # a path of Backlot's own, which no front door answers
+    (b"[0:0]", b"GET", "/", b"health", "served"),
 ]
 
 

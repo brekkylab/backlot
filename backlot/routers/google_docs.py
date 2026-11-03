@@ -1097,8 +1097,9 @@ def _docs_text_style(doc: gdocs.Document, tab: dict, read: dict, names: list[str
     """The `TextStyle` members ``names`` names as `gdocs.Body.style` takes them, one the request
     leaves unset None, in real's order of refusals, measured 2026-11-03 whatever order `fields`
     lists them in: a colour's channel out of bounds (`_docs_color`), the font size's unit, an empty
-    font family, a link of no kind or to a heading, bookmark or tab the Doc lacks
-    (`_docs_link`), then a weight that is not a hundred from 100 to 900. A member `fields` does
+    font family, a link `_docs_link` refuses (of no kind, to a heading the tab it is looked for in
+    lacks, to a tab the Doc lacks or to a bookmark), then a weight that is not a hundred from 100
+    to 900. A member `fields` does
     not name is not read: a font size with no unit beside `fields=bold` was taken.
 
     A weight of 0 is 400, and a link to an empty URL changes nothing: measured, it left a link

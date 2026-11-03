@@ -10,11 +10,11 @@ baseline records.
 first row and column, a second sheet for a grid range to name, and a prose spreadsheet beside it,
 then writes to the grid, copies a sheet and creates a workbook, as its owner.
 
-`gdocs` reads a document stating a title, a heading and every run mark a corpus states, one
-stating tabs, a child tab, a header, a footer, a footnote and a page break, and a prose document
-beside them, flat and as their tabs, as their owner; then creates a document and writes the first
-one with each request `documents.batchUpdate` applies, the body it sent recorded beside the
-answer.
+`gdocs` reads a document stating a title, a heading, every run mark a corpus states and a list,
+one stating tabs, a child tab, a header, a footer, a footnote and a page break, and a prose
+document beside them, flat and as their tabs, as their owner; then creates a document and writes
+the first one with each request `documents.batchUpdate` applies, the body it sent recorded beside
+the answer, and reads it again once it holds a named range.
 """
 
 from __future__ import annotations
@@ -76,6 +76,8 @@ GDOCS_CORPUS = [
                     {"text": "link", "link": "https://example.com/"},
                 ]
             },
+            {"text": "item", "list": {"preset": "NUMBERED_DECIMAL_ALPHA_ROMAN"}},
+            {"text": "nested", "list": {"preset": "NUMBERED_DECIMAL_ALPHA_ROMAN", "level": 1}},
         ],
     },
     {
@@ -194,6 +196,7 @@ def gdocs(timeout: float) -> list[tuple[Any, ...]]:
                 for body in writes
             ]
             written += _gdocs_structure(client, doc)
+            written += _gdocs_styles(client, doc)
             return [*walked, ("docs.documents.create", created), *written]
 
 
@@ -247,6 +250,129 @@ def _gdocs_structure(client: httpx.Client, doc: str) -> list[tuple[Any, ...]]:
     }
     return [
         ("docs.documents.batchUpdate", {"replies": replies}, made),
+        (
+            "docs.documents.batchUpdate",
+            _ok(client.post(f"/docs/v1/documents/{doc}:batchUpdate", json=removed)),
+            removed,
+        ),
+    ]
+
+
+def _gdocs_styles(client: httpx.Client, doc: str) -> list[tuple[Any, ...]]:
+    """The style, bullet and named range requests, each field they read sent, links to a URL, a
+    heading and a tab among them; the Doc read as it then is, flat and as its tabs; then the named
+    range replaced and deleted by its name and by its id."""
+    here = {"tabId": "t.0", "segmentId": ""}
+    heading = next(
+        el["paragraph"]["paragraphStyle"]["headingId"]
+        for el in _ok(client.get(f"/docs/v1/documents/{doc}"))["body"]["content"]
+        if "headingId" in el.get("paragraph", {}).get("paragraphStyle", {})
+    )
+    color = {"color": {"rgbColor": {"red": 0.5, "green": 0.25, "blue": 1}}}
+    size = {"magnitude": 12, "unit": "PT"}
+    border = {"color": color, "width": size, "padding": size, "dashStyle": "DOT"}
+    made = {
+        "requests": [
+            {
+                "updateTextStyle": {
+                    "range": {"startIndex": 2, "endIndex": 4, **here},
+                    "textStyle": {
+                        "bold": True,
+                        "italic": True,
+                        "underline": True,
+                        "strikethrough": True,
+                        "smallCaps": True,
+                        "backgroundColor": color,
+                        "foregroundColor": color,
+                        "fontSize": size,
+                        "weightedFontFamily": {"fontFamily": "Lato", "weight": 300},
+                        "baselineOffset": "SUPERSCRIPT",
+                        "link": {"url": "https://example.com/walk"},
+                    },
+                    "fields": "*",
+                }
+            },
+            *(
+                {
+                    "updateTextStyle": {
+                        "range": {"startIndex": at, "endIndex": at + 1, **here},
+                        "textStyle": {"link": link},
+                        "fields": "link",
+                    }
+                }
+                for at, link in (
+                    (5, {"headingId": heading}),
+                    (6, {"heading": {"id": heading, "tabId": "t.0"}}),
+                    (7, {"tabId": "t.0"}),
+                )
+            ),
+            {
+                "updateParagraphStyle": {
+                    "range": {"startIndex": 2, "endIndex": 3, **here},
+                    "paragraphStyle": {
+                        "namedStyleType": "HEADING_2",
+                        "alignment": "CENTER",
+                        "lineSpacing": 150,
+                        "direction": "LEFT_TO_RIGHT",
+                        "spacingMode": "NEVER_COLLAPSE",
+                        "spaceAbove": size,
+                        "spaceBelow": size,
+                        "borderBetween": border,
+                        "borderTop": border,
+                        "borderBottom": border,
+                        "borderLeft": border,
+                        "borderRight": border,
+                        "indentFirstLine": size,
+                        "indentStart": size,
+                        "indentEnd": size,
+                        "keepLinesTogether": True,
+                        "keepWithNext": True,
+                        "avoidWidowAndOrphan": True,
+                        "shading": {"backgroundColor": color},
+                        "pageBreakBefore": False,
+                    },
+                    "fields": "*",
+                }
+            },
+            {
+                "createParagraphBullets": {
+                    "range": {"startIndex": 1, "endIndex": 2, **here},
+                    "bulletPreset": "BULLET_CHECKBOX",
+                }
+            },
+            {
+                "createNamedRange": {
+                    "name": "walked",
+                    "range": {"startIndex": 3, "endIndex": 5, **here},
+                }
+            },
+        ]
+    }
+    replies = _ok(client.post(f"/docs/v1/documents/{doc}:batchUpdate", json=made))["replies"]
+    named = replies[-1]["createNamedRange"]["namedRangeId"]
+    read = [
+        ("docs.documents.get", _ok(client.get(f"/docs/v1/documents/{doc}", params=q)))
+        for q in ({}, {"includeTabsContent": "true"})
+    ]
+    tabs = {"tabIds": ["t.0"]}
+    removed = {
+        "requests": [
+            {"deleteParagraphBullets": {"range": {"startIndex": 1, "endIndex": 2, **here}}},
+            {
+                "replaceNamedRangeContent": {
+                    "namedRangeName": "walked",
+                    "text": "named",
+                    "tabsCriteria": tabs,
+                }
+            },
+            {"replaceNamedRangeContent": {"namedRangeId": named, "text": "again"}},
+            {"deleteNamedRange": {"name": "nobody", "tabsCriteria": {"tabIds": []}}},
+            {"deleteNamedRange": {"namedRangeId": named, "tabsCriteria": tabs}},
+        ]
+    }
+    return [
+        ("docs.documents.batchUpdate", {"replies": replies}, made),
+        *read,
         (
             "docs.documents.batchUpdate",
             _ok(client.post(f"/docs/v1/documents/{doc}:batchUpdate", json=removed)),

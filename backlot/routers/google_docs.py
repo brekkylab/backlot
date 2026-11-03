@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import functools
 import json
+import math
+import struct
 import time
 from pathlib import Path
 
@@ -348,6 +351,10 @@ for _key, _group in {
     ("docs.WriteControl", "requiredRevisionId"): "control",
     ("docs.WriteControl", "targetRevisionId"): "control",
     ("docs.ReplaceAllTextRequest", "containsText"): "criteria",
+    ("docs.DeleteNamedRangeRequest", "namedRangeId"): "named_range_reference",
+    ("docs.DeleteNamedRangeRequest", "name"): "named_range_reference",
+    ("docs.ReplaceNamedRangeContentRequest", "namedRangeId"): "named_range_reference",
+    ("docs.ReplaceNamedRangeContentRequest", "namedRangeName"): "named_range_reference",
 }.items():
     _DOCS_SHAPES[_key] = {"oneof": _group}
 # `createHeader`'s and `createFooter`'s `type`: measured 2026-11-02, `1` was read as `DEFAULT`, and
@@ -355,6 +362,13 @@ for _key, _group in {
 _DOCS_HEADER_FOOTER = protojson.Enum(
     f"{_DOCS_VIEW}.HeaderFooterType", ("HEADER_FOOTER_TYPE_UNSPECIFIED", "DEFAULT", "FIRST_PAGE")
 )
+# `createParagraphBullets`' `bulletPreset`, its names in number order (`gdocs.PRESETS`): measured
+# 2026-11-03, a name it lacks is refused naming this type, as `NOPE` and `1.5` were.
+_DOCS_PRESETS = gdocs.PRESETS
+_DOCS_BULLET_PRESET = protojson.Enum(
+    f"{_DOCS_VIEW}.BulletGlyphPreset", ("BULLET_GLYPH_PRESET_UNSPECIFIED", *_DOCS_PRESETS)
+)
+
 # A request is declared inside the body's message: `"requests": "x"` is refused naming
 # `….BatchUpdateDocumentRequest.Request`.
 _PJ_DOCS = _pj_messages(
@@ -363,6 +377,7 @@ _PJ_DOCS = _pj_messages(
         ("docs.WriteControl", "writeMode"): _DOCS_WRITE_MODE,
         ("docs.CreateHeaderRequest", "type"): _DOCS_HEADER_FOOTER,
         ("docs.CreateFooterRequest", "type"): _DOCS_HEADER_FOOTER,
+        ("docs.CreateParagraphBulletsRequest", "bulletPreset"): _DOCS_BULLET_PRESET,
     },
     _DOCS_SHAPES,
     {"docs.Request": "BatchUpdateDocumentRequest.Request"},
@@ -521,6 +536,30 @@ def _docs_insert_text(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     return {}, bool(gdocs.UNWRITABLE.search(kept))
 
 
+def _docs_range(doc: gdocs.Document, rng: dict | None, missing: str) -> tuple:
+    """The tab, the kind of segment, the segment opened and the two indices a request's range
+    names, in real's order of refusals, measured 2026-10-29 on `deleteContentRange` and 2026-11-03
+    on the style, bullet and named range requests: no range (``missing``), the tab, an index
+    missing (a `null` one included), the end before the start, an index below zero, the segment,
+    then the start's and the end's last index at or past the segment's end."""
+    if rng is None:
+        raise _EditorRefused(missing)
+    tab = _docs_tab(doc, rng)
+    if "start_index" not in rng or "end_index" not in rng:
+        raise _EditorRefused(_DOCS_NO_INDEX)
+    start, end = rng["start_index"], rng["end_index"]
+    if end < start:
+        raise _EditorRefused("Invalid range: end index cannot be less than start index")
+    _docs_negative(start)
+    kind, body = _docs_segment(doc, tab, rng)
+    _docs_past_end(start, body)
+    _docs_past_end(end - 1, body)
+    return tab, kind, body, start, end
+
+
+_DOCS_NO_INDEX = "Invalid range: must contain a start and end index"
+
+
 def _docs_delete_content_range(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``deleteContentRange``, in real's order of refusals, measured: no range, the tab, an index
     missing (a `null` one included), the end before the start, an index below zero, the segment,
@@ -528,19 +567,9 @@ def _docs_delete_content_range(doc: gdocs.Document, req: dict) -> tuple[dict, bo
     section break at 0, the segment's last newline, and either end inside a surrogate pair.
     Deleting a combining mark without the letter it sits on is taken, and deleting a footnote
     reference deletes its footnote."""
-    rng = req.get("range")
-    if rng is None:
-        raise _EditorRefused("Delete content range requests must include a range to delete.")
-    tab = _docs_tab(doc, rng)
-    if "start_index" not in rng or "end_index" not in rng:
-        raise _EditorRefused("Invalid range: must contain a start and end index")
-    start, end = rng["start_index"], rng["end_index"]
-    if end < start:
-        raise _EditorRefused("Invalid range: end index cannot be less than start index")
-    _docs_negative(start)
-    _, body = _docs_segment(doc, tab, rng)
-    _docs_past_end(start, body)
-    _docs_past_end(end - 1, body)
+    _, _, body, start, end = _docs_range(
+        doc, req.get("range"), "Delete content range requests must include a range to delete."
+    )
     if start == end:
         raise _EditorRefused("The range should not be empty.")
     if start < body.base:
@@ -830,19 +859,25 @@ _DOCS_SPACE = "".join(
 )
 
 
-def _docs_tab_fields(fields: str) -> list[str] | None:
-    """The `TabProperties` fields a `fields` mask names, read as real reads it, or None for the mask
-    real answers with a 500. Measured 2026-11-02 and 2026-11-03: `*` alone names every field; names
-    are split at commas, trimmed, and empty ones dropped, so `title,` and ` , ` are read while `,`
-    is refused as naming no field. A name is split at dots with empty parts dropped (`title.` and
-    `.title` name `title`), and one of dots alone is the 500 before any name is read (`nope,.`). Its
-    first part read as `_docs_snake` spells it must be a field's `snake_case` name (`TITLE`,
-    `parentTABId` and `icon_emoji` were taken, `TItle`, `_title` and `PARENTTABID` refused), and is
-    refused by that spelling (`fooBar` as `foo_bar`). Every name is checked before any path into a
-    field, which is refused by the field's name and the rest so spelt (`icon_emoji.x` as
-    `iconEmoji.x`, `title.fooBar` as `title.foo_bar`)."""
+def _docs_fields(
+    fields: str, message: protojson.Message, every: tuple[str, ...]
+) -> list[str] | None:
+    """The fields of ``message`` a request's `fields` mask names, read as real reads it, or None for
+    the mask real answers with a 500. Measured 2026-11-02 and 2026-11-03 on
+    `updateDocumentTabProperties`, `updateTextStyle` and `updateParagraphStyle`: `*` alone names
+    ``every`` field; names are split at commas, trimmed, and empty ones dropped, so `title,` and
+    ` , ` are read while `,` is refused as naming no field. A name is split at dots with empty parts
+    dropped (`title.` and `.title` name `title`), and one of dots alone is the 500 before any name
+    is read (`nope,.`). Its first part read as `_docs_snake` spells it must be a field's
+    `snake_case` name (`TITLE`, `parentTABId`, `fontSIZE` and `icon_emoji` were taken, `TItle`,
+    `_title` and `PARENTTABID` refused), and is refused by that spelling (`fooBar` as `foo_bar`,
+    `textStyle.bold` as `text_style`). Every name is checked before any path into a field, which
+    must name the fields of the messages it walks (`link.url` and
+    `foregroundColor.color.rgbColor.red` were taken) and is refused by the field's name and the
+    rest so spelt (`icon_emoji.x` as `iconEmoji.x`, `title.fooBar` as `title.foo_bar`, `bold.x`,
+    `link.nope`). A path names its first field whole."""
     if fields == "*":
-        return list(_DOCS_TAB_FIELDS)
+        return list(every)
     parts = fields.split(",")
     if not "".join(parts):
         raise _EditorRefused(
@@ -855,16 +890,21 @@ def _docs_tab_fields(fields: str) -> list[str] | None:
     ]
     if not all(paths):
         return None
-    known = {_docs_snake(f): f for f in _DOCS_TAB_FIELDS}
+    known = {f.name: f for f in message.fields}
     read = []
     for path in paths:
         if path[0] not in known:
             raise _EditorRefused(f"Invalid field: {path[0]}")
-        read.append([known[path[0]], *path[1:]])
+        read.append(path)
     for path in read:
-        if len(path) > 1:
-            raise _EditorRefused(f"Invalid field: {'.'.join(path)}")
-    return [path[0] for path in read]
+        field, spelt = known[path[0]], [known[path[0]].json_name]
+        for name in path[1:]:
+            inner = {f.name: f for f in field.message.fields} if field.kind == "message" else {}
+            if field.wrapper or name not in inner:
+                raise _EditorRefused(f"Invalid field: {'.'.join([*spelt, name])}")
+            field = inner[name]
+            spelt.append(field.json_name)
+    return [known[path[0]].json_name for path in read]
 
 
 def _docs_snake(name: str) -> str:
@@ -883,7 +923,7 @@ def _docs_snake(name: str) -> str:
 
 
 def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
-    """``updateDocumentTabProperties``: the properties `fields` names (`_docs_tab_fields`), in
+    """``updateDocumentTabProperties``: the properties `fields` names (`_docs_fields`), in
     real's order of refusals, measured 2026-11-02: no field, a field `TabProperties` lacks, no
     `tabId`, a tab the Doc lacks, the title (missing, too long or another tab's), the icon, a parent
     the Doc lacks, a parent too deep for the tab (`_DOCS_TAB_DEPTH`), an index below zero, then,
@@ -899,7 +939,7 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         raise _EditorRefused(
             "At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"
         )
-    names = _docs_tab_fields(fields)
+    names = _docs_fields(fields, _PJ_DOCS("docs.TabProperties"), _DOCS_TAB_FIELDS)
     if names is None:
         raise gerr.internal_error()
     props = req.get("tab_properties", {})
@@ -986,6 +1026,415 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     return {}, False
 
 
+# --- text and paragraph styles, lists and named ranges --------------------------------------------
+#
+# Measured against the live Docs v1 API on 2026-11-02 and 2026-11-03, as a Workspace member writing
+# Docs it owns. How each request changes the document is `gdocs.Body`'s and `gdocs.Document`'s;
+# this section is the request, its refusals and the values it keeps.
+
+_PJ_TEXT_STYLE = _PJ_DOCS("docs.TextStyle")
+_PJ_PARAGRAPH_STYLE = _PJ_DOCS("docs.ParagraphStyle")
+_DOCS_UNIT = _docs_enum("Unit")
+_DOCS_BASELINE = _docs_enum("BaselineOffset")
+_DOCS_NAMED_STYLE = _docs_enum("NamedStyleType")
+_DOCS_PARAGRAPH_ENUMS = {
+    "alignment": _docs_enum("ParagraphStyle.Alignment"),
+    "direction": _docs_enum("ContentDirection"),
+    "spacingMode": _docs_enum("ParagraphStyle.SpacingMode"),
+}
+_DOCS_DASH = _docs_enum("DashStyle")
+
+
+def _docs_float(value: float) -> float | int:
+    """A float as real serves one it keeps in 32 bits: the shortest decimal that reads back as
+    the same float (0.1 kept as 0.101960786 once a colour's 255ths round it), whole as an
+    integer."""
+    kept = struct.unpack("<f", struct.pack("<f", value))[0]
+    for digits in range(1, 10):
+        text = f"{kept:.{digits}g}"
+        if struct.unpack("<f", struct.pack("<f", float(text)))[0] == kept:
+            break
+    return _docs_number(float(text))
+
+
+def _docs_number(value: float) -> float | int:
+    return int(value) if float(value).is_integer() else value
+
+
+def _docs_color(read: dict) -> dict:
+    """An `OptionalColor` as real keeps it, measured 2026-11-03: each channel to the nearest
+    255th (0.5 as 0.5019608, 0.001 as 0), a zero channel left out, and no `color` at all a
+    transparent `{}`. A channel below 0 or above 1 is a 500 at its request."""
+    if "color" not in read:
+        return {}
+    rgb = read["color"].get("rgb_color", {})
+    out = {}
+    for channel in ("red", "green", "blue"):
+        value = rgb.get(channel, 0)
+        if not 0 <= value <= 1:
+            raise gerr.internal_error()
+        if kept := math.floor(value * 255 + 0.5) / 255:
+            out[channel] = _docs_float(kept)
+    return {"color": {"rgbColor": out}}
+
+
+def _docs_dimension(read: dict) -> dict:
+    """A `Dimension`, refused by its unit unless points: measured 2026-11-03, a missing unit was
+    `Unsupported dimension unit:UNIT_UNSPECIFIED`, and a magnitude of 0 is left out."""
+    unit = read.get("unit", 0)
+    if unit != _DOCS_UNIT.names.index("PT"):
+        named = _DOCS_UNIT.names[unit] if 0 <= unit < len(_DOCS_UNIT.names) else "UNRECOGNIZED"
+        raise _EditorRefused(f"Unsupported dimension unit:{named}")
+    magnitude = read.get("magnitude", 0)
+    return ({"magnitude": _docs_number(magnitude)} if magnitude else {}) | {"unit": "PT"}
+
+
+# The font sizes a run may take: measured 2026-11-03, 0, -3 and 0.5 were kept as 1, and 513 and
+# 2,000 as 512.
+_DOCS_FONT_SIZES = (1, 512)
+
+
+def _docs_text_style(doc: gdocs.Document, tab: dict, read: dict, names: list[str]) -> dict:
+    """The `TextStyle` members ``names`` names as `gdocs.Body.style` takes them, one the request
+    leaves unset None, in real's order of refusals, measured 2026-11-03 whatever order `fields`
+    lists them in: a colour's channel out of bounds (`_docs_color`), the font size's unit, an empty
+    font family, a link of no kind or to a heading, bookmark or tab the Doc lacks
+    (`_docs_link`), then a weight that is not a hundred from 100 to 900. A member `fields` does
+    not name is not read: a font size with no unit beside `fields=bold` was taken.
+
+    A weight of 0 is 400, and a link to an empty URL changes nothing: measured, it left a link
+    as it was."""
+    named = set(names)
+    out: dict = {}
+    for key in ("backgroundColor", "foregroundColor"):
+        if key in named:
+            proto = _docs_snake(key)
+            out[key] = _docs_color(read[proto]) if proto in read else None
+    if "fontSize" in named:
+        out["fontSize"] = None
+        if "font_size" in read:
+            size = _docs_dimension(read["font_size"])
+            low, high = _DOCS_FONT_SIZES
+            magnitude = min(max(size.get("magnitude", 0), low), high)
+            out["fontSize"] = {"magnitude": magnitude, "unit": "PT"}
+    family = read.get("weighted_font_family") if "weightedFontFamily" in named else None
+    if family is not None and not family.get("font_family"):
+        raise _EditorRefused(
+            "Invalid `weighted_font_family.font_family`. Must provide a valid font family."
+        )
+    if "link" in named:
+        link = _docs_link(doc, tab, read["link"]) if "link" in read else None
+        if link != {}:
+            out["link"] = link
+    if "weightedFontFamily" in named:
+        out["weightedFontFamily"] = None
+        if family is not None:
+            weight = family.get("weight", 0) or 400
+            if weight % 100 or not 100 <= weight <= 900:
+                raise _EditorRefused(f"Font weight {weight} is not supported.")
+            out["weightedFontFamily"] = {"fontFamily": family["font_family"], "weight": weight}
+    for key in ("bold", "italic", "underline", "strikethrough", "smallCaps"):
+        if key in named:
+            out[key] = read.get(_docs_snake(key))
+    if "baselineOffset" in named:
+        offset = read.get("baseline_offset", 0)
+        out["baselineOffset"] = _DOCS_BASELINE.names[offset] if offset else None
+    return {k: out[k] for k in gdocs.TEXT_STYLE_ORDER if k in out}
+
+
+def _docs_link(doc: gdocs.Document, tab: dict, read: dict) -> dict:
+    """A `Link` as real serves it, or `{}` for one that changes nothing. Measured 2026-11-03: a
+    link of no kind is refused, one to a heading by its id or by a `heading` is served by its
+    `headingId`, a heading, bookmark or tab the Doc lacks is refused (no Doc here holds a
+    bookmark), and a link to an empty URL changes nothing."""
+    if not read:
+        raise _EditorRefused("Links must include at least one type.")
+    if "url" in read:
+        return {"url": read["url"]} if read["url"] else {}
+    if "heading_id" in read or "heading" in read:
+        heading = read.get("heading_id", read.get("heading", {}).get("id", ""))
+        if not heading or heading not in doc.heading_ids():
+            raise _EditorRefused("Cannot link to an invalid heading ID.")
+        return {"headingId": heading}
+    if "bookmark_id" in read or "bookmark" in read:
+        raise _EditorRefused("Cannot link to an invalid bookmark ID.")
+    if not read["tab_id"] or doc.tab(read["tab_id"]) is None:
+        raise _EditorRefused("Cannot link to an invalid tab ID.")
+    return {"tabId": read["tab_id"]}
+
+
+def _docs_update_text_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``updateTextStyle``, in real's order of refusals, measured 2026-11-03: the range
+    (`_docs_range`), the fields (`_docs_fields`), the values (`_docs_text_style`), an empty range,
+    then a body's section break at 0. A range may start or end between the halves of a character
+    outside the BMP (`gdocs.Body.cut`) and may hold the segment's last newline.
+
+    `*` takes a link off only when the range starts on linked text, and otherwise leaves links
+    alone unless the request states one: measured, `*` with no link over a link's whole range or
+    from its start took it off, and over a range starting before it kept it."""
+    tab, _, body, start, end = _docs_range(
+        doc, req.get("range"), "Update text style requests must specify an update range."
+    )
+    names = _docs_fields(req.get("fields", ""), _PJ_TEXT_STYLE, gdocs.TEXT_STYLE_ORDER)
+    if names is None:
+        raise gerr.internal_error()
+    read = req.get("text_style", {})
+    stated = _docs_text_style(doc, tab, read, names)
+    if start == end:
+        raise _EditorRefused("The range should not be empty.")
+    if start < body.base:
+        raise _EditorRefused("Cannot operate on the first section break in the document.")
+    first, last = body.cut(start), body.cut(end)
+    if req.get("fields") == "*" and "link" not in read and "link" not in body.chars[first][1]:
+        stated.pop("link")
+    body.style(first, last, stated)
+    return {}, False
+
+
+def _docs_paragraph_style(read: dict, names: list[str]) -> dict:
+    """The `ParagraphStyle` members ``names`` names as `gdocs.Body.style_paragraph` takes them,
+    one the request leaves unset None, in real's order of refusals, measured 2026-11-03: a named
+    style left unset, then each member's unit (`_docs_dimension`) or a border's dash style left
+    unset. A border is stated whole: one stating its width alone was refused for its padding's
+    unit."""
+    out: dict = {}
+    for key in names:
+        value = read.get(_docs_snake(key))
+        if key == "namedStyleType":
+            if not value:
+                raise _EditorRefused("Named style property is not inherited and cannot be cleared.")
+            out[key] = _DOCS_NAMED_STYLE.names[value]
+        elif value is None or key in _DOCS_PARAGRAPH_ENUMS and not value:
+            out[key] = None
+        elif key in _DOCS_PARAGRAPH_ENUMS:
+            out[key] = _DOCS_PARAGRAPH_ENUMS[key].names[value]
+        elif key == "lineSpacing":
+            out[key] = _docs_float(value)
+        elif key in _DOCS_DIMENSIONS:
+            out[key] = _docs_dimension(value)
+        elif key.startswith("border"):
+            border = {
+                "color": _docs_color(value.get("color", {})),
+                "width": _docs_dimension(value.get("width", {})),
+                "padding": _docs_dimension(value.get("padding", {})),
+            }
+            if not value.get("dash_style"):
+                raise _EditorRefused("The dash style is invalid: DASH_STYLE_UNSPECIFIED")
+            out[key] = border | {"dashStyle": _DOCS_DASH.names[value["dash_style"]]}
+        elif key == "shading":
+            out[key] = {"backgroundColor": _docs_color(value.get("background_color", {}))}
+        else:
+            out[key] = value
+    return out
+
+
+_DOCS_DIMENSIONS = ("spaceAbove", "spaceBelow", "indentFirstLine", "indentStart", "indentEnd")
+
+# What `*` names of `ParagraphStyle`: measured 2026-11-03, it reached `namedStyleType` and not
+# `headingId` or `tabStops`, which named are refused.
+_DOCS_PARAGRAPH_FIELDS = tuple(k for k in gdocs.PARAGRAPH_STYLE_ORDER if k != "headingId")
+_DOCS_READ_ONLY = ("headingId", "tabStops")
+
+
+def _docs_update_paragraph_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``updateParagraphStyle`` on every paragraph the range overlaps, in real's order of
+    refusals, measured 2026-11-03: the range (`_docs_range`, no range refused as an index
+    missing), the fields (`_docs_fields`), a read-only one, the values
+    (`_docs_paragraph_style`), then a body's section break at 0. An empty range styles the
+    paragraph it falls in."""
+    _, _, body, start, end = _docs_range(doc, req.get("range"), _DOCS_NO_INDEX)
+    names = _docs_fields(req.get("fields", ""), _PJ_PARAGRAPH_STYLE, _DOCS_PARAGRAPH_FIELDS)
+    if names is None:
+        raise gerr.internal_error()
+    for name in names:
+        if name in _DOCS_READ_ONLY:
+            raise _EditorRefused(f"Unallowed field: {name}")
+    stated = _docs_paragraph_style(req.get("paragraph_style", {}), names)
+    if start < body.base:
+        raise _EditorRefused("Cannot operate on the first section break in the document.")
+    for p in body.paragraphs_in(start, end):
+        body.style_paragraph(p, stated)
+    return {}, False
+
+
+# How deep a list nests: nine levels, 0 to 8.
+_DOCS_LIST_DEPTH = 8
+
+
+def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``createParagraphBullets`` on every paragraph the range overlaps, in real's order of
+    refusals, measured 2026-11-03: the range (`_docs_range`, no range refused as an index
+    missing), an unset or unknown preset, then a body's section break at 0. An empty range lists
+    the paragraph it falls in.
+
+    Measured too: each paragraph loses the tabs it opens with, its level being how many it had,
+    at most 8, less the fewest any paragraph of the request had, and a list the request makes
+    indents each level that many tabs further (paragraphs of seven tabs made a list indented 252
+    PT more than its preset). The paragraphs join the list of the paragraph before them when that
+    list's glyphs are the preset's, else the list of the first of them already in one, else one
+    new list; a paragraph already in a list stays in it and gives that whole list the preset. A
+    paragraph is indented as its list's level is."""
+    tab, _, body, start, end = _docs_range(doc, req.get("range"), _DOCS_NO_INDEX)
+    preset = req.get("bullet_preset", 0)
+    if not 0 < preset < len(_DOCS_BULLET_PRESET.names):
+        named = _DOCS_BULLET_PRESET.names[0] if preset == 0 else "UNRECOGNIZED"
+        raise _EditorRefused(f"Unknown bullet preset {named}")
+    if start < body.base:
+        raise _EditorRefused("Cannot operate on the first section break in the document.")
+    paragraphs = body.paragraphs_in(start, end)
+    tabs = [min(body.leading_tabs(p), _DOCS_LIST_DEPTH) for p in paragraphs]
+    fewest = min(tabs)
+    levels = _docs_shifted(_DOCS_PRESETS[_DOCS_BULLET_PRESET.names[preset]], fewest)
+    before = body.bullet(paragraphs.start - 1) if paragraphs.start else None
+    made = next((b["listId"] for p in paragraphs if (b := body.bullet(p)) is not None), None)
+    if before is not None and _docs_glyphs(_docs_levels(tab, before["listId"])) == _docs_glyphs(
+        levels
+    ):
+        made = before["listId"]
+    for p, n in zip(paragraphs, tabs):
+        own = body.bullet(p)
+        if own is not None:
+            tab["lists"][own["listId"]]["listProperties"]["nestingLevels"] = levels
+            list_id, level = own["listId"], own.get("nestingLevel", 0)
+        else:
+            made = made or doc.new_list(tab, levels)
+            list_id, level = made, n - fewest
+        at = _docs_levels(tab, list_id)[level]
+        body.set_bullet(p, list_id, level, (at["indentFirstLine"], at["indentStart"]))
+    return {}, False
+
+
+def _docs_levels(tab: dict, list_id: str) -> list[dict]:
+    return tab["lists"][list_id]["listProperties"]["nestingLevels"]
+
+
+def _docs_shifted(levels: list[dict], tabs: int) -> list[dict]:
+    """A preset's levels, each indented ``tabs`` tabs of 36 PT further."""
+    out = copy.deepcopy(levels)
+    for level in out:
+        for key in ("indentFirstLine", "indentStart"):
+            level[key]["magnitude"] += 36 * tabs
+    return out
+
+
+def _docs_glyphs(levels: list[dict]) -> list[dict]:
+    return [{k: v for k, v in lv.items() if not k.startswith("indent")} for lv in levels]
+
+
+def _docs_delete_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``deleteParagraphBullets`` on every paragraph the range overlaps (`gdocs.Body.drop_bullet`),
+    in real's order of refusals, measured 2026-11-03: the range (`_docs_range`, no range refused as
+    an index missing), then a body's section break at 0. The list stays in the tab's `lists`."""
+    _, _, body, start, end = _docs_range(doc, req.get("range"), _DOCS_NO_INDEX)
+    if start < body.base:
+        raise _EditorRefused("Cannot operate on the first section break in the document.")
+    for p in body.paragraphs_in(start, end):
+        body.drop_bullet(p)
+    return {}, False
+
+
+# The longest name a named range takes, in UTF-16 code units: measured 2026-11-02 and 2026-11-03,
+# 256 `y` or 128 `😀` were taken and 257 `x` or 129 `😀` refused, as was an empty one.
+_DOCS_RANGE_NAME_UNITS = 256
+
+
+def _docs_create_named_range(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``createNamedRange``: a range of the tab and segment it names (`gdocs.Document.add_range`),
+    answered with its id, in real's order of refusals, measured 2026-11-02 and 2026-11-03: the
+    range (`_docs_range`, no range refused as an index missing), the name's length, then an empty
+    range. A range may start at 0, end between the halves of a character outside the BMP and hold
+    the segment's last newline."""
+    tab, _, body, start, end = _docs_range(doc, req.get("range"), _DOCS_NO_INDEX)
+    name = req.get("name", "")
+    if not 0 < gdocs.utf16_len(name) <= _DOCS_RANGE_NAME_UNITS:
+        raise _EditorRefused("Invalid name: must be at least 1 and no more than 256 characters.")
+    if start == end:
+        raise _EditorRefused("Invalid range: endIndex must be strictly greater than startIndex.")
+    made = doc.add_range(tab, req["range"].get("segment_id", ""), name, start, end)
+    return {"createNamedRange": {"namedRangeId": made}}, False
+
+
+def _docs_named_tabs(doc: gdocs.Document, req: dict) -> list[dict]:
+    """The tabs a named range request reaches: every tab, or those its `tabsCriteria` lists.
+    Measured 2026-11-03, a `tabsCriteria` naming a tab the Doc lacks is a 500 at its request, and
+    one listing none reaches none."""
+    tabs = doc.flat()
+    if "tabs_criteria" not in req:
+        return tabs
+    named = req["tabs_criteria"].get("tab_ids", [])
+    if any(doc.tab(n) is None or not n for n in named):
+        raise gerr.internal_error()
+    return [t for t in tabs if t["tabProperties"]["tabId"] in named]
+
+
+def _docs_named(tabs: list[dict], req: dict, name_key: str) -> list:
+    """Each named range a request names by its id or its name, with its tab, among ``tabs``."""
+    if "named_range_id" in req:
+        wanted = req["named_range_id"]
+        key = "namedRangeId"
+    else:
+        wanted, key = req[name_key], "name"
+    return [(t, n) for t in tabs for n in t["namedRanges"] if n[key] == wanted]
+
+
+def _docs_delete_named_range(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``deleteNamedRange`` by id, or every named range of a name, in every tab or those its
+    `tabsCriteria` lists (`_docs_named_tabs`). Measured 2026-11-02 and 2026-11-03: neither set is
+    refused, then the tabs, then an empty name is a 500, and an id or a name none has is
+    refused; a name in another tab than the ones listed is none."""
+    if "named_range_id" not in req and "name" not in req:
+        raise _EditorRefused("ID or name for named range must be set.")
+    tabs = _docs_named_tabs(doc, req)
+    if req.get("name") == "":
+        raise gerr.internal_error()
+    found = _docs_named(tabs, req, "name")
+    if not found and "tabs_criteria" in req and not tabs:
+        # measured 2026-11-03: a `tabsCriteria` of no tab kept the `revisionId`
+        doc.unchanged += 1
+        return {}, False
+    if not found and "named_range_id" in req:
+        raise _EditorRefused(f"No named range with ID: {req['named_range_id']}")
+    if not found:
+        raise _EditorRefused(f"No named range with name: {req['name']}")
+    for tab, named in found:
+        tab["namedRanges"].remove(named)
+        doc.forget(tab, named)
+    return {}, False
+
+
+def _docs_replace_named_range(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """``replaceNamedRangeContent``: the text of each named range of the id or name, in every tab
+    or those its `tabsCriteria` lists (`_docs_named_tabs`), replaced by ``text`` styled as the
+    character it replaces first, the range then covering the text alone. Measured 2026-11-02 and
+    2026-11-03: neither set is refused, then the tabs; an id none has is refused while a name none
+    has changes nothing and keeps the `revisionId`, and an empty name is taken; a range holding its
+    segment's last newline is refused naming its id; an empty text deletes the range with its
+    text; the characters `insertText` strips are stripped, and one in `gdocs.UNWRITABLE` fails the
+    batch once every request is read. A named range of several ranges has its first replaced
+    and the rest deleted, as the discovery document says."""
+    if "named_range_id" not in req and "named_range_name" not in req:
+        raise _EditorRefused("Must specify a named range reference")
+    tabs = _docs_named_tabs(doc, req)
+    found = _docs_named(tabs, req, "named_range_name")
+    if not found and "named_range_id" in req:
+        raise _EditorRefused(f"No named range with ID {req['named_range_id']}")
+    if not found:
+        doc.unchanged += 1
+        return {}, False
+    sent = req.get("text", "")
+    text = gdocs.STRIPPED.sub("", sent)
+    for tab, named in found:
+        for r in named["ranges"]:
+            body = doc.open(tab, r.get("segmentId", ""))
+            if r["endIndex"] >= body.end:
+                raise _EditorRefused(
+                    f"Named range with ID {named['namedRangeId']} contains content that cannot "
+                    "be replaced."
+                )
+        doc.replace_range(tab, named, text, sent)
+    return {}, bool(gdocs.UNWRITABLE.search(text))
+
+
 # The requests applied here, by the proto name a read body carries each under; every other kind is
 # refused naming itself (`routers.google._editor_batch`).
 _DOCS_APPLY = {
@@ -1001,6 +1450,13 @@ _DOCS_APPLY = {
     "add_document_tab": _docs_add_tab,
     "delete_tab": _docs_delete_tab,
     "update_document_tab_properties": _docs_update_tab,
+    "update_text_style": _docs_update_text_style,
+    "update_paragraph_style": _docs_update_paragraph_style,
+    "create_paragraph_bullets": _docs_create_bullets,
+    "delete_paragraph_bullets": _docs_delete_bullets,
+    "create_named_range": _docs_create_named_range,
+    "delete_named_range": _docs_delete_named_range,
+    "replace_named_range_content": _docs_replace_named_range,
 }
 _DOCS_KINDS = {
     f.name: f.json_name
@@ -1129,7 +1585,8 @@ async def docs_batch_update(document_id: str, request: Request):
         {
             "gdrive_doc_bodies": [
                 {
-                    "document": json.dumps(stored, ensure_ascii=False),
+                    # escaped, since a style's edge may leave half a character in a run
+                    "document": json.dumps(stored),
                     "revision": written + 1,
                     "bytes": nbytes,
                     "version": version + 1,

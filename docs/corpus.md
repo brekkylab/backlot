@@ -148,8 +148,22 @@ line breaks become one space, as real stores a title.
 
 `documents.get` serves the footnote as real serves one, opening with a space in 10 PT and numbered
 by its reference's place in the tab, and `content` is the text Drive's full-text search reads, its
-tab titles, headers, footers and footnotes with the bodies. Lists and tables have no representation
-yet.
+tab titles, headers, footers and footnotes with the bodies.
+
+A paragraph in a list states its `list`: the `preset` that names its glyphs, as
+`createParagraphBullets` names a `bulletPreset`, and its `level`, 0 (the default) to 8.
+Consecutive paragraphs of one preset are one list, as that request joins a paragraph to the list
+before it, and a paragraph of another preset, or of no list, ends it. `documents.get` serves each
+item's bullet and indent and the list in the tab's `lists`, and `files.export` writes each item's
+marker, a numbered list counted from 1 at each level.
+
+```json
+{"source_type": "google_drive", "title": "Launch checklist", "folder": "ops", "author_email": "pm@acme.com", "created": "2026-02-02T08:00:00Z", "updated": "2026-02-03T08:00:00Z", "paragraphs": [{"style": "HEADING_1", "text": "Before launch"}, {"text": "Sign off the pricing page", "list": {"preset": "BULLET_CHECKBOX"}}, {"text": "Brief support", "list": {"preset": "BULLET_CHECKBOX"}}, {"text": "Escalation rota", "list": {"preset": "BULLET_CHECKBOX", "level": 1}}]}
+```
+
+A corpus states neither a font, a size, a colour or a paragraph's alignment and spacing, nor a
+named range, nor a table: `documents.batchUpdate` makes the first two (see
+[the write overlay](write-overlay.md)).
 
 ## Load a public dataset
 

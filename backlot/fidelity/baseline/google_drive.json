@@ -6,7 +6,7 @@
     "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
     "https://www.googleapis.com/discovery/v1/apis/slides/v1/rest"
   ],
-  "measured": "2026-11-02",
+  "measured": "2026-11-03",
   "operations": [
     {
       "operation": "DELETE /drive/v3/drives/{}",
@@ -1450,18 +1450,18 @@
     },
     "docs.Bullet": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "listId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "nestingLevel": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "textStyle": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TextStyle"
         }
       }
@@ -1658,38 +1658,38 @@
     },
     "docs.CreateNamedRangeRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "name": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "range": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Range"
         }
       }
     },
     "docs.CreateNamedRangeResponse": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "namedRangeId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
     },
     "docs.CreateParagraphBulletsRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "bulletPreset": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "range": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Range"
         }
       }
@@ -1918,28 +1918,28 @@
     },
     "docs.DeleteNamedRangeRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "name": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "namedRangeId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "tabsCriteria": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TabsCriteria"
         }
       }
     },
     "docs.DeleteParagraphBulletsRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "range": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Range"
         }
       }
@@ -2057,16 +2057,12 @@
           "severity": "gap"
         },
         "lists": {
-          "status": "missing",
-          "type": "map<string, docs.List>",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "map<string, docs.List>"
         },
         "namedRanges": {
-          "status": "missing",
-          "type": "map<string, docs.NamedRanges>",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "map<string, docs.NamedRanges>"
         },
         "namedStyles": {
           "status": "implemented",
@@ -2349,16 +2345,12 @@
           "severity": "gap"
         },
         "lists": {
-          "status": "missing",
-          "type": "map<string, docs.List>",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "map<string, docs.List>"
         },
         "namedRanges": {
-          "status": "missing",
-          "type": "map<string, docs.NamedRanges>",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "map<string, docs.NamedRanges>"
         },
         "namedStyles": {
           "status": "implemented",
@@ -2778,14 +2770,14 @@
     },
     "docs.HeadingLink": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "id": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "tabId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
@@ -3225,22 +3217,16 @@
           "severity": "gap"
         },
         "heading": {
-          "status": "missing",
-          "type": "docs.HeadingLink",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.HeadingLink"
         },
         "headingId": {
-          "status": "missing",
-          "type": "string",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "string"
         },
         "tabId": {
-          "status": "missing",
-          "type": "string",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "string"
         },
         "url": {
           "status": "implemented",
@@ -3555,10 +3541,8 @@
       "status": "implemented",
       "fields": {
         "bullet": {
-          "status": "missing",
-          "type": "docs.Bullet",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.Bullet"
         },
         "elements": {
           "status": "implemented",
@@ -4194,22 +4178,22 @@
     },
     "docs.ReplaceNamedRangeContentRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "namedRangeId": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "namedRangeName": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "tabsCriteria": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TabsCriteria"
         },
         "text": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
@@ -4253,16 +4237,12 @@
           "type": "docs.CreateHeaderRequest"
         },
         "createNamedRange": {
-          "status": "missing",
-          "type": "docs.CreateNamedRangeRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.CreateNamedRangeRequest"
         },
         "createParagraphBullets": {
-          "status": "missing",
-          "type": "docs.CreateParagraphBulletsRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.CreateParagraphBulletsRequest"
         },
         "deleteComment": {
           "status": "missing",
@@ -4295,16 +4275,12 @@
           "type": "docs.DeleteHeaderRequest"
         },
         "deleteNamedRange": {
-          "status": "missing",
-          "type": "docs.DeleteNamedRangeRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.DeleteNamedRangeRequest"
         },
         "deleteParagraphBullets": {
-          "status": "missing",
-          "type": "docs.DeleteParagraphBulletsRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.DeleteParagraphBulletsRequest"
         },
         "deletePositionedObject": {
           "status": "missing",
@@ -4431,10 +4407,8 @@
           "severity": "gap"
         },
         "replaceNamedRangeContent": {
-          "status": "missing",
-          "type": "docs.ReplaceNamedRangeContentRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.ReplaceNamedRangeContentRequest"
         },
         "unmergeTableCells": {
           "status": "missing",
@@ -4477,10 +4451,8 @@
           "severity": "gap"
         },
         "updateParagraphStyle": {
-          "status": "missing",
-          "type": "docs.UpdateParagraphStyleRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.UpdateParagraphStyleRequest"
         },
         "updateSectionStyle": {
           "status": "missing",
@@ -4507,10 +4479,8 @@
           "severity": "gap"
         },
         "updateTextStyle": {
-          "status": "missing",
-          "type": "docs.UpdateTextStyleRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.UpdateTextStyleRequest"
         }
       }
     },
@@ -4547,10 +4517,8 @@
           "type": "docs.CreateHeaderResponse"
         },
         "createNamedRange": {
-          "status": "missing",
-          "type": "docs.CreateNamedRangeResponse",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.CreateNamedRangeResponse"
         },
         "insertComment": {
           "status": "missing",
@@ -5840,18 +5808,18 @@
     },
     "docs.UpdateParagraphStyleRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "fields": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "paragraphStyle": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.ParagraphStyle"
         },
         "range": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Range"
         }
       }
@@ -5942,18 +5910,18 @@
     },
     "docs.UpdateTextStyleRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "fields": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "range": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Range"
         },
         "textStyle": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TextStyle"
         }
       }

@@ -1,0 +1,167 @@
+{
+  "BULLET_DISC_CIRCLE_SQUARE": [
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%0", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%1", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%2", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%3", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%4", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%5", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%6", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%7", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%8", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "BULLET_DIAMONDX_ARROW3D_SQUARE": [
+    {"bulletAlignment": "START", "glyphSymbol": "❖", "glyphFormat": "%0", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "➢", "glyphFormat": "%1", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%2", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%3", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◆", "glyphFormat": "%4", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "➢", "glyphFormat": "%5", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%6", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%7", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◆", "glyphFormat": "%8", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "BULLET_CHECKBOX": [
+    {"bulletAlignment": "START", "glyphType": "GLYPH_TYPE_UNSPECIFIED", "glyphFormat": "%0", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "GLYPH_TYPE_UNSPECIFIED", "glyphFormat": "%1", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "GLYPH_TYPE_UNSPECIFIED", "glyphFormat": "%2", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "GLYPH_TYPE_UNSPECIFIED", "glyphFormat": "%3", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "GLYPH_TYPE_UNSPECIFIED", "glyphFormat": "%4", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "GLYPH_TYPE_UNSPECIFIED", "glyphFormat": "%5", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "GLYPH_TYPE_UNSPECIFIED", "glyphFormat": "%6", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "GLYPH_TYPE_UNSPECIFIED", "glyphFormat": "%7", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "GLYPH_TYPE_UNSPECIFIED", "glyphFormat": "%8", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "BULLET_ARROW_DIAMOND_DISC": [
+    {"bulletAlignment": "START", "glyphSymbol": "➔", "glyphFormat": "%0", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◆", "glyphFormat": "%1", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%2", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%3", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◆", "glyphFormat": "%4", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%5", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%6", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◆", "glyphFormat": "%7", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%8", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "BULLET_STAR_CIRCLE_SQUARE": [
+    {"bulletAlignment": "START", "glyphSymbol": "★", "glyphFormat": "%0", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%1", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%2", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%3", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%4", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%5", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%6", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%7", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%8", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "BULLET_ARROW3D_CIRCLE_SQUARE": [
+    {"bulletAlignment": "START", "glyphSymbol": "➢", "glyphFormat": "%0", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%1", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%2", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%3", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%4", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%5", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%6", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%7", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%8", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "BULLET_LEFTTRIANGLE_DIAMOND_DISC": [
+    {"bulletAlignment": "START", "glyphSymbol": "◄", "glyphFormat": "%0", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◆", "glyphFormat": "%1", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%2", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%3", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◆", "glyphFormat": "%4", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%5", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%6", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◆", "glyphFormat": "%7", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%8", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "BULLET_DIAMONDX_HOLLOWDIAMOND_SQUARE": [
+    {"bulletAlignment": "START", "glyphSymbol": "❖", "glyphFormat": "%0", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◇", "glyphFormat": "%1", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%2", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%3", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◆", "glyphFormat": "%4", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◇", "glyphFormat": "%5", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%6", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%7", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "◆", "glyphFormat": "%8", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "BULLET_DIAMOND_CIRCLE_SQUARE": [
+    {"bulletAlignment": "START", "glyphSymbol": "◆", "glyphFormat": "%0", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%1", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%2", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%3", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%4", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%5", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "●", "glyphFormat": "%6", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "○", "glyphFormat": "%7", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphSymbol": "■", "glyphFormat": "%8", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "NUMBERED_DECIMAL_ALPHA_ROMAN": [
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "%0.", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%1.", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "%2.", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "%3.", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%4.", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "%5.", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "%6.", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%7.", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "%8.", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "NUMBERED_DECIMAL_ALPHA_ROMAN_PARENS": [
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "%0)", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%1)", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "%2)", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "(%3)", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "(%4)", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "(%5)", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "%6.", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%7.", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "%8.", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "NUMBERED_DECIMAL_NESTED": [
+    {"bulletAlignment": "END", "glyphType": "DECIMAL", "glyphFormat": "%0.", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "DECIMAL", "glyphFormat": "%0.%1.", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "DECIMAL", "glyphFormat": "%0.%1.%2.", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "DECIMAL", "glyphFormat": "%0.%1.%2.%3.", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "DECIMAL", "glyphFormat": "%0.%1.%2.%3.%4.", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "DECIMAL", "glyphFormat": "%0.%1.%2.%3.%4.%5.", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "DECIMAL", "glyphFormat": "%0.%1.%2.%3.%4.%5.%6.", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "DECIMAL", "glyphFormat": "%0.%1.%2.%3.%4.%5.%6.%7.", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "DECIMAL", "glyphFormat": "%0.%1.%2.%3.%4.%5.%6.%7.%8.", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "NUMBERED_UPPERALPHA_ALPHA_ROMAN": [
+    {"bulletAlignment": "START", "glyphType": "UPPER_ALPHA", "glyphFormat": "%0.", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%1.", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "%2.", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "%3.", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%4.", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "%5.", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "%6.", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%7.", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "%8.", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "NUMBERED_UPPERROMAN_UPPERALPHA_DECIMAL": [
+    {"bulletAlignment": "END", "glyphType": "UPPER_ROMAN", "glyphFormat": "%0.", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "UPPER_ALPHA", "glyphFormat": "%1.", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "%2.", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%3)", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "(%4)", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "(%5)", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "(%6)", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "(%7)", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "(%8)", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ],
+  "NUMBERED_ZERODECIMAL_ALPHA_ROMAN": [
+    {"bulletAlignment": "START", "glyphType": "ZERO_DECIMAL", "glyphFormat": "%0.", "indentFirstLine": {"magnitude": 18, "unit": "PT"}, "indentStart": {"magnitude": 36, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%1.", "indentFirstLine": {"magnitude": 54, "unit": "PT"}, "indentStart": {"magnitude": 72, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "%2.", "indentFirstLine": {"magnitude": 90, "unit": "PT"}, "indentStart": {"magnitude": 108, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "%3.", "indentFirstLine": {"magnitude": 126, "unit": "PT"}, "indentStart": {"magnitude": 144, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%4.", "indentFirstLine": {"magnitude": 162, "unit": "PT"}, "indentStart": {"magnitude": 180, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "%5.", "indentFirstLine": {"magnitude": 198, "unit": "PT"}, "indentStart": {"magnitude": 216, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "DECIMAL", "glyphFormat": "%6.", "indentFirstLine": {"magnitude": 234, "unit": "PT"}, "indentStart": {"magnitude": 252, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "START", "glyphType": "ALPHA", "glyphFormat": "%7.", "indentFirstLine": {"magnitude": 270, "unit": "PT"}, "indentStart": {"magnitude": 288, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1},
+    {"bulletAlignment": "END", "glyphType": "ROMAN", "glyphFormat": "%8.", "indentFirstLine": {"magnitude": 306, "unit": "PT"}, "indentStart": {"magnitude": 324, "unit": "PT"}, "textStyle": {"underline": false}, "startNumber": 1}
+  ]
+}

@@ -14870,10 +14870,10 @@ def test_google_decompresses_a_body_only_as_one_whole_gzip_member():
 _READ_AS_A_GET = {"X-HTTP-Method-Override": "GET", "Content-Type": _FORM}
 
 # Requests with `Content-Encoding: br` and no credential but where a row names one, beside what real
-# answered on 2026-10-30 (UTC), and on 2026-11-03 to the rows sent as a POST with a `callback`: the
-# status, `Content-Type` and body, the body's length the one real sent, and for a `HEAD` its
-# `Content-Length`; or `without` where the answer was the one real gives the same request with no
-# coding, which here is this server's answer to it.
+# answered on 2026-10-30 (UTC), and to the rows sent as a POST with a `callback` on the day
+# `errors.google.jsonp_callback` gives: the status, `Content-Type` and body, the body's length the
+# one real sent, and for a `HEAD` its `Content-Length`; or `without` where the answer was the one
+# real gives the same request with no coding, which here is this server's answer to it.
 _CODING_ANSWERS = [
     ("GET", "/drive/v3/about", {}, 415, _JSON_UTF8, _415),
     ("GET", "/gmail/v1/users/me/labels", {}, 415, _JSON_UTF8, _415),
@@ -15118,10 +15118,10 @@ _PAST_THE_LIMIT = [
 
 def test_google_refuses_a_body_that_decompresses_past_its_front_ends_limit(client):
     """A body gzipped to decompress to a row's size, `POST`ed with the row's headers and no
-    credential: real's 400 ahead of the credential on 2026-10-30 (UTC), and on 2026-11-03 beside a
-    `callback`, where the row's answer is one; the route's 401 where it is ``None``; and where it
-    is `without`, the answer to the same `POST` with no body, as real's was its answer to a path or
-    method it does not route."""
+    credential: real's 400 ahead of the credential on 2026-10-30 (UTC), and beside a `callback` on
+    the day `errors.google.jsonp_callback` gives, where the row's answer is one; the route's 401
+    where it is ``None``; and where it is `without`, the answer to the same `POST` with no body, as
+    real's was its answer to a path or method it does not route."""
 
     def answered(path, headers, size, answer):
         sent = {"Content-Type": "application/json", "Content-Encoding": "gzip", **headers}

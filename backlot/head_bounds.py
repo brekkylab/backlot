@@ -240,12 +240,13 @@ _BOUNDS = {
 
 
 def bound(start: bytes) -> Bound | None:
-    """The bound on a head whose request line starts ``start``, read off the path in it, or
-    ``None`` where no vendor owns the path. Jira Cloud's is built here, its page naming the
-    request."""
+    """The bound on a head whose request line starts ``start``, read off the path in it as the
+    vendor reads it (``backlot.request_target.backslashes_read``), or ``None`` where no vendor owns
+    the path. Jira Cloud's is built here, its page naming the request."""
     method, _, target = start.partition(b" ")
-    path = re.split(rb"[? ]", target, maxsplit=1)[0].decode("latin-1")
-    unquoted = urllib.parse.unquote(path)
+    sent = re.split(rb"[? ]", target, maxsplit=1)[0]
+    path = sent.decode("latin-1")
+    unquoted = urllib.parse.unquote(request_target.backslashes_read(sent).decode("latin-1"))
     named = request_target.front_door(unquoted)
     if named is None:
         return None

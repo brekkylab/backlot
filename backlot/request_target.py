@@ -590,11 +590,24 @@ _GRAPH_REFUSED_PRINTABLE = re.compile(rb'["#<>]')
 #: The path under which HubSpot's Jetty reads a `{` and a `;` (:func:`printable_answer`,
 #: :func:`printable_reading`).
 _HUBSPOT_OBJECTS = b"/hubspot/crm/v3/objects/"
-#: The mounts under which a `\` in the path is read as a `/` (:func:`printable_reading`).
+#: The mounts under which a `\` in the path is read as a `/` (:func:`backslashes_read`).
 _BACKSLASH_MOUNTS = (b"/atlassian/", b"/drive/", b"/gmail/", b"/docs/", b"/sheets/", b"/slides/")
 #: The mounts here that come ahead of the path the vendor is sent, so that a `\` right after one is
-#: the first byte of the vendor's target (:func:`printable_answer`).
+#: the first byte of the vendor's target (:func:`_backslash_first`).
 _MOUNTS_AHEAD_OF_THE_TARGET = (b"/atlassian", b"/docs", b"/sheets", b"/slides")
+
+
+def backslashes_read(path: bytes) -> bytes:
+    """``path`` as sent, as the vendor behind its mount reads it: under a mount of
+    :data:`_BACKSLASH_MOUNTS`, each `\\` a `/`."""
+    slashed = path.replace(b"\\", b"/")
+    return slashed if slashed.startswith(_BACKSLASH_MOUNTS) else path
+
+
+def _backslash_first(path: bytes) -> bytes | None:
+    """The mount of :data:`_MOUNTS_AHEAD_OF_THE_TARGET` that ``path``, as sent, follows with a
+    `\\`, or ``None``."""
+    return next((m for m in _MOUNTS_AHEAD_OF_THE_TARGET if path.startswith(m + b"\\")), None)
 
 
 def printable_answer(scope: Scope) -> Response | None:
@@ -637,7 +650,7 @@ def printable_answer(scope: Scope) -> Response | None:
     path, raw_path = scope["path"], scope["raw_path"]
     sent = scope.get(WITH_A_FRAGMENT)
     sent_path = raw_path if sent is None else sent.partition(b"?")[0]
-    first = next((m for m in _MOUNTS_AHEAD_OF_THE_TARGET if sent_path.startswith(m + b"\\")), None)
+    first = _backslash_first(sent_path)
     if first == b"/atlassian":
         page = errors.atlassian.cdn_bad_request(scope["method"], sent_path.decode("latin-1"))
         return _front_door(scope, "cdn", page, {})
@@ -699,9 +712,7 @@ def printable_reading(scope: Scope) -> dict[str, object] | None:
     sent = scope.get(WITH_A_FRAGMENT)
     if sent is not None and errors.s3.owns(path):
         raw, _, reading["query_string"] = sent.partition(b"?")
-    slashed = raw.replace(b"\\", b"/")
-    if slashed.startswith(_BACKSLASH_MOUNTS):
-        raw = slashed
+    raw = backslashes_read(raw)
     if raw.startswith(_HUBSPOT_OBJECTS):
         segments = raw.removeprefix(_HUBSPOT_OBJECTS).split(b"/")
         raw = _HUBSPOT_OBJECTS + b"/".join(s.partition(b";")[0] for s in segments)
@@ -733,14 +744,17 @@ def refused_in_the_line(
     measurement; ``tests/test_head_bounds.py::_REFUSED_LINES`` holds the lines. Every long request
     the branches below do not refuse drew the bound's page but `/../rest/api/3/myself` on Jira
     Cloud, which drew the CDN's 400 as it did with a short head, and which is not given here; S3
-    answered each with an empty 400, which its bound answers too."""
+    answered each with an empty 400, which its bound answers too. On 2026-11-03 (UTC), a `#` in the
+    target on api.github.com and a `\\` as its first byte on Jira Cloud drew the page each gives
+    with a short head (:func:`printable_answer`), in a line past the bound and ahead of a header
+    past it."""
     method, _, rest = line.partition(b" ")
     target = rest.rpartition(b" ")[0] if ended else rest
     path, mark, query = target.partition(b"?")
     kinds = _kinds(path) + _kinds(query)
     every = set(kinds)
     bad_request = "HTTP/1.1 400 Bad Request"
-    if door == "github" and kinds:
+    if door == "github" and (kinds or b"#" in target):
         return bad_request, "text/html; charset=utf-8", GITHUB_PAGE
     if door == "slack" and kinds and ahead:
         return bad_request, "text/plain", b"Bad Request"
@@ -748,13 +762,14 @@ def refused_in_the_line(
         return "HTTP/1.0 400 Bad Request", "text/html; charset=UTF-8", GOOGLE_PAGE_54
     if door == "graph" and (page := _graph_page(kinds)) is not None:
         return bad_request, "text/html; charset=us-ascii", page
-    if door == "atlassian" and (every & {"nul", "cr"} or ahead and _broken(path)):
+    if door == "atlassian" and (
+        every & {"nul", "cr"} or _backslash_first(path) or ahead and _broken(path)
+    ):
         raw_path = _RAW.sub(lambda m: b"%%%02X" % m[0][0], path).decode("latin-1")
         page = errors.atlassian.cdn_bad_request(method.decode("latin-1"), raw_path)
         return bad_request, "text/html", page.encode()
     if door == "cloudflare":
         own = b"/" + path.partition(b"/")[2].partition(b"/")[2]
-        ends = not mark and b"#" not in path
-        if every & {"nul", "cr"} or ahead and refused_path(own, ends):
+        if every & {"nul", "cr"} or ahead and refused_path(own, not mark):
             return bad_request, "text/html", CLOUDFLARE_PAGE
     return None

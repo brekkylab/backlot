@@ -1144,8 +1144,8 @@ def _stated_tabs(tabs: list, path: str):
 
 
 def _paragraph_errors(paragraphs, path: str, body: bool) -> list[str]:
-    """What a stated body, header, footer or footnote's paragraphs may not say. Only a body holds
-    a footnote or a page break: real refuses `createFootnote` and `insertPageBreak` anywhere else."""
+    """What a stated body, header, footer or footnote's paragraphs may not say. Only a body holds a
+    footnote or a page break: real refuses `createFootnote` and `insertPageBreak` anywhere else."""
     if not isinstance(paragraphs, list):
         return []
     msgs = []

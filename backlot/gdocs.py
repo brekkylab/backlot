@@ -274,14 +274,15 @@ def is_icon(text: str) -> bool:
 # --- a document: its tabs, and in each a body, a header, a footer and footnotes ------------------
 #
 # Stored as ``{"tabs": [tab, ...]}``, each tab ``{"tabProperties": {tabId, title, iconEmoji?},
-# "body": [...], "headers": {id: [...]}, "footers": {...}, "footnotes": {...}, "childTabs": [...]}``,
-# its contents as real serves them without indices or footnote numbers. A tab's index, parent and
-# depth are its place in the tree, read where it is served.
+# "body": [...], "headers": {id: [...]}, "footers": {...}, "footnotes": {...},
+# "childTabs": [...]}``, its contents as real serves them without indices or footnote numbers. A
+# tab's index, parent and depth are its place in the tree, read where it is served.
 
 
 def new_tab(tab_id: str, title: str, body: list[dict] | None = None) -> dict:
-    """A tab holding ``body``, or the empty paragraph a blank Doc and `addDocumentTab` make: measured
-    2026-11-02, a new tab's `documentStyle`, `namedStyles` and section style are a blank Doc's."""
+    """A tab holding ``body``, or the empty paragraph a blank Doc and `addDocumentTab` make:
+    measured 2026-11-02, a new tab's `documentStyle`, `namedStyles` and section style are a blank
+    Doc's."""
     return {
         "tabProperties": {"tabId": tab_id, "title": title},
         "body": body if body is not None else from_text(""),

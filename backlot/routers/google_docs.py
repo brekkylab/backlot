@@ -438,9 +438,9 @@ async def docs_create(request: Request):
 # --- `documents.batchUpdate` ----------------------------------------------------------------------
 #
 # Measured against the live Docs v1 API on 2026-10-29, 2026-11-02 and 2026-11-03, as a Workspace
-# member writing a Doc it owns and as a second member it was shared with as a reader. How each request changes
-# the document is `gdocs.Body`'s and `gdocs.Document`'s; this section is the request, its refusals
-# and the answer.
+# member writing a Doc it owns and as a second member it was shared with as a reader. How each
+# request changes the document is `gdocs.Body`'s and `gdocs.Document`'s; this section is the
+# request, its refusals and the answer.
 
 _PJ_BATCH_UPDATE = _PJ_DOCS("docs.BatchUpdateDocumentRequest")
 
@@ -558,21 +558,22 @@ def _docs_delete_content_range(doc: gdocs.Document, req: dict) -> tuple[dict, bo
 
 def _docs_replace_all_text(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``replaceAllText``: in every tab, or only in those a `tabsCriteria` lists, in each tab's
-    body, header, footer and footnotes. Measured 2026-11-02: with no `tabsCriteria` a child tab
-    was replaced in too, one listing no tab replaced nothing, a tab listed twice counted once, and
-    a match in a header, a footer and a footnote each counted. Real fails on a `tabsCriteria`
-    naming a tab the Doc does not have at this request, measured 2026-11-03, and on a replacement
-    holding a character in `gdocs.UNWRITABLE` that matched once every request is read; measured,
-    a zero-match replace by U+FDD0 was a 200.
-    What matches is `gdocs.Body.find`'s, and an empty or missing `replaceText` deletes it; the
-    characters `insertText` strips are stripped from it too. A `searchByRegex` replacement is the
-    text as sent: `$1` is not a group."""
+    body, header, footer and footnotes. Measured 2026-11-02: with no `tabsCriteria` a child tab was
+    replaced in too, one listing no tab replaced nothing, a tab listed twice counted once, and a
+    match in a header, a footer and a footnote each counted. Real fails at this request on a
+    `tabsCriteria` naming a tab the Doc does not have (measured 2026-11-03), and once every request
+    is read on a replacement holding a character in `gdocs.UNWRITABLE` that matched; measured, a
+    zero-match replace by U+FDD0 was a 200. What matches is `gdocs.Body.find`'s, and an empty or
+    missing `replaceText` deletes it; the characters `insertText` strips are stripped from it too. A
+    `searchByRegex` replacement is the text as sent: `$1` is not a group."""
     criteria = req.get("contains_text") or {}
     if not criteria.get("text"):
         raise _EditorRefused("The substring match text should not be empty")
     tabs = doc.flat()
     if "tabs_criteria" in req:
-        named = req["tabs_criteria"].get("tab_ids", [])
+        # measured 2026-11-03: an empty id named `t.0`, not the first tab, and was a 500 once
+        # `t.0` was deleted
+        named = [n or "t.0" for n in req["tabs_criteria"].get("tab_ids", [])]
         if any(not any(t["tabProperties"]["tabId"] == n for t in tabs) for n in named):
             raise gerr.internal_error()
         tabs = [t for t in tabs if t["tabProperties"]["tabId"] in named]
@@ -808,16 +809,16 @@ _DOCS_TAB_FIELDS = ("tabId", "title", "parentTabId", "index", "nestingLevel", "i
 
 
 def _docs_tab_fields(fields: str) -> list[str] | None:
-    """The `TabProperties` fields a `fields` mask names, read as real reads it, or None for the
-    mask real answers with a 500. Measured 2026-11-02 and 2026-11-03: `*` alone names every
-    field; names are split at commas, trimmed, and empty ones dropped, so `title,` and ` , ` are
-    read while `,` is refused as naming no field. A name is split at dots with empty parts dropped
-    (`title.` and `.title` name `title`), and one of dots alone is the 500 before any name is read
-    (`nope,.`). Its first part read as `_docs_snake` spells it must be a field's `snake_case` name
-    (`TITLE`, `parentTABId` and `icon_emoji` were taken, `TItle`, `_title` and `PARENTTABID`
-    refused), and is refused by that spelling (`fooBar` as `foo_bar`). Every name is checked before any path into a field, which is
-    refused by the field's name and the rest so spelt (`icon_emoji.x` as `iconEmoji.x`,
-    `title.fooBar` as `title.foo_bar`)."""
+    """The `TabProperties` fields a `fields` mask names, read as real reads it, or None for the mask
+    real answers with a 500. Measured 2026-11-02 and 2026-11-03: `*` alone names every field; names
+    are split at commas, trimmed, and empty ones dropped, so `title,` and ` , ` are read while `,`
+    is refused as naming no field. A name is split at dots with empty parts dropped (`title.` and
+    `.title` name `title`), and one of dots alone is the 500 before any name is read (`nope,.`). Its
+    first part read as `_docs_snake` spells it must be a field's `snake_case` name (`TITLE`,
+    `parentTABId` and `icon_emoji` were taken, `TItle`, `_title` and `PARENTTABID` refused), and is
+    refused by that spelling (`fooBar` as `foo_bar`). Every name is checked before any path into a
+    field, which is refused by the field's name and the rest so spelt (`icon_emoji.x` as
+    `iconEmoji.x`, `title.fooBar` as `title.foo_bar`)."""
     if fields == "*":
         return list(_DOCS_TAB_FIELDS)
     parts = fields.split(",")
@@ -984,15 +985,15 @@ async def docs_batch_update(document_id: str, request: Request):
     (`backlot.gdocs.Document`). A document that states no structure has its line reading stored
     by its first write.
 
-    The order real answers in, measured 2026-10-29: the credential, the body, the `fields` mask,
-    the lookup and a reader's 403, no requests or one with no kind set (`_editor_requests`), a
-    revision of another Doc, a `requiredRevisionId` that is not the Doc's latest or a
-    `targetRevisionId` that is no revision of it, then each request's refusal, the first one's
-    named alone. A 500 a character in `gdocs.UNWRITABLE` leads to comes after every request is
-    read; one for an unknown tab in `tabsCriteria`, a header or footer at an index past the first
-    section break, or a tab update's `fields` of dots alone comes at its own request, measured
-    2026-11-03, ahead of a later request's refusal. Neither keeps anything. A kind other than those applied here is refused naming itself, and so is the
-    `SUGGEST` write mode, which records the requests as suggestions.
+    The order real answers in, measured 2026-10-29: the credential, the body, the `fields` mask, the
+    lookup and a reader's 403, no requests or one with no kind set (`_editor_requests`), a revision
+    of another Doc, a `requiredRevisionId` that is not the Doc's latest or a `targetRevisionId` that
+    is no revision of it, then each request's refusal, the first one's named alone. A 500 a
+    character in `gdocs.UNWRITABLE` leads to comes after every request is read; one a request raises
+    (`_docs_replace_all_text`, `_docs_create_segment`, `_docs_update_tab`) comes at its own request,
+    ahead of a later request's refusal. Neither keeps anything. A kind other than those applied here
+    is refused naming itself, and so is the `SUGGEST` write mode, which records the requests as
+    suggestions.
 
     Every write, one that changed nothing included, moves the `revisionId`, but for a batch of
     `updateDocumentTabProperties` requests that each left the tab's title, index and parent as they

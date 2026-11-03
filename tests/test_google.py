@@ -18132,6 +18132,34 @@ _TAB_WRITES = [
         [{"replaceAllText": {}}],
         False,
     ),
+    # an empty id names `t.0`, not the first tab, and with `t.0` beside it counts once
+    (
+        [
+            _upd({"tabId": "$T2", "index": 0}, "index"),
+            {
+                "replaceAllText": {
+                    **_rep("o", "0")["replaceAllText"],
+                    "tabsCriteria": {"tabIds": [""]},
+                }
+            },
+            {
+                "replaceAllText": {
+                    **_rep("0", "0")["replaceAllText"],
+                    "tabsCriteria": {"tabIds": ["", "t.0"]},
+                }
+            },
+        ],
+        [
+            *_TABS_START[1:3],
+            "Tab 1: alpha beta gamma/x\U0001f600y e\u0301z/ref[1] end H:head F:f00t N1: n0te",
+            _TABS_START[3],
+        ],
+        [
+            {},
+            {"replaceAllText": {"occurrencesChanged": 3}},
+            {"replaceAllText": {"occurrencesChanged": 3}},
+        ],
+    ),
     (
         [_rep("o", "0")],
         [
@@ -18432,6 +18460,7 @@ _DOCS_BATCH_REFUSALS = [
     ([_ins(1, "﷐"), _ins(0, "a")], 400, _IN_PARAGRAPH.replace("[0]", "[1]")),
     ([_ins(1, "a"), _ins(1, "﷐")], 500, "Internal error encountered."),
     ([_rep("world", "﷐")], 500, "Internal error encountered."),
+    # but an unknown tab in `tabsCriteria` is the 500 at its own request
     (
         [
             {
@@ -18445,7 +18474,6 @@ _DOCS_BATCH_REFUSALS = [
         500,
         "Internal error encountered.",
     ),
-    # but an unknown tab in `tabsCriteria` is the 500 at its own request
     (
         [
             {
@@ -18626,6 +18654,20 @@ _DOCS_TAB_REFUSALS = [
         [
             {"createFooter": {"type": "DEFAULT", "sectionBreakLocation": {"index": 1}}},
             {"insertText": {"location": {"index": 0}, "text": "x"}},
+        ],
+        500,
+        "Internal error encountered.",
+    ),
+    # an empty id in `tabsCriteria` once `t.0` is gone
+    (
+        [
+            {"deleteTab": {"tabId": "t.0"}},
+            {
+                "replaceAllText": {
+                    **_rep("o", "0")["replaceAllText"],
+                    "tabsCriteria": {"tabIds": [""]},
+                }
+            },
         ],
         500,
         "Internal error encountered.",

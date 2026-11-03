@@ -540,7 +540,7 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
             expected[row.id] = (connection, 505, "application/xml", True)
             continue
         # the edge's page carries the edge's two headers beside its own, CloudFront's neither, and
-        # Cloudflare's page on api.hubapi.com no `x-hubspot-correlation-id` (2026-10-30)
+        # Cloudflare's page on api.hubapi.com no `x-hubspot-correlation-id`
         if answer.startswith("edge "):
             extra = {k: headers.get(k) for k in [*edge, "access-control-allow-origin"]}
             want_extra = edge | {"access-control-allow-origin": "*"}

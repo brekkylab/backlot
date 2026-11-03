@@ -26,8 +26,11 @@ import urllib.parse
 from pathlib import Path
 
 import pytest
+import uvicorn
 from starlette.testclient import TestClient
+from uvicorn.server import ServerState
 
+from backlot import protocol
 from backlot.config import Settings, get_settings
 
 # A value for every field a schema can ask for, so `complete` can answer any of them. A field
@@ -415,6 +418,26 @@ class RecordingTransport(asyncio.Transport):
 
     def resume_reading(self) -> None:
         pass
+
+
+@contextlib.contextmanager
+def in_process(app):
+    """``backlot.protocol.Protocol`` in front of ``app`` in this process, on an event loop of its
+    own, connected to a :class:`RecordingTransport`: the protocol, the transport and the loop. The
+    app's tasks are cancelled and the loop closed on the way out."""
+    loop = asyncio.new_event_loop()
+    state = ServerState()
+    try:
+        config = uvicorn.Config(app, http=protocol.Protocol, lifespan="off", log_config=None)
+        served = protocol.Protocol(config, state, {}, _loop=loop)
+        transport = RecordingTransport()
+        served.connection_made(transport)
+        yield served, transport, loop
+    finally:
+        for task in state.tasks:
+            task.cancel()
+        loop.run_until_complete(asyncio.sleep(0))
+        loop.close()
 
 
 def sent_as(client, method: str, path: str, headers, content=None, bare: bool = False):

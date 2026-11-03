@@ -15,12 +15,7 @@ import re
 import socket
 import urllib.parse
 
-import pytest
-import uvicorn
-from uvicorn.server import ServerState
-
-from backlot import protocol
-from tests._helpers import RecordingTransport
+from tests._helpers import in_process
 
 #: Real's answer to each request below (``backlot.parser_refusals`` has the measurement), as its
 #: status line and `Content-Type`, each ``None`` where real sent none, the size and SHA-256 of its
@@ -271,6 +266,10 @@ _KINDS = {
     "LF on a HEAD": ("HEAD", "/nope\nx HTTP/1.1", [], False),
 }
 
+#: Each control byte but HTAB, LF, CR, 0x00 (``nul``) and 0x01 (``control``), in a header value.
+_BYTES = [*range(0x02, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20), 0x7F]
+_KINDS.update({f"0x{b:02X}": ("GET", " HTTP/1.1", [f"X-Probe: a{chr(b)}b"], False) for b in _BYTES})
+
 _GITHUB = ("/github", "/repos/octocat/Hello-World")
 _SLACK = ("/slack", "/api/api.test")
 _GOOGLE = ("", "/drive/v3/about")
@@ -339,6 +338,8 @@ _ROWS = [
     (*_LINEAR, "control, then a nul", "cloudflare 400"),
     (*_LINEAR, "blank coding, then a control byte", "cloudflare 501"),
     (*_LINEAR, "identity, split in its name", "cloudflare 400"),
+    # Each byte drew the empty 400 0x01 drew, from each of the four hosts behind Cloudflare.
+    *[(*_LINEAR, f"0x{b:02X}", "cloudflare empty") for b in _BYTES],
     ("/notion", "/v1/users", "control", "cloudflare empty"),
     ("/hubspot", "/crm/v3/objects/contacts", "blank coding", "cloudflare 501"),
     ("/hubspot", "/crm/v3/objects/contacts", "a high byte, then a nul", "cloudflare 400"),
@@ -402,19 +403,11 @@ async def _refused(scope, receive, send):
 
 def _answer(base_url: str, reads: list[bytes]) -> bytes:
     if len(reads) > 1:
-        loop = asyncio.new_event_loop()
-        try:
-            config = uvicorn.Config(
-                _refused, http=protocol.Protocol, lifespan="off", log_config=None
-            )
-            served = protocol.Protocol(config, ServerState(), {}, _loop=loop)
-            transport = RecordingTransport()
-            served.connection_made(transport)
+        with in_process(_refused) as (served, transport, loop):
             for read in reads:
                 if not transport.closed:
                     served.data_received(read)
-        finally:
-            loop.close()
+                    loop.run_until_complete(asyncio.sleep(0))
         return transport.written
     url = urllib.parse.urlsplit(base_url)
     with socket.create_connection((url.hostname, url.port), timeout=10) as c:
@@ -452,30 +445,16 @@ def _shape(answer: bytes) -> tuple:
     return status_line, content_type, len(body), hashlib.sha256(body).hexdigest(), request_id
 
 
-@pytest.mark.parametrize("mount, path, kind, real", _ROWS)
-def test_a_request_httptools_refuses_is_answered_as_its_front_door_answered_it(
-    live_server, mount, path, kind, real
-):
+def test_a_request_httptools_refuses_gets_its_front_doors_answer_or_uvicorns_400(live_server):
     base_url, settings = live_server
-    answer = _answer(base_url, _request(mount, path, kind, settings.admin_token))
-    assert _shape(answer) == _REAL[real]
-
-
-@pytest.mark.parametrize("byte", [*range(0x00, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20), 0x7F])
-def test_each_byte_httptools_refuses_in_a_value_is_answered_by_its_kind(live_server, byte):
-    """0x00 draws Cloudflare's page and each other byte its empty 400, on Linear as on the four
-    hosts behind Cloudflare, which answered each byte alike."""
-    base_url, _ = live_server
-    raw = f"GET /linear/graphql HTTP/1.1\r\nHost: x\r\nX-Probe: a{chr(byte)}b\r\n\r\n"
-    answer = _answer(base_url, [raw.encode("latin-1")])
-    assert _shape(answer) == _REAL["cloudflare 400" if byte == 0 else "cloudflare empty"]
-
-
-@pytest.mark.parametrize("mount, path, kind", _UVICORNS)
-def test_a_refusal_no_rule_answers_keeps_uvicorns_400(live_server, mount, path, kind):
-    base_url, settings = live_server
-    answer = _answer(base_url, _request(mount, path, kind, settings.admin_token))
-    assert _shape(answer) == _UVICORN
+    rows = [*_ROWS, *[(*row, None) for row in _UVICORNS]]
+    got = {}
+    for mount, path, kind, _ in rows:
+        reads = _request(mount, path, kind, settings.admin_token)
+        got[mount, path, kind] = _shape(_answer(base_url, reads))
+    assert got == {
+        (mount, path, kind): _REAL[real] if real else _UVICORN for mount, path, kind, real in rows
+    }
 
 
 #: A GET, then in the same write a request real's front door refused, and real's answer to the

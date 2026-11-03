@@ -264,10 +264,11 @@ def is_icon(text: str) -> bool:
 
 # --- a document: its tabs, and in each a body, a header, a footer and footnotes ------------------
 #
-# Stored as ``{"tabs": [tab, ...]}``, each tab ``{"tabProperties": {tabId, title, iconEmoji?},
-# "body": [...], "headers": {id: [...]}, "footers": {...}, "footnotes": {...},
-# "childTabs": [...]}``, its contents as real serves them without indices or footnote numbers. A
-# tab's index, parent and depth are its place in the tree, read where it is served.
+# Stored as ``{"tabs": [tab, ...]}``, with ``"tabbed": true`` once the Doc has held more than one
+# tab (`document_text`), each tab ``{"tabProperties": {tabId, title, iconEmoji?}, "body": [...],
+# "headers": {id: [...]}, "footers": {...}, "footnotes": {...}, "childTabs": [...]}``, its contents
+# as real serves them without indices or footnote numbers. A tab's index, parent and depth are its
+# place in the tree, read where it is served.
 
 
 def new_tab(tab_id: str, title: str, body: list[dict] | None = None) -> dict:
@@ -357,13 +358,13 @@ def record_text(rec: dict) -> str:
 
 def document_text(doc: dict) -> str:
     """A stored document's text as Drive's search reads it: each tab's title, but the default of a
-    lone tab in a Doc that never held more than one, then its body, headers, footers and
-    footnotes, depth first, one line per paragraph, a segment holding no text giving none.
-    Measured 2026-11-03: `fullText contains` found a word only in a tab's header, footer or
-    footnote, in an added or a renamed tab's title and not the old one, and in a lone tab's title
-    once renamed, and `Tab` in a Doc of several tabs, one untitled, and in one whose tabs were
-    deleted back to one, but not in a Doc that only ever had one untitled tab; and a footnote
-    reference or a page break parted the words either side of it as a line break does
+    lone tab in a Doc that never held more than one, then its body, headers, footers and footnotes,
+    depth first, one line per paragraph, a segment holding no text giving none. Measured 2026-11-03:
+    `fullText contains` found a word only in a first or second tab's header, footer or footnote or a
+    child tab's header or footer, in an added or a renamed tab's title and not the old one, and in a
+    lone tab's title once renamed, and `Tab` in a Doc of several tabs, one untitled, and in one
+    whose tabs were deleted back to one, but not in a Doc that only ever had one untitled tab; and a
+    footnote reference or a page break parted the words either side of it as a line break does
     (`routers.google._in_a_line`)."""
     tabs = [tab for tab, *_ in walk(doc["tabs"])]
     lines = []

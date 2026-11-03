@@ -17671,7 +17671,13 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
         return did in {x["id"] for x in found.json()["files"]}
 
     assert not searched("Tab")
-    made = {"requests": [{"createHeader": {"type": "DEFAULT"}}, _fn(1)]}
+    made = {
+        "requests": [
+            {"createHeader": {"type": "DEFAULT"}},
+            _fn(1),
+            {"createFooter": {"type": "DEFAULT"}},
+        ]
+    }
     replies = wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=h, json=made).json()
     header, note = replies["replies"][0]["createHeader"]["headerId"], replies["replies"][1]
     words = {
@@ -17683,33 +17689,38 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
                     "text": "numbat",
                 }
             },
+            {
+                "insertText": {
+                    "location": {"segmentId": replies["replies"][2]["createFooter"]["footerId"]},
+                    "text": "quoll",
+                }
+            },
         ]
     }
     assert (
         wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=h, json=words).status_code == 200
     )
-    titled = {
-        "requests": [
-            _upd({"tabId": "t.0", "title": "solotitle"}, "title"),
-            {"addDocumentTab": {"tabProperties": {"title": "wallaby"}}},
-        ]
-    }
+    lone = {"requests": [_upd({"tabId": "t.0", "title": "solotitle"}, "title")]}
+    assert _docs_write(wc, h, "wr-text", lone).status_code == 200
+    assert searched("solotitle")
+    titled = {"requests": [{"addDocumentTab": {"tabProperties": {"title": "wallaby"}}}]}
     added = wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=h, json=titled).json()
     renamed = _upd(
         {
-            "tabId": added["replies"][1]["addDocumentTab"]["tabProperties"]["tabId"],
+            "tabId": added["replies"][0]["addDocumentTab"]["tabProperties"]["tabId"],
             "title": "lorikeet",
         },
         "title",
     )
     wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=h, json={"requests": [renamed]})
-    line = "cr\u00e8me br\u00fbl\u00e9e pbleftpbright vtalpha\x0bvtbeta fnleftfnright\n"
+    line = "cr\u00e8me br\u00fbl\u00e9e pbleftpbright vtalpha\x0bvtbeta fnleftfnright the runners jumped\n"
     at = 1 + line.index("pbright")
     parted = [_ins(1, line), _fn(1 + line.index("fnright")), _pb(at), _del(at + 1, at + 2)]
     assert _docs_write(wc, h, "wr-text", {"requests": parted}).status_code == 200
     for q, hit in [
         ("wombat", True),
         ("numbat", True),
+        ("quoll", True),
         ("solotitle", True),
         ("wallaby", False),
         ("lorikeet", True),
@@ -17724,6 +17735,9 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
         ("fnleftfnright", False),
         ("vtbeta", True),
         ('"vtalpha vtbeta"', False),
+        ('"runners jumped"', True),
+        ('"runners jump"', False),
+        ('"jump"', False),
     ]:
         assert searched(q) == hit, q
     # a Doc that held two tabs keeps its lone tab's default title
@@ -18111,6 +18125,17 @@ def _tab_props(title, index, parent=None, depth=0):
 _TAB_WRITES = [
     # a new tab is a blank one, `Tab n` when untitled, last or at its index, under its parent
     ([{"addDocumentTab": {}}], [*_TABS_START, "Tab 5: "], [_tab_props("Tab 5", 3)]),
+    # climbing past a title another tab has
+    (
+        [
+            _upd({"tabId": "t.0", "title": "Tab 6"}, "title"),
+            {"addDocumentTab": {}},
+            {"addDocumentTab": {}},
+            {"addDocumentTab": {}},
+        ],
+        ["Tab 6" + _TABS_START[0][5:], *_TABS_START[1:], "Tab 5: ", "Tab 7: ", "Tab 8: "],
+        [{}, _tab_props("Tab 5", 3), _tab_props("Tab 7", 4), _tab_props("Tab 8", 5)],
+    ),
     (
         [{"addDocumentTab": {"tabProperties": {"iconEmoji": "\U0001f1ea\U0001f1fa"}}}],
         [*_TABS_START, "Tab 5 \U0001f1ea\U0001f1fa: "],
@@ -18235,6 +18260,17 @@ _TAB_WRITES = [
     ),
     # a delete takes the child tabs; the first tab then is the one after it
     ([{"deleteTab": {"tabId": "$T2"}}], [_TABS_START[0], _TABS_START[3]], None),
+    # the only root deleted, its child with it, leaves a fresh `Tab 1` of a new id
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"title": "K", "parentTabId": "t.0"}}},
+            {"deleteTab": {"tabId": "$T2"}},
+            {"deleteTab": {"tabId": "$T3"}},
+            {"deleteTab": {"tabId": "t.0"}},
+        ],
+        ["Tab 1: "],
+        [_tab_props("K", 0, "t.0", 1), {}, {}, {}],
+    ),
     (
         [{"deleteTab": {"tabId": "t.0"}}, {"addDocumentTab": {}}],
         [*_TABS_START[1:], "Tab 4: "],
@@ -19352,6 +19388,17 @@ _DOCS_TAB_REFUSALS = [
                 [{"deleteTab": {"tabId": "t.0"}}, _upd({"tabId": "t.0", "title": "x"}, "title")],
                 "At tab with ID t.0 does not exist.",
                 1,
+            ),
+            (
+                [
+                    {"addDocumentTab": {"tabProperties": {"title": "K", "parentTabId": "t.0"}}},
+                    {"deleteTab": {"tabId": "$T2"}},
+                    {"deleteTab": {"tabId": "$T3"}},
+                    {"deleteTab": {"tabId": "t.0"}},
+                    _upd({"tabId": "t.0", "title": "x"}, "title"),
+                ],
+                "At tab with ID t.0 does not exist.",
+                4,
             ),
             # the depth of the tab, then an index below zero, itself, its children, the index past
             # its siblings, then its children's depth

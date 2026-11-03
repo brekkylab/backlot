@@ -1547,6 +1547,50 @@ def test_slack_users_list_reads_the_cursor_before_a_negative_limit(client, admin
     assert got == {(c, limit): {"ok": False, "error": e} for c, limit, e in rows}
 
 
+# (max_page_size, limit, messages served, has_more): the measurement on `_limit` at the default
+# `max_page_size`, then a `max_page_size` above real's 1000 and one below it.
+_HISTORY_LIMITS = [
+    (1000, "201", 201, True),
+    (1000, "1000", 330, False),
+    (1000, "1000.5", 330, False),
+    (1000, "1001", 100, True),
+    (1000, "2000", 100, True),
+    (1000, "9223372036854775807", 100, True),
+    (5000, "2000", 100, True),
+    (250, "300", 250, True),
+]
+
+
+def test_slack_conversations_history_large_limits(tmp_path, monkeypatch):
+    """`conversations.history` on a channel of 330 messages, for each row of `_HISTORY_LIMITS`."""
+    records = [
+        {
+            "source_type": "slack",
+            "channel": "general",
+            "content": f"msg {n}",
+            "author_email": "ava@x.com",
+            "visibility": "public",
+            "created": f"2026-01-{(n // 24) + 1:02d}T{n % 24:02d}:00:00Z",
+        }
+        for n in range(330)
+    ]
+    s = tiny_corpus(tmp_path, records)
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+        channels = c.get("/slack/api/conversations.list", headers=h).json()["channels"]
+        cid = next(ch["id"] for ch in channels if ch["name"] == "general")
+        got = []
+        for ceiling, limit, _, _ in _HISTORY_LIMITS:
+            monkeypatch.setattr(slack.get_settings(), "max_page_size", ceiling)
+            j = c.get(
+                "/slack/api/conversations.history",
+                headers=h,
+                params={"channel": cid, "limit": limit},
+            ).json()
+            got.append((ceiling, limit, len(j["messages"]), j["has_more"]))
+    assert got == _HISTORY_LIMITS
+
+
 def test_slack_search_all_answers_both_blocks_and_search_files_only_its_own(client, admin_h):
     # slack-go's Search()/SearchContext() hits search.all; it must return both messages + files.
     j = client.post("/slack/api/search.all", headers=admin_h, data={"query": "the"}).json()

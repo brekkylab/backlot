@@ -1733,7 +1733,8 @@ async def read_a_drive_or_editor_query_as_google_does(request: Request, call_nex
     sequence back as nothing on 2026-10-30 (UTC), `a%80b` as `ab`, so a Gmail query is left to the
     router. Registered before ``answer_a_google_read_sent_as_a_post``, which makes it the inner of
     the two, so it reads the form that one adds to the query too."""
-    request.scope["query_string"] = utf8_escapes.google_query(request.scope["query_string"])
+    query = request.scope["query_string"]
+    request.scope["query_string"] = utf8_escapes.google_query(query, errors.google.QUERY_TOKENS)
     return await call_next(request)
 
 

@@ -4557,6 +4557,7 @@ _QUERY_CREDENTIAL_ROWS = [
     (None, "access_token=ya29.x&oauth_token={t}&oauth_token={t}", _CHALLENGE),
     (None, "access_token=ya29.x&access_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "access_token=ya29.x&oauth_token={m}", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%80", _CHALLENGED),
     # beside a header: a credential, a bare scheme and `Bearer ,` outrank the query, a scheme run
     # into its token reads it without the gate, and a header that is no credential leaves it alone
     ("Bearer {t}", "access_token=ya29.x", _SERVED),

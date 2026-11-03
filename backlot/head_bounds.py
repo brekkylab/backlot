@@ -118,8 +118,7 @@ class Bound:
 def written(
     status_line: str, media_type: str | None, body: bytes, headers: dict[str, str] | None = None
 ) -> bytes:
-    """``body`` as a front door sends it here (the module docstring says which headers), with
-    ``headers`` after `Content-Type`."""
+    """``body`` as a front door sends it here, with ``headers`` after `Content-Type`."""
     head = f"{status_line}\r\n"
     if media_type is not None:
         head += f"Content-Type: {media_type}\r\n"

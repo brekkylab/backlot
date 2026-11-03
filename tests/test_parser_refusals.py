@@ -185,6 +185,18 @@ _KINDS = {
         False,
     ),
     "control in a name": ("GET", " HTTP/1.1", ["X-Pr\x01obe: ab"], False),
+    "control, then a nul in a later read": (
+        "GET",
+        " HTTP/1.1",
+        ["X-A: a\x01b", "|X-B: a\x00b"],
+        False,
+    ),
+    "control, then a plain header in a later read": (
+        "GET",
+        " HTTP/1.1",
+        ["X-A: a\x01b", "|X-B: ab"],
+        False,
+    ),
     "blank coding": ("POST", " HTTP/1.1", [_JSON, "Transfer-Encoding: ", _LENGTH], True),
     "blank coding, no length": ("POST", " HTTP/1.1", [_JSON, "Transfer-Encoding: "], False),
     "blank coding after a length": (
@@ -274,6 +286,9 @@ _JIRA = ("/atlassian", "/rest/api/3/myself")
 _LINEAR = ("/linear", "/graphql")
 _S3 = ("/s3", "/")
 _GRAPH = ("/msgraph", "/v1.0/me")
+_NOTION = ("/notion", "/v1/users")
+_FIREFLIES = ("/fireflies", "/graphql")
+_HUBSPOT = ("/hubspot", "/crm/v3/objects/contacts")
 
 #: Each request real's front door refused, on a path of its vendor's, and real's answer.
 _ROWS = [
@@ -292,6 +307,8 @@ _ROWS = [
     (*_GITHUB, "control, then a nul", "github page"),
     (*_GITHUB, "blank coding, then a control byte", "github page"),
     (*_GITHUB, "nul, then a length and a blank coding", "github page"),
+    (*_GITHUB, "control, then a nul in a later read", "github page"),
+    (*_GITHUB, "control, then a plain header in a later read", "github empty"),
     (*_GITHUB, "LF, then a length and a blank coding", "github page"),
     (*_SLACK, "nul", "slack 400"),
     (*_SLACK, "control", "slack 400"),
@@ -301,11 +318,15 @@ _ROWS = [
     (*_SLACK, "identity", "slack 400"),
     (*_SLACK, "IDENTITY", "slack 400"),
     (*_SLACK, "identity after a length", "slack 400"),
+    (*_SLACK, "control, then a nul in a later read", "slack 400"),
+    (*_SLACK, "control, then a plain header in a later read", "slack 400"),
     (*_GOOGLE, "nul", "google 400"),
     (*_GOOGLE, "control", "google 400"),
     (*_GOOGLE, "blank coding", "google 400"),
     (*_GOOGLE, "blank coding, no length", "google 400"),
     (*_GOOGLE, "blank coding after a length", "google 400"),
+    (*_GOOGLE, "control, then a nul in a later read", "google 400"),
+    (*_GOOGLE, "control, then a plain header in a later read", "google 400"),
     (*_JIRA, "control", "jira edge"),
     (*_JIRA, "nul", "jira 400"),
     (*_JIRA, "blank coding", "jira 501"),
@@ -335,11 +356,19 @@ _ROWS = [
     (*_LINEAR, "control, then a nul", "cloudflare 400"),
     (*_LINEAR, "blank coding, then a control byte", "cloudflare 501"),
     (*_LINEAR, "identity, split in its name", "cloudflare 400"),
+    *[
+        (mount, path, kind, real)
+        for mount, path in [_LINEAR, _NOTION, _FIREFLIES, _HUBSPOT]
+        for kind, real in [
+            ("control, then a nul in a later read", "cloudflare 400"),
+            ("control, then a plain header in a later read", "cloudflare empty"),
+        ]
+    ],
     # Each byte drew the empty 400 0x01 drew, from each of the four hosts behind Cloudflare.
     *[(*_LINEAR, f"0x{b:02X}", "cloudflare empty") for b in _BYTES],
-    ("/notion", "/v1/users", "control", "cloudflare empty"),
-    ("/hubspot", "/crm/v3/objects/contacts", "blank coding", "cloudflare 501"),
-    ("/fireflies", "/graphql", "identity", "cloudflare 400"),
+    (*_NOTION, "control", "cloudflare empty"),
+    (*_HUBSPOT, "blank coding", "cloudflare 501"),
+    (*_FIREFLIES, "identity", "cloudflare 400"),
     (*_S3, "nul", "s3 empty"),
     (*_S3, "blank coding", "s3 empty"),
     (*_S3, "blank coding, no length", "s3 empty"),
@@ -349,6 +378,7 @@ _ROWS = [
     (*_S3, "nul, then a control byte", "s3 empty"),
     (*_S3, "control, then a nul", "s3 empty"),
     (*_S3, "blank coding, then a control byte", "s3 empty"),
+    (*_S3, "control, then a nul in a later read", "s3 empty"),
     (*_GRAPH, "nul", "graph 400"),
     (*_GRAPH, "control", "graph 400"),
     (*_GRAPH, "blank coding", "graph 501"),
@@ -356,11 +386,13 @@ _ROWS = [
     (*_GRAPH, "identity", "graph 501"),
     (*_GRAPH, "IDENTITY", "graph 501"),
     (*_GRAPH, "identity after a length", "graph 501"),
+    (*_GRAPH, "control, then a nul in a later read", "graph 400"),
+    (*_GRAPH, "control, then a plain header in a later read", "graph 400"),
 ]
 
-#: The refusals uvicorn's 400 answers: where real reads the request on (the module docstring of
-#: ``backlot.parser_refusals`` says where), where no rule names the refusal, and on a path no vendor
-#: owns.
+#: The refusals uvicorn's 400 answers: where real's front door does not answer them itself (the
+#: module docstring of ``backlot.parser_refusals`` says where), where no rule names the refusal, and
+#: on a path no vendor owns.
 _UVICORNS = [
     (*_GITHUB, "control, credential ahead"),
     (*_GITHUB, "control, credential after"),
@@ -370,6 +402,7 @@ _UVICORNS = [
     (*_GOOGLE, "LF"),
     (*_JIRA, "identity"),
     (*_S3, "control"),
+    (*_S3, "control, then a plain header in a later read"),
     (*_S3, "identity"),
     (*_GRAPH, "LF"),
     (*_LINEAR, "chunked beside a length"),
@@ -384,7 +417,8 @@ _UVICORNS = [
 def _request(mount: str, path: str, kind: str, token: str) -> list[bytes]:
     """The request ``kind`` names, in the reads it is sent in."""
     method, rest, lines, body = _KINDS[kind]
-    lines = [line.format(token=token) for line in ["Host: x", "Connection: close", *lines]]
+    fixed = ["Host: x", "Connection: close", "User-Agent: probe"]
+    lines = [line.format(token=token) for line in [*fixed, *lines]]
     raw = f"{method} {mount}{path}{rest}\r\n" + "".join(f"{line}\r\n" for line in lines) + "\r\n"
     return [part.encode("latin-1") for part in raw.split("|")[:-1]] + [
         raw.split("|")[-1].encode("latin-1") + (_BODY if body else b"")
@@ -453,11 +487,13 @@ def test_a_request_httptools_refuses_gets_its_front_doors_answer_or_uvicorns_400
 
 #: A GET, then a request real's front door refused, and real's answer to the second, which came
 #: after the GET's 200: written in the same write as the GET (slack.com and api.github.com,
-#: 2026-11-02, twice each), and written once the GET's answer had been read (2026-11-03).
+#: 2026-11-02, twice each), and written once the GET's answer had been read (2026-11-03). The last
+#: is one of :data:`_UVICORNS`, whose 400 waits for the 200 here as well.
 _BEHIND = [
     ("/slack/api/api.test", *_SLACK, "blank coding", "slack 400"),
     ("/github/rate_limit", *_GITHUB, "nul", "github page"),
     ("/github/rate_limit", *_GITHUB, "blank coding", "github page"),
+    ("/github/rate_limit", *_GITHUB, "control, credential ahead", None),
 ]
 
 
@@ -497,7 +533,7 @@ def test_a_refused_request_behind_another_is_answered_after_it(live_server):
         ]:
             got[first, kind, shape] = outcome(_after_the_200, send)
     assert got == {
-        (first, kind, shape): (b"HTTP/1.1 200 OK\r\n", _REAL[real])
+        (first, kind, shape): (b"HTTP/1.1 200 OK\r\n", _REAL[real] if real else _UVICORN)
         for first, _, _, kind, real in _BEHIND
         for shape in ("one write", "after its answer")
     }

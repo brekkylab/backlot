@@ -174,8 +174,8 @@ def _graph(refused: Refused) -> bytes | None:
 
 
 def answer(refused: Refused) -> bytes | None:
-    """What the front door the path in ``refused.target`` names writes, or ``None`` where it reads
-    the request on (the module docstring says where) or no vendor owns the path."""
+    """What the front door the path in ``refused.target`` names writes, or ``None`` where it does
+    not answer the request itself (the module docstring says where) or no vendor owns the path."""
     raw_path, _, raw_query = refused.target.partition(b"?")
     path = urllib.parse.unquote(raw_path.decode("latin-1"))
     door = (request_target.front_door(path) or (None, ""))[0]

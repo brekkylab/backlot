@@ -19,6 +19,7 @@ import urllib.parse
 import pytest
 
 from backlot import bracketed_host, errors, request_target, store
+from backlot.routers import hubspot
 from tests._helpers import raw_exchange, raw_request, read_answer, served_id
 
 _UTF8, _LONE = b"\xc3\xa9", b"\x80"
@@ -855,13 +856,15 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
             expected[row.id] = (connection, 505, "application/xml", True)
             continue
         # the edge's page carries the edge's two headers beside its own, Tomcat's behind it the two
-        # alone, CloudFront's neither
+        # alone, CloudFront's neither, and Cloudflare's page on api.hubapi.com no
+        # `x-hubspot-correlation-id` (2026-10-30)
         if answer.startswith("edge ") or answer == "tomcat":
             allow_origin = "*" if answer.startswith("edge ") else None
             extra = {k: headers.get(k) for k in [*edge, "access-control-allow-origin"]}
             want_extra = edge | {"access-control-allow-origin": allow_origin}
         else:
-            extra, want_extra = sorted(edge.keys() & headers.keys()), []
+            vendor = {*edge, hubspot.CORRELATION_ID_HEADER}
+            extra, want_extra = sorted(vendor & headers.keys()), []
         if answer == "github empty":
             extra = (extra, headers.get("vary"), "x-github-request-id" in headers)
             want_extra = (want_extra, "Accept-Encoding, Accept, X-Requested-With", True)

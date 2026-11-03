@@ -5358,10 +5358,11 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
     split the way real splits it.
 
     Every family GET is sent a name that cannot be a JavaScript one and has to refuse it. Every
-    family POST is sent the same name and has to IGNORE it: measured on Sheets, a `callback` on
-    `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is not honoured and not even
-    validated, where the same POST honours `$.xgafv` and `prettyPrint` — JSONP is what a `<script>`
-    element fetches, and a `<script>` element issues a GET.
+    other family operation is sent the same name and has to IGNORE it, and a name it could call
+    leaves its answer unwrapped (``errors.google.jsonp_callback`` has the measurements): measured on
+    Sheets, a `callback` on `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is
+    not honoured and not even validated, where the same POST honours `$.xgafv` and `prettyPrint` —
+    JSONP is what a `<script>` element fetches, and a `<script>` element issues a GET.
 
     `callback` is NOT declared router-wide beside `$.xgafv` — Sheets is the only family whose
     SUCCESS is wrapped, and `qp` declares only what Backlot honours — so this is the whole of what
@@ -5398,6 +5399,9 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
                 posts += 1
                 if refused:
                     wrong.append(f"{method.upper()} {path} refused where real ignores")
+                called = client.request(method.upper(), f"{url}?callback=cb", json=body)
+                if "// API callback" in called.text:
+                    wrong.append(f"{method.upper()} {path} wrapped where real does not")
     assert wrong == []
     assert gets and posts, f"both halves have to have run, got {gets} GET(s) and {posts} POST(s)"
 

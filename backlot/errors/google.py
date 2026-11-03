@@ -993,7 +993,8 @@ def jsonp_callback(request: Request) -> str | None:
     element fetches, and a `<script>` element issues a GET. Measured on Sheets, a `callback` on
     `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is ignored outright -- no
     wrap on a success, none on an error, and a name that a GET would be refused for is not even
-    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the only
+    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`, and on 2026-11-03 (UTC) a
+    Drive `DELETE` of a missing file under `callback=foo` drew its 404 as JSON. So GET is the only
     method this parameter applies to. A `HEAD` (``request.state.answering_head``) is not GET here
     either: measured 2026-10-11 on Drive's `files.list` and Gmail's `profile`, a callable name and
     an uncallable one each answered a `HEAD` with 200 `application/json; charset=UTF-8`, where the

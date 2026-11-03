@@ -490,10 +490,10 @@ def _docs_cluster(body: gdocs.Body, index: int) -> int:
 def _docs_insert_text(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``insertText``, in real's order of refusals, measured: no location, the tab, no text, an
     index below zero, the segment, then the index at or past the segment's end, a body's section
-    break at 0, inside a grapheme cluster. A header, footer or footnote opens at 0 with its first
-    character. `endOfSegmentLocation` inserts before the segment's last newline. The characters
-    `insertText` strips are dropped, and text that was nothing else inserts nothing and is taken.
-    Real fails on one that holds a character in `gdocs.UNWRITABLE` once every request is read."""
+    break at 0, inside a grapheme cluster. `endOfSegmentLocation` inserts before the segment's last
+    newline. The characters `insertText` strips are dropped, and text that was nothing else inserts
+    nothing and is taken. Real fails on one that holds a character in `gdocs.UNWRITABLE` once every
+    request is read."""
     where = req.get("location", req.get("end_of_segment_location"))
     if where is None:
         raise _EditorRefused("No insertion location set.")
@@ -866,8 +866,7 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
 
     A parent named puts the tab last under it, the root for none, and an index stated moves it
     before the sibling there (`gdocs.Document.place`): measured, `*` with no index moved a tab to
-    the root's end, and with no title was refused for the title. An empty icon removes it. The 500
-    a mask leads to is answered at this request, whatever a later one would be refused for."""
+    the root's end, and with no title was refused for the title. An empty icon removes it."""
     fields = req.get("fields", "")
     if not fields:
         raise _EditorRefused(

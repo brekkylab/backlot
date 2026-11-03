@@ -1303,7 +1303,7 @@ class Document:
 
 # --- a document as Drive's `files.export` renders it ----------------------------------------------
 #
-# Measured against Drive v3 from 2026-10-30 to 2026-11-02, as a Workspace member exporting Docs it
+# Measured against Drive v3 from 2026-10-30 to 2026-11-03, as a Workspace member exporting Docs it
 # wrote through `documents.batchUpdate`, each holding only what a corpus may state.
 
 # The `#`s a paragraph of each named style opens with in Markdown.
@@ -1391,8 +1391,15 @@ def _lead_breaks(paragraph: dict) -> int:
     run follows, and one for each such run that is a link. Real's answers on 2026-11-01 match it on
     paragraphs starting with one to three runs of vertical tabs, before text or alone, in
     NORMAL_TEXT, TITLE and SUBTITLE, and on ones starting with runs of a vertical tab and a space,
-    U+3000, a tab, U+00A0 or two spaces, or a space and a vertical tab; a HEADING_n takes none."""
-    spans = _spans(paragraph)
+    U+3000, a tab, U+00A0 or two spaces, or a space and a vertical tab; a HEADING_n takes none. A
+    footnote reference is a run of its own, measured 2026-11-03: a vertical tab and then a reference
+    of one text style took the CRLF of two runs."""
+    spans = [
+        (piece, style)
+        for text, style in _spans(paragraph)
+        for piece in re.split(f"({FOOTNOTE})", text)
+        if piece
+    ]
     n = 0
     for i, (text, style) in enumerate(spans):
         if _after_break(text).strip("\x0b"):
@@ -1404,6 +1411,9 @@ def _lead_breaks(paragraph: dict) -> int:
 
 # What a plain export writes for a page break, on a line of its own, and before the footnotes.
 _RULE = "_" * 16
+# The vertical tabs and page breaks a paragraph opens with, which `_lead_breaks`' CRLFs follow:
+# measured 2026-11-03, a page break, a vertical tab and a reference were the rule, then them.
+_LEAD = re.compile(f"(?:\x0b|{_RULE})*")
 
 
 def _page_breaks(text: str, bare: str) -> str:
@@ -1426,12 +1436,13 @@ def _page_breaks(text: str, bare: str) -> str:
 def _plain_lines(content: list[dict], note) -> list[str]:
     """Stored content as `files.export` writes it as `text/plain`, a line per paragraph. A vertical
     tab is a CRLF and drops the separator after it (`_after_break`), a tab is eight spaces, a page
-    break is `_page_breaks`' and a footnote reference ``note``'s. A paragraph holding nothing but
-    vertical tabs, or nothing, takes one CRLF more, and one other than a HEADING_n that starts with
-    vertical tabs takes the CRLFs `_lead_breaks` counts; a HEADING_n holding nothing is left out,
-    and one holding no text but vertical tabs or page breaks is a CRLF fewer, from its end if it
-    ends with one, else from its start (measured 2026-11-03 on HEADING_1 to HEADING_6: a page break
-    alone was the rule alone, a page break then a vertical tab the rule and one CRLF)."""
+    break is `_page_breaks`' and a footnote reference ``note``'s. A paragraph holding no text but
+    vertical tabs or page breaks, or nothing, takes one CRLF more, and one other than a HEADING_n
+    takes the CRLFs `_lead_breaks` counts after the vertical tabs and page breaks it opens with
+    (`_LEAD`); a HEADING_n holding nothing is left out, and one holding no text but vertical tabs or
+    page breaks is a CRLF fewer, from its end if it ends with one, else from its start (measured
+    2026-11-03: a page break alone in HEADING_1 to HEADING_6 was the rule alone, and a page break
+    then a vertical tab in a HEADING_2 the rule and one CRLF)."""
     lines = []
     for el in content:
         if "paragraph" not in el:
@@ -1448,7 +1459,8 @@ def _plain_lines(content: list[dict], note) -> list[str]:
         else:
             if not bare.strip("\x0b"):
                 text += "\x0b"
-            text = "\x0b" * _lead_breaks(el["paragraph"]) + text
+            lead = _LEAD.match(text).end()
+            text = text[:lead] + "\x0b" * _lead_breaks(el["paragraph"]) + text[lead:]
         lines.append("".join(map(_plain_char, text)))
     return lines
 
@@ -1820,13 +1832,18 @@ def markdown(doc: dict) -> str:
     body one after another (`_export_parts`), and then each footnote as `[^n]: ` and its content,
     the lines after its first indented four spaces, each two apart by a blank line. Measured
     2026-11-02: a page break wrote nothing, a reference `[^n]` inside the marks around it, and no
-    header or footer was written."""
+    header or footer was written; measured 2026-11-03, a body ending in that blank line, after two
+    or more empty paragraphs, took no second one before the first footnote."""
     body, _, _, _, notes = _export_parts(doc)
     refs = iter(range(1, len(notes) + 1))
     out = _markdown(body, refs)
     for n, (_, content) in enumerate(notes, 1):
         lines = _markdown(content, refs).split("\n")
-        out += f"\n\n[^{n}]: " + "\n".join([lines[0]] + [f"    {x}" if x else x for x in lines[1:]])
+        out = (
+            (out.removesuffix("\n\n") if n == 1 else out)
+            + f"\n\n[^{n}]: "
+            + "\n".join([lines[0]] + [f"    {x}" if x else x for x in lines[1:]])
+        )
     return out
 
 

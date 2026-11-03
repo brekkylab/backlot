@@ -1803,6 +1803,21 @@ _DOCS_EXPORTS = {
         "\ufeffa\r\n________________\r\n\r\n\r\n\r\nXX\r\nz\r\n________________\r\n\r\nXX\r\nz\r\n\r\n\r\n________________\r\n\r\nXX\r\nz\r\n\r\n________________\r\nXX\r\nz\r\n________________\r\n\r\ncd\r\nz\r\n________________\r\n\r\ncd\r\nz",
         "a\n\nXX  \nz\n\n##  \n\n## XX\n\nz\n\nXX  \nz\n\n##  \n\n## XX\n\nz\n\ncd  \nz\n\n##  cd\n\nz",
     ),
+    "fn_vt": (
+        {"paragraphs": [_runs("a"), _runs("\x0b", _note("")), _runs("z"), _runs("\x0b", _note(""), style="TITLE"), _runs("z"), _runs("\x0b", _note(""), style="HEADING_2"), _runs("z"), _runs("\x0b", _note(""), "cd"), _runs("z"), _runs("\x0b", _note(""), "cd", style="TITLE"), _runs("z"), _runs("\x0b", _note(""), "cd", style="HEADING_2"), _runs("z"), _runs("\x0b\x0b", _note("")), _runs("z"), _runs("\x0b\x0b", _note(""), style="TITLE"), _runs("z"), _runs("\x0b\x0b", _note(""), style="HEADING_2"), _runs("z"), _runs(_note(""), "\x0b"), _runs("z"), _runs(_note(""), "\x0b", style="TITLE"), _runs("z"), _runs(_note(""), "\x0b", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b", _note("")), _runs("XX"), _runs("z"), _runs(_PB, "\x0b", _note(""), style="TITLE"), _runs("XX", style="TITLE"), _runs("z"), _runs(_PB, "\x0b", _note(""), style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b", _note(""), "cd"), _runs("z"), _runs(_PB, "\x0b", _note(""), "cd", style="TITLE"), _runs("z"), _runs(_PB, "\x0b", _note(""), "cd", style="HEADING_2"), _runs("z")]},
+        "\ufeffa\r\n\r\n\r\n[1]\r\nz\r\n\r\n\r\n[2]\r\nz\r\n\r\n[3]\r\nz\r\n\r\n\r\n[4]cd\r\nz\r\n\r\n\r\n[5]cd\r\nz\r\n\r\n[6]cd\r\nz\r\n\r\n\r\n\r\n[7]\r\nz\r\n\r\n\r\n\r\n[8]\r\nz\r\n\r\n\r\n[9]\r\nz\r\n[10]\r\n\r\nz\r\n[11]\r\n\r\nz\r\n[12]\r\n\r\nz\r\n________________\r\n\r\n\r\n[13]\r\nXX\r\nz\r\n________________\r\n\r\n\r\n[14]\r\nXX\r\nz\r\n________________\r\n\r\n[15]\r\nXX\r\nz\r\n________________\r\n\r\n\r\n[16]cd\r\nz\r\n________________\r\n\r\n\r\n[17]cd\r\nz\r\n________________\r\n\r\n[18]cd\r\nz\r\n________________\r\n[1] \r\n[2] \r\n[3] \r\n[4] \r\n[5] \r\n[6] \r\n[7] \r\n[8] \r\n[9] \r\n[10] \r\n[11] \r\n[12] \r\n[13] \r\n[14] \r\n[15] \r\n[16] \r\n[17] \r\n[18]",
+        "a\n\n[^1]  \nz\n\n#  [^2]\n\nz\n\n##  [^3]\n\nz\n\n[^4]cd  \nz\n\n#  [^5]cd\n\nz\n\n##  [^6]cd\n\nz\n\n[^7]  \nz\n\n#   [^8]\n\nz\n\n##   [^9]\n\nz  \n[^10]\n\nz\n\n# [^11] \n\nz\n\n## [^12] \n\nz\n\n[^13]  \nXX  \nz\n\n#  [^14]\n\n# XX\n\nz\n\n##  [^15]\n\n## XX\n\nz\n\n[^16]cd  \nz\n\n#  [^17]cd\n\nz\n\n##  [^18]cd\n\nz\n\n[^1]:  \n\n[^2]:  \n\n[^3]:  \n\n[^4]:  \n\n[^5]:  \n\n[^6]:  \n\n[^7]:  \n\n[^8]:  \n\n[^9]:  \n\n[^10]:  \n\n[^11]:  \n\n[^12]:  \n\n[^13]:  \n\n[^14]:  \n\n[^15]:  \n\n[^16]:  \n\n[^17]:  \n\n[^18]:  ",
+    ),
+    "fn_last_tab": (
+        {"tabs": [{"paragraphs": [_runs("a", _note(""), "z")]}, {"paragraphs": [_runs(_PB), {"text": ""}]}]},
+        "\ufeffa[1]z\r\n________________\r\n\r\n\r\n\r\n\r\n________________\r\n[1]",
+        "a[^1]z\n\n[^1]:  ",
+    ),
+    "fn_trail": (
+        {"paragraphs": [_runs("a", _note(""), "z"), {"text": ""}, {"text": ""}]},
+        "\ufeffa[1]z\r\n\r\n\r\n\r\n\r\n________________\r\n[1]",
+        "a[^1]z\n\n[^1]:  ",
+    ),
     "pb_heading": (
         {"paragraphs": [_runs("ab"), _runs(_PB, style="HEADING_2"), _runs("cd", style="HEADING_2"), _runs(_PB, style="TITLE"), _runs("ef", style="TITLE"), _runs("gh")]},
         "\ufeffab\r\n" + _RULE + "\r\ncd\r\n" + _RULE + "\r\n\r\n\r\nef\r\ngh",

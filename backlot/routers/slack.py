@@ -2272,7 +2272,6 @@ async def chat_post_message(request: Request):
     parent = (
         store.document_by_key(conn, "slack", (name, wanted), ids) if wanted is not None else None
     )
-    parent_uid = None
     if parent is not None:
         # Slack threads a reply under the ROOT, not under whichever message was named: replying to
         # a reply puts it in the same thread. The corpus stores that as the root's own ts, which is
@@ -2285,9 +2284,6 @@ async def chat_post_message(request: Request):
             # `conversations.replies` answers the root alone and the message reads back with no
             # thread at all — a thread this API made and cannot show.
             store.patch_document(conn, "slack", (name, parent["ts"]), "thread_ts", thread_ts)
-        root = store.document_by_key(conn, "slack", (name, thread_ts), ids)
-        if root is not None:
-            parent_uid = _parent_uid(root)
     now = int(time.time())
     ts = store.slack_next_ts(conn, name, now)
     store.insert_document(
@@ -2310,13 +2306,12 @@ async def chat_post_message(request: Request):
         },
     )
     row = store.document_by_key(conn, "slack", (name, ts))
+    message = _message(row, parent_user_id=_parent_user_id(conn, name, ids, row))
     return {
         "ok": True,
         "channel": synth.slack_channel_id(name),
         "ts": ts,
-        "message": _with_root(
-            conn, name, ids, caller, row, _message(row, parent_user_id=parent_uid)
-        ),
+        "message": _with_root(conn, name, ids, caller, row, message),
     }
 
 
@@ -3141,17 +3136,18 @@ def _flag(request: Request, key: str) -> bool:
 
 
 def _parent_user_id(conn, name: str, ids, row) -> str | None:
-    """The `parent_user_id` of a reply a method answers by itself: the `user` of its thread's root.
+    """The `parent_user_id` of a reply a method answers by itself: :func:`_parent_uid` of its
+    thread's root.
 
     Measured against slack.com on 2026-10-31: the `chat.update` echo, the `message` of
-    `reactions.get` and its `reactions.list` item each carried it on a reply, a reply to a reply
-    included, with a bot token and a user token. A thread whose root was deleted was not measured
-    on these three, and a root this server cannot find answers None.
+    `reactions.get` and the reply's `reactions.list` item each carried it on a reply, a reply to a
+    reply included, with a bot token and a user token. On 2026-11-01 the three carried
+    ``USLACKBOT`` under a deleted root, on replies posted before the root was deleted and after it.
     """
     if not row["thread_ts"] or row["thread_seq"] == 0:
         return None
     root = store.document_by_key(conn, "slack", (name, row["thread_ts"]), ids)
-    return _uid(root["author_email"]) if root is not None else None
+    return _parent_uid(root) if root is not None else None
 
 
 def _with_root(conn, name: str, ids, caller: Caller, row, m: dict) -> dict:

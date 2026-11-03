@@ -1036,30 +1036,25 @@ _PATH_REFUSAL_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "method, path, status, error, members",
-    _PATH_REFUSAL_ROWS,
-    ids=[f"{r[0]}-{r[1]}" for r in _PATH_REFUSAL_ROWS],
-)
-def test_s3_a_path_real_cannot_read_is_refused_before_its_bucket(
-    live_server, method, path, status, error, members
-):
+def test_s3_a_path_real_cannot_read_is_refused_before_its_bucket(live_server):
     """Its own table for the method and the path each row varies, with no credential."""
     import httpx
 
     base_url, _ = live_server
-    r = httpx.request(method, f"{base_url}/s3{path}")
-    if error is None:
-        framing = (r.headers.get("content-type"), r.headers.get("transfer-encoding"))
-        assert (r.status_code, r.content, "content-length" in r.headers, framing) == (
-            status,
-            b"",
-            False,
-            ("application/xml", "chunked"),
-        )
-        return
-    named = re.search(r"<Code>([^<]+)</Code><Message>([^<]*)</Message>(.*)<RequestId>", r.text)
-    assert (r.status_code, (named[1], named[2]), named[3]) == (status, error, members)
+    got, expected = {}, {}
+    for method, path, status, error, members in _PATH_REFUSAL_ROWS:
+        r = httpx.request(method, f"{base_url}/s3{path}")
+        key = f"{method} {path}"
+        if error is None:
+            framing = (r.headers.get("content-type"), r.headers.get("transfer-encoding"))
+            got[key] = (r.status_code, r.content, "content-length" in r.headers, framing)
+            expected[key] = (status, b"", False, ("application/xml", "chunked"))
+            continue
+        named = re.search(r"<Code>([^<]+)</Code><Message>([^<]*)</Message>(.*)<RequestId>", r.text)
+        got[key] = (r.status_code, named and (named[1], named[2]), named and named[3])
+        expected[key] = (status, error, members)
+    assert len(got) == len(_PATH_REFUSAL_ROWS)
+    assert got == expected
 
 
 def test_s3_a_signature_mismatch_names_what_this_server_signed(live_server):

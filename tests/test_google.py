@@ -14771,53 +14771,56 @@ _OVERRIDE_ROWS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "path, get, query, body, content_type, override",
-    _OVERRIDE_ROWS,
-    ids=[
-        "files-list",
-        "about",
-        "files-get",
-        "drives",
-        "gmail-labels",
-        "gmail-head",
-        "docs",
-        "sheets",
-        "sheets-tab-get",
-        "lower-case-get",
-        "spaced-get",
-        "head",
-        "mixed-case-head",
-        "no-content-type",
-        "form-with-charset",
-        "form-in-capitals",
-        "form-after-another-type",
-        "form-less-a-letter",
-        "text-plain",
-        "json",
-        "url-query-first",
-        "drive-form-escape-not-utf-8",
-        "drive-form-nul-escape",
-        "docs-form-escape-not-utf-8",
-        "docs-form-nul-escape",
-        "sheets-form-escape-not-utf-8",
-    ],
-)
-def test_google_read_sent_as_a_post_with_a_get_override_is_the_get(
-    client, admin_h, path, get, query, body, content_type, override
-):
+#: The name of each row of `_OVERRIDE_ROWS`, in its order.
+_OVERRIDE_NAMES = [
+    "files-list",
+    "about",
+    "files-get",
+    "drives",
+    "gmail-labels",
+    "gmail-head",
+    "docs",
+    "sheets",
+    "sheets-tab-get",
+    "lower-case-get",
+    "spaced-get",
+    "head",
+    "mixed-case-head",
+    "no-content-type",
+    "form-with-charset",
+    "form-in-capitals",
+    "form-after-another-type",
+    "form-less-a-letter",
+    "text-plain",
+    "json",
+    "url-query-first",
+    "drive-form-escape-not-utf-8",
+    "drive-form-nul-escape",
+    "docs-form-escape-not-utf-8",
+    "docs-form-nul-escape",
+    "sheets-form-escape-not-utf-8",
+]
+
+
+def test_google_read_sent_as_a_post_with_a_get_override_is_the_get(client, admin_h):
     """Each row is how `answer_a_google_read_sent_as_a_post` reads its POST: as the GET of the
     query in the second column."""
     files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": "100"}).json()
     sheet = next(f["id"] for f in files["files"] if f["mimeType"].endswith("spreadsheet"))
     doc = next(f["id"] for f in files["files"] if f["mimeType"].endswith("document"))
-    url = path.format(file=files["files"][0]["id"], sheet=sheet, doc=doc)
-    headers = {**admin_h, "X-HTTP-Method-Override": override}
-    if content_type is not None:
-        headers["Content-Type"] = content_type
-    got = client.get(f"{url}?{get}", headers=admin_h)
-    posted = client.post(f"{url}?{query}", headers=headers, content=body)
-    assert (posted.status_code, posted.content) == (got.status_code, got.content)
+    got, expected = {}, {}
+    for name, row in zip(_OVERRIDE_NAMES, _OVERRIDE_ROWS, strict=True):
+        path, get, query, body, content_type, override = row
+        url = path.format(file=files["files"][0]["id"], sheet=sheet, doc=doc)
+        headers = {**admin_h, "X-HTTP-Method-Override": override}
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        read = client.get(f"{url}?{get}", headers=admin_h)
+        posted = client.post(f"{url}?{query}", headers=headers, content=body)
+        got[name] = (posted.status_code, posted.content)
+        expected[name] = (read.status_code, read.content)
+    assert len(got) == len(_OVERRIDE_ROWS)
+    assert got == expected
 
 
 @pytest.mark.parametrize(

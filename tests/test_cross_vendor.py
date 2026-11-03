@@ -769,10 +769,7 @@ _RUNS = [
 ]
 
 
-@pytest.mark.parametrize("method, path, headers, ran", _RUNS)
-def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
-    client, tokens_yaml, monkeypatch, method, path, headers, ran
-):
+def test_a_request_runs_its_own_vendors_middlewares_and_no_others(client, tokens_yaml, monkeypatch):
     # the class the client's app was built with: `tests._helpers.client_for` reloads
     # `backlot.main`, which defines `_Layer` again for each app
     layer = next(m.cls for m in client.app.user_middleware if m.cls.__name__ == "_Layer")
@@ -786,8 +783,14 @@ def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
 
     monkeypatch.setattr(layer, "__call__", watched)
     admin = {"Authorization": _ADMIN.format(admin=tokens_yaml["admin_token"])}
-    client.request(method, path, headers={**admin, **headers})
-    assert seen == ran
+    got, expected = {}, {}
+    for row in _RUNS:
+        method, path, headers, ran = row.values
+        seen.clear()
+        client.request(method, path, headers={**admin, **headers})
+        got[row.id], expected[row.id] = list(seen), ran
+    assert len(got) == len(_RUNS)
+    assert got == expected
 
 
 # A path a route serves, with `%0A` after it: (method, path, query, real's status), with the
@@ -809,28 +812,33 @@ _NEWLINE_ENDS = [
 ]
 
 
-@pytest.mark.parametrize("method, path, query, status", _NEWLINE_ENDS)
-def test_a_newline_at_the_end_of_a_path_is_read_as_any_other_byte(
-    client, tokens_yaml, method, path, query, status
-):
-    """The path with `%0A` after it is answered as real answered it, and as the path with `%0D`
-    after it is (``backlot.routers._to_the_end_of_the_path``)."""
-    headers = {"Notion-Version": "2022-06-28"}
-    if not path.startswith(("/drive/", "/gmail/")):
-        headers["Authorization"] = _ADMIN.format(admin=tokens_yaml["admin_token"])
-    body = None
-    if method == "POST":  # Linear's, which takes its key with no `Bearer`
-        headers |= {"Authorization": tokens_yaml["admin_token"], "Content-Type": "application/json"}
-        body = _TYPENAME
-    newline, cr = (
-        client.request(method, f"{path}{end}?{query}", headers=headers, content=body)
-        for end in ("%0A", "%0D")
-    )
-    assert newline.status_code == status
-    assert (newline.status_code, newline.headers.get("content-type")) == (
-        cr.status_code,
-        cr.headers.get("content-type"),
-    )
+def test_a_newline_at_the_end_of_a_path_is_read_as_any_other_byte(client, tokens_yaml):
+    """Each path of `_NEWLINE_ENDS` with `%0A` after it is answered as real answered it, and as the
+    path with `%0D` after it is (``backlot.routers._to_the_end_of_the_path``)."""
+    got, expected = {}, {}
+    for method, path, query, status in _NEWLINE_ENDS:
+        headers = {"Notion-Version": "2022-06-28"}
+        if not path.startswith(("/drive/", "/gmail/")):
+            headers["Authorization"] = _ADMIN.format(admin=tokens_yaml["admin_token"])
+        body = None
+        if method == "POST":  # Linear's, which takes its key with no `Bearer`
+            headers |= {
+                "Authorization": tokens_yaml["admin_token"],
+                "Content-Type": "application/json",
+            }
+            body = _TYPENAME
+        newline, cr = (
+            client.request(method, f"{path}{end}?{query}", headers=headers, content=body)
+            for end in ("%0A", "%0D")
+        )
+        key = f"{method} {path}?{query}"
+        got[key] = (
+            newline.status_code,
+            cr.status_code,
+            newline.headers.get("content-type") == cr.headers.get("content-type"),
+        )
+        expected[key] = (status, status, True)
+    assert got == expected
 
 
 @pytest.mark.parametrize(

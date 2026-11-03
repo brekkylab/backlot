@@ -149,8 +149,8 @@ mirage = [
     # Rust core and ships `cp311-abi3` wheels for macOS, glibc and musl Linux and Windows, each on
     # x86_64 and arm64; anywhere else installs the sdist, which needs a Rust toolchain.
     # 0.0.8 is the first release whose `Workspace.__exit__` closes a FUSE mount without raising
-    # `RuntimeError` from another event loop, so every `--fuse` example exits 0 on it; it requires
-    # Python 3.12, so 3.11 keeps 0.0.7, where a `--fuse` run reads the mount and then fails on exit.
+    # `RuntimeError` from another event loop. It declares `requires-python >=3.12`, hence the split;
+    # the FUSE section of examples/using-mirage/README.md says what a `--fuse` run does on each.
     "mirage-ai[fuse,s3]>=0.0.7; python_version < '3.12'",
     "mirage-ai[fuse,s3]>=0.0.8; python_version >= '3.12'",
 ]

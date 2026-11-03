@@ -993,16 +993,18 @@ def jsonp_callback(request: Request) -> str | None:
     element fetches, and a `<script>` element issues a GET. Measured on Sheets, a `callback` on
     `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is ignored outright -- no
     wrap on a success, none on an error, and a name that a GET would be refused for is not even
-    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`, and on 2026-11-03 (UTC) a
-    Drive `DELETE` and `PATCH` of a missing file under `callback=foo` drew its 404 as JSON. So GET
-    is the only method this parameter applies to. A `HEAD` (``request.state.answering_head``) is not
-    GET here either: measured 2026-10-11 on Drive's `files.list` and Gmail's `profile`, a callable
-    name and an uncallable one each answered a `HEAD` with 200 `application/json; charset=UTF-8`,
-    where the GET beside it was the script, and a `HEAD` that failed beside one kept its own status
-    — no credential's and a bad one's, and a missing file's 404 — where its GET was the script at
-    200. Nor is a POST read as the GET it names in `X-HTTP-Method-Override`
-    (``request.state.sent_as_a_post``): on 2026-11-03 (UTC) real answered such a POST on Drive,
-    Gmail and Sheets as JSON beside a `callback`, a success and a front-end error alike.
+    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`, and on 2026-11-03 (UTC),
+    under `callback=foo`, a Drive `DELETE` and `PATCH` of a missing file drew its 404 as JSON, a
+    Gmail `PUT` of a missing label its 401 or 403 as JSON, and an `OPTIONS` on Drive's `about` its
+    empty 400. So GET is the only method this parameter applies to. A `HEAD`
+    (``request.state.answering_head``) is not GET here either: measured 2026-10-11 on Drive's
+    `files.list` and Gmail's `profile`, a callable name and an uncallable one each answered a `HEAD`
+    with 200 `application/json; charset=UTF-8`, where the GET beside it was the script, and a `HEAD`
+    that failed beside one kept its own status — no credential's and a bad one's, and a missing
+    file's 404 — where its GET was the script at 200. Nor is a POST read as the GET it names in
+    `X-HTTP-Method-Override` (``request.state.sent_as_a_post``): on 2026-11-03 (UTC) real answered
+    such a POST on Drive, Gmail and Sheets as JSON beside a `callback`, a success and a front-end
+    error alike.
 
     Two values that look like a callback are not one either. An empty `callback=` is absent:
     measured, it answers the plain body at the real status, success and error alike. So is any

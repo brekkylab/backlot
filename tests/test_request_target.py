@@ -377,9 +377,8 @@ _HOSTS = [
             (b"GET", "/notion/v1/", b"users%2"),
         )
     ),
-    # a `Host` beside a raw byte of each kind, in the path and after `?a=`, and on GitHub beside a
-    # target past its bound (``backlot.bracketed_host._refused_ahead`` says which answer comes
-    # first)
+    # a raw byte of every kind beside a `Host`, in the path and after `?a=`, and a target past
+    # GitHub's bound
     *(
         (host, b"GET", base, rest + at + byte, answer)
         for host in (b"[0:0]", b"[v1.x]")

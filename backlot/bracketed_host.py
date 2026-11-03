@@ -93,10 +93,10 @@ def _page(status: int, body: bytes, media_type: str | None, close: bool) -> Resp
     return Response(body, status_code=status, headers=headers)
 
 
-#: The kinds of raw byte in the target (``backlot.request_target.kinds_sent``) each front door
-#: refuses ahead of the `Host`, as it refuses them under its own
-#: (``backlot.request_target.answer``); beside the others it answers the `Host`. GitHub's answer to
-#: each kind is its answer to the `Host`, and S3 reads the request on.
+#: The kinds of raw byte in the target (``backlot.request_target.kinds_sent``) whose refusal
+#: (``backlot.request_target.answer``) each front door gives ahead of a bracketed `Host`'s; beside
+#: the others it answers the `Host`. GitHub's answer to each kind is its answer to the `Host`, and
+#: S3 reads the request on.
 _RAW_AHEAD = {
     "slack": {"nul", "tab", "cr", "space", "control", "high"},
     "google": {"nul", "tab", "cr", "space", "control"},
@@ -108,8 +108,7 @@ _RAW_AHEAD = {
 
 def _refused_ahead(scope: Scope) -> bool:
     """Whether the front door refuses the request's target or method ahead of its `Host`, as it
-    refuses them under its own: a raw byte of :data:`_RAW_AHEAD`; in front of Notion, HubSpot,
-    Linear and Fireflies a header Cloudflare refuses twice
+    refuses them under its own: a raw byte of :data:`_RAW_AHEAD`; a header Cloudflare refuses twice
     (``backlot.auth.repeated_cloudflare_refused_header``); a target past GitHub's bound
     (``backlot.routers.github.target_past_its_bound``); a `%00` on Slack, Notion and HubSpot
     (``backlot.request_target.escape_answer``); in front of Jira and Confluence the CDN's 400s and

@@ -25,7 +25,7 @@ def _to_the_end_of_the_path(compile_path):
     Starlette ends a pattern in `$`, which Python also matches just before a newline that ends the
     string, and its `path` parameter's `.*` stops at a newline. Real reads a `%0A` in a path as any
     other byte but on Slack, which drops one at the end (``slack.drop_the_end``), and on Graph,
-    whose front door refuses it (``request_target.escape_answer``): on 2026-10-19 (UTC) a path a
+    whose front door refuses it (``request_target.escape_answer``). On 2026-10-19 (UTC) a path a
     route here serves, with `%0A` after it, was the vendor's answer to a path no route matches on
     Jira, GitHub, Notion, Linear, Drive and Gmail, or where a route's parameter takes the newline,
     that route's answer: Jira's `project/search%0A` its 404 for the project key `search` and a

@@ -154,8 +154,7 @@ _UNRESERVED_ESCAPE = re.compile(rb"%(?:2[DEde]|3[0-9]|[46][1-9A-Fa-f]|[57][0-9Aa
 
 def target_past_its_bound(scope: Scope) -> bool:
     """Whether a `/github` request's target is too long for real's front door, which answers it
-    with a 414 of its own (``backlot.main.answer_a_github_request_target_past_its_bound``): 8,174
-    bytes on `/search/code` and 8,192 on every other path, counted as
+    with a 414 of its own: 8,174 bytes on `/search/code` and 8,192 on every other path, counted as
     :func:`_refuse_a_long_line_or_path` counts the request line's, from after `/github`."""
     query = scope["query_string"]
     target = scope["raw_path"][len(router.prefix) :] + (b"?" + query if query else b"")

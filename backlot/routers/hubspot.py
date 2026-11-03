@@ -19,16 +19,21 @@ omit it. :func:`_page` is the single place that decides this.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
+import unicodedata
+import uuid
 from functools import lru_cache
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from backlot import auth, store, synth
+from backlot import ascii_folding, auth, published, store, synth
 from backlot.acl import Caller
+from backlot.errors.atlassian import _java_double as _parse_java_double
 from backlot.openapi import qp
 from backlot.routers import json_body
 
@@ -146,6 +151,101 @@ def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSO
     )
 
 
+# Real's INVALID_AUTHENTICATION 401, with no key, with `Bearer nope` and with `bearer <key>`
+# (api.hubapi.com, 2026-09-28 and 2026-10-18), has this message. `x-hubspot-auth-failure` came on
+# each of those 401s and on the `OPTIONS` 401 (:data:`_OPTIONS_REFUSAL`; 2026-10-19 and 2026-11-02),
+# and on no other answer of 2026-10-18.
+_NO_CREDENTIALS = (
+    "Authentication credentials not found. This API supports OAuth 2.0 authentication and you can "
+    "find more details at https://developers.hubspot.com/docs/methods/auth/oauth-overview"
+)
+_AUTH_FAILURE = {"x-hubspot-auth-failure": "401 Unauthorized"}
+
+
+def _unauthenticated() -> JSONResponse:
+    response = _error(401, _NO_CREDENTIALS, "INVALID_AUTHENTICATION")
+    response.headers.update(_AUTH_FAILURE)
+    return response
+
+
+CORRELATION_ID_HEADER = "x-hubspot-correlation-id"
+_JSON = "application/json;charset=utf-8"
+
+
+def correlation_id(method: str, path: str, query: str) -> str:
+    """The `x-hubspot-correlation-id` for one request, which an error body also carries as
+    `correlationId` (:func:`correlate`).
+
+    Real's was a UUIDv7 on each of 96 answers on 2026-10-18, a different one on each, its first 48
+    bits the millisecond it was made. This one is derived from the method, path and query string
+    instead, as ``backlot.routers.notion._request_id`` derives Notion's, so that a corpus served
+    twice answers the same id; it carries version 7, but its first 48 bits come from that hash and
+    not from the clock."""
+    raw = bytearray(hashlib.shake_256(f"hubspot-corr:{method} {path}?{query}".encode()).digest(16))
+    raw[6] = (raw[6] & 0x0F) | 0x70
+    raw[8] = (raw[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+
+async def correlate(request: Request, response: Response) -> Response:
+    """``response`` as real sends it: with :func:`correlation_id`'s header, a JSON content type that
+    names its charset, and an error body's `correlationId`.
+
+    Measured against api.hubapi.com on 2026-09-30, over 165 answers, and on 2026-10-18, over 100:
+    the header came on every answer but the 404 its front gives a path no route serves
+    (``backlot.main.put_a_correlation_id_on_hubspot_answers`` leaves that one alone), and every
+    JSON answer came under `application/json;charset=utf-8`, with no space. Each of the 24 JSON
+    error bodies of 2026-10-18 carried a `correlationId` equal to the header, the third member,
+    right after `message`; a 200's body and a 207's, whose error items carry none, have the header
+    only."""
+    rid = correlation_id(request.method, request.url.path, request.url.query)
+    response.headers[CORRELATION_ID_HEADER] = rid
+    if response.headers.get("content-type") != "application/json":
+        return response
+    if response.status_code < 400:
+        response.headers["content-type"] = _JSON
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    content = json.loads(body)
+    if isinstance(content, dict) and content.get("status") == "error" and "message" in content:
+        members = list(content.items())
+        at = list(content).index("message") + 1
+        content = dict([*members[:at], ("correlationId", rid), *members[at:]])
+        body = JSONResponse(content).body
+    headers = {
+        k: v for k, v in response.headers.items() if k not in ("content-length", "content-type")
+    }
+    return Response(body, status_code=response.status_code, headers=headers, media_type=_JSON)
+
+
+# batch/read refuses more than this many ids, each counted once as `_batch_read_id` reads it.
+# Measured against api.hubapi.com on 2026-10-01 and 2026-10-22: 101 ids is 400 with this message
+# on contacts, companies, deals and `0-1`, sent as strings or as `{"id": …}`, under `idProperty`
+# and `archived=true` alike; 100 is still read, and so are 101 copies of one id, 200 inputs naming
+# 100 ids twice, and the ids `1` to `100` with `{"id": 5}` among them. Beside those 100, `" 1"`,
+# `"01"`, `5.0`, `1e0`, `true` and `{"id": 101}` each made a 101st, and so did an email differing
+# from another only in case under `idProperty=email`. A `null` input, and a body
+# `_refuse_a_batch_read_shape` refuses, are refused first at any count. An empty `inputs`, and a
+# body without one, stay 200.
+_HUBSPOT_BATCH_MAX = 100
+_HUBSPOT_BATCH_TOO_MANY = (
+    "The maximum number of inputs supported in a batch is 100. "
+    "Please reduce the number of items and try again"
+)
+
+
+def _batch_read_id(raw: bytes, i: int, item) -> str:
+    """The id `batch_read` looks ``inputs[i]`` up by. A string in `inputs` is answered as
+    ``{"id": <that string>}`` is (measured 2026-10-11), and a number or boolean id is echoed as the
+    body ``raw`` spells it (`1e3`, `1E3`, `1.0`, `-0.0`, `true`), measured 2026-10-11 and
+    2026-10-18; an integer naming a record finds it."""
+    rid = item if isinstance(item, str) else item["id"]
+    if isinstance(rid, str):
+        return rid
+    text, start, end = _token_span(raw, ("inputs", i, "id"))
+    return text[start:end]
+
+
 # Real's answer on the record route for an id that parses but names nothing visible: this page,
 # 197 bytes, under a Latin-1 content type although its own `<meta>` says utf-8. `contacts/1`,
 # `contacts/9223372036854775807` and `deals/{a contact's id}` answered it byte for byte the same
@@ -158,9 +258,85 @@ _MISSING_RECORD_PAGE = (
 )
 
 
+# Real's header on a 404 about a record id, the page above and `_record_id`'s JSON alike, and on no
+# other answer: not a 207 for a missing id, a 400 or the 404 its front gives an unserved path
+# (api.hubapi.com, 2026-09-30 and 2026-10-18).
+_NOT_FOUND = {"x-hubspot-notfound": "true"}
+
+
 def _missing_record() -> Response:
     return Response(
-        _MISSING_RECORD_PAGE, status_code=404, media_type="text/html;charset=iso-8859-1"
+        _MISSING_RECORD_PAGE,
+        status_code=404,
+        headers=_NOT_FOUND,
+        media_type="text/html;charset=iso-8859-1",
+    )
+
+
+def _reason_page(status: int, reason: str) -> bytes:
+    """Real's page for a 405 and a 406, which names its reason where the 404's page has a sentence.
+    Measured against api.hubapi.com on 2026-10-19: 229 bytes for the 405 and 221 for the 406, the
+    same on every request."""
+    return (
+        b"<html>\n<head>\n"
+        b'<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>\n'
+        b"<title>Error %d %s</title>\n</head>\n"
+        b"<body><h2>HTTP ERROR %d</h2>\n<p>Reason:\n<pre>    %s</pre></p>\n</body>\n</html>\n"
+    ) % (status, reason.encode(), status, reason.encode())
+
+
+# The `Cache-Control` real's 405 and 406 carry on a `GET`, `POST` or `HEAD` (api.hubapi.com,
+# 2026-10-19 and 2026-10-22).
+_NO_STORE = {"Cache-Control": "must-revalidate,no-cache,no-store"}
+
+
+def _asks_for_the_page(accept: str | None) -> bool:
+    """Whether an `Accept` gets real's 405 and 406 page: absent, or listing `text/html`, `text/*` or
+    `*/*` exactly as written, with no parameter but a `q` that is not zero, and no member's `q`
+    negative, `-0` included. A member's `q` is its last `q=` (lower-case), read the way Java's
+    `Double.parseDouble` reads one, and zero where that throws; real's answers below match that
+    reading, which HubSpot does not document.
+
+    Measured against api.hubapi.com on 2026-10-22, on `GET …/search` and the contacts listing: no
+    `Accept`, `*/*`, `text/*`, `application/json, text/html`, ` text/html`, `text/html;q=0.5` and
+    `text/html ; q=0.5` got the page, and `application/json`, `application/xml`, `text/plain`,
+    `TEXT/HTML`, `text/html;level=1` and `text/html; q=0` got the status with no body. On
+    2026-10-23, on `GET …/search`: `text/html` with `q=NaN`, `q=-NaN`, `q=Infinity`, `q=1e0`,
+    `q=0x1p0`, `q=1d`, `q=.5` or `q=0;q=0.5` got the page, and with `q=abc`, `q=`, `q=inf`, `q=1_0`,
+    `q=-1`, `q=-0`, `q=-Infinity`, `q=0.5;q=0` or `Q=0.5` did not, nor did `application/*`,
+    `text/html, application/json;q=-1` or `application/json;q=-1, text/html`.
+    """
+    if accept is None:
+        return True
+    page = False
+    for entry in accept.split(","):
+        media, *params = (part.strip() for part in entry.split(";"))
+        weights = [p[2:] for p in params if p.startswith("q=")]
+        weight = _parse_java_double(weights[-1]) if weights else 1.0
+        if weight is None:
+            weight = 0.0
+        if weight == weight and math.copysign(1.0, weight) < 0:
+            return False
+        if media in ("text/html", "text/*", "*/*") and len(weights) == len(params) and weight != 0:
+            page = True
+    return page
+
+
+def _error_page(request: Request, status: int, reason: str, headers: dict) -> Response:
+    """Real's 405 or 406, which its server writes for itself: a `GET`, `POST` or `HEAD` carries
+    :data:`_NO_STORE`, and the page when :func:`_asks_for_the_page`; a `PUT`, `PATCH` or `DELETE`
+    carries neither (measured 2026-10-22: `PATCH` and `DELETE` on a record with `Accept: text/html`
+    got a bare 406, and `PUT` on a record a bare 405)."""
+    if request.method not in ("GET", "POST", "HEAD"):
+        return Response(status_code=status, headers=headers)
+    headers = {**headers, **_NO_STORE}
+    if not _asks_for_the_page(request.headers.get("accept")):
+        return Response(status_code=status, headers=headers)
+    return Response(
+        _reason_page(status, reason),
+        status_code=status,
+        headers=headers,
+        media_type="text/html;charset=iso-8859-1",
     )
 
 
@@ -173,8 +349,7 @@ def _record_id(record_id: str) -> str | JSONResponse:
     `99999999999999999999999` are `objectId are usually numeric.`, with two spaces. `context.id`
     holds the id as sent. Those ids fit one reading, applied here to every id: ASCII digits, an
     optional `-` and leading zeros, naming a signed 64-bit value, looked up above 0 and "positive"
-    otherwise, and anything that doesn't parse "numeric". Real's body also carries a
-    `correlationId`, which this one leaves out."""
+    otherwise, and anything that doesn't parse "numeric". The 404 carries :data:`_NOT_FOUND`."""
     # At most 19 significant digits, so `int` never meets a string too long for it to convert.
     m = re.fullmatch(r"(-?)0*([0-9]{1,19})", record_id)
     value = int(m[1] + m[2]) if m else None
@@ -192,6 +367,7 @@ def _record_id(record_id: str) -> str | JSONResponse:
             "context": {"id": [record_id]},
             "category": "OBJECT_NOT_FOUND",
         },
+        headers=_NOT_FOUND,
     )
 
 
@@ -395,17 +571,25 @@ _PLURAL = {plural: singular for singular, plural in _SINGULAR.items()}
 # one answers 403 MISSING_SCOPES exactly as its name does, while `0-6`, `0-9`, `0-12`, `0-41` and
 # `2-12345` answer 400 `Invalid object or event type id: <id>`, which is the message below.
 #
-# `0-<n>` is a much wider space than these thirteen: swept on 2026-08-24, every id from `0-1` to
-# `0-165` resolves apart from eleven gaps, and nothing above `0-165` does -- so most of the space is
-# internal types with no published name. Only the pairings above are mapped, because a name
-# Backlot cannot verify is a name it would be inventing; an unmapped id stays a 400 rather than
-# resolving to a guess.
+# `0-<n>` is a much wider space than these thirteen: swept on 2026-08-24 and again on 2026-10-19,
+# every id from `0-1` to `0-165` resolves apart from eleven gaps, and of `0-166` to `0-700` on
+# 2026-10-19 eleven resolve (`0-410`, `0-420` to `0-422`, `0-500`, `0-580`, `0-600`, `0-620`,
+# `0-621`, `0-633` and `0-634`) -- so most of the space is internal types with no published name.
+# Only measured pairings are mapped, because a name Backlot cannot verify is a name it would be
+# inventing; an unmapped id stays a 400 rather than resolving to a guess.
 #
 # Three more are mapped from real's own answers rather than from that list (measured 2026-10-09
 # and 2026-10-15): `0-18`, `0-72` and `0-64` serve the same records as `communications`,
 # `deal_splits` and `quote_templates` on the listing, and `0-64` on a record, search and batch/read
 # too; `archived=true` on each id is the refusal its name gets, naming the same id; and the v4
 # associations route reads each id on either side as it reads the name.
+#
+# Thirteen more are mapped from real's 403s (measured 2026-10-19 with a key holding no scope on
+# them): `PATCH /crm/v3/objects/{type}/1` answered the same 403 MISSING_SCOPES on each id as on the
+# name below, byte for byte but for `correlationId`, and so did the listing where it was sent.
+# `0-101` answered as both `commerce_payments` and `payments`, and `0-35`, `0-130` and `0-131` as
+# `campaigns`, so they stay unmapped, as do `discounts`, `fees`, `taxes` and `postal_mail`, which
+# that key could not settle.
 #
 # A custom object is a `2-<n>`, and its records are addressed here by the name the corpus gave it.
 # HubSpot's own alias for one is `p_<name>` (or the fully qualified `p<portalId>_<name>`), but both
@@ -427,8 +611,21 @@ _TYPE_IDS = {
     "0-47": "meetings",
     "0-48": "calls",
     "0-49": "emails",
+    "0-53": "invoices",
+    "0-54": "marketing_events",
     "0-64": "quote_templates",
+    "0-69": "subscriptions",
     "0-72": "deal_splits",
+    "0-74": "goal_targets",
+    "0-115": "users",
+    "0-123": "orders",
+    "0-136": "leads",
+    "0-142": "carts",
+    "0-145": "partner_clients",
+    "0-162": "services",
+    "0-410": "courses",
+    "0-420": "listings",
+    "0-421": "appointments",
 }
 # The shape of an objectTypeId, for telling "an id I do not know" apart from "not a type at all":
 # HubSpot answers those two with different messages.
@@ -631,12 +828,12 @@ def _operator(f: dict):
     return (f.get("operator") or "EQ").strip(_TRIM)
 
 
-def _token_at(raw: bytes, path: tuple) -> tuple[int, int]:
-    """Where the value at `path` starts in the JSON body `raw`, as real reports a position: a
-    1-based line and a 1-based column counted in UTF-8 bytes, so `ééé` before the value moves it
-    six columns and a CRLF line ending none (measured 2026-10-06), a lone CR is a line break and a
-    byte-order mark three columns of line 1 (2026-10-13). A key the body repeats resolves to its
-    last occurrence, the one `json.loads` keeps."""
+def _token_span(raw: bytes, path: tuple) -> tuple[str, int, int]:
+    """The decoded body and the start/end offsets of its value at `path`.
+
+    Walk parsed values, so braces in strings or nested objects do not end a value early. A key
+    repeated in an object resolves to its last occurrence, the one `json.loads` keeps.
+    """
     encoding = json.detect_encoding(raw)
     if encoding == "utf-8-sig":
         encoding = "utf-8"
@@ -660,7 +857,23 @@ def _token_at(raw: bytes, path: tuple) -> tuple[int, int]:
             if text[pos] == ",":
                 pos = _WS.match(text, pos + 1).end()
         pos = found
+    return text, pos, decoder.raw_decode(text, pos)[1]
+
+
+def _token_at(raw: bytes, path: tuple) -> tuple[int, int]:
+    """Where the value at `path` starts in the JSON body `raw`, as real reports a position: a
+    1-based line and a 1-based column counted in UTF-8 bytes, so `ééé` before the value moves it
+    six columns and a CRLF line ending none (measured 2026-10-06), a lone CR is a line break and a
+    byte-order mark three columns of line 1 (2026-10-13). A key the body repeats resolves to its
+    last occurrence, the one `json.loads` keeps."""
+    text, pos, _ = _token_span(raw, path)
     return _position(text, pos)
+
+
+def _closing_at(raw: bytes, path: tuple) -> tuple[int, int]:
+    """The closing brace of the object at `path`, in the same coordinates as `_token_at`."""
+    text, _, end = _token_span(raw, path)
+    return _position(text, end - 1)
 
 
 def _position(text: str, pos: int) -> tuple[int, int]:
@@ -825,12 +1038,17 @@ def _refuse_a_batch_read_shape(
     2026-10-09, 2026-10-11 and 2026-10-12: real reads `inputs`, `properties` and
     `propertiesWithHistory` in body order and stops at the first that is neither null nor a list, or
     at the first element of `inputs` that is neither an object nor a string, naming where that value
-    starts. A string `properties` or `propertiesWithHistory` is echoed trimmed (`_TRIM`), and one
-    that trims to nothing is named by its field alone. A null element of `inputs` is refused only
-    once the rest of the body has been read, in an envelope with no `category`. The elements of
-    `properties` and the members of an object in `inputs` are not checked here. With a `before`
-    from `_non_standard_number`, a value from there on and a null element are left to the token."""
+    starts. An object or array in an input's `id` or either properties list is named where it
+    starts too. A missing or null `id` is refused at the input's closing brace. A string
+    `properties` or `propertiesWithHistory` is echoed trimmed (`_TRIM`), and one that trims to
+    nothing is named by its field alone. A null element of either properties list, and a null
+    element of `inputs`, are deferred until after the other value refusals. Then `properties`
+    is named first, followed by `propertiesWithHistory`, then a null input, whatever their order
+    in the body (measured 2026-10-18). A properties element is named at the body's closing brace;
+    a null input's envelope has no `category`. With a `before` from `_non_standard_number`, a
+    refusal from there on and the deferred null elements are left to the token."""
     null_input = False
+    null_properties = set()
     for key, value in body.items():
         if key not in ("inputs", "properties", "propertiesWithHistory") or value is None:
             continue
@@ -850,18 +1068,77 @@ def _refuse_a_batch_read_shape(
                 "String-argument constructor/factory method to deserialize from String value "
                 f"('{value.strip(_TRIM)}')",
             )
-        for i, item in enumerate(value if key == "inputs" else ()):
-            if item is None:
-                null_input = True
-            elif not isinstance(item, (str, dict)):
-                if not _ahead(raw, ("inputs", i), before):
+        for i, item in enumerate(value):
+            path = (key, i)
+            if key == "inputs":
+                if item is None:
+                    null_input = True
+                    continue
+                if not isinstance(item, (str, dict)):
+                    if not _ahead(raw, path, before):
+                        return None
+                    return _invalid_at(raw, path, _not_an_input(item))
+                if isinstance(item, str):
+                    continue
+                if item.get("id") is None:
+                    position = _closing_at(raw, path)
+                    if before is not None and position >= before:
+                        return None
+                    line, column = position
+                    return _error(
+                        400,
+                        f"Invalid input JSON on line {line}, column {column}. "
+                        "Some required fields were not set: [id]",
+                    )
+                item = item["id"]
+                path += ("id",)
+            elif item is None:
+                null_properties.add(key)
+                continue
+            if isinstance(item, (dict, list)):
+                if not _ahead(raw, path, before):
                     return None
-                return _invalid_at(raw, ("inputs", i), _not_an_input(item))
-    if null_input and before is None:
-        return JSONResponse(
-            status_code=400, content={"status": "error", "message": "Input IDs must be non-null."}
-        )
+                kind = "Object" if isinstance(item, dict) else "Array"
+                return _invalid_at(
+                    raw,
+                    path,
+                    f"Cannot deserialize value of type  from {kind} value "
+                    f"(token `JsonToken.START_{kind.upper()}`)",
+                )
+    if before is None:
+        for key in ("properties", "propertiesWithHistory"):
+            if key in null_properties:
+                line, column = _closing_at(raw, ())
+                return _error(
+                    400, f"Invalid input JSON on line {line}, column {column}: {key} element"
+                )
+        if null_input:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": "Input IDs must be non-null."},
+            )
     return None
+
+
+def _hubspot_fold(value: str) -> str:
+    """A string property as a search filter compares it: in NFKC, folded as Lucene's
+    `ASCIIFoldingFilter` folds it (:mod:`backlot.ascii_folding`), then in lower case. Read off
+    real's answers; the vendor does not say which analyzer its search runs.
+
+    Measured against api.hubapi.com on 2026-10-16 and 2026-10-25, ``firstname EQ`` against
+    contacts stored as ``Maria``, ``Brian``, ``bob`` and ``cara``. Each letter the table folds that
+    was sent matched the letter it folds to: ``MARÍA``, ``MARİA``, ``marıa``, ``maʀia``, ``BØB``,
+    ``bᴏb``, ``ƀob``, ``ʙob``, ``Mɐria``, ``Məria``, ``bɔb``, ``Briaŋ``, ``ɯaria``, ``ᴄara``,
+    ``ȼara``, ``MarƗa`` and ``Maɍia`` among them. So did each that NFKC takes to one, fullwidth
+    ``ＭＡＲＩＡ``, ``Mªria``, ``bºb``, ``bⓞb``, ``Marⅰa``, ``Marℹa`` and ``ℳaria``, and an acute or a
+    diaeresis NFKC composes with the letter before it, ``maria`` + U+0301 and ``bo`` + U+0308 +
+    ``b``. ``Mɑria`` (U+0251), ``Marɩa`` (U+0269) and ``bᴑb`` (U+1D11), which the table leaves, did
+    not, nor did a Greek capital iota, a Cyrillic ``о`` or ``і``, a mark NFKC leaves on its own
+    (``b`` + U+0302 + ``ob``, ``bob`` + U+0308) or a value whose spaces differ. ``IN`` and ``NEQ``
+    compare the same way; an enumeration property does not fold at all, which its caller decides.
+    """
+    text = unicodedata.normalize("NFKC", str(value))
+    return text.translate(ascii_folding.TABLE).lower()
 
 
 def _match_one(prop, f: dict) -> bool:
@@ -880,12 +1157,22 @@ def _match_one(prop, f: dict) -> bool:
     target = f.get("value")
     cands = _values_of(prop)
 
+    # Real compares a value with no regard to case, except on an enumeration property, which it
+    # compares exactly: "When filtering for an enumeration property, search is case-sensitive for
+    # all filter operators" (the search guide). Measured against api.hubapi.com: `firstname`,
+    # `name` and `domain` matched in any case on 2026-10-09 and 2026-10-16, and on 2026-10-16
+    # `lifecyclestage EQ LEAD`, `dealstage EQ APPOINTMENTSCHEDULED` and `pipeline EQ DEFAULT`
+    # answered nothing where the lower-case values matched. The four below are the enumerations
+    # (`/crm/v3/properties`, 2026-10-16) among the properties the bundled records carry. A string
+    # property is compared through :func:`_hubspot_fold`.
+    exact = f.get("propertyName") in {"lifecyclestage", "dealstage", "pipeline", "industry"}
+    fold = str if exact else _hubspot_fold
     if op in ("EQ", "NEQ"):
-        hit = any(c == str(target) for c in cands)
+        hit = any(fold(c) == fold(str(target)) for c in cands)
         return hit if op == "EQ" else not hit
     if op in ("IN", "NOT_IN"):
-        wanted = {str(v) for v in (f.get("values") or [])}
-        hit = any(c in wanted for c in cands)
+        wanted = {fold(str(v)) for v in (f.get("values") or [])}
+        hit = any(fold(c) in wanted for c in cands)
         return hit if op == "IN" else not hit
     if op in ("CONTAINS_TOKEN", "NOT_CONTAINS_TOKEN"):
         pats = _token_patterns(str(target or ""))
@@ -981,21 +1268,23 @@ def _sql_prefilter(body: dict):
             frags.append("json_extract(properties, ?) IS NOT NULL")
             params.append(path)
         elif op in ("EQ", "IN", "CONTAINS_TOKEN"):
-            # The value (or every needle token) must appear somewhere in the properties text. True
-            # whether the property holds a scalar or a list, which is why this is a substring test
-            # rather than an equality one.
+            # A substring of the properties text, whether the value is a scalar or a list. An
+            # ascii needle also keeps a row whose JSON holds a `\u` escape: accent folding matches
+            # that stored value, and the escape does not contain the needle. `_match_one` decides
+            # those rows. A row with neither the needle nor an escape cannot match.
             needles = [f.get("value")] if op != "IN" else list(f.get("values") or [])
             if op == "CONTAINS_TOKEN":
                 needles = list(_tokens(str(f.get("value") or "")))
             vals = [_ascii_scalar(v) for v in needles]
             if not vals or any(v is None for v in vals):
                 return None
+            needle = (
+                "(instr(lower(properties), lower(?)) > 0 OR instr(properties, char(92) || 'u') > 0)"
+            )
             if op == "IN":
-                frags.append(
-                    "(" + " OR ".join(["instr(lower(properties), lower(?)) > 0"] * len(vals)) + ")"
-                )
+                frags.append("(" + " OR ".join([needle] * len(vals)) + ")")
             else:
-                frags += ["instr(lower(properties), lower(?)) > 0"] * len(vals)
+                frags += [needle] * len(vals)
             params += vals
         # every other operator (NEQ/NOT_*/comparisons/BETWEEN) has no safe necessary condition here
     return (" AND ".join(frags), params) if frags else None
@@ -1038,6 +1327,294 @@ def _caller(request: Request) -> Caller | None:
     return auth.acl(request).resolve(_bearer_credential(request))
 
 
+#: The HubSpot baseline's ``missing`` operations (``backlot.published``): what HubSpot publishes
+#: that no route here serves, its CRM writes and the v4 association `batch/read` among them.
+_PUBLISHED_NOT_SERVED = published.not_served("hubspot")
+
+
+#: The scopes real's 403 lists for a write on each object type, in its order. Measured against
+#: api.hubapi.com on 2026-10-18 with a service key: `PATCH` and `DELETE` on
+#: `/crm/v3/objects/{type}/1` answered each list the same on every request, for `contact`,
+#: `CONTACTS` and `0-1` as for `contacts`. That key passes the scope check on `tickets`, `notes`,
+#: `tasks`, `calls`, `emails`, `meetings`, `line_items` and `products`, and no other standard type
+#: was sent, so no other type's list is measured.
+_WRITE_SCOPES = {
+    "contacts": [
+        "crm.schemas.contacts.write",
+        "crm.objects.contacts.write",
+        "crm.objects.contacts.sensitive.write.v2",
+        "crm.objects.contacts.highly_sensitive.write.v2",
+    ],
+    "companies": [
+        "crm.objects.companies.write",
+        "crm.schemas.companies.write",
+        "crm.objects.companies.highly_sensitive.write.v2",
+        "crm.objects.companies.sensitive.write.v2",
+    ],
+    "deals": [
+        "crm.objects.deals.write",
+        "crm.schemas.deals.write",
+        "crm.objects.deals.sensitive.write.v2",
+        "crm.objects.deals.highly_sensitive.write.v2",
+    ],
+    "quotes": ["crm.schemas.quotes.write", "crm.objects.quotes.write", "cpq.quotes.write"],
+    "orders": [
+        "crm.schemas.orders.write",
+        "crm.objects.orders.write",
+        "crm.pipelines.orders.write",
+    ],
+}
+
+_RECORD_PATH = re.compile(r"/crm/v3/objects/([^/]+)/([^/]+)")
+# The keyed writes real answers ahead of their operation, each with the object types it names.
+_V3_CREATE_OR_BATCH_WRITE = re.compile(
+    r"/crm/v3/objects/([^/]+)(?:/batch/(?:archive|create|update|upsert))?"
+)
+_MERGE_PATH = re.compile(r"/crm/v3/objects/([^/]+)/merge")
+_RECORD_ASSOCIATION_PATH = re.compile(
+    r"/crm/v4/objects/([^/]+)/[^/]+/associations/(?:default/)?([^/]+)/[^/]+"
+)
+_ASSOCIATION_BATCH_WRITE = re.compile(
+    r"/crm/v4/associations/([^/]+)/([^/]+)/batch/"
+    r"(?:archive|associate/default|create|labels/archive)"
+)
+_HIGH_USAGE_REPORT = re.compile(r"/crm/v4/associations/usage/high-usage-report/([^/]+)")
+
+#: The order real's 403 lists two types' scopes in on a v4 association write, whichever side of the
+#: path each is on: all 25 ordered pairs of these on `batch/create` answered so on 2026-10-25.
+_PAIR_ORDER = ("contacts", "companies", "deals", "orders", "quotes")
+
+# A Java `int`, as `Integer.parseInt` reads one: a sign, then decimal digits. `parseInt` takes the
+# digits of other scripts too, as `\d` and `int` do here; `١` (U+0661) is the one sent to real.
+_JAVA_INT = re.compile(r"[+-]?\d+")
+
+
+def _missing_scopes(scopes: list[str]) -> JSONResponse:
+    """Real's 403 for a write the key has no scope for."""
+    return JSONResponse(
+        status_code=403,
+        content={
+            "status": "error",
+            "message": "This app hasn't been granted all required scopes to make this call. "
+            "Read more about required scopes here: https://developers.hubspot.com/scopes.",
+            "errors": [
+                {
+                    "message": "One or more of the following scopes are required.",
+                    "context": {"requiredGranularScopes": scopes},
+                }
+            ],
+            "links": {"scopes": "https://developers.hubspot.com/scopes"},
+            "category": "MISSING_SCOPES",
+        },
+    )
+
+
+def _bare_error(status: int, content: dict) -> JSONResponse:
+    """One of real's errors with no `category`: `status`, then ``content``, `message` first."""
+    return JSONResponse(status_code=status, content={"status": "error", **content})
+
+
+def _java_int(value: str) -> int | None:
+    """``value`` as `Integer.parseInt` reads it, or None where that throws. That parse reads one
+    UTF-16 unit at a time, so a digit past U+FFFF is two units and no digit to it, and reads any
+    number of leading zeros, where `int` refuses a string of more than 4,300 digits. Real answered
+    U+1D7CF and `1` 5,000 times with the parse 400, and `0` 4,400 times then `7` as `7`, on
+    2026-10-26."""
+    if not _JAVA_INT.fullmatch(value) or max(map(ord, value)) > 0xFFFF:
+        return None
+    number = 0
+    for digit in value.lstrip("+-"):
+        number = number * 10 + int(digit)
+        if number > 2**31:
+            return None
+    number = -number if value[0] == "-" else number
+    return number if number < 2**31 else None
+
+
+def is_an_unserved_operation(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/hubspot` ``path`` is in :data:`_PUBLISHED_NOT_SERVED`, the path
+    read as ``backlot.routers.github.is_an_unserved_operation`` reads one."""
+    return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/hubspot"))
+
+
+async def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
+    """The INVALID_AUTHENTICATION 401 for an operation of :data:`_PUBLISHED_NOT_SERVED` sent with no
+    key or one that does not resolve, as a served route refuses it before running. With a key that
+    resolves, a write is refused as real refuses it for this key, which may write none of
+    :data:`_WRITE_SCOPES`' types, and goes on to the router otherwise: its 404 or 405 stands for an
+    operation Backlot cannot run. Measured against api.hubapi.com on 2026-10-18, 2026-10-25 and
+    2026-10-26 with a service key, real checks in this order: the 415 (`text/plain`, or a body with
+    no `Content-Type`), the credential, the object types in the path (:func:`_unknown_type`, on
+    either side of a v4 pair), the body, and then the scopes. The body is a 400 where it is empty,
+    `null`, doesn't parse (`{`) or doesn't fit the operation (`{}` on `merge`, which names
+    `primaryObjectId` and `objectIdToMerge` as required, or an object where `PUT` on a record's
+    association takes a list), and the answer below where none is sent and the `Content-Type` is
+    absent or blank (empty, spaces or a tab); `PUT` on `…/associations/default/…` reads no body
+    but for the 415. The 415 and those 400s belong with request bodies, so a request sent with a
+    body or a `Content-Type` that isn't blank goes on to the scopes here, as `{` does.
+
+    - `PATCH` and `DELETE` on a record, and `POST` on `merge`: the 403 naming the type's scopes.
+      The record is not looked up first: `1` names no contact and was the 403.
+    - `POST` creating a record or on `batch/archive`, `batch/create`, `batch/update` or
+      `batch/upsert`: the same 403, and the 400 `The request body may not be null` for a request
+      with no body and no `Content-Type`, whatever the type: `tickets`, which the key may write,
+      was that 400 too.
+    - `DELETE` and `PUT` on a record's association, `default` or not: the 403 naming the first
+      type's scopes, whatever the second type is.
+    - `POST` on a v4 association batch write other than `batch/read`, which is a read the key is
+      allowed: the 403 naming both types' scopes, one after the other in :data:`_PAIR_ORDER`, or a
+      type's once when both are the same type; a 500 for a request with no body and no
+      `Content-Type`, `contacts/tickets` and `tickets/contacts` included. A pair with a type
+      outside :data:`_WRITE_SCOPES` and a body goes on to the operation: real answered
+      `contacts/tickets` with an empty `inputs` with a 201.
+    - `high-usage-report`: the 400 real answers an id that names no user, which every id is here
+      since Backlot serves no HubSpot user, ahead of the body. It names the id as `Integer.parseInt`
+      reads it (:func:`_java_int`; `+1`, `01` and `١` are `1`), and is
+      `Unable to parse value for path parameter: userId` where that parse throws. Real doesn't say
+      which parse it uses; that one matches its answers to the 18 ids sent on 2026-10-25.
+
+    Measured against api.hubapi.com on 2026-09-28 with no `Authorization` header and with
+    `Bearer nope`: `POST /crm/v3/objects/contacts`, `PATCH` and `DELETE`
+    `/crm/v3/objects/contacts/abc123` and `POST /crm/v3/objects/contacts/batch/create` each answered
+    the 401 a served route answers, where `GET /crm/v3/nonexistent-xyz`, which HubSpot does not
+    publish, was a 404 with no key, so only the baseline's operations are refused. On 2026-10-19
+    every other operation the baseline lists answered the same 401 both ways, the v4 association
+    writes and `batch/read` among them, and so did `PATCH` on `zzz/1` and `DELETE` on `2-999/1`,
+    whose types real can't resolve.
+    """
+    if not is_an_unserved_operation(request.method, request.scope["path"]):
+        return None
+    path = request.scope["path"].removeprefix("/hubspot")
+    if _caller(request) is None:
+        return _unauthenticated()
+    report = _HIGH_USAGE_REPORT.fullmatch(path)
+    if report:
+        user_id = _java_int(report[1])
+        if user_id is None:
+            message = "Unable to parse value for path parameter: userId"
+        else:
+            message = f"This is not a valid userId ({user_id}) for your portal "
+        return _bare_error(400, {"message": message})
+    # Each write: the types its path names, how many of them its 403 names, and its answer to a
+    # request with no body and no `Content-Type`.
+    if request.method in ("PATCH", "DELETE") and (match := _RECORD_PATH.fullmatch(path)):
+        types, scoped, no_body = [match[1]], 1, None
+    elif request.method == "POST" and (match := _MERGE_PATH.fullmatch(path)):
+        types, scoped, no_body = [match[1]], 1, None
+    elif request.method == "POST" and (match := _V3_CREATE_OR_BATCH_WRITE.fullmatch(path)):
+        null = {"message": "validation error", "errors": ["The request body may not be null"]}
+        types, scoped, no_body = [match[1]], 1, (400, null)
+    elif match := _RECORD_ASSOCIATION_PATH.fullmatch(path):
+        types, scoped, no_body = [match[1], match[2]], 1, None
+    elif request.method == "POST" and (match := _ASSOCIATION_BATCH_WRITE.fullmatch(path)):
+        types, scoped, no_body = [match[1], match[2]], 2, (500, {"message": "internal error"})
+    else:
+        return None
+    for object_type in types:
+        if _resolve_type(request, object_type) is None:
+            return _unknown_type(object_type)
+    if (
+        no_body
+        and not request.headers.get("content-type", "").strip(" \t")
+        and not await request.body()
+    ):
+        return _bare_error(*no_body)
+    canonical = {_canonical(object_type) for object_type in types[:scoped]}
+    if not canonical <= _WRITE_SCOPES.keys():
+        return None
+    return _missing_scopes([s for t in _PAIR_ORDER if t in canonical for s in _WRITE_SCOPES[t]])
+
+
+#: The body of real's 401 for `OPTIONS`, which is not the INVALID_AUTHENTICATION one a route
+#: answers.
+_OPTIONS_REFUSAL = {
+    "status": "error",
+    "message": "Any of the listed authentication credentials are missing",
+    "engagement": {
+        "service-to-service": "service-to-service not engaged. Metadata for service-to-service "
+        "request not found.",
+        "internal-cookie": "internal-cookie not engaged. You can get a new internal auth cookie "
+        "for host 'api.hubapi.com' by visiting following link from your current browser window: "
+        "https://tools.hubteam.com/login/host/api.hubapi.com .",
+        "app-cookie": "app-cookie not engaged. App cookie is not present on the request.",
+    },
+}
+
+# The paths a route here serves, and `merge`, each with the methods real takes on it in the order
+# its 405's `Allow` lists them (api.hubapi.com, 2026-10-19, 2026-10-22 and 2026-10-26).
+_ALLOWED_METHODS = (
+    (re.compile(r"/crm/v3/objects/[^/]+/(?:search|batch/read|merge)"), "POST,OPTIONS"),
+    (re.compile(r"/crm/v3/objects/[^/]+/[^/]+"), "DELETE,GET,OPTIONS,PATCH"),
+    (re.compile(r"/crm/v3/objects/[^/]+"), "POST,GET,OPTIONS"),
+    (re.compile(r"/crm/v4/objects/[^/]+/[^/]+/associations/[^/]+"), "GET,OPTIONS"),
+)
+
+
+def _admits_json(accept: str) -> bool:
+    """Whether an `Accept` names `application/json`, `application/*` or `*/*`, in any case and
+    whatever its `q`: `Application/JSON`, `APPLICATION/*`, `application/json;q=0` and `*/*;q=0` were
+    served on 2026-10-22, and `application/hal+json` was the 406."""
+    ranges = {entry.partition(";")[0].strip().lower() for entry in accept.split(",")}
+    return bool(ranges & {"application/json", "application/*", "*/*"})
+
+
+def answer_ahead_of_the_routes(request: Request) -> Response | None:
+    """Real's answer to a method or an `Accept` that no route here takes on a path one serves or on
+    `merge`, or None to go on to the routes. Measured against api.hubapi.com on 2026-09-30,
+    2026-10-19 and 2026-10-22 with a service key.
+
+    `OPTIONS` is :data:`_OPTIONS_REFUSAL` at 401, the key sent or not: on the listing, a record,
+    `search`, the listing of a type real cannot infer and the v4 associations path, and as a CORS
+    preflight, with no `Allow` and no CORS headers. A `GET`, `POST`, `PUT`, `PATCH` or `DELETE` the
+    path's `Allow` (:data:`_ALLOWED_METHODS`) does not list is the 405 :func:`_error_page` writes,
+    with no key as with one and ahead of the type: `GET`, `PUT`, `PATCH` and `DELETE` on `search`
+    and `batch/read`, `PUT`, `PATCH` and `DELETE` on the listing, `PUT` and `POST` on a record and
+    `PUT` on the v4 associations path were each that 405, and on 2026-10-26 so were `GET`, `PUT`,
+    `PATCH` and `DELETE` on `merge`, with `search`'s `Allow` rather than a record's. Every answer
+    on `search` carries `nosniff`, its `OPTIONS` and its 200 among them. Then an `Accept` that does
+    not :func:`_admits_json` is the 406 it writes, ahead of the credential, on each of those paths,
+    `POST` on `merge` among them (2026-10-26). Any other path goes on to the router: real's
+    `OPTIONS` on `/crm/v3/nonexistent-xyz` is not this 401, and its `GET` with `Accept: text/html`
+    is the 404 that path gets, not the 406. A `HEAD` arrives here as its `GET`
+    (``backlot.main.answer_head_as_the_get_without_its_body``).
+    """
+    path = request.scope["path"]
+    answered = _answered_ahead(request.method, path, request.headers.get("accept"))
+    if answered is None:
+        return None
+    status, allowed = answered
+    sniff = {"X-Content-Type-Options": "nosniff"} if path.endswith("/search") else {}
+    if status == 401:
+        return JSONResponse(
+            status_code=401, content=_OPTIONS_REFUSAL, headers={**_AUTH_FAILURE, **sniff}
+        )
+    if status == 405:
+        return _error_page(request, 405, "Method Not Allowed", {"Allow": allowed, **sniff})
+    return _error_page(request, 406, "Not Acceptable", sniff)
+
+
+def answers_ahead_of_the_routes(method: str, path: str, accept: str | None) -> bool:
+    """Whether :func:`answer_ahead_of_the_routes` answers a request with this method, path and
+    `Accept` rather than going on to the routes."""
+    return _answered_ahead(method, path, accept) is not None
+
+
+def _answered_ahead(method: str, path: str, accept: str | None) -> tuple[int, str] | None:
+    """The status :func:`answer_ahead_of_the_routes` answers with and the path's `Allow`, or None
+    to go on to the routes."""
+    path = path.removeprefix("/hubspot")
+    allowed = next((methods for route, methods in _ALLOWED_METHODS if route.fullmatch(path)), None)
+    if allowed is None:
+        return None
+    if method == "OPTIONS":
+        return 401, allowed
+    if method in ("GET", "POST", "PUT", "PATCH", "DELETE") and method not in allowed.split(","):
+        return 405, allowed
+    if not _admits_json(accept or "*/*"):
+        return 406, allowed
+    return None
+
+
 # --------------------------------------------------------------------------- routes
 
 
@@ -1049,7 +1626,7 @@ def _caller(request: Request) -> Caller | None:
 async def list_objects(object_type: str, request: Request):
     caller = _caller(request)
     if caller is None:
-        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+        return _unauthenticated()
     spellings = _resolve_type(request, object_type)
     if spellings is None:
         return _unknown_type(object_type)
@@ -1084,7 +1661,7 @@ async def list_objects(object_type: str, request: Request):
 async def get_object(object_type: str, record_id: str, request: Request):
     caller = _caller(request)
     if caller is None:
-        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+        return _unauthenticated()
     # The type is resolved ahead of the record: on api.hubapi.com, `/crm/v3/objects/nosuch/{id}`
     # answered `Unable to infer object type from: nosuch` for a contact's id (2026-09-30) and for a
     # non-numeric and a negative one (2026-10-12).
@@ -1112,7 +1689,7 @@ async def get_object(object_type: str, record_id: str, request: Request):
 async def search_objects(object_type: str, request: Request):
     caller = _caller(request)
     if caller is None:
-        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+        return _unauthenticated()
     spellings = _resolve_type(request, object_type)
     if spellings is None:
         return _unknown_type(object_type)
@@ -1178,7 +1755,7 @@ async def search_objects(object_type: str, request: Request):
 async def batch_read(object_type: str, request: Request):
     caller = _caller(request)
     if caller is None:
-        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+        return _unauthenticated()
     spellings = _resolve_type(request, object_type)
     if spellings is None:
         return _unknown_type(object_type)
@@ -1187,12 +1764,15 @@ async def batch_read(object_type: str, request: Request):
     refused = _refuse_a_batch_read_shape(await request.body(), body, before) or refused
     if refused is not None:
         return refused
+    inputs = body.get("inputs") or []
+    raw = await request.body()
+    if len({_batch_read_id(raw, i, item) for i, item in enumerate(inputs)}) > _HUBSPOT_BATCH_MAX:
+        return _error(400, _HUBSPOT_BATCH_TOO_MANY)
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
     keep = _keep(body.get("properties"))
     results, errors = [], []
-    for item in body.get("inputs") or []:
-        # A string in `inputs` is answered as `{"id": <that string>}` is (measured 2026-10-11).
-        rid = item if isinstance(item, str) else str(item.get("id"))
+    for i, item in enumerate(inputs):
+        rid = _batch_read_id(raw, i, item)
         # One ACL-scoped query, not a resolve followed by a get_document refetch of the same
         # row -- see get_object's comment for why the collapse is safe.
         row = store.hubspot_by_id(conn, rid, visible)
@@ -1233,7 +1813,7 @@ async def list_associations(
 ):
     caller = _caller(request)
     if caller is None:
-        return _error(401, "Authentication credentials not found.", "INVALID_AUTHENTICATION")
+        return _unauthenticated()
     # In the order real answers them (api.hubapi.com, 2026-09-30 for the types and the empty page,
     # 2026-10-12 and 2026-10-14 for the rest): a type real cannot infer is its 400 on either side of
     # the path, the source's when both are; a record id it won't look up is the 404 `_record_id`

@@ -16,7 +16,7 @@ from backlot.config import Settings, get_settings
 from backlot.importer import byo
 from backlot.importer.byo import load
 from backlot.routers.slack import _message
-from tests._helpers import complete, served_id
+from tests._helpers import build_corpus, complete, served_id
 
 
 def _write(tmp_path, records, name="corpus.jsonl", *, raw=False):
@@ -2666,6 +2666,83 @@ def test_byo_empty_readers_means_nobody(tmp_path):
         conn.close()
 
 
+@pytest.mark.parametrize("source", ["msteams", "slack"])
+def test_byo_an_appended_empty_readers_revokes_what_the_thread_had(tmp_path, source):
+    """A re-imported thread's grants are REPLACED, and an empty `readers` replaces them with none:
+    it contributes no grant rows, so a rewrite keyed on the grants it adds would leave the old
+    readers in place."""
+    record = complete(
+        source,
+        doc_id="reimported-thread",
+        channel="restricted",
+        author_email="ava@acme.com",
+        readers=["user:ava@acme.com"],
+        replies=[{"content": "A reply.", "author_email": "ava@acme.com"}],
+    )
+    settings = build_corpus(tmp_path, [record])
+
+    def grants():
+        conn = store.connect_ro(settings.db_path)
+        try:
+            cols = ", ".join(store.id_columns(source))
+            keys = [tuple(r) for r in conn.execute(f"SELECT {cols} FROM {store.table(source)}")]
+            return [store.doc_grants(conn, source, *key) for key in keys]
+        finally:
+            conn.close()
+
+    assert len(grants()) == 2 and all(grants())
+    load(_write(tmp_path, [{**record, "readers": []}], name="nobody.jsonl"), settings, reset=False)
+    assert grants() == [[], []]
+
+
+def test_byo_msteams_ids_fill_every_millisecond_of_a_second_and_reimport_stably(tmp_path):
+    """A Teams message id is its creation time in epoch milliseconds, so one channel-second holds
+    a thousand of them: the probe walks every one before refusing, and a re-import of a message
+    already stored lands on the id it has rather than probing on."""
+    records = [
+        complete("msteams", doc_id=f"d{i}", channel="busy", content=f"Message {i}", created=100)
+        for i in range(1000)
+    ]
+    settings = build_corpus(tmp_path / "first", records)
+
+    def assigned(settings):
+        conn = store.connect_ro(settings.db_path)
+        try:
+            return dict(conn.execute("SELECT content, id FROM msteams_messages"))
+        finally:
+            conn.close()
+
+    first = assigned(settings)
+    assert {int(mid) for mid in first.values()} == set(range(100000, 101000))
+    assert assigned(build_corpus(tmp_path / "fresh", records)) == first
+    load(_write(tmp_path, [records[0], records[-1]], name="again.jsonl"), settings, reset=False)
+    assert assigned(settings) == first
+    overflow = complete(
+        "msteams", doc_id="overflow", channel="busy", content="One more", created=100
+    )
+    with pytest.raises(SystemExit, match="1000 sub-second values"):
+        load(_write(tmp_path, [overflow], name="overflow.jsonl"), settings, reset=False)
+    assert assigned(settings) == first
+
+
+@pytest.mark.parametrize("part", ["root", "reply"])
+@pytest.mark.parametrize("edited", ["not-a-date", "", 99, 100])
+def test_byo_a_teams_edit_that_does_not_parse_or_precedes_its_message_is_refused(
+    tmp_path, part, edited
+):
+    """100 is refused too: the served creation time carries the id's milliseconds, so an edit in
+    the message's own whole second would read as before it."""
+    record = complete("msteams", doc_id="edited", created=100)
+    target = record
+    if part == "reply":
+        record["created"] = 50
+        record["replies"] = [{"content": "Reply", "author_email": "ava@acme.com", "created": 100}]
+        target = record["replies"][0]
+    target["edited"] = edited
+    with pytest.raises(SystemExit, match="edited"):
+        build_corpus(tmp_path, [record])
+
+
 def _shard_artifact(tmp_path):
     """A two-shard artifact plus the manifest that describes it, written the way `export_byo` does."""
     import gzip as _gz
@@ -2746,7 +2823,7 @@ def test_verify_manifest_catches_a_tampered_shard(tmp_path):
     good = shard.read_bytes()
     shard.write_bytes(good + b"\x00")
     problems = byo.verify_manifest(out)
-    assert len(problems) == 1 and "bytes" in problems[0]
+    assert len(problems) == 1 and "byte(s)" in problems[0]
 
     # A swap that keeps the byte count is what the digest is FOR. The size check above answers the
     # other cases and returns early, so without this the sha256 comparison never runs in the suite.
@@ -5502,7 +5579,7 @@ def test_a_changed_path_matching_no_file_is_reported_and_loaded(tmp_path, capsys
 
     assert byo.run(corpus, dry_run=True) == 0  # a report, not a verdict on the corpus
     dry = capsys.readouterr()
-    assert "OK: 3 records valid." in dry.out
+    assert "OK: 3 record(s) valid." in dry.out
     assert "path reference" in dry.err and "line 3: src/typo.py" in dry.err
     assert "src/a.py" not in dry.err  # only the unresolved one is named
 
@@ -5923,14 +6000,16 @@ def test_reimporting_a_workbook_replaces_its_sheets_rather_than_adding_to_them(t
     assert json.loads(rows[0]["grid"]) == [["only"]]
 
 
-def test_reimporting_a_workbook_as_prose_drops_its_sheets(tmp_path):
+@pytest.mark.parametrize("structure", ["sheets", "paragraphs"])
+def test_reimporting_a_structured_file_as_prose_drops_its_structure(tmp_path, structure):
     """The other direction of the same rule, and the worse one: a record that stops stating a grid
-    must stop serving one. Left behind, the stale sheets make `spreadsheets.get` answer with cells
-    that `files.export` no longer has -- one document described two ways, which is the whole thing
-    a derived `content` exists to prevent."""
+    or paragraphs must stop serving them. Left behind, the stale sheets make `spreadsheets.get`
+    answer with cells that `files.export` no longer has -- one document described two ways, which
+    is the whole thing a derived `content` exists to prevent."""
+    record = {"sheets": GRID_REC, "paragraphs": PARAS_REC}[structure]
     settings = Settings(data_dir=tmp_path)
-    load(_write(tmp_path, [GRID_REC], name="a.jsonl"), settings)
-    prose = {k: v for k, v in GRID_REC.items() if k != "sheets"}
+    load(_write(tmp_path, [record], name="a.jsonl"), settings)
+    prose = {k: v for k, v in record.items() if k != structure}
     prose["content"] = "now prose"
     load(_write(tmp_path, [prose], name="b.jsonl"), settings, reset=False)
 
@@ -5938,14 +6017,34 @@ def test_reimporting_a_workbook_as_prose_drops_its_sheets(tmp_path):
     row = conn.execute("SELECT id, content FROM gdrive_files").fetchone()
     assert row["content"] == "now prose"
     assert store.gdrive_sheets_for(conn, row["id"]) == []
+    assert store.gdrive_doc_body_for(conn, row["id"]) is None
+
+
+def test_a_file_that_is_not_a_doc_may_hold_what_insert_text_refuses(tmp_path):
+    """The control for the `insertText refuses` rows of
+    `test_a_structure_a_record_cannot_mean_is_refused`: the same characters in a `.txt`, which Drive
+    keeps as uploaded (`gdocs.UNWRITABLE`), import and are stored as stated."""
+    content = "a\ufdd0\ufdefb"
+    record = {
+        **{k: v for k, v in PARAS_REC.items() if k != "paragraphs"},
+        "subtype": "txt",
+        "content": content,
+    }
+    corpus = _write(tmp_path, [record])
+    assert byo.run(corpus, dry_run=True) == 0
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    assert conn.execute("SELECT content FROM gdrive_files").fetchone()["content"] == content
 
 
 @pytest.mark.parametrize(
-    "overrides,fragment",
+    "structure,overrides,fragment",
     [
-        ({"content": "prose"}, "drop 'content'"),
-        ({"subtype": "document"}, "subtype 'spreadsheet'"),
+        ("sheets", {"content": "prose"}, "drop 'content'"),
+        ("sheets", {"subtype": "document"}, "subtype 'spreadsheet'"),
         (
+            "sheets",
             {"sheets": [{"title": "Data", "grid": []}, {"title": "data", "grid": []}]},
             "duplicate sheet title",
         ),
@@ -5953,19 +6052,78 @@ def test_reimporting_a_workbook_as_prose_drops_its_sheets(tmp_path):
         # that spells `Sheet1` out collides with it. Comparing only STATED titles misses this and
         # leaves the second sheet unreachable by name -- lookup answers with the first match.
         (
+            "sheets",
             {"sheets": [{"grid": [["x"]]}, {"title": "Sheet1", "grid": [["y"]]}]},
             "duplicate sheet title",
         ),
+        ("paragraphs", {"content": "prose"}, "drop 'content'"),
+        ("paragraphs", {"subtype": "spreadsheet"}, "subtype 'document'"),
+        ("paragraphs", {"paragraphs": [{"text": "a", "runs": [{"text": "b"}]}]}, "one of"),
+        ("paragraphs", {"paragraphs": [{"style": "TITLE"}]}, "one of"),
+        ("paragraphs", {"paragraphs": [{"text": "a\nb"}]}, "holds none"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a"}, {"text": "b\n"}]}]}, "holds none"),
+        ("paragraphs", {"paragraphs": [{"text": "a\rb"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x00b"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x08b"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x0cb"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x1fb"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\ue000"}]}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\uf8ff"}]}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [1]}, "is not of type 'object'"),
+        ("paragraphs", {"paragraphs": [{"runs": [1]}]}, "is not of type 'object'"),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "example.com"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "#heading=h.x"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "wiki.acme.example:8443/page"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a/b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a?b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a#b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": ":foo"}]}]},
+            "does not match",
+        ),
+        ("paragraphs", {"paragraphs": [{"text": "a\ufdd0"}]}, "insertText refuses"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\ufdef"}]}]}, "insertText refuses"),
+        ("prose", {"content": "a\ufdd0"}, "insertText refuses"),
+        ("prose", {"content": "a\ud800b"}, "lone surrogate"),
     ],
 )
-def test_a_grid_a_record_cannot_mean_is_refused(tmp_path, capsys, overrides, fragment):
+def test_a_structure_a_record_cannot_mean_is_refused(
+    tmp_path, capsys, structure, overrides, fragment
+):
     """Cross-field rules, refused in Python rather than by the schema: expressed as an `if`/`then`
     each reports as a missing property at the record root, naming neither the field that put the
     rule in force nor what is wrong with the pairing.
 
     Asserted against BOTH passes. `--dry-run` walks the corpus itself rather than sharing the
     loader's, so a rule reaches it only by being wired into that pass as well."""
-    corpus = _write(tmp_path, [{**GRID_REC, **overrides}])
+    prose = {**{k: v for k, v in PARAS_REC.items() if k != "paragraphs"}, "content": "x"}
+    record = {"sheets": GRID_REC, "paragraphs": PARAS_REC, "prose": prose}[structure]
+    corpus = _write(tmp_path, [{**record, **overrides}])
     with pytest.raises(SystemExit) as e:
         load(corpus, Settings(data_dir=tmp_path))
     assert fragment in str(e.value)
@@ -6070,3 +6228,44 @@ def test_a_cell_json_cannot_carry_is_refused_at_import(tmp_path, cell):
     with pytest.raises(SystemExit) as e:
         _load_grid(tmp_path, [{**GRID_REC, "sheets": [{"grid": [[cell]]}]}])
     assert "RFC 8259" in str(e.value)
+
+
+# --- google_drive: a document that states its paragraphs ------------------------
+
+PARAS_REC = {
+    "source_type": "google_drive",
+    "title": "Plan",
+    "folder": "sales",
+    "doc_id": "gd-paras",
+    "author_email": "dana@example.com",
+    "paragraphs": [
+        {"style": "HEADING_1", "text": "Goals"},
+        {"runs": [{"text": "Ship "}, {"text": "it", "bold": True}]},
+        {"text": ""},
+    ],
+}
+
+
+def test_stated_paragraphs_are_the_body_and_their_text_is_the_content(tmp_path):
+    """The body is stored in real's shape with its indices left out, and `content` is the
+    paragraphs' text, one line each, which Drive's export and search read. Two documents with one
+    text and different styles are two documents, so the paragraphs reach the id; one that states
+    none stores no body."""
+    restyled = {
+        **PARAS_REC,
+        "doc_id": "gd-restyled",
+        "paragraphs": [{"text": "Goals"}, {"text": "Ship it"}, {"text": ""}],
+    }
+    unnamed = [{k: v for k, v in r.items() if k != "doc_id"} for r in (PARAS_REC, restyled)]
+    prose = {
+        **{k: v for k, v in PARAS_REC.items() if k != "paragraphs"},
+        "doc_id": "gd-prose",
+        "content": "Goals\nShip it\n",
+    }
+    conn = _load_grid(tmp_path, [*unnamed, prose])
+    rows = conn.execute("SELECT id, content FROM gdrive_files ORDER BY rowid").fetchall()
+    assert [r["content"] for r in rows] == ["Goals\nShip it\n"] * 3
+    body = store.gdrive_doc_body_for(conn, rows[0]["id"])
+    assert [el.keys() for el in body] == [{"sectionBreak"}] + [{"paragraph"}] * 3
+    assert store.gdrive_doc_body_for(conn, rows[1]["id"]) != body
+    assert store.gdrive_doc_body_for(conn, rows[2]["id"]) is None

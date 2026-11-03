@@ -414,5 +414,6 @@ def measure(source: "ProbeTarget", *, timeout: float = 120.0) -> Measurement:
     import backlot
 
     model = fetch_json(source.spec_url, timeout=timeout)
-    with backlot.serve() as server:
+    # Backlot measuring itself is not anyone's use of it.
+    with backlot.serve(telemetry=False) as server:
         return source.run(server.base_url, model, timeout)

@@ -299,11 +299,17 @@ def _masked(view: dict, names: dict[str, bool], parts: set[str]) -> dict:
     return masked
 
 
+def _files(run: Path) -> dict[str, dict]:
+    """``coverage.json``'s files, each named with ``/`` between its parts. Coverage names them with
+    the platform's separator, ``\\`` on Windows, where no path from ``git diff`` would match one."""
+    files = json.loads((run / "coverage.json").read_text(encoding="utf-8"))["files"]
+    return {name.replace("\\", "/"): data for name, data in files.items()}
+
+
 def _coverage(run: Path) -> dict[str, tuple[set, set]]:
-    data = json.loads((run / "coverage.json").read_text(encoding="utf-8"))["files"]
     return {
         name: (set(f["executed_lines"]), {tuple(b) for b in f.get("executed_branches", [])})
-        for name, f in data.items()
+        for name, f in _files(run).items()
     }
 
 
@@ -334,10 +340,10 @@ def _compare(base: Path, head: Path, mode: str, calibration: Path | None, limit:
         digits = sorted(n for n, d in names.items() if d)
         whole = sorted(n for n, d in names.items() if not d)
         print(
-            f"traffic: {len(b)} responses on the base, {len(h)} on the head; ignored as varying "
+            f"traffic: {len(b)} response(s) on the base, {len(h)} on the head; ignored as varying "
             f"between two base runs: the digits of {digits or 'no headers'}, the values of "
-            f"{whole or 'no headers'}, and {sum(map(len, parts.values()))} other values in "
-            f"{len(parts)} exchanges"
+            f"{whole or 'no headers'}, and {sum(map(len, parts.values()))} other value(s) in "
+            f"{len(parts)} exchange(s)"
         )
         shown = 0
         for key in sorted(set(b) | set(h)):
@@ -371,11 +377,11 @@ def _compare(base: Path, head: Path, mode: str, calibration: Path | None, limit:
                 problems.append(f"{name}: lines no longer executed: {missing}")
             if missing_branches:
                 problems.append(f"{name}: branches no longer taken: {missing_branches}")
-        print(f"coverage: {lost_lines} lines and {lost_branches} branches of backlot/ lost")
+        print(f"coverage: {lost_lines} line(s) and {lost_branches} branch(es) of backlot/ lost")
 
     for line in problems:
         print(line)
-    print("invariant" if not problems else f"{len(problems)} differences")
+    print("invariant" if not problems else f"{len(problems)} difference(s)")
     return 1 if problems else 0
 
 
@@ -425,19 +431,19 @@ def _prose(base_ref: str) -> int:
         new = Path(name).read_text(encoding="utf-8") if Path(name).exists() else None
         if old.returncode or new is None or _code_tree(old.stdout) != _code_tree(new):
             problems.append(name)
-    print(f"{len(changed)} Python files changed, {len(untracked)} added")
+    print(f"{len(changed)} Python file(s) changed, {len(untracked)} added")
     for name in problems:
         print(f"{name}: changed beyond its comments and unserved docstrings")
-    print("invariant" if not problems else f"{len(problems)} differences")
+    print("invariant" if not problems else f"{len(problems)} difference(s)")
     return 1 if problems else 0
 
 
 def _uncovered(run: Path, paths: list[str]) -> int:
-    files = json.loads((run / "coverage.json").read_text(encoding="utf-8"))["files"]
-    for name, data in sorted(files.items()):
-        if any(name == p or name.startswith(p.rstrip("/") + "/") for p in paths):
+    paths = [p.replace("\\", "/").rstrip("/") for p in paths]
+    for name, data in sorted(_files(run).items()):
+        if any(name == p or name.startswith(p + "/") for p in paths):
             missing = data["missing_lines"]
-            print(f"{name}: {len(missing)} lines no test executes: {missing}")
+            print(f"{name}: {len(missing)} line(s) no test executes: {missing}")
     return 0
 
 
@@ -517,7 +523,7 @@ def _verbose(paths: list[str], minimum: int) -> int:
                 start = None
     for length, path, line, code in sorted(blocks, key=lambda b: -b[0]):
         if length >= minimum:
-            kind = "comment" if code is None else f"docstring over {code} lines of code"
+            kind = "comment" if code is None else f"docstring over {code} line(s) of code"
             print(f"{length:4} {path}:{line} {kind}")
     return 0
 

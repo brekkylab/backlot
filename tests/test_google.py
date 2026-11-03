@@ -1,6 +1,7 @@
 """Google APIs over HTTP: Gmail, Drive, and the Workspace editor reads (Docs/Sheets/Slides).
 
-One file because they are one router (``backlot/routers/google.py``) and one error envelope
+One file because they are one router (``routers.google.router``, Sheets' routes in
+``backlot/routers/google_sheets.py``) and one error envelope
 (``backlot/errors/google.py``) — Drive and Gmail share ``_gerr`` and the per-family status table, so
 splitting them would put two halves of the same contract in two places.
 """
@@ -9,24 +10,29 @@ from __future__ import annotations
 
 import base64
 import csv
+import datetime
 import io
 import json
 import re
-from urllib.parse import quote, urlencode
+import unicodedata
+from unittest.mock import ANY
+from urllib.parse import parse_qsl, quote, urlencode
 
 import httpx
 import jwt
 import pytest
 import yaml
 
-from backlot import oauth, sheets_grid, store
+from backlot import gdocs, gsheets, oauth, store, synth
 from backlot.config import Settings
 from backlot.errors import google as gerr
 from tests._helpers import (
     client_for,
+    corpus_client,
     crawl_drive,
     crawl_gmail,
     db_count,
+    sent_as,
     served_id,
     tiny_corpus,
     tok,
@@ -233,20 +239,7 @@ def test_gmail_hex_id_resolves_to_the_same_document(client, admin_h, ro_conn):
     assert upper["id"] == m["id"]
 
 
-@pytest.mark.parametrize(
-    "spelling, same_as",
-    [
-        ("{ROOT}", "{root}"),
-        ("0{root}", "{root}"),
-        ("00{root}", "{root}"),
-        ("0000000000{root}", "{root}"),
-        ("0{ROOT}", "{root}"),
-        ("0{reply}", "1"),
-    ],
-)
-def test_gmail_threads_get_reads_an_id_as_a_hex_integer(
-    client, admin_h, ro_conn, spelling, same_as
-):
+def test_gmail_threads_get_reads_an_id_as_a_hex_integer(client, admin_h, ro_conn):
     """`threads.get` on a thread's id in uppercase, or with one, two or ten zeros in front and its
     hex in either case, serves the thread as the lowercase id without them does; on a reply's id
     with a zero in front it serves the 404 of an id the mailbox does not hold (`1`). The measurement
@@ -265,8 +258,15 @@ def test_gmail_threads_get_reads_an_id_as_a_hex_integer(
             params={"format": "minimal"},
         )
 
-    got, want = threads_get(spelling), threads_get(same_as)
-    assert (got.status_code, got.json()) == (want.status_code, want.json())
+    def answer(thread_id):
+        r = threads_get(thread_id)
+        return (r.status_code, r.json())
+
+    same_as = {"{ROOT}": "{root}", "0{root}": "{root}", "00{root}": "{root}"}
+    same_as |= {"0000000000{root}": "{root}", "0{ROOT}": "{root}", "0{reply}": "1"}
+    assert {spelling: answer(spelling) for spelling in same_as} == {
+        spelling: answer(want) for spelling, want in same_as.items()
+    }
 
 
 def test_gmail_thread_id_matches_the_message_id_for_a_lone_message(client, admin_h, ro_conn):
@@ -336,15 +336,7 @@ def test_gmail_threads_list_is_the_mailbox_searched_or_not(client, tokens):
     )
 
 
-@pytest.mark.parametrize(
-    "msg_key",
-    ["owner", "other", "missing", "non_hex"],
-)
-@pytest.mark.parametrize(
-    "att_key, expect_status",
-    [("valid", 200), ("bogus", 400), ("altered", 400)],
-)
-def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, expect_status):
+def test_gmail_attachment_errors(client, admin_h, ro_conn):
     """Under each of the four message ids, an attachment id gets the answer it gets under its own
     message: 200 with its bytes when a message holds it, 400 when none does, as the comment in
     `gmail_attachment` records."""
@@ -362,47 +354,43 @@ def test_gmail_attachment_errors(client, admin_h, ro_conn, msg_key, att_key, exp
     ).json()
     valid_att = next(p for p in m["payload"]["parts"] if p.get("filename"))["body"]["attachmentId"]
 
-    msg_id = {
+    msg_ids = {
         "owner": hexid,
         "other": other_row["id"],
         "missing": "0000000000000001",
         "non_hex": "zzz",
-    }[msg_key]
-    att_id = (
-        valid_att
-        if att_key == "valid"
-        else "bogus"
-        if att_key == "bogus"
-        else valid_att[:-4] + "abcd"
-    )
-
-    r = client.get(
-        f"/gmail/v1/users/me/messages/{msg_id}/attachments/{att_id}",
-        headers=admin_h,
-    )
-
-    assert r.status_code == expect_status
-    if expect_status == 400:
-        assert r.json() == {
-            "error": {
-                "code": 400,
-                "message": "Invalid attachment token",
-                "errors": [
-                    {
-                        "message": "Invalid attachment token",
-                        "domain": "global",
-                        "reason": "invalidArgument",
-                    }
-                ],
-                "status": "INVALID_ARGUMENT",
-            }
+    }
+    att_ids = {"valid": valid_att, "bogus": "bogus", "altered": valid_att[:-4] + "abcd"}
+    owned = client.get(
+        f"/gmail/v1/users/me/messages/{hexid}/attachments/{valid_att}", headers=admin_h
+    ).json()
+    assert owned["size"] > 0
+    refused = {
+        "error": {
+            "code": 400,
+            "message": "Invalid attachment token",
+            "errors": [
+                {
+                    "message": "Invalid attachment token",
+                    "domain": "global",
+                    "reason": "invalidArgument",
+                }
+            ],
+            "status": "INVALID_ARGUMENT",
         }
-    else:
-        owned = client.get(
-            f"/gmail/v1/users/me/messages/{hexid}/attachments/{valid_att}", headers=admin_h
-        ).json()
-        assert owned["size"] > 0
-        assert r.json() == owned
+    }
+    answered = {}
+    for msg_key, msg_id in msg_ids.items():
+        for att_key, att_id in att_ids.items():
+            r = client.get(
+                f"/gmail/v1/users/me/messages/{msg_id}/attachments/{att_id}", headers=admin_h
+            )
+            answered[msg_key, att_key] = (r.status_code, r.json())
+    assert answered == {
+        (msg_key, att_key): (200, owned) if att_key == "valid" else (400, refused)
+        for msg_key in msg_ids
+        for att_key in att_ids
+    }
 
 
 _ATTACHMENT_ACL = [
@@ -441,11 +429,16 @@ _ATTACHMENT_ACL = [
 ]
 
 
+@pytest.fixture(scope="module")
+def attachment_acl_settings(tmp_path_factory):
+    return tiny_corpus(tmp_path_factory.mktemp("attachment_acl"), _ATTACHMENT_ACL)
+
+
 @pytest.fixture
-def attachment_acl(tmp_path):
+def attachment_acl(attachment_acl_settings):
     """Two of ava's messages with one attachment each, and a message of mia's with none. Yields the
     client, a header per caller, and each attachment id by the doc it belongs to."""
-    settings = tiny_corpus(tmp_path, _ATTACHMENT_ACL)
+    settings = attachment_acl_settings
     tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     h = {"admin": {"Authorization": f"Bearer {settings.admin_token}"}}
     for name in ("ava", "mia"):
@@ -499,40 +492,43 @@ def test_gmail_attachment_is_found_by_its_id_within_the_acl(
         assert scanned == ([] if under == doc and caller != "mia" else [reads]), doc
 
 
-@pytest.mark.parametrize(
-    "mid",
-    ["0", "1", "abc123", "DEADBEEF", "7fffffffffffffff", "0000000000000001", "18c9a1b2c3d4e5f6"],
-)
-def test_gmail_a_valid_but_unknown_id_is_not_found(client, admin_h, mid):
+def test_gmail_a_valid_but_unknown_id_is_not_found(client, admin_h):
     """A well-formed id the mailbox does not hold is 404, uppercase included — measured."""
+    mids = ["0", "1", "abc123", "DEADBEEF", "7fffffffffffffff", "0000000000000001"]
+    mids.append("18c9a1b2c3d4e5f6")
+    answered = {}
     for kind in ("messages", "threads"):
-        r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
-        assert r.status_code == 404, f"{kind}/{mid}: {r.status_code}"
-        assert r.json()["error"]["message"] == "Requested entity was not found."
+        for mid in mids:
+            r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
+            answered[kind, mid] = (r.status_code, r.json()["error"]["message"])
+    assert answered == {
+        (kind, mid): (404, "Requested entity was not found.")
+        for kind in ("messages", "threads")
+        for mid in mids
+    }
 
 
-@pytest.mark.parametrize(
-    "mid",
-    [
-        "8000000000000000",
-        "ffffffffffffffff",
-        "18c9a1b2c3d4e5f6a",
-        "-1",
-        "1g",
-        "nosuchmessageid",
-        "dsid_00908a2dda4b4d359194a09101",
-    ],
-)
-def test_gmail_an_unparsable_id_is_an_invalid_argument(client, admin_h, mid):
+def test_gmail_an_unparsable_id_is_an_invalid_argument(client, admin_h):
     """An id that is not a parsable in-range hex integer is 400 INVALID_ARGUMENT "Invalid id
     value", not 404. The last row is a `dsid_…`, which real would refuse the same way."""
+    mids = ["8000000000000000", "ffffffffffffffff", "18c9a1b2c3d4e5f6a", "-1", "1g"]
+    mids += ["nosuchmessageid", "dsid_00908a2dda4b4d359194a09101"]
+    answered = {}
     for kind in ("messages", "threads"):
-        r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
-        assert r.status_code == 400, f"{kind}/{mid}: {r.status_code}"
-        e = r.json()["error"]
-        assert e["message"] == "Invalid id value"
-        assert e["status"] == "INVALID_ARGUMENT"
-        assert e["errors"][0]["reason"] == "invalidArgument"
+        for mid in mids:
+            r = client.get(f"/gmail/v1/users/me/{kind}/{mid}", headers=admin_h)
+            e = r.json()["error"]
+            answered[kind, mid] = (
+                r.status_code,
+                e["message"],
+                e["status"],
+                e["errors"][0]["reason"],
+            )
+    assert answered == {
+        (kind, mid): (400, "Invalid id value", "INVALID_ARGUMENT", "invalidArgument")
+        for kind in ("messages", "threads")
+        for mid in mids
+    }
 
 
 def test_gmail_hex_ids_still_enforce_the_acl(client, admin_h, tokens_yaml, ro_conn):
@@ -692,40 +688,20 @@ _GMAIL_MAX_RESULTS = [
 ]
 
 
-@pytest.mark.parametrize("kind", ["messages", "threads"])
-@pytest.mark.parametrize("values, shape, named", _GMAIL_MAX_RESULTS)
-def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind, values, shape, named):
-    """The refusals `_gmail_page` records, on both listings."""
-    r = client.get(
-        f"/gmail/v1/users/me/{kind}",
-        headers=admin_h,
-        params=[("maxResults", value) for value in values],
-    )
-    if shape == "size":
-        assert r.status_code == 200, (kind, values, r.text)
-        body = r.json()
-        assert body["resultSizeEstimate"] >= named, (kind, values)
-        assert len(body[kind]) == named, (kind, values)
-        return
-    assert r.status_code == 400, (kind, values, r.text)
-    err = r.json()["error"]
+def _max_results_refusal(shape, named):
+    """The 400 error object a `_GMAIL_MAX_RESULTS` row of ``shape`` records."""
     if shape == "maxResults":
-        assert err == {
+        return {
             "code": 400,
             "message": "Invalid maxResults",
             "errors": [
-                {
-                    "message": "Invalid maxResults",
-                    "domain": "global",
-                    "reason": "invalidArgument",
-                }
+                {"message": "Invalid maxResults", "domain": "global", "reason": "invalidArgument"}
             ],
             "status": "INVALID_ARGUMENT",
-        }, (kind, values)
-        return
+        }
     messages = [f"Invalid value at 'max_results' (TYPE_UINT32), \"{raw}\"" for raw in named]
     message = "\n".join(messages)
-    assert err == {
+    return {
         "code": 400,
         "message": message,
         "errors": [{"message": message, "reason": "invalid"}],
@@ -738,7 +714,32 @@ def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind, value
                 ],
             }
         ],
-    }, (kind, values)
+    }
+
+
+@pytest.mark.parametrize("kind", ["messages", "threads"])
+def test_gmail_refuses_a_max_results_it_cannot_read(client, admin_h, kind):
+    """The refusals `_gmail_page` records, on both listings: a served row as its page's length and
+    whether `resultSizeEstimate` is at least that."""
+    answered = {}
+    for values, *_ in _GMAIL_MAX_RESULTS:
+        r = client.get(
+            f"/gmail/v1/users/me/{kind}",
+            headers=admin_h,
+            params=[("maxResults", value) for value in values],
+        )
+        if r.status_code == 200:
+            body = r.json()
+            listed = len(body[kind])
+            answered[tuple(values)] = (listed, body["resultSizeEstimate"] >= listed)
+        else:
+            answered[tuple(values)] = (r.status_code, r.json()["error"])
+    assert answered == {
+        tuple(values): (named, True)
+        if shape == "size"
+        else (400, _max_results_refusal(shape, named))
+        for values, shape, named in _GMAIL_MAX_RESULTS
+    }
 
 
 _GMAIL_TOKEN = {
@@ -791,28 +792,30 @@ _GMAIL_PAGE_TOKEN_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("query, on_messages, on_threads", _GMAIL_PAGE_TOKEN_ROWS)
 @pytest.mark.parametrize("kind", ["messages", "threads"])
-def test_gmail_lists_read_a_page_token_as_real_does(
-    client, admin_h, kind, query, on_messages, on_threads
-):
+def test_gmail_lists_read_a_page_token_as_real_does(client, admin_h, kind):
     """The rules `_gmail_page` and `gerr.invalid_page_token` record, one request per row and
     listing. `None` is the answer the request gets without a `pageToken`, `"second"` the page after
     the first at `maxResults=1`, and `{token}` the `nextPageToken` of that first page."""
     path = f"/gmail/v1/users/me/{kind}"
-    first = client.get(path, headers=admin_h, params={"maxResults": 1}).json()
-    query = [(k, v.format(token=first["nextPageToken"])) for k, v in query]
-    r = client.get(path, headers=admin_h, params=query)
-    want = on_messages if kind == "messages" else on_threads
-    if want is None:
-        without = [(k, v) for k, v in query if k != "pageToken"]
-        assert r.content == client.get(path, headers=admin_h, params=without).content
-    elif want == "second":
-        both = client.get(path, headers=admin_h, params={"maxResults": 2}).json()[kind]
-        assert r.status_code == 200, r.text
-        assert r.json()[kind] == both[1:]
-    else:
-        assert (r.status_code, _gerr(r)) == (400, want)
+    token = client.get(path, headers=admin_h, params={"maxResults": 1}).json()["nextPageToken"]
+    second = client.get(path, headers=admin_h, params={"maxResults": 2}).json()[kind][1:]
+
+    def answer(query, want):
+        query = [(k, v.format(token=token)) for k, v in query]
+        r = client.get(path, headers=admin_h, params=query)
+        if want is None:
+            without = [(k, v) for k, v in query if k != "pageToken"]
+            same = r.content == client.get(path, headers=admin_h, params=without).content
+            return None if same else r.text
+        if want == "second":
+            return "second" if (r.status_code, r.json()[kind]) == (200, second) else r.text
+        return (r.status_code, _gerr(r))
+
+    rows = [(query, m if kind == "messages" else t) for query, m, t in _GMAIL_PAGE_TOKEN_ROWS]
+    assert {urlencode(query): answer(query, want) for query, want in rows} == {
+        urlencode(query): want if want in (None, "second") else (400, want) for query, want in rows
+    }
 
 
 def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
@@ -843,16 +846,967 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
         )  # ...and match the bytes
 
 
-def test_drive_export_roundtrip(client, admin_h, ro_conn):
-    doc = ro_conn.execute("SELECT * FROM gdrive_files LIMIT 1").fetchone()
-    # The row's own `id`, not the corpus's identifier: hitting the route by the corpus id would
-    # stop exercising the id resolution path without the test noticing.
-    text = client.get(
-        f"/drive/v3/files/{doc['id']}/export",
-        headers=admin_h,
-        params={"mimeType": "text/plain"},
-    ).text
-    assert doc["content"] in text and text.startswith(doc["title"])
+# A paragraph long enough that a Markdown writer would wrap it, which real does not.
+_WORDS = " ".join(f"word{i}" for i in range(120))
+
+
+def _runs(*runs: str | tuple[str, str] | dict, style: str | None = None) -> dict:
+    """A paragraph as a record's `paragraphs` states it, from `runs`: each a text, a (text, marks)
+    pair, or a run as `paragraphs` states it. In marks, `i`, `b`, `s` and `u` are italic, bold,
+    strikethrough and underline, and a digit n is a link to `https://e.com/n`."""
+    out = []
+    for run in runs:
+        if isinstance(run, str):
+            run = (run, "")
+        if isinstance(run, tuple):
+            text, marks = run
+            names = {"i": "italic", "b": "bold", "s": "strikethrough", "u": "underline"}
+            run = {"text": text, **{names[c]: True for c in marks if c in names}}
+            run.update({"link": f"https://e.com/{c}" for c in marks if c.isdigit()})
+        out.append(run)
+    return {"runs": out, **({"style": style} if style else {})}
+
+
+# Paragraphs of real's Docs, as one Doc, for the mark writer of `gdocs.markdown` and for
+# `gdocs.plain_text`.
+# fmt: off
+_MD_WRITER = [
+    _runs("z", ("a", "s"), (" ", "b"), (" ", "i2"), (" ", "bs"), (" ", "i"), (" ", "is1"), (" ", "ib"), (" ", "i"), (" ", "ibs2"), ("b", "b2"), "d"),
+    _runs(("  ", "s"), ("http://y", "2"), ("\u01c5", "ib1"), (" ", "is2"), (" a", "ib"), ("x y", "b1"), ("a", "ibs"), ("x y", "ibs"), ("\u4e2d\u6587", "i1"), (" ", "s"), "b", ("-a", "ib"), ("\xa0", "ib"), (" a", "b"), ("\xe9www.x", "ib"), (" a", "b2"), ("a", "ibs"), ("\xa0", "s")),
+    _runs("q 0\ufe0fwww.x"),
+    _runs("q _\ufe0fhttp://x"),
+    _runs("z", ("a", "b"), ("b", "bs"), ("c", "bs1"), ("d", "ibs1"), ("e", "s2"), ("f", "2"), "g"),
+    _runs(("999. \u3000 10 <-", "u"), ("<", "ibu"), ("~ #", "is"), {"text": "\"Foo_*Zed\U0001f600", "bold": True, "link": "https://e.com/back\\s"}, ("999.", "ib"), style="HEADING_5"),
+    _runs("q \u03b1\U000e0100http://x"),
+    _runs("z", ("a", "i"), ("b", "is"), ("c", "is1"), ("d", "ibs1"), ("e", "s2"), ("f", "2"), "g"),
+    _runs("z", ("a", "bs"), (" ", "is"), (" ", "ibs"), (" ", "is"), (" ", "s"), (" ", "is1"), ("b", "bs1"), "d"),
+    _runs("z", ("a", "s"), (" ", "is"), (" ", "bs1"), (" ", "ibs1"), (" ", "bs1"), (" ", "is"), " ", ("b", "is"), "d"),
+    _runs(("\x0b", "ib"), "x"),
+    _runs(("\x0b", "b"), ("x", "b"), "y"),
+    _runs("\x0b\x0b \x0b", style="HEADING_2"),
+    _runs("_https://x"),
+    _runs(" \x0b\t\x0b", style="HEADING_2"),
+    _runs("\x0b\xa0h"),
+    _runs("q A\ufe0fhttp://x"),
+    _runs("q \u03b1\u034fhttp://x"),
+    _runs("\u01c5\u0301www.x \u01c5\u0301http://y"),
+    _runs("\u4e2d\u0301www.x \u4e2d\u0301http://y"),
+    _runs("  "),
+    {"text": ""},
+    _runs(("\u4e2d\u02b0\u0301http://x", "1"), ("a", "ibs"), "www.x-"),
+    _runs("z", ("a", "1"), (" ", "ibs"), (" ", "ibs1"), ("b", "b"), "d"),
+    _runs("z", ("a", "1"), (" ", "ibs1"), (" ", "i1"), ("b", "is"), "d"),
+    _runs("z", ("a", "1"), ("b", "i1"), ("c", "ib1"), ("d", "ibs1"), ("e", "i2"), "f"),
+    _runs("z", ("a", "ibs1"), (" ", "is"), (" ", "is"), (" ", "ib1"), (" ", "ibs1"), (" ", "i1"), (" ", "is1"), ("b", "s"), "d"),
+    _runs("  ", style="NORMAL_TEXT"),
+    _runs({"text": "=", "strikethrough": True, "link": "https://e.com/q r"}, "`\tb", ("@12.q", "iu"), ("\u2022 3.", "i"), ("999.\t&1\t  \t^\t.\t\u3000", "iu"), style="HEADING_4"),
+    _runs((" ", "bs1"), ("*", "is2"), ("  ", "b2"), ("1. a", "i"), (" \t", "i1"), (" \t", "s2"), ("\u4e2d\u6587", "i"), "def", ("1. a", "b2"), ("a ", "s1"), (" ", "b")),
+    _runs(("\xe9\u01c5", "s"), ("\u0301http://xwww.x", "s"), ("\u0301", "b")),
+    _runs("\x0b \t\x0b", style="TITLE"),
+    _runs(("b", "is"), ("a", "ibs2"), ("-a", "2"), "a", ("\u4e2d\u6587", "ibs"), ("b", "1"), ("  ", "ibs2"), ("\u4e2d\u6587", "b1"), (" \t", "1"), " ", ("x y", "is"), (" ", "b"), (" \t", "s"), ("a", "bs"), "a", "a_b", (" \t", "ibs2"), ("e\u0301", "2"), ("bc", "i"), (" ", "is2")),
+    _runs("z", ("a", "is"), (" ", "ib"), (" ", "s1"), ("b", "s1"), "d"),
+    _runs((" ", "b1"), (" ", "bs2"), (" ", "b"), ("  ", "i"), ("x y", "s"), ("  ", "ibs"), (" ", "bs1"), ("\u4e2d\u6587", "i"), (" \t", "is1"), ("a ", "b1")),
+    _runs("z", ("a", "s"), (" ", "bs1"), (" ", "s1"), (" ", "s1"), (" ", "ibs1"), (" ", "s"), " ", " ", ("b", "bs1"), "d"),
+    _runs(("_\u01c5\u4e2d", "bs2"), ("_www.x\u01c5\xe9", "b"), ("\u02b0\U0001f600*http://x", "i")),
+    _runs("z", ("a", "bs1"), (" ", "is1"), (" ", "is1"), ("b", "ib1"), "d"),
+    _runs("z", ("a", "b3"), (" \t", "3"), ("   ", "s2"), ("b", "is1"), (" \t", "is2"), ("c", "b"), "d"),
+    _runs("z", ("a", "s"), (" \t", "bs2"), ("\t", "ibs2"), ("\t", "bs1"), ("   ", "ib2"), ("\t", "is2"), (" \t", "is"), ("b", "is"), "d"),
+    _runs((" a", "2"), ("-", "i2"), style="HEADING_6"),
+    _runs((" \x0b", "s"), ("\U0001f600_", "1")),
+    _runs("z", ("a", "is"), (" ", "is1"), (" ", "2"), ("b", "bs1"), "d"),
+    _runs(("  ", "ibs"), ("\u4e2d\u0301\u4e2d", "ibs2"), ("www.x\U0001f600", "s"), ("a_b", "ib"), "*\u0301http://x", "~", ("def", "bs"), ("\x0b ", "i"), style="HEADING_3"),
+    _runs((" ", "1"), "*-\x0ba", ("x y", "is"), ("~", "b"), ("a", "i2"), ("\u4e2d\x0b\xe9", "is1"), ("\U0001f600 1. ", "bs"), (" ", "b1"), style="HEADING_4"),
+    _runs("z", ("a", "bs2"), " \t", (" ", "s1"), ("b", "bs2"), ("  ", "ibs1"), ("c", "1"), "d"),
+    _runs("z", ("a", "is2"), (" ", "s2"), ("b", "ibs3"), (" ", "ibs3"), (" \t", "is2"), ("\t", "ib1"), ("c", "i1"), "d"),
+    _runs("z", (" ", "i2"), ("a", "ibs1"), ("  ", "is1"), ("c", "i2"), ("   ", "ibs3"), ("b", "i"), (" \t", "i3"), "d"),
+    _runs((" a", "bs1"), "http://xhttp://xhttp://x", ("\u02b0", "2"), ("\u4e2d\u6587", "is"), ("~", "b2"), "-a", ("bc", "ibs3"), ("\t", "ib1"), ("\t", "bs"), ("b", "ib1"), ("  ", "ibs3")),
+    _runs("z", ("a", "ibs3"), (" ", "is2"), ("   ", "i3"), ("\t", "i"), (" ", "i1"), ("\t", "ibs1"), (" \t", "i3"), (" \t", "i"), ("  ", "b"), ("b", "ib2"), "d"),
+    _runs("q \u03b1\u3099www.x"),
+    _runs("\x0b   ", style="HEADING_2"),
+    _runs("x"),
+    _runs("\u3000\u3000"),
+    {"text": ""},
+    _runs(("-\U0001f600a", "s"), ("\t", "ibs4"), ("e\u0301", "i3"), (" \t", "4")),
+    _runs("z", ("a", "bs"), (" ", "b"), (" ", "ibs"), ("b", "s1"), "d"),
+    _runs("z", ("a", "bs"), (" ", "is1"), (" ", "i1"), ("b", "b"), "d"),
+    _runs("  "),
+    _runs("z", ("a", "ib"), (" ", "is"), ("\t", "ib1"), (" ", "bs2"), ("   ", "b2"), ("b", "i2"), "d"),
+    _runs("z", ("a", "b"), (" ", "ibs1"), (" ", "s1"), " ", (" ", "bs"), " ", ("b", "bs1"), "d"),
+    _runs("z", ("a", "bs1"), "\t", (" \t", "bs1"), ("b", "s"), ("  ", "ibs2"), ("\t", "is1"), ("c", "b1"), "d"),
+    _runs(("  ", "s2"), ("\t", "ibs"), ("\t", "is2"), ("\u02b0\u4e2dwww.x", "1"), ("   ", "i1"), ("a_b", "i"), ("_\u4e2de", "b2"), " ", (" ", "i2"), (" ", "s")),
+    _runs("1."),
+    _runs("1.\tx"),
+    _runs("1.\xa0x"),
+    _runs("\u0661. x"),
+    _runs("\uff11. x"),
+    _runs("1.", ("x", "b")),
+    _runs("1.\x0bx"),
+    _runs("\thttp://x"),
+    _runs("*http://x"),
+    _runs("_http://x"),
+    _runs("~http://x"),
+    _runs("<http://x"),
+    _runs("http\u017f://x"),
+    _runs({"text": "a", "link": "https://e.com/a<b"}),
+    _runs({"text": "a", "link": "https://e.com/a>b"}),
+    _runs({"text": "a", "link": "https://e.com/a`b"}),
+    _runs({"text": "a", "link": "https://e.com/a\\b"}),
+    _runs({"text": "a", "link": "https://e.com/a(b)c"}),
+    _runs(("a\x0bb", "b")),
+    _runs(("a\x0bb", "1")),
+    _runs("a"),
+    _runs("abc  ", style="HEADING_1"),
+    _runs("b"),
+    _runs("\x0babc", style="HEADING_1"),
+    _runs("c"),
+    _runs("abc\t", style="HEADING_1"),
+    _runs("d"),
+    _runs("q e", ("\u0301www.x", "u")),
+    _runs("q e", ("\u0301http://x", "u")),
+]
+# fmt: on
+
+# Real's `text/plain` and `text/markdown` exports of the Doc each record states, from the
+# measurement `backlot.gdocs`'s export section records; `md_writer` is `_MD_WRITER`.
+# fmt: off
+_DOCS_EXPORTS = {
+    "chars": (
+        {
+            "content": "tab\there\x0bsoft\u2028ls nbsp\xa0x \U0001f600 \ufeffbom \u200bzw\n  lead and trail  \ne\u0301 \x7f del \x85 nel \u2029 ps"
+        },
+        "\ufefftab        here\r\nsoft ls nbsp x \U0001f600 \ufeffbom \u200bzw\r\n  lead and trail  \r\ne\u0301 \x7f del \x85 nel   ps",
+        "tab\there  \nsoft\u2028ls nbsp\xa0x \U0001f600 \ufeffbom \u200bzw  \n  lead and trail    \ne\u0301 \x7f del \x85 nel \u2029 ps",
+    ),
+    "md_prose": (
+        {"content": "a\nb\nc\n\nd\n\n\ne"},
+        "\ufeffa\r\nb\r\nc\r\n\r\n\r\nd\r\n\r\n\r\n\r\n\r\ne",
+        "a  \nb  \nc\n\nd\n\ne",
+    ),
+    "soft": (
+        {
+            "content": "\x0bstart\nend\x0b\n\x0b\ntwo\x0b\x0bbreaks\n\u2028\nsp\u2002\u2007\u202f\u3000x\nx"
+        },
+        "\ufeffstart\r\nend\r\n\r\n\r\n\r\n\r\ntwo\r\n\r\nbreaks\r\n \r\nsp \u2007\u202f x\r\nx",
+        "  \nstart  \nend\n\ntwo\n\nbreaks  \n\u2028  \nsp\u2002\u2007\u202f\u3000x  \nx",
+    ),
+    "trail_two": ({"content": "a\n\n"}, "\ufeffa", "a\n\n"),
+    "md_empty_lead": ({"content": "\n\na\nb"}, "\ufeffa\r\nb", "\n\na  \nb"),
+    "ws_plain": (
+        {"content": "a\n \nb\n\t\nc\n   \nd"},
+        "\ufeffa\r\n \r\nb\r\n        \r\nc\r\n   \r\nd",
+        "a  \n   \nb  \n\t  \nc  \n     \nd",
+    ),
+    "md_headings": (
+        {
+            "paragraphs": [
+            _runs("Title ", ("bold", "b"), style="TITLE"),
+            _runs("Sub", style="SUBTITLE"),
+            _runs("H1", style="HEADING_1"),
+            _runs("H2", style="HEADING_2"),
+            _runs("p"),
+            {"style": "HEADING_3", "text": ""},
+            _runs("H4 *x*", style="HEADING_4"),
+            _runs("H5", style="HEADING_5"),
+            _runs("H6 ", ("b", "b"), style="HEADING_6"),
+            _runs("q"),
+            _runs("r"),
+            _runs("# hashy", style="HEADING_1"),
+            {"text": ""},
+            _runs("last", style="HEADING_2"),
+        ]
+        },
+        "\ufeffTitle bold\r\nSub\r\nH1\r\nH2\r\np\r\nH4 *x*\r\nH5\r\nH6 b\r\nq\r\nr\r\n# hashy\r\n\r\n\r\nlast",
+        "# Title **bold**\n\n## Sub\n\n# H1\n\n## H2\n\np\n\n### \n\n#### H4 \\*x\\*\n\n##### H5\n\n###### *H6 **b***\n\nq  \nr\n\n# \\# hashy\n\n## last",
+    ),
+    "empty_head_mid": (
+        {
+            "paragraphs": [
+            _runs("a"),
+            {"style": "HEADING_3", "text": ""},
+            _runs("b"),
+            {"style": "HEADING_2", "text": ""},
+            {"text": ""},
+            _runs("c"),
+            {"text": ""},
+            {"style": "TITLE", "text": ""},
+            {"text": ""},
+            _runs("d"),
+        ]
+        },
+        "\ufeffa\r\nb\r\n\r\n\r\nc\r\n\r\n\r\n\r\n\r\n\r\n\r\nd",
+        "a\n\n### \n\nb\n\n## \n\nc\n\n# \n\nd",
+    ),
+    "subtitle_empty": (
+        {
+            "paragraphs": [
+            _runs("a"),
+            {"style": "SUBTITLE", "text": ""},
+            _runs("b"),
+            _runs("\x0b", style="HEADING_4"),
+            _runs("c"),
+            _runs("\x0b\x0b"),
+            _runs("d"),
+        ]
+        },
+        "\ufeffa\r\n\r\n\r\nb\r\n\r\nc\r\n\r\n\r\n\r\n\r\nd",
+        "a\n\n## \n\nb\n\n####  \n\nc\n\nd",
+    ),
+    "md_breaks": (
+        {
+            "paragraphs": [
+            _runs("a"),
+            {"text": ""},
+            _runs("h", style="HEADING_1"),
+            {"text": ""},
+            {"text": ""},
+            _runs("b"),
+            _runs("c\x0b"),
+            _runs("h2", style="HEADING_2"),
+            _runs("d\x0b"),
+            {"text": ""},
+            _runs("e"),
+        ]
+        },
+        "\ufeffa\r\n\r\n\r\nh\r\n\r\n\r\n\r\n\r\nb\r\nc\r\n\r\nh2\r\nd\r\n\r\n\r\n\r\ne",
+        "a\n\n# h\n\nb  \nc\n\n## h2\n\nd\n\ne",
+    ),
+    "md_marks": (
+        {
+            "paragraphs": [
+            _runs("x ", ("bold ", "b"), "after"),
+            _runs("x", (" spaced ", "i"), "y"),
+            _runs(("whole bold", "b")),
+            _runs(("a", "b"), ("b", "i"), ("c", "s")),
+            _runs("u ", ("under", "u"), " ", ("ub", "bu")),
+            _runs("see ", {"text": "link", "link": "https://example.com/a"}, " and ", {"text": "bold link", "bold": True, "link": "https://example.com/b"}, "."),
+            _runs("odd ", {"text": "li]nk", "link": "https://example.com/p(a)r en"}, " ", {"text": "mail", "link": "mailto:a@b.c"}),
+            _runs(("*", "b"), "x", ("_y_", "i")),
+            _runs(("   ", "b"), "sp"),
+            _runs("mid", ("dle", "b"), "word"),
+            _runs(("part ", "b"), ("bold", "ib"), (" more", "b")),
+            _runs({"text": "http://example.com", "link": "http://example.com"}),
+            _runs({"text": "same", "link": "https://example.com/s"}, {"text": "+bold", "bold": True, "link": "https://example.com/s"}),
+        ]
+        },
+        "\ufeffx bold after\r\nx spaced y\r\nwhole bold\r\nabc\r\nu under ub\r\nsee link and bold link.\r\nodd li]nk mail\r\n*x_y_\r\n   sp\r\nmiddleword\r\npart bold more\r\nhttp://example.com\r\nsame+bold",
+        "x **bold** after  \nx *spaced* y  \n**whole bold**  \n**a***b*~~c~~  \nu under **ub**  \nsee [link](https://example.com/a) and [**bold link**](https://example.com/b).  \nodd [li\\]nk](https://example.com/p\\(a\\)r%20en) [mail](mailto:a@b.c)  \n**\\***x*\\_y\\_*  \n   sp  \nmid**dle**word  \n**part *bold* more**  \n[http\\://example.com](http://example.com)  \n[same**\\+bold**](https://example.com/s)",
+    ),
+    "nest": (
+        {
+            "paragraphs": [
+            _runs(("a", "s"), ("b", "bs"), ("c", "b")),
+            _runs(("a", "b"), ("b", "bs"), ("c", "s")),
+            _runs(("a", "i"), ("b", "ib"), ("c", "b")),
+            _runs(("a", "b"), ("b", "ib"), ("c", "i")),
+            _runs(("a", "ib"), ("b", "b"), "c"),
+            _runs(("a", "ib"), ("b", "i"), "c"),
+            _runs(("a", "ibs"), ("b", "i"), "c"),
+            _runs(("a", "is"), ("b", "ibs")),
+            _runs(("a", "s"), ("b", "ibs"), ("c", "s")),
+            _runs("x", ("ib", "ib"), "y"),
+            _runs(("l", "1"), ("m", "2")),
+            _runs(("l", "b1"), ("m", "b")),
+            _runs(("l", "b"), ("m", "b1"), ("n", "b")),
+            _runs(("l", "i1"), ("m", "1")),
+            _runs(("s", "s1")),
+            _runs(("  sp  ", "b"), "x"),
+            _runs("x", ("  sp  ", "1"), "x"),
+            _runs("x", (" ", "1"), "x"),
+            _runs("x", ("\tt\t", "i"), "x"),
+        ]
+        },
+        "\ufeffabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nabc\r\nab\r\nabc\r\nxiby\r\nlm\r\nlm\r\nlmn\r\nlm\r\ns\r\n  sp  x\r\nx  sp  x\r\nx x\r\nx        t        x",
+        "~~a**b**~~**c**  \n**a~~b~~**~~c~~  \n*a**b*****c**  \n**a*b****c*  \n***a*****b**c  \n***a**b*c  \n***~~a~~**b*c  \n*~~a**b**~~*  \n~~a***b***c~~  \nx***ib***y  \n[l](https://e.com/1)[m](https://e.com/2)  \n[**l**](https://e.com/1)**m**  \n**l[m](https://e.com/1)n**  \n[*l*m](https://e.com/1)  \n[~~s~~](https://e.com/1)  \n  **sp**  x  \nx  [sp](https://e.com/1)  x  \nx x  \nx\t*t*\tx",
+    ),
+    "md_escape": (
+        {
+            "content": "*star* _under_ **x** __y__\n# not heading\n#hash\n1. not list\n2) paren\n- not list\n+ plus\n* star item\n> quote\n[x](y) ![i](j)\n<b>tag</b> & amp &lt;\nback\\slash `code` ``two``\npipe | table |\n~tilde~ ~~s~~\nunder_score_word snake_case\na  b double\n    four spaces\ntrailing space   \n===\n---\n***\n___\n!bang [ ] ( ) { }\n1\\. x\nhttp://example.com/a_b*c\n100% $5 @at ^up =eq"
+        },
+        "\ufeff*star* _under_ **x** __y__\r\n# not heading\r\n#hash\r\n1. not list\r\n2) paren\r\n- not list\r\n+ plus\r\n* star item\r\n> quote\r\n[x](y) ![i](j)\r\n<b>tag</b> & amp &lt;\r\nback\\slash `code` ``two``\r\npipe | table |\r\n~tilde~ ~~s~~\r\nunder_score_word snake_case\r\na  b double\r\n    four spaces\r\ntrailing space   \r\n===\r\n---\r\n***\r\n___\r\n!bang [ ] ( ) { }\r\n1\\. x\r\nhttp://example.com/a_b*c\r\n100% $5 @at ^up =eq",
+        "\\*star\\* \\_under\\_ \\*\\*x\\*\\* \\_\\_y\\_\\_  \n\\# not heading  \n\\#hash  \n1\\. not list  \n2\\) paren  \n\\- not list  \n\\+ plus  \n\\* star item  \n\\> quote  \n\\[x\\](y) \\!\\[i\\](j)  \n\\<b\\>tag\\</b\\> & amp \\&lt;  \nback\\\\slash \\`code\\` \\`\\`two\\`\\`  \npipe \\| table \\|  \n\\~tilde\\~ \\~\\~s\\~\\~  \nunder\\_score\\_word snake\\_case  \na  b double  \n    four spaces  \ntrailing space     \n\\===  \n\\---  \n\\*\\*\\*  \n\\_\\_\\_  \n\\!bang \\[ \\] ( ) { }  \n1\\\\. x  \nhttp\\://example.com/a\\_b\\*c  \n100% \\$5 @at ^up \\=eq",
+    ),
+    "esc_runs": (
+        {
+            "paragraphs": [
+            _runs("a", ("-b", "b")),
+            _runs("a", ("1. x", "b")),
+            _runs("a&", ("b", "b")),
+            _runs("\t-x"),
+            _runs("x\t-y"),
+            _runs("\xa0-x"),
+            _runs("x 1. y"),
+            _runs("x 2) y"),
+            _runs("HTTP://x"),
+            _runs("Www.x"),
+            _runs("xhttp://y"),
+            _runs("x www.y"),
+            _runs("xwww.y"),
+            _runs("www."),
+            _runs("http:/x"),
+            _runs("https:x"),
+            _runs(("www.x", "1")),
+            _runs("&1"),
+            _runs("&\xe9"),
+            _runs("x&_"),
+            _runs("http", ("://x", "b")),
+            _runs("www", (".x", "b")),
+            _runs("1", (". x", "b")),
+            _runs("a ", ("=b", "b")),
+            _runs(("a", "b"), " +b"),
+            _runs("x", ("-", "b"), "y"),
+            _runs("\xe9-x"),
+            _runs("x,-y"),
+            _runs("(-x"),
+            _runs("x/-y"),
+            _runs("x\u3000-y"),
+            _runs("Http://x Https://y FTP://z WWW.q"),
+            _runs("http://"),
+            _runs("mailto://x file://y"),
+        ]
+        },
+        "\ufeffa-b\r\na1. x\r\na&b\r\n        -x\r\nx        -y\r\n -x\r\nx 1. y\r\nx 2) y\r\nHTTP://x\r\nWww.x\r\nxhttp://y\r\nx www.y\r\nxwww.y\r\nwww.\r\nhttp:/x\r\nhttps:x\r\nwww.x\r\n&1\r\n&\xe9\r\nx&_\r\nhttp://x\r\nwww.x\r\n1. x\r\na =b\r\na +b\r\nx-y\r\n\xe9-x\r\nx,-y\r\n(-x\r\nx/-y\r\nx -y\r\nHttp://x Https://y FTP://z WWW.q\r\nhttp://\r\nmailto://x file://y",
+        "a**\\-b**  \na**1\\. x**  \na&**b**  \n\t\\-x  \nx\t\\-y  \n\xa0-x  \nx 1\\. y  \nx 2\\) y  \nHTTP\\://x  \nWww\\.x  \nxhttp://y  \nx www\\.y  \nxwww.y  \nwww\\.  \nhttp:/x  \nhttps:x  \n[www\\.x](https://e.com/1)  \n&1  \n&\xe9  \nx&\\_  \nhttp**://x**  \nwww**.x**  \n1**. x**  \na **\\=b**  \n**a** \\+b  \nx**\\-**y  \n\xe9-x  \nx,-y  \n(-x  \nx/-y  \nx\u3000-y  \nHttp\\://x Https\\://y FTP\\://z WWW\\.q  \nhttp\\://  \nmailto://x file://y",
+    ),
+    "loose": (
+        {
+            "paragraphs": [
+            _runs("x", ("\xa0b\xa0", "b"), "y"),
+            _runs("x", ("\u3000b\u3000", "b"), "y"),
+            _runs("x", ("\u2002b\u2002", "b"), "y"),
+            _runs("a", ("-b", "u")),
+            _runs(("a", "u"), ("-b", "bu")),
+            _runs("x1. y"),
+            _runs("(http://x"),
+            _runs(("x", "1"), "-y"),
+        ]
+        },
+        "\ufeffx b y\r\nx b y\r\nx b y\r\na-b\r\na-b\r\nx1. y\r\n(http://x\r\nx-y",
+        "x**\xa0b\xa0**y  \nx**\u3000b\u3000**y  \nx**\u2002b\u2002**y  \na\\-b  \na**\\-b**  \nx1. y  \n(http\\://x  \n[x](https://e.com/1)\\-y",
+    ),
+    "heading_escapes": (
+        {
+            "paragraphs": [
+                {"text": _WORDS},
+                {"runs": [{"text": _WORDS[:300], "bold": True}, {"text": " tail " + _WORDS[:200]}]},
+                {"style": "HEADING_1", "text": "1. Introduction"},
+                {"style": "HEADING_2", "text": "- dash"},
+                {"style": "HEADING_3", "text": "+ plus"},
+                {"style": "TITLE", "text": "= eq"},
+                {"style": "SUBTITLE", "text": "2) paren"},
+                {"style": "HEADING_1", "text": "http://x.com www.y"},
+                {"style": "HEADING_2", "text": "  1. spaced"},
+                {"style": "HEADING_4", "text": "a & b &c"},
+                {"text": "\t1. tabbed"},
+                {"runs": [{"text": "x"}, {"text": "1. run", "bold": True}]},
+                {"text": "end"},
+            ]
+        },
+        "\ufeff"
+        + _WORDS
+        + "\r\n"
+        + _WORDS[:300]
+        + " tail "
+        + _WORDS[:200]
+        + "\r\n1. Introduction\r\n- dash\r\n+ plus\r\n= eq\r\n2) paren\r\nhttp://x.com www.y\r\n  1. spaced\r\na & b &c\r\n        1. tabbed\r\nx1. run\r\nend",
+        _WORDS
+        + "  \n**"
+        + _WORDS[:300]
+        + "** tail "
+        + _WORDS[:200]
+        + "\n\n# 1\\. Introduction\n\n## \\- dash\n\n### \\+ plus\n\n# \\= eq\n\n## 2\\) paren\n\n# http\\://x.com www\\.y\n\n##   1\\. spaced\n\n#### a & b \\&c\n\n\t1\\. tabbed  \nx**1\\. run**  \nend",
+    ),
+    "md_writer": (
+        {"paragraphs": _MD_WRITER},
+        (
+            "\ufeffza        bd\r\n"
+            "  http://y\u01c5  ax yax y\u4e2d\u6587 b-a  a\xe9www.x aa \r\n"
+            "q 0\ufe0fwww.x\r\n"
+            "q _\ufe0fhttp://x\r\n"
+            "zabcdefg\r\n"
+            '999.   10 <-<~ #"Foo_*Zed\U0001f600999.\r\n'
+            "q \u03b1\U000e0100http://x\r\n"
+            "zabcdefg\r\n"
+            "za     bd\r\n"
+            "za      bd\r\n"
+            "\r\n"
+            "\r\n"
+            "x\r\n"
+            "\r\n"
+            "xy\r\n"
+            "\r\n"
+            "\r\n"
+            "\r\n"
+            "_https://x\r\n"
+            " \r\n"
+            "        \r\n"
+            "\r\n"
+            "\r\n"
+            " h\r\n"
+            "q A\ufe0fhttp://x\r\n"
+            "q \u03b1\u034fhttp://x\r\n"
+            "\u01c5\u0301www.x \u01c5\u0301http://y\r\n"
+            "\u4e2d\u0301www.x \u4e2d\u0301http://y\r\n"
+            "  \r\n"
+            "\r\n"
+            "\r\n"
+            "\u4e2d\u02b0\u0301http://xawww.x-\r\n"
+            "za  bd\r\n"
+            "za  bd\r\n"
+            "zabcdef\r\n"
+            "za      bd\r\n"
+            "  \r\n"
+            "=`        b@12.q\u2022 3.999.        &1                  ^        .         \r\n"
+            " *  1. a                  \u4e2d\u6587def1. aa  \r\n"
+            "\xe9\u01c5\u0301http://xwww.x\u0301\r\n"
+            "\r\n"
+            "        \r\n"
+            "\r\n"
+            "ba-aa\u4e2d\u6587b  \u4e2d\u6587          x y          aaa_b         e\u0301bc \r\n"
+            "za  bd\r\n"
+            "     x y   \u4e2d\u6587         a \r\n"
+            "za       bd\r\n"
+            "_\u01c5\u4e2d_www.x\u01c5\xe9\u02b0\U0001f600*http://x\r\n"
+            "za  bd\r\n"
+            "za            b         cd\r\n"
+            "za                                             bd\r\n"
+            " a-\r\n"
+            " \r\n"
+            "\U0001f600_\r\n"
+            "za  bd\r\n"
+            "  \u4e2d\u0301\u4e2dwww.x\U0001f600a_b*\u0301http://x~def\r\n"
+            "\r\n"
+            " *-\r\n"
+            "ax y~a\u4e2d\r\n"
+            "\xe9\U0001f600 1.  \r\n"
+            "za          b  cd\r\n"
+            "za b                  cd\r\n"
+            "z a  c   b         d\r\n"
+            " ahttp://xhttp://xhttp://x\u02b0\u4e2d\u6587~-abc                b  \r\n"
+            "za                                         bd\r\n"
+            "q \u03b1\u3099www.x\r\n"
+            "\r\n"
+            "  \r\n"
+            "x\r\n"
+            "  \r\n"
+            "\r\n"
+            "\r\n"
+            "-\U0001f600a        e\u0301         \r\n"
+            "za  bd\r\n"
+            "za  bd\r\n"
+            "  \r\n"
+            "za             bd\r\n"
+            "za     bd\r\n"
+            "za                 b          cd\r\n"
+            "                  \u02b0\u4e2dwww.x   a_b_\u4e2de   \r\n"
+            "1.\r\n"
+            "1.        x\r\n"
+            "1. x\r\n"
+            "\u0661. x\r\n"
+            "\uff11. x\r\n"
+            "1.x\r\n"
+            "1.\r\n"
+            "x\r\n"
+            "        http://x\r\n"
+            "*http://x\r\n"
+            "_http://x\r\n"
+            "~http://x\r\n"
+            "<http://x\r\n"
+            "http\u017f://x\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "a\r\n"
+            "b\r\n"
+            "a\r\n"
+            "b\r\n"
+            "a\r\n"
+            "abc  \r\n"
+            "b\r\n"
+            "\r\n"
+            "abc\r\n"
+            "c\r\n"
+            "abc        \r\n"
+            "d\r\n"
+            "q e\u0301www.x\r\n"
+            "q e\u0301http://x"
+        ),
+        (
+            "z~~a~~        ~~**b**](https://e.com/2)d  \n"
+            "  [http\\://y](https://e.com/2)[***\u01c5***](https://e.com/1)  ****a***[**x y](https://e.com/1)*~~ax y](https://e.com/1)***[[\u4e2d\u6587](https://e.com/1)* b***\\-a\xa0*** **a*\xe9www\\.x* [a](https://e.com/2)*~~a~~***~~\xa0~~  \n"
+            "q 0\ufe0fwww.x  \n"
+            "q \\_\ufe0fhttp\\://x  \n"
+            "z**a~~b[c*d*](https://e.com/1)](https://e.com/2)**[~~e](https://e.com/2)~~[f](https://e.com/2)g\n"
+            "\n"
+            '##### 999\\. \u3000 10 \\<-***\\<**~~\\~ \\#](https://e.com/back\\\\s)***["Foo\\_\\*Zed\U0001f600**](https://e.com/back\\\\s)***999\\.***\n'
+            "\n"
+            "q \u03b1\U000e0100http\\://x  \n"
+            "z*a~~b[c**d**](https://e.com/1)](https://e.com/2)*[[e](https://e.com/2)~~[f](https://e.com/2)g  \n"
+            "z**~~a~~**   *  [**b**](https://e.com/1)~~d  \n"
+            "z~~a    ~~  *~~b~~*d\n"
+            "\n"
+            "x\n"
+            "\n"
+            "**x**y\n"
+            "\n"
+            "##     \n"
+            "\n"
+            "\\_https://x\n"
+            "\n"
+            "##   \t \n"
+            "\n"
+            "\xa0h  \n"
+            "q A\ufe0fhttp://x  \n"
+            "q \u03b1\u034fhttp://x  \n"
+            "\u01c5\u0301www.x \u01c5\u0301http://y  \n"
+            "\u4e2d\u0301www.x \u4e2d\u0301http://y  \n"
+            "  \n"
+            "\n"
+            "[\u4e2d\u02b0\u0301http://x](https://e.com/1)***~~a**~~*www\\.x-  \n"
+            "z[a](https://e.com/1)  ~~b**d  \n"
+            "z[a  ](https://e.com/1)*~~b~~*d  \n"
+            "z[a*b**c~~d**~~*](https://e.com/1)~~[e](https://e.com/2)*f  \n"
+            "z[***~~a**~~*](https://e.com/1)  ~~  *  ~~b~~d\n"
+            "\n"
+            "\n"
+            "#### [~~\\=~~](https://e.com/q%20r)\\`\tb*@12.q\u2022 3\\.999\\.\t&1\t  \t^\t.\t\u3000*\n"
+            "\n"
+            " *[~~\\****~~  *1\\. a* \t \t*\u4e2d\u6587*def[**1\\. a**](https://e.com/2)[~~a~~](https://e.com/1)    \n"
+            "~~\xe9\u01c5\u0301http://xwww.x~~**\u0301**\n"
+            "\n"
+            "#   \t \n"
+            "\n"
+            "*~~b[**a**~~](https://e.com/2)*[\\-a](https://e.com/2)a***~~\u4e2d\u6587~~](https://e.com/1)*[b](https://e.com/1)  [[\u4e2d\u6587](https://e.com/1)** \t *~~x y~~*  \t~~**a**~~aa\\_b \t[e\u0301](https://e.com/2)*bc*   \n"
+            "z*~~a~~ * [~~b~~](https://e.com/1)d  \n"
+            "     ~~x y   ~~*\u4e2d\u6587* \t~~**a**](https://e.com/1)   \n"
+            "z~~a    ~~   [**~~b**~~](https://e.com/1)d  \n"
+            "[**~~\\_\u01c5\u4e2d~~**](https://e.com/2)~~\\_www.x\u01c5\xe9***\u02b0\U0001f600\\*http\\://x*  \n"
+            "z[**~~a***  ***b***](https://e.com/1)d  \n"
+            "z[**a**](https://e.com/3) \t   ~~[*b*](https://e.com/1)~~ \t**c**d  \n"
+            "z~~a \t\t\t~~   \t \t~~*b~~*d\n"
+            "\n"
+            "######  [*a-*](https://e.com/2)\n"
+            "\n"
+            "   \n"
+            "[\U0001f600\\_](https://e.com/1)  \n"
+            "z*~~a](https://e.com/2)*  [**~~b**~~](https://e.com/1)d\n"
+            "\n"
+            "###   ***~~[\u4e2d\u0301\u4e2d](https://e.com/2)**~~*~~www\\.x\U0001f600~~***a\\_b***\\*\u0301http\\://x\\~**~~def~~**  \n"
+            "\n"
+            "####  \\*- a*~~x y~~***\\~***[a*](https://e.com/2)*[~~\u4e2d~~](https://e.com/1)* [*~~\xe9*~~](https://e.com/1)~~**\U0001f600 1\\.**~~  \n"
+            "\n"
+            "z[**~~a**~~](https://e.com/2) \t ~~[**b**](https://e.com/2)~~  [c](https://e.com/1)d  \n"
+            "z[*~~a~~*](https://e.com/2) ~~[***b***](https://e.com/3)  \t~~\t**[c](https://e.com/1)*d  \n"
+            "z *[**~~a~~**](https://e.com/1)  [c](https://e.com/2)   b* \td  \n"
+            " [**~~a**~~](https://e.com/1)http\\://xhttp://xhttp://x[\u02b0](https://e.com/2)*~~\u4e2d\u6587](https://e.com/2)***[\\~**](https://e.com/2)\\-a[***~~bc~~***](https://e.com/3)\t\t***[b*](https://e.com/1)  **  \n"
+            "z[***~~a**~~*](https://e.com/3) ~~   \t \t* \t \t  **[*b*](https://e.com/2)**d  \n"
+            "q \u03b1\u3099www.x\n"
+            "\n"
+            "##     \n"
+            "\n"
+            "x  \n"
+            "\u3000\u3000\n"
+            "\n"
+            "~~\\-\U0001f600a~~\t[*e\u0301](https://e.com/3)* \t  \n"
+            "z**~~a~~  **[~~b](https://e.com/1)~~d  \n"
+            "z**~~a***  **b**d  \n"
+            "    \n"
+            "z***a** *\t    *[b*](https://e.com/2)d  \n"
+            "z**a **    [**~~b**~~](https://e.com/1)d  \n"
+            "z[**~~a**~~](https://e.com/1)\t \t~~b~~  \t**[c**](https://e.com/1)d  \n"
+            "  \t\t[\u02b0\u4e2dwww\\.x](https://e.com/1)   *a\\_b*[**\\_\u4e2de**](https://e.com/2)     \n"
+            "1\\.  \n"
+            "1\\.\tx  \n"
+            "1.\xa0x  \n"
+            "\u0661. x  \n"
+            "\uff11. x  \n"
+            "1\\.**x**  \n"
+            "1\\.  \n"
+            "x  \n"
+            "\thttp\\://x  \n"
+            "\\*http\\://x  \n"
+            "\\_http://x  \n"
+            "\\~http\\://x  \n"
+            "\\<http\\://x  \n"
+            "http\u017f\\://x  \n"
+            "[a](https://e.com/a\\<b)  \n"
+            "[a](https://e.com/a\\>b)  \n"
+            "[a](https://e.com/a\\`b)  \n"
+            "[a](https://e.com/a\\\\b)  \n"
+            "[a](https://e.com/a\\(b\\)c)  \n"
+            "**a**  \n"
+            "**b**  \n"
+            "[a](https://e.com/1)  \n"
+            "[b](https://e.com/1)  \n"
+            "a\n"
+            "\n"
+            "# abc  \n"
+            "\n"
+            "b\n"
+            "\n"
+            "#  abc\n"
+            "\n"
+            "c\n"
+            "\n"
+            "# abc\t\n"
+            "\n"
+            "d  \n"
+            "q e\u0301www\\.x  \n"
+            "q e\u0301http\\://x"
+        ),
+    ),
+    "md_tail": (
+        {
+            "paragraphs": [
+                _runs(
+                    "z",
+                    ("a", "ibs"),
+                    (" ", "is1"),
+                    (" ", "bs"),
+                    (" ", "bs"),
+                    (" ", "ib1"),
+                    ("b", "ibs1"),
+                    "d",
+                ),
+                _runs("  "),
+            ]
+        },
+        "\ufeffza    bd",
+        "z***~~a~~***    *[**~~b*~~](https://e.com/1)**d  \n  ",
+    ),
+    "md_kept": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs(
+                    ("a", "b2"),
+                    ("a ", "ibs"),
+                    (" ", "bs1"),
+                    (" a", "i"),
+                    (" ", "is2"),
+                    ("  ", "ibs"),
+                    ("a ", "i"),
+                    (" \t", "bs1"),
+                    (" ", "ib"),
+                ),
+                _runs("p001"),
+                _runs(
+                    ("a", "is"),
+                    ("  ", "ib"),
+                    (" ", "ibs"),
+                    (" ", "ib1"),
+                    (" ", "ibs2"),
+                    (" ", "ibs"),
+                    ("  ", "is"),
+                    (" ", "s"),
+                    "b",
+                ),
+                _runs("p002"),
+            ]
+        },
+        "\ufeffp000\r\naa   a   a           \r\np001\r\na         b\r\np002",
+        (
+            "p000  \n"
+            "[**a**](https://e.com/2)***~~a~~*  ** *a   a*  \t   \n"
+            "p001  \n"
+            "*~~a~~   *      b  \n"
+            "p002"
+        ),
+    ),
+    "md_named": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs(
+                    ("a\x0b\x0b", "s"),
+                    ("  ", "i1"),
+                    " ",
+                    ("\t", "i"),
+                    ("b\x0b", "2"),
+                    style="HEADING_6",
+                ),
+                _runs("p001"),
+                _runs(("*a", "is"), ("_\U0001f600-\x0b", "i"), (" 1. ", "i")),
+                _runs("p002"),
+                _runs(("\x0b\x0ba", "i2"), "\t", (" ", "i"), ("b", "ibs"), style="HEADING_6"),
+                _runs("p003"),
+                _runs(("a", "ib2"), ("\x0b  ", "b1"), ("b", "is")),
+                _runs("p004"),
+                _runs(
+                    ("\x0b\x0ba", "b"),
+                    (" ", "b"),
+                    ("  ", "bs"),
+                    (" ", "2"),
+                    (" \x0b\x0b", "i1"),
+                    (" ", "i"),
+                    " ",
+                    ("b", "s2"),
+                    style="HEADING_6",
+                ),
+                _runs("p005"),
+                _runs(
+                    " a",
+                    "  \x0b\x0b",
+                    ("b", "b"),
+                    (" \t", "i1"),
+                    ("\x0bx y", "i"),
+                    ("\t", "s"),
+                    ("\x0b\x0b\xa0", "is"),
+                    style="SUBTITLE",
+                ),
+                _runs("p006"),
+                _runs(
+                    (" \t", "s2"),
+                    (" \t", "i"),
+                    (" \t", "i1"),
+                    ("x y", "i"),
+                    "x y",
+                    (" ", "is"),
+                    "\t",
+                    style="TITLE",
+                ),
+                _runs("p007"),
+            ]
+        },
+        (
+            "\ufeffp000\r\n"
+            "a\r\n"
+            "\r\n"
+            "           b\r\n"
+            "\r\n"
+            "p001\r\n"
+            "*a_\U0001f600-\r\n"
+            "1. \r\n"
+            "p002\r\n"
+            "\r\n"
+            "\r\n"
+            "a         b\r\n"
+            "p003\r\n"
+            "a\r\n"
+            " b\r\n"
+            "p004\r\n"
+            "\r\n"
+            "\r\n"
+            "a     \r\n"
+            "\r\n"
+            "  b\r\n"
+            "p005\r\n"
+            " a  \r\n"
+            "\r\n"
+            "b         \r\n"
+            "x y        \r\n"
+            "\r\n"
+            " \r\n"
+            "p006\r\n"
+            "                           x yx y         \r\n"
+            "p007"
+        ),
+        (
+            "p000\n"
+            "\n"
+            "###### *~~a~~*     \t*[b](https://e.com/2)* \n"
+            "\n"
+            "p001  \n"
+            "*~~\\*a~~\\_\U0001f600-*  \n"
+            " *1\\.*   \n"
+            "p002\n"
+            "\n"
+            "######   [*a*](https://e.com/2)\t ***~~b**~~*\n"
+            "\n"
+            "p003  \n"
+            "[***a***](https://e.com/2)  \n"
+            "  *~~b~~*  \n"
+            "p004\n"
+            "\n"
+            "######   ***a   ***      *[~~b~~](https://e.com/2)*\n"
+            "\n"
+            "p005\n"
+            "\n"
+            "##  a    **b** \t *x y*\t  *~~\xa0~~*\n"
+            "\n"
+            "p006\n"
+            "\n"
+            "#  \t \t \t*x y*x y \t\n"
+            "\n"
+            "p007"
+        ),
+    ),
+    "md_pieces": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs(("\xe9", "i"), ("1. a", "iu")),
+                _runs("p001"),
+                _runs(("  ", "isu"), (" \t", "is"), ("\ta", "isu")),
+                _runs("p002"),
+                _runs(("\t", "i"), (" y", "iu")),
+                _runs("p003"),
+                _runs(("\x0b ", "i"), "x"),
+                _runs("p004"),
+                _runs(("\x0b ", "1"), "x"),
+                _runs("p005"),
+                _runs(("\x0b\t", "i"), "x"),
+                _runs("p006"),
+                _runs(("\x0b ", "i"), "x", style="HEADING_2"),
+                _runs("p007"),
+                _runs(("\x0b  ", "i"), "x"),
+                _runs("p008"),
+            ]
+        },
+        (
+            "\ufeffp000\r\n"
+            "\xe91. a\r\n"
+            "p001\r\n"
+            "                   a\r\n"
+            "p002\r\n"
+            "         y\r\n"
+            "p003\r\n"
+            "\r\n"
+            "\r\n"
+            "x\r\n"
+            "p004\r\n"
+            "\r\n"
+            "\r\n"
+            "\r\n"
+            "x\r\n"
+            "p005\r\n"
+            "\r\n"
+            "        x\r\n"
+            "p006\r\n"
+            "\r\n"
+            "x\r\n"
+            "p007\r\n"
+            "\r\n"
+            " x\r\n"
+            "p008"
+        ),
+        (
+            "p000  \n"
+            "*\xe91\\. a*  \n"
+            "p001  \n"
+            "   \t\t*~~a~~*  \n"
+            "p002  \n"
+            "\t *y*  \n"
+            "p003\n"
+            "\n"
+            " x  \n"
+            "p004\n"
+            "\n"
+            " x  \n"
+            "p005\n"
+            "\n"
+            "\tx  \n"
+            "p006\n"
+            "\n"
+            "##   x\n"
+            "\n"
+            "p007\n"
+            "\n"
+            "  x  \n"
+            "p008"
+        ),
+    ),
+    "md_h6": (
+        {
+            "paragraphs": [
+                _runs("p000"),
+                _runs("ww", ("w.x", "i"), style="HEADING_6"),
+                _runs("p001"),
+                _runs("a", ("_b", "i"), style="HEADING_6"),
+                _runs("p002"),
+                _runs(("www.", "i"), "x", style="HEADING_6"),
+                _runs("p003"),
+                _runs("x", (" ", "i"), "y", style="HEADING_6"),
+                _runs("p004"),
+                _runs(("w", "i"), ("ww.x", "b"), style="HEADING_6"),
+                _runs("p005"),
+            ]
+        },
+        (
+            "\ufeffp000\r\n"
+            "www.x\r\n"
+            "p001\r\n"
+            "a_b\r\n"
+            "p002\r\n"
+            "www.x\r\n"
+            "p003\r\n"
+            "x y\r\n"
+            "p004\r\n"
+            "www.x\r\n"
+            "p005"
+        ),
+        (
+            "p000\n"
+            "\n"
+            "###### *www\\.x*\n"
+            "\n"
+            "p001\n"
+            "\n"
+            "###### *a\\_b*\n"
+            "\n"
+            "p002\n"
+            "\n"
+            "###### *www\\.x*\n"
+            "\n"
+            "p003\n"
+            "\n"
+            "###### *x y*\n"
+            "\n"
+            "p004\n"
+            "\n"
+            "###### *w**ww.x***\n"
+            "\n"
+            "p005"
+        ),
+    ),
+    "vt_links": (
+        {"paragraphs": [_runs("p000"), _runs(("\x0b", "1")), _runs("p001")]},
+        "﻿p000\r\n\r\n\r\n\r\n\r\np001",
+        "p000\n\np001",
+    ),
+}
+# fmt: on
+
+
+def test_a_docs_text_export_is_rendered_from_its_body_as_real_renders_it(tmp_path):
+    """`files.export` of a Doc as `text/plain`, `text/markdown` and `text/x-markdown` is what real
+    exported, byte for byte, for the Doc each record states as `content` or as `paragraphs`: no
+    title, a byte-order mark and CRLFs in plain text, and the named styles, marks and escapes of
+    `gdocs.markdown`."""
+    records = [
+        {
+            "source_type": "google_drive",
+            "doc_id": f"export-{name}",
+            "title": name,
+            "author_email": "owner@acme.com",
+            **fields,
+        }
+        for name, (fields, _, _) in _DOCS_EXPORTS.items()
+    ]
+    deck = {
+        "doc_id": "export-deck",
+        "title": "Deck",
+        "content": "a\n\nb",
+        "subtype": "presentation",
+    }
+    records.append({"source_type": "google_drive", "author_email": "owner@acme.com", **deck})
+    formats = ("text/plain", "text/markdown", "text/x-markdown")
+    with corpus_client(tmp_path, records) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def export(name, mime):
+            fid = served_id("google_drive", f"export-{name}")
+            r = client.get(f"/drive/v3/files/{fid}/export", headers=h, params={"mimeType": mime})
+            return r.status_code, r.headers["content-type"], r.content.decode("utf-8")
+
+        got = {name: [export(name, mime) for mime in formats] for name in _DOCS_EXPORTS}
+        # A Slides deck's `text/plain` is not rendered as a Doc's.
+        assert export("deck", "text/plain") == (200, "text/plain", "Deck\n\na\n\nb")
+    assert got == {
+        name: [(200, mime, text) for mime, text in zip(formats, (plain, md, md))]
+        for name, (_, plain, md) in _DOCS_EXPORTS.items()
+    }
 
 
 def test_drive_in_owners_query(client, admin_h, ro_conn):
@@ -1116,12 +2070,20 @@ _BATCH_ROWS = [
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values:batchGet?ranges=A1", None, None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", "{}", None), 501, 200, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _A1_FILTER, None), 501, 200, _UNIMPLEMENTED),
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents", '{"title": "x"}', None), 501, None, _UNIMPLEMENTED),
+    # a create's body and mask are refused ahead of the batch's 501
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents", '{"title": 5}', None), 400, 400, "Invalid value at 'title' (TYPE_STRING), 5"),
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents?fields=title,nope", '{"title": "x"}', None), 400, 400, "Request contains an invalid argument."),
+    (_SHEETS_BATCH, ("POST", "/docs/v1/documents/{doc}:batchUpdate", '{"requests": []}', None), 501, None, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1", None, None), 501, 404, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _MIA), 501, 403, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/NoSuchSheet!A1", None, None), 501, 400, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?alt=media", None, None), 501, 400, _UNIMPLEMENTED),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?$.xgafv=1", None, None), 501, 200, _UNIMPLEMENTED_AT_XGAFV_1),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?majorDimension=NOPE", None, None), 400, 400, None),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1?fields=bogus", None, None), 400, 400, None),
+    (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{nope}/values/A1?fields=bogus", None, None), 400, 400, None),
+    (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{nope}:getByDataFilter?fields=bogus", "{}", None), 400, 400, None),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}:getByDataFilter", _BAD_FILTER, None), 400, 400, None),
     (_SHEETS_BATCH, ("POST", "/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter", _BAD_FILTER, None), 400, 400, None),
     (_SHEETS_BATCH, ("GET", "/sheets/v4/spreadsheets/{sheet}/values/A1", None, _BAD), 401, 401, _CHALLENGED),
@@ -1206,6 +2168,77 @@ def test_google_batch_passes_on_no_location_on_the_host_it_sends_parts_to(client
     assert (alone.status_code, "location" in alone.headers) == (302, True)
     status, lines, _ = _batch_answer(client, admin_h, _DRIVE_BATCH, "GET", target, None, None)
     assert (status, lines) == (302, ["Content-Type: text/html;charset=utf-8"])
+
+
+# A Drive batch part whose path carries a `;`, as real's Drive batch answered each one. A row is
+# the part's target, the status in the batch and what the answer carries: a 302's `Location`
+# below the server's base URL, a 404's message, or the top-level key a 200 carries. The last row
+# is the escaped spelling, which stays in the path. `{doc}` is a Doc's id.
+_BATCH_CUT_ROWS = [
+    ("/drive/v3/files/{doc};x?fields=id,name", 200, "id"),
+    ("/drive/v3/files/{doc};a=b;c?fields=id,name", 200, "id"),
+    ("/drive/v3/files/{doc};x/export?mimeType=text/plain", 200, "id"),
+    (
+        "/drive/v3/files/{doc}/export;x?mimeType=text/plain",
+        302,
+        "download/drive/v3/files/{doc}/export?mimeType=text/plain&quotaUser=7",
+    ),
+    ("/drive/v3/files/{doc}/permissions;x?fields=permissions(role)", 200, "permissions"),
+    ("/drive/v3/files;x?pageSize=1&fields=files(id)", 200, "files"),
+    ("/drive/v3/about;x?fields=user", 200, "user"),
+    ("/drive/v3/drives;x", 200, "drives"),
+    ("/drive/v3/files/nosuch;x", 404, "File not found: nosuch."),
+    ("/drive/v3/files/{doc}%3Bx?fields=id,name", 404, "File not found: {doc};x."),
+]
+
+
+@pytest.mark.parametrize("target, status, detail", _BATCH_CUT_ROWS)
+def test_google_drive_batch_cuts_a_part_path_at_a_semicolon(
+    client, admin_h, target, status, detail
+):
+    """The rows `_BATCH_CUT_ROWS` records, each as the one part of its batch
+    (`_drive_batch_cut_path`), and the same request on its own, which no batch cuts."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    ids = {"doc": doc}
+    got, lines, sub_body = _batch_answer(
+        client, admin_h, _DRIVE_BATCH, "GET", target.format(**ids), None, None
+    )
+    assert got == status, sub_body
+    if status == 302:
+        assert lines == [
+            "Content-Length: 0",
+            "Content-Type: application/json; charset=UTF-8",
+            f"Location: http://testserver/{detail.format(**ids)}",
+        ]
+        assert json.loads(sub_body) == _REDIRECTED
+    elif status == 404:
+        assert json.loads(sub_body)["error"]["message"] == detail.format(**ids)
+    else:
+        body = json.loads(sub_body)
+        assert detail in body, sub_body
+        if detail == "id":
+            assert body["id"] == doc and body["name"]
+    assert client.get(target.format(**ids), headers=admin_h).status_code == 404
+
+
+def test_google_drive_batch_cuts_every_part_path_at_a_semicolon(client, admin_h):
+    """All the `_BATCH_CUT_ROWS` targets in one batch, as they were measured in one batch, each
+    part cut on its own."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    payload = "".join(
+        f"--b\r\nContent-Type: application/http\r\nContent-ID: <p{i}>\r\n\r\n"
+        f"GET {target.format(doc=doc)} HTTP/1.1\r\n\r\n"
+        for i, (target, _, _) in enumerate(_BATCH_CUT_ROWS)
+    )
+    r = client.post(
+        _DRIVE_BATCH,
+        headers={**admin_h, "Content-Type": "multipart/mixed; boundary=b"},
+        content=payload + "--b--\r\n",
+    )
+    assert r.status_code == 200, r.text
+    assert [int(code) for code in re.findall(r"^HTTP/1\.1 (\d+)", r.text, re.M)] == [
+        status for _, status, _ in _BATCH_CUT_ROWS
+    ]
 
 
 _ACK = "/drive/v3/files/{doc}?acknowledgeAbuse=true&fields=id"
@@ -1376,75 +2409,112 @@ def test_drive_not_found_names_the_file_id(client, admin_h):
 
 
 @pytest.mark.parametrize(
-    "name, caller, mime, answer",
+    "name, caller, answers",
     [
-        # no `mimeType`: a document, a PDF, a file that does not exist, and a spreadsheet the scoped
-        # token cannot see, which with a `mimeType` is its 404
-        ("Brand", None, None, "required"),
-        ("Whitepaper", None, None, "required"),
-        (None, None, None, "required"),
-        ("Q1 Revenue Model", "mia@acme.com", None, "required"),
-        # a format the spreadsheet does not export to
-        ("Q1 Revenue Model", None, "text/plain", "unsupported"),
-        ("Q1 Revenue Model", None, "bogus/type", "unsupported"),
-        ("Q1 Revenue Model", None, "application/vnd.google-apps.document", "unsupported"),
-        ("Q1 Revenue Model", None, "", "unsupported"),
-        ("Q1 Revenue Model", None, "text/csv ", "unsupported"),
-        ("Q1 Revenue Model", None, "text/csv;charset=utf-8", "unsupported"),
-        # a format its type exports to, in any case, and the one it answers as
-        ("Q1 Revenue Model", None, "text/csv", "text/csv"),
-        ("Q1 Revenue Model", None, "TEXT/CSV", "text/csv"),
-        ("Q1 Revenue Model", None, "Text/Csv", "text/csv"),
-        ("Brand", None, "text/markdown", "text/markdown"),
-        ("Brand", None, "TEXT/MARKDOWN", "text/markdown"),
+        # `None` is no `mimeType`, sent on a document, a PDF, a file that does not exist, and a
+        # spreadsheet the scoped token cannot see, which with a `mimeType` is its 404
+        (
+            "Brand",
+            None,
+            {
+                None: "required",
+                # a format the document exports to, in any case, and the one it answers as
+                "text/markdown": "text/markdown",
+                "TEXT/MARKDOWN": "text/markdown",
+            },
+        ),
+        ("Whitepaper", None, {None: "required"}),
+        (None, None, {None: "required"}),
+        ("Q1 Revenue Model", "mia@acme.com", {None: "required"}),
+        (
+            "Q1 Revenue Model",
+            None,
+            {
+                # a format the spreadsheet does not export to
+                "text/plain": "unsupported",
+                "bogus/type": "unsupported",
+                "application/vnd.google-apps.document": "unsupported",
+                "": "unsupported",
+                "text/csv ": "unsupported",
+                "text/csv;charset=utf-8": "unsupported",
+                # a format its type exports to, in any case, and the one it answers as
+                "text/csv": "text/csv",
+                "TEXT/CSV": "text/csv",
+                "Text/Csv": "text/csv",
+            },
+        ),
     ],
 )
 def test_drive_export_answers_a_mime_type_the_way_real_does(
-    client, admin_h, tokens, name, caller, mime, answer
+    client, admin_h, tokens, name, caller, answers
 ):
-    """The order and the matching `drive_files_export`'s docstring records. `required` is the
-    absent-`mimeType` refusal, `unsupported` the one `gerr.unsupported_conversion` records, and a
-    format the export that format answers, served under the `mimeType` exactly as sent. With a
-    `mimeType`, a file that does not exist is its 404. The TSV spelling is
-    `test_tsv_export_reserialises_the_grid_rather_than_serving_content`'s, over a grid."""
+    """The order and the matching `drive_files_export`'s docstring records, each `mimeType` sent on
+    its row's file. `required` is the absent-`mimeType` refusal, `unsupported` the one
+    `gerr.unsupported_conversion` records, and a format the export that format answers, served under
+    the `mimeType` exactly as sent. With a `mimeType`, a file that does not exist is its 404. The
+    TSV spelling is `test_tsv_export_reserialises_the_grid_rather_than_serving_content`'s, over a
+    grid."""
     fid = _drive_find(client, admin_h, name)["id"] if name else "nosuchfileid123"
     headers = {"Authorization": f"Bearer {tokens[caller]}"} if caller else admin_h
     url = f"/drive/v3/files/{fid}/export"
-    r = client.get(url, headers=headers, params={} if mime is None else {"mimeType": mime})
-    if answer == "required":
+
+    def answer(mime):
+        r = client.get(url, headers=headers, params={} if mime is None else {"mimeType": mime})
+        if r.status_code == 200:
+            return (200, r.headers["content-type"], r.text)
         e = _gerr(r)
-        assert e["code"] == 400 and e["message"] == "Required parameter: mimeType"
-        assert e["errors"][0] == {
-            "message": "Required parameter: mimeType",
-            "domain": "global",
-            "reason": "required",
-            "location": "mimeType",
-            "locationType": "parameter",
-        }
-        if caller:
-            ok = client.get(url, headers=headers, params={"mimeType": "text/csv"})
-            assert ok.status_code == 404
-        return
-    if answer == "unsupported":
-        e = _gerr(r)
-        assert e["code"] == 400
-        assert e["errors"] == [
-            {
-                "message": "The requested conversion is not supported.",
-                "domain": "global",
-                "reason": "badRequest",
-                "location": "convertTo",
-                "locationType": "parameter",
-            }
-        ]
-    else:
-        assert r.status_code == 200, r.text
-        assert r.headers["content-type"] == mime
-        assert r.text == client.get(url, headers=admin_h, params={"mimeType": answer}).text
-    missing = client.get(
-        "/drive/v3/files/nosuchfileid123/export", headers=admin_h, params={"mimeType": mime}
-    )
-    assert missing.status_code == 404
+        return (e["code"], e["message"], e["errors"])
+
+    def expected(mime, answer):
+        if answer == "required":
+            message = "Required parameter: mimeType"
+            error = {"message": message, "domain": "global", "reason": "required"}
+            error |= {"location": "mimeType", "locationType": "parameter"}
+            return (400, message, [error])
+        if answer == "unsupported":
+            message = "The requested conversion is not supported."
+            error = {"message": message, "domain": "global", "reason": "badRequest"}
+            error |= {"location": "convertTo", "locationType": "parameter"}
+            return (400, message, [error])
+        exported = client.get(url, headers=admin_h, params={"mimeType": answer}).text
+        return (200, mime, exported)
+
+    assert {mime: answer(mime) for mime in answers} == {
+        mime: expected(mime, answer) for mime, answer in answers.items()
+    }
+    sent = [mime for mime in answers if mime is not None]
+    missing = "/drive/v3/files/nosuchfileid123/export"
+    assert {
+        mime: client.get(missing, headers=admin_h, params={"mimeType": mime}).status_code
+        for mime in sent
+    } == dict.fromkeys(sent, 404)
+    if caller:
+        ok = client.get(url, headers=headers, params={"mimeType": "text/csv"})
+        assert ok.status_code == 404
+
+
+_PAGE_SIZES = [
+    (["0"], "range", "0"),
+    (["-1"], "range", "-1"),
+    (["-0"], "range", "0"),
+    (["{above}"], "range", "{above}"),
+    (["2147483647"], "range", "2147483647"),
+    (["2147483648"], "int32", "2147483648"),
+    ([" 2"], "int32", " 2"),
+    (["2 "], "int32", "2 "),
+    (["1_0"], "int32", "1_0"),
+    (["2.0"], "int32", "2.0"),
+    (["0x10"], "int32", "0x10"),
+    (["1e2"], "int32", "1e2"),
+    ([""], "int32", ""),
+    (["NOPE"], "int32", "NOPE"),
+    (["2", "NOPE"], "int32", "NOPE"),
+    (["NOPE", "2"], "int32", "NOPE"),
+    (["+2"], "size", "2"),
+    (["02"], "size", "2"),
+    (["1"], "size", "1"),
+    (["{top}"], "size", "{top}"),
+]
 
 
 @pytest.mark.parametrize(
@@ -1455,33 +2525,8 @@ def test_drive_export_answers_a_mime_type_the_way_real_does(
         ("/drive/v3/drives", 100),
     ],
 )
-@pytest.mark.parametrize(
-    "values, kind, named",
-    [
-        (["0"], "range", "0"),
-        (["-1"], "range", "-1"),
-        (["-0"], "range", "0"),
-        (["{above}"], "range", "{above}"),
-        (["2147483647"], "range", "2147483647"),
-        (["2147483648"], "int32", "2147483648"),
-        ([" 2"], "int32", " 2"),
-        (["2 "], "int32", "2 "),
-        (["1_0"], "int32", "1_0"),
-        (["2.0"], "int32", "2.0"),
-        (["0x10"], "int32", "0x10"),
-        (["1e2"], "int32", "1e2"),
-        ([""], "int32", ""),
-        (["NOPE"], "int32", "NOPE"),
-        (["2", "NOPE"], "int32", "NOPE"),
-        (["NOPE", "2"], "int32", "NOPE"),
-        (["+2"], "size", "2"),
-        (["02"], "size", "2"),
-        (["1"], "size", "1"),
-        (["{top}"], "size", "{top}"),
-    ],
-)
 def test_drive_a_listing_takes_an_int32_page_size_from_1_to_its_top(
-    client, admin_h, path, top, values, kind, named
+    client, admin_h, drive_check_ids, path, top
 ):
     """The rules `_INT32` and `_drive_page_size_in_range` record, on each route, each value alone
     unless the row lists two. `range` is the range refusal naming the value as an int, `int32` the
@@ -1489,39 +2534,44 @@ def test_drive_a_listing_takes_an_int32_page_size_from_1_to_its_top(
     `files.list` and that many permissions on `permissions.list`, or all there are, and none on
     `drives.list`."""
     fill = {"top": top, "above": top + 1}
-    named = named.format(**fill)
-    url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
-    r = client.get(url, headers=admin_h, params=[("pageSize", v.format(**fill)) for v in values])
-    if kind == "size":
-        assert r.status_code == 200, r.text
-        listed = {"/drive/v3/files": "files", _PERMS: "permissions"}.get(path)
-        if listed:
-            total = len(client.get(url, headers=admin_h, params={"pageSize": top}).json()[listed])
-            assert len(r.json()[listed]) == min(int(named), total)
-        return
-    e = _gerr(r)
-    assert e["code"] == 400
-    if kind == "range":
-        assert e["errors"] == [
-            {
-                "message": (
-                    f"Invalid value '{named}'. Values must be within the range: [value: 1\n, "
-                    f"value: {top}\n]"
-                ),
-                "domain": "global",
-                "reason": "invalidParameter",
-                "location": "page_size",
-                "locationType": "parameter",
-            }
-        ]
-        assert "status" not in e and "details" not in e
-    else:
+    url = path.format(doc=drive_check_ids["doc"])
+    listed = {"/drive/v3/files": "files", _PERMS: "permissions"}.get(path)
+    total = listed and len(
+        client.get(url, headers=admin_h, params={"pageSize": top}).json()[listed]
+    )
+
+    def answer(values):
+        params = [("pageSize", v.format(**fill)) for v in values]
+        r = client.get(url, headers=admin_h, params=params)
+        if r.status_code == 200:
+            return listed and len(r.json()[listed])
+        e = _gerr(r)
+        violations = e["details"][0]["fieldViolations"] if "details" in e else None
+        return (e["code"], e["errors"], e.get("status"), violations)
+
+    def expected(kind, named):
+        named = named.format(**fill)
+        if kind == "size":
+            return listed and min(int(named), total)
+        if kind == "range":
+            message = (
+                f"Invalid value '{named}'. Values must be within the range: [value: 1\n, "
+                f"value: {top}\n]"
+            )
+            entry = {"message": message, "domain": "global", "reason": "invalidParameter"}
+            return (
+                400,
+                [entry | {"location": "page_size", "locationType": "parameter"}],
+                None,
+                None,
+            )
         message = f"Invalid value at 'page_size' (TYPE_INT32), \"{named}\""
-        assert e["errors"] == [{"message": message, "reason": "invalid"}]
-        assert e["status"] == "INVALID_ARGUMENT"
-        assert e["details"][0]["fieldViolations"] == [
-            {"field": "page_size", "description": message}
-        ]
+        violations = [{"field": "page_size", "description": message}]
+        return (400, [{"message": message, "reason": "invalid"}], "INVALID_ARGUMENT", violations)
+
+    assert {tuple(values): answer(values) for values, *_ in _PAGE_SIZES} == {
+        tuple(values): expected(kind, named) for values, kind, named in _PAGE_SIZES
+    }
 
 
 @pytest.mark.parametrize(
@@ -1617,34 +2667,33 @@ _TOKEN_EXPIRED = {
 _UNKNOWN_ERROR = {"code": 500, "message": "Unknown Error.", "errors": [{}], "status": "UNKNOWN"}
 
 
-@pytest.mark.parametrize(
-    "path, query, error",
-    [
-        *[
-            (path, query, error)
-            for path in (_PERMS, "/drive/v3/drives")
-            for query, error in [
-                ([("pageToken", "bad")], _TOKEN_INVALID),
-                ([("pageToken", "bzow")], _TOKEN_INVALID),
-                ([("pageToken", "{token}")], _TOKEN_INVALID),
-                ([("useDomainAdminAccess", "true"), ("pageToken", "bad")], _TOKEN_INVALID),
-                ([("pageToken", "bad"), ("useDomainAdminAccess", "true")], _TOKEN_INVALID),
-                ([("pageToken", "bad"), ("pageSize", "0")], None),
-                ([("pageToken", "bad"), ("useDomainAdminAccess", "NOPE")], None),
-            ]
-        ],
-        (_PERMS, [("pageToken", "")], _TOKEN_EXPIRED),
-        (_PERMS, [("useDomainAdminAccess", "true"), ("pageToken", "")], _TOKEN_EXPIRED),
-        ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "")], _TOKEN_EXPIRED),
-        ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "bzow")], _TOKEN_INVALID),
-        (_PERMS, [("pageSize", "1"), ("pageToken", "{issued}.")], _TOKEN_INVALID),
-        (_PERMS, [("pageSize", "1"), ("pageToken", "{at_zero}")], _TOKEN_INVALID),
-        ("/drive/v3/drives", [("pageToken", "")], None),
-        ("/drive/v3/drives", [("useDomainAdminAccess", "true"), ("pageToken", "")], None),
+_FOREIGN_PAGE_TOKENS = [
+    *[
+        (path, query, error)
+        for path in (_PERMS, "/drive/v3/drives")
+        for query, error in [
+            ([("pageToken", "bad")], _TOKEN_INVALID),
+            ([("pageToken", "bzow")], _TOKEN_INVALID),
+            ([("pageToken", "{token}")], _TOKEN_INVALID),
+            ([("useDomainAdminAccess", "true"), ("pageToken", "bad")], _TOKEN_INVALID),
+            ([("pageToken", "bad"), ("useDomainAdminAccess", "true")], _TOKEN_INVALID),
+            ([("pageToken", "bad"), ("pageSize", "0")], None),
+            ([("pageToken", "bad"), ("useDomainAdminAccess", "NOPE")], None),
+        ]
     ],
-)
+    (_PERMS, [("pageToken", "")], _TOKEN_EXPIRED),
+    (_PERMS, [("useDomainAdminAccess", "true"), ("pageToken", "")], _TOKEN_EXPIRED),
+    ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "")], _TOKEN_EXPIRED),
+    ("/drive/v3/files/nosuchfileid000000/permissions", [("pageToken", "bzow")], _TOKEN_INVALID),
+    (_PERMS, [("pageSize", "1"), ("pageToken", "{issued}.")], _TOKEN_INVALID),
+    (_PERMS, [("pageSize", "1"), ("pageToken", "{at_zero}")], _TOKEN_INVALID),
+    ("/drive/v3/drives", [("pageToken", "")], None),
+    ("/drive/v3/drives", [("useDomainAdminAccess", "true"), ("pageToken", "")], None),
+]
+
+
 def test_drive_permissions_and_drives_refuse_a_page_token_they_did_not_issue(
-    client, admin_h, path, query, error
+    client, admin_h, drive_check_ids
 ):
     """The rules `_drive_permissions_page_token` and `_drive_listing_page_token` record, one request
     per row. `None` is a token that changes nothing: the answer is the one the request gets without
@@ -1654,22 +2703,34 @@ def test_drive_permissions_and_drives_refuse_a_page_token_they_did_not_issue(
     issues."""
     from backlot.routers import google
 
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    url = path.format(doc=doc)
+    doc = drive_check_ids["doc"]
     files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1}).json()
-    issued = client.get(_PERMS.format(doc=doc), headers=admin_h, params={"pageSize": 1}).json()
     fill = {
         "token": files["nextPageToken"],
-        "issued": issued["nextPageToken"],
+        "issued": drive_check_ids["issued"],
         "at_zero": google._drive_permissions_token(doc, 0),
     }
-    query = [(k, v.format(**fill)) for k, v in query]
-    r = client.get(url, headers=admin_h, params=query)
-    if error is None:
-        without = [(k, v) for k, v in query if k != "pageToken"]
-        assert r.content == client.get(url, headers=admin_h, params=without).content
-    else:
-        assert (r.status_code, _gerr(r)) == (error["code"], error)
+
+    def answer(path, query, error):
+        url = path.format(doc=doc)
+        query = [(k, v.format(**fill)) for k, v in query]
+        r = client.get(url, headers=admin_h, params=query)
+        if error is None:
+            without = [(k, v) for k, v in query if k != "pageToken"]
+            return (
+                None
+                if r.content == client.get(url, headers=admin_h, params=without).content
+                else r.text
+            )
+        return (r.status_code, _gerr(r))
+
+    assert {
+        (path, urlencode(query)): answer(path, query, error)
+        for path, query, error in _FOREIGN_PAGE_TOKENS
+    } == {
+        (path, urlencode(query)): error and (error["code"], error)
+        for path, query, error in _FOREIGN_PAGE_TOKENS
+    }
 
 
 # fmt: off
@@ -1708,48 +2769,71 @@ _PERMISSION_PAGES = [
 # fmt: on
 
 
-@pytest.mark.parametrize("first, follow, expected", _PERMISSION_PAGES)
-def test_drive_permissions_list_pages_in_the_unpaged_order(
-    client, admin_h, first, follow, expected
-):
+def test_drive_permissions_list_pages_in_the_unpaged_order(client, admin_h, drive_check_ids):
     """The rules `_drive_permission_page` and `_drive_permissions_page_size` record, on a file with
     two permissions. A row of page lengths also checks that the pages, joined, are the unpaged
     list."""
-    url = _PERMS.format(doc=_drive_find(client, admin_h, "Brand")["id"])
+    url = _PERMS.format(doc=drive_check_ids["doc"])
     whole = client.get(url, headers=admin_h).json()["permissions"]
     assert len(whole) == 2
-    r = client.get(url, headers=admin_h, params=first)
-    if isinstance(expected, dict):
-        assert (r.status_code, _gerr(r)) == (expected["code"], expected)
-        return
-    pages = [r]
-    while "nextPageToken" in pages[-1].json() and len(pages) < len(expected):
-        token = pages[-1].json()["nextPageToken"]
-        pages.append(client.get(url, headers=admin_h, params=[*follow, ("pageToken", token)]))
-    assert [p.status_code for p in pages] == [200] * len(pages)
-    assert [len(p.json()["permissions"]) for p in pages] == expected
-    assert "nextPageToken" not in pages[-1].json()
-    assert [x for p in pages for x in p.json()["permissions"]] == whole
+
+    def paged(first, follow, expected):
+        """The page lengths, whether the last page offers another, and whether the pages joined
+        are the unpaged list; a refused page as its number, status and error."""
+        r = client.get(url, headers=admin_h, params=first)
+        if r.status_code != 200:
+            return (r.status_code, _gerr(r))
+        pages = [r.json()]
+        while "nextPageToken" in pages[-1] and len(pages) < len(expected):
+            params = [*follow, ("pageToken", pages[-1]["nextPageToken"])]
+            r = client.get(url, headers=admin_h, params=params)
+            if r.status_code != 200:
+                return (len(pages) + 1, r.status_code, r.text)
+            pages.append(r.json())
+        return (
+            [len(p["permissions"]) for p in pages],
+            "nextPageToken" in pages[-1],
+            [x for p in pages for x in p["permissions"]] == whole,
+        )
+
+    assert {
+        (urlencode(first), urlencode(follow)): paged(first, follow, expected)
+        for first, follow, expected in _PERMISSION_PAGES
+    } == {
+        (urlencode(first), urlencode(follow)): (
+            (expected, False, True) if isinstance(expected, list) else (expected["code"], expected)
+        )
+        for first, follow, expected in _PERMISSION_PAGES
+    }
+
+
+@pytest.fixture(scope="module")
+def three_readers(tmp_path_factory):
+    """One Drive file with its author and two readers."""
+    return tiny_corpus(
+        tmp_path_factory.mktemp("three_readers"),
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": "three",
+                "folder": "mk",
+                "title": "Three readers",
+                "content": "x",
+                "author_email": "a@x.com",
+                "readers": ["b@x.com", "c@x.com"],
+            }
+        ],
+    )
 
 
 @pytest.mark.parametrize("size, lengths", [(1, [1, 1, 1]), (2, [2, 1])])
-def test_drive_permissions_list_pages_a_file_with_three_permissions(tmp_path, size, lengths):
+def test_drive_permissions_list_pages_a_file_with_three_permissions(three_readers, size, lengths):
     """`_drive_permission_page` past the second page: at `pageSize=1` the page a token serves
     carries the token for the third, at `pageSize=2` the second page starts after the two the first
     served, and the pages joined are the unpaged list. The files measured had two permissions
     each, so neither was measured."""
-    from tests._helpers import corpus_client
-
-    record = {
-        "source_type": "google_drive",
-        "doc_id": "three",
-        "folder": "mk",
-        "title": "Three readers",
-        "content": "x",
-        "author_email": "a@x.com",
-        "readers": ["b@x.com", "c@x.com"],
-    }
-    with corpus_client(tmp_path, [record]) as (client, settings):
+    settings = three_readers
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         q = {"q": "name = 'Three readers'"}
         (doc,) = client.get("/drive/v3/files", headers=h, params=q).json()["files"]
@@ -1767,85 +2851,94 @@ def test_drive_permissions_list_pages_a_file_with_three_permissions(tmp_path, si
     assert [x for p in pages for x in p["permissions"]] == whole
 
 
-def test_drive_permissions_list_declares_the_parameters_it_pages_by(client):
-    """`pageSize` and `pageToken` shape the page, so a client reading the OpenAPI document can
-    find them, and `backlot diff --source google_drive` reports neither as missing."""
-    op = client.app.openapi()["paths"]["/drive/v3/files/{file_id}/permissions"]["get"]
-    assert {"pageSize", "pageToken"} <= {p["name"] for p in op["parameters"]}
-
-
 @pytest.mark.parametrize(
-    "query, code, location",
+    "route, method, names",
     [
-        ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], 400, None),
-        ([("fields", "bogus"), ("pageSize", "0")], 400, "page_size"),
-        ([("fields", "bogus"), ("pageToken", "BOGUS")], 400, "pageToken"),
-        ([("pageToken", "BOGUS"), ("fields", "bogus")], 400, "pageToken"),
-        ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], 400, "q"),
-        ([("fields", "bogus"), ("q", "nosuchfield = 1")], 400, "q"),
-        ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], 400, "orderBy"),
-        ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], 400, "orderBy"),
-        ([("fields", "bogus"), ("orderBy", "bogus")], 400, "orderBy"),
-        ([("orderBy", "name,name"), ("pageSize", "0")], 400, "page_size"),
-        ([("orderBy", "name,name"), ("pageSize", "NOPE")], 400, None),
-        ([("q", "nosuchfield = 1"), ("orderBy", "name,name")], 403, "orderBy"),
-        ([("orderBy", "name,name"), ("q", "nosuchfield = 1")], 403, "orderBy"),
-        ([("pageToken", "BOGUS"), ("orderBy", "name,name")], 403, "orderBy"),
-        ([("fields", "bogus"), ("orderBy", "name,name")], 403, "orderBy"),
-        ([("orderBy", "name,starred"), ("pageSize", "0")], 400, "page_size"),
-        ([("orderBy", "name,starred"), ("q", "nosuchfield = 1")], 400, "q"),
-        ([("orderBy", "name,starred"), ("pageToken", "BOGUS")], 400, "pageToken"),
-        ([("fields", "bogus"), ("orderBy", "name,starred")], 500, None),
-        ([("fields", ""), ("orderBy", "name,starred")], 500, None),
-        ([("q", "name = 'no such file'"), ("orderBy", "name,starred")], 500, None),
-        (
-            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageSize", "0")],
-            400,
-            "page_size",
-        ),
-        (
-            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageSize", "NOPE")],
-            400,
-            None,
-        ),
-        ([("q", "fullText contains 'the'"), ("orderBy", "bogus")], 400, "orderBy"),
-        ([("q", "fullText contains 'the' and nosuchfield = 1"), ("orderBy", "name")], 400, "q"),
-        (
-            [("q", "fullText contains 'the' and nosuchfield = 1"), ("orderBy", "viewedByMeTime")],
-            400,
-            "q",
-        ),
-        (
-            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageToken", "BOGUS")],
-            403,
-            "orderBy",
-        ),
-        (
-            [("pageToken", "BOGUS"), ("q", "fullText contains 'the'"), ("orderBy", "name")],
-            403,
-            "orderBy",
-        ),
-        (
-            [("q", "fullText contains 'the'"), ("orderBy", "name"), ("fields", "bogus")],
-            403,
-            "orderBy",
-        ),
-        (
-            [("fields", "bogus"), ("q", "fullText contains 'the'"), ("orderBy", "name")],
-            403,
-            "orderBy",
-        ),
-        ([("q", "fullText contains 'the'"), ("orderBy", "name"), ("fields", "")], 403, "orderBy"),
-        ([("fields", ""), ("q", "fullText contains 'the'"), ("orderBy", "name")], 403, "orderBy"),
+        ("/drive/v3/files/{file_id}/permissions", "get", {"pageSize", "pageToken", "fields"}),
+        ("/drive/v3/drives", "get", {"q", "fields"}),
+        ("/docs/v1/documents", "post", {"fields"}),
     ],
 )
-def test_drive_files_list_refuses_in_reals_order(client, admin_h, query, code, location):
+def test_a_google_route_declares_the_parameters_it_reads(client, route, method, names):
+    """A parameter that shapes the answer is declared, so a client reading the OpenAPI document can
+    find it, and `backlot diff --source google_drive` reports none of them as missing."""
+    op = client.app.openapi()["paths"][route][method]
+    assert names <= {p["name"] for p in op["parameters"]}
+
+
+_REFUSAL_ORDER = [
+    ([("pageToken", "BOGUS"), ("pageSize", "NOPE")], 400, None),
+    ([("fields", "bogus"), ("pageSize", "0")], 400, "page_size"),
+    ([("fields", "bogus"), ("pageToken", "BOGUS")], 400, "pageToken"),
+    ([("pageToken", "BOGUS"), ("fields", "bogus")], 400, "pageToken"),
+    ([("pageToken", "BOGUS"), ("q", "nosuchfield = 1")], 400, "q"),
+    ([("fields", "bogus"), ("q", "nosuchfield = 1")], 400, "q"),
+    ([("q", "nosuchfield = 1"), ("orderBy", "bogus")], 400, "orderBy"),
+    ([("orderBy", "bogus"), ("q", "nosuchfield = 1")], 400, "orderBy"),
+    ([("fields", "bogus"), ("orderBy", "bogus")], 400, "orderBy"),
+    ([("orderBy", "name,name"), ("pageSize", "0")], 400, "page_size"),
+    ([("orderBy", "name,name"), ("pageSize", "NOPE")], 400, None),
+    ([("q", "nosuchfield = 1"), ("orderBy", "name,name")], 403, "orderBy"),
+    ([("orderBy", "name,name"), ("q", "nosuchfield = 1")], 403, "orderBy"),
+    ([("pageToken", "BOGUS"), ("orderBy", "name,name")], 403, "orderBy"),
+    ([("fields", "bogus"), ("orderBy", "name,name")], 403, "orderBy"),
+    ([("orderBy", "name,starred"), ("pageSize", "0")], 400, "page_size"),
+    ([("orderBy", "name,starred"), ("q", "nosuchfield = 1")], 400, "q"),
+    ([("orderBy", "name,starred"), ("pageToken", "BOGUS")], 400, "pageToken"),
+    ([("fields", "bogus"), ("orderBy", "name,starred")], 500, None),
+    ([("fields", ""), ("orderBy", "name,starred")], 500, None),
+    ([("q", "name = 'no such file'"), ("orderBy", "name,starred")], 500, None),
+    (
+        [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageSize", "0")],
+        400,
+        "page_size",
+    ),
+    (
+        [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageSize", "NOPE")],
+        400,
+        None,
+    ),
+    ([("q", "fullText contains 'the'"), ("orderBy", "bogus")], 400, "orderBy"),
+    ([("q", "fullText contains 'the' and nosuchfield = 1"), ("orderBy", "name")], 400, "q"),
+    (
+        [("q", "fullText contains 'the' and nosuchfield = 1"), ("orderBy", "viewedByMeTime")],
+        400,
+        "q",
+    ),
+    (
+        [("q", "fullText contains 'the'"), ("orderBy", "name"), ("pageToken", "BOGUS")],
+        403,
+        "orderBy",
+    ),
+    (
+        [("pageToken", "BOGUS"), ("q", "fullText contains 'the'"), ("orderBy", "name")],
+        403,
+        "orderBy",
+    ),
+    (
+        [("q", "fullText contains 'the'"), ("orderBy", "name"), ("fields", "bogus")],
+        403,
+        "orderBy",
+    ),
+    (
+        [("fields", "bogus"), ("q", "fullText contains 'the'"), ("orderBy", "name")],
+        403,
+        "orderBy",
+    ),
+    ([("q", "fullText contains 'the'"), ("orderBy", "name"), ("fields", "")], 403, "orderBy"),
+    ([("fields", ""), ("q", "fullText contains 'the'"), ("orderBy", "name")], 403, "orderBy"),
+]
+
+
+def test_drive_files_list_refuses_in_reals_order(client, admin_h):
     """Two values at once, refused in the order `drive_files_list`'s comment records, where a `q`
     with a `fullText` term and an `orderBy` count as one, the 403. A `pageSize` the proto layer
     cannot read has no `location`."""
-    e = _gerr(client.get("/drive/v3/files", headers=admin_h, params=query))
-    assert e["code"] == code
-    assert e["errors"][0].get("location") == location
+    answered = {}
+    for query, *_ in _REFUSAL_ORDER:
+        e = _gerr(client.get("/drive/v3/files", headers=admin_h, params=query))
+        answered[urlencode(query)] = (e["code"], e["errors"][0].get("location"))
+    assert answered == {urlencode(query): tuple(answer) for query, *answer in _REFUSAL_ORDER}
 
 
 _DRIVE_BOOL_ROUTES = [
@@ -1897,26 +2990,40 @@ _DRIVE_BOOL_ROWS = (
 )
 
 
-@pytest.mark.parametrize("path, param, value, accepted", _DRIVE_BOOL_ROWS)
+def _bool_refused(param, value):
+    """The 400 `_DRIVE_BOOLS` records for a value of ``param`` that is not a boolean."""
+    field = re.sub(r"(?<!^)(?=[A-Z])", "_", param).lower()
+    message = f"Invalid value at '{field}' (TYPE_BOOL), \"{value}\""
+    return (400, message, [{"field": field, "description": message}])
+
+
 def test_drive_a_declared_boolean_takes_the_protobuf_spellings_and_another_is_ignored(
-    client, admin_h, path, param, value, accepted
+    client, admin_h, drive_check_ids
 ):
     """The spellings `_DRIVE_BOOLS` records, one request per value on each route; the `files.list`
     `supportsAllDrives` rows are 24 of the 30 swept and two spellings outside ASCII. `true` is sent
     on those rows alone: four of the other flags answer a `true` with a check of their own, which
     `_DRIVE_CHECK_ROWS` holds."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    url = path.format(doc=doc)
-    # the query string is built here because httpx's `params` replaces the one the row's path has
-    r = client.get(f"{url}{'&' if '?' in url else '?'}{urlencode({param: value})}", headers=admin_h)
-    if accepted:
-        assert r.status_code == 200, r.text
-        return
-    field = re.sub(r"(?<!^)(?=[A-Z])", "_", param).lower()
-    message = f"Invalid value at '{field}' (TYPE_BOOL), \"{value}\""
-    e = _gerr(r)
-    assert (e["code"], e["message"]) == (400, message)
-    assert e["details"][0]["fieldViolations"] == [{"field": field, "description": message}]
+    answered = {}
+    for path, param, value, _ in _DRIVE_BOOL_ROWS:
+        url = path.format(doc=drive_check_ids["doc"])
+        # the query string is built here because httpx's `params` replaces the one the path has
+        r = client.get(
+            f"{url}{'&' if '?' in url else '?'}{urlencode({param: value})}", headers=admin_h
+        )
+        if r.status_code == 200:
+            answered[path, param, value] = True
+        else:
+            e = _gerr(r)
+            answered[path, param, value] = (
+                e["code"],
+                e["message"],
+                e["details"][0]["fieldViolations"],
+            )
+    assert answered == {
+        (path, param, value): True if accepted else _bool_refused(param, value)
+        for path, param, value, accepted in _DRIVE_BOOL_ROWS
+    }
 
 
 _SHARED_DRIVES = (
@@ -1941,6 +3048,303 @@ _ADMIN_ONLY = (
 _SERVED = (200, None, None, None)
 _TYPED = (400, "invalid", None, None)
 _RANGE = (400, "invalidParameter", "page_size", None)
+_Q_REFUSED = (400, "invalid", "q", "Invalid Value")
+
+
+def _mask_refused(subject: str) -> tuple:
+    return (400, "invalidParameter", "fields", f"Invalid field selection {subject}")
+
+
+_DOC = "/drive/v3/files/{doc}"
+_PERMS_OF_DOC = "/drive/v3/files/{doc}/permissions"
+# Masks real refused on a Google Workspace member's `files.get`, `files.list`, `permissions.list`,
+# `drives.list` and `about`: a mask that is not one is named whole, an unknown name alone, the first
+# in the mask's order.
+_MASKS_REFUSED = (
+    [
+        (_DOC, mask, mask)
+        for mask in [",", "id,", ",id", "id,,name", " ,id", "id, ", "id ,", "id, ,name", "id,name,"]
+        + ["owners(emailAddress,)", "capabilities(canEdit,)", "capabilities/canEdit,", "owners("]
+        + ["id(", "(id)", "id,\t", "id,\nname", "id," + chr(0xA0) + "name", "b x", "bogus,,id"]
+        + ["id,,bogus", "bogus,id(", "owners(*id)", "id)", "id),name", "owners(kind)),id"]
+        + ["owners(kind", "owners(kind,zzz", "id name", "id)name", "\n", chr(0x3000)]
+        + ["owners(" * 1000 + "kind" + ")" * 1000 + ",", "owners(" * 1000 + "kind"]
+        + ["id,b" + chr(cp) + "x" for cp in (0xAA, 0xB2, 0xB5, 0x9FA6, 0x21030)]
+        + ["id,x-", "id,-", "id,:x", "id,x:", "id,x::y", "id,x:y:z", "id,:", "owners(:x)"]
+    ]
+    + [
+        (_DOC, mask, name)
+        for mask, name in [("id, bogus", "bogus"), (" bogus", "bogus"), ("bogus ", "bogus")]
+        + [
+            ("id,b" + chr(cp) + "x", "b" + chr(cp) + "x")
+            for cp in (0xE9, 0xB7, 0x308, 0x640, 0x4E00)
+        ]
+        + [(f"id,{name}", name) for name in ("-x", "x--y", "x:y", "1:x", "x.", "x$y$z", "+x")]
+        + [
+            ("zzz,bogus", "zzz"),
+            ("bogus,zzz", "bogus"),
+            ("zzz,id,aaa", "zzz"),
+            ("aaa,owners(zzz)", "aaa"),
+        ]
+        + [
+            ("owners(zzz)", "zzz"),
+            ("owners/zzz", "zzz"),
+            ("id/zzz", "zzz"),
+            ("kind/zzz", "zzz"),
+            ("kind/id", "id"),
+            ("*/id", "id"),
+            ("owners(owners(kind))", "owners"),
+            ("owners/kind/zzz", "zzz"),
+            ("owners(kind/zzz)", "zzz"),
+            ("capabilities/zzz", "zzz"),
+            ("exportLinks/zzz", "zzz"),
+            ("exportLinks(application)", "application"),
+            ("sharingUser/zzz", "zzz"),
+            ("permissions(zzz)", "zzz"),
+            ("parents/zzz", "zzz"),
+            ("permissions/permissionDetails/zzz", "zzz"),
+            ("contentHints/thumbnail/zzz", "zzz"),
+            ("imageMediaMetadata/location/zzz", "zzz"),
+            ("labelInfo/labels/fields/zzz", "zzz"),
+            ("downloadRestrictions/zzz", "zzz"),
+        ]
+    ]
+    + [
+        ("/drive/v3/files", mask, name)
+        for mask, name in [("kind/id", "id"), ("nextPageToken/zzz", "zzz")]
+        + [("files(id/zzz)", "zzz"), ("files(owners(zzz))", "zzz")]
+    ]
+    + [
+        (path, mask, "zzz")
+        for path, listed in ((_PERMS_OF_DOC, "permissions"), ("/drive/v3/drives", "drives"))
+        for mask in ["kind/zzz", "nextPageToken/zzz", f"{listed}(id/zzz)"]
+    ]
+    + [
+        (_PERMS_OF_DOC, "permissions(permissionDetails(zzz))", "zzz"),
+        ("/drive/v3/drives", "drives(capabilities/zzz)", "zzz"),
+    ]
+    + [
+        ("/drive/v3/about", mask, subject)
+        for mask, subject in [
+            ("user(zzz)", "zzz"),
+            ("user/kind/zzz", "zzz"),
+            ("user(kind/zzz)", "zzz"),
+            ("*/user", "user"),
+            ("exportFormats/zzz", "zzz"),
+        ]
+    ]
+    + [
+        ("/drive/v3/files", mask, mask)
+        for mask in ["files(id),", "files(id,)", "files(,id)", ",files(id)", "files/id,"]
+        + ["files(id),,nextPageToken", "nextPageToken,", "files(*id)", "files(id", "files(id))"]
+        + ["\n", chr(0x1C), chr(0x3000), "files(" + "owners(" * 1000 + "kind" + ")" * 1001 + ","]
+    ]
+    + [
+        (path, mask.format(list=listed), subject.format(list=listed))
+        for path, listed in ((_PERMS_OF_DOC, "permissions"), ("/drive/v3/drives", "drives"))
+        for mask, subject in [("bogus", "bogus"), ("{list}(bogus)", "bogus"), ("files", "files")]
+        + [("{list}(id),bogus", "bogus"), ("zzz,bogus", "zzz"), ("{list}(zzz),aaa", "zzz")]
+        + [("aaa,{list}(zzz)", "aaa"), ("{list}(zzz,aaa)", "zzz"), ("{list}(id,)", "{list}(id,)")]
+        + [("kind,", "kind,"), (",", ","), ("{list}(id),", "{list}(id),")]
+        + [("bogus,{list}(id,)", "bogus,{list}(id,)"), ("{list}(id", "{list}(id"), ("\n", "\n")]
+    ]
+    + [
+        ("/drive/v3/about", mask, subject)
+        for mask, subject in [("zzz,bogus", "zzz"), ("bogus,user", "bogus")]
+        + [
+            (mask, mask)
+            for mask in ["user,", ",", "user ,", "user,,", ",,", "user(,", "*,", "(,", "user/,"]
+            + ["user, ", "user,\t", "user(kind),", "user(kind,", "user name", "user\tname"]
+            + ["user name(kind)", "user(kind name)", "kind, user name"]
+        ]
+    ]
+)
+_FIELDS_REQUIRED = (
+    400,
+    "required",
+    "fields",
+    "The 'fields' parameter is required for this method.",
+)
+_NOT_FOUND = (404, "notFound", "fileId", None)
+
+
+def _unserved(name: str) -> tuple:
+    message = (
+        f"'{name}' is not served by Backlot: real Drive answers it, and nothing here carries it."
+    )
+    return (400, "invalidParameter", "fields", message)
+
+
+# Masks naming a field real answered and nothing here carries, refused as the comment above
+# `_DRIVE_FILE_UNSERVED` says.
+_MASKS_UNSERVED = [
+    (_DOC, "downloadRestrictions", "downloadRestrictions"),
+    (_DOC, "id,clientEncryptionDetails", "clientEncryptionDetails"),
+    (_DOC, "copyRequiresWriterPermission,viewersCanCopyContent", "copyRequiresWriterPermission"),
+    ("/drive/v3/files", "files(id,writersCanShare)", "writersCanShare"),
+    ("/drive/v3/files", "files/linkShareMetadata", "linkShareMetadata"),
+]
+_FULLTEXT = "q=" + quote("fullText contains 'a'")
+# Where real answered a mask ending in a comma among a route's other refusals, each sent beside it,
+# and, as controls, where it answered a mask that is not one in another way or one naming a field
+# the resource lacks, and which of two `fields` it read.
+_MASK_ORDER = (
+    [("/drive/v3/files", "files(id),", "pageSize=NOPE", _TYPED)]
+    + [("/drive/v3/files", "files(id),", "pageSize=0", _RANGE)]
+    + [
+        ("/drive/v3/files", mask, extra, _mask_refused(mask))
+        for mask in ["files(id),", "files(id),\t"]
+        for extra in ["pageToken=bad", "q=bogus", "orderBy=bogus", "orderBy=name,name"]
+        + ["orderBy=name,starred", f"{_FULLTEXT}&orderBy=name", "includeItemsFromAllDrives=true"]
+        + ["pageSize=1&pageSize=2"]
+    ]
+    + [
+        ("/drive/v3/files", mask, "q=bogus", _Q_REFUSED)
+        for mask in ["files(id,,name)", "files(id,)", "files(", "\n", "bogus"]
+    ]
+    + [("/drive/v3/files", "bogus", "orderBy=bogus", (400, "invalid", "orderBy", "Invalid Value"))]
+    + [
+        (
+            "/drive/v3/files",
+            "bogus",
+            "pageToken=bad",
+            (400, "invalid", "pageToken", "Invalid Value"),
+        )
+    ]
+    + [
+        ("/drive/v3/files/{nope}", mask, "", _mask_refused(mask))
+        for mask in ["id,", "id, ", "id,\t", "id,\n", "id," + chr(0x0B), ",", "id,,", "bogus,"]
+        + ["owners(kind,"]
+    ]
+    + [
+        ("/drive/v3/files/{nope}", mask, "", _NOT_FOUND)
+        for mask in ["id,,name", "owners(", "id)", "\n", "id name", ",id", "bogus", "files(id,)"]
+        + ["id," + chr(0x1C), "id," + chr(0xA0)]
+    ]
+    + [(_DOC, "id,", "acknowledgeAbuse=true", _mask_refused("id,"))]
+    + [(_DOC, "id,", "supportsAllDrives=NOPE", _TYPED)]
+    + [("/drive/v3/files/{nope}/permissions", "kind,", "", _mask_refused("kind,"))]
+    + [
+        ("/drive/v3/files/{nope}/permissions", mask, "", _NOT_FOUND)
+        for mask in ["kind,,permissions", "permissions(", "\n"]
+    ]
+    + [
+        (path, "kind,", extra, expected)
+        for path in (_PERMS_OF_DOC, "/drive/v3/drives")
+        for extra, expected in [("pageSize=NOPE", _TYPED), ("useDomainAdminAccess=NOPE", _TYPED)]
+        + [("pageSize=0", _RANGE), ("pageSize=1&pageSize=2", _mask_refused("kind,"))]
+        + [("useDomainAdminAccess=true", _mask_refused("kind,"))]
+    ]
+    + [(_PERMS_OF_DOC, "kind,", "supportsAllDrives=NOPE", _TYPED)]
+    + [(_PERMS_OF_DOC, "kind,", "pageToken=bad", _mask_refused("kind,"))]
+    + [
+        ("/drive/v3/drives", "kind,", extra, _mask_refused("kind,"))
+        for extra in ["pageToken=x", "q=bogus"]
+    ]
+    + [("/drive/v3/drives", mask, "q=bogus", _Q_REFUSED) for mask in ["kind,,drives", "\n"]]
+    + [(_PERMS_OF_DOC, "kind,", "fields=kind", _mask_refused("kind,"))]
+    + [(_PERMS_OF_DOC, "kind", "fields=" + quote("kind,"), _SERVED)]
+    + [(_DOC, "id", "fields=" + quote("id,"), _SERVED)]
+)
+# Masks `about` answered with the missing-mask 400 `_drive_about_field_keys` describes.
+_ABOUT_MASKS_REQUIRED = [
+    "\n",
+    chr(0x1C),
+    chr(0x3000),
+    "user()",
+    "user( )",
+    "kind()",
+    "user(),kind",
+    "kind,user()",
+    "user,,kind",
+    ",user",
+    "zzz,,user",
+    "user(",
+    "user)",
+    "(user)",
+    "user/",
+    "/user",
+    "*id",
+    chr(0x0000),
+    chr(0x0001),
+    chr(0x200B),
+    chr(0xFEFF),
+    "user)(",
+    "user(kind,)",
+    "user(,kind)",
+    "user//kind",
+    "user;kind",
+    "user*",
+    "*name",
+    "user *",
+    " ,user",
+    "user(kind) name",
+    "user name)",
+    "kind,user(kind name",
+]
+# What a member's `drives.list` answered each `q` with, as `_DRIVES_Q` records.
+_DRIVES_Q_TAKEN = [
+    "",
+    "name contains 'a'",
+    "name = 'a'",
+    "name != 'a'",
+    "name = 'a\\'b'",
+    "hidden = true",
+    "hidden = TRUE",
+    "hidden != true",
+    "hidden",
+    "not hidden",
+    "not hidden = true",
+    "(name = 'a')",
+    "name = 'a' or name = 'b'",
+    "name = 'a' or hidden = true",
+    "name contains 'a' and not hidden = true",
+    "name < 'a'",
+    "name <= 'a'",
+    "name > 'a'",
+    "name >= 'a'",
+    "not name < 'a'",
+    "name < 'a' and hidden = false",
+    "not (not hidden)",
+    "not (hidden)",
+    "()",
+    "not ()",
+    "name contains 'a' and ()",
+    "hidden = true or",
+    "(name contains 'a' or) and hidden = false",
+    'name = "x"',
+    'name contains "a"',
+]
+_DRIVES_Q_REFUSED = [
+    " ",
+    "\t",
+    "bogus",
+    "name",
+    "name contains",
+    "name = a",
+    "name ~ 'a'",
+    "NAME = 'a'",
+    "hidden = 'yes'",
+    "memberCount > 1",
+    "memberCount > 'a'",
+    "organizerCount = 1",
+    "orgUnitId = 'x'",
+    "createdTime > '2020-01-01T00:00:00'",
+    "name contains 'a' or memberCount > 1",
+    "mimeType = 'a'",
+    "trashed = false",
+    "'root' in parents",
+    "fullText contains 'a'",
+    "starred = true",
+    "not not hidden",
+    "not not name contains 'a'",
+    "not(hidden)",
+    "hidden" + chr(0xA0) + "= true",
+    "( )",
+    "()()",
+    "not()",
+    "hidden = true and",
+]
 _PAGE_EXPIRED = (403, "pageTokenExpired", None, None)
 _UNKNOWN = (500, None, None, None)
 
@@ -2034,23 +3438,49 @@ _DRIVE_CHECK_ROWS = [
     ("/drive/v3/drives", "useDomainAdminAccess=false&useDomainAdminAccess=true", "admin", _SERVED),
     ("/drive/v3/drives", "useDomainAdminAccess=true&pageSize=0", "admin", _RANGE),
     ("/drive/v3/drives", "useDomainAdminAccess=true&q=name%3D%27x%27", "admin", _ADMIN_ONLY),
+    # the `q` a member's `drives.list` takes, and where its refusal falls among the others
+    *[("/drive/v3/drives", f"q={quote(q)}", "admin", _SERVED) for q in _DRIVES_Q_TAKEN],
+    *[("/drive/v3/drives", f"q={quote(q)}", "admin", _Q_REFUSED) for q in _DRIVES_Q_REFUSED],
+    ("/drive/v3/drives", "q=bogus&q=name%3D%27a%27", "admin", _Q_REFUSED),
+    ("/drive/v3/drives", "q=name%3D%27a%27&q=bogus", "admin", _SERVED),
+    ("/drive/v3/drives", "q=bogus&pageSize=NOPE", "admin", _TYPED),
+    ("/drive/v3/drives", "pageSize=NOPE&q=bogus", "admin", _TYPED),
+    ("/drive/v3/drives", "q=bogus&useDomainAdminAccess=NOPE", "admin", _TYPED),
+    ("/drive/v3/drives", "q=bogus&pageSize=0", "admin", _RANGE),
+    ("/drive/v3/drives", "q=bogus&pageToken=x", "admin", _Q_REFUSED),
+    ("/drive/v3/drives", "pageToken=x&q=bogus", "admin", _Q_REFUSED),
+    ("/drive/v3/drives", "q=bogus&useDomainAdminAccess=true", "admin", _Q_REFUSED),
+    ("/drive/v3/drives", "useDomainAdminAccess=true&q=bogus", "admin", _Q_REFUSED),
+    # a mask, and where its refusal falls among the others
+    *[(path, f"fields={quote(mask)}", "admin", _mask_refused(subject)) for path, mask, subject in _MASKS_REFUSED],
+    *[("/drive/v3/about", f"fields={quote(mask)}", "admin", _FIELDS_REQUIRED) for mask in _ABOUT_MASKS_REQUIRED],
+    *[(path, f"fields={quote(mask)}" + (extra and f"&{extra}"), "admin", expected) for path, mask, extra, expected in _MASK_ORDER],
+    *[(path, f"fields={quote(mask)}", "admin", _unserved(name)) for path, mask, name in _MASKS_UNSERVED],
+    ("/drive/v3/files/{pdf}/permissions", "fields=bogus&pageToken={issued}", "admin", _PAGE_EXPIRED),
+    ("/drive/v3/files/{pdf}/permissions", "fields=kind%2C&pageToken={issued}", "admin", _mask_refused("kind,")),
+    *[(path, "fields=bogus&fields=kind", "admin", _mask_refused("bogus")) for path in (_PERMS_OF_DOC, "/drive/v3/drives")],
+    *[(path, "fields=kind&fields=bogus", "admin", _SERVED) for path in (_PERMS_OF_DOC, "/drive/v3/drives")],
+    *[(path, f"fields=bogus&{query}", "admin", _TYPED) for path in (_PERMS_OF_DOC, "/drive/v3/drives") for query in ("pageSize=NOPE", "useDomainAdminAccess=NOPE")],
+    *[(path, "fields=bogus&pageSize=0", "admin", _RANGE) for path in (_PERMS_OF_DOC, "/drive/v3/drives")],
+    (_PERMS_OF_DOC, "fields=bogus&pageToken=bad", "admin", (400, "invalid", "pageToken", "Invalid Value")),
+    (_PERMS_OF_DOC, "pageToken=bad&fields=bogus", "admin", (400, "invalid", "pageToken", "Invalid Value")),
+    (_PERMS_OF_DOC, "fields=bogus&useDomainAdminAccess=true", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/{nope}/permissions", "fields=bogus", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/drives", "fields=bogus&pageToken=x", "admin", (400, "invalid", "pageToken", "Invalid Value")),
+    ("/drive/v3/drives", "fields=bogus&useDomainAdminAccess=true", "admin", _ADMIN_ONLY),
+    ("/drive/v3/drives", "fields=bogus&q=bogus", "admin", _Q_REFUSED),
 ]
 # fmt: on
 
 
-@pytest.mark.parametrize("path, query, caller, expected", _DRIVE_CHECK_ROWS)
-def test_drive_answers_each_check_with_reals_status_and_reason(
-    client, admin_h, tokens, path, query, caller, expected
-):
-    """The rows `_DRIVE_CHECK_ROWS` records. The 403 for a file the scoped token cannot see is the
-    one for a file that does not exist, and both name no file, so the check tells the caller
-    nothing about what it cannot read; the permissions 404 names the file it was asked about, and
-    is the same 404 the scoped token gets for that file without the flag."""
+@pytest.fixture(scope="module")
+def drive_check_ids(client, admin_h):
+    """The files `_DRIVE_CHECK_ROWS` names, and a page token `permissions.list` issued for {doc}."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     issued = client.get(
         f"/drive/v3/files/{doc}/permissions", headers=admin_h, params={"pageSize": 1}
     )
-    ids = {
+    return {
         "doc": doc,
         "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
         "folder": _drive_ids(client, admin_h, q=f"mimeType='{FOLDER_MIME}'")[0],
@@ -2058,18 +3488,44 @@ def test_drive_answers_each_check_with_reals_status_and_reason(
         "nope": "nosuchfile000",
         "issued": issued.json()["nextPageToken"],
     }
+
+
+def _drive_check(client, headers, ids, path, query, expected):
+    """The answer to one `_DRIVE_CHECK_ROWS` request in its row's shape: the status, `errors[0]`'s
+    reason and location, and the message where the row names one, from an envelope with no
+    `status` member."""
+    r = client.get(f"{path.format(**ids)}?{query.format(**ids)}", headers=headers)
+    if r.status_code == 200:
+        return (200, None, None, None)
+    e = _gerr(r)
+    message = e["message"] if expected[3] is not None and "status" not in e else None
+    return (r.status_code, e["errors"][0].get("reason"), e["errors"][0].get("location"), message)
+
+
+@pytest.mark.parametrize(
+    "path, query, caller, expected", [row for row in _DRIVE_CHECK_ROWS if "{hidden}" in row[0]]
+)
+def test_drive_answers_each_check_with_reals_status_and_reason(
+    client, admin_h, tokens, drive_check_ids, path, query, caller, expected
+):
+    """The rows `_DRIVE_CHECK_ROWS` records on the file the scoped token cannot see. The 403 it gets
+    is the one for a file that does not exist, and both name no file, so the check tells the
+    caller nothing about what it cannot read; the permissions 404 names the file it was asked
+    about, and is the same 404 the scoped token gets for that file without the flag."""
     headers = (
         admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
     )
-    r = client.get(f"{path.format(**ids)}?{query.format(**ids)}", headers=headers)
-    status, reason, location, message = expected
-    assert r.status_code == status, r.text
-    if status == 200:
-        return
-    e = _gerr(r)
-    assert (e["errors"][0].get("reason"), e["errors"][0].get("location")) == (reason, location)
-    if message is not None:
-        assert (e["message"], "status" in e) == (message, False)
+    assert _drive_check(client, headers, drive_check_ids, path, query, expected) == expected
+
+
+def test_drive_answers_every_other_check_with_reals_status_and_reason(
+    client, admin_h, drive_check_ids
+):
+    """The rest of `_DRIVE_CHECK_ROWS`, each sent by the admin token, as ``{row: answer}``."""
+    rows = [row for row in _DRIVE_CHECK_ROWS if "{hidden}" not in row[0]]
+    assert {
+        row[:2]: _drive_check(client, admin_h, drive_check_ids, *row[:2], row[3]) for row in rows
+    } == {row[:2]: row[3] for row in rows}
 
 
 def test_reads_of_a_folder_the_caller_cannot_see(tmp_path):
@@ -2135,6 +3591,9 @@ def test_reads_of_a_folder_the_caller_cannot_see(tmp_path):
             (files, {"fields": "totallyBogusField"}, "mia", "Private", 404, "notFound"),
             (files, {"fields": "totallyBogusField"}, "mia", "Shared", 400, "invalidParameter"),
             (files, {"alt": "media"}, "mia", "Private", 404, "notFound"),
+            (files, {"alt": "media"}, "mia", "Shared", 403, "fileNotDownloadable"),
+            (files, {"alt": "MEDIA"}, "mia", "Shared", 403, "fileNotDownloadable"),
+            (files, {"alt": "media"}, "admin", "Private", 403, "fileNotDownloadable"),
             (perms, {}, "admin", "Private", 200, None),
             (perms, {}, "ava", "Private", 200, None),
             (perms, {}, "mia", "Private", 404, "notFound"),
@@ -2223,9 +3682,8 @@ def test_a_typed_refusal_comes_after_the_credential_and_before_the_lookup(
         assert send(missing, headers, bad=True).content == send(missing, headers).content
 
 
-@pytest.mark.parametrize("mask", ["", " "])
-def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
-    """The blank mask `_drive_get_field_keys` describes, on a listing, a file and a folder, and
+def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h):
+    """The blank mask `_drive_project_one` describes, on a listing, a file and a folder, and
     `about`'s missing-mask 400 for the same mask. An absent mask is the default object."""
     doc = _drive_find(client, admin_h, "Brand")["id"]
     folder = client.get(
@@ -2233,11 +3691,286 @@ def test_drive_a_blank_fields_mask_selects_nothing(client, admin_h, mask):
         headers=admin_h,
         params={"q": "mimeType='application/vnd.google-apps.folder'"},
     ).json()["files"][0]["id"]
-    for path in ("/drive/v3/files", f"/drive/v3/files/{doc}", f"/drive/v3/files/{folder}"):
-        assert client.get(path, headers=admin_h, params={"fields": mask}).json() == {}, path
-        assert client.get(path, headers=admin_h).json(), path
-    about = _gerr(client.get(ABOUT, headers=admin_h, params={"fields": mask}))
-    assert about["message"] == "The 'fields' parameter is required for this method."
+    paths = ("/drive/v3/files", f"/drive/v3/files/{doc}", f"/drive/v3/files/{folder}")
+    assert {
+        path: bool(client.get(path, headers=admin_h).json()) for path in paths
+    } == dict.fromkeys(paths, True)
+    masks = ["", " ", "\t"]
+    assert {
+        (path, mask): client.get(path, headers=admin_h, params={"fields": mask}).json()
+        for path in paths
+        for mask in masks
+    } == {(path, mask): {} for path in paths for mask in masks}
+    assert {
+        mask: _gerr(client.get(ABOUT, headers=admin_h, params={"fields": mask}))["message"]
+        for mask in masks
+    } == dict.fromkeys(masks, "The 'fields' parameter is required for this method.")
+
+
+# What real answered each mask with. The third column is the top-level keys, `None` where the
+# answer was the one `fields=*` gets. The fourth is each entry's keys on a listing: `"full"` where
+# each entry was whole, as `fields=*` answers it (no mask answers a file's or a permission's default
+# keys alone), an empty set where the list came back empty because every entry was left with no
+# key, and `None` where the entries are not compared. A documented field the file has no value for
+# leaves it out of the answer here, where real answers it.
+_MASKS_SERVED = [
+    (_DOC, "id , name", {"id", "name"}, None),
+    (_DOC, "id,\tname", {"id", "name"}, None),
+    (_DOC, "id\t,name", {"id", "name"}, None),
+    (_DOC, "  id  ", {"id"}, None),
+    (_DOC, "owners()", set(), None),
+    (_DOC, "owners( )", set(), None),
+    (_DOC, "owners (kind),id", {"owners", "id"}, None),
+    (_DOC, "owners/ kind,id", {"owners", "id"}, None),
+    (_DOC, "owners /kind,id", {"owners", "id"}, None),
+    (_DOC, "owners(emailAddress , displayName),id", {"owners", "id"}, None),
+    (_DOC, "owners(),id", {"id"}, None),
+    (_DOC, "*,id", None, None),
+    (_DOC, "id,*", None, None),
+    (_DOC, "id()", {"id"}, None),
+    (_DOC, "id( )", {"id"}, None),
+    (_DOC, "name()", {"name"}, None),
+    (_DOC, "kind()", {"kind"}, None),
+    (_DOC, "mimeType()", {"mimeType"}, None),
+    (_DOC, "kind(),id", {"kind", "id"}, None),
+    (_DOC, "createdTime()", set(), None),
+    (_DOC, "trashed()", set(), None),
+    (_DOC, "owners/*", {"owners"}, None),
+    (_DOC, "permissions(id)", set(), None),
+    (_DOC, "capabilities(canAcceptOwnership,canEdit)", {"capabilities"}, None),
+    (_DOC, "contentHints/thumbnail/image", set(), None),
+    (_DOC, "imageMediaMetadata/location/altitude", set(), None),
+    (_DOC, "labelInfo/labels/id", set(), None),
+    (_DOC, "shortcutDetails/targetId", set(), None),
+    (_DOC, "contentRestrictions(readOnly,restrictingUser/me)", set(), None),
+    (_DOC, "properties/zzz", set(), None),
+    (_DOC, "appProperties(zzz)", set(), None),
+    (_DOC, "exportLinks(*)", {"exportLinks"}, None),
+    ("/drive/v3/files", "*", {"kind", "incompleteSearch", "nextPageToken", "files"}, None),
+    ("/drive/v3/files", "*,files(id)", None, None),
+    ("/drive/v3/files", "kind", {"kind"}, None),
+    ("/drive/v3/files", "nextPageToken", {"nextPageToken"}, None),
+    ("/drive/v3/files", "incompleteSearch,files(id)", {"incompleteSearch", "files"}, {"id"}),
+    ("/drive/v3/files", "files(permissions(id))", {"files"}, set()),
+    ("/drive/v3/files", "files(capabilities(canAcceptOwnership))", {"files"}, {"capabilities"}),
+    ("/drive/v3/files", "files(id,*)", {"files"}, "full"),
+    ("/drive/v3/files", "files()", {"files"}, set()),
+    ("/drive/v3/files", "files( )", {"files"}, set()),
+    ("/drive/v3/files", "files(trashingUser)", {"files"}, set()),
+    ("/drive/v3/files", "files/trashingUser", {"files"}, set()),
+    ("/drive/v3/files", "files(id,trashingUser)", {"files"}, {"id"}),
+    ("/drive/v3/files", "files(id())", {"files"}, {"id"}),
+    ("/drive/v3/files", "files(name())", {"files"}, {"name"}),
+    ("/drive/v3/files", "files(createdTime())", {"files"}, set()),
+    (_PERMS_OF_DOC, "", set(), None),
+    (_PERMS_OF_DOC, " ", set(), None),
+    (_PERMS_OF_DOC, "nextPageToken", set(), None),
+    (_PERMS_OF_DOC, "kind", {"kind"}, None),
+    (_PERMS_OF_DOC, " kind", {"kind"}, None),
+    (_PERMS_OF_DOC, "kind,nextPageToken", {"kind"}, None),
+    (_PERMS_OF_DOC, "permissions(id)", {"permissions"}, {"id"}),
+    (_PERMS_OF_DOC, "permissions( id )", {"permissions"}, {"id"}),
+    (_PERMS_OF_DOC, "permissions/id", {"permissions"}, {"id"}),
+    (_PERMS_OF_DOC, "permissions/kind", {"permissions"}, {"kind"}),
+    (_PERMS_OF_DOC, "permissions(id,role)", {"permissions"}, {"id", "role"}),
+    (_PERMS_OF_DOC, "permissions(id,\trole)", {"permissions"}, {"id", "role"}),
+    (_PERMS_OF_DOC, "kind ,permissions(id)", {"kind", "permissions"}, {"id"}),
+    (_PERMS_OF_DOC, "permissions()", {"permissions"}, set()),
+    (_PERMS_OF_DOC, "kind()", {"kind"}, None),
+    (_PERMS_OF_DOC, "permissions(id())", {"permissions"}, {"id"}),
+    (_PERMS_OF_DOC, "permissions(role())", {"permissions"}, {"role"}),
+    (_PERMS_OF_DOC, "permissions(type())", {"permissions"}, {"type"}),
+    (_PERMS_OF_DOC, "permissions(kind())", {"permissions"}, {"kind"}),
+    (_PERMS_OF_DOC + "?pageSize=1", "nextPageToken()", {"nextPageToken"}, None),
+    (_PERMS_OF_DOC, "permissions(emailAddress())", {"permissions"}, set()),
+    (_PERMS_OF_DOC, "permissions( )", {"permissions"}, set()),
+    (_PERMS_OF_DOC, "permissions(teamDrivePermissionDetails)", {"permissions"}, set()),
+    (_PERMS_OF_DOC, "permissions", {"permissions"}, "full"),
+    (_PERMS_OF_DOC, "permissions(*)", {"permissions"}, "full"),
+    (_PERMS_OF_DOC, "*", {"kind", "permissions"}, "full"),
+    (_PERMS_OF_DOC, "*,permissions(id)", {"kind", "permissions"}, "full"),
+    (_PERMS_OF_DOC, "permissions(id,*)", {"permissions"}, "full"),
+    ("/drive/v3/drives", "", set(), None),
+    ("/drive/v3/drives", " ", set(), None),
+    ("/drive/v3/drives", "nextPageToken", set(), None),
+    ("/drive/v3/drives", "kind", {"kind"}, None),
+    ("/drive/v3/drives", "kind,nextPageToken", {"kind"}, None),
+    ("/drive/v3/drives", "drives(id)", {"drives"}, None),
+    ("/drive/v3/drives", "drives/id", {"drives"}, None),
+    ("/drive/v3/drives", "drives()", {"drives"}, None),
+    ("/drive/v3/drives", "drives(id,name)", {"drives"}, None),
+    ("/drive/v3/drives", "drives(capabilities(canEdit))", {"drives"}, None),
+    (
+        "/drive/v3/drives",
+        "drives(restrictions/downloadRestriction/restrictedForReaders)",
+        {"drives"},
+        None,
+    ),
+    ("/drive/v3/drives", "*", {"kind", "drives"}, None),
+    ("/drive/v3/drives", "kind()", {"kind"}, None),
+    ("/drive/v3/about", "user, storageQuota", {"user", "storageQuota"}, None),
+    ("/drive/v3/about", "user ,kind", {"user", "kind"}, None),
+    ("/drive/v3/about", "user", {"user"}, None),
+    ("/drive/v3/about", "user,storageQuota", {"user", "storageQuota"}, None),
+    ("/drive/v3/about", "user(*)", {"user"}, None),
+    ("/drive/v3/about", "user/*", {"user"}, None),
+    ("/drive/v3/about", "driveThemes(id)", {"driveThemes"}, None),
+]
+
+
+def test_drive_answers_a_fields_mask_with_what_it_selects(client, admin_h, drive_check_ids):
+    """The rows `_MASKS_SERVED` records. A row with top-level keys compares them on every route,
+    `files.list` included, and the listed entries as its fourth column says; a row without compares
+    the whole answer with the one `fields=*` gets. A `drives.list` row compares the top-level keys
+    alone: Backlot serves no shared drive, where real listed the member's two."""
+
+    def get(path, **params):
+        url, _, query = path.format(doc=drive_check_ids["doc"]).partition("?")
+        r = client.get(
+            url, headers=admin_h, params={"pageSize": 2, **dict(parse_qsl(query)), **params}
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def answer(path, mask, top, entries):
+        """The row's answer in its own shape: "full" where it is the one `fields=*` gets."""
+        body = get(path, fields=mask)
+        if top is None:
+            return "full" if body == get(path, fields="*") else body
+        listed = next((k for k in body if isinstance(body[k], list)), None)
+        if entries == "full":
+            shown = "full" if body[listed] == get(path, fields="*")[listed] else body[listed]
+        elif entries:
+            shown = {frozenset(e) for e in body[listed]}
+        else:
+            shown = None if entries is None else body[listed]
+        return (set(body), shown)
+
+    def expected(top, entries):
+        if top is None:
+            return "full"
+        if entries and entries != "full":
+            return (top, {frozenset(entries)})
+        return (top, None if entries is None else entries or [])
+
+    assert {row[:2]: answer(*row) for row in _MASKS_SERVED} == {
+        (path, mask): expected(top, entries) for path, mask, top, entries in _MASKS_SERVED
+    }
+
+
+_USER = {"kind", "displayName", "emailAddress", "me", "permissionId", "photoLink"}
+_DETAILS = {"permissionType", "role", "inherited"}
+# What real answered each mask naming a name below an object field with, as `_drive_trim_object`
+# trims it: the path to each value the answer holds, a list's entries together, and to each list
+# left empty.
+_MASKS_TRIMMED = [
+    (_DOC, "owners(kind)", {"owners/kind"}),
+    (_DOC, "owners/kind", {"owners/kind"}),
+    (_DOC, "owners(kind,me)", {"owners/kind", "owners/me"}),
+    (_DOC, "owners(kind),owners(me)", {"owners/kind", "owners/me"}),
+    (_DOC, "owners,owners(kind)", {"owners/kind"}),
+    (_DOC, "owners(kind),owners", {"owners/kind"}),
+    (_DOC, "owners(*),owners(kind)", {f"owners/{k}" for k in _USER}),
+    (_DOC, "owners(kind),owners(*)", {f"owners/{k}" for k in _USER}),
+    (_DOC, "owners(kind),owners()", set()),
+    (_DOC, "owners(),owners(kind)", set()),
+    (_DOC, "owners(*),owners()", set()),
+    (_DOC, "owners(),owners(*)", set()),
+    (_DOC, "owners,owners()", set()),
+    (_DOC, "lastModifyingUser(kind)", {"lastModifyingUser/kind"}),
+    (_DOC, "lastModifyingUser(),lastModifyingUser(kind)", set()),
+    (_DOC, "lastModifyingUser(kind),lastModifyingUser()", set()),
+    (_DOC, "capabilities(canEdit,canCopy)", {"capabilities/canEdit", "capabilities/canCopy"}),
+    (_DOC, "capabilities,capabilities(canEdit)", {"capabilities/canEdit"}),
+    (_DOC, "capabilities(canEdit),capabilities()", set()),
+    (_DOC, "capabilities(),capabilities(canEdit)", set()),
+    ("/drive/v3/files", "files(owners(kind))", {"files/owners/kind"}),
+    ("/drive/v3/files", "files/owners/kind", {"files/owners/kind"}),
+    ("/drive/v3/files", "files(owners/kind,id)", {"files/id", "files/owners/kind"}),
+    ("/drive/v3/files", "files(id),files(owners(kind))", {"files/id", "files/owners/kind"}),
+    ("/drive/v3/files", "files(kind,owners/kind)", {"files/kind", "files/owners/kind"}),
+    (
+        "/drive/v3/files",
+        "files(owners(kind)),nextPageToken",
+        {"files/owners/kind", "nextPageToken"},
+    ),
+    ("/drive/v3/files", "files(capabilities(canEdit))", {"files/capabilities/canEdit"}),
+    (
+        "/drive/v3/files",
+        "files(id,lastModifyingUser(kind))",
+        {"files/id", "files/lastModifyingUser/kind"},
+    ),
+    ("/drive/v3/files", "files(owners,owners(kind))", {"files/owners/kind"}),
+    ("/drive/v3/files", "files(owners(kind),owners(*))", {f"files/owners/{k}" for k in _USER}),
+    ("/drive/v3/files", "files(owners(*),owners(kind))", {f"files/owners/{k}" for k in _USER}),
+    ("/drive/v3/files", "files(owners(),owners(kind))", {"files"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(role))", {"permissions/permissionDetails/role"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails/role)", {"permissions/permissionDetails/role"}),
+    (_PERMS_OF_DOC, "permissions/permissionDetails/role", {"permissions/permissionDetails/role"}),
+    (
+        _PERMS_OF_DOC,
+        "permissions(id,permissionDetails(role))",
+        {"permissions/id", "permissions/permissionDetails/role"},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(id),permissions(permissionDetails(role))",
+        {"permissions/id", "permissions/permissionDetails/role"},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(role,inherited))",
+        {"permissions/permissionDetails/role", "permissions/permissionDetails/inherited"},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(role)),kind",
+        {"kind", "permissions/permissionDetails/role"},
+    ),
+    (_PERMS_OF_DOC, "kind,permissions(role)", {"kind", "permissions/role"}),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(*),permissionDetails(role))",
+        {f"permissions/permissionDetails/{k}" for k in _DETAILS},
+    ),
+    (
+        _PERMS_OF_DOC,
+        "permissions(permissionDetails(role),permissionDetails(*))",
+        {f"permissions/permissionDetails/{k}" for k in _DETAILS},
+    ),
+    (_PERMS_OF_DOC, "permissions(permissionDetails())", {"permissions"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(),permissionDetails(role))", {"permissions"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(role),permissionDetails())", {"permissions"}),
+    (_PERMS_OF_DOC, "permissions(permissionDetails(*),permissionDetails())", {"permissions"}),
+    ("/drive/v3/about", "user(kind)", {"user/kind"}),
+    ("/drive/v3/about", "user/kind", {"user/kind"}),
+    ("/drive/v3/about", "user(kind,me)", {"user/kind", "user/me"}),
+    ("/drive/v3/about", "kind,user(me)", {"kind", "user/me"}),
+    ("/drive/v3/about", "storageQuota/limit", {"storageQuota/limit"}),
+    ("/drive/v3/about", "storageQuota(limit)", {"storageQuota/limit"}),
+    ("/drive/v3/about", "user(kind),storageQuota/limit", {"user/kind", "storageQuota/limit"}),
+    ("/drive/v3/about", "user,user(kind)", {"user/kind"}),
+    ("/drive/v3/about", "user(kind),user", {"user/kind"}),
+    ("/drive/v3/about", "user(*),user(kind)", {f"user/{k}" for k in _USER}),
+    ("/drive/v3/about", "user(kind),user(*)", {f"user/{k}" for k in _USER}),
+]
+
+
+def _leaves(value, at: str = "") -> set[str]:
+    if isinstance(value, list):
+        return set().union(*(_leaves(v, at) for v in value)) if value else {at}
+    if isinstance(value, dict) and value:
+        return set().union(*(_leaves(v, f"{at}/{k}" if at else k) for k, v in value.items()))
+    return {at} if at else set()
+
+
+@pytest.mark.parametrize("path, mask, leaves", _MASKS_TRIMMED)
+def test_drive_trims_an_object_field_to_the_names_below_it(client, admin_h, path, mask, leaves):
+    """The rows `_MASKS_TRIMMED` records; a listing's rows read its first two files."""
+    doc = _drive_find(client, admin_h, "Brand")["id"]
+    r = client.get(path.format(doc=doc), headers=admin_h, params={"pageSize": 2, "fields": mask})
+    assert r.status_code == 200, r.text
+    assert _leaves(r.json()) == leaves
 
 
 BAD_TOKEN = {"Authorization": "Bearer not-a-real-token"}
@@ -2287,6 +4020,48 @@ def test_xgafv_takes_1_or_2_and_refuses_the_rest_with_reals_sentence(client, adm
     assert e["errors"] == [
         {"message": XGAFV_REFUSAL.format(value), "domain": "global", "reason": "badRequest"}
     ]
+
+
+def test_a_folder_says_it_can_be_downloaded(tmp_path):
+    """Both kinds of folder, a `subtype: folder` record and the folder a record's `folder` names,
+    answer `canDownload` true, though `alt=media` refuses either. Real's did: on 2026-10-18 each of
+    the 49 folders a Google Workspace member's `files.list` named (two its own, 23 shared with it,
+    24 in shared drives) answered `capabilities.canDownload: true`."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-open",
+                "folder": "Shared",
+                "title": "Open",
+                "content": "body",
+                "author_email": "mia@acme.com",
+                "visibility": "public",
+            },
+            {
+                "source_type": "google_drive",
+                "doc_id": "gd-dir",
+                "subtype": "folder",
+                "title": "Plans",
+                "content": "x",
+                "author_email": "mia@acme.com",
+                "visibility": "public",
+            },
+        ],
+    )
+    h = {"Authorization": f"Bearer {s.admin_token}"}
+    with client_for(s, reload=True) as c:
+        q = {"q": f"mimeType='{FOLDER_MIME}'", "fields": "files(id,name)"}
+        folder = {
+            f["name"]: f["id"]
+            for f in c.get("/drive/v3/files", headers=h, params=q).json()["files"]
+        }
+        for name in ("Shared", "Plans"):
+            r = c.get(
+                f"/drive/v3/files/{folder[name]}", headers=h, params={"fields": "capabilities"}
+            )
+            assert r.json()["capabilities"]["canDownload"] is True, name
 
 
 def test_a_bad_xgafv_is_refused_before_anything_else_is_read(client, admin_h):
@@ -2596,6 +4371,8 @@ _NO_CREDENTIAL_ROWS = [
     ("POST", "/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", 401, 404),
     ("POST", "/sheets/v4/spreadsheets/x:getByDataFilter", 401, 404),
     ("GET", "/docs/v1/documents/x", 401, 404),
+    # the admin's body, a data filter, is refused before the lookup
+    ("POST", "/docs/v1/documents/x:batchUpdate", 401, 400),
     ("GET", "/slides/v1/presentations/x", 401, 404),
     ("GET", "/gmail/v1/users/me/profile", 401, 200),
     ("GET", "/gmail/v1/users/me/labels", 401, 200),
@@ -2617,7 +4394,6 @@ _NO_CREDENTIAL_ROWS = [
     ("POST", "/drive/v3/files/{doc}/copy", 401, 404),
     ("GET", "/sheets/v4/spreadsheets/x/developerMetadata/1", 401, 404),
     ("POST", "/sheets/v4/spreadsheets/x:batchUpdate", 401, 405),
-    ("POST", "/docs/v1/documents/x:batchUpdate", 401, 405),
     ("GET", "/slides/v1/presentations/x/pages/p1", 401, 404),
     ("POST", "/gmail/v1/users/me/messages/send", 401, 405),
     ("GET", "/gmail/v1/users/me/drafts", 401, 404),
@@ -2634,35 +4410,43 @@ _NO_CREDENTIAL_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("method, path, code, admin", _NO_CREDENTIAL_ROWS)
-def test_a_missing_credential_is_answered_by_operation(client, admin_h, method, path, code, admin):
+def test_a_missing_credential_is_answered_by_operation(client, admin_h, drive_check_ids):
     """The rows `_NO_CREDENTIAL_ROWS` records: no `Authorization` at all is answered per operation
     rather than per family, a published operation Backlot does not serve included. Every 401 carries
     real's challenge and no 403 does, `Bearer nope` is the 401 on each published operation, and the
     admin token is what the request gets once its credential is read."""
-    url = path.format(doc=_drive_find(client, admin_h, "Brand")["id"])
-    body = _A1_FILTER if method in ("POST", "PATCH") else None
-    r = client.request(method, url, json=body)
-    if code in (404, 405):
-        for headers in (BAD_TOKEN, admin_h):
-            assert client.request(method, url, json=body, headers=headers).status_code == code
-        assert r.status_code == code, r.text
-        return
-    assert r.status_code == code, r.text
-    e = _gerr(r)
-    if code == 403:
-        assert (
-            e["message"] == gerr.UNREGISTERED_CALLER_MESSAGE and e["status"] == "PERMISSION_DENIED"
+
+    def answer(method, path, admin):
+        url = path.format(doc=drive_check_ids["doc"])
+        body = _A1_FILTER if method in ("POST", "PATCH") else None
+        r, bad, as_admin = (
+            client.request(method, url, json=body, headers=headers)
+            for headers in ({}, BAD_TOKEN, admin_h)
         )
-        assert "www-authenticate" not in r.headers
-    else:
-        assert e["message"] == gerr.MISSING_CREDENTIALS_MESSAGE and e["status"] == "UNAUTHENTICATED"
-        assert r.headers["www-authenticate"] == _CHALLENGE
-    bad = client.request(method, url, json=body, headers=BAD_TOKEN)
-    assert bad.status_code == 401, bad.text
-    assert bad.headers["www-authenticate"] == _CHALLENGED
-    if admin is not None:
-        assert client.request(method, url, json=body, headers=admin_h).status_code == admin
+        if r.status_code in (404, 405):
+            return (r.status_code, bad.status_code, as_admin.status_code)
+        e = _gerr(r)
+        return (
+            (r.status_code, e["message"], e["status"], r.headers.get("www-authenticate")),
+            (bad.status_code, bad.headers["www-authenticate"]),
+            None if admin is None else as_admin.status_code,
+        )
+
+    def expected(code, admin):
+        if code in (404, 405):
+            return (code, code, code)
+        if code == 403:
+            shown = (403, gerr.UNREGISTERED_CALLER_MESSAGE, "PERMISSION_DENIED", None)
+        else:
+            shown = (code, gerr.MISSING_CREDENTIALS_MESSAGE, "UNAUTHENTICATED", _CHALLENGE)
+        return (shown, (401, _CHALLENGED), admin)
+
+    assert {
+        (method, path): answer(method, path, admin)
+        for method, path, _, admin in _NO_CREDENTIAL_ROWS
+    } == {
+        (method, path): expected(code, admin) for method, path, code, admin in _NO_CREDENTIAL_ROWS
+    }
 
 
 _SERVED = "served"  # the read's own 200
@@ -2740,38 +4524,75 @@ _QUERY_CREDENTIAL_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "value, query, answer",
-    [(value, "", answer) for value, answer in _CREDENTIAL_ROWS] + _QUERY_CREDENTIAL_ROWS,
-)
-@pytest.mark.parametrize(
+_ALL_CREDENTIAL_ROWS = [
+    (value, "", answer) for value, answer in _CREDENTIAL_ROWS
+] + _QUERY_CREDENTIAL_ROWS
+_CREDENTIAL_PATHS = pytest.mark.parametrize(
     "path, anonymous", [("/gmail/v1/users/me/labels/INBOX", 401), ("/drive/v3/files", 403)]
 )
-def test_a_credential_is_read_as_google_reads_it(
+
+
+def _as_scoped(value, query):
+    """Whether a row sends the scoped token."""
+    return "{m}" in f"{value}{query}"
+
+
+def _credential_reader(client, tokens_yaml, tokens, path, anonymous):
+    """What ``path`` answers a row's `Authorization` value and query with: `_SERVED` and whose read
+    it is, `_NONE`, the bad token's challenge, or the status and body where it is none of those."""
+    admin, scoped = tokens_yaml["admin_token"], tokens["mia@acme.com"]
+    served = {
+        "admin": client.get(path, headers={"Authorization": f"Bearer {admin}"}).json(),
+        "scoped": client.get(path, headers={"Authorization": f"Bearer {scoped}"}).json(),
+    }
+    assert served["admin"] != served["scoped"]
+    nothing = client.get(path).json()
+
+    def read(value, query):
+        headers = {} if value is None else {"Authorization": value.format(t=admin, m=scoped)}
+        sent = query.format(t=admin, m=scoped)
+        r = client.get(f"{path}?{sent}" if sent else path, headers=headers)
+        if r.status_code == 200:
+            return (_SERVED, *(whom for whom, body in served.items() if body == r.json()))
+        if (r.status_code, r.json()) == (anonymous, nothing):
+            return _NONE
+        if r.status_code == 401 and _gerr(r)["message"] == gerr.BAD_TOKEN_MESSAGE:
+            return r.headers["www-authenticate"]
+        return (r.status_code, r.text)
+
+    return read
+
+
+def _credential_expected(value, query, answer):
+    if answer != _SERVED:
+        return answer
+    return (_SERVED, "scoped" if _as_scoped(value, query) else "admin")
+
+
+@_CREDENTIAL_PATHS
+def test_a_credential_is_read_as_google_reads_it(client, tokens_yaml, tokens, path, anonymous):
+    """The rows `_CREDENTIAL_ROWS` and `_QUERY_CREDENTIAL_ROWS` record that send the admin token
+    or none, on an operation whose caller with no credential is a missing one and on one whose is
+    an unregistered one. A served row is answered as the admin token is under
+    `Authorization: Bearer`."""
+    read = _credential_reader(client, tokens_yaml, tokens, path, anonymous)
+    rows = [row for row in _ALL_CREDENTIAL_ROWS if not _as_scoped(*row[:2])]
+    assert {(value, query): read(value, query) for value, query, _ in rows} == {
+        (value, query): _credential_expected(value, query, answer) for value, query, answer in rows
+    }
+
+
+@pytest.mark.parametrize(
+    "value, query, answer", [row for row in _ALL_CREDENTIAL_ROWS if _as_scoped(*row[:2])]
+)
+@_CREDENTIAL_PATHS
+def test_a_scoped_credential_is_read_as_its_user(
     client, tokens_yaml, tokens, value, query, answer, path, anonymous
 ):
-    """The rows `_CREDENTIAL_ROWS` and `_QUERY_CREDENTIAL_ROWS` record, on an operation whose caller
-    with no credential is a missing one and on one whose is an unregistered one. A served row is
-    answered as its token is under `Authorization: Bearer`, the scoped token's as the scoped user's
-    rather than the admin's."""
-    admin, scoped = tokens_yaml["admin_token"], tokens["mia@acme.com"]
-    headers = {} if value is None else {"Authorization": value.format(t=admin, m=scoped)}
-    sent = query.format(t=admin, m=scoped)
-    r = client.get(f"{path}?{sent}" if sent else path, headers=headers)
-    if answer == _SERVED:
-        assert r.status_code == 200, r.text
-        token = scoped if "{m}" in f"{value}{query}" else admin
-        assert r.json() == client.get(path, headers={"Authorization": f"Bearer {token}"}).json()
-        if token == scoped:
-            assert r.json() != client.get(path, headers={"Authorization": f"Bearer {admin}"}).json()
-        return
-    if answer == _NONE:
-        assert r.status_code == anonymous, r.text
-        assert r.json() == client.get(path).json()
-        return
-    assert r.status_code == 401, r.text
-    assert _gerr(r)["message"] == gerr.BAD_TOKEN_MESSAGE
-    assert r.headers["www-authenticate"] == answer
+    """The rows of the same tables that send the scoped token, each a case of its own: a served row
+    is answered as the scoped user's read, not the admin's."""
+    read = _credential_reader(client, tokens_yaml, tokens, path, anonymous)
+    assert read(value, query) == _credential_expected(value, query, answer)
 
 
 _DENIED = "Delegation denied for mia@acme.com"
@@ -3318,16 +5139,18 @@ def test_an_alt_the_api_cannot_render_takes_the_request_out_of_the_jsonp_path(
 
 
 @pytest.mark.parametrize("path, code", JSONP_FAMILY_ERRORS)
-@pytest.mark.parametrize("alt", ["json", "JSON", "Json", ""])
-def test_an_alt_that_still_means_json_keeps_the_callback(client, path, code, alt):
+def test_an_alt_that_still_means_json_keeps_the_callback(client, path, code):
     """`alt` is matched without regard to case, and an empty `alt=` names no format at all.
 
     Measured 2026-09-17, anonymous on all five families and authenticated on Sheets: `alt=JSON`,
     `alt=Json` and `alt=` each come back as the same 200 script `alt=json` does. Comparing the
     value literally answered all three at the error status with an unwrapped body, which is the one
     shape a page loading the answer through a `<script>` element cannot read."""
-    r = client.get(path, params={"callback": "cb", "alt": alt})
-    assert _jsonp(r, "cb")["error"]["code"] == code
+    alts = ["json", "JSON", "Json", ""]
+    assert {
+        alt: _jsonp(client.get(path, params={"callback": "cb", "alt": alt}), "cb")["error"]["code"]
+        for alt in alts
+    } == dict.fromkeys(alts, code)
 
 
 @pytest.mark.parametrize("alt", ["json", "JSON", "Json", ""])
@@ -3568,7 +5391,7 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
                 if refused:
                     wrong.append(f"{method.upper()} {path} refused where real ignores")
     assert wrong == []
-    assert gets and posts, f"both halves have to have run, got {gets} GETs and {posts} POSTs"
+    assert gets and posts, f"both halves have to have run, got {gets} GET(s) and {posts} POST(s)"
 
 
 def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_name(client):
@@ -3680,10 +5503,10 @@ def test_the_characters_the_serializer_escapes():
     [
         ("\t", "\\t"),
         ("\\", "\\\\"),
-        ("", "\\u007f"),
-        ("­", "\\u00ad"),
-        ("​", "\\u200b"),
-        (" ", "\\u2028"),
+        ("\u007f", "\\u007f"),
+        ("\u00ad", "\\u00ad"),
+        ("\u200b", "\\u200b"),
+        ("\u2028", "\\u2028"),
         ("\U0001d173", "\\ud834\\udd73"),
         ("\U000e0001", "\\udb40\\udc01"),
     ],
@@ -3705,10 +5528,10 @@ def test_a_callback_name_reaches_the_wrapper_escaped(client, admin_h, ch, writte
 @pytest.mark.parametrize(
     "ch, written",
     [
-        ("­", "\\u00ad"),
-        ("", "\\u007f"),
-        ("​", "\\u200b"),
-        (" ", "\\u2028"),
+        ("\u00ad", "\\u00ad"),
+        ("\u007f", "\\u007f"),
+        ("\u200b", "\\u200b"),
+        ("\u2028", "\\u2028"),
         ("\U0001d173", "\\ud834\\udd73"),
     ],
 )
@@ -3835,10 +5658,11 @@ def test_drive_files_has_typed_response_schema(client):
     assert schema != {}
 
 
-def _drive_find(client, admin_h, name_substr):
-    j = client.get(
-        "/drive/v3/files", params={"q": f"name contains '{name_substr}'"}, headers=admin_h
-    ).json()
+def _drive_find(client, admin_h, name_substr, fields=None):
+    params = {"q": f"name contains '{name_substr}'"}
+    if fields is not None:
+        params["fields"] = fields
+    j = client.get("/drive/v3/files", params=params, headers=admin_h).json()
     return j["files"][0] if j.get("files") else None
 
 
@@ -3847,7 +5671,9 @@ def test_drive_responses_unchanged_by_enrichment(client, admin_h):
     assert lst["kind"] == "drive#fileList" and "files" in lst
     doc = _drive_find(client, admin_h, "Brand")
     assert doc is not None
-    full = client.get(f"/drive/v3/files/{doc['id']}", headers=admin_h).json()
+    full = client.get(
+        f"/drive/v3/files/{doc['id']}", headers=admin_h, params={"fields": "*"}
+    ).json()
     for k in (
         "kind",
         "id",
@@ -4088,30 +5914,32 @@ _DOWNLOAD_QUERY_TOKEN_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("kind, query, value, status, answer", _DOWNLOAD_QUERY_TOKEN_ROWS)
-def test_a_download_refuses_a_token_in_its_query(
-    client, admin_h, tokens_yaml, kind, query, value, status, answer
-):
+def test_a_download_refuses_a_token_in_its_query(client, admin_h, tokens_yaml):
     """The rows `_DOWNLOAD_QUERY_TOKEN_ROWS` records. A function of its own beside
     `test_the_refusal_order_on_a_download_is_system_bearer_then_callback`, whose rows are
     `Authorization` values on a query that names no token."""
     requests = _download_requests(client, admin_h)
-    url, params = {
+    reads = {
         "media": requests["media"],
         "export": requests["export"],
         "bare": (requests["export"][0], {}),
         "missing": ("/drive/v3/files/nosuchfile000/export", requests["export"][1]),
         "json": (requests["export"][0], {**requests["export"][1], "alt": "json"}),
-    }[kind]
-    sent = "&".join(f"{k}={v}" for k, v in params.items())
-    token = tokens_yaml["admin_token"]
-    headers = {} if value is None else {"Authorization": value.format(t=token)}
-    r = client.get(f"{url}?{sent}&{query}" if sent else f"{url}?{query}", headers=headers)
-    assert r.status_code == status, r.text
-    if status == 401:
-        assert r.headers["www-authenticate"] == answer
-    else:
-        assert _gerr(r)["message"] == answer
+    }
+    answered = {}
+    for kind, query, value, *_ in _DOWNLOAD_QUERY_TOKEN_ROWS:
+        url, params = reads[kind]
+        sent = "&".join(f"{k}={v}" for k, v in params.items())
+        headers = (
+            {} if value is None else {"Authorization": value.format(t=tokens_yaml["admin_token"])}
+        )
+        r = client.get(f"{url}?{sent}&{query}" if sent else f"{url}?{query}", headers=headers)
+        shown = r.headers["www-authenticate"] if r.status_code == 401 else _gerr(r)["message"]
+        answered[kind, query, value] = (r.status_code, shown)
+    assert answered == {
+        (kind, query, value): (status, answer)
+        for kind, query, value, status, answer in _DOWNLOAD_QUERY_TOKEN_ROWS
+    }
 
 
 def test_a_download_is_the_route_not_the_path_shape(client, admin_h):
@@ -4207,13 +6035,13 @@ def _drive_ids(client, headers, **params):
 
 
 def test_drive_shared_with_me_partitions_by_owner(client, tokens_yaml):
-    """`q=sharedWithMe=true` must return only items shared with the caller by someone else, and
-    `false` must exclude them — real Drive's "Shared with me" is the only way to enumerate those.
-    Ignoring the clause makes both return the caller's whole visible corpus."""
+    """`q=sharedWithMe=true` returns only the items someone else shared with the caller, and
+    `'me' in owners` the caller's own, so the two partition what the caller sees. Real refuses
+    `sharedWithMe = false`, as `_FILES_Q` records, so the caller's own are asked for by owner."""
     mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
     all_ids = set(_drive_ids(client, mia, q="trashed=false", pageSize=100))
     shared = set(_drive_ids(client, mia, q="sharedWithMe=true and trashed=false", pageSize=100))
-    own = set(_drive_ids(client, mia, q="sharedWithMe=false and trashed=false", pageSize=100))
+    own = set(_drive_ids(client, mia, q="'me' in owners and trashed=false", pageSize=100))
     assert shared and own  # SAMPLE gives mia both her own and others' files
     assert shared != own and not (shared & own)
     assert shared | own == all_ids  # together they partition the visible corpus
@@ -4231,12 +6059,12 @@ def test_drive_shared_items_carry_shared_with_me_time(client, tokens_yaml):
     shared = client.get(
         "/drive/v3/files",
         headers=mia,
-        params={"q": "sharedWithMe=true and trashed=false", "pageSize": 100},
+        params={"q": "sharedWithMe=true and trashed=false", "pageSize": 100, "fields": "*"},
     ).json()["files"]
     own = client.get(
         "/drive/v3/files",
         headers=mia,
-        params={"q": "sharedWithMe=false and trashed=false", "pageSize": 100},
+        params={"q": "'me' in owners and trashed=false", "pageSize": 100, "fields": "*"},
     ).json()["files"]
     assert shared and own
     assert all(f["sharedWithMeTime"] for f in shared), "every shared item needs the timestamp"
@@ -4247,7 +6075,10 @@ def test_drive_shared_items_carry_shared_with_me_time(client, tokens_yaml):
     assert any(f["mimeType"] == FOLDER_MIME for f in shared)
     # and files.get agrees with the listing
     one = shared[0]
-    assert client.get(f"/drive/v3/files/{one['id']}", headers=mia).json() == one
+    assert (
+        client.get(f"/drive/v3/files/{one['id']}", headers=mia, params={"fields": "*"}).json()
+        == one
+    )
 
 
 def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
@@ -4265,25 +6096,210 @@ def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
     )
 
 
-def test_drive_order_by_shared_with_me_time(client, tokens_yaml):
-    """Backlot models the relation this key sorts on (owner vs caller), so it sorts rather than
-    400s — unlike the view/modify-by-me timestamps, which have no counterpart here at all."""
-    mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
-    r = client.get(
-        "/drive/v3/files",
-        headers=mia,
-        params={"q": "sharedWithMe=true", "pageSize": 100, "orderBy": "sharedWithMeTime desc"},
+_PER_CALLER_ORDER = [
+    ("sharedWithMeTime", "a2 a1 m1 m2"),
+    ("sharedWithMeTime asc", "a2 a1 m1 m2"),
+    ("sharedWithMeTime desc", "m2 m1 a2 a1"),
+    ("modifiedByMeTime", "m2 m1 a1 a2"),
+    ("modifiedByMeTime asc", "m2 m1 a1 a2"),
+    ("modifiedByMeTime desc", "a2 a1 m2 m1"),
+    ("viewedByMeTime", "a2 a1 m2 m1"),
+    ("viewedByMeTime asc", "a2 a1 m2 m1"),
+    ("viewedByMeTime desc", "m2 m1 a2 a1"),
+    ("recency", "a2 a1 m2 m1"),
+    ("recency asc", "a2 a1 m2 m1"),
+    ("recency desc", "a2 a1 m2 m1"),
+]
+
+
+def test_drive_order_by_a_per_caller_time(tmp_path):
+    """Ava owns two of the files and the other two are Mia's, shared with her, modified in turn,
+    so each block's order is its own and not the files' modification order. None is viewed, so
+    under `viewedByMeTime` Mia's files sort after Ava's own, where `_DRIVE_ORDER_KEYS` says real
+    puts them."""
+    records = [
+        {
+            "source_type": "google_drive",
+            "doc_id": doc_id,
+            "folder": "f",
+            "title": doc_id,
+            "content": "p",
+            "author_email": f"{owner}@acme.com",
+            "readers": ["ava@acme.com", "mia@acme.com"],
+            "visibility": "private",
+            "created": f"2026-01-{day:02d}T09:00:00Z",
+            "updated": f"2026-01-{day:02d}T09:00:00Z",
+        }
+        for doc_id, owner, day in (
+            ("a1", "ava", 1),
+            ("m1", "mia", 5),
+            ("a2", "ava", 10),
+            ("m2", "mia", 15),
+        )
+    ]
+    s = tiny_corpus(tmp_path, records)
+    ava = tok(yaml.safe_load(s.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    answered = {}
+    with client_for(s, reload=True) as c:
+        for order_by, _ in _PER_CALLER_ORDER:
+            r = c.get(
+                "/drive/v3/files",
+                headers={"Authorization": f"Bearer {ava}"},
+                params={
+                    "orderBy": order_by,
+                    "fields": "files(name)",
+                    "q": "mimeType != 'application/vnd.google-apps.folder'",
+                },
+            )
+            names = " ".join(f["name"] for f in r.json().get("files", []))
+            answered[order_by] = (r.status_code, names if r.status_code == 200 else r.text)
+    assert answered == {order_by: (200, listed) for order_by, listed in _PER_CALLER_ORDER}
+
+
+# Each set of `capabilities` true for a file or a folder, as its owner and as a reader read it
+# (`_drive_file_capabilities`); every other one is false.
+_CAPS_TRUE = {
+    ("file", True): {
+        "canDownload",
+        "canComment",
+        "canEdit",
+        "canCopy",
+        "canShare",
+        "canRename",
+        "canTrash",
+        "canDelete",
+        "canReadRevisions",
+        "canModifyContent",
+    },
+    ("file", False): {"canDownload", "canCopy"},
+    ("folder", True): {
+        "canDownload",
+        "canListChildren",
+        "canComment",
+        "canEdit",
+        "canShare",
+        "canRename",
+        "canTrash",
+        "canDelete",
+        "canAddChildren",
+        "canModifyContent",
+    },
+    ("folder", False): {"canDownload", "canListChildren"},
+}
+
+
+@pytest.fixture(scope="module")
+def owned_and_lent(tmp_path_factory):
+    """A file and a folder record of ava's and of mia's, and a PDF of mia's, in folder `Plans`,
+    each readable by both."""
+    record = {
+        "source_type": "google_drive",
+        "folder": "Plans",
+        "content": "body",
+        "readers": ["ava@acme.com", "mia@acme.com"],
+        "visibility": "private",
+    }
+    folder = {"subtype": "folder"}
+    pdf = {"subtype": "pdf", "mime_type": "application/pdf"}
+    rows = [("mine", "Mine", "ava", {}), ("theirs", "Theirs", "mia", {})]
+    rows += [("figures", "Figures", "ava", folder), ("drafts", "Drafts", "mia", folder)]
+    rows += [("scan", "Scan.pdf", "mia", pdf)]
+    return tiny_corpus(
+        tmp_path_factory.mktemp("owned_and_lent"),
+        [
+            {
+                **record,
+                "doc_id": doc_id,
+                "title": title,
+                "author_email": f"{author}@acme.com",
+                **extra,
+            }
+            for doc_id, title, author, extra in rows
+        ],
     )
-    assert r.status_code == 200
-    times = [f["sharedWithMeTime"] for f in r.json()["files"]]
-    assert times == sorted(times, reverse=True)
 
 
-def test_drive_owned_by_me_reflects_the_caller(client, tokens_yaml):
-    """`ownedByMe` is per-caller in real Drive; Backlot reported False for every file."""
-    mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
-    assert _drive_find(client, mia, "Brand")["ownedByMe"] is True
-    assert _drive_find(client, mia, "Whitepaper")["ownedByMe"] is False
+@pytest.mark.parametrize(
+    "name, owned, kind",
+    [
+        ("Mine", True, "file"),
+        ("Theirs", False, "file"),
+        ("Plans", False, "folder"),
+        ("Figures", True, "folder"),
+        ("Drafts", False, "folder"),
+    ],
+)
+def test_drive_owned_by_me_can_share_and_modified_by_me_follow_the_caller(
+    owned_and_lent, name, owned, kind
+):
+    """`ownedByMe` is per caller, and `canShare` and `modifiedByMe` with it: what the caller owns it
+    can share, and what it can only read it cannot; `_modified_by_me` says why the caller modified
+    exactly what it owns. Real answered `canShare: true` on 117 of the 118 items a Google Workspace
+    member's `files.list` named as its own on 2026-10-18 and on 2026-10-19, and `false` on each
+    folder and each file shared with it to read. `Plans` is a folder a record's `folder` names, and
+    `Figures` and `Drafts` are `subtype: folder` records. The rest of `capabilities` is
+    `_CAPS_TRUE`'s."""
+    s = owned_and_lent
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
+    ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+    with client_for(s, reload=True) as c:
+        listed = {
+            f["name"]: f
+            for f in c.get(
+                "/drive/v3/files",
+                headers=ava,
+                params={"fields": f"files(id,name,{_PER_CALLER})"},
+            ).json()["files"]
+        }[name]
+        got = c.get(
+            f"/drive/v3/files/{listed['id']}", headers=ava, params={"fields": _PER_CALLER}
+        ).json()
+    for f in (listed, got):
+        assert (f["ownedByMe"], f["capabilities"]["canShare"], f["modifiedByMe"]) == (owned,) * 3
+        assert f.get("modifiedByMeTime") == (f["modifiedTime"] if owned else None)
+        assert {k for k, v in f["capabilities"].items() if v} == _CAPS_TRUE[kind, owned]
+
+
+def test_drive_key_order_differs_between_listing_and_read(owned_and_lent):
+    """Each item comes in real's listing order in a listing and in its read order when read by
+    id, with the same keys and values both ways, and the listing's own keys come in a third
+    order. Between them the items carry every key either order names: ava is a scoped caller,
+    so her own file carries `modifiedByMeTime`, what mia lent her `sharedWithMeTime`, and the
+    PDF the keys only a binary file has."""
+    list_order = (
+        "kind fileExtension md5Checksum viewedByMe mimeType exportLinks parents iconLink "
+        "shared lastModifyingUser owners webViewLink webContentLink size spaces id name "
+        "starred trashed explicitlyTrashed createdTime modifiedTime modifiedByMeTime "
+        "sharedWithMeTime quotaBytesUsed version ownedByMe fullFileExtension capabilities "
+        "modifiedByMe"
+    ).split()
+    get_order = (
+        "kind id name mimeType starred trashed explicitlyTrashed parents spaces version "
+        "webContentLink webViewLink iconLink viewedByMe createdTime modifiedTime "
+        "modifiedByMeTime modifiedByMe sharedWithMeTime owners lastModifyingUser shared "
+        "ownedByMe capabilities fullFileExtension fileExtension md5Checksum size "
+        "quotaBytesUsed exportLinks"
+    ).split()
+    s = owned_and_lent
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
+    ava = {"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"}
+    with client_for(s, reload=True) as c:
+        listing = c.get(
+            "/drive/v3/files", headers=ava, params={"fields": "*", "pageSize": 100}
+        ).json()
+        assert {k for entry in listing["files"] for k in entry} == set(list_order)
+        for entry in listing["files"]:
+            assert list(entry) == [k for k in list_order if k in entry]
+            got = c.get(
+                f"/drive/v3/files/{entry['id']}", headers=ava, params={"fields": "*"}
+            ).json()
+            assert got == entry
+            assert list(got) == [k for k in get_order if k in got]
+        paged = c.get("/drive/v3/files", headers=ava, params={"pageSize": 2}).json()
+        assert list(paged) == ["files", "kind", "nextPageToken", "incompleteSearch"]
+
+
+_PER_CALLER = "ownedByMe,capabilities,modifiedByMe,modifiedByMeTime,modifiedTime"
 
 
 def test_drive_order_by_sorts_the_result(client, admin_h):
@@ -4363,32 +6379,739 @@ def test_drive_order_by_does_not_change_the_rows_themselves(client, admin_h):
     so the served objects must still be identical to the unsorted ones, field for field."""
     plain = {
         f["id"]: f
-        for f in client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 100}).json()[
-            "files"
-        ]
+        for f in client.get(
+            "/drive/v3/files", headers=admin_h, params={"pageSize": 100, "fields": "*"}
+        ).json()["files"]
     }
     sorted_ = {
         f["id"]: f
         for f in client.get(
             "/drive/v3/files",
             headers=admin_h,
-            params={"pageSize": 100, "orderBy": "modifiedTime desc"},
+            params={"pageSize": 100, "orderBy": "modifiedTime desc", "fields": "*"},
         ).json()["files"]
     }
     assert plain and plain == sorted_
     assert any(f["shared"] for f in plain.values())  # ...and `shared` is really resolved
 
 
-def test_drive_order_by_rejects_keys_it_cannot_honor(client, admin_h):
-    """Real Drive 400s an undocumented sort key. Backlot models no per-caller view/share
-    timestamps, so those documented keys are rejected loudly rather than silently ignored."""
-    for bad in ("bogusKey", "name descending", "viewedByMeTime"):
-        r = client.get("/drive/v3/files", headers=admin_h, params={"orderBy": bad})
-        assert r.status_code == 400, f"orderBy={bad!r} should 400, got {r.status_code}"
-    ok = client.get(
-        "/drive/v3/files", headers=admin_h, params={"orderBy": "folder,name desc", "pageSize": 5}
+def _nfd(name: str) -> str:
+    return unicodedata.normalize("NFD", name)
+
+
+# The first folder `backlot.collation` describes: its names in the order they were made, and the
+# orders real listed them in.
+_MADE = [
+    "resume",
+    "résumé",
+    "resumé",
+    "Resume",
+    "RESUME",
+    "cote",
+    "coté",
+    "côte",
+    "côté",
+    "가",
+    "家",
+    "可",
+    "加",
+    "각",
+    "각2",
+    "家2",
+    "a",
+    "A",
+    "b",
+    "x2",
+    "x02",
+    "x002",
+    "x10",
+    "x1٠",
+    "x٢",
+    "x²",
+    "x2①",
+    "x2²",
+    "x20",
+    "x 2",
+    "x-2",
+    "x_2",
+    "x.2",
+    "file99999999999999999999",
+    "file100000000000000000000",
+    "v1",
+    "v01",
+    "_a",
+    "-a",
+    ".a",
+    "(a",
+    "[a",
+    "1a",
+    "$a",
+    "#a",
+    "~a",
+    "€a",
+    "가나",
+    "abc",
+    "家族",
+    "ガ",
+    "α",
+    "Ж",
+    "😀",
+    _nfd("한글"),
+    "한글",
+    _nfd("éclair"),
+    "éclair",
+]
+_BY_NAME_NATURAL = [
+    "_a",
+    "-a",
+    ".a",
+    "(a",
+    "[a",
+    "#a",
+    "~a",
+    "😀",
+    "$a",
+    "€a",
+    "1a",
+    "A",
+    "a",
+    "abc",
+    "b",
+    "cote",
+    "coté",
+    "côte",
+    "côté",
+    "éclair",
+    _nfd("éclair"),
+    "file99999999999999999999",
+    "file100000000000000000000",
+    "RESUME",
+    "Resume",
+    "resume",
+    "resumé",
+    "résumé",
+    "v01",
+    "v1",
+    "x 2",
+    "x_2",
+    "x-2",
+    "x.2",
+    "x٢",
+    "x002",
+    "x02",
+    "x2",
+    "x2①",
+    "x2²",
+    "x1٠",
+    "x10",
+    "x20",
+    "x²",
+    "α",
+    "Ж",
+    "가",
+    "가나",
+    "각",
+    "각2",
+    "한글",
+    _nfd("한글"),
+    "ガ",
+    "加",
+    "可",
+    "家",
+    "家2",
+    "家族",
+]
+_BY_NAME_NATURAL_DESC = [
+    "家族",
+    "家2",
+    "家",
+    "可",
+    "加",
+    "ガ",
+    "한글",
+    _nfd("한글"),
+    "각2",
+    "각",
+    "가나",
+    "가",
+    "Ж",
+    "α",
+    "x²",
+    "x20",
+    "x1٠",
+    "x10",
+    "x2²",
+    "x2①",
+    "x٢",
+    "x002",
+    "x02",
+    "x2",
+    "x.2",
+    "x-2",
+    "x_2",
+    "x 2",
+    "v01",
+    "v1",
+    "résumé",
+    "resumé",
+    "RESUME",
+    "Resume",
+    "resume",
+    "file100000000000000000000",
+    "file99999999999999999999",
+    "éclair",
+    _nfd("éclair"),
+    "côté",
+    "côte",
+    "coté",
+    "cote",
+    "b",
+    "abc",
+    "A",
+    "a",
+    "1a",
+    "€a",
+    "$a",
+    "😀",
+    "~a",
+    "#a",
+    "[a",
+    "(a",
+    ".a",
+    "-a",
+    "_a",
+]
+_BY_NAME = [
+    "#a",
+    "$a",
+    "(a",
+    "-a",
+    ".a",
+    "1a",
+    "[a",
+    "_a",
+    "A",
+    "a",
+    "abc",
+    "b",
+    "cote",
+    "coté",
+    "côte",
+    "côté",
+    _nfd("éclair"),
+    "file100000000000000000000",
+    "file99999999999999999999",
+    "RESUME",
+    "Resume",
+    "resume",
+    "resumé",
+    "résumé",
+    "v01",
+    "v1",
+    "x 2",
+    "x-2",
+    "x.2",
+    "x002",
+    "x02",
+    "x10",
+    "x1٠",
+    "x2",
+    "x20",
+    "x2²",
+    "x2①",
+    "x_2",
+    "x²",
+    "x٢",
+    "~a",
+    "éclair",
+    "α",
+    "Ж",
+    _nfd("한글"),
+    "€a",
+    "ガ",
+    "加",
+    "可",
+    "家",
+    "家2",
+    "家族",
+    "가",
+    "가나",
+    "각",
+    "각2",
+    "한글",
+    "😀",
+]
+# The second: names some code points of which collate as one, runs of more digits than ICU reads
+# as one number, and code points ICU weighs by their value.
+_MADE_2 = [
+    "la",
+    "l\u00b7a",
+    "lb",
+    "l.a",
+    _nfd("й"),
+    "й",
+    "ий",
+    "ик",
+    "и",
+    "เก",
+    "ก",
+    "กา",
+    "ข",
+    "ཀ\u0fb2\u0f71\u0f80",
+    "ཀ\u0fb2\u0f71",
+    "ཀ\u0fb2",
+    "ཀ\u0f71\u0f80",
+    "9" * 254 + "1",
+    "9" * 255,
+    "1" + "0" * 254,
+    "x𝟐",
+    "x2",
+    "x𝟐3",
+    "x23",
+    "x１０",
+    "x11",
+    "一",
+    "𠀀",
+    "a\u0378",
+    "a\ue000",
+    "a\U0010fffd",
+    "a",
+]
+_BY_NAME_NATURAL_2 = [
+    "1" + "0" * 254,
+    "9" * 254 + "1",
+    "9" * 255,
+    "a",
+    "a\u0378",
+    "a\ue000",
+    "a\U0010fffd",
+    "l.a",
+    "la",
+    "l\u00b7a",
+    "lb",
+    "x2",
+    "x𝟐",
+    "x１０",
+    "x11",
+    "x23",
+    "x𝟐3",
+    "и",
+    "ий",
+    "ик",
+    "й",
+    _nfd("й"),
+    "ก",
+    "กา",
+    "เก",
+    "ข",
+    "ཀ\u0fb2",
+    "ཀ\u0fb2\u0f71",
+    "ཀ\u0f71\u0f80",
+    "ཀ\u0fb2\u0f71\u0f80",
+    "一",
+    "𠀀",
+]
+_BY_NAME_NATURAL_DESC_2 = [
+    "𠀀",
+    "一",
+    "ཀ\u0fb2\u0f71\u0f80",
+    "ཀ\u0f71\u0f80",
+    "ཀ\u0fb2\u0f71",
+    "ཀ\u0fb2",
+    "ข",
+    "เก",
+    "กา",
+    "ก",
+    "й",
+    _nfd("й"),
+    "ик",
+    "ий",
+    "и",
+    "x23",
+    "x𝟐3",
+    "x11",
+    "x１０",
+    "x2",
+    "x𝟐",
+    "lb",
+    "l\u00b7a",
+    "la",
+    "l.a",
+    "a\U0010fffd",
+    "a\ue000",
+    "a\u0378",
+    "a",
+    "9" * 255,
+    "9" * 254 + "1",
+    "1" + "0" * 254,
+]
+_BY_NAME_2 = [
+    "1" + "0" * 254,
+    "9" * 254 + "1",
+    "9" * 255,
+    "a",
+    "a\u0378",
+    "a\ue000",
+    "a\U0010fffd",
+    "l.a",
+    "la",
+    "lb",
+    "l\u00b7a",
+    "x11",
+    "x2",
+    "x23",
+    "x１０",
+    "x𝟐",
+    "x𝟐3",
+    "и",
+    _nfd("й"),
+    "ий",
+    "ик",
+    "й",
+    "ก",
+    "กา",
+    "ข",
+    "เก",
+    "ཀ\u0f71\u0f80",
+    "ཀ\u0fb2",
+    "ཀ\u0fb2\u0f71",
+    "ཀ\u0fb2\u0f71\u0f80",
+    "一",
+    "𠀀",
+]
+# The third: U+0E01 U+0E4D U+0E32, whose last two code points collate as one and tie it with U+0E01
+# U+0E33, beside Thai names that hold one of its parts or neither.
+_MADE_3 = [
+    "\u0e01\u0e4d\u0e32",
+    "\u0e01\u0e33",
+    "\u0e01\u0e32",
+    "\u0e01\u0e21",
+    "\u0e01\u0e4d",
+    "\u0e01",
+]
+_BY_NAME_NATURAL_3 = [
+    "\u0e01",
+    "\u0e01\u0e4d",
+    "\u0e01\u0e21",
+    "\u0e01\u0e32",
+    "\u0e01\u0e33",
+    "\u0e01\u0e4d\u0e32",
+]
+_BY_NAME_NATURAL_DESC_3 = [
+    "\u0e01\u0e33",
+    "\u0e01\u0e4d\u0e32",
+    "\u0e01\u0e32",
+    "\u0e01\u0e21",
+    "\u0e01\u0e4d",
+    "\u0e01",
+]
+# The fourth: `ab` with a code point ICU weighs as nothing between its letters, which real tied
+# with `ab`.
+_MADE_4 = ["ab", "a\u00adb", "aa", "a\u200bb", "ac", "a\ufeffb"]
+_BY_NAME_NATURAL_4 = ["aa", "a\ufeffb", "a\u200bb", "a\u00adb", "ab", "ac"]
+_BY_NAME_NATURAL_DESC_4 = ["ac", "a\ufeffb", "a\u200bb", "a\u00adb", "ab", "aa"]
+# The fifth: a number of 255 digits beside one of 254, digits beside characters ICU weighs as digit
+# zero, a Cyrillic `и` whose breve follows its dot below and so collates as `й`, and Tibetan vowel
+# signs a sign further on completes; `name_natural desc` was the exact reverse.
+_MADE_5 = ["1" + "0" * 254, "2" + "0" * 253, "x5", "x\u2070", "x1", "x\u24ea", "x0"]
+_MADE_5 += [
+    "\u0438\u0430",
+    "\u0438\u0432",
+    "\u0439\u0430",
+    "\u0439\u0432",
+    "\u0438\u0323\u0306\u0431",
+]
+_MADE_5 += ["\u0f71\u0f72\u0fb3", "\u0f71\u0f71\u0f72", "\u0f71\u0f74\u0fb3", "\u0f71\u0f71\u0f74"]
+_BY_NAME_NATURAL_5 = [_MADE_5[i] for i in (0, 1, 6, 4, 2, 5, 3, 7, 8, 9, 11, 10, 12, 13, 14, 15)]
+# Replayed without the two names whose vowel sign ICU joins to the first AA sign past the second,
+# which `backlot.collation` does not; real's order of the others is the order it listed them in.
+_KEPT_5 = [n for n in _MADE_5 if n not in ("\u0f71\u0f71\u0f72", "\u0f71\u0f71\u0f74")]
+# The sixth: names that differ in case or in a character's variant, in pairs made in turn; real
+# tied an ASCII letter's capital with it and no other.
+_MADE_6 = [
+    "xa",
+    "xA",
+    "yA",
+    "ya",
+    "q\u24ea",
+    "q\u2070",
+    "z\uff58",
+    "zx",
+    "\ufb01g",
+    "fig",
+    "k\u00aa",
+    "ka",
+    "\u00e4b",
+    "a\u0308b",
+    "\u00c4c",
+    "\u00e4c",
+    "w\u00e9",
+    "w\u00c9",
+    "we",
+]
+_BY_NAME_NATURAL_6 = [
+    _MADE_6[i] for i in (13, 12, 15, 14, 9, 8, 11, 10, 4, 5, 18, 16, 17, 1, 0, 3, 2, 7, 6)
+]
+_BY_NAME_NATURAL_DESC_6 = [
+    _MADE_6[i] for i in (6, 7, 3, 2, 1, 0, 17, 16, 18, 5, 4, 10, 11, 8, 9, 14, 15, 13, 12)
+]
+# The seventh: an `и` whose breve a mark of its own class keeps from the letter, which real sorted
+# among the names with `и`, and Tibetan vowel signs that one sign or two spell alike.
+_MADE_7 = ["\u0438\u0430", "\u0439\u0430", "\u0438\u0323\u0301\u0306\u0431", "\u0438\u0432"]
+_MADE_7 += [
+    "\u0439\u0432",
+    "\u0f40\u0f71\u0f74\u0f72",
+    "\u0f40\u0f71\u0f72",
+    "\u0f40\u0f71\u0f74",
+    "\u0f40\u0f73",
+]
+_BY_NAME_NATURAL_7 = [_MADE_7[i] for i in (0, 2, 3, 1, 4, 8, 6, 7, 5)]
+_BY_NAME_NATURAL_DESC_7 = [_MADE_7[i] for i in (5, 7, 8, 6, 4, 1, 3, 2, 0)]
+# Replayed without the name whose marks are out of their canonical order, which ICU weighs as
+# written and `backlot.collation` after NFC has reordered them.
+_KEPT_7 = [n for n in _MADE_7 if n != "\u0f40\u0f71\u0f74\u0f72"]
+# The eighth: Tibetan vowel signs whose later sign completes the first one past another, which
+# real tied with the same signs written the other way round, listed newest first both ways.
+_MADE_8 = ["\u0f71\u0f71\u0f72", "\u0f71\u0f72\u0f71", "\u0f71\u0f71\u0f74", "\u0f71\u0f74\u0f71"]
+_MADE_8 += ["\u0f71\u0f71\u0f80", "\u0f71\u0f80\u0f71"]
+_BY_NAME_NATURAL_8 = [_MADE_8[i] for i in (1, 0, 5, 4, 3, 2)]
+_BY_NAME_NATURAL_DESC_8 = [_MADE_8[i] for i in (3, 2, 5, 4, 1, 0)]
+# Eleven names real listed under `name_natural` on 2026-10-10, in a folder made for them in a
+# Korean-language account; `name_natural desc` was the exact reverse. None holds Hangul or Han,
+# which a Korean-language account orders otherwise than an English-language one.
+_ELEVEN = ["2²3", "10²", "²", "a", "x2", "x2①", "x2²", "x3", "x10", "x22", "x²"]
+# The ninth folder `backlot.collation` describes: names whose order turns on the entries of its
+# tables, made in code point order.
+# fmt: off
+_MADE_9 = [f"a{c}b" for c in (
+    "\t\n\x0b\x0c\r !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~\x85\xa1\xa2\xa3\xa4\xa5\xa6\xa7"
+    "\xa8\xa9\xab\xac\xae\xaf\xb0\xb1\xb4\xb6\xb7\xb8\xbb\xbf\xd7\xf7\u0e46\u0ec6\u2010"
+    "\u2012\u2013\u2014\u2015\u2016\u2017\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f"
+    "\u2020\u2021\u2022\u2023\u2027\u2028\u2029\u2038\u2044\u20ac\u20ad\u2190\u2191\u2192"
+    "\u2193\u2194\u2195\u2196\u2197\u2198\u2199\u219c\u219d\u219e\u219f\u3001\u3002\u3003"
+    "\u3005\u3008\u3009\u300a\u300b\u300c\u300d\u300e\u300f\u3010\u3011\u3014\u3015\u301c"
+    "\u301d\u301e\u303b\u309d\u30fb\u30fc\u30fd"
+)]
+_MADE_9 += ["a" + mark + "b" for mark in (
+    "\u034f\u0591\u05bd\u05c4\u05c5\u0610\u06d6\u06df\u06e7\u06e8\u06ea\ufe21\ufe23\ufe28"
+    "\ufe2a\ufe2f\U000e0100"
+)]
+_MADE_9 += ["xa"] + ["xa" + mark for mark in (
+    "\u0300\u0301\u0302\u0303\u0304\u0306\u0307\u0308\u030a\u030b\u030c\u0310\u0327\u0328"
+    "\u0335\u0338"
+)]
+_MADE_9 += [f"w{a}{b}" for a, b in zip("acefghijkmoqsuw", "\u0305\u05b0\u05bf\u05bf\u05c1\u05c1\u05c7\u05c7\u064b\u0670\u0e47\u0ec8\u20d0\ufe20\u3099")]
+_MADE_9 += [f"w{a}{b}" for a in "acefghijkmoqsuw" for b in ("", "b")]
+_MADE_9 += [
+    "ab", "la", "lb", "l\xb7a", "l\u0387a", "x a", "x,",
+    "x10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "x1\u20442",
+    "x9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
+    "x\xa0a", "x\xb9\u2044\u2082", "x\xbd", "x\u0628", "x\u1d2c", "x\u1d43", "x\u2002a",
+    "x\u2090", "x\u24b6", "x\u24d0", "x\u3000a", "x\u3002", "x\ufe10", "x\ufe50", "x\ufe8f",
+    "x\ufe90", "x\ufe91", "x\ufe92", "x\uff21", "x\uff41", "x\uff61", "x\U0001d400",
+    "x\U0001d41a", "x\U0001f130", "yae", "yaf", "yd", "ye", "yh", "yi", "yj", "yl", "ym", "yn",
+    "yo", "yoe", "yof", "yp", "yq", "yr", "yss", "yst", "yt", "yu", "yz", "y\xc6", "y\xd0",
+    "y\xd8", "y\xde", "y\xdf", "y\xe6", "y\xf0", "y\xf8", "y\xfe", "y\u0110", "y\u0111",
+    "y\u0126", "y\u0127", "y\u0131", "y\u0138", "y\u0141", "y\u0142", "y\u014a", "y\u014b",
+    "y\u0152", "y\u0153", "y\u0166", "y\u0167", "y\u1e9e", "\u013fa", "\u0140a",
+    "\u0430\u0418\u0306", "\u0430\u0419", "\u0430\u0438\u0306", "\u0430\u0438\u043a",
+    "\u0430\u0439", "\u0622\u0628", "\u0623\u0628", "\u0624\u0628", "\u0625\u0628",
+    "\u0626\u0628", "\u0627\u0628", "\u0627\u062c", "\u0627\u0653\u0628", "\u0627\u0654\u0628",
+    "\u0627\u0655\u0628", "\u0648\u0628", "\u0648\u0654\u0628", "\u064a\u0628",
+    "\u064a\u0654\u0628", "\u0e02", "\u0e40\u0e01", "\u0e81\u0eb2", "\u0e81\u0eb3",
+    "\u0e81\u0ec0", "\u0e81\u0ecd", "\u0e81\u0ecd\u0eb2", "\u0e82", "\u0ec0\u0e01",
+    "\u0ec0\u0e81", "\u0f40\u0e33", "\u0f40\u0e4d\u0e32", "\u0f40\u0eb3", "\u0f40\u0ecd\u0eb2",
+    "\u0f40\u0f68", "\u0f40\u0f71", "\u0f40\u0f71\u0f72", "\u0f40\u0f71\u0f74",
+    "\u0f40\u0f71\u0f80", "\u0f40\u0f72", "\u0f40\u0f73", "\u0f40\u0f74", "\u0f40\u0f75",
+    "\u0f40\u0f76", "\u0f40\u0f77", "\u0f40\u0f78", "\u0f40\u0f79", "\u0f40\u0f7a",
+    "\u0f40\u0f7b", "\u0f40\u0f7c", "\u0f40\u0f7d", "\u0f40\u0f80", "\u0f40\u0f81",
+    "\u0f40\u0f84", "\u0f40\u0f88", "\u0f40\u0f90", "\u0f40\u0fb2\u0f71\u0f80",
+    "\u0f40\u0fb2\u0f80", "\u0f40\u0fb3\u0f71\u0f80", "\u0f40\u0fb3\u0f80", "\u0f40\u0fb8",
+    "\u0f41", "\u1981", "\u19b5\u1980", "\u2764", "\u2764\ufe0e", "\u2764\ufe0f", "\u3041",
+    "\u3041\u3044", "\u3042", "\u304b\u3042", "\u304b\u30fc", "\u30a1", "\u30a2",
+    "\u30ab\u30a2", "\u30ab\u30fc", "\u32d0", "\uff67", "\uff71",
+]
+_MADE_9.sort()
+_BY_NAME_NATURAL_9 = [_MADE_9[int(i)] for i in (
+    "353 352 351 0 1 2 3 4 39 96 97 5 32 82 18 76 77 78 79 80 132 137 17 116 22 21 6 40 26 60 "
+    "19 117 57 12 83 84 85 86 7 87 88 89 90 133 134 49 59 13 14 28 30 35 37 120 121 122 123 "
+    "124 125 126 127 128 129 130 131 81 46 56 27 15 20 29 11 8 10 91 92 93 94 95 118 98 33 55 "
+    "31 52 47 58 53 48 51 102 104 103 105 106 107 108 109 110 111 112 113 114 115 16 54 62 61 "
+    "23 24 25 50 36 45 38 99 74 75 119 135 136 138 139 43 41 9 42 44 100 101 145 144 143 142 "
+    "141 140 73 72 71 70 69 68 67 66 65 64 63 34 146 287 149 148 286 147 150 152 151 153 155 "
+    "154 156 158 157 159 161 160 162 164 163 165 167 166 168 170 169 171 173 172 174 176 175 "
+    "177 179 178 180 182 181 183 185 184 186 188 187 189 191 190 192 194 193 195 227 223 217 "
+    "196 230 229 228 237 198 199 197 218 219 200 236 239 226 235 238 225 222 224 240 221 202 "
+    "201 206 203 211 209 208 210 204 207 216 213 214 205 215 212 220 233 234 232 231 241 267 "
+    "262 242 243 272 271 268 263 244 245 274 273 246 275 247 248 278 277 249 250 280 279 251 "
+    "269 264 252 282 281 253 254 255 276 256 257 266 285 258 259 284 283 260 261 270 265 291 "
+    "292 290 289 288 300 293 301 294 304 295 302 296 306 297 298 299 303 305 308 307 312 309 "
+    "313 310 316 311 314 315 318 317 320 319 342 321 347 341 322 326 327 323 338 339 325 328 "
+    "329 324 344 330 343 331 346 332 345 333 334 335 336 337 340 348 350 349 354 356 359 364 "
+    "360 365 363 355 358 362 357 361"
+).split()]
+_BY_NAME_NATURAL_DESC_9 = [_MADE_9[int(i)] for i in (
+    "361 357 362 358 355 363 365 360 364 359 356 354 349 350 348 340 337 336 335 334 345 333 "
+    "346 332 343 331 344 330 329 324 328 339 325 338 327 323 326 322 341 347 321 342 320 319 "
+    "318 317 315 314 316 311 313 310 309 312 307 308 305 303 299 298 306 297 302 296 304 295 "
+    "301 294 300 293 289 288 292 290 291 265 270 261 260 283 284 259 258 285 266 257 256 276 "
+    "255 254 253 281 282 252 264 269 251 279 280 250 249 277 278 248 247 275 246 273 274 245 "
+    "244 263 268 271 272 243 242 262 267 241 231 232 234 233 220 212 215 205 214 213 216 207 "
+    "204 210 208 209 211 203 206 201 202 240 221 224 222 225 238 235 226 239 236 200 219 218 "
+    "197 199 198 237 228 229 230 196 217 223 227 195 193 194 192 190 191 189 187 188 186 184 "
+    "185 183 181 182 180 178 179 177 175 176 174 172 173 171 169 170 168 166 167 165 163 164 "
+    "162 160 161 159 157 158 156 154 155 153 151 152 150 147 286 287 149 148 146 145 144 143 "
+    "142 141 140 73 72 71 70 69 68 67 66 65 64 63 34 101 100 44 42 9 41 43 139 138 136 135 119 "
+    "75 74 99 38 45 36 50 25 24 23 61 62 54 16 115 114 113 112 111 110 109 108 107 106 105 103 "
+    "104 102 51 48 53 58 47 52 31 55 33 98 118 95 94 93 92 91 10 8 11 29 20 15 27 56 46 81 131 "
+    "130 129 128 127 126 125 124 123 122 121 120 37 35 30 28 14 13 59 49 134 133 90 89 88 87 7 "
+    "86 85 84 83 12 57 117 19 60 26 40 6 21 22 116 17 137 132 80 79 78 77 76 18 82 32 5 97 96 "
+    "39 4 3 2 1 0 353 352 351"
+).split()]
+# fmt: on
+
+# The tenth: a digit with no decomposition, Tibetan subjoined consonants beside their consonants, a
+# middle dot ahead of an l, control characters, the Hebrew maqaf and paseq, and `가`, which
+# an English-language account lists after the Latin names.
+_MADE_10 = [
+    "a",
+    "a\x01b",
+    "a-b",
+    "ab",
+    "ac",
+    "a\x7fb",
+    "a\u05beb",
+    "a\u05c0b",
+    "a\u2010b",
+    "l",
+    "la",
+    "x10",
+    "x5",
+    "xa",
+    "x\u278e",
+    "\xb7a",
+    "\xb7l",
+    "\u0f40\u0f40",
+    "\u0f40\u0f41",
+    "\u0f40\u0f62",
+    "\u0f40\u0f63",
+    "\u0f40\u0f90",
+    "\u0f40\u0fb2",
+    "\uac00",
+]
+_BY_NAME_NATURAL_10 = [
+    _MADE_10[i]
+    for i in (15, 16, 0, 2, 8, 6, 7, 5, 3, 1, 4, 9, 10, 12, 11, 14, 13, 17, 21, 18, 19, 22, 20, 23)
+]
+_BY_NAME_NATURAL_DESC_10 = [
+    _MADE_10[i]
+    for i in (23, 20, 22, 19, 18, 21, 17, 13, 14, 11, 12, 10, 9, 4, 5, 3, 1, 7, 6, 8, 2, 0, 16, 15)
+]
+# The eleventh: a Tai Viet vowel written ahead of its consonant, in a folder of its own, since ICU
+# orders the Tai Viet script among the others otherwise than `backlot.collation` does.
+_MADE_11 = ["\uaa80", "\uaa81", "\uaab5\uaa80"]
+_BY_NAME_NATURAL_11 = [_MADE_11[i] for i in (0, 2, 1)]
+_BY_NAME_NATURAL_DESC_11 = [_MADE_11[i] for i in (1, 2, 0)]
+# The twelfth: small kana of the Katakana Phonetic Extensions and of the Small Kana Extension
+# beside the letters they tie, and katakana `ア` beside a longer hiragana name.
+_MADE_12 = [
+    "\u3042",
+    "\u3042\u3044",
+    "\u304f",
+    "\u3053",
+    "\u30a2",
+    "\u30a2\u3044",
+    "\u30af",
+    "\u30b3",
+    "\u31f0",
+    "\U0001b132",
+    "\U0001b155",
+]
+_BY_NAME_NATURAL_12 = [_MADE_12[i] for i in (0, 4, 1, 5, 2, 8, 6, 9, 3, 10, 7)]
+_BY_NAME_NATURAL_DESC_12 = [_MADE_12[i] for i in (7, 10, 3, 9, 6, 8, 2, 5, 1, 4, 0)]
+# A Python whose `unicodedata` predates Unicode 15 does not know the Small Kana Extension's two
+# letters, which `backlot.collation` then sorts by code point, so the replay leaves those out there.
+_KEPT_12 = [n for n in _MADE_12 if "Cn" not in map(unicodedata.category, n)]
+
+
+@pytest.fixture(scope="module")
+def name_folders(tmp_path_factory):
+    """Each folder's corpus, built once for the rows that list it."""
+    built = {}
+
+    def build(made, records):
+        if tuple(made) not in built:
+            built[tuple(made)] = tiny_corpus(tmp_path_factory.mktemp("names"), records)
+        return built[tuple(made)]
+
+    return build
+
+
+@pytest.mark.parametrize(
+    "made, order_by, listed",
+    [
+        (_MADE, "name_natural", _BY_NAME_NATURAL),
+        (_MADE, "name_natural desc", _BY_NAME_NATURAL_DESC),
+        (_MADE, "name", _BY_NAME),
+        (_MADE_2, "name_natural", _BY_NAME_NATURAL_2),
+        (_MADE_2, "name_natural desc", _BY_NAME_NATURAL_DESC_2),
+        (_MADE_2, "name", _BY_NAME_2),
+        (_MADE_3, "name_natural", _BY_NAME_NATURAL_3),
+        (_MADE_3, "name_natural desc", _BY_NAME_NATURAL_DESC_3),
+        (_MADE_4, "name_natural", _BY_NAME_NATURAL_4),
+        (_MADE_4, "name_natural desc", _BY_NAME_NATURAL_DESC_4),
+        (_KEPT_5, "name_natural", [n for n in _BY_NAME_NATURAL_5 if n in _KEPT_5]),
+        (_KEPT_5, "name_natural desc", [n for n in _BY_NAME_NATURAL_5[::-1] if n in _KEPT_5]),
+        (_MADE_6, "name_natural", _BY_NAME_NATURAL_6),
+        (_MADE_6, "name_natural desc", _BY_NAME_NATURAL_DESC_6),
+        (_KEPT_7, "name_natural", [n for n in _BY_NAME_NATURAL_7 if n in _KEPT_7]),
+        (_KEPT_7, "name_natural desc", [n for n in _BY_NAME_NATURAL_DESC_7 if n in _KEPT_7]),
+        (_MADE_8, "name_natural", _BY_NAME_NATURAL_8),
+        (_MADE_8, "name_natural desc", _BY_NAME_NATURAL_DESC_8),
+        (_ELEVEN, "name_natural", _ELEVEN),
+        (_ELEVEN, "name_natural desc", _ELEVEN[::-1]),
+        (_MADE_9, "name_natural", _BY_NAME_NATURAL_9),
+        (_MADE_9, "name_natural desc", _BY_NAME_NATURAL_DESC_9),
+        (_MADE_10, "name_natural", _BY_NAME_NATURAL_10),
+        (_MADE_10, "name_natural desc", _BY_NAME_NATURAL_DESC_10),
+        (_MADE_11, "name_natural", _BY_NAME_NATURAL_11),
+        (_MADE_11, "name_natural desc", _BY_NAME_NATURAL_DESC_11),
+        (_KEPT_12, "name_natural", [n for n in _BY_NAME_NATURAL_12 if n in _KEPT_12]),
+        (_KEPT_12, "name_natural desc", [n for n in _BY_NAME_NATURAL_DESC_12 if n in _KEPT_12]),
+    ],
+)
+def test_drive_order_by_a_name_lists_a_folder_as_real_did(name_folders, made, order_by, listed):
+    """Each file is modified after the one made before it, as the measured folder's were, so
+    names a key ties come out newest first, as they did on real."""
+    s = name_folders(
+        made,
+        [
+            {
+                "source_type": "google_drive",
+                "doc_id": f"name-{i}",
+                "folder": "names",
+                "title": title,
+                "content": "p",
+                "created": f"2026-10-20T17:{36 + i // 60}:{i % 60:02d}Z",
+                "updated": f"2026-10-20T17:{36 + i // 60}:{i % 60:02d}Z",
+            }
+            for i, title in enumerate(made)
+        ],
     )
-    assert ok.status_code == 200
+    admin = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))["admin_token"]
+    with client_for(s, reload=True) as c:
+        r = c.get(
+            "/drive/v3/files",
+            headers={"Authorization": f"Bearer {admin}"},
+            params={
+                "orderBy": order_by,
+                "q": "mimeType != 'application/vnd.google-apps.folder'",
+                "pageSize": 1000,
+            },
+        )
+    assert r.status_code == 200, r.text
+    assert [f["name"] for f in r.json()["files"]] == listed
 
 
 _DUPLICATE_403 = (
@@ -4399,102 +7122,145 @@ _FULLTEXT_403 = (
     "forbidden",
     "Sorting is not supported for queries with fullText terms. Results are always in descending relevance order.",
 )
+_INVALID_400 = ("invalid", "Invalid Value")
+# The eleven keys the reference lists, each a 200 with ` asc` and with ` desc` on real.
+_ORDER_KEYS = ["createdTime", "folder", "modifiedByMeTime", "modifiedTime", "name", "name_natural"]
+_ORDER_KEYS += ["quotaBytesUsed", "recency", "sharedWithMeTime", "starred", "viewedByMeTime"]
+# The code points sent in the three places `_DRIVE_ORDER_SPACE` describes, as real answered them:
+# its 25 a 200 in each place, and every other one sent the 400, U+001C-U+001F among them.
+_ORDER_SPACES = [*range(0x09, 0x0E), 0x20, 0x85, 0xA0, 0x1680, *range(0x2000, 0x200B)]
+_ORDER_SPACES += [0x2028, 0x2029, 0x202F, 0x205F, 0x3000]
+_ORDER_NOT_SPACES = [*range(0x00, 0x09), *range(0x0E, 0x20), 0x7F, 0x180E, 0x200B, 0x2060]
+_ORDER_NOT_SPACES += [0x3164, 0xFEFF]
+_ORDER_SPACE_ROWS = [
+    (None, spelling.format(c=chr(cp)), *answer)
+    for cps, answer in ((_ORDER_SPACES, (200, None)), (_ORDER_NOT_SPACES, (400, _INVALID_400)))
+    for cp in cps
+    for spelling in ("name{c}desc", "{c}name", "name{c}")
+]
 
 
-@pytest.mark.parametrize(
-    "q, order_by, status, error",
-    [
-        (None, "name", 200, None),
-        (None, "name,modifiedTime", 200, None),
-        (None, "name desc,modifiedTime", 200, None),
-        (None, "recency,modifiedTime", 200, None),
-        (None, "name,name", 403, _DUPLICATE_403),
-        (None, "name desc,name", 403, _DUPLICATE_403),
-        (None, "name,name desc", 403, _DUPLICATE_403),
-        (None, "name desc,name desc", 403, _DUPLICATE_403),
-        (None, "modifiedTime,name,modifiedTime", 403, _DUPLICATE_403),
-        (None, "name_natural,name", 403, _DUPLICATE_403),
-        (None, "name,name_natural", 403, _DUPLICATE_403),
-        (None, "name,name,bogus", 403, _DUPLICATE_403),
-        (None, "name,bogus,name", 400, None),
-        (None, "name,name sideways", 400, None),
-        (None, "starred", 200, None),
-        (None, "starred desc", 200, None),
-        (None, "starred,name", 200, None),
-        (None, "starred desc,name", 200, None),
-        (None, "starred,name,folder", 200, None),
-        (None, ",starred", 200, None),
-        (None, "name,starred", 500, None),
-        (None, "name, starred", 500, None),
-        (None, "name desc,starred desc", 500, None),
-        (None, "folder,starred,name", 500, None),
-        (None, "name,folder,starred", 500, None),
-        (None, "createdTime,starred", 500, None),
-        (None, "quotaBytesUsed,starred", 500, None),
-        (None, "name,,starred", 500, None),
-        (None, "name,starred,name", 403, _DUPLICATE_403),
-        (None, "starred,starred", 403, _DUPLICATE_403),
-        (None, "name,starred,bogus", 400, None),
-        ("fullText contains 'the'", "name", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "name desc", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "name,modifiedTime", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "name,starred", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "name,viewedByMeTime", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "viewedByMeTime", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "viewedByMeTime desc", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "modifiedByMeTime", 403, _FULLTEXT_403),
-        ("fullText contains 'the'", "name,name", 403, _DUPLICATE_403),
-        ("fullText contains 'the'", "viewedByMeTime,viewedByMeTime", 403, _DUPLICATE_403),
-        ("fullText contains 'zzqqxx'", "name", 403, _FULLTEXT_403),
-        ("fullText contains 'zzqqxx'", None, 200, None),
-        ("fullText contains 'zzqqxx'", "", 200, None),
-        ("fullText contains 'zzqqxx' and trashed = false", "name", 403, _FULLTEXT_403),
-        ("fullText contains 'zzqqxx' or name contains 'zzqqxx'", "name", 403, _FULLTEXT_403),
-        ("not fullText contains 'the'", "name", 403, _FULLTEXT_403),
-        ("(fullText contains 'the')", "name", 403, _FULLTEXT_403),
-        ("name contains 'the'", "name", 200, None),
-        ("name contains 'fullText'", "name", 200, None),
-    ],
-)
-def test_drive_order_by_is_refused_where_real_refuses_it(
-    client, admin_h, q, order_by, status, error
-):
-    """`orderBy` on its own and beside a `q`, answered with the 403s `_drive_order_specs` and
-    `gerr.sorting_not_supported_fulltext` describe and the 500 `gerr.drive_internal_error`
-    describes, each `error` object the one real sends. An unusable token at or before a repeat is
-    the 400, the parse is refused ahead of the 500 wherever `starred` sits and the repeat ahead of
-    the `fullText` 403, and an absent or empty `orderBy`, or a `q` with no `fullText` term, is
-    served."""
-    params = {"pageSize": 1, "q": q, "orderBy": order_by}
-    r = client.get(
-        "/drive/v3/files",
-        headers=admin_h,
-        params={k: v for k, v in params.items() if v is not None},
-    )
-    assert r.status_code == status, r.text
-    if error is not None:
-        reason, message = error
-        assert _gerr(r) == {
-            "code": 403,
-            "message": message,
-            "errors": [
-                {
-                    "message": message,
-                    "domain": "global",
-                    "reason": reason,
-                    "location": "orderBy",
-                    "locationType": "parameter",
-                }
-            ],
-        }
+_ORDER_BY_ROWS = [
+    (None, "name", 200, None),
+    (None, "name,modifiedTime", 200, None),
+    (None, "name desc,modifiedTime", 200, None),
+    (None, "recency,modifiedTime", 200, None),
+    (None, "name,name", 403, _DUPLICATE_403),
+    (None, "name desc,name", 403, _DUPLICATE_403),
+    (None, "name,name desc", 403, _DUPLICATE_403),
+    (None, "name desc,name desc", 403, _DUPLICATE_403),
+    (None, "modifiedTime,name,modifiedTime", 403, _DUPLICATE_403),
+    (None, "name_natural,name", 403, _DUPLICATE_403),
+    (None, "name,name_natural", 403, _DUPLICATE_403),
+    (None, "name,name,bogus", 403, _DUPLICATE_403),
+    (None, "name,bogus,name", 400, _INVALID_400),
+    (None, "name,name sideways", 400, _INVALID_400),
+    (None, "bogus", 400, _INVALID_400),
+    (None, "name descending", 400, _INVALID_400),
+    (None, "NAME", 400, _INVALID_400),
+    (None, "name ASC", 400, _INVALID_400),
+    (None, "name Desc", 400, _INVALID_400),
+    (None, "name desc desc", 400, _INVALID_400),
+    (None, "name asc desc", 400, _INVALID_400),
+    (None, "asc", 400, _INVALID_400),
+    (None, "name,asc", 400, _INVALID_400),
+    (None, "name   asc", 200, None),
+    (None, "name asc,modifiedTime desc", 200, None),
+    (None, "folder,name desc", 200, None),
+    (None, ",name", 200, None),
+    (None, "name,", 200, None),
+    (None, "name asc,name", 403, _DUPLICATE_403),
+    (None, "name,name asc", 403, _DUPLICATE_403),
+    (None, "viewedByMeTime", 200, None),
+    (None, "viewedByMeTime,modifiedByMeTime", 200, None),
+    (None, "viewedByMeTime,viewedByMeTime desc", 403, _DUPLICATE_403),
+    *_ORDER_SPACE_ROWS,
+    *[(None, f"{key} {way}", 200, None) for key in _ORDER_KEYS for way in ("asc", "desc")],
+    (None, "starred", 200, None),
+    (None, "starred,name", 200, None),
+    (None, "starred desc,name", 200, None),
+    (None, "starred,name,folder", 200, None),
+    (None, ",starred", 200, None),
+    (None, "name,starred", 500, None),
+    (None, "name, starred", 500, None),
+    (None, "name desc,starred desc", 500, None),
+    (None, "folder,starred,name", 500, None),
+    (None, "name,folder,starred", 500, None),
+    (None, "createdTime,starred", 500, None),
+    (None, "quotaBytesUsed,starred", 500, None),
+    (None, "name,,starred", 500, None),
+    (None, "name,starred,name", 403, _DUPLICATE_403),
+    (None, "starred,starred", 403, _DUPLICATE_403),
+    (None, "name,starred,bogus", 400, _INVALID_400),
+    (None, "name asc,starred", 500, None),
+    ("fullText contains 'the'", "name", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "name desc", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "name,modifiedTime", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "name,starred", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "name,viewedByMeTime", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "viewedByMeTime", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "viewedByMeTime desc", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "modifiedByMeTime", 403, _FULLTEXT_403),
+    ("fullText contains 'the'", "name,name", 403, _DUPLICATE_403),
+    ("fullText contains 'the'", "viewedByMeTime,viewedByMeTime", 403, _DUPLICATE_403),
+    ("fullText contains 'zzqqxx'", "name", 403, _FULLTEXT_403),
+    ("fullText contains 'zzqqxx'", None, 200, None),
+    ("fullText contains 'zzqqxx'", "", 200, None),
+    ("fullText contains 'zzqqxx' and trashed = false", "name", 403, _FULLTEXT_403),
+    ("fullText contains 'zzqqxx' or name contains 'zzqqxx'", "name", 403, _FULLTEXT_403),
+    ("not fullText contains 'the'", "name", 403, _FULLTEXT_403),
+    ("(fullText contains 'the')", "name", 403, _FULLTEXT_403),
+    ("name contains 'the'", "name", 200, None),
+    ("name contains 'fullText'", "name", 200, None),
+]
+
+
+def _order_by_answer(status, error):
+    """The error object real sends for a refused `_ORDER_BY_ROWS` row."""
     if status == 500:
-        assert _gerr(r) == {
+        return {
             "code": 500,
             "message": "Internal Error",
             "errors": [
                 {"message": "Internal Error", "domain": "global", "reason": "internalError"}
             ],
         }
+    reason, message = error
+    return {
+        "code": status,
+        "message": message,
+        "errors": [
+            {
+                "message": message,
+                "domain": "global",
+                "reason": reason,
+                "location": "orderBy",
+                "locationType": "parameter",
+            }
+        ],
+    }
+
+
+def test_drive_order_by_is_refused_where_real_refuses_it(client, admin_h):
+    """`orderBy` on its own and beside a `q`, answered with the 400 and the 403s
+    `_drive_order_specs` and `gerr.sorting_not_supported_fulltext` describe and the 500
+    `gerr.drive_internal_error` describes, each `error` object the one real sends. An unusable
+    token at or before a repeat is the 400, the parse is refused ahead of the 500 wherever
+    `starred` sits and the repeat ahead of the `fullText` 403, and an absent or empty `orderBy`, or
+    a `q` with no `fullText` term, is served."""
+    answered = {}
+    for q, order_by, *_ in _ORDER_BY_ROWS:
+        params = {"pageSize": 1, "q": q, "orderBy": order_by}
+        r = client.get(
+            "/drive/v3/files",
+            headers=admin_h,
+            params={k: v for k, v in params.items() if v is not None},
+        )
+        answered[q, order_by] = (r.status_code, None if r.status_code == 200 else _gerr(r))
+    assert answered == {
+        (q, order_by): (status, None if status == 200 else _order_by_answer(status, error))
+        for q, order_by, status, error in _ORDER_BY_ROWS
+    }
 
 
 def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
@@ -4533,10 +7299,27 @@ def test_drive_get_honors_the_fields_mask(client, admin_h):
         f"/drive/v3/files/{row['id']}", headers=admin_h, params={"fields": mask}
     ).json()
     assert got == row
+    assert list(row) == ["mimeType", "webViewLink", "size", "id", "name", "modifiedTime"]
+    assert list(got) == ["id", "name", "mimeType", "webViewLink", "modifiedTime", "size"]
     r = client.get(
         f"/drive/v3/files/{row['id']}", headers=admin_h, params={"fields": "totallyBogusField"}
     )
     assert r.status_code == 400
+
+
+def test_drive_files_answer_the_default_keys_with_no_mask(client, admin_h):
+    """With no mask a file is `kind`, `id`, `name` and `mimeType`, listed and read by id, a folder
+    as well as a stored file, in a listing's order and in a read's."""
+    listing = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 2}).json()
+    folders = client.get(
+        "/drive/v3/files", headers=admin_h, params={"q": f"mimeType='{FOLDER_MIME}'", "pageSize": 1}
+    ).json()
+    entries = listing["files"] + folders["files"]
+    assert [list(x) for x in entries] == [["kind", "mimeType", "id", "name"]] * 3
+    for x in entries:
+        got = client.get(f"/drive/v3/files/{x['id']}", headers=admin_h).json()
+        assert got == x
+        assert list(got) == ["kind", "id", "name", "mimeType"]
 
 
 def test_drive_folders_are_found_by_mime_type(client, admin_h):
@@ -4594,7 +7377,7 @@ def test_drive_folder_permissions_resolve(client, admin_h):
 def test_drive_native_docs_report_size(client, admin_h):
     """Google populates `size` for binary content *and for Docs Editors files*; Backlot omitted
     it on native rows, which taught implementors something false about the API."""
-    doc = _drive_find(client, admin_h, "Brand")
+    doc = _drive_find(client, admin_h, "Brand", fields="files(*)")
     assert doc["mimeType"] == DOC_MIME
     assert int(doc["size"]) > 0
     assert "md5Checksum" not in doc  # real Drive omits checksums on native files
@@ -4602,6 +7385,76 @@ def test_drive_native_docs_report_size(client, admin_h):
         "/drive/v3/files", headers=admin_h, params={"q": "'root' in parents", "pageSize": 1}
     ).json()["files"][0]
     assert "size" not in folder  # ...but not for folders or shortcuts
+
+
+@pytest.mark.parametrize(
+    "mime, export, link",
+    [
+        (
+            DOC_MIME,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "https://docs.google.com/feeds/download/documents/export/Export?id={id}&exportFormat=docx",
+        ),
+        (
+            "application/vnd.google-apps.spreadsheet",
+            "text/csv",
+            "https://docs.google.com/spreadsheets/export?id={id}&exportFormat=csv",
+        ),
+        (
+            "application/vnd.google-apps.presentation",
+            "text/plain",
+            "https://docs.google.com/feeds/download/presentations/Export?id={id}&exportFormat=txt",
+        ),
+    ],
+)
+def test_drive_native_files_carry_export_links_and_quota(client, admin_h, mime, export, link):
+    """A native file's `exportLinks` as `_drive_export_links` gives them, and the `quotaBytesUsed`
+    of a native file and of a folder."""
+    files = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"q": f"mimeType='{mime}'", "fields": "files(id,size,quotaBytesUsed,exportLinks)"},
+    ).json()["files"]
+    formats = _about(client, admin_h, "exportFormats").json()["exportFormats"][mime]
+    assert files
+    for f in files:
+        assert list(f["exportLinks"]) == formats
+        assert f["exportLinks"][export] == link.format(id=f["id"])
+        assert f["quotaBytesUsed"] == f["size"] == "1024"  # every SAMPLE native file is under 1 KiB
+    folder = client.get(
+        "/drive/v3/files",
+        headers=admin_h,
+        params={"q": f"mimeType='{FOLDER_MIME}'", "fields": "files(quotaBytesUsed)"},
+    ).json()["files"]
+    assert folder and all(x == {"quotaBytesUsed": "0"} for x in folder)
+
+
+@pytest.mark.parametrize("name", ["Brand", "Q1 Revenue"])
+def test_drive_permissions_answer_each_kind_of_permission_as_real_does(client, admin_h, name):
+    """With no mask a permission is `id`, `type`, `kind` and `role`; under `permissions` it is the
+    whole object `_drive_permissions` describes, on a file shared with anyone and on one shared with
+    a group."""
+    doc = _drive_find(client, admin_h, name)["id"]
+    url = f"/drive/v3/files/{doc}/permissions"
+    bare = client.get(url, headers=admin_h).json()["permissions"]
+    assert bare and all(set(x) == {"id", "type", "kind", "role"} for x in bare)
+    whole = client.get(url, headers=admin_h, params={"fields": "permissions"}).json()["permissions"]
+    assert [x["id"] for x in whole] == [x["id"] for x in bare]
+    for x in whole:
+        direct = {"permissionType": "file", "role": x["role"], "inherited": False}
+        inherited = [{"permissionType": "file", "role": "writer", "inherited": True}]
+        assert x["permissionDetails"] == (inherited if x["role"] == "owner" else []) + [direct]
+        assert (
+            set(x)
+            == {"kind", "id", "type", "role", "permissionDetails"}
+            | {
+                "user": {"deleted", "pendingOwner", "emailAddress", "displayName", "photoLink"},
+                "group": {"deleted", "emailAddress", "displayName"},
+                "anyone": {"allowFileDiscovery"},
+            }[x["type"]]
+        )
+        assert x.get("deleted", False) is False and x.get("pendingOwner", False) is False
+    assert {x["type"] for x in whole} == {"user", "anyone" if name == "Brand" else "group"}
 
 
 # --- Drive about.get -----------------------------------------------------------------------
@@ -4632,13 +7485,6 @@ def test_drive_about_rejects_an_unknown_field(client, admin_h):
     assert _about(client, admin_h, "storageQuota").status_code == 200
 
 
-def test_drive_about_rejects_a_mask_that_selects_nothing(client, admin_h):
-    """`fields=,` clears the required-mask check but names no field. Falling through to "no
-    projection" would answer a request for nothing with the entire resource."""
-    r = client.get(ABOUT, headers=admin_h, params={"fields": ","})
-    assert r.status_code == 400
-
-
 def test_drive_about_needs_auth(client):
     # no header at all -> 401 (`about` takes no API key, `_NO_CREDENTIAL_ROWS`); a bad token -> 401
     assert client.get(ABOUT, params={"fields": "user"}).status_code == 401
@@ -4648,32 +7494,23 @@ def test_drive_about_needs_auth(client):
     assert client.get(ABOUT, headers=bad).status_code == 401
 
 
-def test_drive_about_serves_only_the_requested_fields(client, admin_h):
-    """Unlike `files.list` — whose typed response model always carries `kind` — `about` projects
-    strictly, which is what real Drive does: ask for `user` and `user` is all you get."""
-    j = _about(client, admin_h, "user").json()
-    assert set(j) == {"user"}
-    assert set(_about(client, admin_h, "user,storageQuota").json()) == {"user", "storageQuota"}
-
-
-def test_drive_about_nested_mask_selects_its_parent(client, admin_h):
-    """`storageQuota/limit` selects `storageQuota`, the same rule every other mask in Backlot
-    follows — one projection depth, applied consistently."""
-    j = _about(client, admin_h, "storageQuota/limit").json()
-    assert set(j) == {"storageQuota"}
-    assert "usage" in j["storageQuota"]
-
-
 def test_drive_about_user_is_the_caller(client, tokens_yaml):
-    """`about.user` is the authenticated user, so `me` is true — the opposite of the same object
-    read as a file's `owners` entry, where it describes someone else."""
+    """`about.user` is the authenticated user, so `me` is true, and so is a file's `owners` entry
+    and `lastModifyingUser` when the caller owns it (`routers.google._drive_user`)."""
     mia = {"Authorization": f"Bearer {tok(tokens_yaml, 'mia@acme.com')}"}
     u = _about(client, mia, "user").json()["user"]
     assert u["kind"] == "drive#user"
     assert u["emailAddress"] == "mia@acme.com"
     assert u["me"] is True
-    # the file resource keeps its own answer: mia as an owner is not "me" to the object itself
-    assert _drive_find(client, mia, "Brand")["owners"][0]["me"] is False
+    files = client.get(
+        "/drive/v3/files",
+        headers=mia,
+        params={"fields": "files(ownedByMe,owners(me),lastModifyingUser(me))", "pageSize": 100},
+    ).json()["files"]
+    files = [f for f in files if "owners" in f]  # a folder here has no owner
+    assert {f["ownedByMe"] for f in files} == {True, False}
+    for f in files:
+        assert f["owners"][0]["me"] is f["lastModifyingUser"]["me"] is f["ownedByMe"]
 
 
 def test_drive_about_admin_token_reports_a_concrete_address(client, admin_h):
@@ -4845,7 +7682,7 @@ def test_root_lists_folders_with_matching_ids(base, admin_h):
     kids = httpx.get(
         f"{base}/drive/v3/files",
         headers=admin_h,
-        params={"q": f"'{finance['id']}' in parents and trashed=false"},
+        params={"q": f"'{finance['id']}' in parents and trashed=false", "fields": "files(*)"},
     ).json()["files"]
     assert kids and all(finance["id"] in k["parents"] for k in kids)
     # and GET on the folder id resolves to the folder object
@@ -4857,43 +7694,370 @@ def test_root_lists_folders_with_matching_ids(base, admin_h):
 
 
 def test_docs_get_returns_paragraph_text(base, admin_h):
+    """A document that states no structure is one plain paragraph per line, indexed and styled as
+    real serves a plain paragraph, with the `documentStyle` and `namedStyles` of a document
+    `documents.create` makes (`backlot.gdocs`)."""
     fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
     doc = httpx.get(f"{base}/docs/v1/documents/{fid}", headers=admin_h).json()
     assert doc["documentId"] == fid
-    text = "".join(
-        e["textRun"]["content"]
-        for el in doc["body"]["content"]
-        if "paragraph" in el
-        for e in el["paragraph"]["elements"]
-    )
+    content = doc["body"]["content"]
+    assert content[0] == {
+        "endIndex": 1,
+        "sectionBreak": {
+            "sectionStyle": {
+                "columnSeparatorStyle": "NONE",
+                "contentDirection": "LEFT_TO_RIGHT",
+                "sectionType": "CONTINUOUS",
+            }
+        },
+    }
+    at = 1
+    for el in content[1:]:
+        (run,) = el["paragraph"]["elements"]
+        end = at + len(run["textRun"]["content"].encode("utf-16-le")) // 2
+        assert el == {
+            "startIndex": at,
+            "endIndex": end,
+            "paragraph": {
+                "elements": [{"startIndex": at, "endIndex": end, "textRun": run["textRun"]}],
+                "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT"},
+            },
+        }
+        assert run["textRun"]["textStyle"] == {}
+        at = end
+    text = "".join(el["paragraph"]["elements"][0]["textRun"]["content"] for el in content[1:])
     assert "Logo usage" in text  # SAMPLE "Brand guidelines v3"
+    assert doc["documentStyle"]["pageSize"] == {
+        "height": {"magnitude": 792, "unit": "PT"},
+        "width": {"magnitude": 612, "unit": "PT"},
+    }
+    styles = doc["namedStyles"]["styles"]
+    assert [s["namedStyleType"] for s in styles] == [
+        "NORMAL_TEXT",
+        *(f"HEADING_{n}" for n in range(1, 7)),
+        "TITLE",
+        "SUBTITLE",
+    ]
+    assert styles[0]["textStyle"]["weightedFontFamily"] == {"fontFamily": "Arial", "weight": 400}
 
 
-@pytest.mark.parametrize(
-    "params",
-    [{}, {"suggestionsViewMode": "PREVIEW_WITHOUT_SUGGESTIONS"}, {"includeTabsContent": "true"}],
-    ids=["plain", "preview-without-suggestions", "tabs-content"],
-)
-def test_docs_get_serves_members_in_reals_order(base, admin_h, params):
-    """A document read serves its members in real's order, `commentsViewMode` last with the value
-    real serves. The tabbed shape `includeTabsContent=true` selects is not served, so that row
-    checks the last member alone.
+def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
+    """A document whose corpus states `paragraphs`, served as real served the same paragraphs
+    written through `batchUpdate` (`backlot.gdocs`): indices in UTF-16 code units, so the emoji
+    counts two; a `headingId` on a heading alone; adjacent runs of one style as one; a link
+    underlined in the link colour; and the newline in its paragraph's last run's style, but for a
+    link and the underline it brought. A document stating no paragraphs is read without the
+    characters `insertText` strips, `\r` among them."""
+    url = "https://example.com/"
+    link = {
+        "underline": True,
+        "foregroundColor": {
+            "color": {"rgbColor": {"red": 0.06666667, "green": 0.33333334, "blue": 0.8}}
+        },
+        "link": {"url": url},
+    }
+    record = {
+        "source_type": "google_drive",
+        "doc_id": "plan",
+        "title": "Quarterly plan",
+        "author_email": "owner@acme.com",
+        "paragraphs": [
+            {"style": "TITLE", "text": "Quarterly plan"},
+            {
+                "runs": [
+                    {"text": "Ship the "},
+                    {"text": "reader", "bold": True},
+                    {"text": " and", "bold": False},
+                    {"text": " the "},
+                    {"text": "writer", "italic": True},
+                    {"text": "."},
+                ]
+            },
+            {
+                "runs": [
+                    {"text": "See "},
+                    {"text": "the spec", "link": url},
+                    {"text": " and "},
+                    {"text": "old", "strikethrough": True},
+                    {"text": " "},
+                    {"text": "notes", "underline": True},
+                    {"text": "."},
+                ]
+            },
+            {"style": "HEADING_2", "text": "Risks \U0001f600"},
+            {"runs": [{"text": "Plain "}, {"text": "bold", "bold": True}]},
+            {"runs": [{"text": "End "}, {"text": "link", "link": url}]},
+            {
+                "runs": [
+                    {"text": "A "},
+                    {
+                        "text": "linkbold",
+                        "link": url,
+                        "bold": True,
+                        "italic": True,
+                        "strikethrough": True,
+                    },
+                ]
+            },
+            {"runs": [{"text": "pre "}, {"text": "ullink", "underline": True, "link": url}]},
+            {
+                "runs": [
+                    {"text": "a "},
+                    {"text": "ulb", "bold": True, "underline": True, "link": url},
+                ]
+            },
+            {"text": ""},
+        ],
+    }
+    prose = {
+        "source_type": "google_drive",
+        "doc_id": "crlf",
+        "title": "CRLF notes",
+        "author_email": "owner@acme.com",
+        "content": "one\r\ntwo\x01\ue000\t\x0b\uf900\ufdcf\ufdf0",
+    }
+
+    def para(start, end, runs, style="NORMAL_TEXT"):
+        elements, at = [], start
+        for content, text_style, width in runs:
+            elements.append(
+                {
+                    "startIndex": at,
+                    "endIndex": at + width,
+                    "textRun": {"content": content, "textStyle": text_style},
+                }
+            )
+            at += width
+        assert at == end
+        heading = {"headingId": ANY} if style != "NORMAL_TEXT" else {}
+        return {
+            "startIndex": start,
+            "endIndex": end,
+            "paragraph": {
+                "elements": elements,
+                "paragraphStyle": {
+                    **heading,
+                    "namedStyleType": style,
+                    "direction": "LEFT_TO_RIGHT",
+                },
+            },
+        }
+
+    with corpus_client(tmp_path, [record, prose]) as (client, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        fid = served_id("google_drive", "plan")
+        doc = client.get(f"/docs/v1/documents/{fid}", headers=h).json()
+        crlf = client.get(f"/docs/v1/documents/{served_id('google_drive', 'crlf')}", headers=h)
+    assert doc["body"]["content"][1:] == [
+        para(1, 16, [("Quarterly plan\n", {}, 15)], "TITLE"),
+        para(
+            16,
+            48,
+            [
+                ("Ship the ", {}, 9),
+                ("reader", {"bold": True}, 6),
+                (" and the ", {}, 9),
+                ("writer", {"italic": True}, 6),
+                (".\n", {}, 2),
+            ],
+        ),
+        para(
+            48,
+            76,
+            [
+                ("See ", {}, 4),
+                ("the spec", link, 8),
+                (" and ", {}, 5),
+                ("old", {"strikethrough": True}, 3),
+                (" ", {}, 1),
+                ("notes", {"underline": True}, 5),
+                (".\n", {}, 2),
+            ],
+        ),
+        para(76, 85, [("Risks \U0001f600\n", {}, 9)], "HEADING_2"),
+        para(85, 96, [("Plain ", {}, 6), ("bold\n", {"bold": True}, 5)]),
+        para(96, 105, [("End ", {}, 4), ("link", link, 4), ("\n", {}, 1)]),
+        para(
+            105,
+            116,
+            [
+                ("A ", {}, 2),
+                ("linkbold", {"bold": True, "italic": True, "strikethrough": True, **link}, 8),
+                ("\n", {"bold": True, "italic": True, "strikethrough": True}, 1),
+            ],
+        ),
+        para(116, 127, [("pre ", {}, 4), ("ullink", link, 6), ("\n", {"underline": True}, 1)]),
+        para(
+            127,
+            133,
+            [
+                ("a ", {}, 2),
+                ("ulb", {"bold": True, **link}, 3),
+                ("\n", {"bold": True, "underline": True}, 1),
+            ],
+        ),
+        para(133, 134, [("\n", {}, 1)]),
+    ]
+    assert crlf.json()["body"]["content"][1:] == [
+        para(1, 5, [("one\n", {}, 4)]),
+        para(5, 14, [("two\t\x0b\uf900\ufdcf\ufdf0\n", {}, 9)]),
+    ]
+    headings = [
+        el["paragraph"]["paragraphStyle"]["headingId"]
+        for el in doc["body"]["content"][1:]
+        if "headingId" in el["paragraph"]["paragraphStyle"]
+    ]
+    assert len(headings) == len(set(headings)) == 2
+    assert all(re.fullmatch(r"h[.][a-z0-9]{12}", h) for h in headings)
+    # `==` above holds whatever order the members come in, so real's is asserted on its own.
+    content = doc["body"]["content"]
+    assert list(content[0]) == ["endIndex", "sectionBreak"]
+    assert list(content[1]) == ["startIndex", "endIndex", "paragraph"]
+    assert list(content[1]["paragraph"]["paragraphStyle"]) == [
+        "headingId",
+        "namedStyleType",
+        "direction",
+    ]
+    run, newline = content[7]["paragraph"]["elements"][1:]
+    assert list(run) == ["startIndex", "endIndex", "textRun"]
+    assert list(run["textRun"]["textStyle"]) == [
+        "bold",
+        "italic",
+        "underline",
+        "strikethrough",
+        "foregroundColor",
+        "link",
+    ]
+    assert list(newline["textRun"]["textStyle"]) == ["bold", "italic", "strikethrough"]
+
+
+_DOCS_FLAT = [
+    "title",
+    "body",
+    "documentStyle",
+    "namedStyles",
+    "revisionId",
+    "suggestionsViewMode",
+    "documentId",
+    "commentsViewMode",
+]
+_DOCS_TABBED = [
+    "title",
+    "revisionId",
+    "suggestionsViewMode",
+    "documentId",
+    "tabs",
+    "commentsViewMode",
+]
+_DOCS_TAB = {"tabId": "t.0", "title": "Tab 1", "index": 0}
+_INLINE, _PREVIEW = "SUGGESTIONS_INLINE", "PREVIEW_WITHOUT_SUGGESTIONS"
+_OMITTED, _INCLUDED = "COMMENTS_VIEW_MODE_OMITTED", "COMMENTS_VIEW_MODE_INCLUDED"
+_TABS = {"includeTabsContent": "true"}
+_DEFAULT_COMMENTS = {"commentsViewMode": "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS"}
+
+
+@pytest.fixture(scope="module")
+def document_callers(tokens_yaml):
+    """The SAMPLE document's owner, and a user it is visible to, whom every grant here makes a
+    reader, as headers."""
+    tokens = {u["email"]: u["token"] for u in tokens_yaml["users"]}
+    return {
+        who: {"Authorization": f"Bearer {tokens[email]}"}
+        for who, email in (("owner", "mia@acme.com"), ("reader", "cfo@acme.com"))
+    }
+
+
+# `(caller, query, members, suggestionsViewMode, commentsViewMode)` per measured read.
+_DOCS_MEMBER_ROWS = [
+    ("owner", {}, _DOCS_FLAT, _INLINE, _OMITTED),
+    (
+        "owner",
+        {"suggestionsViewMode": "DEFAULT_FOR_CURRENT_ACCESS"},
+        _DOCS_FLAT,
+        _INLINE,
+        _OMITTED,
+    ),
+    ("owner", {"suggestionsViewMode": _PREVIEW}, _DOCS_FLAT, _PREVIEW, _OMITTED),
+    (
+        "owner",
+        {"suggestionsViewMode": "2"},
+        _DOCS_FLAT,
+        "PREVIEW_SUGGESTIONS_ACCEPTED",
+        _OMITTED,
+    ),
+    ("owner", {"includeTabsContent": "false"}, _DOCS_FLAT, _INLINE, _OMITTED),
+    (
+        "owner",
+        [("suggestionsViewMode", "1"), ("suggestionsViewMode", "3")],
+        _DOCS_FLAT,
+        _PREVIEW,
+        _OMITTED,
+    ),
+    (
+        "owner",
+        [("includeTabsContent", "true"), ("includeTabsContent", "false")],
+        _DOCS_FLAT,
+        _INLINE,
+        _OMITTED,
+    ),
+    (
+        "owner",
+        {"commentsViewMode": "COMMENTS_VIEW_MODE_UNSPECIFIED"},
+        _DOCS_FLAT,
+        _INLINE,
+        _OMITTED,
+    ),
+    ("owner", _TABS, _DOCS_TABBED, _INLINE, _OMITTED),
+    ("owner", {**_TABS, **_DEFAULT_COMMENTS}, _DOCS_TABBED, _INLINE, _INCLUDED),
+    (
+        "owner",
+        {**_TABS, "commentsViewMode": "3", "suggestionsViewMode": _INLINE},
+        _DOCS_TABBED,
+        _INLINE,
+        _INCLUDED,
+    ),
+    ("reader", {}, _DOCS_FLAT, _PREVIEW, _OMITTED),
+    ("reader", {"suggestionsViewMode": "0"}, _DOCS_FLAT, _PREVIEW, _OMITTED),
+    ("reader", {**_TABS, **_DEFAULT_COMMENTS}, _DOCS_TABBED, _PREVIEW, _OMITTED),
+    ("admin", _TABS, _DOCS_TABBED, _PREVIEW, _OMITTED),
+]
+
+
+def test_docs_get_serves_members_in_reals_order(client, tokens_yaml, document_callers, document_id):
+    """A document read serves its members in real's order, flat or as its one tab, the tab holding
+    what the flat read holds. A reader, the admin token on a corpus file among them, is served no
+    `revisionId` and a preview of the suggestions unless it asks for another mode, and comments to
+    the owner alone.
     """
-    fid, _ = _drive_by_mime(base, admin_h, "application/vnd.google-apps.document")
-    r = httpx.get(f"{base}/docs/v1/documents/{fid}", headers=admin_h, params=params)
-    assert r.status_code == 200
-    assert list(r.json().items())[-1] == ("commentsViewMode", "COMMENTS_VIEW_MODE_OMITTED")
-    if "includeTabsContent" not in params:
-        assert list(r.json()) == [
-            "title",
-            "body",
-            "documentStyle",
-            "namedStyles",
-            "revisionId",
-            "suggestionsViewMode",
-            "documentId",
-            "commentsViewMode",
-        ]
+    callers = {
+        **document_callers,
+        "admin": {"Authorization": f"Bearer {tokens_yaml['admin_token']}"},
+    }
+    url = f"/docs/v1/documents/{document_id}"
+    flat = {who: client.get(url, headers=h).json() for who, h in callers.items()}
+
+    def answer(who, params):
+        r = client.get(url, headers=callers[who], params=params)
+        doc = r.json()
+        views = (doc.get("suggestionsViewMode"), doc.get("commentsViewMode"))
+        return (r.status_code, list(doc), *views, doc.get("tabs"))
+
+    def tabs(who):
+        held = {k: flat[who][k] for k in ("body", "documentStyle", "namedStyles")}
+        return [{"tabProperties": _DOCS_TAB, "documentTab": held}]
+
+    assert {
+        f"{who} {urlencode(params)}": answer(who, params) for who, params, *_ in _DOCS_MEMBER_ROWS
+    } == {
+        f"{who} {urlencode(params)}": (
+            200,
+            [m for m in members if m != "revisionId" or who == "owner"],
+            suggestions,
+            comments,
+            tabs(who) if "tabs" in members else None,
+        )
+        for who, params, members, suggestions, comments in _DOCS_MEMBER_ROWS
+    }
 
 
 _DOCS_SUGGESTIONS = "type.googleapis.com/google.apps.docs.v1.SuggestionsViewMode"
@@ -5021,28 +8185,34 @@ def document_id(client, tokens_yaml):
     return next(f["id"] for f in files if f["mimeType"] == "application/vnd.google-apps.document")
 
 
-@pytest.mark.parametrize("query, refusal", _DOCS_GET_VALUES)
 def test_documents_get_reads_a_query_value_real_reads_and_refuses_one_it_cannot(
-    client, tokens_yaml, document_id, query, refusal
+    client, document_callers, document_id
 ):
-    """The spellings `docs_get` records. A repeat holding a refused value is that value's 400
-    whichever end it is at; two values that are read are served. At `$.xgafv=1` the refusal's
-    `errors` entry is the one `backlot.errors.google.invalid_field_value` records."""
-    headers = {"Authorization": f"Bearer {tokens_yaml['admin_token']}"}
-    r = client.get(f"/docs/v1/documents/{document_id}?{urlencode(query)}", headers=headers)
-    if refusal is None:
-        assert r.status_code == 200, r.text
-        assert r.json()["documentId"] == document_id
-        return
-    assert r.status_code == 400, r.text
-    assert r.json()["error"] == refusal
-    verbose = client.get(
-        f"/docs/v1/documents/{document_id}?{urlencode([*query, ('$.xgafv', '1')])}",
-        headers=headers,
-    )
-    assert verbose.json()["error"] == {
-        **refusal,
-        "errors": [{"message": refusal["message"], "reason": "invalid"}],
+    """The spellings `docs_get` records, read by the document's owner, whom every mode is served
+    to. A repeat holding a refused value is that value's 400 whichever end it is at; two values that
+    are read are served. At `$.xgafv=1` the refusal's `errors` entry is the one
+    `backlot.errors.google.invalid_field_value` records."""
+    headers = document_callers["owner"]
+
+    def answer(query):
+        r = client.get(f"/docs/v1/documents/{document_id}?{urlencode(query)}", headers=headers)
+        if r.status_code == 200:
+            return r.json()["documentId"]
+        verbose = client.get(
+            f"/docs/v1/documents/{document_id}?{urlencode([*query, ('$.xgafv', '1')])}",
+            headers=headers,
+        )
+        return (r.status_code, r.json()["error"], verbose.json()["error"])
+
+    assert {urlencode(query): answer(query) for query, _ in _DOCS_GET_VALUES} == {
+        urlencode(query): document_id
+        if refusal is None
+        else (
+            400,
+            refusal,
+            {**refusal, "errors": [{"message": refusal["message"], "reason": "invalid"}]},
+        )
+        for query, refusal in _DOCS_GET_VALUES
     }
 
 
@@ -5057,14 +8227,21 @@ def test_documents_get_reads_a_query_value_real_reads_and_refuses_one_it_cannot(
         ("suggestionsViewMode=NOPE", "admin", "missing", 400, "suggestions_view_mode"),
         ("includeTabsContent=NOPE", "admin", "missing", 400, "include_tabs_content"),
         ("commentsViewMode=NOPE", "admin", "missing", 400, "comments_view_mode"),
+        ("fields=nope&suggestionsViewMode=NOPE", "admin", "missing", 400, "suggestions_view_mode"),
+        ("fields=nope", "admin", "missing", 400, "path 'nope'"),
+        ("fields=title", "admin", "missing", 404, "Requested entity"),
+        ("commentsViewMode=COMMENTS_VIEW_MODE_OMITTED", "admin", "missing", 404, "Requested"),
+        ("fields=comments", "admin", "missing", 404, "Requested entity"),
+        ("fields=body&includeTabsContent=true", "admin", "missing", 404, "Requested entity"),
     ],
 )
 def test_documents_get_answers_a_bad_query_after_the_credential_and_before_the_lookup(
     client, tokens_yaml, document_id, query, who, target, status, needle
 ):
     """A bad token or none is the 401, and `$.xgafv=3` is that parameter's 400, ahead of a value
-    `docs_get` cannot read. On an id that does not exist the same value is the 400, where the
-    request without it is the 404."""
+    `docs_get` cannot read, and that value ahead of a mask naming nothing. On an id that does not
+    exist either is the 400, where the request without it is the 404; the refusals of a mode or a
+    mask real can read come after the lookup."""
     headers = {
         "none": {},
         "bad": BAD_TOKEN,
@@ -5080,6 +8257,227 @@ def test_documents_get_answers_a_bad_query_after_the_credential_and_before_the_l
         assert r.content == client.get(f"/docs/v1/documents/{document}", headers=headers).content
     if target == "missing":
         assert client.get(f"/docs/v1/documents/{document}", headers=headers).status_code == 404
+
+
+_TABS_ONLY = "Comments view mode may only be specified if tabs content is also requested."
+_INLINE_ONLY = (
+    "Comments may only be explicitly included if inline suggestions are also explicitly requested."
+)
+_PREVIEWING = "Comments may not be requested when previewing suggestions."
+_COMMENT_FIELD = "Field mask may not contain comment-specific fields if comments are not requested"
+_LEGACY_FIELD = (
+    "Field mask may not contain legacy text-level Document resource fields while requesting tabs "
+    "content"
+)
+_NO_SUGGESTIONS = "You do not have permission to access the document suggestions."
+
+
+# `(caller, query, status, message)` per measured refusal, the last rows two that both hold.
+_DOCS_VIEW_REFUSALS = [
+    ("reader", "suggestionsViewMode=SUGGESTIONS_INLINE", 403, _NO_SUGGESTIONS),
+    ("reader", "suggestionsViewMode=PREVIEW_SUGGESTIONS_ACCEPTED", 403, _NO_SUGGESTIONS),
+    ("owner", "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED", 400, _TABS_ONLY),
+    (
+        "owner",
+        "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED&includeTabsContent=false",
+        400,
+        _TABS_ONLY,
+    ),
+    ("owner", "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED&fields=title", 400, _TABS_ONLY),
+    ("owner", "commentsViewMode=0&commentsViewMode=2", 400, _TABS_ONLY),
+    ("owner", "includeTabsContent=true&commentsViewMode=3", 400, _INLINE_ONLY),
+    (
+        "owner",
+        "includeTabsContent=true&commentsViewMode=3&suggestionsViewMode=0",
+        400,
+        _INLINE_ONLY,
+    ),
+    (
+        "owner",
+        "includeTabsContent=true&commentsViewMode=3&suggestionsViewMode=2",
+        400,
+        _PREVIEWING,
+    ),
+    (
+        "owner",
+        "includeTabsContent=true&commentsViewMode=1&suggestionsViewMode=3",
+        400,
+        _PREVIEWING,
+    ),
+    (
+        "reader",
+        "includeTabsContent=true&commentsViewMode=1&suggestionsViewMode=3",
+        400,
+        _PREVIEWING,
+    ),
+    ("owner", "fields=comments", 400, _COMMENT_FIELD),
+    ("owner", "fields=title,suggestions", 400, _COMMENT_FIELD),
+    ("owner", "fields=*.commentId", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.*.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.childTabs.documentTab.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.*.*.commentAnchors", 400, _COMMENT_FIELD),
+    ("owner", "fields=tabs.childTabs.childTabs.documentTab.commentAnchors", 400, _COMMENT_FIELD),
+    (
+        "owner",
+        "fields=comments&includeTabsContent=true&commentsViewMode=2",
+        400,
+        _COMMENT_FIELD,
+    ),
+    ("owner", "fields=body&includeTabsContent=true", 400, _LEGACY_FIELD),
+    ("owner", "fields=footnotes&includeTabsContent=true", 400, _LEGACY_FIELD),
+    ("owner", "fields=*.content,tabs", 400, _LEGACY_FIELD),
+    ("owner", "fields=tabs.documentTab.body,body&includeTabsContent=true", 400, _LEGACY_FIELD),
+    # each ahead of the next when both hold
+    (
+        "reader",
+        "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED&suggestionsViewMode=SUGGESTIONS_INLINE",
+        403,
+        _NO_SUGGESTIONS,
+    ),
+    (
+        "reader",
+        "fields=body&includeTabsContent=true&suggestionsViewMode=SUGGESTIONS_INLINE",
+        403,
+        _NO_SUGGESTIONS,
+    ),
+    ("owner", "commentsViewMode=3&suggestionsViewMode=3", 400, _TABS_ONLY),
+    ("owner", "commentsViewMode=COMMENTS_VIEW_MODE_OMITTED&fields=comments", 400, _TABS_ONLY),
+    ("owner", "includeTabsContent=true&commentsViewMode=3&fields=comments", 400, _INLINE_ONLY),
+    ("owner", "includeTabsContent=true&commentsViewMode=3&fields=body", 400, _INLINE_ONLY),
+    ("owner", "fields=body,comments&includeTabsContent=true", 400, _COMMENT_FIELD),
+]
+
+
+def test_documents_get_refuses_the_view_real_refuses(client, document_callers, document_id):
+    """A reader asking to see suggestions, a comments mode without the tabs, comments beside a
+    suggestions mode other than inline, a comment field the mode did not ask for, and a field a
+    tab carries beside the tabs, each refused as real refuses it and in its order. At `$.xgafv=1`
+    each `errors` entry is under `global`."""
+    url = f"/docs/v1/documents/{document_id}"
+
+    def answer(who, query):
+        r = client.get(f"{url}?{query}", headers=document_callers[who])
+        verbose = client.get(f"{url}?{query}&$.xgafv=1", headers=document_callers[who])
+        return (r.status_code, r.json(), verbose.json()["error"].get("errors"))
+
+    status = {400: "INVALID_ARGUMENT", 403: "PERMISSION_DENIED"}
+    reason = {400: "badRequest", 403: "forbidden"}
+    assert {f"{who} {query}": answer(who, query) for who, query, *_ in _DOCS_VIEW_REFUSALS} == {
+        f"{who} {query}": (
+            code,
+            {"error": {"code": code, "message": message, "status": status[code]}},
+            [{"message": message, "domain": "global", "reason": reason[code]}],
+        )
+        for who, query, code, message in _DOCS_VIEW_REFUSALS
+    }
+
+
+def _bad_docs_mask(field, description):
+    return {
+        "error": {
+            "code": 400,
+            "message": "Request contains an invalid argument.",
+            "status": "INVALID_ARGUMENT",
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.BadRequest",
+                    "fieldViolations": [{"field": field, "description": description}],
+                }
+            ],
+        }
+    }
+
+
+def _no_match(mask, path):
+    return _bad_docs_mask(
+        mask, f"Error expanding 'fields' parameter. Cannot find matching fields for path '{path}'."
+    )
+
+
+# `(caller, query, answer)` per measured mask: the body, its members in order, or the refusal.
+_DOCS_MASKS = [
+    ("owner", "fields=title", {"title": "Brand guidelines v3"}),
+    ("owner", "fields=documentId,title", ["title", "documentId"]),
+    ("owner", "fields=,title,,documentId,", ["title", "documentId"]),
+    ("owner", "fields=title&fields=nope", ["title"]),
+    ("owner", "fields=*", _DOCS_FLAT),
+    ("owner", "fields=", _DOCS_FLAT),
+    ("owner", "fields=*.*", _DOCS_FLAT),
+    ("owner", "fields=tabs()", _DOCS_FLAT),
+    ("owner", "fields=body.content.endIndex", ["body"]),
+    ("owner", "fields=documentStyle.pageSize", ["documentStyle"]),
+    ("owner", "fields=tabs", ["tabs"]),
+    ("owner", "fields=tabs,title", ["title", "tabs"]),
+    ("owner", "fields=tabs&includeTabsContent=false", ["tabs"]),
+    ("owner", "fields=*.tabProperties", {"tabs": [{"tabProperties": _DOCS_TAB}]}),
+    ("owner", "fields=tabs.childTabs", {"tabs": [{}]}),
+    ("owner", "fields=tabs.documentTab.*", ["tabs"]),
+    ("owner", "fields=*&includeTabsContent=true", _DOCS_TABBED),
+    ("owner", "fields=documentId,title&includeTabsContent=true", ["title", "documentId"]),
+    ("owner", "fields=title,body()&includeTabsContent=true", ["title"]),
+    (
+        "owner",
+        "fields=comments&includeTabsContent=true&commentsViewMode=3&suggestionsViewMode=1",
+        {},
+    ),
+    ("reader", "fields=comments&includeTabsContent=true&commentsViewMode=1", {}),
+    (
+        "owner",
+        "fields=tabs.childTabs.documentTab.commentAnchors&includeTabsContent=true"
+        "&commentsViewMode=1",
+        {"tabs": [{}]},
+    ),
+    ("reader", "fields=title,revisionId", ["title"]),
+    ("owner", "fields=nope", _no_match("nope", "nope")),
+    ("owner", "fields=nope&fields=title", _no_match("nope", "nope")),
+    ("owner", "fields=title,nope", _no_match("title,nope", "nope")),
+    ("owner", "fields=Title", _no_match("Title", "Title")),
+    ("owner", "fields= title", _no_match(" title", " title")),
+    ("owner", "fields=*.tabId", _no_match("*.tabId", "*.tabId")),
+    ("owner", "fields=nope,tabs", _no_match("nope,tabs", "nope")),
+    ("owner", "fields=body,nope&includeTabsContent=true", _no_match("body,nope", "nope")),
+    (
+        "owner",
+        "fields=nope&commentsViewMode=COMMENTS_VIEW_MODE_OMITTED",
+        _no_match("nope", "nope"),
+    ),
+    (
+        "owner",
+        "fields=body(content",
+        _bad_docs_mask(
+            "body(content",
+            "Invalid FieldMask 'body(content'. Cannot find matching ')' for all '('.",
+        ),
+    ),
+    (
+        "owner",
+        "fields=title)",
+        _bad_docs_mask(
+            "title)", "Invalid FieldMask 'title)'. Cannot find matching '(' for all ')'."
+        ),
+    ),
+]
+
+
+def test_documents_get_trims_to_a_fields_mask_as_real_does(client, document_callers, document_id):
+    """A mask trims the answer to what it names, in the order real serves the members whatever
+    order the mask names them in, and selects the tabbed answer when it names `tabs`. The first
+    `fields` is the one read. A path naming nothing, or a bracket left unpaired, is the 400 whose
+    detail names the whole mask."""
+    url = f"/docs/v1/documents/{document_id}"
+
+    def answer(who, query, expected):
+        r = client.get(f"{url}?{query}", headers=document_callers[who])
+        if r.status_code != 200 or isinstance(expected, dict):
+            return r.json()
+        return list(r.json())
+
+    assert {f"{who} {query}": answer(who, query, want) for who, query, want in _DOCS_MASKS} == {
+        f"{who} {query}": want for who, query, want in _DOCS_MASKS
+    }
+    whole = client.get(url, headers=document_callers["owner"]).json()["body"]["content"]
+    ends = client.get(f"{url}?fields=body.content.endIndex", headers=document_callers["owner"])
+    assert ends.json() == {"body": {"content": [{"endIndex": el["endIndex"]} for el in whole]}}
 
 
 def test_sheets_get_withholds_grid_data_by_default(base, admin_h):
@@ -5263,14 +8661,10 @@ def test_editor_apis_reject_a_folder(base, admin_h):
 
 
 def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
-    """Sheets and Docs resolve a stored file's type before its visibility (`_editor_doc`). A hidden
-    file of the API's own type is permission-denied, another native type is not-found, an Office
-    file of the API's own family is a failed precondition, and a PDF or an Office file of the other
-    family is an invalid argument. Slides resolves visibility first, so a hidden presentation is
-    not-found there, as an id that does not exist is on Sheets and Docs. The files the scoped token
-    can see are served. At `$.xgafv=1` the 403's entry is ``forbidden`` and the Office 400's
-    ``failedPrecondition``."""
-    hidden = ("spreadsheet", "document", "presentation", "pdf", "xlsx", "docx")
+    """Each editor API's answers for the files a scoped token cannot see, as `_editor_doc` reads
+    them, beside the files it can see. At `$.xgafv=1` the 403's entry is ``forbidden`` and the
+    Office 400's ``failedPrecondition``."""
+    hidden = ("spreadsheet", "document", "presentation", "pdf", "xlsx", "docx", "pptx")
     records = [
         {
             "source_type": "google_drive",
@@ -5293,15 +8687,18 @@ def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
             "author_email": "mia@acme.com",
             "visibility": "public",
         }
-        for kind in ("spreadsheet", "document")
+        for kind in ("spreadsheet", "document", "presentation")
     ]
     settings = tiny_corpus(tmp_path, records)
     token_data = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     tokens = {u["email"]: u["token"] for u in token_data["users"]}
     outsider = {"Authorization": f"Bearer {tokens['mia@acme.com']}"}
-    sheet, doc, deck, pdf, xlsx, docx = (served_id("google_drive", f"hidden-{k}") for k in hidden)
+    sheet, doc, deck, pdf, xlsx, docx, pptx = (
+        served_id("google_drive", f"hidden-{k}") for k in hidden
+    )
     own_sheet = served_id("google_drive", "mia-spreadsheet")
     own_doc = served_id("google_drive", "mia-document")
+    own_deck = served_id("google_drive", "mia-presentation")
 
     def refusal(code, message, status):
         return {"error": {"code": code, "message": message, "status": status}}
@@ -5314,8 +8711,10 @@ def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
     rows = [
         (f"/sheets/v4/spreadsheets/{own_sheet}", 200, None),
         (f"/docs/v1/documents/{own_doc}", 200, None),
+        (f"/slides/v1/presentations/{own_deck}", 200, None),
         (f"/sheets/v4/spreadsheets/{sheet}", 403, permission),
         (f"/docs/v1/documents/{doc}", 403, permission),
+        (f"/slides/v1/presentations/{deck}", 403, permission),
         (
             f"/docs/v1/documents/{doc}?suggestionsViewMode=NOPE",
             400,
@@ -5324,15 +8723,21 @@ def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
         (f"/docs/v1/documents/{own_doc}?suggestionsViewMode=SUGGESTIONS_INLINE", 200, None),
         (f"/sheets/v4/spreadsheets/{xlsx}", 400, office),
         (f"/docs/v1/documents/{docx}", 400, office),
+        (f"/slides/v1/presentations/{pptx}", 400, office),
         (f"/sheets/v4/spreadsheets/{pdf}", 400, invalid),
         (f"/docs/v1/documents/{pdf}", 400, invalid),
+        (f"/slides/v1/presentations/{pdf}", 400, invalid),
         (f"/sheets/v4/spreadsheets/{docx}", 400, invalid),
         (f"/docs/v1/documents/{xlsx}", 400, invalid),
+        (f"/slides/v1/presentations/{xlsx}", 400, invalid),
+        (f"/slides/v1/presentations/{docx}", 400, invalid),
         (f"/sheets/v4/spreadsheets/{doc}", 404, not_found),
         (f"/docs/v1/documents/{sheet}", 404, not_found),
-        (f"/slides/v1/presentations/{deck}", 404, not_found),
+        (f"/slides/v1/presentations/{doc}", 404, not_found),
+        (f"/slides/v1/presentations/{sheet}", 404, not_found),
         ("/sheets/v4/spreadsheets/nosuchfile000", 404, not_found),
         ("/docs/v1/documents/nosuchfile000", 404, not_found),
+        ("/slides/v1/presentations/nosuchfile000", 404, not_found),
     ]
     with client_for(settings, reload=True) as client:
         for path, status, body in rows:
@@ -5342,7 +8747,9 @@ def test_editor_apis_distinguish_hidden_type_permission_and_missing(tmp_path):
                 assert response.json() == body, path
         for path, message, reason in (
             (f"/sheets/v4/spreadsheets/{sheet}", permission["error"]["message"], "forbidden"),
+            (f"/slides/v1/presentations/{deck}", permission["error"]["message"], "forbidden"),
             (f"/docs/v1/documents/{docx}", OFFICE_MSG, "failedPrecondition"),
+            (f"/slides/v1/presentations/{pptx}", OFFICE_MSG, "failedPrecondition"),
         ):
             verbose = client.get(path, headers=outsider, params={"$.xgafv": "1"})
             assert verbose.json()["error"]["errors"] == [
@@ -5851,6 +9258,19 @@ _GRID = "Invalid value at 'include_grid_data' (TYPE_BOOL), "
             {"dataFilters": [{"a1Range": "Sheet1!A1"}], "includeGridData": "NOPE"},
             [("include_grid_data", _GRID + '"NOPE"')],
         ),
+        # a body that is not an object is refused alone (`protojson.whole`)
+        (
+            "POST",
+            "values_by_filter",
+            [("majorDimension", "NOPE")],
+            [],
+            [
+                (
+                    None,
+                    'Invalid JSON payload received. Unknown name "": Root element must be a message.',
+                )
+            ],
+        ),
     ],
 )
 def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
@@ -5876,7 +9296,7 @@ def test_every_typed_value_is_parsed_and_every_one_refused_is_named(
     err = r.json()["error"]
     [bad_request] = err["details"]
     assert bad_request["@type"] == "type.googleapis.com/google.rpc.BadRequest"
-    got = [(v["field"], v["description"]) for v in bad_request["fieldViolations"]]
+    got = [(v.get("field"), v["description"]) for v in bad_request["fieldViolations"]]
     assert err["message"] == "\n".join(m for _, m in got)
     assert err["status"] == "INVALID_ARGUMENT"
 
@@ -6378,7 +9798,7 @@ def test_sheets_a_title_spelt_as_a_reference_is_quoted_in_either_notation():
     """Measured on sheets so named: `'A1'`, `'R1C1'` and `'RC'` echo quoted because the bare word
     reads as a cell, while `A` echoes bare — a lone column is no range. And a bare `R1` is the A1
     cell R1, not a row in R1C1 notation."""
-    from backlot.routers.google import _a1_classify, _a1_title
+    from backlot.routers.google_sheets import _a1_classify, _a1_title
 
     assert _a1_title("A1") == "'A1'"
     assert _a1_title("R1C1") == "'R1C1'"
@@ -6575,62 +9995,284 @@ def test_drive_permissions_and_trashed(tmp_path):
     # group-restricted doc surfaces a group-type permission
     gperms = _drive_permissions(conn, served_id("google_drive", "d2"))
     assert any(p["type"] == "group" for p in gperms)
-    # trashed excluded from a default `q`, included when asked
+    # `trashed = false` leaves a trashed file out and `trashed = true` matches it
     d2 = store.get_document(conn, "google_drive", served_id("google_drive", "d2"))
     facts = _drive_facts(d2)
     assert _drive_q_eval(_drive_q_parse("trashed = false"), facts, None, {}) is False
     assert _drive_q_eval(_drive_q_parse("trashed = true"), facts, None, {}) is True
 
 
-def test_drive_files_list_excludes_trashed_with_no_query_at_all(tmp_path):
-    """Real Drive leaves trashed files out of `files.list` unless `trashed = true` asks for them.
+# A file and a trashed file its owner lists, as the no-`q` branch of `drive_files_list` records.
+_TRASH_LISTED = [
+    (None, {"live", "gone"}),
+    ("name contains 'Deck'", {"live", "gone"}),
+    ("'{folder}' in parents", {"live", "gone"}),
+    ("'{folder}' in parents and trashed = false", {"live"}),
+    ("'{folder}' in parents and trashed = true", {"gone"}),
+    ("name contains 'Deck' and not starred", {"live", "gone"}),
+    ("name contains 'Deck' and trashed = false", {"live"}),
+    ("name contains 'Deck' and not trashed", {"live"}),
+    ("name contains 'Deck' and trashed", {"gone"}),
+]
 
-    Every `q`-bearing path honored that (the matcher's default branch, and list_drive_folder's own
-    WHERE), so the ONE call that returned trash was the plainest possible one: `files.list` with no
-    `q`, which went straight to the generic listing helper and had no trashed notion. Asserted over
-    HTTP rather than on the matcher, since the matcher was never reached on this path — and on the
-    reported total too, because a count that includes rows the listing drops makes nextPageToken
-    promise a page that does not exist."""
+
+def test_drive_files_list_lists_the_trash_unless_q_leaves_it_out(tmp_path):
+    """The total is the listing's, so `nextPageToken` promises no page there is not."""
     from backlot import synth
     from tests._helpers import corpus_client
 
     records = [
         {
             "source_type": "google_drive",
-            "doc_id": "live",
+            "doc_id": doc_id,
             "folder": "mk",
-            "title": "Current Deck",
+            "title": title,
             "content": "x",
             "author_email": "a@x.com",
             "visibility": "public",
-        },
-        {
-            "source_type": "google_drive",
-            "doc_id": "gone",
-            "folder": "mk",
-            "title": "Old Deck",
-            "content": "y",
-            "author_email": "a@x.com",
-            "visibility": "public",
-            "trashed": True,
-        },
+            **extra,
+        }
+        for doc_id, title, extra in (
+            ("live", "Current Deck", {}),
+            ("gone", "Old Deck", {"trashed": True}),
+        )
     ]
-    # The served ids, not the corpus ids: a bare "live"/"gone" never appears in `ids` regardless
-    # of whether trashing is honored, so the assertions below would pass for the wrong reason.
-    live_id, gone_id = synth.gdrive_file_id("live"), synth.gdrive_file_id("gone")
+    served = {synth.gdrive_file_id(doc_id): doc_id for doc_id in ("live", "gone")}
+    answered = {}
     with corpus_client(tmp_path, records) as (client, settings):
-        h = {"Authorization": f"Bearer {settings.admin_token}"}
-        body = client.get("/drive/v3/files", headers=h, params={"pageSize": 100}).json()
-        ids = [f["id"] for f in body["files"]]
-        assert live_id in ids
-        assert gone_id not in ids, "a trashed file must not appear in an unfiltered files.list"
-        assert "nextPageToken" not in body, "the total counted a row the listing dropped"
+        for q, _ in _TRASH_LISTED:
+            params = {"pageSize": 100, "q": (q or "").format(folder=synth.drive_folder_id("mk"))}
+            r = client.get(
+                "/drive/v3/files",
+                headers={"Authorization": f"Bearer {settings.admin_token}"},
+                params={k: v for k, v in params.items() if v},
+            )
+            body = r.json()
+            listed = {served[f["id"]] for f in body.get("files", []) if f["id"] in served}
+            answered[q] = (
+                r.status_code,
+                "nextPageToken" in body,
+                listed if r.status_code == 200 else r.text,
+            )
+    assert answered == {q: (200, False, listed) for q, listed in _TRASH_LISTED}
 
-        # ...and it is still reachable when the caller asks for it, as in real Drive.
-        asked = client.get(
-            "/drive/v3/files", headers=h, params={"q": "trashed = true", "pageSize": 100}
-        ).json()
-        assert [f["id"] for f in asked["files"]] == [gone_id]
+
+@pytest.mark.parametrize(
+    "q, scope",
+    [
+        ("'f' in parents", "all"),
+        ("('f' in parents)", "all"),
+        ("'f' in parents and trashed = false", "live"),
+        ("trashed = false and 'f' in parents", "live"),
+        ("'f' in parents and name = 'a'", None),
+        ("'f' in parents and 'me' in owners", None),
+        ("'f' in parents and (name = 'a' or name = 'b')", None),
+        ("'f' in parents and trashed = true", None),
+        ("'f' in parents or name = 'a'", None),
+        ("not 'f' in parents", None),
+    ],
+)
+def test_drive_q_plain_folder_reads_a_folder_scope(q, scope):
+    from backlot.routers import google
+
+    assert google._drive_q_plain_folder(google._drive_q_parse(q)) == scope
+
+
+@pytest.fixture(scope="module")
+def live_and_gone(tmp_path_factory):
+    """Two private files of mia's in folder `mk`, `Gone` in her trash."""
+    record = {
+        "source_type": "google_drive",
+        "folder": "mk",
+        "content": "x",
+        "visibility": "private",
+    }
+    return tiny_corpus(
+        tmp_path_factory.mktemp("live_and_gone"),
+        [
+            {**record, "doc_id": "live", "title": "Live", "author_email": "mia@acme.com"},
+            {**record, "doc_id": "gone", "title": "Gone", "author_email": "mia@acme.com"}
+            | {"trashed": True},
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "q, scan, listed",
+    [
+        ("'{folder}' in parents", "backlot.routers.google._drive_q_rows", {"Live", "Gone"}),
+        ("name = 'Gone'", "backlot.store.list_documents", {"Gone"}),
+        ("name contains 'ON'", "backlot.store.list_documents", {"Gone"}),
+        ("name = 'Gone' and trashed = false", "backlot.store.list_documents", set()),
+        ("name contains 'e' and not trashed", "backlot.store.list_documents", {"Live"}),
+    ],
+)
+def test_drive_a_folder_scope_or_a_name_is_listed_from_sql(
+    live_and_gone, monkeypatch, q, scan, listed
+):
+    """`'<id>' in parents`, LlamaIndex's Google Drive reader's `q`, is served by
+    `store.list_drive_folder`, and a `name` term, mirage's lookup, by `store.list_drive_by_name`,
+    each with its owner's trash and whatever `trashed` term sits beside it: with ``scan`` patched
+    to fail, the listing still answers, where the rows a scan builds stop at 100,000 candidates."""
+    from backlot import synth
+
+    def fail(*args, **kwargs):
+        raise AssertionError(f"{q} reached {scan}")
+
+    monkeypatch.setattr(scan, fail)
+    s = live_and_gone
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
+    mia = {"Authorization": f"Bearer {tok(tokens, 'mia@acme.com')}"}
+    params = {"q": q.format(folder=synth.drive_folder_id("mk")), "fields": "files(name)"}
+    with client_for(s, reload=True) as c:
+        r = c.get("/drive/v3/files", headers=mia, params=params)
+        assert r.status_code == 200, r.text
+        assert {f["name"] for f in r.json()["files"]} == listed
+
+
+def test_drive_lists_only_the_trash_its_caller_may_see(tmp_path):
+    """Mia lists her own trash, and neither Ava's private file nor the two of Ava's she can read,
+    which `files.get` still answers; the admin token lists every one. Ava's file out of the trash,
+    `Kept`, is listed to each caller under each `q` but `trashed`. To each of the three users
+    `files.get` answers `ownedByMe: true` on exactly the trashed files it lists: `MIA@acme.com`'s is
+    `mia@acme.com`'s, and `Éva@acme.com`'s is not `éva@acme.com`'s."""
+    from backlot import synth
+
+    record = {"source_type": "google_drive", "folder": "mk", "content": "alpha", "trashed": True}
+    ava = {**record, "author_email": "ava@acme.com"}
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {**record, "doc_id": "hers", "title": "Hers", "author_email": "mia@acme.com"},
+            {**ava, "doc_id": "secret", "title": "Secret", "visibility": "private"},
+            {**ava, "doc_id": "public", "title": "Public", "visibility": "public"},
+            {**ava, "doc_id": "lent", "title": "Lent", "visibility": "private"}
+            | {"readers": ["ava@acme.com", "mia@acme.com"]},
+            {**record, "doc_id": "shout", "title": "Shout", "author_email": "MIA@acme.com"}
+            | {"visibility": "private", "readers": ["MIA@acme.com", "mia@acme.com"]},
+            {**record, "doc_id": "accent", "title": "Accent", "author_email": "Éva@acme.com"}
+            | {"visibility": "private", "readers": ["Éva@acme.com", "éva@acme.com"]},
+            {**ava, "doc_id": "kept", "title": "Kept", "visibility": "public", "trashed": False},
+        ],
+    )
+    tokens = yaml.safe_load(s.tokens_path.read_text(encoding="utf-8"))
+    callers = {"admin": tokens["admin_token"]}
+    callers |= {who: tok(tokens, f"{who}@acme.com") for who in ("mia", "ava", "éva")}
+    folder = synth.drive_folder_id("mk")
+    queries = (None, "trashed", f"'{folder}' in parents", "fullText contains 'alpha'")
+    queries += ("name contains 'e' or name contains 'u'", "name != 'x'")
+    with client_for(s, reload=True) as c:
+        for who, want in (
+            ("admin", {"Hers", "Secret", "Public", "Lent", "Shout", "Accent"}),
+            ("mia", {"Hers", "Shout"}),
+            ("ava", {"Secret", "Public", "Lent"}),
+            ("éva", set()),
+        ):
+            h = {"Authorization": f"Bearer {callers[who]}"}
+            for q in queries:
+                params = {"q": q, "fields": "files(name,mimeType)"} if q else {}
+                r = c.get("/drive/v3/files", headers=h, params=params)
+                names = {f["name"] for f in r.json()["files"] if f["mimeType"] != _FOLDER}
+                assert names == (want if q == "trashed" else want | {"Kept"}), (who, q)
+            for name in ("Hers", "Public", "Lent", "Shout", "Accent", "Kept"):
+                r = c.get("/drive/v3/files", headers=h, params={"q": f"name = '{name}'"})
+                assert {f["name"] for f in r.json()["files"]} == {name} & (want | {"Kept"}), (
+                    who,
+                    name,
+                )
+            if who == "admin":
+                continue
+            for doc_id in ("hers", "secret", "public", "lent", "shout", "accent"):
+                url = f"/drive/v3/files/{synth.gdrive_file_id(doc_id)}"
+                r = c.get(url, headers=h, params={"fields": "name,trashed,ownedByMe"})
+                if r.status_code == 404:
+                    continue
+                body = r.json()
+                assert body["trashed"] and body["ownedByMe"] == (body["name"] in want), (
+                    who,
+                    doc_id,
+                )
+
+
+#: Two folders whose synthesized times (``synth.epoch``) fall between their files', a file whose
+#: time ties the `ops` folder's to the second, two files newer than every folder that tie each
+#: other, stored in the opposite order to their ids, and a file only its author's token lists.
+_NEWEST_FIRST_RECORDS = [
+    {
+        "source_type": "google_drive",
+        "doc_id": doc,
+        "folder": folder,
+        "title": title,
+        "content": content,
+        "author_email": author,
+        "visibility": visibility,
+        "created": "2022-12-01T00:00:00Z",
+        "updated": updated,
+    }
+    for doc, folder, title, content, author, visibility, updated in [
+        ("old", "mk", "Old", "beta beta beta beta", "a@x.com", "public", "2023-01-01T00:00:00Z"),
+        ("mid", "ops", "Mid", "gamma", "a@x.com", "private", "2023-03-01T00:00:00Z"),
+        ("same", "ops", "Same", "gamma", "b@x.com", "public", "2023-06-06T01:18:43Z"),
+        ("new", "mk", "New", "alpha beta gamma delta", "a@x.com", "public", "2024-01-01T00:00:00Z"),
+        ("twin-a", "mk", "Twin A", "delta", "a@x.com", "public", "2025-01-01T00:00:00Z"),
+        ("twin-b", "mk", "Twin B", "delta", "a@x.com", "public", "2025-01-01T00:00:00Z"),
+    ]
+]
+_NEWEST_FIRST = ["Twin B", "Twin A", "New", "ops", "Same", "Mid", "mk", "Old"]
+
+
+@pytest.fixture(scope="module")
+def newest_first(tmp_path_factory):
+    return tiny_corpus(tmp_path_factory.mktemp("newest_first"), _NEWEST_FIRST_RECORDS)
+
+
+@pytest.mark.parametrize(
+    "params,caller,names",
+    [
+        ({}, "admin", _NEWEST_FIRST),
+        ({"orderBy": ""}, "admin", _NEWEST_FIRST),
+        ({"q": "trashed = false"}, "admin", _NEWEST_FIRST),
+        ({}, "b@x.com", ["Twin B", "Twin A", "New", "ops", "Same", "mk", "Old"]),
+        ({"q": "'root' in parents"}, "admin", ["ops", "mk"]),
+        ({"q": "'{mk}' in parents"}, "admin", ["Twin B", "Twin A", "New", "Old"]),
+        ({"q": "name contains 'twin'"}, "admin", ["Twin B", "Twin A"]),
+        (
+            {"q": "mimeType != 'application/vnd.google-apps.folder'"},
+            "admin",
+            ["Twin B", "Twin A", "New", "Same", "Mid", "Old"],
+        ),
+        # the index's rank order, the older file first
+        ({"q": "fullText contains 'beta'"}, "admin", ["Old", "New"]),
+    ],
+)
+def test_drive_files_list_with_no_order_by_lists_the_newest_first(
+    newest_first, params, caller, names
+):
+    """Pins the order ``_drive_newest_first`` serves and the `fullText` listing it leaves alone, at
+    every page size, so each folder falls inside a page's window and outside one."""
+    from backlot import synth
+
+    if "q" in params:
+        params = {**params, "q": params["q"].format(mk=synth.drive_folder_id("mk"))}
+    with client_for(newest_first) as client:
+        settings = newest_first
+        token = settings.admin_token
+        if caller != "admin":
+            users = client.get("/_meta/users").json()["users"]
+            token = next(u["token"] for u in users if u["email"] == caller)
+        h = {"Authorization": f"Bearer {token}"}
+        for size in range(1, len(names) + 2):
+            listed, page_token = [], None
+            for _ in range(len(names) + 1):
+                p = {**params, "pageSize": size, "fields": "nextPageToken,files(name)"}
+                if page_token:
+                    p["pageToken"] = page_token
+                body = client.get("/drive/v3/files", headers=h, params=p).json()
+                listed += [f["name"] for f in body["files"]]
+                page_token = body.get("nextPageToken")
+                if not page_token:
+                    break
+            assert listed == names, size
 
 
 _Q_RECORDS = [
@@ -6691,21 +10333,28 @@ _Q_RECORDS = [
         "author_email": "mia@x.com",
         "visibility": "public",
         "trashed": True,
+        "created": "2025-11-01T09:00:00Z",
+        "updated": "2025-11-02T09:00:00Z",
     },
 ]
 _FOLDER = "application/vnd.google-apps.folder"
 
 
-def test_drive_q_evaluates_the_operators_the_reference_lists(tmp_path):
-    """Every operator the reference lists for `name`, `mimeType`, `modifiedTime`, `createdTime` and
-    `trashed`, over a corpus small enough to name the answer; `sharedWithMe`, `fullText` and the
-    two collections are in the client-shapes test that closes this group. Folders are dropped here
-    (their `createdTime` is seeded,
-    so a time clause's answer for them is not this test's to state); the test below is where they
-    go through the same evaluator."""
-    from tests._helpers import corpus_client
+@pytest.fixture(scope="module")
+def q_corpus(tmp_path_factory):
+    """`_Q_RECORDS` built."""
+    return tiny_corpus(tmp_path_factory.mktemp("q_corpus"), _Q_RECORDS)
 
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+
+def test_drive_q_evaluates_the_operators_the_reference_lists(q_corpus):
+    """Every operator the reference lists for `name`, `mimeType`, `modifiedTime`, `createdTime`,
+    `viewedByMeTime`, `trashed` and `starred`, over a corpus small enough to name the answer;
+    `sharedWithMe`, `fullText` and the two collections are in the client-shapes test that closes
+    this group. Folders are dropped here (their `createdTime` is seeded, so a time clause's answer
+    for them is not this test's to state); the test below is where they go through the same
+    evaluator."""
+    settings = q_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
 
         def files(q):
@@ -6720,18 +10369,28 @@ def test_drive_q_evaluates_the_operators_the_reference_lists(tmp_path):
         # name: contains, =, != — `=` reads case-insensitively, as the `contains` before it did
         assert files("name = 'Q1 Deck'") == {"Q1 Deck"}
         assert files("name = 'q1 deck'") == {"Q1 Deck"}
-        assert files("name != 'Q1 Deck'") == {"Brand guidelines", "Q1 Revenue", "Mia's Notes"}
+        assert files("name != 'Q1 Deck'") == {
+            "Brand guidelines",
+            "Q1 Revenue",
+            "Mia's Notes",
+            "Old Deck",
+        }
         # the reference's escape for an apostrophe inside a value
         assert files("name = 'Mia\\'s Notes'") == {"Mia's Notes"}
         # mimeType: contains, =, !=
         assert files("mimeType contains 'spreadsheet'") == {"Q1 Revenue"}
         assert files("mimeType = 'application/vnd.google-apps.presentation'") == {"Q1 Deck"}
         # modifiedTime / createdTime: the full comparison set, a zone-less value read as UTC
-        assert files("modifiedTime < '2026-01-10T00:00:00Z'") == {"Q1 Revenue", "Mia's Notes"}
+        assert files("modifiedTime < '2026-01-10T00:00:00Z'") == {
+            "Q1 Revenue",
+            "Mia's Notes",
+            "Old Deck",
+        }
         assert files("modifiedTime <= '2026-01-21T09:00:00Z'") == {
             "Q1 Revenue",
             "Q1 Deck",
             "Mia's Notes",
+            "Old Deck",
         }
         assert files("modifiedTime >= '2026-01-21T09:00:00'") == {"Brand guidelines", "Q1 Deck"}
         assert files("modifiedTime > '2026-01-21T09:00:00Z'") == {"Brand guidelines"}
@@ -6740,35 +10399,77 @@ def test_drive_q_evaluates_the_operators_the_reference_lists(tmp_path):
             "Brand guidelines",
             "Q1 Deck",
             "Mia's Notes",
+            "Old Deck",
         }
         # or, not, parentheses
         assert files("name contains 'Deck' or name contains 'Brand'") == {
             "Q1 Deck",
             "Brand guidelines",
+            "Old Deck",
         }
-        assert files("not name contains 'Q1'") == {"Brand guidelines", "Mia's Notes"}
+        assert files("not name contains 'Q1'") == {"Brand guidelines", "Mia's Notes", "Old Deck"}
         assert files(
             "(name contains 'Q1' or name contains 'Brand') and mimeType != "
             "'application/vnd.google-apps.presentation'"
         ) == {"Q1 Revenue", "Brand guidelines"}
-        # trashed: left out unless a clause asks, and asked for through `not` as well as `= true`
-        assert files("name contains 'Deck'") == {"Q1 Deck"}
+        # trashed: listed unless a clause leaves it out, and asked for through `not` as well as
+        # `= true`
+        assert files("name contains 'Deck'") == {"Q1 Deck", "Old Deck"}
+        assert files("name contains 'Deck' and trashed = false") == {"Q1 Deck"}
         assert files("name contains 'Deck' and trashed = true") == {"Old Deck"}
         assert files("not trashed = false") == {"Old Deck"}
         assert files("trashed != false") == {"Old Deck"}
         # ...and through `not` beside a `name contains`, whose title-LIKE candidate set answers
         # non-trashed rows only and so must not be used here.
         assert files("name contains 'Deck' and not trashed = false") == {"Old Deck"}
+        assert files("trashed") == {"Old Deck"}
+        # a folder's files, the trash with them unless the scope leaves it out, and a clause
+        # beside the scope applied as well
+        mk = synth.drive_folder_id("mk")
+        assert files(f"'{mk}' in parents") == {
+            "Brand guidelines",
+            "Q1 Deck",
+            "Mia's Notes",
+            "Old Deck",
+        }
+        assert files(f"'{mk}' in parents and trashed = false") == {
+            "Brand guidelines",
+            "Q1 Deck",
+            "Mia's Notes",
+        }
+        assert files(f"'{mk}' in parents and trashed = false and name contains 'Deck'") == {
+            "Q1 Deck"
+        }
+        # starred and viewedByMeTime: nothing is starred or viewed, so `!=` alone matches a time
+        every = {"Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes", "Old Deck"}
+        for q, expected in (
+            ("starred = true", set()),
+            ("starred = TRUE", set()),
+            ("starred", set()),
+            ("starred = false", every),
+            ("starred != true", every),
+            ("not starred = true", every),
+            ("not starred", every),
+            ("starred != false", set()),
+            ("viewedByMeTime > '2000-01-01T00:00:00'", set()),
+            ("viewedByMeTime < '2100-01-01T00:00:00Z'", set()),
+            ("viewedByMeTime <= '2100-01-01T00:00:00Z'", set()),
+            ("viewedByMeTime >= '2000-01-01'", set()),
+            ("viewedByMeTime = '2000-01-01T00:00:00'", set()),
+            ("viewedByMeTime != '2000-01-01T00:00:00'", every),
+            ("not viewedByMeTime > '2000-01-01T00:00:00'", every),
+            ("not viewedByMeTime != '2000-01-01T00:00:00'", set()),
+        ):
+            assert files(q) == expected, q
 
 
-def test_drive_q_or_spans_folders_and_files(tmp_path):
+def test_drive_q_or_spans_folders_and_files(q_corpus):
     """The synthesized folders go through the same evaluator as stored rows, so a disjunction that
     names a folder by its mimeType and a file by its name answers both. A `'root' in parents`
     under an `or` scopes nothing — the parent shortcut reads only the terms every match must
     satisfy — so the files still come back."""
-    from tests._helpers import corpus_client
-
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+    settings = q_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         r = client.get(
             "/drive/v3/files",
@@ -6788,13 +10489,11 @@ def test_drive_q_or_spans_folders_and_files(tmp_path):
         assert {f["name"] for f in r.json()["files"]} == {"mk", "fin", "Q1 Deck", "Q1 Revenue"}
 
 
-def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
-    """A term the reference does not list, or a clause that is not the grammar, is a 400 on `q` —
-    where before it silently fell out of the filter. Real Drive's wording for it is unmeasured, so
-    the message is the bare `Invalid Value` of the parameter envelope."""
-    from tests._helpers import corpus_client
-
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+def test_drive_q_refuses_a_clause_it_cannot_parse(q_corpus):
+    """A term `files.list` does not take, a clause that is not the grammar, or white space alone is
+    the 400 `_drive_q_refused` raises."""
+    settings = q_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for q in (
             "bogusField = 'x'",
@@ -6803,15 +10502,53 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
             "name contains 'unterminated",
             "trashed = 'true'",
             "modifiedTime contains 'x'",
-            "modifiedTime < 'yesterday'",  # the reference wants RFC 3339 here
+            "modifiedTime < 'yesterday'",
+            "createdTime < 'yesterday'",
             "'x' in bogus",
-            "name contains 'a' or",
             "(name contains 'a'",
             "name contains 'a' name contains 'b'",
-            # Past the nesting bound: the parser is recursive, and these exhausted the frame
-            # limit into a 500 before the bound was there.
-            "(" * 64 + "name contains 'a'" + ")" * 64,
-            "not " * 64 + "name contains 'a'",
+            # past `_DRIVE_Q_MAX_DEPTH`, which real reads
+            "(" * 200 + "name contains 'a'" + ")" * 200,
+            # refused by real beside the shapes the test below reads
+            "( )",
+            "()()",
+            "name contains 'a' and",
+            "name contains 'a' or or name contains 'b'",
+            "not",
+            "name contains 'a' and not",
+            "not " * 200 + "name contains 'a'",
+            "sharedWithMe < true",
+            "sharedWithMe >= false",
+            "Starred = true",
+            "starred = 'true'",
+            "starred = yes",
+            "starred contains true",
+            "VIEWEDBYMETIME > '2000-01-01T00:00:00'",
+            "viewedByMeTime > 'garbage'",
+            "viewedByMeTime > ''",
+            "viewedByMeTime > 2020",
+            "viewedByMeTime contains '2020'",
+            "modifiedByMeTime > '2000-01-01T00:00:00'",
+            "sharedWithMeTime > '2000-01-01T00:00:00'",
+            "starred = true and",
+            "not not starred",
+            "not not name contains 'a'",
+            "not sharedWithMe",
+            "sharedWithMe = false",
+            "sharedWithMe != true",
+            "not (name contains 'a' and sharedWithMe)",
+            "not(trashed)",
+            "NOT(trashed)",
+            "(not(trashed))",
+            "name contains 'a' and not(starred)",
+            *("trashed" + chr(cp) + "= false" for cp in (0x0B, 0x1C, 0x85, 0xA0, 0x2003, 0x3000)),
+            chr(0xA0) + "trashed = false",
+            *("trashed = false" + chr(cp) for cp in (0x0B, 0xA0, 0x3000)),
+            " and ",
+            " ",
+            "\t",
+            "\n",
+            chr(0xA0),
         ):
             r = client.get("/drive/v3/files", headers=h, params={"q": q})
             assert r.status_code == 400, f"{q}: {r.text}"
@@ -6820,19 +10557,56 @@ def test_drive_q_refuses_a_clause_it_cannot_parse(tmp_path):
             assert (err["errors"][0]["reason"], err["errors"][0]["location"]) == ("invalid", "q")
 
 
-def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(tmp_path):
-    """`starred`, `writers`, `viewedByMeTime` are the reference's, and a corpus record carries
-    nothing to answer them from. Refused with a message that says so, the way an unmodelled
-    `orderBy` key is — honouring `starred = true` as "everything" would be the silent listing the
-    parser exists to stop."""
-    from tests._helpers import corpus_client
+_LIVE = {"Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"}
 
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+
+_Q_PAST_THE_REFERENCE = [
+    ('name = "Q1 Deck"', {"Q1 Deck"}),
+    ("trashed < true", set()),
+    ("trashed < false", set()),
+    ("trashed <= true", {"Old Deck"}),
+    ("trashed <= false", set()),
+    ("trashed > true", set()),
+    ("trashed > false", _LIVE),
+    ("trashed >= true", {"Old Deck"}),
+    ("trashed >= false", _LIVE),
+    ("()", _LIVE | {"Old Deck"}),
+    ("name = 'Q1 Deck' and ()", {"Q1 Deck"}),
+    ("name = 'Q1 Deck' or", _LIVE | {"Old Deck"}),
+    ("(name = 'Q1 Deck' or) and name contains 'Q1'", {"Q1 Deck", "Q1 Revenue"}),
+    ("not (not name = 'Q1 Deck')", {"Q1 Deck"}),
+    ("(" * 64 + "name = 'Q1 Deck'" + ")" * 64, {"Q1 Deck"}),
+]
+
+
+def test_drive_q_reads_what_real_reads_past_the_reference(q_corpus):
+    """Shapes the reference does not list and real answers with a 200, each with the files its
+    answer names here, folders left out."""
+    answered = {}
+    settings = q_corpus
+    with client_for(settings) as client:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        for q, _ in _Q_PAST_THE_REFERENCE:
+            r = client.get(
+                "/drive/v3/files",
+                headers=h,
+                params={"q": q, "fields": "files(name,mimeType)", "pageSize": 100},
+            )
+            names = {f["name"] for f in r.json().get("files", []) if f["mimeType"] != _FOLDER}
+            answered[q] = (r.status_code, names if r.status_code == 200 else r.text)
+    assert answered == {q: (200, names) for q, names in _Q_PAST_THE_REFERENCE}
+
+
+def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(q_corpus):
+    """`writers`, `readers`, `visibility` and the two map-valued terms are the reference's, and a
+    corpus record carries nothing to answer them from, so the refusal says so."""
+    settings = q_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for q in (
-            "starred = true",
             "'mia@x.com' in writers",
-            "viewedByMeTime > '2026-01-01T00:00:00Z'",
+            "'mia@x.com' in readers",
+            "visibility = 'anyoneCanFind'",
             # The reference's own spelling for the two map-valued terms: `{` is a token, so the
             # field is read and named before the brace can be refused.
             "properties has { key='x' and value='y' }",
@@ -6845,13 +10619,12 @@ def test_drive_q_refuses_a_documented_term_it_holds_no_fact_for(tmp_path):
             assert err["errors"][0]["location"] == "q"
 
 
-def test_drive_q_shapes_clients_send_still_parse(tmp_path):
+def test_drive_q_shapes_clients_send_still_parse(q_corpus):
     """The shapes clients send, spaces and all — mirage's `'<id>' in parents and trashed=false` is
     the first — plus a bare `sharedWithMe`, keywords in either case, `in owners`, and a phrase and
     an `or` around `fullText`, whose index answer is a membership test rather than a pre-filter."""
-    from tests._helpers import corpus_client
-
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+    settings = q_corpus
+    with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         for q, expected in (
             ("'root' in parents and trashed=false", {"mk", "fin"}),
@@ -6862,8 +10635,14 @@ def test_drive_q_shapes_clients_send_still_parse(tmp_path):
                 "sharedWithMe and trashed = false",
                 {"mk", "fin", "Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"},
             ),
-            ("sharedWithMe = false", set()),
-            ("sharedWithMe != true", set()),
+            (
+                "(sharedWithMe = TRUE) and not (name contains 'zzzq') and trashed = false",
+                {"mk", "fin", "Brand guidelines", "Q1 Revenue", "Q1 Deck", "Mia's Notes"},
+            ),
+            ("not (not starred)", set()),
+            ("not\t(name != 'Q1 Deck')", {"Q1 Deck"}),
+            ("trashed = false\fand\rname = 'Q1 Deck'", {"Q1 Deck"}),
+            ("trashed = false and(name = 'Q1 Deck') \t\n", {"Q1 Deck"}),
             ("'mia@x.com' in owners and name contains 'Q1'", {"Q1 Deck"}),
             # `me` is the caller; the admin token owns nothing, so nothing is `me`'s and
             # everything non-trashed is `not me`'s.
@@ -6884,14 +10663,13 @@ def test_drive_q_shapes_clients_send_still_parse(tmp_path):
             assert {f["name"] for f in r.json()["files"]} == expected, q
 
 
-def test_drive_q_me_is_the_caller(tmp_path):
+def test_drive_q_me_is_the_caller(q_corpus):
     """`'me' in owners` is the caller's own files and `not 'me' in owners` everyone else's, resolved
     through the identity `sharedWithMe` reads."""
     import yaml
 
-    from tests._helpers import corpus_client
-
-    with corpus_client(tmp_path, _Q_RECORDS) as (client, settings):
+    settings = q_corpus
+    with client_for(settings) as client:
         tokens = {
             u["email"]: u["token"]
             for u in yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"]
@@ -6899,7 +10677,7 @@ def test_drive_q_me_is_the_caller(tmp_path):
         mia = {"Authorization": f"Bearer {tokens['mia@x.com']}"}
         files = "mimeType != 'application/vnd.google-apps.folder'"
         for q, expected in (
-            ("'me' in owners", {"Brand guidelines", "Q1 Deck", "Mia's Notes"}),
+            ("'me' in owners", {"Brand guidelines", "Q1 Deck", "Mia's Notes", "Old Deck"}),
             (f"not 'me' in owners and {files}", {"Q1 Revenue"}),
         ):
             r = client.get("/drive/v3/files", headers=mia, params={"q": q, "fields": "files(name)"})
@@ -6934,8 +10712,7 @@ MEASURED_NAME = [
 ]
 
 
-@pytest.mark.parametrize(("q", "expected"), MEASURED_NAME, ids=[q for q, _ in MEASURED_NAME])
-def test_drive_q_name_compares_as_real_drive_does(tmp_path, q, expected):
+def test_drive_q_name_compares_as_real_drive_does(tmp_path):
     """Every measured row, through the handler — so through `list_drive_by_name`'s candidate set
     and `_drive_q_eval` both. `name !=` is the complement of `name =` and shares its fold."""
     from tests._helpers import corpus_client
@@ -6955,64 +10732,66 @@ def test_drive_q_name_compares_as_real_drive_does(tmp_path, q, expected):
         }
         for i, title in enumerate(_NAME_TITLES)
     ]
+    equal = [(q, expected) for q, expected in MEASURED_NAME if q.startswith("name = ")]
     with corpus_client(tmp_path, records) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
-        r = client.get("/drive/v3/files", headers=h, params={"q": q, "fields": "files(name)"})
-        assert r.status_code == 200, r.text
-        assert {f["name"] for f in r.json()["files"]} == expected
-        if q.startswith("name = "):
-            r = client.get(
-                "/drive/v3/files",
-                headers=h,
-                params={
-                    "q": q.replace("name = ", "name != ", 1)
-                    + " and mimeType != 'application/vnd.google-apps.folder'",
-                    "fields": "files(name)",
-                },
-            )
-            assert {f["name"] for f in r.json()["files"]} == set(_NAME_TITLES) - expected
+
+        def listed(q):
+            r = client.get("/drive/v3/files", headers=h, params={"q": q, "fields": "files(name)"})
+            assert r.status_code == 200, r.text
+            return {f["name"] for f in r.json()["files"]}
+
+        assert {q: listed(q) for q, _ in MEASURED_NAME} == dict(MEASURED_NAME)
+        files = " and mimeType != 'application/vnd.google-apps.folder'"
+        assert {q: listed(q.replace("name = ", "name != ", 1) + files) for q, _ in equal} == {
+            q: set(_NAME_TITLES) - expected for q, expected in equal
+        }
 
 
 def test_drive_size_is_populated_for_docs_editors_files(tmp_path):
     """Google: `size` "is populated for files with binary content stored in Google Drive AND for
     Docs Editors files; it is not populated for shortcuts or folders." Backlot set it only in the
-    binary branch, so it taught implementors that native Docs have no byte size."""
+    binary branch, so it taught implementors that native Docs have no byte size. A native file's
+    `size` and `quotaBytesUsed` never go under `store.DRIVE_NATIVE_MIN_BYTES`; above it, and on a
+    binary file, they are the UTF-8 byte length."""
     from backlot.routers.google import _drive_file
+
+    def record(doc_id, subtype, content, **extra):
+        return {
+            "source_type": "google_drive",
+            "doc_id": doc_id,
+            "folder": "mk",
+            "title": doc_id,
+            "content": content,
+            "author_email": "a@x.com",
+            "subtype": subtype,
+            **extra,
+        }
 
     s = tiny_corpus(
         tmp_path,
         [
-            {
-                "source_type": "google_drive",
-                "doc_id": "n1",
-                "folder": "mk",
-                "title": "Doc",
-                "content": "hello there",
-                "author_email": "a@x.com",
-                "subtype": "document",
-            },
-            {
-                "source_type": "google_drive",
-                "doc_id": "b1",
-                "folder": "mk",
-                "title": "Scan.pdf",
-                "content": "%PDF-1.7",
-                "author_email": "a@x.com",
-                "subtype": "pdf",
-                "mime_type": "application/pdf",
-            },
+            record("n1", "document", "hello there"),
+            record("edge", "document", "x" * 1024),
+            record("big", "document", "x" * 1500),
+            # 400 characters are 1200 UTF-8 bytes: counting characters would floor this to 1024
+            record("wide", "document", "안" * 400),
+            record("b1", "pdf", "%PDF-1.7", mime_type="application/pdf"),
         ],
     )
     conn = store.connect_ro(s.db_path)
-    native = _drive_file(
-        conn, store.get_document(conn, "google_drive", served_id("google_drive", "n1"))
-    )
-    assert native["size"] == str(len("hello there"))
+
+    def served(doc_id):
+        row = store.get_document(conn, "google_drive", served_id("google_drive", doc_id))
+        return _drive_file(conn, row)
+
+    native = served("n1")
+    assert (native["size"], native["quotaBytesUsed"]) == ("1024", "1024")  # 11 bytes of text
     # checksums and a download link stay binary-only, as they are on real Drive
     assert "md5Checksum" not in native and "webContentLink" not in native
-    binary = _drive_file(
-        conn, store.get_document(conn, "google_drive", served_id("google_drive", "b1"))
-    )
+    for doc_id, size in [("edge", "1024"), ("big", "1500"), ("wide", "1200")]:
+        assert served(doc_id)["size"] == size, doc_id
+    binary = served("b1")
     assert binary["size"] == str(len("%PDF-1.7")) and binary["md5Checksum"]
 
 
@@ -7240,9 +11019,14 @@ _GMAIL_SHAPES = [
 ]
 
 
+@pytest.fixture(scope="module")
+def gmail_shapes_settings(tmp_path_factory):
+    return tiny_corpus(tmp_path_factory.mktemp("gmail_shapes"), _GMAIL_SHAPES)
+
+
 @pytest.fixture
-def gmail_shapes(tmp_path):
-    settings = tiny_corpus(tmp_path, _GMAIL_SHAPES)
+def gmail_shapes(gmail_shapes_settings):
+    settings = gmail_shapes_settings
     with client_for(settings, reload=True) as client:
         yield client, {"Authorization": f"Bearer {settings.admin_token}"}
 
@@ -7602,37 +11386,236 @@ def test_public_key_not_exposed(creds):
 # --- the grid behind a spreadsheet: normalising it, and serialising it the way export does ------
 
 
+def _nf(type_, pattern):
+    return {"type": type_, "pattern": pattern}
+
+
 @pytest.mark.parametrize(
     "cell,want",
-    [("hello", "hello"), (42, "42"), (3.5, "3.5"), (True, "TRUE"), (False, "FALSE"), (None, "")],
+    [
+        ("hello", "hello"),
+        (42, "42"),
+        (3.5, "3.5"),
+        (True, "TRUE"),
+        (False, "FALSE"),
+        (None, ""),
+        # General (`gsheets.general`)
+        (0.30000000000000004, "0.3"),
+        (1 / 3, "0.3333333333"),
+        (12345678902.5, "12345678903"),
+        (123456789012345, "123456789012345"),
+        (999999999999998, "1E+15"),
+        (999999999999990, "999999999999990"),
+        (1234567890123456, "1.23457E+15"),
+        (1e-7, "0.0000001"),
+        (2.5e-10, "0.00000000025"),
+        (9.9e-11, "0"),
+        (-1e-11, "0"),
+        (1e100, "1E+100"),
+        # a number format, as a write leaves one
+        (gsheets.cell(0.125, number_format=_nf("PERCENT", "0%")), "13%"),
+        (gsheets.cell(0.12345, number_format=_nf("PERCENT", "0.00%")), "12.35%"),
+        (gsheets.cell(2.675, number_format=_nf("NUMBER", "#,##0.00")), "2.68"),
+        (gsheets.cell(-0.4, number_format=_nf("NUMBER", "#,##0")), "0"),
+        (gsheets.cell(-5.5, number_format=_nf("CURRENCY", '"$"#,##0.00')), "-$5.50"),
+        (gsheets.cell(1234.5, number_format=_nf("CURRENCY", '#,##0"$"')), "1,235$"),
+        (gsheets.cell(-0.004, number_format=_nf("CURRENCY", '"$"#,##0.00')), "$0.00"),
+        (gsheets.cell(9.995, number_format=_nf("SCIENTIFIC", "0.00E+00")), "1.00E+01"),
+        (gsheets.cell(0, number_format=_nf("SCIENTIFIC", "0.00E+00")), "0.00E+00"),
+        (gsheets.cell(60, number_format=_nf("DATE", "yyyy-mm-dd")), "1900-02-28"),
+        (gsheets.cell(2958466, number_format=_nf("DATE", "yyyy-mm-dd")), "10000-01-01"),
+        (gsheets.cell(45306.9999999, number_format=_nf("DATE", "yyyy-mm-dd")), "2024-01-16"),
+        (gsheets.cell(1, number_format=_nf("DATE", "m/d/yy")), "12/31/99"),
+        (gsheets.cell(45306, number_format=_nf("DATE", "ddd mmm d yyyy")), "Mon Jan 15 2024"),
+        (gsheets.cell(45306, number_format=_nf("DATE", "mmmm d, yyyy")), "January 15, 2024"),
+        (gsheets.cell(0.4380208333333333, number_format=_nf("TIME", "h:mm")), "10:30"),
+        (gsheets.cell(0.999999, number_format=_nf("TIME", "h:mm")), "0:00"),
+        (gsheets.cell(-0.25, number_format=_nf("TIME", "h:mm")), "18:00"),
+        (
+            gsheets.cell(0.937505787037037, number_format=_nf("TIME", "h:mm:ss am/pm")),
+            "10:30:01 PM",
+        ),
+        (gsheets.cell(0, number_format=_nf("TIME", "h:mm am/pm")), "12:00 AM"),
+        (gsheets.cell(-0.5, number_format=_nf("TIME", "[h]:mm:ss")), "-12:00:00"),
+        (gsheets.cell(100.25, number_format=_nf("TIME", "[h]:mm:ss")), "2406:00:00"),
+        (
+            gsheets.cell(45306.4375, number_format=_nf("DATE_TIME", "m/d/yyyy h:mm")),
+            "1/15/2024 10:30",
+        ),
+        # a boolean keeps its display under any format, an error displays its code
+        (gsheets.cell(True, number_format=_nf("PERCENT", "0%")), "TRUE"),
+        (gsheets.cell(None, error="N_A"), "#N/A"),
+        (gsheets.cell(None, error="NULL_VALUE"), "#NULL!"),
+        (gsheets.cell(None, number_format=_nf("PERCENT", "0%")), ""),
+    ],
 )
 def test_a_cell_formats_the_way_the_real_api_displays_it(cell, want):
-    assert sheets_grid.formatted(cell) == want
+    assert gsheets.formatted(cell) == want
+
+
+_TODAY = datetime.date(2026, 10, 26)
+
+
+@pytest.mark.parametrize(
+    "typed,value,shown,pattern",
+    [
+        # as `gsheets.apply` measured them: the value stored, its display, its format
+        ("42", 42, "42", None),
+        ("  7  ", 7, "7", None),
+        ("(5)", -5, "-5", None),
+        ("- 5", -5, "-5", None),
+        ("1,234", 1234, "1,234", "#,##0"),
+        ("1,2345", 12345, "12,345", "#,##0"),
+        (",123", 123, "123", "#,##0"),
+        ("1,234.", 1234, "1,234.00", "#,##0.00"),
+        ("1e3", 1000, "1.00E+03", "0.00E+00"),
+        ("1e3%", 10, "1.00E+01", "0.00E+00"),
+        ("1e-400", 0, "0.00E+00", "0.00E+00"),
+        ("12%", 0.12, "12%", "0%"),
+        ("12.%", 0.12, "12.00%", "0.00%"),
+        ("(5%)", -0.05, "-5%", "0%"),
+        ("$5.555", 5.555, "$5.56", '"$"#,##0.00'),
+        ("$-5", -5, "-$5", '"$"#,##0'),
+        ("5 $", 5, "5$", '#,##0"$"'),
+        ("€5", 5, "€5", '"€"#,##0'),
+        ("$5%", 0.05, "$0", '"$"#,##0'),
+        ("0.1234567890123456789", 0.123456789012345, "0.123456789", None),
+        ("1234567890123456.5", 1234567890123450, "1.23457E+15", None),
+        ("2024-01-15", 45306, "2024-01-15", "yyyy-mm-dd"),
+        ("2024-1-15", 45306, "2024-1-15", "yyyy-m-d"),
+        ("1/05/2024", 45296, "01/05/2024", "mm/dd/yyyy"),
+        ("1/15/29", 47133, "1/15/29", "m/d/yy"),
+        ("1/15/30", 10973, "1/15/30", "m/d/yy"),
+        ("1/15/0024", 45306, "1/15/2024", "m/d/yyyy"),
+        ("1/15/124", -648655, "1/15/0124", "m/d/yyyy"),
+        ("1/15", 46037, "1/15", "m/d"),
+        ("01/2024", 45292, "01/2024", "mm/yyyy"),
+        ("12/30/1899", 0, "12/30/1899", "m/d/yyyy"),
+        ("jan 15, 2024", 45306, "Jan 15, 2024", "mmm d, yyyy"),
+        ("Jan. 15, 2024", 45306, "Jan. 15, 2024", "mmm. d, yyyy"),
+        ("Jan15", 46037, "Jan15", "mmmd"),
+        ("05 Jan 2024", 45296, "05 Jan 2024", "dd mmm yyyy"),
+        ("15 January, 2024", 45306, "15 January, 2024", "d mmmm, yyyy"),
+        ("Mon Jan 15 2024", 45306, "Mon Jan 15 2024", "ddd mmm d yyyy"),
+        ("10:30", 0.4375, "10:30", "h:mm"),
+        ("10:60", 0.4583333333333333, "11:00", "h:mm"),
+        ("10pm", 0.9166666666666666, "10:00 PM", "h:mm am/pm"),
+        ("10:30:15.5", 0.43767939814814816, "10:30:16", "h:mm:ss"),
+        ("25:00", 1.0416666666666667, "25:00:00", "[h]:mm:ss"),
+        ("-1:00", -0.041666666666666664, "-1:00:00", "[h]:mm:ss"),
+        ("2024-01-15T10:30", 45306.4375, "2024-01-15 10:30", "yyyy-mm-dd h:mm"),
+        ("1/15/2024 10:30 PM", 45306.9375, "1/15/2024 10:30 PM", "m/d/yyyy h:mm am/pm"),
+        ("1/15/2024  10:30", 45306.4375, "1/15/2024 10:30", "m/d/yyyy h:mm"),
+        ("-\t5", -5, "-5", None),
+        ("$\n5", 5, "$5", '"$"#,##0'),
+        ("5\t$", 5, "5$", '#,##0"$"'),
+        ("tRuE", True, "TRUE", None),
+        ("'0123", "0123", "0123", None),
+        ("''x", "'x", "'x", None),
+        # each of these stays the text typed
+        ("TRUE ", "TRUE ", "TRUE ", None),
+        ("12,34", "12,34", "12,34", None),
+        ("1234567890123456", "1234567890123456", "1234567890123456", None),
+        ("1e400", "1e400", "1e400", None),
+        ("$1e3", "$1e3", "$1e3", None),
+        ("5 %", "5 %", "5 %", None),
+        ("£5", "£5", "£5", None),
+        ("٣", "٣", "٣", None),
+        ("Sept 15, 2024", "Sept 15, 2024", "Sept 15, 2024", None),
+        ("2/29/2023", "2/29/2023", "2/29/2023", None),
+        ("15/01/2024", "15/01/2024", "15/01/2024", None),
+        ("2024.01.15", "2024.01.15", "2024.01.15", None),
+        ("13:00 PM", "13:00 PM", "13:00 PM", None),
+        ("10:30\tPM", "10:30\tPM", "10:30\tPM", None),
+        ("1/15/2024\t10:30", "1/15/2024\t10:30", "1/15/2024\t10:30", None),
+        ("-\u00a05", "-\u00a05", "-\u00a05", None),
+        ("falſe", "falſe", "falſe", None),
+        ("9:5", "9:5", "9:5", None),
+        ("2024-01-15T10:30:15Z", "2024-01-15T10:30:15Z", "2024-01-15T10:30:15Z", None),
+        (" =1+1", " =1+1", " =1+1", None),
+    ],
+)
+def test_a_user_entered_string_is_read_the_way_the_real_api_reads_it(typed, value, shown, pattern):
+    cell = gsheets.apply(None, typed, "USER_ENTERED", _TODAY)
+    got = gsheets.cell_value(cell)
+    assert got == value and type(got) is type(value)
+    assert gsheets.formatted(cell) == shown
+    assert (gsheets.cell_format(cell) or {}).get("pattern") == pattern
+
+
+@pytest.mark.parametrize(
+    "typed,error",
+    [
+        ("#N/A", "N_A"),
+        ("#n/a", "N_A"),
+        ("#N/A ", "N_A"),
+        ("#ref!", "REF"),
+        ("#NULL!", "NULL_VALUE"),
+    ],
+)
+def test_a_typed_error_literal_is_an_error_cell(typed, error):
+    assert gsheets.cell_error(gsheets.apply(None, typed, "USER_ENTERED", _TODAY)) == error
+
+
+_PCT = _nf("PERCENT", "0.00%")
+_NUM = _nf("NUMBER", "#,##0")
+_DATE = _nf("DATE", "yyyy-mm-dd")
+
+
+@pytest.mark.parametrize(
+    "existing,written,option,want",
+    [
+        # `gsheets.apply`'s rules, a cell's format against each kind of write: a format the write
+        # infers is kept when the cell's is of its family and replaces it otherwise
+        (_PCT, "12%", "USER_ENTERED", _PCT),
+        (_NUM, "$5", "USER_ENTERED", _NUM),
+        (_PCT, "1,234", "USER_ENTERED", _NUM),
+        (_DATE, "12.5%", "USER_ENTERED", _PCT),
+        (_nf("DATE_TIME", "yyyy-mm-dd h:mm"), "2024-01-15", "USER_ENTERED", _DATE),
+        # one that infers none keeps a number-family format and drops any other
+        (_NUM, "abc", "USER_ENTERED", _NUM),
+        (_NUM, "#N/A", "USER_ENTERED", _NUM),
+        (_PCT, "42", "USER_ENTERED", None),
+        (_DATE, "TRUE", "USER_ENTERED", None),
+        # an apostrophe drops it, a formula and an empty string keep it
+        (_NUM, "'x", "USER_ENTERED", None),
+        (_PCT, "=1+1", "USER_ENTERED", _PCT),
+        (_PCT, "", "USER_ENTERED", _PCT),
+        # a JSON number or boolean keeps it under either option; a RAW string, "" too, drops it
+        (_PCT, 0.5, "RAW", _PCT),
+        (_DATE, True, "USER_ENTERED", _DATE),
+        (_NUM, "txt", "RAW", None),
+        (_PCT, "", "RAW", None),
+    ],
+)
+def test_a_write_keeps_or_replaces_a_cells_number_format(existing, written, option, want):
+    cell = gsheets.cell(None, number_format=existing)
+    assert gsheets.cell_format(gsheets.apply(cell, written, option, _TODAY)) == want
 
 
 def test_normalise_pads_short_rows_and_collapses_integral_floats():
     """A ragged grid is padded rather than refused -- a table whose last row is short is ordinary.
     3.0 collapses because a real sheet stores it as ``numberValue: 3``."""
-    assert sheets_grid.normalise_grid([["a", "b", "c"], ["d"], []]) == [
+    assert gsheets.normalise_grid([["a", "b", "c"], ["d"], []]) == [
         ["a", "b", "c"],
         ["d", None, None],
         [None, None, None],
     ]
-    assert sheets_grid.normalise_grid([[3.0, 3.5]]) == [[3, 3.5]]
-    assert sheets_grid.normalise_grid([]) == []
+    assert gsheets.normalise_grid([[3.0, 3.5]]) == [[3, 3.5]]
+    assert gsheets.normalise_grid([]) == []
 
 
 def test_used_extent_stops_at_the_last_row_and_column_holding_anything():
-    assert sheets_grid.used_extent([["a", None, None], [None, None, None]]) == (1, 1)
-    assert sheets_grid.used_extent([[None]]) == (0, 0)
-    assert sheets_grid.used_extent([]) == (0, 0)
+    assert gsheets.used_extent([["a", None, None], [None, None, None]]) == (1, 1)
+    assert gsheets.used_extent([[None]]) == (0, 0)
+    assert gsheets.used_extent([]) == (0, 0)
 
 
 def test_csv_export_follows_the_measured_rfc4180_rules():
     """Measured against a real export: quote on a comma, a double quote or a newline; double an
     embedded quote; keep an embedded newline bare inside the quotes; leave a TAB and surrounding
     spaces unquoted; separate rows with CRLF; emit no trailing newline."""
-    grid = sheets_grid.normalise_grid(
+    grid = gsheets.normalise_grid(
         [
             ["FIRST_SHEET_MARKER", None, None],
             ["with,comma", 'with"quote', "with\nnewline"],
@@ -7640,7 +11623,7 @@ def test_csv_export_follows_the_measured_rfc4180_rules():
             [42, True, None],
         ]
     )
-    assert sheets_grid.to_csv(grid) == (
+    assert gsheets.to_csv(grid) == (
         "FIRST_SHEET_MARKER,,\r\n"
         '"with,comma","with""quote","with\nnewline"\r\n'
         "with\ttab,trailing ,  leading\r\n"
@@ -7651,16 +11634,16 @@ def test_csv_export_follows_the_measured_rfc4180_rules():
 def test_tsv_export_collapses_a_newline_and_a_tab_to_a_space_and_never_quotes():
     """Measured: TSV has no quoting mechanism at all, so the conversion is lossy. Reproducing the
     loss is what agreeing with it means."""
-    grid = sheets_grid.normalise_grid(
+    grid = gsheets.normalise_grid(
         [["with,comma", 'with"quote', "with\nnewline"], ["with\ttab", 1, None]]
     )
-    assert sheets_grid.to_tsv(grid) == 'with,comma\twith"quote\twith newline\r\nwith tab\t1\t'
+    assert gsheets.to_tsv(grid) == 'with,comma\twith"quote\twith newline\r\nwith tab\t1\t'
 
 
 def test_an_empty_grid_serialises_to_the_empty_string():
-    assert sheets_grid.to_csv([]) == ""
-    assert sheets_grid.to_tsv([]) == ""
-    assert sheets_grid.to_csv(sheets_grid.normalise_grid([[None, None]])) == ""
+    assert gsheets.to_csv([]) == ""
+    assert gsheets.to_tsv([]) == ""
+    assert gsheets.to_csv(gsheets.normalise_grid([[None, None]])) == ""
 
 
 # --- a spreadsheet that states a real grid ------------------------------------------------------
@@ -7820,29 +11803,30 @@ def _gvalues(gc, gh, book, rng, **params):
     )
 
 
-@pytest.mark.parametrize(
-    "spec,echo",
-    [
-        ("Summary!A1:B2", "Summary!A1:B2"),
-        ("summary!A1:B2", "Summary!A1:B2"),  # lookup is case-insensitive, the echo normalises
-        ("'Second Sheet'!A1", "'Second Sheet'!A1"),
-        ("Second Sheet!A1", "'Second Sheet'!A1"),  # an unquoted name with a space is accepted
-        ("has!bang!A1", "'has!bang'!A1"),  # the separator is the LAST bang
-        ("has!bang", "'has!bang'!A1:Z1000"),  # a bare sheet name is the whole declared grid
-        ("A1", "Summary!A1"),  # a cell reference beats a sheet named A1
-        ("'A1'!A1", "'A1'!A1"),
-        ("A1!A1", "'A1'!A1"),
-        ("Summary", "Summary!A1:Z1000"),
-        ("Summary!A:B", "Summary!A1:B1000"),  # an open range fills from gridProperties
-        ("Summary!1:2", "Summary!A1:Z2"),
-        ("Summary!B2:B1", "Summary!B1:B2"),  # reversed normalises ascending
-        ("Summary!A999:B1002", "Summary!A999:B1000"),  # the END clamps to the grid
-    ],
-)
-def test_an_a1_range_resolves_and_echoes_the_way_the_real_api_does(gc, gh, book, spec, echo):
-    r = _gvalues(gc, gh, book, spec)
-    assert r.status_code == 200, r.text
-    assert r.json()["range"] == echo
+_A1_ECHOES = [
+    ("Summary!A1:B2", "Summary!A1:B2"),
+    ("summary!A1:B2", "Summary!A1:B2"),  # lookup is case-insensitive, the echo normalises
+    ("'Second Sheet'!A1", "'Second Sheet'!A1"),
+    ("Second Sheet!A1", "'Second Sheet'!A1"),  # an unquoted name with a space is accepted
+    ("has!bang!A1", "'has!bang'!A1"),  # the separator is the LAST bang
+    ("has!bang", "'has!bang'!A1:Z1000"),  # a bare sheet name is the whole declared grid
+    ("A1", "Summary!A1"),  # a cell reference beats a sheet named A1
+    ("'A1'!A1", "'A1'!A1"),
+    ("A1!A1", "'A1'!A1"),
+    ("Summary", "Summary!A1:Z1000"),
+    ("Summary!A:B", "Summary!A1:B1000"),  # an open range fills from gridProperties
+    ("Summary!1:2", "Summary!A1:Z2"),
+    ("Summary!B2:B1", "Summary!B1:B2"),  # reversed normalises ascending
+    ("Summary!A999:B1002", "Summary!A999:B1000"),  # the END clamps to the grid
+]
+
+
+def test_an_a1_range_resolves_and_echoes_the_way_the_real_api_does(gc, gh, book):
+    answered = {}
+    for spec, _ in _A1_ECHOES:
+        r = _gvalues(gc, gh, book, spec)
+        answered[spec] = (r.status_code, r.json()["range"] if r.status_code == 200 else r.text)
+    assert answered == {spec: (200, echo) for spec, echo in _A1_ECHOES}
 
 
 @pytest.mark.parametrize("spec", ["Nope!A1:B2", "Nope", "!!!", "Summary!"])
@@ -7969,34 +11953,38 @@ def test_a_grid_data_block_serves_reals_keys_and_rows(gc, gh, book, read, rng, k
     assert got == rows
 
 
-@pytest.mark.parametrize(
-    "render,want",
-    [
-        ("FORMATTED_VALUE", [["EMEA", "12", "TRUE"]]),
-        # measured: UNFORMATTED_VALUE returns real JSON numbers and booleans, and FORMULA returns
-        # the identical raw value for every cell that is not a formula
-        ("UNFORMATTED_VALUE", [["EMEA", 12, True]]),
-        ("FORMULA", [["EMEA", 12, True]]),
-        # by number, in the order `_PJ_RENDER` lists them
-        ("0", [["EMEA", "12", "TRUE"]]),
-        ("1", [["EMEA", 12, True]]),
-        ("2", [["EMEA", 12, True]]),
-        # a repeated option is read from its LAST repeat (gerr.first_repeat)
-        (["FORMATTED_VALUE", "UNFORMATTED_VALUE"], [["EMEA", 12, True]]),
-        (["UNFORMATTED_VALUE", "FORMATTED_VALUE"], [["EMEA", "12", "TRUE"]]),
-    ],
-)
-def test_the_render_options_differ_over_typed_cells(gc, gh, book, render, want):
-    assert (
-        _gvalues(gc, gh, book, "Summary!A2:C2", valueRenderOption=render).json()["values"] == want
-    )
+_RENDERED = [
+    ("FORMATTED_VALUE", [["EMEA", "12", "TRUE"]]),
+    # measured: UNFORMATTED_VALUE returns real JSON numbers and booleans, and FORMULA returns
+    # the identical raw value for every cell that is not a formula
+    ("UNFORMATTED_VALUE", [["EMEA", 12, True]]),
+    ("FORMULA", [["EMEA", 12, True]]),
+    # by number, in the order `_PJ_RENDER` lists them
+    ("0", [["EMEA", "12", "TRUE"]]),
+    ("1", [["EMEA", 12, True]]),
+    ("2", [["EMEA", 12, True]]),
+    # a repeated option is read from its LAST repeat (gerr.first_repeat)
+    (["FORMATTED_VALUE", "UNFORMATTED_VALUE"], [["EMEA", 12, True]]),
+    (["UNFORMATTED_VALUE", "FORMATTED_VALUE"], [["EMEA", "12", "TRUE"]]),
+]
 
 
-@pytest.mark.parametrize("render", ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"])
-def test_an_empty_cell_is_the_empty_string_under_every_render_option(gc, gh, book, render):
+def test_the_render_options_differ_over_typed_cells(gc, gh, book):
+    assert {
+        str(render): _gvalues(gc, gh, book, "Summary!A2:C2", valueRenderOption=render).json()[
+            "values"
+        ]
+        for render, _ in _RENDERED
+    } == {str(render): want for render, want in _RENDERED}
+
+
+def test_an_empty_cell_is_the_empty_string_under_every_render_option(gc, gh, book):
     """Measured: a JSON string even under UNFORMATTED_VALUE, never null."""
-    got = _gvalues(gc, gh, book, "Ragged!A1:C1", valueRenderOption=render).json()["values"]
-    assert got == [["a", "", "c"]]
+    renders = ["FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA"]
+    assert {
+        render: _gvalues(gc, gh, book, "Ragged!A1:C1", valueRenderOption=render).json()["values"]
+        for render in renders
+    } == dict.fromkeys(renders, [["a", "", "c"]])
 
 
 def test_columns_transposes_a_real_two_dimensional_block(gc, gh, book):
@@ -8141,14 +12129,15 @@ def test_csv_export_of_a_gridded_spreadsheet_serialises_its_first_sheet(gc, gh, 
     assert _export(gc, gh, book, "text/csv").text == "Region,Deals,\r\nEMEA,12,TRUE"
 
 
-@pytest.mark.parametrize("mime", ["text/tab-separated-values", "TEXT/TAB-SEPARATED-VALUES"])
-def test_tsv_export_reserialises_the_grid_rather_than_serving_content(gc, gh, hostile, mime):
+def test_tsv_export_reserialises_the_grid_rather_than_serving_content(gc, gh, hostile):
     """`content` is the first sheet's CSV, so serving it for TSV too would answer commas and
-    quotes. The lossy space-substitution is `sheets_grid.to_tsv`'s own test; this is the route
+    quotes. The lossy space-substitution is `gsheets.to_tsv`'s own test; this is the route
     reaching it, spelled either way `drive_files_export` accepts."""
-    r = _export(gc, gh, hostile, mime)
-    assert r.text == 'with,comma\twith"quote\twith newline'
-    assert r.headers["content-type"] == mime
+    mimes = ["text/tab-separated-values", "TEXT/TAB-SEPARATED-VALUES"]
+    exported = {mime: _export(gc, gh, hostile, mime) for mime in mimes}
+    assert {mime: (r.text, r.headers["content-type"]) for mime, r in exported.items()} == {
+        mime: ('with,comma\twith"quote\twith newline', mime) for mime in mimes
+    }
 
 
 def test_a_prose_spreadsheet_still_exports_verbatim(gc, gh, prose):
@@ -8206,6 +12195,10 @@ def test_a_prose_export_round_trips_through_its_lines_not_through_a_csv_parser(g
         ("range,majorDimension", {"range": "Summary!A1:B2", "majorDimension": "ROWS"}),
         # a trailing comma is tolerated, measured
         ("range,", {"range": "Summary!A1:B2"}),
+        # a run of `*` under a field holding no message is all of it
+        ("range.*.*", {"range": "Summary!A1:B2"}),
+        # `*` beside a name is dropped
+        ("range,*", {"range": "Summary!A1:B2"}),
         ("*", None),
     ],
 )
@@ -8219,21 +12212,139 @@ def test_fields_narrows_a_value_range(gc, gh, book, mask, want):
     )
 
 
-@pytest.mark.parametrize(
-    "mask, want",
-    [
-        ("spreadsheetId", ["spreadsheetId"]),
-        ("properties.title", ["properties"]),
-        # `.` and `/` both descend, and `a(b,c)` groups — measured, all three spellings work
-        ("properties/title", ["properties"]),
-        ("properties(title)", ["properties"]),
-        ("spreadsheetId,sheets.properties.index", ["spreadsheetId", "sheets"]),
-    ],
-)
-def test_fields_narrows_a_spreadsheet(gc, gh, book, mask, want):
-    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"fields": mask})
-    assert r.status_code == 200
-    assert sorted(r.json()) == sorted(want)
+_BOOK_KEYS = ["spreadsheetId", "properties", "sheets", "spreadsheetUrl"]
+
+
+_SPREADSHEET_MASKS = [
+    ("spreadsheetId", ["spreadsheetId"]),
+    ("properties.title", ["properties"]),
+    # `.` and `/` both descend, and `a(b,c)` groups — measured, all three spellings work
+    ("properties/title", ["properties"]),
+    ("properties(title)", ["properties"]),
+    ("spreadsheetId,sheets.properties.index", ["spreadsheetId", "sheets"]),
+    # the response's order, not the mask's
+    ("sheets.properties.index,spreadsheetId", ["spreadsheetId", "sheets"]),
+    # declared, and held by no spreadsheet here
+    ("namedRanges", []),
+    ("developerMetadata,dataSources", []),
+    ("properties.iterativeCalculationSettings", ["properties"]),
+    ("commentsViewMode", ["commentsViewMode"]),
+    # `*` alone is no mask, and beside a name is dropped
+    ("*", _BOOK_KEYS),
+    ("(*)", _BOOK_KEYS),
+    (",", _BOOK_KEYS),
+    ("spreadsheetId,*", ["spreadsheetId"]),
+    ("*.*", [*_BOOK_KEYS, "commentsViewMode"]),
+    ("*.title", ["properties"]),
+    # a run of `*` under a field holding no message is all of it
+    ("*.*.*", [*_BOOK_KEYS, "commentsViewMode"]),
+    ("spreadsheetId.*.*", ["spreadsheetId"]),
+    # an empty group names nothing
+    ("a()", _BOOK_KEYS),
+    ("spreadsheetId,sheets()", ["spreadsheetId"]),
+    ("sheets(merges,conditionalFormats)", {"sheets": [{}]}),
+    ("sheets.properties.hidden", {"sheets": [{"properties": {}}]}),
+    ("sheets.*.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
+    # a narrower path wins over a wider one and over `*`
+    ("sheets,sheets.properties.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
+    ("sheets.*,sheets.properties.title", {"sheets": [{"properties": {"title": "Ragged"}}]}),
+    # a cell left empty by the mask is cut as an empty cell is
+    (
+        "sheets.data.rowData.values.userEnteredValue",
+        {
+            "sheets": [
+                {
+                    "data": [
+                        {
+                            "rowData": [
+                                {
+                                    "values": [
+                                        {"userEnteredValue": {"stringValue": "a"}},
+                                        {},
+                                        {"userEnteredValue": {"stringValue": "c"}},
+                                    ]
+                                },
+                                {},
+                                {"values": [{"userEnteredValue": {"stringValue": "z"}}]},
+                                {
+                                    "values": [
+                                        {},
+                                        {},
+                                        {"userEnteredValue": {"stringValue": "w"}},
+                                    ]
+                                },
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+    ),
+    (
+        "sheets.data.rowData.values.effectiveValue.formulaValue",
+        {
+            "sheets": [
+                {
+                    "data": [
+                        {
+                            "rowData": [
+                                {
+                                    "values": [
+                                        {"effectiveValue": {}},
+                                        {},
+                                        {"effectiveValue": {}},
+                                    ]
+                                },
+                                {},
+                                {"values": [{"effectiveValue": {}}]},
+                                {"values": [{}, {}, {"effectiveValue": {}}]},
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+    ),
+    ("sheets.data.rowData.values.note", {"sheets": [{"data": [{}]}]}),
+    ("sheets.data.rowData.values.userEnteredFormat", {"sheets": [{"data": [{}]}]}),
+    (
+        "sheets.data.rowMetadata.hiddenByUser",
+        {"sheets": [{"data": [{"rowMetadata": [{}, {}, {}, {}]}]}]},
+    ),
+]
+
+
+_SPREADSHEET_MASKS += [
+    # a narrower path wins, in a format too, but not under a message `_GMASK_WHOLE` keeps whole
+    ("properties(defaultFormat,defaultFormat.numberFormat)", {"properties": {"defaultFormat": {}}}),
+    (
+        "properties.defaultFormat(backgroundColorStyle,backgroundColorStyle.themeColor)",
+        {
+            "properties": {
+                "defaultFormat": {
+                    "backgroundColorStyle": {"rgbColor": {"red": 1, "green": 1, "blue": 1}}
+                }
+            }
+        },
+    ),
+    (
+        "sheets.data.rowData.values(userEnteredValue,userEnteredValue.formulaValue)",
+        dict(_SPREADSHEET_MASKS)["sheets.data.rowData.values.userEnteredValue"],
+    ),
+]
+
+
+def test_fields_narrows_a_spreadsheet(gc, gh, book):
+    """Each row as real answered it, as `_gmask_select` records: its keys, or for a row whose
+    `want` is a body, the whole answer over `Ragged`, whose rows hold a gap, nothing at all, one
+    cell and a cell after two gaps, as `_gmask_tree` and `_gmask_trim_rows` read it."""
+    answered = {}
+    for mask, want in _SPREADSHEET_MASKS:
+        params = {"fields": mask} | ({"ranges": "Ragged!A1:C4"} if isinstance(want, dict) else {})
+        r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params=params)
+        body = r.json()
+        answered[mask] = (r.status_code, body if isinstance(want, dict) else list(body))
+    assert answered == {mask: (200, want) for mask, want in _SPREADSHEET_MASKS}
 
 
 def test_fields_reaches_through_the_sheets_list(gc, gh, book):
@@ -8248,11 +12359,47 @@ def test_fields_reaches_through_the_sheets_list(gc, gh, book):
     assert all(set(s["properties"]) == {"title", "index"} for s in got)
 
 
-@pytest.mark.parametrize("mask", ["nope", "sheets.properties.nope", "SpreadsheetId"])
-def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, mask):
+@pytest.mark.parametrize(
+    "url, mask, field, path",
+    [
+        ("{book}", "nope", "nope", "nope"),
+        ("{book}", "sheets.properties.nope", "sheets.properties.nope", "sheets.properties.nope"),
+        ("{book}", "SpreadsheetId", "SpreadsheetId", "SpreadsheetId"),
+        ("{book}", "spreadsheetId,bogus", "spreadsheetId,bogus", "bogus"),
+        (
+            "{book}",
+            "sheets(properties/bogus)",
+            "sheets(properties.bogus)",
+            "sheets.properties.bogus",
+        ),
+        ("{book}", "sheets.properties.title,bogus2,sheets.bogus3", None, "bogus2"),
+        ("{book}", "bogus.x", "bogus.x", "bogus.x"),
+        ("{book}", "namedRanges.bogus", "namedRanges.bogus", "namedRanges.bogus"),
+        # a map's keys are not names
+        ("{book}", "sheets.filterViews.criteria.foo", None, "sheets.filterViews.criteria.foo"),
+        ("{book}", "sheets.*.bogus", "sheets.*.bogus", "sheets.*.bogus"),
+        ("{book}", "*.*.rowCount", "*.*.rowCount", "*.*.rowCount"),
+        ("{book}", "spreadsheetId.*.x", "spreadsheetId.*.x", "spreadsheetId.*.x"),
+        ("{book}/values/Summary!A1", "values.foo", "values.foo", "values.foo"),
+        ("{book}/values:batchGet?ranges=A1", "valueRanges.values.x", None, "valueRanges.values.x"),
+        # a path ahead of an unpaired bracket is read first
+        ("{book}", "a)", None, "a"),
+        ("{book}", "bogus)spreadsheetId", None, "bogus"),
+        (
+            "{book}",
+            "sheets(properties/title,bogus",
+            "sheets(properties.title,bogus",
+            "sheets.bogus",
+        ),
+    ],
+)
+def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, url, mask, field, path):
     """Measured: the top-level message is generic and the failing PATH is named only inside a
-    google.rpc.BadRequest detail. Matching is case-sensitive."""
-    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"fields": mask})
+    google.rpc.BadRequest detail, beside the whole mask (`gerr.bad_field_mask`). Matching is
+    case-sensitive, and the first path in the mask's order that names nothing is the one named."""
+    r = gc.get(
+        f"/sheets/v4/spreadsheets/{url.format(book=book)}", headers=gh, params={"fields": mask}
+    )
     assert r.status_code == 400
     err = r.json()["error"]
     assert err["message"] == "Request contains an invalid argument."
@@ -8262,13 +12409,44 @@ def test_a_fields_mask_naming_no_field_is_refused(gc, gh, book, mask):
             "@type": "type.googleapis.com/google.rpc.BadRequest",
             "fieldViolations": [
                 {
-                    "field": mask,
+                    "field": field or mask,
                     "description": (
                         "Error expanding 'fields' parameter. Cannot find matching fields for "
-                        f"path '{mask}'."
+                        f"path '{path}'."
                     ),
                 }
             ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "mask, unpaired",
+    [
+        ("(", "("),
+        ("sheets(", "("),
+        ("sheets(properties/title", "("),
+        ("sheets(properties(title)", "("),
+        ("spreadsheetId,(", "("),
+        ("sheets()(", "("),
+        (")", ")"),
+        ("spreadsheetId)", ")"),
+        ("spreadsheetId)bogus", ")"),
+        ("sheets(properties))", ")"),
+    ],
+)
+def test_a_fields_mask_with_an_unpaired_bracket_is_refused(gc, gh, book, mask, unpaired):
+    """`gerr.unbalanced_field_mask`, reached once the paths before the bracket name something."""
+    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params={"fields": mask})
+    assert r.status_code == 400
+    pair = ")" if unpaired == "(" else "("
+    dotted = mask.replace("/", ".")
+    assert r.json()["error"]["details"][0]["fieldViolations"] == [
+        {
+            "field": dotted,
+            "description": (
+                f"Invalid FieldMask '{dotted}'. Cannot find matching '{pair}' for all '{unpaired}'."
+            ),
         }
     ]
 
@@ -8280,34 +12458,36 @@ _A1_INDENTED = (
 _A1_COMPACT = b'{"range":"Summary!A1","majorDimension":"ROWS","values":[["Region"]]}'
 
 
-@pytest.mark.parametrize(
-    "value, compact",
-    [
-        (None, False),
-        ("false", True),
-        ("0", True),
-        ("FALSE", False),
-        ("False", False),
-        ("f", False),
-        ("F", False),
-        ("no", False),
-        ("n", False),
-        ("00", False),
-        (" false", False),
-        ("", False),
-        ("NOPE", False),
-    ],
-)
-def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(
-    gc, gh, book, value, compact
-):
+_PRETTY_PRINT_COMPACT = [
+    (None, False),
+    ("false", True),
+    ("0", True),
+    ("FALSE", False),
+    ("False", False),
+    ("f", False),
+    ("F", False),
+    ("no", False),
+    ("n", False),
+    ("00", False),
+    (" false", False),
+    ("", False),
+    ("NOPE", False),
+]
+
+
+def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(gc, gh, book):
     """Pins `gerr.respond`'s two renderings to the byte: compact at the spellings
     `_sheets_respond` records, indented with no parameter and at every other value, and a 200
     whatever the value, `NOPE` included."""
     url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
-    r = gc.get(url, headers=gh, params={} if value is None else {"prettyPrint": value})
-    assert r.status_code == 200
-    assert r.content == (_A1_COMPACT if compact else _A1_INDENTED)
+    answered = {}
+    for value, _ in _PRETTY_PRINT_COMPACT:
+        r = gc.get(url, headers=gh, params={} if value is None else {"prettyPrint": value})
+        answered[value] = (r.status_code, r.content)
+    assert answered == {
+        value: (200, _A1_COMPACT if compact else _A1_INDENTED)
+        for value, compact in _PRETTY_PRINT_COMPACT
+    }
 
 
 @pytest.mark.parametrize(
@@ -8318,11 +12498,13 @@ def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(
     ],
 )
 def test_alt_serves_json_and_refuses_anything_else(gc, gh, book, alt, message):
+    """`NOPE` is refused ahead of the credential and `media` behind it (`_sheets_alt`)."""
     url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
     assert gc.get(url, headers=gh, params={"alt": "json"}).status_code == 200
     r = gc.get(url, headers=gh, params={"alt": alt})
     assert r.status_code == 400
     assert r.json()["error"]["message"] == message
+    assert gc.get(url, params={"alt": alt}).status_code == (403 if alt == "media" else 400)
 
 
 def test_callback_wraps_the_body_as_jsonp(gc, gh, book):
@@ -8335,15 +12517,15 @@ def test_callback_wraps_the_body_as_jsonp(gc, gh, book):
     assert r.text.startswith("// API callback\ncb({") and r.text.endswith(");")
 
 
-@pytest.mark.parametrize("param", ["quotaUser", "upload_protocol"])
-@pytest.mark.parametrize("value", ["x", ""])
-def test_a_param_with_no_effect_here_is_still_accepted(gc, gh, book, param, value):
+def test_a_param_with_no_effect_here_is_still_accepted(gc, gh, book):
     """`quotaUser` picks a rate-limit bucket and `upload_protocol` belongs to uploads; neither
     changes a read's answer, and measured, the real API takes both without complaint."""
-    r = gc.get(
-        f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1", headers=gh, params={param: value}
-    )
-    assert r.status_code == 200
+    url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
+    sent = [(param, value) for param in ("quotaUser", "upload_protocol") for value in ("x", "")]
+    assert {
+        (param, value): gc.get(url, headers=gh, params={param: value}).status_code
+        for param, value in sent
+    } == dict.fromkeys(sent, 200)
 
 
 # --- the two reads issued over POST -------------------------------------------------------------
@@ -8372,6 +12554,20 @@ def test_batch_get_by_data_filter_answers_each_filter_with_the_filter_beside_it(
             }
         ],
     }
+    # a request field may come in the query, which wins over the body, and both are read
+    url = f"/sheets/v4/spreadsheets/{book}/values:batchGetByDataFilter"
+    body = {"dataFilters": [{"a1Range": "Summary!A1:B2"}], "majorDimension": "ROWS"}
+    r = gc.post(url, headers=gh, params={"majorDimension": "columns"}, json=body)
+    assert r.json()["valueRanges"][0]["valueRange"]["values"] == [
+        ["Region", "EMEA"],
+        ["Deals", "12"],
+    ]
+    r = gc.post(url, headers=gh, params={"majorDimension": "NOPE"}, json={"dataFilters": "x"})
+    assert r.json()["error"]["message"] == (
+        "Invalid value at 'data_filters' (type.googleapis.com/google.apps.sheets.v4.DataFilter), "
+        "\"x\"\nInvalid value at 'major_dimension' "
+        '(type.googleapis.com/google.apps.sheets.v4.Dimension), "NOPE"'
+    )
 
 
 def test_a_data_filter_may_name_a_grid_range_instead_of_an_a1_string(gc, gh, book):
@@ -9097,40 +13293,60 @@ def test_the_data_filter_reads_answer_every_measured_request(tmp_path):
 _NOT_JSON = "Invalid JSON payload received. Unexpected token."
 
 
+_UNPARSED_BODIES = [
+    (b"abc", _NOT_JSON),
+    (b'{"dataFilters": "abc"', _NOT_JSON),
+    (b'{"a": NaN}', _NOT_JSON),
+    (b'{"a": Infinity}', _NOT_JSON),
+    (b'{"a": -Infinity}', _NOT_JSON),
+    (b'{"a": 1e400}', _NOT_JSON),
+    (b'{"a": -1e400}', _NOT_JSON),
+    # the largest double, which is read
+    (
+        b'{"a": 1.7976931348623157e308}',
+        'Invalid JSON payload received. Unknown name "a": Cannot find field.',
+    ),
+]
+
+
 @pytest.mark.parametrize("route", ["/values:batchGetByDataFilter", ":getByDataFilter"])
-@pytest.mark.parametrize(
-    "body, message",
-    [
-        (b"abc", _NOT_JSON),
-        (b'{"dataFilters": "abc"', _NOT_JSON),
-        (b'{"a": NaN}', _NOT_JSON),
-        (b'{"a": Infinity}', _NOT_JSON),
-        (b'{"a": -Infinity}', _NOT_JSON),
-        (b'{"a": 1e400}', _NOT_JSON),
-        (b'{"a": -1e400}', _NOT_JSON),
-        # the largest double, which is read
-        (
-            b'{"a": 1.7976931348623157e308}',
-            'Invalid JSON payload received. Unknown name "a": Cannot find field.',
-        ),
-    ],
-)
-def test_a_body_that_does_not_parse_is_refused_before_the_lookup(
-    gc, gh, book, route, body, message
-):
+def test_a_body_that_does_not_parse_is_refused_before_the_lookup(gc, gh, book, route):
     """The refusal `protojson.read` gives a body that does not parse, with a `parseError` entry at
-    `$.xgafv=1` (`gerr.invalid_json`), the same for a spreadsheet that does not exist. These are not
-    rows of `MEASURED_BY_FILTER`, since the sentence is not the one real gives."""
-    for spreadsheet in (book, "nosuchspreadsheet"):
-        r = gc.post(
-            f"/sheets/v4/spreadsheets/{spreadsheet}{route}",
-            headers=gh,
-            params={"$.xgafv": "1"},
-            content=body,
+    `$.xgafv=1` (`gerr.invalid_json`), the same for a spreadsheet that does not exist, and alone
+    where a query value is refused too, which a body read but refused is answered beside. These are
+    not rows of `MEASURED_BY_FILTER`, since the sentence is not the one real gives."""
+    params = {"$.xgafv": "1"}
+    beside = ""
+    if route.startswith("/values"):
+        params["majorDimension"] = "NOPE"
+        beside = (
+            "\nInvalid value at 'major_dimension' "
+            '(type.googleapis.com/google.apps.sheets.v4.Dimension), "NOPE"'
         )
-        err = _gerr(r)
-        assert (r.status_code, err["message"]) == (400, message)
-        assert err["errors"][0]["reason"] == ("parseError" if message == _NOT_JSON else "invalid")
+    answered = {}
+    for spreadsheet in (book, "nosuchspreadsheet"):
+        for body, _ in _UNPARSED_BODIES:
+            r = gc.post(
+                f"/sheets/v4/spreadsheets/{spreadsheet}{route}",
+                headers=gh,
+                params=params,
+                content=body,
+            )
+            err = _gerr(r)
+            answered[spreadsheet, body] = (
+                r.status_code,
+                err["message"],
+                err["errors"][0]["reason"],
+            )
+    assert answered == {
+        (spreadsheet, body): (
+            (400, message, "parseError")
+            if message == _NOT_JSON
+            else (400, message + beside, "invalid")
+        )
+        for spreadsheet in (book, "nosuchspreadsheet")
+        for body, message in _UNPARSED_BODIES
+    }
 
 
 def test_get_by_data_filter_scopes_the_sheets_array_like_ranges_does(gc, gh, book):
@@ -9143,6 +13359,14 @@ def test_get_by_data_filter_scopes_the_sheets_array_like_ranges_does(gc, gh, boo
     sheets = r.json()["sheets"]
     assert [s["properties"]["title"] for s in sheets] == ["Summary"]
     assert len(sheets[0]["data"]) == 1
+    # `includeGridData` in the query wins over the body's
+    r = gc.post(
+        f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+        headers=gh,
+        params={"includeGridData": "false"},
+        json={"dataFilters": [{"a1Range": "Summary!A1:B2"}], "includeGridData": True},
+    )
+    assert "data" not in r.json()["sheets"][0]
 
 
 def test_get_by_data_filter_takes_no_filters_to_mean_every_sheet(gc, gh, book):
@@ -9151,6 +13375,248 @@ def test_get_by_data_filter_takes_no_filters_to_mean_every_sheet(gc, gh, book):
     r = gc.post(f"/sheets/v4/spreadsheets/{book}:getByDataFilter", headers=gh, json={})
     assert r.status_code == 200
     assert len(r.json()["sheets"]) == 7
+
+
+_NO_COMMENTS = "Field mask may not contain comment-specific fields if comments are not requested"
+_NO_PERMISSION = "You do not have permission to view comments on this spreadsheet."
+_INCLUDED, _OMITTED = "COMMENTS_VIEW_MODE_INCLUDED", "COMMENTS_VIEW_MODE_OMITTED"
+
+
+@pytest.fixture(scope="module")
+def dana(grid_settings):
+    """The owner of every gridded record, where the admin token owns nothing and so reads them."""
+    data = yaml.safe_load(grid_settings.tokens_path.read_text(encoding="utf-8"))
+    return {"Authorization": f"Bearer {tok(data, 'dana@acme.com')}"}
+
+
+@pytest.mark.parametrize(
+    "route, mode, fields, owner, status, want",
+    [
+        ("get", None, None, True, 200, None),
+        ("get", None, "commentsViewMode", False, 200, _OMITTED),
+        ("get", "COMMENTS_VIEW_MODE_UNSPECIFIED", "commentsViewMode", True, 200, _OMITTED),
+        ("get", "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS", None, True, 200, None),
+        (
+            "get",
+            "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+            "commentsViewMode",
+            True,
+            200,
+            _INCLUDED,
+        ),
+        (
+            "get",
+            "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+            "commentsViewMode",
+            False,
+            200,
+            _OMITTED,
+        ),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "commentsViewMode", False, 403, _NO_PERMISSION),
+        ("get", "+1", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "03", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "comments_view_mode_included", "commentsViewMode", True, 200, _INCLUDED),
+        ("get", "COMMENTS_VIEW_MODE_OMITTED", "comments", True, 400, _NO_COMMENTS),
+        ("get", None, "comments.headPost", True, 400, _NO_COMMENTS),
+        ("get", None, "*.commentId", True, 400, _NO_COMMENTS),
+        ("get", None, "*.*", True, 200, _OMITTED),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "comments", True, 200, None),
+        ("get", "COMMENTS_VIEW_MODE_INCLUDED", "comments", False, 403, _NO_PERMISSION),
+        (
+            "get",
+            "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
+            "comments.commentId",
+            False,
+            200,
+            None,
+        ),
+        ("get", "4", None, True, 400, None),
+        ("get", "", None, True, 400, None),
+        ("getByDataFilter", None, "comments", True, 400, _NO_COMMENTS),
+        ("getByDataFilter", 3, "comments", True, 200, None),
+        ("getByDataFilter", 3, "comments", False, 403, _NO_PERMISSION),
+        ("getByDataFilter", "1", "commentsViewMode", True, 200, _INCLUDED),
+        ("getByDataFilter", "1", "commentsViewMode", False, 200, _OMITTED),
+        # a number the enum does not declare is taken, and answered as no comments
+        ("getByDataFilter", 4, "commentsViewMode", False, 200, _OMITTED),
+        ("getByDataFilter", 4, "commentsViewMode", True, 200, _OMITTED),
+        ("getByDataFilter", 4, "comments", False, 200, None),
+        ("getByDataFilter", -1, "comments", True, 200, None),
+    ],
+)
+def test_comments_view_mode_is_read_as_real_reads_it(
+    gc, gh, dana, book, route, mode, fields, owner, status, want
+):
+    """`commentsViewMode` (`_sheets_comments_view`) in `spreadsheets.get`'s query and in
+    `:getByDataFilter`'s body, each row as real answered it to the spreadsheet's owner or a reader.
+    With no mask it shows only beside the grid: a mode alone answers none."""
+    headers = dana if owner else gh
+    params = {} if fields is None else {"fields": fields}
+    if route == "get":
+        params |= {} if mode is None else {"commentsViewMode": mode}
+        r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=headers, params=params)
+    else:
+        body = {} if mode is None else {"commentsViewMode": mode}
+        r = gc.post(
+            f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+            headers=headers,
+            params=params,
+            json=body,
+        )
+    assert r.status_code == status, r.text
+    if status != 200:
+        message = want or (
+            "Invalid value at 'comments_view_mode' "
+            f'(type.googleapis.com/google.apps.sheets.v4.CommentsViewMode), "{mode}"'
+        )
+        assert r.json()["error"]["message"] == message
+    else:
+        assert r.json().get("commentsViewMode") == want
+        if fields is not None and "commentsViewMode" not in fields and "*" not in fields:
+            assert r.json() == {}
+
+
+_INCLUDE = {"commentsViewMode": "COMMENTS_VIEW_MODE_INCLUDED"}
+
+
+@pytest.mark.parametrize(
+    "method, url, params, body, status, message",
+    [
+        # a mask naming nothing: behind the typed values, ahead of the lookup, a range and `alt`
+        (
+            "GET",
+            "{book}",
+            {"fields": "bogus", "includeGridData": "x"},
+            None,
+            400,
+            "include_grid_data",
+        ),
+        ("GET", "{missing}", {"fields": "bogus"}, None, 400, "Request contains"),
+        ("GET", "{book}", {"fields": "bogus", "ranges": "Nope!A1"}, None, 400, "Request contains"),
+        ("GET", "{book}", {"fields": "bogus", "alt": "media"}, None, 400, "Request contains"),
+        ("GET", "{missing}/values/A1", {"fields": "bogus"}, None, 400, "Request contains"),
+        (
+            "GET",
+            "{missing}/values:batchGet",
+            {"ranges": "A1", "fields": "bogus"},
+            None,
+            400,
+            "Request contains",
+        ),
+        ("POST", "{missing}:getByDataFilter", {"fields": "bogus"}, {}, 400, "Request contains"),
+        (
+            "POST",
+            "{missing}/values:batchGetByDataFilter",
+            {"fields": "bogus"},
+            {"dataFilters": [{"a1Range": "A1"}]},
+            400,
+            "Request contains",
+        ),
+        (
+            "POST",
+            "{book}/values:batchGetByDataFilter",
+            {"fields": "bogus"},
+            {},
+            400,
+            "Request contains",
+        ),
+        (
+            "POST",
+            "{book}:getByDataFilter",
+            {"fields": "bogus"},
+            {"includeGridData": "x"},
+            400,
+            "include_grid_data",
+        ),
+        # a comment field: behind the lookup, ahead of `ranges` and `alt=media`, and behind a
+        # filter on `:getByDataFilter`
+        ("GET", "{missing}", {"fields": "comments"}, None, 404, "Requested entity"),
+        ("GET", "{book}", {"fields": "comments", "ranges": "Nope!A1"}, None, 400, "Field mask"),
+        ("GET", "{book}", {"fields": "comments", "alt": "media"}, None, 400, "Field mask"),
+        (
+            "POST",
+            "{book}:getByDataFilter",
+            {"fields": "comments"},
+            {"dataFilters": [{"a1Range": "Nope!A1"}]},
+            400,
+            "Unable to parse range",
+        ),
+        # an `alt` naming no format: ahead of the typed values and the body
+        ("GET", "{book}", {"alt": "zzz", "includeGridData": "x"}, None, 400, 'Invalid value "zzz"'),
+        (
+            "POST",
+            "{book}:getByDataFilter",
+            {"alt": "zzz"},
+            {"includeGridData": "x"},
+            400,
+            'Invalid value "zzz"',
+        ),
+        ("GET", "{missing}", {"alt": "media"}, None, 404, "Requested entity"),
+        # a reader asking for comments: behind the mask, ahead of `ranges` and `alt=media`, and
+        # behind a filter
+        ("GET", "{book}", {**_INCLUDE, "fields": "bogus"}, None, 400, "Request contains"),
+        ("GET", "{book}", {**_INCLUDE, "ranges": "Nope!A1"}, None, 403, "You do not have"),
+        ("GET", "{book}", {**_INCLUDE, "alt": "media"}, None, 403, "You do not have"),
+        (
+            "POST",
+            "{book}:getByDataFilter",
+            {},
+            {**_INCLUDE, "dataFilters": [{"a1Range": "Nope!A1"}]},
+            400,
+            "Unable to parse range",
+        ),
+    ],
+)
+def test_a_sheets_read_answers_its_refusals_in_reals_order(
+    gc, gh, book, method, url, params, body, status, message
+):
+    """Each pair of refusals as real ordered them (`_sheets_alt`, `_sheets_mask`,
+    `_sheets_comments_view`), `message` the start of the one it gave, or the proto field a typed
+    refusal names."""
+    url = url.format(book=book, missing="1nonexistentAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    r = gc.request(method, f"/sheets/v4/spreadsheets/{url}", headers=gh, params=params, json=body)
+    assert r.status_code == status, r.text
+    err = r.json()["error"]
+    assert err["message"].startswith(message) or message in err["message"]
+
+
+_FILTER_MASKS = [
+    ("valueRanges.dataFilters.developerMetadataLookup", [{"dataFilters": [{}]}] * 2),
+    (
+        "valueRanges.dataFilters.gridRange.sheetId",
+        [{"dataFilters": [{"gridRange": {}}]}, {"dataFilters": [{}]}],
+    ),
+    (
+        "valueRanges.dataFilters.gridRange.endRowIndex",
+        [{"dataFilters": [{"gridRange": {"endRowIndex": 1}}]}, {"dataFilters": [{}]}],
+    ),
+    (
+        "valueRanges.dataFilters.developerMetadataLookup.metadataLocation.dimensionRange.sheetId",
+        [{"dataFilters": [{}]}] * 2,
+    ),
+]
+
+
+def test_a_values_level_mask_may_name_what_a_filter_declares(gc, gh, book):
+    """A `DataFilter`'s declared fields answer 200, the lookup no filter here holds absent, and
+    `gridRange.sheetId` absent at its default of 0, as real answered."""
+    body = {
+        "dataFilters": [
+            {"gridRange": {"sheetId": 0, "startRowIndex": 0, "endRowIndex": 1}},
+            {"a1Range": "Summary!B1:B2"},
+        ]
+    }
+    answered = {}
+    for fields, _ in _FILTER_MASKS:
+        r = gc.post(
+            f"/sheets/v4/spreadsheets/{book}/values:batchGetByDataFilter",
+            headers=gh,
+            params={"fields": fields},
+            json=body,
+        )
+        answered[fields] = (r.status_code, r.json())
+    assert answered == {fields: (200, {"valueRanges": want}) for fields, want in _FILTER_MASKS}
 
 
 @pytest.mark.parametrize(
@@ -9285,6 +13751,22 @@ def test_a_fields_mask_may_now_name_the_cell_format(gc, gh, book):
     assert r.json()["sheets"][0]["data"][0]["rowData"][0]["values"][0] == {
         "effectiveFormat": {"horizontalAlignment": "LEFT"}
     }
+    # a cell's format the mask leaves holding nothing is left out, an empty value kept
+    for mask, cell in [
+        (
+            "values(userEnteredValue,effectiveFormat.numberFormat,effectiveValue.boolValue)",
+            ["userEnteredValue", "effectiveValue"],
+        ),
+        ("values(userEnteredValue,effectiveFormat.textFormat.link)", ["userEnteredValue"]),
+        ("values(userEnteredFormat.numberFormat,effectiveFormat.numberFormat)", None),
+    ]:
+        r = gc.get(
+            f"/sheets/v4/spreadsheets/{book}",
+            headers=gh,
+            params={"ranges": "Summary!A1:A1", "fields": f"sheets.data.rowData.{mask}"},
+        )
+        block = r.json()["sheets"][0]["data"][0]
+        assert (list(block["rowData"][0]["values"][0]) if cell else block) == (cell or {}), mask
 
 
 def test_the_spreadsheet_carries_the_default_format_and_theme_a_fresh_one_has(gc, gh, book):
@@ -9338,7 +13820,12 @@ def test_the_spreadsheet_carries_the_default_format_and_theme_a_fresh_one_has(gc
 
 
 def test_the_properties_are_emitted_in_the_order_real_sends_them(gc, gh, book):
-    props = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh).json()["properties"]
+    url = f"/sheets/v4/spreadsheets/{book}"
+    body = gc.get(url, headers=gh).json()
+    assert list(body) == _BOOK_KEYS
+    grid = gc.get(url, headers=gh, params={"includeGridData": "true", "ranges": "Summary!A1"})
+    assert list(grid.json()) == [*_BOOK_KEYS, "commentsViewMode"]
+    props = body["properties"]
     assert list(props) == [
         "title",
         "locale",
@@ -9397,44 +13884,49 @@ def test_a_mask_may_name_a_colour_component_wherever_a_colour_appears(gc, gh, bo
 
 
 @pytest.mark.parametrize(
-    "mask, wants_grid",
+    "mask, include, wants_grid",
     [
-        ("sheets.data.rowData.values.formattedValue", True),
-        ("sheets", True),
-        ("sheets.properties.title", False),
-        # measured: `*` selects everything and still does NOT build the grid
-        ("*", False),
-        ("spreadsheetId", False),
+        ("sheets.data.rowData.values.formattedValue", None, True),
+        ("sheets", "false", True),
+        ("sheets.*", "false", True),
+        ("*.data", None, True),
+        ("*.*", None, True),
+        ("sheets.properties.title", "true", False),
+        ("spreadsheetId", "true", False),
+        # no mask at all, so `includeGridData` decides
+        ("*", None, False),
+        ("*", "true", True),
+        ("a()", "true", True),
     ],
 )
-def test_a_field_mask_decides_the_grid_when_one_is_set(gc, gh, book, mask, wants_grid):
+def test_a_field_mask_decides_the_grid_when_one_is_set(gc, gh, book, mask, include, wants_grid):
     """The vendor's own wording for `includeGridData`: "This parameter is ignored if a field mask
     was set in the request." Measured, that is narrower than it reads — the mask has to reach
-    `sheets.data`, which `*` does not."""
-    r = gc.get(
-        f"/sheets/v4/spreadsheets/{book}",
-        headers=gh,
-        params={"fields": mask, "ranges": "Summary!A1:A1"},
-    )
+    `sheets.data` (`_gmask_wants_grid`)."""
+    params = {"fields": mask, "ranges": "Summary!A1:A1"}
+    if include is not None:
+        params["includeGridData"] = include
+    r = gc.get(f"/sheets/v4/spreadsheets/{book}", headers=gh, params=params)
     assert r.status_code == 200, r.text
     sheets = r.json().get("sheets") or [{}]
     assert ("data" in sheets[0]) is wants_grid
 
 
-@pytest.mark.parametrize(
-    "value, grid",
-    [("false", False), ("no", False), ("0", False), (False, False), ("true", True), (1, True)],
-)
-def test_include_grid_data_in_the_body_is_read_as_a_proto_bool(gc, gh, book, value, grid):
+def test_include_grid_data_in_the_body_is_read_as_a_proto_bool(gc, gh, book):
     """`includeGridData` in the body, read by `protojson.to_bool`: a string by its words, a number
     when it is 0 or 1."""
-    r = gc.post(
-        f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
-        headers=gh,
-        json={"dataFilters": [{"a1Range": "Summary!A1"}], "includeGridData": value},
-    )
-    assert r.status_code == 200, r.text
-    assert ("data" in r.json()["sheets"][0]) is grid
+    grids = [("false", False), ("no", False), ("0", False), (False, False), ("true", True)]
+    grids.append((1, True))
+    answered = {}
+    for value, _ in grids:
+        r = gc.post(
+            f"/sheets/v4/spreadsheets/{book}:getByDataFilter",
+            headers=gh,
+            json={"dataFilters": [{"a1Range": "Summary!A1"}], "includeGridData": value},
+        )
+        sheets = r.json().get("sheets") or [{}]
+        answered[json.dumps(value)] = (r.status_code, "data" in sheets[0])
+    assert answered == {json.dumps(value): (200, grid) for value, grid in grids}
 
 
 @pytest.mark.parametrize(
@@ -9481,60 +13973,90 @@ def test_gmail_size_estimate_matches_raw_bytes_in_every_format(tmp_path, title, 
             assert thread.json()["messages"][0]["sizeEstimate"] == size
 
 
-@pytest.mark.parametrize("surface", ["messages", "threads"])
-@pytest.mark.parametrize(
-    "caller, query, expected",
-    [
-        ("ava", "cc:lena", ["plan"]),
-        ("ava", "cc:LENA", ["plan"]),
-        ("ava", "cc:LENA@ACME.COM", ["plan"]),
-        ("ava", 'cc:"lena@acme.com" rollout', ["plan"]),
-        ("ava", "bcc:ava", ["lunch"]),
-        ("ava", "cc:acme.com", ["plan"]),
-        ("ava", "cc:lena bcc:ava", []),
-        ("ava", "cc:nobody", []),
-        ("ava", "bcc:me", ["lunch"]),
-        ("ava", "cc:me", ["plan"]),
-        ("admin", "cc:me", []),
-        # a word, never part of one, and an address only whole
-        ("ava", "cc:len", []),
-        ("ava", "cc:ena", []),
-        ("ava", "cc:acme", ["plan"]),
-        ("ava", "cc:com", ["plan"]),
-        ("ava", "cc:com.acme", []),
-        ("ava", "cc:@acme.com", ["plan"]),
-        ("ava", "cc:lena@", ["plan"]),
-        ("ava", "cc:lena@acme", []),
-        ("ava", "cc:park", ["plan"]),
-        ("ava", "cc:par", []),
-        ("ava", 'cc:"lena park"', ["plan"]),
-        ("ava", "bcc:\uc5d0\ubc14", ["lunch"]),
-        ("ava", "cc:ops_team", ["standup"]),
-        ("ava", "cc:ops", []),
-        ("ava", "cc:_", []),
-        ("ava", "cc:&", []),
-        # no word at all: the operator is ignored
-        ("ava", "cc:.", ["plan", "lunch", "decoy", "standup"]),
-        ("ava", "cc:@", ["plan", "lunch", "decoy", "standup"]),
-        ("ava", 'bcc:""', ["plan", "lunch", "decoy", "standup"]),
-    ],
-)
-def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query, expected):
-    """The rule `_gmail_address_match` records, on both listings: a message whose body or subject
-    names the address is not a match. `me` is the caller's address, and for the admin token, which
-    has no mailbox of its own, the address `_service_email` gives."""
-    records = [
-        {
-            "doc_id": "plan",
-            "title": "rollout plan",
-            "cc": "Lena Park <lena@acme.com>, ava@acme.com",
-        },
-        {"doc_id": "lunch", "title": "lunch", "bcc": "\uc5d0\ubc14 <ava@acme.com>"},
-        {"doc_id": "decoy", "title": "cc lena bcc ava", "content": "lena ava"},
-        {"doc_id": "standup", "title": "standup", "cc": "ops_team@corp.example, me@corp.example"},
-    ]
-    settings = tiny_corpus(
-        tmp_path,
+def _gmail_searched(settings, token, records, rows):
+    """Each row's query sent on both listings, as ``{(listing, query): (status, the doc_ids it
+    listed)}``."""
+    doc_id = {served_id("gmail", r["doc_id"]): r["doc_id"] for r in records}
+    answered = {}
+    with client_for(settings, reload=True) as c:
+        for listing in ("messages", "threads"):
+            for query, _ in rows:
+                r = c.get(
+                    f"/gmail/v1/users/me/{listing}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"q": query},
+                )
+                listed = {doc_id[m["id"]] for m in r.json().get(listing, [])}
+                answered[listing, query] = (
+                    r.status_code,
+                    listed if r.status_code == 200 else r.text,
+                )
+    return answered
+
+
+def _gmail_listed(rows):
+    """What `_gmail_searched` should answer for ``rows``: a 200 and each row's doc_ids on both
+    listings."""
+    return {
+        (listing, query): (200, set(expected))
+        for listing in ("messages", "threads")
+        for query, expected in rows
+    }
+
+
+_GMAIL_CC_BCC_ROWS = [
+    ("ava", "cc:lena", ["plan"]),
+    ("ava", "cc:LENA", ["plan"]),
+    ("ava", "cc:LENA@ACME.COM", ["plan"]),
+    ("ava", 'cc:"lena@acme.com" rollout', ["plan"]),
+    ("ava", "bcc:ava", ["lunch"]),
+    ("ava", "cc:acme.com", ["plan"]),
+    ("ava", "cc:lena bcc:ava", []),
+    ("ava", "cc:nobody", []),
+    ("ava", "bcc:me", ["lunch"]),
+    ("ava", "cc:me", ["plan"]),
+    ("admin", "cc:me", []),
+    # a word, never part of one, and an address only whole
+    ("ava", "cc:len", []),
+    ("ava", "cc:ena", []),
+    ("ava", "cc:acme", ["plan"]),
+    ("ava", "cc:com", ["plan"]),
+    ("ava", "cc:com.acme", []),
+    ("ava", "cc:@acme.com", ["plan"]),
+    ("ava", "cc:lena@", ["plan"]),
+    ("ava", "cc:lena@acme", []),
+    ("ava", "cc:park", ["plan"]),
+    ("ava", "cc:par", []),
+    ("ava", 'cc:"lena park"', ["plan"]),
+    ("ava", "bcc:\uc5d0\ubc14", ["lunch"]),
+    ("ava", "cc:ops_team", ["standup"]),
+    ("ava", "cc:ops", []),
+    ("ava", "cc:_", []),
+    ("ava", "cc:&", []),
+    # no word at all: the operator is ignored
+    ("ava", "cc:.", ["plan", "lunch", "decoy", "standup"]),
+    ("ava", "cc:@", ["plan", "lunch", "decoy", "standup"]),
+    ("ava", 'bcc:""', ["plan", "lunch", "decoy", "standup"]),
+]
+
+
+_GMAIL_CC_BCC_RECORDS = [
+    {
+        "doc_id": "plan",
+        "title": "rollout plan",
+        "cc": "Lena Park <lena@acme.com>, ava@acme.com",
+    },
+    {"doc_id": "lunch", "title": "lunch", "bcc": "\uc5d0\ubc14 <ava@acme.com>"},
+    {"doc_id": "decoy", "title": "cc lena bcc ava", "content": "lena ava"},
+    {"doc_id": "standup", "title": "standup", "cc": "ops_team@corp.example, me@corp.example"},
+]
+
+
+@pytest.fixture(scope="module")
+def cc_bcc_mailbox(tmp_path_factory):
+    """`_GMAIL_CC_BCC_RECORDS` in ava's mailbox."""
+    return tiny_corpus(
+        tmp_path_factory.mktemp("cc_bcc_mailbox"),
         [
             {
                 "source_type": "gmail",
@@ -9547,105 +14069,123 @@ def test_gmail_cc_bcc_searches_address_headers(tmp_path, surface, caller, query,
                 "readers": ["ava@acme.com"],
                 **r,
             }
-            for r in records
+            for r in _GMAIL_CC_BCC_RECORDS
         ],
     )
+
+
+@pytest.mark.parametrize("caller", ["ava", "admin"])
+def test_gmail_cc_bcc_searches_address_headers(cc_bcc_mailbox, caller):
+    """The rule `_gmail_address_match` records, on both listings: a message whose body or subject
+    names the address is not a match. `me` is the caller's address, and for the admin token, which
+    has no mailbox of its own, the address `_service_email` gives."""
+    settings = cc_bcc_mailbox
     tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     token = tokens["admin_token"] if caller == "admin" else tok(tokens, "ava@acme.com")
-    with client_for(settings, reload=True) as c:
-        response = c.get(
-            f"/gmail/v1/users/me/{surface}",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"q": query},
-        )
-    assert response.status_code == 200
-    assert {r["id"] for r in response.json().get(surface, [])} == {
-        served_id("gmail", doc_id) for doc_id in expected
-    }
+    rows = [(query, expected) for who, query, expected in _GMAIL_CC_BCC_ROWS if who == caller]
+    assert _gmail_searched(settings, token, _GMAIL_CC_BCC_RECORDS, rows) == _gmail_listed(rows)
 
 
-@pytest.mark.parametrize("surface", ["messages", "threads"])
-@pytest.mark.parametrize(
-    "caller, query, expected",
-    [
-        ("ava", "to:ava@acme.com", ["plan", "lunch"]),
-        ("ava", "to:me", ["plan", "lunch"]),
-        ("ava", "to:av", []),
-        ("ava", "from:bo", []),
-        ("ava", "from:me", ["reply"]),
-        ("ava", "from:", ["plan", "lunch", "reply"]),
-        ("ava", "to:dev@acme.com", ["reply"]),
-        ("ava", "to:dev", ["reply"]),
-        ("ava", "to:lena@acme.com", ["lunch"]),
-        ("ava", "to:lena", ["lunch"]),
-        ("ava", "to:bob@acme.com", ["reply"]),
-        ("ava", "to:bob", ["reply"]),
-        ("ava", "from:bob@acme.com", ["plan"]),
-        ("ava", "from:bob", ["plan"]),
-        ("ava", "from:acme.com", ["plan", "lunch", "reply"]),
-        ("ava", "from:acm", []),
-        ("ava", "to:acme.com", ["plan", "lunch", "reply"]),
-        ("ava", "to:acm", []),
-        ("ava", "to:le", []),
-        ("ava", "to:", ["plan", "lunch", "reply"]),
-        ("ava", "bcc:", ["plan", "lunch", "reply"]),
-        ("ava", "cc:", ["plan", "lunch", "reply"]),
-        ("ava", 'from:""', ["plan", "lunch", "reply"]),
-        ("ava", 'to:""', ["plan", "lunch", "reply"]),
-        ("ava", "to: from: bcc:", []),
-        ("ava", "from: bob", ["plan"]),
-        ("ava", "From: bob", ["plan"]),
-        ("ava", "to:\tlena", ["lunch"]),
-        ("ava", "cc: dev", ["reply"]),
-        ("ava", "bcc: ava", ["lunch"]),
-        ("ava", "to:bob to:dev", ["reply"]),
-        ("ava", "from:bob from:mia", []),
-        ("ava", "from:bob from:", ["plan"]),
-        ("ava", 'to:ava to:""', ["plan", "lunch"]),
-        ("admin", "from:me", []),
-        ("admin", "to:me", []),
-        ("admin", "from:ava@acme.com", ["reply"]),
-        ("admin", "to:ava@acme.com", ["plan", "lunch"]),
-        ("admin", "from:", ["plan", "lunch", "reply"]),
-    ],
-)
-def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query, expected):
-    """A `from:` search matches author email, and `to:` matches any recipient header (To, Cc, or
-    Bcc) as whole words or address. `me` resolves to the caller's address, and for admin callers,
-    the address `_service_email` gives. Empty address operators are ignored."""
-    records = [
-        {
-            "doc_id": "plan",
-            "title": "Rollout plan",
-            "content": "attached",
-            "author_email": "bob@acme.com",
-            "to": "ava@acme.com",
-            "readers": ["ava@acme.com"],
-            "created": "2026-03-01T09:00:00Z",
-        },
-        {
-            "doc_id": "lunch",
-            "title": "Lunch",
-            "content": "Friday?",
-            "author_email": "mia@acme.com",
-            "to": "lena@acme.com",
-            "bcc": "ava@acme.com",
-            "readers": ["ava@acme.com"],
-            "created": "2026-03-02T09:00:00Z",
-        },
-        {
-            "doc_id": "reply",
-            "title": "Re: Rollout plan",
-            "content": "ok",
-            "author_email": "ava@acme.com",
-            "to": "bob@acme.com",
-            "cc": "dev@acme.com",
-            "readers": ["ava@acme.com"],
-            "created": "2026-03-03T09:00:00Z",
-        },
-    ]
-    settings = tiny_corpus(
-        tmp_path,
+_GMAIL_FROM_TO_ROWS = [
+    ("ava", "to:ava@acme.com", ["plan", "lunch"]),
+    ("ava", "to:me", ["plan", "lunch"]),
+    ("ava", "to:av", []),
+    ("ava", "from:bo", []),
+    ("ava", "from:me", ["reply"]),
+    ("ava", 'from:"me"', ["reply"]),
+    ("ava", 'to:"me"', ["plan", "lunch"]),
+    ("ava", "from:", ["plan", "lunch", "reply"]),
+    ("ava", "to:dev@acme.com", ["reply"]),
+    ("ava", "to:dev", ["reply"]),
+    ("ava", "to:lena@acme.com", ["lunch"]),
+    ("ava", "to:lena", ["lunch"]),
+    ("ava", "to:bob@acme.com", ["reply"]),
+    ("ava", "to:bob", ["reply"]),
+    ("ava", "from:bob@acme.com", ["plan"]),
+    ("ava", "from:bob", ["plan"]),
+    ("ava", "from:acme.com", ["plan", "lunch", "reply"]),
+    ("ava", "from:acm", []),
+    ("ava", "to:acme.com", ["plan", "lunch", "reply"]),
+    ("ava", "to:acm", []),
+    ("ava", "to:le", []),
+    ("ava", "to:", ["plan", "lunch", "reply"]),
+    ("ava", "bcc:", ["plan", "lunch", "reply"]),
+    ("ava", "cc:", ["plan", "lunch", "reply"]),
+    ("ava", 'from:""', ["plan", "lunch", "reply"]),
+    ("ava", 'to:""', ["plan", "lunch", "reply"]),
+    ("ava", "to: from: bcc:", []),
+    ("ava", "from: bob", ["plan"]),
+    ("ava", 'from:"" bob', ["plan"]),
+    ("ava", 'to:" " lena', ["lunch"]),
+    ("ava", 'cc:""dev', ["reply"]),
+    ("ava", "From: bob", ["plan"]),
+    ("ava", "to:\tlena", ["lunch"]),
+    ("ava", "cc: dev", ["reply"]),
+    ("ava", "bcc: ava", ["lunch"]),
+    ("ava", "to:bob to:dev", ["reply"]),
+    ("ava", "from:bob from:mia", []),
+    ("ava", "from:bob from:", ["plan"]),
+    ("ava", 'to:ava to:""', ["plan", "lunch"]),
+    ("admin", "from:me", []),
+    ("admin", "to:me", []),
+    ("admin", "from:ava@acme.com", ["reply"]),
+    ("admin", "to:ava@acme.com", ["plan", "lunch"]),
+    ("admin", "from:", ["plan", "lunch", "reply"]),
+    # a `-` in front of the operator or its value negates it
+    ("ava", "-from:bob", ["lunch", "reply"]),
+    ("ava", "from:-bob", ["lunch", "reply"]),
+    ("ava", "-from: bob", ["lunch", "reply"]),
+    ("ava", 'from:"-bob"', ["plan"]),
+    ("ava", "-to:lena", ["plan", "reply"]),
+    ("ava", "-cc:dev", ["plan", "lunch"]),
+    ("ava", "bcc:-ava", ["plan", "reply"]),
+    ("ava", "-from:me", ["plan", "lunch"]),
+    ("ava", '-from:"me"', ["plan", "lunch"]),
+    ("ava", "-from:bob from:mia", ["lunch"]),
+    ("ava", '-from:""', ["plan", "lunch", "reply"]),
+    ("ava", "from:-", ["plan", "lunch", "reply"]),
+    ("admin", "-from:me", ["plan", "lunch", "reply"]),
+]
+
+
+_GMAIL_FROM_TO_RECORDS = [
+    {
+        "doc_id": "plan",
+        "title": "Rollout plan",
+        "content": "attached",
+        "author_email": "bob@acme.com",
+        "to": "ava@acme.com",
+        "readers": ["ava@acme.com"],
+        "created": "2026-03-01T09:00:00Z",
+    },
+    {
+        "doc_id": "lunch",
+        "title": "Lunch",
+        "content": "Friday?",
+        "author_email": "mia@acme.com",
+        "to": "lena@acme.com",
+        "bcc": "ava@acme.com",
+        "readers": ["ava@acme.com"],
+        "created": "2026-03-02T09:00:00Z",
+    },
+    {
+        "doc_id": "reply",
+        "title": "Re: Rollout plan",
+        "content": "ok",
+        "author_email": "ava@acme.com",
+        "to": "bob@acme.com",
+        "cc": "dev@acme.com",
+        "readers": ["ava@acme.com"],
+        "created": "2026-03-03T09:00:00Z",
+    },
+]
+
+
+@pytest.fixture(scope="module")
+def from_to_mailbox(tmp_path_factory):
+    """`_GMAIL_FROM_TO_RECORDS` in ava's mailbox."""
+    return tiny_corpus(
+        tmp_path_factory.mktemp("from_to_mailbox"),
         [
             {
                 "source_type": "gmail",
@@ -9653,53 +14193,4000 @@ def test_gmail_from_to_searches_address_headers(tmp_path, surface, caller, query
                 "visibility": "public",
                 **r,
             }
-            for r in records
+            for r in _GMAIL_FROM_TO_RECORDS
         ],
     )
+
+
+@pytest.mark.parametrize("caller", ["ava", "admin"])
+def test_gmail_from_to_searches_address_headers(from_to_mailbox, caller):
+    """A `from:` search matches author email, and `to:` matches any recipient header (To, Cc, or
+    Bcc) as whole words or address. `me` resolves to the caller's address, and for admin callers,
+    the address `_service_email` gives. Empty address operators are ignored, and a `-` in front of
+    an operator or its value negates it (`_GMAIL_NEGATED_ADDRESS`)."""
+    settings = from_to_mailbox
     tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
     token = tokens["admin_token"] if caller == "admin" else tok(tokens, f"{caller}@acme.com")
-    with client_for(settings, reload=True) as c:
-        response = c.get(
-            f"/gmail/v1/users/me/{surface}",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"q": query},
-        )
-    assert response.status_code == 200
-    assert {r["id"] for r in response.json().get(surface, [])} == {
-        served_id("gmail", doc_id) for doc_id in expected
-    }
+    rows = [(query, expected) for who, query, expected in _GMAIL_FROM_TO_ROWS if who == caller]
+    assert _gmail_searched(settings, token, _GMAIL_FROM_TO_RECORDS, rows) == _gmail_listed(rows)
 
 
-@pytest.mark.parametrize("surface", ["messages", "threads"])
-@pytest.mark.parametrize(
-    "query, expected", [('subject:"from: foo"', ["literal"]), ('subject:""', ["literal", "other"])]
-)
-def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path, surface, query, expected):
+_GMAIL_NEGATED_WORD_ROWS = [
+    ("plan", ["plan", "reply"]),
+    ("-plan", ["lunch"]),
+    ("--plan", ["lunch"]),
+    ("-PLAN", ["lunch"]),
+    ('-"plan"', ["lunch"]),
+    ("NOT plan", ["lunch"]),
+    ("-(plan)", ["lunch"]),
+    ("-( plan )", ["lunch"]),
+    ("plan -plan", []),
+    ("not plan", []),
+    ("label:inbox", ["plan"]),
+    ("label:inbox -plan", []),
+    ("label:sent", ["lunch", "reply"]),
+    ("label:sent -plan", ["lunch"]),
+    ('-"rollout plan"', ["lunch"]),
+    ('NOT "rollout plan"', ["lunch"]),
+    ('-("rollout plan")', ["lunch"]),
+    ('-"plan rollout"', ["plan", "lunch", "reply"]),
+    ("NOT -plan", ["plan", "reply"]),
+    ("NOT NOT plan", ["plan", "reply"]),
+    ("NOT NOT NOT plan", ["lunch"]),
+    ('NOT -"rollout plan"', ["plan", "reply"]),
+    ("-plan+", ["plan", "lunch", "reply"]),
+    ("NOT plan+", ["plan", "lunch", "reply"]),
+    ("plan -plan+", ["plan", "reply"]),
+    ('-plan "', ["lunch"]),
+]
+
+
+def test_gmail_a_negated_word_leaves_out_the_messages_holding_it(tmp_path):
+    """A `-` or a capital `NOT` in front of a word, and `-(…)` around one word, leave out the
+    messages that word answers (`_gmail_take_negated_words`), over both listings. `not` in lower
+    case stays a word, so `not plan` searches for both."""
+    records = [
+        {
+            "source_type": "gmail",
+            "mailbox": "ava",
+            "to": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "visibility": "public",
+            **r,
+        }
+        for r in [
+            {
+                "doc_id": "plan",
+                "title": "Rollout plan",
+                "content": "attached",
+                "label_ids": ["INBOX"],
+                "author_email": "bob@acme.com",
+                "created": "2026-03-01T09:00:00Z",
+            },
+            {
+                "doc_id": "lunch",
+                "title": "Lunch",
+                "content": "Friday?",
+                "label_ids": ["SENT"],
+                "author_email": "mia@acme.com",
+                "created": "2026-03-02T09:00:00Z",
+            },
+            {
+                "doc_id": "reply",
+                "title": "Re: Rollout plan",
+                "content": "ok",
+                "label_ids": ["SENT"],
+                "author_email": "ava@acme.com",
+                "created": "2026-03-03T09:00:00Z",
+            },
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_NEGATED_WORD_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
+
+
+_GMAIL_EMPTY_OPERATOR_ROWS = [
+    ("subject:", ["plan", "lunch", "after"]),
+    ("subject: ", ["plan", "lunch", "after"]),
+    ("subject:\t", ["plan", "lunch", "after"]),
+    ("SUBJECT:", ["plan", "lunch", "after"]),
+    ("label:", ["plan", "lunch", "after"]),
+    ('label:""', ["plan", "lunch", "after"]),
+    ("in:", ["plan", "lunch", "after"]),
+    ('in:""', ["plan", "lunch", "after"]),
+    ("lunch label:", ["lunch"]),
+    ('subject:"" lunch', ["lunch"]),
+    ('subject:" " lunch', ["lunch"]),
+    ('label:"" lunch', []),
+    ("after:", ["after"]),
+    ('label:"', ["plan", "lunch", "after"]),
+    ('in:"', ["plan", "lunch", "after"]),
+    ('subject:"', ["plan", "lunch", "after"]),
+    ('lunch label:"', ["lunch"]),
+    ('label:" lunch', []),
+    ('label: " inbox', ["plan", "lunch", "after"]),
+    ('label:" -inbox', ["plan", "lunch", "after"]),
+    ('label:" inbox lunch', []),
+    ('subject:" lunch', ["lunch"]),
+    ('subject:" after', []),
+    ('subject:" rollout plan', ["plan"]),
+    ('subject:" plan rollout', []),
+    ('subject:" label:inbox', []),
+    ('subject:" after:2026/01/01', []),
+    ('LABEL:" inbox', ["plan", "lunch", "after"]),
+    ('subject:" from:me', ["plan", "lunch", "after"]),
+    ('subject:" FROM:me', ["plan", "lunch", "after"]),
+    ('subject:" from: me', ["plan", "lunch", "after"]),
+    ('subject:" -from:me', ["plan", "lunch", "after"]),
+    ('subject:" from:-me', ["plan", "lunch", "after"]),
+    ('subject:"from:me', []),
+    ('subject:" from:me+lunch', []),
+    ('-subject:" from:me', []),
+    ('-subject:" from:bob', ["plan", "lunch", "after"]),
+    ('in:" subject:lunch', ["lunch"]),
+]
+
+
+def test_gmail_an_empty_or_lone_quoted_operator(tmp_path):
+    """Each row is how the comments on `_GMAIL_DROPPED_WHEN_EMPTY`, `_GMAIL_SPACED` and
+    `_GMAIL_LONE_QUOTE` read its query, over both listings; the corpus holds the word `after` so
+    that a bare `after:` can be told from a dropped one, and `subject:" after` from a search
+    term."""
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": content,
+            "author_email": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        }
+        for doc_id, title, content in [
+            ("plan", "Rollout plan", "attached"),
+            ("lunch", "Lunch", "Friday?"),
+            ("after", "Later", "see after the meeting"),
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_EMPTY_OPERATOR_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
+
+
+_GMAIL_STRAY_QUOTE_ROWS = [
+    ('from:" me', ["lunch"]),
+    ('to:" me', ["plan"]),
+    ('from:" probe', []),
+    ('from:"me probe', []),
+    ('to:" probe', []),
+    ('from:" label:inbox', []),
+    ('subject:" from:me"', ["lunch"]),
+    ('subject:" from:"me"', ["lunch"]),
+    ('label:" inbox "', ["plan"]),
+    ('subject:" probe "', ["lunch"]),
+    ('subject:" probe\u00a0"', ["lunch"]),
+    ('subject:" from:" probe', []),
+    ('label:" inbox subject:"probe"', ["plan"]),
+    ('" label:inbox', ["plan"]),
+    ('" from:me', ["lunch"]),
+    ('newer_than:"', []),
+    ('label:"" "', ["plan", "lunch"]),
+    ('label:"""', ["plan", "lunch"]),
+    ("probe-label:inbox", []),
+    ('probe-subject:" from:me', []),
+    ("probe-(from:me)", []),
+    ('from:" from:me', ["lunch"]),
+    ('to:" from:me', ["lunch"]),
+    ('cc:" from:me', ["lunch"]),
+    ('to:" -from:me', ["lunch"]),
+    ('from:" to:me', ["plan"]),
+    ('from:" -to:me', ["plan"]),
+    ('-from:" to:me', ["lunch"]),
+    ('from:" subject:probe', ["lunch"]),
+    ('label:"" " inbox', ["plan"]),
+    ('subject:"" " from:me', ["lunch"]),
+    ('subject:"" " -from:me', ["lunch"]),
+    ('in:"" " to:me', ["plan"]),
+    ('subject:"" " label:inbox', []),
+    ('label:" inbox -subject:"probe"', ["plan"]),
+    ('-newer_than:"', ["plan", "lunch"]),
+    ('NOT older_than:"', ["plan", "lunch"]),
+    ('newer_than:""', []),
+    ('older_than:""', []),
+    ('newer_than:"" "', []),
+    ('older_than:30d"', ["plan", "lunch"]),
+    ('older_than:30d"" "', ["plan", "lunch"]),
+    ('newer_than:30"d', []),
+    ("2026-label:inbox", ["plan"]),
+    ("2026-from:me", []),
+    ("probe-(label:inbox)", ["plan"]),
+    ("probe-(label:inbox", ["plan"]),
+    ("probe-(label:inbox from:me)", []),
+    ("probe-(-from:me)", []),
+    ("probe-(label:inbox -subject:probe)", []),
+    ("-probe-label:inbox", ["plan", "lunch"]),
+    ("NOT probe-label:inbox", ["plan", "lunch"]),
+    ("NOT NOT probe-label:inbox", []),
+    ("-probe-(from:me)", ["plan", "lunch"]),
+    ("-probe-label:inbox from:me", ["lunch"]),
+    ('" -label:inbox', ["plan"]),
+    ('" -from:me', ["lunch"]),
+    ('label:inbox "', ["plan"]),
+    ('"label:inbox', ["plan"]),
+    ('" label:inbox -from:me', []),
+    ('label:inbox -from:me "', ["plan"]),
+    ('" label:', []),
+    ('" from:', []),
+    ("label:inbox me", []),
+    ('from:"', ["plan", "lunch"]),
+    ('probe from:"', ["plan", "lunch"]),
+    ('from:"me', ["lunch"]),
+    ('subject:"', ["plan", "lunch"]),
+    ('-subject:"', ["plan", "lunch"]),
+    ('probe-label:" inbox', []),
+    ('" probe', ["plan", "lunch"]),
+    ('probe "', ["plan", "lunch"]),
+    ('"probe', ["plan", "lunch"]),
+    ('"', []),
+]
+
+
+def test_gmail_a_stray_quote_beside_an_operator(tmp_path):
+    """Each row is how the comments on `_GMAIL_LONE_QUOTE`, `_GMAIL_CLOSED_QUOTE`,
+    `_GMAIL_HYPHENED` and `_GMAIL_BARE_LONE_QUOTE`, and those in `_parse_gmail_q`, read its query,
+    over both listings. `plan` is from bob to the caller in the inbox and `lunch` from the caller to
+    bob in sent; both hold the word `probe` and the number 2026."""
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": content,
+            "author_email": author,
+            "to": to,
+            "label_ids": [label],
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        }
+        for doc_id, title, content, author, to, label in [
+            ("plan", "Rollout plan", "probe 2026", "bob@acme.com", "ava@acme.com", "INBOX"),
+            ("lunch", "Lunch probe", "Friday? 2026", "ava@acme.com", "bob@acme.com", "SENT"),
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_STRAY_QUOTE_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
+
+
+def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path):
     """Ignoring an empty address operator must not edit a quoted value or change empty subjects."""
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": "body",
+            "author_email": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        }
+        for doc_id, title in [("literal", "from: foo"), ("other", "foo")]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = [('subject:"from: foo"', ["literal"]), ('subject:""', ["literal", "other"])]
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
+
+
+_GMAIL_HYPHENATED_ROWS = [
+    ("from:no-reply", {"joined", "hyphen"}),
+    ("from:noreply", {"joined"}),
+    ("from:jt-snowball", {"domain"}),
+    ("from:jtsnowball", {"domain"}),
+    ("from:no-repl", set()),
+    ("from:noreplyx", set()),
+    ("from:no-reply@bank.example", {"hyphen"}),
+    ("from:no-reply@shop.example", set()),
+    ("to:no-reply", {"joined", "hyphen"}),
+    ("to:noreply", {"joined"}),
+    ("cc:no-reply", {"joined", "hyphen"}),
+    ("bcc:no-reply", {"joined", "hyphen"}),
+    ("from:no--reply", {"hyphen"}),
+    ("from:jt-snowball.com", set()),
+    ("from:@jt-snowball", {"domain"}),
+    ('from:"no-reply"', {"hyphen"}),
+    ('to:"no-reply"', {"hyphen"}),
+    ('cc:"no-reply"', {"hyphen"}),
+    ('bcc:"no-reply"', {"hyphen"}),
+    ('from:"noreply"', {"joined"}),
+    ('from:"jt-snowball"', set()),
+    ('from:"@jt-snowball"', set()),
+    ('-from:"no-reply"', {"joined", "domain"}),
+    ('-to:"no-reply"', {"joined", "domain"}),
+    ('-cc:"no-reply"', {"joined", "domain"}),
+    ('-from:"jt-snowball"', {"joined", "hyphen", "domain"}),
+]
+
+
+def test_gmail_hyphenated_address_search(tmp_path):
+    """Each row is how `_gmail_address_match` reads a value with a hyphen or without one, quoted or
+    not, and how a `-` in front negates it."""
+    records = [
+        {"doc_id": "joined", "author_email": "noreply@shop.example"},
+        {"doc_id": "hyphen", "author_email": "no-reply@bank.example"},
+        {"doc_id": "domain", "author_email": "news@jtsnowball.com"},
+    ]
     settings = tiny_corpus(
         tmp_path,
         [
             {
                 "source_type": "gmail",
-                "doc_id": doc_id,
                 "mailbox": "ava",
-                "title": title,
+                "title": "Notice",
                 "content": "body",
-                "author_email": "ava@acme.com",
+                "to": r["author_email"],
+                "cc": r["author_email"],
+                "bcc": r["author_email"],
                 "readers": ["ava@acme.com"],
+                "visibility": "public",
                 "created": "2026-03-01T09:00:00Z",
+                **r,
             }
-            for doc_id, title in [("literal", "from: foo"), ("other", "foo")]
+            for r in records
         ],
     )
-    tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
-    with client_for(settings, reload=True) as c:
-        r = c.get(
-            f"/gmail/v1/users/me/{surface}",
-            headers={"Authorization": f"Bearer {tok(tokens, 'ava@acme.com')}"},
-            params={"q": query},
-        )
-    assert r.status_code == 200
-    assert {item["id"] for item in r.json().get(surface, [])} == {
-        served_id("gmail", doc_id) for doc_id in expected
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_HYPHENATED_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
+
+
+_LONG_Q = " or ".join(f"name contains 'Brand{i}'" for i in range(80)) + " or name contains 'Brand'"
+_FORM = "application/x-www-form-urlencoded"
+_OVERRIDE_ROWS = [
+    # path, the query the GET sends, the URL query and the body the POST sends, `Content-Type`,
+    # `X-HTTP-Method-Override`
+    ("/drive/v3/files", f"q={_LONG_Q}&pageSize=2", "", f"q={_LONG_Q}&pageSize=2", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, "GET"),
+    ("/drive/v3/files/{file}", "fields=kind,mimeType", "", "fields=kind,mimeType", _FORM, "GET"),
+    ("/drive/v3/drives", "pageSize=1", "", "pageSize=1", _FORM, "GET"),
+    ("/gmail/v1/users/me/labels", "", "", "", _FORM, "GET"),
+    ("/gmail/v1/users/me/labels", "", "", "", _FORM, "HEAD"),
+    ("/docs/v1/documents/{doc}", "", "", "", _FORM, "GET"),
+    (
+        "/sheets/v4/spreadsheets/{sheet}",
+        "fields=spreadsheetId",
+        "",
+        "fields=spreadsheetId",
+        _FORM,
+        "GET",
+    ),
+    ("/sheets/v4/spreadsheets/{sheet}", "", "", "", _FORM, "\tGET "),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, "get"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, " GET "),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, "HEAD"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM, "hEAD"),
+    ("/drive/v3/about", "", "", "fields=kind", None, "GET"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", f"{_FORM}; charset=UTF-8", "GET"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", _FORM.upper(), "GET"),
+    ("/drive/v3/about", "fields=kind", "", "fields=kind", f"text/plain;{_FORM}", "GET"),
+    ("/drive/v3/about", "", "", "fields=kind", _FORM[:-1], "GET"),
+    ("/drive/v3/about", "", "", "fields=kind", "text/plain", "GET"),
+    ("/drive/v3/about", "", "", '{"fields": "kind"}', "application/json", "GET"),
+    ("/drive/v3/about", "fields=user", "fields=user", "fields=kind", _FORM, "GET"),
+]
+
+
+@pytest.mark.parametrize(
+    "path, get, query, body, content_type, override",
+    _OVERRIDE_ROWS,
+    ids=[
+        "files-list",
+        "about",
+        "files-get",
+        "drives",
+        "gmail-labels",
+        "gmail-head",
+        "docs",
+        "sheets",
+        "sheets-tab-get",
+        "lower-case-get",
+        "spaced-get",
+        "head",
+        "mixed-case-head",
+        "no-content-type",
+        "form-with-charset",
+        "form-in-capitals",
+        "form-after-another-type",
+        "form-less-a-letter",
+        "text-plain",
+        "json",
+        "url-query-first",
+    ],
+)
+def test_google_read_sent_as_a_post_with_a_get_override_is_the_get(
+    client, admin_h, path, get, query, body, content_type, override
+):
+    """Each row is how `answer_a_google_read_sent_as_a_post` reads its POST: as the GET of the
+    query in the second column."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": "100"}).json()
+    sheet = next(f["id"] for f in files["files"] if f["mimeType"].endswith("spreadsheet"))
+    doc = next(f["id"] for f in files["files"] if f["mimeType"].endswith("document"))
+    url = path.format(file=files["files"][0]["id"], sheet=sheet, doc=doc)
+    headers = {**admin_h, "X-HTTP-Method-Override": override}
+    if content_type is not None:
+        headers["Content-Type"] = content_type
+    got = client.get(f"{url}?{get}", headers=admin_h)
+    posted = client.post(f"{url}?{query}", headers=headers, content=body)
+    assert (posted.status_code, posted.content) == (got.status_code, got.content)
+
+
+@pytest.mark.parametrize(
+    "method, path, overrides",
+    [
+        ("POST", "/drive/v3/about", []),
+        ("POST", "/drive/v3/about", ["PUT"]),
+        ("POST", "/drive/v3/about", ["GET, PUT"]),
+        ("POST", "/drive/v3/about", ["GET", "GET"]),
+        ("POST", "/drive/v3/about", ["NBSPGET"]),
+        ("POST", "/drive/v3/about", ["NELGET"]),
+        ("POST", "/gmail/v1/users/me/labels", ["get"]),
+        ("POST", "/gmail/v1/users/me/labels", ["Head"]),
+        ("POST", "/docs/v1/documents/{doc}", ["HEAD"]),
+        ("POST", "/docs/v1/documents/{doc}", ["get"]),
+        ("POST", "/sheets/v4/spreadsheets/{sheet}", ["HEAD"]),
+        ("POST", "/sheets/v4/spreadsheets/{sheet}", ["Get"]),
+        ("PUT", "/drive/v3/about", ["GET"]),
+        ("DELETE", "/drive/v3/about", ["GET"]),
+    ],
+    ids=[
+        "none",
+        "put",
+        "get-and-put",
+        "get-twice",
+        "nbsp-get",
+        "nel-get",
+        "gmail-lower-case-get",
+        "gmail-mixed-case-head",
+        "docs-head",
+        "docs-lower-case-get",
+        "sheets-head",
+        "sheets-mixed-case-get",
+        "drive-put",
+        "drive-delete",
+    ],
+)
+def test_google_request_whose_override_is_not_read_goes_on_as_sent(
+    client, admin_h, method, path, overrides
+):
+    """A request whose `X-HTTP-Method-Override` :data:`backlot.main._GOOGLE_READ_OVERRIDES` does not
+    read for its path, or that is not a POST, is answered as the same request with no override is.
+    The headers go out as their latin-1 bytes (`sent_as`), so `NBSP` and `NEL` stand for 0xA0 and
+    0x85."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": "100"}).json()
+    sheet = next(f["id"] for f in files["files"] if f["mimeType"].endswith("spreadsheet"))
+    doc = next(f["id"] for f in files["files"] if f["mimeType"].endswith("document"))
+    url = path.format(sheet=sheet, doc=doc)
+    plain = [*admin_h.items(), ("Content-Type", _FORM)]
+    named = [
+        *plain,
+        *(
+            ("X-HTTP-Method-Override", o.replace("NBSP", chr(0xA0)).replace("NEL", chr(0x85)))
+            for o in overrides
+        ),
+    ]
+    posted = sent_as(client, method, url, named, content=b"fields=kind")
+    control = sent_as(client, method, url, plain, content=b"fields=kind")
+    assert (posted.status_code, posted.content) == (control.status_code, control.content)
+
+
+# --- Sheets `values` writes --------------------------------------------------------------------
+#
+# A corpus of its own, and a server of its own per test (`wc`): every test here writes, and a
+# write left in one test's overlay would be the next one's starting state.
+
+WRITE_RECORDS = [
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-book",
+        "subtype": "spreadsheet",
+        "title": "Book",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+        "sheets": [
+            {"title": "Data", "grid": [["region", "deals"], ["EMEA", 12]]},
+            {"title": "Other", "grid": [["o"]]},
+        ],
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-prose",
+        "subtype": "spreadsheet",
+        "title": "Prose",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "content": "month,revenue\nJan,1",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-doc",
+        "subtype": "document",
+        "title": "Notes",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "content": "notes",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-01T09:00:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-text",
+        "subtype": "document",
+        "title": "Text",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "content": "Hello world\nSecond para",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-styled",
+        "subtype": "document",
+        "title": "Styled",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "paragraphs": [
+            {"style": "HEADING_1", "text": "Title line"},
+            {"runs": [{"text": "plain "}, {"text": "BOLD", "bold": True}, {"text": " tail"}]},
+            {"runs": [{"text": "link", "link": "https://example.com/"}, {"text": " here"}]},
+            {"runs": [{"text": "struck", "strikethrough": True}]},
+            {"runs": [{"text": "BOLDSTART", "italic": True}, {"text": " x"}]},
+            {"text": ""},
+            {"text": "last"},
+        ],
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-links",
+        "subtype": "document",
+        "title": "Links",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "paragraphs": [
+            {
+                "runs": [
+                    {"text": "BL", "bold": True, "link": "https://example.com/"},
+                    {"text": " t"},
+                ]
+            },
+            {
+                "runs": [
+                    {"text": "BL", "bold": True, "link": "https://example.com/"},
+                    {"text": " t", "bold": True},
+                ]
+            },
+            {
+                "runs": [
+                    {"text": "lnk", "bold": True, "link": "https://example.com/"},
+                    {"text": " t"},
+                ]
+            },
+            {"text": "ab"},
+            {"runs": [{"text": "cd", "underline": True}]},
+            {"runs": [{"text": "x"}, {"text": "YZ", "bold": True}]},
+        ],
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-hidden",
+        "subtype": "document",
+        "title": "Hidden",
+        "folder": "hr",
+        "visibility": "private",
+        "author_email": "reader@acme.com",
+        "content": "not yours",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-private",
+        "subtype": "spreadsheet",
+        "title": "Private",
+        "folder": "hr",
+        "visibility": "private",
+        "author_email": "reader@acme.com",
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+        "sheets": [{"title": "Sheet1", "grid": [["x"]]}],
+    },
+]
+
+
+@pytest.fixture(scope="module")
+def write_settings(tmp_path_factory):
+    from tests._helpers import build_corpus
+
+    return build_corpus(tmp_path_factory.mktemp("writes"), WRITE_RECORDS, raw=True)
+
+
+@pytest.fixture
+def wc(write_settings):
+    from tests._helpers import client_for
+
+    with client_for(write_settings, reload=True) as c:
+        yield c
+
+
+@pytest.fixture(scope="module")
+def wh(write_settings):
+    """Headers for each user of the write corpus, and the admin's."""
+    data = yaml.safe_load(write_settings.tokens_path.read_text(encoding="utf-8"))
+    out = {u["email"]: {"Authorization": f"Bearer {u['token']}"} for u in data["users"]}
+    out["admin"] = {"Authorization": f"Bearer {data['admin_token']}"}
+    return out
+
+
+@pytest.fixture(scope="module")
+def wbook(write_settings):
+    from tests._helpers import served_id
+
+    return f"/sheets/v4/spreadsheets/{served_id('google_drive', 'wr-book')}"
+
+
+_OWNER = "owner@acme.com"
+_RAW = {"valueInputOption": "RAW"}
+_ENTERED = {"valueInputOption": "USER_ENTERED"}
+
+
+def _read_back(wc, h, wbook, rng, **params):
+    r = wc.get(f"{wbook}/values/{quote(rng, safe='')}", headers=h, params=params)
+    assert r.status_code == 200, r.text
+    return r.json().get("values")
+
+
+def test_an_update_answers_what_it_wrote_and_every_read_sees_it(wc, wh, wbook):
+    """Measured: the counts are the distinct rows, columns and cells written, and
+    `updatedRange` runs from the range's first cell to the last one written. The write then reads
+    back through `values.get` in each rendering, through the grid, and through Drive."""
+    h = wh[_OWNER]
+    r = wc.put(
+        f"{wbook}/values/Data!A3:D3",
+        headers=h,
+        params=_ENTERED,
+        json={"values": [["APAC", "12.5%", "2024-01-15", None]]},
+    )
+    assert r.status_code == 200, r.text
+    sid = wbook.rsplit("/", 1)[1]
+    assert r.json() == {
+        "spreadsheetId": sid,
+        "updatedRange": "Data!A3:C3",
+        "updatedRows": 1,
+        "updatedColumns": 3,
+        "updatedCells": 3,
     }
+    assert _read_back(wc, h, wbook, "Data!A3:C3") == [["APAC", "12.50%", "2024-01-15"]]
+    assert _read_back(wc, h, wbook, "Data!A3:C3", valueRenderOption="UNFORMATTED_VALUE") == [
+        ["APAC", 0.125, 45306]
+    ]
+    assert _read_back(
+        wc,
+        h,
+        wbook,
+        "Data!A3:C3",
+        valueRenderOption="UNFORMATTED_VALUE",
+        dateTimeRenderOption="FORMATTED_STRING",
+    ) == [["APAC", 0.125, "2024-01-15"]]
+    cell = wc.get(
+        wbook,
+        headers=h,
+        params={
+            "ranges": "Data!B3",
+            "includeGridData": "true",
+            "fields": "sheets.data.rowData.values(userEnteredValue,formattedValue,userEnteredFormat)",
+        },
+    ).json()["sheets"][0]["data"][0]["rowData"][0]["values"][0]
+    assert cell == {
+        "userEnteredValue": {"numberValue": 0.125},
+        "formattedValue": "12.50%",
+        "userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0.00%"}},
+    }
+    drive = wc.get(f"/drive/v3/files/{sid}", headers=h, params={"fields": "modifiedTime"}).json()
+    assert drive["modifiedTime"] > "2026-07-14T17:20:00"
+    csv_ = wc.get(f"/drive/v3/files/{sid}/export", headers=h, params={"mimeType": "text/csv"})
+    assert csv_.text == "region,deals,\r\nEMEA,12,\r\nAPAC,12.50%,2024-01-15"
+    hits = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains 'APAC'"}).json()
+    assert [f["id"] for f in hits["files"]] == [sid]
+
+
+def test_a_null_leaves_its_cell_and_an_empty_string_clears_it(wc, wh, wbook):
+    r = wc.put(
+        f"{wbook}/values/Data!A1:B1", headers=wh[_OWNER], params=_RAW, json={"values": [[None, ""]]}
+    )
+    assert r.json()["updatedRange"] == "Data!A1:B1"
+    assert (r.json()["updatedColumns"], r.json()["updatedCells"]) == (1, 1)
+    assert _read_back(wc, wh[_OWNER], wbook, "Data!A1:B2") == [["region"], ["EMEA", "12"]]
+
+
+@pytest.mark.parametrize("body", [{"values": []}, {}, {"values": [[None]]}, {"values": [[]]}])
+def test_a_write_of_nothing_answers_its_first_cell_and_changes_nothing(wc, wh, wbook, body):
+    sid = wbook.rsplit("/", 1)[1]
+    r = wc.put(f"{wbook}/values/Data!B5:C6", headers=wh[_OWNER], params=_RAW, json=body)
+    assert r.json() == {"spreadsheetId": sid, "updatedRange": "Data!B5"}
+    assert wc.get("/_meta/overlay").json()["google_drive_patch"] == []
+
+
+def test_a_single_cell_is_an_anchor_that_grows_the_grid(wc, wh, wbook):
+    """Measured: a block from `Y1` three wide writes `Y1:AA1` and the sheet becomes 27 columns
+    wide; only an anchor itself past the edge is refused. A bound past the edge grows it too."""
+    h = wh[_OWNER]
+    r = wc.put(
+        f"{wbook}/values/Data!Y1", headers=h, params=_RAW, json={"values": [["x", "y", "z"]]}
+    )
+    assert r.json()["updatedRange"] == "Data!Y1:AA1"
+    grid = wc.get(wbook, headers=h).json()["sheets"][0]["properties"]["gridProperties"]
+    assert grid == {"rowCount": 1000, "columnCount": 27}
+    r = wc.put(f"{wbook}/values/Data!AC1", headers=h, params=_RAW, json={"values": [["x"]]})
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == (
+        "Range (Data!AC1) exceeds grid limits. Max rows: 1000, max columns: 27"
+    )
+    r = wc.put(
+        f"{wbook}/values/Data!Y999:AB999", headers=h, params=_RAW, json={"values": [list("wxyz")]}
+    )
+    assert r.json()["updatedRange"] == "Data!Y999:AB999"
+    grid = wc.get(wbook, headers=h).json()["sheets"][0]["properties"]["gridProperties"]
+    assert grid == {"rowCount": 1000, "columnCount": 28}
+
+
+@pytest.mark.parametrize(
+    "rng,body,message",
+    [
+        (
+            "Data!A1:B1",
+            {"values": [["a", "b"], ["c"]]},
+            "Requested writing within range [Data!A1:B1], but tried writing to row [2]",
+        ),
+        (
+            "Data!A7:A7",
+            {"values": [["x", "y"]]},
+            "Requested writing within range [Data!A7], but tried writing to column [B]",
+        ),
+        # a bound is the range as sent, past the grid's edge too; only its start must be inside
+        (
+            "Data!Z999:Z1001",
+            {"values": [["a"], ["b"], ["c"], ["d"]]},
+            "Requested writing within range [Data!Z999:Z1001], but tried writing to row [1002]",
+        ),
+        (
+            "Data!Z1001:Z1002",
+            {"values": [["x"]]},
+            "Range (Data!Z1001:Z1002) exceeds grid limits. Max rows: 1000, max columns: 26",
+        ),
+        ("Nope!A1", {"values": [["x"]]}, "Unable to parse range: Nope!A1"),
+        (
+            "Data!A1:B1",
+            {"range": "data!a1:b1", "values": [["a"]]},
+            "Request range[Data!A1:B1] does not match value's range[data!a1:b1]",
+        ),
+        (
+            "Data!B5",
+            {"values": [["ok", {"a": 1}]]},
+            'Invalid values[4][1]: struct_value \t {\n  fields {\n    key: "a"\n    value {\n'
+            "      number_value: 1.0\n    }\n  }\n}\n",
+        ),
+        (
+            "Data!A3",
+            {"values": [[[1, 2]]]},
+            "Invalid values[2][0]: list_value \t {\n  values {\n    number_value: 1.0\n  }\n"
+            "  values {\n    number_value: 2.0\n  }\n}\n",
+        ),
+        # under COLUMNS a list is a column, indexed from the range's start column
+        (
+            "Data!U950",
+            {"majorDimension": "COLUMNS", "values": [["a"], ["b"], [{"x": 1}]]},
+            'Invalid values[22][0]: struct_value \t {\n  fields {\n    key: "x"\n    value {\n'
+            "      number_value: 1.0\n    }\n  }\n}\n",
+        ),
+        (
+            "Data!Z950",
+            {"majorDimension": "COLUMNS", "values": [["a", {"x": 1}]]},
+            'Invalid values[25][1]: struct_value \t {\n  fields {\n    key: "x"\n    value {\n'
+            "      number_value: 1.0\n    }\n  }\n}\n",
+        ),
+        (
+            "Data!A1",
+            {"bogus": 1},
+            "Invalid JSON payload received. Unknown name \"bogus\" at 'data': Cannot find field.",
+        ),
+        (
+            "Data!A1",
+            {"values": ["x"]},
+            "Invalid value at 'data.values[0]' (type.googleapis.com/google.protobuf.ListValue), "
+            '"x"',
+        ),
+    ],
+)
+def test_a_write_real_refuses_is_refused_with_reals_message(wc, wh, wbook, rng, body, message):
+    r = wc.put(f"{wbook}/values/{quote(rng, safe='')}", headers=wh[_OWNER], params=_RAW, json=body)
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == message
+    assert wc.get("/_meta/overlay").json()["gdrive_sheets"] == []
+
+
+@pytest.mark.parametrize(
+    "who,book,params,body,status,message",
+    [
+        # a reader is refused ahead of a missing option and of a range that does not parse ...
+        (
+            "reader@acme.com",
+            "wr-book",
+            {},
+            {"values": [["x"]]},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            "reader@acme.com",
+            "wr-book",
+            _RAW,
+            {"values": [["x"]]},
+            403,
+            "The caller does not have permission",
+        ),
+        # ... and behind the typed query values and the body
+        (
+            "reader@acme.com",
+            "wr-book",
+            {**_RAW, "includeValuesInResponse": "bogus"},
+            {"values": [["x"]]},
+            400,
+            "Invalid value at 'include_values_in_response' (TYPE_BOOL), \"bogus\"",
+        ),
+        # a file the caller cannot see is the same 403, a Doc the 404 the reads give it
+        (
+            _OWNER,
+            "wr-private",
+            _RAW,
+            {"values": [["x"]]},
+            403,
+            "The caller does not have permission",
+        ),
+        (_OWNER, "wr-doc", _RAW, {"values": [["x"]]}, 404, "Requested entity was not found."),
+        ("admin", "wr-book", _RAW, {"values": [["x"]]}, 403, "The caller does not have permission"),
+        # the option has no default, and its zero value is no value
+        (
+            _OWNER,
+            "wr-book",
+            {},
+            {"values": [["x"]]},
+            400,
+            "'valueInputOption' is required but not specified",
+        ),
+        (
+            _OWNER,
+            "wr-book",
+            {"valueInputOption": "INPUT_VALUE_OPTION_UNSPECIFIED"},
+            {"values": [["x"]]},
+            400,
+            "'valueInputOption' is required but not specified",
+        ),
+        (
+            _OWNER,
+            "wr-book",
+            {"valueInputOption": "BOGUS"},
+            {"values": [["x"]]},
+            400,
+            "Invalid value at 'value_input_option' "
+            '(type.googleapis.com/google.apps.sheets.v4.ValueInputOption), "BOGUS"',
+        ),
+        # a refused body and a refused query are one 400, the body's first
+        (
+            "reader@acme.com",
+            "wr-book",
+            {**_RAW, "includeValuesInResponse": "on"},
+            {"values": "x"},
+            400,
+            "Invalid value at 'data.values' (type.googleapis.com/google.protobuf.ListValue), "
+            '"x"\nInvalid value at \'include_values_in_response\' (TYPE_BOOL), "on"',
+        ),
+        (
+            _OWNER,
+            "wr-book",
+            {"valueInputOption": "BOGUS"},
+            {"bogus": 1},
+            400,
+            "Invalid JSON payload received. Unknown name \"bogus\" at 'data': Cannot find field.\n"
+            "Invalid value at 'value_input_option' "
+            '(type.googleapis.com/google.apps.sheets.v4.ValueInputOption), "BOGUS"',
+        ),
+        # a Doc's batchUpdate (`<doc>:batchUpdate`): the body and the mask before the lookup, a
+        # reader's 403 before the body's emptiness, a Doc the caller cannot see before its indices
+        (
+            "reader@acme.com",
+            "wr-text:batchUpdate",
+            {},
+            {"requests": []},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            "reader@acme.com",
+            "wr-text:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 0}, "text": "x"}}]},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            "admin",
+            "wr-text:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 1}, "text": "x"}}]},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            _OWNER,
+            "wr-hidden:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 0}, "text": "x"}}]},
+            403,
+            "The caller does not have permission",
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 0}, "text": "x"}}]},
+            404,
+            "Requested entity was not found.",
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {},
+            {"requests": [{}]},
+            404,
+            "Requested entity was not found.",
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {},
+            {"requests": [], "nope": 1},
+            400,
+            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+        ),
+        (
+            _OWNER,
+            "nope:batchUpdate",
+            {"fields": "nope"},
+            {"requests": []},
+            400,
+            "Request contains an invalid argument.",
+        ),
+        (
+            _OWNER,
+            "wr-text:batchUpdate",
+            {"fields": "nope"},
+            {"nope": 1},
+            400,
+            'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+        ),
+        (
+            _OWNER,
+            "wr-book:batchUpdate",
+            {},
+            {"requests": [{"insertText": {"location": {"index": 1}, "text": "x"}}]},
+            404,
+            "Requested entity was not found.",
+        ),
+    ],
+)
+def test_who_may_write_and_in_what_order_a_write_is_refused(
+    wc, wh, who, book, params, body, status, message
+):
+    from tests._helpers import served_id
+
+    book, _, method = book.partition(":")
+    fid = served_id("google_drive", book) if book != "nope" else "1nope" + "0" * 38
+    if method:
+        r = wc.post(f"/docs/v1/documents/{fid}:{method}", headers=wh[who], params=params, json=body)
+    else:
+        path = f"/sheets/v4/spreadsheets/{fid}/values/A1"
+        r = wc.put(path, headers=wh[who], params=params, json=body)
+    assert (r.status_code, r.json()["error"]["message"]) == (status, message)
+
+
+@pytest.mark.parametrize(
+    "method,suffix,rpc",
+    [
+        ("POST", "/docs/v1/documents", "docs.v1.DocumentsService.CreateDocument"),
+        (
+            "POST",
+            "/docs/v1/documents/1nope:batchUpdate",
+            "docs.v1.DocumentsService.BatchUpdateDocument",
+        ),
+        ("PUT", "/values/A1", "UpdateValues"),
+        ("POST", "/values:batchUpdate", "BatchUpdateValues"),
+        ("POST", "/values/A1:clear", "ClearValues"),
+        ("POST", "/values/A1:append", "AppendValues"),
+        ("POST", "/sheets/0:copyTo", "CopySheetToAnotherSpreadsheet"),
+        ("POST", "/values:batchUpdateByDataFilter", "BatchUpdateValuesByDataFilter"),
+        ("POST", "/values:batchClearByDataFilter", "BatchClearValuesByDataFilter"),
+        ("POST", "/values:batchClear", "BatchClearValues"),
+        ("POST", "/values:batchGetByDataFilter", "BatchGetValuesByDataFilter"),
+        ("POST", ":getByDataFilter", "GetSpreadsheetByDataFilter"),
+        # not served, and the same 401
+        ("POST", ":batchUpdate", "BatchUpdateSpreadsheet"),
+        ("POST", "/developerMetadata:search", "SearchDeveloperMetadata"),
+        ("GET", "/developerMetadata/5", "GetDeveloperMetadata"),
+    ],
+)
+def test_an_editor_post_or_put_with_no_credential_names_its_rpc(wc, wbook, method, suffix, rpc):
+    """No credential on these is a 401 whose ErrorInfo names the RPC: a Sheets one by its name on
+    the spreadsheet the path suffixes, any other by its path and its whole name."""
+    if "." not in rpc:
+        suffix, rpc = f"{wbook}{suffix}", f"sheets.v4.SpreadsheetsService.{rpc}"
+    r = wc.request(method, suffix, params=_RAW, json={})
+    assert r.status_code == 401
+    assert r.json()["error"]["details"] == [
+        {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": "CREDENTIALS_MISSING",
+            "domain": "googleapis.com",
+            "metadata": {
+                "method": f"google.apps.{rpc}",
+                "service": f"{rpc.split('.')[0]}.googleapis.com",
+            },
+        }
+    ]
+
+
+@pytest.mark.parametrize("option", ["raw", "1"])
+def test_value_input_option_reads_a_name_in_any_case_or_its_number(wc, wh, wbook, option):
+    r = wc.put(
+        f"{wbook}/values/Data!A1",
+        headers=wh[_OWNER],
+        params={"valueInputOption": option},
+        json={"values": [["=1"]]},
+    )
+    assert r.status_code == 200
+    assert _read_back(wc, wh[_OWNER], wbook, "Data!A1") == [["=1"]]
+
+
+def test_columns_writes_each_inner_list_down_a_column(wc, wh, wbook):
+    r = wc.put(
+        f"{wbook}/values/Data!D1:E3",
+        headers=wh[_OWNER],
+        params={**_RAW, "includeValuesInResponse": "true"},
+        json={"majorDimension": "COLUMNS", "values": [["d1", "d2", "d3"], ["e1"]]},
+    )
+    assert r.json()["updatedData"] == {
+        "range": "Data!D1:E3",
+        "majorDimension": "COLUMNS",
+        "values": [["d1", "d2", "d3"], ["e1"]],
+    }
+    assert _read_back(wc, wh[_OWNER], wbook, "Data!D1:E3") == [["d1", "e1"], ["d2"], ["d3"]]
+
+
+def test_updated_data_reads_back_a_bound_whole_and_an_anchor_as_written(wc, wh, wbook):
+    """Measured: `[[null, "x"]]` over `A1:C2` updates `B1` alone and answers the whole request
+    range read back, cells the write left alone included, under the response render options. An
+    anchor reads back its `updatedRange`, in a batch too."""
+    r = wc.put(
+        f"{wbook}/values/Data!A1:C2",
+        headers=wh[_OWNER],
+        params={
+            **_ENTERED,
+            "includeValuesInResponse": "true",
+            "responseValueRenderOption": "UNFORMATTED_VALUE",
+        },
+        json={"values": [[None, "12%"]]},
+    )
+    assert r.json()["updatedRange"] == "Data!A1:B1"
+    assert r.json()["updatedData"] == {
+        "range": "Data!A1:C2",
+        "majorDimension": "ROWS",
+        "values": [["region", 0.12], ["EMEA", 12]],
+    }
+    echo = {**_RAW, "includeValuesInResponse": "true"}
+    for at, values, read in [
+        ("Data!A6", [list("abc")], ("Data!A6:C6", [list("abc")])),
+        ("Data!A81", [[None, "b"]], ("Data!A81:B81", [["", "b"]])),
+        ("Data!A80", [["a", None]], ("Data!A80", [["a"]])),
+    ]:
+        r = wc.put(f"{wbook}/values/{at}", headers=wh[_OWNER], params=echo, json={"values": values})
+        data = r.json()["updatedData"]
+        assert (data["range"], data["values"]) == read
+    r = wc.post(
+        f"{wbook}/values:batchUpdate",
+        headers=wh[_OWNER],
+        params=echo,
+        json={"data": [{"range": "Data!A86", "values": [["e", "f"]]}]},
+    )
+    assert r.json()["responses"][0]["updatedData"]["range"] == "Data!A86:B86"
+
+
+def test_a_prose_spreadsheet_takes_a_write_as_the_grid_it_reads_as(wc, wh, write_settings):
+    """`_workbook`'s line-per-cell sheet is the grid a write lands in, and once written the file
+    exports as that grid."""
+    from tests._helpers import served_id
+
+    sid = served_id("google_drive", "wr-prose")
+    book = f"/sheets/v4/spreadsheets/{sid}"
+    h = wh[_OWNER]
+    r = wc.put(f"{book}/values/B2", headers=h, params=_RAW, json={"values": [["new"]]})
+    assert r.json()["updatedRange"] == "Sheet1!B2"
+    assert _read_back(wc, h, book, "A1:B2") == [["month,revenue"], ["Jan,1", "new"]]
+    props = wc.get(book, headers=h).json()["sheets"][0]["properties"]
+    assert (props["sheetId"], props["title"]) == (0, "Sheet1")
+    csv_ = wc.get(f"/drive/v3/files/{sid}/export", headers=h, params={"mimeType": "text/csv"})
+    assert csv_.text == '"month,revenue",\r\n"Jan,1",new'
+
+
+_REQUIRED = "'valueInputOption' is required but not specified"
+# (route, body options, refusal): a body's enum read by its number (`_sheets_batch_options`)
+_BODY_ENUM_REFUSALS = [
+    ("values:batchUpdate", {"valueInputOption": "INPUT_VALUE_OPTION_UNSPECIFIED"}, _REQUIRED),
+    ("values:batchUpdate", {"valueInputOption": 0}, _REQUIRED),
+    ("values:batchUpdate", {"valueInputOption": 0, "responseValueRenderOption": 99}, _REQUIRED),
+    ("values:batchUpdate", {"valueInputOption": -1}, "Invalid 'valueInputOption'"),
+    ("values:batchUpdate", {"valueInputOption": 3}, "Invalid 'valueInputOption'"),
+    (
+        "values:batchUpdate",
+        {"valueInputOption": 99, "responseValueRenderOption": 99},
+        "Invalid 'valueInputOption'",
+    ),
+    (
+        "values:batchUpdate",
+        {"valueInputOption": "RAW", "responseValueRenderOption": -1},
+        "Invalid 'responseValueRenderOption'",
+    ),
+    (
+        "values:batchUpdate",
+        {
+            "valueInputOption": "RAW",
+            "responseValueRenderOption": 99,
+            "responseDateTimeRenderOption": 99,
+        },
+        "Invalid 'responseValueRenderOption'",
+    ),
+    (
+        "values:batchUpdate",
+        {"valueInputOption": "RAW", "responseDateTimeRenderOption": 99},
+        "Invalid 'responseDateTimeRenderOption'",
+    ),
+    (
+        "values:batchUpdateByDataFilter",
+        {"valueInputOption": "INPUT_VALUE_OPTION_UNSPECIFIED"},
+        _REQUIRED,
+    ),
+    ("values:batchUpdateByDataFilter", {"valueInputOption": 0}, _REQUIRED),
+    ("values:batchUpdateByDataFilter", {"valueInputOption": 3}, "Invalid 'valueInputOption'"),
+    (
+        "values:batchUpdateByDataFilter",
+        {"valueInputOption": 99, "responseValueRenderOption": 99},
+        "Invalid 'valueInputOption'",
+    ),
+    (
+        "values:batchUpdateByDataFilter",
+        {"valueInputOption": "RAW", "responseValueRenderOption": 99},
+        "Invalid 'responseValueRenderOption'",
+    ),
+    (
+        "values:batchUpdateByDataFilter",
+        {"valueInputOption": "RAW", "responseDateTimeRenderOption": 99},
+        "Invalid 'responseDateTimeRenderOption'",
+    ),
+]
+
+
+def test_a_batch_update_writes_every_entry_or_none(wc, wh, wbook):
+    """Measured: one bad entry refuses the call by its index and writes nothing; the totals count
+    distinct cells across the batch, and every sheet an entry names."""
+    h = wh[_OWNER]
+    path = f"{wbook}/values:batchUpdate"
+    r = wc.post(
+        path,
+        headers=h,
+        json={
+            "valueInputOption": "RAW",
+            "data": [
+                {"range": "Data!A5", "values": [["first"]]},
+                {"range": "Nope!A1", "values": [["x"]]},
+            ],
+        },
+    )
+    assert r.json()["error"]["message"] == "Invalid data[1]: Unable to parse range: Nope!A1"
+    assert _read_back(wc, h, wbook, "Data!A5") is None
+    r = wc.post(
+        path,
+        headers=h,
+        json={
+            "valueInputOption": "RAW",
+            "data": [
+                {"range": "Data!A8:B8", "values": [["one", "one"]]},
+                {"range": "Data!B8:C8", "values": [["two", "two"]]},
+                {"range": "Other!A5"},
+            ],
+        },
+    )
+    body = r.json()
+    assert {k: v for k, v in body.items() if k.startswith("total")} == {
+        "totalUpdatedRows": 1,
+        "totalUpdatedColumns": 3,
+        "totalUpdatedCells": 3,
+        "totalUpdatedSheets": 2,
+    }
+    assert [x["updatedRange"] for x in body["responses"]] == [
+        "Data!A8:B8",
+        "Data!B8:C8",
+        "Other!A5",
+    ]
+    assert _read_back(wc, h, wbook, "Data!A8:C8") == [["one", "two", "two"]]
+    # what the body leaves unset is read from the query
+    r = wc.post(
+        path,
+        headers=h,
+        params={
+            **_ENTERED,
+            "includeValuesInResponse": "true",
+            "responseValueRenderOption": "UNFORMATTED_VALUE",
+        },
+        json={"data": [{"range": "Data!A9", "values": [["50%"]]}]},
+    )
+    assert r.json()["responses"][0]["updatedData"]["values"] == [[0.5]]
+    r = wc.post(path, headers=h, json={"valueInputOption": "RAW", "data": [{"values": [["x"]]}]})
+    assert r.json()["error"]["message"] == (
+        "Invalid data[0]: ValueRange.range is required but not specified"
+    )
+    sid = wbook.rsplit("/", 1)[1]
+    assert wc.post(path, headers=h, json={"valueInputOption": "RAW"}).json() == {
+        "spreadsheetId": sid
+    }
+    # the query's option wins over the body's
+    r = wc.post(
+        path,
+        headers=h,
+        params={**_ENTERED, "includeValuesInResponse": "false"},
+        json={
+            "valueInputOption": "RAW",
+            "includeValuesInResponse": True,
+            "data": [{"range": "Data!A10", "values": [["5%"]]}],
+        },
+    )
+    assert "updatedData" not in r.json()["responses"][0]
+    assert _read_back(wc, h, wbook, "Data!A10", valueRenderOption="UNFORMATTED_VALUE") == [[0.05]]
+    r = wc.post(path, headers=h, params={"includeValuesInResponse": "on"}, json={"bogus": 1})
+    assert r.json()["error"]["message"] == (
+        'Invalid JSON payload received. Unknown name "bogus": Cannot find field.\n'
+        "Invalid value at 'include_values_in_response' (TYPE_BOOL), \"on\""
+    )
+    # a body's enum number zero is no value, and one outside the enum is refused; nothing is written
+    for route, options, message in _BODY_ENUM_REFUSALS:
+        if route == "values:batchUpdate":
+            entry = {"range": "Data!A12", "values": [["5%"]]}
+        else:
+            entry = {"dataFilter": {"a1Range": "Data!A12"}, "values": [["5%"]]}
+        r = wc.post(f"{wbook}/{route}", headers=h, json={**options, "data": [entry]})
+        assert (r.status_code, r.json()["error"]["message"]) == (400, message), (route, options)
+        assert _read_back(wc, h, wbook, "Data!A12") is None
+
+
+def test_a_clear_empties_the_values_and_keeps_the_formats(wc, wh, wbook):
+    """Measured: `clearedRange` is the range as resolved, cut at the grid's edge; a cleared percent
+    cell written a RAW `0.5` afterwards displays `50.00%`."""
+    h = wh[_OWNER]
+    wc.put(f"{wbook}/values/Data!C1", headers=h, params=_ENTERED, json={"values": [["12.5%"]]})
+    r = wc.post(f"{wbook}/values/Data!C1:AC1:clear", headers=h)
+    assert r.json()["clearedRange"] == "Data!C1:Z1"
+    wc.put(f"{wbook}/values/Data!C1", headers=h, params=_RAW, json={"values": [[0.5]]})
+    assert _read_back(wc, h, wbook, "Data!C1") == [["50.00%"]]
+    r = wc.post(f"{wbook}/values:batchClear", headers=h, json={"ranges": ["Data!A1", "Nope!A1"]})
+    assert r.json()["error"]["message"] == "Invalid range[1]: Unable to parse range: Nope!A1"
+    assert _read_back(wc, h, wbook, "Data!A1") == [["region"]]
+    r = wc.post(f"{wbook}/values:batchClear", headers=h, json={"ranges": ["Other", "data!b2:a1"]})
+    assert r.json()["clearedRanges"] == ["Other!A1:Z1000", "Data!A1:B2"]
+    assert _read_back(wc, h, wbook, "Data!A1:B2") is None
+    r = wc.post(f"{wbook}/values/Data!A1:clear", headers=h, json={"bogus": 1})
+    assert r.json()["error"]["message"] == (
+        'Invalid JSON payload received. Unknown name "bogus": Cannot find field.'
+    )
+    r = wc.post(f"{wbook}/values/Data!A1:clear", headers=wh["reader@acme.com"])
+    assert r.status_code == 403
+
+
+def test_a_written_cell_carries_its_format_and_an_error_its_type(wc, wh, wbook):
+    """`userEnteredFormat` sits between `formattedValue` and an
+    `effectiveFormat` that opens with the same `numberFormat`; a typed error is `errorValue` with
+    no message, centred, and reads `#N/A ()` unformatted; a cleared cell keeps its format and
+    with it a trimmed `effectiveFormat`, no alignment and no `hyperlinkDisplayType`."""
+    h = wh[_OWNER]
+    wc.put(
+        f"{wbook}/values/Data!A4:C4",
+        headers=h,
+        params=_ENTERED,
+        json={"values": [["$5", "#N/A", "12%"]]},
+    )
+    wc.post(f"{wbook}/values/Data!C4:clear", headers=h)
+    values = _cells(wc, h, wbook.rsplit("/", 1)[1], "Data!A4:C4")[0]["values"]
+    assert list(values[0]) == [
+        "userEnteredValue",
+        "effectiveValue",
+        "formattedValue",
+        "userEnteredFormat",
+        "effectiveFormat",
+    ]
+    currency = {"type": "CURRENCY", "pattern": '"$"#,##0'}
+    assert values[0]["effectiveFormat"] == {
+        "numberFormat": currency,
+        **_CELL_FORMAT,
+        "horizontalAlignment": "RIGHT",
+    }
+    assert list(values[0]["effectiveFormat"])[:2] == ["numberFormat", "backgroundColor"]
+    for fmt in ("userEnteredFormat", "effectiveFormat"):
+        assert list(values[0][fmt]["numberFormat"]) == ["type", "pattern"]
+    assert values[1]["effectiveValue"] == {"errorValue": {"type": "N_A"}}
+    assert values[1]["effectiveFormat"]["horizontalAlignment"] == "CENTER"
+    trimmed = {k: v for k, v in _CELL_FORMAT.items() if k != "hyperlinkDisplayType"}
+    assert values[2] == {
+        "userEnteredFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0%"}},
+        "effectiveFormat": {"numberFormat": {"type": "PERCENT", "pattern": "0%"}, **trimmed},
+    }
+    assert _read_back(wc, h, wbook, "Data!B4", valueRenderOption="UNFORMATTED_VALUE") == [
+        ["#N/A ()"]
+    ]
+
+
+def _layout(wc, h, wbook, cells):
+    """Clear `Data` and write ``cells`` (`{"B2": "x"}`) into it."""
+    wc.post(f"{wbook}/values/Data:clear", headers=h)
+    for at, value in cells.items():
+        wc.put(f"{wbook}/values/Data!{at}", headers=h, params=_RAW, json={"values": [[value]]})
+
+
+@pytest.mark.parametrize(
+    "cells,rng,table,written",
+    [
+        # measured: the last cell holding a value, row by row, starts the table
+        ({"E5": "t", "F5": "u", "G1": "m"}, "Data!F1:G10", "Data!E5:F5", "Data!E6"),
+        ({"A5": "t", "B5": "u"}, "Data!A1:A10", "Data!A5:B5", "Data!A6"),
+        (
+            {"A1": "Weekly log", "A3": "h", "B3": "i", "A4": "a", "B4": "b", "A5": "c", "B5": "d"},
+            "Data!A1:B100",
+            "Data!A3:B5",
+            "Data!A6",
+        ),
+        ({"A40": "a", "A41": "b", "C45": "c"}, "Data!A40:E49", "Data!C45", "Data!C46"),
+        ({"G44": "g", "I44": "i"}, "Data!G40:K49", "Data!I44", "Data!I45"),
+        ({"W40": "w", "X44": "x", "W46": "y"}, "Data!W40:X49", "Data!W46", "Data!W47"),
+        # and grows past the range, up as well as down
+        ({f"O{n}": "o" for n in range(40, 44)}, "Data!O42:O49", "Data!O40:O43", "Data!O44"),
+        # it grows through a cell in the row or column next to it, never a diagonal one
+        ({"A1": "a", "A2": "b", "B2": "c", "C1": "d"}, "Data!A1", "Data!A1:C2", "Data!A3"),
+        ({"A1": "a", "B1": "b", "C2": "c"}, "Data!A1", "Data!A1:B1", "Data!A2"),
+        # and the values start in its first column, whatever column the range named
+        ({"A1": "a", "B1": "b", "C1": "c"}, "Data!C1", "Data!A1:C1", "Data!A2"),
+        # no value in the range: no table, and the values go to the range's first cell
+        ({"A1": "a", "B1": "b"}, "Data!D1", None, "Data!D1"),
+        ({}, "Data!A12", None, "Data!A12"),
+        # past the grid's edge is no refusal for an append
+        ({}, "Data!AB1", None, "Data!AB1"),
+    ],
+)
+def test_an_append_writes_below_the_table_it_finds(wc, wh, wbook, cells, rng, table, written):
+    h = wh[_OWNER]
+    _layout(wc, h, wbook, cells)
+    r = wc.post(
+        f"{wbook}/values/{quote(rng, safe='')}:append",
+        headers=h,
+        params=_RAW,
+        json={"values": [["new"]]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json().get("tableRange") == table
+    assert r.json()["updates"]["updatedRange"] == written
+
+
+def test_an_appended_cell_a_write_emptied_starts_no_table(wc, wh, wbook):
+    """A format-only cell and an empty string hold no value, so neither is a table."""
+    h = wh[_OWNER]
+    _layout(wc, h, wbook, {"B1": ""})
+    wc.put(f"{wbook}/values/Data!A1", headers=h, params=_ENTERED, json={"values": [["12%"]]})
+    wc.post(f"{wbook}/values/Data!A1:clear", headers=h)
+    r = wc.post(
+        f"{wbook}/values/Data!A1:B1:append", headers=h, params=_RAW, json={"values": [["x"]]}
+    )
+    assert "tableRange" not in r.json()
+    assert r.json()["updates"]["updatedRange"] == "Data!A1"
+
+
+def test_insert_rows_moves_what_is_below_and_grows_the_grid(wc, wh, wbook):
+    """Measured: `INSERT_ROWS` inserts whole rows below the table, so a row under it moves down,
+    and the row count grows by as many even far from the sheet's edge. `updatedData` reads back
+    `updatedRange`, and with nothing to write nothing is inserted."""
+    h = wh[_OWNER]
+    _layout(wc, h, wbook, {"A1": "a", "B1": "x", "A2": "b", "A4": "below", "C4": "far"})
+    r = wc.post(
+        f"{wbook}/values/Data!A1:append",
+        headers=h,
+        params={**_RAW, "insertDataOption": "INSERT_ROWS", "includeValuesInResponse": "true"},
+        json={"values": [[None, "n1"], ["n2"]]},
+    )
+    sid = wbook.rsplit("/", 1)[1]
+    assert r.json() == {
+        "spreadsheetId": sid,
+        "tableRange": "Data!A1:B2",
+        "updates": {
+            "spreadsheetId": sid,
+            "updatedRange": "Data!A3:B4",
+            "updatedRows": 2,
+            "updatedColumns": 2,
+            "updatedCells": 2,
+            "updatedData": {
+                "range": "Data!A3:B4",
+                "majorDimension": "ROWS",
+                "values": [["", "n1"], ["n2"]],
+            },
+        },
+    }
+    assert _read_back(wc, h, wbook, "Data!A1:C6") == [
+        ["a", "x"],
+        ["b"],
+        ["", "n1"],
+        ["n2"],
+        [],
+        ["below", "", "far"],
+    ]
+    grid = wc.get(wbook, headers=h).json()["sheets"][0]["properties"]["gridProperties"]
+    assert grid == {"rowCount": 1002, "columnCount": 26}
+    wc.post(
+        f"{wbook}/values/Data!A1:append",
+        headers=h,
+        params={**_RAW, "insertDataOption": "INSERT_ROWS"},
+        json={"values": []},
+    )
+    grid = wc.get(wbook, headers=h).json()["sheets"][0]["properties"]["gridProperties"]
+    assert grid["rowCount"] == 1002
+
+
+@pytest.mark.parametrize(
+    "params,body,message",
+    [
+        (
+            {**_RAW, "insertDataOption": "BOGUS"},
+            {"values": [["x"]]},
+            "Invalid value at 'insert_data_option' "
+            '(type.googleapis.com/google.apps.sheets.v4.InsertDataOption), "BOGUS"',
+        ),
+        ({}, {"values": [["x"]]}, "'valueInputOption' is required but not specified"),
+        (
+            _RAW,
+            {"range": "Data!B1", "values": [["x"]]},
+            "Request range[Data!A1] does not match value's range[Data!B1]",
+        ),
+        (
+            _RAW,
+            {"bogus": 1},
+            "Invalid JSON payload received. Unknown name \"bogus\" at 'data': Cannot find field.",
+        ),
+        # indexed as an update's, from where the values land: row 2 of the table's first column
+        (
+            _RAW,
+            {"majorDimension": "COLUMNS", "values": [["a"], ["b", {"x": 1}]]},
+            'Invalid values[1][1]: struct_value \t {\n  fields {\n    key: "x"\n    value {\n'
+            "      number_value: 1.0\n    }\n  }\n}\n",
+        ),
+        (
+            {**_RAW, "includeValuesInResponse": "on"},
+            {"values": "x"},
+            "Invalid value at 'data.values' (type.googleapis.com/google.protobuf.ListValue), "
+            '"x"\nInvalid value at \'include_values_in_response\' (TYPE_BOOL), "on"',
+        ),
+    ],
+)
+def test_an_append_real_refuses_is_refused_with_reals_message(wc, wh, wbook, params, body, message):
+    r = wc.post(f"{wbook}/values/Data!A1:append", headers=wh[_OWNER], params=params, json=body)
+    assert (r.status_code, r.json()["error"]["message"]) == (400, message)
+
+
+def _create(wc, h, body):
+    r = wc.post("/sheets/v4/spreadsheets", headers=h, json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_created_spreadsheet_is_its_creators_alone_at_their_root(wc, wh):
+    """Measured: with no `sheets` the one sheet is `Sheet1`, `sheetId 0`, 1000 x 26; the Drive
+    file sits at the creator's My Drive root, listed under `'root' in parents`, with one
+    permission, the owner's, and not shared; anyone else gets the 403 and 404 a hidden file gets."""
+    from backlot import synth
+
+    h = wh[_OWNER]
+    book = _create(wc, h, {"properties": {"title": "Fresh"}})
+    sid = book["spreadsheetId"]
+    assert list(book) == ["spreadsheetId", "properties", "sheets", "spreadsheetUrl"]
+    assert book["sheets"] == [
+        {
+            "properties": {
+                "sheetId": 0,
+                "title": "Sheet1",
+                "index": 0,
+                "sheetType": "GRID",
+                "gridProperties": {"rowCount": 1000, "columnCount": 26},
+            }
+        }
+    ]
+    ouid = synth.google_user_id(_OWNER)
+    assert (
+        book["spreadsheetUrl"] == f"https://docs.google.com/spreadsheets/d/{sid}/edit?ouid={ouid}"
+    )
+    f = wc.get(f"/drive/v3/files/{sid}", headers=h, params={"fields": "name,parents,shared"}).json()
+    assert f == {"name": "Fresh", "parents": [synth.drive_root_id(_OWNER)], "shared": False}
+    roots = [
+        x["id"]
+        for q in ("'root' in parents", f"'{synth.drive_root_id(_OWNER)}' in parents")
+        for x in wc.get("/drive/v3/files", headers=h, params={"q": q}).json()["files"]
+    ]
+    assert roots.count(sid) == 2
+    perms = wc.get(f"/drive/v3/files/{sid}/permissions", headers=h).json()["permissions"]
+    assert [p["role"] for p in perms] == ["owner"]
+    other = wh["reader@acme.com"]
+    assert wc.get(f"/sheets/v4/spreadsheets/{sid}", headers=other).status_code == 403
+    assert wc.get(f"/drive/v3/files/{sid}", headers=other).status_code == 404
+    assert _create(wc, h, {})["properties"]["title"] == "Untitled spreadsheet"
+    # the admin token owns what its service account creates, in Drive as in Sheets, and only that
+    admin = wh["admin"]
+    mine = _create(wc, admin, {})["spreadsheetId"]
+    fields = {"fields": "ownedByMe,shared,owners(me),capabilities(canEdit)"}
+    assert wc.get(f"/drive/v3/files/{mine}", headers=admin, params=fields).json() == {
+        "ownedByMe": True,
+        "shared": False,
+        "owners": [{"me": True}],
+        "capabilities": {"canEdit": True},
+    }
+    theirs = wc.get(f"/drive/v3/files/{sid}", headers=admin, params=fields).json()
+    assert (theirs["ownedByMe"], theirs["owners"], theirs["capabilities"]) == (
+        False,
+        [{"me": False}],
+        {"canEdit": False},
+    )
+    owned = wc.get("/drive/v3/files", headers=admin, params={"q": "'me' in owners"}).json()
+    assert [f["id"] for f in owned["files"]] == [mine]
+    path = f"/sheets/v4/spreadsheets/{mine}/values/A1"
+    assert wc.put(path, headers=admin, params=_RAW, json={"values": [["x"]]}).status_code == 200
+
+
+def test_a_created_spreadsheet_keeps_what_its_sheets_state(wc, wh):
+    """Measured: stated sheets each get an id of their own unless they state one; the grid size,
+    `hidden`, the tab colour (as `_sheets_tab_color` keeps it), `rightToLeft`, frozen rows and
+    `hideGridlines` are kept; `data` is stored though the answer carries no grid; the settings
+    a request states are served back, a time zone that names none replaced by GMT. A write then
+    meets the stated grid's edge."""
+    h = wh[_OWNER]
+    book = _create(
+        wc,
+        h,
+        {
+            "properties": {"title": "Stated", "timeZone": "Asia/Seoul", "autoRecalc": "HOUR"},
+            "sheets": [
+                {
+                    "properties": {
+                        "title": "G",
+                        "sheetId": 42,
+                        "gridProperties": {"rowCount": 5, "columnCount": 3, "frozenRowCount": 1},
+                        "tabColor": {"blue": 1, "alpha": 0.5},
+                        "tabColorStyle": {"rgbColor": {"blue": 0.5, "red": 1}},
+                    },
+                    "data": [
+                        {
+                            "startRow": 1,
+                            "rowData": [
+                                {
+                                    "values": [
+                                        {"userEnteredValue": {"stringValue": "hi"}},
+                                        {
+                                            "userEnteredValue": {"numberValue": 0.125},
+                                            "userEnteredFormat": {
+                                                "numberFormat": {
+                                                    "type": "PERCENT",
+                                                    "pattern": "0.00%",
+                                                }
+                                            },
+                                        },
+                                    ]
+                                }
+                            ],
+                        }
+                    ],
+                },
+                {"properties": {"title": "H", "hidden": True}},
+                {"properties": {"tabColorStyle": {"themeColor": "LINK"}}},
+            ],
+        },
+    )
+    sid = book["spreadsheetId"]
+    sheets = [s["properties"] for s in book["sheets"]]
+    assert sheets[0] == {
+        "sheetId": 42,
+        "title": "G",
+        "index": 0,
+        "sheetType": "GRID",
+        "gridProperties": {"rowCount": 5, "columnCount": 3, "frozenRowCount": 1},
+        "tabColor": {"red": 1, "blue": 0.49803922},
+        "tabColorStyle": {"rgbColor": {"red": 1, "blue": 0.49803922}},
+    }
+    assert sheets[1]["hidden"] is True and sheets[1]["sheetId"] not in (0, 42)
+    assert sheets[2]["title"] == "Sheet1"
+    assert (sheets[2]["tabColor"], sheets[2]["tabColorStyle"]) == (
+        {"red": 0.06666667, "green": 0.33333334, "blue": 0.8},
+        {"themeColor": "LINK"},
+    )
+    assert "data" not in book["sheets"][0]
+    assert (book["properties"]["timeZone"], book["properties"]["autoRecalc"]) == (
+        "Asia/Seoul",
+        "HOUR",
+    )
+    path = f"/sheets/v4/spreadsheets/{sid}"
+    read = wc.get(path, headers=h, params={"fields": "sheets.properties.tabColor"}).json()
+    assert list(read["sheets"][0]["properties"]["tabColor"]) == ["red", "blue"]
+    assert _read_back(wc, h, path, "G!A1:B2") == [[], ["hi", "12.50%"]]
+    r = wc.put(f"{path}/values/G!D1", headers=h, params=_RAW, json={"values": [["x"]]})
+    assert r.json()["error"]["message"] == (
+        "Range (G!D1) exceeds grid limits. Max rows: 5, max columns: 3"
+    )
+    # a time zone is served by its CLDR name, an offset as Etc/Unknown, and the rest as Etc/GMT
+    for zone, served in [
+        ("UTC", "Etc/UTC"),
+        ("US/Pacific", "America/Los_Angeles"),
+        ("EST", "America/Panama"),
+        ("Asia/Kolkata", "Asia/Calcutta"),
+        ("Etc/GMT-9", "Etc/GMT-9"),
+        ("GMT+09:00", "Etc/Unknown"),
+        ("GMT+0900", "Etc/GMT"),
+        ("Factory", "Etc/GMT"),
+        ("asia/seoul", "Etc/GMT"),
+        ("Mars/Base", "Etc/GMT"),
+    ]:
+        made = _create(wc, h, {"properties": {"timeZone": zone}})
+        assert made["properties"]["timeZone"] == served, zone
+        # a typed date takes its year in the zone, `Etc/Unknown`'s too
+        at = f"/sheets/v4/spreadsheets/{made['spreadsheetId']}/values/A1"
+        assert (
+            wc.put(at, headers=h, params=_ENTERED, json={"values": [["1/15"]]}).status_code == 200
+        )
+    # titles whose case mapping changes their length do not collide
+    for pair in (("Straße", "STRASSE"), ("ﬁle", "FILE"), ("İ", "i̇")):
+        made = _create(wc, h, {"sheets": [{"properties": {"title": t}} for t in pair]})
+        assert [x["properties"]["title"] for x in made["sheets"]] == list(pair)
+
+
+_SHEETS_TITLE_5 = "Invalid value at 'spreadsheet.properties.title' (TYPE_STRING), 5"
+_SHEETS_CRITERIA_AT = "spreadsheet.sheets[0].basic_filter"
+
+
+def _criteria(criteria) -> dict:
+    """A `Spreadsheet` whose one sheet's basic filter states ``criteria``, and a title of 5."""
+    return {"sheets": [{"basicFilter": {"criteria": criteria}}], "properties": {"title": 5}}
+
+
+# What `spreadsheets.create` refuses, as `(body, message)`.
+_SHEETS_CREATE_REFUSALS = [
+    # a map is read as its entries, an int32 key typed
+    (
+        _criteria(5),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria' "
+        f"(type.googleapis.com/google.apps.sheets.v4.BasicFilter.CriteriaEntry), 5\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria([]),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}' (Map), Cannot bind a list to map for field "
+        f"'criteria'.\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria({"a": {"condition": 5}}),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].key' (TYPE_INT32), \"a\"\n"
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].value.condition' "
+        f"(type.googleapis.com/google.apps.sheets.v4.BooleanCondition), 5\n{_SHEETS_TITLE_5}",
+    ),
+    (
+        _criteria({"0": []}),
+        f"Invalid value at '{_SHEETS_CRITERIA_AT}.criteria[0].value' (Map), Cannot have repeated "
+        f"items ('0') within a map.\n{_SHEETS_TITLE_5}",
+    ),
+    (_criteria({"+1": {}, "2": None}), _SHEETS_TITLE_5),
+    (
+        {"sheets": [{"filterViews": [{"criteria": {"a": {}}}]}], "properties": {"title": 5}},
+        "Invalid value at 'spreadsheet.sheets[0].filter_views[0].criteria[0].key' (TYPE_INT32), "
+        f'"a"\n{_SHEETS_TITLE_5}',
+    ),
+    (
+        {
+            "sheets": [
+                {"data": [{"rowData": [{"values": [{"pivotTable": {"criteria": {"a": {}}}}]}]}]}
+            ],
+            "properties": {"title": 5},
+        },
+        "Invalid value at 'spreadsheet.sheets[0].data[0].row_data[0].values[0].pivot_table."
+        f'criteria[0].key\' (TYPE_INT32), "a"\n{_SHEETS_TITLE_5}',
+    ),
+    (
+        {
+            "sheets": [
+                {"properties": {"title": "a", "sheetId": 7}},
+                {"properties": {"title": "b", "sheetId": 7}},
+            ]
+        },
+        "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "a", "sheetId": -1}}]},
+        "Invalid sheets[0]: Sheet id must be non-negative.",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "Same"}}, {"properties": {"title": "same"}}]},
+        'Invalid sheets[1]: A sheet with the name "same" already exists. Please enter another name.',
+    ),
+    (
+        {"sheets": [{"properties": {"title": "x" * 101}}]},
+        "Invalid sheets[0]: The sheet name cannot be greater than 100 characters.",
+    ),
+    (
+        {"sheets": [{"properties": {"index": 3}}]},
+        "Invalid sheets: The new sheet index is too high.",
+    ),
+    (
+        {"sheets": [{"properties": {"hidden": True}}]},
+        "Invalid sheets[0]: You can't hide all the sheets in a document.",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"columnCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the columns on the sheet.",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"rowCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the rows on the sheet.",
+    ),
+    ({"spreadsheetId": "abc"}, "Invalid spreadsheet.spreadsheetId: The id is invalid."),
+    # two refusals at once: real names the one it checks first
+    (
+        {"spreadsheetId": "abc", "properties": {"locale": "xx_YY"}},
+        "Invalid properties: Unsupported locale: xx_YY",
+    ),
+    (
+        {"sheets": [{"properties": {"title": "x" * 101, "sheetId": -1}}]},
+        "Invalid sheets[0]: Sheet id must be non-negative.",
+    ),
+    (
+        {
+            "sheets": [
+                {"properties": {"title": "a", "sheetId": 7}},
+                {"properties": {"title": "A", "sheetId": 7}},
+            ]
+        },
+        "Invalid sheets[1].id: Duplicate ids are not allowed. Multiple sheets are assigned to id 7",
+    ),
+    (
+        {"sheets": [{"properties": {"gridProperties": {"rowCount": -1, "columnCount": -1}}}]},
+        "Invalid sheets[0]: You can't delete all the rows on the sheet.",
+    ),
+    (
+        {"sheets": [{"properties": {"index": 3, "hidden": True}}]},
+        "Invalid sheets[0]: You can't hide all the sheets in a document.",
+    ),
+    (
+        {"bogus": 1},
+        "Invalid JSON payload received. Unknown name \"bogus\" at 'spreadsheet': Cannot find field.",
+    ),
+    ({"properties": {"locale": "xx_YY"}}, "Invalid properties: Unsupported locale: xx_YY"),
+    ({"properties": {"locale": "en_us"}}, "Invalid properties: Unsupported locale: en_us"),
+    (
+        {"sheets": [{"properties": {"title": "o", "sheetType": "OBJECT"}}]},
+        "Object sheets must have exactly one embedded object",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "data": [
+                        {
+                            "rowData": [
+                                {"values": [{"userEnteredValue": {"errorValue": {"type": "N_A"}}}]}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Cannot set cell to an error value",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"rowCount": 2, "columnCount": 2}},
+                    "data": [
+                        {
+                            "startRow": 3,
+                            "rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}]}],
+                        }
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: GridCoordinate.rowIndex[3] is after last row in grid[1]",
+    ),
+    # a block starting inside the grid and running past it says what it attempted
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"rowCount": 2}},
+                    "data": [
+                        {"rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}]}] * 3}
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Attempting to write row: 2, beyond the last requested row "
+        "of: 1",
+    ),
+    (
+        {
+            "sheets": [
+                {
+                    "properties": {"gridProperties": {"columnCount": 2}},
+                    "data": [
+                        {"rowData": [{"values": [{"userEnteredValue": {"stringValue": "x"}}] * 3}]}
+                    ],
+                }
+            ]
+        },
+        "Invalid sheets[0].data[0]: Attempting to write column: 2, beyond the last requested "
+        "column of: 1",
+    ),
+    # titles collide as Java's equalsIgnoreCase compares them
+    (
+        {"sheets": [{"properties": {"title": "ſheet"}}, {"properties": {"title": "Sheet"}}]},
+        'Invalid sheets[1]: A sheet with the name "Sheet" already exists. Please enter another name.',
+    ),
+    (
+        {"sheets": [{"properties": {"title": "ς"}}, {"properties": {"title": "σ"}}]},
+        'Invalid sheets[1]: A sheet with the name "σ" already exists. Please enter another name.',
+    ),
+]
+
+
+def _create_doc(wc, h, body=None, **params):
+    r = wc.post("/docs/v1/documents", headers=h, params=params, json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh, monkeypatch):
+    """Measured: the answer is the owner's `documents.get` with `tabs` beside the flat members and
+    no `commentsViewMode`, its body a section break and one empty paragraph, and the next read
+    serves its `revisionId`; the Drive file sits at the creator's My Drive root with one
+    permission, the owner's, a `size` of 1 and `version` 1; anyone else gets the 403 and 404 a
+    hidden file gets. A new id is one no file has."""
+    h = wh[_OWNER]
+    doc = _create_doc(wc, h, {"title": "Fresh doc"})
+    did = doc["documentId"]
+    assert list(doc) == [
+        "title",
+        "body",
+        "documentStyle",
+        "namedStyles",
+        "revisionId",
+        "suggestionsViewMode",
+        "documentId",
+        "tabs",
+    ]
+    assert doc["body"]["content"] == [
+        {
+            "endIndex": 1,
+            "sectionBreak": {
+                "sectionStyle": {
+                    "columnSeparatorStyle": "NONE",
+                    "contentDirection": "LEFT_TO_RIGHT",
+                    "sectionType": "CONTINUOUS",
+                }
+            },
+        },
+        {
+            "startIndex": 1,
+            "endIndex": 2,
+            "paragraph": {
+                "elements": [
+                    {
+                        "startIndex": 1,
+                        "endIndex": 2,
+                        "textRun": {"content": "\n", "textStyle": {}},
+                    }
+                ],
+                "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT"},
+            },
+        },
+    ]
+    held = {k: doc[k] for k in ("body", "documentStyle", "namedStyles")}
+    assert doc["tabs"] == [{"tabProperties": _DOCS_TAB, "documentTab": held}]
+    read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+    flat = {k: v for k, v in doc.items() if k != "tabs"}
+    assert read == {**flat, "commentsViewMode": "COMMENTS_VIEW_MODE_OMITTED"}
+    fields = "name,mimeType,parents,shared,size,quotaBytesUsed,version,createdTime,modifiedTime"
+    f = wc.get(f"/drive/v3/files/{did}", headers=h, params={"fields": fields}).json()
+    assert f == {
+        "name": "Fresh doc",
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": [synth.drive_root_id(_OWNER)],
+        "shared": False,
+        "size": "1",
+        "quotaBytesUsed": "1",
+        "version": "1",
+        "createdTime": f["modifiedTime"],
+        "modifiedTime": f["modifiedTime"],
+    }
+    # a Doc with content is past version 1 whatever its two times say
+    notes = f"/drive/v3/files/{served_id('google_drive', 'wr-doc')}"
+    f = wc.get(notes, headers=h, params={"fields": fields}).json()
+    assert (f["size"], f["version"], f["createdTime"]) == ("1024", "2", f["modifiedTime"])
+    # and so is a spreadsheet with no cells, its version, size and quota as real's read together
+    # three seconds on
+    quota = {"fields": "storageQuota(usage)"}
+    used = int(wc.get("/drive/v3/about", headers=h, params=quota).json()["storageQuota"]["usage"])
+    r = wc.post("/sheets/v4/spreadsheets", headers=h, json={"properties": {"title": "Empty"}})
+    sheet = f"/drive/v3/files/{r.json()['spreadsheetId']}"
+    f = wc.get(sheet, headers=h, params={"fields": fields}).json()
+    assert (f["size"], f["quotaBytesUsed"], f["version"]) == ("1024", "1024", "2")
+    quota = wc.get("/drive/v3/about", headers=h, params=quota).json()["storageQuota"]
+    assert int(quota["usage"]) == used + 1024
+    roots = wc.get("/drive/v3/files", headers=h, params={"q": "'root' in parents"}).json()
+    assert did in [x["id"] for x in roots["files"]]
+    perms = wc.get(f"/drive/v3/files/{did}/permissions", headers=h).json()["permissions"]
+    assert [p["role"] for p in perms] == ["owner"]
+    other = wh["reader@acme.com"]
+    assert wc.get(f"/docs/v1/documents/{did}", headers=other).status_code == 403
+    assert wc.get(f"/drive/v3/files/{did}", headers=other).status_code == 404
+    # the admin token owns what its service account creates
+    admin = wh["admin"]
+    mine = _create_doc(wc, admin, {})["documentId"]
+    owned = wc.get("/drive/v3/files", headers=admin, params={"q": "'me' in owners"}).json()
+    assert [x["id"] for x in owned["files"]] == [mine]
+    minted = iter([did, "1fresh"])
+    monkeypatch.setattr(synth, "gdrive_file_id", lambda seed: next(minted))
+    assert _create_doc(wc, h)["documentId"] == "1fresh"
+
+
+def test_a_created_document_keeps_its_title_alone(wc, wh):
+    """Measured: of what a request states, only `title` is kept, from the body or, over it, the
+    query, whose last repeat is read; no title, `null` or an empty one is `Untitled document`."""
+    h = wh[_OWNER]
+    plain = _create_doc(wc, h, {"title": "t"})
+    stated = _create_doc(
+        wc,
+        h,
+        {
+            "title": "t",
+            "documentId": "abc",
+            "revisionId": "abc",
+            "suggestionsViewMode": "PREVIEW_WITHOUT_SUGGESTIONS",
+            "commentsViewMode": 3,
+            "body": {"content": [{"paragraph": {"elements": [{"textRun": {"content": "hi\n"}}]}}]},
+            "tabs": [{"tabProperties": {"title": "X"}}, {"tabProperties": {"title": "Y"}}],
+            "documentStyle": {"marginTop": {"magnitude": 10, "unit": "PT"}},
+            "namedStyles": {"styles": []},
+        },
+        suggestionsViewMode="PREVIEW_WITHOUT_SUGGESTIONS",
+        documentId="abc",
+    )
+    ignored = ("documentId", "revisionId")
+    assert {k: v for k, v in stated.items() if k not in ignored} == {
+        k: v for k, v in plain.items() if k not in ignored
+    }
+    assert stated["documentId"] not in ("abc", plain["documentId"])
+    # values of the right kind, each read and dropped
+    read = [
+        *(
+            _doc_style(paragraphStyle={"namedStyleType": v})
+            for v in (5, 999, -1, "heading_1", "HEADING-1", "1")
+        ),
+        {"headers": None},
+        {"headers": {"h1": None}},
+        {"headers": {"h1": {"headerId": "x"}}},
+        *(
+            _doc_date(v)
+            for v in (
+                "2026-10-29T00:00:00Z",
+                "2026-10-29T00:00:00.123456789+09:00",
+                " 2026-10-29T00:00:00Z",
+                "2026-10-29T00:00:60Z",
+                {},
+                {"seconds": 1, "nanos": 2},
+                None,
+            )
+        ),
+        *(_doc_red(v) for v in ("NaN", "Infinity", 3.4e38, 1e-50)),
+        *(_doc_style(textStyle={"bold": v}) for v in ({"value": True}, {}, "true", 1)),
+        {"tabs": [{"tabProperties": {"index": "1"}}]},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": "x"}}]}},
+        _doc_tables(13),
+    ]
+    assert {_create_doc(wc, h, body)["title"] for body in read} == {"Untitled document"}
+    titles = [
+        ({}, {}),
+        (None, {}),
+        ({"title": None}, {}),
+        ({"title": ""}, {}),
+        ({"title": "   "}, {}),
+        ({"title": "body"}, {"title": "query"}),
+        ({"title": "body"}, {"title": ""}),
+        ({}, [("title", "first"), ("title", "last")]),
+    ]
+    assert [
+        wc.post("/docs/v1/documents", headers=h, params=params, json=body).json()["title"]
+        for body, params in titles
+    ] == [
+        "Untitled document",
+        "Untitled document",
+        "Untitled document",
+        "Untitled document",
+        "   ",
+        "query",
+        "Untitled document",
+        "last",
+    ]
+    masks = {
+        "documentId": ["documentId"],
+        "title,tabs": ["title", "tabs"],
+        "body": ["body"],
+        "*": list(plain),
+        "comments": [],
+    }
+    assert {mask: list(_create_doc(wc, h, {"title": "m"}, fields=mask)) for mask in masks} == masks
+    assert _create_doc(wc, h, {}, fields="*.tabProperties") == {
+        "tabs": [{"tabProperties": _DOCS_TAB}]
+    }
+
+
+_DOCS_TYPE = "type.googleapis.com/google.apps.docs.v1"
+_ROOT_NOT_A_MESSAGE = (
+    'Invalid JSON payload received. Unknown name "": Root element must be a message.'
+)
+
+
+def _doc_element(element: dict) -> dict:
+    """A `Document` whose body holds one paragraph holding ``element``."""
+    return {"body": {"content": [{"paragraph": {"elements": [element]}}]}}
+
+
+def _doc_style(**style) -> dict:
+    """A `Document` whose one named style states ``style``."""
+    return {"namedStyles": {"styles": [style]}}
+
+
+def _doc_date(value) -> dict:
+    return _doc_element({"dateElement": {"dateElementProperties": {"timestamp": value}}})
+
+
+def _doc_red(value) -> dict:
+    return {"documentStyle": {"background": {"color": {"color": {"rgbColor": {"red": value}}}}}}
+
+
+def _doc_tables(depth: int) -> dict:
+    """A `Document` whose body nests ``depth`` tables, each in the one cell of the last."""
+    cell: dict = {}
+    for _ in range(depth):
+        cell = {"table": {"tableRows": [{"tableCells": [{"content": [cell]}]}]}}
+    return {"body": {"content": [cell]}}
+
+
+def _nested(depth: int, value=1):
+    for _ in range(depth):
+        value = {"a": value}
+    return value
+
+
+def _deep(opening: bytes, leaf: bytes, closing: bytes, depth: int, at=(b'"nope": ', b"")):
+    """A body nesting ``leaf`` ``depth`` deep under a refused title, at ``at``'s opening and
+    closing, as raw JSON, since `json.dumps` cannot write it."""
+    head, tail = at
+    return lambda: b'{"title": 5, ' + head + opening * depth + leaf + closing * depth + tail + b"}"
+
+
+_DOCS_DATE_AT = "body.content[0].paragraph.elements[0].date_element.date_element_properties"
+_DOCS_TIMESTAMP = "type.googleapis.com/google.protobuf.Timestamp"
+_DOCS_TOO_DEEP = "Invalid JSON payload received. Message too deep. Max recursion depth reached"
+_DOCS_TOO_LONG = "Request contains an invalid argument."
+
+# What `documents.create` refuses, as `(params, body, message)`.
+_DOCS_CREATE_REFUSALS = [
+    ({}, {"title": 5}, "Invalid value at 'title' (TYPE_STRING), 5"),
+    ({}, {"title": True}, "Invalid value at 'title' (TYPE_STRING), true"),
+    (
+        {},
+        {"title": ["a"]},
+        'Invalid JSON payload received. Unknown name "title": Proto field is not repeating, '
+        "cannot start list.",
+    ),
+    ({}, {"title": {"a": 1}}, "Invalid value (title), Starting an object on a scalar field"),
+    ({}, [], _ROOT_NOT_A_MESSAGE),
+    ({}, "x", _ROOT_NOT_A_MESSAGE),
+    ({}, 5, _ROOT_NOT_A_MESSAGE),
+    (
+        {},
+        {"zap": 2, "title": "t", "nope": 1},
+        'Invalid JSON payload received. Unknown name "zap": Cannot find field.\n'
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    ),
+    (
+        {},
+        {"nope": 1, "title": 5},
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.\n'
+        "Invalid value at 'title' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"body": {"content": "x"}},
+        f"Invalid value at 'body.content' ({_DOCS_TYPE}.StructuralElement), \"x\"",
+    ),
+    (
+        {},
+        {"body": {"nope": 1}},
+        "Invalid JSON payload received. Unknown name \"nope\" at 'body': Cannot find field.",
+    ),
+    ({}, {"comments": 5}, f"Invalid value at 'comments' ({_DOCS_TYPE}.CommentThread), 5"),
+    (
+        {},
+        {"suggestionsViewMode": "NOPE"},
+        f"Invalid value at 'suggestions_view_mode' ({_DOCS_TYPE}.SuggestionsViewMode), \"NOPE\"",
+    ),
+    # the query's enums are refused beside the body's refusals, and ahead of the mask's
+    (
+        {"suggestionsViewMode": "NOPE"},
+        {"title": 5},
+        "Invalid value at 'title' (TYPE_STRING), 5\nInvalid value at 'suggestions_view_mode' "
+        f'({_DOCS_TYPE}.SuggestionsViewMode), "NOPE"',
+    ),
+    (
+        {"commentsViewMode": "NOPE", "fields": "nope"},
+        {},
+        f"Invalid value at 'comments_view_mode' ({_DOCS_TYPE}.CommentsViewMode), \"NOPE\"",
+    ),
+    ({"fields": "nope"}, [], _ROOT_NOT_A_MESSAGE),
+    ({"fields": "nope"}, {}, "Request contains an invalid argument."),
+    ({"fields": "tabs("}, {}, "Request contains an invalid argument."),
+    # a title past 10,000 UTF-16 code units, last
+    ({}, {"title": "x" * 10_001}, _DOCS_TOO_LONG),
+    ({}, {"title": "\U0001f600" * 5_001}, _DOCS_TOO_LONG),
+    ({"title": "x" * 10_001}, {}, _DOCS_TOO_LONG),
+    (
+        {},
+        {"title": "x" * 10_001, "nope": 1},
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    ),
+    # a body refused as a whole is answered alone
+    ({"suggestionsViewMode": "NOPE"}, [], _ROOT_NOT_A_MESSAGE),
+    # a map is read as its entries, each named by its count and `value`
+    ({}, {"headers": 5}, f"Invalid value at 'headers' ({_DOCS_TYPE}.Document.HeadersEntry), 5"),
+    (
+        {},
+        {"inlineObjects": []},
+        "Invalid value (Map), Cannot bind a list to map for field 'inlineObjects'.",
+    ),
+    (
+        {},
+        {"tabs": [{"documentTab": {"inlineObjects": []}}]},
+        "Invalid value at 'tabs[0].document_tab' (Map), Cannot bind a list to map for field "
+        "'inlineObjects'.",
+    ),
+    ({}, {"headers": {"h1": 5}}, f"Invalid value at 'headers[0].value' ({_DOCS_TYPE}.Header), 5"),
+    (
+        {},
+        {"headers": {"h1": []}},
+        "Invalid value at 'headers[0].value' (Map), Cannot have repeated items ('h1') within a "
+        "map.",
+    ),
+    (
+        {},
+        {"headers": {"a": {"headerId": "x"}, "b": {"headerId": 5}}},
+        "Invalid value at 'headers[1].value.header_id' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"lists": {"l1": {"nope": 1}}},
+        "Invalid JSON payload received. Unknown name \"nope\" at 'lists[0].value': Cannot find "
+        "field.",
+    ),
+    (
+        {},
+        {"lists": {"l": {"suggestedListPropertiesChanges": {"s": 5}}}},
+        "Invalid value at 'lists[0].value.suggested_list_properties_changes[0].value' "
+        f"({_DOCS_TYPE}.SuggestedListProperties), 5",
+    ),
+    # every enum is typed as its own, a number past int32 refused
+    (
+        {},
+        _doc_style(paragraphStyle={"namedStyleType": "BOGUS"}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.named_style_type' "
+        f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"',
+    ),
+    (
+        {},
+        _doc_style(paragraphStyle={"namedStyleType": 2**31}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.named_style_type' "
+        f"({_DOCS_TYPE}.NamedStyleType), 2147483648",
+    ),
+    (
+        {},
+        _doc_element({"autoText": {"type": "BOGUS"}}),
+        "Invalid value at 'body.content[0].paragraph.elements[0].auto_text.type' "
+        f'({_DOCS_TYPE}.AutoText.Type), "BOGUS"',
+    ),
+    # a wrapped value is named at `value`
+    (
+        {},
+        {"documentStyle": {"defaultHeaderId": 5}},
+        "Invalid value at 'document_style.default_header_id.value' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": {"value": "x"}}),
+        "Invalid value at 'named_styles.styles[0].text_style.bold.value' (TYPE_BOOL), \"x\"",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": 2}),
+        "Invalid value at 'named_styles.styles[0].text_style.bold.value' (TYPE_BOOL), 2",
+    ),
+    (
+        {},
+        _doc_style(textStyle={"bold": {"nope": 1}}),
+        'Invalid JSON payload received. Unknown name "nope" at '
+        "'named_styles.styles[0].text_style.bold': Cannot find field.",
+    ),
+    (
+        {},
+        _doc_style(paragraphStyle={"lineSpacing": 1e39}),
+        "Invalid value at 'named_styles.styles[0].paragraph_style.line_spacing.value' "
+        "(TYPE_FLOAT), 1e+39",
+    ),
+    (
+        {},
+        {"tabs": [{"tabProperties": {"index": {"value": "x"}}}]},
+        "Invalid value at 'tabs[0].tab_properties.index.value' (TYPE_INT32), \"x\"",
+    ),
+    # a float past a float's range
+    (
+        {},
+        _doc_red(1e39),
+        "Invalid value at 'document_style.background.color.color.rgb_color.red' (TYPE_FLOAT), "
+        "1e+39",
+    ),
+    (
+        {},
+        _doc_red("1e39"),
+        "Invalid value at 'document_style.background.color.color.rgb_color.red' (TYPE_FLOAT), "
+        '"1e39"',
+    ),
+    # a timestamp: a string in RFC 3339, or the message it is
+    (
+        {},
+        _doc_date(5),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid data type for timestamp, value is 5",
+    ),
+    (
+        {},
+        _doc_date("2026-10-29"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Illegal timestamp format; timestamps must end with 'Z' or have a valid timezone offset.",
+    ),
+    (
+        {},
+        _doc_date("2026-13-01T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid time format: Failed to parse input",
+    ),
+    (
+        {},
+        _doc_date("2026-02-30T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Invalid time format: Out-of-range field",
+    ),
+    (
+        {},
+        _doc_date("0000-01-01T00:00:00Z"),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', "
+        "Timestamp value exceeds limits",
+    ),
+    (
+        {},
+        _doc_date({"seconds": "x"}),
+        f"Invalid value at '{_DOCS_DATE_AT}.timestamp.seconds' (TYPE_INT64), \"x\"",
+    ),
+    (
+        {},
+        {"suggestions": [{"replies": [{"create_time": 5}]}]},
+        f"Invalid value at 'suggestions[0].replies[0].create_time' ({_DOCS_TIMESTAMP}), Field "
+        "'create_time', Invalid data type for timestamp, value is 5",
+    ),
+    # a second member of a oneof
+    (
+        {},
+        _doc_element({"textRun": {}, "autoText": {}}),
+        "Invalid value at 'body.content[0].paragraph.elements[0]' (oneof), oneof field "
+        "'content' is already set. Cannot set 'autoText'",
+    ),
+    # a repeated string takes one value, and counts only the elements it refuses
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": 5}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids' (TYPE_STRING), 5",
+    ),
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": [5, "a", 6]}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids[0]' (TYPE_STRING), "
+        "5\nInvalid value at 'body.content[0].paragraph.positioned_object_ids[1]' "
+        "(TYPE_STRING), 6",
+    ),
+    (
+        {},
+        {"body": {"content": [{"paragraph": {"positionedObjectIds": [{}]}}]}},
+        "Invalid value at 'body.content[0].paragraph.positioned_object_ids' "
+        "(positioned_object_ids), Starting an object on a scalar field",
+    ),
+    # nested past 100, alone whatever else is refused
+    ({}, {"title": 5, **_doc_tables(14)}, f"{_DOCS_TOO_DEEP} in array"),
+    ({}, {"title": 5, "nope": _nested(100)}, f"{_DOCS_TOO_DEEP} for key 'a'"),
+    # and past the depth Python's own parser reaches
+    ({}, _deep(b'{"a": ', b"1", b"}", 1_000_000), f"{_DOCS_TOO_DEEP} for key 'a'"),
+    ({}, _deep(b"[", b"1", b"]", 1_000_000), f"{_DOCS_TOO_DEEP} in array"),
+    ({}, _deep(b'[{"a": ', b"1", b"}]", 500_000), f"{_DOCS_TOO_DEEP} for key ''"),
+    (
+        {},
+        _deep(
+            b'{"a\\"": ',
+            b"1",
+            b"}",
+            1_000_000,
+            (b'"x": ' + b"[" * 99 + b"]" * 99 + b', "nope": ', b""),
+        ),
+        f"{_DOCS_TOO_DEEP} for key 'a\"'",
+    ),
+    # brackets inside a string, each run after a character that does not end it, are not counted
+    (
+        {},
+        _deep(
+            b'{"a": ',
+            b"1",
+            b"}",
+            1_000_000,
+            (
+                b'"s": "'
+                + b"".join(bytes([c]) + b"[" * 101 for c in b"'\t\n\r\x07\x08\x0c")
+                + b'\\"'
+                + b"[" * 101
+                + b'", "nope": ',
+                b"",
+            ),
+        ),
+        f"{_DOCS_TOO_DEEP} for key 'a'",
+    ),
+    (
+        {},
+        _deep(
+            b'{"table": {"tableRows": [{"tableCells": [{"content": [',
+            b"{}",
+            b"]}]}]}}",
+            20_000,
+            (b'"body": {"content": [', b"]}"),
+        ),
+        f"{_DOCS_TOO_DEEP} in array",
+    ),
+]
+
+
+def _doc_at(path: str, leaf: dict) -> dict:
+    """A `Document` holding ``leaf`` at ``path``, where `[]` is a list's one element and `{}` a
+    map's one entry."""
+    for step in reversed(path.split(".") if path else []):
+        name = step.rstrip("[]{}")
+        held = [leaf] if step.endswith("[]") else {"k": leaf} if step.endswith("{}") else leaf
+        leaf = {name: held}
+    return leaf
+
+
+def _doc_refused(path: str, refusals: list) -> str:
+    """Real's message refusing ``refusals`` of the message at ``path``, each a name under it
+    (none for the message itself) and the rest of its line."""
+    at = ".".join(
+        re.sub(r"(?<!^)(?=[A-Z])", "_", step.rstrip("[]{}")).lower()
+        + ("[0]" if step.endswith("[]") else "[0].value" if step.endswith("{}") else "")
+        for step in path.split(".")
+        if step
+    )
+    return "\n".join(
+        f"Invalid value at '{'.'.join(filter(None, (at, name)))}' {rest}" for name, rest in refusals
+    )
+
+
+# each field `backlot/data/gdocs_proto.json` types past the discovery document, given a value of
+# the wrong kind, and each oneof with every member set
+_DOCS_ANNOTATED = [
+    (
+        "body.content[].paragraph.elements[].autoText",
+        {"type": "BOGUS"},
+        [
+            ("type", f'({_DOCS_TYPE}.AutoText.Type), "BOGUS"'),
+        ],
+    ),
+    (
+        "comments[]",
+        {"status": "BOGUS"},
+        [
+            ("status", f'({_DOCS_TYPE}.CommentThread.Status), "BOGUS"'),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject.imageProperties.cropProperties",
+        {
+            "angle": "x",
+            "offsetLeft": "x",
+            "offsetTop": "x",
+            "offsetBottom": "x",
+            "offsetRight": "x",
+        },
+        [
+            ("angle", '(TYPE_FLOAT), "x"'),
+            ("offset_left", '(TYPE_FLOAT), "x"'),
+            ("offset_top", '(TYPE_FLOAT), "x"'),
+            ("offset_bottom", '(TYPE_FLOAT), "x"'),
+            ("offset_right", '(TYPE_FLOAT), "x"'),
+        ],
+    ),
+    (
+        "body.content[].paragraph.elements[].dateElement.dateElementProperties",
+        {"timestamp": 5, "dateFormat": "BOGUS", "timeFormat": "BOGUS"},
+        [
+            (
+                "timestamp",
+                f"({_DOCS_TIMESTAMP}), Field 'timestamp', Invalid data type for timestamp, value is 5",
+            ),
+            ("date_format", f'({_DOCS_TYPE}.DateFormat), "BOGUS"'),
+            ("time_format", f'({_DOCS_TYPE}.TimeFormat), "BOGUS"'),
+        ],
+    ),
+    (
+        "documentStyle.marginBottom",
+        {"unit": "BOGUS"},
+        [
+            ("unit", f'({_DOCS_TYPE}.Unit), "BOGUS"'),
+        ],
+    ),
+    (
+        "",
+        {"commentsViewMode": "BOGUS", "suggestionsViewMode": "BOGUS"},
+        [
+            ("comments_view_mode", f'({_DOCS_TYPE}.CommentsViewMode), "BOGUS"'),
+            ("suggestions_view_mode", f'({_DOCS_TYPE}.SuggestionsViewMode), "BOGUS"'),
+        ],
+    ),
+    (
+        "documentStyle.documentFormat",
+        {"documentMode": "BOGUS"},
+        [
+            ("document_mode", f'({_DOCS_TYPE}.DocumentMode), "BOGUS"'),
+        ],
+    ),
+    (
+        "documentStyle",
+        {
+            "firstPageFooterId": 5,
+            "evenPageHeaderId": 5,
+            "defaultHeaderId": 5,
+            "defaultFooterId": 5,
+            "evenPageFooterId": 5,
+            "firstPageHeaderId": 5,
+        },
+        [
+            ("first_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("even_page_header_id.value", "(TYPE_STRING), 5"),
+            ("default_header_id.value", "(TYPE_STRING), 5"),
+            ("default_footer_id.value", "(TYPE_STRING), 5"),
+            ("even_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("first_page_header_id.value", "(TYPE_STRING), 5"),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject.embeddedObjectBorder",
+        {"propertyState": "BOGUS", "dashStyle": "BOGUS"},
+        [
+            ("property_state", f'({_DOCS_TYPE}.PropertyState), "BOGUS"'),
+            ("dash_style", f'({_DOCS_TYPE}.DashStyle), "BOGUS"'),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject.imageProperties",
+        {"brightness": "x", "contrast": "x", "transparency": "x", "angle": "x"},
+        [
+            ("brightness", '(TYPE_FLOAT), "x"'),
+            ("contrast", '(TYPE_FLOAT), "x"'),
+            ("transparency", '(TYPE_FLOAT), "x"'),
+            ("angle", '(TYPE_FLOAT), "x"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[]",
+        {"namedStyleType": "BOGUS"},
+        [
+            ("named_style_type", f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"'),
+        ],
+    ),
+    (
+        "suggestedNamedStylesChanges{}.namedStylesSuggestionState.stylesSuggestionStates[]",
+        {"namedStyleType": "BOGUS"},
+        [
+            ("named_style_type", f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"'),
+        ],
+    ),
+    (
+        "lists{}.listProperties.nestingLevels[]",
+        {"glyphType": "BOGUS", "bulletAlignment": "BOGUS", "glyphSymbol": 5},
+        [
+            ("glyph_type", f'({_DOCS_TYPE}.NestingLevel.GlyphType), "BOGUS"'),
+            ("bullet_alignment", f'({_DOCS_TYPE}.NestingLevel.BulletAlignment), "BOGUS"'),
+            ("", "(oneof), oneof field 'glyph_kind' is already set. Cannot set 'glyphSymbol'"),
+        ],
+    ),
+    (
+        "namedStyles.styles[].paragraphStyle.borderBottom",
+        {"dashStyle": "BOGUS"},
+        [
+            ("dash_style", f'({_DOCS_TYPE}.DashStyle), "BOGUS"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[].paragraphStyle",
+        {
+            "lineSpacing": "x",
+            "spacingMode": "BOGUS",
+            "pageBreakBefore": "x",
+            "avoidWidowAndOrphan": "x",
+            "keepLinesTogether": "x",
+            "keepWithNext": "x",
+            "direction": "BOGUS",
+            "alignment": "BOGUS",
+            "namedStyleType": "BOGUS",
+        },
+        [
+            ("line_spacing.value", '(TYPE_FLOAT), "x"'),
+            ("spacing_mode", f'({_DOCS_TYPE}.ParagraphStyle.SpacingMode), "BOGUS"'),
+            ("page_break_before.value", '(TYPE_BOOL), "x"'),
+            ("avoid_widow_and_orphan.value", '(TYPE_BOOL), "x"'),
+            ("keep_lines_together.value", '(TYPE_BOOL), "x"'),
+            ("keep_with_next.value", '(TYPE_BOOL), "x"'),
+            ("direction", f'({_DOCS_TYPE}.ContentDirection), "BOGUS"'),
+            ("alignment", f'({_DOCS_TYPE}.ParagraphStyle.Alignment), "BOGUS"'),
+            ("named_style_type", f'({_DOCS_TYPE}.NamedStyleType), "BOGUS"'),
+        ],
+    ),
+    (
+        "positionedObjects{}.positionedObjectProperties.positioning",
+        {"layout": "BOGUS"},
+        [
+            ("layout", f'({_DOCS_TYPE}.PositionedObjectLayout), "BOGUS"'),
+        ],
+    ),
+    (
+        "suggestions[].replies[]",
+        {"commentAction": "BOGUS", "updateTime": 5, "suggestionAction": "BOGUS", "createTime": 5},
+        [
+            ("comment_action", f'({_DOCS_TYPE}.Post.CommentActionType), "BOGUS"'),
+            (
+                "update_time",
+                f"({_DOCS_TIMESTAMP}), Field 'updateTime', Invalid data type for timestamp, value is 5",
+            ),
+            ("", "(oneof), oneof field 'action' is already set. Cannot set 'suggestionAction'"),
+            (
+                "create_time",
+                f"({_DOCS_TIMESTAMP}), Field 'createTime', Invalid data type for timestamp, value is 5",
+            ),
+        ],
+    ),
+    (
+        "namedRanges{}.namedRanges[].ranges[]",
+        {"endIndex": "x", "startIndex": "x"},
+        [
+            ("end_index.value", '(TYPE_INT32), "x"'),
+            ("start_index.value", '(TYPE_INT32), "x"'),
+        ],
+    ),
+    (
+        "documentStyle.background.color.color.rgbColor",
+        {"red": "x", "blue": "x", "green": "x"},
+        [
+            ("red", '(TYPE_FLOAT), "x"'),
+            ("blue", '(TYPE_FLOAT), "x"'),
+            ("green", '(TYPE_FLOAT), "x"'),
+        ],
+    ),
+    (
+        "body.content[].sectionBreak.sectionStyle",
+        {
+            "contentDirection": "BOGUS",
+            "columnSeparatorStyle": "BOGUS",
+            "evenPageFooterId": 5,
+            "firstPageHeaderId": 5,
+            "pageNumberStart": "x",
+            "evenPageHeaderId": 5,
+            "defaultFooterId": 5,
+            "firstPageFooterId": 5,
+            "defaultHeaderId": 5,
+            "flipPageOrientation": "x",
+            "sectionType": "BOGUS",
+            "useFirstPageHeaderFooter": "x",
+        },
+        [
+            ("content_direction", f'({_DOCS_TYPE}.ContentDirection), "BOGUS"'),
+            (
+                "column_separator_style",
+                f'({_DOCS_TYPE}.SectionStyle.ColumnSeparatorStyle), "BOGUS"',
+            ),
+            ("even_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("first_page_header_id.value", "(TYPE_STRING), 5"),
+            ("page_number_start.value", '(TYPE_INT32), "x"'),
+            ("even_page_header_id.value", "(TYPE_STRING), 5"),
+            ("default_footer_id.value", "(TYPE_STRING), 5"),
+            ("first_page_footer_id.value", "(TYPE_STRING), 5"),
+            ("default_header_id.value", "(TYPE_STRING), 5"),
+            ("flip_page_orientation.value", '(TYPE_BOOL), "x"'),
+            ("section_type", f'({_DOCS_TYPE}.SectionStyle.SectionType), "BOGUS"'),
+            ("use_first_page_header_footer.value", '(TYPE_BOOL), "x"'),
+        ],
+    ),
+    (
+        "suggestions[]",
+        {"status": "BOGUS"},
+        [
+            ("status", f'({_DOCS_TYPE}.SuggestionThread.Status), "BOGUS"'),
+        ],
+    ),
+    (
+        "tabs[].tabProperties",
+        {"index": "x"},
+        [
+            ("index.value", '(TYPE_INT32), "x"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[].paragraphStyle.tabStops[]",
+        {"alignment": "BOGUS"},
+        [
+            ("alignment", f'({_DOCS_TYPE}.TabStop.TabStopAlignment), "BOGUS"'),
+        ],
+    ),
+    (
+        "body.content[].table.tableRows[].tableCells[].tableCellStyle.borderRight",
+        {"dashStyle": "BOGUS"},
+        [
+            ("dash_style", f'({_DOCS_TYPE}.DashStyle), "BOGUS"'),
+        ],
+    ),
+    (
+        "body.content[].table.tableRows[].tableCells[].tableCellStyle",
+        {"contentAlignment": "BOGUS"},
+        [
+            ("content_alignment", f'({_DOCS_TYPE}.ContentAlignment), "BOGUS"'),
+        ],
+    ),
+    (
+        "body.content[].table.tableStyle.tableColumnProperties[]",
+        {"widthType": "BOGUS"},
+        [
+            ("width_type", f'({_DOCS_TYPE}.TableColumnProperties.WidthType), "BOGUS"'),
+        ],
+    ),
+    (
+        "namedStyles.styles[].textStyle",
+        {
+            "strikethrough": "x",
+            "bold": "x",
+            "baselineOffset": "BOGUS",
+            "underline": "x",
+            "smallCaps": "x",
+            "italic": "x",
+        },
+        [
+            ("strikethrough.value", '(TYPE_BOOL), "x"'),
+            ("bold.value", '(TYPE_BOOL), "x"'),
+            ("baseline_offset", f'({_DOCS_TYPE}.BaselineOffset), "BOGUS"'),
+            ("underline.value", '(TYPE_BOOL), "x"'),
+            ("small_caps.value", '(TYPE_BOOL), "x"'),
+            ("italic.value", '(TYPE_BOOL), "x"'),
+        ],
+    ),
+    (
+        "inlineObjects{}.inlineObjectProperties.embeddedObject",
+        {"imageProperties": {}, "embeddedDrawingProperties": {}},
+        [
+            (
+                "",
+                "(oneof), oneof field 'properties' is already set. Cannot set 'embeddedDrawingProperties'",
+            ),
+        ],
+    ),
+    (
+        "namedStyles.styles[].textStyle.link",
+        {
+            "url": "x",
+            "headingId": "x",
+            "heading": {},
+            "bookmark": {},
+            "bookmarkId": "x",
+            "tabId": "x",
+        },
+        [
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'headingId'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'heading'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'bookmark'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'bookmarkId'"),
+            ("", "(oneof), oneof field 'destination' is already set. Cannot set 'tabId'"),
+        ],
+    ),
+    (
+        "lists{}.listProperties.nestingLevels[]",
+        {"glyphType": "NONE", "glyphSymbol": "x"},
+        [
+            ("", "(oneof), oneof field 'glyph_kind' is already set. Cannot set 'glyphSymbol'"),
+        ],
+    ),
+    (
+        "body.content[].paragraph.elements[]",
+        {
+            "dropdown": {},
+            "horizontalRule": {},
+            "pageBreak": {},
+            "equation": {},
+            "richLink": {},
+            "columnBreak": {},
+            "dateElement": {},
+            "inlineObjectElement": {},
+            "autoText": {},
+            "person": {},
+            "footnoteReference": {},
+            "textRun": {},
+        },
+        [
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'horizontalRule'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'pageBreak'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'equation'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'richLink'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'columnBreak'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'dateElement'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'inlineObjectElement'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'autoText'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'person'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'footnoteReference'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'textRun'"),
+        ],
+    ),
+    (
+        "suggestions[].replies[]",
+        {
+            "commentAction": "NO_COMMENT_ACTION_CHANGE",
+            "suggestionAction": "NO_SUGGESTION_ACTION_CHANGE",
+        },
+        [
+            ("", "(oneof), oneof field 'action' is already set. Cannot set 'suggestionAction'"),
+        ],
+    ),
+    (
+        "body.content[]",
+        {"sectionBreak": {}, "tableOfContents": {}, "table": {}, "paragraph": {}},
+        [
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'tableOfContents'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'table'"),
+            ("", "(oneof), oneof field 'content' is already set. Cannot set 'paragraph'"),
+        ],
+    ),
+    # the members of a oneof the rows above set second, given a wrong kind alone
+    (
+        "lists{}.listProperties.nestingLevels[]",
+        {"glyphSymbol": 5},
+        [("glyph_symbol.value", "(TYPE_STRING), 5")],
+    ),
+    (
+        "suggestions[].replies[]",
+        {"suggestionAction": "BOGUS"},
+        [("suggestion_action", f'({_DOCS_TYPE}.Post.SuggestionActionType), "BOGUS"')],
+    ),
+]
+_DOCS_CREATE_REFUSALS += [
+    ({}, _doc_at(path, leaf), _doc_refused(path, refusals))
+    for path, leaf, refusals in _DOCS_ANNOTATED
+]
+
+_TS_UNPARSED = "Invalid time format: Failed to parse input"
+_TS_NO_SUCH_DAY = "Invalid time format: Out-of-range field"
+_TS_TRAILING = "Invalid time format: Illegal trailing data in input string"
+_TS_NANOS = "Invalid time format, failed to parse nano seconds"
+_TS_PAST_LIMITS = "Timestamp value exceeds limits"
+_TS_NO_ZONE = (
+    "Illegal timestamp format; timestamps must end with 'Z' or have a valid timezone offset."
+)
+# a timestamp string at each bound, beside a refused title so that one read creates nothing; None
+# where it is read
+_DOCS_TIMESTAMPS = [
+    ("2026-00-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-12-01T00:00:00Z", None),
+    ("2026-01-00T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-32T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-31T00:00:00Z", None),
+    ("2026-04-31T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("2025-02-29T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("2024-02-29T00:00:00Z", None),
+    ("2026-01-01T24:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T23:00:00Z", None),
+    ("2026-01-01T00:60:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:59:00Z", None),
+    ("2026-01-01T00:00:61Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:60Z", None),
+    ("2026-01-01T00:00:00.123456789Z", None),
+    ("2026-01-01T00:00:00.1234567890Z", _TS_PAST_LIMITS),
+    ("2026-13-01T00:00:00.1234567890Z", _TS_UNPARSED),
+    ("0000-02-30T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("0000-02-29T00:00:00Z", _TS_PAST_LIMITS),
+    ("0001-01-01T00:00:00Z", None),
+    ("9999-12-31T23:59:59Z", None),
+    ("2026-1-01T00:00:00Z", None),
+    ("2026-01-01 00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00+09:00", None),
+    ("2026-01-01T00:00:00+0900", _TS_NO_ZONE),
+    (" 2026-01-01T00:00:00Z", None),
+    ("2026-01-01T00:00:00.Z", None),
+    ("2026-01-1T1:2:3Z", None),
+    ("2026-001-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-1-1T00:00:00Z", None),
+    ("26-01-01T00:00:00Z", None),
+    ("1-01-01T00:00:00Z", None),
+    ("12026-01-01T00:00:00Z", _TS_PAST_LIMITS),
+    ("002026-01-01T00:00:00Z", None),
+    ("-2026-01-01T00:00:00Z", _TS_PAST_LIMITS),
+    ("+2026-01-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-+1-01T00:00:00Z", _TS_UNPARSED),
+    ("2026--1-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01t00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00Z ", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00 Z", None),
+    ("2026-02-30T00:00:00.1234567890Z", _TS_NO_SUCH_DAY),
+    ("0000-01-01T00:00:00.1234567890Z", _TS_PAST_LIMITS),
+    ("0000-01-01T00:00:00.Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00.000000000000000000001Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00.1.2Z", _TS_TRAILING),
+    ("2026-01-01T00:00:00+24:00", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00+23:59", None),
+    ("2026-01-01T00:00:00+09:60", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00-00:00", None),
+    ("\t2026-01-01T00:00:00Z", None),
+    ("\n2026-01-01T00:00:00Z", None),
+    ("2026-01-01T00:00:00Zz", _TS_NO_ZONE),
+    ("10000-01-01T00:00:00Z", _TS_PAST_LIMITS),
+    ("9999-12-31T23:59:59-01:00", _TS_PAST_LIMITS),
+    ("0001-01-01T00:00:00+01:00", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00+9:00", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00.1aZ", _TS_NANOS),
+    ("2026-01-01T00:00:00.-1Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00.+1Z", _TS_NANOS),
+    ("2026.5-01-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:00. Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.1 Z", _TS_NANOS),
+    ("2026-01-01T00:00:00 .1Z", None),
+    ("2026-01-01T00:00:00..1Z", _TS_TRAILING),
+    ("9999-12-31T23:59:60Z", _TS_PAST_LIMITS),
+    ("2026-01-01T00:00:00 +09:00", None),
+    ("2026-01-01T00:00:00.123456789123Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.1234567890", _TS_NO_ZONE),
+    ("2026-01-01 T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T 00:00:00Z", _TS_UNPARSED),
+    ("2026 -01-01T00:00:00Z", _TS_UNPARSED),
+    ("2026-01-01T00:00:0.5Z", None),
+    ("2026-13-01T00:00:00+24:00", _TS_NO_ZONE),
+    ("0001-01-01T00:00:59+00:01", _TS_PAST_LIMITS),
+    ("0001-01-01T00:01:00+00:01", None),
+    ("9999-12-31T23:58:59-00:01", None),
+    ("9999-12-31T23:59:00-00:01", _TS_PAST_LIMITS),
+    ("10000-01-01T00:00:00+01:00", None),
+    ("2026-01-01T00:00:00Z\n", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00+09:00\n", _TS_NO_ZONE),
+    ("2026-01-01T00:00:00.-0Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.-00Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.-0000000000Z", _TS_NANOS),
+    ("2026-02-30T00:00:00.-0Z", _TS_NO_SUCH_DAY),
+    ("10000-01-01T00:00:00.-0Z", _TS_NANOS),
+    ("2026-01-01T00:00:00.0000000000Z", None),
+    ("2026-01-01T00:00:00.00000000000000Z", None),
+    ("9223372036854775807-01-01T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("9223372036854775808-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-9223372036854775808-01-01T00:00:00Z", _TS_NO_SUCH_DAY),
+    ("-9223372036854775809-01-01T00:00:00Z", _TS_UNPARSED),
+    ("9223372036854775808-01-01T00:00:00 xZ", _TS_UNPARSED),
+    ("-0000-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-0-01-01T00:00:00Z", _TS_UNPARSED),
+    ("-0000-01-01T00:00:00 xZ", _TS_UNPARSED),
+    ("-0000-02-30T00:00:00Z", _TS_UNPARSED),
+    ("292277026596-12-04T15:30:07Z", _TS_PAST_LIMITS),
+    ("292277026596-12-04T15:30:08Z", _TS_NO_SUCH_DAY),
+    ("292277026596-12-04T15:30:08+01:00", _TS_NO_SUCH_DAY),
+    ("-292277022657-01-27T08:29:52Z", _TS_PAST_LIMITS),
+    ("-292277022657-01-27T08:29:51Z", _TS_NO_SUCH_DAY),
+    ("292277026597-01-01T00:00:00 xZ", _TS_TRAILING),
+    ("292277026597-01-01T00:00:00.1aZ", _TS_NO_SUCH_DAY),
+    ("2024-01-31T00:00:00Z", None),
+    ("2026-13-01T00:00:00.1.2Z", _TS_UNPARSED),
+    ("2026-02-30T00:00:00.1.2Z", _TS_TRAILING),
+    ("2026-02-30T00:00:00.1aZ", _TS_NO_SUCH_DAY),
+]
+_DOCS_CREATE_REFUSALS += [
+    (
+        {},
+        {"title": 5, **_doc_date(value)},
+        "Invalid value at 'title' (TYPE_STRING), 5"
+        + (
+            f"\nInvalid value at '{_DOCS_DATE_AT}.timestamp' ({_DOCS_TIMESTAMP}), Field 'timestamp', {error}"
+            if error
+            else ""
+        ),
+    )
+    for value, error in _DOCS_TIMESTAMPS
+]
+
+
+@pytest.mark.parametrize(
+    "route,params,body,message",
+    [("/sheets/v4/spreadsheets", {}, *row) for row in _SHEETS_CREATE_REFUSALS]
+    + [("/docs/v1/documents", *row) for row in _DOCS_CREATE_REFUSALS],
+)
+def test_a_create_real_refuses_is_refused_with_reals_message(wc, wh, route, params, body, message):
+    if callable(body):
+        h = {**wh[_OWNER], "Content-Type": "application/json"}
+        r = wc.post(route, headers=h, params=params, content=body())
+    else:
+        r = wc.post(route, headers=wh[_OWNER], params=params, json=body)
+    assert (r.status_code, r.json()["error"]["message"]) == (400, message)
+    assert wc.get("/_meta/overlay").json()["gdrive_files"] == []
+
+
+# --- `documents.batchUpdate` ----------------------------------------------------------------------
+#
+# `wr-text` is the prose `Hello world\nSecond para`, end index 25. `wr-links` states, by index: a
+# bold link `BL` [1, 3) and ` t` [3, 5); the same with ` t` bold [6, 11); a bold link `lnk`
+# [11, 14) and ` t` [14, 16); `ab` [17, 19); underlined `cd` [20, 22); `x` and bold `YZ` [23, 26).
+# `wr-styled` states, by index:
+# a HEADING_1 `Title line` [1, 12); `plain ` [12, 18), bold `BOLD` [18, 22), ` tail` [22, 28); a
+# link `link` [28, 32), ` here` [32, 38); struck `struck` [38, 45), its newline struck too; italic
+# `BOLDSTART` [45, 54), ` x` [54, 57); an empty paragraph [57, 58); `last` [58, 63).
+
+
+def _docs_write(wc, h, doc, body, **params):
+    from tests._helpers import served_id
+
+    path = f"/docs/v1/documents/{served_id('google_drive', doc)}:batchUpdate"
+    return wc.post(path, headers=h, params=params, json=body)
+
+
+def _docs_runs(wc, h, doc) -> list[str]:
+    """A Doc's paragraphs as `<style><headingId> <runs>`: the style `H1` or `N`, the headingId
+    `#orig` when it is the one `wr-styled` starts with and `#new` otherwise, and each run as its
+    marks (`b`, `i`, `u`, `s`, `L` for a link with its underline and colour) before its text, runs
+    joined by `|`."""
+    from tests._helpers import served_id
+
+    did = served_id("google_drive", doc)
+    content = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["body"]["content"]
+    marks = {"bold": "b", "italic": "i", "underline": "u", "strikethrough": "s", "link": "L"}
+    out = []
+    for el in content[1:]:
+        p = el["paragraph"]
+        style = p["paragraphStyle"]
+        tag = "H1" if style["namedStyleType"] == "HEADING_1" else "N"
+        if "headingId" in style:
+            orig = gdocs.heading_id(did, 0)
+            tag += "#orig" if style["headingId"] == orig else "#new"
+        runs = []
+        for pe in p["elements"]:
+            run = pe["textRun"]
+            style = run["textStyle"]
+            m = "".join(
+                v
+                for k, v in marks.items()
+                if k in style and (k != "underline" or "link" not in style)
+            )
+            runs.append(f"{m}:{run['content']}" if m else run["content"])
+        out.append(f"{tag} {'|'.join(runs)}")
+    return out
+
+
+_STYLED = [
+    "H1#orig Title line\n",
+    "N plain |b:BOLD| tail\n",
+    "N L:link| here\n",
+    "N s:struck\n",
+    "N i:BOLDSTART| x\n",
+    "N \n",
+    "N last\n",
+]
+
+
+def _ins(index, text):
+    return {"insertText": {"location": {"index": index}, "text": text}}
+
+
+def _del(start, end):
+    return {"deleteContentRange": {"range": {"startIndex": start, "endIndex": end}}}
+
+
+def _rep(text, by, **criteria):
+    return {"replaceAllText": {"containsText": {"text": text, **criteria}, "replaceText": by}}
+
+
+def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left(wc, wh):
+    """Measured: each request's indices count what the ones before it inserted, the answer is one
+    reply and one suggestion response per request with `replaceAllText`'s count left out at zero,
+    every write moves the `revisionId` the next read serves, and Drive reads the written text,
+    with `modifiedTime` the write's, and `size` and `version` as `docs_batch_update` stores
+    them."""
+    from tests._helpers import served_id
+
+    h = wh[_OWNER]
+    did = served_id("google_drive", "wr-text")
+    before = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
+    r = _docs_write(wc, h, "wr-text", {"requests": [_ins(1, "A"), _ins(2, "B"), _del(3, 4)]})
+    assert r.status_code == 200, r.text
+    answer = r.json()
+    revision = answer["writeControl"]["requiredRevisionId"]
+    assert answer == {
+        "replies": [{}, {}, {}],
+        "writeControl": {"requiredRevisionId": revision},
+        "documentId": did,
+        "suggestionResponses": [{}, {}, {}],
+        "commentUpdateState": "NO_UPDATES_REQUESTED",
+    }
+    assert revision != before
+    assert _docs_runs(wc, h, "wr-text") == ["N ABello world\n", "N Second para\n"]
+    read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+    assert read["revisionId"] == revision
+    assert [e["endIndex"] for e in read["body"]["content"]] == [1, 14, 26]
+    replaced = _docs_write(
+        wc, h, "wr-text", {"requests": [_rep("o", "0"), _rep("zzz", "y")]}, fields="replies"
+    ).json()
+    assert replaced == {
+        "replies": [{"replaceAllText": {"occurrencesChanged": 3}}, {"replaceAllText": {}}]
+    }
+    unchanged = _docs_write(wc, h, "wr-text", {"requests": [_rep("zzz", "y")]}).json()
+    assert unchanged["writeControl"]["requiredRevisionId"] not in (before, revision)
+    fields = {"fields": "modifiedTime,version,size,quotaBytesUsed"}
+    f = wc.get(f"/drive/v3/files/{did}", headers=h, params=fields).json()
+    assert f["modifiedTime"] > "2026-07-14T17:20:00.000Z"
+    # `version` moves once per write and `size` stays, but a blank Doc's first write takes it from
+    # 1 to 1024, which the quota counts as well
+    assert (f["version"], f["size"], f["quotaBytesUsed"]) == ("5", "1024", "1024")
+    about = {"fields": "storageQuota"}
+
+    def quota():
+        return int(
+            wc.get("/drive/v3/about", headers=h, params=about).json()["storageQuota"]["usage"]
+        )
+
+    used = quota()
+    blank = wc.post("/docs/v1/documents", headers=h, json={"title": "Blank"}).json()["documentId"]
+    assert quota() == used + 1
+    write = {"requests": [_ins(1, "x" * 3000)]}
+    assert (
+        wc.post(f"/docs/v1/documents/{blank}:batchUpdate", headers=h, json=write).status_code == 200
+    )
+    f = wc.get(f"/drive/v3/files/{blank}", headers=h, params=fields).json()
+    assert (f["version"], f["size"], quota()) == ("2", "1024", used + 1024)
+    found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains 'ABell0'"})
+    assert [x["id"] for x in found.json()["files"]] == [did]
+    exported = wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"})
+    assert exported.content.decode("utf-8") == "\ufeffABell0 w0rld\r\nSec0nd para"
+
+
+def _searched(seed, *replace):
+    """`wr-text` rewritten to ``seed`` alone, then replaced in as ``replace`` says."""
+    return [_del(1, 24), _ins(1, seed), *replace]
+
+
+_LINKS = [
+    "N bL:BL| t\n",
+    "N bL:BL|b: t\n",
+    "N bL:lnk| t\n",
+    "N ab\n",
+    "N u:cd\n",
+    "N x|b:YZ\n",
+]
+_RE = {"searchByRegex": True, "matchCase": True}
+
+
+_STYLED_ROWS = [
+    # a newline splits a heading into two, the new one with a headingId of its own: after the
+    # one it was cut from, or before it at the heading's start
+    ([_ins(6, "\n")], ["H1#orig Title\n", "H1#new  line\n", *_STYLED[1:]]),
+    (
+        [_ins(1, "a\nb\nc")],
+        ["H1#new a\n", "H1#new b\n", "H1#orig cTitle line\n", *_STYLED[1:]],
+    ),
+    # inserted text takes the style of the character before it, joining its run
+    ([_ins(18, "X")], [_STYLED[0], "N plain X|b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_ins(22, "X")], [_STYLED[0], "N plain |b:BOLDX| tail\n", *_STYLED[2:]]),
+    (
+        [_ins(22, "X\nY")],
+        [_STYLED[0], "N plain |b:BOLDX\n", "N b:Y| tail\n", *_STYLED[2:]],
+    ),
+    # a link only inside it; after it the text is unstyled, and a run of its own
+    ([_ins(30, "X")], [*_STYLED[:2], "N L:liXnk| here\n", *_STYLED[3:]]),
+    ([_ins(32, "X")], [*_STYLED[:2], "N L:link|X| here\n", *_STYLED[3:]]),
+    # at a paragraph's start, the first character's; a run of its own after a newline with a
+    # member it lacks (struck here)
+    ([_ins(45, "X")], [*_STYLED[:4], "N i:X|i:BOLDSTART| x\n", *_STYLED[5:]]),
+    # ... and joins its run after an unstyled newline: `BOLD` starts the paragraph once
+    # `plain ` is gone
+    ([_del(12, 18), _ins(12, "X")], [_STYLED[0], "N b:XBOLD| tail\n", *_STYLED[2:]]),
+    ([_ins(57, "X")], [*_STYLED[:5], "N X\n", _STYLED[6]]),
+    (
+        [{"insertText": {"endOfSegmentLocation": {}, "text": "Z"}}],
+        [*_STYLED[:6], "N lastZ\n"],
+    ),
+    # joined paragraphs take the first one's style, or the last one's when the range starts at
+    # the first one's start; a delete joins the runs it brings together
+    ([_del(11, 12)], ["H1#orig Title lineplain |b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_del(1, 14)], ["N ain |b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_del(1, 12)], _STYLED[1:]),
+    ([_del(18, 22)], [_STYLED[0], "N plain  tail\n", *_STYLED[2:]]),
+    # a replacement takes its match's first character's style, and the body's last newline
+    # stays
+    (
+        [_rep("n BO", "##", matchCase=True)],
+        [_STYLED[0], "N plai##|b:LD| tail\n", *_STYLED[2:]],
+    ),
+    (
+        [_rep("LD t", "##", matchCase=True)],
+        [_STYLED[0], "N plain |b:BO##|ail\n", *_STYLED[2:]],
+    ),
+    ([_rep("line\nplain", "Z")], ["H1#orig Title Z |b:BOLD| tail\n", *_STYLED[2:]]),
+    ([_rep("last\n", "L")], [*_STYLED[:6], "N L\n"]),
+    # matching folds case fully; a regular expression's `$1` is text
+    ([_ins(58, "straße "), _rep("STRASSE", "R")], [*_STYLED[:6], "N R last\n"]),
+    (
+        [_rep("(pl)ain", "$1X", searchByRegex=True)],
+        [_STYLED[0], "N $1X |b:BOLD| tail\n", *_STYLED[2:]],
+    ),
+    ([_rep("^la", "R", searchByRegex=True)], [*_STYLED[:6], "N Rst\n"]),
+]
+
+
+_SEARCH_ROWS = [
+    # a letter with a mark and 104 others compare as `gdocs._FOLD` folds them, case or not, and a
+    # match of part of a fold reaches as `gdocs._unfold` says
+    ("ßs", "s", {}, "RR"),
+    ("sßs", "ss", {}, "RR"),
+    ("xæ y", "a", {"matchCase": True}, "R y"),
+    ("xæ y", "xa", {"matchCase": True}, "Ræ y"),
+    ("x\næ y", "a", {"matchCase": True}, "xR y"),
+    ("aæ y", "a", {"matchCase": True}, "R y"),
+    ("e\u0301 x", "e", {}, "R x"),
+    ("ete é", "é", {"matchCase": True}, "RtR R"),
+    ("Résumé resume", "resume", {}, "R R"),
+    ("ı I i", "I", {}, "R R R"),
+    ("ǅ dž", "Ǆ", {}, "R R"),
+    ("ſ s", "s", {"matchCase": True}, "ſ R"),
+    ("ľ l L", "L", {"matchCase": True}, "R l R"),
+    ("ﬁx fix", "FI", {}, "ﬁx Rx"),
+    ("ß x", "ẞ", {}, "ß x"),
+    ("ά α", "α", {}, "ά R"),
+    # a regular expression is `java.util.regex`'s, over the folded text
+    ("été x", "e", {"searchByRegex": True}, "RtR x"),
+    ("café", "[a-z]+", _RE, "R"),
+    ("ß", "^..$", _RE, "R"),
+    ("a1 b٣ c１", "\\d", _RE, "aR b٣ c１"),
+    ("a\u00a0b c\u2003d", "\\s", _RE, "a\u00a0bRc\u2003dR"),
+    ("aé_1 ж", "\\w", _RE, "RRRR ж"),
+    ("жa", "(?U)\\w", _RE, "RR"),
+    ("ab1", "\\p{L}", _RE, "RR1"),
+    ("ab1ж", "\\p{Alpha}", _RE, "RR1ж"),
+    ("aB", "a(?i)b", _RE, "R"),
+    ("Ж", "(?i)ж", _RE, "Ж"),
+    ("aab", "(?<n>a)\\k<n>", _RE, "Rb"),
+    ("a.b axb", "\\Qa.b\\E", _RE, "R axb"),
+    ("ab", "b\\Z", _RE, "aR"),
+    ("ab", "b\\z", _RE, "ab"),
+    ("A", "\\0101", _RE, "R"),
+    ("abc", "[a-c&&[^b]]", _RE, "RbR"),
+    ("abcx", "[a-c[x]]", _RE, "RRRR"),
+    ("a:", "[[:alpha:]]", _RE, "RR"),
+    ("aaa", "a++a", _RE, "aaa"),
+    ("aaaa", "a{,2}", _RE, "aaaa"),
+    ("a", "a(?#c)", _RE, "a"),
+    # a combining mark folds into the character before it, whatever it is, and alone matches
+    # nothing; one that starts the text moves every match one character on
+    ("ж\u0301 ж", "ж", {"matchCase": True}, "R R", 2),
+    ("1\u0301 1", "1", {"matchCase": True}, "R R", 2),
+    ("x \u0301a", "\u0301", {"matchCase": True}, "x \u0301a", 0),
+    ("x \u0301a", " ", {"matchCase": True}, "xRa", 1),
+    ("\u0301abc", "b", {"matchCase": True}, "\u0301abR", 1),
+    ("cat CAT", "CAT", {"matchCase": True}, "cat R", 1),
+    ("cat CAT", "CAT", {}, "R R", 2),
+    ("ſt st", "s", {}, "Rt Rt", 2),
+    ("\u212a k", "k", {}, "R R", 2),
+    ("ſt st", "s", {"searchByRegex": True}, "Rt Rt", 2),
+    # Java's classes and properties: ASCII classes that keep their case, `\p{...}` whatever the
+    # case flags, and the names Java gives a property
+    ("ſ \u212a s k", "\\w", {"searchByRegex": True}, "ſ \u212a R R", 2),
+    ("ſ \u212a s k", "\\p{Alpha}", {"searchByRegex": True}, "ſ \u212a R R", 2),
+    ("ſ \u212a s k", "[a-z]", {"searchByRegex": True}, "R R R R", 4),
+    ("Привет мир ab", "\\p{L}+", _RE, "R R R", 3),
+    ("Ωmega ΔΣ Ab", "\\p{Lu}", _RE, "Rmega RR Rb", 4),
+    ("aБ", "(?i)\\p{Lu}", _RE, "RR", 2),
+    ("Привет мир ab", "\\p{IsCyrillic}+", _RE, "R R ab", 2),
+    ("ab 12 c.", "\\p{IsLetter}+", {"searchByRegex": True}, "R 12 R.", 2),
+    ("a.b,c", "\\p{IsPunctuation}", {"searchByRegex": True}, "aRbRc", 2),
+    ("a b", "\\p{IsWhiteSpace}", _RE, "aRbR", 2),
+    ("abC d", "\\p{javaLowerCase}+", _RE, "RC R", 2),
+    ("a b\u00a0c\td", "\\p{javaWhitespace}", _RE, "aRb\u00a0cRdR", 3),
+    ("a1-b", "\\p{javaLetterOrDigit}+", _RE, "R-R", 2),
+    ("abж", "\\p{InBasicLatin}+", _RE, "RжR", 2),
+    ("abж", "\\p{sc=Latin}+", _RE, "Rж", 1),
+    ("1x2", "[\\p{IsDigit}x]+", _RE, "R", 1),
+    ("a", "\\p{isletter}", _RE, "a", 0),
+    ("abж", "\\p{Latin}+", _RE, "abж", 0),
+    # `\p{Lower}` and `\p{Upper}` take both ASCII cases under a case-insensitive flag, and a
+    # non-ASCII letter keeps its case under an ASCII-only `(?i)`, however it is written
+    ("aB cD", "\\p{Upper}", {"searchByRegex": True}, "RR RR", 4),
+    ("aB cD", "\\P{Lower}", {"searchByRegex": True}, "aBRcDR", 2),
+    ("aB cD", "(?i)\\p{Upper}", _RE, "RR RR", 4),
+    ("aB cD", "\\p{Upper}", _RE, "aR cR", 2),
+    ("aB ſ \u212a sk", "\\p{Lower}", {"searchByRegex": True}, "RR ſ \u212a RR", 4),
+    ("aB ж Ж", "(?U)\\p{Lower}", _RE, "RB R Ж", 2),
+    *(
+        ("жЖ aA", pattern, _RE, after, changed)
+        for pattern, after, changed in [
+            ("(?i)\\x{436}", "RЖ aA", 1),
+            ("(?i)\\Qж\\E", "RЖ aA", 1),
+            ("(?i)\\u0436", "RЖ aA", 1),
+            ("(?i)\\N{CYRILLIC SMALL LETTER ZHE}", "RЖ aA", 1),
+            ("(?iu)ж", "RR aA", 2),
+            ("(?i)\\x{41}", "жЖ RR", 2),
+        ]
+    ),
+    ("жЖ", "(?i)ж", {"searchByRegex": True}, "RR", 2),
+    ("ab", "\\p{all}", _RE, "RRR", 3),
+    ("aé ж", "\\p{L1}+", _RE, "RжR", 2),
+    ("a1-b", "\\p{LD}+", _RE, "R-R", 2),
+    ("a1 $", "\\p{javaJavaIdentifierStart}", _RE, "R1 R", 2),
+    ("a1 $_", "\\p{javaJavaIdentifierPart}+", _RE, "R R", 2),
+    ("a1 _", "\\p{javaUnicodeIdentifierStart}", _RE, "R1 _", 1),
+    ("a1 _", "\\p{javaUnicodeIdentifierPart}+", _RE, "R R", 2),
+    ("a\u200bb", "\\p{javaIdentifierIgnorable}", _RE, "aRb", 1),
+    ("Noe", "\\p{Nope}", _RE, "Noe", 0),
+    # what the rest of Java's syntax reads
+    ("a.b axb", "a\\.b", _RE, "R axb", 1),
+    ("ab ac", "a(?=b)", _RE, "Rb ac", 1),
+    ("ab cb", "(?<=a)b", _RE, "aR cb", 1),
+    ("ab cb", "(?<!a)b", _RE, "ab cR", 1),
+    ("ab", "(?>a)b", _RE, "R", 1),
+    ("ab", "(?!a).", _RE, "aR", 1),
+    ("a b", "\\W", _RE, "aRbR", 2),
+    ("a1", "\\D", _RE, "R1R", 2),
+    ("a b", "\\S", _RE, "R R", 2),
+    ("a1", "\\P{L}", _RE, "aRR", 2),
+    ("AB", "\\x{41}", _RE, "RB", 1),
+    ("AB", "\\x41", _RE, "RB", 1),
+    ("aA", "\\x{0041}", _RE, "aR", 1),
+    ("aA", "\\x{10FFFF}|a", _RE, "RA", 1),
+    ("\U0001f600a", "\\uD83D\\uDE00", _RE, "Ra", 1),
+    ("\U0001f600a", "\\uD83D", _RE, "\U0001f600a", 0),
+    ("ab", "\\N{LATIN SMALL LETTER A}", _RE, "Rb", 1),
+    ("a\nb", "\\cJ", _RE, "aRbR", 2),
+    ("a-b", "[\\w]", _RE, "R-R", 2),
+    ("a1", "[\\p{Alpha}]", _RE, "R1", 1),
+    ("aж1", "(?U)\\p{Alpha}", _RE, "RR1", 2),
+    ("a b", "[ a]", _RE, "RRb", 2),
+    ("a#b", "[#a]", _RE, "RRb", 2),
+    ("ſs k", "\\b", {"searchByRegex": True}, "ſRRRR", 4),
+    # an empty match moves the search on one character
+    ("aa", "a??", _RE, "RRR", 3),
+    ("ab", "|a", _RE, "RRR", 3),
+    ("a b", "\\s*?", _RE, "RRRR", 4),
+    ("ab", "$", _RE, "abR", 1),
+    ("baab", "a*", _RE, "RRRR", 4),
+    # syntax Java refuses, or reads otherwise, and malformed escapes match nothing
+    *(
+        (seed, pattern, {"searchByRegex": True}, seed, 0)
+        for pattern, seed in [
+            ("(?R)", "abc"),
+            ("a\\Kb", "abc"),
+            ("(?P<n>a)", "ab"),
+            ("(?<n>a)|(?<n>b)", "ab"),
+            ("(?1)(a)", "aa"),
+            ("(?&n)(?<n>a)", "aa"),
+            ("(?|(a)|(b))", "ab"),
+            ("(?(1)a|b)", "ab"),
+            ("a(?-1)", "aa"),
+            ("\\m", "m"),
+            ("\\0", "a0b"),
+            ("\\x{41", "A{41"),
+            ("\\k<a", "ab"),
+            ("\\p{L", "ab"),
+            ("\\N{LATIN", "ab"),
+            ("a\\", "ab"),
+            ("(", "a(b"),
+        ]
+    ),
+    *(
+        ("aA", pattern, _RE, "aA", 0)
+        for pattern in ("\\x{}", "\\x{zz}", "\\x{+41}", "\\x{110000}", "a|\\x{}", "[\\x{}a]")
+    ),
+    ("a b", "(?x)[ a]", _RE, "R b", 1),
+    ("a#b", "(?x)[#a]", _RE, "a#b", 0),
+    ("aaa", "a{2}", _RE, "Ra", 1),
+    ("abab x", "(?:ab)+", _RE, "R x", 1),
+]
+
+
+@pytest.mark.parametrize(
+    "doc,requests,runs,changed",
+    [
+        *(("wr-styled", *row, None) for row in _STYLED_ROWS),
+        # at a link's end, the next character's style; text starting with a newline inside a link
+        # is unstyled
+        ("wr-links", [_ins(3, "X")], ["N bL:BL|X| t\n", *_LINKS[1:]], None),
+        ("wr-links", [_ins(8, "X")], [_LINKS[0], "N bL:BL|b:X|b: t\n", *_LINKS[2:]], None),
+        (
+            "wr-links",
+            [_ins(12, "\nX")],
+            [*_LINKS[:2], "N bL:l|\n", "N X|bL:nk| t\n", *_LINKS[3:]],
+            None,
+        ),
+        ("wr-links", [_ins(20, "X")], [*_LINKS[:4], "N u:Xcd\n", _LINKS[5]], None),
+        ("wr-links", [_ins(20, "\n")], [*_LINKS[:4], "N u:\n", "N u:cd\n", _LINKS[5]], None),
+        ("wr-links", [_rep("YZ", "Q", matchCase=True)], [*_LINKS[:5], "N x|b:Q\n"], None),
+        # what `replaceAllText` matches, each row a seed, a search, its criteria, the text left
+        # and, where measured, the matches it counted
+        *(
+            ("wr-text", _searched(seed, _rep(text, "R", **criteria)), [f"N {after}\n"], *changed)
+            for seed, text, criteria, after, *changed in [(*row, None)[:5] for row in _SEARCH_ROWS]
+        ),
+    ],
+)
+def test_a_write_styles_what_it_inserts_as_real_does(wc, wh, doc, requests, runs, changed):
+    h = wh[_OWNER]
+    r = _docs_write(wc, h, doc, {"requests": requests})
+    assert r.status_code == 200, r.text
+    assert _docs_runs(wc, h, doc) == runs
+    if changed is not None:
+        count = {"occurrencesChanged": changed} if changed else {}
+        assert r.json()["replies"][-1] == {"replaceAllText": count}
+
+
+_GRAPHEME = (
+    "Invalid requests[1].insertText: The insertion index cannot be within a grapheme cluster."
+)
+_IN_PARAGRAPH = (
+    "Invalid requests[0].insertText: The insertion index must be inside the bounds of an existing "
+    "paragraph. You can still create new paragraphs by inserting newlines."
+)
+_PAST_END = "must be less than the end index of the referenced segment, 25."
+_NO_SEGMENT = (
+    "Segment with ID kix.nope was not found. If a segment ID is provided, it must be a header, "
+    "footer or footnote ID. Use an empty segment ID to reference the body."
+)
+_DOCS_BATCH_REFUSALS = [
+    ([], 400, "Must specify at least one request."),
+    ({"requests": None}, 400, "Must specify at least one request."),
+    ([{}], 400, "Invalid requests[0]: No request set."),
+    ([{"insertText": None}], 400, "Invalid requests[0]: No request set."),
+    # the first refusal is named alone, and what came before it is not kept
+    ([_ins(0, "x"), _del(3, 2)], 400, _IN_PARAGRAPH),
+    (
+        [_ins(1, "ZZ"), _del(3, 2)],
+        400,
+        "Invalid requests[1].deleteContentRange: Invalid range: end index cannot be less than start index",
+    ),
+    (
+        [{"insertText": {"text": "x"}}],
+        400,
+        "Invalid requests[0].insertText: No insertion location set.",
+    ),
+    ([{"insertText": {}}], 400, "Invalid requests[0].insertText: No insertion location set."),
+    (
+        [{"insertText": {"location": {"index": 1}}}],
+        400,
+        "Invalid requests[0].insertText: Insert text requests must specify text to insert.",
+    ),
+    (
+        [{"insertText": {"location": {"index": 0}}}],
+        400,
+        "Invalid requests[0].insertText: Insert text requests must specify text to insert.",
+    ),
+    (
+        [_ins(1, "")],
+        400,
+        "Invalid requests[0].insertText: Insert text requests must specify text to insert.",
+    ),
+    (
+        [{"insertText": {"location": {"index": 1, "tabId": "t.nope", "segmentId": "kix.nope"}}}],
+        400,
+        "Invalid requests[0].insertText: Cannot apply request to an invalid tab ID.",
+    ),
+    (
+        [{"insertText": {"location": {"index": 1000, "segmentId": "kix.nope"}, "text": "x"}}],
+        400,
+        f"Invalid requests[0].insertText: {_NO_SEGMENT}",
+    ),
+    (
+        [{"insertText": {"endOfSegmentLocation": {"tabId": "t.nope"}, "text": "x"}}],
+        400,
+        "Invalid requests[0].insertText: Cannot apply request to an invalid tab ID.",
+    ),
+    (
+        [_ins(-1, "x")],
+        400,
+        "Invalid requests[0].insertText: Index must be greater than or equal to 0.",
+    ),
+    ([_ins(25, "x")], 400, f"Invalid requests[0].insertText: Index 25 {_PAST_END}"),
+    ([_ins(1000, "x")], 400, f"Invalid requests[0].insertText: Index 1000 {_PAST_END}"),
+    ([_ins(0, "x")], 400, _IN_PARAGRAPH),
+    ([{"insertText": {"location": {}, "text": "x"}}], 400, _IN_PARAGRAPH),
+    ([_ins(1, "\U0001f600"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "é"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "\U0001f44d\U0001f3fd"), _ins(3, "x")], 400, _GRAPHEME),
+    ([_ins(1, "\U0001f1f0\U0001f1f7"), _ins(3, "x")], 400, _GRAPHEME),
+    ([_ins(1, "가"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "❤️"), _ins(2, "x")], 400, _GRAPHEME),
+    ([_ins(1, "\U0001f468‍\U0001f469"), _ins(3, "x")], 400, _GRAPHEME),
+    # where Unicode's extended grapheme clusters have no boundary
+    *(
+        ([_ins(1, seed), _ins(at, "x")], 400, _GRAPHEME)
+        for seed, at in [
+            ("a\u200cb", 2),
+            ("\U0001f408\u200d\u2b1b", 3),
+            ("\U0001f408\u200d\u2b1b", 4),
+            ("\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f", 3),
+            ("\u0600\u0661", 2),
+            ("a\u200d\U0001f600", 2),
+            ("\U0001f1f0\U0001f1f7\U0001f1fa", 3),
+            ("\U0001f1f0\U0001f1f7\U0001f1fa\U0001f1f8", 7),
+            ("\u1100\u1100", 2),
+            ("\u1100가", 2),
+            ("\u1161\u11a8", 2),
+            ("\u11a8\u11a8", 2),
+            ("가\u11a8", 2),
+            ("각\u11a8", 2),
+            ("\ua960\u1161", 2),
+            ("\u1100\ud7b0\ud7cb", 3),
+            ("क\u093e", 2),
+            ("a\u20dd", 2),
+            ("a\U0001f3fb", 2),
+            ("\U0001f600\u093e", 3),
+            ("\U0001f1f0\u0301", 3),
+        ]
+    ),
+    (
+        [{"deleteContentRange": {}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Delete content range requests must include a range to delete.",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"endIndex": 3}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: must contain a start and end index",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"startIndex": None, "endIndex": 3}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: must contain a start and end index",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"startIndex": 3}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: must contain a start and end index",
+    ),
+    (
+        [{"deleteContentRange": {"range": {"startIndex": 2, "endIndex": 2, "tabId": "t.nope"}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: Cannot apply request to an invalid tab ID.",
+    ),
+    (
+        [
+            {
+                "deleteContentRange": {
+                    "range": {"startIndex": 2, "endIndex": 3, "segmentId": "kix.nope"}
+                }
+            }
+        ],
+        400,
+        f"Invalid requests[0].deleteContentRange: {_NO_SEGMENT}",
+    ),
+    (
+        [_del(5, -1)],
+        400,
+        "Invalid requests[0].deleteContentRange: Invalid range: end index cannot be less than start index",
+    ),
+    (
+        [_del(-1, -1)],
+        400,
+        "Invalid requests[0].deleteContentRange: Index must be greater than or equal to 0.",
+    ),
+    ([_del(30, 30)], 400, f"Invalid requests[0].deleteContentRange: Index 30 {_PAST_END}"),
+    ([_del(0, 30)], 400, f"Invalid requests[0].deleteContentRange: Index 29 {_PAST_END}"),
+    ([_del(0, 0)], 400, "Invalid requests[0].deleteContentRange: The range should not be empty."),
+    *(
+        (
+            [_del(0, end)],
+            400,
+            "Invalid requests[0].deleteContentRange: Cannot operate on the first section break in the document.",
+        )
+        for end in (2, 25)
+    ),
+    *(
+        (
+            [_del(start, 25)],
+            400,
+            "Invalid requests[0].deleteContentRange: The range cannot include the newline character at the end of the segment.",
+        )
+        for start in (1, 24)
+    ),
+    *(
+        (
+            [_ins(1, "\U0001f600b"), _del(start, end)],
+            400,
+            "Invalid requests[1].deleteContentRange: Invalid deletion range. Cannot delete the requested range.",
+        )
+        for start, end in ((1, 2), (2, 4))
+    ),
+    (
+        [{"replaceAllText": {"replaceText": "x"}}],
+        400,
+        "Invalid requests[0].replaceAllText: The substring match text should not be empty",
+    ),
+    (
+        [_rep("", "x")],
+        400,
+        "Invalid requests[0].replaceAllText: The substring match text should not be empty",
+    ),
+    # a 500 a request leads to comes after every refusal, and keeps nothing either
+    ([_ins(1, "﷐"), _ins(0, "a")], 400, _IN_PARAGRAPH.replace("[0]", "[1]")),
+    ([_ins(1, "a"), _ins(1, "﷐")], 500, "Internal error encountered."),
+    ([_rep("world", "﷐")], 500, "Internal error encountered."),
+    (
+        [
+            {
+                "replaceAllText": {
+                    "containsText": {"text": "zzz"},
+                    "replaceText": "x",
+                    "tabsCriteria": {"tabIds": ["t.0", "t.nope"]},
+                }
+            }
+        ],
+        500,
+        "Internal error encountered.",
+    ),
+    # what is not served here names itself
+    (
+        [{"updateTextStyle": {}}],
+        400,
+        "Invalid requests[0].updateTextStyle: 'updateTextStyle' is not served by Backlot: real Docs applies it, and nothing here keeps what it changes.",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"writeMode": "SUGGEST"}},
+        400,
+        "'SUGGEST' is not served by Backlot: real Docs records each request as a suggestion, and nothing here keeps one.",
+    ),
+    # the body is read as the proto layer reads it
+    (
+        [{**_ins(1, "x"), **_del(2, 3)}],
+        400,
+        "Invalid value at 'requests[0]' (oneof), oneof field 'request' is already set. Cannot set 'deleteContentRange'",
+    ),
+    (
+        [{"insertText": {"location": {"index": 1}, "endOfSegmentLocation": {}, "text": "x"}}],
+        400,
+        "Invalid value at 'requests[0].insert_text' (oneof), oneof field 'insertion_location' is already set. Cannot set 'endOfSegmentLocation'",
+    ),
+    (
+        {
+            "requests": [_ins(1, "x")],
+            "writeControl": {"requiredRevisionId": "a", "targetRevisionId": "a"},
+        },
+        400,
+        "Invalid value at 'write_control' (oneof), oneof field 'control' is already set. Cannot set 'targetRevisionId'",
+    ),
+    (
+        [{"insertFoo": {}}],
+        400,
+        "Invalid JSON payload received. Unknown name \"insertFoo\" at 'requests[0]': Cannot find field.",
+    ),
+    (
+        [_ins("a", "x")],
+        400,
+        "Invalid value at 'requests[0].insert_text.location.index' (TYPE_INT32), \"a\"",
+    ),
+    (
+        [_del("a", 3)],
+        400,
+        "Invalid value at 'requests[0].delete_content_range.range.start_index.value' (TYPE_INT32), \"a\"",
+    ),
+    (
+        {"requests": "x"},
+        400,
+        f"Invalid value at 'requests' ({_DOCS_TYPE}.BatchUpdateDocumentRequest.Request), \"x\"",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"writeMode": "BOGUS"}},
+        400,
+        f"Invalid value at 'write_control.write_mode' ({_DOCS_TYPE}.WriteControl.WriteMode), \"BOGUS\"",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "nope": 1},
+        400,
+        'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    ),
+    ([1], 400, _ROOT_NOT_A_MESSAGE),
+    # `requests` before the revision, the revision before the requests' own refusals
+    (
+        {"requests": [], "writeControl": {"requiredRevisionId": "abc"}},
+        400,
+        "Must specify at least one request.",
+    ),
+    (
+        {"requests": [{}], "writeControl": {"requiredRevisionId": "abc"}},
+        400,
+        "Invalid requests[0]: No request set.",
+    ),
+    (
+        {"requests": [_ins(0, "x")], "writeControl": {"requiredRevisionId": "abc"}},
+        400,
+        "The required revision ID 'abc' does not match the latest revision.",
+    ),
+    (
+        {"requests": [_ins(0, "x")], "writeControl": {"targetRevisionId": "abc"}},
+        400,
+        "Invalid revision ID: abc",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"requiredRevisionId": "AHj4eMabc"}},
+        500,
+        "Internal error encountered.",
+    ),
+    (
+        {"requests": [_ins(1, "x")], "writeControl": {"targetRevisionId": "AHj4eMabc"}},
+        500,
+        "Internal error encountered.",
+    ),
+]
+
+
+@pytest.mark.parametrize("body,status,message", _DOCS_BATCH_REFUSALS)
+def test_a_batch_update_real_refuses_is_refused_with_reals_message(wc, wh, body, status, message):
+    body = {"requests": body} if isinstance(body, list) and body != [1] else body
+    r = _docs_write(wc, wh[_OWNER], "wr-text", body)
+    assert (r.status_code, r.json()["error"]["message"]) == (status, message)
+    assert wc.get("/_meta/overlay").json()["gdrive_doc_bodies"] == []
+
+
+def test_a_batch_update_takes_what_real_takes(wc, wh):
+    """Measured: text that is only characters `insertText` strips is taken and inserts nothing,
+    as is the one tab by its id and an empty `tabsCriteria`; `requests` as one object is a list of
+    it; a range may end inside a letter's combining mark; a `requiredRevisionId` must be the latest,
+    a `targetRevisionId` may be any earlier one, and another Doc's is refused as either."""
+    from tests._helpers import served_id
+
+    h = wh[_OWNER]
+    did = served_id("google_drive", "wr-text")
+    first = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
+    taken = [
+        [_ins(1, "\x01\r")],
+        [{"insertText": {"location": {"index": 1, "tabId": "t.0"}, "text": "x"}}],
+        [
+            {
+                "replaceAllText": {
+                    "containsText": {"text": "zzz"},
+                    "replaceText": "x",
+                    "tabsCriteria": {"tabIds": []},
+                }
+            }
+        ],
+        _ins(1, "y"),
+        [_ins(1, "é"), _del(2, 3)],
+        [_rep("zzz", "\ufdd0")],
+        [{"insertText": {"location": {"index": 1, "tabId": ""}, "text": "t"}}],
+        [{"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 2, "tabId": ""}}}],
+        # a cluster's boundary: after a ZWNJ, between a ZWJ that follows a letter and an emoji,
+        # after a flag's pair, between a syllable and a leading jamo
+        [_ins(1, "a\u200cb"), _ins(3, "x")],
+        [_ins(1, "a\u200d\U0001f600"), _ins(3, "x")],
+        [_ins(1, "\U0001f1f0\U0001f1f7\U0001f1fa"), _ins(5, "x")],
+        [_ins(1, "가\u1100"), _ins(2, "x")],
+    ]
+    for requests in taken:
+        assert _docs_write(wc, h, "wr-text", {"requests": requests}).status_code == 200
+    # a `writeMode` is its number, and only `SUGGEST`'s is refused
+    for mode in (7, -1, "1"):
+        body = {"requests": [_ins(1, "m")], "writeControl": {"writeMode": mode}}
+        assert _docs_write(wc, h, "wr-text", body).status_code == 200
+    assert _docs_runs(wc, h, "wr-text") == [
+        "N mmm가xᄀ\U0001f1f0\U0001f1f7x\U0001f1faa\u200dx\U0001f600a\u200cxbeyxHello world\n",
+        "N Second para\n",
+    ]
+    latest = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
+    pinned = {"requests": [_ins(1, "z")], "writeControl": {"requiredRevisionId": latest}}
+    assert _docs_write(wc, h, "wr-text", pinned).status_code == 200
+    assert _docs_write(wc, h, "wr-text", pinned).status_code == 400
+    late = {"requests": [_ins(1, "w")], "writeControl": {"targetRevisionId": first}}
+    assert _docs_write(wc, h, "wr-text", late).status_code == 200
+    # another Doc's revision is neither, as either
+    other = served_id("google_drive", "wr-doc")
+    theirs = wc.get(f"/docs/v1/documents/{other}", headers=h).json()["revisionId"]
+    for field in ("requiredRevisionId", "targetRevisionId"):
+        body = {"requests": [_ins(1, "v")], "writeControl": {field: theirs}}
+        r = _docs_write(wc, h, "wr-text", body)
+        assert (r.status_code, r.json()["error"]["message"]) == (
+            400,
+            "The provided revision ID is invalid.",
+        )
+
+
+def test_copy_to_adds_a_copy_named_in_the_destinations_language(wc, wh, wbook):
+    """Measured: the copy goes last with an id of its own, its source's properties and cells, and
+    a title in the destination's language -- `Copy of Data`, then `Copy of Data 1`; an unnamed
+    sheet is named in it too, `Hoja 1` under `es`. Reading the
+    source is enough; the destination has to be the caller's to write."""
+    from tests._helpers import served_id
+
+    h = wh[_OWNER]
+    dest = _create(wc, h, {"properties": {"title": "Dest"}})["spreadsheetId"]
+    korean = _create(wc, h, {"properties": {"locale": "ko_KR"}})["spreadsheetId"]
+    copy = f"{wbook}/sheets/0:copyTo"
+    first = wc.post(copy, headers=h, json={"destinationSpreadsheetId": dest}).json()
+    again = wc.post(copy, headers=h, json={"destinationSpreadsheetId": dest}).json()
+    assert (first["title"], first["index"], again["title"]) == ("Copy of Data", 1, "Copy of Data 1")
+    assert first["sheetId"] not in (0, again["sheetId"])
+    path = f"/sheets/v4/spreadsheets/{dest}"
+    assert _read_back(wc, h, path, "'Copy of Data'!A1:B2") == [["region", "deals"], ["EMEA", "12"]]
+    ko = wc.post(copy, headers=h, json={"destinationSpreadsheetId": korean}).json()
+    assert ko["title"] == "Data의 사본"
+    spanish = _create(wc, h, {"properties": {"locale": "es"}})
+    assert spanish["sheets"][0]["properties"]["title"] == "Hoja 1"
+    es = {"destinationSpreadsheetId": spanish["spreadsheetId"]}
+    assert wc.post(copy, headers=h, json=es).json()["title"] == "Copia de Data"
+    reader = wh["reader@acme.com"]
+    assert wc.post(copy, headers=reader, json={"destinationSpreadsheetId": dest}).status_code == 403
+    assert (
+        wc.post(copy, headers=wh["admin"], json={"destinationSpreadsheetId": dest}).status_code
+        == 403
+    )
+    unseen = f"/sheets/v4/spreadsheets/{served_id('google_drive', 'wr-private')}/sheets/0:copyTo"
+    assert wc.post(unseen, headers=h, json={"destinationSpreadsheetId": dest}).status_code == 403
+    for body, message in [
+        ({}, "Invalid destinationSpreadsheetId []"),
+        ({"destinationSpreadsheetId": "1nope"}, "Invalid destinationSpreadsheetId [1nope]"),
+    ]:
+        assert wc.post(copy, headers=h, json=body).json()["error"]["message"] == message
+    missing = wc.post(
+        f"{wbook}/sheets/9:copyTo", headers=h, json={"destinationSpreadsheetId": dest}
+    )
+    assert missing.json()["error"]["message"] == "The sheet (9) does not exist."
+
+
+def _grid(r0, r1, c0, c1):
+    return {
+        "gridRange": {
+            "sheetId": 0,
+            "startRowIndex": r0,
+            "endRowIndex": r1,
+            "startColumnIndex": c0,
+            "endColumnIndex": c1,
+        }
+    }
+
+
+_FIT = "Invalid dataFilterValueRange[1]: dataFilterValueRange.dataFilter matched range"
+# (filter, majorDimension, values, refusal), as `routers.google_sheets._sheets_filter_fit` records
+# them
+_FIT_REFUSALS = [
+    # more lists than the match has rows, or a list wider than it, under ROWS
+    (
+        _grid(6, 7, 0, 2),
+        "ROWS",
+        [["x"], ["y"]],
+        f"{_FIT} Data!$A$7:$B$7 whose rows cannot fit the data described in data.values.",
+    ),
+    (
+        _grid(6, 7, 0, 2),
+        "ROWS",
+        [list("abc")],
+        f"{_FIT} Data!$A$7:$B$7 whose columns cannot fit the data described in data.values[0].",
+    ),
+    # the other way round under COLUMNS
+    (
+        _grid(6, 7, 0, 2),
+        "COLUMNS",
+        [["x"], ["y"], ["z"]],
+        f"{_FIT} Data!$A$7:$B$7 whose columns cannot fit the data described in data.values.",
+    ),
+    (
+        _grid(6, 7, 0, 2),
+        "COLUMNS",
+        [["x"], ["y", "z"]],
+        f"{_FIT} Data!$A$7:$B$7 whose rows cannot fit the data described in data.values[1].",
+    ),
+    # unspecified is checked as COLUMNS is, then written by rows against the match
+    (
+        {"a1Range": "Data!A7"},
+        None,
+        [["x"], ["y"]],
+        f"{_FIT} Data!$A$7 whose dimension_unspecified cannot fit the data described in data.values.",
+    ),
+    (
+        _grid(6, 7, 0, 2),
+        None,
+        [["x", "y"]],
+        f"{_FIT} Data!$A$7:$B$7 whose rows cannot fit the data described in data.values[0].",
+    ),
+    (
+        _grid(6, 7, 0, 2),
+        None,
+        [["x"], ["y"]],
+        "Invalid dataFilterValueRange[1]: Requested writing within range [Data!A7:B7], but tried writing to row [8]",
+    ),
+    # an empty grid range fits nothing, and with no values cannot be parsed
+    (
+        _grid(949, 949, 25, 26),
+        None,
+        [["x"]],
+        f"{_FIT} #REF! whose rows cannot fit the data described in data.values[0].",
+    ),
+    (
+        _grid(949, 950, 25, 25),
+        "COLUMNS",
+        [["x"]],
+        f"{_FIT} #REF! whose columns cannot fit the data described in data.values.",
+    ),
+    (
+        _grid(949, 949, 25, 26),
+        None,
+        None,
+        "Invalid dataFilterValueRange[1]: Unable to parse range: #REF!",
+    ),
+]
+
+
+def test_a_data_filter_write_is_bounded_by_what_the_filter_matches(wc, wh, wbook):
+    """Measured: a matched range is a bound even when it is one cell, a developer metadata lookup
+    leaves no entry, and each entry echoes its filter with no `spreadsheetId`."""
+    h = wh[_OWNER]
+    path = f"{wbook}/values:batchUpdateByDataFilter"
+    r = wc.post(
+        path,
+        headers=h,
+        json={
+            "valueInputOption": "RAW",
+            "data": [
+                {"dataFilter": {"a1Range": "Data!A3:B4"}, "values": [["x", "y"]]},
+                {
+                    "dataFilter": {"developerMetadataLookup": {"metadataKey": "k"}},
+                    "values": [["m"]],
+                },
+            ],
+        },
+    )
+    assert r.json()["responses"] == [
+        {
+            "updatedRange": "Data!A3:B3",
+            "updatedRows": 1,
+            "updatedColumns": 2,
+            "updatedCells": 2,
+            "dataFilter": {"a1Range": "Data!A3:B4"},
+        }
+    ]
+    over = {"gridRange": {"sheetId": 0, "startRowIndex": 6, "endRowIndex": 7, "endColumnIndex": 1}}
+    r = wc.post(
+        path,
+        headers=h,
+        json={"valueInputOption": "RAW", "data": [{"dataFilter": over, "values": [["a", "b"]]}]},
+    )
+    assert r.json()["error"]["message"] == (
+        "Invalid dataFilterValueRange[0]: dataFilterValueRange.dataFilter matched range Data!$A$7 "
+        "whose rows cannot fit the data described in data.values[0]."
+    )
+    r = wc.post(
+        path,
+        headers=h,
+        params={**_RAW, "includeValuesInResponse": "true"},
+        json={"data": [{"dataFilter": {"a1Range": "Data!A4"}, "values": [["q"]]}]},
+    )
+    assert r.json()["responses"][0]["updatedData"]["values"] == [["q"]]
+    r = wc.post(path, headers=h, json={"valueInputOption": "RAW", "data": [{"values": [["x"]]}]})
+    assert r.json()["error"]["message"] == (
+        "Invalid dataFilterValueRange[0]: dataFilterValueRange.filter is required but not specified."
+    )
+    # a refused entry refuses the good one before it
+    good = {"dataFilter": {"a1Range": "Data!A5"}, "values": [["kept out"]]}
+    for data_filter, major, values, message in _FIT_REFUSALS:
+        entry = {"dataFilter": data_filter}
+        entry.update({"values": values} if values is not None else {})
+        entry.update({"majorDimension": major} if major else {})
+        body = {"valueInputOption": "RAW", "data": [good, entry]}
+        r = wc.post(path, headers=h, json=body)
+        assert r.json()["error"]["message"] == message, (data_filter, major, values)
+    assert _read_back(wc, h, wbook, "Data!A5") is None
+    clear = f"{wbook}/values:batchClearByDataFilter"
+    r = wc.post(clear, headers=h, json={"dataFilters": [_grid(949, 950, 25, 25)]})
+    assert r.json()["clearedRanges"] == ["(empty) Data!Z950:Y950"]
+    r = wc.post(
+        clear,
+        headers=h,
+        json={
+            "dataFilters": [
+                {"a1Range": "Data!A3"},
+                _grid(949, 949, 25, 26),
+                {"gridRange": {"sheetId": 0}},
+            ]
+        },
+    )
+    assert r.json()["clearedRanges"] == ["Data!A3", "(empty) Data!Z950:Z949", "Data!A1:Z1000"]
+    assert _read_back(wc, h, wbook, "Data!A1:B3") is None
+
+
+def test_spreadsheet_url_names_the_caller(wc, wh, wbook):
+    """`_sheets_url`: the owner and a reader each get their own `ouid`, the admin none."""
+    from backlot import synth
+
+    for who in (_OWNER, "reader@acme.com"):
+        url = wc.get(wbook, headers=wh[who], params={"fields": "spreadsheetUrl"}).json()[
+            "spreadsheetUrl"
+        ]
+        assert url.endswith(f"/edit?ouid={synth.google_user_id(who)}")
+    url = wc.get(wbook, headers=wh["admin"], params={"fields": "spreadsheetUrl"}).json()[
+        "spreadsheetUrl"
+    ]
+    assert url.endswith("/edit")
+
+
+def test_a_file_shared_with_no_one_but_its_owner_is_not_shared(wc, wh):
+    """A grant to a file's own author is its owner permission, not a reader's, and shares it with
+    nobody. Measured on a created spreadsheet, whose one permission is the owner's."""
+    from tests._helpers import served_id
+
+    fid = served_id("google_drive", "wr-private")
+    h = wh["reader@acme.com"]
+    assert wc.get(f"/drive/v3/files/{fid}", headers=h, params={"fields": "shared"}).json() == {
+        "shared": False
+    }
+    perms = wc.get(f"/drive/v3/files/{fid}/permissions", headers=h).json()["permissions"]
+    assert [p["role"] for p in perms] == ["owner"]

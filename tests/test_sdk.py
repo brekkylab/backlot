@@ -1,11 +1,18 @@
-"""Read-only coverage: drive each official SDK against Backlot.
+"""Drive each official SDK against Backlot.
 
 Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corpus, which
 carries the +α surface) — the official SDKs make real HTTP calls, so they need a listening
 port rather than the in-process ``TestClient``. Exercises every service's SDK read methods — Slack (slack_sdk),
-Gmail+Drive+Sheets (google-api-python-client), GitHub (PyGithub), Jira+Confluence
-(atlassian-python-api) — asserting all return shape-correct data. Skipped unless the optional
-SDKs (``.[official-sdk]``) are installed.
+Microsoft Teams (msgraph-sdk), Gmail+Drive+Sheets (google-api-python-client), GitHub (PyGithub),
+Jira+Confluence (atlassian-python-api) — asserting all return shape-correct data, and Slack's
+write methods, which is the only place the request's media type is exercised: `slack_sdk` sends
+three of them as JSON and the rest as a form, so a server that reads one and not the other passes
+every other test here. Skipped unless the optional SDKs (``.[official-sdk]``) are installed.
+
+The Graph SDK earns its place beyond "a client can reach the route": it deserializes into
+generated models, so a field Backlot spells wrong does not raise — it silently arrives as ``None``.
+Every assertion below therefore reads a TYPED attribute (``message_type``, ``from_.user``,
+``membership_type``) rather than a dict key, which is what makes a wrong name fail here.
 """
 
 from __future__ import annotations
@@ -38,7 +45,7 @@ def slack():
     check("Slack", "auth.test")(lambda: c.auth_test()["ok"] and "ok")
     chans = c.conversations_list(limit=200)["channels"]
     inc = next(x["id"] for x in chans if x["name"] == "incidents")
-    check("Slack", "conversations.list")(lambda: f"{len(chans)} channels")
+    check("Slack", "conversations.list")(lambda: f"{len(chans)} channel(s)")
     check("Slack", "conversations.info")(
         lambda: c.conversations_info(channel=inc)["channel"]["name"]
     )
@@ -52,15 +59,45 @@ def slack():
         lambda: f"{len(c.conversations_replies(channel=inc, ts=root['ts'])['messages'])} in thread"
     )
     check("Slack", "conversations.members")(
-        lambda: f"{len(c.conversations_members(channel=inc)['members'])} members"
+        lambda: f"{len(c.conversations_members(channel=inc)['members'])} member(s)"
     )
-    check("Slack", "users.list")(lambda: f"{len(c.users_list()['members'])} users")
+    check("Slack", "users.list")(lambda: f"{len(c.users_list()['members'])} user(s)")
     check("Slack", "search.messages")(
         lambda: (
-            f"{len(m)} matches"
+            f"{len(m)} match(es)"
             if (m := c.search_messages(query="gateway")["messages"]["matches"])
             else 1 / 0
         )
+    )
+    # The writes. `chat_postMessage`, `chat_update` and `chat_postEphemeral` go out as JSON
+    # (`WebClient.api_call(..., json=kwargs)`) where the rest go as a form, so these three are what
+    # a media-type gap answers `invalid_arguments` to while everything above stays green.
+    posted = c.chat_postMessage(channel=inc, text="sdk wrote this")
+    check("Slack", "chat.postMessage")(lambda: posted["message"]["text"])
+    check("Slack", "chat.update")(
+        lambda: c.chat_update(channel=inc, ts=posted["ts"], text="sdk edited this")["text"]
+    )
+    check("Slack", "chat.postEphemeral")(
+        lambda: c.chat_postEphemeral(channel=inc, user=c.auth_test()["user_id"], text="just you")[
+            "message_ts"
+        ]
+    )
+    check("Slack", "reactions.add")(
+        lambda: c.reactions_add(channel=inc, timestamp=posted["ts"], name="tada")["ok"] and "ok"
+    )
+    check("Slack", "reactions.get")(
+        lambda: c.reactions_get(channel=inc, timestamp=posted["ts"])["message"]["reactions"][0][
+            "name"
+        ]
+    )
+    check("Slack", "reactions.remove")(
+        lambda: c.reactions_remove(channel=inc, timestamp=posted["ts"], name="tada")["ok"] and "ok"
+    )
+    check("Slack", "chat.getPermalink")(
+        lambda: c.chat_getPermalink(channel=inc, message_ts=posted["ts"])["permalink"]
+    )
+    check("Slack", "chat.delete")(
+        lambda: c.chat_delete(channel=inc, ts=posted["ts"])["ok"] and "ok"
     )
 
 
@@ -85,10 +122,10 @@ def gmail():
         lambda: svc.users().getProfile(userId="me").execute()["emailAddress"]
     )
     check("Gmail", "labels.list")(
-        lambda: f"{len(svc.users().labels().list(userId='me').execute()['labels'])} labels"
+        lambda: f"{len(svc.users().labels().list(userId='me').execute()['labels'])} label(s)"
     )
     msgs = svc.users().messages().list(userId="me", maxResults=50).execute().get("messages", [])
-    check("Gmail", "messages.list")(lambda: f"{len(msgs)} messages")
+    check("Gmail", "messages.list")(lambda: f"{len(msgs)} message(s)")
     # find the message that has an attachment
     full = None
     for stub in msgs:
@@ -116,14 +153,16 @@ def gmail():
         )
     )
     qres = svc.users().messages().list(userId="me", q="board").execute().get("messages", [])
-    check("Gmail", "messages.list q (free text)")(lambda: f"{len(qres)} match" if qres else 1 / 0)
+    check("Gmail", "messages.list q (free text)")(
+        lambda: f"{len(qres)} match(es)" if qres else 1 / 0
+    )
     fres = svc.users().messages().list(userId="me", q="from:ceo").execute().get("messages", [])
-    check("Gmail", "messages.list q (from:)")(lambda: f"{len(fres)} match" if fres else 1 / 0)
+    check("Gmail", "messages.list q (from:)")(lambda: f"{len(fres)} match(es)" if fres else 1 / 0)
     threads = svc.users().threads().list(userId="me").execute().get("threads", [])
-    check("Gmail", "threads.list")(lambda: f"{len(threads)} threads" if threads else 1 / 0)
+    check("Gmail", "threads.list")(lambda: f"{len(threads)} thread(s)" if threads else 1 / 0)
     check("Gmail", "threads.get")(
         lambda: (
-            f"{len(svc.users().threads().get(userId='me', id=threads[0]['id']).execute()['messages'])} msgs"
+            f"{len(svc.users().threads().get(userId='me', id=threads[0]['id']).execute()['messages'])} msg(s)"
         )
     )
     # Served ids must look like Gmail's own: 16 lowercase hex under 2**63. A dsid would be
@@ -131,7 +170,7 @@ def gmail():
     # only discover that in production.
     check("Gmail", "ids are Gmail-shaped")(
         lambda: (
-            f"{len(msgs)} hex ids"
+            f"{len(msgs)} hex id(s)"
             if all(
                 # up to 16 digits and never zero-padded: real Gmail renders the integer
                 1 <= len(m["id"]) <= 16
@@ -175,7 +214,7 @@ def drive():
         .list(pageSize=100, fields="files(id,name,mimeType,capabilities,size)")
         .execute()["files"]
     )
-    check("Drive", "files.list")(lambda: f"{len(files)} files")
+    check("Drive", "files.list")(lambda: f"{len(files)} file(s)")
     by_mime = {f["mimeType"].rsplit(".", 1)[-1]: f for f in files}
     check("Drive", "doc/sheet/slide types")(lambda: ",".join(sorted(by_mime)[:3]))
     sheet = next(f for f in files if f["mimeType"].endswith("spreadsheet"))
@@ -192,7 +231,7 @@ def drive():
     )
     check("Drive", "permissions.list")(
         lambda: (
-            f"{len(svc.permissions().list(fileId=files[0]['id']).execute()['permissions'])} perms"
+            f"{len(svc.permissions().list(fileId=files[0]['id']).execute()['permissions'])} perm(s)"
         )
     )
     ftxt = (
@@ -200,7 +239,9 @@ def drive():
         .list(q="fullText contains 'palette'", fields="files(id,name)")
         .execute()["files"]
     )
-    check("Drive", "files.list fullText contains")(lambda: f"{len(ftxt)} match" if ftxt else 1 / 0)
+    check("Drive", "files.list fullText contains")(
+        lambda: f"{len(ftxt)} match(es)" if ftxt else 1 / 0
+    )
     # about.get is usually a client's first call; the SDK builds it from the discovery doc, so this
     # proves the real request shape (fields + alt=json) reaches the route.
     about = svc.about().get(fields="user,storageQuota").execute()
@@ -261,7 +302,7 @@ def sheets():
     want = [[["month,revenue"]], [["month,revenue"], ["Jan,120000"], ["Feb,135000"]]]
     check("Sheets", "values.batchGet")(
         lambda: (
-            f"{len(batch['valueRanges'])} ranges"
+            f"{len(batch['valueRanges'])} range(s)"
             if [vr["values"] for vr in batch["valueRanges"]] == want
             else 1 / 0
         )
@@ -331,15 +372,17 @@ def github():
     repo = gh.get_repo("acme/gateway")  # the SAMPLE corpus is @acme.com; owner is echoed by Backlot
     check("GitHub", "get_repo")(lambda: repo.full_name)
     issues = list(repo.get_issues(state="all"))
-    check("GitHub", "get_issues (issues+PRs)")(lambda: f"{len(issues)} items")
+    check("GitHub", "get_issues (issues+PRs)")(lambda: f"{len(issues)} item(s)")
     check("GitHub", "PR marker on /issues")(
         lambda: "yes" if any(i.pull_request for i in issues) else 1 / 0
     )
     an_issue = next(i for i in issues if not i.pull_request)
-    check("GitHub", "issue.get_comments")(lambda: f"{len(list(an_issue.get_comments()))} comments")
+    check("GitHub", "issue.get_comments")(
+        lambda: f"{len(list(an_issue.get_comments()))} comment(s)"
+    )
     prs = list(repo.get_pulls(state="all"))
-    check("GitHub", "get_pulls")(lambda: f"{len(prs)} PRs")
-    check("GitHub", "pull.get_reviews")(lambda: f"{len(list(prs[0].get_reviews()))} reviews")
+    check("GitHub", "get_pulls")(lambda: f"{len(prs)} PR(s)")
+    check("GitHub", "pull.get_reviews")(lambda: f"{len(list(prs[0].get_reviews()))} review(s)")
 
     def missing_readme():
         # gateway holds no README, which is real's 404 (`backlot.routers.github.get_readme`)
@@ -352,7 +395,7 @@ def github():
 
     check("GitHub", "get_readme missing file")(missing_readme)
     sr = gh.search_issues(query="refill")
-    check("GitHub", "search_issues")(lambda: f"{sr.totalCount} hits" if sr.totalCount else 1 / 0)
+    check("GitHub", "search_issues")(lambda: f"{sr.totalCount} hit(s)" if sr.totalCount else 1 / 0)
     # what a client asks before a crawl: a 404 here raised UnknownObjectException before the first
     # real request, and the answer is the same windows the x-ratelimit-* headers report
     check("GitHub", "get_rate_limit")(
@@ -458,22 +501,22 @@ def jira():
 
     j = Jira(url=f"{BASE}/atlassian", username="svc@x", password=ADMIN)
     res = j.get("rest/api/3/search/jql", params={"jql": "project is not EMPTY", "maxResults": 50})
-    check("Jira", "search/jql")(lambda: f"{len(res['issues'])} issues")
+    check("Jira", "search/jql")(lambda: f"{len(res['issues'])} issue(s)")
     tres = j.get("rest/api/3/search/jql", params={"jql": 'text ~ "latency"'})
     check("Jira", "search/jql text~")(
-        lambda: f"{len(tres['issues'])} match" if tres["issues"] else 1 / 0
+        lambda: f"{len(tres['issues'])} match(es)" if tres["issues"] else 1 / 0
     )
     key = next(i["key"] for i in res["issues"] if i["fields"]["summary"].startswith("SEV2"))
     iss = j.get(f"rest/api/3/issue/{key}")
     f = iss["fields"]
-    check("Jira", "issue comments")(lambda: f"{f['comment']['total']} comments")
-    check("Jira", "issue links")(lambda: f"{len(f['issuelinks'])} links")
-    check("Jira", "subtasks")(lambda: f"{len(f['subtasks'])} subtasks")
+    check("Jira", "issue comments")(lambda: f"{f['comment']['total']} comment(s)")
+    check("Jira", "issue links")(lambda: f"{len(f['issuelinks'])} link(s)")
+    check("Jira", "subtasks")(lambda: f"{len(f['subtasks'])} subtask(s)")
     check("Jira", "issue/{key}/comment")(
-        lambda: f"{j.get(f'rest/api/3/issue/{key}/comment')['total']} comments"
+        lambda: f"{j.get(f'rest/api/3/issue/{key}/comment')['total']} comment(s)"
     )
     check("Jira", "issueLinkType")(
-        lambda: f"{len(j.get('rest/api/3/issueLinkType')['issueLinkTypes'])} types"
+        lambda: f"{len(j.get('rest/api/3/issueLinkType')['issueLinkTypes'])} type(s)"
     )
 
 
@@ -483,23 +526,23 @@ def confluence():
 
     cf = Confluence(url=f"{BASE}/atlassian/wiki", username="svc@x", password=ADMIN)
     res = cf.get("rest/api/content", params={"limit": 50, "expand": "body.storage"})
-    check("Confluence", "content.list")(lambda: f"{len(res['results'])} pages")
+    check("Confluence", "content.list")(lambda: f"{len(res['results'])} page(s)")
     handbook = next(p for p in res["results"] if "Handbook" in p["title"])
     kids = cf.get(f"rest/api/content/{handbook['id']}/child/page")
-    check("Confluence", "child/page")(lambda: f"{kids['size']} children")
+    check("Confluence", "child/page")(lambda: f"children: {kids['size']}")
     child = kids["results"][0]["id"]
     check("Confluence", "child/comment")(
-        lambda: f"{cf.get(f'rest/api/content/{child}/child/comment')['size']} comments"
+        lambda: f"{cf.get(f'rest/api/content/{child}/child/comment')['size']} comment(s)"
     )
     check("Confluence", "child/attachment")(
-        lambda: f"{cf.get_attachments_from_content(child)['size']} attachments"
+        lambda: f"{cf.get_attachments_from_content(child)['size']} attachment(s)"
     )
     check("Confluence", "content/{id}/label")(
         lambda: ",".join(x["name"] for x in cf.get(f"rest/api/content/{child}/label")["results"])
     )
     check("Confluence", "ancestors expand")(
         lambda: (
-            f"{len(cf.get(f'rest/api/content/{child}', params={'expand': 'ancestors'})['ancestors'])} ancestors"
+            f"{len(cf.get(f'rest/api/content/{child}', params={'expand': 'ancestors'})['ancestors'])} ancestor(s)"
         )
     )
 
@@ -512,12 +555,12 @@ def notion():
 
     c = Client(auth=ADMIN, base_url=f"{BASE}/notion")
     check("Notion", "search")(
-        lambda: f"{len(m)} hits" if (m := c.search(query="on-call")["results"]) else 1 / 0
+        lambda: f"{len(m)} hit(s)" if (m := c.search(query="on-call")["results"]) else 1 / 0
     )
     pid = synth.notion_id("nt-runbook")
     check("Notion", "pages.retrieve")(lambda: c.pages.retrieve(pid)["object"])
     blocks = c.blocks.children.list(pid)["results"]
-    check("Notion", "blocks.children.list")(lambda: f"{len(blocks)} blocks" if blocks else 1 / 0)
+    check("Notion", "blocks.children.list")(lambda: f"{len(blocks)} block(s)" if blocks else 1 / 0)
     did = synth.notion_id("nt-tasks-db")
     db = c.databases.retrieve(did)
     check("Notion", "databases.retrieve")(lambda: db["object"])
@@ -525,14 +568,119 @@ def notion():
     check("Notion", "data_sources.retrieve")(lambda: c.data_sources.retrieve(dsid)["object"])
     check("Notion", "data_sources.query")(
         lambda: (
-            f"{len(r)} rows"
+            f"{len(r)} row(s)"
             if (r := c.data_sources.query(data_source_id=dsid)["results"])
             else 1 / 0
         )
     )
-    check("Notion", "users.list")(lambda: f"{len(c.users.list()['results'])} users")
+    check("Notion", "users.list")(lambda: f"{len(c.users.list()['results'])} user(s)")
     check("Notion", "users.me")(lambda: c.users.me()["type"])
     check("Notion", "comments.list")(lambda: c.comments.list(block_id=pid)["results"][0]["object"])
+
+
+# ------------------------------------------------------- Microsoft Teams (Graph)
+
+
+def _graph_client(base_url, token):
+    """A ``GraphServiceClient`` pointed at Backlot — the same two-line shim the example documents."""
+    from azure.core.credentials import AccessToken
+    from kiota_authentication_azure.azure_identity_authentication_provider import (
+        AzureIdentityAuthenticationProvider,
+    )
+    from msgraph import GraphServiceClient
+    from msgraph.graph_request_adapter import GraphRequestAdapter
+
+    class _Static:
+        def get_token(self, *scopes, **kwargs):
+            return AccessToken(token, 2**31 - 1)
+
+    auth = AzureIdentityAuthenticationProvider(_Static(), scopes=["/.default"])
+    adapter = GraphRequestAdapter(auth)
+    adapter.base_url = f"{base_url.rstrip('/')}/msgraph/v1.0"
+    return GraphServiceClient(request_adapter=adapter)
+
+
+async def _msteams_reads(graph):
+    from kiota_abstractions.base_request_configuration import RequestConfiguration
+    from msgraph.generated.teams.item.channels.item.messages.messages_request_builder import (
+        MessagesRequestBuilder,
+    )
+
+    me = await graph.me.get()
+    check("Teams", "me")(lambda: me.user_principal_name)
+
+    teams = await graph.me.joined_teams.get()
+    check("Teams", "me.joinedTeams")(lambda: teams.value[0].display_name)
+    team = graph.teams.by_team_id(teams.value[0].id)
+
+    channels = await team.channels.get()
+    by_name = {c.display_name: c for c in channels.value}
+    check("Teams", "channels")(lambda: f"{len(channels.value)} channel(s)")
+    # The enum deserializes only if the served string is a member the schema declares.
+    check("Teams", "channel.membershipType")(lambda: by_name["Platform"].membership_type.value)
+
+    one = await team.channels.by_channel_id(by_name["Platform"].id).get()
+    check("Teams", "channels/{id}")(lambda: one.layout_type.value)
+
+    incidents = team.channels.by_channel_id(by_name["Incidents"].id)
+    config = RequestConfiguration(
+        query_parameters=MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+            expand=["replies"]
+        )
+    )
+    posts = await incidents.messages.get(request_configuration=config)
+    root = next(m for m in posts.value if "502s" in m.body.content)
+    check("Teams", "channel messages")(lambda: f"{posts.odata_count} root(s)")
+    # The id is the creation time and the etag the last-modified time, both in epoch ms, as live.
+    check("Teams", "id is createdDateTime")(
+        lambda: round(root.created_date_time.timestamp() * 1000) == int(root.id) or 1 / 0
+    )
+    check("Teams", "etag is lastModifiedDateTime")(
+        lambda: round(root.last_modified_date_time.timestamp() * 1000) == int(root.etag) or 1 / 0
+    )
+    check("Teams", "message.from")(lambda: root.from_.user.display_name)
+    check("Teams", "message.messageType")(lambda: root.message_type.value)
+    check("Teams", "$expand=replies")(lambda: f"{len(root.replies)} inline")
+
+    replies = await incidents.messages.by_chat_message_id(root.id).replies.get()
+    check("Teams", "message replies")(
+        lambda: (
+            f"replies: {len(replies.value)}"
+            if all(r.reply_to_id == root.id for r in replies.value)
+            else 1 / 0
+        )
+    )
+    thread = incidents.messages.by_chat_message_id(root.id)
+    fetched = await thread.replies.by_chat_message_id1(replies.value[0].id).get()
+    check("Teams", "replies/{id}")(lambda: fetched.reply_to_id == root.id or 1 / 0)
+
+    members = await incidents.members.get()
+    check("Teams", "channel members")(lambda: ", ".join(sorted(m.email for m in members.value)))
+
+    users = await graph.users.get()
+    check("Teams", "users")(lambda: f"{len(users.value)} user(s)")
+    got = await graph.users.by_user_id("ava@acme.com").get()
+    check("Teams", "users/{upn}")(lambda: got.user_principal_name)
+
+    # The SDK raises its own ODataError only if it could parse Backlot's error envelope.
+    from kiota_abstractions.api_error import APIError
+
+    raised = None
+    try:
+        await incidents.messages.by_chat_message_id("9999999999999").get()
+    except APIError as exc:
+        # Rebound, because Python clears an `except ... as` name at the end of its block and the
+        # closure below outlives it.
+        raised = exc
+    check("Teams", "an unknown message is an ODataError")(
+        lambda: raised.error.code if raised and raised.response_status_code == 403 else 1 / 0
+    )
+
+
+def msteams():
+    import asyncio
+
+    asyncio.run(_msteams_reads(_graph_client(BASE, ADMIN)))
 
 
 def test_sdk_read_coverage(live_server):
@@ -544,6 +692,8 @@ def test_sdk_read_coverage(live_server):
 
     if importlib.util.find_spec("notion_client"):  # optional; only on .[official-sdk]
         fns.append(notion)
+    if importlib.util.find_spec("msgraph"):
+        fns.append(msteams)
     for fn in fns:
         try:
             fn()
@@ -665,3 +815,44 @@ def test_s3_sdk_acl_scopes_to_user(live_server, tokens):
     with pytest.raises(ClientError) as e:
         s3.get_object(Bucket="people-vault", Key="comp/bands.csv")
     assert e.value.response["Error"]["Code"] in ("NoSuchKey", "NoSuchBucket", "AccessDenied")
+
+
+def test_msteams_sdk_acl_scopes_to_user(live_server, tokens):
+    """`People Confidential` is group-scoped to people; bob is engineering.
+
+    Asserted through the SDK rather than over HTTP because that is where a client would notice: the
+    channel has to be absent from the listing AND refused by id, or a caller who saved the id keeps
+    reading a room they were removed from.
+    """
+    pytest.importorskip("msgraph")
+    import asyncio
+
+    from kiota_abstractions.api_error import APIError
+
+    base_url, _ = live_server
+
+    async def visible(token):
+        graph = _graph_client(base_url, token)
+        teams = await graph.me.joined_teams.get()
+        team = graph.teams.by_team_id(teams.value[0].id)
+        channels = await team.channels.get()
+        return team, {c.display_name: c.id for c in channels.value}
+
+    _, hana_sees = asyncio.run(visible(tokens["hana@acme.com"]))
+    assert "People Confidential" in hana_sees
+    confidential = hana_sees["People Confidential"]
+
+    async def bob():
+        graph = _graph_client(base_url, tokens["bob@acme.com"])
+        teams = await graph.me.joined_teams.get()
+        team = graph.teams.by_team_id(teams.value[0].id)
+        names = {c.display_name for c in (await team.channels.get()).value}
+        try:
+            await team.channels.by_channel_id(confidential).get()
+            return names, None
+        except APIError as e:
+            return names, e.response_status_code
+
+    names, status = asyncio.run(bob())
+    assert "People Confidential" not in names
+    assert status == 403, "a channel bob cannot read is refused by id, as live refuses it"

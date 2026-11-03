@@ -15,7 +15,7 @@ source, which is the half of the version-aware router that version serves.
     python examples/using-mirage/notion.py --url http://localhost:8000 --fuse   # real OS mount
 
 With ``--fuse`` the tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read with
-plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
+plain ``os``/shell tools; otherwise it's driven in-process via ``ws.shell``.
 """
 
 import argparse
@@ -24,7 +24,7 @@ import subprocess
 
 from _helpers import FUSE_HELP, lines, run_mirage
 from mirage import MountMode, Workspace
-from mirage.resource.notion import NotionConfig, NotionResource
+from mirage.vfs.notion import NotionConfig, NotionVFS
 
 from backlot import serve_or_connect
 
@@ -74,38 +74,38 @@ CORPUS = [
 def build(s, token):
     # Notion's host is a config knob — point it at Backlot (no monkeypatch needed).
     # --token <usr-token> (from /_meta/users) → ACL-filtered to that user; else admin sees all.
-    return NotionResource(NotionConfig(api_key=token, base_url=f"{s.base_url}/notion/v1"))
+    return NotionVFS(NotionConfig(api_key=token, base_url=f"{s.base_url}/notion/v1"))
 
 
-async def main(resource) -> None:
-    ws = Workspace({"/notion": resource}, mode=MountMode.READ)
+async def main(vfs) -> None:
+    ws = Workspace({"/notion": vfs}, mode=MountMode.READ)
 
     print("=== ls /notion/ ===")
-    print((await (await ws.execute("ls /notion/")).stdout_str()).rstrip())
+    print((await (await ws.shell("ls /notion/")).stdout_str()).rstrip())
 
-    pages = lines(await (await ws.execute("ls /notion/pages/")).stdout_str())
+    pages = lines(await (await ws.shell("ls /notion/pages/")).stdout_str())
     print(f"\n=== {len(pages)} page(s) ===")
     for p in pages:
         print(f"  {p}")
     if pages:
         page_json = f"/notion/pages/{pages[0].rstrip('/')}/page.json"
         print(f"\n$ cat {page_json}")
-        print((await (await ws.execute(f'cat "{page_json}"')).stdout_str()).rstrip()[:600])
+        print((await (await ws.shell(f'cat "{page_json}"')).stdout_str()).rstrip()[:600])
 
-    dbs = lines(await (await ws.execute("ls /notion/databases/")).stdout_str())
+    dbs = lines(await (await ws.shell("ls /notion/databases/")).stdout_str())
     print(f"\n=== {len(dbs)} database(s) ===")
     for d in dbs:
         print(f"  {d}")
     if dbs:
         db_json = f"/notion/databases/{dbs[0].rstrip('/')}/database.json"
         print(f"\n$ cat {db_json}")
-        print((await (await ws.execute(f'cat "{db_json}"')).stdout_str()).rstrip()[:600])
+        print((await (await ws.shell(f'cat "{db_json}"')).stdout_str()).rstrip()[:600])
 
 
-def main_fuse(resource) -> None:
+def main_fuse(vfs) -> None:
     """--fuse: mount the Notion tree as a *real* filesystem, then read it with ordinary tools."""
     try:
-        with Workspace({"/notion": resource}, mode=MountMode.READ) as ws:
+        with Workspace({"/notion": vfs}, mode=MountMode.READ) as ws:
             mnt = ws.add_fuse_mount("/notion")  # "/notion" is now a real directory on disk
             print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
             pages = sorted(os.listdir(f"{mnt}/pages"))
@@ -147,8 +147,8 @@ if __name__ == "__main__":
     with serve_or_connect(CORPUS, url=args.url) as s:
         if args.token:
             print("authenticating with --token → responses are ACL-filtered to that user")
-        resource = build(s, args.token or s.token)
+        vfs = build(s, args.token or s.token)
         if args.fuse:
-            main_fuse(resource)
+            main_fuse(vfs)
         else:
-            run_mirage(main(resource))
+            run_mirage(main(vfs))

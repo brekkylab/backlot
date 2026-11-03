@@ -11,11 +11,15 @@ these share are in ``tests/_helpers.py``.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import urllib.parse
 
 import pytest
 
-from tests._helpers import build_corpus, client_for, crawl_confluence, db_count
+from backlot.graphql import body as request_body
+from backlot.graphql import v8_json
+from tests._helpers import build_corpus, client_for, crawl_confluence, db_count, padded_query
 
 
 def test_unauthenticated_request_reports_the_vendors_own_401_detail(client):
@@ -111,23 +115,30 @@ def test_unauthenticated_is_rejected(client):
 # router: the assertion is identical and only the path and the expected names differ.
 
 
-@pytest.mark.parametrize(
-    "path, expected",
-    [
-        ("/github/search/issues", {"q", "page", "per_page"}),
-        ("/slack/api/search.messages", {"query", "count", "page"}),
-        ("/slack/api/conversations.history", {"channel", "limit", "cursor"}),
-        # `user_id` is the path param, asserted here so enrichment cannot drop it
-        ("/gmail/v1/users/{user_id}/messages", {"q", "maxResults", "pageToken", "user_id"}),
-        ("/drive/v3/files", {"q", "pageSize", "pageToken", "fields"}),
-        ("/notion/v1/users", {"start_cursor", "page_size"}),
-        ("/atlassian/rest/api/3/search/jql", {"jql", "maxResults", "nextPageToken"}),
-        ("/atlassian/wiki/rest/api/search", {"cql"}),
-    ],
-)
-def test_router_advertises_the_params_it_honours(client, path, expected):
-    op = client.get("/openapi.json").json()["paths"][path]["get"]
-    assert expected <= {p["name"] for p in op.get("parameters", [])}
+_ADVERTISED_PARAMS = [
+    ("/github/search/issues", {"q", "page", "per_page"}),
+    ("/slack/api/search.messages", {"query", "count", "page"}),
+    ("/slack/api/conversations.history", {"channel", "limit", "cursor"}),
+    (
+        "/slack/api/conversations.replies",
+        {"channel", "ts", "limit", "cursor", "oldest", "latest", "inclusive"},
+    ),
+    # `user_id` is the path param, asserted here so enrichment cannot drop it
+    ("/gmail/v1/users/{user_id}/messages", {"q", "maxResults", "pageToken", "user_id"}),
+    ("/drive/v3/files", {"q", "pageSize", "pageToken", "fields"}),
+    ("/notion/v1/users", {"start_cursor", "page_size"}),
+    ("/atlassian/rest/api/3/search/jql", {"jql", "maxResults", "nextPageToken"}),
+    ("/atlassian/wiki/rest/api/search", {"cql"}),
+]
+
+
+def test_router_advertises_the_params_it_honours(client):
+    paths = client.get("/openapi.json").json()["paths"]
+    unadvertised = {
+        path: expected - {p["name"] for p in paths[path]["get"].get("parameters", [])}
+        for path, expected in _ADVERTISED_PARAMS
+    }
+    assert unadvertised == {path: set() for path, _ in _ADVERTISED_PARAMS}
 
 
 # --- /_meta/openapi/{source}: the MCP-ready spec endpoint ---------------
@@ -215,8 +226,10 @@ def test_a_failing_warm_up_is_recorded_instead_of_dying_with_its_thread(tmp_path
     # The thread is the only caller of this, so patching it cannot disturb the serving path.
     monkeypatch.setattr(
         store,
-        "slack_channel_member_counts",
-        lambda conn: (_ for _ in ()).throw(sqlite3.OperationalError("no such table: whatever")),
+        "conversation_member_counts",
+        lambda conn, src: (_ for _ in ()).throw(
+            sqlite3.OperationalError("no such table: whatever")
+        ),
     )
     with client_for(settings, reload=True) as client:
         _join_warm_thread(main_module)
@@ -283,3 +296,518 @@ def test_health_source_documents_is_null_without_the_meta_key(tmp_path):
         body = client.get("/health").json()
     assert body["source_documents"] is None
     assert body["documents"] == 1
+
+
+# A variable declared `Int` holding a number as the body spells it, and that number as both vendors
+# quoted it back, which the docstrings of `backlot.graphql.body._int` and `Double` record.
+_NUMBERS = [
+    pytest.param("1" * 4301, "Infinity", id="4301 ones"),
+    pytest.param("1" * 311, "Infinity", id="311 ones"),
+    pytest.param("9" * 309, "Infinity", id="309 nines"),
+    pytest.param("1e400", "Infinity", id="1e400"),
+    pytest.param("-1e400", "-Infinity", id="-1e400"),
+    pytest.param("9" * 308, "1e+308", id="308 nines"),
+    pytest.param("9007199254740993", "9007199254740992", id="2**53 + 1"),
+    pytest.param("734946803407896717", "734946803407896700", id="past 2**53"),
+    pytest.param("123456789012345678901234", "1.2345678901234569e+23", id="24 digits"),
+    pytest.param("1e21", "1e+21", id="1e21"),
+    pytest.param("1e20", "100000000000000000000", id="1e20"),
+    pytest.param("3000000000.0", "3000000000", id="3000000000.0"),
+    pytest.param("0.00001", "0.00001", id="0.00001"),
+    pytest.param("1e-7", "1e-7", id="1e-7"),
+]
+
+
+@pytest.mark.parametrize(
+    "vendor, document",
+    [
+        ("linear", "query($x: Int) { issues(first: $x) { nodes { id } } }"),
+        ("fireflies", "query($x: Int) { transcripts(limit: $x) { id } }"),
+    ],
+)
+def test_a_graphql_vendor_quotes_a_number_as_javascript_prints_it(
+    client, tokens_yaml, vendor, document
+):
+    """The variable's value is read as the double ``JSON.parse`` reads and quoted as JavaScript
+    prints it, at both places graphql-js quotes it."""
+    admin = tokens_yaml["admin_token"]
+    credential = admin if vendor == "linear" else f"Bearer {admin}"
+    answered = {}
+    for row in _NUMBERS:
+        number, quoted = row.values
+        body = '{"query":"%s","variables":{"x":%s}}' % (document, number)
+        r = client.post(
+            f"/{vendor}/graphql",
+            content=body.encode(),
+            headers={"Authorization": credential, "Content-Type": "application/json"},
+        )
+        message = (r.json().get("errors") or [{}])[0].get("message", "")
+        answered[row.id] = (
+            r.status_code,
+            f" got invalid value {quoted}; Int cannot represent " in message,
+            message.endswith(f" value: {quoted}"),
+        )
+    assert answered == {row.id: (400, True, True) for row in _NUMBERS}
+
+
+# A request to Linear or Fireflies that Cloudflare answers itself, `{key}` standing for the vendor's
+# own spelling of the admin token, and the status, headers and body of the answer, as
+# `backlot.main.refuse_cloudflares_methods_on_linear_and_fireflies`, the repeated-header middleware
+# it names, `backlot.main.refuse_a_path_cloudflare_refuses_on_linear_and_fireflies` and
+# `backlot.main.refuse_a_cut_escape_on_linear_and_fireflies` record them, or by each vendor where
+# they part. The rows answered with a status alone are the control: one header reaches the vendor,
+# a path that only starts with the vendor's name is not the vendor's, with a broken escape in it or
+# without, a broken escape in the query string is not one in the path, and a `..` that ends the
+# path is passed on to the vendor.
+_TYPENAME = b'{"query":"{ __typename }"}'
+_CLOUDFLARE = 400
+_PAGE = (
+    b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
+    b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
+)
+_PRIVATE = {
+    "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, post-check=0, "
+    "pre-check=0",
+    "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+    "referrer-policy": "same-origin",
+    "x-frame-options": "SAMEORIGIN",
+}
+_NOT_PRIVATE = dict.fromkeys(_PRIVATE)
+
+
+def _answer(status, media_type, length, connection, private, body):
+    headers = {"content-type": media_type, "content-length": length, "connection": connection}
+    return status, headers | (_PRIVATE if private else _NOT_PRIVATE), body
+
+
+_BAD_REQUEST = _answer(
+    _CLOUDFLARE, "text/html", "155", "close", False, _PAGE % ((b"400 Bad Request",) * 2)
+)
+_NOT_ALLOWED = _answer(405, "text/html", "155", "close", False, _PAGE % ((b"405 Not Allowed",) * 2))
+_ERROR_1045 = _answer(400, "text/plain; charset=UTF-8", "17", None, True, b"error code: 1045\n")
+_PURGED = _answer(
+    400, "text/html; charset=UTF-8", "155", None, True, _PAGE % ((b"400 Bad Request",) * 2)
+)
+_CUT = {
+    vendor: _answer(
+        400, "text/html; charset=UTF-8", length, None, True, _PAGE % ((b"400 Bad Request",) * 2)
+    )
+    for vendor, length in (("linear", None), ("fireflies", "155"))
+}
+
+
+def _auth(*values: str) -> tuple:
+    return tuple(("Authorization", value) for value in values)
+
+
+_ETAG_TWICE = (("If-None-Match", '"x"'),) * 2
+_CLOUDFLARE_FIRST = [
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", "{key}"), _BAD_REQUEST, id="two keys"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="a key, nope"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("nope", "{key}"), _BAD_REQUEST, id="nope, a key"
+    ),
+    pytest.param(
+        "POST", "/graphql", _TYPENAME, _auth("{key}", ""), _BAD_REQUEST, id="a key, empty"
+    ),
+    pytest.param("POST", "/graphql", _TYPENAME, _auth("", ""), _BAD_REQUEST, id="two empty"),
+    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}") * 3, _BAD_REQUEST, id="three keys"),
+    pytest.param("POST", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="no bytes"),
+    pytest.param("POST", "/graphql", b"{", _auth("{key}", "nope"), _BAD_REQUEST, id="{"),
+    pytest.param(
+        "POST", "/graphql", None, _auth("{key}", "nope"), _BAD_REQUEST, id="past the limit"
+    ),
+    pytest.param("GET", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="GET"),
+    pytest.param("HEAD", "/graphql", b"", _auth("{key}", "nope"), _BAD_REQUEST, id="HEAD"),
+    pytest.param(
+        "POST", "/nosuch", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="another path"
+    ),
+    pytest.param("POST", "", _TYPENAME, _auth("{key}", "nope"), _BAD_REQUEST, id="the root"),
+    *(
+        pytest.param(m, path, b"", _auth("{key}"), answer, id=f"{m} {path or '/'}")
+        for m, answer in (("TRACE", _NOT_ALLOWED), ("CONNECT", _ERROR_1045), ("PURGE", _PURGED))
+        for path in ("/graphql/", "/nosuch", "", "/a%2")
+    ),
+    *(
+        pytest.param(m, "/graphql", b"", _auth("{key}", "{key}"), _BAD_REQUEST, id=f"{m}, two keys")
+        for m in ("CONNECT", "PURGE")
+    ),
+    *(
+        pytest.param(
+            m, "/graphql", b"", (*_auth("{key}"), *_ETAG_TWICE), _BAD_REQUEST, id=f"{m}, ETag twice"
+        )
+        for m in ("TRACE", "CONNECT", "PURGE")
+    ),
+    pytest.param("POST", "/a%2", _TYPENAME, _auth("{key}"), _CUT, id="%2 at the end"),
+    pytest.param("POST", "/nosucha%b", b"{}", (), _CUT, id="% before b"),
+    pytest.param("POST", "/graphql%", _TYPENAME, (), _CUT, id="% at the end"),
+    pytest.param("HEAD", "/a%2", b"", (), _CUT, id="HEAD, %2 at the end"),
+    pytest.param(
+        "POST", "/a%2", _TYPENAME, _auth("{key}", "{key}"), _BAD_REQUEST, id="%2, two keys"
+    ),
+    pytest.param("POST", "/a%2?x=1", _TYPENAME, (), _BAD_REQUEST, id="%2 before a query"),
+    pytest.param("POST", "/a%2/", _TYPENAME, (), _BAD_REQUEST, id="%2 before a slash"),
+    pytest.param("POST", "/a%zz/b%2", _TYPENAME, (), _BAD_REQUEST, id="%zz before a %2 at the end"),
+    pytest.param(
+        "POST", "/%2e%2e/a%2", _TYPENAME, (), _BAD_REQUEST, id="%2 at the end past the root"
+    ),
+    pytest.param("POST", "/graphql%zz", _TYPENAME, (), _BAD_REQUEST, id="%zz"),
+    *(
+        pytest.param(m, p, b"", (), _BAD_REQUEST, id=f"{m} {p}")
+        for m in ("TRACE", "CONNECT", "PURGE")
+        for p in ("/a%zz", "/a%00b", "/%2e%2e/graphql")
+    ),
+    *(
+        pytest.param("POST", p, _TYPENAME, _auth("{key}"), _BAD_REQUEST, id=f"POST {p}")
+        for p in ("/%2e%2e/graphql", "/..%2Fgraphql", "/x//%2e%2e/%2e%2e/graphql", "/%2e%2e/")
+    ),
+    pytest.param("POST", "/graphql", _TYPENAME, _auth("{key}"), 200, id="one key"),
+    pytest.param("POST", "x/graphql", _TYPENAME, _auth("{key}", "nope"), 404, id="a longer name"),
+    pytest.param("TRACE", "x/graphql", b"", _auth("{key}"), 404, id="TRACE, a longer name"),
+    pytest.param("POST", "x/a%zz", _TYPENAME, _auth("{key}"), 404, id="%zz under a longer name"),
+    pytest.param("POST", "x/a%2", _TYPENAME, _auth("{key}"), 404, id="%2 under a longer name"),
+    pytest.param("POST", "/graphql?a=%zz", _TYPENAME, _auth("{key}"), 200, id="%zz in the query"),
+    pytest.param("POST", "/graphql?a=%2", _TYPENAME, _auth("{key}"), 200, id="%2 in the query"),
+    pytest.param(
+        "POST", "/%2e%2e", _TYPENAME, _auth("{key}"), {"linear": 404, "fireflies": 400}, id="/.."
+    ),
+]
+
+
+@pytest.mark.parametrize("vendor", ["linear", "fireflies"])
+def test_cloudflare_answers_ahead_of_linear_and_fireflies(client, tokens_yaml, vendor):
+    admin = tokens_yaml["admin_token"]
+    key = admin if vendor == "linear" else f"Bearer {admin}"
+    answered, expected = {}, {}
+    for row in _CLOUDFLARE_FIRST:
+        method, path, body, sent, answer = row.values
+        if isinstance(answer, dict):
+            answer = answer[vendor]
+        if body is None:
+            body = padded_query({"linear": 10 * 2**20, "fireflies": 2**20}[vendor] + 1)
+        headers = [("Content-Type", "application/json")]
+        headers += [(name, value.format(key=key)) for name, value in sent]
+        r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
+        if isinstance(answer, int):
+            answered[row.id] = (
+                r.status_code,
+                b"cloudflare" in r.content,
+                "connection" in r.headers,
+                r.json() if r.status_code == 200 else None,
+            )
+            expected[row.id] = (
+                answer,
+                False,
+                False,
+                {"data": {"__typename": "Query"}} if answer == 200 else None,
+            )
+            continue
+        status, named, page = answer
+        answered[row.id] = (r.status_code, {name: r.headers.get(name) for name in named}, r.content)
+        expected[row.id] = (status, named, b"" if method == "HEAD" else page)
+    assert answered == expected
+
+
+# The same page on each vendor Cloudflare fronts, `{key}` as above, for each header it refuses
+# sent more than once. The controls: one copy reaches the vendor, and `Cache-Control` or `Range`
+# twice reaches it too. The one-copy `If-None-Match` sends a tag, not `*`: api.notion.com answers
+# a single `*` on `GET /v1/users/me` with a 304, where these controls assert the 200.
+_CLOUDFLARE_REQUESTS = [
+    ("notion", "GET", "/v1/users/me", None, (("Notion-Version", "2025-09-03"),)),
+    ("linear", "POST", "/graphql", _TYPENAME, (("Content-Type", "application/json"),)),
+    ("fireflies", "POST", "/graphql", _TYPENAME, (("Content-Type", "application/json"),)),
+    ("hubspot", "GET", "/crm/v3/objects/contacts?limit=1", None, ()),
+]
+_CLOUDFLARE_REFUSED = [
+    ("Authorization", "{key}"),
+    ("If-None-Match", '"x"'),
+    ("If-Match", '"x"'),
+    ("If-Modified-Since", "Wed, 01 Jan 2025 00:00:00 GMT"),
+    ("If-Unmodified-Since", "Wed, 01 Jan 2025 00:00:00 GMT"),
+    ("If-Range", '"x"'),
+]
+_CLOUDFLARE_SERVED_TWICE = [
+    ("Cache-Control", "no-cache"),
+    ("Range", "bytes=0-99"),
+]
+
+
+def test_cloudflare_refuses_a_repeated_header(client, tokens_yaml):
+    admin = tokens_yaml["admin_token"]
+    page = (
+        b"<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n"
+        b"<center><h1>400 Bad Request</h1></center>\r\n<hr><center>cloudflare</center>\r\n"
+        b"</body>\r\n</html>\r\n"
+    )
+    answered, expected = {}, {}
+    for vendor, method, path, body, extra in _CLOUDFLARE_REQUESTS:
+        key = admin if vendor == "linear" else f"Bearer {admin}"
+        for name, value in _CLOUDFLARE_REFUSED:
+            for copies, status in ((2, _CLOUDFLARE), (1, 200)):
+                headers = list(extra)
+                headers += [(name, value.format(key=key)) for _ in range(copies)]
+                if name != "Authorization":
+                    headers.append(("Authorization", key))
+                r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
+                label = f"{vendor} {name} x{copies}"
+                if status == _CLOUDFLARE:
+                    answered[label] = (
+                        r.status_code,
+                        r.headers.get("content-type"),
+                        r.headers.get("content-length"),
+                        r.headers.get("connection"),
+                        r.content,
+                    )
+                    expected[label] = (400, "text/html", "155", "close", page)
+                else:
+                    answered[label] = (r.status_code, page in r.content)
+                    expected[label] = (200, False)
+        for name, value in _CLOUDFLARE_SERVED_TWICE:
+            headers = list(extra) + [(name, value)] * 2 + [("Authorization", key)]
+            r = client.request(method, f"/{vendor}{path}", content=body, headers=headers)
+            label = f"{vendor} {name} twice"
+            answered[label] = (r.status_code, page in r.content)
+            expected[label] = (200, False)
+    assert answered == expected
+
+
+@pytest.mark.parametrize(
+    "vendor, reader, body",
+    [
+        pytest.param("linear", (request_body, "decode"), _TYPENAME, id="linear"),
+        pytest.param("fireflies", (request_body, "decode"), _TYPENAME, id="fireflies"),
+        pytest.param("linear", (v8_json, "error"), b"{", id="linear, V8's message"),
+    ],
+)
+def test_a_graphql_vendor_reads_the_body_in_a_worker_thread(
+    client, monkeypatch, vendor, reader, body
+):
+    """The router hands the body to its reader through ``run_in_threadpool``, so the reader runs
+    where no event loop does and the loop serves other requests while it reads."""
+    module, name = reader
+    where = []
+    original = getattr(module, name)
+
+    def recording(*args):
+        try:
+            asyncio.get_running_loop()
+            where.append("the event loop")
+        except RuntimeError:
+            where.append("a worker thread")
+        return original(*args)
+
+    monkeypatch.setattr(module, name, recording)
+    client.post(f"/{vendor}/graphql", content=body, headers={"Content-Type": "application/json"})
+    assert where == ["a worker thread"]
+
+
+# Half a surrogate pair where a message quotes the client's text without escaping it: the `\u`
+# escape sent, the text the message names, and the bytes that text is on the wire. A pair is the
+# control, the one character it makes.
+_ISSUE_FILTER = "query($f: IssueFilter) { issues(filter: $f) { nodes { id } } }"
+_TWO_OPERATIONS = "query A { __typename } query B { __typename }"
+_HIGH, _LOW = chr(0xD83D), chr(0xDC00)
+_LONE_SURROGATES = [
+    pytest.param("linear", "key", "\\ud83d", _HIGH, b"\\ud83d", id="Linear, a key, the high half"),
+    pytest.param(
+        "linear",
+        "key",
+        "\\uD83D",
+        _HIGH,
+        b"\\ud83d",
+        id="Linear, a key, the high half in upper case",
+    ),
+    pytest.param("linear", "key", "\\udc00", _LOW, b"\\udc00", id="Linear, a key, the low half"),
+    pytest.param(
+        "linear",
+        "key",
+        "\\udc00\\ud83d",
+        _LOW + _HIGH,
+        b"\\udc00\\ud83d",
+        id="Linear, a key, low then high",
+    ),
+    pytest.param(
+        "linear", "operationName", "\\ud83d", _HIGH, b"\\ud83d", id="Linear, an operationName"
+    ),
+    pytest.param(
+        "fireflies", "operationName", "\\ud83d", _HIGH, b"\\ud83d", id="Fireflies, an operationName"
+    ),
+    pytest.param(
+        "fireflies",
+        "operationName",
+        "\\uDC00",
+        _LOW,
+        b"\\udc00",
+        id="Fireflies, the low half in upper case",
+    ),
+    pytest.param(
+        "linear",
+        "key",
+        "\\ud83d" + "\\ude00",
+        chr(0x1F600),
+        chr(0x1F600).encode(),
+        id="Linear, a key, a pair",
+    ),
+]
+
+
+@pytest.mark.parametrize("vendor, where, sent, named, wire", _LONE_SURROGATES)
+def test_a_graphql_vendor_writes_a_lone_surrogate_as_an_escape(
+    client, tokens_yaml, vendor, where, sent, named, wire
+):
+    """The answer is the request error, its message naming the text and its bytes carrying it as
+    `backlot.graphql.body.node_json` writes it."""
+    admin = tokens_yaml["admin_token"]
+    if where == "key":
+        body = '{"query":"%s","variables":{"f":{"%s":1}}}' % (_ISSUE_FILTER, sent)
+        quoted, member = f'"{named}" is not defined by type', "message"
+    elif vendor == "linear":
+        body = '{"query":"%s","operationName":"%s"}' % (_TWO_OPERATIONS, sent)
+        quoted, member = f"The operation '{named}' does not", "userPresentableMessage"
+    else:
+        body = '{"query":"%s","operationName":"%s"}' % (_TWO_OPERATIONS, sent)
+        quoted, member = f'operation named "{named}"', "message"
+    credential = admin if vendor == "linear" else f"Bearer {admin}"
+    r = client.post(
+        f"/{vendor}/graphql",
+        content=body.encode(),
+        headers={"Authorization": credential, "Content-Type": "application/json"},
+    )
+    assert r.status_code == 400
+    error = r.json()["errors"][0]
+    assert quoted in error.get("extensions", {}).get(member, error.get(member))
+    assert wire in r.content
+
+
+# The middlewares of `backlot.main` a request runs, outermost first: its own vendor's, and none of
+# another's. The Drive `HEAD` and the Slack `POST` each have a row beside their vendor's `GET`, for
+# the middlewares only that method runs.
+_ADMIN = "Bearer {admin}"
+_RUNS = [
+    pytest.param("GET", "/slack/api/auth.test", {}, [], id="slack"),
+    pytest.param(
+        "POST",
+        "/slack/api/auth.test",
+        {"Content-Type": "application/x-www-form-urlencoded"},
+        ["warn_slack_post_charset", "parse_slack_form"],
+        id="slack POST",
+    ),
+    pytest.param(
+        "GET",
+        "/notion/v1/users/me",
+        {"Notion-Version": "2022-06-28"},
+        [
+            "vendor_json_media_type",
+            "report_notion_cors",
+            "report_notion_etag",
+            "read_a_notion_body_as_express_does",
+            "report_notion_headers",
+        ],
+        id="notion",
+    ),
+    pytest.param(
+        "GET",
+        "/github/rate_limit",
+        {},
+        [
+            "vendor_json_media_type",
+            "answer_a_github_request_target_past_its_bound",
+            "put_a_request_id_on_github_answers",
+            "report_github_rate_limit",
+            "echo_github_api_version",
+        ],
+        id="github",
+    ),
+    pytest.param(
+        "GET",
+        "/atlassian/rest/api/3/serverInfo",
+        {},
+        [
+            "vendor_json_media_type",
+            "report_atlassian_headers",
+            "normalise_the_slashes_in_an_atlassian_path",
+        ],
+        id="jira",
+    ),
+    pytest.param("GET", "/drive/v3/about", {}, [], id="drive"),
+    pytest.param(
+        "HEAD", "/drive/v3/about", {}, ["answer_head_as_the_get_without_its_body"], id="drive HEAD"
+    ),
+    pytest.param("GET", "/s3/", {}, ["answer_s3_with_request_ids"], id="s3"),
+    pytest.param(
+        "GET",
+        "/hubspot/crm/v3/objects/contacts",
+        {},
+        ["put_a_correlation_id_on_hubspot_answers"],
+        id="hubspot",
+    ),
+    pytest.param("POST", "/linear/graphql", {}, [], id="linear"),
+    pytest.param(
+        "GET", "/msgraph/v1.0/me", {}, ["read_a_graph_request_the_way_graph_does"], id="teams"
+    ),
+    pytest.param("GET", "/health", {}, [], id="health"),
+]
+
+
+@pytest.mark.parametrize("method, path, headers, ran", _RUNS)
+def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
+    client, tokens_yaml, monkeypatch, method, path, headers, ran
+):
+    # the class the client's app was built with: `tests._helpers.client_for` reloads
+    # `backlot.main`, which defines `_Layer` again for each app
+    layer = next(m.cls for m in client.app.user_middleware if m.cls.__name__ == "_Layer")
+    seen = []
+    call = layer.__call__
+
+    async def watched(self, scope, receive, send):
+        if scope["type"] == "http" and self.runs_on(scope):
+            seen.append(self.layer.dispatch_func.__name__)
+        await call(self, scope, receive, send)
+
+    monkeypatch.setattr(layer, "__call__", watched)
+    admin = {"Authorization": _ADMIN.format(admin=tokens_yaml["admin_token"])}
+    client.request(method, path, headers={**admin, **headers})
+    assert seen == ran
+
+
+@pytest.mark.parametrize(
+    "path, host",
+    [
+        ("/github/x", b"testserver"),
+        ("/github/x%3Fy/", b"testserver"),
+        ("/github/x%23y/", b"testserver"),
+        ("/git%09hub/x", b"testserver"),
+        ("/notion%0D", b"testserver"),
+        ("/s3%0A/b", b"testserver"),
+        ("/github/x", b"[::1]:8000"),
+        ("/github/x", b"[0:0]"),
+    ],
+)
+def test_url_path_is_the_path_request_url_reads(path, host):
+    from starlette.requests import Request
+
+    from backlot import main
+
+    raw = path.encode()
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "path": urllib.parse.unquote(path),
+        "raw_path": raw,
+        "query_string": b"q=1",
+        "headers": [(b"host", host)],
+    }
+
+    def read(path_of):
+        try:
+            return path_of(scope)
+        except ValueError as error:  # `[0:0]`, which `urlsplit` refuses
+            return type(error)
+
+    assert read(main._url_path) == read(lambda scope: Request(scope).url.path)

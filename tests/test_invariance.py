@@ -2,24 +2,17 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
+from tests._helpers import script_module
+
 REPO = Path(__file__).resolve().parent.parent
 
 
-def _invariance():
-    """`scripts/invariance.py` as a module, since `scripts/` is not a package."""
-    spec = importlib.util.spec_from_file_location("invariance", REPO / "scripts" / "invariance.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-invariance = _invariance()
+invariance = script_module("invariance")
 
 
 def _run(
@@ -124,6 +117,40 @@ def test_compare_flags_a_difference_and_only_one_two_base_runs_agree_on(
     out = capsys.readouterr().out
     assert code == (found is not None)
     assert (found or "invariant") in out
+
+
+@pytest.mark.parametrize(
+    "written", ["backlot/x.py", "backlot\\x.py"], ids=["written-slash", "written-backslash"]
+)
+def test_coverage_names_a_recordings_files_with_slashes(tmp_path, written):
+    files = {written: {"executed_lines": [1]}}
+    (tmp_path / "coverage.json").write_text(json.dumps({"files": files}), encoding="utf-8")
+    assert invariance._coverage(tmp_path) == {"backlot/x.py": ({1}, set())}
+
+
+@pytest.mark.parametrize(
+    "written", ["backlot/x.py", "backlot\\x.py"], ids=["written-slash", "written-backslash"]
+)
+@pytest.mark.parametrize(
+    ("path", "listed"),
+    [
+        pytest.param("backlot/x.py", True, id="file"),
+        pytest.param("backlot\\x.py", True, id="file-backslash"),
+        pytest.param("backlot/", True, id="directory"),
+        pytest.param("backlot", True, id="directory-bare"),
+        pytest.param("backlot\\", True, id="directory-backslash"),
+        pytest.param("backlot/y.py", False, id="another-file"),
+        pytest.param("backl", False, id="a-prefix-of-the-directory"),
+    ],
+)
+def test_a_recordings_files_are_named_with_slashes_and_found_by_either_separator(
+    tmp_path, capsys, written, path, listed
+):
+    files = {written: {"executed_lines": [1], "missing_lines": [2]}}
+    (tmp_path / "coverage.json").write_text(json.dumps({"files": files}), encoding="utf-8")
+    assert invariance._uncovered(tmp_path, [path]) == 0
+    listing = "backlot/x.py: 1 line(s) no test executes: [2]\n"
+    assert capsys.readouterr().out == (listing if listed else "")
 
 
 def test_prose_tree_ignores_comments_and_unserved_docstrings_only():

@@ -16,7 +16,7 @@ keypair.
     python examples/using-mirage/s3.py --url http://localhost:8000 --access-key <AKIA...> --secret-key <secret> --fuse   # real OS mount
 
 With ``--fuse`` the tree is exposed as an actual filesystem (needs macFUSE/fuse3) and read with
-plain ``os``/shell tools; otherwise it's driven in-process via ``ws.execute``.
+plain ``os``/shell tools; otherwise it's driven in-process via ``ws.shell``.
 """
 
 import argparse
@@ -27,7 +27,7 @@ import urllib.request
 
 from _helpers import FUSE_HELP, lines, run_mirage
 from mirage import MountMode, Workspace
-from mirage.resource.s3 import S3Config, S3Resource
+from mirage.vfs.s3 import S3VFS, S3Config
 
 from backlot import serve_or_connect
 
@@ -57,7 +57,7 @@ CORPUS = [
 
 
 def build(s, access_key, secret_key):
-    return S3Resource(
+    return S3VFS(
         S3Config(
             bucket=BUCKET,
             endpoint_url=f"{s.base_url}/s3",
@@ -69,22 +69,22 @@ def build(s, access_key, secret_key):
     )
 
 
-async def main(resource) -> None:
-    ws = Workspace({"/s3": resource}, mode=MountMode.READ)
+async def main(vfs) -> None:
+    ws = Workspace({"/s3": vfs}, mode=MountMode.READ)
     print("=== ls /s3/ (recursive) ===")
-    print((await (await ws.execute("ls /s3/")).stdout_str()).rstrip())
-    for entry in lines(await (await ws.execute("ls /s3/runbooks/")).stdout_str()):
+    print((await (await ws.shell("ls /s3/")).stdout_str()).rstrip())
+    for entry in lines(await (await ws.shell("ls /s3/runbooks/")).stdout_str()):
         path = f"/s3/runbooks/{entry.rstrip('/')}"
         print(f"\n$ cat {path}")
-        print((await (await ws.execute(f'cat "{path}"')).stdout_str()).rstrip()[:400])
+        print((await (await ws.shell(f'cat "{path}"')).stdout_str()).rstrip()[:400])
     print("\n$ grep -r dashboards /s3/")
-    print((await (await ws.execute("grep -r dashboards /s3/")).stdout_str()).rstrip())
+    print((await (await ws.shell("grep -r dashboards /s3/")).stdout_str()).rstrip())
 
 
-def main_fuse(resource) -> None:
+def main_fuse(vfs) -> None:
     """--fuse: mount the S3 bucket as a *real* filesystem, then read it with ordinary tools."""
     try:
-        with Workspace({"/s3": resource}, mode=MountMode.READ) as ws:
+        with Workspace({"/s3": vfs}, mode=MountMode.READ) as ws:
             mnt = ws.add_fuse_mount("/s3")  # "/s3" is now a real directory on disk
             print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
             objs = [os.path.join(r, f) for r, _dirs, files in os.walk(mnt) for f in files]
@@ -140,8 +140,8 @@ if __name__ == "__main__":
     args = _parse_args()
     with serve_or_connect(CORPUS, url=args.url) as s:
         ak, sk = (args.access_key, args.secret_key) if args.url else _admin_keys(s.base_url)
-        resource = build(s, ak, sk)
+        vfs = build(s, ak, sk)
         if args.fuse:
-            main_fuse(resource)
+            main_fuse(vfs)
         else:
-            run_mirage(main(resource))
+            run_mirage(main(vfs))

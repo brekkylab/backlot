@@ -30,22 +30,27 @@ from backlot.fidelity import (
     OperationEntry,
     baseline_path,
     comparisons,
+    csdl_diff,
     google_discovery_diff,
     hubspot_catalog,
+    msgraph,
     openapi_diff,
     operations,
     s3_probe,
+    slack_docs,
 )
 from backlot.fidelity.comparisons import (
     COMPARISONS,
+    CSDL,
     GOOGLE_DISCOVERY,
     GRAPHQL,
     OPENAPI,
     PROBE,
+    SLACK,
     UNCOMPARED,
 )
 from backlot.fidelity.graphql_diff import backlot_schema, diff_schemas, schema_surface
-from backlot.fidelity.surface import OperationSurface, SchemaSurface
+from backlot.fidelity.surface import GraphSurface, OperationSurface, SchemaSurface
 
 VENDOR = """
 type Query { transcripts(limit: Int, keyword: String): [Transcript!], origin: Origin }
@@ -494,19 +499,48 @@ def test_jira_compares_both_rest_versions_against_their_own_documents():
     assert by_mount["/atlassian/rest/api/3"].endswith("/swagger-v3.v3.json")
 
 
-def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkeypatch):
-    """A discovery document describes operations under `resources` AND a batch endpoint in its
-    top-level `batchPath`, and a Google source reads it once for both."""
+def test_a_google_document_is_read_once_for_every_contract_it_carries(monkeypatch):
+    """A discovery document describes operations under `resources`, a batch endpoint in its
+    top-level `batchPath` and, for a document a walk reads, the messages its methods answer with
+    under `schemas` (`google_discovery_diff.types_measure`), with the request message of a method
+    the walk sends a body to, and a Google source reads it once for all three."""
     URL = "https://gmail.invalid/rest"
     doc = {
         "id": "gmail:v1",
+        "name": "gmail",
         "batchPath": "batch",
         "resources": {
             "users": {
                 "methods": {
-                    "getProfile": {"path": "gmail/v1/users/{userId}/profile", "httpMethod": "GET"}
+                    "getProfile": {
+                        "id": "gmail.users.getProfile",
+                        "path": "gmail/v1/users/{userId}/profile",
+                        "httpMethod": "GET",
+                        "response": {"$ref": "Profile"},
+                    },
+                    "update": {
+                        "id": "gmail.users.update",
+                        "path": "gmail/v1/users/{userId}/profile",
+                        "httpMethod": "PUT",
+                        "request": {"$ref": "Settings"},
+                        "response": {"$ref": "Profile"},
+                    },
                 }
             }
+        },
+        "schemas": {
+            "Profile": {
+                "properties": {
+                    "emailAddress": {"type": "string"},
+                    "labels": {"type": "array", "items": {"$ref": "Label"}},
+                    "history": {"$ref": "History"},
+                    "byKey": {"type": "object", "additionalProperties": {"$ref": "Keyed"}},
+                }
+            },
+            "Label": {"properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
+            "History": {"properties": {"id": {"type": "string"}}},
+            "Keyed": {"properties": {"x": {"type": "string"}}},
+            "Settings": {"properties": {"theme": {"type": "string"}, "lang": {"type": "string"}}},
         },
     }
     fetched = []
@@ -516,9 +550,14 @@ def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkey
         return doc
 
     monkeypatch.setattr(google_discovery_diff, "fetch_json", fake_fetch)
+
+    def walk(timeout):
+        profile = {"emailAddress": "a@b", "labels": [{"id": "1"}], "nickname": "a"}
+        return [("gmail.users.getProfile", profile), ("gmail.users.update", {}, {"theme": "x"})]
+
     c = comparisons.GoogleDiscoveryComparison(
         name="gmail",
-        specs=(comparisons.Spec(URL, ("/gmail",)),),
+        specs=(comparisons.Spec(URL, ("/gmail",), walk=walk),),
         # A route that cannot answer what this document declares, so the batch check has something
         # to say and reading it off the memoized document is what the assertion below proves.
         batch_mount=("/batch/{api}/{version}",),
@@ -530,8 +569,56 @@ def test_a_google_document_is_read_once_for_both_the_contracts_it_carries(monkey
         ("extra_batch_route", "/batch/{}/{}"),
         ("missing_batch_path", "gmail:v1 batch"),
     ]
-    # The batch contract joins the operations' surface, so those two have elements to sit on.
-    _, back = OperationSurface.from_json(measured.surface.to_json(found))
+    assert [(f.kind, f.path) for f in found if "field" in f.kind] == [
+        ("extra_field", "gmail.Profile.nickname"),
+        ("missing_field", "gmail.Label.name"),
+        ("missing_field", "gmail.Profile.byKey"),
+        ("missing_field", "gmail.Profile.history"),
+        ("missing_field", "gmail.Settings.lang"),
+    ]
+    written = measured.surface.to_json(found)
+    profile = next(e for e in written["operations"] if e.get("id") == "gmail.users.getProfile")
+    assert profile["response"] == "gmail.Profile"
+    update = next(e for e in written["operations"] if e.get("id") == "gmail.users.update")
+    assert (update["request"], update["response"]) == ("gmail.Settings", "gmail.Profile")
+    assert written["types"]["gmail.Settings"]["fields"]["theme"]["status"] == "implemented"
+    assert "root" not in written
+    assert written["types"]["gmail.Profile"]["status"] == "implemented"
+    assert written["types"]["gmail.Profile"]["fields"] == {
+        "byKey": {
+            "status": "missing",
+            "type": "map<string, gmail.Keyed>",
+            "kind": "missing_field",
+            "severity": "gap",
+        },
+        "emailAddress": {"status": "implemented", "type": "string"},
+        "history": {
+            "status": "missing",
+            "type": "gmail.History",
+            "kind": "missing_field",
+            "severity": "gap",
+        },
+        "labels": {"status": "implemented", "type": "[gmail.Label]"},
+        "nickname": {
+            "status": "extra",
+            "kind": "extra_field",
+            "severity": "breaking",
+            "detail": "Backlot serves it, and the vendor's message declares no such field",
+        },
+    }
+    assert written["types"]["gmail.History"] == {
+        "type_kind": "object",
+        "status": "missing",
+        "fields": {"id": {"status": "missing", "type": "string"}},
+    }
+    # a map's value is reached, so a body reader can be built from it
+    assert written["types"]["gmail.Keyed"] == {
+        "type_kind": "object",
+        "status": "missing",
+        "fields": {"x": {"status": "missing", "type": "string"}},
+    }
+    # Each finding has an element to sit on, operations, batch and types alike.
+    _, back = GraphSurface.from_json(written)
     assert sorted(f.key for f in back) == sorted(f.key for f in found)
 
 
@@ -596,7 +683,9 @@ def test_every_comparison_is_registered_once_as_the_class_its_registry_implies()
         (OPENAPI, comparisons.OpenAPIComparison),
         (GOOGLE_DISCOVERY, comparisons.GoogleDiscoveryComparison),
         (GRAPHQL, comparisons.GraphQLComparison),
+        (CSDL, comparisons.CSDLComparison),
         (PROBE, comparisons.ProbeComparison),
+        (SLACK, comparisons.SlackComparison),
     ]
     assert sum(len(r) for r, _ in registries) == len(COMPARISONS)
     for registry, expected in registries:
@@ -626,13 +715,14 @@ def test_every_comparison_ships_a_baseline(tmp_path):
         names = [e.operation for e in entries]
         assert names == sorted(set(names)), f"{name}: one entry per operation, in order"
         surface = baseline.surface
-        if isinstance(surface, SchemaSurface):
-            statuses = set(surface.elements().values())
-        else:
-            statuses = {e.status for e in entries}
-            if surface.batch is not None:
-                statuses |= {d.status for d in surface.batch.documents}
-                statuses |= {r.status for r in surface.batch.routes}
+        statuses = {e.status for e in entries}
+        if isinstance(surface, GraphSurface):
+            statuses |= set(surface.schema.elements().values())
+        elif isinstance(surface, SchemaSurface):
+            statuses |= set(surface.elements().values())
+        elif surface.batch is not None:
+            statuses |= {d.status for d in surface.batch.documents}
+            statuses |= {r.status for r in surface.batch.routes}
         allowed = {IMPLEMENTED, MISSING, EXTRA}
         if isinstance(comparison, comparisons.ProbeComparison):
             allowed.add(REFUSED)
@@ -642,12 +732,8 @@ def test_every_comparison_ships_a_baseline(tmp_path):
         for f in baseline.acknowledged.values():
             want = {"missing_operation": MISSING, "extra_operation": EXTRA}.get(f.kind)
             assert want in (None, status.get(f.path)), f"{name}: {f.key} on {status.get(f.path)}"
-        named_by_path = any(s.named_by_path for s in getattr(comparison, "specs", ()))
         for e in entries:
-            if named_by_path:
-                assert e.id == e.operation.partition(" /")[2], f"{name}: id {e}"
-            else:
-                assert bool(e.id) == (e.status != EXTRA), f"{name}: id {e}"
+            assert bool(e.id) == (e.status != EXTRA), f"{name}: id {e}"
 
 
 def test_every_mount_selects_something_backlot_serves():
@@ -756,6 +842,15 @@ def test_every_served_element_is_one_its_baseline_records_served():
         baseline = Baseline.load(baseline_path(name))
         assert baseline.operations, f"{name}: the baseline names no operations"
         rerun = f"{name}: rerun `backlot diff -s {name} --update-baseline`"
+        recorded_ops = {
+            e.operation for e in baseline.operations if e.status in (IMPLEMENTED, EXTRA)
+        }
+        # A probe's and a CSDL walk's served surface is what a running Backlot answers; a CSDL
+        # source's operations are still the app's routes under its mount.
+        if isinstance(comparison, comparisons.CSDLComparison):
+            mine = operations.from_backlot(spec, comparison.mount, comparison.mount[0])
+            assert recorded_ops == {str(op) for op in mine.values()}, rerun
+            continue
         if isinstance(comparison, comparisons.ProbeComparison):
             continue
         if isinstance(comparison, comparisons.GraphQLComparison):
@@ -773,14 +868,19 @@ def test_every_served_element_is_one_its_baseline_records_served():
             kinds = {n: t.kind for n, t in baseline.surface.types.items()}
             assert kinds == {n: t.kind for n, t in mine.types.items()}, rerun
             continue
-        served_ops = {
-            str(op): op
-            for s in comparison.specs
-            for op in operations.from_backlot(spec, s.mount, s.strip).values()
-        }
-        recorded = {e.operation for e in baseline.operations if e.status in (IMPLEMENTED, EXTRA)}
-        assert recorded == set(served_ops), rerun
-        served_params = {f"{o}?{p}" for o, op in served_ops.items() for p in op.params}
+        if isinstance(comparison, comparisons.SlackComparison):
+            served_ops = {
+                n: set(m.arguments)
+                for n, m in slack_docs.from_backlot(spec, comparison.mount).items()
+            }
+        else:
+            served_ops = {
+                str(op): op.params
+                for s in comparison.specs
+                for op in operations.from_backlot(spec, s.mount, s.strip).values()
+            }
+        assert recorded_ops == set(served_ops), rerun
+        served_params = {f"{o}?{p}" for o, params in served_ops.items() for p in params}
         missing = {f.path for f in baseline.acknowledged.values() if f.kind == "missing_param"}
         assert not served_params & missing, rerun
         extra = {f.path for f in baseline.acknowledged.values() if f.kind == "extra_param"}
@@ -789,6 +889,23 @@ def test_every_served_element_is_one_its_baseline_records_served():
         batch = baseline.surface.batch
         routes = {r.route for r in (batch.routes if batch else ()) if r.status != MISSING}
         assert routes == {"/" + operations.canonical(r) for r in _batch_routes(comparison)}, rerun
+        # A walked document's types: what a running Backlot serves, read through the types and
+        # responses the file records, is exactly what it records served.
+        walks = [s.walk for s in getattr(comparison, "specs", ()) if getattr(s, "walk", None)]
+        assert isinstance(baseline.surface, GraphSurface) == bool(walks), rerun
+        if walks:
+            schema = baseline.surface.schema
+            types = {n: {f: m.type for f, m in t.fields.items()} for n, t in schema.types.items()}
+            answers = {e.id: e.response for e in baseline.operations if e.response}
+            requests = {e.id: e.request for e in baseline.operations if e.request}
+            served: dict[str, set[str]] = {}
+            for method, body, *sent in (read for walk in walks for read in walk(20.0)):
+                google_discovery_diff.served_fields(types, answers[method], body, served)
+                for request in sent:
+                    google_discovery_diff.served_fields(types, requests[method], request, served)
+            elements = set(served) | {f"{n}.{f}" for n, fs in served.items() for f in fs}
+            recorded = {p for p, st in schema.elements().items() if st in (IMPLEMENTED, EXTRA)}
+            assert recorded == elements, rerun
 
     pytest.importorskip("botocore")
     from botocore.loaders import Loader
@@ -856,6 +973,7 @@ def test_the_package_exports_exactly_what_the_command_needs():
 
 
 A_DISCOVERY_DOC = {
+    "name": "drive",
     "servicePath": "drive/v3/",
     "parameters": {"fields": {"location": "query"}, "alt": {"location": "query"}},
     "resources": {
@@ -866,6 +984,7 @@ A_DISCOVERY_DOC = {
                     "httpMethod": "GET",
                     "path": "files",
                     "parameters": {"q": {"location": "query"}},
+                    "response": {"$ref": "FileList"},
                 },
                 "get": {"httpMethod": "GET", "path": "files/{fileId}", "parameters": {}},
             },
@@ -906,6 +1025,9 @@ def test_a_discovery_document_joins_its_service_path_and_nests_its_resources():
     # The method's own `id` is the vendor's name for it; a method declaring none has no name.
     assert found[("get", "drive/v3/files")].id == "drive.files.list"
     assert found[("get", "drive/v3/files/{}")].id == ""
+    # And its `response` the message it answers with, keyed as the baseline's `types` are.
+    assert found[("get", "drive/v3/files")].response == "drive.FileList"
+    assert found[("get", "drive/v3/files/{}")].response == ""
 
 
 def test_an_openapi_document_follows_refs_and_keeps_path_level_parameters():
@@ -920,15 +1042,13 @@ def test_a_placeholders_name_is_not_a_divergence():
 
 
 def test_the_mount_comes_off_only_where_the_vendor_does_not_repeat_it():
-    """Slack's spec starts at /conversations.list so its mount comes off. Google differs per
-    DOCUMENT, which is why `strip` sits on the Spec: Drive's own document spells `drive/v3`, so
-    nothing comes off there, while the Sheets document declares an empty `servicePath` and spells
-    `v4/spreadsheets/...` itself, so its mount does. Jira and Confluence share /atlassian and must
-    not capture each other."""
+    """Google differs per DOCUMENT, which is why `strip` sits on the Spec: Drive's own document
+    spells `drive/v3`, so nothing comes off there, while the Sheets document declares an empty
+    `servicePath` and spells `v4/spreadsheets/...` itself, so its mount does. Jira and Confluence
+    share /atlassian and must not capture each other."""
     served = {
         "paths": dict.fromkeys(
             [
-                "/slack/api/conversations.list",
                 "/drive/v3/files",
                 "/sheets/v4/spreadsheets/{spreadsheet_id}",
                 "/atlassian/rest/api/3/field",
@@ -946,7 +1066,6 @@ def test_the_mount_comes_off_only_where_the_vendor_does_not_repeat_it():
             for _, p in operations.from_backlot(served, spec.mount, spec.strip)
         }
 
-    assert mounted("slack") == {"conversations.list"}
     assert mounted("google_drive") == {"drive/v3/files", "v4/spreadsheets/{}"}
     assert mounted("jira") == {"rest/api/3/field"}
     assert mounted("confluence") == {"wiki/rest/api/space"}
@@ -965,8 +1084,7 @@ def test_operation_divergences_are_classified_paired_and_written_like_schema_one
 
     # The operations pair the same way: each is on both sides, the vendor's only or Backlot's only,
     # named as the vendor's document names it, and a served route with no path item in the
-    # document has no name -- unless the vendor names an operation by its path, as Slack names
-    # `conversations.list`.
+    # document has no name.
     served[("post", "a")] = operations.Operation("post", "a", frozenset())
     surface = operations.inventory(served, vendor)
     assert surface.operations == (
@@ -974,15 +1092,15 @@ def test_operation_divergences_are_classified_paired_and_written_like_schema_one
         OperationEntry("GET /b", MISSING, "get-b"),
         OperationEntry("POST /a", EXTRA, ""),
     )
-    assert [e.id for e in operations.inventory(served, vendor, named_by_path=True).operations] == [
-        "a",
-        "b",
-        "a",
-    ]
 
-    # Each finding is written onto the operation it names, a parameter's under its operation, and
-    # read back off it; a gap's detail is regenerated by every run and is not kept.
-    findings = operations.diff_operations(served, vendor)
+    # Each finding is written onto the operation it names, a parameter's and an answer's field's
+    # under its operation, and read back off it; a gap's detail is regenerated by every run and is
+    # not kept. An operation's name can hold a space, so a field is what follows the whole of it.
+    findings = operations.diff_operations(served, vendor) + [
+        Finding("missing_field", GAP, "GET /a user.profile", ""),
+        Finding("param_type_mismatch", BREAKING, "GET /b?k", "vendor: string, Backlot: number"),
+        Finding("type_mismatch", BREAKING, "GET /b user.id", "vendor: string, Backlot: number"),
+    ]
     written = surface.to_json(findings)
     assert written["operations"][0]["params"] == {
         "m": {"kind": "missing_param", "severity": GAP},
@@ -992,12 +1110,29 @@ def test_operation_divergences_are_classified_paired_and_written_like_schema_one
             "detail": "Backlot accepts it; the vendor's spec declares no such parameter",
         },
     }
+    assert written["operations"][0]["fields"] == {
+        "user.profile": {"kind": "missing_field", "severity": GAP}
+    }
     assert written["operations"][1] == {
         "operation": "GET /b",
         "id": "get-b",
         "status": MISSING,
         "kind": "missing_operation",
         "severity": GAP,
+        "params": {
+            "k": {
+                "kind": "param_type_mismatch",
+                "severity": BREAKING,
+                "detail": "vendor: string, Backlot: number",
+            }
+        },
+        "fields": {
+            "user.id": {
+                "kind": "type_mismatch",
+                "severity": BREAKING,
+                "detail": "vendor: string, Backlot: number",
+            }
+        },
     }
     read, back = OperationSurface.from_json(written)
     assert read == surface
@@ -1413,6 +1548,182 @@ def test_a_probe_declares_its_prober_and_the_dispatcher_only_hands_over(monkeypa
     assert seen["base_url"].startswith("http")
 
 
+# --------------------------------------------------------------------------- CSDL
+
+
+# A CSDL small enough to read, carrying every feature the parser has to get right: an alias
+# (`g.`), inheritance through `BaseType`, an open type beside a closed one, an enum, a navigation
+# property, `Nullable="false"`, and a type name declared in TWO namespaces.
+CSDL_DOC = """<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx" Version="4.0">
+  <edmx:DataServices>
+    <Schema xmlns="http://docs.oasis-open.org/odata/ns/edm" Namespace="vendor.api" Alias="g">
+      <EnumType Name="importance">
+        <Member Name="normal" Value="0"/>
+        <Member Name="high" Value="1"/>
+      </EnumType>
+      <EntityType Name="entity" Abstract="true">
+        <Property Name="id" Type="Edm.String" Nullable="false"/>
+      </EntityType>
+      <EntityType Name="message" BaseType="g.entity">
+        <Property Name="body" Type="Edm.String" Nullable="false"/>
+        <Property Name="importance" Type="g.importance"/>
+        <NavigationProperty Name="replies" Type="Collection(g.message)"/>
+      </EntityType>
+      <EntityType Name="person" BaseType="g.entity" OpenType="true">
+        <Property Name="mail" Type="Edm.String"/>
+      </EntityType>
+    </Schema>
+    <Schema xmlns="http://docs.oasis-open.org/odata/ns/edm" Namespace="vendor.security">
+      <EntityType Name="person">
+        <Property Name="riskLevel" Type="Edm.String"/>
+      </EntityType>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>
+"""
+
+
+@pytest.fixture(scope="module")
+def csdl():
+    return csdl_diff.schema(CSDL_DOC)
+
+
+def test_a_csdl_type_carries_what_it_inherits_and_is_keyed_by_its_namespace(csdl):
+    """`id` is declared once, on an abstract base, so without the walk through `BaseType` every
+    entity in every response reports it as invented.
+
+    And the two `person` types are why the key is fully qualified: keyed by bare name, one
+    namespace silently answers for the other, and every property of the one that lost is reported
+    as undeclared.
+    """
+    message = csdl.declared("vendor.api.message")
+    assert set(message.properties) == {"id", "body", "importance"}
+    assert message.navigations == frozenset({"replies"})
+    assert message.required == frozenset({"id", "body"})
+    assert not message.open
+
+    assert csdl.declared("vendor.api.person").open  # OpenType is inherited-or-own, not overridden
+    assert set(csdl.declared("vendor.security.person").properties) == {"riskLevel"}
+    assert csdl.members("g.importance") == frozenset({"normal", "high"})
+    assert csdl.members("Edm.String") is None
+
+
+@pytest.mark.parametrize(
+    "type_name, obj, expected",
+    [
+        # A closed type has no field to bind an undeclared property to.
+        (
+            "vendor.api.message",
+            {"id": "1", "invented": 1},
+            ["undeclared_property:message.invented"],
+        ),
+        # An open one is declared to accept them, so reporting it would report what the vendor
+        # permits. Two of Graph's own Teams types are open.
+        ("vendor.api.person", {"id": "1", "invented": 1}, []),
+        # `$expand` serves a navigation property inline, which is a request the vendor documents.
+        ("vendor.api.message", {"id": "1", "replies": []}, []),
+        (
+            "vendor.api.message",
+            {"id": "1", "body": None},
+            ["null_where_declared_non_nullable:message.body"],
+        ),
+        # `Nullable="false"` means "not null WHEN RETURNED", never "always returned": these APIs
+        # project, so a declared property the response omits is the normal case.
+        ("vendor.api.message", {"id": "1"}, []),
+        (
+            "vendor.api.message",
+            {"id": "1", "importance": "URGENT"},
+            ["value_outside_enum:message.importance"],
+        ),
+        ("vendor.api.message", {"id": "1", "importance": "high"}, []),
+        # OData plumbing is not a property of the entity.
+        ("vendor.api.message", {"id": "1", "@odata.context": "x", "replies@odata.count": 2}, []),
+    ],
+)
+def test_what_a_served_object_is_and_is_not_held_to(csdl, type_name, obj, expected):
+    found = csdl_diff.check(csdl, type_name, obj, "GET /messages")
+    assert [f"{f.kind}:{f.path}" for f in found] == expected
+    assert all(f.severity == BREAKING for f in found)
+    assert all("GET /messages" in f.detail for f in found)
+
+
+def test_a_type_the_walk_names_and_the_vendor_does_not_is_not_a_divergence(csdl):
+    """A renamed vendor type has to stop the run. Reported as a finding it would read as Backlot
+    inventing a property, and the baseline would then acknowledge a name that no longer exists."""
+    with pytest.raises(FidelityError, match="not a type this vendor's document declares"):
+        csdl_diff.check(csdl, "vendor.api.chat", {"id": "1"}, "GET /chats")
+
+    with pytest.raises(FidelityError, match="not parseable XML"):
+        csdl_diff.schema("<Edmx")
+    with pytest.raises(FidelityError, match="declares no types"):
+        csdl_diff.schema('<?xml version="1.0"?><Edmx/>')
+
+
+def test_a_csdl_source_declares_its_walk_and_the_dispatcher_only_hands_over(monkeypatch):
+    """Same handover as a probe's, and for the same reason: which request answers with which
+    declared type is knowledge no document carries, so the source names it and a rename is
+    something a linter catches rather than a nightly ImportError."""
+    with pytest.raises(TypeError):
+        comparisons.CSDLComparison(name="x", spec_url="https://example.invalid")
+
+    seen = {}
+
+    measured = Measurement([], SchemaSurface("GraphService", {}))
+
+    def fake_walk(base_url, token, schema, timeout):
+        seen.update(base_url=base_url, token=token, timeout=timeout, types=len(schema.types))
+        return measured
+
+    monkeypatch.setattr(csdl_diff, "fetch_text", lambda url, timeout: CSDL_DOC)
+    source = comparisons.CSDLComparison("x", "https://e.invalid", fake_walk)
+    assert comparisons.measure(source, timeout=5) is measured
+    assert seen["timeout"] == 5 and seen["types"] == 4
+    assert seen["base_url"].startswith("http")
+    # The token is `serve()`'s MEASURED one, not a re-fetch of `/_meta/users`: a type nothing
+    # serves is a type nothing checks, and an ACL-filtered caller would leave whole channels
+    # unasked and report clean.
+    assert seen["token"]
+
+
+def test_the_teams_walk_asks_as_the_service_account_and_reaches_every_type_it_names():
+    """The walk is the only thing that decides what gets compared, so a request it stops making is
+    coverage that silently disappears. `backlot.serve()`'s own corpus is what it is asked against.
+    """
+    import backlot
+
+    with backlot.serve() as server:
+        with httpx.Client(
+            base_url=server.base_url,
+            timeout=30,
+            headers={"Authorization": f"Bearer {server.token}"},
+        ) as client:
+            reached = {t for t, _, _ in msgraph._objects(client)}
+        anonymous = httpx.get(f"{server.base_url}{msgraph.V1}/me")
+    assert anonymous.status_code == 401  # the walk's answers are the authenticated ones
+
+    named = {
+        f"microsoft.graph.{n}"
+        for n in (
+            "user",
+            "team",
+            "channel",
+            "aadUserConversationMember",
+            "chatMessage",
+            "itemBody",
+            "channelIdentity",
+            "chatMessageFromIdentitySet",
+            "teamworkUserIdentity",
+            "chatMessageReaction",
+            "chatMessageReactionIdentitySet",
+            "chatMessageAttachment",
+            "chatMessageMention",
+            "chatMessageMentionedIdentitySet",
+        )
+    }
+    assert named <= reached
+
+
 # --------------------------------------------------------------------------- the command
 
 
@@ -1663,10 +1974,28 @@ def test_the_human_form_groups_by_severity_and_says_what_to_do(_vendor, tmp_path
     assert "\x1b[" not in out.out + out.err
 
 
-def test_a_clean_run_says_so(_vendor, tmp_path, capsys):
+def test_a_clean_run_says_so_and_a_stale_baseline_fails(_vendor, tmp_path, capsys):
+    """An entry for a divergence the vendor no longer has fails the run as a new one does, in both
+    forms, or a scheduled run stays green and files nothing about it."""
     _vendor()
-    assert cli.main(["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path)]) == 0
+    args = ["diff", "-s", "fireflies", "--baseline-dir", str(tmp_path)]
+    assert cli.main(args) == 0
     assert "nothing new" in capsys.readouterr().out
+    assert cli.main([*args, "--json"]) == 0
+    capsys.readouterr()
+
+    _vendor(VENDOR.replace("status: Status", "status: Status, summary: String"))
+    assert cli.main([*args, "--update-baseline"]) == 0
+    _vendor()
+    capsys.readouterr()
+    assert cli.main(args) == 1
+    out = capsys.readouterr().out
+    assert "no longer diverging (1)" in out and "Transcript.summary" in out
+    assert "nothing new" not in out
+    assert cli.main([*args, "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["new"] == []
+    assert [f["path"] for f in payload["resolved"]] == ["Transcript.summary"]
 
 
 def test_a_long_detail_is_wrapped(monkeypatch, capsys):
@@ -1737,3 +2066,441 @@ def test_the_probe_asks_with_the_timeout_it_was_given(monkeypatch):
     monkeypatch.setattr(s3_probe.httpx, "request", fake_request)
     s3_probe.run("http://x", S3_MODEL, timeout=99.0)
     assert seen and set(seen) == {99.0}
+
+
+# --------------------------------------------------------------------------- slack
+
+# The reference as docs.slack.dev serves it, abbreviated to the parts `slack_docs` reads: an index
+# that is a markdown table of links, a method page with frontmatter, one line per argument and its
+# examples on one line between fences, and an object page whose tables render one cell per line.
+SLACK_INDEX = """---
+title: "Methods"
+---
+
+| Name | Description |
+|------|-------------|
+| [users.info](https://docs.slack.dev/reference/methods/users.info.md) | Gets one user. |
+| [users.list](https://docs.slack.dev/reference/methods/users.list.md) | Lists all users. |
+| [chat.postMessage](https://docs.slack.dev/reference/methods/chat.postmessage.md) | Sends one. |
+"""
+
+SLACK_PAGE = """---
+method_name: "users.list"
+http_method: "GET"
+---
+
+## Arguments {#arguments}
+
+### Required arguments
+
+**`token`**`string`Required
+
+Authentication token bearing required scopes.
+
+### Optional arguments
+
+**`limit`**`number`Optional
+
+**`team_id`**Optional
+
+## Usage info {#usage-info}
+
+**`not_an_argument`**`string`Required
+
+```
+GET /api/users.list?limit=1
+```
+
+## Response {#response}
+
+#### Typical success response
+
+```
+{  "ok": true,  "members": [    {      "id": "W012A3CDE",      "name": "spengler",      "profile": {        "image_24": "https://a.slack-edge.com/.../..._24.jpg",        "fields": {"Xf111AAA111": {"value": "x"}}      },      "is_admin": true    },  ],  // ...  "cache_ts": 1498777272}
+```
+
+#### Typical error response
+
+```
+{  "ok": false,  "error": "invalid_cursor"}
+```
+
+Returns a list of [user objects](https://docs.slack.dev/reference/objects/user-object.md).
+
+## Errors {#errors}
+"""
+
+SLACK_OBJECT = """---
+title: "User object"
+---
+
+## Example {#example}
+
+```
+{    "user": {        "id": "U123ABC456",        "name": "sherlock",        "profile": {            "real_name": "Sherlock Holmes"        }    }}
+```
+
+```
+{    "unrelated": {        "q": 1    }}
+```
+
+## Common fields {#fields}
+
+Field
+
+Type
+
+Description
+
+`deleted`
+
+Boolean
+
+This user has been deactivated.
+
+`id`
+
+String
+
+Identifier for this workspace user.
+
+`enterprise_user.teams`
+
+String\\[\\]
+
+An array of workspace IDs.
+
+`tz_offset`
+
+Integer or null
+
+Number of seconds to offset UTC time by.
+
+`team_id`
+
+`team_id`
+
+The workspace this user belongs to.
+
+`who_can_share_contact_card`
+
+Contact card sharing permission setting.
+
+## Profile fields {#profile}
+
+Field
+
+Type
+
+Description
+
+`real_name`
+
+String
+
+The user's first and last name.
+
+`status_emoji_display_info`
+
+Array of objects
+
+The emoji shown beside a status.
+
+## Flags {#flags}
+
+Property
+
+Description
+
+`is_bot`
+
+Whether the user is a bot.
+
+## File types {#types}
+
+`pdf`
+
+A PDF.
+"""
+
+OBJECT_URL = "https://docs.slack.dev/reference/objects/user-object.md"
+
+
+def test_the_slack_reference_is_read_off_its_index_and_its_pages():
+    """The index is the whole inventory, and a row it does not read is refused rather than dropped
+    from it. An argument is read only inside its section, its type as JSON names it, and one with
+    no type at all (`team_id`) is still an argument. A section that moved, or an argument line
+    respelled, is refused rather than read as a method taking fewer arguments."""
+    assert slack_docs.documented_methods(SLACK_INDEX) == {
+        "users.info": "https://docs.slack.dev/reference/methods/users.info.md",
+        "users.list": "https://docs.slack.dev/reference/methods/users.list.md",
+        "chat.postMessage": "https://docs.slack.dev/reference/methods/chat.postmessage.md",
+    }
+    with pytest.raises(FidelityError, match="does not read as a method"):
+        slack_docs.documented_methods(SLACK_INDEX + "| chat.update | Updates one. |\n")
+    with pytest.raises(FidelityError, match="lists no methods"):
+        slack_docs.documented_methods("| Name |\n|---|\n")
+    assert slack_docs.arguments(SLACK_PAGE) == {"token": "string", "limit": "number", "team_id": ""}
+    for respelled, refusal in [
+        (SLACK_PAGE.replace("`number`", "`float`"), "types limit"),
+        (SLACK_PAGE.replace("`number`Optional", "`number`Deprecated"), "argument line"),
+        (SLACK_PAGE.replace("**`limit`**", "- **`limit`**"), "argument line"),
+        (SLACK_PAGE.replace("{#arguments}", "{#parameters}"), "no `## Arguments` section"),
+    ]:
+        with pytest.raises(FidelityError, match=refusal):
+            slack_docs.arguments(respelled)
+
+
+def test_a_slack_response_is_its_examples_with_each_linked_object_placed_where_they_carry_it():
+    """Read off success examples alone, an elision and a trailing comma taken out only outside a
+    string, a request and an error example passed over, and an example's map keys collapsed to
+    `{}`. The user object's first table is the object's own fields, read from where an example
+    carries them, and an example sharing none of them is not the object. A later table goes under
+    the container whose fields it shares (`profile`), or the object's own where none does; a table
+    with no Type column types nothing, and a heading ends a table. The object goes where an example
+    carries the container sharing most of its fields (`members[]`), and only where those are at
+    least half of that container's."""
+    obj = slack_docs.object_shape(SLACK_OBJECT)
+    assert obj.fields["profile.status_emoji_display_info"] == {"array"}
+    assert obj.fields["enterprise_user.teams"] == {"array"}
+    assert obj.fields["tz_offset"] == {"number"}
+    assert obj.fields["team_id"] == {"string"}
+    assert obj.fields["who_can_share_contact_card"] == frozenset()
+    assert obj.fields["is_bot"] == frozenset()
+    assert not {"pdf", "unrelated", "q", "user"} & set(obj.fields)
+    assert {"", "profile", "enterprise_user"} <= obj.containers
+
+    shape = slack_docs.response_shape(SLACK_PAGE, {OBJECT_URL: obj}.__getitem__)
+    assert shape.fields["members[].profile.image_24"] == {"string"}
+    assert "members[].profile.fields.{}.value" in shape.fields
+    assert shape.fields["members[].deleted"] == {"boolean"}
+    assert shape.fields["members[].profile.real_name"] == {"string"}
+    assert "error" not in shape.fields and "user.id" not in shape.fields
+    assert obj.under("elsewhere").within("elsewhere") == obj
+    assert slack_docs.loads('{"text": "a, }", "n": [1, ...],}') == {"text": "a, }", "n": [1]}
+
+    with pytest.raises(FidelityError, match="does not read as JSON"):
+        slack_docs.response_shape(SLACK_PAGE.replace('"ok": true,', '"ok": true'), {}.get)
+    # One shared field out of the four `members[]` carries is not the object's container.
+    for unplaced in ({"x": 1, "y": 2}, {"id": "U1"}):
+        with pytest.raises(FidelityError, match="no example carries that object"):
+            slack_docs.response_shape(
+                SLACK_PAGE, {OBJECT_URL: slack_docs.shape_of(unplaced)}.__getitem__
+            )
+
+
+def test_a_json_shape_keeps_types_and_enters_only_what_it_looked_inside():
+    """A boolean is told apart before a number, since a bool is an int to Python. An empty array
+    is never a container; an empty object is where Backlot answers it, and not in an example."""
+    shape = slack_docs.shape_of({"a": True, "b": 1, "c": "s", "d": None, "e": [], "f": {}})
+    assert {k: set(v) for k, v in shape.fields.items()} == {
+        "a": {"boolean"},
+        "b": {"number"},
+        "c": {"string"},
+        "d": {"null"},
+        "e": {"array"},
+        "f": {"object"},
+    }
+    assert shape.containers == {"", "f"}
+    assert slack_docs.shape_of({"f": {}}, empty_object_entered=False).containers == {""}
+
+
+def test_slack_divergences_are_classified_like_operation_ones():
+    """A method is one unit over both verbs, its arguments the union over them. Integer and number
+    are one JSON type, and an argument or a field one side states no type for is no type mismatch;
+    a field Backlot answers under a list the documentation never looks inside is not one it
+    invented, and `null` beside a type is not another type."""
+    served = slack_docs.from_backlot(
+        {
+            "paths": {
+                "/slack/api/users.list": {
+                    "get": {
+                        "parameters": [
+                            {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+                            {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+                        ]
+                    },
+                    "post": {"parameters": [{"name": "x", "in": "query"}]},
+                }
+            }
+        },
+        ("/slack/api",),
+    )
+    assert served["users.list"].arguments == {"limit": "number", "cursor": "string", "x": ""}
+
+    ours = slack_docs.shape_of(
+        {
+            "members": [{"id": "U1", "tz": 3, "bot": {"a": 1}, "name": None, "locale": "en"}],
+            "cache_ts": "x",
+        }
+    )
+    documented = slack_docs.Shape.union(
+        [
+            slack_docs.shape_of(
+                {
+                    "members": [{"id": "U1", "tz": "Asia/Seoul", "bot": {}, "name": "a"}],
+                    "extra": [{"y": 1}],
+                },
+                empty_object_entered=False,
+            ),
+            slack_docs.Shape({"members[].locale": frozenset()}, frozenset()),
+        ]
+    )
+    backlot = {
+        "users.list": slack_docs.Method(
+            "users.list", {"limit": "number", "cursor": "array", "x": "", "y": "string"}, ours
+        ),
+        "a.b": slack_docs.Method("a.b"),
+    }
+    real = {
+        "users.list": slack_docs.Method(
+            "users.list",
+            {"limit": "number", "cursor": "string", "x": "string", "y": "", "team_id": ""},
+            documented,
+        ),
+        "c.d": slack_docs.Method("c.d"),
+    }
+    found = {(f.kind, f.path): f.severity for f in slack_docs.diff_methods(backlot, real)}
+    assert found == {
+        ("extra_operation", "a.b"): BREAKING,
+        ("missing_operation", "c.d"): GAP,
+        ("missing_param", "users.list?team_id"): GAP,
+        ("param_type_mismatch", "users.list?cursor"): BREAKING,
+        ("extra_field", "users.list cache_ts"): BREAKING,
+        ("missing_field", "users.list extra"): GAP,
+        ("type_mismatch", "users.list members[].tz"): BREAKING,
+    }
+    assert slack_docs.inventory(backlot, real).operations == (
+        OperationEntry("a.b", EXTRA, ""),
+        OperationEntry("c.d", MISSING, "c.d"),
+        OperationEntry("users.list", IMPLEMENTED, "users.list"),
+    )
+
+
+def test_slack_is_measured_off_the_reference_with_each_page_read_once(monkeypatch):
+    """Only a served method's page is read, and an object page once however many methods link it.
+    A page stating another method's name, or none, is refused: the index and the page must
+    agree."""
+    fetched = []
+    pages = {
+        "https://docs.slack.dev/reference/methods.md": SLACK_INDEX,
+        "https://docs.slack.dev/reference/methods/users.info.md": SLACK_PAGE.replace(
+            '"users.list"', '"users.info"', 1
+        ),
+        "https://docs.slack.dev/reference/methods/users.list.md": SLACK_PAGE,
+        OBJECT_URL: SLACK_OBJECT,
+    }
+
+    def fetch(url, *, timeout):
+        fetched.append(url)
+        return pages[url]
+
+    monkeypatch.setattr(slack_docs, "fetch_text", fetch)
+    monkeypatch.setattr(
+        slack_docs,
+        "from_backlot",
+        lambda spec, mount: {
+            name: slack_docs.Method(name, {"limit": "number"})
+            for name in ("users.info", "users.list")
+        },
+    )
+    monkeypatch.setattr(
+        slack_docs,
+        "answers",
+        lambda *, timeout: {
+            name: slack_docs.shape_of({"ok": True, "members": []})
+            for name in ("users.info", "users.list")
+        },
+    )
+    measured = slack_docs.measure(COMPARISONS["slack"])
+    assert sorted(fetched) == sorted(pages)
+    assert {f.path for f in measured.findings if f.kind == "missing_param"} == {
+        f"{name}?{argument}"
+        for name in ("users.info", "users.list")
+        for argument in ("token", "team_id")
+    }
+    assert "missing_field:users.list cache_ts" in {f.key for f in measured.findings}
+
+    for stated, refusal in [
+        ('method_name: "users.info"', "states method_name users.info, not users.list"),
+        ("", r"states method_name \(none\), not users.list"),
+    ]:
+        pages["https://docs.slack.dev/reference/methods/users.list.md"] = SLACK_PAGE.replace(
+            'method_name: "users.list"', stated
+        )
+        with pytest.raises(FidelityError, match=refusal):
+            slack_docs.measure(COMPARISONS["slack"])
+
+
+@pytest.mark.parametrize(
+    "answer, read",
+    [
+        (httpx.Response(404), lambda: slack_docs.fetch_text("https://x.invalid/a.md", timeout=1)),
+        (
+            httpx.ConnectError("no route to host"),
+            lambda: slack_docs.fetch_text("https://x.invalid/a.md", timeout=1),
+        ),
+        (
+            httpx.Response(200, json={"ok": False, "error": "invalid_auth"}),
+            lambda: slack_docs._Caller("https://x.invalid/api", "t", timeout=1)("api.test"),
+        ),
+        *(
+            (
+                httpx.Response(200, json={"ok": True, **served}),
+                lambda: slack_docs._calls(
+                    slack_docs._Caller("https://x.invalid/api", "t", timeout=1)
+                ),
+            )
+            for served in (
+                {},
+                {"channels": [{"id": "C1"}], "messages": [{"ts": "1", "reply_count": 1}]},
+                {"channels": [{"id": "C1"}], "members": [{"id": "U1"}], "messages": [{"ts": "1"}]},
+            )
+        ),
+    ],
+    ids=[
+        "page-not-found",
+        "unreachable",
+        "backlot-refused",
+        "corpus-serves-nothing",
+        "corpus-serves-no-person",
+        "corpus-serves-no-thread",
+    ],
+)
+def test_a_slack_contract_that_cannot_be_read_is_not_a_divergence(answer, read, monkeypatch):
+    """Exit 2, never a finding: a page that is not there, and a Backlot that refuses a call or
+    serves nothing to aim one at."""
+
+    def get(*a, **k):
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(slack_docs.httpx, "get", get)
+    with pytest.raises(FidelityError):
+        read()
+
+
+def test_the_probe_corpus_answers_every_method_backlot_serves():
+    """Backlot's side is the running server on a corpus the module supplies, asked every method
+    the reference is compared on, over every channel, thread and person, so a message's thread,
+    reaction, edit and file fields are each answered somewhere. The baseline's field entries hold
+    to it with no network, as its arguments are held to the app's own declarations: a field it
+    acknowledges missing is one Backlot does not answer, and one it acknowledges extra is one
+    Backlot does."""
+    from backlot.main import app
+
+    answered = slack_docs.answers(timeout=20.0)
+    assert set(answered) == set(slack_docs.from_backlot(app.openapi(), ("/slack/api",)))
+    history = answered["conversations.history"].fields
+    for field in ("reply_count", "reactions", "edited", "files[].id"):
+        assert f"messages[].{field}" in history, field
+    # And with the arguments the reference's examples were sent, where an answer echoes them.
+    assert {"latest", "response_metadata"} <= set(history)
+    assert "args.foo" in answered["api.test"].fields
+
+    rerun = "slack: rerun `backlot diff -s slack --update-baseline`"
+    for f in Baseline.load(baseline_path("slack")).acknowledged.values():
+        if f.kind in ("missing_field", "extra_field"):
+            method, _, path = f.path.partition(" ")
+            assert (path in answered[method].fields) == (f.kind == "extra_field"), (f.key, rerun)

@@ -19,6 +19,11 @@ updates:
     groups:
       python:
         patterns: ["*"]
+    # The `<3.3` ceiling in pyproject.toml is deliberate, but this updater widens a ceiling
+    # rather than respecting it.
+    ignore:
+      - dependency-name: graphql-core
+        versions: [">=3.3"]
 
   # The one TypeScript example, which CI installs, typechecks and runs.
   - package-ecosystem: npm

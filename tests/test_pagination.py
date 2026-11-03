@@ -319,14 +319,14 @@ def test_linear_after_cursor_becomes_the_offset():
 
 
 def test_linear_backward_slice_ends_just_before_the_cursor():
-    # `before` is the offset of the first row already seen; `last: 5` is the 5 rows before it.
-    assert _slice(None, None, 5, pg.encode_cursor(20)) == (15, 5, 0)
+    # Cursor 20 names the twentieth node (offset 19); take the five nodes preceding it.
+    assert _slice(None, None, 5, pg.encode_cursor(20)) == (14, 5, 0)
 
 
 def test_linear_backward_slice_clamps_at_the_start():
     """Asking for more rows than exist before the cursor must not produce a negative offset or
     re-read rows at or past the cursor."""
-    assert _slice(None, None, 10, pg.encode_cursor(3)) == (0, 3, 0)
+    assert _slice(None, None, 10, pg.encode_cursor(3)) == (0, 2, 0)
 
 
 def test_linear_last_without_before_defers_to_the_total():
@@ -354,18 +354,26 @@ def test_linear_both_directions_at_once_is_rejected():
 
 
 def test_linear_page_info_flags_the_middle_of_a_result_set():
+    """A page in the middle flags the direction it was asked in, and answers `false` for the
+    other one, as the docstring of `_connection` measures."""
     page = _connection([{"id": 1}, {"id": 2}], offset=2, has_next=True)
     assert page["pageInfo"]["hasNextPage"] is True
-    assert page["pageInfo"]["hasPreviousPage"] is True
-    assert pg.decode_cursor(page["pageInfo"]["startCursor"]) == 2
-    # endCursor is where the NEXT page starts, so it feeds straight back in as `after`.
+    assert page["pageInfo"]["hasPreviousPage"] is False
+    assert pg.decode_cursor(page["pageInfo"]["startCursor"]) == 3
+    # The last node is position four; after that node starts at offset four.
     assert pg.decode_cursor(page["pageInfo"]["endCursor"]) == 4
+    back = _connection([{"id": 1}, {"id": 2}], offset=2, has_next=True, backward=True)
+    assert back["pageInfo"]["hasNextPage"] is False
+    assert back["pageInfo"]["hasPreviousPage"] is True
 
 
 def test_linear_page_info_terminates_on_the_last_page():
     page = _connection([{"id": 9}], offset=9, has_next=False)
     assert page["pageInfo"]["hasNextPage"] is False
-    assert page["pageInfo"]["hasPreviousPage"] is True
+    assert page["pageInfo"]["hasPreviousPage"] is False
+    back = _connection([{"id": 9}], offset=9, has_next=False, backward=True)
+    assert back["pageInfo"]["hasNextPage"] is False
+    assert back["pageInfo"]["hasPreviousPage"] is True
 
 
 def test_linear_limit_plus_one_probe_decides_has_next():

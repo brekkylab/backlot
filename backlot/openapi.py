@@ -17,7 +17,9 @@ renames each operation to its route's own name (``search_messages``, not
 operations sharing a name to one (prefer GET, then fewest path params, then the lexicographically
 greatest path — so Jira's ``/rest/api/3`` alias survives over ``/rest/api/2``). Served at
 ``GET /_meta/openapi/{source}`` so a bridge (``backlot.mcp``) consumes it directly — no client-side
-spec surgery. HEAD goes first, before anything is renamed (:func:`drop_head_operations`).
+spec surgery. HEAD goes first, before anything is renamed (:func:`drop_head_operations`). The
+bridge renames only the tool arguments the Anthropic API refuses, on its tools rather than in this
+spec (:func:`backlot.mcp.argument_name`).
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ import copy
 import re
 import warnings
 
+from backlot import protojson
 from backlot.errors import google as gerr
 
 # Building the app's /openapi.json (FastAPI) warns "Duplicate Operation ID" once per multi-method
@@ -45,6 +48,7 @@ warnings.filterwarnings("ignore", message="Duplicate Operation ID", category=Use
 SOURCE_PREFIXES: dict[str, list[str]] = {
     "github": ["/github"],
     "slack": ["/slack/api"],
+    "msteams": ["/msgraph"],
     "gmail": ["/gmail"],
     "gdrive": ["/drive/v3", "/docs/v1", "/sheets/v4", "/slides/v1"],
     "notion": ["/notion/v1"],
@@ -146,6 +150,75 @@ def qp(
     if description:
         p["description"] = description
     return p
+
+
+_PROTO_SCALARS = {
+    "int32": {"type": "integer", "format": "int32"},
+    "int64": {"type": "string", "format": "int64"},
+    "float": {"type": "number", "format": "float"},
+    "double": {"type": "number", "format": "double"},
+    "string": {"type": "string"},
+    "bool": {"type": "boolean"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "rows": {"type": "array", "items": {"type": "array", "items": {}}},
+    "any": {},
+}
+
+
+def _proto_value(field: protojson.Field, keep: dict | None, seen: tuple[str, ...]) -> dict:
+    """The schema of what one field holds, a map as an object of its values."""
+    if field.map:
+        assert field.message is not None
+        value = _proto_value(field.message.fields[1], keep, seen)
+        return {"type": "object", "additionalProperties": value}
+    if field.kind == "message":
+        assert field.message is not None
+        value = _proto_schema(field.message, keep, seen)
+    elif field.kind == "enum":
+        assert field.enum is not None
+        value = {"type": "string", "enum": list(field.enum.names)}
+    else:
+        value = dict(_PROTO_SCALARS[field.kind])
+    if field.repeated:
+        value = {"type": "array", "items": value}
+    return value
+
+
+def _proto_schema(message: protojson.Message, keep: dict | None, seen: tuple[str, ...]) -> dict:
+    if keep is None and message.type_url in seen:
+        raise ValueError(f"{message.type_url} holds itself; name the fields to declare")
+    if keep is not None:
+        unknown = set(keep) - {f.json_name for f in message.fields}
+        if unknown:
+            raise ValueError(f"{message.type_url} has no field {sorted(unknown)}")
+    return {
+        "type": "object",
+        "properties": {
+            field.json_name: _proto_value(
+                field, None if keep is None else keep[field.json_name], (*seen, message.type_url)
+            )
+            for field in message.fields
+            if keep is None or field.json_name in keep
+        },
+    }
+
+
+def proto_body(
+    message: protojson.Message, field: str | None = None, keep: dict | None = None
+) -> dict:
+    """The ``requestBody`` of a route that reads its JSON body into ``message`` with
+    :func:`protojson.read`, for its ``openapi_extra``; ``field`` is ``read``'s, a request whose
+    body is that one field's message. Without it a route that reads its body itself declares
+    none, and the tool ``backlot mcp`` derives from the route can send none.
+
+    ``keep`` is :func:`qp`'s rule applied to a body: the fields the route keeps, by JSON name, each
+    mapped to the fields kept within it or to ``None`` for all of them, where the route reads more
+    than it keeps. Each field is typed as ``message`` types it, so the schema promises nothing the
+    reader refuses; a name ``message`` lacks raises."""
+    if field is not None:
+        message = next(f.message for f in message.fields if f.json_name == field)
+    schema = _proto_schema(message, keep, ())
+    return {"requestBody": {"content": {"application/json": {"schema": schema}}}}
 
 
 def github_page_parameters(spec: dict, parameters: dict[str, tuple[int, str]]) -> dict:

@@ -3,7 +3,7 @@
   "endpoints": [
     "https://developers.notion.com/openapi.json"
   ],
-  "measured": "2026-10-16",
+  "measured": "2026-11-03",
   "operations": [
     {
       "operation": "DELETE /v1/agents/{}",
@@ -214,6 +214,14 @@
       "severity": "gap"
     },
     {
+      "operation": "PATCH /v1/agents/{}",
+      "id": "update-agent",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Backlot serves no /v1/agents operation, and the connected integration measures only 403 restricted_resource on it (2026-11-03)."
+    },
+    {
       "operation": "PATCH /v1/agents/{}/credit_limit",
       "id": "update-agent-credit-limit",
       "status": "missing",
@@ -298,6 +306,14 @@
       "severity": "gap"
     },
     {
+      "operation": "POST /v1/ai/skills/{}/upload",
+      "id": "upload-skill",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Imports a skill directory, sent as \"a gzip-compressed tar archive (maximum 20 MiB)\" in Notion's reference, into a page of a Skills database, so it writes the per-workspace skill state the note on `GET /v1/ai/skills/{}` records the corpus does not represent. Measured against api.notion.com on 2026-10-22 with a random id: the format's 401 with no header and the token's 401 with `Bearer nope`, and `GET` on the same path the URL's 400; not sent with a working token, since an upload writes to the connected workspace."
+    },
+    {
       "operation": "POST /v1/blocks/meeting_notes",
       "id": "create-meeting-note",
       "status": "missing",
@@ -328,13 +344,7 @@
     {
       "operation": "POST /v1/data_sources/{}/query",
       "id": "post-database-query",
-      "status": "implemented",
-      "params": {
-        "filter_properties": {
-          "kind": "missing_param",
-          "severity": "gap"
-        }
-      }
+      "status": "implemented"
     },
     {
       "operation": "POST /v1/databases",

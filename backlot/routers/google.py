@@ -1,6 +1,7 @@
-"""Google APIs (read-only): Gmail (``/gmail/v1``), Drive (``/drive/v3``), and the
-Workspace editor read APIs — Docs (``/docs/v1``), Sheets (``/sheets/v4``), Slides
-(``/slides/v1``) — for clients that read native docs structurally instead of via Drive export.
+"""Google APIs: Gmail (``/gmail/v1``), Drive (``/drive/v3``), and the Workspace editor APIs — Docs
+(``/docs/v1``, in `routers.google_docs`), Sheets (``/sheets/v4``, in `routers.google_sheets`),
+Slides (``/slides/v1``) — for clients that read a Doc, Sheet or Slide deck structurally instead
+of via Drive export.
 
 Client base-URL override: point the Gmail client at ``http://<host>/gmail`` and the
 Drive client at ``http://<host>/drive`` (google-api-python-client ``api_endpoint``).
@@ -11,11 +12,15 @@ from __future__ import annotations
 
 import base64
 import datetime
+import functools
 import hashlib
 import json
 import quopri
 import re
 import string
+import time
+import xml.parsers.expat
+from collections.abc import Callable
 from contextvars import ContextVar
 from email.parser import BytesParser
 from email.utils import formataddr, getaddresses
@@ -30,7 +35,15 @@ from pydantic import BaseModel, ConfigDict
 from starlette.datastructures import QueryParams
 from starlette.routing import Match
 
-from backlot import auth, protojson, sheets_grid, store, synth
+from backlot import (
+    auth,
+    collation,
+    gdocs,
+    gsheets,
+    protojson,
+    store,
+    synth,
+)
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.errors import google as gerr
@@ -113,7 +126,8 @@ class DrivePermissionList(_GLoose):
 # drive_files_get / .export return a raw Response on some branches — they get openapi_extra params
 # only (no JSON response_model, which would mis-serialize the raw body).
 _P_DRIVE_LIST = [qp("pageSize", "integer"), qp("pageToken"), qp("q"), qp("fields"), qp("orderBy")]
-_P_DRIVE_PERMISSIONS = [qp("pageSize", "integer"), qp("pageToken")]
+_P_DRIVE_PERMISSIONS = [qp("pageSize", "integer"), qp("pageToken"), qp("fields")]
+_P_DRIVE_DRIVES = [qp("q"), qp("fields")]
 _P_DRIVE_ALT = [qp("alt"), qp("fields")]
 _P_DRIVE_EXPORT = [qp("mimeType", required=True)]
 _P_DRIVE_ABOUT = [qp("fields", required=True)]
@@ -143,6 +157,9 @@ class _BatchOuter(NamedTuple):
 # ``httpx.ASGITransport`` runs the app in the task that `batch` dispatches from, so the routes a
 # part reaches see what `batch` set.
 _BATCH_OUTER: ContextVar[_BatchOuter | None] = ContextVar("google_batch_outer", default=None)
+# The service account an admin/service caller stands for, which `_require` sets: what it creates
+# is its own (`_editor_creator`, `_drive_owned_by`).
+_ADMIN_OWNER: ContextVar[str | None] = ContextVar("google_admin_owner", default=None)
 
 
 def _batch_part_downloads(method: str, target: str) -> bool:
@@ -182,6 +199,24 @@ def _parse_batch_subrequest(payload: str):
             if k.strip().lower() not in _BATCH_DROP_HEADERS:
                 headers[k.strip()] = v.strip()
     return method, target, headers, body
+
+
+def _drive_batch_cut_path(target: str) -> str:
+    """A Drive batch part's target with its path cut at the first ``;`` in it, its query kept.
+
+    Measured 2026-10-05 against ``www.googleapis.com/batch/drive/v3``, and on 2026-10-22 with each
+    part alone in its batch and all ten of ``_BATCH_CUT_ROWS`` in one: real ends a part's path
+    there, so ``files/{id};x`` is that file, ``files/{id};x/export`` is ``files.get`` on that file
+    with its ``/export`` dropped, and ``files;x``, ``about;x``, ``drives;x`` and
+    ``files/{id}/permissions;x`` are those routes' answers. The cut is read off the target as
+    sent, so an escaped ``%3B`` stays in the path and names the file whose id carries a ``;``.
+    A request sent on its own is not cut: each of those paths was a 404 there on 2026-10-22, that
+    same ``files/{id};x`` naming a file that does not exist."""
+    path, sep, query = target.partition("?")
+    cut = path.find(";")
+    if cut != -1:
+        path = path[:cut]
+    return f"{path}?{query}" if sep else path
 
 
 def _batch_sub_response(r, base: str) -> str:
@@ -234,6 +269,13 @@ async def batch(request: Request, api: str = "", version: str = "") -> Response:
         (part.get("Content-ID", ""), *_parse_batch_subrequest(part.get_payload(decode=False)))
         for part in parsed.get_payload()
     ]
+    if api == "drive":
+        # A Drive batch ends each part's path at a `;` it carries (`_drive_batch_cut_path`), ahead
+        # of the download a part is read as, so the cut decides that too.
+        parts = [
+            (cid, method, _drive_batch_cut_path(target) if target else target, headers, body)
+            for cid, method, target, headers, body in parts
+        ]
     others = sum(
         1
         for _, method, target, _, _ in parts
@@ -398,6 +440,8 @@ def _require(request: Request, *, download: bool = False) -> Caller:
     caller = auth.acl(request).resolve(token) if token is not None else None
     if caller is None:
         raise gerr.bad_token(named=token is not None)
+    if caller.email is None:
+        _ADMIN_OWNER.set(_service_email(request))
     return caller
 
 
@@ -636,9 +680,179 @@ async def gmail_label_get(user_id: str, label_id: str, request: Request):
     return _label_obj(label_id, (messages, threads) if label_id == _GMAIL_DEFAULT_LABEL else (0, 0))
 
 
-# The lookbehinds are the four `_GMAIL_ADDRESS_KEYS`; their comment says why.
+# The operators that read the word after whitespace as their value. Measured on a Workspace
+# mailbox: on 2026-10-16, `from: <word>`, `bcc: <word>`, `to:<tab><word>`, `From: <word>` and
+# `TO: <word>` answered the ids the operator answers with no whitespace, and `to: from: bcc:`
+# answered nothing; on 2026-10-17, so did `subject:`, `label:` and `in:` after a space or a tab
+# (`subject:` after two spaces or a no-break space too), and `after:`, `before:`, `newer:` and
+# `older:` after one space or three. A tab after those four leaves the operator empty:
+# `after:<tab>1` answered the messages holding both search terms `after` and `1`. `has:`,
+# `newer_than:`, `older_than:` and `larger:` read nothing after a space: `has: attachment` answered
+# nothing where `has:attachment` answered 160 messages. On 2026-10-19 a pair of quotes holding
+# nothing or only spaces read as whitespace after each operator `_GMAIL_SPACED` names:
+# `label:"" probe`, `subject:" " probe`, `from:"" <word>` and `cc:""<word>` answered what
+# `label: probe`, `subject: probe`, `from: <word>` and `cc: <word>` answer, and `<word> to:""` what
+# `<word>` alone answers.
+_GMAIL_SPACED = (
+    r"(?<=\bfrom:)|(?<=\bto:)|(?<=\bcc:)|(?<=\bbcc:)|(?<=\bsubject:)|(?<=\blabel:)|(?<=\bin:)"
+)
+# In the whitespace `_GMAIL_SPACED` reads after an operator, a no-break space counts only after
+# `subject:`: measured on 2026-10-22, `subject:<no-break space>probe` answered the ids of
+# `subject:probe`, where `from:<no-break space>me` answered nothing — after the other operators
+# a value holding a no-break space matches nothing. On 2026-10-25 `from:me<no-break space>`,
+# `label:inbox<no-break space>`, `has:<no-break space>attachment` and
+# `has:attachment<no-break space>` answered nothing too, and with a `-` or a `NOT` in front
+# (`-label:inbox<no-break space>`, `-has:<no-break space>attachment`,
+# `NOT label:inbox<no-break space>`) every message; `subject:probe<no-break space>` answered the ids
+# of `subject:probe`.
+_GMAIL_SPACED_NBSP = r"(?<=\bsubject:)"
+_GMAIL_DATED = r"(?<=\bafter:)|(?<=\bbefore:)|(?<=\bnewer:)|(?<=\bolder:)"
+# A `"` after `subject:`, `label:` or `in:` that no later `"` closes. What follows it is the
+# operator's value, read as if a `"` closed it at the end of `q`, with the whitespace around it and
+# any `-` in front of it left out; after whitespace, one `from:`, `to:`, `cc:`, `bcc:` or `subject:`
+# operator is read as itself instead, its value whole and with no `-` in front of it or of its
+# value, and the first operator and the quote are left out. Measured on a Workspace mailbox,
+# comparing `messages.list` id sets: on 2026-10-19, `label:"`, `in:"` and `subject:"` answered every
+# message, `probe label:"` what `probe` answers, and `subject:" probe` and `label:" probe` what
+# `subject:probe` and `label:probe` answer. On 2026-10-21, `label: " inbox`, `label:"inbox`,
+# `label:" -inbox`, `in:" sent` and `IN:" sent` answered what `label:inbox` and `in:sent` answer,
+# `-label:" inbox` and `-in:" sent` their negations, and `subject:" backlot probe` what
+# `subject:"backlot probe"` answers; `subject:" probe backlot`, `subject:"probe backlot`,
+# `label:"inbox probe`, `label:" inbox probe`, `subject:" label:inbox`, `in:" in:sent` and
+# `subject:" has:attachment` answered nothing, and `label: "`, `-label:"` and `-subject:"` every
+# message. `subject:" from:me`, `subject:" FROM:me`, `label:" from:me`, `in:" from:me`,
+# `subject: " from:me`, `subject:" from: me`, `subject:" -from:me` and `subject:" from:-me` answered
+# what `from:me` answers, `-subject:" from:me` its negation, and `subject:" to:me` and
+# `in:" subject:probe` what `to:me` and `subject:probe` answer; `subject:"from:me`,
+# `subject:" from:me to:me` and `subject:" from:me+probe` answered nothing. `threads.list` answered
+# `label:"`, `subject:" probe`, `subject:" from:me` and `subject:" label:inbox` alike.
+_GMAIL_LONE_QUOTE = re.compile(
+    r'(?<!\S)(-*)((?:subject|label|in|from|to|cc|bcc):)\s*(?:"[ \t]*"\s*)*"(?![^"]*")(\s*)(.*)',
+    re.IGNORECASE,
+)
+_GMAIL_LONE_QUOTE_OPERATOR = re.compile(r"-*((?:from|to|cc|bcc|subject):)\s*-*(\S*)", re.IGNORECASE)
+# `from:`, `to:`, `cc:` and `bcc:` read a lone quote as `subject:`, `label:` and `in:` do, and a
+# pair of quotes holding nothing in front of the lone quote is left out. Measured on a Workspace
+# mailbox over 639 to 645 messages on 2026-10-21 and 2026-10-22, comparing `messages.list` id
+# sets: `from:" me` and `to:" me` answered what `from:me` and `to:me` answer; `from:" probe`,
+# `from:"me probe`, `to:" probe` and `from:" label:inbox` nothing; `from:" from:me`,
+# `to:" from:me`, `cc:" from:me`, `from:" FROM:me` and `to:" -from:me` what `from:me` answers,
+# `from:" to:me` and `from:" -to:me` what `to:me` answers, `from:" subject:probe` what
+# `subject:probe` answers, and `-from:" to:me` and `-to:" from:me` the negations of `to:me` and
+# `from:me`. `from:"` answered every message, `probe from:"` what `probe` answers and `from:"me`
+# what `from:me` answers. `label:"" "` and `label:"""` answered every message, `label:"" " inbox`
+# and `label:""" inbox` what `label:inbox` answers, `subject:"" " from:me` and
+# `subject:"" " -from:me` what `from:me` answers, `in:"" " to:me` what `to:me` answers, and
+# `subject:"" " label:inbox` nothing.
+#
+# A quote after `subject:`, `label:`, `in:` or an address operator that whitespace follows and a
+# later quote closes. Measured on the same mailboxes: `subject:" from:me"` and `subject:" from:"me"`
+# answered what `from:me` answers, `label:" inbox "` and `subject:" probe "` what `label:inbox` and
+# `subject:probe` answer, and `label:" inbox subject:"probe"`, `label:" inbox -subject:"probe"` and
+# `label:" inbox --subject:"probe"` what `label:inbox probe` answers; on 2026-10-22,
+# `subject:" from:" probe` answered nothing and `subject:" probe<no-break space>"` what
+# `subject:probe` answers.
+_GMAIL_CLOSED_QUOTE = re.compile(
+    r'(?<!\S)(-*)((?:subject|label|in|from|to|cc|bcc):)\s*"\s+(?=[^\s"])([^"]*)"', re.IGNORECASE
+)
+_GMAIL_BARE_OPERATOR = re.compile(r"-*(?:from|to|cc|bcc|subject):", re.IGNORECASE)
+_GMAIL_TRAILING_OPERATOR = re.compile(
+    r"\s+-*(?:from|to|cc|bcc|subject|label|in|has|after|before|newer|older|newer_than|older_than):$",
+    re.IGNORECASE,
+)
+# A word joined by a hyphen to an operator is one search term no message holds, and so is a word
+# joined by a hyphen to a bracket holding an address operator or `subject:`, negated or not; a word
+# of digits makes such a term only with those five. A `-` touching the word, or a `NOT` in front of
+# it, flips the term as `_GMAIL_NOT` flips an operator, and a flipped term is left out. Measured on
+# a Workspace mailbox on 2026-10-21 and 2026-10-22, comparing `messages.list` id sets:
+# `probe-label:inbox`, `probe-subject:" from:me`, `probe-has:attachment`, `probe-after:2020/01/01`,
+# `a1-label:inbox`, `probe-(from:me)`, `probe-( from:me)`, `probe-(to:me)`, `probe-(-from:me)`,
+# `2026-from:me` and `2026-(from:me)` answered nothing; `-probe-label:inbox`, `--probe-label:inbox`,
+# `NOT probe-label:inbox`, `NOT - probe-label:inbox`, `-probe-(from:me)`, `-probe-subject:" from:me`
+# and `-2026-from:me` every message; `NOT NOT probe-label:inbox` and `- probe-label:inbox` nothing;
+# and `-probe-label:inbox from:me` and `NOT probe-label:inbox from:me` what `from:me` answers.
+# `2026-label:inbox`, `2026-in:inbox` and `2026--label:inbox` answered what `2026 label:inbox`
+# answers, and `probe-(label:inbox)`, `probe-(in:inbox)` and `probe-(label:inbox` what
+# `label:inbox probe` answers, where `probe-(label:inbox from:me)`, `probe-(label:inbox to:me)`,
+# `probe-(label:inbox -subject:probe)` and `probe-(label:inbox NOT from:me)` answered nothing.
+_GMAIL_HYPHENED = re.compile(
+    r"(?<!\S)((?:NOT[ \t]+(?:-+[ \t]+)*)*)(-*)"
+    r"(?:\w+-+\((?=[^)]*(?<![^\s(])-*(?i:from|to|cc|bcc|subject):)[^)]*\)?"
+    r"|(?:\w+-+(?i:from|to|cc|bcc|subject)"
+    r"|\w*[^\W\d]\w*-+(?i:label|in|has|after|before|newer|older|newer_than|older_than))"
+    r':(?:"[^"]*"?|\S*))'
+)
+# A lone quote at the start of a search with one operator after it, and nothing more, stands for
+# that operator, with any `-` in front of the operator left out. Measured on a Workspace mailbox on
+# 2026-10-21 and 2026-10-22, comparing `messages.list` id sets: `" label:inbox`, `" -label:inbox`
+# and `" --label:inbox` answered what `label:inbox` answers, `" from:me` and `" -from:me` what
+# `from:me` answers, and `" has:attachment` and `" in:sent` what `has:attachment` and `in:sent`
+# answer; `" label:inbox -from:me`, `" -label:inbox -from:me`, `" label:`, `" -label:`, `" from:`
+# and `"` alone answered nothing.
+_GMAIL_BARE_LONE_QUOTE = re.compile(
+    r'^[ \t]*"[ \t]+-*(?=(?i:from|to|cc|bcc|subject|label|in|has|after|before|newer|older'
+    r"|newer_than|older_than):\S+[ \t]*$)"
+)
+# A lone quote after `subject:`, `label:`, `in:` or an address operator, then whitespace and a
+# `(` that no `)` closes. On 2026-10-25 (the record at `_GMAIL_NOT`): `subject:" (from:me`,
+# `subject:" ( from:me`, `subject:" (probe`, `subject:" ((from:me)`, `subject:" (from:me) (to:me`,
+# `label:" (from:me`, `from:" (from:me`, `to:" (from:me` and `probe subject:" (from:me` answered
+# nothing, and `-subject:" (from:me`, `-subject:" (probe`, `-label:" (from:me` and
+# `NOT subject:" (from:me` every message, where `subject:" (from:me)`, with the `)`, answered the
+# ids of `from:me`. `_parse_gmail_q` reads it before `_gmail_groups` can read the group.
+_GMAIL_LONE_QUOTE_UNCLOSED = re.compile(
+    r'(?<!\S)((?:NOT\s+)*)(-*)(?:subject|label|in|from|to|cc|bcc):\s*(?:"[ \t]*"\s*)*'
+    r'"(?![^"]*")\s+(.*)',
+    re.IGNORECASE,
+)
+# A quoted run holding one operator and its value, with nothing around them but whitespace,
+# brackets, a leading `-` or `#` and a trailing `.`, `,`, `;`, `/` or `-`, reads as that operator.
+# With the 2026-10-25 record at `_GMAIL_NOT`: `"from:me"`, `"from: me"`, `"(from:me)"`,
+# `"( from:me )"`, `" (from:me)"`, `"(from:me"`, `"(((from:me)))"`, `"[from:me]"`, `"-from:me"`,
+# `"(-from:me)"`, `"-(from:me)"`, `"#from:me"`, `"from:me."` and `"(from:me);"` answered what
+# `from:me` answers; `"(label:inbox)"`, `"has:attachment"` and `"in:sent"` what the operator
+# answers; `-"(from:me)"` and `NOT "from:me"` the negation, `probe "(from:me)"` the ids both `probe`
+# and the operator answer, `"(from:)"` every message and `"!from:me"` and `"from:me+"` nothing. Two
+# terms in the quotes are no operator: `"(from:me to:me)"` and `"(from:me)(to:me)"` answered
+# nothing. The operator's name is read in any case: on 2026-10-26 `"(FROM:me)"`, `"(From:me)"` and
+# `"FROM:me"` answered what `from:me` answers, `"IN:sent"` and `"HAS:attachment"` what their
+# operators answer, and `-"(FROM:me)"` and `NOT "FROM:me"` the negation.
+_GMAIL_QUOTED_OPERATOR = re.compile(
+    r'(?<![^\s(])(-*)"[\s(\[{#-]*'
+    r"((?:from|to|cc|bcc|subject|label|in|has|after|before|newer|older|newer_than|older_than):"
+    r'[ \t]*[^\s"()\[\]{}]*?)[\s)\]}.,;/-]*"',
+    re.IGNORECASE,
+)
+# An empty operator `_GMAIL_OP` drops, so that the operator after it applies. Measured on a
+# Workspace mailbox of 625 messages on 2026-10-19, comparing `messages.list` id sets
+# (`threads.list` answered the ten queries sent to it alike):
+#
+#   dropped   an empty `subject:`, `from:`, `to:`, `cc:` or `bcc:` with spaces, a tab, a pair of
+#             quotes holding nothing or spaces, or nothing at all after it, and an empty `label:` or
+#             `in:` with any of those except nothing, in any letter case, before `label:`, `in:`,
+#             `has:`, `after:`, `before:`, `newer:`, `older:`, `newer_than:` or `older_than:` whose
+#             value starts right after its colon, or after spaces for the four date operators:
+#             `subject:label:inbox`, `bcc:""in:sent`, `label:" "label:inbox`,
+#             `SUBJECT: NEWER_THAN:30d` and `in: before: 2026/10/01` answered the ids of the
+#             operator after the empty one
+#   kept      before `subject:`, `from:`, `to:`, `cc:` or `bcc:`, before one of those nine whose
+#             value is empty, quoted or (for the five that are not dates) after a space, before a
+#             date operator whose value is `-`, and with a no-break space after it:
+#             `subject: from:me`, `label: label:""`, `in: label:"inbox"`, `from: label: inbox`,
+#             `subject: after:-` and `subject:<no-break space>label:inbox` answered nothing, and
+#             `_GMAIL_OP` reads the next word as the empty operator's value
+_GMAIL_EMPTY_BEFORE = (
+    r'(?:(?:subject|from|to|cc|bcc):|(?:label|in):(?=[ \t"]))(?:[ \t]|"[ \t]*")*'
+    r'(?=(?:label|in|has|newer_than|older_than):[^\s"]|(?:after|before|newer|older): *[^\s"-])'
+)
+# An operator does not start in the middle of a term: a no-break space glues the word before it
+# to what follows, so `(?<!\xa0)` keeps `probe<no-break space>from:me` one free-text term
+# no message holds, where a space in that place would leave `from:me` an operator.
 _GMAIL_OP = re.compile(
-    r'(\w+):(?:(?:(?<=\bfrom:)|(?<=\bto:)|(?<=\bcc:)|(?<=\bbcc:))\s*)?("[^"]*"|\S*)', re.IGNORECASE
+    rf"(?<!\xa0)(?:{_GMAIL_EMPTY_BEFORE})?(?:(?<!\S)-+)?(\w+):"
+    rf'(?:(?:{_GMAIL_SPACED_NBSP})(?:\s|"\s*")*|(?:{_GMAIL_SPACED})(?:[ \t]|"[ \t]*")*'
+    rf'|(?:{_GMAIL_DATED}) *)?("[^"]*"|(?:\S|\xa0)*)',
+    re.IGNORECASE,
 )
 # operators we honor; anything else stays as free text
 _GMAIL_KEYS = {
@@ -664,14 +878,17 @@ _GMAIL_KEYS = {
 # `newer`, as an empty `after:` is `after`, and `_GMAIL_OP` leaves both in the free text.
 _GMAIL_KEY_ALIASES = {"newer": "after", "older": "before"}
 # The address operators. A Gmail search ignores one with no value rather than searching it as free
-# text, and reads the word after whitespace as its value. Measured on a Workspace mailbox: `to:`,
-# `from:` and `bcc:` with no value answered every message, as no `q` does (2026-10-14), and so did
-# `cc:`, `from:""` and `to:""` (2026-10-16). On 2026-10-16, `from: <word>`, `bcc: <word>`,
-# `to:<tab><word>`, `From: <word>` and `TO: <word>` answered the ids the operator answers with no
-# whitespace, and `to: from: bcc:` answered nothing. `has: attachment` and `newer_than: 7d` answered
-# nothing where `has:attachment` and `newer_than:7d` answered 160 and 36 messages, so `_GMAIL_OP`
-# reads across whitespace for these four alone.
+# text. Measured on a Workspace mailbox: `to:`, `from:` and `bcc:` with no value answered every
+# message, as no `q` does (2026-10-14), and so did `cc:`, `from:""` and `to:""` (2026-10-16).
 _GMAIL_ADDRESS_KEYS = {"from", "to", "cc", "bcc"}
+# The operators a search ignores when they have no value, as it ignores an address operator with
+# none, where a bare `after:`, `before:`, `newer:` or `older:` is the word it spells. Measured on a
+# Workspace mailbox, comparing `messages.list` id sets with those of no `q`: on 2026-10-17,
+# `subject:`, `label:` and `in:` answered every message, with a space after the colon or none,
+# where `subject`, `label` and `in` alone did not; on 2026-10-18 so did `subject:""`, `label:""`
+# and `in:""`, a tab or two spaces after the colon, and `SUBJECT:`. `probe label:` answered as
+# `probe` does, and `threads.list` answered each of the three with every thread.
+_GMAIL_DROPPED_WHEN_EMPTY = {"subject", "label", "in"}
 # The operators whose value a `+` ends. Measured on a Workspace mailbox on 2026-10-15:
 # `cc:<local>+<word>`, `from:<local>+update` and `to:<local>+update` answered the ids of the
 # operator with `+<word>` sent as a search term of its own; `cc:<local>+`, `cc:<local>++` and
@@ -688,12 +905,388 @@ _GMAIL_PLUS_ENDS = {"from", "to", "cc", "bcc", "subject"}
 # The `ops` key of a value that ends in `+`: real answers such a search with nothing. No operator
 # can be named this, since `_GMAIL_OP` reads a name of at least one word character.
 _GMAIL_NOTHING = ""
+# How real reads the value of `after:` and `before:` (and so of `newer:` and `older:`), as
+# `_gmail_q_date` reads it. Measured on a Workspace mailbox, comparing the ids each query returned
+# with those of a date written `YYYY/MM/DD` (595 messages on 2026-10-15, 603 on 2026-10-17):
+#
+#   read as seconds   ASCII digits whose value is above 0 and at most `_GMAIL_SECONDS_MAX`,
+#                     leading zeros and all: `1`, `01`, `1790812800`, `01790812800`,
+#                     `253402300800`; `0`, `000`, `-1`, `+1790812800`, `1e9`, `9223372036854` and
+#                     `99999999999999999999` nothing
+#   read as a date    three runs of ASCII digits split by one `/` or one `-`, tried as year, month,
+#                     day, then month, day, year, then day, month, year, the first that is a date:
+#                     `10/1/2026` is 1 October, `01/10/2026` 10 January, `15/10/2026` 15 October;
+#                     a year above 0 and below 100 is in the 2000s (`26/10/05`, `9/30/26`), so
+#                     `10/05/26` is 26 May 2010; a first run of three digits or more is the year
+#                     (`026/10/05`, `02026/10/01`); a month or day may carry leading zeros
+#                     (`2026/010/01`, `2026/10/005`)
+#   either            after the trailing `/`, `.`, `,` and `:` are dropped (`2026/10/01//`,
+#                     `2026/10/01.`, `1790812800,`, `2026/10/01:`)
+#   nothing           anything else: `abc`, `2026/13/01`, `2026/02/30`, `2026.10.01`,
+#                     `2026-10-01T00:00`, `2026/10-01`, `"2026/10/01"`, `(2026/10/01)`, digits
+#                     that are not ASCII (`２０２６/１０/０１`), and a query holding one of them
+#                     beside a value real reads
+#
+# A `-` in front negates the operator when its value reads: `-after:2026/10/01` answered as
+# `before:2026/10/01`, and `-before:X` as `after:X`; `-after:abc`, `-after:0` and `-before:0`
+# answered every message. `after:-` is the search term `after`, as an empty `after:` is. Not
+# modelled here, each answered nothing: a year past 9999 (real read `10000/01/01` as a date after
+# every message), `00` (real read it), a count of seconds between `_GMAIL_SECONDS_MAX` and
+# `9223372036854`, and values real answered with ids no reading above gives (`2026/10`, `10/01`,
+# `2026/10/01x`, `1790812800.5`).
+_GMAIL_DATE_KEYS = {"after", "before"}
+# The largest count of seconds measured to read, 10000-01-01T00:00:00Z.
+_GMAIL_SECONDS_MAX = 253402300800
+_GMAIL_DATE = re.compile(r"([0-9]+)([/-])([0-9]+)\2([0-9]+)")
+_GMAIL_NEGATED_DATE = re.compile(r"(?<!\S)-(after|before|newer|older): *(\S+)", re.IGNORECASE)
+# A `-` in front of an address operator, or in front of its value, negates it. Measured on a
+# Workspace mailbox, comparing `messages.list` id sets: on 2026-10-17, `-from:<word>` and
+# `from:-<word>` each answered the messages `from:<word>` does not, and so did `to:` and `cc:`, for
+# three words on each operator and for 15 hyphenated local parts sent as `from:-<local part>`. On
+# 2026-10-18, so did `bcc:`, and on all four operators `-from: <word>`, `from: -<word>`,
+# `-from:-<word>`, `--from:<word>`, `from:--<word>`, `-FROM:<word>`, `-from:"<word>"`, a whole
+# address, an `@<domain>` and `me`; `from:"-<word>"` answered as `from:<word>`, and `-from:`,
+# `from:-`, `-from:-`, `from:--` and `-from:""` every message. `label:` keeps the `-` in its value:
+# `label:-` answered nothing. Not modelled: `from:-<word>+update` answered every message, where
+# `-from:<word>+update` answered the messages of `+update` that `from:<word>` leaves out. A negated
+# value is stored under its key with a `-` in front.
+_GMAIL_NEGATED_ADDRESS = re.compile(r"(?<!\S)-+(from|to|cc|bcc):\s*", re.IGNORECASE)
+# A `-` in front of `subject:`, `label:` or `in:` negates it, and so does a `-` in front of its
+# value after whitespace or a pair of quotes; a `-` touching the colon negates `subject:` and stays
+# in the value of `label:` and `in:`. A `-` standing alone is no search term. Measured on a
+# Workspace mailbox, comparing `messages.list` id sets: on 2026-10-18, `-subject:probe`,
+# `-label:inbox`, `label: -inbox`, `-in:sent` and `in: -sent` answered the messages the operator
+# alone does not, `- from:<word>` the ids of `from:<word>`, and `NOT from:<word>` and
+# `-(from:<word>)` the ids `from:<word>` does not answer, for three words on each of `from:`, `to:`,
+# `cc:` and `bcc:`; on 2026-10-19 `label:"" -probe` answered every message. On 2026-10-20 (637
+# messages), `-label: inbox`, `-label:<tab>inbox`, `-label: "inbox"`, `-label:"" inbox`,
+# `-label: -inbox`, `-subject: probe`, `subject:-probe`, `-in: sent`, `NOT label:inbox`,
+# `NOT subject:probe`, `NOT in:sent`, `-(label:inbox)` and `-( from:me )` answered the messages the
+# operator alone does not; `NOT -from:me` and `NOT -label:inbox` the ids of the operator alone;
+# `not from:me` those of `from:me not`; `-subject:<word>+probe`, for a word in no subject, those of
+# `probe`; `label:-inbox`, `in:-sent` and `-in:anywhere` nothing; and `-label:-inbox`,
+# `-subject:""`, `-label:" "`, `subject:-`, `subject: -`, `label: -` and `subject: -label:inbox`
+# every message. Not modelled: `subject:-<word>+probe` answered every message. `NOT <word>` and
+# `-(<word>)` are :func:`_gmail_take_negated_words`.
+_GMAIL_NEGATABLE = {"subject", "label", "in"}
+# `NOT` in capitals negates the operator after it as a `-` does, and each `NOT`, and a `-` touching
+# the operator, in a run in front of it flips it again; a `-` standing alone in the run flips
+# nothing. Measured on a Workspace mailbox of 642 messages on 2026-10-21, comparing `messages.list`
+# id sets: `NOT has:attachment`, `NOT  has:attachment` and `NOT<tab>has:attachment` answered the
+# messages `has:attachment` does not, `NOT after:2026/10/01` and `NOT newer:2026/10/01` the ids of
+# `before:2026/10/01`, `NOT before:2026/10/01` and `NOT older:2026/10/01` those of
+# `after:2026/10/01`, `NOT newer_than:30d` those of `older_than:30d` and `NOT older_than:30d` those
+# of `newer_than:30d`; `NOT NOT from:me`, `NOT NOT NOT NOT from:me`, `NOT -from:me` and
+# `NOT NOT NOT -from:me` the ids of `from:me`, and `NOT NOT NOT from:me`, `NOT NOT -from:me`,
+# `NOT - from:me` and `- NOT from:me` those of `-from:me`; `NOT -has:attachment` and
+# `NOT NOT has:attachment` those of `has:attachment`. In small capitals `not` is a word:
+# `not has:attachment` and `Not has:attachment` answered the ids of `has:attachment not`.
+# Measured again on a Workspace mailbox of 664 messages on 2026-10-25: `NOT -from:me`,
+# `NOT NOT NOT -from:me`, `NOT -(from:me)`, `NOT -label:inbox`, `NOT -subject:probe`, `NOT -in:sent`
+# and `NOT -has:attachment` answered the ids of the operator without its `-`, and
+# `probe NOT -from:me` those of `probe from:me`. A `-` touching a `NOT` flips as another `NOT`
+# would: `-NOT from:me` answered as `NOT NOT from:me` does and `NOT -NOT from:me` as
+# `NOT NOT NOT from:me`. An operator with no value leaves the run no term to fall on (the comment at
+# `_gmail_not_words`): `NOT subject:"`, `NOT label:""` and `NOT -NOT label:` answered nothing, and
+# `NOT NOT subject:"`, `-NOT subject:` and `-NOT subject:"` every message. A no-break space is no
+# separator in the run: `NOT<no-break space>from:me` answered nothing, as one term no message holds.
+_GMAIL_NOT = re.compile(
+    r"(?:^|(?<=[^\S\xa0]))((?:(?:-*)NOT[^\S\xa0]+(?:-+[^\S\xa0]+)*)+)(-*)"
+    r"(?=(?i:from|to|cc|bcc|subject|label|in|has|after|before|newer|older|newer_than|older_than):)"
+)
+_GMAIL_NOT_DASH = re.compile(r"-(?=NOT)")
+# A `NOT` in a run of them, with any `-` touching it.
+_GMAIL_NOT_TERM = re.compile(r"-*NOT")
+_GMAIL_TRAILING_NOTS = re.compile(r"\s*-*NOT\s*\Z")
+# `NOT`s glued by no-break spaces are one term, and the term reads as the word `not`: measured
+# on 2026-10-22, `NOT<no-break space>NOT from:me` answered what `not from:me` answers.
+_GMAIL_NOT_GLUE = re.compile(r"NOT(?:\xa0NOT)+")
+_GMAIL_NEGATION = {"after": "before", "before": "after", "newer": "older", "older": "newer"}
+# A `-` in front of an empty operator `_GMAIL_OP` drops is moved onto the operator after it.
+# Measured on a Workspace mailbox, comparing `messages.list` id sets: on 2026-10-19,
+# `-subject: label:inbox`, `-label: label:inbox`, `-from: label:inbox` and `-from:label:inbox`
+# answered the ids of `-label:inbox`; on 2026-10-20, so did `-in: label:inbox`, `-to: label:inbox`,
+# `-subject:label:inbox`, `-subject:<tab>label:inbox`, `-SUBJECT: LABEL:inbox`,
+# `-subject:"" label:inbox`, `-from:"" label:inbox` and `-label:" " label:inbox`, and
+# `-subject: in:sent`, `-cc: has:attachment`, `-from: in:anywhere`, `-from: after:2026/10/01` and
+# `-to: newer_than:30d` answered the ids of the operator after the empty one with a `-` in front.
+# Where the empty operator is kept the `-` stays on it: `-from: from:me`, `-subject: subject:probe`,
+# `-label:label:inbox` and `-in:label:inbox` answered every message, and `-has: label:inbox`,
+# `-after: label:inbox` and `-newer: label:inbox` the ids of `label:inbox -has`,
+# `label:inbox -after` and `label:inbox -newer`.
+_GMAIL_NEGATED_EMPTY = re.compile(rf"(?<!\S)-+{_GMAIL_EMPTY_BEFORE}", re.IGNORECASE)
+# A `-` flips an age operator and negates `has:`: on 2026-10-20 `-newer_than:30d` answered the ids
+# of `older_than:30d`, `-older_than:30d` those of `newer_than:30d`, and `-has:attachment` the
+# messages `has:attachment` does not.
+_GMAIL_AGE_NEGATION = {"newer_than": "older_than", "older_than": "newer_than"}
+# A `(…)` group, read before the operators (`_gmail_groups`), measured with the queries at
+# `_GMAIL_NOT`: `(from:me)`, `((from:me))`, `( from:me )`, `(from:me` and `from:me)` answered the
+# ids of `from:me`, and `probe(from:me)` and `(from:me) probe` those of `from:me probe`;
+# `-(from:me to:me)`, `-((from:me) to:me)`, `-(from:me (to:me))`, `-( from:me to:me )` and
+# `-(from:me to:me`, with no `)`, answered the messages `from:me to:me` does not, `-(probe from:me)`
+# those `from:me probe` does not, and `-(NOT from:me to:me)` and `-(-from:me to:me)` those
+# `-from:me to:me` does not; `-(from:me)`, `-((from:me))`, `-(from:me`, `-(-from:me)`, `--(from:me)`
+# and `-(NOT NOT from:me)` answered the ids of `-from:me`, and `-(-(from:me to:me))` and
+# `--(from:me to:me)` those of `-(from:me to:me)`; `-( )`, `-()`, `(` and `)` every message. After
+# `NOT` the brackets are no group, and `NOT` falls on the first term inside them:
+# `NOT (from:me to:me)`, `NOT((from:me to:me))` and `NOT (from:me) to:me` answered the ids of
+# `-from:me to:me`, `NOT (-from:me to:me)` those of `from:me to:me`, and `NOT -(from:me to:me)`
+# those of `from:me to:me` as well. `threads.list` answered `-(from:me to:me)`, `-(probe from:me)`
+# and `NOT (from:me to:me)` alike. A `)` with a `-` and more after it, and a `-(` after a word, are
+# no brackets: `-(from:me)-(to:me)` and `-(from:me)-to:me` answered every message, and
+# `(from:me)-(to:me)`, `from:me-(to:me)` and `probe-(from:me)` nothing, where `-(from:me)- (to:me)`
+# answered the ids of `-from:me to:me` and `-(from:me)-` those of `-from:me`. A lone quote
+# before a group no `)` closes is read at `_GMAIL_LONE_QUOTE_UNCLOSED`. A no-break space is no
+# separator here or anywhere in `_parse_gmail_q`: measured on 2026-10-22,
+# `probe<no-break space>from:me` and `from:me<no-break space>to:me` answered nothing,
+# `NOT<no-break space>from:me` nothing, and `-(from:me<no-break space>to:me)` every message — the
+# no-break space is part of the term it touches, where after `subject:` it reads as whitespace (the
+# measurements at `_GMAIL_SPACED`).
+_GMAIL_GROUP_PIECE = re.compile(
+    r'[ \t\n\r\f\v]+|"[^"]*"|'
+    r'(?:(?<=[^ \t\n\r\f\v(-])-+\(|\)(?=-+[^ \t\n\r\f\v])|[^ \t\n\r\f\v()"])+|[()]|"'
+)
+# The `ops` key holding the inner text of each `-(…)` group of more than one term, whose messages
+# `_gmail_query` leaves out. No operator can be named this, since `_GMAIL_OP` reads a name of word
+# characters.
+_GMAIL_NOT_ALL = "-()"
+# The `ops` key holding each word a leading `-` or a capital `NOT` leaves out
+# (:func:`_gmail_take_negated_words`). No operator can be named this either.
+_GMAIL_NOT_WORD = "-w"
+_GMAIL_DASHED_WORD = re.compile(r'-+(?:"([^"]*)"|([^ ]+))\Z')
+# A free-text term: a quoted stretch, spaces and all, with what touches it, or a run of other
+# characters between spaces.
+_GMAIL_FREE_TERM = re.compile(r'[^ "]*"[^"]*"[^ "]*|[^ ]+')
+
+
+def _gmail_q_date(v: str) -> str | None:
+    """The epoch seconds an `after:` or `before:` value in a search names, or None for a value real
+    answers with nothing (the reading the comment at `_GMAIL_DATE_KEYS` measures)."""
+    v = v.rstrip("/.,:")
+    if re.fullmatch(r"[0-9]+", v):
+        return str(int(v)) if 0 < int(v) <= _GMAIL_SECONDS_MAX else None
+    m = _GMAIL_DATE.fullmatch(v)
+    if m is None:
+        return None
+    a, b, c = m.group(1), m.group(3), m.group(4)
+    for y, mo, d in [(a, b, c)] if len(a) > 2 else [(a, b, c), (c, a, b), (c, b, a)]:
+        year = int(y) + 2000 if 0 < int(y) < 100 else int(y)
+        try:
+            day = datetime.datetime(year, int(mo), int(d), tzinfo=datetime.timezone.utc)
+        except ValueError:
+            continue
+        return str(int(day.timestamp()))
+    return None
+
+
+def _gmail_negated_date(m: re.Match) -> str:
+    """A negated date operator as the one it flips to, or nothing at all when its value does not
+    read (the comment at `_GMAIL_DATE_KEYS`)."""
+    if _gmail_q_date(m.group(2)) is None:
+        return " "
+    return f"{_GMAIL_NEGATION[m.group(1).lower()]}:{m.group(2)}"
+
+
+def _gmail_lone_quote(m: re.Match) -> str:
+    """A lone quote's operator with the rest of the search as its quoted value, or the one operator
+    after it on its own (the comment at `_GMAIL_LONE_QUOTE`)."""
+    dashes, key, gap, rest = m.group(1), m.group(2), m.group(3), m.group(4).rstrip()
+    alone = _GMAIL_LONE_QUOTE_OPERATOR.fullmatch(rest) if gap else None
+    if alone:
+        return f'{dashes}{alone.group(1)}"{alone.group(2)}"'
+    return f'{dashes}{key}"{rest.lstrip("-")}"'
+
+
+def _gmail_not(m: re.Match) -> str:
+    """A run of `NOT`s in front of an operator as the `-` it leaves on it, or nothing: each `NOT`
+    in the run, each `-` touching one and a `-` touching the operator flip it once more (the
+    measurements at `_GMAIL_NOT`). In front of an operator with no value the run stays as it is,
+    for `_gmail_not_words`: on 2026-10-25 `NOT in:` and `NOT from:` answered nothing,
+    `NOT NOT from:` every message, and `NOT has:` and `NOT after:` what `-has` and `-after`
+    answer, an empty `has:` or `after:` being the word it spells."""
+    if not _GMAIL_OP.match(m.string, m.end()).group(2):
+        return m.group(0)
+    run = m.group(1)
+    flips = run.count("NOT") + len(_GMAIL_NOT_DASH.findall(run)) + bool(m.group(2))
+    return "-" if flips % 2 else ""
+
+
+def _gmail_not_words(words: list[str]) -> tuple[list[str], bool]:
+    """The free-text words with each run of `NOT`s read, and whether the search answers nothing.
+
+    Each `NOT` in a run and each `-` touching one flips what follows it. A run in front of a word
+    becomes one `NOT` when it flips an odd number of times and nothing when even, for
+    :func:`_gmail_take_negated_words`; a run with no term after it makes the search answer nothing
+    when it flips an odd number of times and is left out when even. Measured with the other
+    2026-10-25 queries at `_GMAIL_NOT`: `NOT`, `NOT ()`, `NOT -`, `(NOT)`, `NOT NOT NOT`,
+    `NOT -NOT`, `-NOT NOT`, `NOT ""`, `probe NOT`, `from:me NOT`, `probe NOT NOT NOT`,
+    `NOT probe NOT` and `(probe) NOT` answered nothing; `NOT NOT`, `NOT NOT NOT NOT`, `-NOT`,
+    `-NOT -NOT`, `-(NOT)`, `NOT NOT -` and `NOT NOT ""` every message; `NOT NOT probe`,
+    `-NOT probe`, `probe NOT NOT` and `probe -NOT` what `probe` answers.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(words):
+        j, flips = i, 0
+        while j < len(words) and _GMAIL_NOT_TERM.fullmatch(words[j]):
+            flips += 1 + words[j].startswith("-")
+            j += 1
+        if j == i:
+            out.append(words[i])
+            i += 1
+            continue
+        if j == len(words):
+            return out, bool(flips % 2)
+        out += ["NOT"] * (flips % 2)
+        i = j
+    return out, False
+
+
+def _gmail_group_items(text: str) -> list:
+    """The top-level items of ``text``: each run of characters between whitespace and brackets, and
+    each `(…)` group as ``(negated, inner text)``, a group running to its `)` or to the end. A group
+    is negated when a run of `-` touches its `(`; a quoted run is one item, brackets and all."""
+    pieces = _GMAIL_GROUP_PIECE.findall(text)
+    items: list = []
+    run, i = "", 0
+    while i < len(pieces):
+        piece = pieces[i]
+        if piece == "(":
+            depth, j = 1, i + 1
+            while j < len(pieces) and depth:
+                depth += {"(": 1, ")": -1}.get(pieces[j], 0)
+                j += 1
+            negated = bool(run) and not run.strip("-")
+            if run and not negated:
+                items.append(run)
+            items.append((negated, "".join(pieces[i + 1 : j - 1 if depth == 0 else j])))
+            run, i = "", j
+            continue
+        if piece.isspace() or piece == ")":
+            if run:
+                items.append(run)
+            run = ""
+        else:
+            run += piece
+        i += 1
+    if run:
+        items.append(run)
+    return items
+
+
+def _gmail_flatten(items: list, out: list, negated: list) -> None:
+    """Write ``items`` into ``out`` as terms, as the comment at `_GMAIL_GROUP_PIECE` measures: a
+    group's brackets drop, a `-(…)` of one term puts a `-` on that term, and one of several terms
+    goes into ``negated`` whole, each `NOT` in front of it flipping it."""
+    for item in items:
+        if isinstance(item, str):
+            out.append(item)
+            continue
+        is_negated, inner = item
+        sub = _gmail_group_items(inner)
+        if not is_negated:
+            _gmail_flatten(sub, out, negated)
+            continue
+        # Inside `-(…)` a run of `NOT`s with no term after it is left out: `-(NOT NOT)` answered
+        # every message and `-(probe NOT)` the messages `probe` does not, on 2026-10-25.
+        while sub and isinstance(sub[-1], str) and _GMAIL_NOT_TERM.fullmatch(sub[-1]):
+            sub.pop()
+            inner = _GMAIL_TRAILING_NOTS.sub("", inner)
+        terms = [s for s in sub if not (isinstance(s, str) and not s.strip("-"))]
+        if len(terms) == 1 and isinstance(terms[0], str):
+            out.append("-" + terms[0].lstrip("-"))
+            continue
+        if len(terms) == 1:  # `-((…))` and `-(-(…))` are `-(…)`
+            _gmail_flatten([(True, terms[0][1])], out, negated)
+            continue
+        if not terms:
+            continue
+        nots = 0
+        while out and out[-1] == "NOT":
+            out.pop()
+            nots += 1
+        if nots % 2:
+            _gmail_flatten(sub, out, negated)
+        else:
+            negated.append(inner)
+
+
+def _gmail_groups(q: str) -> tuple[str, list[str]]:
+    """``q`` with its `(…)` groups read (`_gmail_flatten`), and the inner text of each `-(…)` of
+    several terms."""
+    if "(" not in q and ")" not in q:
+        return q, []
+    out: list[str] = []
+    negated: list[str] = []
+    _gmail_flatten(_gmail_group_items(q), out, negated)
+    return " ".join(out), negated
+
+
+def _gmail_take_negated_words(free: str) -> tuple[str, list[str]]:
+    """``free`` without the words a leading `-` or a capital `NOT` leaves out, and those words.
+
+    Measured on a Workspace mailbox of 635 messages on 2026-10-20, comparing `messages.list` id
+    sets with a baseline taken the same minute: `-probe`, `--probe`, `-PROBE` and `-"probe"` each
+    answered the messages `probe` does not, and so did `NOT probe` and `-( probe )`.
+    `label:inbox -probe` answered the inbox messages `probe` leaves out, `probe -probe` answered
+    nothing, and `-attachment`, a word no message holds, answered every message. Only `NOT` in
+    capitals reads this way: `not from:me` answered as `from:me not`. On 2026-10-22 (655
+    messages), `-"backlot probe"`, `NOT "backlot probe"` and `-("backlot probe")` answered the
+    messages the phrase `"backlot probe"` does not, and `-"probe backlot"`, a phrase no message
+    holds, every message; `NOT -probe`, `NOT --probe`, `NOT NOT probe` and `NOT NOT NOT -probe`
+    answered what `probe` answers, and `NOT NOT NOT probe` what `-probe` answers, each `NOT` and a
+    `-` touching the word flipping it; and `-probe+` and `NOT probe+` answered every message, where
+    `probe+` answers nothing. A `-(…)` of one word arrives here as that word with a `-` in front
+    (:func:`_gmail_flatten`); one of several terms is :data:`_GMAIL_NOT_ALL`. The word is then
+    matched by the same search the word alone runs, and those messages are left out, so `-plan` on
+    its own has no free text left and the listing path answers.
+    """
+    kept: list[str] = []
+    negated: list[str] = []
+    terms = _GMAIL_FREE_TERM.findall(free)
+    i = 0
+    while i < len(terms):
+        j = i
+        while j < len(terms) and terms[j] == "NOT":
+            j += 1
+        dashed = _GMAIL_DASHED_WORD.fullmatch(terms[j]) if j < len(terms) else None
+        if dashed:
+            word = (dashed.group(1) if dashed.group(1) is not None else dashed.group(2)).strip('"')
+        else:
+            word = terms[j].strip('"') if i < j < len(terms) else None
+        if not word:
+            kept += terms[i : j + 1]
+        elif (j - i + bool(dashed)) % 2 == 0:
+            kept.append(terms[j].lstrip("-"))
+        elif not word.endswith("+"):
+            negated.append(word)
+        i = j + 1
+    return " ".join(kept), negated
+
+
+def _gmail_closed_quote(m: re.Match) -> str:
+    """The operator a quote that whitespace follows and a later quote closes stands for: the one
+    operator inside it on its own, the operator the closing quote opens a value for, or the
+    operator with what is inside the quotes as its value (the comment at `_GMAIL_CLOSED_QUOTE`)."""
+    dashes, key, content = m.group(1), m.group(2), m.group(3).rstrip()
+    if _GMAIL_BARE_OPERATOR.fullmatch(content):
+        return f'{dashes}{content.lstrip("-")}"'
+    alone = _GMAIL_LONE_QUOTE_OPERATOR.fullmatch(content)
+    if alone:
+        return f'{dashes}{alone.group(1)}"{alone.group(2)}"'
+    return f'{dashes}{key}"{_GMAIL_TRAILING_OPERATOR.sub("", content)}"'
 
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
     """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
     after:/before:/newer:/older:/newer_than:/older_than:/label:/in:/has: — the rest is free text
     matched full-text."""
+    q = _GMAIL_QUOTED_OPERATOR.sub(r"\1\2", q)
+    lone = _GMAIL_LONE_QUOTE_UNCLOSED.search(q)
+    if lone and lone.group(3).count("(") > lone.group(3).count(")"):
+        if (lone.group(1).count("NOT") + bool(lone.group(2))) % 2 == 0:
+            return "", {_GMAIL_NOTHING: [lone.group(0)]}
+        q = q[: lone.start()]
     ops: dict[str, list[str]] = {}
 
     def _take(m):
@@ -702,7 +1295,55 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             key = _GMAIL_KEY_ALIASES.get(key, key)
             value = m.group(2)
             if not value and key not in _GMAIL_ADDRESS_KEYS:
+                if key in _GMAIL_DROPPED_WHEN_EMPTY:
+                    return " "
                 return m.group(0)
+            # A value is no age when it starts with a `"` or has a `"` followed by anything but
+            # quotes, and with a `-` in front it is left out; quotes that end an age are left out of
+            # it. Measured on a Workspace mailbox on 2026-10-21 and 2026-10-22: `newer_than:"`,
+            # `older_than:"`, `newer_than:""`, `older_than:""`, `newer_than:"30d"`,
+            # `newer_than:" 30d`, `newer_than:"probe` and `newer_than:30"d` answered nothing, and
+            # `-newer_than:"`, `NOT newer_than:"`, `-older_than:""` and `-newer_than:"30d"` every
+            # message; `newer_than:30d"`, `newer_than:30d""` and `newer_than:30d"""` answered what
+            # `newer_than:30d` answers, and `older_than:1d"`, `older_than:30d"` and
+            # `older_than:30d"" "` what `older_than:1d` and `older_than:30d` answer.
+            if key in _GMAIL_AGE_NEGATION and (value[:1] == '"' or '"' in value.rstrip('"')):
+                if not m.group(0).startswith("-"):
+                    ops.setdefault(_GMAIL_NOTHING, []).append(value)
+                return " "
+            if key in _GMAIL_DATE_KEYS:
+                if value == "-":
+                    return m.group(0)
+                read = _gmail_q_date(value)
+                ops.setdefault(_GMAIL_NOTHING if read is None else key, []).append(read or value)
+                return " "
+            # A no-break space in a value: the measurements at `_GMAIL_SPACED_NBSP`.
+            if key == "subject":
+                value = value.strip("\xa0")
+            elif "\xa0" in value:
+                if not (m.group(0).startswith("-") or value.startswith("-")):
+                    ops.setdefault(_GMAIL_NOTHING, []).append(value)
+                return " "
+            stored = key
+            if key in _GMAIL_ADDRESS_KEYS and value.startswith("-"):
+                value, stored = value.lstrip("-"), f"-{key}"
+                if not _GMAIL_ADDRESS_WORD.search(value):
+                    return " "
+            if key in _GMAIL_NEGATABLE:
+                spaced = m.start(2) > m.end(1) + 1
+                if value[:1] == "-" and (key == "subject" or spaced):
+                    value, stored = value.lstrip("-"), f"-{key}"
+                    if not value:
+                        return " "
+                elif m.group(0).startswith("-"):
+                    stored = f"-{key}"
+            elif m.group(0).startswith("-"):
+                if key in _GMAIL_AGE_NEGATION:
+                    stored = _GMAIL_AGE_NEGATION[key]
+                elif key == "has":
+                    stored = "-has"
+                else:
+                    return m.group(0)
             if key in _GMAIL_PLUS_ENDS and not value.startswith('"'):
                 value = value.lstrip("+")
                 if re.search(r"[^@]@", value):
@@ -713,20 +1354,65 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                         ops.setdefault(_GMAIL_NOTHING, []).append(value)
                         return " "
                     if plus:
-                        ops.setdefault(key, []).append(value)
+                        ops.setdefault(stored, []).append(value)
                         return f" +{term} "
-            ops.setdefault(key, []).append(value.strip('"'))
+            # A quoted address value keeps its quotes, which `_gmail_address_match` reads.
+            quoted = (
+                key in _GMAIL_ADDRESS_KEYS and len(value) > 1 and value[:1] == value[-1:] == '"'
+            )
+            ops.setdefault(stored, []).append(value if quoted else value.strip('"'))
             return " "
         return m.group(0)
 
-    free = re.sub(r"\s+", " ", _GMAIL_OP.sub(_take, q)).strip()
-    # A `+` standing alone is no search term, and a word ending in one matches nothing (the
-    # measurement at `_GMAIL_PLUS_ENDS`).
+    trailing = re.search(r'\S[ \t]+"[ \t]*$', q)
+    hyphened = []
+
+    def _hyphened(m):
+        if m.string.count('"', 0, m.start()) % 2:
+            return m.group(0)
+        if (m[1].count("NOT") + bool(m[2])) % 2 == 0:
+            hyphened.append(m.group(0))
+        return " "
+
+    q = _GMAIL_HYPHENED.sub(_hyphened, _GMAIL_BARE_LONE_QUOTE.sub("", q))
+    if hyphened:
+        return "", {_GMAIL_NOTHING: hyphened}
+    q, groups = _gmail_groups(q)
+    if groups:
+        ops[_GMAIL_NOT_ALL] = groups
+    q = _GMAIL_CLOSED_QUOTE.sub(_gmail_closed_quote, q)
+    q = _GMAIL_LONE_QUOTE.sub(_gmail_lone_quote, q)
+    q = _GMAIL_NOT.sub(_gmail_not, q)
+    q = _GMAIL_NEGATED_EMPTY.sub("-", q)
+    q = _GMAIL_NEGATED_DATE.sub(_gmail_negated_date, q)
+    q = _GMAIL_NEGATED_ADDRESS.sub(lambda m: f"{m.group(1)}:-", q)
+    free = re.sub(r"[^\S\xa0]+", " ", _GMAIL_OP.sub(_take, q)).strip(" \t\n\r\f\v")
+    # A `+` or a `-` standing alone is no search term, and a word ending in a `+` matches nothing
+    # (the measurements at `_GMAIL_PLUS_ENDS` and `_GMAIL_NEGATABLE`). Nor is a pair of quotes
+    # holding nothing, or a no-break space alone: on 2026-10-25 `probe ""` and `"" probe` answered
+    # what `probe` answers, `NOT "" probe` what `-probe` answers, and `from:me <no-break space>`
+    # what `from:me` answers. Negated words come out first, so a `-` on a word ending in a `+`
+    # does not mark the whole search as matching nothing.
     if not (len(free) >= 2 and free[0] == free[-1] == '"'):
-        words = [t for t in free.split(" ") if t != "+"]
-        if any(t.endswith("+") for t in words):
+        words = [t for t in free.split(" ") if t.strip("\xa0") not in ("", "+", "-", '""')]
+        words = ["not" if _GMAIL_NOT_GLUE.fullmatch(t) else t for t in words]
+        words, nothing = _gmail_not_words(words)
+        if nothing:
             ops.setdefault(_GMAIL_NOTHING, []).append(free)
-        free = " ".join(words)
+        free, negated = _gmail_take_negated_words(" ".join(words))
+        if negated:
+            ops[_GMAIL_NOT_WORD] = negated
+        if any(t.endswith("+") for t in free.split(" ")):
+            ops.setdefault(_GMAIL_NOTHING, []).append(free)
+    # A lone quote that no search term follows is no term beside the operators read; one in front of
+    # the operator is read at `_GMAIL_BARE_LONE_QUOTE`, where a search with two answers nothing, and
+    # an operator left with no value is not counted (`" from:` there). Measured on a Workspace
+    # mailbox on 2026-10-22: `label:inbox "` and `"label:inbox` answered what `label:inbox` answers,
+    # `from:me "` what `from:me` answers, and `label:inbox -from:me "` and `from:me to:me "` what
+    # `label:inbox -from:me` and `from:me to:me` answer.
+    valued = sum(1 for values in ops.values() for value in values if value)
+    if free == '"' and valued and (trailing or valued == 1):
+        free = ""
     return free, ops
 
 
@@ -782,6 +1468,8 @@ def _resolve_relative_dates(ops: dict) -> dict:
 _GMAIL_ADDRESS_WORD = re.compile(r"[\w&]+")
 _GMAIL_ONE_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+")
 _GMAIL_ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+# What keeps a hyphenated value from being read joined as well (`_gmail_address_match`).
+_GMAIL_UNJOINED = re.compile(r"--|[\w&]\.[\w&]")
 
 
 def _gmail_address_match(header: str | None, value: str) -> bool:
@@ -793,7 +1481,12 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     where `len`, `ena`, `par` and `com.acme` do not. `_` joins the characters around it into one
     word, so `ops` does not match `ops_team@corp.example`, and `&` counts as a word character too,
     where the rest of ASCII punctuation does not. A value with no word in it, such as `.`, `@` or
-    `""`, is ignored and matches every message, a message without the header included.
+    `""`, is ignored and matches every message, a message without the header included. A value
+    with a hyphen matches its words joined as well (`no-reply` finds `noreply@` beside
+    `no-reply@`, `jt-snowball` finds `@jtsnowball.com`) unless it holds `--` or a `.` between two
+    word characters (`jt-snowball.com` is its three words alone); a joined value does not find the
+    hyphenated spelling. A quoted value is matched without its quotes and with no joined spelling:
+    `from:"no-reply"` finds `no-reply@` and not `noreply@`.
 
     Measured on a Workspace mailbox of 595 messages on 2026-10-15: 113 searches on `cc:` and
     `bcc:`, compared with the headers of every message, all match this rule, and of the 32 ASCII
@@ -801,17 +1494,40 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     every message. On the same mailbox at 601 messages on 2026-10-16, 122 of 124 `from:` and `to:`
     searches built from its own addresses, local parts, domains and display-name words match this
     rule over `From`, and over `To`, `Cc` and `Bcc` together; `to:me` counts the four messages
-    where the caller is in `Bcc` alone. The other two are a hyphenated value, which real also reads
-    joined (`no-reply` finds `noreply@` as well as `no-reply@`), and part of a Korean display
-    name. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search term of its own."""
+    where the caller is in `Bcc` alone. The other two are a hyphenated value, read joined as above,
+    and part of a Korean display name. At 603 messages on 2026-10-17, the 311 `from:`, `to:` and
+    `cc:` searches with a hyphen in them (a header's words split by one hyphen and by two, into two
+    and three parts, beside an `@` or a `.`, and each hyphenated local part whole and in pairs),
+    none quoted and none led by `-`, match this rule, and at 604 on 2026-10-18 so did `bcc:` on a
+    word of the one `Bcc` address there, split by one hyphen and by two and beside a `.`. At 624
+    on 2026-10-19 so did 444 searches on the four operators, compared with the headers of every
+    message in `messages.list` and `threads.list`: 27 words of five letters or more from the
+    mailbox's local parts, domain labels and display names, each whole, split by a hyphen, both of
+    those quoted, and the quoted two negated; the 7 domain labels among them split after an `@`,
+    quoted and not; and the 37 local parts the mailbox holds that are letters and digits joined by
+    `-`, each whole, joined, both of those quoted, negated quoted and not, and quoted with its
+    domain and as `@<domain>`. A value led by `-` is the negation the comment at
+    `_GMAIL_NEGATED_ADDRESS` measures. On 2026-10-14, `cc:<a local part>+x` read `+x` as a search
+    term of its own."""
     header = (header or "").lower()
     value = value.lower()
+    # A value the parser kept its quotes around is read alone: no joined spelling beside its words.
+    quoted = len(value) > 1 and value[:1] == value[-1:] == '"'
+    if quoted:
+        value = value[1:-1]
     if _GMAIL_ONE_ADDRESS.fullmatch(value):
         return value in _GMAIL_ADDRESS.findall(header)
     words, have = _GMAIL_ADDRESS_WORD.findall(value), _GMAIL_ADDRESS_WORD.findall(header)
     if not words:
         return True
-    return any(have[i : i + len(words)] == words for i in range(len(have) - len(words) + 1))
+    alternatives = [words]
+    if not quoted and "-" in value and not _GMAIL_UNJOINED.search(value):
+        alternatives.append(_GMAIL_ADDRESS_WORD.findall(value.replace("-", "")))
+    return any(
+        have[i : i + len(option)] == option
+        for option in alternatives
+        for i in range(len(have) - len(option) + 1)
+    )
 
 
 def _gmail_op_match(row, ops: dict) -> bool:
@@ -827,8 +1543,21 @@ def _gmail_op_match(row, ops: dict) -> bool:
         for v in ops.get(key, []):
             if not _gmail_address_match(row[key], v):
                 return False
+    for v in ops.get("-from", []):
+        if _gmail_address_match(row["author_email"], v):
+            return False
+    for v in ops.get("-to", []):
+        if any(_gmail_address_match(row[k], v) for k in ("to_addr", "cc", "bcc")):
+            return False
+    for key in ("cc", "bcc"):
+        for v in ops.get(f"-{key}", []):
+            if _gmail_address_match(row[key], v):
+                return False
     for v in ops.get("subject", []):
         if v.lower() not in (row["title"] or "").lower():
+            return False
+    for v in ops.get("-subject", []):
+        if v.lower() in (row["title"] or "").lower():
             return False
     # `in:` and `label:` ask the same question of a message — Gmail's folders ARE labels — and both
     # have to see the label a message is served under rather than only a stated one. `in:anywhere`
@@ -838,7 +1567,16 @@ def _gmail_op_match(row, ops: dict) -> bool:
     for v in ops.get("label", []) + [x for x in ops.get("in", []) if x.lower() != "anywhere"]:
         if v.lower() not in labels:
             return False
+    for v in ops.get("-label", []) + ops.get("-in", []):
+        if v.lower() in labels:
+            return False
+    if any(v.lower() == "anywhere" for v in ops.get("-in", [])):
+        return False
     if any(v.lower() == "attachment" for v in ops.get("has", [])) and not store.jcol(
+        row, "attachments"
+    ):
+        return False
+    if any(v.lower() == "attachment" for v in ops.get("-has", [])) and store.jcol(
         row, "attachments"
     ):
         return False
@@ -858,10 +1596,14 @@ def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) ->
     """Full ACL+mailbox-filtered match set for a Gmail `q` (FTS-ranked when free text is
     present; otherwise the mailbox listing). The caller paginates the returned rows."""
     free, ops = _parse_gmail_q(q)
+    groups = ops.pop(_GMAIL_NOT_ALL, [])
+    negated_words = ops.pop(_GMAIL_NOT_WORD, [])
     if caller_email:
-        for key in ("from", "to", "cc", "bcc"):
+        # `me` reads through quotes: on 2026-10-19, `op:"me"` and `-op:"me"` answered what `op:me`
+        # and `-op:me` answer on each address operator.
+        for key in ("from", "to", "cc", "bcc", "-from", "-to", "-cc", "-bcc"):
             if key in ops:
-                ops[key] = [caller_email if v.lower() == "me" else v for v in ops[key]]
+                ops[key] = [caller_email if v.strip('"').lower() == "me" else v for v in ops[key]]
     ops = _resolve_relative_dates(ops)  # newer_than:/older_than: -> absolute after:/before: bounds
     if free:
         # Honor a fully "quoted" free-text term as a phrase (Gmail's quote semantics): match the
@@ -888,7 +1630,29 @@ def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) ->
         # created_ts DESC, id order is the newest-first listing real Gmail returns — the plain
         # list_documents path ordered by id (a hash), scattering the listing by date.
         cand = store.list_gmail_in_range(conn, mailbox, lo, hi, ids, limit=100_000)
-    return [r for r in cand if _gmail_op_match(r, ops)]
+    rows = [r for r in cand if _gmail_op_match(r, ops)]
+    for word in negated_words:
+        # The same search the word alone runs, so `-probe` leaves out what `probe` answers.
+        # A quoted phrase of several words is matched adjacently, as a quoted free-text term is.
+        phrase = " " in word
+        excluded = {
+            row["id"]
+            for row in store.search_documents(
+                conn,
+                word,
+                "gmail",
+                ids,
+                limit=100_000,
+                offset=0,
+                container=mailbox,
+                phrase=phrase,
+            )
+        }
+        rows = [row for row in rows if row["id"] not in excluded]
+    for group in groups:
+        out = {r["id"] for r in _gmail_query(conn, mailbox, ids, group, caller_email)}
+        rows = [r for r in rows if r["id"] not in out]
+    return rows
 
 
 # --- Gmail ids ------------------------------------------------------------------------------
@@ -1548,39 +2312,96 @@ def _gmail_message(
 # "Escape single quotes in queries with \'". Parentheses group. Whether `and` binds before `or` the
 # reference does not say; Backlot reads it as SQL does, `and` first.
 #
-# A term Backlot cannot evaluate is a 400 on `q`, never a silence. Two kinds: a term the reference
-# does not list (`bogusField = 'x'`), which real Drive refuses too — its wording is unmeasured, so
-# the bare `Invalid Value` of the parameter envelope stands — and a documented term Backlot holds no
-# fact for, refused with a message that says so, the way an unmodelled `orderBy` key is. Honouring
-# `starred = true` as "everything" would be the listing this section exists to stop.
+# A term Backlot cannot evaluate is a 400 on `q`, never a silence. Two kinds: a term the listing
+# does not take (`bogusField = 'x'`), which real Drive refuses too with the bare `Invalid Value` of
+# the parameter envelope, and a term `_FILES_Q.unmodelled` names, which `files.list` documents and
+# Backlot holds no fact for, refused with a message that says so.
 
-# Every term Backlot evaluates, with the operators the reference lists for it.
-_DRIVE_Q_OPERATORS: dict[str, frozenset[str]] = {
-    "name": frozenset({"contains", "=", "!="}),
-    "fullText": frozenset({"contains"}),
-    "mimeType": frozenset({"contains", "=", "!="}),
-    "modifiedTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
-    "createdTime": frozenset({"<=", "<", "=", "!=", ">", ">="}),
-    "trashed": frozenset({"=", "!="}),
-    "sharedWithMe": frozenset({"=", "!="}),
+_TIME_OPS = frozenset({"<=", "<", "=", "!=", ">", ">="})
+_TIME_FIELDS = frozenset({"modifiedTime", "createdTime", "viewedByMeTime"})
+
+
+class _DriveQTerms(NamedTuple):
+    """The terms one listing's `q` takes: each field with the operators it takes, the fields whose
+    value is `true` or `false` (and which alone mean `= true`), those of them taken only as `true`
+    and never under a `not`, the fields `'x' in <field>` takes, and the documented fields refused
+    with a sentence saying Backlot does not evaluate them."""
+
+    operators: dict[str, frozenset[str]]
+    boolean: frozenset[str]
+    collections: frozenset[str]
+    unmodelled: frozenset[str]
+    only_true: frozenset[str] = frozenset()
+
+
+_FILES_Q = _DriveQTerms(
+    operators={
+        "name": frozenset({"contains", "=", "!="}),
+        "fullText": frozenset({"contains"}),
+        "mimeType": frozenset({"contains", "=", "!="}),
+        "modifiedTime": _TIME_OPS,
+        "createdTime": _TIME_OPS,
+        "viewedByMeTime": _TIME_OPS,
+        "trashed": frozenset({"=", "!=", "<", "<=", ">", ">="}),
+        "starred": frozenset({"=", "!="}),
+        "sharedWithMe": frozenset({"="}),
+    },
+    boolean=frozenset({"trashed", "starred", "sharedWithMe"}),
+    collections=frozenset({"parents", "owners"}),
+    unmodelled=frozenset({"writers", "readers", "properties", "appProperties", "visibility"}),
+    # Real answered `sharedWithMe`, `= true`, `= TRUE` and `(sharedWithMe)`, and refused with the
+    # 400 at `q` `= false`, `!= true`, `not sharedWithMe` and
+    # `not (name contains 'a' and sharedWithMe)`, measured 2026-10-20.
+    only_true=frozenset({"sharedWithMe"}),
+)
+#: What `trashed` with `<`, `<=`, `>` or `>=` lists: the files `trashed = <value>` lists, or none
+#: (None). No order of `false` and `true` gives all eight. Measured on Drive v3 on 2026-10-21 over
+#: a Workspace member's files with two trashed ones among them; `sharedWithMe` with any of the four
+#: is the 400.
+_DRIVE_Q_TRASHED_ORDERED = {
+    ("<", "true"): None,
+    ("<", "false"): None,
+    ("<=", "true"): "true",
+    ("<=", "false"): None,
+    (">", "true"): None,
+    (">", "false"): "false",
+    (">=", "true"): "true",
+    (">=", "false"): "false",
 }
-_DRIVE_Q_COLLECTIONS = frozenset({"parents", "owners"})
-_DRIVE_Q_BOOLEAN = frozenset({"trashed", "sharedWithMe"})
-# Documented on the reference, and nothing in a corpus record to evaluate them against.
-_DRIVE_Q_UNMODELLED = frozenset(
-    {"starred", "viewedByMeTime", "writers", "readers", "properties", "appProperties", "visibility"}
+# What `drives.list` takes from a caller who is not the domain's administrator, measured 2026-10-20
+# as a Google Workspace member of two shared drives: `name` with `<`, `<=`, `>` and `>=` too, which
+# the reference does not list for it. The reference's other four terms for it, `memberCount`,
+# `organizerCount`, `orgUnitId` and `createdTime`, were each the 400 at `q` with a value of their
+# own type. On 2026-10-22 `drives.list` served `()`, `not ()`, a trailing `or` and a value in double
+# quotes, and refused `( )`, a trailing `and`, `not()` and `()()` with the 400 at `q`.
+_DRIVES_Q = _DriveQTerms(
+    operators={
+        "name": frozenset({"contains", "=", "!=", "<", "<=", ">", ">="}),
+        "hidden": frozenset({"=", "!="}),
+    },
+    boolean=frozenset({"hidden"}),
+    collections=frozenset(),
+    unmodelled=frozenset(),
 )
 # `{` and `}` are tokens so that `properties has { key='x' and value='y' }`, the reference's own
 # spelling, reaches `term()` with the field read — the refusal then names `properties` instead of
-# the bare `Invalid Value` an unlexable character gets.
+# the bare `Invalid Value` an unlexable character gets. `()` with nothing between is a token of its
+# own, the empty group real lists every file for, where `( )` is the 400 (2026-10-21); a value in
+# double quotes is read as the same value in single quotes (2026-10-20). Tokens stand apart by a
+# space, a tab, a line feed, a form feed or a carriage return: real served each of those five
+# between two tokens and before the first, and refused U+000B, U+001C, U+0085, U+00A0, U+2003 and
+# U+3000 in either place with the 400 at `q`, measured 2026-10-21.
+_DRIVE_Q_SPACE = " \t\n\f\r"
 _DRIVE_Q_TOKEN = re.compile(
-    r"\s*(?:(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)|'(?P<str>(?:[^'\\]|\\.)*)'"
+    r"[ \t\n\f\r]*(?:(?P<empty>\(\))|(?P<paren>[()])|(?P<brace>[{}])|(?P<op>!=|<=|>=|=|<|>)"
+    r"|(?P<str>'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")"
     r"|(?P<word>[A-Za-z_][A-Za-z0-9_]*))"
 )
-# Nesting past this is refused. The parser is recursive, so an unbounded query answered 500 where
-# this section's contract is a 400: 320 parentheses, or 960 `not`s, exhausted the interpreter's
-# frame limit. Real Drive's own limit is unmeasured; no client writes a query 32 levels deep.
-_DRIVE_Q_MAX_DEPTH = 32
+# Nesting past this is refused here and read by real: 2,000 parentheses around a term, and 400
+# groups each inside the last one's `and`, were served on 2026-10-21, where 4,000 and 800 overran
+# the URL. The parser is recursive, so an unbounded query answered 500 where this section's contract
+# is a 400: 320 parentheses exhausted the interpreter's frame limit.
+_DRIVE_Q_MAX_DEPTH = 128
 
 
 class _QTerm(NamedTuple):
@@ -1601,6 +2422,10 @@ class _QOr(NamedTuple):
     parts: tuple
 
 
+class _QAll(NamedTuple):
+    """The empty group `()`, and the missing operand of a trailing `or`: every file."""
+
+
 def _drive_q_refused(message: str | None = None) -> gerr.GoogleError:
     return gerr.invalid_value("q", message)
 
@@ -1612,24 +2437,33 @@ def _drive_q_tokens(q: str) -> list[tuple[str, str]]:
     while pos < len(q):
         m = _DRIVE_Q_TOKEN.match(q, pos)
         if m is None:
-            if q[pos:].strip():
+            if q[pos:].strip(_DRIVE_Q_SPACE):
                 raise _drive_q_refused()
             break
         pos = m.end()
         kind = m.lastgroup or ""
         text = m.group(kind)
-        out.append((kind, re.sub(r"\\(.)", r"\1", text) if kind == "str" else text))
+        # Real refused `not(trashed)`, `NOT(trashed)` and `not(hidden)`, a `not` its group's
+        # parenthesis touches, and served `not (trashed)`, `not\t(trashed)` and
+        # `trashed and(starred)`, measured 2026-10-21.
+        if kind == "word" and text.lower() == "not" and q.startswith("(", pos):
+            raise _drive_q_refused()
+        if kind == "str":
+            text = re.sub(r"\\(.)", r"\1", text[1:-1])  # strip surrounding quotes
+        out.append((kind, text))
     return out
 
 
-def _drive_q_parse(q: str):
-    """The parsed query, or ``None`` for an empty one. A clause Backlot cannot evaluate is a 400.
-
-    A query that names no ``trashed`` term gets ``and trashed = false`` appended: real Drive leaves
-    trashed files out of a listing unless a clause asks for them, as the plain listing does through
-    ``exclude_trashed``."""
+def _drive_q_parse(q: str, terms: _DriveQTerms = _FILES_Q):
+    """The parsed query, or ``None`` for an empty one; a query of the separators `_DRIVE_Q_TOKEN`
+    reads alone is the 400, as real answered a space, a tab and a newline on `files.list` and a
+    space and a tab on `drives.list`. A clause ``terms`` does not take is a 400. A query that names
+    no ``trashed`` term matches a trashed file, as `drive_files_list` lists the caller's trash with
+    no ``q``."""
     tokens = _drive_q_tokens(q)
     if not tokens:
+        if q:
+            raise _drive_q_refused()
         return None
     pos = 0
 
@@ -1650,7 +2484,9 @@ def _drive_q_parse(q: str):
         parts = [conjunction()]
         while is_word("or"):
             take()
-            parts.append(conjunction())
+            # at the end or before a `)`, every file, where a trailing `and` is the 400 (2026-10-21)
+            ended = peek() in ((None, None), ("paren", ")"))
+            parts.append(_QAll() if ended else conjunction())
         return parts[0] if len(parts) == 1 else _QOr(tuple(parts))
 
     def conjunction():
@@ -1670,7 +2506,18 @@ def _drive_q_parse(q: str):
         try:
             if is_word("not"):
                 take()
-                return _QNot(unary())
+                # Real refused `not not hidden` and `not not name contains 'a'` on `drives.list`,
+                # and `not not starred` on `files.list`, with the 400 at `q`, and served
+                # `not (not hidden)`, measured 2026-10-20.
+                if is_word("not"):
+                    raise _drive_q_refused()
+                inner = unary()
+                if any(t.field in terms.only_true for t in _drive_q_terms(inner)):
+                    raise _drive_q_refused()
+                return _QNot(inner)
+            if peek() == ("empty", "()"):
+                take()
+                return _QAll()
             if peek() == ("paren", "("):
                 take()
                 node = disjunction()
@@ -1682,7 +2529,7 @@ def _drive_q_parse(q: str):
             depth -= 1
 
     def unmodelled(field: str) -> gerr.GoogleError:
-        evaluated = ", ".join(sorted(_DRIVE_Q_OPERATORS))
+        evaluated = ", ".join(sorted(terms.operators))
         return _drive_q_refused(
             f"'{field}' is not evaluated by Backlot: a corpus record carries nothing to answer it "
             f"from. Terms it evaluates: {evaluated}, and 'x' in parents / owners."
@@ -1697,17 +2544,17 @@ def _drive_q_parse(q: str):
             fkind, field = take()
             if fkind != "word":
                 raise _drive_q_refused()
-            if field in _DRIVE_Q_UNMODELLED:
+            if field in terms.unmodelled:
                 raise unmodelled(field)
-            if field not in _DRIVE_Q_COLLECTIONS:
+            if field not in terms.collections:
                 raise _drive_q_refused()
             return _QTerm(field, "in", text or "")
         if kind != "word" or text is None:
             raise _drive_q_refused()
         field = text
-        if field in _DRIVE_Q_UNMODELLED:
+        if field in terms.unmodelled:
             raise unmodelled(field)
-        if field not in _DRIVE_Q_OPERATORS:
+        if field not in terms.operators:
             raise _drive_q_refused()
         okind, op = peek()
         if okind == "op":
@@ -1715,32 +2562,35 @@ def _drive_q_parse(q: str):
         elif okind == "word" and (op or "").lower() in ("contains", "has", "in"):
             take()
             op = (op or "").lower()
-        elif field == "sharedWithMe":
-            # The bare `sharedWithMe` Drive also accepts, meaning true.
+        elif field in terms.boolean:
+            # The bare `sharedWithMe`, `trashed`, `starred` or `hidden` Drive also accepts,
+            # meaning true.
             return _QTerm(field, "=", "true")
         else:
             raise _drive_q_refused()
-        if op not in _DRIVE_Q_OPERATORS[field]:
+        if op not in terms.operators[field]:
             raise _drive_q_refused()
         vkind, value = take()
-        if field in _DRIVE_Q_BOOLEAN:
-            if vkind != "word" or (value or "").lower() not in ("true", "false"):
+        if field in terms.boolean:
+            value = (value or "").lower()
+            if vkind != "word" or value not in ("true", "false"):
                 raise _drive_q_refused()
-            return _QTerm(field, op or "", (value or "").lower())
+            if field in terms.only_true and value != "true":
+                raise _drive_q_refused()
+            return _QTerm(field, op or "", value)
         if vkind != "str":
             raise _drive_q_refused()
-        if field in ("modifiedTime", "createdTime") and _drive_q_time(value or "") is None:
+        if field in _TIME_FIELDS and _drive_q_time(value or "") is None:
             # The reference wants RFC 3339 here. A value that is not one would otherwise compare
-            # as a string against the file's timestamp and answer something for every file; what
-            # real Drive answers for it is unmeasured, so this is a refusal rather than its wording.
+            # as a string against the file's timestamp and answer something for every file; real
+            # answered `modifiedTime < 'yesterday'`, `createdTime < 'yesterday'` and
+            # `viewedByMeTime > 'garbage'` with this 400, measured 2026-10-20.
             raise _drive_q_refused()
         return _QTerm(field, op or "", value or "")
 
     node = disjunction()
     if pos != len(tokens):
         raise _drive_q_refused()
-    if not any(t.field == "trashed" for t in _drive_q_terms(node)):
-        node = _QAnd((node, _QTerm("trashed", "=", "false")))
     return node
 
 
@@ -1810,9 +2660,21 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
         return all(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
     if isinstance(node, _QOr):
         return any(_drive_q_eval(p, f, me, fulltext) for p in node.parts)
+    if isinstance(node, _QAll):
+        return True
     field, op, value = node
     if field == "trashed":
-        return ((value == "true") == f["trashed"]) == (op == "=")
+        if op in ("=", "!="):
+            return ((value == "true") == f["trashed"]) == (op == "=")
+        same = _DRIVE_Q_TRASHED_ORDERED[op, value]
+        return same is not None and (same == "true") == f["trashed"]
+    if field == "starred":
+        # Nothing here is starred, as every file's `starred` says.
+        return (value == "false") == (op == "=")
+    if field == "viewedByMeTime":
+        # No file has one: real matched a file its caller never viewed under `!=` and under no
+        # other comparison, measured 2026-10-20, and `not` around any of them matches the rest.
+        return op == "!="
     if field == "sharedWithMe":
         # "Shared with me" = visible to the caller and not owned by them. Items shared with you
         # carry no My Drive parent on real Drive, so this clause is the only way to enumerate
@@ -1837,13 +2699,18 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
     if field == "createdTime":
         return _drive_q_compare(op, f["created"], value)
     if field == "parents":
+        # `root` is the caller's My Drive root by its alias, and so is its id: a file created at
+        # the root carries the id (`synth.drive_root_id`), a folder here the alias.
+        roots = _drive_roots(me)
+        if value in roots:
+            return any(p in roots for p in f["parents"])
         return value in f["parents"]
     if field == "owners":
         # `me` is the reference's alias for the caller (`'me' in owners`), resolved through the
-        # identity `sharedWithMe` reads: the admin token is not a Drive user and owns nothing.
+        # identity `sharedWithMe` reads (`_drive_owned_by`).
         who = value.strip().lower()
         if who == "me":
-            return bool(me) and me.lower() in f["owners"]
+            return any(_drive_owned_by(owner, me) for owner in f["owners"])
         return who in f["owners"]
     raise AssertionError(f"unevaluated q term {field!r}")  # every field the parser admits is above
 
@@ -1879,10 +2746,35 @@ def _drive_q_fulltext_ids(hits: dict[str, list]) -> dict[str, set[str]]:
     return {value: {r["id"] for r in rows} for value, rows in hits.items()}
 
 
+def _drive_listed_trash(ids: set[str] | None, me: str | None) -> bool | str:
+    """The trashed files `files.list` lists to this caller, as the ``trash`` the store's Drive
+    listings take: those it owns. Real listed a trashed file to its owner, with no `q` and under
+    each `q` it was sent that named no `trashed` term, on two accounts' Drives, the folder scope on
+    one, and to no one else: a Google Workspace member's `files.get` answered two files another
+    user owns and trashed, and `files.list` listed neither with no `q` or under `trashed = true`,
+    `trashed`, the file's name, its folder or `not 'me' in owners`, measured 2026-10-20. The admin
+    token, ``ids`` ``None``, sees every file and lists them all."""
+    return True if ids is None else (me or False)
+
+
+# The `folder` a file created at a user's My Drive root is stored under: no folder at all, which
+# no corpus file has (every one lives in a folder), so the two never meet.
+_DRIVE_ROOT_FOLDER = ""
+
+
+def _drive_roots(me: str | None) -> set[str]:
+    """What names the caller's My Drive root in a `parents` term: the alias `root`, and the id."""
+    return {"root", synth.drive_root_id(me)} if me else {"root"}
+
+
 def _drive_owned_by(owner_email: str | None, me: str | None) -> bool:
     """Whether the caller owns this file. The admin/service token is not a Drive user (its
-    ``caller.email`` is None), so it owns nothing — for it, everything reads as shared."""
-    return bool(me) and (owner_email or "").lower() == me.lower()
+    ``caller.email`` is None): it owns what the service account it stands for created
+    (`_ADMIN_OWNER`), and every other file reads as shared to it. ASCII letters fold, as SQLite's
+    ``lower()`` folds them in the trash rule `_drive_listed_trash` hands the store, so a listing
+    and ``ownedByMe`` agree on whose a file is."""
+    who = me or _ADMIN_OWNER.get()
+    return bool(who) and _ascii_lower(owner_email or "") == _ascii_lower(who)
 
 
 def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) -> dict:
@@ -1898,6 +2790,17 @@ def _shared_with_me_time(owner_email: str | None, me: str | None, created: int) 
     return {"sharedWithMeTime": synth.rfc3339(created)}
 
 
+def _modified_by_me(owner_email: str | None, me: str | None, modified: int) -> dict:
+    """``modifiedByMe``, and ``modifiedByMeTime`` when it is true, as a ``**``-mergeable fragment.
+    A row's author is its owner and the one user ``lastModifyingUser`` names, so the caller
+    modified a file exactly when it owns it, last at ``modifiedTime``. Real sends ``modifiedByMe``
+    on every file and the time only when it is true, and on 21,074 of the 21,085 files two
+    accounts owned and had modified the time was ``modifiedTime``, measured 2026-10-20."""
+    if not _drive_owned_by(owner_email, me):
+        return {"modifiedByMe": False}
+    return {"modifiedByMe": True, "modifiedByMeTime": synth.rfc3339(modified)}
+
+
 def _drive_created(row) -> int:
     """A file's creation second — its own, else one seeded from its id. `is not None`, because
     1970-01-01T00:00:00Z stores as 0 and a file that HAS a second must serve it rather than a
@@ -1906,7 +2809,8 @@ def _drive_created(row) -> int:
 
 
 def _drive_modified(row) -> int:
-    """A file's last-modified second, an hour after creation when the corpus states none."""
+    """A file's last-modified second, an hour after creation when the corpus states none
+    (``store.DRIVE_MODIFIED`` is the same in SQL)."""
     return row["updated_ts"] if row["updated_ts"] is not None else _drive_created(row) + 3600
 
 
@@ -1970,24 +2874,26 @@ def _drive_folder_obj(conn, name: str, me: str | None = None) -> dict:
         "parents": ["root"],
         "createdTime": synth.rfc3339(ts),
         "modifiedTime": synth.rfc3339(ts),
+        "quotaBytesUsed": "0",  # as real's folders answered it, 2026-10-25
         **_shared_with_me_time(None, me, ts),
         "trashed": False,
         "explicitlyTrashed": False,
         "starred": False,
         "shared": True,
         "ownedByMe": False,
+        "modifiedByMe": False,
         "viewedByMe": False,
         "version": "1",
         "spaces": ["drive"],
         "webViewLink": f"https://drive.google.com/drive/folders/{fid}",
         "iconLink": "https://drive.google.com/icons/folder.png",
         "capabilities": {
-            "canDownload": False,
+            "canDownload": True,
             "canListChildren": True,
             "canComment": False,
             "canEdit": False,
             "canCopy": False,
-            "canShare": True,
+            "canShare": False,
             "canRename": False,
             "canTrash": False,
             "canDelete": False,
@@ -2014,8 +2920,9 @@ def _drive_folder_name_by_id(conn, file_id: str) -> str | None:
 # Validating against it is what makes a Backlot-backed test able to catch a typo'd or stale mask.
 _DRIVE_FILE_FIELDS = frozenset(
     """
-    appProperties capabilities contentHints contentRestrictions copyRequiresWriterPermission
-    createdTime description driveId explicitlyTrashed exportLinks fileExtension folderColorRgb
+    appProperties capabilities clientEncryptionDetails contentHints contentRestrictions
+    copyRequiresWriterPermission createdTime description downloadRestrictions driveId
+    explicitlyTrashed exportLinks fileExtension folderColorRgb
     fullFileExtension hasAugmentedPermissions hasThumbnail headRevisionId iconLink id
     imageMediaMetadata inheritedPermissionsDisabled isAppAuthorized kind labelInfo
     lastModifyingUser linkShareMetadata md5Checksum mimeType modifiedByMe modifiedByMeTime
@@ -2029,85 +2936,560 @@ _DRIVE_FILE_FIELDS = frozenset(
 _DRIVE_LIST_FIELDS = frozenset({"kind", "nextPageToken", "incompleteSearch", "files"})
 
 
-def _split_mask(mask: str) -> list[str]:
-    """Split a `fields` mask on its top-level commas, so a nested group stays whole
-    (``files(id,name),nextPageToken`` -> ``['files(id,name)', 'nextPageToken']``)."""
-    out, depth, cur = [], 0, ""
-    for ch in mask:
-        if ch == "," and depth == 0:
-            out.append(cur)
-            cur = ""
-            continue
-        depth += (ch == "(") - (ch == ")")
-        depth = max(depth, 0)
-        cur += ch
-    out.append(cur)
-    return [t.strip() for t in out if t.strip()]
+# `permissions.list`'s and `drives.list`'s entries, each field the reference lists for them.
+_DRIVE_PERMISSION_FIELDS = frozenset(
+    """
+    allowFileDiscovery deleted displayName domain emailAddress expirationTime id
+    inheritedPermissionsDisabled kind pendingOwner permissionDetails photoLink role
+    teamDrivePermissionDetails type view
+""".split()
+)
+_DRIVE_DRIVE_FIELDS = frozenset(
+    """
+    backgroundImageFile backgroundImageLink capabilities colorRgb createdTime hidden id kind name
+    orgUnitId restrictions themeId
+""".split()
+)
+# What each object field of a Drive resource holds, as Drive v3's discovery document declares it:
+# names that hold none in turn as a set, names some of which do as a dict, and `None` where any name
+# is taken (`properties` and `appProperties`). A field missing from its table holds no name, so a
+# name below it is refused, `id/zzz` and `exportLinks/zzz` as `owners/zzz` are. On 2026-10-25 real
+# served each name these tables declare below a file, a permission, a drive and `about`, and
+# answered `zzz` below each of their 84 objects, and below `exportLinks`, `exportFormats`,
+# `importFormats` and `maxImportSizes`, with the 400 naming `zzz`; it served `properties/zzz` and
+# `appProperties/zzz`.
+_DRIVE_USER_KEYS = frozenset("displayName emailAddress kind me permissionId photoLink".split())
+_DRIVE_PERMISSION_SUBFIELDS = {
+    "permissionDetails": frozenset("inherited inheritedFrom permissionType role".split()),
+    "teamDrivePermissionDetails": frozenset(
+        "inherited inheritedFrom role teamDrivePermissionType".split()
+    ),
+}
+_DRIVE_DOWNLOAD_RESTRICTION = frozenset({"restrictedForReaders", "restrictedForWriters"})
+_DRIVE_PERMISSION_ENTRY = {
+    **dict.fromkeys(_DRIVE_PERMISSION_FIELDS, frozenset()),
+    **_DRIVE_PERMISSION_SUBFIELDS,
+}
+_DRIVE_FILE_SUBFIELDS = {
+    "appProperties": None,
+    "capabilities": frozenset(
+        """
+        canAcceptOwnership canAccessViaGenAi canAddChildren canAddFolderFromAnotherDrive
+        canAddMyDriveParent canChangeCopyRequiresWriterPermission canChangeItemDownloadRestriction
+        canChangeSecurityUpdateEnabled canChangeViewersCanCopyContent canComment canCopy canDelete
+        canDeleteChildren canDisableInheritedPermissions canDownload canEdit
+        canEnableInheritedPermissions canListChildren canModifyContent canModifyContentRestriction
+        canModifyEditorContentRestriction canModifyLabels canModifyOwnerContentRestriction
+        canMoveChildrenOutOfDrive canMoveChildrenOutOfTeamDrive canMoveChildrenWithinDrive
+        canMoveChildrenWithinTeamDrive canMoveItemIntoTeamDrive canMoveItemOutOfDrive
+        canMoveItemOutOfTeamDrive canMoveItemWithinDrive canMoveItemWithinTeamDrive
+        canMoveTeamDriveItem canReadDrive canReadLabels canReadRevisions canReadTeamDrive
+        canRemoveChildren canRemoveContentRestriction canRemoveMyDriveParent canRename canShare
+        canStartApproval canTrash canTrashChildren canUntrash
+    """.split()
+    ),
+    "clientEncryptionDetails": {
+        "decryptionMetadata": frozenset(
+            """
+            aes256GcmChunkSize encryptionResourceKeyHash jwt kaclsId kaclsName keyFormat wrappedKey
+        """.split()
+        ),
+        "encryptionState": frozenset(),
+    },
+    "contentHints": {"indexableText": frozenset(), "thumbnail": frozenset({"image", "mimeType"})},
+    "contentRestrictions": {
+        **dict.fromkeys(
+            """
+            ownerRestricted readOnly reason restrictionTime systemRestricted type
+        """.split(),
+            frozenset(),
+        ),
+        "restrictingUser": _DRIVE_USER_KEYS,
+    },
+    "downloadRestrictions": dict.fromkeys(
+        ("effectiveDownloadRestrictionWithContext", "itemDownloadRestriction"),
+        _DRIVE_DOWNLOAD_RESTRICTION,
+    ),
+    "imageMediaMetadata": {
+        **dict.fromkeys(
+            """
+            aperture cameraMake cameraModel colorSpace exposureBias exposureMode exposureTime
+            flashUsed focalLength height isoSpeed lens maxApertureValue meteringMode rotation sensor
+            subjectDistance time whiteBalance width
+        """.split(),
+            frozenset(),
+        ),
+        "location": frozenset({"altitude", "latitude", "longitude"}),
+    },
+    "labelInfo": {"labels": frozenset({"fields", "id", "kind", "revisionId"})},
+    "lastModifyingUser": _DRIVE_USER_KEYS,
+    "linkShareMetadata": frozenset({"securityUpdateEligible", "securityUpdateEnabled"}),
+    "owners": _DRIVE_USER_KEYS,
+    "permissions": _DRIVE_PERMISSION_ENTRY,
+    "properties": None,
+    "sharingUser": _DRIVE_USER_KEYS,
+    "shortcutDetails": frozenset({"targetId", "targetMimeType", "targetResourceKey"}),
+    "trashingUser": _DRIVE_USER_KEYS,
+    "videoMediaMetadata": frozenset({"durationMillis", "height", "width"}),
+}
+_DRIVE_DRIVE_SUBFIELDS = {
+    "backgroundImageFile": frozenset({"id", "width", "xCoordinate", "yCoordinate"}),
+    "capabilities": frozenset(
+        """
+        canAddChildren canChangeCopyRequiresWriterPermissionRestriction
+        canChangeDomainUsersOnlyRestriction canChangeDownloadRestriction canChangeDriveBackground
+        canChangeDriveMembersOnlyRestriction
+        canChangeSharingFoldersRequiresOrganizerPermissionRestriction canComment canCopy
+        canDeleteChildren canDeleteDrive canDownload canEdit canListChildren canManageMembers
+        canReadRevisions canRename canRenameDrive canResetDriveRestrictions canShare
+        canTrashChildren
+    """.split()
+    ),
+    "restrictions": {
+        **dict.fromkeys(
+            """
+            adminManagedRestrictions copyRequiresWriterPermission domainUsersOnly driveMembersOnly
+            sharingFoldersRequiresOrganizerPermission
+        """.split(),
+            frozenset(),
+        ),
+        "downloadRestriction": _DRIVE_DOWNLOAD_RESTRICTION,
+    },
+}
+# The fields a resource's default answer holds, which an empty group selects: real answered
+# `id()`, `name()`, `kind()` and `mimeType()` on a file, `id()`, `type()`, `kind()` and `role()` on
+# a permission, `id()`, `name()` and `kind()` on a drive, and a listing's `kind()` and
+# `nextPageToken()` with those keys, and `createdTime()`, `owners()`, `trashed()`,
+# `permissions(emailAddress())` and `drives(hidden())` with nothing, measured 2026-10-20.
+_DRIVE_FILE_DEFAULT = frozenset({"kind", "id", "name", "mimeType"})
+_DRIVE_PERMISSION_DEFAULT = frozenset({"id", "type", "kind", "role"})
+_DRIVE_DRIVE_DEFAULT = frozenset({"id", "name", "kind"})
+_DRIVE_LIST_DEFAULT = frozenset({"kind", "nextPageToken", "incompleteSearch"})
+# Documented fields real gave each of a Google Workspace member's 228 files, measured 2026-10-20,
+# that no file here carries: a mask that names one is refused, saying so, rather than answered
+# without it.
+_DRIVE_FILE_UNSERVED = frozenset(
+    """
+    clientEncryptionDetails copyRequiresWriterPermission downloadRestrictions hasThumbnail
+    inheritedPermissionsDisabled isAppAuthorized linkShareMetadata thumbnailVersion
+    viewersCanCopyContent writersCanShare
+""".split()
+)
+# What a name in a `fields` mask is made of, as real read each character between `id,b` and `x` on
+# 2026-10-20: the ASCII below, and past ASCII the name characters of XML 1.0's fourth edition
+# (Appendix B), whose table expat's is. None of the 1,345 code points past ASCII it was sent, every
+# one from U+0080 to U+02FF and the rest chosen by category, was read otherwise. Every other
+# character it was sent, white space other than a space or a tab among them, made the whole mask the
+# 400's subject, and so did a name ending in `-` or holding `:` other than once between two other
+# characters (`x-`, `:x`, `x:`, `x::y`, `x:y:z`), where `-x`, `x--y` and `x:y` were names.
+_MASK_NAME = frozenset("$+-.:_" + string.ascii_letters + string.digits)
+# The last name of a path an empty group, `owners()`, ends.
+_MASK_EMPTY = "()"
+# How many names of a path `_mask_paths` keeps: a listing, an entry's field, the two levels the
+# deepest object below a field holds (`permissions/permissionDetails/role`) and one name past them,
+# which `_check_mask` refuses, so a mask nested a thousand deep costs its length rather than the
+# square of its depth.
+_MASK_DEPTH = 5
 
 
-def _mask_names(mask: str) -> set[str]:
-    """The leading key of each comma-separated entry: a nested mask (``capabilities/canEdit``,
-    ``owners(emailAddress)``) selects — and is validated as — its parent key."""
-    return {t.split("/")[0].split("(")[0].strip() for t in _split_mask(mask)}
+def _mask_paths(mask: str) -> list[tuple[str, ...]]:
+    """The paths a `fields` mask selects, in its order: ``files(id,owners(kind)),kind`` is
+    ``files/id``, ``files/owners/kind`` and ``kind``, and ``files()`` is ``files`` then
+    ``_MASK_EMPTY``, each path to its first ``_MASK_DEPTH`` names. A space or a tab may stand beside
+    a name, a ``/`` or a parenthesis. A mask that is not one — an empty entry, a name `_mask_name`
+    does not take, a group never opened or never closed — is the 400 naming the whole mask, as real
+    answered ``id,,name``, ``files(id,)``, ``id,`` and ``owners(``; that refusal comes before any
+    name's.
 
+    Read without recursion: real answered a group nested a thousand deep with the name it did not
+    take, not a refusal of the mask."""
+    paths: list[tuple[str, ...]] = []
+    prefixes: list[tuple[str, ...]] = [()]
+    i = 0
 
-def _check_mask(names, allowed: frozenset) -> None:
-    """Reject an unknown field name the way real Drive does. Without this a bogus name simply
-    matched nothing and vanished, so the response was a 200 full of empty objects and no
-    Backlot-backed test could catch a mask that 400s in production."""
-    for n in sorted(names):
-        if n != "*" and n not in allowed:
-            raise gerr.invalid_parameter("fields", f"Invalid field selection {n}")
+    def refused() -> gerr.GoogleError:
+        return gerr.invalid_parameter("fields", f"Invalid field selection {mask}")
 
+    def blank() -> None:
+        nonlocal i
+        while i < len(mask) and mask[i] in " \t":
+            i += 1
 
-def _drive_file_field_keys(fields: str | None) -> set[str] | None:
-    """File keys a ``files.list`` caller selected — so the response carries only those, not the
-    full ~30-field object. Google accepts both the group form (``files(id,name)``) and the path
-    form (``files/id``); both are honored. ``None`` = no projection (an absent mask, or one that
-    asks for everything with ``*``).
+    def name() -> str:
+        nonlocal i
+        blank()
+        start = i
+        if mask.startswith("*", i):
+            i += 1
+        while i < len(mask) and mask[start] != "*" and _mask_name_char(mask[i]):
+            i += 1
+        end = i
+        if not _mask_name(mask[start:end]):
+            raise refused()
+        blank()
+        return mask[start:end]
 
-    Top-level names are validated but not projected: Backlot always returns ``kind`` and
-    ``incompleteSearch``, because its typed response model (``DriveFileList``, which the OpenAPI
-    schema is built from) declares them."""
-    if not (fields or "").strip():
-        return None
-    top, keys = set(), set()
-    for tok in _split_mask(fields):
-        if tok == "*":
-            return None
-        group = re.fullmatch(r"files\s*\((.*)\)", tok, re.DOTALL)
-        if group:
-            top.add("files")
-            keys |= _mask_names(group.group(1))
-        elif tok.startswith("files/"):
-            top.add("files")
-            keys |= _mask_names(tok[len("files/") :])
+    while True:
+        path = [name()]
+        while mask.startswith("/", i):
+            i += 1
+            path.append(name())
+        full = (prefixes[-1] + tuple(path))[:_MASK_DEPTH]
+        if mask.startswith("(", i):
+            i += 1
+            blank()
+            if not mask.startswith(")", i):
+                prefixes.append(full)
+                continue
+            i += 1
+            paths.append((*full, _MASK_EMPTY)[:_MASK_DEPTH])
         else:
-            top.add(tok.split("/")[0].split("(")[0])
-    _check_mask(top, _DRIVE_LIST_FIELDS)
-    _check_mask(keys, _DRIVE_FILE_FIELDS)
-    return None if "*" in keys else (keys or None)
+            paths.append(full)
+        blank()
+        while mask.startswith(")", i) and len(prefixes) > 1:
+            i += 1
+            prefixes.pop()
+            blank()
+        if i == len(mask) and len(prefixes) == 1:
+            return paths
+        if not mask.startswith(",", i):
+            raise refused()
+        i += 1
 
 
-def _drive_get_field_keys(fields: str | None) -> set[str] | None:
-    """The same projection for ``files.get``, whose mask names file fields directly
-    (``fields=id,name,size``). Applying it is what makes one file look the same whether a client
-    read it out of a listing or resolved it by id.
+def _mask_name(text: str) -> bool:
+    """Whether ``text``, read of the characters `_mask_name_char` takes, is a name, as the comment
+    above ``_MASK_NAME`` says."""
+    if text == "*":
+        return True
+    colons = text.count(":")
+    if not text or text.endswith("-") or colons > 1:
+        return False
+    return not colons or (text[0] != ":" and text[-1] != ":")
 
-    A mask that is empty or blank selects nothing, which is not the same as no mask: measured
-    2026-09-23, `fields=` and `fields=%20` answer ``{}`` where an absent `fields` answers the
-    default object. So an absent mask is ``None`` and a blank one the empty set."""
+
+@functools.lru_cache(maxsize=4096)
+def _mask_name_char(ch: str) -> bool:
+    if ch.isascii():
+        return ch in _MASK_NAME
+    parser = xml.parsers.expat.ParserCreate()
+    try:
+        parser.Parse(f"<a{ch}/>", True)
+    except (xml.parsers.expat.ExpatError, ValueError):
+        return False
+    return True
+
+
+def _check_mask(
+    paths,
+    top: frozenset,
+    under: str | None = None,
+    entries: frozenset = frozenset(),
+    unserved: frozenset = frozenset(),
+    subfields: dict | None = None,
+):
+    """Refuse the first name, in the mask's order, the resource does not have, as real names it:
+    a top-level name outside ``top``, under the list ``under`` an entry's name outside ``entries``,
+    and a name below a field that does not hold it, as ``subfields`` gives what the resource's
+    object fields hold; a field it leaves out, and each name of a listing but ``under``, holds none.
+    Then refuse the first of the ``unserved`` names of a file, the top level's on `files.get` and
+    an entry's on `files.list`, with a sentence saying Backlot does not carry it."""
+    subfields = subfields or {}
+    served: list[str] = []
+    for path in paths:
+        names = [n for n in path if n != _MASK_EMPTY]
+        checks = [(names[0], top)]
+        held, below = frozenset(), names[1:]
+        if under is not None and names[0] == under and len(names) > 1:
+            checks.append((names[1], entries))
+            held, below = subfields.get(names[1], frozenset()), names[2:]
+        elif under is None:
+            held = subfields.get(names[0], frozenset())
+        for name, allowed in checks:
+            if name != "*" and name not in allowed:
+                raise gerr.invalid_parameter("fields", f"Invalid field selection {name}")
+        for name in below:
+            if held is None or name == "*":
+                break
+            if name not in held:
+                raise gerr.invalid_parameter("fields", f"Invalid field selection {name}")
+            held = held[name] if isinstance(held, dict) else frozenset()
+        served.append(checks[-1][0] if under is None or path[0] == under else "")
+    for name in served:
+        if name in unserved:
+            raise gerr.invalid_parameter(
+                "fields",
+                f"'{name}' is not served by Backlot: real Drive answers it, and nothing here "
+                f"carries it.",
+            )
+
+
+def _mask_keys(paths, defaults: frozenset = frozenset()) -> set[str] | None:
+    """The names a mask's paths select at their top level; ``None`` selects every one, as no mask
+    and a top-level ``*`` do. A key an empty group names is selected only when it is one of the
+    ``defaults``, as the comment above ``_DRIVE_FILE_DEFAULT`` says."""
+    if paths is None:
+        return None
+    keys = {p[0] for p in paths if not (len(p) > 1 and p[1] == _MASK_EMPTY) or p[0] in defaults}
+    return None if "*" in keys else keys
+
+
+def _drive_refuse_a_trailing_comma(request: Request) -> None:
+    """Refuse a `fields` mask whose last character but white space (`string.whitespace`) is a comma,
+    with the 400 naming the whole mask, on a metadata read. Real answered it after the typed and
+    range refusals and ahead of the rest, measured 2026-10-20 beside a bad `pageToken`, `q` and
+    `orderBy`, an `orderBy` naming a key twice or `starred` after another, `fullText` beside an
+    `orderBy`, `includeItemsFromAllDrives` alone, `acknowledgeAbuse`, `useDomainAdminAccess`, a
+    repeated `pageSize` and a file that does not exist. A download read no mask."""
+    mask = gerr.first_repeat(request.query_params, "fields")
+    if mask is not None and mask.rstrip(string.whitespace).endswith(","):
+        raise gerr.invalid_parameter("fields", f"Invalid field selection {mask}")
+
+
+def _drive_mask(fields: str | None) -> list[tuple[str, ...]] | None:
+    """A mask's paths; ``None`` for an absent one, and no paths (``[]``) for one of spaces and tabs
+    alone, the blank mask `_drive_project_one` describes."""
     if fields is None:
         return None
-    if not fields.strip():
-        return set()
-    keys = _mask_names(fields)
-    _check_mask(keys, _DRIVE_FILE_FIELDS)
-    return None if "*" in keys else (keys or None)
+    return _mask_paths(fields) if fields.strip(" \t") else []
+
+
+def _drive_project_listing(
+    body: dict,
+    fields: str | None,
+    under: str,
+    entries: frozenset,
+    defaults: frozenset,
+):
+    """``permissions.list`` or ``drives.list`` trimmed to its mask: the top-level keys it names,
+    and the entries of the list ``under`` trimmed to theirs by `_drive_project_paths`. The list
+    stays when only its entries are emptied. ``None`` for no mask."""
+    paths = _drive_mask(fields)
+    if paths is None:
+        return None
+    _check_mask(
+        paths,
+        frozenset({"kind", "nextPageToken", under}),
+        under,
+        entries,
+        subfields=_DRIVE_PERMISSION_ENTRY if under == "permissions" else _DRIVE_DRIVE_SUBFIELDS,
+    )
+    tops = _mask_keys(paths, defaults=_DRIVE_LIST_DEFAULT)
+    if tops is None:
+        return body
+    if any(p[:2] == (under, _MASK_EMPTY) for p in paths):
+        tops.add(under)
+    out = {k: v for k, v in body.items() if k in tops}
+    if under in out:
+        out[under] = _drive_project_paths(out[under], paths, under, defaults)
+    return out
+
+
+def _drive_project_entries(entries: list[dict], keys: set[str] | None) -> list[dict]:
+    """A list's entries trimmed to ``keys``, an entry left with none dropped: real answered
+    `files(trashingUser)` and `permissions(teamDrivePermissionDetails)` with an empty list on
+    listings none of whose entries had the field, measured 2026-10-20."""
+    return [e for e in _drive_project(entries, keys) if e]
 
 
 def _drive_project(files: list[dict], keys: set[str] | None) -> list[dict]:
     return files if keys is None else [{k: v for k, v in f.items() if k in keys} for f in files]
+
+
+def _drive_entry_keys(paths, under: str, defaults: frozenset) -> set[str] | None:
+    """The keys each entry of a masked list carries: ``None`` for the whole entry object, a set for
+    a projection, and an empty set when the wrapper is not named at all. A bare wrapper, an empty
+    group on a default key, a `*` at entry level, or a top-level `*` that reaches in each answer
+    the whole entry."""
+    if paths is None:
+        return None
+    if any(len(p) == 1 and p[0] == "*" for p in paths):
+        return None
+    under_paths = [p[1:] for p in paths if p[0] == under]
+    if not under_paths:
+        return set()
+    if any(not p for p in under_paths):
+        return None
+    keys = {
+        p[0] for p in under_paths if not (len(p) > 1 and p[1] == _MASK_EMPTY) or p[0] in defaults
+    }
+    return None if "*" in keys else keys
+
+
+def _drive_trim_object(obj, paths, under: str | None, defaults: frozenset):
+    """One resource object trimmed to a mask's paths. ``under`` strips a list wrapper's name
+    (`files`, `permissions` or `drives`); for a single object it is None. Nested paths trim
+    object-valued fields (`owners(kind)`) instead of leaving the whole object. A path naming a key
+    the object does not carry omits it, the way real omits an absent key; name validity is
+    `_check_mask`'s job."""
+    chains = []
+    bare = False
+    entry_empty = False
+    empty_groups: set[str] = set()
+    for p in paths:
+        raw = list(p)
+        if under is not None:
+            if not raw or raw[0] != under:
+                continue
+            raw = raw[1:]
+        if not raw:  # a bare `files`/`permissions` names the whole entry object
+            bare = True
+            continue
+        if raw == [_MASK_EMPTY]:  # `files()`/`permissions()` answers an empty entry
+            entry_empty = True
+            continue
+        if len(raw) >= 2 and raw[1] == _MASK_EMPTY and raw[0] not in defaults:
+            empty_groups.add(raw[0])
+        chains.append([n for n in raw if n != _MASK_EMPTY])
+    if entry_empty:
+        return []
+    if bare:
+        return obj
+    selected = _mask_keys(chains, defaults)
+    if selected is None:
+        return obj
+    nested: dict[str, set] = {}
+    whole: set[str] = set()
+    for chain in chains:
+        if len(chain) > 1:
+            if chain[1] == "*":
+                whole.add(chain[0])
+            else:
+                nested.setdefault(chain[0], set()).add(chain[1])
+    # Measured 2026-10-25, in either order: `*` below a field keeps it whole beside a narrower group
+    # (`owners`, `capabilities`, `permissionDetails` and `about`'s `user`), an empty group drops it
+    # whatever else names it (`owners`, `capabilities`, `lastModifyingUser`, `permissionDetails`),
+    # and a narrower group trims it beside its bare name (`owners`, `capabilities`, `user`).
+    for field in whole:
+        nested.pop(field, None)
+    nested.update(dict.fromkeys(empty_groups, set()))
+    out = {}
+    for key, value in obj.items():
+        if key not in selected:
+            continue
+        if key in nested:
+            subkeys = nested[key]
+            if not subkeys:
+                continue
+            if isinstance(value, dict):
+                value = {k: v for k, v in value.items() if k in subkeys}
+            elif isinstance(value, list):
+                value = [
+                    {k: v for k, v in item.items() if k in subkeys}
+                    if isinstance(item, dict)
+                    else item
+                    for item in value
+                ]
+        out[key] = value
+    return out
+
+
+def _drive_project_paths(entries: list[dict], paths, under: str, defaults: frozenset) -> list[dict]:
+    """A listing's entries each trimmed to the mask, an entry left with none dropped."""
+    return [
+        e for e in (_drive_trim_object(entry, paths, under, defaults) for entry in entries) if e
+    ]
+
+
+# Real Drive's key orders, measured 2026-10-27 with `fields=*` on 54 files of ten types, each
+# listed and then read by id: a listing's entries in one, a read by id in another, and a
+# listing's own top level in a third. A mask does not change them.
+_DRIVE_FILE_LIST_ORDER = (
+    "kind",
+    "fileExtension",
+    "md5Checksum",
+    "viewedByMe",
+    "mimeType",
+    "exportLinks",
+    "parents",
+    "iconLink",
+    "shared",
+    "lastModifyingUser",
+    "owners",
+    "webViewLink",
+    "webContentLink",
+    "size",
+    "spaces",
+    "id",
+    "name",
+    "starred",
+    "trashed",
+    "explicitlyTrashed",
+    "createdTime",
+    "modifiedTime",
+    "modifiedByMeTime",
+    "sharedWithMeTime",
+    "quotaBytesUsed",
+    "version",
+    "ownedByMe",
+    "fullFileExtension",
+    "capabilities",
+    "modifiedByMe",
+)
+_DRIVE_FILE_GET_ORDER = (
+    "kind",
+    "id",
+    "name",
+    "mimeType",
+    "starred",
+    "trashed",
+    "explicitlyTrashed",
+    "parents",
+    "spaces",
+    "version",
+    "webContentLink",
+    "webViewLink",
+    "iconLink",
+    "viewedByMe",
+    "createdTime",
+    "modifiedTime",
+    "modifiedByMeTime",
+    "modifiedByMe",
+    "sharedWithMeTime",
+    "owners",
+    "lastModifyingUser",
+    "shared",
+    "ownedByMe",
+    "capabilities",
+    "fullFileExtension",
+    "fileExtension",
+    "md5Checksum",
+    "size",
+    "quotaBytesUsed",
+    "exportLinks",
+)
+_DRIVE_LIST_TOP_ORDER = ("files", "kind", "nextPageToken", "incompleteSearch")
+
+
+def _drive_ordered(obj: dict, order: tuple[str, ...]) -> dict:
+    """`obj` with its keys in `order`. A key the order does not name is kept after them, in
+    its original order, so reordering never drops a key."""
+    out = {k: obj[k] for k in order if k in obj}
+    out.update({k: v for k, v in obj.items() if k not in out})
+    return out
+
+
+def _drive_project_one(obj: dict, fields: str | None) -> dict:
+    """A single file resource trimmed to a ``files.get`` mask; the mask is validated (400 on a name
+    real refuses) before trimming, including nested object fields. A file read by id is trimmed as
+    a listing's entries are, so it carries the keys and values it carries in a listing, in the
+    order real gives a read.
+
+    No mask answers the `_DRIVE_FILE_DEFAULT` keys alone, measured 2026-10-25. A mask that is empty
+    or of spaces and tabs alone selects nothing, which is not the same as no mask: measured
+    2026-09-23, `fields=` and `fields=%20` answer ``{}``, and `fields=%09` did too on 2026-10-20."""
+    paths = _drive_mask(fields)
+    if paths is None:
+        trimmed = {k: v for k, v in obj.items() if k in _DRIVE_FILE_DEFAULT}
+    else:
+        _check_mask(
+            paths,
+            _DRIVE_FILE_FIELDS,
+            unserved=_DRIVE_FILE_UNSERVED,
+            subfields=_DRIVE_FILE_SUBFIELDS,
+        )
+        trimmed = _drive_trim_object(obj, paths, None, _DRIVE_FILE_DEFAULT)
+    return _drive_ordered(trimmed, _DRIVE_FILE_GET_ORDER)
 
 
 def _drive_fill_shared(conn, files: list[dict], stored: set[str]) -> None:
@@ -2117,9 +3499,7 @@ def _drive_fill_shared(conn, files: list[dict], stored: set[str]) -> None:
 
     ``stored`` is the SET of served file ids that came from a row. An ACL grant names a file by
     that same id, so plain set membership is exact."""
-    have = store.docs_with_grants(
-        conn, "google_drive", [f["id"] for f in files if f["id"] in stored]
-    )
+    have = store.gdrive_shared(conn, [f["id"] for f in files if f["id"] in stored])
     for f in files:
         if f["id"] in stored:
             f["shared"] = f["id"] in have
@@ -2128,56 +3508,64 @@ def _drive_fill_shared(conn, files: list[dict], stored: set[str]) -> None:
 # --- `orderBy` -----------------------------------------------------------------------------
 
 
-def _natural_key(name: str) -> list[tuple]:
-    """Drive's ``name_natural``: digit runs compare numerically, so ``v2`` sorts before ``v10``."""
-    return [
-        (0, int(t), "") if t.isdigit() else (1, 0, t.casefold())
-        for t in re.split(r"(\d+)", name)
-        if t
-    ]
-
-
 # Real Drive's documented `orderBy` keys -> the sort key each takes from the served file object
-# (sorting what the client actually sees, so folders and stored rows order together). Names sort
-# case-insensitively, the way Drive's collation presents them. `recency` is Drive's "most recent
-# by any signal"; Backlot models exactly one modification timestamp, which stands in for it.
+# (sorting what the client actually sees, so folders and stored rows order together). `name`
+# compares names case-insensitively, code point by code point; `name_natural` is
+# `backlot.collation`'s.
 _DRIVE_ORDER_KEYS = {
     "createdTime": lambda f: f.get("createdTime") or "",
     "modifiedTime": lambda f: f.get("modifiedTime") or "",
-    "recency": lambda f: f.get("modifiedTime") or "",
     "name": lambda f: (f.get("name") or "").casefold(),
-    "name_natural": lambda f: _natural_key(f.get("name") or ""),
+    "name_natural": lambda f: collation.sort_key(f.get("name") or ""),
     "folder": lambda f: f.get("mimeType") != DRIVE_FOLDER_MIME,  # folders first
     "starred": lambda f: bool(f.get("starred")),
     "quotaBytesUsed": lambda f: int(f.get("quotaBytesUsed") or f.get("size") or 0),
-    # Sortable because Backlot DOES model the relation behind it — owner vs caller — even though it
-    # records no share event (see _shared_with_me_time). Absent for the admin/service token, where
-    # every key ties and the order falls back to the id, as it would on real Drive over nulls.
+    # The per-caller keys read the served object, so a file the caller never modified or was
+    # shared sorts as real sorts a file without the time: ahead of every time, and after every one
+    # under `desc`.
     "sharedWithMeTime": lambda f: f.get("sharedWithMeTime") or "",
+    "modifiedByMeTime": lambda f: f.get("modifiedByMeTime") or "",
+    # Real sorts a file shared with the caller that the caller never viewed after every file
+    # without a view time and ahead of every view time, one of 2001 included, measured 2026-10-21;
+    # a file reached through a shared folder carries no `sharedWithMeTime` and sorts with the
+    # first. Nothing here is viewed, as `viewedByMe` says on every file, so whether the caller was
+    # shared the file is all the key reads.
+    "viewedByMeTime": lambda f: bool(f.get("sharedWithMeTime")),
+    # The later of the caller's last view and last modification; a file with neither after every
+    # file with either.
+    "recency": lambda f: max(f.get("viewedByMeTime") or "", f.get("modifiedByMeTime") or ""),
 }
-# Documented by Drive, but derived from per-caller signals Backlot does not model at all: nothing
-# here is ever viewed or modified *by* anyone in particular. Sorting by one of these could only be a
-# no-op, and a silently unapplied sort is the very failure this fix is about — so they 400, which
-# tells a consumer "verify this against real Drive" instead of quietly agreeing.
-_DRIVE_ORDER_UNMODELLED = ("viewedByMeTime", "modifiedByMeTime")
+# Listed newest first whichever direction is asked for: real answered `recency` and `recency asc`
+# newest first, as it answers `recency desc`, measured 2026-10-20.
+_DRIVE_ORDER_NEWEST_FIRST = frozenset({"recency"})
+# What separates an `orderBy` key from its direction, and what may stand around either: the 25
+# code points of Unicode's White_Space property, each a 200 between `name` and `desc`, ahead of
+# `name` and after it, measured 2026-10-20. `str.split()` also splits on U+001C-U+001F, which real
+# refuses as part of the key.
+_DRIVE_ORDER_SPACE = re.compile(
+    "[\t-\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+"
+)
+
+
+def _drive_order_words(order_by: str | None) -> list[list[str]]:
+    """``orderBy``'s comma-separated keys, each as its words. A key with no words is no key:
+    ``,name``, ``name,`` and ``name,,modifiedTime`` are each served."""
+    words = ([w for w in _DRIVE_ORDER_SPACE.split(tok) if w] for tok in (order_by or "").split(","))
+    return [w for w in words if w]
 
 
 def _drive_order_specs(order_by: str | None) -> list[tuple]:
-    """Parse ``orderBy`` — comma-separated keys, each optionally suffixed ``desc`` — into
-    ``(key, reverse)`` pairs. An unusable key is a 400, as on the real API — accepting one and not
-    applying it would let a client relying on server-side ordering pass here and misbehave against
-    the real thing. A key named twice is a 403."""
+    """Parse ``orderBy`` — comma-separated keys, each optionally followed by ``asc`` or ``desc`` in
+    lower case — into ``(key, reverse)`` pairs. Anything else is real's 400 ``Invalid Value``: an
+    unknown key, a key or direction in another case, a third word. A key named twice is a 403."""
     specs = []
     seen: set[str] = set()
-    for tok in (order_by or "").split(","):
-        parts = tok.split()
-        if not parts:
-            continue
+    for parts in _drive_order_words(order_by):
         key = parts[0]
-        if len(parts) > 2 or (len(parts) == 2 and parts[1] != "desc"):
-            raise gerr.invalid_value("orderBy", f"Invalid sort key: {tok.strip()}")
-        if key not in _DRIVE_ORDER_KEYS and key not in _DRIVE_ORDER_UNMODELLED:
-            raise gerr.invalid_value("orderBy", f"Invalid sort key: {tok.strip()}")
+        if parts[1:] not in ([], ["asc"], ["desc"]):
+            raise gerr.invalid_value("orderBy")
+        if key not in _DRIVE_ORDER_KEYS:
+            raise gerr.invalid_value("orderBy")
         # Real Drive (measured 2026-10-04) 403s a key named twice whatever either direction is, and
         # reads `name_natural` as `name` but `recency` and `modifiedTime` as two keys — so this
         # compares names, not the key functions. It reads left to right and answers the first
@@ -2186,49 +3574,66 @@ def _drive_order_specs(order_by: str | None) -> list[tuple]:
         if name in seen:
             raise gerr.duplicate_sort_keys()
         seen.add(name)
-        specs.append((key, len(parts) == 2))
+        specs.append((key, parts[1:] == ["desc"]))
     return specs
 
 
-def _drive_order_keyfns(specs: list[tuple]) -> list[tuple]:
-    """``(key function, reverse)`` pairs for the keys ``_drive_order_specs`` passed. A key Backlot
-    cannot sort by is refused here, after the 403 a `fullText` term gets."""
-    for key, _ in specs:
-        if key in _DRIVE_ORDER_UNMODELLED:
-            raise gerr.invalid_value(
-                "orderBy",
-                f"Sorting by '{key}' is not supported by Backlot (it models no per-caller "
-                f"view/share timestamps). Supported: {', '.join(sorted(_DRIVE_ORDER_KEYS))}.",
-            )
-    return [(_DRIVE_ORDER_KEYS[key], reverse) for key, reverse in specs]
-
-
 def _drive_sort(files: list[dict], specs: list[tuple]) -> list[dict]:
-    """Apply the keys last-first: Python's sort is stable, so the first key wins. The id pre-sort
-    makes ties deterministic, which is what keeps a sorted walk from repeating or skipping a row
-    across pages."""
+    """Apply the keys last-first: Python's sort is stable, so the first key wins. Files the keys
+    tie stay newest modification first under either direction, as real lists them: of the tied
+    pairs in its `name`, `name_natural`, `folder,name`, `starred` and `quotaBytesUsed` listings of
+    two accounts' files on 2026-10-20, and in its `viewedByMeTime`, `sharedWithMeTime`,
+    `modifiedByMeTime` and `recency` listings of folders made for them on 2026-10-21, none had the
+    older first. The id under that keeps a sorted walk from repeating or skipping a row across
+    pages."""
     files.sort(key=lambda f: f.get("id") or "")
-    for keyfn, reverse in reversed(specs):
-        files.sort(key=keyfn, reverse=reverse)
+    files.sort(key=lambda f: f.get("modifiedTime") or "", reverse=True)
+    for key, reverse in reversed(specs):
+        files.sort(key=_DRIVE_ORDER_KEYS[key], reverse=reverse or key in _DRIVE_ORDER_NEWEST_FIRST)
     return files
+
+
+def _drive_newest_first(objects, folders: list[dict], offset: int, limit: int) -> list[dict]:
+    """The page at ``offset`` of a listing whose request names no `orderBy` and whose `q` has no
+    `fullText` term: newest `modifiedTime` first, ties by id, each synthesized folder among the
+    stored files where its own time puts it. Measured on Drive v3: a Workspace member's 170 files
+    and a consumer account's 21,702 with no `q` (2026-10-20), and on 2026-10-21 the member's 228
+    with `orderBy=` or `q=` empty, under `trashed = false` and under a `modifiedTime` bound, and
+    both accounts' under `createdTime` and `viewedByMeTime` bounds, `starred = false`,
+    `sharedWithMe = true`, `'me' in owners` and `trashed = true`, in the order
+    `orderBy=modifiedTime desc` gives, id for id, and in descending `modifiedTime` under `mimeType`
+    and `name contains` terms on both accounts and `'root' in parents` on the member's. Five
+    `fullText contains` queries on the two accounts came back with 16 to 144 of their adjacent pairs
+    out of time order.
+
+    ``objects(o, n)`` reads stored rows ``o`` to ``o + n`` already in that order. A row on the page
+    has at most ``len(folders)`` folders ahead of it, so the page holds no row before row
+    ``offset - len(folders)``, and a folder ahead of every row from there sorts before the page."""
+    start = max(0, offset - len(folders))
+    window = objects(start, offset + limit - start, with_shared=False)
+    newest = [("modifiedTime", True)]
+    return _drive_sort(window + folders, newest)[offset - start : offset - start + limit]
 
 
 def _drive_starred_after_another_key(order_by: str | None) -> bool:
     """Whether ``starred`` follows another key in an ``orderBy`` that ``_drive_order_specs`` passed,
-    the case `gerr.drive_internal_error` answers. An empty token is no key: `,starred` is served and
-    `name,,starred` is the 500."""
-    keys = [parts[0] for tok in (order_by or "").split(",") if (parts := tok.split())]
+    the case `gerr.drive_internal_error` answers: `,starred` is served and `name,,starred` is the
+    500."""
+    keys = [parts[0] for parts in _drive_order_words(order_by)]
     return "starred" in keys[1:]
 
 
-def _drive_q_plain_folder(query) -> bool:
-    """True when the query is just a folder scope (``'<id>' in parents``, and the ``trashed =
-    false`` every query carries) with no other clause — the shape a tree-walking client sends,
-    servable straight from SQL."""
-    return _drive_q_is_conjunction(query) and all(
-        t.field == "parents" or t == _QTerm("trashed", "=", "false")
-        for t in _drive_q_conjuncts(query)
-    )
+def _drive_q_plain_folder(query) -> str | None:
+    """Whether the query is just a folder scope, the shape a tree-walking client sends, servable
+    straight from SQL: ``"live"`` for ``'<id>' in parents and trashed = false``, whose listing
+    leaves the trash out, ``"all"`` for ``'<id>' in parents`` alone, as LlamaIndex's Google Drive
+    reader sends it, whose listing holds the caller's own trash too, and ``None`` for any other
+    clause."""
+    conjuncts = _drive_q_conjuncts(query) if _drive_q_is_conjunction(query) else []
+    trashed_false = _QTerm("trashed", "=", "false")
+    if not conjuncts or not all(t.field == "parents" or t == trashed_false for t in conjuncts):
+        return None
+    return "live" if trashed_false in conjuncts else "all"
 
 
 def _drive_q_excludes_folders(conjuncts: list[_QTerm]) -> bool:
@@ -2286,20 +3691,19 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
     # same one `_drive_q_eval` makes, so the candidate set is the answer for that term and the
     # evaluator only applies the others. Nothing the evaluator accepts is outside it.
     name = next((t for t in conjuncts if t.field == "name" and t.op in ("contains", "=")), None)
-    # `list_drive_by_name` answers non-trashed rows only, so it can be the candidate set only when
-    # every match is non-trashed — `trashed = false` a conjunct, not merely present: under a `not`
-    # it asks for the trash.
-    non_trashed = _QTerm("trashed", "=", "false") in conjuncts or (
-        _QTerm("trashed", "!=", "true") in conjuncts
-    )
+    trash = _drive_listed_trash(ids, me)
     if fulltext is not None:  # the index's candidates, in rank order, then the other terms
-        candidates = hits[fulltext.value]
-    elif name is not None and non_trashed:
+        candidates = [
+            r
+            for r in hits[fulltext.value]
+            if not r["trashed"] or trash is True or _drive_owned_by(r["author_email"], me)
+        ]
+    elif name is not None:
         # A name lookup (mirage resolves every gdrive file with `name='…'`) — SQL title LIKE
         # instead of materializing the whole corpus (~25k rows, ~1.6s) to match in Python. The
-        # remaining terms still filter the (small) name-matched set below.
+        # remaining terms, `trashed` among them, still filter the (small) name-matched set below.
         candidates = store.list_drive_by_name(
-            conn, name.value, container, ids, limit=100_000, exact=name.op == "="
+            conn, name.value, container, ids, limit=100_000, exact=name.op == "=", trash=trash
         )
     else:  # scope to the folder and/or the owner (if any) to shrink the set before the filter
         owner, not_owner = _drive_shared_with_me_scope(conjuncts, me)
@@ -2311,6 +3715,7 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
             limit=100_000,
             author_email=owner,
             not_author_email=not_owner,
+            trash=trash,
         )
     ids_by_value = _drive_q_fulltext_ids(hits)
     return [r for r in candidates if _drive_q_eval(query, _drive_facts(r), me, ids_by_value)]
@@ -2327,22 +3732,57 @@ _DRIVE_ABOUT_FIELDS = frozenset(
     importFormats kind maxImportSizes maxUploadSize storageQuota teamDriveThemes user
 """.split()
 )
+# What `about`'s object fields hold, as `_DRIVE_FILE_SUBFIELDS` gives a file's.
+_DRIVE_ABOUT_SUBFIELDS = {
+    "driveThemes": frozenset({"backgroundImageLink", "colorRgb", "id"}),
+    "storageQuota": frozenset({"limit", "usage", "usageInDrive", "usageInDriveTrash"}),
+    "teamDriveThemes": frozenset({"backgroundImageLink", "colorRgb", "id"}),
+    "user": _DRIVE_USER_KEYS,
+}
+
+_MASK_SPACED_NAMES = re.compile(r"(?<=[^ \t,()/])[ \t]+(?=[^ \t,()/])")
+
+
+def _drive_about_mask_is_required(mask: str) -> bool:
+    """Whether `about` answers a mask `_mask_paths` refuses whole with the missing-mask 400,
+    `required`, rather than with that refusal: it does for each one but a mask ending in a comma
+    and one that would be a mask if two names with only spaces or tabs between them were one.
+
+    Measured 2026-10-20 and 2026-10-25: `user,`, `user,,`, `,,`, `user(,`, `*,`, `(,`,
+    `user/,`, `user(kind),`, `user, ` and `user,<TAB>` were `Invalid field selection` and the mask,
+    and so were `user name`, `user<TAB>name`, `user name(kind)`, `user(kind name)` and
+    `kind, user name`; `user,,kind`, `,user`, ` ,user`, `user(`, `user)(`, `user(kind,)`,
+    `user//kind`, `user;kind`, `user*`, `*name`, `user *`, `user(kind) name`, `user name)` and
+    `kind,user(kind name` were `required`."""
+    if mask.rstrip(" \t").endswith(","):
+        return False
+    try:
+        _mask_paths(_MASK_SPACED_NAMES.sub("_", mask))
+    except gerr.GoogleError:
+        return True
+    return False
 
 
 def _drive_about_field_keys(fields: str | None) -> set[str] | None:
     """``about.get`` is the one Drive read whose ``fields`` mask is MANDATORY — the resource has no
     default projection, and real Drive 400s without one. ``None`` = serve everything (``*``).
 
-    A mask that parses to no names at all (``fields=,``) 400s rather than falling through to "no
-    projection": on a resource where the mask is required, answering a request for nothing with
-    everything is the one outcome the caller certainly did not ask for."""
-    if not (fields or "").strip():
+    A mask that selects nothing is that 400 too: real answered it to white space alone, any one of
+    the 29 code points `str.isspace` takes, and to `user()`, `user( )` and `kind()`, measured
+    2026-10-20, and to an empty group beside another key, `user(),kind` and `kind,user()`, on
+    2026-10-25. So does each mask `_drive_about_mask_is_required` takes."""
+    if fields is None:
         raise gerr.required("fields", "The 'fields' parameter is required for this method.")
-    keys = _mask_names(fields)
-    _check_mask(keys, _DRIVE_ABOUT_FIELDS)
-    if not keys:
-        raise gerr.invalid_parameter("fields", f"Invalid field selection {fields}")
-    return None if "*" in keys else keys
+    if _drive_about_mask_is_required(fields):
+        raise gerr.required("fields", "The 'fields' parameter is required for this method.")
+    paths = _mask_paths(fields)
+    _check_mask(paths, _DRIVE_ABOUT_FIELDS, subfields=_DRIVE_ABOUT_SUBFIELDS)
+    if any(len(p) > 1 and p[-1] == _MASK_EMPTY for p in paths):
+        raise gerr.required("fields", "The 'fields' parameter is required for this method.")
+    keys = _mask_keys(paths)
+    if keys is not None and not keys:
+        raise gerr.required("fields", "The 'fields' parameter is required for this method.")
+    return keys
 
 
 # The conversion tables below describe the *API's* capabilities, not this account's, so they carry
@@ -2383,9 +3823,16 @@ _DRIVE_EXPORT_FORMATS = {
     ],
 }
 
+# The formats a Doc exports to that are rendered from its body.
+_DOCS_TEXT_EXPORTS = {
+    "text/plain": gdocs.plain_text,
+    "text/markdown": gdocs.markdown,
+    "text/x-markdown": gdocs.markdown,
+}
+
 # Source type -> the native types Drive can convert it into on upload. Google's map is longer;
-# this is the part that covers every format Backlot's own corpus contains (native docs, Office
-# files, PDFs, delimited text, images), so a client's lookup for a real file resolves.
+# this is the part that covers every format Backlot's own corpus contains (native editor files,
+# Office files, PDFs, delimited text, images), so a client's lookup for a real file resolves.
 _DRIVE_IMPORT_FORMATS = {
     "application/pdf": [DRIVE_DOC_MIME],
     "application/rtf": [DRIVE_DOC_MIME],
@@ -2462,7 +3909,8 @@ async def drive_about(request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     # 400s on an absent or unknown mask
-    keys = _drive_about_field_keys(gerr.first_repeat(request.query_params, "fields"))
+    mask = gerr.first_repeat(request.query_params, "fields")
+    _drive_about_field_keys(mask)
     ids = auth.visible_ids(request, caller)
     # A caller with no mailbox of their own is the admin/service token; real Drive reports a
     # concrete address here either way, as gmail.users.getProfile already does.
@@ -2470,7 +3918,7 @@ async def drive_about(request: Request):
     used, trashed = store.drive_usage_bytes(conn, ids)
     about = {
         "kind": "drive#about",
-        "user": _drive_user(email) | {"me": True},  # `about.user` IS the caller
+        "user": _drive_user(email, True),  # `about.user` IS the caller
         "storageQuota": {
             "limit": str(_DRIVE_STORAGE_LIMIT),
             # `usage` spans every Google service; Backlot stores nothing outside Drive, so the two
@@ -2492,10 +3940,12 @@ async def drive_about(request: Request):
         "driveThemes": [],
         "teamDriveThemes": [],
     }
-    return _drive_project([about], keys)[0]
+    return _drive_trim_object(
+        about, _mask_paths(mask), None, frozenset({"kind", "storageQuota", "user"})
+    )
 
 
-@router.get("/drive/v3/drives")
+@router.get("/drive/v3/drives", openapi_extra={"parameters": _P_DRIVE_DRIVES})
 async def drive_shared_drives(request: Request):
     """Shared (Team) Drives — Backlot's corpus lives entirely in My Drive, so this is empty.
     Present so shared-drive-aware clients don't 404 while enumerating."""
@@ -2503,13 +3953,24 @@ async def drive_shared_drives(request: Request):
     _drive_page_size_in_range(
         _drive_typed(request, "useDomainAdminAccess", page_size=True)["pageSize"], 100
     )
+    _drive_refuse_a_trailing_comma(request)
+    # A `q` it does not take comes after the typed and range refusals and ahead of a bad
+    # `pageToken` and the 403 below, measured 2026-10-20 by sending one of each beside it.
+    _drive_q_parse(gerr.first_repeat(request.query_params, "q") or "", _DRIVES_Q)
     _drive_listing_page_token(request)
     # Every caller here is a member of one Workspace domain and none is its administrator: a
     # member's 403, with a `q` sent and without one, on its own and in a batch, measured 2026-10-06.
     # Real answers a domain administrator 200 and a consumer account 400 at `q`.
     if _drive_true(request, "useDomainAdminAccess"):
         raise gerr.domain_admin_privilege_required()
-    return {"kind": "drive#driveList", "drives": []}
+    body = {"kind": "drive#driveList", "drives": []}
+    # The rest of the mask's refusals last: real answered a name the list does not have after a bad
+    # `q`, a bad `pageToken` and the 403, each sent beside it, measured 2026-10-20.
+    mask = gerr.first_repeat(request.query_params, "fields")
+    projected = _drive_project_listing(
+        body, mask, "drives", _DRIVE_DRIVE_FIELDS, _DRIVE_DRIVE_DEFAULT
+    )
+    return body if projected is None else projected
 
 
 @router.get(
@@ -2521,8 +3982,8 @@ async def drive_files_list(request: Request):
     and every row comes back shaped the way the caller asked for."""
     conn = auth.conn(request)
     caller = _require(request)
-    ids = auth.visible_ids(request, caller)
     me = caller.email
+    ids = auth.visible_ids(request, caller)
     # Each read off the first repeat, as real reads them -- see `gerr.first_repeat`. Refused in
     # real's order, measured 2026-09-23 by sending two bad values at once: `pageSize` first, then
     # `orderBy`, `q`, `pageToken` and `fields`, whichever order the query names them in. The 403 for
@@ -2530,7 +3991,8 @@ async def drive_files_list(request: Request):
     # 403 between `orderBy` and `q`, measured 2026-10-04, the 403 for an `orderBy` on a `q` with a
     # `fullText` term between `q` and `pageToken`, measured 2026-10-05 and 2026-10-07, and the 500
     # for `starred` after another key between `pageToken` and `fields`, measured 2026-10-04 and
-    # 2026-10-07.
+    # 2026-10-07. A `fields` ending in a comma comes right after `pageSize`, as
+    # `_drive_refuse_a_trailing_comma` says.
     params = request.query_params
     typed = _drive_typed(
         request,
@@ -2541,6 +4003,7 @@ async def drive_files_list(request: Request):
         page_size=True,
     )
     limit = _drive_page_size(typed["pageSize"])
+    _drive_refuse_a_trailing_comma(request)
     # 400 on an unusable key, 403 on a key named twice
     order = _drive_order_specs(gerr.first_repeat(params, "orderBy"))
     shared_items = _drive_true(request, "includeItemsFromAllDrives") or _drive_true(
@@ -2552,9 +4015,9 @@ async def drive_files_list(request: Request):
         raise gerr.supports_all_drives_required()
     q = gerr.first_repeat(params, "q") or ""
     query = _drive_q_parse(q)  # 400 on a clause Backlot cannot evaluate; None when there is no q
-    if order and query is not None and any(t.field == "fullText" for t in _drive_q_terms(query)):
+    fulltext = any(t.field == "fullText" for t in _drive_q_terms(query))
+    if order and fulltext:
         raise gerr.sorting_not_supported_fulltext()
-    order = _drive_order_keyfns(order)
     # Measured 2026-09-23: a token the API did not issue is 400 `Invalid Value`, where an empty one
     # is the first page.
     offset = decode_cursor_or_none(gerr.first_repeat(params, "pageToken"))
@@ -2563,17 +4026,28 @@ async def drive_files_list(request: Request):
     if _drive_starred_after_another_key(gerr.first_repeat(params, "orderBy")):
         raise gerr.drive_internal_error()
     mask = gerr.first_repeat(params, "fields")
-    if mask is not None and not mask.strip():
-        # The blank mask `_drive_get_field_keys` describes; on a listing it drops `kind` and
+    if mask is not None and not mask.strip(" \t"):
+        # The blank mask `_drive_project_one` describes; on a listing it drops `kind` and
         # `files` too, so the typed response model is bypassed.
         return JSONResponse({})
-    keys = _drive_file_field_keys(mask)  # 400 on an unknown field
+    list_paths = _drive_mask(mask)
+    if list_paths is not None:  # 400 on a name the listing or its files do not have
+        _check_mask(
+            list_paths,
+            _DRIVE_LIST_FIELDS,
+            "files",
+            _DRIVE_FILE_FIELDS,
+            _DRIVE_FILE_UNSERVED,
+            _DRIVE_FILE_SUBFIELDS,
+        )
     conjuncts = _drive_q_conjuncts(query)
     hits = _drive_q_fulltext(conn, query, ids)
     # A parent every match has to be under; one under an `or` scopes nothing.
     parent_ids = [t.value for t in conjuncts if t.field == "parents"]
+    roots = _drive_roots(me)
+    in_root = any(pid in roots for pid in parent_ids)
     # A folder-scoped parent resolves to one container name (for the SQL-scoped paths below).
-    scoped = [pid for pid in parent_ids if pid != "root"]
+    scoped = [pid for pid in parent_ids if pid not in roots]
     container = next((n for pid in scoped if (n := _drive_folder_name_by_id(conn, pid))), None)
     # Backlot's folders all hang directly under the root, so a query scoped inside one can only
     # match files — no folder stream to build.
@@ -2585,26 +4059,40 @@ async def drive_files_list(request: Request):
 
     # The row stream as (count, fetch) so the SQL paths stay SQL-paginated: a crawl costs one page
     # of rows per request, not a full-corpus scan re-run for every page.
-    if "root" in parent_ids:
-        total_rows, fetch = 0, lambda o, n: []  # every stored file lives in a folder
-    elif container is not None and _drive_q_plain_folder(query):
+    if in_root and scoped:
+        total_rows, fetch = 0, lambda o, n: []  # a file is at the root or in a folder, not both
+    elif in_root and (scope := _drive_q_plain_folder(query)):
+        # The files at the root are the ones a write created there (`_DRIVE_ROOT_FOLDER`): every
+        # corpus file lives in a folder.
+        trash = _drive_listed_trash(ids, me) if scope == "all" else False
+        total_rows = store.count_drive_folder(conn, _DRIVE_ROOT_FOLDER, ids, trash)
+        fetch = lambda o, n: store.list_drive_folder(  # noqa: E731
+            conn, _DRIVE_ROOT_FOLDER, ids, limit=n, offset=o, trash=trash
+        )
+    elif in_root:
+        matched = _drive_q_rows(conn, query, _DRIVE_ROOT_FOLDER, ids, me, hits)
+        if not fulltext:
+            matched.sort(key=lambda r: r["id"])
+            matched.sort(key=_drive_modified, reverse=True)
+        total_rows, fetch = len(matched), lambda o, n: matched[o : o + n]  # noqa: E731
+    elif container is not None and (scope := _drive_q_plain_folder(query)):
         # The common case: a client walking the tree wants just this folder's files.
-        total_rows = store.count_drive_folder(conn, container, ids)
-        fetch = lambda o, n: store.list_drive_folder(conn, container, ids, limit=n, offset=o)  # noqa: E731
+        trash = _drive_listed_trash(ids, me) if scope == "all" else False
+        total_rows = store.count_drive_folder(conn, container, ids, trash)
+        fetch = lambda o, n: store.list_drive_folder(  # noqa: E731
+            conn, container, ids, limit=n, offset=o, trash=trash
+        )
     elif query is not None:  # filter the visible set by the query, then paginate
         matched = _drive_q_rows(conn, query, container, ids, me, hits)
+        if not fulltext:  # in the order `_drive_newest_first` reads rows in
+            matched.sort(key=lambda r: r["id"])
+            matched.sort(key=_drive_modified, reverse=True)
         total_rows, fetch = len(matched), lambda o, n: matched[o : o + n]  # noqa: E731
     else:
-        # exclude_trashed: with no `q` at all there is no query to carry `trashed = false`, and
-        # real Drive leaves trashed files out of files.list unless `trashed = true` asks for them.
-        # The q-bearing paths already do this (the `trashed = false` _drive_q_parse appends,
-        # store.list_drive_folder's WHERE), so without it the DEFAULT listing was the one call that
-        # returned trash.
-        total_rows = store.count_documents(
-            conn, "google_drive", visible_ids=ids, exclude_trashed=True
-        )
+        trash = _drive_listed_trash(ids, me)  # the caller's own trash with the rest
+        total_rows = store.count_documents(conn, "google_drive", visible_ids=ids, trash=trash)
         fetch = lambda o, n: store.list_documents(  # noqa: E731
-            conn, "google_drive", visible_ids=ids, limit=n, offset=o, exclude_trashed=True
+            conn, "google_drive", visible_ids=ids, limit=n, offset=o, trash=trash, newest_first=True
         )
 
     # The file ids that came from the row stream, as opposed to a synthesized folder -- see
@@ -2614,11 +4102,7 @@ async def drive_files_list(request: Request):
     def objects(o: int, n: int, *, with_shared: bool = True) -> list[dict]:
         rows = fetch(o, n) if n > 0 else []
         stored.update(r["id"] for r in rows)
-        shared = (
-            store.docs_with_grants(conn, "google_drive", [r["id"] for r in rows])
-            if with_shared
-            else ()
-        )
+        shared = store.gdrive_shared(conn, [r["id"] for r in rows]) if with_shared else ()
         return [_drive_file(conn, r, shared=r["id"] in shared, me=me) for r in rows]
 
     total = total_rows + len(folders)
@@ -2631,23 +4115,55 @@ async def drive_files_list(request: Request):
             offset : offset + limit
         ]
         _drive_fill_shared(conn, files, stored)
-    else:
-        # No sort: the stored rows first (SQL-paginated), the folder objects as the tail. Real
-        # Drive leaves the default order unspecified, and keeping folders last means a client that
-        # reads files[0] out of an unfiltered listing still gets a file.
+    elif fulltext:
+        # The index's rank order (`_drive_q_rows`), the folder objects as the tail: real lists a
+        # `fullText` match in an order of its own, not by time (`_drive_newest_first`).
         files = objects(offset, min(limit, max(0, total_rows - offset)))
         if len(files) < limit:
             start = max(0, offset - total_rows)
             files += folders[start : start + limit - len(files)]
+    else:
+        files = _drive_newest_first(objects, folders, offset, limit)
+        _drive_fill_shared(conn, files, stored)
+    # No mask answers each entry with the `_DRIVE_FILE_DEFAULT` keys alone, as `_drive_project_one`
+    # answers a file read by id.
+    entry_keys = (
+        set(_DRIVE_FILE_DEFAULT)
+        if list_paths is None
+        else _drive_entry_keys(list_paths, "files", _DRIVE_FILE_DEFAULT)
+    )
     body = {
         "kind": "drive#fileList",
         "incompleteSearch": False,
-        "files": _drive_project(files, keys),
+        "files": _drive_project_entries(files, entry_keys),
     }
+    # Nested object sub-selection (`files(owners(kind))`) the flat `_drive_project` pass cannot
+    # express, but only when entries are projected and no top-level `*` names the whole entry.
+    if (
+        list_paths is not None
+        and entry_keys is not None
+        and not any(p == ("*",) for p in list_paths)
+        and any(len(p) > 1 and p[0] == "files" and p[1] != "*" for p in list_paths)
+    ):
+        body["files"] = _drive_project_paths(
+            body["files"], list_paths, "files", _DRIVE_FILE_DEFAULT
+        )
     token = next_page_token(offset, len(files), total)
     if token:
         body["nextPageToken"] = token
-    return body
+    # Trim the listing's own top-level keys to the mask, the way real answers `fields=kind` with
+    # only kind, `fields=nextPageToken` without files and `files(id)` without kind/incompleteSearch.
+    tops = _mask_keys(list_paths, _DRIVE_LIST_DEFAULT)
+    if tops is not None:
+        if any(p[0] == "files" for p in list_paths):
+            tops.add("files")
+        body = {k: v for k, v in body.items() if k in tops}
+    if "files" in body:
+        body["files"] = [_drive_ordered(e, _DRIVE_FILE_LIST_ORDER) for e in body["files"]]
+    body = _drive_ordered(body, _DRIVE_LIST_TOP_ORDER)
+    if not body:
+        return JSONResponse({})
+    return JSONResponse(body)
 
 
 @router.get("/drive/v3/files/{file_id}", openapi_extra={"parameters": _P_DRIVE_ALT})
@@ -2670,10 +4186,12 @@ async def drive_files_get(file_id: str, request: Request):
     _drive_typed(request, "acknowledgeAbuse", "supportsAllDrives", "supportsTeamDrives")
     if download:
         caller = _require(request, download=True)
+    else:
+        _drive_refuse_a_trailing_comma(request)
     # Measured 2026-10-04: before the lookup, so a file that does not exist is refused alike, and
-    # before `fields`. Inside a batch real checks a part's own flag only when the part is the
-    # batch's one part that is not a download, measured 2026-10-05 beside downloads, other reads and
-    # a second flagged part.
+    # before each `fields` refusal but `_drive_refuse_a_trailing_comma`'s. Inside a batch real
+    # checks a part's own flag only when the part is the batch's one part that is not a download,
+    # measured 2026-10-05 beside downloads, other reads and a second flagged part.
     outer = _BATCH_OUTER.get()
     if not download and _drive_true(request, "acknowledgeAbuse") and (outer is None or outer.lone):
         raise gerr.abuse_acknowledgment_not_applicable()
@@ -2685,8 +4203,14 @@ async def drive_files_get(file_id: str, request: Request):
         # cannot see with the 404 notFound an id that names nothing gets, `fields` mask or not.
         name = _drive_folder_name_by_id(conn, file_id)
         if name is not None and store.drive_folder_has_visible(conn, name, ids):
-            keys = _drive_get_field_keys(gerr.first_repeat(request.query_params, "fields"))
-            return _drive_project([_drive_folder_obj(conn, name, caller.email)], keys)[0]
+            # Measured 2026-10-16: a visible folder cannot be downloaded, just as a native
+            # Docs Editors file cannot; a folder the caller cannot see remains a 404.
+            if gerr.alt_format(request.query_params) == "media":
+                raise gerr.not_downloadable()
+            return _drive_project_one(
+                _drive_folder_obj(conn, name, caller.email),
+                gerr.first_repeat(request.query_params, "fields"),
+            )
         raise gerr.not_found_file(file_id)
     # `gerr.alt_format`, not `.get`: measured 2026-09-17 against this same route, `alt=MEDIA` and
     # `alt=Media` download the content just as `alt=media` does, and `alt=media&alt=json` downloads
@@ -2698,11 +4222,10 @@ async def drive_files_get(file_id: str, request: Request):
             raise gerr.not_downloadable()
         mime = row["mime_type"] or "application/octet-stream"
         return Response(row["content"].encode("utf-8"), media_type=mime)
-    # Same projection as files.list: a file resolved by id and the same file read out of a listing
-    # must come back identical, or caching/diffing behaves differently depending on which call
-    # produced the row.
-    keys = _drive_get_field_keys(gerr.first_repeat(request.query_params, "fields"))
-    return _drive_project([_drive_file(conn, row, me=caller.email)], keys)[0]
+    return _drive_project_one(
+        _drive_file(conn, row, me=caller.email),
+        gerr.first_repeat(request.query_params, "fields"),
+    )
 
 
 @router.get("/drive/v3/files/{file_id}/export", openapi_extra={"parameters": _P_DRIVE_EXPORT})
@@ -2756,7 +4279,8 @@ async def drive_files_export(file_id: str, request: Request):
     target = requested.casefold()
     if target not in {f.casefold() for f in _DRIVE_EXPORT_FORMATS.get(native[0], ())}:
         raise gerr.unsupported_conversion()
-    # honor the requested target format; CSV/TSV serve the cells, others prefix the title.
+    # A Doc's text formats are rendered from its body (`gdocs.plain_text`, `gdocs.markdown`); CSV
+    # and TSV serve a spreadsheet's cells, and every other format the title and `content`.
     #
     # CSV needs no branch for either kind of document: a document that STATES a grid has its
     # `content` derived from the first sheet's CSV at import, and one that does not has the text it
@@ -2768,7 +4292,12 @@ async def drive_files_export(file_id: str, request: Request):
         stored = store.gdrive_sheets_for(conn, file_id)
         if stored:
             grid = json.loads(stored[0]["grid"])
-            return Response(sheets_grid.to_tsv(grid), headers={"content-type": requested})
+            return Response(gsheets.to_tsv(grid), headers={"content-type": requested})
+    render = _DOCS_TEXT_EXPORTS.get(target) if native[0] == DRIVE_DOC_MIME else None
+    if render is not None:
+        stored = store.gdrive_doc_body_for(conn, file_id)
+        content = stored if stored is not None else gdocs.from_text(row["content"])
+        return Response(render(content), headers={"content-type": requested})
     plain = target in ("text/csv", "text/tab-separated-values")
     body = row["content"] if plain else f"{row['title']}\n\n{row['content']}"
     return Response(body, headers={"content-type": requested})
@@ -2786,10 +4315,11 @@ async def drive_files_permissions(file_id: str, request: Request):
         request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
     )["pageSize"]
     _drive_page_size_in_range(sizes, 100)
+    _drive_refuse_a_trailing_comma(request)
     # Refused in real's order, measured by sending two bad values at once: the `pageToken`
     # refusals, a repeated `pageSize`'s 500, the domain-administrator refusal and the file lookup
-    # below, and a token issued for another file last, in `_drive_permission_page`. The places of
-    # the 500 and of that last refusal were measured 2026-10-08.
+    # below, and a token issued for another file after those, in `_drive_permission_page`. The
+    # places of the 500 and of the other-file token were measured 2026-10-08.
     token = _drive_permissions_page_token(request)
     size = _drive_permissions_page_size(sizes)
     # No caller here is a domain administrator: 404 for the file, even one the caller owns,
@@ -2810,12 +4340,21 @@ async def drive_files_permissions(file_id: str, request: Request):
         permissions = _drive_permissions(conn, file_id, folder=name)
     else:
         permissions = _drive_permissions(conn, row["id"])
-    return _drive_permission_page(permissions, file_id, size, token)
+    mask = gerr.first_repeat(request.query_params, "fields")
+    if mask is None:
+        permissions = [_drive_permission_view(p) for p in permissions]
+    body = _drive_permission_page(permissions, file_id, size, token)
+    # Real answered a name the list does not have after the `pageToken` refusals, the
+    # domain-administrator 404 and the file lookup, each sent beside it, measured 2026-10-20.
+    projected = _drive_project_listing(
+        body, mask, "permissions", _DRIVE_PERMISSION_FIELDS, _DRIVE_PERMISSION_DEFAULT
+    )
+    return body if projected is None else JSONResponse(projected)
 
 
 # --- Google Workspace editors read APIs (Docs / Sheets / Slides) ------------------
 #
-# Drive `files.export` renders a native doc to text, but editor-aware clients (e.g. mirage)
+# Drive `files.export` renders a native editor file to text, but editor-aware clients (mirage)
 # read the *structured* document straight from the Docs/Sheets/Slides APIs instead. These
 # endpoints serve the corpus content shaped into each API's read response, keyed on the same
 # Drive file id, and enforce the same ACL as Drive.
@@ -2838,8 +4377,7 @@ async def drive_files_permissions(file_id: str, request: Request):
 # The Office row is narrower than the widely-cited bug reports (googlesheets4#275 and friends)
 # suggest — they only ever show the family that matches. Measured both ways: .xlsx -> Sheets and
 # .docx -> Docs give the Office message, while .xlsx -> Docs and .docx -> Sheets give the plain
-# invalid-argument one. `.pptx -> Slides` follows the confirmed pattern but was not itself
-# measured; no .pptx was available in the probed account.
+# invalid-argument one. `.pptx -> Slides` gives the Office message too, measured on 2026-10-10.
 EDITOR_NOT_FOUND = "Requested entity was not found."
 EDITOR_INVALID_ARG = "Request contains an invalid argument."
 EDITOR_OFFICE = (
@@ -2862,19 +4400,18 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     reading a Doc through the Sheets API answers 200 with prose sliced into a "grid", plausible
     enough that a client trusts it rather than noticing the id was wrong.
 
-    Sheets and Docs resolve the stored type before visibility: a hidden file of their own type is
-    permission-denied, while a hidden file of another type gets that type's usual answer. Measured
-    on 2026-10-06, and for an Office file on 2026-10-09. Slides was not measured and resolves
-    visibility first."""
+    Sheets, Docs and Slides resolve the stored type before visibility: a hidden file of their own
+    type is permission-denied, while a hidden file of another type gets that type's usual answer.
+    Measured on 2026-10-06, for an Office file on 2026-10-09, and through Slides on 2026-10-10 and
+    2026-10-17."""
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
-    type_before_acl = expect in {"document", "spreadsheet"}
     # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has
-    # to resolve the file's own id. Sheets and Docs need the unscoped row to distinguish a missing
-    # id from a stored file that this caller cannot see.
-    row = store.gdrive_by_id(conn, file_id, visible_ids=None if type_before_acl else ids)
+    # to resolve the file's own id, unscoped, to distinguish a missing id from a stored file that
+    # this caller cannot see.
+    row = store.gdrive_by_id(conn, file_id, visible_ids=None)
     if row is None:
         # Folders are synthesized rather than stored, so they miss the lookup above. Real Google
         # calls a folder an invalid argument, not a missing entity, so resolve it before giving up.
@@ -2885,7 +4422,7 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     # here too — the fallback stays in one place rather than being decided per route.
     subtype = row["subtype"] or "document"
     if subtype == expect:
-        if type_before_acl and store.gdrive_by_id(conn, file_id, visible_ids=ids) is None:
+        if store.gdrive_by_id(conn, file_id, visible_ids=ids) is None:
             raise gerr.permission_denied()
         return row
     if subtype in _EDITOR_NATIVE:  # a different Workspace type: not this API's entity at all
@@ -2895,755 +4432,122 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     raise gerr.invalid_argument(EDITOR_INVALID_ARG)
 
 
-# `documents.get`'s two enums, names in number order. Measured 2026-10-09: `suggestionsViewMode`
-# reads `0` through `3`, `+1` and `01` (the value numbered 1) and a name in any ASCII case, and
-# refuses `4`, `-1`, `1.0`, a padded `" 1"`, empty and `NOPE`. `commentsViewMode` reads the same
-# way (2026-10-14: `3`, `+1` and `comments_view_mode_omitted` read, `4` and `-1` refused).
-# `includeTabsContent` is the boolean `_sheets_bool_value` reads (2026-10-14: `no`, `n`, `y`, `T`
-# and `F` read, `on`, `off`, `2` and `tru` refused). A value that cannot be read is a 400 before
-# the document is looked up.
-_DOCS_VIEW = "type.googleapis.com/google.apps.docs.v1"
-_DOCS_SUGGESTIONS_VIEW = protojson.Enum(
-    f"{_DOCS_VIEW}.SuggestionsViewMode",
-    (
-        "DEFAULT_FOR_CURRENT_ACCESS",
-        "SUGGESTIONS_INLINE",
-        "PREVIEW_SUGGESTIONS_ACCEPTED",
-        "PREVIEW_WITHOUT_SUGGESTIONS",
-    ),
-)
-_DOCS_COMMENTS_VIEW = protojson.Enum(
-    f"{_DOCS_VIEW}.CommentsViewMode",
-    (
-        "COMMENTS_VIEW_MODE_UNSPECIFIED",
-        "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
-        "COMMENTS_VIEW_MODE_OMITTED",
-        "COMMENTS_VIEW_MODE_INCLUDED",
-    ),
-)
+def _editor_writable(request: Request, row) -> None:
+    """Refuse a write to a file the caller may only read. Only its owner may write a file here (the
+    admin's being what its service account created, `_drive_owned_by`): every grant makes a reader
+    (`_drive_file_capabilities`), and a reader's write is the 403 ``The caller does not have
+    permission``, measured on Sheets' update, batchUpdate, clear, batchClear and append."""
+    if not _drive_owned_by(row["author_email"], _require(request).email):
+        raise gerr.permission_denied()
 
 
-@router.get("/docs/v1/documents/{document_id}")
-async def docs_get(document_id: str, request: Request):
-    """The document as Docs structural elements: one ``paragraph`` per line of the stored text."""
-    # The credential, then the typed values, then the lookup -- `_typed_query` records the order.
-    _require(request)
-    # Validated and then unused: the body is the same whatever a value that is read selects, where
-    # real's changes with it.
-    _typed_query(
-        request,
+def _editor_creator(request: Request, caller: Caller) -> str:
+    """Who a created file belongs to: the caller, or for the admin/service token the service
+    account, which on real owns what it creates."""
+    return caller.email or _service_email(request)
+
+
+def _editor_new_file_id(conn, owner: str) -> str:
+    """A Drive file id no stored file has, minted as the importer mints one (`synth.gdrive_file_id`)
+    from a seed only this creation has."""
+    while True:
+        file_id = synth.gdrive_file_id(f"created:{owner}:{time.time_ns()}")
+        if store.gdrive_by_id(conn, file_id) is None:
+            return file_id
+
+
+def _editor_store(
+    conn, file_id: str, owner: str, title: str, subtype: str, content: str, parts=None
+) -> None:
+    """A created editor file, stored at its owner's My Drive root and granted to the owner alone:
+    measured on `spreadsheets.create` 2026-10-26 and `documents.create` 2026-10-28, the Drive file's
+    ``parents`` is the creator's root, listed under ``'root' in parents``, its one permission the
+    owner's, and anyone else is answered as for a file nobody shared with them."""
+    now = int(time.time())
+    store.insert_document(
+        conn,
+        "google_drive",
         {
-            "suggestionsViewMode": lambda raw: _sheets_enum_value(
-                raw, "suggestions_view_mode", _DOCS_SUGGESTIONS_VIEW
-            ),
-            "includeTabsContent": lambda raw: _sheets_bool_value(raw, "include_tabs_content"),
-            "commentsViewMode": lambda raw: _sheets_enum_value(
-                raw, "comments_view_mode", _DOCS_COMMENTS_VIEW
-            ),
+            "id": file_id,
+            "folder": _DRIVE_ROOT_FOLDER,
+            "author_email": owner,
+            "title": title,
+            "content": content,
+            "subtype": subtype,
+            "parents": json.dumps([synth.drive_root_id(owner)]),
+            "created_ts": now,
+            "updated_ts": now,
+            "trashed": 0,
+            "title_fold": store.drive_name_fold(title),
         },
-    )
-    row = _editor_doc(request, document_id, expect="document")
-    content = [{"sectionBreak": {"sectionStyle": {}}}]
-    for line in (row["content"] or "").split("\n"):
-        content.append(
-            {"paragraph": {"elements": [{"textRun": {"content": line + "\n", "textStyle": {}}}]}}
-        )
-    # Real's order for an untabbed read (docs.googleapis.com, 2026-10-16, twelve Docs, six owned by
-    # a Workspace member and six by a consumer account), the same under each `suggestionsViewMode`,
-    # `includeTabsContent=false` and a `fields` mask naming the members in another order
-    # (`documentId,title`, `revisionId,body,title`). Real also serves `headers` and `footers` after
-    # `body`, `lists` after `namedStyles` and `inlineObjects` before `documentId` when a Doc has
-    # them; this server serves none of the four.
-    return {
-        "title": row["title"],
-        "body": {"content": content},
-        "documentStyle": {},
-        "namedStyles": {"styles": []},
-        "revisionId": synth._digest(document_id)[:24],
-        "suggestionsViewMode": "SUGGESTIONS_INLINE",
-        "documentId": document_id,
-        # Last, where real serves it. Real's value for a read that asks for no comments, whatever
-        # `suggestionsViewMode` and `includeTabsContent` select (measured 2026-10-09 and
-        # 2026-10-15); `commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED` beside the tabs and inline
-        # suggestions is answered `COMMENTS_VIEW_MODE_INCLUDED` there and this value here.
-        "commentsViewMode": "COMMENTS_VIEW_MODE_OMITTED",
-    }
-
-
-def _sheets_grid(content: str | None) -> list[list[str]]:
-    """The stored text as a grid: one row per line, each row a SINGLE cell holding that line
-    verbatim. Joined back with ``\\n`` this reproduces the stored content byte-for-byte, which is
-    also what ``files.export`` serves — so the two cannot disagree.
-
-    NOT split on a delimiter. Measured over 1,875 real spreadsheet records, none is
-    delimiter-uniform CSV: 82.6% are prose, 17.4% prose wrapped around a PIPE-delimited table. So
-    comma-splitting manufactures columns out of sentence punctuation. A line break is the only
-    structure the stored text carries, so it is the only structure served — and choosing a column
-    delimiter is a corpus-owner's decision, which a caller can still make without first undoing a
-    guess made here.
-    """
-    return [[line] for line in (content or "").split("\n")]
-
-
-# --- the standard query parameters every Sheets read accepts ---------------------------------
-#
-# Measured on the live API, all on `values.get` unless noted:
-#
-#   fields           a partial-response mask; see `_gmask`
-#   prettyPrint      DEFAULT TRUE -- indented unless `false` or `0`; see `_sheets_respond`
-#   alt              `json` only; `media` is 400 "Unsupported alt type ... for non byte stream
-#                    request." and `zzz` 400 "Invalid value ... for query parameter 'alt'". `proto`
-#                    is a third answer real gives and this module does not -- see `_sheets_respond`
-#   callback         JSONP, on a GET: the body is wrapped, the type becomes text/javascript and the
-#                    status becomes 200 -- a name that is not a JavaScript one is refused ahead of
-#                    everything but `$.xgafv` and `alt` (`gerr.validate_system_parameters`), and an
-#                    empty value is no callback at all. Declared here rather than router-wide with
-#                    `$.xgafv`, because Sheets is where a SUCCESS is wrapped: the other four
-#                    families honour it on their errors only, which is less than a router-wide
-#                    declaration would promise. The two POST routes below share this list and so
-#                    declare it as well, which real's document does for every method -- and real
-#                    ignores it on a POST exactly as `gerr.jsonp_callback` does, so the declaration
-#                    promises a caller no more there than the vendor's own does.
-#   quotaUser        a rate-limit bucket label; any string, including empty, and no effect on the
-#                    response -- Backlot enforces no quota, so there is nothing for it to select
-#   upload_protocol  accepted and ignored on a read
-#
-# `key` is NOT here: it is an alternative way to authenticate, and honouring it means a second
-# credential path through `backlot.auth` rather than a parameter this module can read. Nor are
-# `access_token` and `oauth_token`, which `_credential` reads and
-# `backlot.openapi.google_system_parameters` declares for every family. `uploadType` is not here
-# either -- measured, the real API REFUSES it on a read ("Cannot bind query parameter"), so the
-# baseline's "the vendor accepts it" is not what the vendor does.
-_P_SHEETS_STD = [
-    qp("fields"),
-    qp("prettyPrint", "boolean"),
-    qp("alt"),
-    qp("callback"),
-    qp("quotaUser"),
-    qp("upload_protocol"),
-]
-
-
-def _gmask_parse(mask: str) -> dict:
-    """A ``fields`` mask as a nested selection tree; ``{}`` at a leaf means "this whole subtree".
-
-    Measured grammar: ``.`` and ``/`` both descend, ``a(b,c)`` groups a sub-selection, ``,``
-    separates siblings, ``*`` selects everything, and a trailing comma is tolerated. A name is
-    matched case-sensitively and is not trimmed -- `` spreadsheetId`` with a leading space 400s."""
-    tree: dict = {}
-    # (node, key-so-far) as the parser descends into a group
-    stack, cur, token = [], tree, ""
-
-    def land(node, name):
-        if not name:
-            return node
-        head, _, rest = name.replace("/", ".").partition(".")
-        child = node.setdefault(head, {})
-        while rest:
-            head, _, rest = rest.partition(".")
-            child = child.setdefault(head, {})
-        return child
-
-    for ch in mask:
-        if ch == "(":
-            stack.append((cur, token))
-            cur, token = land(cur, token), ""
-        elif ch == ")":
-            if not stack:
-                raise gerr.bad_field_mask(mask)
-            land(cur, token)
-            cur, token = stack.pop()[0], ""
-        elif ch == ",":
-            land(cur, token)
-            token = ""
-        else:
-            token += ch
-    if stack:
-        raise gerr.bad_field_mask(mask)
-    land(cur, token)
-    return tree
-
-
-def _gmask_check(tree: dict, allowed: dict, path: str = "") -> None:
-    """Refuse a name the response has no field for, naming the full path as the real API does.
-
-    Validated against the fields Backlot CAN emit rather than against the whole Sheets schema:
-    a mask naming a real field this module does not model -- a cell's `userEnteredFormat`, say --
-    400s here where the real API answers 200. Stated rather than hidden; the alternative is to
-    accept any name at all, which is how a typo becomes a silently empty response."""
-    for name, sub in tree.items():
-        if name == "*":
-            continue
-        full = f"{path}.{name}" if path else name
-        if name not in allowed:
-            raise gerr.bad_field_mask(full)
-        if sub:
-            _gmask_check(sub, allowed[name], full)
-
-
-def _gmask_wants_grid(mask: str | None) -> bool:
-    """Whether a `fields` mask reaches the cells, which is what decides the grid when one is set.
-
-    The discovery document says of `includeGridData`, on both methods that take it: "This parameter
-    is ignored if a field mask was set in the request." Measured, that is narrower than it reads --
-    the mask has to reach `sheets.data`. `fields=sheets` and `fields=sheets.data...` build the
-    grid; `fields=*` and `fields=sheets.properties.title` do not, even though the first of those
-    selects everything."""
-    if not mask:
-        return False
-    tree = _gmask_parse(mask)
-    under = tree.get("sheets")
-    return under is not None and (not under or "data" in under)
-
-
-def _gmask_apply(tree: dict, value):
-    """Project ``value`` through a selection tree, mapping over a list rather than indexing it —
-    which is what lets ``sheets.properties.title`` reach into every sheet."""
-    if not tree or "*" in tree:
-        return value
-    if isinstance(value, list):
-        return [_gmask_apply(tree, v) for v in value]
-    if not isinstance(value, dict):
-        return value
-    out = {}
-    for name, sub in tree.items():
-        if name in value:
-            out[name] = _gmask_apply(sub, value[name])
-    return out
-
-
-def _sheets_respond(request: Request, body: dict, allowed: dict) -> Response:
-    """One Sheets response, with the standard query parameters applied.
-
-    Order matters and is measured: `alt` decides whether the answer can be JSON at all, then
-    `fields` narrows the body, then `prettyPrint` decides the indentation, then `callback` wraps
-    what is left. An unparseable `callback` is refused ahead of all of them, in
-    ``gerr.validate_system_parameters`` — measured, that refusal beats a mistyped `fields` mask —
-    so by here the name is one the answer can be handed to.
-
-    The bytes themselves are ``gerr.respond``'s, which is also what every Google ERROR is rendered
-    through: a success and a failure on the same route come back through the same serializer on
-    real, so they do here."""
-    # `gerr.first_repeat`, not `.get`: real answers a repeated `alt` through the first one, and
-    # `gerr.jsonp_callback` reads the same parameter to decide the wrap -- so one request has to
-    # see one `alt` in both places.
-    alt = gerr.alt_format(request.query_params)
-    if alt and alt != "json":
-        # Measured on `media` and `zzz`: `media` gets its own sentence, everything else the
-        # generic one. NOT `proto`, which the discovery document also declares and which real
-        # answers with a protobuf body ("Proto over HTTP is not allowed for service …") under
-        # `application/x-protobuf` — a format this module does not serve, so it lands on the
-        # generic sentence here.
-        #
-        # The two sentences quote different spellings, measured 2026-09-17 on Sheets: `alt=MEDIA`
-        # answers `Unsupported alt type "media"` with the format lowercased, while `alt=ZZZ`
-        # answers `Invalid value "ZZZ"` through the spelling that arrived. So the generic one
-        # reads the parameter again rather than reusing the folded value.
-        raise gerr.invalid_argument(
-            f'Unsupported alt type "{alt}" for non byte stream request.'
-            if alt == "media"
-            else "Invalid value \"{}\" for query parameter 'alt'".format(
-                gerr.first_repeat(request.query_params, gerr.ALT)
-            )
-        )
-    mask = gerr.first_repeat(request.query_params, "fields")
-    if mask:
-        tree = _gmask_parse(mask)
-        _gmask_check(tree, allowed)
-        body = _gmask_apply(tree, body)
-    # Measured 2026-09-23, twenty spellings one request each: `false` and `0` turn it off and the
-    # other eighteen leave it indented, `FALSE`, `False`, `f`, `no`, `n`, `00` and a padded ` false`
-    # among them -- none is refused, where the other booleans refuse a value they cannot read. It
-    # is the success side alone that reads it: an error is indented whatever it says.
-    compact = gerr.first_repeat(request.query_params, "prettyPrint") in _PRETTY_PRINT_FALSE
-    return gerr.respond(body, compact=compact, callback=gerr.jsonp_callback(request))
-
-
-# What a `fields` mask may name, per response — the fields these routes actually build. A cell's
-# value objects are leaves: their members are the one-of `stringValue`/`numberValue`/`boolValue`,
-# which a mask reaches by naming the value itself.
-# Google's Color, whose members a mask may name. Spelled out rather than left a leaf: an empty
-# subtree would make `...rgbColor.red` a refusal where the real API answers it.
-_F_COLOR = {"red": {}, "green": {}, "blue": {}, "alpha": {}}
-_F_TEXT_FORMAT = {
-    "foregroundColor": _F_COLOR,
-    "fontFamily": {},
-    "fontSize": {},
-    "bold": {},
-    "italic": {},
-    "strikethrough": {},
-    "underline": {},
-    "foregroundColorStyle": {"rgbColor": _F_COLOR},
-}
-_F_CELL = {
-    "userEnteredValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
-    "effectiveValue": {"stringValue": {}, "numberValue": {}, "boolValue": {}},
-    "formattedValue": {},
-    "effectiveFormat": {
-        "backgroundColor": _F_COLOR,
-        "padding": {"top": {}, "right": {}, "bottom": {}, "left": {}},
-        "horizontalAlignment": {},
-        "verticalAlignment": {},
-        "wrapStrategy": {},
-        "textFormat": _F_TEXT_FORMAT,
-        "hyperlinkDisplayType": {},
-        "backgroundColorStyle": {"rgbColor": _F_COLOR},
-    },
-}
-_F_GRID_DATA = {
-    "startRow": {},
-    "startColumn": {},
-    "rowData": {"values": _F_CELL},
-    "rowMetadata": {"pixelSize": {}},
-    "columnMetadata": {"pixelSize": {}},
-}
-_F_SPREADSHEET = {
-    "spreadsheetId": {},
-    "spreadsheetUrl": {},
-    "properties": {
-        "title": {},
-        "locale": {},
-        "autoRecalc": {},
-        "timeZone": {},
-        "defaultFormat": {
-            "backgroundColor": _F_COLOR,
-            "padding": {"top": {}, "right": {}, "bottom": {}, "left": {}},
-            "verticalAlignment": {},
-            "wrapStrategy": {},
-            "textFormat": _F_TEXT_FORMAT,
-            "backgroundColorStyle": {"rgbColor": _F_COLOR},
-        },
-        "spreadsheetTheme": {
-            "primaryFontFamily": {},
-            "themeColors": {"colorType": {}, "color": {"rgbColor": _F_COLOR}},
-        },
-    },
-    "sheets": {
-        "properties": {
-            "sheetId": {},
-            "title": {},
-            "index": {},
-            "sheetType": {},
-            "gridProperties": {"rowCount": {}, "columnCount": {}},
-        },
-        "data": _F_GRID_DATA,
-    },
-}
-_F_VALUE_RANGE = {"range": {}, "majorDimension": {}, "values": {}}
-_F_BATCH_BY_FILTER = {
-    "spreadsheetId": {},
-    "valueRanges": {
-        "valueRange": {"range": {}, "majorDimension": {}, "values": {}},
-        "dataFilters": {"a1Range": {}, "gridRange": {}},
-    },
-}
-_F_BATCH_VALUES = {"spreadsheetId": {}, "valueRanges": _F_VALUE_RANGE}
-
-_P_SHEETS_GET = [
-    qp("includeGridData", "boolean"),
-    qp("ranges"),
-    qp("excludeTablesInBandedRanges", "boolean"),
-    *_P_SHEETS_STD,
-]
-
-
-@router.get("/sheets/v4/spreadsheets/{spreadsheet_id}", openapi_extra={"parameters": _P_SHEETS_GET})
-async def sheets_get(spreadsheet_id: str, request: Request):
-    """The spreadsheet's structure, and its cells only if asked for.
-
-    ``data`` is withheld unless ``includeGridData=true`` — measured: a real workbook answers 4 KB by
-    default and 5.7 MB with the flag, and ``ranges`` alone does NOT unlock it. Volunteering the
-    whole grid would hand a reader cells the real API never would, so the document it assembles
-    would differ between the two backends. With the flag, ``ranges`` scopes the returned rows
-    (measured: 5.7 MB -> 11 KB for ``A1:B2``)."""
-    # The credential, then the typed values, then the lookup -- `_typed_query` records the order.
-    _require(request)
-    # A mask that reaches the cells decides the grid, and `includeGridData` is then ignored rather
-    # than consulted -- the vendor's own wording. Still parsed, so a bad value is still refused.
-    flags = _typed_query(
-        request,
-        {
-            "includeGridData": lambda raw: _sheets_bool_value(raw, "include_grid_data"),
-            "excludeTablesInBandedRanges": lambda raw: _sheets_bool_value(
-                raw, "exclude_tables_in_banded_ranges"
-            ),
-        },
-    )
-    grid = (flags["includeGridData"] or [False])[-1]
-    row, sheets = _workbook(request, spreadsheet_id)
-    mask = gerr.first_repeat(request.query_params, "fields")
-    if mask:
-        grid = _gmask_wants_grid(mask)
-    # `excludeTablesInBandedRanges` is validated above and then unused, deliberately: it drops the
-    # tables that sit inside a banded range, and a corpus states neither tables nor banded ranges,
-    # so there is nothing here to exclude. Leaving it unvalidated instead would accept the one
-    # thing a client can get wrong about it.
-    return _sheets_respond(
-        request,
-        _sheets_book(spreadsheet_id, row, sheets, request.query_params.getlist("ranges"), grid),
-        _F_SPREADSHEET,
+        grants=[("user", owner)],
+        parts=parts,
     )
 
 
-def _sheets_book(spreadsheet_id: str, row, sheets: list[_Sheet], specs: list, grid: bool):
-    """The `Spreadsheet` body both `spreadsheets.get` and `:getByDataFilter` answer with.
-
-    ``specs`` is what to serve — A1 ranges from `ranges` for one, and from the data filters for the
-    other A1 ranges and the empty grid ranges they may select (`_Empty`); empty means every sheet,
-    whole."""
-    # Each sheet paired with the cell parts to serve for it: `("", title)` is the whole grid, which
-    # is what a sheet nobody named gets. Resolved ONCE, here — a sheet is never re-derived from its
-    # own title further down, or one titled like a cell reference (`A1`, `AB`) would come back
-    # holding the first sheet's cells, or overflow the grid and fail the whole call.
-    wanted: list[tuple[_Sheet, list[tuple[str, str]]]] = [(sh, [("", sh.title)]) for sh in sheets]
-    if specs:
-        # A range filters the SHEETS ARRAY, not merely the cells: measured, a sheet none touches is
-        # absent from the response entirely, and a sheet several touch gets one `data` block each.
-        # That holds with or without `includeGridData` — without it the sheet list is still
-        # filtered and no block is served.
-        per_sheet: dict[int, list] = {}
-        for spec in specs:
-            if isinstance(spec, _Empty):
-                per_sheet.setdefault(spec.sheet.index, []).append(spec)
-                continue
-            sheet, body = _a1_sheet(spec, sheets)
-            per_sheet.setdefault(sheet.index, []).append((body, spec))
-        wanted = [(sh, per_sheet[sh.index]) for sh in sheets if sh.index in per_sheet]
-    out = []
-    for sh, parts in wanted:
-        entry = {
-            "properties": {
-                "sheetId": sh.sheet_id,
-                "title": sh.title,
-                "index": sh.index,
-                "sheetType": "GRID",
-                # the grid, not the data extent — see SHEETS_GRID_ROWS
-                "gridProperties": {"rowCount": sh.rows, "columnCount": sh.cols},
-            }
-        }
-        if grid:
-            entry["data"] = [
-                _sheets_empty_grid_data(part)
-                if isinstance(part, _Empty)
-                else _sheets_grid_data(sh, *part)
-                for part in parts
-            ]
-        out.append(entry)
-    return {
-        "spreadsheetId": spreadsheet_id,
-        "properties": {
-            "title": row["title"],
-            "locale": "en_US",
-            "autoRecalc": SHEETS_AUTO_RECALC,
-            "timeZone": SHEETS_TIME_ZONE,
-            "defaultFormat": SHEETS_DEFAULT_FORMAT,
-            "spreadsheetTheme": SHEETS_THEME,
-        },
-        "spreadsheetUrl": f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit",
-        "sheets": out,
-    }
+class _EditorRefused(Exception):
+    """One request of an editor's `batchUpdate` refused, worded as real words what follows
+    ``Invalid requests[i].<kind>: ``."""
 
 
-# --- Sheets `values` reads ------------------------------------------------------------------
-# `spreadsheets.get` serves the whole structured grid; a client that wants a slice reads
-# `values.get`, and one that wants several slices reads `values:batchGet`. Both resolve an A1
-# range against the same grid `sheets_get` builds, so the three calls cannot disagree about what
-# a cell holds.
-
-SHEETS_SHEET_TITLE = "Sheet1"  # Backlot shapes every spreadsheet as one sheet with this title
-
-# A real sheet's GRID is larger than its data — Sheets creates one at 1000x26 — and every range
-# behaviour below is defined against the grid rather than against the occupied cells. Measured on a
-# real spreadsheet holding 14 rows: `values/<title>` echoes `A1:Z1000`, `A:A` echoes `A1:A1000`.
-# So Backlot declares the same grid. This is API scaffolding, like the synthesized `sheetId` and
-# sheet title beside it — not invented cell data, which `_sheets_grid` still refuses to manufacture.
-SHEETS_GRID_ROWS = 1000
-SHEETS_GRID_COLS = 26
-
-# A cell's `effectiveFormat`, in the order real emits it. Measured: across every cell type a
-# corpus can state it varies in ONE field, `horizontalAlignment` -- a string sits left, a number
-# right, a boolean centred -- and the rest is the spreadsheet's default format, which nothing in a
-# corpus can change. So the whole object is derived rather than stored, the way `formattedValue`
-# is.
-#
-# `userEnteredFormat` is the other half of the pair and is NOT emitted. Measured, it carries only
-# what was explicitly set on that cell -- a strict subset of `effectiveFormat`, absent entirely
-# from a cell nobody formatted. Of 17 typed cells the only ones that had one were the percent,
-# date, datetime, time and scientific cells, each carrying a lone `numberFormat` that Sheets
-# INFERRED from what was typed. A corpus states no formatting and none of those value types, so no
-# cell it can describe has anything to put there -- not because the field resists derivation, but
-# because nothing a corpus says would trigger one.
-_CELL_FORMAT_ALIGN = {"str": "LEFT", "num": "RIGHT", "bool": "CENTER"}
-_CELL_FORMAT_REST = {
-    "verticalAlignment": "BOTTOM",
-    "wrapStrategy": "OVERFLOW_CELL",
-    "textFormat": {
-        "foregroundColor": {},
-        "fontFamily": "Arial",
-        "fontSize": 10,
-        "bold": False,
-        "italic": False,
-        "strikethrough": False,
-        "underline": False,
-        "foregroundColorStyle": {"rgbColor": {}},
-    },
-    "hyperlinkDisplayType": "PLAIN_TEXT",
-    "backgroundColorStyle": {"rgbColor": {"red": 1, "green": 1, "blue": 1}},
-}
+def _editor_requests(requests: list[dict]) -> list[dict]:
+    """An editor `batchUpdate`'s requests, refused when there are none or one sets no kind: measured
+    2026-10-29 on Docs, ``Must specify at least one request.`` and then
+    ``Invalid requests[i]: No request set.``, both ahead of a revision the write is pinned to and
+    of any other request's refusal."""
+    if not requests:
+        raise gerr.invalid_argument("Must specify at least one request.")
+    for i, req in enumerate(requests):
+        if not req:
+            raise gerr.invalid_argument(f"Invalid requests[{i}]: No request set.")
+    return requests
 
 
-def _sheets_format(cell) -> dict:
-    """The `effectiveFormat` a cell of this type carries."""
-    if isinstance(cell, bool):
-        align = _CELL_FORMAT_ALIGN["bool"]
-    elif isinstance(cell, (int, float)):
-        align = _CELL_FORMAT_ALIGN["num"]
-    else:
-        align = _CELL_FORMAT_ALIGN["str"]
-    return {
-        "backgroundColor": {"red": 1, "green": 1, "blue": 1},
-        "padding": {"top": 2, "right": 3, "bottom": 2, "left": 3},
-        "horizontalAlignment": align,
-        **_CELL_FORMAT_REST,
-    }
+def _editor_batch(
+    requests: list[dict],
+    kinds: dict[str, str],
+    apply: dict[str, Callable[[dict], tuple[dict, bool]]],
+    product: str,
+) -> list[dict]:
+    """The replies to an editor's `batchUpdate` requests, each checked and applied in order by
+    ``apply``'s function for its kind, which answers its reply and whether real fails on it once
+    every request has been read. ``kinds`` gives each kind's JSON name by the proto name a read
+    body carries it under, and ``product`` names the editor.
+
+    Every request sets a kind (`_editor_requests`). Measured 2026-10-29 on Docs'
+    `documents.batchUpdate`: a refusal names its request and kind and only the first is answered,
+    and a 500 a request leads to comes after the refusals of every request behind it. A kind
+    ``apply`` lacks is refused naming itself. The caller keeps what the functions changed only
+    once this returns."""
+    replies = []
+    fails = False
+    for i, req in enumerate(requests):
+        kind = next(iter(req))
+        name = kinds[kind]
+        try:
+            if kind not in apply:
+                raise _EditorRefused(
+                    f"'{name}' is not served by Backlot: real {product} applies it, and nothing "
+                    "here keeps what it changes."
+                )
+            reply, failed = apply[kind](req[kind])
+        except _EditorRefused as refused:
+            raise gerr.invalid_argument(f"Invalid requests[{i}].{name}: {refused}") from None
+        replies.append(reply)
+        fails |= failed
+    if fails:
+        raise gerr.internal_error()
+    return replies
 
 
-# A track's default size in pixels, carried by every `rowMetadata`/`columnMetadata` entry a
-# `GridData` block holds. Measured on a real workbook: every row entry is `{"pixelSize": 21}` and
-# every column entry `{"pixelSize": 100}`. A corpus states no track size, so nothing varies.
-SHEETS_ROW_PIXELS = 21
-SHEETS_COL_PIXELS = 100
-
-# The spreadsheet-level format a freshly created workbook carries. Unlike a cell's
-# `effectiveFormat`, which the cell's own type decides, these two are SETTINGS: measured across six
-# real workbooks they came in three variants, differing where someone had applied a theme or the
-# document had been imported from .xlsx (Malgun Gothic, 11pt, MIDDLE alignment). A corpus states
-# none of that, so what is served is the variant a new spreadsheet has -- the same footing as
-# `locale`, `autoRecalc`, `timeZone` and the 1000x26 grid beside them.
-#
-# `foregroundColor: {}` and the TEXT theme colour's `rgbColor: {}` are black: proto3 drops a zero,
-# so an all-zero colour is the empty object rather than three zeroes.
-SHEETS_DEFAULT_FORMAT = {
-    "backgroundColor": {"red": 1, "green": 1, "blue": 1},
-    "padding": {"top": 2, "right": 3, "bottom": 2, "left": 3},
-    "verticalAlignment": "BOTTOM",
-    "wrapStrategy": "OVERFLOW_CELL",
-    "textFormat": {
-        "foregroundColor": {},
-        # the CSS stack, where a CELL's textFormat resolves to the single family "Arial"
-        "fontFamily": "arial,sans,sans-serif",
-        "fontSize": 10,
-        "bold": False,
-        "italic": False,
-        "strikethrough": False,
-        "underline": False,
-        "foregroundColorStyle": {"rgbColor": {}},
-    },
-    "backgroundColorStyle": {"rgbColor": {"red": 1, "green": 1, "blue": 1}},
-}
-SHEETS_THEME = {
-    "primaryFontFamily": "Arial",
-    "themeColors": [
-        {"colorType": "TEXT", "color": {"rgbColor": {}}},
-        {"colorType": "BACKGROUND", "color": {"rgbColor": {"red": 1, "green": 1, "blue": 1}}},
-        {
-            "colorType": "ACCENT1",
-            "color": {"rgbColor": {"red": 0.25882354, "green": 0.52156866, "blue": 0.95686275}},
-        },
-        {
-            "colorType": "ACCENT2",
-            "color": {"rgbColor": {"red": 0.91764706, "green": 0.2627451, "blue": 0.20784314}},
-        },
-        {
-            "colorType": "ACCENT3",
-            "color": {"rgbColor": {"red": 0.9843137, "green": 0.7372549, "blue": 0.015686275}},
-        },
-        {
-            "colorType": "ACCENT4",
-            "color": {"rgbColor": {"red": 0.20392157, "green": 0.65882355, "blue": 0.3254902}},
-        },
-        {
-            "colorType": "ACCENT5",
-            "color": {"rgbColor": {"red": 1, "green": 0.42745098, "blue": 0.003921569}},
-        },
-        {
-            "colorType": "ACCENT6",
-            "color": {"rgbColor": {"red": 0.27450982, "green": 0.7411765, "blue": 0.7764706}},
-        },
-        {
-            "colorType": "LINK",
-            "color": {"rgbColor": {"red": 0.06666667, "green": 0.33333334, "blue": 0.8}},
-        },
-    ],
-}
-
-# `properties` fields real Sheets always carries beside `title` and `locale`. `ON_CHANGE` is the
-# recalculation setting a spreadsheet has unless someone changes it; `Etc/GMT` is the neutral zone,
-# and matches what a freshly created spreadsheet answered with.
-SHEETS_AUTO_RECALC = "ON_CHANGE"
-SHEETS_TIME_ZONE = "Etc/GMT"
-
-_SHEETS_ENUM = "type.googleapis.com/google.apps.sheets.v4"
-
-
-def _pj_enum(name: str, *values: str) -> protojson.Enum:
-    return protojson.Enum(f"{_SHEETS_ENUM}.{name}", values)
-
-
-# The three read enums, their names in the discovery document's order, which is each name's number:
-# measured 2026-10-04 over a formula cell and a date cell, `valueRenderOption=2` answers the formula
-# and `dateTimeRenderOption=1` the formatted date, and `majorDimension=2` answers by columns.
-_PJ_DIMENSION = _pj_enum("Dimension", "DIMENSION_UNSPECIFIED", "ROWS", "COLUMNS")
-_PJ_RENDER = _pj_enum("ValueRenderOption", "FORMATTED_VALUE", "UNFORMATTED_VALUE", "FORMULA")
-_PJ_DATETIME = _pj_enum("DateTimeRenderOption", "SERIAL_NUMBER", "FORMATTED_STRING")
-# One endpoint of an A1 range: a full cell (`B2`), a bare column (`B`) or a bare row (`2`). A bare
-# column or row is an endpoint only INSIDE a range — measured 2026-09-12, `Sheet1!B`, `Sheet1!2` and
-# a bang-less `Z` are all "Unable to parse range" while `A:A` and `1:1` answer — and row 0 is not
-# one at all (`A0`, `A1:A0` are unparseable too).
-_A1_END = re.compile(r"(?:(?P<col>[A-Za-z]{1,3})(?P<row>\d+)?|(?P<rowonly>\d+))\Z")
-# One endpoint in R1C1 notation, which the discovery document names beside A1 for `values.get`'s
-# `range` ("The A1 notation or R1C1 notation of the range to retrieve values from"), and which
-# the LlamaIndex `GoogleSheetsReader` sends for every sheet as `R1C1:R{rowCount}C{columnCount}`.
-#
-# The grammar below is measured, not read off a document: 217 requests against a real workbook on
-# 2026-09-12 (#174), every one pinned in `tests/test_google.py::MEASURED_R1C1`.
-#
-# * `R` and `C` each take an ABSOLUTE 1-based number (`R1C1`), a BRACKETED 0-based offset from A1
-#   (`R[1]C[1]` is B2, `R[0]C[0]` is A1 — the concepts guide's "relative to the current cell" has
-#   A1 as the current cell on a read), or no number at all (`R1C` is A1, `RC` is A1). Absolute 0
-#   and a negative or `+`-signed offset are unparseable; a leading zero is fine (`R01C01` is A1).
-# * either letter may be absent. Beside an R1C1 half a numbered `R2` is row 2 with the columns
-#   unbounded (`R1C1:R2` is A1:Z2) and `C[1]` alone is column B whole (`B1:B1000`); a bare `R`, `C`
-#   or `RC` is the cell A1.
-# * both halves of a range are read in ONE notation: `A1:R2C2` and `R1C1:B2` are unparseable. A
-#   token is read as A1 first (`R1` is the cell R1, `RC1` the cell RC1, `RC:RC` the columns RC),
-#   then as R1C1 (`RC` alone is A1, and so is `R1C1` even in a workbook with a sheet named `R1C1`),
-#   then — bang-less — as a sheet name (`A` is the sheet `A` when there is one).
-# * a reversed R1C1 range is swapped the way an A1 one is (`R3C3:R1C1` is A1:C3), except that on
-#   an axis where both halves carry a number OF THE SAME KIND — both absolute, or both offsets —
-#   start == end + 1 on the numbers AS WRITTEN is unparseable: `R2C2:R1C1`, `R1C2:R1C1`,
-#   `R[1]C[1]:R[0]C[0]` and `R2:R1C1` 400 while `R3C3:R1C1` and `R[2]C[2]:R[0]C[0]` answer. An
-#   axis that mixes the kinds swaps freely: `R[1]C[1]:R1C1`, `R[2]C[2]:R1C1` and `R1C1:R[0]C[0]`
-#   all answer. That reads as a half-open interval on the raw numbers coming out empty, checked
-#   before offsets are resolved; every reversed range sent is a row of `MEASURED_R1C1`.
-# * the echo is the A1 equivalent, and the grid rules are A1's: an end past the grid is clamped
-#   (`R1C1:R2000C50` is A1:Z1000, `1:1001` is A1:Z1000), a start past it is refused (`R[1000]C[0]`
-#   names `A1001`), and a refused whole column or row is named by its letters or numbers alone,
-#   one column or row collapsing as one cell does (`ZZ:ZZ` names `ZZ`, `AA:AB` names `AA:AB`,
-#   `C[26]` names `AA`, `R[1000]:R[1000]` names `1001`, `1001:1002` names `1001:1002`).
-# * whitespace is refused wherever it was tried — around the whole, around the bang, around the
-#   colon, inside a token, inside a quoted title, a tab as much as a space: ` A1`, `Sheet1! A1`,
-#   `A1: B2`, `R1 C1`, `R[ 1]C[1]`, `'Sheet1 '!A1` — all 36 forms sent — are unparseable. An EMPTY title
-#   before the bang is the first sheet (`!A1`, `''!A1`, `!R[1]C[1]`), a whitespace one is not.
-_R1C1_END = re.compile(
-    r"(?P<r>R(?:(?P<rabs>\d+)|\[(?P<rrel>\d+)\])?)?(?P<c>C(?:(?P<cabs>\d+)|\[(?P<crel>\d+)\])?)?\Z",
-    re.IGNORECASE,
-)
-
-
-class _End(NamedTuple):
-    """One side of a range, resolved: 0-based, ``None`` on an axis left unbounded. ``raw_row`` and
-    ``raw_col`` are the number as written and its kind — ``(2, "abs")`` for `R2`, ``(2, "rel")``
-    for `R[2]` — which is what real's reversed-range check reads; ``None`` where the axis carries no
-    number."""
-
-    row: int | None
-    col: int | None
-    raw_row: tuple[int, str] | None = None
-    raw_col: tuple[int, str] | None = None
-
-
-def _a1_end(part: str) -> _End | None:
-    """An A1 endpoint, or ``None`` when the string is not one."""
-    m = _A1_END.fullmatch(part)
-    if not m:
-        return None
-    if m.group("rowonly"):
-        n = int(m.group("rowonly"))
-        return _End(n - 1, None) if n else None
-    row = m.group("row")
-    if row is not None and int(row) == 0:
-        return None
-    return _End(int(row) - 1 if row else None, _a1_col(m.group("col")))
-
-
-def _r1c1_end(part: str) -> _End | None:
-    """An R1C1 endpoint, or ``None`` when the string is not one — the grammar above."""
-    m = _R1C1_END.fullmatch(part)
-    if not m or not (m.group("r") or m.group("c")):
-        return None
-
-    def numbered(letter: str) -> tuple[int, tuple[int, str]] | None:
-        """``(index, (raw, kind))`` for a letter that carries a number; ``None`` for one that does
-        not."""
-        absolute, relative = m.group(letter + "abs"), m.group(letter + "rel")
-        if absolute is not None:
-            n = int(absolute)
-            if n == 0:
-                raise ValueError(part)
-            return n - 1, (n, "abs")
-        if relative is not None:
-            n = int(relative)
-            return n, (n, "rel")
-        return None
-
-    try:
-        rnum, cnum = numbered("r"), numbered("c")
-    except ValueError:
-        return None
-
-    def index(letter: str, own, other) -> int | None:
-        if own is not None:
-            return own[0]
-        if m.group(letter):  # present without a number: offset 0
-            return 0
-        return None if other is not None else 0  # absent: unbounded beside a numbered letter
-
-    return _End(
-        index("r", rnum, cnum),
-        index("c", cnum, rnum),
-        rnum[1] if rnum else None,
-        cnum[1] if cnum else None,
-    )
-
-
-def _a1_classify(body: str) -> tuple[str, list[_End]] | None:
-    """Which notation a cell part is in, with its endpoints: ``("a1", ends)``, ``("r1c1", ends)``,
-    or ``None`` when it is neither. A1 first, then R1C1 — the order `_R1C1_END`'s comment states —
-    and a lone A1 token has to be a full cell (see `_A1_END`)."""
-    halves = body.split(":")
-    if len(halves) > 2:
-        return None
-    a1 = [_a1_end(h) for h in halves]
-    if all(a1) and (len(a1) == 2 or (a1[0].row is not None and a1[0].col is not None)):
-        return "a1", a1  # type: ignore[return-value]
-    r1c1 = [_r1c1_end(h) for h in halves]
-    if all(r1c1):
-        return "r1c1", r1c1  # type: ignore[return-value]
-    return None
-
-
-def _a1_col(letters: str) -> int:
-    """Column letters to a 0-based index, base-26 with no zero digit (``A``->0, ``Z``->25,
-    ``AA``->26)."""
-    n = 0
-    for ch in letters.upper():
-        n = n * 26 + (ord(ch) - 64)
-    return n - 1
-
-
-def _a1_enum_error(field: str, enum: protojson.Enum, value: str) -> str:
+def _enum_error(field: str, enum: protojson.Enum, value: str) -> str:
     """Google's own wording for a bad read enum — it names the proto field and message type, e.g.
     ``Invalid value at 'major_dimension' (…sheets.v4.Dimension), "DIAGONAL"``. Measured, because a
     client that matches on the message needs the real one."""
     return f"Invalid value at '{field}' ({enum.type_url}), \"{value}\""
 
 
-# The two values that turn `prettyPrint` off, matched exactly -- see `_sheets_respond`.
-_PRETTY_PRINT_FALSE = frozenset({"false", "0"})
-
-
-def _sheets_bool_value(raw: str | None, field: str) -> bool:
+def _query_bool(raw: str | None, field: str) -> bool:
     """One of the boolean query parameters, read as a JSON body's string is (``protojson.to_bool``).
     Measured: `1`, `t`, `y` and `yes` mean true and `0`, `f`, `n` and `no` mean false, whatever the
     case of their ASCII letters, while `on`/`off`, a padded `" true"`, `2`, `01` and `1.0` are
@@ -3659,954 +4563,309 @@ def _sheets_bool_value(raw: str | None, field: str) -> bool:
         ) from None
 
 
-def _a1_find(title: str, sheets: list[_Sheet]) -> _Sheet | None:
-    """The sheet a title names, or None.
-
-    Measured: lookup is CASE-INSENSITIVE (`data!B1:B3` answers from `Data`), quoting is optional
-    even for a title holding a space, a colon, brackets or a bang, and inside quotes a doubled
-    apostrophe is one apostrophe."""
-    if title[:1] == "'" and title[-1:] == "'":
-        title = title[1:-1].replace("''", "'")
-    fold = title.casefold()
-    return next((s for s in sheets if s.title.casefold() == fold), None)
-
-
-def _a1_looks_like_a_range(body: str) -> bool:
-    return _a1_classify(body) is not None
-
-
-def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
-    """``(sheet, body)`` — which sheet a spec addresses, and the cell part left over (``""`` for a
-    bare sheet name, meaning the whole grid).
-
-    Measured against a real multi-sheet workbook:
-
-    * the separator is the LAST bang, not the first — `has!bang!A1` addresses the sheet `has!bang`,
-      and splitting at the first would leave `bang!A1` as the cell part
-    * a spec with NO bang is parsed as a range FIRST and only then as a sheet name, so bare `A1` is
-      cell A1 of the first sheet even in a workbook that has a sheet named `A1`, while bare `Data`
-      is the sheet because four letters cannot be a cell reference. R1C1 before a sheet name too
-      (the order `_R1C1_END`'s comment states, with the sheets it was measured against)
-    * an unqualified range answers from the sheet at index 0
-    * a name no sheet has 400s with the same `Unable to parse range` message unparseable garbage
-      gets — resolving to an empty grid instead would be indistinguishable from an empty range
-    """
-    # Not stripped anywhere — the whitespace rule in `_R1C1_END`'s comment.
-    bare = spec
-    if "!" in bare:
-        title, _, body = bare.rpartition("!")
-        if title in ("", "''") and _a1_looks_like_a_range(body):
-            # An EMPTY title is the first sheet (the rule in `_R1C1_END`'s comment), and only
-            # before a range: `!Data` and a bare `!` are unparseable.
-            return sheets[0], body
-        found = _a1_find(title, sheets)
-        if found is not None and body:
-            return found, body
-        # A title that itself holds a bang, named bare: `has!bang` is the WHOLE sheet, so the
-        # split above leaves `has` (no such sheet) over `bang` (no such range). Measured.
-        # `Sheet1!` with nothing after it falls here too, and is malformed either way.
-        whole = _a1_find(bare, sheets)
-        if whole is None:
-            raise gerr.invalid_argument(f"Unable to parse range: {spec}")
-        return whole, ""
-    if _a1_looks_like_a_range(bare):
-        return sheets[0], bare
-    found = _a1_find(bare, sheets)
-    if found is None:
-        raise gerr.invalid_argument(f"Unable to parse range: {spec}")
-    return found, ""
-
-
-def _a1_range(spec: str, body: str, sheet: _Sheet) -> tuple[int, int, int, int]:
-    """Resolve the cell part of an A1 range to half-open ``(r0, c0, r1, c1)`` against this sheet.
-
-    Handles every form a client may send: ``A1:B2``, ``B2`` (one cell), ``A:B`` / ``1:3`` (whole
-    columns / rows), ``A2:B`` (one edge unbounded), ``R1C1:R2C2`` (either half in R1C1) and ``""``
-    (the whole sheet, which is what a bare sheet name resolves to). Everything resolves against the
-    GRID, so a range may be wider than the data — the caller trims.
-
-    Two boundary rules, measured against a real spreadsheet: the range's END may overflow and is
-    CLAMPED (``A1:AA5`` on a 26-column sheet returns ``A1:Z5``), its START may not.
-
-    ``spec`` is the whole requested range, because that — not the offending half — is what real
-    Sheets names back: `A1:` reports "Unable to parse range: A1:", never a bare "".
-    """
-    nrows, ncols = sheet.rows, sheet.cols
-    if not body:
-        return 0, 0, nrows, ncols
-    classified = _a1_classify(body)
-    if classified is None:
-        raise gerr.invalid_argument(f"Unable to parse range: {spec}")
-    notation, ends = classified
-    if len(ends) == 1:  # a single reference: one cell, one whole row, one column
-        (start,) = ends
-        r0f, c0f = (0 if start.row is None else start.row), (0 if start.col is None else start.col)
-        r1 = nrows if start.row is None else start.row + 1
-        c1 = ncols if start.col is None else start.col + 1
-    else:
-        start, end = ends
-        if notation == "r1c1":
-            # Real's reversed-range rule, on the numbers as written — see `_R1C1_END`.
-            for a, b in ((start.raw_row, end.raw_row), (start.raw_col, end.raw_col)):
-                if a is not None and b is not None and a[1] == b[1] and a[0] == b[0] + 1:
-                    raise gerr.invalid_argument(f"Unable to parse range: {spec}")
-        r0f = 0 if start.row is None else start.row
-        c0f = 0 if start.col is None else start.col
-        r1 = nrows if end.row is None else end.row + 1
-        c1 = ncols if end.col is None else end.col + 1
-        # Ranges are inclusive and may be written in either order (`B2:A1` == `A1:B2`), in R1C1
-        # as in A1 (`R3C3:R1C1` == `A1:C3`), once past the rule above.
-        if r1 < r0f + 1:
-            r0f, r1 = r1 - 1, r0f + 1
-        if c1 < c0f + 1:
-            c0f, c1 = c1 - 1, c0f + 1
-    if r0f >= nrows or c0f >= ncols or r0f < 0 or c0f < 0:
-        # The START is outside the grid — refused, with the range echoed back unclamped; whole
-        # columns by their letters alone and whole rows by their numbers alone (`_a1_axis_name`).
-        if all(e.row is None for e in ends):
-            named = _a1_axis_name(sheet, _a1_col_letters(c0f), _a1_col_letters(c1 - 1))
-        elif all(e.col is None for e in ends):
-            named = _a1_axis_name(sheet, str(r0f + 1), str(r1))
-        else:
-            named = _a1_name(sheet, r0f, c0f, r1, c1)
-        raise gerr.invalid_argument(
-            f"Range ({named}) exceeds grid limits. Max rows: {nrows}, max columns: {ncols}"
-        )
-    return r0f, c0f, min(r1, nrows), min(c1, ncols)
-
-
-# A title the echo may spell without quotes. Measured: `Data` echoes bare while `'Second Sheet'`,
-# `'2024'`, `'Bob''s Sheet'`, `'a:b'`, `'a[b]'`, `'has!bang'` and `'A1'` echo quoted. This pattern
-# (plus the A1-reference exclusion below) is INFERRED from that sample rather than measured: it
-# accounts for every title measured, but a title the sample does not cover could contradict it.
-_A1_PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-
-
-def _a1_title(title: str) -> str:
-    """A sheet title as the echoed ``range`` spells it, quoted unless it is a plain identifier that
-    is not itself a cell reference. An embedded apostrophe doubles.
-
-    Measured 2026-09-12 on sheets so named: `R1C1` and `RC` echo quoted (`'RC'!A1`), as `A1` does,
-    while `A`, no reference on its own, echoes bare (`A!A1:Z1000`)."""
-    if _A1_PLAIN.fullmatch(title) and _a1_classify(title) is None:
-        return title
-    return "'" + title.replace("'", "''") + "'"
-
-
-def _a1_col_letters(i: int) -> str:
-    """A 0-based column index as A1 letters — the inverse of :func:`_a1_col`."""
-    s = ""
-    i += 1
-    while i:
-        i, rem = divmod(i - 1, 26)
-        s = chr(65 + rem) + s
-    return s
-
-
-def _a1_axis_name(sheet: _Sheet, start: str, end: str) -> str:
-    """Whole columns by their letters alone, or whole rows by their numbers alone, the way real
-    names them when refusing a range past the grid — the naming rule in `_R1C1_END`'s comment,
-    never ``ZZ1:ZZ1000`` or ``A1001:Z1001``."""
-    title = _a1_title(sheet.title)
-    return f"{title}!{start}" if start == end else f"{title}!{start}:{end}"
-
-
-def _a1_name(sheet: _Sheet, r0: int, c0: int, r1: int, c1: int) -> str:
-    """The resolved range in A1 form, which is what the response echoes.
-
-    A single cell echoes as a bare reference (``Sheet1!A1``), not as ``A1:A1`` — measured: real
-    Sheets collapses a 1x1 range even when the request spelled it out as ``A1:A1``."""
-    title = _a1_title(sheet.title)
-    start = f"{_a1_col_letters(c0)}{r0 + 1}"
-    if r1 - r0 == 1 and c1 - c0 == 1:
-        return f"{title}!{start}"
-    return f"{title}!{start}:{_a1_col_letters(c1 - 1)}{r1}"
-
-
-def _rstrip_empty(cells: list[str]) -> list[str]:
-    while cells and cells[-1] == "":
-        cells.pop()
-    return cells
-
-
-def _sheets_block(sheet: _Sheet, body: str, spec: str):
-    """``(r0, c0, r1, c1, cells)`` for the cell part ``body`` against ``sheet``: the range as
-    resolved against that sheet's grid, and the cells it covers as STORED — trimming happens in the
-    caller, which knows how it is rendering them. ``spec`` is only what an error echoes.
-
-    Takes an already-resolved sheet rather than re-parsing one out of a spec, so a caller that
-    knows which sheet it wants cannot have it reinterpreted: a title reading as a cell or column
-    reference (``A1``, ``AB``) would resolve against the FIRST sheet instead of itself.
-
-    The bounds are the RANGE's, not the data's: callers echo them, so they must not shrink to the
-    occupied cells."""
-    rows = sheet.grid
-    r0, c0, r1, c1 = _a1_range(spec, body, sheet)
-    block = [
-        [(rows[r][c] if c < len(rows[r]) else None) for c in range(c0, c1)]
-        for r in range(r0, min(r1, len(rows)))
-    ]
-    return r0, c0, r1, c1, block
-
-
-def _sheets_value(cell) -> dict:
-    """A cell's ``ExtendedValue``.
-
-    Measured: a string is ``stringValue``, a number ``numberValue``, a boolean ``boolValue``, and
-    an empty cell carries no value object at all.
-
-    ``bool`` is tested BEFORE the numeric branch because it is a subclass of ``int`` in Python —
-    unguarded, TRUE would serve as ``numberValue: 1``.
-
-    A real cell may also hold ``formulaValue`` (in ``userEnteredValue``) or ``errorValue`` (in
-    ``effectiveValue``). A corpus states neither, so neither is emitted."""
-    if cell is None or cell == "":
-        return {}
-    if isinstance(cell, bool):
-        return {"boolValue": cell}
-    if isinstance(cell, (int, float)):
-        return {"numberValue": cell}
-    return {"stringValue": cell}
-
-
-def _sheets_empty_grid_data(empty: _Empty) -> dict:
-    """The `GridData` block for an empty grid range: where it starts and the metadata of the axis
-    that is not empty, with no `rowData`. Measured 2026-10-04: an empty row range at row 1 is
-    ``{"startRow": 1, "columnMetadata": [26 entries]}``, an empty column range at column 1
-    ``{"startColumn": 1, "rowMetadata": [1000 entries]}``, and one empty on both axes the two
-    starts alone. The keys come in that order, the starts first, measured 2026-10-05."""
-    out: dict = {}
-    if empty.r0:
-        out["startRow"] = empty.r0
-    if empty.c0:
-        out["startColumn"] = empty.c0
-    rows = min(empty.r1, empty.sheet.rows) - empty.r0
-    cols = min(empty.c1, empty.sheet.cols) - empty.c0
-    if rows > 0:
-        out["rowMetadata"] = [{"pixelSize": SHEETS_ROW_PIXELS} for _ in range(rows)]
-    if cols > 0:
-        out["columnMetadata"] = [{"pixelSize": SHEETS_COL_PIXELS} for _ in range(cols)]
-    return out
-
-
-def _sheets_grid_data(sheet: _Sheet, body: str, spec: str) -> dict:
-    """One ``GridData`` block for ``spreadsheets.get?includeGridData=true``.
-
-    Measured: ``startRow``/``startColumn`` omitted when zero, proto3 dropping its defaults; and no
-    ``rowData`` key at all on an empty sheet, whose block is metadata alone.
-
-    Measured on 2026-10-05, through ``ranges`` and through an ``a1Range`` filter: a row's
-    ``values`` end at its last cell holding a value, an empty cell before that being ``{}``; a row
-    holding no value is ``{}`` itself; ``rowData`` ends at the last row holding a value; and the
-    keys come in the order ``startRow``, ``startColumn``, ``rowData``, ``rowMetadata``,
-    ``columnMetadata``.
-
-    ``userEnteredValue`` and ``effectiveValue`` are equal here and both absent from an empty cell.
-    Measured, they differ on real Sheets only for a FORMULA cell — the formula in the first, its
-    result in the second — and a corpus cannot state a formula, so there is nothing to differ over.
-
-    ``rowMetadata``/``columnMetadata`` cover the RANGE, one entry per row and column of it —
-    measured, 2 and 2 for ``Data!A1:B2`` against the same sheet whose unscoped block carries 1000
-    and 26. Every entry is identical (``pixelSize`` 21 for a row, 100 for a column), those being
-    the default track sizes; a corpus states no track size, so there is nothing to vary."""
-    r0, c0, r1x, c1, block = _sheets_block(sheet, body, spec)
-    width = c1 - c0
-    while block and all(sheets_grid.formatted(c) == "" for c in block[-1]):
-        block.pop()
-    out: dict = {}
-    if r0:
-        out["startRow"] = r0
-    if c0:
-        out["startColumn"] = c0
-    if block:
-        row_data = []
-        for row in block:
-            vals = [
-                (
-                    {
-                        "userEnteredValue": v,
-                        "effectiveValue": v,
-                        "formattedValue": sheets_grid.formatted(row[i]),
-                        "effectiveFormat": _sheets_format(row[i]),
-                    }
-                    if i < len(row) and (v := _sheets_value(row[i]))
-                    else {}
-                )
-                for i in range(width)
-            ]
-            while vals and not vals[-1]:
-                vals.pop()
-            row_data.append({"values": vals} if vals else {})
-        out["rowData"] = row_data
-    out["rowMetadata"] = [{"pixelSize": SHEETS_ROW_PIXELS} for _ in range(r1x - r0)]
-    out["columnMetadata"] = [{"pixelSize": SHEETS_COL_PIXELS} for _ in range(width)]
-    return out
-
-
-def _sheets_render(cell, render: str):
-    """One cell as ``values.get`` returns it under ``render``.
-
-    Measured: ``FORMATTED_VALUE`` gives the display string, while ``UNFORMATTED_VALUE`` and
-    ``FORMULA`` both give the raw typed value — a JSON number for a number, a JSON boolean for a
-    boolean. The two agree for every NON-FORMULA cell on the real API, and a corpus states no
-    formulas, so they agree here for every cell.
-
-    An empty cell is ``""`` under every option, measured — a JSON string even under
-    ``UNFORMATTED_VALUE``, never null."""
-    if cell is None:
-        return ""
-    return sheets_grid.formatted(cell) if render == "FORMATTED_VALUE" else cell
-
-
-def _sheets_value_range(spec: str, sheets: list[_Sheet], major: str, render: str) -> dict:
-    """One ``ValueRange``.
-
-    Trailing empty cells are dropped PER ROW rather than padded out to the requested bounds, so
-    rows come back ragged; an interior gap stays ``""``; trailing empty rows are dropped
-    altogether. Under ``COLUMNS`` the same rule applies per column, and a fully empty INTERIOR
-    column comes back as ``[]`` rather than being dropped. All measured.
-
-    A range holding nothing omits ``values`` entirely — a client tests for the key's presence, so
-    an empty list would claim the range exists and is blank."""
-    sheet, body = _a1_sheet(spec, sheets)
-    r0, c0, r1, c1, raw = _sheets_block(sheet, body, spec)
-    block = [[_sheets_render(c, render) for c in row] for row in raw]
-    out = {"range": _a1_name(sheet, r0, c0, r1, c1), "majorDimension": major}
-    if major == "COLUMNS":
-        width = max((len(r) for r in block), default=0)
-        block = [_rstrip_empty([(r[i] if i < len(r) else "") for r in block]) for i in range(width)]
-    else:
-        block = [_rstrip_empty(row) for row in block]
-    while block and not block[-1]:
-        block.pop()
-    if block:
-        out["values"] = block
-    return out
-
-
-class _Sheet(NamedTuple):
-    """One sheet of a workbook, however the corpus stated it."""
-
-    sheet_id: int
-    index: int
-    title: str
-    grid: list[list]
-
-    @property
-    def rows(self) -> int:
-        """The declared grid's height — never smaller than the data, and at least the default."""
-        return max(SHEETS_GRID_ROWS, len(self.grid))
-
-    @property
-    def cols(self) -> int:
-        return max(SHEETS_GRID_COLS, max((len(r) for r in self.grid), default=0))
-
-
-def _workbook(request: Request, spreadsheet_id: str) -> tuple:
-    """``(row, sheets)`` — the Drive row behind a spreadsheet and the sheets it serves.
-
-    A document that STATES a grid answers with its stored sheets; one that does not answers with a
-    SINGLE synthesized sheet holding ``_sheets_grid``'s line-per-cell reading. Prose is therefore
-    one more grid, which is what leaves a single serving path below and stops the five Sheets reads
-    disagreeing about a cell.
-
-    A prose sheet's cells are strings and STAY strings. Nothing here sniffs a line for a number or
-    a boolean: a cell's type is something a corpus states, never something this module infers.
-
-    Inside a batch there is no lookup: real's batch does not implement the Sheets reads. Measured
-    2026-10-04 on the five reads this module serves, and on the two POST reads' bodies 2026-10-06,
-    the answer is 501 after the credential, the typed query values and a POST read's body and before
-    the spreadsheet is looked up, so one that does not exist gets it as well."""
-    if _BATCH_OUTER.get() is not None:
-        raise gerr.unimplemented()
-    row = _editor_doc(request, spreadsheet_id, expect="spreadsheet")
-    stored = store.gdrive_sheets_for(auth.conn(request), spreadsheet_id)
-    if not stored:
-        return row, [_Sheet(0, 0, SHEETS_SHEET_TITLE, _sheets_grid(row["content"]))]
-    return row, [
-        _Sheet(s["sheet_id"], s["sheet_index"], s["title"], json.loads(s["grid"])) for s in stored
-    ]
-
-
-def _sheets_enum_value(raw: str, field: str, enum: protojson.Enum) -> str:
+def _query_enum(raw: str, field: str, enum: protojson.Enum) -> str:
     """One of the read enums from the query string, as its canonical name.
 
     Read the way a JSON body's string is (``protojson.enum_from_string``), measured on the query
     string too: a number names the value it is the number of and nothing past the enum's last, so on
     `majorDimension` ``+2`` and ``02`` are `COLUMNS` while ``3``, ``-1``, ``2.0`` and a space-padded
     `` 2`` are refused. The response echoes the canonical name whatever the request used,
-    `DIMENSION_UNSPECIFIED` as `ROWS` (:func:`_sheets_major`). Anything else 400s naming the proto
-    field and type and quoting the value as sent, and an EMPTY value is not an absent one — it 400s
-    rather than falling back to the default."""
+    `DIMENSION_UNSPECIFIED` as `ROWS` (:func:`google_sheets._sheets_major`). Anything else 400s
+    naming the proto field and type and quoting the value as sent, and an EMPTY value is not an
+    absent one — it 400s rather than falling back to the default."""
     try:
         return enum.names[protojson.enum_from_string(raw, enum)]
     except protojson.ConversionError:
-        raise gerr.invalid_field_value(field, _a1_enum_error(field, enum, raw)) from None
+        raise gerr.invalid_field_value(field, _enum_error(field, enum, raw)) from None
 
 
-def _sheets_options(request: Request) -> tuple[str, str]:
-    """Validate the read enums and return ``(majorDimension, valueRenderOption)``. Real Sheets 400s
-    on an unknown value; accepting one silently would hand back ROWS-shaped data to a client that
-    asked for columns, and a silently unapplied option is worse than a refusal.
-    """
-    enums = _typed_query(
-        request,
-        {
-            "majorDimension": lambda raw: _sheets_enum_value(raw, "major_dimension", _PJ_DIMENSION),
-            # Measured over typed cells: FORMATTED_VALUE gives the display string "12",
-            # UNFORMATTED_VALUE the JSON number 12, and FORMULA the same raw value as
-            # UNFORMATTED_VALUE for every cell that is not a formula. A spreadsheet whose cells are
-            # lines of stored text has only strings, so all three agree on one; a spreadsheet that
-            # STATES its grid does not.
-            "valueRenderOption": lambda raw: _sheets_enum_value(
-                raw, "value_render_option", _PJ_RENDER
-            ),
-            # Validated and then unused, deliberately. It selects between a date cell's serial
-            # number and its formatted string, and a corpus states no date cells — every cell is a
-            # string, a number, a boolean or empty — so the two renderings coincide here. Leaving
-            # it unvalidated instead would accept the one thing a client can get wrong about it.
-            "dateTimeRenderOption": lambda raw: _sheets_enum_value(
-                raw, "date_time_render_option", _PJ_DATETIME
-            ),
-        },
-    )
-    major = (enums["majorDimension"] or ["ROWS"])[-1]
-    render = (enums["valueRenderOption"] or ["FORMATTED_VALUE"])[-1]
-    return _sheets_major(major), render
+# --- the `fields` mask the Sheets and Docs reads apply --------------------------------------------
 
 
-def _sheets_major(name: str) -> str:
-    """The dimension a read is answered by: `DIMENSION_UNSPECIFIED` answers by rows, and echoes
-    `ROWS`, measured 2026-10-04 in the query string and in a JSON body."""
-    return "COLUMNS" if name == "COLUMNS" else "ROWS"
+def _google_types() -> dict[str, dict[str, str | None]]:
+    """The messages a Sheets or Docs read answers with and every message they reach, each as its
+    fields and the message each holds (`None` for a scalar, an enum, a map or a list of lists): the
+    `types` `backlot diff` records in the `google_drive` baseline from the discovery documents. A
+    field only Backlot serves is not one a mask may name."""
+    types = json.loads((_BASELINES / "google_drive.json").read_text(encoding="utf-8"))["types"]
 
+    def held(type_: str) -> str | None:
+        name = type_.strip("[]")
+        return name if name in types else None
 
-_P_SHEETS_VALUES = [
-    qp("majorDimension"),
-    qp("valueRenderOption"),
-    qp("dateTimeRenderOption"),
-    *_P_SHEETS_STD,
-]
-_P_SHEETS_BATCH = [qp("ranges"), *_P_SHEETS_VALUES]
-
-
-@router.get(
-    "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchGet",
-    openapi_extra={"parameters": _P_SHEETS_BATCH},
-)
-async def sheets_values_batch_get(spreadsheet_id: str, request: Request):
-    """Several ranges in one round trip. Declared before ``values/{range}`` for clarity only —
-    ``values:batchGet`` is a single path segment, so the two cannot collide.
-
-    One unusable range fails the whole call rather than yielding a short ``valueRanges`` list: a
-    partial batch leaves the caller unable to say which range it is missing.
-
-    With no ``ranges`` at all, nothing is selected and ``valueRanges`` is omitted. NOTE: that is
-    the natural reading of a parameter with no default, NOT a response diffed against real
-    Sheets — unlike the rest of this module's behaviour, it is unverified."""
-    _require(request)
-    major, render = _sheets_options(request)
-    _row, sheets = _workbook(request, spreadsheet_id)
-    ranges = request.query_params.getlist("ranges")
-    body = {"spreadsheetId": spreadsheet_id}
-    if ranges:
-        body["valueRanges"] = [_sheets_value_range(r, sheets, major, render) for r in ranges]
-    return _sheets_respond(request, body, _F_BATCH_VALUES)
-
-
-@router.get(
-    "/sheets/v4/spreadsheets/{spreadsheet_id}/values/{a1_range:path}",
-    openapi_extra={"parameters": _P_SHEETS_VALUES},
-)
-async def sheets_values_get(spreadsheet_id: str, a1_range: str, request: Request):
-    """One range of a spreadsheet, ACL-enforced through the same lookup as ``spreadsheets.get``."""
-    _require(request)
-    major, render = _sheets_options(request)
-    _row, sheets = _workbook(request, spreadsheet_id)
-    return _sheets_respond(
-        request, _sheets_value_range(a1_range, sheets, major, render), _F_VALUE_RANGE
-    )
-
-
-# --- the two reads issued over POST ------------------------------------------------------------
-#
-# A DataFilter selects the same cells an A1 range does, by range or by grid indices, or selects them
-# by developer metadata (`developerMetadataLookup`), which a corpus never carries, so a lookup
-# selects nothing (`_sheets_check_lookup`). Measured, the two endpoints disagree about an ABSENT
-# filter list: `values:batchGetByDataFilter` refuses it ("Must specify at least one dataFilter.")
-# while `spreadsheets:getByDataFilter` treats it as "every sheet".
-#
-# The request messages as `backlot.protojson` reads them: the Sheets v4 discovery document's fields,
-# in proto field order (the order real echoes a filter back in) rather than the order the document
-# lists them, with the wrapper fields measured 2026-10-04 by the `.value` real's refusal names.
-
-
-_PJ_LOCATION_TYPE = _pj_enum(
-    "DeveloperMetadataLocationType",
-    "DEVELOPER_METADATA_LOCATION_TYPE_UNSPECIFIED",
-    "ROW",
-    "COLUMN",
-    "SHEET",
-    "SPREADSHEET",
-)
-_PJ_MATCHING = _pj_enum(
-    "DeveloperMetadataLocationMatchingStrategy",
-    "DEVELOPER_METADATA_LOCATION_MATCHING_STRATEGY_UNSPECIFIED",
-    "EXACT_LOCATION",
-    "INTERSECTING_LOCATION",
-)
-_PJ_VISIBILITY = _pj_enum(
-    "DeveloperMetadataVisibility",
-    "DEVELOPER_METADATA_VISIBILITY_UNSPECIFIED",
-    "DOCUMENT",
-    "PROJECT",
-)
-_PJ_GRID_RANGE = protojson.Message(
-    f"{_SHEETS_ENUM}.GridRange",
-    (
-        protojson.Field("sheetId", "sheet_id", "int32"),
-        protojson.Field("startRowIndex", "start_row_index", "int32", wrapper=True),
-        protojson.Field("endRowIndex", "end_row_index", "int32", wrapper=True),
-        protojson.Field("startColumnIndex", "start_column_index", "int32", wrapper=True),
-        protojson.Field("endColumnIndex", "end_column_index", "int32", wrapper=True),
-    ),
-)
-_PJ_DIMENSION_RANGE = protojson.Message(
-    f"{_SHEETS_ENUM}.DimensionRange",
-    (
-        protojson.Field("sheetId", "sheet_id", "int32"),
-        protojson.Field("dimension", "dimension", "enum", enum=_PJ_DIMENSION),
-        protojson.Field("startIndex", "start_index", "int32", wrapper=True),
-        protojson.Field("endIndex", "end_index", "int32", wrapper=True),
-    ),
-)
-_PJ_METADATA_LOCATION = protojson.Message(
-    f"{_SHEETS_ENUM}.DeveloperMetadataLocation",
-    (
-        protojson.Field("locationType", "location_type", "enum", enum=_PJ_LOCATION_TYPE),
-        protojson.Field("spreadsheet", "spreadsheet", "bool", oneof="location"),
-        protojson.Field("sheetId", "sheet_id", "int32", oneof="location"),
-        protojson.Field(
-            "dimensionRange",
-            "dimension_range",
-            "message",
-            message=_PJ_DIMENSION_RANGE,
-            oneof="location",
-        ),
-    ),
-)
-_PJ_METADATA_LOOKUP = protojson.Message(
-    f"{_SHEETS_ENUM}.DeveloperMetadataLookup",
-    (
-        protojson.Field("locationType", "location_type", "enum", enum=_PJ_LOCATION_TYPE),
-        protojson.Field(
-            "metadataLocation", "metadata_location", "message", message=_PJ_METADATA_LOCATION
-        ),
-        protojson.Field(
-            "locationMatchingStrategy", "location_matching_strategy", "enum", enum=_PJ_MATCHING
-        ),
-        protojson.Field("metadataId", "metadata_id", "int32", wrapper=True),
-        protojson.Field("metadataKey", "metadata_key", "string", wrapper=True),
-        protojson.Field("metadataValue", "metadata_value", "string", wrapper=True),
-        protojson.Field("visibility", "visibility", "enum", enum=_PJ_VISIBILITY),
-    ),
-)
-_PJ_DATA_FILTER = protojson.Message(
-    f"{_SHEETS_ENUM}.DataFilter",
-    (
-        protojson.Field(
-            "developerMetadataLookup",
-            "developer_metadata_lookup",
-            "message",
-            message=_PJ_METADATA_LOOKUP,
-            oneof="filter",
-        ),
-        protojson.Field("a1Range", "a1_range", "string", oneof="filter"),
-        protojson.Field(
-            "gridRange", "grid_range", "message", message=_PJ_GRID_RANGE, oneof="filter"
-        ),
-    ),
-)
-_PJ_FILTERS = protojson.Field(
-    "dataFilters", "data_filters", "message", message=_PJ_DATA_FILTER, repeated=True
-)
-_PJ_BATCH_GET_BY_FILTER = protojson.Message(
-    f"{_SHEETS_ENUM}.BatchGetValuesByDataFilterRequest",
-    (
-        _PJ_FILTERS,
-        protojson.Field("majorDimension", "major_dimension", "enum", enum=_PJ_DIMENSION),
-        protojson.Field("valueRenderOption", "value_render_option", "enum", enum=_PJ_RENDER),
-        protojson.Field(
-            "dateTimeRenderOption", "date_time_render_option", "enum", enum=_PJ_DATETIME
-        ),
-    ),
-)
-_PJ_GET_BY_FILTER = protojson.Message(
-    f"{_SHEETS_ENUM}.GetSpreadsheetByDataFilterRequest",
-    (
-        _PJ_FILTERS,
-        protojson.Field("includeGridData", "include_grid_data", "bool"),
-        protojson.Field("excludeTablesInBandedRanges", "exclude_tables_in_banded_ranges", "bool"),
-        protojson.Field(
-            "commentsViewMode",
-            "comments_view_mode",
-            "enum",
-            enum=_pj_enum(
-                "CommentsViewMode",
-                "COMMENTS_VIEW_MODE_UNSPECIFIED",
-                "COMMENTS_VIEW_MODE_DEFAULT_FOR_CURRENT_ACCESS",
-                "COMMENTS_VIEW_MODE_OMITTED",
-                "COMMENTS_VIEW_MODE_INCLUDED",
-            ),
-        ),
-    ),
-)
-
-
-class _Empty(NamedTuple):
-    """A grid range that holds no cell, an end equal to its start on either axis. Real answers one
-    at 200, measured 2026-10-04: `#REF!` as the range on the values-level read, and on the
-    spreadsheet-level one a block with no rows or no columns."""
-
-    sheet: _Sheet
-    r0: int
-    c0: int
-    r1: int
-    c1: int
-
-
-def _int32(n: int) -> int:
-    """``n`` as a Java int would hold it. Real names the row after `startRowIndex` 2147483647 as
-    `-2147483648`, measured 2026-10-04."""
-    return (n + 2**31) % 2**32 - 2**31
-
-
-def _grid_range_name(sheet: _Sheet, grid: dict) -> str:
-    """A grid range as real names it when refusing one past the grid: only the edges the request
-    set, start and end each as column letters (none past `ZZZ`, column 18277) then a row number, one
-    of them alone when the two read the same, and an `(empty) ` in front when an axis was sent with
-    its end at its start (an end of 0 with no start does not count). Measured 2026-10-04 on every
-    combination of the indexes sent, with the start row or the start column past the grid, among
-    them (start row, end row, start column, end column, `-` for one not sent)::
-
-        1000, -, -, -       Sheet1!1001:
-        1000, -, 1, 3       Sheet1!B1001:C
-        -, -, 26, 27        Sheet1!AA
-        5, 5, 26, -         (empty) Sheet1!AA6:5
-        -, 0, 26, -         Sheet1!AA:0
-        -, -, 18278, -      Sheet1!
-        -, -, 26, 18279     Sheet1!AA:
-    """
-    sr, er = grid.get("start_row_index"), grid.get("end_row_index")
-    sc, ec = grid.get("start_column_index"), grid.get("end_column_index")
-
-    def letters(column: int | None) -> str:
-        return _a1_col_letters(column) if column is not None and column <= 18277 else ""
-
-    start = letters(sc) + (str(_int32(sr + 1)) if sr is not None else "")
-    end = letters(None if ec is None else ec - 1) + (str(er) if er is not None else "")
-    name = start if start == end else f"{start}:{end}"
-    empty = (sr is not None and er == sr) or (sc is not None and ec == sc)
-    return ("(empty) " if empty else "") + f"{_a1_title(sheet.title)}!{name}"
-
-
-def _sheets_grid_selection(grid: dict, sheets: list[_Sheet], sheet_word: str):
-    """A `gridRange`, checked as real checks it once the spreadsheet is found, as the A1 spec it
-    selects or an :class:`_Empty`.
-
-    In real's order, measured 2026-10-04 by sending two of them wrong together: the sheet
-    (`No grid with id` on the values-level read, `No sheet with id` on the other: ``sheet_word``),
-    then a negative index, then an end before its start (rows before columns), then a start past
-    the grid (:func:`_grid_range_name`), and only then an empty range. An end past the grid is
-    clamped, as an A1 range's is."""
-    sheet_id = grid.get("sheet_id", 0)
-    sheet = next((s for s in sheets if s.sheet_id == sheet_id), None)
-    if sheet is None:
-        raise gerr.invalid_argument(f"No {sheet_word} with id: {sheet_id}")
-    sr, er = grid.get("start_row_index"), grid.get("end_row_index")
-    sc, ec = grid.get("start_column_index"), grid.get("end_column_index")
-    if any(i is not None and i < 0 for i in (sr, er, sc, ec)):
-        raise gerr.invalid_argument("GridRange indexes must be >= 0")
-    for start, end, axis in ((sr, er, "Row"), (sc, ec, "Column")):
-        if start is not None and end is not None and end < start:
-            raise gerr.invalid_argument(
-                f"end{axis}Index[{end}] cannot be before start{axis}Index[{start}]"
-            )
-    r0, c0 = sr or 0, sc or 0
-    r1 = sheet.rows if er is None else er
-    c1 = sheet.cols if ec is None else ec
-    if r0 >= sheet.rows or c0 >= sheet.cols:
-        raise gerr.invalid_argument(
-            f"Range ({_grid_range_name(sheet, grid)}) exceeds grid limits. "
-            f"Max rows: {sheet.rows}, max columns: {sheet.cols}"
-        )
-    if r1 == r0 or c1 == c0:
-        return _Empty(sheet, r0, c0, r1, c1)
-    # An end past the grid is cut to it here rather than left to the A1 parser, which reads three
-    # column letters at most: `endColumnIndex: 20000` answers `A1:Z1000`, measured 2026-10-04.
-    return _a1_name(sheet, r0, c0, min(r1, sheet.rows), min(c1, sheet.cols))
-
-
-def _sheets_bounds(selection, sheets: list[_Sheet]) -> tuple[_Sheet, int, int, int, int]:
-    """The sheet and half-open ``(r0, c0, r1, c1)`` a filter's A1 spec or :class:`_Empty` covers,
-    an end past the grid cut to it."""
-    if isinstance(selection, _Empty):
-        e = selection
-        return e.sheet, e.r0, e.c0, min(e.r1, e.sheet.rows), min(e.c1, e.sheet.cols)
-    sheet, part = _a1_sheet(selection, sheets)
-    return (sheet, *_a1_range(selection, part, sheet))
-
-
-def _sheets_check_lookup(lookup: dict, sheets: list[_Sheet]) -> None:
-    """A `developerMetadataLookup`'s refusals. A corpus states no developer metadata, so a lookup
-    that passes them matches nothing — real's answer for one on a spreadsheet carrying none,
-    measured 2026-10-04 — and the caller serves it as such.
-
-    Real's checks, in the order it makes them, measured the same day over every combination of
-    six `locationType`s, eight locations and four `locationMatchingStrategy`s (a location with no
-    member, `{}`, counts as none)::
-
-        locationType SPREADSHEET, a location other than spreadsheet: true
-                                            Cannot limit by location type of SPREADSHEET for the
-                                            location <the location's member>
-        EXACT_LOCATION beside a locationType     The locationMatchingStrategy was specified as …
-        a strategy and no location               A locationMatchingStrategy was specified, but …
-        INTERSECTING_LOCATION, spreadsheet: true DeveloperMetadataLookup.spreadsheet is true, …
-        a locationType number not in the enum    500
-        the location (:func:`_sheets_check_dimension_range`, or a sheetId no sheet has)
-        ROW, COLUMN or SHEET with a spreadsheet location, a strategy or a visibility number not
-        in the enum                              500
-
-    The location's own `locationType` is read and ignored."""
-    location_type = lookup.get("location_type", 0)
-    strategy = lookup.get("location_matching_strategy", 0)
-    location = lookup.get("metadata_location") or {}
-    member = next(
-        (field for field in _PJ_METADATA_LOCATION.fields if field.name in location and field.oneof),
-        None,
-    )
-    whole_spreadsheet = (
-        member is not None and member.name == "spreadsheet" and location["spreadsheet"]
-    )
-    if location_type == 4 and member is not None and not whole_spreadsheet:
-        raise gerr.invalid_argument(
-            f"Cannot limit by location type of SPREADSHEET for the location {member.json_name}"
-        )
-    if strategy == 1 and location_type != 0:
-        raise gerr.invalid_argument(
-            "The locationMatchingStrategy was specified as EXACT_LOCATION, but a locationType was "
-            "also specified: lookups cannot limit by a location type when matching an exact "
-            "location."
-        )
-    if strategy != 0 and member is None:
-        raise gerr.invalid_argument(
-            "A locationMatchingStrategy was specified, but no metadataLocation was specified: "
-            "lookups must always specify a metadataLocation when specifying a "
-            "locationMatchingStrategy."
-        )
-    if strategy == 2 and whole_spreadsheet:
-        raise gerr.invalid_argument(
-            "DeveloperMetadataLookup.spreadsheet is true, but locationMatchingStrategy was "
-            "specified as INTERSECTING."
-        )
-    if not 0 <= location_type < len(_PJ_LOCATION_TYPE.names):
-        raise gerr.internal_error()
-    if member is not None and member.name == "sheet_id":
-        if all(s.sheet_id != location["sheet_id"] for s in sheets):
-            raise gerr.invalid_argument(f"No grid with id: {location['sheet_id']}")
-    if member is not None and member.name == "dimension_range":
-        _sheets_check_dimension_range(location["dimension_range"], sheets)
-    if location_type in (1, 2, 3) and member is not None and member.name == "spreadsheet":
-        raise gerr.internal_error()
-    if not 0 <= strategy < len(_PJ_MATCHING.names):
-        raise gerr.internal_error()
-    if not 0 <= lookup.get("visibility", 0) < len(_PJ_VISIBILITY.names):
-        raise gerr.internal_error()
-
-
-def _sheets_check_dimension_range(dimension_range: dict, sheets: list[_Sheet]) -> None:
-    """A lookup's `dimensionRange`, checked in the order real checks it (measured 2026-10-04 with
-    two members wrong at once): both indexes, exactly one row or column (`endIndex` one past
-    `startIndex`), both indexes non-negative, the sheet, a dimension, a dimension number the enum
-    does not declare (real's 500), and a start inside the grid."""
-    if "start_index" not in dimension_range or "end_index" not in dimension_range:
-        raise gerr.invalid_argument(
-            "DimensionRange must specify both a startIndex and an endIndex."
-        )
-    start, end = dimension_range["start_index"], dimension_range["end_index"]
-    # In Java int arithmetic: `startIndex: 2147483647, endIndex: -2147483648` passes this and is
-    # refused as negative, measured 2026-10-04.
-    if _int32(end - start) != 1:
-        raise gerr.invalid_argument("DimensionRange must represent a single row or column.")
-    if start < 0 or end < 0:
-        raise gerr.invalid_argument("DimensionRange indexes must be >= 0")
-    sheet_id = dimension_range.get("sheet_id", 0)
-    sheet = next((s for s in sheets if s.sheet_id == sheet_id), None)
-    if sheet is None:
-        raise gerr.invalid_argument(f"No grid with id: {sheet_id}")
-    dimension = dimension_range.get("dimension", 0)
-    if dimension == 0:
-        raise gerr.invalid_argument("No dimension specified")
-    if dimension not in (1, 2):
-        raise gerr.internal_error()
-    size, axis = (sheet.rows, "ROWS") if dimension == 1 else (sheet.cols, "COLUMNS")
-    if start >= size:
-        raise gerr.invalid_argument(
-            f"DimensionRange startIndex [{start}] is after the last {axis} index "
-            f"[{size - 1}] of the sheet [{sheet_id}]."
-        )
-
-
-def _sheets_selections(filters: list[dict], sheets: list[_Sheet], *, values_level: bool) -> list:
-    """What each filter selects, in the order sent: an A1 spec, an :class:`_Empty`, or ``None`` for
-    a developer metadata lookup (:func:`_sheets_check_lookup`).
-
-    Real checks the filters one at a time and answers the first that fails, measured 2026-10-04
-    with a failing filter on either side of another, a lookup's refusal and a range's alike. The
-    values-level read puts `Invalid dataFilter[N]: ` in front of the refusal and the
-    spreadsheet-level one does not. An `a1Range` is resolved here, past-grid check and all, so its
-    refusal is reported against the filter that carried it."""
-    selections = []
-    for i, f in enumerate(filters):
-        try:
-            if "a1_range" in f:
-                spec = f["a1_range"]
-                sheet, part = _a1_sheet(spec, sheets)
-                _a1_range(spec, part, sheet)
-                selections.append(spec)
-            elif "grid_range" in f:
-                word = "grid" if values_level else "sheet"
-                selections.append(_sheets_grid_selection(f["grid_range"], sheets, word))
-            elif "developer_metadata_lookup" in f:
-                _sheets_check_lookup(f["developer_metadata_lookup"], sheets)
-                selections.append(None)
-            else:
-                raise gerr.invalid_argument("dataFilter.filter must be specified.")
-        except gerr.GoogleError as exc:
-            if exc.status_code != 400 or not values_level:
-                raise
-            raise gerr.invalid_argument(f"Invalid dataFilter[{i}]: {exc.message}") from None
-    return selections
-
-
-def _sheets_filter_echo(f: dict) -> dict:
-    """A filter as the values-level read echoes it beside its answer: the proto real read, back in
-    JSON, so an accepted spelling comes back canonical — `"startRowIndex": "+1"` as `1` —
-    with a plain field at its default left out and a wrapper field kept: `sheetId: 0` is absent
-    and `startRowIndex: 0` present. Measured 2026-10-04."""
-    if "a1_range" in f:
-        return {"a1Range": f["a1_range"]}
-    grid = f["grid_range"]
     return {
-        "gridRange": {
-            field.json_name: grid[field.name]
-            for field in _PJ_GRID_RANGE.fields
-            if field.name in grid and (field.wrapper or grid[field.name])
-        }
+        name: {f: held(m["type"]) for f, m in entry.get("fields", {}).items() if "type" in m}
+        for name, entry in types.items()
     }
 
 
-@router.post(
-    "/sheets/v4/spreadsheets/{spreadsheet_id}/values:batchGetByDataFilter",
-    openapi_extra={"parameters": _P_SHEETS_STD},
+_GOOGLE_FIELDS = _google_types()
+
+# A request body that is a whole editor message (`spreadsheets.create`'s `Spreadsheet`,
+# `documents.create`'s `Document`) is read with a `protojson.Message` generated from the message the
+# `google_drive` baseline records from the discovery document (`backlot diff` keeps it current), so
+# a name the vendor's message lacks is refused where real refuses it and every name it has is read.
+_GOOGLE_RECORDED = json.loads((_BASELINES / "google_drive.json").read_text(encoding="utf-8"))[
+    "types"
+]
+_PJ_SCALAR_KINDS = {"integer": "int32", "number": "double", "boolean": "bool", "string": "string"}
+
+
+def _pj_messages(
+    package: str, enums: dict, shapes: dict | None = None, nested: dict | None = None
+) -> Callable[[str], protojson.Message]:
+    """A reader of the recorded messages of one editor API: ``package`` is its type URL prefix
+    (``type.googleapis.com/google.apps.sheets.v4``), ``enums`` the `protojson.Enum` of each enum
+    field by ``(message, field)``, the baseline recording an enum as `string`, and ``shapes`` what
+    else the baseline cannot say of a field, by the same key: the `protojson.Field` members
+    (``kind``, ``wrapper``, ``oneof``) that differ from what its recorded type gives, or for a map
+    the ``key`` kind, `string` when unsaid. Nor does it say which message is declared inside
+    another, which ``nested`` spells for its type URL by name."""
+    built: dict[str, protojson.Message] = {}
+    shapes, nested = shapes or {}, nested or {}
+
+    def field(name: str, json_name: str, proto: str, type_: str) -> protojson.Field:
+        repeated = type_.startswith("[")
+        inner = type_[1:-1] if repeated else type_
+        enum = enums.get((name, json_name))
+        shape = shapes.get((name, json_name), {})
+        if enum is not None:
+            made = protojson.Field(json_name, proto, "enum", enum=enum, repeated=repeated)
+        elif type_.startswith("map<string, "):
+            value = field("", json_name, proto, type_[len("map<string, ") : -1])
+            key = shape.get("key", "string")
+            entry = protojson.map_entry(built[name].type_url, json_name, value, key)
+            return protojson.Field(
+                json_name, proto, "message", message=entry, repeated=True, map=True
+            )
+        elif inner in _GOOGLE_RECORDED:
+            made = protojson.Field(
+                json_name, proto, "message", message=message(inner), repeated=repeated
+            )
+        elif inner in _PJ_SCALAR_KINDS:
+            made = protojson.Field(json_name, proto, _PJ_SCALAR_KINDS[inner], repeated=repeated)
+        else:  # a bare JSON value: kept as sent
+            made = protojson.Field(json_name, proto, "any")
+        return made._replace(**shape)
+
+    def message(name: str) -> protojson.Message:
+        if name in built:
+            return built[name]
+        fields: list[protojson.Field] = []
+        # kept before its fields are read, for a message that holds itself: a Docs table cell
+        # holds the structural elements that hold the table
+        built[name] = protojson.Message(
+            f"{package}.{nested.get(name, name.split('.', 1)[1])}", fields
+        )
+        for json_name, member in _GOOGLE_RECORDED[name].get("fields", {}).items():
+            proto = re.sub(r"(?<!^)(?=[A-Z])", "_", json_name).lower()
+            fields.append(field(name, json_name, proto, member.get("type", "any")))
+        return built[name]
+
+    return message
+
+
+def _gmask_paths(mask: str) -> tuple[list[tuple[str, ...]], str]:
+    """The paths a ``fields`` mask names, in its order, each as its names, and the bracket it leaves
+    unpaired (``""`` for none).
+
+    Measured grammar: ``.`` and ``/`` both descend, ``a(b,c)`` groups a sub-selection, ``,``
+    separates siblings and a trailing comma is tolerated. A name is matched case-sensitively and is
+    not trimmed -- `` spreadsheetId`` with a leading space 400s. An empty group names nothing, not
+    even the name before it: measured 2026-10-22, `a()` answered the whole spreadsheet with no
+    refusal for `a`, and `spreadsheetId,sheets()` the `spreadsheetId` alone.
+
+    A bracket left unpaired is refused after the paths before it, a ``)`` where it stands and a
+    ``(`` at the end (`gerr.unbalanced_field_mask`): measured 2026-10-22, `a)` and
+    `bogus)spreadsheetId` named `a` and `bogus`, `spreadsheetId)bogus` was the `)` refusal, and
+    `sheets(properties/title,bogus` named `sheets.bogus` where `sheets(properties/title` was the
+    `(` one."""
+    paths: list[tuple[str, ...]] = []
+    # the prefix of each open group
+    stack: list[tuple[str, ...]] = []
+    prefix: tuple[str, ...] = ()
+    token = ""
+
+    def names(text: str) -> tuple[str, ...]:
+        return tuple(text.replace("/", ".").split("."))
+
+    for ch in mask:
+        if ch == "(":
+            stack.append(prefix)
+            prefix += names(token) if token else ()
+            token = ""
+        elif ch == ")":
+            if token:
+                paths.append(prefix + names(token))
+            if not stack:
+                return paths, ")"
+            prefix, token = stack.pop(), ""
+        elif ch == ",":
+            if token:
+                paths.append(prefix + names(token))
+            token = ""
+        else:
+            token += ch
+    if token:
+        paths.append(prefix + names(token))
+    return paths, "(" if stack else ""
+
+
+def _gmask_resolve(path: tuple[str, ...], message: str | None) -> dict | None:
+    """What ``path`` selects in ``message`` (`None` for a field that holds no message), or ``None``
+    when it names nothing there; ``{}`` is all of it.
+
+    A ``*`` stands for one name. Measured 2026-10-22: `sheets.*.title` is `sheets.properties.title`,
+    `*.*.title` the same, `*.*.rowCount` refused as naming nothing (the row count is three names
+    under `sheets`), and `*.data` is `sheets.data`. A ``*`` that ends a path selects all of what it
+    is under, a field holding no message included, and so does a run of them: `spreadsheetId.*`,
+    `spreadsheetId.*.*`, a map's `criteria.*` and `*.*.*` answered, where `spreadsheetId.*.x` names
+    nothing."""
+    if not path:
+        return {}
+    head, rest = path[0], path[1:]
+    if message is None:
+        return {} if all(name == "*" for name in path) else None
+    fields = _GOOGLE_FIELDS[message]
+    if head == "*":
+        if not rest:
+            return {}
+        out = {}
+        for name, held in fields.items():
+            sub = _gmask_resolve(rest, held)
+            if sub is not None:
+                out[name] = sub
+        return out or None
+    if head not in fields:
+        return None
+    sub = _gmask_resolve(rest, fields[head])
+    return None if sub is None else {head: sub}
+
+
+# The messages a mask selects whole once any path names them whole, a narrower path beside it
+# notwithstanding. Measured 2026-10-27: `values(userEnteredValue,userEnteredValue.formulaValue)`
+# answered a string cell's `stringValue`, and so did the same for `effectiveValue`, an
+# `errorValue`'s `message` beside `errorValue.type`, a `backgroundColorStyle`'s `rgbColor` beside
+# `backgroundColorStyle.themeColor`, and `themeColors` whole beside `themeColors.colorType`.
+_GMASK_WHOLE = frozenset(
+    {"sheets.ExtendedValue", "sheets.ErrorValue", "sheets.ColorStyle", "sheets.ThemeColorPair"}
 )
-async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: Request):
-    """``values:batchGet`` addressed by DataFilter rather than by A1 string.
 
-    A read, issued over POST because the filters do not fit in a query string. Each entry carries
-    the ``valueRange`` AND the filters that selected it — measured — so a caller that sent several
-    can tell which answer belongs to which.
 
-    In the order real answers, measured 2026-10-04 with two wrong at once: the credential, then the
-    body (``protojson.read``), then the spreadsheet's lookup, then a `valueRenderOption` number the
-    enum does not declare (a 400 of the service's own), then an empty filter list, then the filters
-    (:func:`_sheets_selections`), then a `majorDimension` number it does not declare (a 500). A
-    `dateTimeRenderOption` number it does not declare is ignored, as the option is."""
-    _require(request)
-    body = protojson.read(await request.body(), _PJ_BATCH_GET_BY_FILTER)
-    _row, sheets = _workbook(request, spreadsheet_id)
-    render = body.get("value_render_option", 0)
-    if not 0 <= render < len(_PJ_RENDER.names):
-        raise gerr.invalid_argument("Invalid valueRenderOption: UNRECOGNIZED")
-    filters = body.get("data_filters", [])
-    if not filters:
-        raise gerr.invalid_argument("Must specify at least one dataFilter.")
-    selections = _sheets_selections(filters, sheets, values_level=True)
-    major = body.get("major_dimension", 0)
-    if not 0 <= major < len(_PJ_DIMENSION.names):
-        raise gerr.internal_error()
-    major, render = _sheets_major(_PJ_DIMENSION.names[major]), _PJ_RENDER.names[render]
+def _gmask_merge(into: dict, selection: dict, message: str | None) -> None:
+    """Merge one path's selection into the tree, a narrower selection replacing a wider one:
+    measured 2026-10-22, `spreadsheetId,*` answered `spreadsheetId` alone, and
+    `sheets,sheets.properties.title` and `sheets.*,sheets.properties.title` the title alone, and
+    on 2026-10-27 `effectiveFormat,effectiveFormat.numberFormat` and
+    `properties(defaultFormat,defaultFormat.numberFormat)` the narrower path alone, in either
+    order. A message in :data:`_GMASK_WHOLE` is the exception, kept whole."""
+    fields = _GOOGLE_FIELDS.get(message, {}) if message else {}
+    for name, sub in selection.items():
+        held = fields.get(name)
+        if held in _GMASK_WHOLE and (sub == {} or into.get(name) == {}):
+            into[name] = {}
+        else:
+            _gmask_merge(into.setdefault(name, {}), sub, held)
 
-    # NOT the order the filters arrived in. Measured: the answers come back sorted by where each
-    # range starts, column before row — `Data!A2` precedes `Data!B1`, `Data!B9` precedes
-    # `Data!B10`, a shorter range precedes the one that extends it, and a sheet earlier in the
-    # workbook comes first. Each entry still carries the filters that selected it, so a caller
-    # pairs by those rather than by position.
-    def where(i: int):
-        sheet, r0, c0, r1, c1 = _sheets_bounds(selections[i], sheets)
-        return (sheet.index, c0, r0, c1, r1)
 
-    def answer(selection) -> dict:
-        if isinstance(selection, _Empty):
-            return {"range": "#REF!", "majorDimension": major}
-        return _sheets_value_range(selection, sheets, major, render)
+def _gmask_named(selection: dict, path: tuple[str, ...]) -> dict:
+    """The part of one path's ``selection`` the path names: down to its last name that is not
+    ``*``, so `tabs.documentTab.*` names `tabs.documentTab` and nothing under it, `*.commentId`
+    names `comments.commentId`, and `*.*` names nothing."""
+    depth = max((i + 1 for i, name in enumerate(path) if name != "*"), default=0)
 
-    out: dict = {"spreadsheetId": spreadsheet_id}
-    # Filters whose answers name the same range share one entry, which lists them in the order
-    # sent, measured 2026-10-04: `Data!A1:A1` beside `Data!A1`, an `a1Range` beside the `gridRange`
-    # for its cells, two ranges equal once an end past the grid is cut, and two ranges with no
-    # cells in different places, rows or columns, both `#REF!`.
-    first: dict[str, int] = {}
-    entries: dict[str, dict] = {}
-    for i, selection in enumerate(selections):
+    def cut(tree: dict, levels: int) -> dict:
+        return {name: cut(sub, levels - 1) if levels > 1 else {} for name, sub in tree.items()}
+
+    return cut(selection, depth) if depth else {}
+
+
+def _gmask_select(mask: str | None, message: str) -> tuple[dict | None, dict]:
+    """The selection tree a ``fields`` mask makes of a ``message`` response, ``{}`` at a leaf
+    meaning all of it, and the fields its paths name (`_gmask_named`), merged. ``None`` for no
+    mask, which an empty one, an empty group and a ``*`` alone each are: measured 2026-10-22,
+    `fields=*` answered what no mask does, `includeGridData` deciding the grid.
+
+    A path that names nothing is refused, the first such in the mask's order (measured on
+    `sheets.properties.title,bogus2,sheets.bogus3`: `bogus2`), so a declared field the response
+    holds no value for answers 200 without it rather than the 400 a field it does not declare gets.
+    Checked against the whole schema, not against what this module builds: measured 2026-10-22,
+    `namedRanges`, `sheets(merges,conditionalFormats)` and a cell's `userEnteredFormat` each
+    answered 200 on a spreadsheet holding none. A bracket left unpaired is refused after the paths
+    before it (`_gmask_paths`).
+
+    What a path names is what the editors' own refusals read: measured 2026-10-22 on Sheets,
+    `comments`, `comments.*`, `*.commentId` and `*.headPost` were refused for asking after comments
+    that `commentsViewMode` did not request, and `*.*`, which reaches `comments` through ``*``
+    alone, was answered."""
+    if not mask:
+        return None, {}
+    tree: dict = {}
+    named: dict = {}
+    paths, unpaired = _gmask_paths(mask)
+    for path in paths:
+        selection = _gmask_resolve(path, message)
         if selection is None:
-            continue
-        value_range = answer(selection)
-        key = value_range["range"]
-        if key not in entries:
-            first[key] = i
-            entries[key] = {"valueRange": value_range, "dataFilters": []}
-        entries[key]["dataFilters"].append(_sheets_filter_echo(filters[i]))
-    if entries:
-        # A lookup selects nothing and leaves no entry; with nothing else, there is no
-        # `valueRanges` at all, measured 2026-10-04.
-        out["valueRanges"] = [entries[k] for k in sorted(entries, key=lambda k: where(first[k]))]
-    return _sheets_respond(request, out, _F_BATCH_BY_FILTER)
+            raise gerr.bad_field_mask(mask, ".".join(path))
+        _gmask_merge(named, _gmask_named(selection, path), message)
+        _gmask_merge(tree, selection, message)
+    if unpaired:
+        raise gerr.unbalanced_field_mask(mask, unpaired)
+    return (tree or None), named
 
 
-@router.post(
-    "/sheets/v4/spreadsheets/{spreadsheet_id}:getByDataFilter",
-    openapi_extra={"parameters": _P_SHEETS_STD},
-)
-async def sheets_get_by_data_filter(spreadsheet_id: str, request: Request):
-    """``spreadsheets.get`` addressed by DataFilter. Same response, and the filters scope the
-    ``sheets`` array as ``ranges`` does but for cells two filters cover (below) — measured,
-    including that NO filter means every sheet rather than the refusal its values-level sibling
-    gives, and so does a list of developer metadata lookups alone, which select nothing (measured
-    2026-10-04). The credential, the body, the spreadsheet's lookup and the filters come in the
-    order its sibling's docstring gives."""
-    _require(request)
-    body = protojson.read(await request.body(), _PJ_GET_BY_FILTER)
-    row, sheets = _workbook(request, spreadsheet_id)
-    selections = _sheets_selections(body.get("data_filters", []), sheets, values_level=False)
-    # Filters that cover the same cells share one `data` block, placed where the first of them was
-    # sent, measured 2026-10-04 on the pairs with cells `sheets_values_batch_get_by_data_filter`
-    # lists and on one empty range sent twice. Two empty ranges in different places stay two
-    # blocks, and `spreadsheets.get` answers a `ranges` value sent twice with a block for each.
-    specs, seen = [], set()
-    for selection in selections:
-        if selection is None:
-            continue
-        sheet, *cells = _sheets_bounds(selection, sheets)
-        if (sheet.index, *cells) not in seen:
-            seen.add((sheet.index, *cells))
-            specs.append(selection)
-    grid = body.get("include_grid_data", False)
-    if mask := gerr.first_repeat(request.query_params, "fields"):
-        grid = _gmask_wants_grid(mask)
-    return _sheets_respond(
-        request, _sheets_book(spreadsheet_id, row, sheets, specs, grid), _F_SPREADSHEET
-    )
+def _gmask_apply(tree: dict, value):
+    """Project ``value`` through a selection tree, mapping over a list rather than indexing it —
+    which is what lets ``sheets.properties.title`` reach into every sheet — and keeping the order
+    ``value`` has: measured 2026-10-22, `*.title,spreadsheetId` answered `spreadsheetId` first."""
+    if not tree:
+        return value
+    if isinstance(value, list):
+        return [_gmask_apply(tree, v) for v in value]
+    if not isinstance(value, dict):
+        return value
+    out = {name: _gmask_apply(tree[name], v) for name, v in value.items() if name in tree}
+    if "rowData" in out:
+        _gmask_trim_rows(out)
+    return out
+
+
+_CELL_FORMATS = frozenset({"userEnteredFormat", "effectiveFormat"})
+
+
+def _gmask_hollow(value) -> bool:
+    """Whether a projected message holds nothing but empty messages."""
+    return isinstance(value, dict) and all(_gmask_hollow(v) for v in value.values())
+
+
+def _gmask_trim_rows(block: dict) -> None:
+    """Cut a projected `GridData` block's rows the way `google_sheets._sheets_grid_data` cuts
+    them, a cell the mask left empty counting as an empty cell. Measured 2026-10-22 over `D1:F4`
+    holding `a` in D1 and `b` in F2: `rowData.values.userEnteredValue` answered
+    `[{"values": [{…}]}, {"values": [{}, {}, {…}]}]`, and `rowData.values.userEnteredFormat`, which
+    no cell held, no `rowData` at all.
+
+    A cell's format the mask leaves holding nothing is left out, where every other message is kept
+    empty. Measured 2026-10-27: `values(userEnteredValue,effectiveFormat.numberFormat)` served no
+    `effectiveFormat` on a string, a number or a boolean, and neither did
+    `effectiveFormat.textFormat.link`, while `effectiveValue.numberValue` served a string's
+    `effectiveValue` as `{}`, and `sheets.properties.tabColorStyle` and
+    `properties.defaultFormat.numberFormat` served `properties` and `defaultFormat` as `{}`."""
+    rows = []
+    for row in block["rowData"]:
+        values = [
+            {k: v for k, v in cell.items() if k not in _CELL_FORMATS or not _gmask_hollow(v)}
+            for cell in row.get("values", [])
+        ]
+        while values and not values[-1]:
+            values.pop()
+        rows.append({"values": values} if values else {})
+    while rows and not rows[-1]:
+        rows.pop()
+    if rows:
+        block["rowData"] = rows
+    else:
+        del block["rowData"]
 
 
 @router.get("/slides/v1/presentations/{presentation_id}")
@@ -4658,18 +4917,63 @@ _NATIVE = {
 
 
 def _native(row):
-    """Return the _NATIVE tuple for this doc, or None if it's a binary (non-native) file."""
-    return _NATIVE.get(row["subtype"] or "document")
+    """Return the _NATIVE tuple for this file, or None if it's a binary (non-native) file."""
+    return _NATIVE.get(row["subtype"] or store.DRIVE_DEFAULT_SUBTYPE)
 
 
-def _drive_user(email: str) -> dict:
+def _drive_user(email: str, me: bool = False) -> dict:
+    """A `User`, ``me`` when it is the caller: measured 2026-10-27, the owner reading its own file
+    gets ``me: true`` on ``owners[]`` and on ``lastModifyingUser``."""
     return {
         "kind": "drive#user",
         "displayName": email.split("@")[0].replace(".", " ").title(),
         "emailAddress": email,
-        "me": False,
+        "me": me,
         "permissionId": str(synth.github_user_id(email)),
         "photoLink": synth.github_avatar(synth.github_user_id(email)),
+    }
+
+
+# Where real's `exportLinks` point for a native file of each type, and the short name each type it
+# exports to is named by there, read off a document, a spreadsheet and a presentation on
+# 2026-10-25.
+_DRIVE_EXPORT_LINK = {
+    DRIVE_DOC_MIME: "https://docs.google.com/feeds/download/documents/export/Export",
+    "application/vnd.google-apps.spreadsheet": "https://docs.google.com/spreadsheets/export",
+    "application/vnd.google-apps.presentation": (
+        "https://docs.google.com/feeds/download/presentations/Export"
+    ),
+}
+_DRIVE_EXPORT_NAME = {
+    "application/epub+zip": "epub",
+    "application/pdf": "pdf",
+    "application/rtf": "rtf",
+    "application/vnd.oasis.opendocument.presentation": "odp",
+    "application/vnd.oasis.opendocument.spreadsheet": "ods",
+    "application/vnd.oasis.opendocument.text": "odt",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/x-vnd.oasis.opendocument.spreadsheet": "ods",
+    "application/zip": "zip",
+    "text/csv": "csv",
+    "text/html": "html",
+    "text/markdown": "markdown",
+    "text/plain": "txt",
+    "text/tab-separated-values": "tsv",
+    "text/x-markdown": "markdown",
+}
+
+
+def _drive_export_links(file_id: str, mime: str) -> dict[str, str]:
+    """The `exportLinks` a native Docs Editors file carries, one per MIME `about.exportFormats`
+    gives its type, in that order, at the address real's use with the format's short name."""
+    base = _DRIVE_EXPORT_LINK.get(mime)
+    if base is None:
+        return {}
+    return {
+        out: f"{base}?id={file_id}&exportFormat={_DRIVE_EXPORT_NAME[out]}"
+        for out in _DRIVE_EXPORT_FORMATS[mime]
     }
 
 
@@ -4680,6 +4984,39 @@ def _drive_mime(row) -> str:
     return native[0] if native else (row["mime_type"] or "application/octet-stream")
 
 
+def _drive_file_capabilities(is_folder: bool, owned: bool) -> dict:
+    """A stored file's `capabilities`, for its owner or for anyone else, whom every grant here makes
+    a reader. Measured 2026-10-22 on a spreadsheet, a plain-text file and a folder, each read by its
+    owner and by a user it was shared with as a reader: the owner may comment, edit, rename, trash,
+    delete, share and modify content, and the reader may do none of those; both may download. A
+    file can be copied and its owner may read its revisions; a folder lists its children to both
+    and takes new ones from its owner."""
+    return {
+        "canDownload": True,
+        "canListChildren": is_folder,
+        "canComment": owned,
+        "canEdit": owned,
+        "canCopy": not is_folder,
+        "canShare": owned,
+        "canRename": owned,
+        "canTrash": owned,
+        "canDelete": owned,
+        "canReadRevisions": owned and not is_folder,
+        "canAddChildren": owned and is_folder,
+        "canModifyContent": owned,
+    }
+
+
+def _drive_version(row) -> str:
+    """A file's ``version``: 2 once it states a modification, and 1 for a blank Doc -- measured
+    2026-10-29, a Doc `documents.create` made was version 1 at 2, 20, 60 and 150 seconds, and a
+    Doc converted from a text upload was 4 as the upload answered and 6 three seconds on."""
+    if not row["updated_ts"]:
+        return "1"
+    blank = row["subtype"] == "document" and not row["content"]
+    return "1" if blank else "2"
+
+
 def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) -> dict:
     """The served ``files`` resource for a stored row. ``me`` is the caller's email, which decides
     the per-caller ``ownedByMe`` (None for the admin/service token, which owns nothing)."""
@@ -4688,6 +5025,8 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     author = row["author_email"]
     native = _native(row)
     mime = _drive_mime(row)
+    # a Doc `documents.batchUpdate` wrote serves the `size` and `version` it stored
+    written = store.gdrive_doc_written(conn, row["id"]) if mime == DRIVE_DOC_MIME else None
     if native is not None:
         seg = native[1]
         view = (
@@ -4695,15 +5034,15 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
             if seg
             else f"https://drive.google.com/drive/folders/{row['id']}"
         )
-    else:  # binary file (PDF, image, office doc)
+    else:  # binary file (PDF, image, Office file)
         view = f"https://drive.google.com/file/d/{row['id']}/view"
     is_folder = row["subtype"] == "folder"
-    # "shared" = visible to anyone besides the owner — true for org/group/multi-reader docs.
+    # "shared" = visible to anyone besides the owner — true for org/group/multi-reader files.
     # In a list the caller passes it in (batch-computed); for a single get, look it up here.
     if shared is None:
-        shared = bool(store.doc_grants(conn, "google_drive", row["id"]))
+        shared = bool(store.gdrive_shared(conn, [row["id"]]))
     ext = row["title"].rsplit(".", 1)[-1] if (native is None and "." in row["title"]) else None
-    nbytes = len((row["content"] or "").encode("utf-8"))
+    owned = _drive_owned_by(author, me)
     f = {
         "kind": "drive#file",
         "id": row["id"],
@@ -4712,43 +5051,37 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "parents": store.jcol(row, "parents") or [synth.drive_folder_id(row["folder"])],
         "createdTime": synth.rfc3339(created),
         "modifiedTime": synth.rfc3339(modified),
-        "owners": [_drive_user(author)],
-        "lastModifyingUser": _drive_user(author),
+        "owners": [_drive_user(author, owned)],
+        "lastModifyingUser": _drive_user(author, owned),
         "trashed": bool(row["trashed"]),
         "explicitlyTrashed": bool(row["trashed"]),
         "starred": False,
         "shared": bool(shared),
         "viewedByMe": False,
-        "ownedByMe": _drive_owned_by(author, me),
+        "ownedByMe": owned,
+        **_modified_by_me(author, me, modified),
         **_shared_with_me_time(author, me, created),
-        "version": str(2 if row["updated_ts"] else 1),
+        "version": str(written[1]) if written else _drive_version(row),
         "spaces": ["drive"],
         "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
-        "capabilities": {
-            "canDownload": not is_folder,
-            "canListChildren": is_folder,
-            "canComment": not is_folder,
-            "canEdit": False,
-            "canCopy": not is_folder,
-            "canShare": True,
-            "canRename": False,
-            "canTrash": False,
-            "canDelete": False,
-            "canReadRevisions": not is_folder,
-            "canAddChildren": is_folder,
-            "canModifyContent": False,
-        },
+        "capabilities": _drive_file_capabilities(is_folder, owned),
     }
     # Per Google's reference, `size` "is populated for files with binary content stored in Google
     # Drive AND for Docs Editors files; it is not populated for shortcuts or folders" — so a native
     # Doc/Sheet/Slides carries it too. Checksums, a download link and the file-extension pair stay
-    # binary-only, which is also what real Drive does for the Docs-editors types.
+    # binary-only, which is also what real Drive does for the Docs-editors types. A non-folder file
+    # always answers `quotaBytesUsed` (its own `size`), and a native file answers `exportLinks`,
+    # both measured 2026-10-21/25. A native file's `size` never goes under
+    # `store.DRIVE_NATIVE_MIN_BYTES`, where the measurement is recorded.
     if not is_folder:
+        nbytes = written[0] if written else store.drive_file_bytes(row["subtype"], row["content"])
         f["size"] = str(nbytes)
+        f["quotaBytesUsed"] = str(nbytes)
+    if native is not None and not is_folder:
+        f["exportLinks"] = _drive_export_links(row["id"], mime)
     if native is None:
         f["md5Checksum"] = hashlib.md5(row["content"].encode()).hexdigest()
-        f["quotaBytesUsed"] = str(nbytes)
         f["webContentLink"] = f"https://drive.google.com/uc?id={row['id']}&export=download"
         if ext:
             f["fileExtension"] = ext
@@ -4767,57 +5100,99 @@ def _drive_permissions(conn, file_id: str, *, folder: str | None = None) -> list
         else store.doc_grants(conn, "google_drive", file_id)
     )
     domain = get_settings().org_domain
+
+    def full(
+        kind_id: str,
+        ptype: str,
+        role: str,
+        email: str | None = None,
+        name: str | None = None,
+        *,
+        anyone: bool = False,
+    ) -> dict:
+        """A permission as real answers it under `permissions` or `*`: the four default keys and
+        `permissionDetails`, a direct entry for its role and, on an owner's, an inherited `writer`
+        entry before it; an `anyone` permission adds `allowFileDiscovery`, any other `deleted`
+        (false), and a user's `pendingOwner` (false) and `photoLink`. Measured 2026-10-25 on the
+        permissions of a Workspace member's 193 files: 192 owners', 45 writers', a user commenter's,
+        two groups' and two `anyone` permissions, where one owner's and nine writers' carried a
+        single inherited entry instead. No user reader's was among them; a reader here takes the
+        commenter's shape."""
+        details = [{"permissionType": "file", "role": role, "inherited": False}]
+        if role == "owner":
+            details.insert(0, {"permissionType": "file", "role": "writer", "inherited": True})
+        p = {
+            "kind": "drive#permission",
+            "id": kind_id,
+            "type": ptype,
+            "role": role,
+            "permissionDetails": details,
+        }
+        if anyone:
+            p["allowFileDiscovery"] = True
+        else:
+            p["deleted"] = False
+        if ptype == "user":
+            p["pendingOwner"] = False
+        if email is not None:
+            p["emailAddress"] = email
+        if name is not None:
+            p["displayName"] = name
+        if ptype == "user":
+            p["photoLink"] = synth.github_avatar(synth.github_user_id(email))
+        return p
+
+    row = None if folder else store.get_document(conn, "google_drive", file_id)
+    owner_email = row["author_email"].lower() if row is not None else None
     perms = []
     for g in grants:
         ptype, pid = g["principal_type"], g["principal_id"]
+        if ptype == "user" and pid.lower() == owner_email:
+            # The owner's own grant is the owner permission below, not a reader's beside it:
+            # measured 2026-10-26, a file whose only grant is its owner's lists one permission.
+            continue
         if ptype == "org":  # anyone-in-org / anyone-with-link
-            perms.append(
-                {
-                    "kind": "drive#permission",
-                    "id": "anyoneWithLink",
-                    "type": "anyone",
-                    "role": "reader",
-                    "allowFileDiscovery": True,
-                }
-            )
+            perms.append(full("anyoneWithLink", "anyone", "reader", anyone=True))
         elif ptype == "group":
             perms.append(
-                {
-                    "kind": "drive#permission",
-                    "id": str(synth.github_user_id(pid)),
-                    "type": "group",
-                    "role": "reader",
-                    "emailAddress": f"{pid}@{domain}",
-                    "displayName": pid,
-                }
+                full(
+                    str(synth.github_user_id(pid)),
+                    "group",
+                    "reader",
+                    email=f"{pid}@{domain}",
+                    name=pid,
+                )
             )
         else:  # user
             perms.append(
-                {
-                    "kind": "drive#permission",
-                    "id": str(synth.github_user_id(pid)),
-                    "type": "user",
-                    "role": "reader",
-                    "emailAddress": pid,
-                    "displayName": pid.split("@")[0].replace(".", " ").title(),
-                }
+                full(
+                    str(synth.github_user_id(pid)),
+                    "user",
+                    "reader",
+                    email=pid,
+                    name=pid.split("@")[0].replace(".", " ").title(),
+                )
             )
     # every file has an owner
-    row = store.get_document(conn, "google_drive", file_id)
     if row is not None:
         owner = row["author_email"]
         perms.insert(
             0,
-            {
-                "kind": "drive#permission",
-                "id": str(synth.github_user_id(owner)),
-                "type": "user",
-                "role": "owner",
-                "emailAddress": owner,
-                "displayName": owner.split("@")[0].replace(".", " ").title(),
-            },
+            full(
+                str(synth.github_user_id(owner)),
+                "user",
+                "owner",
+                email=owner,
+                name=owner.split("@")[0].replace(".", " ").title(),
+            ),
         )
     return perms
+
+
+def _drive_permission_view(p: dict) -> dict:
+    """The default `permissions.list` projection: real answers id, type, kind and role with no
+    mask; emailAddress, displayName and the rest appear only under an explicit mask (`*`)."""
+    return {k: p[k] for k in ("id", "type", "kind", "role") if k in p}
 
 
 def _typed_query(request: Request, readers: dict) -> dict[str, list]:
@@ -4859,12 +5234,41 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
     return parsed
 
 
+async def _query_and_body(
+    request: Request, readers: dict, message: protojson.Message, *, field: str | None = None
+) -> tuple[dict, dict]:
+    """``(query, body)`` of an editor POST or PUT: each typed query parameter in ``readers`` by
+    its last repeat (``None`` when absent), and the body read into ``message``.
+
+    A query parameter names a field of the request, and real reads both. Measured 2026-10-27 on
+    Sheets' update, append, batchUpdate, batchUpdateByDataFilter, batchGetByDataFilter and
+    getByDataFilter, and 2026-10-28 on Docs' create: with both refused, one 400 lists the body's
+    refusals and then the query's -- ``Invalid value at 'data.values' (…), "x"`` then
+    ``Invalid value at 'include_values_in_response' (TYPE_BOOL), "on"`` -- an unknown body name
+    among them; with both set, the query's value is the one used. A body refused as a whole
+    (`protojson.whole`) is answered alone."""
+    raw = await request.body()
+    try:
+        parsed = _typed_query(request, readers)
+    except gerr.GoogleError as exc:
+        refused = gerr.field_violations(exc)
+        try:
+            protojson.read(raw, message, field=field)
+        except gerr.GoogleError as body_exc:
+            if protojson.whole(body_exc):
+                raise body_exc from None
+            raise gerr.invalid_field_values(gerr.field_violations(body_exc) + refused) from None
+        raise
+    query = {name: (values[-1] if values else None) for name, values in parsed.items()}
+    return query, protojson.read(raw, message, field=field)
+
+
 # The typed booleans each Drive method Backlot serves declares, as the proto field its refusal
 # names. Each is parsed and the parsed value never read. Measured 2026-09-23 on each of them: the
-# Sheets boolean spellings (`_sheets_bool_value`), 30 of them swept on `supportsAllDrives`; and on
-# 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since only ASCII letters are folded
-# (`protojson.to_bool`). Spelled `true`, four of them run a check of their own and two lift one --
-# see `_drive_true`. `files.export` and `about.get` declare none, and real ignores
+# spellings `_query_bool` reads, first measured on Sheets, 30 of them swept on `supportsAllDrives`;
+# and on 2026-10-06 `yeſ`, `YEſ`, `falſe` and `FALſE`, each refused, since only ASCII letters are
+# folded (`protojson.to_bool`). Spelled `true`, four of them run a check of their own and two lift
+# one -- see `_drive_true`. `files.export` and `about.get` declare none, and real ignores
 # `supportsAllDrives=NOPE` on both.
 _DRIVE_BOOLS = {
     "supportsAllDrives": "supports_all_drives",
@@ -4880,8 +5284,7 @@ def _drive_typed(request: Request, *bools: str, page_size: bool = False) -> dict
     """`_typed_query` over the booleans a Drive method declares, and its `pageSize` if it has
     one."""
     readers = {
-        name: (lambda raw, field=_DRIVE_BOOLS[name]: _sheets_bool_value(raw, field))
-        for name in bools
+        name: (lambda raw, field=_DRIVE_BOOLS[name]: _query_bool(raw, field)) for name in bools
     }
     if page_size:
         readers["pageSize"] = _drive_int32
@@ -5108,8 +5511,8 @@ def _drive_listing_page_token(request: Request) -> None:
     """Refuse a `pageToken` sent to `drives.list`, which is empty and issues no `nextPageToken`,
     so every token is one it did not issue. Presence is the whole test: `decode_cursor_or_none`,
     which `files.list` calls, reads `bzow` and that route's own tokens as offsets. Read from the
-    first repeat, after the typed and range refusals and ahead of the `useDomainAdminAccess=true`
-    refusal. What real answers is the `drives.list` column of the table
+    first repeat, ahead of the `useDomainAdminAccess=true` refusal; the route comment says what
+    precedes it. What real answers is the `drives.list` column of the table
     `_drive_permissions_page_token` records."""
     token = gerr.first_repeat(request.query_params, "pageToken")
     if token:
@@ -5128,3 +5531,8 @@ def _drive_page_size(sizes: list[int]) -> int:
     first = sizes[0]
     size = 1000 if first > 1000 else 500 if first < 1 else first
     return min(size, get_settings().max_page_size)
+
+
+# The Sheets and Docs routes, registered on `router` by the modules that hold them -- which import
+# this one's helpers, so they are imported last.
+from backlot.routers import google_docs, google_sheets  # noqa: E402, F401

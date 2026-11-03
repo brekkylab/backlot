@@ -141,13 +141,47 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
     implements neither, and sharing the permissive parser would authenticate five spellings the
     real site serves anonymously — so a client sending ``Authorization: bearer <t>`` would pass
     every test here and read nothing in production. Slack is strict in its own way (see
-    :func:`auth.slack_bearer_token`); it accepts the double space Atlassian refuses, which is why
-    that parser is not shared either.
+    :func:`auth.slack_bearer_token`), which is why that parser is not shared either.
     """
     assert auth.atlassian_bearer_token(_request(header)) == token
 
 
+@pytest.mark.parametrize(
+    "header, token",
+    [
+        ("Bearer usr-abc123", "usr-abc123"),
+        (" Bearer usr-abc123", "usr-abc123"),
+        ("Bearer usr-abc123 ", "usr-abc123"),
+        ("\tBearer usr-abc123", "usr-abc123"),
+        ("Bearer usr-abc123\t", "usr-abc123"),
+        ("Bearer  usr-abc123", " usr-abc123"),
+        ("Bearer   usr-abc123", "  usr-abc123"),
+        ("Bearer \tusr-abc123", "\tusr-abc123"),
+        ("Bearer \xa0usr-abc123", "\xa0usr-abc123"),
+        ("Bearer usr-abc123\xa0", "usr-abc123\xa0"),
+        ("Bearer usr-abc123\x85", "usr-abc123\x85"),
+        ("Bearer usr-abc123 x", "usr-abc123 x"),
+        ("bearer usr-abc123", None),
+        ("BEARER usr-abc123", None),
+        ("token usr-abc123", None),
+        ("Bearer\tusr-abc123", None),
+        ("Bearerusr-abc123", None),
+        ("Bearer", None),
+        ("Bearer ", None),
+        ("Bearer  ", None),
+        (None, None),
+    ],
+)
+def test_slack_bearer_token_reads_one_header_as_real_does(header, token):
+    """The token :func:`auth.slack_bearer_token` reads from one `Authorization` header, whose rows
+    its docstring records; two headers are `test_slack_reads_the_authorization_headers_as_real_does`
+    in tests/test_slack.py."""
+    assert auth.slack_bearer_token(_request(header)) == token
+
+
 # --- github_credential: which headers api.github.com reads as a credential -------
+
+_A36 = "A" * 36
 
 
 @pytest.mark.parametrize(
@@ -205,6 +239,36 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic\tb64(x:{t})", "{t}"),
         ("Basic\t b64(x:{t})", "{t}"),
         ("Basic\tb64({t}:x-oauth-basic)", "{t}"),
+        # a token that does not resolve, shaped like one of real's or like a Backlot one
+        (f"Basic b64(x:ghp_{_A36})", f"ghp_{_A36}"),
+        (f"Basic b64(x:gho_{_A36})", f"gho_{_A36}"),
+        (f"Basic b64(x:ghu_{_A36})", f"ghu_{_A36}"),
+        (f"Basic b64(x:ghs_{_A36})", f"ghs_{_A36}"),
+        (f"Basic b64(x:ghp_{'a' * 36})", f"ghp_{'a' * 36}"),
+        (f"Basic b64(x:ghp_{'0' * 36})", f"ghp_{'0' * 36}"),
+        (f"Basic b64(gho_{_A36}:)", f"gho_{_A36}"),
+        (f"Basic b64(gho_{_A36}:x-oauth-basic)", f"gho_{_A36}"),
+        (f"Basic b64(ghp_{_A36})", f"ghp_{_A36}"),
+        (f"Basic b64(x:usr-{'0' * 20})", f"usr-{'0' * 20}"),
+        # refused too, but counted: 40 lower-case hex digits, or a prefix in another case
+        (f"Basic b64(x:{'a' * 40})", "a" * 40),
+        (f"Basic b64(x:{'0' * 40})", "0" * 40),
+        (f"Basic b64(x:{'f' * 40})", "f" * 40),
+        (
+            "Basic b64(x:0123456789abcdef0123456789abcdef01234567)",
+            "0123456789abcdef0123456789abcdef01234567",
+        ),
+        (f"Basic b64({'a' * 40})", "a" * 40),
+        (f"Basic b64({'a' * 40}:)", "a" * 40),
+        (f"Basic b64({'a' * 40}:x-oauth-basic)", "a" * 40),
+        (f"Basic b64(x:GHP_{_A36})", f"GHP_{_A36}"),
+        (f"Basic b64(x:Ghp_{_A36})", f"Ghp_{_A36}"),
+        (f"Basic b64(x:gHp_{_A36})", f"gHp_{_A36}"),
+        (f"Basic b64(x:ghP_{_A36})", f"ghP_{_A36}"),
+        (f"Basic b64(x:GHO_{_A36})", f"GHO_{_A36}"),
+        (f"Basic b64(x:GHS_{_A36})", f"GHS_{_A36}"),
+        (f"Basic b64(x:GHU_{_A36})", f"GHU_{_A36}"),
+        (f"Basic b64(x:GHP_{'a' * 36})", f"GHP_{'a' * 36}"),
         # served as no credential at all
         ("Basic abcd", None),
         ("Basic Zm9vOmJhcg==", None),
@@ -221,6 +285,33 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
         ("Basic b64({t}:x-oauth-basic:)", None),
         ("Basic b64({t}: )", None),
         ("Basic\tb64({t}:x)", None),
+        (f"Basic b64(x:ghr_{_A36})", None),
+        ("Basic b64(x:ghp_)", None),
+        (f"Basic b64(x:ghp_{'A' * 35})", None),
+        (f"Basic b64(x:ghp_{'A' * 37})", None),
+        (f"Basic b64(x:ghp_{'A' * 35}_)", None),
+        (f"Basic b64(x:github_pat_{'A' * 82})", None),
+        (f"Basic b64(ghp_{_A36}:x)", None),
+        (f"Basic b64(x:usr-{'0' * 19}g)", None),
+        (f"Basic b64(x:{'g' * 40})", None),
+        (f"Basic b64(x:{'A' * 40})", None),
+        (f"Basic b64(x:{'F' * 40})", None),
+        (f"Basic b64(x:{'aB' * 20})", None),
+        (f"Basic b64(x:{'-' * 40})", None),
+        (f"Basic b64(x:{'_' * 40})", None),
+        (f"Basic b64(x:{'a' * 39})", None),
+        (f"Basic b64(x:{'a' * 41})", None),
+        (f"Basic b64({'a' * 40}:x)", None),
+        (f"Basic b64(x:GHA_{_A36})", None),
+        (f"Basic b64(x:GHR_{_A36})", None),
+        (f"Basic b64(x:GHP_{'A' * 35})", None),
+        (f"Basic b64(x:GHP_{'A' * 37})", None),
+        (f"Basic b64(x:GHP_{'A' * 35}_)", None),
+        # the shapes are ASCII: no long s (U+017F) for `s`, no Kelvin sign (U+212A) for a letter
+        (f"Basic b64(x:gh\u017f_{_A36})", None),
+        (f"Basic b64(x:GH\u017f_{_A36})", None),
+        (f"Basic b64(x:GHP_{'A' * 35}\u212a)", None),
+        (f"Basic b64(x:{'a' * 39}\u212a)", None),
         # no base64 after a tab, and no comma anywhere
         ("Basic\t!!!!", None),
         ("Basic\ta", None),
@@ -247,8 +338,9 @@ def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(head
 def test_github_credential_reads_the_header_as_real_does(acl, tokens, header, token):
     """The rows of :func:`auth.github_credential`'s table, `{t}` a token that resolves and
     `b64(…)` the base64 of what it holds: real served each `{t}` row as that token's caller,
-    refused each other row with a token, and served each `None` row as anonymous. The token is
-    what the router resolves, so one that is empty or holds a comma never names a caller."""
+    refused each other row with a token but the `usr-` one, a Backlot token's shape, and served
+    each `None` row as anonymous. The token is what the router resolves, so one that is empty or
+    holds a comma never names a caller."""
     t = tokens["ava@acme.com"]
     if header is not None:
         header = re.sub(
@@ -260,37 +352,36 @@ def test_github_credential_reads_the_header_as_real_does(acl, tokens, header, to
     assert auth.github_credential(_request(header, app=_app(acl))) == expected
 
 
-# --- api_key_token --------------------------------------------------------------
+# --- api_key_token, linear_bearer_token, fireflies_bearer_token -----------------------
+# What each reader takes from one `Authorization` value; the statuses Linear and Fireflies answer
+# them with are in tests/test_linear.py and tests/test_fireflies.py.
 
 
-def test_api_key_accepts_a_bare_key():
-    assert auth.api_key_token(_request("lin_api_deadbeef")) == "lin_api_deadbeef"
-
-
-def test_api_key_accepts_a_bearer_prefixed_token():
-    assert auth.api_key_token(_request("Bearer lin_oauth_1234")) == "lin_oauth_1234"
-
-
-def test_api_key_bearer_prefix_is_case_insensitive():
-    assert auth.api_key_token(_request("bearer lin_oauth_1234")) == "lin_oauth_1234"
-
-
-def test_api_key_keeps_an_unrecognised_scheme_verbatim():
-    # Linear treats anything that isn't `Bearer <t>` as the key itself, so a stray scheme
-    # becomes part of the key and simply fails to resolve — it is not silently stripped.
-    assert auth.api_key_token(_request("Basic abc123")) == "Basic abc123"
-
-
-def test_api_key_is_none_without_a_header():
-    assert auth.api_key_token(_request()) is None
-
-
-def test_api_key_is_none_for_a_blank_header():
-    assert auth.api_key_token(_request("   ")) is None
-
-
-def test_api_key_is_none_for_a_bare_bearer_header():
-    assert auth.api_key_token(_request("Bearer")) is None
+@pytest.mark.parametrize(
+    "header, key, linear_bearer, fireflies",
+    [
+        ("lin_api_deadbeef", "lin_api_deadbeef", None, None),
+        (" \tlin_api_deadbeef\t ", "lin_api_deadbeef", None, None),
+        ("lin_api_deadbeef\xa0", "lin_api_deadbeef\xa0", None, None),
+        ("Basic abc123", "Basic abc123", None, None),
+        ("Bearer lin_oauth_1234", "Bearer lin_oauth_1234", "lin_oauth_1234", "lin_oauth_1234"),
+        ("bearer lin_oauth_1234", "bearer lin_oauth_1234", "lin_oauth_1234", "lin_oauth_1234"),
+        ("BEARER lin_oauth_1234", "BEARER lin_oauth_1234", None, "lin_oauth_1234"),
+        ("Bearer  lin_oauth_1234", "Bearer  lin_oauth_1234", " lin_oauth_1234", "lin_oauth_1234"),
+        ("Bearer \xa0x\xa0", "Bearer \xa0x\xa0", "\xa0x\xa0", "x"),
+        ("Bearer x\x85", "Bearer x\x85", "x\x85", "x\x85"),
+        ("Bearer\tx", "Bearer\tx", None, None),
+        ("Bearer", "Bearer", None, None),
+        ("Bearer \xa0", "Bearer \xa0", "\xa0", ""),
+        ("   ", None, None, ""),
+        (None, None, None, ""),
+    ],
+)
+def test_each_reader_takes_from_authorization(header, key, linear_bearer, fireflies):
+    request = _request(header)
+    assert auth.api_key_token(request) == key
+    assert auth.linear_bearer_token(request) == linear_bearer
+    assert auth.fireflies_bearer_token(request) == fireflies
 
 
 # --- resolve_api_key ------------------------------------------------------------
@@ -303,10 +394,11 @@ def test_resolve_api_key_resolves_a_bare_user_token(acl, tokens):
     assert caller.is_admin is False
 
 
-def test_resolve_api_key_resolves_a_bearer_admin_token(acl, sample_settings):
-    caller = auth.resolve_api_key(_request(f"Bearer {sample_settings.admin_token}", app=_app(acl)))
-    assert caller is not None
-    assert caller.is_admin is True
+def test_resolve_api_key_does_not_read_a_bearer_admin_token(acl, sample_settings):
+    assert (
+        auth.resolve_api_key(_request(f"Bearer {sample_settings.admin_token}", app=_app(acl)))
+        is None
+    )
 
 
 def test_resolve_api_key_rejects_an_unknown_key(acl):

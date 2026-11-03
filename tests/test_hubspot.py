@@ -7,6 +7,7 @@ or call the response builder directly.
 from __future__ import annotations
 
 import json
+import uuid
 
 import pytest
 
@@ -14,6 +15,16 @@ from backlot import store
 from tests._helpers import crawl_hubspot, db_count, served_id, tiny_corpus
 
 HUBSPOT_OBJECT_TYPES = ("companies", "contacts", "notes")
+
+
+def _body(r):
+    """``r``'s JSON body less the `correlationId` an error body carries, once it is checked to be
+    the answer's `x-hubspot-correlation-id`; where it goes in the body is
+    ``test_hubspot_names_every_answer_by_a_correlation_id``'s."""
+    body = r.json()
+    if isinstance(body, dict) and body.get("status") == "error":
+        assert body.pop("correlationId") == r.headers["x-hubspot-correlation-id"]
+    return body
 
 
 def test_admin_hubspot_crawls_all(client, admin_h, ro_conn):
@@ -29,46 +40,43 @@ def test_admin_hubspot_crawls_all(client, admin_h, ro_conn):
     assert all(r["archived"] is True for r in archived)
 
 
-@pytest.mark.parametrize(
-    "value,archived",
-    [
-        (None, False),
-        ("true", True),
-        ("TRUE", True),
-        ("True", True),
-        ("1", False),
-        ("yes", False),
-        ("abc", False),
-        ("", False),
-        (" true", False),
-        ("true ", False),
-        ("\ttrue", False),
-        ("true\t", False),
-        ("\ntrue", False),
-        ("true\n", False),
-        ("\rtrue", False),
-        ("true\r", False),
-        ("\u00a0true", False),
-        ("true\u00a0", False),
-        (["true", "false"], True),
-        (["true", ""], True),
-        (["true", "abc"], True),
-        (["TRUE", "false"], True),
-        (["True", "false"], True),
-        (["true", "false", "false"], True),
-        (["false", "true"], False),
-        (["", "true"], False),
-        (["yes", "true"], False),
-        (["1", "true"], False),
-        (["abc", "true"], False),
-        ([" true", "true"], False),
-        (["false", "TRUE"], False),
-        (["false", "false", "true"], False),
-    ],
-)
-def test_hubspot_archived_parameter_reads_its_first_value_and_only_true_as_true(
-    client, admin_h, value, archived
-):
+_ARCHIVED_VALUES = [
+    (None, False),
+    ("true", True),
+    ("TRUE", True),
+    ("True", True),
+    ("1", False),
+    ("yes", False),
+    ("abc", False),
+    ("", False),
+    (" true", False),
+    ("true ", False),
+    ("\ttrue", False),
+    ("true\t", False),
+    ("\ntrue", False),
+    ("true\n", False),
+    ("\rtrue", False),
+    ("true\r", False),
+    ("\u00a0true", False),
+    ("true\u00a0", False),
+    (["true", "false"], True),
+    (["true", ""], True),
+    (["true", "abc"], True),
+    (["TRUE", "false"], True),
+    (["True", "false"], True),
+    (["true", "false", "false"], True),
+    (["false", "true"], False),
+    (["", "true"], False),
+    (["yes", "true"], False),
+    (["1", "true"], False),
+    (["abc", "true"], False),
+    ([" true", "true"], False),
+    (["false", "TRUE"], False),
+    (["false", "false", "true"], False),
+]
+
+
+def test_hubspot_archived_parameter_reads_its_first_value_and_only_true_as_true(client, admin_h):
     """`_flag`'s rule over companies, on the first value when `archived` repeats (a list row is
     sent as the key repeated in list order, and `None` sends no `archived`). The listing answers the
     one archived company when `_flag` reads that value as true, and otherwise the same page as a
@@ -76,90 +84,127 @@ def test_hubspot_archived_parameter_reads_its_first_value_and_only_true_as_true(
     when `_flag` reads the value as true and otherwise answered as a missing id is (see
     `_hidden_archived`); an active company is served whatever the value."""
     url = "/hubspot/crm/v3/objects/companies"
-    params = {} if value is None else {"archived": value}
-    r = client.get(url, headers=admin_h, params=params)
-    assert r.status_code == 200
-    if archived:
-        assert [x["properties"]["name"] for x in r.json()["results"]] == ["Defunct Labs"]
-    else:
-        assert r.json() == client.get(url, headers=admin_h).json()
-
     (defunct,) = client.get(url, headers=admin_h, params={"archived": "true"}).json()["results"]
-    active = client.get(url, headers=admin_h).json()["results"][0]["id"]
+    unflagged = client.get(url, headers=admin_h).json()
+    active = unflagged["results"][0]["id"]
     missing = "999999999999"
-    for rid, served in ((defunct["id"], archived), (active, True)):
-        got = client.get(f"{url}/{rid}", headers=admin_h, params=params)
-        batch = client.post(
-            f"{url}/batch/read", headers=admin_h, params=params, json={"inputs": [{"id": rid}]}
-        )
-        if served:
-            assert (got.status_code, got.json()["id"]) == (200, rid)
-            assert (batch.status_code, [x["id"] for x in batch.json()["results"]]) == (200, [rid])
-        else:
-            gone = client.get(f"{url}/{missing}", headers=admin_h)
-            assert (got.status_code, got.headers["content-type"], got.content) == (
-                404,
-                gone.headers["content-type"],
-                gone.content,
-            )
-            assert (batch.status_code, json.loads(batch.text.replace(rid, missing))) == (
-                207,
-                client.post(
-                    f"{url}/batch/read", headers=admin_h, json={"inputs": [{"id": missing}]}
-                ).json(),
-            )
-
-
-@pytest.mark.parametrize(
-    "object_type,type_label",
-    [
-        ("meetings", "0-47 (MEETING_EVENT)"),
-        ("meeting", "0-47 (MEETING_EVENT)"),
-        ("Meetings", "0-47 (MEETING_EVENT)"),
-        ("MEETING", "0-47 (MEETING_EVENT)"),
-        ("0-47", "0-47 (MEETING_EVENT)"),
-        ("communications", "0-18 (COMMUNICATION)"),
-        ("communication", "0-18 (COMMUNICATION)"),
-        ("deal_splits", "0-72 (DEAL_SPLIT)"),
-        ("deal_split", "0-72 (DEAL_SPLIT)"),
-        ("quote_templates", "0-64 (QUOTE_TEMPLATE)"),
-        ("quote_template", "0-64 (QUOTE_TEMPLATE)"),
-    ],
-)
-def test_hubspot_archived_listing_refuses_unsupported_types(
-    client, admin_h, object_type, type_label
-):
-    url = f"/hubspot/crm/v3/objects/{object_type}"
-    r = client.get(url, headers=admin_h, params={"archived": "true"})
-    assert r.status_code == 400
-    body = r.json()
-    assert body["status"] == "error"
-    assert body["message"] == (
-        f"Paging through deleted objects is not yet supported for object type {type_label}"
+    gone = client.get(f"{url}/{missing}", headers=admin_h)
+    gone_batch = client.post(
+        f"{url}/batch/read", headers=admin_h, json={"inputs": [{"id": missing}]}
     )
-    assert body["category"] == "VALIDATION_ERROR"
-    assert client.get(url, headers=admin_h).status_code == 200
+    answered, expected = {}, {}
+    for value, archived in _ARCHIVED_VALUES:
+        params = {} if value is None else {"archived": value}
+        r = client.get(url, headers=admin_h, params=params)
+        page = r.json()
+        reads, wanted = [], []
+        for rid, served in ((defunct["id"], archived), (active, True)):
+            got = client.get(f"{url}/{rid}", headers=admin_h, params=params)
+            batch = client.post(
+                f"{url}/batch/read", headers=admin_h, params=params, json={"inputs": [{"id": rid}]}
+            )
+            reads.append(
+                (
+                    got.status_code,
+                    got.json()["id"]
+                    if got.status_code == 200
+                    else (got.headers["content-type"], got.content),
+                    batch.status_code,
+                    [x["id"] for x in batch.json()["results"]]
+                    if batch.status_code == 200
+                    else json.loads(batch.text.replace(rid, missing)),
+                )
+            )
+            wanted.append(
+                (200, rid, 200, [rid])
+                if served
+                else (404, (gone.headers["content-type"], gone.content), 207, gone_batch.json())
+            )
+        answered[repr(value)] = (
+            r.status_code,
+            [x["properties"]["name"] for x in page["results"]],
+            page == unflagged,
+            reads,
+        )
+        expected[repr(value)] = (
+            200,
+            ["Defunct Labs"]
+            if archived
+            else [x["properties"]["name"] for x in unflagged["results"]],
+            not archived,
+            wanted,
+        )
+    assert answered == expected
 
 
-@pytest.mark.parametrize(
-    "params,refused",
-    [
-        ({"archived": "TRUE"}, True),
-        ({"archived": "True"}, True),
-        ({"archived": ["true", "false"]}, True),
-        ({"archived": "true", "limit": "1"}, True),
-        ({"archived": "true", "properties": "hs_meeting_title"}, True),
-        ({"archived": "yes"}, False),
-        ({"archived": "false"}, False),
-        ({"archived": ["false", "true"]}, False),
-    ],
-)
-def test_hubspot_meetings_refuses_or_lists_by_the_parsed_flag(client, admin_h, params, refused):
+_UNSUPPORTED_ARCHIVED_TYPES = [
+    ("meetings", "0-47 (MEETING_EVENT)"),
+    ("meeting", "0-47 (MEETING_EVENT)"),
+    ("Meetings", "0-47 (MEETING_EVENT)"),
+    ("MEETING", "0-47 (MEETING_EVENT)"),
+    ("0-47", "0-47 (MEETING_EVENT)"),
+    ("communications", "0-18 (COMMUNICATION)"),
+    ("communication", "0-18 (COMMUNICATION)"),
+    ("deal_splits", "0-72 (DEAL_SPLIT)"),
+    ("deal_split", "0-72 (DEAL_SPLIT)"),
+    ("quote_templates", "0-64 (QUOTE_TEMPLATE)"),
+    ("quote_template", "0-64 (QUOTE_TEMPLATE)"),
+]
+
+
+def test_hubspot_archived_listing_refuses_unsupported_types(client, admin_h):
+    answered = {}
+    for object_type, _ in _UNSUPPORTED_ARCHIVED_TYPES:
+        url = f"/hubspot/crm/v3/objects/{object_type}"
+        r = client.get(url, headers=admin_h, params={"archived": "true"})
+        answered[object_type] = (
+            r.status_code,
+            _body(r),
+            client.get(url, headers=admin_h).status_code,
+        )
+    assert answered == {
+        object_type: (
+            400,
+            {
+                "status": "error",
+                "message": (
+                    "Paging through deleted objects is not yet supported for object type "
+                    + type_label
+                ),
+                "category": "VALIDATION_ERROR",
+            },
+            200,
+        )
+        for object_type, type_label in _UNSUPPORTED_ARCHIVED_TYPES
+    }
+
+
+_MEETINGS_FLAGS = [
+    ({"archived": "TRUE"}, True),
+    ({"archived": "True"}, True),
+    ({"archived": ["true", "false"]}, True),
+    ({"archived": "true", "limit": "1"}, True),
+    ({"archived": "true", "properties": "hs_meeting_title"}, True),
+    ({"archived": "yes"}, False),
+    ({"archived": "false"}, False),
+    ({"archived": ["false", "true"]}, False),
+]
+
+
+def test_hubspot_meetings_refuses_or_lists_by_the_parsed_flag(client, admin_h):
     url = "/hubspot/crm/v3/objects/meetings"
-    r = client.get(url, headers=admin_h, params=params)
-    expected = client.get(url, headers=admin_h, params={"archived": "true"} if refused else None)
-    assert r.status_code == (400 if refused else 200)
-    assert r.json() == expected.json()
+    answers = {
+        refused: client.get(url, headers=admin_h, params={"archived": "true"} if refused else None)
+        for refused in (True, False)
+    }
+    answered = {}
+    for params, _ in _MEETINGS_FLAGS:
+        r = client.get(url, headers=admin_h, params=params)
+        answered[str(params)] = (r.status_code, _body(r))
+    assert answered == {
+        str(params): (400 if refused else 200, _body(answers[refused]))
+        for params, refused in _MEETINGS_FLAGS
+    }
 
 
 @pytest.mark.parametrize("headers", [None, "admin"])
@@ -171,7 +216,7 @@ def test_hubspot_archived_refusal_follows_authentication_and_cursor_validation(
     r = client.get(url, headers=h, params={"archived": "true", "after": "abc"})
     control = client.get(url, headers=h, params={"after": "abc"})
     assert r.status_code == control.status_code == (400 if h else 401)
-    assert r.json() == control.json()
+    assert _body(r) == _body(control)
 
 
 def test_hubspot_list_cursor_pages_without_overlap(client, admin_h):
@@ -235,34 +280,37 @@ def _each_route(client, company: str, headers: dict) -> list:
     ]
 
 
-@pytest.mark.parametrize(
-    ("authorization", "status"),
-    [
-        ("Bearer {key}", 200),
-        (" Bearer {key}", 200),
-        ("Bearer {key} ", 200),
-        ("Bearer {key}\t", 200),
-        ("bearer {key}", 401),
-        ("BEARER {key}", 401),
-        ("Bearer  {key}", 401),
-        ("Bearer\t{key}", 401),
-        ("Bearer {key} x", 401),
-        ("token {key}", 401),
-        ("Basic Zm9vOmJhcg==", 401),
-        ("{key}", 401),
-    ],
-)
-def test_hubspot_reads_the_bearer_scheme_spelled_exactly(
-    client, admin_h, tokens_yaml, authorization, status
-):
+_BEARER_SPELLINGS = [
+    ("Bearer {key}", 200),
+    (" Bearer {key}", 200),
+    ("Bearer {key} ", 200),
+    ("Bearer {key}\t", 200),
+    ("bearer {key}", 401),
+    ("BEARER {key}", 401),
+    ("Bearer  {key}", 401),
+    ("Bearer\t{key}", 401),
+    ("Bearer {key} x", 401),
+    ("token {key}", 401),
+    ("Basic Zm9vOmJhcg==", 401),
+    ("{key}", 401),
+]
+
+
+def test_hubspot_reads_the_bearer_scheme_spelled_exactly(client, admin_h, tokens_yaml):
     """Each of the five routes serves what `_bearer_credential` in `backlot.routers.hubspot`
     records as served, and answers the other spellings with the INVALID_AUTHENTICATION 401."""
     company = client.get("/hubspot/crm/v3/objects/companies", headers=admin_h).json()["results"][0]
-    headers = {"Authorization": authorization.format(key=tokens_yaml["admin_token"])}
-    for r in _each_route(client, company["id"], headers):
-        assert r.status_code == status, (authorization, r.request.url)
-        if status == 401:
-            assert r.json()["category"] == "INVALID_AUTHENTICATION"
+    answered, expected = {}, {}
+    for authorization, status in _BEARER_SPELLINGS:
+        headers = {"Authorization": authorization.format(key=tokens_yaml["admin_token"])}
+        for r in _each_route(client, company["id"], headers):
+            row = (authorization, r.request.method, r.request.url.path)
+            answered[row] = (
+                r.status_code,
+                r.json()["category"] if r.status_code == 401 else None,
+            )
+            expected[row] = (status, "INVALID_AUTHENTICATION" if status == 401 else None)
+    assert answered == expected
 
 
 def test_hubspot_unknown_object_type_is_400(client, admin_h):
@@ -276,7 +324,7 @@ def test_hubspot_unknown_object_type_is_400(client, admin_h):
     objectTypeId gets a message of its own."""
     r = client.get("/hubspot/crm/v3/objects/widgets", headers=admin_h)
     assert r.status_code == 400
-    assert r.json() == {"status": "error", "message": "Unable to infer object type from: widgets"}
+    assert _body(r) == {"status": "error", "message": "Unable to infer object type from: widgets"}
     for r in (
         client.post("/hubspot/crm/v3/objects/widgets/search", headers=admin_h, json={}),
         client.post(
@@ -309,6 +357,8 @@ def test_hubspot_unknown_object_type_is_400(client, admin_h):
         ("0-3", True),  # deals: a real type, so an empty page rather than an error
         ("0-6", False),  # no standard object holds it
         ("0-41", False),
+        ("0-166", False),
+        ("0-400", False),
         ("2-12345", False),  # a custom object's id, which no corpus of Backlot defines
     ],
 )
@@ -382,6 +432,58 @@ def test_hubspot_0_18_0_72_0_64_are_their_types(tmp_path):
             assert (linked.status_code, linked.json()) == (200, {"results": []}), to
 
 
+_MEASURED_TYPE_IDS = [
+    ("0-53", "invoices"),
+    ("0-54", "marketing_events"),
+    ("0-69", "subscriptions"),
+    ("0-74", "goal_targets"),
+    ("0-115", "users"),
+    ("0-123", "orders"),
+    ("0-136", "leads"),
+    ("0-142", "carts"),
+    ("0-145", "partner_clients"),
+    ("0-162", "services"),
+    ("0-410", "courses"),
+    ("0-420", "listings"),
+    ("0-421", "appointments"),
+]
+
+
+@pytest.fixture(scope="module")
+def measured_types(tmp_path_factory):
+    """One record of each type `_MEASURED_TYPE_IDS` names."""
+    return tiny_corpus(
+        tmp_path_factory.mktemp("measured_types"),
+        [
+            {
+                "source_type": "hubspot",
+                "doc_id": f"hs-{named}",
+                "object_type": named,
+                "title": named,
+                "content": f"One of {named}.",
+                "author_email": "rep@acme.com",
+                "created": "2026-03-01T09:00:00Z",
+            }
+            for _, named in _MEASURED_TYPE_IDS
+        ],
+    )
+
+
+@pytest.mark.parametrize("asked,named", _MEASURED_TYPE_IDS)
+def test_hubspot_a_measured_type_id_is_its_type(measured_types, asked, named):
+    """The thirteen pairings the comment above `_TYPE_IDS` records from real's 403s, over a corpus
+    holding one record of each of the thirteen types, so an id read as any other type lists another
+    type's record or nothing."""
+    from tests._helpers import client_for
+
+    settings = measured_types
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        by_id = c.get(f"/hubspot/crm/v3/objects/{asked}", headers=h)
+        assert by_id.status_code == 200, by_id.json()
+        assert [r["id"] for r in by_id.json()["results"]] == [served_id("hubspot", f"hs-{named}")]
+
+
 def test_hubspot_one_type_stated_both_ways_is_one_type(tmp_path):
     """A portal has ONE `deals` type, so no HubSpot response can show a record under
     `/objects/deal/{id}` that `/objects/deal` never lists. Resolving to the first spelling that
@@ -426,38 +528,49 @@ def test_hubspot_one_type_stated_both_ways_is_one_type(tmp_path):
                 assert c.get(f"/hubspot/crm/v3/objects/{asked}/{rid}", headers=h).status_code == 200
 
 
-@pytest.mark.parametrize(
-    "asked", ["companies", "company", "Companies", "COMPANY", "companie\u017f", "compan\u0131es"]
-)
-def test_hubspot_a_standard_type_answers_to_either_spelling(client, admin_h, asked):
+_COMPANY_SPELLINGS = [
+    "companies",
+    "company",
+    "Companies",
+    "COMPANY",
+    "companie\u017f",
+    "compan\u0131es",
+]
+
+
+def test_hubspot_a_standard_type_answers_to_either_spelling(client, admin_h):
     """HubSpot resolves the path segment through its object-type registry, so `/objects/company`
     reaches the same records as `/objects/companies` — measured: both answer 403 MISSING_SCOPES on
     a scope-less key, where an unrecognized word answers 400. A corpus states one spelling or the
     other, and neither may hide its records from the vendor's own path. Either is read in upper
     case on each route, as `_canonical` records."""
-    listed = client.get(
-        f"/hubspot/crm/v3/objects/{asked}", headers=admin_h, params={"limit": 100}
-    ).json()["results"]
-    assert [r["id"] for r in listed] == [
+    plural_ids = [
         r["id"]
         for r in client.get(
             "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"limit": 100}
         ).json()["results"]
     ]
-    # and a record of that type resolves under both spellings, while another type's does not
-    one = listed[0]["id"]
-    assert client.get(f"/hubspot/crm/v3/objects/{asked}/{one}", headers=admin_h).status_code == 200
-    assert client.get(f"/hubspot/crm/v3/objects/tickets/{one}", headers=admin_h).status_code == 404
-    for route, body in (
-        ("search", {"limit": 100}),
-        ("batch/read", {"inputs": [{"id": r["id"]} for r in listed]}),
-    ):
-        spelt = client.post(f"/hubspot/crm/v3/objects/{asked}/{route}", headers=admin_h, json=body)
-        plural = client.post(
-            f"/hubspot/crm/v3/objects/companies/{route}", headers=admin_h, json=body
-        )
-        assert spelt.status_code == plural.status_code == 200, route
-        assert spelt.json() == plural.json(), route
+    bodies = {"search": {"limit": 100}, "batch/read": {"inputs": [{"id": i} for i in plural_ids]}}
+    answered, expected = {}, {}
+    for asked in _COMPANY_SPELLINGS:
+        listed = client.get(
+            f"/hubspot/crm/v3/objects/{asked}", headers=admin_h, params={"limit": 100}
+        ).json()["results"]
+        # and a record of that type resolves under both spellings, while another type's does not
+        got = client.get(f"/hubspot/crm/v3/objects/{asked}/{plural_ids[0]}", headers=admin_h)
+        other = client.get(f"/hubspot/crm/v3/objects/tickets/{plural_ids[0]}", headers=admin_h)
+        answered[asked] = [[r["id"] for r in listed], got.status_code, other.status_code]
+        expected[asked] = [plural_ids, 200, 404]
+        for route, body in bodies.items():
+            spelt = client.post(
+                f"/hubspot/crm/v3/objects/{asked}/{route}", headers=admin_h, json=body
+            )
+            plural = client.post(
+                f"/hubspot/crm/v3/objects/companies/{route}", headers=admin_h, json=body
+            )
+            answered[asked].append((spelt.status_code, plural.status_code, spelt.json()))
+            expected[asked].append((200, 200, plural.json()))
+    assert answered == expected
 
 
 def test_hubspot_standard_type_with_no_records_is_an_empty_page(client, admin_h):
@@ -496,6 +609,708 @@ _MISSING_RECORD_PAGE = (
 
 def test_hubspot_unauth_is_401(client):
     assert client.get("/hubspot/crm/v3/objects/companies").status_code == 401
+
+
+@pytest.mark.parametrize("authorization", [None, "Bearer nope"])
+def test_hubspot_refuses_an_unserved_operation_for_its_credential(client, authorization):
+    """An operation HubSpot publishes and no route here serves, sent with no key or one that names
+    nothing, is the INVALID_AUTHENTICATION 401 a served route answers, ahead of an object type real
+    can't resolve, as `refuse_an_unserved_operation` in `backlot.routers.hubspot` records, not
+    FastAPI's 404 or 405."""
+    headers = {"Authorization": authorization} if authorization else {}
+    operations = (
+        ("POST", "/hubspot/crm/v3/objects/contacts"),
+        ("PATCH", "/hubspot/crm/v3/objects/contacts/abc123"),
+        ("DELETE", "/hubspot/crm/v3/objects/contacts/abc123"),
+        ("POST", "/hubspot/crm/v3/objects/contacts/batch/create"),
+        ("DELETE", "/hubspot/crm/v4/objects/contacts/1/associations/companies/2"),
+        ("POST", "/hubspot/crm/v4/associations/contacts/companies/batch/read"),
+        ("POST", "/hubspot/crm/v4/associations/usage/high-usage-report/abc"),
+        ("PATCH", "/hubspot/crm/v3/objects/zzz/1"),
+        ("DELETE", "/hubspot/crm/v3/objects/2-999/1"),
+    )
+    answered = {}
+    for method, path in operations:
+        r = client.request(method, path, headers=headers, json={})
+        answered[(method, path)] = (r.status_code, _body(r))
+    refusal = {
+        "status": "error",
+        "message": "Authentication credentials not found. This API supports OAuth 2.0 authentication "
+        "and you can find more details at "
+        "https://developers.hubspot.com/docs/methods/auth/oauth-overview",
+        "category": "INVALID_AUTHENTICATION",
+    }
+    assert answered == {operation: (401, refusal) for operation in operations}
+
+
+_JSON = "application/json;charset=utf-8"
+_PAGE_TYPE = "text/html;charset=iso-8859-1"
+_ID = "x-hubspot-correlation-id"
+_AUTH_FAILURE = "x-hubspot-auth-failure"
+_NOT_FOUND = "x-hubspot-notfound"
+
+# (method, path, credential, body, status, content type, x-hubspot headers), as `correlate`,
+# `_unauthenticated`, `_record_id`, `_missing_record` and `put_a_correlation_id_on_hubspot_answers`
+# record them.
+_CORRELATED = [
+    ("GET", "/crm/v3/objects/contacts?limit=1", "key", None, 200, _JSON, {_ID}),
+    ("POST", "/crm/v3/objects/contacts/search", "key", {}, 200, _JSON, {_ID}),
+    (
+        "POST",
+        "/crm/v3/objects/contacts/batch/read",
+        "key",
+        {"inputs": [{"id": "1"}]},
+        207,
+        _JSON,
+        {_ID},
+    ),
+    ("GET", "/crm/v3/objects/contacts", None, None, 401, _JSON, {_ID, _AUTH_FAILURE}),
+    (
+        "GET",
+        "/crm/v3/objects/contacts",
+        "Bearer nope",
+        None,
+        401,
+        _JSON,
+        {_ID, _AUTH_FAILURE},
+    ),
+    (
+        "GET",
+        "/crm/v3/objects/contacts",
+        "bearer",
+        None,
+        401,
+        _JSON,
+        {_ID, _AUTH_FAILURE},
+    ),
+    ("PATCH", "/crm/v3/objects/contacts/1", None, {}, 401, _JSON, {_ID, _AUTH_FAILURE}),
+    ("GET", "/crm/v3/objects/contacts/abc", "key", None, 404, _JSON, {_ID, _NOT_FOUND}),
+    ("GET", "/crm/v3/objects/contacts/-1", "key", None, 404, _JSON, {_ID, _NOT_FOUND}),
+    (
+        "GET",
+        "/crm/v4/objects/contacts/abc/associations/companies",
+        "key",
+        None,
+        404,
+        _JSON,
+        {_ID, _NOT_FOUND},
+    ),
+    ("GET", "/crm/v3/objects/contacts/1", "key", None, 404, _PAGE_TYPE, {_ID, _NOT_FOUND}),
+    ("GET", "/crm/v3/objects/nosuch/1", "key", None, 400, _JSON, {_ID}),
+    ("GET", "/crm/v3/objects/contacts?after=bogus", "key", None, 400, _JSON, {_ID}),
+    ("PATCH", "/crm/v3/objects/contacts/1", "key", {}, 403, _JSON, {_ID}),
+    ("PUT", "/crm/v3/objects/contacts/1", "key", None, 405, None, {_ID}),
+    ("GET", "/crm/v3/nosuch", "key", None, 404, "application/json", set()),
+    ("GET", "/CRM/v3/objects/contacts", "key", None, 404, "application/json", set()),
+]
+
+
+def test_hubspot_names_every_answer_by_a_correlation_id(client, admin_h):
+    """Each row is an answer of real's: every one carries `x-hubspot-correlation-id` but the 404 its
+    front gives a path no route serves, a JSON one comes under `application/json;charset=utf-8`, a
+    401 carries `x-hubspot-auth-failure` and a 404 about a record id `x-hubspot-notfound`. An error
+    body carries the id as `correlationId`, right after `message`; a 200's and a 207's carry none.
+    That 404's body is `{"detail": "Not Found"}`, where real's front answers its own page. One
+    request asked twice gets one id, and each is a version 7 UUID."""
+    key = admin_h["Authorization"].removeprefix("Bearer ")
+    credentials = {"key": f"Bearer {key}", "bearer": f"bearer {key}"}
+    answered, expected, ids = {}, {}, {}
+    for method, path, credential, body, status, content_type, headers in _CORRELATED:
+        authorization = credentials.get(credential, credential)
+        sent = {"Authorization": authorization} if authorization else {}
+        r = client.request(method, f"/hubspot{path}", headers=sent, json=body)
+        members = None
+        if r.headers.get("content-type") == _JSON and r.status_code >= 400:
+            members = list(r.json())[:3]
+            assert r.json()["correlationId"] == r.headers[_ID], (method, path)
+            assert r.headers["content-length"] == str(len(r.content)), (method, path)
+        elif r.headers.get("content-type") == _JSON:
+            assert "correlationId" not in r.json(), (method, path)
+        named = {k for k in r.headers if k.startswith("x-hubspot")}
+        answered[(method, path, credential)] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            named,
+            members,
+        )
+        error = content_type == _JSON and status >= 400
+        expected[(method, path, credential)] = (
+            status,
+            content_type,
+            headers,
+            ["status", "message", "correlationId"] if error else None,
+        )
+        if _ID in r.headers:
+            ids[(method, path, credential)] = r.headers[_ID]
+    assert answered == expected
+    for rid in ids.values():
+        parsed = uuid.UUID(rid)
+        assert (parsed.version, parsed.variant) == (7, uuid.RFC_4122)
+    again = client.get("/hubspot/crm/v3/objects/contacts?limit=1", headers=admin_h)
+    assert again.headers[_ID] == ids[("GET", "/crm/v3/objects/contacts?limit=1", "key")]
+    assert len(set(ids.values())) == len({(m, p) for m, p, _ in ids})
+
+
+_CONTACT_SCOPES = [
+    "crm.schemas.contacts.write",
+    "crm.objects.contacts.write",
+    "crm.objects.contacts.sensitive.write.v2",
+    "crm.objects.contacts.highly_sensitive.write.v2",
+]
+
+
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+@pytest.mark.parametrize(
+    ("object_type", "scopes"),
+    [
+        ("contacts", _CONTACT_SCOPES),
+        ("contact", _CONTACT_SCOPES),
+        ("CONTACTS", _CONTACT_SCOPES),
+        ("0-1", _CONTACT_SCOPES),
+        (
+            "companies",
+            [
+                "crm.objects.companies.write",
+                "crm.schemas.companies.write",
+                "crm.objects.companies.highly_sensitive.write.v2",
+                "crm.objects.companies.sensitive.write.v2",
+            ],
+        ),
+        (
+            "deals",
+            [
+                "crm.objects.deals.write",
+                "crm.schemas.deals.write",
+                "crm.objects.deals.sensitive.write.v2",
+                "crm.objects.deals.highly_sensitive.write.v2",
+            ],
+        ),
+        ("quotes", ["crm.schemas.quotes.write", "crm.objects.quotes.write", "cpq.quotes.write"]),
+        (
+            "orders",
+            ["crm.schemas.orders.write", "crm.objects.orders.write", "crm.pipelines.orders.write"],
+        ),
+    ],
+)
+def test_hubspot_refuses_a_record_write_for_the_scopes_of_its_type(
+    client, admin_h, method, object_type, scopes
+):
+    """`PATCH` and `DELETE` on a record, with a key that resolves, are the 403 MISSING_SCOPES naming
+    the type's write scopes, as `_WRITE_SCOPES` in `backlot.routers.hubspot` records. `1` names no
+    record: the scopes come before the record is looked up."""
+    r = client.request(method, f"/hubspot/crm/v3/objects/{object_type}/1", headers=admin_h)
+    assert r.status_code == 403
+    assert list(r.json()) == ["status", "message", "correlationId", "errors", "links", "category"]
+    assert _body(r) == {
+        "status": "error",
+        "message": "This app hasn't been granted all required scopes to make this call. "
+        "Read more about required scopes here: https://developers.hubspot.com/scopes.",
+        "errors": [
+            {
+                "message": "One or more of the following scopes are required.",
+                "context": {"requiredGranularScopes": scopes},
+            }
+        ],
+        "links": {"scopes": "https://developers.hubspot.com/scopes"},
+        "category": "MISSING_SCOPES",
+    }
+
+
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
+@pytest.mark.parametrize(
+    ("object_type", "status", "body"),
+    [
+        ("zzz", 400, {"status": "error", "message": "Unable to infer object type from: zzz"}),
+        ("2-999", 400, {"status": "error", "message": "Invalid object or event type id: 2-999"}),
+    ],
+)
+def test_hubspot_checks_a_record_writes_type_before_its_scopes(
+    client, admin_h, method, object_type, status, body
+):
+    """With a key that resolves, a type real can't resolve is its 400 ahead of the scopes
+    (`refuse_an_unserved_operation` in `backlot.routers.hubspot`)."""
+    r = client.request(method, f"/hubspot/crm/v3/objects/{object_type}/1", headers=admin_h)
+    assert (r.status_code, _body(r)) == (status, body)
+
+
+_COMPANY_SCOPES = [
+    "crm.objects.companies.write",
+    "crm.schemas.companies.write",
+    "crm.objects.companies.highly_sensitive.write.v2",
+    "crm.objects.companies.sensitive.write.v2",
+]
+_QUOTE_SCOPES = ["crm.schemas.quotes.write", "crm.objects.quotes.write", "cpq.quotes.write"]
+_ORDER_SCOPES = [
+    "crm.schemas.orders.write",
+    "crm.objects.orders.write",
+    "crm.pipelines.orders.write",
+]
+
+
+def _scopes_refused(r) -> list[str]:
+    assert (r.status_code, r.json()["category"]) == (403, "MISSING_SCOPES")
+    return r.json()["errors"][0]["context"]["requiredGranularScopes"]
+
+
+_INPUTS = {"inputs": []}
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "scopes"),
+    [
+        ("POST", "/crm/v3/objects/contacts", _INPUTS, _CONTACT_SCOPES),
+        ("POST", "/crm/v3/objects/0-1", _INPUTS, _CONTACT_SCOPES),
+        ("POST", "/crm/v3/objects/quotes", _INPUTS, _QUOTE_SCOPES),
+        ("POST", "/crm/v3/objects/contacts/batch/archive", _INPUTS, _CONTACT_SCOPES),
+        ("POST", "/crm/v3/objects/contacts/batch/create", _INPUTS, _CONTACT_SCOPES),
+        ("POST", "/crm/v3/objects/companies/batch/update", _INPUTS, _COMPANY_SCOPES),
+        ("POST", "/crm/v3/objects/contacts/batch/upsert", _INPUTS, _CONTACT_SCOPES),
+        (
+            "POST",
+            "/crm/v3/objects/contacts/merge",
+            {"primaryObjectId": "1", "objectIdToMerge": "2"},
+            _CONTACT_SCOPES,
+        ),
+        ("DELETE", "/crm/v4/objects/contacts/1/associations/companies/2", _INPUTS, _CONTACT_SCOPES),
+        ("PUT", "/crm/v4/objects/companies/1/associations/contacts/2", [], _COMPANY_SCOPES),
+        ("PUT", "/crm/v4/objects/quotes/1/associations/default/tickets/2", _INPUTS, _QUOTE_SCOPES),
+        (
+            "POST",
+            "/crm/v4/associations/contacts/companies/batch/create",
+            _INPUTS,
+            _CONTACT_SCOPES + _COMPANY_SCOPES,
+        ),
+        (
+            "POST",
+            "/crm/v4/associations/companies/contacts/batch/archive",
+            _INPUTS,
+            _CONTACT_SCOPES + _COMPANY_SCOPES,
+        ),
+        (
+            "POST",
+            "/crm/v4/associations/quotes/orders/batch/associate/default",
+            _INPUTS,
+            _ORDER_SCOPES + _QUOTE_SCOPES,
+        ),
+        (
+            "POST",
+            "/crm/v4/associations/CONTACTS/company/batch/labels/archive",
+            _INPUTS,
+            _CONTACT_SCOPES + _COMPANY_SCOPES,
+        ),
+        ("POST", "/crm/v4/associations/contacts/contacts/batch/create", _INPUTS, _CONTACT_SCOPES),
+    ],
+)
+def test_hubspot_refuses_a_keyed_write_for_the_scopes_of_its_types(
+    client, admin_h, method, path, body, scopes
+):
+    """With a key that resolves, each write with the body real answered it for is the 403
+    MISSING_SCOPES. A v4 record association names its first type's scopes, and a v4 association
+    batch write both types', in `_PAIR_ORDER`, as `refuse_an_unserved_operation` in
+    `backlot.routers.hubspot` records."""
+    r = client.request(method, f"/hubspot{path}", headers=admin_h, json=body)
+    assert _scopes_refused(r) == scopes
+
+
+_NULL_BODY = {
+    "status": "error",
+    "message": "validation error",
+    "errors": ["The request body may not be null"],
+}
+_INTERNAL_ERROR = {"status": "error", "message": "internal error"}
+_CONTACTS_REFUSED = {
+    "status": "error",
+    "message": "This app hasn't been granted all required scopes to make this call. "
+    "Read more about required scopes here: https://developers.hubspot.com/scopes.",
+    "errors": [
+        {
+            "message": "One or more of the following scopes are required.",
+            "context": {"requiredGranularScopes": _CONTACT_SCOPES},
+        }
+    ],
+    "links": {"scopes": "https://developers.hubspot.com/scopes"},
+    "category": "MISSING_SCOPES",
+}
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "content_type", "content", "status", "body"),
+    [
+        ("POST", "/crm/v3/objects/contacts", None, "", 400, _NULL_BODY),
+        ("POST", "/crm/v3/objects/contacts", "", "", 400, _NULL_BODY),
+        ("POST", "/crm/v3/objects/contacts", "   ", "", 400, _NULL_BODY),
+        ("POST", "/crm/v3/objects/contacts", "\t", "", 400, _NULL_BODY),
+        ("POST", "/crm/v3/objects/deals/batch/upsert", None, "", 400, _NULL_BODY),
+        ("POST", "/crm/v3/objects/tickets", None, "", 400, _NULL_BODY),
+        ("POST", "/crm/v3/objects/tickets/batch/archive", None, "", 400, _NULL_BODY),
+        (
+            "POST",
+            "/crm/v4/associations/contacts/companies/batch/create",
+            None,
+            "",
+            500,
+            _INTERNAL_ERROR,
+        ),
+        (
+            "POST",
+            "/crm/v4/associations/contacts/companies/batch/create",
+            "",
+            "",
+            500,
+            _INTERNAL_ERROR,
+        ),
+        (
+            "POST",
+            "/crm/v4/associations/tickets/contacts/batch/archive",
+            None,
+            "",
+            500,
+            _INTERNAL_ERROR,
+        ),
+        ("POST", "/crm/v3/objects/contacts/merge", None, "", 403, _CONTACTS_REFUSED),
+        (
+            "PUT",
+            "/crm/v4/objects/contacts/1/associations/companies/2",
+            None,
+            "",
+            403,
+            _CONTACTS_REFUSED,
+        ),
+        ("POST", "/crm/v3/objects/contacts", "application/json", "{", 403, _CONTACTS_REFUSED),
+        ("POST", "/crm/v3/objects/contacts", "application/json", "", 403, _CONTACTS_REFUSED),
+        ("POST", "/crm/v3/objects/contacts", None, "{}", 403, _CONTACTS_REFUSED),
+    ],
+)
+def test_hubspot_answers_a_keyed_write_with_no_body_and_no_content_type(
+    client, admin_h, method, path, content_type, content, status, body
+):
+    """Each row is what `refuse_an_unserved_operation` in `backlot.routers.hubspot` records."""
+    headers = {**admin_h, **({} if content_type is None else {"Content-Type": content_type})}
+    r = client.request(method, f"/hubspot{path}", headers=headers, content=content)
+    assert (r.status_code, _body(r)) == (status, body)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "name"),
+    [
+        ("POST", "/crm/v3/objects/zzz", "zzz"),
+        ("POST", "/crm/v3/objects/zzz/batch/create", "zzz"),
+        ("POST", "/crm/v3/objects/zzz/merge", "zzz"),
+        ("PUT", "/crm/v4/objects/contacts/1/associations/zzz/2", "zzz"),
+        ("POST", "/crm/v4/associations/zzz/companies/batch/create", "zzz"),
+        ("POST", "/crm/v4/associations/contacts/zzz/batch/create", "zzz"),
+    ],
+)
+def test_hubspot_checks_a_keyed_writes_types_before_its_body_and_scopes(
+    client, admin_h, method, path, name
+):
+    """A type real can't resolve, on either side of a v4 pair, is its 400 ahead of the body and the
+    scopes (`refuse_an_unserved_operation` in `backlot.routers.hubspot`)."""
+    r = client.request(method, f"/hubspot{path}", headers=admin_h)
+    assert (r.status_code, _body(r)) == (
+        400,
+        {"status": "error", "message": f"Unable to infer object type from: {name}"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("user_id", "message"),
+    [
+        ("1", "This is not a valid userId (1) for your portal "),
+        ("-2147483648", "This is not a valid userId (-2147483648) for your portal "),
+        ("%2B1", "This is not a valid userId (1) for your portal "),
+        ("01", "This is not a valid userId (1) for your portal "),
+        ("%D9%A1", "This is not a valid userId (1) for your portal "),
+        ("2147483648", "Unable to parse value for path parameter: userId"),
+        ("1.0", "Unable to parse value for path parameter: userId"),
+        ("abc", "Unable to parse value for path parameter: userId"),
+        ("%201", "Unable to parse value for path parameter: userId"),
+        ("%F0%9D%9F%8F", "Unable to parse value for path parameter: userId"),
+        pytest.param(
+            "1" * 5000, "Unable to parse value for path parameter: userId", id="5000-ones"
+        ),
+        pytest.param(
+            "0" * 4400 + "7", "This is not a valid userId (7) for your portal ", id="4400-zeros-7"
+        ),
+    ],
+)
+def test_hubspot_refuses_a_high_usage_report_for_its_user_id(client, admin_h, user_id, message):
+    """Each row is the `userId` 400 of `refuse_an_unserved_operation` in `backlot.routers.hubspot`,
+    sent with a body that doesn't parse."""
+    r = client.post(
+        f"/hubspot/crm/v4/associations/usage/high-usage-report/{user_id}",
+        headers={**admin_h, "Content-Type": "application/json"},
+        content="{",
+    )
+    assert (r.status_code, _body(r)) == (400, {"status": "error", "message": message})
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "status"),
+    [
+        ("PATCH", "/hubspot/crm/v3/objects/tickets/1", 405),
+        ("DELETE", "/hubspot/crm/v3/objects/tickets/1", 405),
+        ("POST", "/hubspot/crm/v3/objects/tickets", 405),
+        ("POST", "/hubspot/crm/v3/objects/tickets/merge", 405),
+        ("POST", "/hubspot/crm/v3/objects/tickets/batch/create", 404),
+        ("DELETE", "/hubspot/crm/v4/objects/tickets/2/associations/contacts/2", 404),
+        ("POST", "/hubspot/crm/v4/associations/contacts/tickets/batch/create", 404),
+        ("POST", "/hubspot/crm/v4/associations/contacts/companies/batch/read", 404),
+    ],
+)
+def test_hubspot_leaves_the_other_keyed_operations_to_the_router(
+    client, admin_h, method, path, status
+):
+    """Each row goes on to the router from `refuse_an_unserved_operation` in
+    `backlot.routers.hubspot`: a type outside `_WRITE_SCOPES`, or the v4 `batch/read`."""
+    assert client.request(method, path, headers=admin_h, json={"inputs": []}).status_code == status
+
+
+def test_hubspot_answers_a_record_patch_that_does_not_parse_with_the_scopes(client, admin_h):
+    """A `PATCH` body that doesn't parse is answered with the scopes' 403, as
+    `refuse_an_unserved_operation` in `backlot.routers.hubspot` records."""
+    headers = {**admin_h, "Content-Type": "application/json"}
+    r = client.request("PATCH", "/hubspot/crm/v3/objects/contacts/1", headers=headers, content="{")
+    assert (r.status_code, r.json()["category"]) == (403, "MISSING_SCOPES")
+
+
+def test_hubspot_does_not_refuse_an_unpublished_path_for_its_credential(client):
+    """Only what HubSpot publishes is refused for its credential: a path HubSpot does not publish
+    is still a 404 with no key, as `refuse_an_unserved_operation` in `backlot.routers.hubspot`
+    records."""
+    assert client.get("/hubspot/crm/v3/nonexistent-xyz").status_code == 404
+
+
+_METHOD_NOT_ALLOWED_PAGE = (
+    b"<html>\n<head>\n"
+    b'<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>\n'
+    b"<title>Error 405 Method Not Allowed</title>\n</head>\n"
+    b"<body><h2>HTTP ERROR 405</h2>\n<p>Reason:\n<pre>    Method Not Allowed</pre></p>\n"
+    b"</body>\n</html>\n"
+)
+
+_NOT_ACCEPTABLE_PAGE = (
+    b"<html>\n<head>\n"
+    b'<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>\n'
+    b"<title>Error 406 Not Acceptable</title>\n</head>\n"
+    b"<body><h2>HTTP ERROR 406</h2>\n<p>Reason:\n<pre>    Not Acceptable</pre></p>\n"
+    b"</body>\n</html>\n"
+)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/crm/v3/objects/contacts",
+        "/crm/v3/objects/contacts/{ava}",
+        "/crm/v4/objects/contacts/{ava}/associations/companies",
+        "/crm/v3/objects/contacts/1",
+        "/crm/v3/objects/contacts/abc",
+        "/crm/v3/objects/contacts/search",
+        "/crm/v3/objects/contacts/batch/read",
+    ],
+)
+@pytest.mark.parametrize("keyed", [True, False])
+def test_hubspot_answers_head_as_the_get_without_its_body(client, admin_h, ava, path, keyed):
+    """A `HEAD` is the `GET`'s status and headers with no body, declaring the length of the body
+    the `GET` carries (``answer_head_as_the_get_without_its_body`` in `backlot.main`)."""
+    url = "/hubspot" + path.format(ava=ava)
+    headers = admin_h if keyed else {}
+    got, head = client.get(url, headers=headers), client.head(url, headers=headers)
+    assert head.status_code == got.status_code
+    assert head.content == b""
+    assert head.headers["content-type"] == got.headers["content-type"]
+    assert head.headers["content-length"] == str(len(got.content))
+    assert head.headers.get("allow") == got.headers.get("allow")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/crm/v3/objects/contacts",
+        "/crm/v3/objects/contacts/{ava}",
+        "/crm/v4/objects/contacts/{ava}/associations/companies",
+        "/crm/v3/objects/contacts/search",
+        "/crm/v3/objects/zzz",
+    ],
+)
+@pytest.mark.parametrize(
+    "headers",
+    [
+        "key",
+        "none",
+        {"Origin": "https://example.com", "Access-Control-Request-Method": "GET"},
+    ],
+)
+def test_hubspot_refuses_options_for_its_own_credentials(client, admin_h, ava, path, headers):
+    """`OPTIONS` is real's 401 naming the credentials its front door looks for, the key sent or not
+    and as a CORS preflight, with no `Allow` and no CORS headers (`answer_ahead_of_the_routes` in
+    `backlot.routers.hubspot`)."""
+    sent = {"key": admin_h, "none": {}}.get(headers) if isinstance(headers, str) else headers
+    r = client.options("/hubspot" + path.format(ava=ava), headers=sent)
+    assert r.status_code == 401
+    assert list(r.json()) == ["status", "message", "correlationId", "engagement"]
+    assert r.headers["x-hubspot-auth-failure"] == "401 Unauthorized"
+    assert r.json()["message"] == "Any of the listed authentication credentials are missing"
+    assert list(r.json()["engagement"]) == ["service-to-service", "internal-cookie", "app-cookie"]
+    assert not {"allow", "access-control-allow-origin", "access-control-allow-methods"} & set(
+        r.headers
+    )
+    assert (r.headers.get("x-content-type-options") == "nosniff") is path.endswith("/search")
+
+
+_SEARCH = "/crm/v3/objects/contacts/search"
+_BATCH = "/crm/v3/objects/contacts/batch/read"
+_LISTING = "/crm/v3/objects/contacts"
+_RECORD = "/crm/v3/objects/contacts/1"
+_V4 = "/crm/v4/objects/contacts/{ava}/associations/companies"
+_MERGE = "/crm/v3/objects/contacts/merge"
+_FORBIDDEN_ROWS = [
+    # method, path, keyed, Accept (None sends none), status, Allow, page, `nosniff`, no-store
+    ("GET", _SEARCH, True, None, 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, False, None, 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "application/json", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, False, "application/json", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/*", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "application/json, text/html", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "TEXT/HTML", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html;level=1", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html; q=0", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "application/*", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html;q=abc", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html;q=inf", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html;q=1d", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "text/html;q=NaN", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "text/html;q=-NaN", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "text/html;q=-0", 405, "POST,OPTIONS", False, True, True),
+    (
+        "GET",
+        _SEARCH,
+        True,
+        "text/html, application/json;q=-1",
+        405,
+        "POST,OPTIONS",
+        False,
+        True,
+        True,
+    ),
+    ("GET", _SEARCH, True, "text/html;Q=0.5", 405, "POST,OPTIONS", False, True, True),
+    ("GET", _SEARCH, True, "text/html;q=0;q=0.5", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _BATCH, True, None, 405, "POST,OPTIONS", True, False, True),
+    ("GET", _BATCH, True, "application/json", 405, "POST,OPTIONS", False, False, True),
+    ("PUT", _SEARCH, True, None, 405, "POST,OPTIONS", False, True, False),
+    ("DELETE", _SEARCH, False, None, 405, "POST,OPTIONS", False, True, False),
+    ("PATCH", _BATCH, True, None, 405, "POST,OPTIONS", False, False, False),
+    ("PUT", _RECORD, True, None, 405, "DELETE,GET,OPTIONS,PATCH", False, False, False),
+    ("PUT", _RECORD, False, None, 405, "DELETE,GET,OPTIONS,PATCH", False, False, False),
+    ("PUT", _RECORD, True, "text/html", 405, "DELETE,GET,OPTIONS,PATCH", False, False, False),
+    ("POST", _RECORD, False, None, 405, "DELETE,GET,OPTIONS,PATCH", True, False, True),
+    ("PUT", _LISTING, True, None, 405, "POST,GET,OPTIONS", False, False, False),
+    ("DELETE", _LISTING, True, None, 405, "POST,GET,OPTIONS", False, False, False),
+    ("PUT", _V4, True, None, 405, "GET,OPTIONS", False, False, False),
+    ("GET", _MERGE, False, None, 405, "POST,OPTIONS", True, False, True),
+    ("PATCH", _MERGE, True, None, 405, "POST,OPTIONS", False, False, False),
+    ("DELETE", _MERGE, True, None, 405, "POST,OPTIONS", False, False, False),
+    ("PUT", _MERGE, False, None, 405, "POST,OPTIONS", False, False, False),
+    ("GET", _LISTING, True, "text/html", 406, None, True, False, True),
+    ("GET", _LISTING, False, "text/html", 406, None, True, False, True),
+    ("GET", _LISTING, True, "text/*", 406, None, True, False, True),
+    ("GET", _LISTING, True, "text/html;q=0.5", 406, None, True, False, True),
+    ("GET", _LISTING, True, "application/xml", 406, None, False, False, True),
+    ("GET", _LISTING, True, "TEXT/HTML", 406, None, False, False, True),
+    ("GET", _LISTING, True, "text/html;level=1", 406, None, False, False, True),
+    ("GET", _LISTING, True, "application/hal+json", 406, None, False, False, True),
+    ("GET", _RECORD, True, "text/html", 406, None, True, False, True),
+    ("GET", _V4, True, "text/html", 406, None, True, False, True),
+    ("POST", _SEARCH, True, "text/html", 406, None, True, True, True),
+    ("POST", _SEARCH, True, "application/xml", 406, None, False, True, True),
+    ("POST", _BATCH, True, "text/html", 406, None, True, False, True),
+    ("PATCH", _RECORD, False, "text/html", 406, None, False, False, False),
+    ("DELETE", _RECORD, True, "text/html", 406, None, False, False, False),
+    ("POST", _MERGE, False, "text/html", 406, None, True, False, True),
+]
+
+
+@pytest.mark.parametrize(
+    "method, path, keyed, accept, status, allow, page, nosniff, no_store", _FORBIDDEN_ROWS
+)
+def test_hubspot_answers_a_method_or_accept_no_route_takes(
+    client, admin_h, ava, method, path, keyed, accept, status, allow, page, nosniff, no_store
+):
+    """Each row is what `answer_ahead_of_the_routes` in `backlot.routers.hubspot` measures."""
+    body = b"{}" if method in ("POST", "PUT", "PATCH") else None
+    request = client.build_request(
+        method, "/hubspot" + path.format(ava=ava), headers=admin_h if keyed else {}, content=body
+    )
+    if accept is None:
+        del request.headers["Accept"]
+    else:
+        request.headers["Accept"] = accept
+    r = client.send(request)
+    expected = {405: _METHOD_NOT_ALLOWED_PAGE, 406: _NOT_ACCEPTABLE_PAGE}[status] if page else b""
+    assert (r.status_code, r.content) == (status, expected)
+    assert r.headers.get("content-type") == (_PAGE_TYPE if page else None)
+    assert r.headers.get("allow") == allow
+    assert (r.headers.get("x-content-type-options") == "nosniff") is nosniff
+    assert (r.headers.get("cache-control") == "must-revalidate,no-cache,no-store") is no_store
+
+
+@pytest.mark.parametrize(
+    "accept",
+    [
+        "application/json",
+        "*/*",
+        "text/html, */*;q=0.8",
+        "Application/JSON",
+        "APPLICATION/*",
+        "application/json;q=0",
+        "*/*;q=0",
+        "",
+    ],
+)
+def test_hubspot_serves_an_accept_that_admits_json(client, admin_h, accept):
+    """An `Accept` that names JSON, `application/*` or any type, in any case and at any `q`, is
+    served (`_admits_json` in `backlot.routers.hubspot`)."""
+    r = client.get("/hubspot/crm/v3/objects/contacts", headers={**admin_h, "Accept": accept})
+    assert r.status_code == 200
+
+
+@pytest.mark.parametrize("method", ["OPTIONS", "GET"])
+def test_hubspot_leaves_a_path_no_route_serves_to_the_router(client, admin_h, method):
+    """`OPTIONS`, and an `Accept` of `text/html`, on a path no route serves are not the 401 and the
+    406 of a served one: real's `GET` there is its 404, and its `OPTIONS` a 405 page from its front
+    door, which this server does not answer."""
+    r = client.request(
+        method, "/hubspot/crm/v3/nonexistent-xyz", headers={**admin_h, "Accept": "text/html"}
+    )
+    assert r.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("GET", "/crm/v3/objects/contacts", None),
+        ("GET", "/crm/v3/objects/contacts/{ava}", None),
+        ("GET", "/crm/v4/objects/contacts/{ava}/associations/companies", None),
+        ("POST", "/crm/v3/objects/contacts/search", {}),
+        ("POST", "/crm/v3/objects/contacts/batch/read", {"inputs": [{"id": "{ava}"}]}),
+    ],
+)
+def test_hubspot_serves_a_trailing_slash_as_the_path_without_it(
+    client, admin_h, ava, method, path, body
+):
+    """Trailing slashes are served as the path without them, not redirected
+    (``serve_a_slashed_hubspot_path_as_the_path_without_it`` in `backlot.main`)."""
+    url = "/hubspot" + path.format(ava=ava)
+    sent = json.loads(json.dumps(body).replace("{ava}", ava)) if body is not None else None
+    bare = client.request(method, url, headers=admin_h, json=sent)
+    assert bare.status_code == 200
+    for slashes in ("/", "//", "///"):
+        slashed = client.request(
+            method, url + slashes, headers=admin_h, json=sent, follow_redirects=False
+        )
+        assert (slashed.status_code, slashed.content) == (200, bare.content), slashes
 
 
 def test_hubspot_acl_hides_restricted_record(client, tokens_yaml, admin_h):
@@ -576,88 +1391,90 @@ def _not_looked_up(record, why):
     }
 
 
-@pytest.mark.parametrize(
-    ("path", "status", "want"),
-    [
-        ("/crm/v3/objects/nosuch/{ava}", 400, _cannot_infer("nosuch")),
-        ("/crm/v3/objects/tas\u212as", 400, _cannot_infer("tas\u212as")),
-        (_assoc("{ava}", to="company"), 200, _assoc("{ava}")),
-        (_assoc("{ava}", to="0-2"), 200, _assoc("{ava}")),
-        (_assoc("{ava}", to="COMPANIES", source="Contacts"), 200, _assoc("{ava}")),
-        (_assoc("{ava}", to="nosuch"), 400, _cannot_infer("nosuch")),
-        (_assoc("{ava}", source="nosuch"), 400, _cannot_infer("nosuch")),
-        (_assoc("{ava}", to="nosuchtwo", source="nosuchone"), 400, _cannot_infer("nosuchone")),
-        (_assoc("1"), 200, _EMPTY),
-        (_assoc("9223372036854775807"), 200, _EMPTY),
-        (_assoc("0" * 25 + "1"), 200, _EMPTY),
-        (_assoc("{ava}", source="deals"), 200, _EMPTY),
-        (_assoc("0{ava}"), 200, _assoc("{ava}")),
-        (_assoc("abc"), 404, _not_looked_up("abc", "numeric")),
-        (_assoc("1.0"), 404, _not_looked_up("1.0", "numeric")),
-        (_assoc("+1"), 404, _not_looked_up("+1", "numeric")),
-        (_assoc("\u0661"), 404, _not_looked_up("\u0661", "numeric")),
-        (_assoc("0"), 404, _not_looked_up("0", "positive")),
-        (_assoc("-1"), 404, _not_looked_up("-1", "positive")),
-        (_assoc("9223372036854775808"), 404, _not_looked_up("9223372036854775808", "numeric")),
-        (_assoc("abc") + "?after=bogus", 404, _not_looked_up("abc", "numeric")),
-        ("/crm/v3/objects/contacts/0{ava}", 200, "/crm/v3/objects/contacts/{ava}"),
-        ("/crm/v3/objects/contacts/abc", 404, _not_looked_up("abc", "numeric")),
-        ("/crm/v3/objects/contacts/1.0", 404, _not_looked_up("1.0", "numeric")),
-        ("/crm/v3/objects/contacts/+1", 404, _not_looked_up("+1", "numeric")),
-        ("/crm/v3/objects/contacts/\u0661", 404, _not_looked_up("\u0661", "numeric")),
-        (
-            "/crm/v3/objects/contacts/99999999999999999999999",
-            404,
-            _not_looked_up("99999999999999999999999", "numeric"),
-        ),
-        (
-            "/crm/v3/objects/contacts/9223372036854775808",
-            404,
-            _not_looked_up("9223372036854775808", "numeric"),
-        ),
-        ("/crm/v3/objects/contacts/0", 404, _not_looked_up("0", "positive")),
-        ("/crm/v3/objects/contacts/-1", 404, _not_looked_up("-1", "positive")),
-        ("/crm/v3/objects/contacts/00", 404, _not_looked_up("00", "positive")),
-        ("/crm/v3/objects/contacts/-00", 404, _not_looked_up("-00", "positive")),
-        (
-            "/crm/v3/objects/contacts/-9223372036854775808",
-            404,
-            _not_looked_up("-9223372036854775808", "positive"),
-        ),
-        (
-            "/crm/v3/objects/contacts/-9223372036854775809",
-            404,
-            _not_looked_up("-9223372036854775809", "numeric"),
-        ),
-        # longer than `int` converts (4300 digits): the 23-digit row's answer, not a server error
-        ("/crm/v3/objects/contacts/" + "9" * 5000, 404, _not_looked_up("9" * 5000, "numeric")),
-        ("/crm/v3/objects/nosuch/abc", 400, _cannot_infer("nosuch")),
-        ("/crm/v3/objects/contacts/1", 404, _MISSING_RECORD_PAGE),
-        ("/crm/v3/objects/contacts/9223372036854775807", 404, _MISSING_RECORD_PAGE),
-        ("/crm/v3/objects/deals/{ava}", 404, _MISSING_RECORD_PAGE),
-        (_assoc("1") + "?after=bogus", 400, _assoc("{ava}") + "?after=bogus"),
-        (_assoc("{ava}", source="deals") + "?after=bogus", 400, _assoc("{ava}") + "?after=bogus"),
-    ],
-)
-def test_hubspot_object_types_resolve_as_real_resolves_them(
-    client, admin_h, ava, path, status, want
-):
+_OBJECT_TYPE_ROWS = [
+    ("/crm/v3/objects/nosuch/{ava}", 400, _cannot_infer("nosuch")),
+    ("/crm/v3/objects/tas\u212as", 400, _cannot_infer("tas\u212as")),
+    (_assoc("{ava}", to="company"), 200, _assoc("{ava}")),
+    (_assoc("{ava}", to="0-2"), 200, _assoc("{ava}")),
+    (_assoc("{ava}", to="COMPANIES", source="Contacts"), 200, _assoc("{ava}")),
+    (_assoc("{ava}", to="nosuch"), 400, _cannot_infer("nosuch")),
+    (_assoc("{ava}", source="nosuch"), 400, _cannot_infer("nosuch")),
+    (_assoc("{ava}", to="nosuchtwo", source="nosuchone"), 400, _cannot_infer("nosuchone")),
+    (_assoc("1"), 200, _EMPTY),
+    (_assoc("9223372036854775807"), 200, _EMPTY),
+    (_assoc("0" * 25 + "1"), 200, _EMPTY),
+    (_assoc("{ava}", source="deals"), 200, _EMPTY),
+    (_assoc("0{ava}"), 200, _assoc("{ava}")),
+    (_assoc("abc"), 404, _not_looked_up("abc", "numeric")),
+    (_assoc("1.0"), 404, _not_looked_up("1.0", "numeric")),
+    (_assoc("+1"), 404, _not_looked_up("+1", "numeric")),
+    (_assoc("\u0661"), 404, _not_looked_up("\u0661", "numeric")),
+    (_assoc("0"), 404, _not_looked_up("0", "positive")),
+    (_assoc("-1"), 404, _not_looked_up("-1", "positive")),
+    (_assoc("9223372036854775808"), 404, _not_looked_up("9223372036854775808", "numeric")),
+    (_assoc("abc") + "?after=bogus", 404, _not_looked_up("abc", "numeric")),
+    ("/crm/v3/objects/contacts/0{ava}", 200, "/crm/v3/objects/contacts/{ava}"),
+    ("/crm/v3/objects/contacts/abc", 404, _not_looked_up("abc", "numeric")),
+    ("/crm/v3/objects/contacts/1.0", 404, _not_looked_up("1.0", "numeric")),
+    ("/crm/v3/objects/contacts/+1", 404, _not_looked_up("+1", "numeric")),
+    ("/crm/v3/objects/contacts/\u0661", 404, _not_looked_up("\u0661", "numeric")),
+    (
+        "/crm/v3/objects/contacts/99999999999999999999999",
+        404,
+        _not_looked_up("99999999999999999999999", "numeric"),
+    ),
+    (
+        "/crm/v3/objects/contacts/9223372036854775808",
+        404,
+        _not_looked_up("9223372036854775808", "numeric"),
+    ),
+    ("/crm/v3/objects/contacts/0", 404, _not_looked_up("0", "positive")),
+    ("/crm/v3/objects/contacts/-1", 404, _not_looked_up("-1", "positive")),
+    ("/crm/v3/objects/contacts/00", 404, _not_looked_up("00", "positive")),
+    ("/crm/v3/objects/contacts/-00", 404, _not_looked_up("-00", "positive")),
+    (
+        "/crm/v3/objects/contacts/-9223372036854775808",
+        404,
+        _not_looked_up("-9223372036854775808", "positive"),
+    ),
+    (
+        "/crm/v3/objects/contacts/-9223372036854775809",
+        404,
+        _not_looked_up("-9223372036854775809", "numeric"),
+    ),
+    # longer than `int` converts (4300 digits): the 23-digit row's answer, not a server error
+    ("/crm/v3/objects/contacts/" + "9" * 5000, 404, _not_looked_up("9" * 5000, "numeric")),
+    ("/crm/v3/objects/nosuch/abc", 400, _cannot_infer("nosuch")),
+    ("/crm/v3/objects/contacts/1", 404, _MISSING_RECORD_PAGE),
+    ("/crm/v3/objects/contacts/9223372036854775807", 404, _MISSING_RECORD_PAGE),
+    ("/crm/v3/objects/deals/{ava}", 404, _MISSING_RECORD_PAGE),
+    (_assoc("1") + "?after=bogus", 400, _assoc("{ava}") + "?after=bogus"),
+    (_assoc("{ava}", source="deals") + "?after=bogus", 400, _assoc("{ava}") + "?after=bogus"),
+]
+
+
+def test_hubspot_object_types_resolve_as_real_resolves_them(client, admin_h, ava):
     """Each row is one that `_canonical`, `_record_id`, `get_object` and `list_associations` record
     as measured. Where `want` is a path, the row answers what that path does, here and on real: the
     target under its plural, for another spelling of it; Ava's own associations, for a bad `after`,
     since the cursor is refused before a missing or mismatched record is an empty page; and Ava
     herself, or her associations, for her id with a leading zero. Where `want` is bytes, it is the
     HTML page, under real's Latin-1 content type. A JSON answer's members come in real's order."""
-    r = client.get("/hubspot" + path.format(ava=ava), headers=admin_h)
-    assert r.status_code == status, path
-    if isinstance(want, bytes):
-        assert (r.headers["content-type"], r.content) == ("text/html;charset=iso-8859-1", want)
-        return
-    if isinstance(want, str):
-        twin = client.get("/hubspot" + want.format(ava=ava), headers=admin_h).json()
-        assert twin != _EMPTY
-        want = twin
-    assert list(r.json().items()) == list(want.items())
+    answered, expected = {}, {}
+    for path, status, want in _OBJECT_TYPE_ROWS:
+        r = client.get("/hubspot" + path.format(ava=ava), headers=admin_h)
+        if isinstance(want, bytes):
+            answered[path] = (r.status_code, r.headers["content-type"], r.content)
+            expected[path] = (status, "text/html;charset=iso-8859-1", want)
+            continue
+        if isinstance(want, str):
+            control = _body(client.get("/hubspot" + want.format(ava=ava), headers=admin_h))
+            answered[path] = (r.status_code, list(_body(r).items()), control != _EMPTY)
+            expected[path] = (status, list(control.items()), True)
+        else:
+            answered[path] = (r.status_code, list(_body(r).items()))
+            expected[path] = (status, list(want.items()))
+    assert answered == expected
 
 
 def test_hubspot_search_filter_groups(client, admin_h):
@@ -804,32 +1621,161 @@ def test_hubspot_search_every_operator(client, admin_h):
     }
 
 
+def test_hubspot_search_string_filters_ignore_value_case(client, admin_h):
+    """A string property's value is compared in any case and an enumeration's exactly, as
+    `_match_one` records."""
+    f = lambda **kw: _hs_filter(client, admin_h, **kw)  # noqa: E731
+    others = {"Borealis Clinics", "Stealth Health Co"}
+
+    assert f(propertyName="name", operator="EQ", value="acme health") == {"Acme Health"}
+    assert f(propertyName="name", operator="EQ", value="ACME HEALTH") == {"Acme Health"}
+    assert f(propertyName="name", operator="NEQ", value="ACME HEALTH") == others
+    assert f(propertyName="name", operator="IN", values=["acme health"]) == {"Acme Health"}
+    assert f(propertyName="name", operator="NOT_IN", values=["ACME HEALTH"]) == others
+
+
+def test_hubspot_search_folds_a_string_value_as_real_does(tmp_path):
+    """Each row is what `_hubspot_fold` takes a ``firstname EQ`` value to, as the total over a
+    ``Maria``, a ``Mar\u00eda``, a ``Bob`` and a ``Cara``. An enumeration stays exact."""
+    from tests._helpers import client_for
+
+    records = [
+        {
+            "source_type": "hubspot",
+            "doc_id": doc_id,
+            "object_type": "contacts",
+            "title": first,
+            "properties": {"firstname": first, "lifecyclestage": stage},
+        }
+        for doc_id, first, stage in (
+            ("hs-maria", "Maria", "lead"),
+            ("hs-accent", "Mar\u00eda", "lead"),
+            ("hs-bob", "Bob", "customer"),
+            ("hs-cara", "Cara", "customer"),
+        )
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as client:
+        headers = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def total(prop, op, **value):
+            body = {
+                "filterGroups": [{"filters": [{"propertyName": prop, "operator": op, **value}]}]
+            }
+            return client.post(
+                "/hubspot/crm/v3/objects/contacts/search", headers=headers, json=body
+            ).json()["total"]
+
+        for value, want in (
+            ("Maria", 2),
+            ("maria", 2),
+            ("MAR\u00cdA", 2),
+            ("m\u00e1ria", 2),
+            ("M\u00c4RIA", 2),
+            ("Mar\u00efa", 2),
+            ("maria\u0301", 2),
+            ("MAR\u0130A", 2),
+            ("mar\u0131a", 2),
+            ("ma\u0280ia", 2),
+            ("\uff2d\uff21\uff32\uff29\uff21", 2),
+            ("M\u0250ria", 2),
+            ("M\u0259ria", 2),
+            ("\u026faria", 2),
+            ("Mar\u0197a", 2),
+            ("M\u00aaria", 2),
+            ("Mar\u2170a", 2),
+            ("\u2133aria", 2),
+            ("B\u00d8B", 1),
+            ("b\u1d0fb", 1),
+            ("\u0180ob", 1),
+            ("\u0299ob", 1),
+            ("b\u0254b", 1),
+            ("b\u00bab", 1),
+            ("bo\u0308b", 1),
+            ("\u1d04ara", 1),
+            ("\u023cara", 1),
+            ("M\u0251ria", 0),
+            ("Mar\u0269a", 0),
+            ("b\u1d11b", 0),
+            ("MAR\u0399A", 0),
+            ("b\u043eb", 0),
+            ("b\u0302ob", 0),
+            ("bob\u0308", 0),
+            ("MARIA ", 0),
+            (" maria", 0),
+            ("mar ia", 0),
+        ):
+            assert total("firstname", "EQ", value=value) == want, ascii(value)
+        assert total("firstname", "IN", values=["m\u00e1ria"]) == 2
+        assert total("firstname", "NEQ", value="M\u00c1RIA") == 2
+        assert total("lifecyclestage", "EQ", value="lead") == 2
+        assert total("lifecyclestage", "EQ", value="LEAD") == 0
+        assert total("lifecyclestage", "EQ", value="l\u00e9ad") == 0
+
+
 @pytest.mark.parametrize(
-    "prop, value, want",
+    "object_type, prop, stored",
     [
-        ("name", "Clin*", {"Borealis Clinics"}),
-        ("name", "*lini*", {"Borealis Clinics"}),
-        ("name", "*nics", {"Borealis Clinics"}),
-        ("name", "Clinics*", {"Borealis Clinics"}),
-        ("name", "Cl*cs", {"Borealis Clinics"}),
-        ("name", "Heal*", {"Acme Health", "Stealth Health Co"}),
-        ("name", "* Clinics", {"Borealis Clinics"}),
-        ("name", "Clin", set()),
-        ("name", "Clin*x", set()),
-        ("name", "?linics", set()),
-        # `*` alone asks only for a token, and Stealth Health Co has no `domain`
-        ("domain", "*", {"Acme Health", "Borealis Clinics"}),
+        ("contacts", "lifecyclestage", "lead"),
+        ("deals", "dealstage", "closedwon"),
+        ("deals", "pipeline", "default"),
+        ("companies", "industry", "COMPUTER_SOFTWARE"),
     ],
 )
-def test_hubspot_contains_token_reads_star_as_a_wildcard(client, admin_h, prop, value, want):
+def test_hubspot_search_compares_an_enumeration_value_exactly(tmp_path, object_type, prop, stored):
+    """Each enumeration `_match_one` compares exactly is matched only as stored, under each of the
+    four operators."""
+    from tests._helpers import client_for
+
+    record = {"source_type": "hubspot", "doc_id": "hs-enum", "object_type": object_type}
+    s = tiny_corpus(tmp_path, [{**record, "title": "r", "properties": {prop: stored}}])
+    other = stored.swapcase()
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+
+        def total(op, **value):
+            body = {
+                "filterGroups": [{"filters": [{"propertyName": prop, "operator": op, **value}]}]
+            }
+            return c.post(
+                f"/hubspot/crm/v3/objects/{object_type}/search", headers=h, json=body
+            ).json()["total"]
+
+        assert (total("EQ", value=stored), total("EQ", value=other)) == (1, 0)
+        assert (total("IN", values=[stored]), total("IN", values=[other])) == (1, 0)
+        assert (total("NEQ", value=stored), total("NEQ", value=other)) == (0, 1)
+        assert (total("NOT_IN", values=[stored]), total("NOT_IN", values=[other])) == (0, 1)
+
+
+_WILDCARD_ROWS = [
+    ("name", "Clin*", {"Borealis Clinics"}),
+    ("name", "*lini*", {"Borealis Clinics"}),
+    ("name", "*nics", {"Borealis Clinics"}),
+    ("name", "Clinics*", {"Borealis Clinics"}),
+    ("name", "Cl*cs", {"Borealis Clinics"}),
+    ("name", "Heal*", {"Acme Health", "Stealth Health Co"}),
+    ("name", "* Clinics", {"Borealis Clinics"}),
+    ("name", "Clin", set()),
+    ("name", "Clin*x", set()),
+    ("name", "?linics", set()),
+    # `*` alone asks only for a token, and Stealth Health Co has no `domain`
+    ("domain", "*", {"Acme Health", "Borealis Clinics"}),
+]
+
+
+def test_hubspot_contains_token_reads_star_as_a_wildcard(client, admin_h):
     """The wildcard rule `_NEEDLE_RE`'s comment records; `NOT_CONTAINS_TOKEN` finds none of what
     `CONTAINS_TOKEN` finds."""
-
-    def f(op):
-        return _hs_filter(client, admin_h, propertyName=prop, operator=op, value=value)
-
-    assert f("CONTAINS_TOKEN") == want
-    assert not want & f("NOT_CONTAINS_TOKEN")
+    answered = {}
+    for prop, value, want in _WILDCARD_ROWS:
+        found = _hs_filter(
+            client, admin_h, propertyName=prop, operator="CONTAINS_TOKEN", value=value
+        )
+        others = _hs_filter(
+            client, admin_h, propertyName=prop, operator="NOT_CONTAINS_TOKEN", value=value
+        )
+        answered[(prop, value)] = (found, want & others)
+    assert answered == {(prop, value): (want, set()) for prop, value, want in _WILDCARD_ROWS}
 
 
 def test_hubspot_wildcard_needle_with_many_stars_stays_fast():
@@ -937,26 +1883,30 @@ _OPERATOR_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("raw, want, object_type, authed", _OPERATOR_ROWS)
-def test_hubspot_search_reads_a_filter_operator_as_real_does(
-    client, admin_h, raw, want, object_type, authed
-):
+def test_hubspot_search_reads_a_filter_operator_as_real_does(client, admin_h):
     """`_refuse_an_operator`'s rule, one body per row: the status and message real answered for each
     operator it could not read, and a 200 for each it trims (`_TRIM`) or reads as an index
     (`_OPERATOR_INDEXES`). The trimmed rows put real's trimmed spellings around `NEQ`, whose page on
     this corpus is not empty, and compare that page with `NEQ`'s own; the index rows check only that
     the body is served."""
-    headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
-    url = f"/hubspot/crm/v3/objects/{object_type}/search"
-    r = client.post(url, headers=headers, content=raw if isinstance(raw, bytes) else raw.encode())
-    if isinstance(want, dict):
-        assert (r.status_code, r.json()) == (400, want)
-    elif isinstance(want, tuple):
-        control = client.post(url, headers=headers, content=want[1].encode()).json()["results"]
-        assert r.status_code == 200
-        assert r.json()["results"] == control != []
-    else:
-        assert r.status_code == want
+    answered, expected = {}, {}
+    for row in _OPERATOR_ROWS:
+        raw, want, object_type, authed = row.values
+        headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
+        url = f"/hubspot/crm/v3/objects/{object_type}/search"
+        content = raw if isinstance(raw, bytes) else raw.encode()
+        r = client.post(url, headers=headers, content=content)
+        if isinstance(want, dict):
+            answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
+        elif isinstance(want, tuple):
+            control = client.post(url, headers=headers, content=want[1].encode()).json()["results"]
+            answered[row.id], expected[row.id] = (
+                (r.status_code, r.json()["results"], control != []),
+                (200, control, True),
+            )
+        else:
+            answered[row.id], expected[row.id] = r.status_code, want
+    assert answered == expected
 
 
 def test_hubspot_search_prefilter_cannot_change_results(client, admin_h, monkeypatch):
@@ -1137,6 +2087,40 @@ def test_hubspot_batch_read_partial_is_207(client, admin_h):
     assert j["errors"][0]["context"]["id"] == ["111111111111"]
 
 
+_ONE_TO_100 = [str(i) for i in range(1, 101)]
+
+
+@pytest.mark.parametrize(
+    "inputs, status",
+    [
+        pytest.param([{"id": str(i)} for i in range(1, 102)], 400, id="101-objects"),
+        pytest.param([*_ONE_TO_100, "101"], 400, id="101-strings"),
+        pytest.param([*_ONE_TO_100, {"id": 101}], 400, id="an-integer-101"),
+        pytest.param([*_ONE_TO_100, " 1"], 400, id="space-1"),
+        pytest.param([*_ONE_TO_100, "01"], 400, id="zero-1"),
+        pytest.param([*_ONE_TO_100, {"id": 5.0}], 400, id="5.0"),
+        pytest.param([*_ONE_TO_100, {"id": True}], 400, id="true"),
+        pytest.param([{"id": s} for s in _ONE_TO_100], 207, id="100-objects"),
+        pytest.param([{"id": "1"}] * 101, 207, id="one-id-101-times"),
+        pytest.param(_ONE_TO_100 * 2, 207, id="100-ids-twice"),
+        pytest.param([*_ONE_TO_100, {"id": 5}], 207, id="an-integer-5-beside-5"),
+    ],
+)
+def test_hubspot_batch_read_refuses_more_than_100_ids(client, admin_h, inputs, status):
+    """Each row is how `_HUBSPOT_BATCH_MAX` counts its inputs."""
+    r = client.post(
+        "/hubspot/crm/v3/objects/contacts/batch/read", headers=admin_h, json={"inputs": inputs}
+    )
+    assert r.status_code == status, r.text
+    if status == 400:
+        assert _body(r) == {
+            "status": "error",
+            "message": "The maximum number of inputs supported in a batch is 100. "
+            "Please reduce the number of items and try again",
+            "category": "VALIDATION_ERROR",
+        }
+
+
 def test_hubspot_batch_read(client, admin_h):
     listed = client.get(
         "/hubspot/crm/v3/objects/companies", headers=admin_h, params={"limit": 100}
@@ -1183,6 +2167,17 @@ def _br(id, raw, want, object_type="companies", authed=True):
 
 _ONE = '{"inputs":[{"id":"1"}],'
 _ARRAY = "Cannot deserialize value of type  from Array value (token `JsonToken.START_ARRAY`)"
+_OBJECT = "Cannot deserialize value of type  from Object value (token `JsonToken.START_OBJECT`)"
+
+
+def _no_id(column: int) -> dict:
+    return {
+        "status": "error",
+        "message": f"Invalid input JSON on line 1, column {column}. "
+        "Some required fields were not set: [id]",
+        "category": "VALIDATION_ERROR",
+    }
+
 
 # fmt: off
 _BATCH_BODY_ROWS = [
@@ -1213,6 +2208,16 @@ _BATCH_BODY_ROWS = [
     _br("array-element", '{"inputs":[["1"]]}', _batch_refusal(12, _ARRAY)),
     _br("int-after-a-string", '{"inputs":["1",7]}', _batch_refusal(16, _no_creator("int/Int", "Number value (7)"))),
     _br("int-after-an-object", '{"inputs":[{"id":"1"},7]}', _batch_refusal(23, _no_creator("int/Int", "Number value (7)"))),
+    _br("null-id", '{"inputs":[{"id":null}]}', _no_id(22)),
+    _br("null-id-spaced", '{"inputs":[{"id":null }]}', _no_id(23)),
+    _br("missing-id", '{"inputs":[{}]}', _no_id(13)),
+    _br("null-id-in-the-second-input", '{"inputs":[{"id":"1"},{"id":null}]}', _no_id(33)),
+    _br("object-id", '{"inputs":[{"id":{}}]}', _batch_refusal(18, _OBJECT)),
+    _br("empty-array-id", '{"inputs":[{"id":[]}]}', _batch_refusal(18, _ARRAY)),
+    _br("array-id", '{"inputs":[{"id":["1"]}]}', _batch_refusal(18, _ARRAY)),
+    _br("missing-id-before-an-int", '{"inputs":[{},7]}', _no_id(13)),
+    _br("int-before-a-missing-id", '{"inputs":[7,{}]}', _batch_refusal(12, _no_creator("int/Int", "Number value (7)"))),
+    _br("object-id-before-a-null-id", '{"inputs":[{"id":{}},{"id":null}]}', _batch_refusal(18, _OBJECT)),
     _br("null-element", '{"inputs":[null]}', {"status": "error", "message": "Input IDs must be non-null."}),
     _br("int-after-null", '{"inputs":[null,7]}', _batch_refusal(17, _no_creator("int/Int", "Number value (7)"))),
     _br("properties-after-null", '{"inputs":[null],"properties":"x"}', _batch_refusal(31, _no_creator("String", "String value ('x')"))),
@@ -1225,6 +2230,20 @@ _BATCH_BODY_ROWS = [
     _br("properties-integer", _ONE + '"properties":5}', _batch_refusal(37, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
     _br("properties-object", _ONE + '"properties":{}}', _batch_refusal(37, _not_a_list("Object", "START_OBJECT"))),
     _br("properties-false", _ONE + '"properties":false}', _batch_refusal(37, _not_a_list("Boolean", "VALUE_FALSE"))),
+    _br("properties-null-element", _ONE + '"properties":[null]}', _batch_refusal(43, "properties element")),
+    _br("properties-null-element-then-spaces", _ONE + '"properties":[null]}   ', _batch_refusal(43, "properties element")),
+    _br("properties-null-between-strings", _ONE + '"properties":["email",null,"firstname"]}', _batch_refusal(63, "properties element")),
+    _br("properties-object-element", _ONE + '"properties":[{}]}', _batch_refusal(38, _OBJECT)),
+    _br("properties-array-element", _ONE + '"properties":[[]]}', _batch_refusal(38, _ARRAY)),
+    _br("properties-null-before-an-object", _ONE + '"properties":[null,{}]}', _batch_refusal(43, _OBJECT)),
+    _br("with-history-null-element", _ONE + '"propertiesWithHistory":[null]}', _batch_refusal(54, "propertiesWithHistory element")),
+    _br("with-history-object-element", _ONE + '"propertiesWithHistory":[{}]}', _batch_refusal(49, _OBJECT)),
+    _br("with-history-array-element", _ONE + '"propertiesWithHistory":[[]]}', _batch_refusal(49, _ARRAY)),
+    _br("null-elements-with-history-first", _ONE + '"propertiesWithHistory":[null],"properties":[null]}', _batch_refusal(74, "properties element")),
+    _br("null-property-after-a-null-input", '{"inputs":[null],"properties":[null]}', _batch_refusal(37, "properties element")),
+    _br("null-history-before-a-null-input", '{"propertiesWithHistory":[null],"inputs":[null]}', _batch_refusal(48, "propertiesWithHistory element")),
+    _br("null-property-before-a-string-inputs", '{"properties":[null],"inputs":"x"}', _batch_refusal(31, _not_a_list("String", "VALUE_STRING"))),
+    _br("null-id-before-a-null-property", '{"inputs":[{"id":null}],"properties":[null]}', _no_id(22)),
     _br("with-history-string", _ONE + '"propertiesWithHistory":"name"}', _batch_refusal(48, _no_creator("String", "String value ('name')"))),
     _br("with-history-empty", _ONE + '"propertiesWithHistory":""}', _blank_field("propertiesWithHistory")),
     _br("with-history-float", _ONE + '"propertiesWithHistory":1.5}', _batch_refusal(48, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
@@ -1238,24 +2257,107 @@ _BATCH_BODY_ROWS = [
     _br("null-inputs", '{"inputs":null}', 200),
     _br("null-properties", _ONE + '"properties":null}', 207),
     _br("number-in-properties", _ONE + '"properties":[5]}', 207),
+    _br("boolean-in-properties", _ONE + '"properties":[true]}', 207),
+    _br("number-in-with-history", _ONE + '"propertiesWithHistory":[5]}', 207),
+    _br("boolean-in-with-history", _ONE + '"propertiesWithHistory":[true]}', 207),
 ]
 # fmt: on
 
 
-@pytest.mark.parametrize("raw, want, object_type, authed", _BATCH_BODY_ROWS)
-def test_hubspot_batch_read_refuses_a_body_real_cannot_read(
-    client, admin_h, raw, want, object_type, authed
-):
+def test_hubspot_batch_read_refuses_a_body_real_cannot_read(client, admin_h):
     """`_refuse_a_batch_read_shape`'s rule, one body per row: the status and body real answered,
-    including which member it names when two are wrong, and the status for a null member or a
-    number in `properties`, which real reads (a 207 here because no company has id `1`)."""
-    headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
-    url = f"/hubspot/crm/v3/objects/{object_type}/batch/read"
-    r = client.post(url, headers=headers, content=raw.encode())
-    if isinstance(want, dict):
-        assert (r.status_code, r.json()) == (400, want)
-    else:
-        assert r.status_code == want
+    including which member it names when two are wrong, and the status for a null member, or a
+    number or boolean in either properties list, which real reads (a 207 here because no company
+    has id `1`)."""
+    answered, expected = {}, {}
+    for row in _BATCH_BODY_ROWS:
+        raw, want, object_type, authed = row.values
+        headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
+        url = f"/hubspot/crm/v3/objects/{object_type}/batch/read"
+        r = client.post(url, headers=headers, content=raw.encode())
+        if isinstance(want, dict):
+            answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
+        else:
+            answered[row.id], expected[row.id] = r.status_code, want
+    assert answered == expected
+
+
+_MISSING_ID_SPELLINGS = [
+    ("true", "true"),
+    ("false", "false"),
+    ("1e3", "1e3"),
+    ("1E3", "1E3"),
+    ("1e7", "1e7"),
+    ("1.0", "1.0"),
+    ("-1", "-1"),
+    ("-0.0", "-0.0"),
+    ("99999999999999999999", "99999999999999999999"),
+    ('"missing-id"', "missing-id"),
+    (r'"missing\u002did"', "missing-id"),
+    (r'"missing\"\\id"', 'missing"\\id'),
+]
+
+
+def test_hubspot_batch_read_names_a_missing_id_as_the_body_spells_it(client, admin_h):
+    """An input naming no record is the 207's one error, its id a number or boolean as the body
+    spells it and a string as it decodes. Backlot names the member `context.id` where real's is
+    `context.ids`."""
+    answered = {}
+    for raw_id, _ in _MISSING_ID_SPELLINGS:
+        r = client.post(
+            "/hubspot/crm/v3/objects/contacts/batch/read",
+            headers={**admin_h, "Content-Type": "application/json"},
+            content=('{"inputs":[{"id":' + raw_id + "}]}").encode(),
+        )
+        j = r.json()
+        error = (j.get("errors") or [{}])[0]
+        answered[raw_id] = (
+            r.status_code,
+            (j.get("status"), j.get("results"), j.get("numErrors")),
+            error.get("category"),
+            error.get("context"),
+        )
+    assert answered == {
+        raw_id: (207, ("COMPLETE", [], 1), "OBJECT_NOT_FOUND", {"id": [echoed]})
+        for raw_id, echoed in _MISSING_ID_SPELLINGS
+    }
+
+
+_FOUND_ID_SPELLINGS = [
+    ("integer", None, None),
+    ("escaped-string", None, None),
+    ("escaped-string", "properties", "5"),
+    ("escaped-string", "properties", "true"),
+    ("escaped-string", "propertiesWithHistory", "5"),
+    ("escaped-string", "propertiesWithHistory", "true"),
+]
+
+
+def test_hubspot_batch_read_finds_a_record_by_an_integer_or_an_escaped_id(client, admin_h):
+    """A record's id sent as a JSON integer, or as a string of `\\u` escapes, finds the record
+    as real's does, the escaped one also beside a `5` or a `true` in either properties list."""
+    listed = client.get("/hubspot/crm/v3/objects/contacts", headers=admin_h).json()["results"]
+    rid = listed[0]["id"]
+    assert rid.isascii() and rid.isdigit()
+    answered = {}
+    for spelling, field, literal in _FOUND_ID_SPELLINGS:
+        raw_id = (
+            rid if spelling == "integer" else '"' + "".join(f"\\u{ord(c):04x}" for c in rid) + '"'
+        )
+        raw = '{"inputs":[{"id":' + raw_id + "}]"
+        if field is not None:
+            raw += ',"' + field + '":[' + literal + "]"
+        raw += "}"
+        r = client.post(
+            "/hubspot/crm/v3/objects/contacts/batch/read",
+            headers={**admin_h, "Content-Type": "application/json"},
+            content=raw.encode(),
+        )
+        answered[(spelling, field, literal)] = (
+            r.status_code,
+            [record["id"] for record in r.json().get("results", [])],
+        )
+    assert answered == {row: (200, [rid]) for row in _FOUND_ID_SPELLINGS}
 
 
 def _token_refusal(column: int, token: str, line: int = 1) -> dict:
@@ -1319,6 +2421,16 @@ _TOKEN_ROWS = [
     _nt("a-null-input-ahead", "batch/read", '{"inputs":[null],"properties":NaN}', _token_refusal(34, "NaN")),
     _nt("a-null-input-and-an-unknown-member", "batch/read", '{"inputs":[null],"bogus":NaN}', _token_refusal(29, "NaN")),
     _nt("a-null-input-and-an-id", "batch/read", '{"inputs":[null,{"id":NaN}]}', _token_refusal(26, "NaN")),
+    _nt("a-null-id-ahead", "batch/read", '{"inputs":[{"id":null}],"x":NaN}', _no_id(22)),
+    _nt("a-null-id-behind", "batch/read", '{"x":NaN,"inputs":[{"id":null}]}', _token_refusal(9, "NaN")),
+    _nt("the-token-before-a-null-ids-input-closes", "batch/read", '{"inputs":[{"id":null,"x":NaN}]}', _token_refusal(30, "NaN")),
+    _nt("an-object-id-ahead", "batch/read", '{"inputs":[{"id":{}}],"x":NaN}', _batch_refusal(18, _OBJECT)),
+    _nt("an-object-id-behind", "batch/read", '{"x":NaN,"inputs":[{"id":{}}]}', _token_refusal(9, "NaN")),
+    _nt("an-object-id-around-it", "batch/read", '{"inputs":[{"id":{"a":NaN}}]}', _batch_refusal(18, _OBJECT)),
+    _nt("an-object-element-behind", "batch/read", '{"x":NaN,"inputs":[{"id":"1"}],"properties":[{}]}', _token_refusal(9, "NaN")),
+    _nt("a-null-element-ahead", "batch/read", '{"inputs":[{"id":"1"}],"properties":[null],"x":NaN}', _token_refusal(51, "NaN")),
+    _nt("a-missing-id-ahead", "batch/read", '{"inputs":[{}],"x":NaN}', _no_id(13)),
+    _nt("a-missing-id-behind", "batch/read", '{"x":NaN,"inputs":[{}]}', _token_refusal(9, "NaN")),
     _nt("operator-ahead", "search", "{" + _AN_OPERATOR % '"BOGUS"' + ',"limit":NaN}', _enum_refusal(1, 64)),
     _nt("operator-behind", "search", '{"limit":NaN,' + _AN_OPERATOR % '"BOGUS"' + "}", _token_refusal(13, "NaN")),
     _nt("operator-ahead-in-its-filter", "search", '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS","value":NaN}]}]}', _enum_refusal(1, 64)),
@@ -1339,22 +2451,23 @@ _TOKEN_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("route, raw, want, object_type, authed", _TOKEN_ROWS)
-def test_hubspot_refuses_a_non_standard_number_token(
-    client, admin_h, route, raw, want, object_type, authed
-):
+def test_hubspot_refuses_a_non_standard_number_token(client, admin_h):
     """`_non_standard_number`'s rule, one body per row: the status and body real answered,
     including which value it names when the body also holds one `_refuse_a_batch_read_shape` or
     `_refuse_an_operator` refuses, and the status for the three spellings inside a string, which
     real reads as text (a 207 for batch/read because no company has those ids)."""
-    headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
-    url = f"/hubspot/crm/v3/objects/{object_type}/{route}"
-    content = raw if isinstance(raw, bytes) else raw.encode()
-    r = client.post(url, headers=headers, content=content)
-    if isinstance(want, dict):
-        assert (r.status_code, r.json()) == (400, want)
-    else:
-        assert r.status_code == want
+    answered, expected = {}, {}
+    for row in _TOKEN_ROWS:
+        route, raw, want, object_type, authed = row.values
+        headers = {"Content-Type": "application/json", **(admin_h if authed else {})}
+        url = f"/hubspot/crm/v3/objects/{object_type}/{route}"
+        content = raw if isinstance(raw, bytes) else raw.encode()
+        r = client.post(url, headers=headers, content=content)
+        if isinstance(want, dict):
+            answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
+        else:
+            answered[row.id], expected[row.id] = r.status_code, want
+    assert answered == expected
 
 
 @pytest.mark.parametrize(
@@ -1410,9 +2523,12 @@ def test_hubspot_batch_read_reads_a_bare_id_string_as_that_id(
 # --- HubSpot ---------------------------------------------------------------------
 
 
-def _hubspot_conn(tmp_path):
+@pytest.fixture(scope="module")
+def hubspot_conn(tmp_path_factory):
+    """A read-only connection to two companies, one archived, and a contact associated with the
+    live one."""
     s = tiny_corpus(
-        tmp_path,
+        tmp_path_factory.mktemp("hubspot_conn"),
         [
             {
                 "source_type": "hubspot",
@@ -1450,13 +2566,15 @@ def _hubspot_conn(tmp_path):
             },
         ],
     )
-    return store.connect_ro(s.db_path)
+    conn = store.connect_ro(s.db_path)
+    yield conn
+    conn.close()
 
 
-def test_hubspot_record_shape(tmp_path):
+def test_hubspot_record_shape(hubspot_conn):
     from backlot.routers.hubspot import _record
 
-    conn = _hubspot_conn(tmp_path)
+    conn = hubspot_conn
     row = store.get_document(conn, "hubspot", served_id("hubspot", "hf-co"))
     obj = _record(row)
     # a CRM record is {id, properties, createdAt, updatedAt, archived} — ids are numeric strings and
@@ -1477,17 +2595,17 @@ def test_hubspot_record_shape(tmp_path):
     )
 
 
-def test_hubspot_properties_projection(tmp_path):
+def test_hubspot_properties_projection(hubspot_conn):
     from backlot.routers.hubspot import _record
 
-    conn = _hubspot_conn(tmp_path)
+    conn = hubspot_conn
     row = store.get_document(conn, "hubspot", served_id("hubspot", "hf-co"))
     assert set(_record(row, ["name"])["properties"]) == {"name"}
     assert set(_record(row)["properties"]) == {"name", "domain"}  # no projection -> all
 
 
-def test_hubspot_association_shape(tmp_path):
-    conn = _hubspot_conn(tmp_path)
+def test_hubspot_association_shape(hubspot_conn):
+    conn = hubspot_conn
     rows = store.hubspot_associations(conn, served_id("hubspot", "hf-ct"), "companies")
     assert [r["to_id"] for r in rows] == [served_id("hubspot", "hf-co")]
     # the v4 payload is {toObjectId, associationTypes:[{category, typeId, label}]} -- toObjectId
@@ -1580,12 +2698,12 @@ def test_hubspot_route_reads_the_stored_served_id_under_a_collision(tmp_path, mo
         assert str(assoc["results"][0]["toObjectId"]) == ids[0]
 
 
-def test_hubspot_page_omits_paging_next_on_last_page(tmp_path):
+def test_hubspot_page_omits_paging_next_on_last_page(hubspot_conn):
     """The termination contract at the builder level: `paging.next` appears only when a further page
     exists, because the official client's fetch_all stops on its absence."""
     from backlot.routers.hubspot import _page
 
-    conn = _hubspot_conn(tmp_path)
+    conn = hubspot_conn
     rows = store.list_hubspot_objects(conn, "companies", limit=3)  # 1 non-archived company
     assert "paging" not in _page(rows, 10, None)
     assert _page(rows, 1, None)["results"]  # a full page still yields rows

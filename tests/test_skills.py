@@ -14,16 +14,19 @@ already gates that one command.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
+import struct
+import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
 
+from backlot.mcp import ICONS
 from backlot.openapi import SOURCE_PREFIXES
 from backlot.validation import SERVICE_SCHEMAS
+from tests._helpers import script_module
 
 REPO = Path(__file__).resolve().parent.parent
 SKILL_DIR = REPO / "skills" / "backlot"
@@ -34,19 +37,10 @@ _LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)")
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*$", re.M)
 
 
-def _gen_docs():
-    """The generator, loaded by path because scripts/ is not a package.
-
-    Its slug rule is imported rather than reimplemented. A copy of the rule here would agree with
-    the generator by construction, which reads as a second opinion and is not one — it would pass
-    on exactly the headings the generator gets wrong.
-    """
-    spec = importlib.util.spec_from_file_location(
-        "scripts.gen_docs", REPO / "scripts" / "gen_docs.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+# The generator, whose slug rule is imported rather than reimplemented. A copy of the rule here
+# would agree with the generator by construction, which reads as a second opinion and is not
+# one — it would pass on exactly the headings the generator gets wrong.
+gen_docs = script_module("gen_docs")
 
 
 def _frontmatter(md: Path) -> dict:
@@ -60,7 +54,7 @@ def _skill_markdown() -> list[Path]:
 
 
 def _anchors(md: Path) -> set[str]:
-    anchor = _gen_docs()._anchor
+    anchor = gen_docs._anchor
     return {anchor(h) for h in _HEADING_RE.findall(md.read_text(encoding="utf-8"))}
 
 
@@ -157,16 +151,63 @@ def test_claude_plugin_manifest_names_the_plugin():
     assert plugin["name"] in {p["name"] for p in catalog["plugins"]}
 
 
-def test_the_two_plugin_manifests_agree_on_version():
+def test_the_two_plugin_manifests_agree_on_version_and_license():
     """One plugin, two harnesses: a bump that lands in one manifest and not the other is a lie.
 
     Neither can be derived from the package — setuptools-scm reports a dev version off the commit
     count in a checkout, which is not a version a plugin catalog can show — so they are written by
-    hand, and the realistic failure is bumping one and forgetting the other.
+    hand, and the realistic failure is bumping one and forgetting the other. The license is written
+    by hand in both manifests and in `pyproject.toml`, so the three are held to each other.
     """
     claude = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     codex = json.loads((REPO / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    with open(REPO / "pyproject.toml", "rb") as f:
+        pyproject = tomllib.load(f)
     assert claude["version"] == codex["version"]
+    assert claude["license"] == codex["license"] == pyproject["project"]["license"]
+
+
+_RAW_MAIN = "https://raw.githubusercontent.com/brekkylab/backlot/main/"
+
+
+def _square_side(path: Path) -> int:
+    """The side of a square PNG (its IHDR) or SVG (its viewBox); fails on any other shape."""
+    data = path.read_bytes()
+    if path.suffix == ".png":
+        assert data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR", path
+        width, height = struct.unpack(">II", data[16:24])
+    else:
+        m = re.search(rb'viewBox="0 0 ([\d.]+) ([\d.]+)"', data)
+        assert m, f"{path} has no viewBox"
+        width, height = (float(v) for v in m.groups())
+    assert width == height, f"{path} is {width}x{height}, not square"
+    return int(width)
+
+
+def test_every_icon_a_manifest_names_is_a_square_image_this_repo_holds():
+    """Each catalog has its own icon rules. Anthropic's directory: a square PNG of 512–2048px under
+    2 MB (`claude plugin validate --profile directory`, Claude Code 2.1.308). OpenAI's: square, at
+    least 48px, raster at most 4096px and 5 MiB (developers.openai.com/plugins/deploy/submission).
+    The MCP Registry: an HTTPS `src` of at most 255 characters (server.schema.json 2025-12-11),
+    here one onto `main`. ``serverInfo`` lists the same icons as server.json."""
+    claude = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    codex = json.loads((REPO / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    server = json.loads((REPO / "server.json").read_text(encoding="utf-8"))
+
+    icon = REPO / claude["icon"]
+    assert icon.suffix == ".png" and icon.stat().st_size < 2_000_000
+    assert 512 <= _square_side(icon) <= 2048
+    for key in ("logo", "logoDark", "composerIcon", "composerIconDark"):
+        path = REPO / codex["interface"][key]
+        assert path.stat().st_size <= 5 * 2**20
+        assert 48 <= _square_side(path) <= 4096
+    for entry in server["icons"]:
+        assert entry["src"].startswith(_RAW_MAIN) and len(entry["src"]) <= 255
+        path = REPO / entry["src"].removeprefix(_RAW_MAIN)
+        side = _square_side(path)
+        assert entry["sizes"] == (["any"] if path.suffix == ".svg" else [f"{side}x{side}"])
+        assert entry["mimeType"] == {".png": "image/png", ".svg": "image/svg+xml"}[path.suffix]
+    assert server["icons"] == list(ICONS)
 
 
 # Backlot's own endpoints, as opposed to the vendor prefixes gen_docs.py already checks. Matched by
@@ -242,7 +283,7 @@ def test_the_anchor_rule_matches_github(heading, expected):
     the pair that delimits `_italic_`. Getting that backwards writes a link that resolves to the top
     of the page instead of to the section, which no link check can see.
     """
-    assert _gen_docs()._anchor(heading) == expected
+    assert gen_docs._anchor(heading) == expected
 
 
 def test_the_routing_table_names_every_openapi_slice_key_and_no_others():

@@ -29,9 +29,23 @@ from tests._helpers import (
     crawl_confluence,
     crawl_jira,
     db_count,
+    sent_as,
     served_id,
     tiny_corpus,
 )
+
+
+def _failures(check, rows, *fixtures) -> dict[str, str]:
+    """Each of ``rows`` that ``check`` fails on beside ``fixtures``, named by its place and its
+    ``pytest.param`` id or its values, with the assertion: empty when every row holds."""
+    failures = {}
+    for index, row in enumerate(rows):
+        values = getattr(row, "values", row)
+        try:
+            check(*fixtures, *values)
+        except AssertionError as error:
+            failures[f"{index}: {getattr(row, 'id', None) or repr(values)[:200]}"] = str(error)
+    return failures
 
 
 def test_admin_jira_crawls_all(client, admin_h, ro_conn):
@@ -298,9 +312,10 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
     )
     if refused is None:
         assert r.status_code == 200, r.text
-        ignored = {"self", "nextPage"}
-        assert {k: v for k, v in r.json().items() if k not in ignored} == {
-            k: v for k, v in listing.json().items() if k not in ignored
+        # the links carry the query as sent (`_project_search_link`), so they are left out
+        unlinked = ("self", "nextPage")
+        assert {k: v for k, v in r.json().items() if k not in unlinked} == {
+            k: v for k, v in listing.json().items() if k not in unlinked
         }
         return
     assert r.status_code == 400, r.text
@@ -314,20 +329,92 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
     }
 
 
-@pytest.mark.parametrize(
-    "query, start, limit",
-    [
-        ({}, 0, 50),
-        ({"startAt": "1"}, 1, 50),
-        ({"startAt": "-1"}, 0, 50),
-        ({"maxResults": "0"}, 0, 1),
-        ({"maxResults": "101"}, 0, 100),
-        ({"startAt": "1", "maxResults": "1"}, 1, 1),
-    ],
-)
-def test_jira_project_search_pages(tmp_path, admin_h, query, start, limit):
+def test_jira_project_search_filters_by_query_keys_type_and_category(tmp_path):
+    """`project/search` applies `query`, `keys`, `typeKey` and `categoryId`, so a value that
+    matches no project is an empty page (`_jira_project_kept`)."""
     settings = tiny_corpus(
         tmp_path,
+        [
+            {
+                "source_type": "jira",
+                "doc_id": f"issue-{name}",
+                "project": name,
+                "title": name,
+                "content": "Issue",
+                "author_email": "a@x.com",
+                "visibility": "public",
+            }
+            for name in ("scrum", "orders")
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
+        listing = client.get("/atlassian/rest/api/3/project/search", headers=admin_h)
+        assert listing.status_code == 200, listing.text
+        projects = listing.json()["values"]
+        assert len(projects) == 2
+        one, other = projects[0], projects[1]
+
+        def keys_of(params):
+            response = client.get(
+                "/atlassian/rest/api/3/project/search", params=params, headers=admin_h
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            found = [project["key"] for project in body["values"]]
+            assert body["total"] == len(found)
+            return found
+
+        all_keys = [project["key"] for project in projects]
+        assert keys_of({}) == all_keys
+        assert keys_of({"query": "zzqq"}) == []
+        assert keys_of({"query": one["name"][:3].lower()}) == [one["key"]]
+        assert keys_of({"query": one["name"][:3].upper()}) == [one["key"]]
+        fragment = next(
+            one["key"][i : i + 4]
+            for i in range(len(one["key"]) - 3)
+            if one["key"][i : i + 4].lower() not in one["name"].lower()
+            and one["key"][i : i + 4].lower() not in other["name"].lower()
+            and one["key"][i : i + 4].lower() not in other["key"].lower()
+        )
+        assert keys_of({"query": fragment}) == [one["key"]]
+        name_only = next(
+            one["name"][i : i + 3]
+            for i in range(len(one["name"]) - 2)
+            if one["name"][i : i + 3].lower() not in one["key"].lower()
+            and one["name"][i : i + 3].lower() not in other["name"].lower()
+            and one["name"][i : i + 3].lower() not in other["key"].lower()
+        )
+        assert keys_of({"query": name_only}) == [one["key"]]
+        assert keys_of({"keys": one["key"]}) == [one["key"]]
+        assert keys_of({"keys": one["key"].lower()}) == []
+        assert keys_of({"keys": "NOPE"}) == []
+        assert keys_of([("keys", one["key"]), ("keys", other["key"])]) == all_keys
+        assert keys_of({"typeKey": "software"}) == all_keys
+        assert keys_of({"typeKey": "bogus"}) == []
+        assert keys_of({"categoryId": "99"}) == []
+        with_s = next(project for project in projects if "s" in project["name"].lower())
+        assert keys_of({"query": with_s["name"].replace("s", "\u017f")}) == []
+        assert keys_of({"keys": ""}) == all_keys
+        assert keys_of([("keys", ""), ("keys", "")]) == []
+        assert keys_of({"typeKey": "Software"}) == all_keys
+        assert keys_of({"typeKey": " software"}) == all_keys
+        assert keys_of({"typeKey": "\u3000software\x85"}) == all_keys
+        assert keys_of({"typeKey": "\x1fsoftware"}) == []
+        assert keys_of({"typeKey": "business,software"}) == all_keys
+        assert keys_of([("typeKey", "software"), ("typeKey", "business")]) == all_keys
+        assert keys_of([("typeKey", "business"), ("typeKey", "software")]) == all_keys
+        assert keys_of({"typeKey": "business"}) == []
+        assert keys_of({"typeKey": ","}) == all_keys
+        assert keys_of({"categoryId": " "}) == all_keys
+        assert keys_of({"categoryId": "-1"}) == []
+
+
+@pytest.fixture(scope="module")
+def two_projects(tmp_path_factory):
+    """Two Jira projects of one issue each, built once for every page of the listing."""
+    return tiny_corpus(
+        tmp_path_factory.mktemp("two_projects"),
         [
             {
                 "source_type": "jira",
@@ -342,93 +429,178 @@ def test_jira_project_search_pages(tmp_path, admin_h, query, start, limit):
             for i, name in enumerate(("payments", "orders"))
         ],
     )
+
+
+@pytest.mark.parametrize(
+    "query, start, limit",
+    [
+        ({}, 0, 50),
+        ({"startAt": "1"}, 1, 50),
+        ({"startAt": "1", "maxResults": "1"}, 1, 1),
+        ({"startAt": "-1"}, 0, 50),
+        ({"startAt": "99999999999"}, 99999999999, 50),
+        ({"maxResults": "0"}, 0, 1),
+        ({"maxResults": "-1"}, 0, 1),
+        ({"maxResults": "1"}, 0, 1),
+        ({"maxResults": " 1"}, 0, 1),
+        ({"maxResults": "101"}, 0, 100),
+        ({"maxResults": "5000"}, 0, 100),
+    ],
+)
+def test_jira_project_search_pages(two_projects, query, start, limit):
+    """The project pagination measurement recorded in `jira_project_search` governs each page."""
+    settings = two_projects
     with client_for(settings, reload=True) as client:
-        response = client.get(
-            "/atlassian/rest/api/3/project/search",
-            params=query,
-            headers=admin_h,
-        )
+        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
+        url = "/atlassian/rest/api/3/project/search"
+        full = client.get(url, headers=admin_h).json()["values"]
+        assert len(full) > 1
+        response = client.get(url, params=query, headers=admin_h)
         assert response.status_code == 200, response.text
+        page = full[start : start + limit]
         body = response.json()
-        assert body["startAt"] == start
-        assert body["maxResults"] == limit
-        assert body["total"] == 2
-        is_last = start + len(body["values"]) >= body["total"]
-        assert ("nextPage" in body) is (not is_last)
-        assert body["isLast"] is is_last
+        last = start + len(page) >= len(full)
+        assert list(body) == ["self", *([] if last else ["nextPage"]), *_PAGE_MEMBERS]
+        assert {k: body[k] for k in _PAGE_MEMBERS} == {
+            "values": page,
+            "startAt": start,
+            "maxResults": limit,
+            "total": len(full),
+            "isLast": last,
+        }
+        assert body["self"].endswith(f"/project/search?maxResults={limit}&startAt={start}")
+        if not last:
+            assert body["nextPage"].endswith(f"?maxResults={limit}&startAt={start + limit}")
+
+
+_PAGE_MEMBERS = ["maxResults", "startAt", "total", "isLast", "values"]
 
 
 @pytest.mark.parametrize(
-    "query, name, value",
+    "query, link",
     [
-        ([("startAt", "abc")], "startAt", "abc"),
-        ([("startAt", "1.5")], "startAt", "1.5"),
-        ([("maxResults", "abc")], "maxResults", "abc"),
-        ([("startAt", "abc"), ("orderBy", "bogus")], "startAt", "abc"),
-        ([("maxResults", "abc"), ("orderBy", "bogus")], "maxResults", "abc"),
+        ("maxResults=1&bogus=a%2Bb", "bogus=a%2Bb&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus=a+b", "bogus=a+b&maxResults=1&startAt=0"),
+        ("maxResults=1&b%6Fgus=x", "b%6Fgus=x&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus", "bogus=&maxResults=1&startAt=0"),
+        ("maxResults=1&bogus=1&bogus=2", "bogus=1&bogus=2&maxResults=1&startAt=0"),
+        ("maxResults=1&Zeta=1&alpha=2", "Zeta=1&maxResults=1&alpha=2&startAt=0"),
+        ("maxResults=1&keys=A&keys=B", "keys=A&keys=B&maxResults=1&startAt=0"),
+        ("maxResults=1&=x", "maxResults=1&x=&startAt=0"),
+        ("maxResults=1&startAt=0&startAt=5", "maxResults=1&startAt=0"),
+        ("startAt=%2B1&maxResults=1", "maxResults=1&startAt=1"),
+        # fifteen names spread over thirty-two buckets, twelve over sixteen
+        (
+            "maxResults=1&qmokc=1&qscln=1&qmlde=1&qklik=1&qatpo=1&qazyu=1&qzuet=1&quimu=1&qkiux=1&qdktb=1&qolft=1&qqlew=1&qbwqu=1",
+            "qmokc=1&qazyu=1&qdktb=1&quimu=1&qatpo=1&qzuet=1&qbwqu=1&qscln=1&qolft=1&qqlew=1&maxResults=1&qkiux=1&qmlde=1&qklik=1&startAt=0",
+        ),
+        (
+            "maxResults=1&qmokc=1&qscln=1&qmlde=1&qklik=1&qatpo=1&qazyu=1&qzuet=1&quimu=1&qkiux=1&qdktb=1",
+            "qmokc=1&qazyu=1&qdktb=1&quimu=1&qatpo=1&maxResults=1&qkiux=1&qmlde=1&qzuet=1&qscln=1&qklik=1&startAt=0",
+        ),
     ],
 )
-def test_jira_project_search_rejects_non_integer_pages(client, admin_h, query, name, value):
-    response = client.get(
-        "/atlassian/rest/api/3/project/search",
-        params=query,
-        headers=admin_h,
-    )
-    assert response.status_code == 400
+def test_jira_project_search_links_itself_with_what_it_was_sent(client, admin_h, query, link):
+    """Each row is the query real's `self` carried for the same query, in the order
+    `_project_search_link` gives."""
+    r = client.get(f"/atlassian/rest/api/3/project/search?{query}", headers=admin_h)
+    assert r.status_code == 200, r.text
+    assert r.json()["self"].split("?", 1)[1] == link
+
+
+_CONVERSION_ROWS = [
+    ([("startAt", "abc")], "startAt", "abc"),
+    ([("startAt", "1.5")], "startAt", "1.5"),
+    ([("maxResults", "abc")], "maxResults", "abc"),
+    ([("startAt", "abc"), ("orderBy", "bogus")], "startAt", "abc"),
+    ([("orderBy", "bogus"), ("startAt", "abc")], "startAt", "abc"),
+    ([("maxResults", "abc"), ("orderBy", "bogus")], "maxResults", "abc"),
+    ([("orderBy", "bogus"), ("maxResults", "abc")], "maxResults", "abc"),
+    ([("startAt", "abc"), ("maxResults", "xyz")], "startAt", "abc"),
+    ([("maxResults", "xyz"), ("startAt", "abc")], "startAt", "abc"),
+    ([("categoryId", "abc")], "categoryId", "abc"),
+    ([("categoryId", "1.5")], "categoryId", "1.5"),
+    ([("orderBy", "bogus"), ("categoryId", "abc")], "categoryId", "abc"),
+    ([("categoryId", "abc"), ("startAt", "x")], "startAt", "x"),
+    ([("categoryId", "abc"), ("maxResults", "x")], "maxResults", "x"),
+]
+
+
+def _conversion(client, admin_h, query, name, value):
+    """The measured integer refusal precedes orderBy validation in either URL order."""
+    response = client.get("/atlassian/rest/api/3/project/search", params=query, headers=admin_h)
+    assert response.status_code == 400, response.text
     assert response.headers["content-type"] == "application/problem+json;charset=UTF-8"
-    assert response.json()["detail"] == f"Failed to convert '{name}' with value: '{value}'"
+    assert response.json() == {
+        "type": "about:blank",
+        "title": "Bad Request",
+        "status": 400,
+        "detail": f"Failed to convert '{name}' with value: '{value}'",
+        "instance": "/rest/api/3/project/search",
+    }
 
 
-@pytest.mark.parametrize("headers", UNRESOLVABLE)
-@pytest.mark.parametrize(
-    "segment,kind",
-    [
-        pytest.param(synth.jira_project_key("payments"), "key", id="corpus-key"),
-        pytest.param(str(synth.github_user_id("payments")), "id", id="corpus-id"),
-        pytest.param("NOSUCHKEY", "key", id="no-such-key"),
-        pytest.param("1", "id", id="one-digit"),
-        pytest.param("999999999999999999", "id", id="eighteen-digits"),
-        pytest.param("1000000000000000000", "key", id="nineteen-digits"),
-        pytest.param("0", "key", id="zero"),
-        pytest.param("007", "key", id="leading-zero"),
-        pytest.param("1２", "key", id="full-width-digit"),
-    ],
-)
-def test_jira_404s_a_project_role_an_anonymous_caller_cannot_see(client, headers, segment, kind):
+def test_jira_project_search_integer_conversion_precedes_order(client, admin_h):
+    assert _failures(_conversion, _CONVERSION_ROWS, client, admin_h) == {}
+
+
+_ROLE_SEGMENTS = [
+    pytest.param(synth.jira_project_key("payments"), "key", True, id="corpus-key"),
+    pytest.param(str(synth.github_user_id("payments")), "id", True, id="corpus-id"),
+    pytest.param("NOSUCHKEY", "key", False, id="no-such-key"),
+    pytest.param("1", "id", False, id="one-digit"),
+    pytest.param("999999999999999999", "id", False, id="eighteen-digits"),
+    pytest.param("1000000000000000000", "key", False, id="nineteen-digits"),
+    pytest.param("0", "key", False, id="zero"),
+    pytest.param("007", "key", False, id="leading-zero"),
+    pytest.param("1２", "key", False, id="full-width-digit"),
+    pytest.param(synth.jira_project_key("payments").lower(), "key", False, id="key-lower"),
+    pytest.param(
+        synth.jira_project_key("payments").capitalize(), "key", False, id="key-capitalised"
+    ),
+    pytest.param("payments", "key", False, id="project-name"),
+    pytest.param("PAYMENTS", "key", False, id="project-name-upper"),
+]
+
+
+# every segment with no credential and as the admin; the other credentials that resolve to no
+# caller with the corpus's own project, by its key and by its id, the two segments whose answer
+# anonymity decides
+_ROLE_CASES = [
+    pytest.param(headers.values[0], *segment.values, id=f"{segment.id}-{headers.id}")
+    for headers in (*UNRESOLVABLE, pytest.param("admin", id="admin"))
+    for segment in _ROLE_SEGMENTS
+    if headers.id in ("no-credential", "admin") or segment.values[2]
+]
+assert "no-credential" in {headers.id for headers in UNRESOLVABLE}
+assert sum(segment.values[2] for segment in _ROLE_SEGMENTS) == 2
+
+
+@pytest.mark.parametrize("headers,segment,kind,found", _ROLE_CASES)
+def test_jira_role_routes_find_a_project_by_its_key_as_written_or_its_id(
+    client, admin_h, headers, segment, kind, found
+):
     """A role read is the one Jira route that keeps refusing an anonymous caller, and which of the
     two refusals it gives is decided by the project: on the site where the key names a project
     anonymous can see it is 401, and on the site where it names nothing it is 404. Anonymous sees no
     Backlot project, so it is always the 404 here — the corpus's own project, by its key or its id,
-    gets the answer a segment naming nothing would. The 404 calls the segment an id or a key by the
-    rule `_require_project` records."""
-    for path in (
-        f"/rest/api/3/project/{segment}/role",
-        f"/rest/api/3/project/{segment}/role/10002",
-    ):
+    gets the answer a segment naming nothing would. The admin is the control: it reads the role by
+    the project's key and its id, and gets the same 404 for every other segment. The 404 calls the
+    segment an id or a key by the rule `_require_project` records."""
+    if headers == "admin":
+        headers = admin_h
+    else:
+        found = False
+    paths = (f"/rest/api/3/project/{segment}/role", f"/rest/api/3/project/{segment}/role/10002")
+    answered = {}
+    for path in paths:
         r = client.get(f"/atlassian{path}", headers=headers)
-        assert r.status_code == 404, path
-        assert r.json() == {
-            "errorMessages": [f"No project could be found with {kind} '{segment}'."],
-            "errors": {},
-        }, path
-
-
-def _sent_as(client, method: str, path: str, headers: dict[str, str], content=None):
-    """``method`` on ``path`` with each header's latin-1 bytes as sent. The TestClient re-encodes a
-    header's bytes above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's
-    own `ASGITransport` hands the app what it was given, over the app the fixture started."""
-    import asyncio
-
-    import httpx
-
-    raw = {name: value.encode("latin-1") for name, value in headers.items()}
-
-    async def send():
-        transport = httpx.ASGITransport(app=client.app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
-            return await c.request(method, path, headers=raw, content=content)
-
-    return asyncio.run(send())
+        answered[path] = (r.status_code, None if r.status_code == 200 else r.json())
+    refusal = {
+        "errorMessages": [f"No project could be found with {kind} '{segment}'."],
+        "errors": {},
+    }
+    assert answered == dict.fromkeys(paths, (200, None) if found else (404, refusal))
 
 
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
@@ -466,7 +638,7 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
         *("usr-nope", "a\tb", "a,b", "a.b", "\tusr-nope", "\t\tusr-nope"),
         *("\x85a", "\xa0a", "\x85", "\xa0", "\xa0\xa0"),
     ):
-        info = _sent_as(
+        info = sent_as(
             client, "GET", "/atlassian/rest/api/3/serverInfo", {"Authorization": f"Bearer {token}"}
         )
         assert info.status_code == 403 and info.json() == {
@@ -493,33 +665,34 @@ def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
     assert conf.json()["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
 
 
-@pytest.mark.parametrize(
-    "header",
-    [
-        "bearer usr-nope",
-        "BEARER usr-nope",
-        "token usr-nope",
-        "OAuth usr-nope",
-        "Bearer  usr-nope",
-        "Bearer\tusr-nope",
-        "Bearer",
-        # a space in the token, which the gateway does not read past
-        "Bearer a b",
-        "Bearer \t usr-nope",
-        "Bearer a  b",
-        "Bearer a b c",
-        # the header's ends, as ``backlot.auth.atlassian_bearer_token`` trims them
-        "Bearer \t",
-        "\x85Bearer usr-nope",
-        "\xa0Bearer usr-nope",
-    ],
-)
-def test_jira_reads_an_unrecognised_scheme_as_no_credential(client, header):
+_SCHEMES = [
+    "bearer usr-nope",
+    "BEARER usr-nope",
+    "token usr-nope",
+    "OAuth usr-nope",
+    "Bearer  usr-nope",
+    "Bearer\tusr-nope",
+    "Bearer",
+    # a space in the token, which the gateway does not read past
+    "Bearer a b",
+    "Bearer \t usr-nope",
+    "Bearer a  b",
+    "Bearer a b c",
+    # the header's ends, as ``backlot.auth.atlassian_bearer_token`` trims them
+    "Bearer \t",
+    "\x85Bearer usr-nope",
+    "\xa0Bearer usr-nope",
+]
+
+
+def test_jira_reads_an_unrecognised_scheme_as_no_credential(client):
     """The 403 above is for a credential the site READ. A spelling it does not read is not a
     credential at all, and the request is the anonymous one — which is how each spelling was told
     apart on the real sites in the first place (403 = read, 200 = not read)."""
-    r = _sent_as(client, "GET", "/atlassian/rest/api/3/project/search", {"Authorization": header})
-    assert r.status_code == 200 and r.json()["values"] == []
+    path = "/atlassian/rest/api/3/project/search"
+    answers = {h: sent_as(client, "GET", path, {"Authorization": h}) for h in _SCHEMES}
+    answers = {h: (r.status_code, r.json()["values"]) for h, r in answers.items()}
+    assert answers == dict.fromkeys(_SCHEMES, (200, []))
 
 
 def test_atlassian_still_authenticates_the_bearer_spelling_it_does_read(client, tokens_yaml):
@@ -849,10 +1022,7 @@ _CONTENT_SPACE_AND_TYPE = [
 # fmt: on
 
 
-@pytest.mark.parametrize("query, want", _CONTENT_SPACE_AND_TYPE)
-def test_confluence_content_answers_a_space_key_and_a_type_as_real_does(
-    client, admin_h, query, want
-):
+def _space_and_type(client, admin_h, query, want):
     """The rows `_CONTENT_SPACE_AND_TYPE` records, one request each, compared with real's status
     and body; a listing row checks the page listing's own fields instead."""
     query = [(k, v.format(title="Engineering Handbook")) for k, v in query]
@@ -867,40 +1037,54 @@ def test_confluence_content_answers_a_space_key_and_a_type_as_real_does(
         assert (r.status_code, r.json()) == want
 
 
+def test_confluence_content_answers_a_space_key_and_a_type_as_real_does(client, admin_h):
+    assert _failures(_space_and_type, _CONTENT_SPACE_AND_TYPE, client, admin_h) == {}
+
+
 @pytest.mark.parametrize(
-    "caller, space, want",
+    "caller, space, want, written",
     [
-        ("admin", "handbook", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "{handbook}", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "people-ops", ["Compensation Bands 2026"]),
-        ("admin", "{people-ops}", ["Compensation Bands 2026"]),
-        ("admin", "{handbook lower}", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "HANDBOOK", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "people-opſ", 404),
-        ("admin", "", ["Compensation Bands 2026", "Engineering Handbook", "On-call Runbook"]),
-        ("ava@acme.com", "handbook", ["Engineering Handbook", "On-call Runbook"]),
-        ("ava@acme.com", "people-ops", 404),
-        ("ava@acme.com", "{people-ops}", 404),
-        ("ava@acme.com", "{people-ops lower}", 404),
-        ("ava@acme.com", "PEOPLE-OPS", 404),
+        ("admin", "handbook", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("admin", "{handbook}", ["Engineering Handbook", "On-call Runbook"], "{handbook}"),
+        ("admin", "people-ops", ["Compensation Bands 2026"], "people-ops"),
+        ("admin", "{people-ops}", ["Compensation Bands 2026"], "{people-ops}"),
+        ("admin", "{handbook lower}", ["Engineering Handbook", "On-call Runbook"], "{handbook}"),
+        ("admin", "HANDBOOK", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("admin", "people-opſ", 404, "people-opſ"),
+        ("admin", "", ["Compensation Bands 2026", "Engineering Handbook", "On-call Runbook"], ""),
+        ("ava@acme.com", "handbook", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("ava@acme.com", "people-ops", 404, "people-ops"),
+        ("ava@acme.com", "{people-ops}", 404, "{people-ops}"),
+        ("ava@acme.com", "{people-ops lower}", 404, "{people-ops lower}"),
+        ("ava@acme.com", "PEOPLE-OPS", 404, "PEOPLE-OPS"),
+        ("hana@acme.com", "{people-ops lower}", ["Compensation Bands 2026"], "{people-ops}"),
+        ("hana@acme.com", "PEOPLE-OPS", ["Compensation Bands 2026"], "people-ops"),
     ],
 )
-def test_confluence_content_filtered_by_space_key(client, admin_h, tokens, caller, space, want):
+def test_confluence_content_filtered_by_space_key(
+    client, admin_h, tokens, caller, space, want, written
+):
     """A space key narrows the listing to that space under both spellings `_space_container_for_key`
     resolves, the name and `{the synthesized key}`, each in upper or lower case (`people-opſ` is no
     spelling of `people-ops`), and an empty one narrows nothing. ava reaches no page in
     `people-ops`, so to her its key is the 404 a key naming nothing gets (`_content_space`), in
-    upper or lower case."""
+    upper or lower case, where hana, who does, gets its page. ``written`` is the value the CQL
+    search writes back in ``cqlQuery`` for `space.key` with the same value and caller
+    (`_cql_space_key_spelling`)."""
     from backlot import synth
 
     keys = {n: synth.confluence_space_key(n) for n in ("handbook", "people-ops")}
-    key = space.format(**keys, **{f"{n} lower": k.lower() for n, k in keys.items()})
+    spell = {**keys, **{f"{n} lower": k.lower() for n, k in keys.items()}}
+    key = space.format(**spell)
     h = admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens[caller]}"}
     r = client.get("/atlassian/wiki/rest/api/content", headers=h, params={"spaceKey": key})
     if want == 404:
         assert (r.status_code, r.json()) == _no_space(key)
     else:
         assert sorted(x["title"] for x in r.json()["results"]) == want
+    cql = {"cql": f'space.key = "{key}"'}
+    found = client.get("/atlassian/wiki/rest/api/search", headers=h, params=cql)
+    assert found.json()["cqlQuery"] == f"space.key = '{written.format(**spell)}'"
 
 
 def test_confluence_space_names_that_differ_only_in_case_stay_two_spaces(tmp_path):
@@ -1071,7 +1255,7 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
     other_space = client.get(
         "/atlassian/wiki/rest/api/search",
         headers=admin_h,
-        params={"cql": 'text~"software" and space=people-ops'},
+        params={"cql": 'text~"software" and space="people-ops"'},
     ).json()
     assert other_space["results"] == [] and other_space["totalSize"] == 0
 
@@ -1081,6 +1265,228 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
         params={"cql": 'text~"software" and space=BOGUS_NOPE'},
     ).json()
     assert bogus["results"] == [] and bogus["totalSize"] == 0
+
+
+def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
+    """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` answers an `id`, `ancestor`
+    or `parent` clause, alone and beside `type`, `space`, a `~` term and each other, each of those
+    five and `label` negated, `space.key`, clauses joined by `or`, grouped and negated as a group,
+    clauses on fields it does not read, and `siteSearch ~`.
+
+    Not SAMPLE: its one child sits directly under its parent, so an `ancestor` clause would select
+    the same rows as `parent`, and a `~` term that misses a chain's middle could not be sent."""
+    from backlot import synth
+
+    page = {
+        "source_type": "confluence",
+        "space": "eng",
+        "content": "Body.",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+    }
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {**page, "doc_id": "q-gp", "title": "Guide"},
+            {**page, "doc_id": "q-c", "title": "Child", "parent": "q-gp", "labels": ["pager"]},
+            {
+                **page,
+                "doc_id": "q-gc",
+                "title": "Grand",
+                "parent": "q-c",
+                "content": "Deep.",
+                "labels": ["oncall"],
+            },
+            {**page, "doc_id": "q-o", "title": "Other", "space": "ops"},
+            {**page, "doc_id": "q-b", "title": "Post", "space": "ops", "subtype": "blogpost"},
+        ],
+    )
+    eng = synth.confluence_space_key("eng")
+    three = "id in ({Guide},{Child},{Grand})"
+    rows = [
+        # cql, each title standing for its served id, and the titles real answered over the chain
+        # of three pages :func:`confluence_cql_search`'s docstring records.
+        ("id={Child}", {"Child"}),
+        ('id="{Child}"', {"Child"}),
+        ("id in ({Child},{Grand})", {"Child", "Grand"}),
+        ("ID={Child}", {"Child"}),
+        ("Id in ({Child})", {"Child"}),
+        ("type=page and id={Child}", {"Child"}),
+        (f"space={eng} and id={{Child}}", {"Child"}),
+        ("ancestor={Guide}", {"Child", "Grand"}),
+        ("ancestor in ({Guide})", {"Child", "Grand"}),
+        ("ancestor={Child}", {"Grand"}),
+        ("ancestor={Grand}", set()),
+        ("ancestor in ({Guide},{Child})", {"Child", "Grand"}),
+        ("parent={Guide}", {"Child"}),
+        ("parent={Child}", {"Grand"}),
+        ("parent={Grand}", set()),
+        ("type=page and ancestor={Guide}", {"Child", "Grand"}),
+        ('text ~ "Deep" and ancestor={Guide}', {"Grand"}),
+        ('text ~ "Deep" and parent={Guide}', set()),
+        ("ancestor={Guide} and parent={Guide}", {"Child"}),
+        ("ancestor={Guide} and id in ({Grand},{Child})", {"Child", "Grand"}),
+        ("id in ({Child}) and ancestor={Guide}", {"Child"}),
+        ("id={Grand} and parent={Child}", {"Grand"}),
+        ("id in ({Child},{Grand}) and parent={Guide}", {"Child"}),
+        ("id={Child} and id in ({Grand})", set()),
+        ("id={Child} and id in ({Child},{Grand})", {"Child"}),
+        ("ancestor={Guide} and ancestor in ({Child})", {"Grand"}),
+        ("id={Guide} and ancestor={Guide}", set()),
+        ("id=999999999", set()),
+        ("ancestor=999999999", set()),
+        ("parent=999999999", set()),
+        # each of those and `label` negated, `three` naming the chain, its grandchild labelled
+        # `oncall` and its child `pager`
+        (three + " and id != {Child}", {"Guide", "Grand"}),
+        (three + " and id not in ({Child})", {"Guide", "Grand"}),
+        (three + " and not id={Child}", {"Guide", "Grand"}),
+        (three + " and not id in ({Child})", {"Guide", "Grand"}),
+        (three + " and not (id = {Child})", {"Guide", "Grand"}),
+        (three + " and not (id in ({Child}))", {"Guide", "Grand"}),
+        (three + " AND NOT id = {Child}", {"Guide", "Grand"}),
+        (three + " and id != {Child} and id != {Grand}", {"Guide"}),
+        (three + " and not id={Child} and not id={Grand}", {"Guide"}),
+        (three + " and id not in ({Child}) and id not in ({Grand})", {"Guide"}),
+        (three + " and ancestor != {Guide}", {"Guide"}),
+        (three + " and ancestor not in ({Guide})", {"Guide"}),
+        (three + " and not ancestor={Guide}", {"Guide"}),
+        (three + " and not ancestor in ({Guide})", {"Guide"}),
+        (three + " and parent != {Guide}", {"Guide", "Grand"}),
+        (three + " and not parent={Guide}", {"Guide", "Grand"}),
+        (three + " and type != page", set()),
+        (three + " and type not in (page)", set()),
+        (three + " and not type=page", set()),
+        (three + " and not type in (page)", set()),
+        (three + " and TYPE != page", set()),
+        (three + f' and space != "{eng}"', set()),
+        (three + f' and space not in ("{eng}")', set()),
+        (three + f' and not space="{eng}"', set()),
+        (three + f' and not space in ("{eng}")', set()),
+        (three + ' and space != "NOSUCHKEY"', {"Guide", "Child", "Grand"}),
+        (three + ' and label != "oncall"', {"Guide", "Child"}),
+        (three + ' and label not in ("oncall")', {"Guide", "Child"}),
+        (three + ' and not label="oncall"', {"Guide", "Child"}),
+        (three + ' and not label in ("oncall")', {"Guide", "Child"}),
+        (three + ' and not (label = "oncall")', {"Guide", "Child"}),
+        (three + ' and label != "oncall" and label != "pager"', {"Guide"}),
+        (three + ' and not label="oncall" and not label="pager"', {"Guide"}),
+        ("ancestor={Guide} and id != {Child}", {"Grand"}),
+        ("ancestor={Guide} and not id={Child}", {"Grand"}),
+        # a negated clause alone: real answered every row on the site the clause does not name
+        ("id != {Child}", {"Guide", "Grand", "Other", "Post"}),
+        ("type != blogpost", {"Guide", "Child", "Grand", "Other"}),
+        (f'space != "{eng}"', {"Other", "Post"}),
+        ('space != "NOSUCHKEY"', {"Guide", "Child", "Grand", "Other", "Post"}),
+        ("parent != {Guide}", {"Guide", "Grand", "Other", "Post"}),
+        ("ancestor != {Guide}", {"Guide", "Other", "Post"}),
+        ('label != "oncall"', {"Guide", "Child", "Other", "Post"}),
+        # a negated `~` clause, `or`, `and` before `or`, and a `not` on a group or on a negated
+        # clause, Grand alone carrying `Deep` in its body
+        (three + ' and text !~ "Deep"', {"Guide", "Child"}),
+        (three + ' and not text ~ "Deep"', {"Guide", "Child"}),
+        ('text !~ "Deep"', {"Guide", "Child", "Other", "Post"}),
+        (three + ' and text ~ "Deep"', {"Grand"}),
+        (three + ' and title !~ "Grand"', {"Guide", "Child"}),
+        (three + ' and not title ~ "Grand"', {"Guide", "Child"}),
+        ("id={Guide} or id={Child}", {"Guide", "Child"}),
+        (three + " and (id={Guide} or id={Child})", {"Guide", "Child"}),
+        (three + ' and (ancestor={Guide} or label="oncall")', {"Child", "Grand"}),
+        ("id={Guide} or id={Child} and type=blogpost", {"Guide"}),
+        ("(id={Guide} or id={Child}) and type=blogpost", set()),
+        (three + " and not (id={Child} or id={Grand})", {"Guide"}),
+        (three + " and not (id={Child} and type=page)", {"Guide", "Grand"}),
+        (three + " and not id != {Child}", {"Child"}),
+        (three + " and not ancestor != {Guide}", {"Child", "Grand"}),
+        # `space.key`, and `not in (...)`
+        (three + f' and space.key = "{eng}"', {"Guide", "Child", "Grand"}),
+        (three + f' and space.key in ("{eng}", NOSUCHKEY)', {"Guide", "Child", "Grand"}),
+        (three + " and space.key = NOSUCHKEY", set()),
+        (three + " and space.key in (NOSUCHKEY, NOPEKEY)", set()),
+        (three + f' and space.key = "{eng[0]}\\"{eng[1:]}"', {"Guide", "Child", "Grand"}),
+        (three + f" and space.key = '{eng[0]}\"{eng[1:]}'", {"Guide", "Child", "Grand"}),
+        (three + f' and space.key = "{eng[0]}\\{eng[1:]}"', set()),
+        (three + f' and space.key = "{eng[0]}\\"\\"{eng[1:]}"', set()),
+        (three + " and id not in ({Guide})", {"Child", "Grand"}),
+        (three + " and (id={Guide} or id not in ({Guide},{Child}))", {"Guide", "Grand"}),
+        # beside a field this route does not read, which held for each of the three
+        (three + " and lastmodified > 2020-01-01", {"Guide", "Child", "Grand"}),
+        (three + ' and created >= "2020-01-01"', {"Guide", "Child", "Grand"}),
+        (three + " and creator = currentUser()", {"Guide", "Child", "Grand"}),
+        (three + " and not lastmodified > 2999-01-01", {"Guide", "Child", "Grand"}),
+        ('id={Guide} or id={Child} and created >= now("-4w")', {"Guide", "Child"}),
+        (three + ' and (created >= now("-4w") or id={Guide})', {"Guide", "Child", "Grand"}),
+        (three + ' and not (id={Guide} or created >= now("-4w"))', set()),
+    ]
+    with client_for(settings, reload=True) as c:
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        h = {"Authorization": f"Bearer {written['admin_token']}"}
+        content = c.get("/atlassian/wiki/rest/api/content", headers=h).json()["results"]
+        ids = {r["title"]: r["id"] for r in content}
+        answered = {}
+        for template, _ in rows:
+            cql = template.format(**ids)
+            r = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": cql}).json()
+            answered[template] = ({x["title"] for x in r["results"]}, r["totalSize"])
+        cql = {"cql": 'siteSearch ~ "Deep"'}
+        site = c.get("/atlassian/wiki/rest/api/search", headers=h, params=cql).json()
+    assert answered == {template: (want, len(want)) for template, want in rows}
+    # read as `text ~` is, which over this chain is not real's answer: see `_CQL_READABLE`
+    assert {x["title"] for x in site["results"]} == {"Grand"}
+
+
+def test_confluence_cql_search_reads_its_rows_once_in_a_needed_terms_order(tmp_path, monkeypatch):
+    """The rows :func:`backlot.routers.atlassian.confluence_cql_search` reads for each query, as
+    the comment above its evaluator gives them, and their order. Each page says `alpha` and `beta`
+    a different number of times, so the two terms rank the four pages in opposite orders, and
+    neither is the order they are listed in."""
+    page = {
+        "source_type": "confluence",
+        "space": "eng",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+    }
+    words = {n: " ".join(["alpha"] * n + ["beta"] * (5 - n)) for n in (2, 4, 1, 3)}
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {**page, "doc_id": f"rank-{n}", "title": f"P{n}", "content": text}
+            for n, text in words.items()
+        ],
+    )
+    rows = [
+        # cql, the titles in the order served, and how many times the corpus is listed and a
+        # term searched
+        ('text ~ "alpha"', ["P4", "P3", "P2", "P1"], 0, 1),
+        ('text ~ "beta"', ["P1", "P2", "P3", "P4"], 0, 1),
+        ('text ~ "alpha" and text ~ "beta"', ["P4", "P3", "P2", "P1"], 0, 2),
+        ('type = page and text ~ "beta"', ["P1", "P2", "P3", "P4"], 0, 1),
+        ('text ~ "alpha" or type = page', ["P4", "P1", "P2", "P3"], 1, 1),
+        ("type = page", ["P4", "P1", "P2", "P3"], 1, 0),
+    ]
+    reads = []
+
+    def spying(name):
+        read = getattr(store, name)
+
+        def spy(*args, **kwargs):
+            reads.append(name)
+            return read(*args, **kwargs)
+
+        return spy
+
+    with client_for(settings, reload=True) as c:
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        h = {"Authorization": f"Bearer {written['admin_token']}"}
+        for name in ("list_documents", "search_documents"):
+            monkeypatch.setattr(store, name, spying(name))
+        answered = {}
+        for cql, *_ in rows:
+            reads.clear()
+            r = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": cql}).json()
+            titles = [x["title"] for x in r["results"]]
+            answered[cql] = (titles, reads.count("list_documents"), reads.count("search_documents"))
+    assert answered == {cql: tuple(answer) for cql, *answer in rows}
 
 
 _CQL_REQUIRED = {
@@ -1097,31 +1503,73 @@ _LIMIT_BELOW_ZERO = {
 }
 
 
-@pytest.mark.parametrize(
-    "query, status, body",
-    [
-        ("", 400, _CQL_REQUIRED),
-        ("cql=", 400, _CQL_REQUIRED),
-        ("cql", 400, _CQL_REQUIRED),
-        ("CQL=type%3Dpage", 400, _CQL_REQUIRED),
-        ("cql=&cql=type%3Dpage", 400, _CQL_REQUIRED),
-        ("cql=type%3Dpage&cql=", 200, None),
-        ("limit=-1", 400, _CQL_REQUIRED),
-        ("cql=type%3Dpage&limit=-1", 400, _LIMIT_BELOW_ZERO),
-        ("cql=%20&limit=-1", 400, _LIMIT_BELOW_ZERO),
-        ("cql=&limit=abc", 404, None),
-        ("cql=&start=abc", 404, None),
-    ],
-)
-def test_confluence_cql_search_refuses_a_request_with_no_first_cql(
-    client, admin_h, query, status, body
-):
+_NO_FIRST_CQL = [
+    ("", 400, _CQL_REQUIRED),
+    ("cql=", 400, _CQL_REQUIRED),
+    ("cql", 400, _CQL_REQUIRED),
+    ("CQL=type%3Dpage", 400, _CQL_REQUIRED),
+    ("cql=&cql=type%3Dpage", 400, _CQL_REQUIRED),
+    ("cql=type%3Dpage&cql=", 200, None),
+    ("limit=-1", 400, _CQL_REQUIRED),
+    ("cql=type%3Dpage&limit=-1", 400, _LIMIT_BELOW_ZERO),
+    ("cql=%20&limit=-1", 400, _LIMIT_BELOW_ZERO),
+    ("cql=&limit=abc", 404, None),
+    ("cql=&start=abc", 404, None),
+]
+
+
+def _no_first_cql(client, admin_h, query, status, body):
     """The requests :func:`backlot.errors.atlassian.cql_required` records, beside the 404 that comes
     ahead of it and the requests that pass it on to the negative refusal or to the search."""
     r = client.get(f"/atlassian/wiki/rest/api/search?{query}", headers=admin_h)
     assert r.status_code == status, r.text
     if body is not None:
         assert r.json() == body
+
+
+def test_confluence_cql_search_refuses_a_request_with_no_first_cql(client, admin_h):
+    assert _failures(_no_first_cql, _NO_FIRST_CQL, client, admin_h) == {}
+
+
+def test_confluence_cql_search_reads_its_content_type_as_jaxrs_does(client, admin_h):
+    """Pins the search's `Content-Type` refusal (``_refuse_the_search_media_type`` and
+    ``_CONFLUENCE_JAXRS_GETS`` in ``backlot.routers.atlassian``), with no credential and with one,
+    against `Accept` and on a `HEAD`."""
+    url = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
+    for credential in ({}, admin_h):
+        r = client.get(url, headers={**credential, "Content-Type": "text/plain"})
+        assert r.status_code == 415 and r.content == b"", r.text
+        assert r.headers.get("content-type") is None
+        r = client.get(url, headers={**credential, "Content-Type": "foo"})
+        assert r.status_code == 400, r.text
+        assert r.content == errors_atlassian.tomcat_page(400).encode()
+        assert r.headers["content-type"] == errors_atlassian.TOMCAT_MEDIA_TYPE
+    # ahead of the operation's own 400 for a `cql` that names nothing, and on a `HEAD`
+    r = client.get(
+        "/atlassian/wiki/rest/api/search", headers={**admin_h, "Content-Type": "text/plain"}
+    )
+    assert r.status_code == 415, r.text
+    r = client.head(url, headers={"Content-Type": "text/plain"})
+    assert r.status_code == 415, r.text
+    r = client.get(url, headers={**admin_h, "Content-Type": "application/json"})
+    assert r.status_code == 200, r.text
+    twice = [*admin_h.items(), ("Content-Type", _JSON_TYPE), ("Content-Type", _JSON_TYPE)]
+    r = sent_as(client, "GET", url, twice)
+    assert r.status_code == 400 and r.content == errors_atlassian.tomcat_page(400).encode()
+    # ahead of the 406, and the 415 behind the 400 for an `Accept` Jersey cannot parse
+    for accept, ctype, status, ctype_out in [
+        ("application/xml", "text/plain", 415, None),
+        ("application/xml", "foo", 400, errors_atlassian.TOMCAT_MEDIA_TYPE),
+        ("application/json;q=2", "foo", 400, errors_atlassian.TOMCAT_MEDIA_TYPE),
+        ("application/json;q=2", "text/plain", 400, "text/plain"),
+        ("application/xml", "application/json", 406, None),
+    ]:
+        r = client.get(url, headers={**admin_h, "Accept": accept, "Content-Type": ctype})
+        assert (r.status_code, r.headers.get("content-type")) == (status, ctype_out), r.text
+    # where a Spring GET answers either type as it answers none
+    for ctype in ("text/plain", "foo"):
+        r = client.get("/atlassian/wiki/rest/api/content/1", headers={"Content-Type": ctype})
+        assert r.status_code == 403, r.text
 
 
 def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
@@ -1180,6 +1628,8 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
         ("label=runbook", {"Guide"}, {"Guide"}),
         ("space=NOPE", set(), set()),
         ('title="Guide"', set(), set()),
+        ("type != blogpost", {"Guide", "Shut"}, {"Guide"}),
+        (f'space != "{eng}"', {"Shut"}, set()),
         (["type=page", f"space={eng}"], {"Guide", "Shut"}, {"Guide"}),
     ]
     with client_for(settings, reload=True) as c:
@@ -1215,7 +1665,59 @@ def test_confluence_storage_roundtrip(client, admin_h, ro_conn):
     assert unescape(text).strip() == doc["content"].strip()
 
 
-def test_atlassian_errors_use_atlassian_envelope(client):
+_ENTITY_TEXT = "'\"\u00e9\u2014\u0160\u0161\u00a0\u2603\u2329&<>"
+_ENTITY_STORAGE = "'&quot;&eacute;&mdash;\u0160\u0161&nbsp;\u2603&lang;&amp;&lt;&gt;"
+_ENTITY_RENDERED = "'&quot;\u00e9\u2014\u0160\u0161\u00a0\u2603\u2329&amp;&lt;&gt;"
+_LAYOUT = '<div class="contentLayout2"><div class="columnLayout single">{}</div></div>'
+
+
+@pytest.mark.parametrize(
+    "route, representation, value",
+    [
+        ("", "storage", f"<p>{_ENTITY_STORAGE}</p>"),
+        ("", "view", _LAYOUT.format(f'<p class="auto-cursor-target">{_ENTITY_RENDERED}</p>')),
+        ("", "export_view", _LAYOUT.format(f"<p>{_ENTITY_RENDERED}</p>")),
+        ("/child/comment", "storage", f"<p>{_ENTITY_STORAGE}</p>"),
+        (
+            "/child/comment",
+            "view",
+            _LAYOUT.format(f'<p class="auto-cursor-target">{_ENTITY_RENDERED}</p>'),
+        ),
+    ],
+)
+def test_confluence_a_body_is_written_with_each_representations_entities(
+    tmp_path, route, representation, value
+):
+    """A page's body and its comment's, holding characters
+    `backlot.routers.atlassian._CONFLUENCE_STORAGE_ENTITIES` records real writing."""
+    s = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "confluence",
+                "doc_id": "entities",
+                "space": "eng",
+                "title": "P",
+                "content": _ENTITY_TEXT,
+                "author_email": "a@x.com",
+                "visibility": "public",
+                "comments": [{"content": _ENTITY_TEXT, "author_email": "b@x.com"}],
+            }
+        ],
+    )
+    page = served_id("confluence", "entities")
+    with client_for(s, reload=True) as c:
+        r = c.get(
+            f"/atlassian/wiki/rest/api/content/{page}{route}",
+            headers={"Authorization": f"Bearer {s.admin_token}"},
+            params={"expand": f"body.{representation}"},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()["results"][0]["body"] if route else r.json()["body"]
+    assert body[representation]["value"] == value
+
+
+def test_atlassian_errors_use_atlassian_envelope(client, admin_h):
     # atlassian-python-api's Confluence client does response.json()["message"] on any error, so
     # Backlot must shape /atlassian errors like Cloud does, not {"detail"}: each product's own two
     # members (`errors.atlassian.http_body`).
@@ -1223,9 +1725,9 @@ def test_atlassian_errors_use_atlassian_envelope(client):
     assert r.status_code == 403
     assert sorted(r.json()) == ["message", "statusCode"] and r.json()["statusCode"] == 403
     r2 = client.get(
-        "/atlassian/wiki/rest/api/content/search"
-    )  # 'search' fails int path validation -> 422
-    assert r2.status_code == 422 and sorted(r2.json()) == ["message", "statusCode"]
+        "/atlassian/wiki/rest/api/content/abc", headers=admin_h
+    )  # an id `ContentId` cannot read -> Spring's 400
+    assert r2.status_code == 400 and sorted(r2.json()) == ["message", "statusCode"]
     # non-atlassian paths keep FastAPI's default {"detail"} envelope
     r3 = client.get("/no-such-route")
     assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()
@@ -1403,6 +1905,88 @@ def test_confluence_single_space_get(client, admin_h):
         }, sent
 
 
+def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(tmp_path):
+    """Pins the bytes of Confluence's answers on the raw body, since ``.json()`` decodes both
+    writings to one string."""
+    e1, e2 = "\U0001f600", "\U0001d7d3"
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": f"eng{e1}",
+        "title": f"probe {e1}{e2} é",
+        "content": f"body {e1}{e2}",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "labels": [f"probe{e1}"],
+        "comments": [
+            {
+                "content": f"comment {e1}{e2}",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-10-02T09:00:00Z",
+            }
+        ],
+        "created": "2026-10-01T09:00:00Z",
+    }
+    child = {**page, "doc_id": "c", "parent": "p", "title": f"child {e1}{e2}", "comments": []}
+    settings = tiny_corpus(tmp_path, [page, child])
+    with client_for(settings) as client:
+        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        rows = client.get(f"{api}/content?expand=space", headers=admin_h).json()["results"]
+        ids = {r["title"]: r["id"] for r in rows}
+        pid, cid, key = ids[page["title"]], ids[child["title"]], rows[0]["space"]["key"]
+        emoji = "%F0%9F%98%80"  # U+1F600
+        title = rb"probe \uD83D\uDE00\uD835\uDFD3 " + "é".encode()
+        child_title = rb"child \uD83D\uDE00\uD835\uDFD3"
+        space_name = rb'"name":"eng\uD83D\uDE00"'
+        for path, status, written in (
+            (f"{api}/space/{emoji}", 404, rb'No space found with key : \uD83D\uDE00\""'),
+            (f"{api}/content?spaceKey={emoji}", 404, rb"No space with key : \uD83D\uDE00"),
+            (f"{api}/content?limit={emoji}", 400, rb"For input string: \"\uD83D\uDE00\""),
+            (f"{api}/content/{pid}/label?prefix={emoji}", 400, rb"label prefixes :[\uD83D\uDE00]"),
+            (
+                f"{api}/content?type={emoji}",
+                501,
+                rb"Cannot find custom content type : \uD83D\uDE00",
+            ),
+            (f"{api}/content/%F0%9D%9F%93/child/page", 400, rb"for value [\uD835\uDFD3]"),
+            (f"{api}/search?cql=title~%22{emoji}x%22&limit=1", 200, rb'\"\uD83D\uDE00x\""'),
+            (f"{api}/search?cql=label%3D%22{emoji}x%22", 200, rb'\"\uD83D\uDE00x\""'),
+            (f"{api}/search?cql=title~%22probe%22", 200, title),
+            (f"{api}/content/{pid}", 200, title),
+            (f"{api}/content/{pid}?expand=body.storage", 200, rb"body \uD83D\uDE00\uD835\uDFD3"),
+            (f"{api}/content/{cid}", 200, child_title),
+            (f"{api}/content?spaceKey={key}", 200, title),
+            (f"{api}/content?title={quote(page['title'])}&spaceKey={key}", 200, title),
+            (f"{api}/content/{pid}/child/page", 200, child_title),
+            (
+                f"{api}/content/{pid}/child/comment?expand=body.storage",
+                200,
+                rb"comment \uD83D\uDE00\uD835\uDFD3",
+            ),
+            (f"{api}/content/{pid}/label", 200, rb'"name":"probe\uD83D\uDE00"'),
+            (f"{api}/space/{key}", 200, space_name),
+            (f"{api}/space", 200, space_name),
+            (f"{api}/content/{pid}?expand=space", 200, space_name),
+            (f"/atlassian//wiki/rest/api/content/{pid}", 200, title),
+        ):
+            answer = client.get(path, headers=admin_h)
+            assert answer.status_code == status, path
+            assert written in answer.content, path
+            # and never the character's own UTF-8 bytes
+            assert e1.encode() not in answer.content, path
+            assert e2.encode() not in answer.content, path
+            assert answer.headers["content-length"] == str(len(answer.content)), path
+            head = client.head(path, headers=admin_h)
+            if "content-length" in head.headers:
+                assert head.headers["content-length"] == str(len(answer.content)), path
+        assert client.get(f"{api}/content/{pid}", headers=admin_h).json()["title"] == page["title"]
+        # A character inside the plane is written as its UTF-8 bytes, unescaped.
+        inside = client.get(f"{api}/space/%C3%A9", headers=admin_h)
+        assert inside.status_code == 404
+        assert "é".encode() in inside.content
+
+
 # --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------
 
 
@@ -1570,16 +2154,25 @@ def test_confluence_body_and_version(tmp_path):
     assert page["metadata"]["labels"]["results"][0]["name"] == "eng"
 
 
-def test_confluence_restrictions_answers_both_operations_in_real_shape(tmp_path):
-    # restrictions/byOperation must return BOTH read and update operations, with real's links
-    import asyncio
-    import types
+def _members(node: dict) -> str:
+    """An answer's member names in order, nested down to each restriction list."""
+    return " ".join(
+        f"{k}{{{_members(v)}}}"
+        if isinstance(v, dict) and k not in ("user", "group", "_links")
+        else k
+        for k, v in node.items()
+    )
 
-    from backlot.acl import Acl
-    from backlot.routers.atlassian import _site, confluence_restrictions
 
-    s = tiny_corpus(
-        tmp_path,
+_BOTH_LISTS = "restrictions{user group} _expandable{content} _links"
+_NO_LISTS = "_expandable{restrictions content} _links"
+
+
+@pytest.fixture(scope="module")
+def private_page(tmp_path_factory):
+    """One private Confluence page, built once for every `expand` row."""
+    return tiny_corpus(
+        tmp_path_factory.mktemp("private_page"),
         [
             {
                 "source_type": "confluence",
@@ -1592,6 +2185,84 @@ def test_confluence_restrictions_answers_both_operations_in_real_shape(tmp_path)
             },
         ],
     )
+
+
+@pytest.mark.parametrize(
+    "query, members",
+    [
+        ("", f"read{{operation {_BOTH_LISTS}}} update{{operation {_BOTH_LISTS}}} _links"),
+        ("expand=", f"read{{operation {_BOTH_LISTS}}} update{{operation {_BOTH_LISTS}}} _links"),
+        ("expand=read", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        ("expand=update", f"update{{operation {_NO_LISTS}}} _expandable{{read}} _links"),
+        (
+            "expand=update,read",
+            f"read{{operation {_NO_LISTS}}} update{{operation {_NO_LISTS}}} _links",
+        ),
+        (
+            "expand=update&expand=read",
+            f"read{{operation {_NO_LISTS}}} update{{operation {_NO_LISTS}}} _links",
+        ),
+        ("expand=&expand=read", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        ("expand=,read,,", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        ("expand=read.bogus", f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links"),
+        (
+            "expand=read..restrictions",
+            f"read{{operation {_NO_LISTS}}} _expandable{{update}} _links",
+        ),
+        (
+            "expand=read.restrictions.user",
+            "read{operation restrictions{user _expandable{group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=read.restrictions.user.bogus",
+            "read{operation restrictions{user _expandable{group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=update.restrictions.group",
+            "update{operation restrictions{group _expandable{user}} _expandable{content} _links}"
+            " _expandable{read} _links",
+        ),
+        (
+            "expand=read.restrictions",
+            "read{operation restrictions{_expandable{user group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=read.restrictions.USER",
+            "read{operation restrictions{_expandable{user group}} _expandable{content} _links}"
+            " _expandable{update} _links",
+        ),
+        (
+            "expand=read.restrictions.group,read.restrictions.user",
+            f"read{{operation {_BOTH_LISTS}}} _expandable{{update}} _links",
+        ),
+        (
+            "expand=read.restrictions.user,update",
+            "read{operation restrictions{user _expandable{group}} _expandable{content} _links}"
+            f" update{{operation {_NO_LISTS}}} _links",
+        ),
+        ("expand=bogus", "_expandable{read update} _links"),
+        ("expand=READ", "_expandable{read update} _links"),
+        ("expand=%20read", "_expandable{read update} _links"),
+        ("expand=.read", "_expandable{read update} _links"),
+        ("expand=%20", "_expandable{read update} _links"),
+    ],
+)
+def test_confluence_restrictions_answer_what_expand_names_in_real_shape(
+    private_page, query, members
+):
+    """Each row is real's answer to the same query, member names and order, as measured where
+    `_restriction_expansions` and the comment in `confluence_restrictions` say. Every operation
+    served links to itself, and the answer ends with real's links."""
+    import asyncio
+    import types
+
+    from backlot.acl import Acl
+    from backlot.routers.atlassian import _site, confluence_restrictions
+
+    s = private_page
     conn = store.connect_ro(s.db_path)
     cid = served_id("confluence", "c2")
     app = types.SimpleNamespace(
@@ -1605,36 +2276,260 @@ def test_confluence_restrictions_answers_both_operations_in_real_shape(tmp_path)
         "scheme": "http",
         "server": ("m", 80),
         "path": "/",
-        "query_string": b"",
+        "query_string": query.encode(),
         "app": app,
         "headers": [(b"authorization", f"Bearer {s.admin_token}".encode())],
     }
     request = Request(scope)
-    result = asyncio.run(confluence_restrictions(cid, request))
-    assert result["read"]["restrictions"]["user"]["results"]  # the private doc's author
+    result = asyncio.run(confluence_restrictions(str(cid), request))
+    assert _members(result) == members
     path = f"{_site(request)}/wiki/rest/api/content/{cid}/restriction/byOperation"
-    assert list(result) == ["read", "update", "_links"]
     assert result["_links"] == {"self": path, "base": f"{_site(request)}/wiki", "context": "/wiki"}
     for op in ("read", "update"):
-        assert list(result[op]) == ["operation", "restrictions", "_expandable", "_links"]
-        assert result[op]["_links"] == {"self": f"{path}/{op}"}
+        if op in result:
+            assert result[op]["_links"] == {"self": f"{path}/{op}"}
+            if "user" in result[op].get("restrictions", {}):
+                assert result[op]["restrictions"]["user"]["results"]  # the private doc's author
 
 
+@pytest.mark.parametrize("spelt", ["{}", "0{}", "att{}"])
 @pytest.mark.parametrize("route", ["child/page", "child/attachment", "restriction/byOperation"])
-def test_confluence_a_page_an_outsider_cannot_read_is_a_made_up_id(client, admin_h, tokens, route):
+def test_confluence_a_page_an_outsider_cannot_read_is_a_made_up_id(
+    client, admin_h, tokens, route, spelt
+):
     """A page the caller cannot read answers what a made-up id answers, status and body byte for
-    byte, so neither a listing's 200 nor `restriction/byOperation`'s reader roster tells an outsider
-    the page is there. The admin's 200 on the same URL is the control."""
+    byte but for the id each 404 names, which is the number the caller sent, so neither a
+    listing's 200 nor `restriction/byOperation`'s reader roster tells an outsider the page is
+    there, whichever of these spellings names it. The admin's 200 on the same URL is the
+    control."""
     cid = served_id("confluence", "cf-comp")  # people-only
-    path = f"/atlassian/wiki/rest/api/content/{cid}/{route}"
+    path = f"/atlassian/wiki/rest/api/content/{spelt.format(cid)}/{route}"
     served = client.get(path, headers=admin_h)
     assert served.status_code == 200, served.text
 
     h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}  # engineering; cannot see cf-comp
     hidden = client.get(path, headers=h)
-    made_up = client.get(f"/atlassian/wiki/rest/api/content/999999999/{route}", headers=h)
+    made_up = client.get(
+        f"/atlassian/wiki/rest/api/content/{spelt.format(999999999)}/{route}", headers=h
+    )
     assert hidden.status_code == made_up.status_code == 404
-    assert hidden.content == made_up.content
+    assert str(cid).encode() in hidden.content
+    assert hidden.content.replace(str(cid).encode(), b"999999999") == made_up.content
+
+
+# --- Confluence content/{id}: the id as `ContentId` reads it, and the 404 of one naming nothing --
+
+#: Spring's 400 for an id `ContentId` cannot read, up to the value it names.
+_CONTENT_ID_400_HEAD = (
+    "org.springframework.web.method.annotation.MethodArgumentTypeMismatchException: Failed to "
+    "convert value of type 'java.lang.String' to required type "
+    "'com.atlassian.confluence.api.model.content.id.ContentId'; nested exception is "
+    "org.springframework.core.convert.ConversionFailedException: Failed to convert from type "
+    "[java.lang.String] to type [@org.springframework.web.bind.annotation.PathVariable "
+    "com.atlassian.confluence.api.model.content.id.ContentId] for value "
+)
+_CANNOT_PARSE = (
+    "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
+    "Can't parse as a ContentId"
+)
+
+
+def _number_format(rest):
+    return f'java.lang.NumberFormatException: For input string: "{rest}"'
+
+
+@pytest.mark.parametrize(
+    "sent, read",
+    [
+        # sent on `child/page`, and the id real named in its 404
+        ("05", 5),
+        ("+5", 5),
+        ("%2B5", 5),
+        ("0000000000000000000000000005", 5),
+        ("-0", 0),
+        ("%D9%A5", 5),
+        ("%EF%BC%95", 5),
+        ("9223372036854775807", 2**63 - 1),
+        ("-9223372036854775808", -(2**63)),
+        ("att5", 5),
+        ("att05", 5),
+        ("att+5", 5),
+        ("att-5", -5),
+        ("att%D9%A5", 5),
+        # or the value its 400 named, and how the message ended
+        ("abc", ("abc", _CANNOT_PARSE)),
+        ("1.5", ("1.5", _CANNOT_PARSE)),
+        ("1e3", ("1e3", _CANNOT_PARSE)),
+        ("0x10", ("0x10", _CANNOT_PARSE)),
+        ("1_0", ("1_0", _CANNOT_PARSE)),
+        ("5.", ("5.", _CANNOT_PARSE)),
+        (".5", (".5", _CANNOT_PARSE)),
+        ("+", ("+", _CANNOT_PARSE)),
+        ("-", ("-", _CANNOT_PARSE)),
+        ("--5", ("--5", _CANNOT_PARSE)),
+        ("+-5", ("+-5", _CANNOT_PARSE)),
+        ("%20", (" ", _CANNOT_PARSE)),
+        ("%205", (" 5", _CANNOT_PARSE)),
+        ("5%09", ("5" + chr(9), _CANNOT_PARSE)),
+        ("%F0%9D%9F%93", (chr(0x1D7D3), _CANNOT_PARSE)),
+        ("9223372036854775808", ("9223372036854775808", _CANNOT_PARSE)),
+        ("-9223372036854775809", ("-9223372036854775809", _CANNOT_PARSE)),
+        ("99999999999999999999", ("99999999999999999999", _CANNOT_PARSE)),
+        ("search", ("search", _CANNOT_PARSE)),
+        ("ATT999999999", ("ATT999999999", _CANNOT_PARSE)),
+        ("Att5", ("Att5", _CANNOT_PARSE)),
+        ("xatt5", ("xatt5", _CANNOT_PARSE)),
+        ("att", ("att", _number_format(""))),
+        ("attabc", ("attabc", _number_format("abc"))),
+        ("att%205", ("att 5", _number_format(" 5"))),
+        (
+            "att9223372036854775808",
+            ("att9223372036854775808", _number_format("9223372036854775808")),
+        ),
+    ],
+)
+def test_confluence_reads_a_content_id_as_contentid_does(client, admin_h, sent, read):
+    """``read`` is the id real named in its 404, or the value its 400 named and the end of that
+    400's message."""
+    r = client.get(f"/atlassian/wiki/rest/api/content/{sent}/child/page", headers=admin_h)
+    if isinstance(read, int):
+        assert r.status_code == 404, r.text
+        assert r.json()["message"].endswith(f" : ContentId{{id={read}}}")
+    else:
+        value, cause = read
+        assert r.status_code == 400, r.text
+        message = f"{_CONTENT_ID_400_HEAD}[{value}]; nested exception is {cause}"
+        assert r.json() == {"statusCode": 400, "message": message}
+
+
+@pytest.mark.parametrize("route", ["", "/label", "/child/comment", "/restriction/byOperation"])
+@pytest.mark.parametrize("sent", ["abc", "attabc"])
+def test_confluence_reads_the_content_id_alike_on_every_route(client, admin_h, sent, route):
+    """The same 400 for the same id on each route under `content/{id}`, `child/page`'s being the
+    control."""
+    api = "/atlassian/wiki/rest/api/content"
+    r = client.get(f"{api}/{sent}{route}", headers=admin_h)
+    assert r.status_code == 400, r.text
+    assert r.content == client.get(f"{api}/{sent}/child/page", headers=admin_h).content
+
+
+_SERVED_PAGE = "{page}"
+
+
+@pytest.mark.parametrize(
+    "path, sentence, data, length",
+    [
+        # under `content/`; the sentence after `NotFoundException: `; which `data`; real's bytes
+        ("999999999", "No content found with id : 999999999", "refused", 287),
+        ("999999999/label", "No content found with id : 999999999", "refused", 287),
+        (
+            "999999999/child/page",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "999999999/child/comment",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "999999999/child/attachment",
+            "No content found with id: ContentId{id=999999999}",
+            "readable",
+            221,
+        ),
+        (
+            "999999999/restriction/byOperation",
+            "No content with id <ContentId{id=999999999}> can be found",
+            "refused",
+            329,
+        ),
+        # an attachment's id
+        ("att999999999", "null", "attachment", 178),
+        ("att999999999/label", "null", "attachment", 178),
+        (f"att{_SERVED_PAGE}", "null", "attachment", 178),
+        (f"att{_SERVED_PAGE}/label", "null", "attachment", 178),
+        (
+            "att999999999/child/page",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "att999999999/child/attachment",
+            "No content found with id: ContentId{id=999999999}",
+            "readable",
+            221,
+        ),
+        (
+            "att999999999/restriction/byOperation",
+            "No content with id <ContentId{id=999999999}> can be found",
+            "refused",
+            329,
+        ),
+        # what `label` refuses only after its lookup, which an id naming nothing never reaches
+        ("999999999/label?limit=-1", "No content found with id : 999999999", "refused", 287),
+        ("999999999/label?limit=0", "No content found with id : 999999999", "refused", 287),
+        ("999999999/label?start=-1", "No content found with id : 999999999", "refused", 287),
+        (f"att{_SERVED_PAGE}/label?limit=-1", "null", "attachment", 178),
+        (f"att{_SERVED_PAGE}/label?limit=0", "null", "attachment", 178),
+        # with nothing wrong but the id, each listing looks it up
+        (
+            "999999999/child/page?limit=0",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "999999999/child/comment?limit=0",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "999999999/child/attachment?limit=0",
+            "No content found with id: ContentId{id=999999999}",
+            "readable",
+            221,
+        ),
+    ],
+)
+def test_confluence_answers_an_id_naming_nothing_with_reals_404(
+    client, admin_h, path, sentence, data, length
+):
+    """Each row is real's 404 to the request named, in its three members in its order."""
+    page = served_id("confluence", "cf-comp")
+    r = client.get(f"/atlassian/wiki/rest/api/content/{path.format(page=page)}", headers=admin_h)
+    shape = {
+        "readable": {"authorized": True, "valid": True, "errors": [], "successful": True},
+        "refused": {
+            "authorized": False,
+            "valid": False,
+            "errors": [{"message": {"translation": sentence, "args": []}}],
+            "successful": False,
+        },
+        "attachment": {"authorized": False, "valid": True, "errors": [], "successful": False},
+    }[data]
+    want = {
+        "statusCode": 404,
+        "data": shape,
+        "message": f"com.atlassian.confluence.api.service.exceptions.api.NotFoundException: {sentence}",
+    }
+    assert r.status_code == 404, r.text
+    assert r.content == json.dumps(want, separators=(",", ":")).encode()
+    assert len(r.content) == length
+
+
+@pytest.mark.parametrize(
+    "path", ["abc", "abc/child/page", "att5/child/page", "abc/label?limit=abc"]
+)
+def test_confluence_reads_the_content_id_after_the_credential(client, path):
+    """With no `Authorization`, real's 403 comes ahead of the id's 400 and the parameter's."""
+    r = client.get(f"/atlassian/wiki/rest/api/content/{path}")
+    assert r.status_code == 403, r.text
+    assert "caller cannot access Confluence" in r.json()["message"]
 
 
 # --- Jira: a page of comments is a page -------------------------------------------------------
@@ -1759,22 +2654,29 @@ def test_jira_comments_without_order_by_keep_the_order_the_corpus_states(paged):
     assert _bodies(d) == ["comment 1", "comment 2", "comment 3"]
 
 
-@pytest.mark.parametrize(
-    "query,want",
-    [
-        # Atlassian's own document writes the ascending form as `+created`, and a literal `+` in a
-        # query string decodes to a space. Real Jira answers 200 to every one of these.
-        ("orderBy=+created", ["comment 7", "comment 6"]),
-        ("orderBy=%2Bcreated", ["comment 7", "comment 6"]),
-        ("orderBy=%20created", ["comment 7", "comment 6"]),
-        ("orderBy=created%20", ["comment 7", "comment 6"]),
-        ("orderBy=Created", ["comment 7", "comment 6"]),
-        ("orderBy=CREATED", ["comment 7", "comment 6"]),
-        ("orderBy=-Created", ["comment 1", "comment 2"]),
-        ("orderBy=-%20created", ["comment 1", "comment 2"]),
-    ],
-)
-def test_jira_order_by_takes_the_spellings_the_real_api_takes(paged, query, want):
+_ORDER_BY_TAKEN = [
+    # Atlassian's own document writes the ascending form as `+created`, and a literal `+` in a
+    # query string decodes to a space. Real Jira answers 200 to every one of these.
+    ("orderBy=+created", ["comment 7", "comment 6"]),
+    ("orderBy=%2Bcreated", ["comment 7", "comment 6"]),
+    ("orderBy=%20created", ["comment 7", "comment 6"]),
+    ("orderBy=created%20", ["comment 7", "comment 6"]),
+    ("orderBy=Created", ["comment 7", "comment 6"]),
+    ("orderBy=CREATED", ["comment 7", "comment 6"]),
+    ("orderBy=-Created", ["comment 1", "comment 2"]),
+    ("orderBy=-%20created", ["comment 1", "comment 2"]),
+    # `_jira_order_desc` reads the rest, as real did.
+    ("orderBy=%01created", ["comment 7", "comment 6"]),
+    ("orderBy=created%01", ["comment 7", "comment 6"]),
+    ("orderBy=%01-created", ["comment 1", "comment 2"]),
+    ("orderBy=%0Bcreated", ["comment 7", "comment 6"]),
+    ("orderBy=-%0Bcreated", ["comment 1", "comment 2"]),
+    ("orderBy=-%0D%0Acreated", ["comment 1", "comment 2"]),
+    ("orderBy=created%C2%85", ["comment 7", "comment 6"]),
+]
+
+
+def _order_by_taken(paged, query, want):
     """Sent as a RAW query string, not through `params=`, which would percent-encode the `+` and
     never exercise the spelling Atlassian's document actually writes.
 
@@ -1786,14 +2688,34 @@ def test_jira_order_by_takes_the_spellings_the_real_api_takes(paged, query, want
     assert _bodies(d.json()) == want
 
 
-@pytest.mark.parametrize("query", ["orderBy=--created", "orderBy=%2B-created", "orderBy="])
-def test_jira_refuses_the_spellings_the_real_api_refuses(paged, query):
-    """Measured: exactly ONE sigil is stripped, so `--created` leaves `-created`, which is not a
-    field — real Jira's own message echoes `-created`, not `--created`. An empty value is refused
-    for the same reason: the field is the empty string."""
+def test_jira_order_by_takes_the_spellings_the_real_api_takes(paged):
+    assert _failures(_order_by_taken, _ORDER_BY_TAKEN, paged) == {}
+
+
+@pytest.mark.parametrize(
+    "query, named",
+    [
+        ("orderBy=--created", "-created"),
+        ("orderBy=%2B-created", "-created"),
+        ("orderBy=", ""),
+        ("orderBy=%C2%A0created", "\xa0created"),
+        ("orderBy=%E2%80%83created", " created"),
+        ("orderBy=-%01created", "\x01created"),
+        ("orderBy=-%1Fcreated", "\x1fcreated"),
+        ("orderBy=-%C2%A0created", "\xa0created"),
+        ("orderBy=-%C2%85created", "-\x85created"),
+        ("orderBy=-cre%0Aated", "-cre\nated"),
+        ("orderBy=created%20%C2%85", "created "),
+        ("orderBy=created%C2%85%C2%85", "created\x85\x85"),
+    ],
+)
+def test_jira_refuses_the_spellings_the_real_api_refuses(paged, query, named):
+    """Each row names the field real's 400 named, as `_jira_order_desc` reads the value; the
+    sentence around it is Backlot's own."""
     client, h = paged
     r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment?{query}", headers=h)
     assert r.status_code == 400, r.text
+    assert r.json()["errorMessages"][0].endswith(f"Instead: {named}")
 
 
 def test_jira_validates_order_by_before_resolving_the_issue(paged):
@@ -2070,28 +2992,38 @@ def test_jira_role_list_links_the_role_its_read_answers(client, admin_h):
 # `application/json`.
 
 
-# the path a refusal echoes, as `_echoed_path` gives it
-@pytest.mark.parametrize("slash", ["", "/"])
-@pytest.mark.parametrize(
-    "param,value",
-    [
-        ("maxResults", "abc"),
-        ("startAt", "abc"),
-        ("maxResults", "1.5"),
+# the path a refusal echoes, as `_echoed_path` gives it: each value with no trailing slash, and
+# each spelling of the key with one too
+_INTEGER_REFUSALS = [
+    (*row, slash)
+    for row in [
+        ("maxResults", "abc", "PAY-7"),
+        ("startAt", "abc", "PAY-7"),
+        ("maxResults", "1.5", "PAY-7"),
         # where Python's own int() reads 10
-        ("maxResults", "1_0"),
+        ("maxResults", "1_0", "PAY-7"),
         # the width is per PARAMETER: `maxResults` is a Java int, `startAt` a Java long, and each
         # is refused just past its own boundary and answered 200 just inside it (below)
-        ("maxResults", "2147483648"),
-        ("maxResults", "-2147483649"),
-        ("maxResults", "9223372036854775807"),
-        ("startAt", "9223372036854775808"),
-        ("startAt", "-9223372036854775809"),
-    ],
-)
-def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value, slash):
+        ("maxResults", "2147483648", "PAY-7"),
+        ("maxResults", "-2147483649", "PAY-7"),
+        ("maxResults", "9223372036854775807", "PAY-7"),
+        ("startAt", "9223372036854775808", "PAY-7"),
+        ("startAt", "-9223372036854775809", "PAY-7"),
+        # escapes in the key ``errors.atlassian.echoed_spelling`` keeps as sent
+        ("maxResults", "abc", "A%20B"),
+        ("maxResults", "abc", "A%3FB"),
+        ("maxResults", "abc", "A%23B"),
+    ]
+    for slash in ("", "/")
+    if not slash or row[:2] == ("maxResults", "abc")
+]
+assert sum(slash == "/" for *_, slash in _INTEGER_REFUSALS) == 4
+
+
+@pytest.mark.parametrize("param,value,key,slash", _INTEGER_REFUSALS)
+def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value, key, slash):
     client, h = paged
-    r = client.get(f"/atlassian/rest/api/3/issue/PAY-7/comment{slash}?{param}={value}", headers=h)
+    r = client.get(f"/atlassian/rest/api/3/issue/{key}/comment{slash}?{param}={value}", headers=h)
     assert r.status_code == 400, r.text
     assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
     assert r.json() == {
@@ -2099,7 +3031,7 @@ def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value
         "title": "Bad Request",
         "status": 400,
         "detail": f"Failed to convert '{param}' with value: '{value}'",
-        "instance": f"/rest/api/3/issue/PAY-7/comment{slash}",
+        "instance": f"/rest/api/3/issue/{key}/comment{slash}",
     }
 
 
@@ -2204,126 +3136,123 @@ def _ids(n: int) -> str:
     return "&".join(f"reconcileIssues={10000 + i}" for i in range(n))
 
 
-@pytest.mark.parametrize(
-    "query,named",
-    [
-        # fieldsByKeys: the first value, Java's trim off it, matched in any case
-        (f"{_BOUNDED}&fieldsByKeys=true", None),
-        (f"{_BOUNDED}&fieldsByKeys=TRUE", None),
-        (f"{_BOUNDED}&fieldsByKeys=False", None),
-        (f"{_BOUNDED}&fieldsByKeys=yes", None),
-        (f"{_BOUNDED}&fieldsByKeys=ON", None),
-        (f"{_BOUNDED}&fieldsByKeys=no", None),
-        (f"{_BOUNDED}&fieldsByKeys=off", None),
-        (f"{_BOUNDED}&fieldsByKeys=1", None),
-        (f"{_BOUNDED}&fieldsByKeys=0", None),
-        (f"{_BOUNDED}&fieldsByKeys=", None),
-        (f"{_BOUNDED}&fieldsByKeys=%20true", None),
-        (f"{_BOUNDED}&fieldsByKeys=true%20", None),
-        (f"{_BOUNDED}&fieldsByKeys=%01true", None),
-        (f"{_BOUNDED}&fieldsByKeys=true%1F", None),
-        (f"{_BOUNDED}&fieldsByKeys=ye%C5%BF", None),
-        (f"{_BOUNDED}&fieldsByKeys=yes&fieldsByKeys=x", None),
-        (f"{_BOUNDED}&fieldsByKeys=yes&fieldsByKeys=%20", None),
-        (f"{_BOUNDED}&fieldsByKeys=x", ("fieldsByKeys", "x")),
-        (f"{_BOUNDED}&fieldsByKeys=null", ("fieldsByKeys", "null")),
-        (f"{_BOUNDED}&fieldsByKeys=2", ("fieldsByKeys", "2")),
-        (f"{_BOUNDED}&fieldsByKeys=y", ("fieldsByKeys", "y")),
-        (f"{_BOUNDED}&fieldsByKeys=n", ("fieldsByKeys", "n")),
-        (f"{_BOUNDED}&fieldsByKeys=%20", ("fieldsByKeys", " ")),
-        (f"{_BOUNDED}&fieldsByKeys=%01", ("fieldsByKeys", "\x01")),
-        (f"{_BOUNDED}&fieldsByKeys=tr%20ue", ("fieldsByKeys", "tr ue")),
-        (f"{_BOUNDED}&fieldsByKeys=%C2%A0true", ("fieldsByKeys", "\xa0true")),
-        (f"{_BOUNDED}&fieldsByKeys=%C2%85true", ("fieldsByKeys", "\x85true")),
-        (f"{_BOUNDED}&fieldsByKeys=%E2%80%80true", ("fieldsByKeys", "\u2000true")),
-        (f"{_BOUNDED}&fieldsByKeys=o%EF%AC%80", ("fieldsByKeys", "o\ufb00")),
-        (f"{_BOUNDED}&fieldsByKeys=x&fieldsByKeys=yes", ("fieldsByKeys", None)),
-        (f"{_BOUNDED}&fieldsByKeys=&fieldsByKeys=yes", ("fieldsByKeys", None)),
-        # failFast: read by the same rule
-        (f"{_BOUNDED}&failFast=TRUE", None),
-        (f"{_BOUNDED}&failFast=", None),
-        (f"{_BOUNDED}&failFast=%00true", None),
-        (f"{_BOUNDED}&failFast=ye%C5%BF", None),
-        (f"{_BOUNDED}&failFast=yes&failFast=x", None),
-        (f"{_BOUNDED}&failFast=x", ("failFast", "x")),
-        (f"{_BOUNDED}&failFast=null", ("failFast", "null")),
-        (f"{_BOUNDED}&failFast=2", ("failFast", "2")),
-        (f"{_BOUNDED}&failFast=%20", ("failFast", " ")),
-        (f"{_BOUNDED}&failFast=%C2%A0true", ("failFast", "\xa0true")),
-        (f"{_BOUNDED}&failFast=o%EF%AC%80", ("failFast", "o\ufb00")),
-        (f"{_BOUNDED}&failFast=x&failFast=yes", ("failFast", None)),
-        (f"{_BOUNDED}&failFast=&failFast=yes", ("failFast", None)),
-        # reconcileIssues: every value, the blank ones passed over
-        (f"{_BOUNDED}&reconcileIssues=1", None),
-        (f"{_BOUNDED}&reconcileIssues=-1", None),
-        (f"{_BOUNDED}&reconcileIssues=%2B1", None),
-        (f"{_BOUNDED}&reconcileIssues=%201", None),
-        (f"{_BOUNDED}&reconcileIssues=1%20", None),
-        (f"{_BOUNDED}&reconcileIssues=1%202", None),
-        (f"{_BOUNDED}&reconcileIssues=%D9%A1", None),
-        (f"{_BOUNDED}&reconcileIssues=9223372036854775807", None),
-        (f"{_BOUNDED}&reconcileIssues=-9223372036854775808", None),
-        (f"{_BOUNDED}&reconcileIssues=", None),
-        (f"{_BOUNDED}&reconcileIssues=%20", None),
-        (f"{_BOUNDED}&reconcileIssues=1&reconcileIssues=2", None),
-        (f"{_BOUNDED}&reconcileIssues=&reconcileIssues=1", None),
-        (f"{_BOUNDED}&reconcileIssues=%20&reconcileIssues=1", None),
-        (f"{_BOUNDED}&reconcileIssues=a", ("reconcileIssues", "a")),
-        (f"{_BOUNDED}&reconcileIssues=1.5", ("reconcileIssues", "1.5")),
-        (f"{_BOUNDED}&reconcileIssues=1%2C2", ("reconcileIssues", "1,2")),
-        (f"{_BOUNDED}&reconcileIssues=1_0", ("reconcileIssues", "1_0")),
-        (f"{_BOUNDED}&reconcileIssues=%C2%A01", ("reconcileIssues", "\xa01")),
-        (f"{_BOUNDED}&reconcileIssues=%011", ("reconcileIssues", "\x011")),
-        (
-            f"{_BOUNDED}&reconcileIssues=9223372036854775808",
-            ("reconcileIssues", "9223372036854775808"),
-        ),
-        (
-            f"{_BOUNDED}&reconcileIssues=-9223372036854775809",
-            ("reconcileIssues", "-9223372036854775809"),
-        ),
-        (f"{_BOUNDED}&reconcileIssues=1&reconcileIssues=a", ("reconcileIssues", None)),
-        (f"{_BOUNDED}&reconcileIssues=a&reconcileIssues=1", ("reconcileIssues", None)),
-        (
-            f"{_BOUNDED}&reconcileIssues=1&reconcileIssues=9223372036854775808",
-            ("reconcileIssues", None),
-        ),
-        # two refusals at once: the one real names
-        (f"{_ANY_PROJECT}&maxResults=abc&fieldsByKeys=x", ("maxResults", "abc")),
-        (f"{_ANY_PROJECT}&fieldsByKeys=x&maxResults=abc", ("maxResults", "abc")),
-        (f"{_ANY_PROJECT}&reconcileIssues=a&maxResults=abc", ("maxResults", "abc")),
-        (f"{_BOUNDED}&reconcileIssues=a&fieldsByKeys=x", ("fieldsByKeys", "x")),
-        (f"{_ANY_PROJECT}&fieldsByKeys=x&nextPageToken=bogus", ("fieldsByKeys", "x")),
-        (f"{_ANY_PROJECT}&reconcileIssues=a&maxResults=0", ("reconcileIssues", "a")),
-        (f"{_ANY_PROJECT}&maxResults=abc&failFast=x", ("maxResults", "abc")),
-        (f"{_ANY_PROJECT}&failFast=x&maxResults=abc", ("maxResults", "abc")),
-        (f"{_BOUNDED}&failFast=x&fieldsByKeys=x", ("fieldsByKeys", "x")),
-        (f"{_BOUNDED}&failFast=x&reconcileIssues=a", ("failFast", "x")),
-        (f"{_BOUNDED}&reconcileIssues=a&failFast=x", ("failFast", "x")),
-        (f"{_ANY_PROJECT}&failFast=x&nextPageToken=bogus", ("failFast", "x")),
-        (f"{_ANY_PROJECT}&failFast=x&maxResults=0", ("failFast", "x")),
-        ("failFast=x", ("failFast", "x")),
-        # the cap: more than 50 values, a blank one counted, after the conversions and the page
-        # token and before the range and the unbounded JQL
-        (f"{_BOUNDED}&{_ids(50)}", None),
-        (f"{_BOUNDED}&{_ids(49)}&reconcileIssues=", None),
-        (f"{_BOUNDED}&{_ids(51)}", _RECONCILE_TOO_MANY),
-        (f"{_BOUNDED}&" + "&".join(["reconcileIssues=1"] * 51), _RECONCILE_TOO_MANY),
-        (f"{_BOUNDED}&{_ids(50)}&reconcileIssues=", _RECONCILE_TOO_MANY),
-        (f"{_BOUNDED}&{_ids(50)}&reconcileIssues=%20", _RECONCILE_TOO_MANY),
-        (f"{_BOUNDED}&{_ids(50)}&reconcileIssues=a", ("reconcileIssues", None)),
-        (f"{_BOUNDED}&fieldsByKeys=x&{_ids(51)}", ("fieldsByKeys", "x")),
-        (f"{_BOUNDED}&failFast=x&{_ids(51)}", ("failFast", "x")),
-        (f"{_BOUNDED}&failFast=yes&{_ids(51)}", _RECONCILE_TOO_MANY),
-        (f"{_ANY_PROJECT}&maxResults=abc&{_ids(51)}", ("maxResults", "abc")),
-        (f"{_ANY_PROJECT}&nextPageToken=bogus&{_ids(51)}", errors_atlassian.bad_page_token().body),
-        (f"{_ANY_PROJECT}&maxResults=0&{_ids(51)}", _RECONCILE_TOO_MANY),
-        (_ids(51), _RECONCILE_TOO_MANY),
-    ],
-)
-def test_jira_search_get_reads_fields_by_keys_fail_fast_and_reconcile_issues(
-    client, admin_h, query, named
-):
+_SEARCH_GET_ROWS = [
+    # fieldsByKeys: the first value, Java's trim off it, matched in any case
+    (f"{_BOUNDED}&fieldsByKeys=true", None),
+    (f"{_BOUNDED}&fieldsByKeys=TRUE", None),
+    (f"{_BOUNDED}&fieldsByKeys=False", None),
+    (f"{_BOUNDED}&fieldsByKeys=yes", None),
+    (f"{_BOUNDED}&fieldsByKeys=ON", None),
+    (f"{_BOUNDED}&fieldsByKeys=no", None),
+    (f"{_BOUNDED}&fieldsByKeys=off", None),
+    (f"{_BOUNDED}&fieldsByKeys=1", None),
+    (f"{_BOUNDED}&fieldsByKeys=0", None),
+    (f"{_BOUNDED}&fieldsByKeys=", None),
+    (f"{_BOUNDED}&fieldsByKeys=%20true", None),
+    (f"{_BOUNDED}&fieldsByKeys=true%20", None),
+    (f"{_BOUNDED}&fieldsByKeys=%01true", None),
+    (f"{_BOUNDED}&fieldsByKeys=true%1F", None),
+    (f"{_BOUNDED}&fieldsByKeys=ye%C5%BF", None),
+    (f"{_BOUNDED}&fieldsByKeys=yes&fieldsByKeys=x", None),
+    (f"{_BOUNDED}&fieldsByKeys=yes&fieldsByKeys=%20", None),
+    (f"{_BOUNDED}&fieldsByKeys=x", ("fieldsByKeys", "x")),
+    (f"{_BOUNDED}&fieldsByKeys=null", ("fieldsByKeys", "null")),
+    (f"{_BOUNDED}&fieldsByKeys=2", ("fieldsByKeys", "2")),
+    (f"{_BOUNDED}&fieldsByKeys=y", ("fieldsByKeys", "y")),
+    (f"{_BOUNDED}&fieldsByKeys=n", ("fieldsByKeys", "n")),
+    (f"{_BOUNDED}&fieldsByKeys=%20", ("fieldsByKeys", " ")),
+    (f"{_BOUNDED}&fieldsByKeys=%01", ("fieldsByKeys", "\x01")),
+    (f"{_BOUNDED}&fieldsByKeys=tr%20ue", ("fieldsByKeys", "tr ue")),
+    (f"{_BOUNDED}&fieldsByKeys=%C2%A0true", ("fieldsByKeys", "\xa0true")),
+    (f"{_BOUNDED}&fieldsByKeys=%C2%85true", ("fieldsByKeys", "\x85true")),
+    (f"{_BOUNDED}&fieldsByKeys=%E2%80%80true", ("fieldsByKeys", "\u2000true")),
+    (f"{_BOUNDED}&fieldsByKeys=o%EF%AC%80", ("fieldsByKeys", "o\ufb00")),
+    (f"{_BOUNDED}&fieldsByKeys=x&fieldsByKeys=yes", ("fieldsByKeys", None)),
+    (f"{_BOUNDED}&fieldsByKeys=&fieldsByKeys=yes", ("fieldsByKeys", None)),
+    # failFast: read by the same rule
+    (f"{_BOUNDED}&failFast=TRUE", None),
+    (f"{_BOUNDED}&failFast=", None),
+    (f"{_BOUNDED}&failFast=%00true", None),
+    (f"{_BOUNDED}&failFast=ye%C5%BF", None),
+    (f"{_BOUNDED}&failFast=yes&failFast=x", None),
+    (f"{_BOUNDED}&failFast=x", ("failFast", "x")),
+    (f"{_BOUNDED}&failFast=null", ("failFast", "null")),
+    (f"{_BOUNDED}&failFast=2", ("failFast", "2")),
+    (f"{_BOUNDED}&failFast=%20", ("failFast", " ")),
+    (f"{_BOUNDED}&failFast=%C2%A0true", ("failFast", "\xa0true")),
+    (f"{_BOUNDED}&failFast=o%EF%AC%80", ("failFast", "o\ufb00")),
+    (f"{_BOUNDED}&failFast=x&failFast=yes", ("failFast", None)),
+    (f"{_BOUNDED}&failFast=&failFast=yes", ("failFast", None)),
+    # reconcileIssues: every value, the blank ones passed over
+    (f"{_BOUNDED}&reconcileIssues=1", None),
+    (f"{_BOUNDED}&reconcileIssues=-1", None),
+    (f"{_BOUNDED}&reconcileIssues=%2B1", None),
+    (f"{_BOUNDED}&reconcileIssues=%201", None),
+    (f"{_BOUNDED}&reconcileIssues=1%20", None),
+    (f"{_BOUNDED}&reconcileIssues=1%202", None),
+    (f"{_BOUNDED}&reconcileIssues=%D9%A1", None),
+    (f"{_BOUNDED}&reconcileIssues=9223372036854775807", None),
+    (f"{_BOUNDED}&reconcileIssues=-9223372036854775808", None),
+    (f"{_BOUNDED}&reconcileIssues=", None),
+    (f"{_BOUNDED}&reconcileIssues=%20", None),
+    (f"{_BOUNDED}&reconcileIssues=1&reconcileIssues=2", None),
+    (f"{_BOUNDED}&reconcileIssues=&reconcileIssues=1", None),
+    (f"{_BOUNDED}&reconcileIssues=%20&reconcileIssues=1", None),
+    (f"{_BOUNDED}&reconcileIssues=a", ("reconcileIssues", "a")),
+    (f"{_BOUNDED}&reconcileIssues=1.5", ("reconcileIssues", "1.5")),
+    (f"{_BOUNDED}&reconcileIssues=1%2C2", ("reconcileIssues", "1,2")),
+    (f"{_BOUNDED}&reconcileIssues=1_0", ("reconcileIssues", "1_0")),
+    (f"{_BOUNDED}&reconcileIssues=%C2%A01", ("reconcileIssues", "\xa01")),
+    (f"{_BOUNDED}&reconcileIssues=%011", ("reconcileIssues", "\x011")),
+    (
+        f"{_BOUNDED}&reconcileIssues=9223372036854775808",
+        ("reconcileIssues", "9223372036854775808"),
+    ),
+    (
+        f"{_BOUNDED}&reconcileIssues=-9223372036854775809",
+        ("reconcileIssues", "-9223372036854775809"),
+    ),
+    (f"{_BOUNDED}&reconcileIssues=1&reconcileIssues=a", ("reconcileIssues", None)),
+    (f"{_BOUNDED}&reconcileIssues=a&reconcileIssues=1", ("reconcileIssues", None)),
+    (
+        f"{_BOUNDED}&reconcileIssues=1&reconcileIssues=9223372036854775808",
+        ("reconcileIssues", None),
+    ),
+    # two refusals at once: the one real names
+    (f"{_ANY_PROJECT}&maxResults=abc&fieldsByKeys=x", ("maxResults", "abc")),
+    (f"{_ANY_PROJECT}&fieldsByKeys=x&maxResults=abc", ("maxResults", "abc")),
+    (f"{_ANY_PROJECT}&reconcileIssues=a&maxResults=abc", ("maxResults", "abc")),
+    (f"{_BOUNDED}&reconcileIssues=a&fieldsByKeys=x", ("fieldsByKeys", "x")),
+    (f"{_ANY_PROJECT}&fieldsByKeys=x&nextPageToken=bogus", ("fieldsByKeys", "x")),
+    (f"{_ANY_PROJECT}&reconcileIssues=a&maxResults=0", ("reconcileIssues", "a")),
+    (f"{_ANY_PROJECT}&maxResults=abc&failFast=x", ("maxResults", "abc")),
+    (f"{_ANY_PROJECT}&failFast=x&maxResults=abc", ("maxResults", "abc")),
+    (f"{_BOUNDED}&failFast=x&fieldsByKeys=x", ("fieldsByKeys", "x")),
+    (f"{_BOUNDED}&failFast=x&reconcileIssues=a", ("failFast", "x")),
+    (f"{_BOUNDED}&reconcileIssues=a&failFast=x", ("failFast", "x")),
+    (f"{_ANY_PROJECT}&failFast=x&nextPageToken=bogus", ("failFast", "x")),
+    (f"{_ANY_PROJECT}&failFast=x&maxResults=0", ("failFast", "x")),
+    ("failFast=x", ("failFast", "x")),
+    # the cap: more than 50 values, a blank one counted, after the conversions and the page
+    # token and before the range and the unbounded JQL
+    (f"{_BOUNDED}&{_ids(50)}", None),
+    (f"{_BOUNDED}&{_ids(49)}&reconcileIssues=", None),
+    (f"{_BOUNDED}&{_ids(51)}", _RECONCILE_TOO_MANY),
+    (f"{_BOUNDED}&" + "&".join(["reconcileIssues=1"] * 51), _RECONCILE_TOO_MANY),
+    (f"{_BOUNDED}&{_ids(50)}&reconcileIssues=", _RECONCILE_TOO_MANY),
+    (f"{_BOUNDED}&{_ids(50)}&reconcileIssues=%20", _RECONCILE_TOO_MANY),
+    (f"{_BOUNDED}&{_ids(50)}&reconcileIssues=a", ("reconcileIssues", None)),
+    (f"{_BOUNDED}&fieldsByKeys=x&{_ids(51)}", ("fieldsByKeys", "x")),
+    (f"{_BOUNDED}&failFast=x&{_ids(51)}", ("failFast", "x")),
+    (f"{_BOUNDED}&failFast=yes&{_ids(51)}", _RECONCILE_TOO_MANY),
+    (f"{_ANY_PROJECT}&maxResults=abc&{_ids(51)}", ("maxResults", "abc")),
+    (f"{_ANY_PROJECT}&nextPageToken=bogus&{_ids(51)}", errors_atlassian.bad_page_token().body),
+    (f"{_ANY_PROJECT}&maxResults=0&{_ids(51)}", _RECONCILE_TOO_MANY),
+    (_ids(51), _RECONCILE_TOO_MANY),
+]
+
+
+def _search_get(client, admin_h, query, named):
     """Real's answers to the GET form, for the rules `_bool_param` and `_jira_long_list_param`
     describe and the cap on `reconcileIssues`: ``named`` is the parameter a 400 names and the value
     it names as sent, or ``None`` where the parameter repeats and the 400 names the array (see
@@ -2354,6 +3283,10 @@ def test_jira_search_get_reads_fields_by_keys_fail_fast_and_reconcile_issues(
         "status": 400,
         "instance": "/rest/api/3/search/jql",
     }
+
+
+def test_jira_search_get_reads_fields_by_keys_fail_fast_and_reconcile_issues(client, admin_h):
+    assert _failures(_search_get, _SEARCH_GET_ROWS, client, admin_h) == {}
 
 
 @pytest.mark.parametrize("param", ["limit", "start"])
@@ -3195,10 +4128,7 @@ _CQL_INT_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("query, status, answer", _CQL_INT_ROWS)
-def test_confluence_cql_search_reads_limit_and_start_as_jaxrs_does(
-    client, admin_h, query, status, answer
-):
+def _cql_int(client, admin_h, query, status, answer):
     r = client.get(f"/atlassian/wiki/rest/api/search?{query}", headers=admin_h)
     assert r.status_code == status, r.text
     if status == 404:
@@ -3211,6 +4141,10 @@ def test_confluence_cql_search_reads_limit_and_start_as_jaxrs_does(
         assert r.json() == {"statusCode": 400, "message": answer}
     else:
         assert (r.json()["limit"], r.json()["start"]) == answer
+
+
+def test_confluence_cql_search_reads_limit_and_start_as_jaxrs_does(client, admin_h):
+    assert _failures(_cql_int, _CQL_INT_ROWS, client, admin_h) == {}
 
 
 def test_confluence_refuses_a_whitespace_only_value_where_jira_reads_it_as_absent(client, admin_h):
@@ -3254,9 +4188,36 @@ def test_confluence_names_the_trimmed_value_where_jira_names_the_raw_one(client,
         # `label`'s zero-`limit` refusal comes after conversion and after the negative
         ("label", "limit=0&start=abc", 'For input string: "abc"'),
         ("label", "limit=0&start=-1", "start cannot be less than zero"),
-        # on `child/attachment` the conversion and the negative both come before an unknown id's 404
+        # on an id naming nothing, the three `child/*` listings refuse both parameters ahead of the
+        # 404, and `label` its conversion and its `prefix`
         ("content/999999999/child/attachment", "limit=abc", 'For input string: "abc"'),
         ("content/999999999/child/attachment", "limit=-1", "limit cannot be less than zero"),
+        *[
+            (f"content/999999999/{route}", query, want)
+            for route in ("child/page", "child/comment")
+            for query, want in (
+                ("limit=abc", 'For input string: "abc"'),
+                ("start=abc", 'For input string: "abc"'),
+                ("limit=-1", "limit cannot be less than zero"),
+                ("start=-1", "start cannot be less than zero"),
+                ("limit=0&start=-1", "start cannot be less than zero"),
+            )
+        ],
+        ("content/999999999/label", "limit=abc", 'For input string: "abc"'),
+        ("content/999999999/label", "start=abc", 'For input string: "abc"'),
+        ("content/999999999/label", "prefix=bogus", "Could not convert label prefixes :[bogus]"),
+        ("content/999999999/label", "limit=-1&prefix=bogus", "label prefixes :[bogus]"),
+        ("content/999999999/label", "prefix=bogus&limit=0", "label prefixes :[bogus]"),
+        ("content/999999999/label", "prefix=bogus&limit=abc", 'For input string: "abc"'),
+        ("content/att999999999/child/page", "limit=-1", "limit cannot be less than zero"),
+        # an id `ContentId` cannot read comes ahead of each of them
+        ("content/abc/child/page", "limit=abc", "for value [abc]"),
+        ("content/abc/child/page", "limit=-1", "for value [abc]"),
+        ("content/abc/child/comment", "limit=-1", "for value [abc]"),
+        ("content/abc/child/attachment", "limit=-1", "for value [abc]"),
+        ("content/abc/label", "prefix=bogus", "for value [abc]"),
+        ("content/99999999999999999999/label", "limit=abc", "for value [99999999999999999999]"),
+        ("content/attabc/label", "limit=abc", "for value [attabc]"),
     ],
 )
 def test_confluence_refuses_the_parameter_real_names_when_both_are_wrong(
@@ -3403,18 +4364,11 @@ def test_jira_search_max_results_range_wins_over_the_unbounded_jql_refusal_on_ge
     assert r.json()["errorMessages"] == [_MAX_RESULTS_RANGE_MESSAGE]
 
 
-@pytest.mark.parametrize("query", ["", "maxResults=", "maxResults=%20"])
-def test_jira_search_default_page_size_is_never_checked_against_the_range(
-    tmp_path, monkeypatch, query
-):
-    """`default_page_size` is Backlot's own setting, not a value the vendor ever validated, so a
-    deployment that misconfigures it outside 1-5000 must not turn a request that sent no
-    `maxResults` at all into a refusal — real never checks its own default against that range.
-    An empty or whitespace-only value is the same "not really sent" case on real (see
-    `_int_param`), so it gets the same exemption."""
-    monkeypatch.setenv("BACKLOT_DEFAULT_PAGE_SIZE", "0")
-    s = tiny_corpus(
-        tmp_path,
+@pytest.fixture(scope="module")
+def one_payments_issue(tmp_path_factory):
+    """One public issue in project `payments`."""
+    return tiny_corpus(
+        tmp_path_factory.mktemp("one_payments_issue"),
         [
             {
                 "source_type": "jira",
@@ -3427,6 +4381,19 @@ def test_jira_search_default_page_size_is_never_checked_against_the_range(
             }
         ],
     )
+
+
+@pytest.mark.parametrize("query", ["", "maxResults=", "maxResults=%20"])
+def test_jira_search_default_page_size_is_never_checked_against_the_range(
+    one_payments_issue, monkeypatch, query
+):
+    """`default_page_size` is Backlot's own setting, not a value the vendor ever validated, so a
+    deployment that misconfigures it outside 1-5000 must not turn a request that sent no
+    `maxResults` at all into a refusal — real never checks its own default against that range.
+    An empty or whitespace-only value is the same "not really sent" case on real (see
+    `_int_param`), so it gets the same exemption."""
+    monkeypatch.setenv("BACKLOT_DEFAULT_PAGE_SIZE", "0")
+    s = one_payments_issue
     with client_for(s, reload=True) as c:
         h = {"Authorization": f"Bearer {s.admin_token}"}
         get_r = c.get(
@@ -3456,30 +4423,6 @@ def test_jira_search_serves_a_max_results_at_the_range_bounds_on_post(client, ad
     assert r.status_code == 200, r.text
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        "abc",
-        True,
-        False,
-        2147483648,
-        -2147483649,
-        2147483647.5,
-        -2147483648.5,
-        int("1" * 1000),
-        -int("1" * 1000),
-    ],
-)
-def test_jira_search_post_refuses_a_max_results_the_vendor_will_not_coerce(client, admin_h, value):
-    """Measured 2026-09-18: Jackson refuses a non-numeral string or a boolean with the body-wide
-    sentence, naming no parameter. A number past Java's `int` draws the same sentence, a fraction
-    past it included (see `_jira_search_max_results`), up to the 1000 digits real still reads (see
-    `_jira_json_number`)."""
-    r = _search_post(client, admin_h, jql="project = payments", maxResults=value)
-    assert r.status_code == 400, r.text
-    assert r.json() == {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
-
-
 @pytest.mark.parametrize("value,want_len", [("5", 3), (1.5, 1)])
 def test_jira_search_post_coerces_a_max_results_the_vendor_coerces(
     client, admin_h, value, want_len
@@ -3490,35 +4433,6 @@ def test_jira_search_post_coerces_a_max_results_the_vendor_coerces(
     r = _search_post(client, admin_h, jql="project = payments", maxResults=value)
     assert r.status_code == 200, r.text
     assert len(r.json()["issues"]) == want_len
-
-
-@pytest.mark.parametrize("bogus", [{"startAt": 0}, {"bogus": 1}])
-def test_jira_search_post_refuses_an_unknown_body_field(client, admin_h, bogus):
-    """Measured 2026-09-18: an undeclared body property is refused, not ignored."""
-    r = _search_post(client, admin_h, jql="project = payments", **bogus)
-    assert r.status_code == 400, r.text
-    assert r.json() == {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("fields", ["summary"]),
-        ("fields", [1, None, True]),
-        ("fieldsByKeys", True),
-        ("failFast", True),
-        ("expand", "names"),
-        ("properties", ["prop1"]),
-        ("reconcileIssues", [1, 2]),
-    ],
-)
-def test_jira_search_post_accepts_every_field_the_vendors_bean_declares(
-    client, admin_h, field, value
-):
-    """Measured 2026-09-18: real's `SearchAndReconcileRequestBean` also takes these, so the
-    unknown-field refusal above must not catch them even though Backlot acts on none of them."""
-    r = _search_post(client, admin_h, jql="project = payments", **{field: value})
-    assert r.status_code == 200, r.text
 
 
 def _bean(members: str, jql: str | None = '"project = payments"') -> str:
@@ -3538,11 +4452,11 @@ def _properties_null(index: int) -> dict:
     return {"message": f"at index {index}", "status-code": 500, "stack-trace": ""}
 
 
-# What real answers for a value of each of the five bean members other than `fields` that Backlot
-# does not act on, alone and beside a second refusal: the rules are `_jira_bean_boolean_ok`,
-# `_jira_reconcile_issue_ok`, the cap on `reconcileIssues` and where `jira_search` raises the two
-# 500s. `None` is a 200. The one value of each that
-# `test_jira_search_post_accepts_every_field_the_vendors_bean_declares` serves is left to that test.
+# What real answers for a search body's bean members: a value of each of the five other than
+# `fields` that Backlot does not act on, alone and beside a second refusal (the rules are
+# `_jira_bean_boolean_ok`, `_jira_reconcile_issue_ok`, the cap on `reconcileIssues` and where
+# `jira_search` raises the two 500s); then each member, `fields` too, at a value the bean takes; and
+# bytes after a complete body. `None` is a 200.
 _BEAN_MEMBER_ROWS = [
     *[(_bean(f'"expand": {v}'), None) for v in ('"bogus"', '""', "1", "1.5", "true", "null")],
     *[(_bean(f'"expand": {v}'), _BEAN_REFUSED) for v in ("[]", '["names"]', "[1]", "{}")],
@@ -3667,71 +4581,44 @@ _BEAN_MEMBER_ROWS = [
         _properties_null(0),
     ),
     (_bean(f'"reconcileIssues": {[10000 + i for i in range(51)]}, "failFast": "x"'), _BEAN_REFUSED),
+    # Measured 2026-09-18: real's `SearchAndReconcileRequestBean` takes each member, `fields` too, so
+    # the unknown-field refusal does not catch these though Backlot acts on none of them.
+    *[
+        (json.dumps({"jql": "project = payments", field: value}), None)
+        for field, value in (
+            ("fields", ["summary"]),
+            ("fields", [1, None, True]),
+            ("fieldsByKeys", True),
+            ("failFast", True),
+            ("expand", "names"),
+            ("properties", ["prop1"]),
+            ("reconcileIssues", [1, 2]),
+        )
+    ],
+    # Measured: bytes after a complete body are answered 200, the vendor's parser reading the first
+    # value and letting the rest go where a whole-input JSON read would refuse it.
+    *[
+        (json.dumps({"jql": "project = payments"}) + tail, None)
+        for tail in (" trailing", " " + "[" * 1001)
+    ],
 ]
 
 
-@pytest.mark.parametrize("raw,want", _BEAN_MEMBER_ROWS)
-def test_jira_search_post_binds_the_members_it_does_not_act_on_as_real_binds_them(
-    client, admin_h, raw, want
-):
+def _bean_member(client, admin_h, raw, want):
     r = client.post(
         "/atlassian/rest/api/3/search/jql",
         headers={**admin_h, "Content-Type": "application/json"},
         content=raw,
     )
     if want is None:
-        assert r.status_code == 200, r.text
+        assert r.status_code == 200 and r.json()["issues"], r.text
     else:
         assert (r.status_code, r.json()) == (want.get("status-code", 400), want), r.text
         assert r.headers["content-type"] == "application/json;charset=UTF-8"
 
 
-def test_jira_search_post_refuses_a_jql_shaped_as_a_list(client, admin_h):
-    """Measured 2026-09-18: `{"jql": [...]}` draws the same not-an-object refusal as an unknown
-    field, where a scalar `jql` (a number, say) is coerced to a string and reaches the (lenient)
-    JQL parser instead."""
-    r = _search_post(client, admin_h, jql=["order by created"])
-    assert r.status_code == 400, r.text
-    assert r.json() == {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
-
-
-@pytest.mark.parametrize("value", [["abc"], {"a": 1}])
-def test_jira_search_post_refuses_a_next_page_token_shaped_as_a_list_or_object(
-    client, admin_h, value
-):
-    """Measured 2026-09-18: the same not-an-object refusal `jql` draws as a list applies to
-    `nextPageToken` too, where a scalar (an int, a bool) is coerced to a string and reaches the
-    token decoder instead, drawing `bad_page_token`."""
-    r = _search_post(client, admin_h, jql="project = payments", nextPageToken=value)
-    assert r.status_code == 400, r.text
-    assert r.json() == {"errorMessages": [errors_atlassian.BODY_NOT_AN_OBJECT]}
-
-
-@pytest.mark.parametrize(
-    "raw,message",
-    [
-        # JSON's whitespace is the four ASCII ones, so a non-breaking space in front is not skipped
-        (
-            "\xa0{}",
-            "There was an error parsing JSON. Check that your request body is valid.",
-        ),
-        # and bytes that are not UTF-8 are not repaired into U+FFFD and then parsed
-        (
-            b'{"jql": "project = payments\xff"}',
-            "Invalid request payload. Refer to the REST API documentation and try again.",
-        ),
-    ],
-)
-def test_jira_search_post_refuses_the_leading_bytes_real_refuses(client, admin_h, raw, message):
-    """Bytes TRAILING a complete value are ignored; the leading ones are not ignored so freely, and
-    both boundaries are measured rather than taken from a JSON reader's own defaults."""
-    r = client.post(
-        "/atlassian/rest/api/3/search/jql",
-        headers={**admin_h, "Content-Type": "application/json"},
-        content=raw if isinstance(raw, bytes) else raw.encode(),
-    )
-    assert r.status_code == 400, r.text
-    assert r.json() == {"errorMessages": [message]}
+def test_jira_search_post_binds_the_members_it_does_not_act_on_as_real_binds_them(client, admin_h):
+    assert _failures(_bean_member, _BEAN_MEMBER_ROWS, client, admin_h) == {}
 
 
 def test_jira_search_advertises_both_its_methods_when_it_refuses_a_third(client, admin_h):
@@ -3757,14 +4644,14 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
     assert paths["post"]["requestBody"]["required"] is True
 
 
-@pytest.mark.parametrize("slash", ["", "/"])
 @pytest.mark.parametrize(
-    "content_type,named",
+    "content_type,named,slash",
     [
-        (None, "null"),
-        ("text/plain", "text/plain"),
-        ("application/xml", "application/xml"),
-        ("*/*", "*/*"),
+        (None, "null", ""),
+        (None, "null", "/"),
+        ("text/plain", "text/plain", ""),
+        ("application/xml", "application/xml", ""),
+        ("*/*", "*/*", ""),
     ],
 )
 def test_jira_search_post_refuses_a_media_type_it_does_not_read(
@@ -3791,96 +4678,123 @@ def test_jira_search_post_refuses_a_media_type_it_does_not_read(
     }
 
 
-@pytest.mark.parametrize(
-    "content_type", ["application/json", "APPLICATION/JSON", "application/json; charset=utf-8"]
-)
-def test_jira_search_post_reads_the_media_type_the_way_real_matches_it(
-    client, admin_h, content_type
-):
+def test_jira_search_post_reads_the_media_type_the_way_real_matches_it(client, admin_h):
     """Case-insensitive, and parameters are ignored — all three are read on real."""
-    r = client.post(
-        "/atlassian/rest/api/3/search/jql",
-        headers={**admin_h, "Content-Type": content_type},
-        content=json.dumps({"jql": "project = payments"}),
-    )
-    assert r.status_code == 200, r.text
+    statuses = {
+        content_type: client.post(
+            "/atlassian/rest/api/3/search/jql",
+            headers={**admin_h, "Content-Type": content_type},
+            content=json.dumps({"jql": "project = payments"}),
+        ).status_code
+        for content_type in (
+            "application/json",
+            "APPLICATION/JSON",
+            "application/json; charset=utf-8",
+        )
+    }
+    assert statuses == dict.fromkeys(statuses, 200)
 
 
-@pytest.mark.parametrize(
-    "raw,message",
-    [
-        # "no content" is about LENGTH, not emptiness after stripping
-        ("", "No content to map to Object due to end of input"),
-        ("null", "No content to map to Object due to end of input"),
-        ("{", "There was an error parsing JSON. Check that your request body is valid."),
-        ("[]", "Invalid request payload. Refer to the REST API documentation and try again."),
-        # a body that parses to anything but an object, whatever that anything is
-        ("5", "Invalid request payload. Refer to the REST API documentation and try again."),
-        ('"x"', "Invalid request payload. Refer to the REST API documentation and try again."),
-        ("true", "Invalid request payload. Refer to the REST API documentation and try again."),
-        # whitespace alone is NOT the parse error a JSON reader would raise, and not "no content"
-        ("   ", "Invalid request payload. Refer to the REST API documentation and try again."),
-        # constants Python's reader takes and real's does not (see `_reject_json_constant`)
-        *[
-            (
-                '{"jql": "project = payments", "maxResults": %s}' % value,
-                errors_atlassian.BODY_UNPARSEABLE,
-            )
-            for value in ("NaN", "Infinity", "-Infinity")
-        ],
-        # `1e400` reads as an infinite float, past Java's `int` (see `_jira_search_max_results`)
-        *[
-            (
-                '{"jql": "project = payments", "maxResults": %s}' % value,
-                errors_atlassian.BODY_NOT_AN_OBJECT,
-            )
-            for value in ("1e400", "-1e400")
-        ],
-        # a `fields` that is not a list of scalars (see `jira_search`)
-        *[
-            (
-                json.dumps({"jql": "project = payments", "fields": fields}),
-                errors_atlassian.BODY_NOT_AN_OBJECT,
-            )
-            for fields in ([["id"]], [{}], {}, "id")
-        ],
-        # nested past the recursion limit of Python 3.11's reader (999) and of 3.13's (100000),
-        # so each row pins the answer on one side of a limit that moves with the Python
-        *[
-            pytest.param(
-                '{"jql": "project = payments", "fields": %s"id"%s}' % ("[" * depth, "]" * depth),
-                errors_atlassian.BODY_NOT_AN_OBJECT,
-                id=f"fields-nested-{depth}",
-            )
-            for depth in (999, 100_000)
-        ],
-        # a number past 1000 digits inside a list or an object, whichever member holds it (see
-        # `_jira_search_body`); as the body or a member's value it is
-        # `test_jira_search_post_refuses_a_number_past_1000_digits_as_failed_read`
-        *[
-            pytest.param(raw, errors_atlassian.BODY_NOT_AN_OBJECT, id=name)
-            for name, raw in [
-                ("fields-list", '{"jql": "project = payments", "fields": [%s]}' % ("1" * 1001)),
-                (
-                    "properties-list",
-                    '{"jql": "project = payments", "properties": [%s]}' % ("1" * 5000),
-                ),
-                (
-                    "reconcileIssues-nested",
-                    '{"jql": "project = payments", "reconcileIssues": [[%s]]}' % ("1" * 1001),
-                ),
-                (
-                    "expand-object",
-                    '{"jql": "project = payments", "expand": {"a": %s}}' % ("1" * 1001),
-                ),
-                ("body-list", "[%s]" % ("1" * 1001)),
-            ]
-        ],
+_NOT_AN_OBJECT = [
+    # "no content" is about LENGTH, not emptiness after stripping
+    ("", "No content to map to Object due to end of input"),
+    ("null", "No content to map to Object due to end of input"),
+    ("{", "There was an error parsing JSON. Check that your request body is valid."),
+    ("[]", "Invalid request payload. Refer to the REST API documentation and try again."),
+    # a body that parses to anything but an object, whatever that anything is
+    ("5", "Invalid request payload. Refer to the REST API documentation and try again."),
+    ('"x"', "Invalid request payload. Refer to the REST API documentation and try again."),
+    ("true", "Invalid request payload. Refer to the REST API documentation and try again."),
+    # whitespace alone is NOT the parse error a JSON reader would raise, and not "no content"
+    ("   ", "Invalid request payload. Refer to the REST API documentation and try again."),
+    # constants Python's reader takes and real's does not (see `_reject_json_constant`)
+    *[
+        (
+            '{"jql": "project = payments", "maxResults": %s}' % value,
+            errors_atlassian.BODY_UNPARSEABLE,
+        )
+        for value in ("NaN", "Infinity", "-Infinity")
     ],
-)
-def test_jira_search_post_refuses_a_body_it_cannot_turn_into_an_object(
-    client, admin_h, raw, message
-):
+    # `1e400` reads as an infinite float, past Java's `int` (see `_jira_search_max_results`).
+    # Measured 2026-09-18: Jackson refuses a non-numeral string or a boolean with the body-wide
+    # sentence, naming no parameter. A number past Java's `int` draws the same sentence, a fraction
+    # past it included, up to the 1000 digits real still reads (see `_jira_json_number`).
+    *[
+        (
+            '{"jql": "project = payments", "maxResults": %s}' % value,
+            errors_atlassian.BODY_NOT_AN_OBJECT,
+        )
+        for value in (
+            *("1e400", "-1e400", '"abc"', "true", "false", "2147483648", "-2147483649"),
+            *("2147483647.5", "-2147483648.5", "1" * 1000, "-" + "1" * 1000),
+        )
+    ],
+    # a `fields` that is not a list of scalars (see `jira_search`)
+    *[
+        (
+            json.dumps({"jql": "project = payments", "fields": fields}),
+            errors_atlassian.BODY_NOT_AN_OBJECT,
+        )
+        for fields in ([["id"]], [{}], {}, "id")
+    ],
+    # measured 2026-09-18: an undeclared member is refused, not ignored, and so is a `jql` or a
+    # `nextPageToken` shaped as a list or an object, where a scalar one is coerced to a string and
+    # reaches the (lenient) JQL parser or the token decoder (`bad_page_token`) instead
+    *[
+        (json.dumps({"jql": "project = payments", **member}), errors_atlassian.BODY_NOT_AN_OBJECT)
+        for member in (
+            {"startAt": 0},
+            {"bogus": 1},
+            {"jql": ["order by created"]},
+            {"nextPageToken": ["abc"]},
+            {"nextPageToken": {"a": 1}},
+        )
+    ],
+    # JSON's whitespace is the four ASCII ones, so a non-breaking space in front is not skipped,
+    # and bytes that are not UTF-8 are not repaired into U+FFFD and then parsed: bytes TRAILING a
+    # complete value are ignored, the leading ones not so freely, each measured rather than taken
+    # from a JSON reader's own defaults
+    ("\xa0{}", "There was an error parsing JSON. Check that your request body is valid."),
+    (
+        b'{"jql": "project = payments\xff"}',
+        "Invalid request payload. Refer to the REST API documentation and try again.",
+    ),
+    # nested past the recursion limit of Python 3.11's reader (999) and of 3.13's (100000),
+    # so each row pins the answer on one side of a limit that moves with the Python
+    *[
+        pytest.param(
+            '{"jql": "project = payments", "fields": %s"id"%s}' % ("[" * depth, "]" * depth),
+            errors_atlassian.BODY_NOT_AN_OBJECT,
+            id=f"fields-nested-{depth}",
+        )
+        for depth in (999, 100_000)
+    ],
+    # a number past 1000 digits inside a list or an object, whichever member holds it (see
+    # `_jira_search_body`); as the body or a member's value it is
+    # `test_jira_search_post_refuses_a_number_past_1000_digits_as_failed_read`
+    *[
+        pytest.param(raw, errors_atlassian.BODY_NOT_AN_OBJECT, id=name)
+        for name, raw in [
+            ("fields-list", '{"jql": "project = payments", "fields": [%s]}' % ("1" * 1001)),
+            (
+                "properties-list",
+                '{"jql": "project = payments", "properties": [%s]}' % ("1" * 5000),
+            ),
+            (
+                "reconcileIssues-nested",
+                '{"jql": "project = payments", "reconcileIssues": [[%s]]}' % ("1" * 1001),
+            ),
+            (
+                "expand-object",
+                '{"jql": "project = payments", "expand": {"a": %s}}' % ("1" * 1001),
+            ),
+            ("body-list", "[%s]" % ("1" * 1001)),
+        ]
+    ],
+]
+
+
+def _not_an_object(client, admin_h, raw, message):
     """Three sentences, measured."""
     r = client.post(
         "/atlassian/rest/api/3/search/jql",
@@ -3891,58 +4805,45 @@ def test_jira_search_post_refuses_a_body_it_cannot_turn_into_an_object(
     assert r.json() == {"errorMessages": [message]}
 
 
-@pytest.mark.parametrize("tail", [" trailing", " " + "[" * 1001])
-def test_jira_search_post_ignores_bytes_after_a_complete_body(client, admin_h, tail):
-    """Measured: `{"jql": …} junk` is answered 200 — the vendor's parser reads the first value and
-    lets the rest go, where a whole-input JSON read would refuse it."""
-    r = client.post(
-        "/atlassian/rest/api/3/search/jql",
-        headers={**admin_h, "Content-Type": "application/json"},
-        content=json.dumps({"jql": "project = payments"}) + tail,
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["issues"]
+def test_jira_search_post_refuses_a_body_it_cannot_turn_into_an_object(client, admin_h):
+    assert _failures(_not_an_object, _NOT_AN_OBJECT, client, admin_h) == {}
 
 
 _SEARCH_V3 = "/rest/api/3/search/jql"
 
 
-@pytest.mark.parametrize(
-    "path,raw,echoed",
-    [
-        pytest.param(_SEARCH_V3, body, _SEARCH_V3, id=name)
-        for name, body in [
-            ("maxResults-1001", '{"jql": "x", "maxResults": %s}' % ("1" * 1001)),
-            ("maxResults-negative-1001", '{"jql": "x", "maxResults": -%s}' % ("1" * 1001)),
-            ("maxResults-4301", '{"jql": "x", "maxResults": %s}' % ("1" * 4301)),
-            ("maxResults-5000", '{"jql": "x", "maxResults": %s}' % ("1" * 5000)),
-            ("maxResults-1000-then-fraction", '{"jql": "x", "maxResults": %s.5}' % ("1" * 1000)),
-            ("maxResults-exponent", '{"jql": "x", "maxResults": 1.%se1}' % ("1" * 999)),
-            ("jql", '{"jql": %s}' % ("1" * 1001)),
-            ("nextPageToken", '{"jql": "x", "nextPageToken": %s}' % ("1" * 1001)),
-            ("expand", '{"jql": "x", "expand": %s}' % ("1" * 5000)),
-            ("fieldsByKeys", '{"jql": "x", "fieldsByKeys": %s}' % ("1" * 1001)),
-            ("properties", '{"jql": "x", "properties": %s}' % ("1" * 1001)),
-            ("reconcileIssues", '{"jql": "x", "reconcileIssues": %s}' % ("1" * 1001)),
-            ("fields", '{"jql": "x", "fields": %s}' % ("1" * 1001)),
-            ("undeclared-member", '{"jql": "x", "bogus": %s}' % ("1" * 1001)),
-            ("body-1001", "1" * 1001),
-            ("body-5000", "1" * 5000),
-        ]
+_PAST_1000_DIGITS = [
+    pytest.param(_SEARCH_V3, body, _SEARCH_V3, id=name)
+    for name, body in [
+        ("maxResults-1001", '{"jql": "x", "maxResults": %s}' % ("1" * 1001)),
+        ("maxResults-negative-1001", '{"jql": "x", "maxResults": -%s}' % ("1" * 1001)),
+        ("maxResults-4301", '{"jql": "x", "maxResults": %s}' % ("1" * 4301)),
+        ("maxResults-5000", '{"jql": "x", "maxResults": %s}' % ("1" * 5000)),
+        ("maxResults-1000-then-fraction", '{"jql": "x", "maxResults": %s.5}' % ("1" * 1000)),
+        ("maxResults-exponent", '{"jql": "x", "maxResults": 1.%se1}' % ("1" * 999)),
+        ("jql", '{"jql": %s}' % ("1" * 1001)),
+        ("nextPageToken", '{"jql": "x", "nextPageToken": %s}' % ("1" * 1001)),
+        ("expand", '{"jql": "x", "expand": %s}' % ("1" * 5000)),
+        ("fieldsByKeys", '{"jql": "x", "fieldsByKeys": %s}' % ("1" * 1001)),
+        ("properties", '{"jql": "x", "properties": %s}' % ("1" * 1001)),
+        ("reconcileIssues", '{"jql": "x", "reconcileIssues": %s}' % ("1" * 1001)),
+        ("fields", '{"jql": "x", "fields": %s}' % ("1" * 1001)),
+        ("undeclared-member", '{"jql": "x", "bogus": %s}' % ("1" * 1001)),
+        ("body-1001", "1" * 1001),
+        ("body-5000", "1" * 5000),
     ]
-    + [
-        # the path a refusal echoes, as `_echoed_path` gives it
-        pytest.param(path, '{"jql": %s}' % ("1" * 1001), echoed, id=path)
-        for path, echoed in [
-            ("/rest/api/3/search/jql/", "/rest/api/3/search/jql/"),
-            ("/rest/api/3//search/jql", _SEARCH_V3),
-            ("/rest/api/2/search/jql", "/rest/api/2/search/jql"),
-        ]
-    ],
-)
-def test_jira_search_post_refuses_a_number_past_1000_digits_as_failed_read(
-    client, admin_h, path, raw, echoed
-):
+] + [
+    # the path a refusal echoes, as `_echoed_path` gives it
+    pytest.param(path, '{"jql": %s}' % ("1" * 1001), echoed, id=path)
+    for path, echoed in [
+        ("/rest/api/3/search/jql/", "/rest/api/3/search/jql/"),
+        ("/rest/api/3//search/jql", _SEARCH_V3),
+        ("/rest/api/2/search/jql", "/rest/api/2/search/jql"),
+    ]
+]
+
+
+def _past_1000_digits(client, admin_h, path, raw, echoed):
     """A number literal past 1000 digits, the fraction's and exponent's counted, is real's
     problem+json refusal as the body or as any member's value (see `_jira_search_body`); inside a
     list or an object it is a row of
@@ -3961,6 +4862,10 @@ def test_jira_search_post_refuses_a_number_past_1000_digits_as_failed_read(
         "detail": "Failed to read request",
         "instance": echoed,
     }
+
+
+def test_jira_search_post_refuses_a_number_past_1000_digits_as_failed_read(client, admin_h):
+    assert _failures(_past_1000_digits, _PAST_1000_DIGITS, client, admin_h) == {}
 
 
 def test_jira_search_post_with_no_body_at_all_is_the_media_type_refusal(client, admin_h):
@@ -4043,22 +4948,33 @@ def test_confluence_refuses_a_wrong_method_with_springs_errors_list_and_no_allow
     }
 
 
-@pytest.mark.parametrize("slash", ["", "/"])
-@pytest.mark.parametrize(
-    "method,path,allow",
-    [
-        # every row measured on brekkylab.atlassian.net, 2026-09-16, by sending a method the vendor
-        # defines on no route of that path; real's ORDER varies per response, so only the set is
-        # real's and the order below is `_JIRA_ALLOW`'s
+_WRONG_METHODS = [
+    (*row, slash)
+    for row in [
+        # every row measured on brekkylab.atlassian.net, 2026-09-16, by sending a method the
+        # vendor defines on no route of that path; real's ORDER varies per response, so only
+        # the set is real's and the order below is `_JIRA_ALLOW`'s
         ("post", "/rest/api/3/serverInfo", "GET"),
         ("put", "/rest/api/3/field", "GET, POST"),
         ("post", "/rest/api/3/issue/PAY-1", "GET, PUT, DELETE"),
         ("put", "/rest/api/3/issue/PAY-1/comment", "GET, POST"),
         ("put", "/rest/api/2/search/jql", "GET, POST"),
-        # the row the vendor's own document disagrees with: it declares GET alone on `project/search`
+        # the row the vendor's own document disagrees with: it declares GET alone on
+        # `project/search`
         ("post", "/rest/api/3/project/search", "GET, PUT, DELETE"),
-    ],
-)
+        # an escape in the path, echoed as ``errors.atlassian.echoed_spelling`` spells it
+        ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),
+        ("post", "/rest/api/3/issue/A%23B", "GET, PUT, DELETE"),
+        ("post", "/rest/api/3/issue/A%3FB", "GET, PUT, DELETE"),
+    ]
+    # a trailing slash on the plain path and on each escape
+    for slash in ("", "/")
+    if not slash or row[1] == "/rest/api/3/serverInfo" or "%" in row[1]
+]
+assert sum(slash == "/" for *_, slash in _WRONG_METHODS) == 4
+
+
+@pytest.mark.parametrize("method,path,allow,slash", _WRONG_METHODS)
 def test_jira_refuses_a_wrong_method_as_rfc_7807_naming_the_methods_it_takes(
     client, admin_h, method, path, allow, slash
 ):
@@ -4399,6 +5315,10 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         *((path, admin_h) for path in _routes(keys)),
         ("/atlassian/wiki/rest/api/space/NOPESUCH", admin_h),
         ("/atlassian/rest/api/3/issue/NOPE-1", admin_h),
+        # slashed spellings, answered as the slash-free ones
+        # (``backlot.main.normalise_the_slashes_in_an_atlassian_path``)
+        ("/atlassian/wiki/rest/api/search/?cql=type%3Dpage", admin_h),
+        ("/atlassian//wiki/rest/api/space", admin_h),
         ("/atlassian/rest/api/3/serverInfo/", admin_h),
         # the gateway's Connect-token 403 (``backlot.main.refuse_a_bearer_jira_cannot_read``)
         ("/atlassian/rest/api/3/serverInfo", {"Authorization": "Bearer nope"}),
@@ -4423,28 +5343,27 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         TestClient(recording).head(path, headers=headers)
         bodies = [m.get("body", b"") for m in sent if m["type"] == "http.response.body"]
         assert b"".join(bodies) == b"", path
-    assert statuses[-5:] == [404, 404, 200, 403, 401]
+    assert statuses[-7:] == [404, 404, 200, 200, 200, 403, 401]
 
 
-@pytest.mark.parametrize(
-    "path,allow",
-    [
-        # the `Allow` ``errors.atlassian._JIRA_OPTIONS_ALLOW`` copies, route by route
-        ("/atlassian/rest/api/3/serverInfo", "GET,HEAD,OPTIONS"),
-        # its slashed spelling answers the route's own
-        ("/atlassian/rest/api/3/serverInfo/", "GET,HEAD,OPTIONS"),
-        ("/atlassian/rest/api/2/field", "POST,GET,HEAD,OPTIONS"),
-        ("/atlassian/rest/api/3/issue/NOPE-1", "PUT,GET,HEAD,DELETE,OPTIONS"),
-        ("/atlassian/rest/api/3/issue/NOPE-1/comment", "GET,HEAD,POST,OPTIONS"),
-        ("/atlassian/rest/api/2/search/jql", "GET,HEAD,POST,OPTIONS"),
-        ("/atlassian/rest/api/3/issueLinkType", "POST,GET,HEAD,OPTIONS"),
-        ("/atlassian/rest/api/3/project/NOPE/role", "GET,HEAD,OPTIONS"),
-        ("/atlassian/rest/api/3/project/NOPE/role/10002", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
-        # the row that parts from the 405 table (see ``errors.atlassian._JIRA_OPTIONS_ALLOW``)
-        ("/atlassian/rest/api/3/project/search", "GET,HEAD,OPTIONS"),
-    ],
-)
-def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path, allow):
+_OPTIONS_ALLOW = [
+    # the `Allow` ``errors.atlassian._JIRA_OPTIONS_ALLOW`` copies, route by route
+    ("/atlassian/rest/api/3/serverInfo", "GET,HEAD,OPTIONS"),
+    # its slashed spelling answers the route's own
+    ("/atlassian/rest/api/3/serverInfo/", "GET,HEAD,OPTIONS"),
+    ("/atlassian/rest/api/2/field", "POST,GET,HEAD,OPTIONS"),
+    ("/atlassian/rest/api/3/issue/NOPE-1", "PUT,GET,HEAD,DELETE,OPTIONS"),
+    ("/atlassian/rest/api/3/issue/NOPE-1/comment", "GET,HEAD,POST,OPTIONS"),
+    ("/atlassian/rest/api/2/search/jql", "GET,HEAD,POST,OPTIONS"),
+    ("/atlassian/rest/api/3/issueLinkType", "POST,GET,HEAD,OPTIONS"),
+    ("/atlassian/rest/api/3/project/NOPE/role", "GET,HEAD,OPTIONS"),
+    ("/atlassian/rest/api/3/project/NOPE/role/10002", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
+    # the row that parts from the 405 table (see ``errors.atlassian._JIRA_OPTIONS_ALLOW``)
+    ("/atlassian/rest/api/3/project/search", "GET,HEAD,OPTIONS"),
+]
+
+
+def _options_allow(client, admin_h, path, allow):
     """Pins the Jira half of ``backlot.routers.atlassian._options_answer``: 200, an empty
     `text/html` body and `Accept-Patch`, and the vendor's `Allow` for the route."""
     r = client.request("OPTIONS", path, headers=admin_h)
@@ -4453,6 +5372,10 @@ def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h, path,
     assert r.headers["allow"] == allow
     assert r.headers["accept-patch"] == ""
     assert r.content == b""
+
+
+def test_jira_answers_an_options_with_the_vendors_methods(client, admin_h):
+    assert _failures(_options_allow, _OPTIONS_ALLOW, client, admin_h) == {}
 
 
 @pytest.mark.parametrize(
@@ -4544,6 +5467,27 @@ _NO_ENDPOINT_PATHS = [
         ("GET", "/atlassian/rest/api/3/nopesuchroute?a=1&b=2", "/rest/api/3/nopesuchroute"),
         ("GET", "/atlassian/rest/api/3/nopesuchroute/", "/rest/api/3/nopesuchroute/"),
         ("GET", "/atlassian/rest/api/3//nopesuchroute", "/rest/api/3/nopesuchroute"),
+        # an escape ``errors.atlassian.echoed_spelling`` keeps: as sent, hex in upper case, one
+        # layer only
+        ("GET", "/atlassian/rest/api/3/nope%20x", "/rest/api/3/nope%20x"),
+        ("GET", "/atlassian/rest/api/3/nope%3cx", "/rest/api/3/nope%3Cx"),
+        ("GET", "/atlassian/rest/api/3/nope%2541", "/rest/api/3/nope%2541"),
+        ("GET", "/atlassian/rest/api/3/nope%c3%a9", "/rest/api/3/nope%C3%A9"),
+        ("GET", "/atlassian/rest/api/3/nope%3Fx", "/rest/api/3/nope%3Fx"),
+        ("GET", "/atlassian/rest/api/3/nope%23x", "/rest/api/3/nope%23x"),
+        ("GET", "/atlassian/rest/api/3/nope%09x", "/rest/api/3/nope%09x"),
+        ("GET", "/atlassian/rest/api/3/nope%0Dx", "/rest/api/3/nope%0Dx"),
+        ("GET", "/atlassian/rest/api/3/nope%0Ax", "/rest/api/3/nope%0Ax"),
+        # beside the escaped brackets, which draw a page instead (the bracket test below)
+        ("GET", "/atlassian/rest/api/3/nope%5Ex", "/rest/api/3/nope%5Ex"),
+        # and ones it decodes
+        ("GET", "/atlassian/rest/api/3/nope%2dx", "/rest/api/3/nope-x"),
+        ("GET", "/atlassian/rest/api/3/nope%7ex", "/rest/api/3/nope~x"),
+        ("GET", "/atlassian/rest/api/3/nope%21x", "/rest/api/3/nope!x"),
+        ("GET", "/atlassian/rest/api/3/nope%41x", "/rest/api/3/nopeAx"),
+        # an escape beside the slash rules above, and a decoded `%2F` among them
+        ("GET", "/atlassian/rest/api/3//nope%20x/", "/rest/api/3/nope%20x/"),
+        ("GET", "/atlassian/rest/api/3/nope%2F%2Fx", "/rest/api/3/nope/x"),
     ],
 )
 def test_jira_answers_a_path_it_mounts_nothing_at_as_rfc_7807(
@@ -4561,6 +5505,54 @@ def test_jira_answers_a_path_it_mounts_nothing_at_as_rfc_7807(
         "detail": f"No endpoint {method} {echoed}.",
         "instance": echoed,
     }
+
+
+#: The stub of Jira's `(null)` error page: its title and the one line real's reads.
+_JIRA_NULL_PAGE = (
+    "<!DOCTYPE html><html><head><title>(null)</title></head><body>"
+    '<p>Encountered a "null - null" error while loading this page.</p></body></html>'
+)
+
+
+_BRACKET_ROWS = [
+    (*row, accept)
+    for row in [
+        # the dead-link page, the one the site answers `/foo` with
+        ("/rest/api/3/nope%5Bx", 404, "/foo"),
+        ("/rest/api/3/nope%5Dx", 404, "/foo"),
+        ("/rest/api/3/issue/A%5BB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
+        ("/rest/api/3/issue/A%5DB/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
+        # in lower case, and bare
+        ("/rest/api/3/nope%5bx", 404, "/foo"),
+        ("/rest/api/3/nope[x", 404, "/foo"),
+        ("/rest/api/3/issue/A[B/comment?maxResults=abc", 400, _JIRA_NULL_PAGE),
+        # the issue's own 404 is not one of the two
+        ("/rest/api/3/issue/A%5BB", 404, None),
+        ("/rest/api/3/issue/A%5DB", 404, None),
+    ]
+    # `*/*` beside every row the dead-link page does not answer, and one it does
+    for accept in ("application/json", "*/*")
+    if accept == "application/json" or row[2] != "/foo" or row[0].endswith("%5Bx")
+]
+assert [row[2] for row in _BRACKET_ROWS if row[3] == "*/*"].count("/foo") == 1
+
+
+@pytest.mark.parametrize("vendor_path,status,page,accept", _BRACKET_ROWS)
+def test_jira_answers_a_bracket_with_a_page_of_its_web_app(
+    client, admin_h, vendor_path, status, page, accept
+):
+    """Pins the two refusals ``errors.atlassian._JIRA_BRACKET`` names, under both `Accept` values
+    measured."""
+    r = client.get(f"/atlassian{vendor_path}", headers={**admin_h, "Accept": accept})
+    assert r.status_code == status, r.text
+    if page is None:
+        assert r.headers["content-type"] == "application/json;charset=UTF-8"
+        assert sorted(r.json()) == ["errorMessages", "errors"]
+        return
+    if page == "/foo":
+        page = client.get("/atlassian/foo", headers=admin_h).text
+    assert r.headers["content-type"] == "text/html;charset=utf-8"
+    assert r.text == page
 
 
 _CREDENTIALS = {
@@ -4595,9 +5587,13 @@ _CREDENTIALS = {
         ("OPTIONS", "/atlassian/rest/api/3/issue/NOPE-1", "none", 401),
         ("OPTIONS", "/atlassian/rest/api/3/dashboard", "none", 401),
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "admin", 200),
-        # and on a path it publishes nothing at, the URL's 404 whatever the credential
+        # and on a path it publishes nothing at, the URL's 404 whatever the credential, a decoded
+        # newline, tab or `#` in a published path's spelling included
         ("OPTIONS", "/atlassian/rest/api/3/nopesuchroute", "none", 404),
         ("OPTIONS", "/atlassian/rest/api/3/nopesuchroute", "unreadable-bearer", 404),
+        ("GET", "/atlassian/rest/api/3/myse%0Alf", "none", 404),
+        ("GET", "/atlassian/rest/api/3/my%09self", "none", 404),
+        ("GET", "/atlassian/rest/api/3/myself%23x", "none", 404),
     ],
 )
 def test_jira_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
@@ -4611,6 +5607,11 @@ def test_jira_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
     headers = admin_h if credential == "admin" else _CREDENTIALS[credential]
     r = client.request(method, path, headers=headers)
     assert r.status_code == status, r.text
+    if status == 404:
+        # the URL's 404, naming the path as sent (``errors.atlassian.no_endpoint``)
+        echoed = path.removeprefix("/atlassian")
+        assert r.json()["detail"] == f"No endpoint {method} {echoed}."
+        assert r.json()["instance"] == echoed
     if status != 401:
         assert "www-authenticate" not in r.headers
         return
@@ -4807,14 +5808,17 @@ def test_jira_checks_the_media_type_an_operation_takes_before_anything_else(
     }
 
 
-def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
+def test_jira_unserved_agrees_with_the_baseline_and_the_script(monkeypatch):
     """``backlot/data/jira_unserved.json`` sorts each `missing` operation of the Jira baseline
     into `refused` or `run` and holds nothing else, so one the file has lost, or one the baseline
     has gained or dropped since the file was written, fails here: the reminder to rerun
     ``scripts/gen_jira_unserved.py``. A route added for one of them is `implemented` in the baseline
     and the file would otherwise refuse a served operation's path for a method no route takes. Which
     list an operation belongs in is read off Jira's documents, which that script's `--check`
-    compares on the schedule in `.github/workflows/fidelity.yml`."""
+    compares on the schedule in `.github/workflows/fidelity.yml`. An entry's accept, produces and
+    charset, which `ACCEPT_UNCHECKED`, `PRODUCES` and `DOCUMENTED_OTHERWISE` set whatever the
+    documents say, are compared as well, so a name added to or dropped from one of those three
+    without a rerun fails here too."""
     import runpy
 
     import backlot
@@ -4825,67 +5829,91 @@ def test_jira_unserved_sorts_every_operation_no_route_serves(monkeypatch):
     table = Path(backlot.__file__).resolve().parent / "data" / "jira_unserved.json"
     content = json.loads(table.read_text(encoding="utf-8"))
     assert sorted([*content["refused"], *content["run"]]) == sorted(unserved)
-    # And the script reads the same operations off the baseline: given documents declaring
-    # nothing, it refuses every one of them.
-    monkeypatch.setattr("backlot.fidelity.fetch.fetch_json", lambda url, **kw: {"paths": {}})
+    # And the script reads the same operations off the baseline: given documents publishing each
+    # with no `security`, it refuses every one of them.
+    published: dict = {"paths": {}}
+    for operation in unserved:
+        method, path = operation.split(" ", 1)
+        published["paths"].setdefault(path, {})[method.lower()] = {}
+    monkeypatch.setattr("backlot.fidelity.fetch.fetch_json", lambda url, **kw: published)
     script = runpy.run_path(str(table.parents[2] / "scripts" / "gen_jira_unserved.py"))
-    assert sorted(script["build"]()["refused"]) == sorted(unserved)
+    built = script["build"]()["refused"]
+    assert sorted(built) == sorted(unserved)
+    held = {**content["refused"], **content["run"]}
+    for field in ("accept", "produces", "charset"):
+        written = {op: entry[field] for op, entry in built.items() if field in entry}
+        assert written == {op: entry[field] for op, entry in held.items() if field in entry}, field
+    # One the documents stop publishing is a stale baseline row, not one published with no
+    # `security`: the script stops rather than write it back under `refused`.
+    method, path = unserved[0].split(" ", 1)
+    del published["paths"][path][method.lower()]
+    with pytest.raises(SystemExit, match=re.escape(repr([unserved[0]]))):
+        script["build"]()
 
 
-@pytest.mark.parametrize(
-    "path,accept,shape,echoed",
-    [
-        ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "application/json", "json", "?a=1"),
-        ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "*/*", "xml", "?a=1"),
-        ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "application/xml", "xml", "?a=1"),
-        (
-            "/atlassian/wiki/rest/api/nopesuchroute?a=1",
-            "application/xml;q=0.5;x=1, application/json",
-            "json",
-            "?a=1",
-        ),
-        ("/atlassian/wiki/rest/api/nopesuchroute?a=1", None, "xml", "?a=1"),
-        # a trailing slash is kept and an interior run collapsed, as in Jira's `detail`
-        ("/atlassian/wiki/rest/api/nopesuchroute/", "application/json", "json", "nopesuchroute/"),
-        (
-            "/atlassian/wiki/rest/api//nopesuchroute",
-            "application/json",
-            "json",
-            "/api/nopesuchroute",
-        ),
-        # what ``errors.atlassian.jaxrs_not_found`` escapes in the XML; the JSON escapes neither
-        ("/atlassian/wiki/rest/api/nope&x'quote", None, "xml", "nope&amp;x'quote"),
-        ("/atlassian/wiki/rest/api/nope&x'quote", "application/json", "json", "nope&x'quote"),
-        # the name is read whatever its case
-        ("/atlassian/wiki/rest/api/nopesuchroute", "APPLICATION/JSON", "json", "nopesuchroute"),
-        # by `q`, `q=0` among them, then the more specific, then the first listed, XML before JSON
-        *(
-            ("/atlassian/wiki/rest/api/nopesuchroute", accept, shape, "nopesuchroute")
-            for accept, shape in (
-                ("application/json;q=0", "json"),
-                ("application/xml;q=0, application/json", "json"),
-                ("application/json;q=0.5, application/xml", "xml"),
-                ("application/xml, application/json", "xml"),
-                ("APPLICATION/XML, application/json", "xml"),
-                ("application/*, application/json", "json"),
-                ("application/*", "xml"),
-                ("text/xml, application/json", "json"),
-                ("foo, application/json", "json"),
-                ("application/jsonx", "xml"),
-                ("application/json-patch+json", "xml"),
-                ("application/*, application/json;q=0.5", "xml"),
-                ("*/*, application/json;q=0.5", "xml"),
-                ("*/json", "xml"),
-                # a `Q` Spring would fail to copy, where Jersey reads the last `q`
-                ("application/json;q=0.5;Q=2;q=0.5", "json"),
-                ("*/*;q=0.5;Q=2;q=0.5", "xml"),
-            )
-        ),
-    ],
-)
-def test_confluence_answers_an_unclaimed_segment_in_the_shape_accept_asks_for(
-    client, admin_h, path, accept, shape, echoed
-):
+_UNCLAIMED_SEGMENTS = [
+    ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "application/json", "json", "?a=1"),
+    ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "*/*", "xml", "?a=1"),
+    ("/atlassian/wiki/rest/api/nopesuchroute?a=1", "application/xml", "xml", "?a=1"),
+    (
+        "/atlassian/wiki/rest/api/nopesuchroute?a=1",
+        "application/xml;q=0.5;x=1, application/json",
+        "json",
+        "?a=1",
+    ),
+    ("/atlassian/wiki/rest/api/nopesuchroute?a=1", None, "xml", "?a=1"),
+    # a trailing slash is kept and an interior run collapsed, as in Jira's `detail`
+    ("/atlassian/wiki/rest/api/nopesuchroute/", "application/json", "json", "nopesuchroute/"),
+    (
+        "/atlassian/wiki/rest/api//nopesuchroute",
+        "application/json",
+        "json",
+        "/api/nopesuchroute",
+    ),
+    # what ``errors.atlassian.jaxrs_not_found`` escapes in the XML; the JSON escapes neither
+    ("/atlassian/wiki/rest/api/nope&x'quote", None, "xml", "nope&amp;x'quote"),
+    ("/atlassian/wiki/rest/api/nope&x'quote", "application/json", "json", "nope&x'quote"),
+    # the name is read whatever its case
+    ("/atlassian/wiki/rest/api/nopesuchroute", "APPLICATION/JSON", "json", "nopesuchroute"),
+    # by `q`, `q=0` among them, then the more specific, then the first listed, XML before JSON
+    *(
+        ("/atlassian/wiki/rest/api/nopesuchroute", accept, shape, "nopesuchroute")
+        for accept, shape in (
+            ("application/json;q=0", "json"),
+            ("application/xml;q=0, application/json", "json"),
+            ("application/json;q=0.5, application/xml", "xml"),
+            ("application/xml, application/json", "xml"),
+            ("APPLICATION/XML, application/json", "xml"),
+            ("application/*, application/json", "json"),
+            ("application/*", "xml"),
+            ("text/xml, application/json", "json"),
+            ("foo, application/json", "json"),
+            ("application/jsonx", "xml"),
+            ("application/json-patch+json", "xml"),
+            ("application/*, application/json;q=0.5", "xml"),
+            ("*/*, application/json;q=0.5", "xml"),
+            ("*/json", "xml"),
+            # a `Q` Spring would fail to copy, where Jersey reads the last `q`
+            ("application/json;q=0.5;Q=2;q=0.5", "json"),
+            ("*/*;q=0.5;Q=2;q=0.5", "xml"),
+        )
+    ),
+    # the escapes ``errors.atlassian.echoed_spelling`` keeps and decodes, in `null for uri:`,
+    # by Confluence's own set
+    ("/atlassian/wiki/rest/api/nope%20x", "application/json", "json", "nope%20x"),
+    ("/atlassian/wiki/rest/api/nope%21x", "application/json", "json", "nope%21x"),
+    ("/atlassian/wiki/rest/api/nope%3cx", "application/json", "json", "nope%3cx"),
+    ("/atlassian/wiki/rest/api/nope%3Fx", "application/json", "json", "nope%3Fx"),
+    ("/atlassian/wiki/rest/api/nope%23x", "application/json", "json", "nope%23x"),
+    ("/atlassian/wiki/rest/api/nope%2Dx", "application/json", "json", "nope-x"),
+    ("/atlassian/wiki/rest/api/nope%0Ax", "application/json", "json", "nope%0Ax"),
+    ("/atlassian/wiki/rest/api/nope%0Ax", "*/*", "xml", "nope%0Ax"),
+    # an escaped `?` beside a real query: the query is the one sent, after the path's escape
+    ("/atlassian/wiki/rest/api/nope%3Fx?_=1", "application/json", "json", "nope%3Fx?_=1"),
+]
+
+
+def _unclaimed_segment(client, admin_h, path, accept, shape, echoed):
     """Pins the JAX-RS 404 the comment on ``errors.atlassian.JAXRS_XML_MEDIA_TYPE`` describes,
     `Accept` by `Accept`."""
     headers = admin_h if accept is None else {**admin_h, "Accept": accept}
@@ -4902,6 +5930,10 @@ def test_confluence_answers_an_unclaimed_segment_in_the_shape_accept_asks_for(
         assert r.text.startswith('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><status>')
         assert "<status-code>404</status-code>" in r.text
         assert f"{echoed}</message>" in r.text
+
+
+def test_confluence_answers_an_unclaimed_segment_in_the_shape_accept_asks_for(client, admin_h):
+    assert _failures(_unclaimed_segment, _UNCLAIMED_SEGMENTS, client, admin_h) == {}
 
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
@@ -5359,6 +6391,23 @@ _JIRA_PAGE = errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE
             "{site}/login?application=confluence&dest-url=%2Fwiki%2Fnope",
             None,
         ),
+        # an escape in the path, and an escaped `?` beside a query (``unmatched_path``)
+        (
+            "/atlassian/wiki/nope%20x",
+            True,
+            302,
+            None,
+            "{site}/login?application=confluence&dest-url=%2Fwiki%2Fnope%2520x",
+            None,
+        ),
+        (
+            "/atlassian/wiki/nope%3Fx?a=1",
+            True,
+            302,
+            None,
+            "{site}/login?application=confluence&dest-url=%2Fwiki%2Fnope%253Fx%3Fa%3D1",
+            None,
+        ),
         # Jira's own not-found page, its charset in lower case
         ("/atlassian/foo", False, 404, _JIRA_PAGE, None, None),
         ("/atlassian/foo", True, 404, _JIRA_PAGE, None, None),
@@ -5402,6 +6451,16 @@ _JIRA_PAGE = errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE
             False,
             200,
             "text/html; charset=utf-8",
+            None,
+            "no-store, max-age=0, stale-if-error=0",
+        ),
+        # an encoded backslash in the key included, which is Tomcat's 400 under Jira's API
+        # (``errors.atlassian.front_door``) and not here
+        (
+            "/atlassian/browse/A%5C1",
+            True,
+            200,
+            "text/html",
             None,
             "no-store, max-age=0, stale-if-error=0",
         ),
@@ -5483,10 +6542,9 @@ def test_jira_numeric_ids_resolve_exactly_and_preserve_acl(client, admin_h, toke
                 assert numbered.json() == keyed.json()
 
 
-@pytest.mark.parametrize("version", [2, 3])
-def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path, version):
+def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path):
     """PAY-1425 and PAY-2172 share a numeric seed; each served id must read its own issue, and the
-    subtask and parent entries that point at them carry those ids."""
+    subtask and parent entries that point at them carry those ids, under both API versions."""
     keys = ("PAY-1425", "PAY-2172")
     corpus = [
         {
@@ -5508,25 +6566,26 @@ def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path,
     admin = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["admin_token"]
     with client_for(settings, reload=True) as c:
         h = {"Authorization": f"Bearer {admin}"}
-        path = f"/atlassian/rest/api/{version}/issue/"
-        ids = {}
-        for key in keys:
-            by_key = c.get(path + key, headers=h)
-            assert by_key.status_code == 200
-            ids[key] = by_key.json()["id"]
-            by_id = c.get(path + ids[key], headers=h)
-            assert by_id.status_code == 200 and by_id.json()["key"] == key
-            assert by_id.json() == by_key.json()
-            assert (
-                c.get(path + ids[key] + "/comment", headers=h).json()
-                == c.get(path + key + "/comment", headers=h).json()
-            )
-        assert len(set(ids.values())) == len(keys)
-        parent = c.get(path + ids["PAY-1425"], headers=h).json()["fields"]
-        assert [s["id"] for s in parent["subtasks"]] == [ids["PAY-2172"]]
-        assert parent["subtasks"][0]["self"].endswith("/issue/" + ids["PAY-2172"])
-        child = c.get(path + ids["PAY-2172"], headers=h).json()["fields"]
-        assert child["parent"]["id"] == ids["PAY-1425"]
+        for version in (2, 3):
+            path = f"/atlassian/rest/api/{version}/issue/"
+            ids = {}
+            for key in keys:
+                by_key = c.get(path + key, headers=h)
+                assert by_key.status_code == 200
+                ids[key] = by_key.json()["id"]
+                by_id = c.get(path + ids[key], headers=h)
+                assert by_id.status_code == 200 and by_id.json()["key"] == key
+                assert by_id.json() == by_key.json()
+                assert (
+                    c.get(path + ids[key] + "/comment", headers=h).json()
+                    == c.get(path + key + "/comment", headers=h).json()
+                )
+            assert len(set(ids.values())) == len(keys)
+            parent = c.get(path + ids["PAY-1425"], headers=h).json()["fields"]
+            assert [s["id"] for s in parent["subtasks"]] == [ids["PAY-2172"]]
+            assert parent["subtasks"][0]["self"].endswith("/issue/" + ids["PAY-2172"])
+            child = c.get(path + ids["PAY-2172"], headers=h).json()["fields"]
+            assert child["parent"]["id"] == ids["PAY-1425"]
 
 
 _SEARCH = "/atlassian/wiki/rest/api/search?cql=type%3Dpage"
@@ -5578,120 +6637,152 @@ _CLOUDFRONT_BLOCKED = (919, "9d105cf52ff43a5280d20ee1f0fdfac202ef44d9d70b25857d2
 _NGINX_400 = (150, "487ad0d2cf075f4328a1adf57ef428759ad4e2c873a8ebd2ad9653990829c9cf")
 _OPENRESTY_405 = (154, "4a327e30d348f9975e50913c72d1bdb067f31f726722326c17c6af8d7f04b3a6")
 _TOMCAT_400 = (435, "141d0eee920f04eae74509434b49e8c473014166b90ec31e6f03596a782bf89f")
+_EDGE_400 = (126, "8266721d920027d1f639bfc978f9293bd845ffd458017961400c519328e2c328")
 _EDGE_PAGE = "text/html"
 _TOMCAT_PAGE = "text/html;charset=utf-8"
 
 
-@pytest.mark.parametrize(
-    "method,vendor_path,status,page,media_type",
-    [
-        # the CDN: `TRACE` is its 405, a method spelled as the 403's rule spells one its 403, any
-        # other its 400, and a `%00` or a broken escape its 400 ahead of the method and the firewall
-        ("TRACE", "/rest/api/3/serverInfo", 405, _CLOUDFRONT_405, _EDGE_PAGE),
-        ("PROPFIND", "/rest/api/3/serverInfo", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
-        ("MKACTIVITY", "/rest/api/3/serverInfo", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        ("TRACE", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        ("PATCH", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        ("GET", "/rest/api/3/serverInfo%2", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        ("GET", "/wiki/rest/api/space/%", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope%%41", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope%u005c", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        ("TRACE", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        ("PROPFIND", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope<script>%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
-        # its firewall (`errors.atlassian.waf_blocks`): a tag, and a step up a directory
-        ("GET", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/wiki/rest/api/nope%3Cscript%3E", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/wiki/rest/api/space/A<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope%253Cscript%253E", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope&lt;script&gt;", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope</script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope<svg>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope<svgx>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope<xslt>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope<!doctypex>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope<!ENTITY>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope..%2F..%2Fetc%2Fpasswd", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope..%5Cy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope/..;/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope/..%3B/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope/..;;;;/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/nope/..;%3B/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/serverInfo?x=..%2Fy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/serverInfo?x=..%5C", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/serverInfo?x=..%5C&y=1", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/serverInfo?x=..%5C%5Cy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("GET", "/rest/api/3/serverInfo?x=..%5C%2Fy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        # the method's refusal before the firewall's, the firewall's before the gateway's `PATCH`
-        ("PROPFIND", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
-        ("PATCH", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        # the gateway's `PATCH`, which picks the product with each run of slashes read as one and
-        # comes before Tomcat
-        ("PATCH", "/rest/api/3/serverInfo", 400, _NGINX_400, _EDGE_PAGE),
-        ("PATCH", "/wiki/rest/api/space", 405, _OPENRESTY_405, _EDGE_PAGE),
-        ("PATCH", "/wiki", 405, _OPENRESTY_405, _EDGE_PAGE),
-        ("PATCH", "//wiki/rest/api/space", 405, _OPENRESTY_405, _EDGE_PAGE),
-        ("PATCH", "/wiki/rest/api/space/NO%2FSUCH", 405, _OPENRESTY_405, _EDGE_PAGE),
-        # Confluence's Tomcat: an encoded slash or backslash anywhere under `/wiki/` but `spaces/`
-        ("GET", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
-        ("POST", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
-        ("GET", "/wiki/rest/api/space/NO%2fSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
-        ("GET", "/wiki/rest/api/space/NO%5CSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
-        ("GET", "//wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
-        ("GET", "/wiki/rest/api/nope%2Fthing", 400, _TOMCAT_400, _TOMCAT_PAGE),
-        ("GET", "/wiki/rest/api/space%2F", 400, _TOMCAT_400, _TOMCAT_PAGE),
-        ("GET", "/wiki/display/A%2FB", 400, _TOMCAT_400, _TOMCAT_PAGE),
-        # a `HEAD` is the page's status and length with no body
-        ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
-        ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
-        # what none of them refuses reaches the product: a tag the firewall does not name, a
-        # closing tag but `script`'s, a name short of `!doctype`, a `..;` inside a segment or with
-        # no `/` after it, a tag in the query, a `..\` there that neither a `\` nor a `/` nor the
-        # end of the value follows, a step in a parameter's name, a broken escape in the query,
-        # Jira's decoded slash and the web app's `spaces/` in any case
-        ("GET", "/rest/api/3/nope<img>", 404, None, errors_atlassian.PROBLEM_JSON),
-        ("GET", "/rest/api/3/nopeA..;/x", 404, None, errors_atlassian.PROBLEM_JSON),
-        ("GET", "/rest/api/3/nope/..;a/x", 404, None, errors_atlassian.PROBLEM_JSON),
-        ("GET", "/rest/api/3/nope</style>", 404, None, errors_atlassian.PROBLEM_JSON),
-        ("GET", "/rest/api/3/nope<!doctyp>", 404, None, errors_atlassian.PROBLEM_JSON),
-        ("GET", "/rest/api/3/nope<!ELEMENT>", 404, None, errors_atlassian.PROBLEM_JSON),
-        (
-            "GET",
-            "/rest/api/3/serverInfo?q=<script>",
-            200,
-            None,
-            errors_atlassian.JIRA_JSON_MEDIA_TYPE,
-        ),
-        (
-            "GET",
-            "/rest/api/3/serverInfo?x=..%5Cy",
-            200,
-            None,
-            errors_atlassian.JIRA_JSON_MEDIA_TYPE,
-        ),
-        ("GET", "/rest/api/3/serverInfo?x=..%3B", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
-        (
-            "GET",
-            "/rest/api/3/serverInfo?x=..%5C.",
-            200,
-            None,
-            errors_atlassian.JIRA_JSON_MEDIA_TYPE,
-        ),
-        ("GET", "/rest/api/3/serverInfo?..%2F=1", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
-        ("GET", "/rest/api/3/serverInfo?x=%zz", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
-        ("GET", "/rest/api/3/issue/A%2FB", 404, None, errors_atlassian.PROBLEM_JSON),
-        # the web app answers `spaces/` itself (real's single-page app at 200, which is not copied)
-        ("GET", "/wiki/spaces/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
-        ("GET", "/wiki/SPACES/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
-    ],
-)
-def test_atlassian_front_door_answers_before_either_product(
-    client, admin_h, method, vendor_path, status, page, media_type
-):
-    """Each refusal is the page real sent, held here as its length and digest, with the headers real
-    sent beside it (``errors.atlassian.FrontDoor``); which layer gives it and in what order is
+_FRONT_DOOR_ROWS = [
+    # the CDN: `TRACE` is its 405, a method spelled as the 403's rule spells one its 403, any
+    # other its 400, and a `%00` or a broken escape its 400 ahead of the method and the firewall
+    ("TRACE", "/rest/api/3/serverInfo", 405, _CLOUDFRONT_405, _EDGE_PAGE),
+    ("PROPFIND", "/rest/api/3/serverInfo", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
+    ("MKACTIVITY", "/rest/api/3/serverInfo", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("TRACE", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("PATCH", "/rest/api/3/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/serverInfo%2", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/space/%", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope%%41", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope%u005c", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("TRACE", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("PROPFIND", "/rest/api/3/nope%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope<script>%zz", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    # its firewall (`errors.atlassian.waf_blocks`): a tag, and a step up a directory
+    ("GET", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope%3Cscript%3E", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/space/A<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope%253Cscript%253E", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope&lt;script&gt;", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope</script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope<svg>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope<svgx>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope<xslt>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope<!doctypex>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope<!ENTITY>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope..%2F..%2Fetc%2Fpasswd", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope..%5Cy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope/..;/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope/..%3B/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope/..;;;;/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope/..;%3B/x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/serverInfo?x=..%2Fy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/serverInfo?x=..%5C", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/serverInfo?x=..%5C&y=1", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/serverInfo?x=..%5C%5Cy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/rest/api/3/serverInfo?x=..%5C%2Fy", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    # the method's refusal before the firewall's, the firewall's before the gateway's `PATCH`
+    ("PROPFIND", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
+    ("PATCH", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    # the gateway's `PATCH`, which picks the product with each run of slashes read as one and
+    # comes before Tomcat
+    ("PATCH", "/rest/api/3/serverInfo", 400, _NGINX_400, _EDGE_PAGE),
+    ("PATCH", "/wiki/rest/api/space", 405, _OPENRESTY_405, _EDGE_PAGE),
+    ("PATCH", "/wiki", 405, _OPENRESTY_405, _EDGE_PAGE),
+    ("PATCH", "//wiki/rest/api/space", 405, _OPENRESTY_405, _EDGE_PAGE),
+    ("PATCH", "/wiki/rest/api/space/NO%2FSUCH", 405, _OPENRESTY_405, _EDGE_PAGE),
+    # Confluence's Tomcat: an encoded slash or backslash anywhere under `/wiki/` but `spaces/`
+    ("GET", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("POST", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/wiki/rest/api/space/NO%2fSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/wiki/rest/api/space/NO%5CSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "//wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/wiki/rest/api/nope%2Fthing", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/wiki/rest/api/space%2F", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/wiki/display/A%2FB", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    # and on Jira's API an encoded backslash, at a path no route matches and at served ones
+    ("GET", "/rest/api/3/nope%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/rest/api/3/issue/A%5CB", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/rest/api/3/issue/A%5CB/comment?maxResults=abc", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    # the edge's 400 for a `;`, bare or escaped in either case, wherever it stands, a `..;` the
+    # firewall lets through included (the shape `Accept` picks is
+    # `test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks`)
+    ("GET", "/rest/api/3/nope%3Bx", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope%3bx", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope;x%3By", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/issue/A%3BB", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/issue/A;B", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/issue/A%3BB/comment?maxResults=abc", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope%3Bx", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/space/NO;SUCH", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/space/NO%3BSUCH", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/content/1;2", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nopeA..;/x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/nope/..;a/x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/browse/A-1;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/x;y", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/x;y", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/spaces/X;y", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("PATCH", "/rest/api/3/issue/A;B", 400, _EDGE_400, _EDGE_PAGE),
+    ("PATCH", "/wiki/rest/api/space;x", 400, _EDGE_400, _EDGE_PAGE),
+    # and where it stands among the other layers' refusals (``errors.atlassian.front_door``)
+    ("GET", "/rest/api/3/nope%00;x", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("PROPFIND", "/rest/api/3/nope;x", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
+    ("GET", "/rest/api/3/..;/nope;x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/space/A%2FB;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/issue/A%5CB;x", 400, _EDGE_400, _EDGE_PAGE),
+    # a `HEAD` is the page's status and length with no body
+    ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("HEAD", "/rest/api/3/nope;x", 400, _EDGE_400, _EDGE_PAGE),
+    # what none of them refuses reaches the product: a tag the firewall does not name, a
+    # closing tag but `script`'s, a name short of `!doctype`, a tag in the query, a `..\` there
+    # that neither a `\` nor a `/` nor the end of the value follows, a `;` there, a step in a
+    # parameter's name, a broken escape in the query, Jira's decoded slash and the web app's
+    # `spaces/` in any case
+    ("GET", "/rest/api/3/nope<img>", 404, None, errors_atlassian.PROBLEM_JSON),
+    ("GET", "/rest/api/3/nope</style>", 404, None, errors_atlassian.PROBLEM_JSON),
+    ("GET", "/rest/api/3/nope<!doctyp>", 404, None, errors_atlassian.PROBLEM_JSON),
+    ("GET", "/rest/api/3/nope<!ELEMENT>", 404, None, errors_atlassian.PROBLEM_JSON),
+    (
+        "GET",
+        "/rest/api/3/serverInfo?q=<script>",
+        200,
+        None,
+        errors_atlassian.JIRA_JSON_MEDIA_TYPE,
+    ),
+    (
+        "GET",
+        "/rest/api/3/serverInfo?x=..%5Cy",
+        200,
+        None,
+        errors_atlassian.JIRA_JSON_MEDIA_TYPE,
+    ),
+    ("GET", "/rest/api/3/serverInfo?x=..%3B", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+    (
+        "GET",
+        "/rest/api/3/serverInfo?x=..%5C.",
+        200,
+        None,
+        errors_atlassian.JIRA_JSON_MEDIA_TYPE,
+    ),
+    ("GET", "/rest/api/3/serverInfo?..%2F=1", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+    ("GET", "/rest/api/3/serverInfo?x=%zz", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+    ("GET", "/rest/api/3/issue/A%2FB", 404, None, errors_atlassian.PROBLEM_JSON),
+    # the web app answers `spaces/` itself (real's single-page app at 200, which is not copied)
+    ("GET", "/wiki/spaces/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
+    ("GET", "/wiki/SPACES/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
+]
+
+
+def _front_door(client, admin_h, method, vendor_path, status, page, media_type):
+    """Each refusal is the page real sent, held here as its length and digest, with the headers its
+    layer carries (``errors.atlassian.FrontDoor``). The edge's `;` page is the stub
+    ``errors.atlassian._EDGE_PAGE_400`` describes. Which layer gives a refusal and in what order is
     ``errors.atlassian.front_door``'s, which carries the measurement. The rows with no page reach
     the product. The credential does not change which layer answers, so an admin request is enough
     to show a served route does not reach its handler."""
@@ -5706,10 +6797,15 @@ def test_atlassian_front_door_answers_before_either_product(
     length, digest = page
     assert "allow" not in r.headers
     assert ("content-language" in r.headers) == (media_type == _TOMCAT_PAGE)
+    # the gateway's two ids, which the edge's 400 carries too where no `;` is bare
+    ids = page in (_NGINX_400, _OPENRESTY_405, _TOMCAT_400) or (
+        page == _EDGE_400 and ";" not in vendor_path
+    )
     for name in ("atl-request-id", "atl-traceid"):
-        assert (name in r.headers) == (page in (_NGINX_400, _OPENRESTY_405, _TOMCAT_400)), name
+        assert (name in r.headers) == ids, name
     for name in ("x-content-type-options", "x-xss-protection"):
         assert (name in r.headers) == (page not in (_CLOUDFRONT_405, _CLOUDFRONT_400)), name
+    assert r.headers.get("access-control-allow-origin") == ("*" if page == _EDGE_400 else None)
     if method == "HEAD":
         assert r.content == b"" and r.headers["content-length"] == str(length)
         return
@@ -5717,6 +6813,53 @@ def test_atlassian_front_door_answers_before_either_product(
     assert re.search(r"Request ID: [A-Za-z0-9_-]{54}==\n", r.text) or "Request ID" not in r.text
     normalised = re.sub(r"Request ID: \S+", "Request ID: <id>", r.text)
     assert hashlib.sha256(normalised.encode()).hexdigest() == digest
+
+
+def test_atlassian_front_door_answers_before_either_product(client, admin_h):
+    assert _failures(_front_door, _FRONT_DOOR_ROWS, client, admin_h) == {}
+
+
+_EDGE_JSON = b'{"message":"","status":400}\n'
+_EDGE_STUB = (
+    b'<!DOCTYPE html><html><head><meta name="details" content="lua_response">'
+    b"<title>400</title></head><body><p>400</p></body></html>"
+)
+
+
+_SEMICOLON_ROWS = [
+    (*row, vendor_path)
+    for vendor_path in (
+        "/rest/api/3/issue/A;B",
+        "/rest/api/3/nope%3Bx",
+        "/wiki/rest/api/space/NO;SUCH",
+    )
+    for row in [
+        ("application/json", "application/json", _EDGE_JSON),
+        ("application/json, text/html", "application/json", _EDGE_JSON),
+        ("text/html, application/json", "application/json", _EDGE_JSON),
+        ("application/json;q=0, text/html", "application/json", _EDGE_JSON),
+        ("APPLICATION/JSON", "text/html", _EDGE_STUB),
+        ("application/*, application/xml", "text/html", _EDGE_STUB),
+        ("text/html", "text/html", _EDGE_STUB),
+        ("*/*", "text/html", _EDGE_STUB),
+    ]
+    # every `Accept` on the issue's path, and each shape on the other two
+    if vendor_path.endswith("A;B") or row[0] in ("application/json", "APPLICATION/JSON")
+]
+assert len(_SEMICOLON_ROWS) == 8 + 2 * 2
+
+
+@pytest.mark.parametrize("accept,media_type,body,vendor_path", _SEMICOLON_ROWS)
+def test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks(
+    client, admin_h, vendor_path, accept, media_type, body
+):
+    """The edge's 400 for a `;` (``errors.atlassian.front_door``), in the shape `Accept` picks, with
+    no charset on either product."""
+    r = client.get(f"/atlassian{vendor_path}", headers={**admin_h, "Accept": accept})
+    assert r.status_code == 400
+    assert r.headers["content-type"] == media_type
+    assert r.headers["access-control-allow-origin"] == "*"
+    assert r.content == body
 
 
 @pytest.mark.parametrize(
@@ -5788,298 +6931,497 @@ _OUT_OF_RANGE = 'Invalid quality value "{}": should be between 0.0 and 1.0'
 _JSON_TYPE = "application/json"
 
 
-@pytest.mark.parametrize(
-    "method,vendor_path,authorization,ctype,status,body",
-    [
-        # a Spring write that checks its `Content-Type` first: its 415, naming the type as read,
-        # then the caller's refusal for the type it takes
-        ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, None, 415, "''"),
-        ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "", 415, "''"),
-        ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "text/plain", 415)
-        + ("'text/plain'",),
-        ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "APPLICATION/JSON", 415)
-        + ("'application/json'",),
-        (
-            "POST",
-            "/wiki/rest/api/content/abc123/child/attachment",
-            None,
-            "TEXT/Plain;Charset=UTF-8;X=Y",
-            415,
-            "'text/plain;Charset=UTF-8;X=Y'",
-        ),
-        ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "foo", 415)
-        + ("Invalid mime type \"foo\": does not contain '/'",),
-        # the parameters kept (``errors.atlassian._spring_media_type``)
-        *(
-            ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, ctype, 415, named)
-            for ctype, named in (
-                ("application/json;charset=nope;charset=utf-8", "'application/json;charset=utf-8'"),
-                ("application/json;Charset=nope;charset=utf-8", "'application/json;charset=utf-8'"),
-                ("application/json;charset=utf-8;Charset=nope", "'application/json;Charset=nope'"),
-                ("application/xml;x=1;X=2", "'application/xml;X=2'"),
-                ("application/xml;Q=2", "'application/xml;Q=2'"),
-                ("application/xml;q=2;Q=0.5", "'application/xml;Q=0.5'"),
-                ("application/xml;q=1d", "'application/xml;q=1d'"),
-                ("application/xml;q=-0", "'application/xml;q=-0'"),
-            )
-        ),
-        # a `q` Spring cannot read, the one thing wrong with the type: why, in Spring's words and
-        # Java's (``errors.atlassian._spring_quality_reason``)
-        *(
-            ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, 415)
-            + (f'Invalid media type "{ctype}": {reason}',)
-            for ctype, reason in (
-                ("application/json;q=2", _OUT_OF_RANGE.format("2")),
-                ('application/xml;q="2"', _OUT_OF_RANGE.format("2")),
-                ('application/xml;q=" 2"', _OUT_OF_RANGE.format(" 2")),
-                ("application/xml;q=NaN", _OUT_OF_RANGE.format("NaN")),
-                ("application/xml;q=0x1.8p0", _OUT_OF_RANGE.format("0x1.8p0")),
-                ("application/xml;Q=0.5;q=2", _OUT_OF_RANGE.format("2")),
-                ("application/xml;Charset=bogus;q=2", _OUT_OF_RANGE.format("2")),
-                ("application/xml;charset=ISO_8859-1:1987;q=2", _OUT_OF_RANGE.format("2")),
-                ("application/xml;q=abc", 'For input string: "abc"'),
-                ('application/xml;q="abc "', 'For input string: "abc"'),
-                ("application/xml;q=-", 'For input string: "-"'),
-                ("application/xml;q=0x1.8", 'For input string: "0x1.8"'),
-                ("application/xml;q=1.2e3.4", 'For input string: "1.2e3.4"'),
-                ("application/xml;q=1.2.3", "multiple points"),
-                ("application/xml;q=.5.5", "multiple points"),
-                ("application/xml;q=-..", "multiple points"),
-                ('application/xml;q=""', "empty String"),
-            )
-        ),
-        (
-            "POST",
-            "/wiki/rest/api/content/abc123/child/attachment",
-            None,
-            "multipart/form-data;boundary=x;q=2",
-            415,
-            'Invalid media type "multipart/form-data;boundary=x;q=2": ' + _OUT_OF_RANGE.format("2"),
-        ),
-        # a charset Java does not name, in the case Spring checks, and one named in another case
-        (
-            "POST",
-            "/wiki/rest/api/content/abc123/child/attachment",
-            None,
-            "multipart/form-data; boundary=x; charset=u8",
-            415,
-            "'multipart/form-data; boundary=x; charset=u8'",
-        ),
-        (
-            "POST",
-            "/wiki/rest/api/content/abc123/child/attachment",
-            None,
-            "multipart/form-data; boundary=x; Charset=bogus",
-            403,
-            errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,
-        ),
-        (
-            "POST",
-            "/wiki/rest/api/content/abc123/child/attachment",
-            None,
-            "multipart/form-data; boundary=x",
-            403,
-            errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,
-        ),
-        ("POST", "/wiki/rest/api/content/abc123/child/attachment/1/data", None, _JSON_TYPE, 415)
-        + ("'application/json'",),
-        ("PUT", "/wiki/rest/api/content/abc123/state", None, None, 415, "''"),
-        ("PUT", "/wiki/rest/api/content/abc123/state", None, "text/plain", 415, "'text/plain'"),
-        ("PUT", "/wiki/rest/api/content/abc123/state", None, _JSON_TYPE, 403)
-        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
-        ("PUT", "/wiki/rest/api/space/abc123/theme", None, "text/plain", 415, "'text/plain'"),
-        ("POST", "/wiki/rest/api/space/abc123/permission", None, "text/plain", 415, "'text/plain'"),
-        ("POST", "/wiki/rest/api/space/abc123/permission", None, _JSON_TYPE, 403)
-        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
-        # Tomcat's 401 for a Basic value it cannot read comes before the 415
-        ("POST", "/wiki/rest/api/content/abc123/child/attachment", "Basic !!!", _JSON_TYPE, 401)
-        + (None,),
-        # a Spring write that checks nothing first refuses the caller with or without a body
-        ("DELETE", "/wiki/rest/api/space/abc123", None, None, 403)
-        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
-        ("POST", "/wiki/rest/api/content/abc123/label", None, _JSON_TYPE, 403)
-        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
-        # a JAX-RS write: Tomcat's page for a type it cannot read, an empty 415 for one other than
-        # JSON (but `settings/lookandfeel`'s), and the not-permitted refusal for JSON or none
-        ("POST", "/wiki/rest/api/content/archive", None, None, 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        ("POST", "/wiki/rest/api/content/archive", None, _JSON_TYPE, 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        ("POST", "/wiki/rest/api/content/archive", None, "text/plain", 415, b""),
-        ("POST", "/wiki/rest/api/template", None, "application/xml", 415, b""),
-        ("POST", "/wiki/rest/api/content/archive", None, "foo", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        # Jersey's own reading of a type: a wildcard JSON matches is JSON, a charset is not looked
-        # up and an empty parameter is skipped, and a parameter with no name, no `=`, an empty value
-        # or space beside the `=` is unreadable
-        ("POST", "/wiki/rest/api/template", None, "*/*", 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        ("POST", "/wiki/rest/api/template", None, "application/*", 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        ("POST", "/wiki/rest/api/template", None, "*/json", 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        ("POST", "/wiki/rest/api/template", None, "application/json;charset=nope", 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        ("POST", "/wiki/rest/api/template", None, 'application/json; ;x="a;b"', 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        ("POST", "/wiki/rest/api/template", None, "text/*", 415, b""),
-        ("POST", "/wiki/rest/api/template", None, "application/*+json", 415, b""),
-        ("POST", "/wiki/rest/api/template", None, "application/json;;", 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        ("POST", "/wiki/rest/api/template", None, 'application/json;x="a\\"b"', 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        ("POST", "/wiki/rest/api/template", None, "a@b/json", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, "application/json;=x", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, "application/json;x", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, "application/json;x=", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, "application/json;charset =utf-8", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, "application/json;charset= utf-8", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("DELETE", "/wiki/rest/api/user/watch/space/NOPESUCHZZ", None, "", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, 'application/json;x="a', 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, "application/json/x", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, "a/b c", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, "application/json;x?y", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y=2", 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        # the value's ends, as ``backlot.errors.atlassian.jersey_media_type`` trims them
-        ("POST", "/wiki/rest/api/template", None, "application/json\xa0", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, "\x85application/json", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/template", None, "application/json\t", 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        # the two that ran: a type Jersey cannot read is its 400 too, JSON reaches the operation,
-        # which real runs and Backlot does not serve
-        ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, "application/json;x", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, _JSON_TYPE, 404, None),
-        ("POST", "/wiki/rest/api/contentbody/convert/async/bulk/tasks", None, "text/plain", 415)
-        + (b"",),
-        ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "text/plain", 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "foo", 400)
-        + (errors_atlassian.tomcat_page(400).encode(),),
-        ("DELETE", "/wiki/rest/api/relation/1/from/user/a/to/content/2", None, None, 403)
-        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
-        # each operation the four lists in ``backlot.routers.atlassian`` name, with no credential:
-        # the nineteen GETs and the JAX-RS writes but the two that run, the not-permitted 403, the
-        # Spring writes that check a type, the 415 for `text/plain`, and the GETs real serves
-        # outside the document, the Stackless 403
-        *(
-            ("GET", f"/wiki/rest/{path}", None, None, 403)
-            + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,)
-            for path in (
-                "api/audit",
-                "api/audit/export",
-                "api/audit/retention",
-                "api/audit/since",
-                "api/content-states",
-                "api/longtask",
-                "api/longtask/1",
-                "api/relation/1/from/1/1/to/1",
-                "api/relation/1/from/1/1/to/1/1",
-                "api/relation/1/to/1/1/from/1",
-                "api/search/user",
-                "api/settings/lookandfeel",
-                "api/template/blueprint",
-                "api/template/page",
-                "api/template/1",
-                "api/user/watch/content/1",
-                "api/user/watch/label/1",
-                "api/user/watch/space/1",
-                "atlassian-connect/1/app/module/dynamic",
-            )
-        ),
-        *(
-            (method, path, None, None, 403, errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY)
-            for method, path in (
-                ("POST", "/wiki/rest/api/audit"),
-                ("PUT", "/wiki/rest/api/audit/retention"),
-                ("POST", "/wiki/rest/api/content/archive"),
-                ("POST", "/wiki/rest/api/content/blueprint/instance/1"),
-                ("PUT", "/wiki/rest/api/content/blueprint/instance/1"),
-                ("PUT", "/wiki/rest/api/relation/1/from/1/1/to/1/1"),
-                ("DELETE", "/wiki/rest/api/relation/1/from/1/1/to/1/1"),
-                ("PUT", "/wiki/rest/api/settings/lookandfeel"),
-                ("POST", "/wiki/rest/api/settings/lookandfeel/custom"),
-                ("DELETE", "/wiki/rest/api/settings/lookandfeel/custom"),
-                ("POST", "/wiki/rest/api/template"),
-                ("PUT", "/wiki/rest/api/template"),
-                ("DELETE", "/wiki/rest/api/template/1"),
-                ("POST", "/wiki/rest/api/user/watch/content/1"),
-                ("DELETE", "/wiki/rest/api/user/watch/content/1"),
-                ("POST", "/wiki/rest/api/user/watch/label/1"),
-                ("DELETE", "/wiki/rest/api/user/watch/label/1"),
-                ("POST", "/wiki/rest/api/user/watch/space/1"),
-                ("DELETE", "/wiki/rest/api/user/watch/space/1"),
-                ("POST", "/wiki/rest/atlassian-connect/1/app/module/dynamic"),
-                ("DELETE", "/wiki/rest/atlassian-connect/1/app/module/dynamic"),
-            )
-        ),
-        *(
-            (method, path, None, "text/plain", 415, "'text/plain'")
-            for method, path in (
-                ("POST", "/wiki/rest/api/content/1/child/attachment"),
-                ("PUT", "/wiki/rest/api/content/1/child/attachment"),
-                ("POST", "/wiki/rest/api/content/1/child/attachment/1/data"),
-                ("POST", "/wiki/rest/api/content/1/pagehierarchy/copy"),
-                ("POST", "/wiki/rest/api/content/1/permission/check"),
-                ("POST", "/wiki/rest/api/content/1/restriction"),
-                ("PUT", "/wiki/rest/api/content/1/restriction"),
-                ("PUT", "/wiki/rest/api/content/1/state"),
-                ("POST", "/wiki/rest/api/content/1/version"),
-                ("POST", "/wiki/rest/api/group"),
-                ("POST", "/wiki/rest/api/group/userByGroupId"),
-                ("POST", "/wiki/rest/api/space/1/permission"),
-                ("POST", "/wiki/rest/api/space/1/permission/custom-content"),
-                ("PUT", "/wiki/rest/api/space/1/theme"),
-                ("POST", "/wiki/rest/api/user/1/property/1"),
-                ("PUT", "/wiki/rest/api/user/1/property/1"),
-            )
-        ),
-        *(
-            ("GET", f"/wiki/rest/api/{path}", None, None, 403)
-            + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,)
-            for path in (
-                "content/1/child",
-                "content/1/history",
-                "content/1/property",
-                "content/1/version",
-                "space/ENG/content",
-                "space/ENG/property",
-            )
-        ),
-        # an `OPTIONS` asks for no operation and is refused by none of these
-        ("OPTIONS", "/wiki/rest/api/content/1/label", None, None, 404, None),
-    ],
-)
-def test_confluence_answers_an_operation_before_it_runs(
-    client, method, vendor_path, authorization, ctype, status, body
-):
+_OPERATION_REFUSALS = [
+    # a Spring write that checks its `Content-Type` first: its 415, naming the type as read,
+    # then the caller's refusal for the type it takes
+    ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, None, 415, "''"),
+    ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "", 415, "''"),
+    *(
+        (method, f"/wiki/rest/api/{path}", None, "text/plain", 415, "'text/plain'")
+        for method, path in (
+            ("POST", "content/abc123/child/attachment"),
+            ("PUT", "content/abc123/state"),
+            ("PUT", "space/abc123/theme"),
+            ("POST", "space/abc123/permission"),
+        )
+    ),
+    ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "APPLICATION/JSON", 415)
+    + ("'application/json'",),
+    (
+        "POST",
+        "/wiki/rest/api/content/abc123/child/attachment",
+        None,
+        "TEXT/Plain;Charset=UTF-8;X=Y",
+        415,
+        "'text/plain;Charset=UTF-8;X=Y'",
+    ),
+    ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "foo", 415)
+    + ("Invalid mime type \"foo\": does not contain '/'",),
+    # a type Spring's parser cannot read, named for its reason
+    # (``errors.atlassian._invalid_mime_type``), and `*` and `text/plain;a`, which it reads
+    *(
+        ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, 415, reason)
+        for ctype, reason in (
+            (
+                "text/plain;charset=nope",
+                "Invalid mime type \"text/plain;charset=nope\": unsupported charset 'nope'",
+            ),
+            (
+                "text/",
+                "Invalid mime type \"text/\": does not contain subtype after '/'",
+            ),
+            (
+                "a/b c",
+                'Invalid mime type "a/b c": Invalid token character \' \' in token "b c"',
+            ),
+            (";x", "Invalid mime type \";x\": 'mimeType' must not be empty"),
+            (" ;x", "Invalid mime type \";x\": 'mimeType' must not be empty"),
+            (
+                "text/plain\xa0",
+                'Invalid mime type "text/plain\xa0": '
+                "Invalid token character '\xa0' in token \"plain\xa0\"",
+            ),
+            (
+                "text/plain;charset=nope\xa0",
+                'Invalid mime type "text/plain;charset=nope\xa0": nope\xa0',
+            ),
+            (
+                "*/json",
+                'Invalid mime type "*/json": '
+                "wildcard type is legal only in '*/*' (all mime types)",
+            ),
+            ("*", "'*/*'"),
+            ("/plain", "Invalid mime type \"/plain\": 'type' must not be empty"),
+            (
+                "text//plain",
+                'Invalid mime type "text//plain": Invalid token character \'/\' in token "/plain"',
+            ),
+            (
+                "text/plain;=x",
+                "Invalid mime type \"text/plain;=x\": 'parameter' must not be empty",
+            ),
+            ("text/plain;a=", "Invalid mime type \"text/plain;a=\": 'value' must not be empty"),
+            (
+                "text/plain;a b=c;charset=nope",
+                'Invalid mime type "text/plain;a b=c;charset=nope": '
+                "Invalid token character ' ' in token \"a b\"",
+            ),
+            (
+                "text/plain;a=b c",
+                'Invalid mime type "text/plain;a=b c": Invalid token character \' \' in token "b c"',
+            ),
+            (
+                'text/plain;a="b',
+                'Invalid mime type "text/plain;a="b": Invalid token character \'"\' in token ""b"',
+            ),
+            ("text/plain;charset=a b", 'Invalid mime type "text/plain;charset=a b": a b'),
+            (
+                "t x/p y",
+                'Invalid mime type "t x/p y": Invalid token character \' \' in token "t x"',
+            ),
+            (
+                "text/pl ain;charset=nope",
+                'Invalid mime type "text/pl ain;charset=nope": '
+                "Invalid token character ' ' in token \"pl ain\"",
+            ),
+            (
+                "text/plain;=",
+                "Invalid mime type \"text/plain;=\": 'parameter' must not be empty",
+            ),
+            ("text/plain;a", "'text/plain'"),
+            (
+                "text/plain; charset = nope ",
+                "Invalid mime type \"text/plain; charset = nope\": unsupported charset 'nope'",
+            ),
+        )
+    ),
+    # the charset Tomcat reads first (``errors.atlassian.refuse_a_confluence_charset``)
+    *(
+        ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, status, body)
+        for ctype, status, body in (
+            ("text/plain;charset=", 500, b""),
+            ("application/json;charset=", 500, b""),
+            ("application/json; charset=", 500, b""),
+            ("text/plain;Charset=", 500, b""),
+            ("text/plain;charset", 500, b""),
+            ('text/plain;charset=""', 500, b""),
+            ("text/plain;charset=utf-8;charset=", 500, b""),
+            ("application/json;charset=utf-8;Charset=", 500, b""),
+            ("text/plain;charset=_x", 500, b""),
+            ('text/plain;charset="a b"', 500, b""),
+            ("text/plain; charset =", 500, b""),
+            ('text/plain;charset;a="b', 500, b""),
+            ("application/json;charset=;charset=utf-8", 403, None),
+            ("text/plain;charset=;charset=utf-8", 415, "'text/plain;charset=utf-8'"),
+            (
+                "text/plain;charset=;x=y",
+                415,
+                "Invalid mime type \"text/plain;charset=;x=y\": 'value' must not be empty",
+            ),
+            (
+                "text/plain;charset= ;x=y",
+                415,
+                "Invalid mime type \"text/plain;charset= ;x=y\": 'value' must not be empty",
+            ),
+            ("foo;charset=", 415, "Invalid mime type \"foo;charset=\": does not contain '/'"),
+            (";charset=", 415, "Invalid mime type \";charset=\": 'mimeType' must not be empty"),
+            (
+                "text/plain;a b=c;charset=",
+                415,
+                'Invalid mime type "text/plain;a b=c;charset=": '
+                "Invalid token character ' ' in token \"a b\"",
+            ),
+            (
+                "text/plain;charset=_x;a b=c",
+                415,
+                'Invalid mime type "text/plain;charset=_x;a b=c": _x',
+            ),
+            (
+                'text/plain;charset="nope"',
+                415,
+                'Invalid mime type "text/plain;charset="nope"": unsupported charset \'nope\'',
+            ),
+        )
+    ),
+    # the parameters kept (``errors.atlassian._spring_media_type``)
+    *(
+        ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, ctype, 415, named)
+        for ctype, named in (
+            ("application/json;charset=nope;charset=utf-8", "'application/json;charset=utf-8'"),
+            ("application/json;Charset=nope;charset=utf-8", "'application/json;charset=utf-8'"),
+            ("application/json;charset=utf-8;Charset=nope", "'application/json;Charset=nope'"),
+            ("application/xml;x=1;X=2", "'application/xml;X=2'"),
+            ("application/xml;Q=2", "'application/xml;Q=2'"),
+            ("application/xml;q=2;Q=0.5", "'application/xml;Q=0.5'"),
+            ("application/xml;q=1d", "'application/xml;q=1d'"),
+            ("application/xml;q=-0", "'application/xml;q=-0'"),
+        )
+    ),
+    # a `q` Spring cannot read, the one thing wrong with the type: why, in Spring's words and
+    # Java's (``errors.atlassian._spring_quality_reason``)
+    *(
+        ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, 415)
+        + (f'Invalid media type "{ctype}": {reason}',)
+        for ctype, reason in (
+            ("application/json;q=2", _OUT_OF_RANGE.format("2")),
+            ('application/xml;q="2"', _OUT_OF_RANGE.format("2")),
+            ('application/xml;q=" 2"', _OUT_OF_RANGE.format(" 2")),
+            ("application/xml;q=NaN", _OUT_OF_RANGE.format("NaN")),
+            ("application/xml;q=0x1.8p0", _OUT_OF_RANGE.format("0x1.8p0")),
+            ("application/xml;Q=0.5;q=2", _OUT_OF_RANGE.format("2")),
+            ("application/xml;Charset=bogus;q=2", _OUT_OF_RANGE.format("2")),
+            ("application/xml;charset=ISO_8859-1:1987;q=2", _OUT_OF_RANGE.format("2")),
+            ("application/xml;q=abc", 'For input string: "abc"'),
+            ('application/xml;q="abc "', 'For input string: "abc"'),
+            ("application/xml;q=-", 'For input string: "-"'),
+            ("application/xml;q=0x1.8", 'For input string: "0x1.8"'),
+            ("application/xml;q=1.2e3.4", 'For input string: "1.2e3.4"'),
+            ("application/xml;q=1.2.3", "multiple points"),
+            ("application/xml;q=.5.5", "multiple points"),
+            ("application/xml;q=-..", "multiple points"),
+            ('application/xml;q=""', "empty String"),
+        )
+    ),
+    (
+        "POST",
+        "/wiki/rest/api/content/abc123/child/attachment",
+        None,
+        "multipart/form-data;boundary=x;q=2",
+        415,
+        'Invalid media type "multipart/form-data;boundary=x;q=2": ' + _OUT_OF_RANGE.format("2"),
+    ),
+    # a charset Java does not name, in the case Spring checks, and one named in another case
+    (
+        "POST",
+        "/wiki/rest/api/content/abc123/child/attachment",
+        None,
+        "multipart/form-data; boundary=x; charset=u8",
+        415,
+        'Invalid mime type "multipart/form-data; boundary=x; charset=u8": '
+        "unsupported charset 'u8'",
+    ),
+    (
+        "POST",
+        "/wiki/rest/api/content/abc123/child/attachment",
+        None,
+        "multipart/form-data; boundary=x; Charset=bogus",
+        403,
+        errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,
+    ),
+    (
+        "POST",
+        "/wiki/rest/api/content/abc123/child/attachment",
+        None,
+        "multipart/form-data; boundary=x",
+        403,
+        errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,
+    ),
+    ("POST", "/wiki/rest/api/content/abc123/child/attachment/1/data", None, _JSON_TYPE, 415)
+    + ("'application/json'",),
+    ("PUT", "/wiki/rest/api/content/abc123/state", None, None, 415, "''"),
+    ("PUT", "/wiki/rest/api/content/abc123/state", None, _JSON_TYPE, 403)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+    ("POST", "/wiki/rest/api/space/abc123/permission", None, _JSON_TYPE, 403)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+    # Tomcat's 401 for a Basic value it cannot read comes before the 415
+    ("POST", "/wiki/rest/api/content/abc123/child/attachment", "Basic !!!", _JSON_TYPE, 401, None),
+    # a Spring write that checks nothing first refuses the caller with or without a body
+    ("DELETE", "/wiki/rest/api/space/abc123", None, None, 403)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+    ("POST", "/wiki/rest/api/content/abc123/label", None, _JSON_TYPE, 403)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+    # a JAX-RS write: Tomcat's page for a type it cannot read, an empty 415 for one other than
+    # JSON (but `settings/lookandfeel`'s), and the not-permitted refusal for JSON or none
+    ("POST", "/wiki/rest/api/content/archive", None, _JSON_TYPE, 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("POST", "/wiki/rest/api/content/archive", None, "text/plain", 415, b""),
+    ("POST", "/wiki/rest/api/template", None, "application/xml", 415, b""),
+    ("POST", "/wiki/rest/api/content/archive", None, "foo", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    # Jersey's own reading of a type: a wildcard JSON matches is JSON, a charset is not looked
+    # up and an empty parameter is skipped, and a parameter with no name, no `=`, an empty value
+    # or space beside the `=` is unreadable
+    ("POST", "/wiki/rest/api/template", None, "*/*", 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("POST", "/wiki/rest/api/template", None, "application/*", 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("POST", "/wiki/rest/api/template", None, "*/json", 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("POST", "/wiki/rest/api/template", None, "application/json;charset=nope", 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("POST", "/wiki/rest/api/template", None, 'application/json; ;x="a;b"', 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("POST", "/wiki/rest/api/template", None, "text/*", 415, b""),
+    ("POST", "/wiki/rest/api/template", None, "application/*+json", 415, b""),
+    ("POST", "/wiki/rest/api/template", None, "application/json;;", 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("POST", "/wiki/rest/api/template", None, 'application/json;x="a\\"b"', 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("POST", "/wiki/rest/api/template", None, "a@b/json", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, "application/json;=x", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, "application/json;x", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, "application/json;x=", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, "application/json;charset =utf-8", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, "application/json;charset= utf-8", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("DELETE", "/wiki/rest/api/user/watch/space/NOPESUCHZZ", None, "", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, 'application/json;x="a', 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, "application/json/x", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, "a/b c", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, "application/json;x?y", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y=2", 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("POST", "/wiki/rest/api/template", None, "application/json;x=1 ;y", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    # the value's ends, as ``backlot.errors.atlassian.jersey_media_type`` trims them
+    ("POST", "/wiki/rest/api/template", None, "application/json\xa0", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, "\x85application/json", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/template", None, "application/json\t", 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    # the two that ran: a type Jersey cannot read is its 400 too, JSON reaches the operation,
+    # which real runs and Backlot does not serve
+    ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, "application/json;x", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/contentbody/convert/async/1", None, _JSON_TYPE, 404, None),
+    ("POST", "/wiki/rest/api/contentbody/convert/async/bulk/tasks", None, "text/plain", 415, b""),
+    ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "text/plain", 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("PUT", "/wiki/rest/api/settings/lookandfeel", None, "foo", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("DELETE", "/wiki/rest/api/relation/1/from/user/a/to/content/2", None, None, 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    # each operation the four lists in ``backlot.routers.atlassian`` name, with no credential:
+    # the nineteen GETs and the JAX-RS writes but the two that run, the not-permitted 403, the
+    # Spring writes that check a type, the 415 for `text/plain`, and the GETs real serves
+    # outside the document, the Stackless 403
+    *(
+        ("GET", f"/wiki/rest/{path}", None, None, 403)
+        + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,)
+        for path in (
+            "api/audit",
+            "api/audit/export",
+            "api/audit/retention",
+            "api/audit/since",
+            "api/content-states",
+            "api/longtask",
+            "api/longtask/1",
+            "api/relation/1/from/1/1/to/1",
+            "api/relation/1/from/1/1/to/1/1",
+            "api/relation/1/to/1/1/from/1",
+            "api/search/user",
+            "api/settings/lookandfeel",
+            "api/template/blueprint",
+            "api/template/page",
+            "api/template/1",
+            "api/user/watch/content/1",
+            "api/user/watch/label/1",
+            "api/user/watch/space/1",
+            "atlassian-connect/1/app/module/dynamic",
+        )
+    ),
+    # the same GETs reading a `Content-Type` (``_CONFLUENCE_JAXRS_GETS``)
+    *(
+        ("GET", f"/wiki/rest/{path}", None, "text/plain", 415, b"")
+        for path in (
+            "api/audit",
+            "api/audit/export",
+            "api/audit/retention",
+            "api/audit/since",
+            "api/content-states",
+            "api/longtask",
+            "api/longtask/1",
+            "api/relation/1/from/1/1/to/1",
+            "api/relation/1/from/1/1/to/1/1",
+            "api/relation/1/to/1/1/from/1",
+            "api/search/user",
+            "api/template/blueprint",
+            "api/template/page",
+            "api/template/1",
+            "api/user/watch/content/1",
+            "api/user/watch/label/1",
+            "api/user/watch/space/1",
+            "atlassian-connect/1/app/module/dynamic",
+        )
+    ),
+    ("GET", "/wiki/rest/api/settings/lookandfeel", None, "text/plain", 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("GET", "/wiki/rest/api/audit", None, "application/*+json", 415, b""),
+    ("GET", "/wiki/rest/api/audit", None, "application/json;charset=_x", 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("GET", "/wiki/rest/api/audit", None, "foo", 400, errors_atlassian.tomcat_page(400).encode()),
+    ("GET", "/wiki/rest/api/audit", None, "application/json;x=", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("GET", "/wiki/rest/api/settings/lookandfeel", None, "foo", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    # a path no service serves: the header Jersey cannot read is the 400 page ahead of
+    # its 404, and a type it can read leaves that 404 alone
+    ("GET", "/wiki/rest/api/nosuch", None, "foo", 400, errors_atlassian.tomcat_page(400).encode()),
+    ("GET", "/wiki/rest/api/nosuch", None, "", 400, errors_atlassian.tomcat_page(400).encode()),
+    ("GET", "/wiki/rest/api/nosuch", None, "text/plain", 404, None),
+    # the two `contentbody/convert` reads, which ``_CONFLUENCE_JAXRS_GETS`` names as well
+    ("GET", "/wiki/rest/api/contentbody/convert/async/1", None, "text/plain", 415, b""),
+    ("GET", "/wiki/rest/api/contentbody/convert/async/bulk/tasks", None, "application/xml")
+    + (415, b""),
+    ("GET", "/wiki/rest/api/contentbody/convert/async/1", None, "foo", 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    # the header sent twice (``_jaxrs_media_refusal``), and a Spring GET and write as controls
+    *(
+        ("GET" if path else "POST", path or "/wiki/rest/api/template", None, twice, 400)
+        + (errors_atlassian.tomcat_page(400).encode(),)
+        for path, twice in (
+            ("", (_JSON_TYPE, _JSON_TYPE)),
+            ("/wiki/rest/api/audit", (_JSON_TYPE, "text/plain")),
+            ("/wiki/rest/api/settings/lookandfeel", ("text/plain", "text/plain")),
+            ("/wiki/rest/api/nosuch", (_JSON_TYPE, _JSON_TYPE)),
+        )
+    ),
+    ("GET", "/wiki/rest/api/content/1", None, (_JSON_TYPE, "text/plain"), 403)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+    # a blank value beside one is left out, and blank ones alone read as an empty value
+    ("GET", "/wiki/rest/api/audit", None, ("", _JSON_TYPE), 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("GET", "/wiki/rest/api/audit", None, (_JSON_TYPE, " "), 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("GET", "/wiki/rest/api/audit", None, ("\t", "text/plain"), 415, b""),
+    ("GET", "/wiki/rest/api/audit", None, ("", _JSON_TYPE, _JSON_TYPE), 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("GET", "/wiki/rest/api/audit", None, ("", "", _JSON_TYPE), 403)
+    + (errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY,),
+    ("GET", "/wiki/rest/api/nosuch", None, ("", ""), 400)
+    + (errors_atlassian.tomcat_page(400).encode(),),
+    ("POST", "/wiki/rest/api/content", None, (_JSON_TYPE, "text/plain"), 403)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+    *(
+        (method, path, None, None, 403, errors_atlassian.CONFLUENCE_NOT_PERMITTED_BODY)
+        for method, path in (
+            ("POST", "/wiki/rest/api/audit"),
+            ("PUT", "/wiki/rest/api/audit/retention"),
+            ("POST", "/wiki/rest/api/content/archive"),
+            ("POST", "/wiki/rest/api/content/blueprint/instance/1"),
+            ("PUT", "/wiki/rest/api/content/blueprint/instance/1"),
+            ("PUT", "/wiki/rest/api/relation/1/from/1/1/to/1/1"),
+            ("DELETE", "/wiki/rest/api/relation/1/from/1/1/to/1/1"),
+            ("PUT", "/wiki/rest/api/settings/lookandfeel"),
+            ("POST", "/wiki/rest/api/settings/lookandfeel/custom"),
+            ("DELETE", "/wiki/rest/api/settings/lookandfeel/custom"),
+            ("POST", "/wiki/rest/api/template"),
+            ("PUT", "/wiki/rest/api/template"),
+            ("DELETE", "/wiki/rest/api/template/1"),
+            ("POST", "/wiki/rest/api/user/watch/content/1"),
+            ("DELETE", "/wiki/rest/api/user/watch/content/1"),
+            ("POST", "/wiki/rest/api/user/watch/label/1"),
+            ("DELETE", "/wiki/rest/api/user/watch/label/1"),
+            ("POST", "/wiki/rest/api/user/watch/space/1"),
+            ("DELETE", "/wiki/rest/api/user/watch/space/1"),
+            ("POST", "/wiki/rest/atlassian-connect/1/app/module/dynamic"),
+            ("DELETE", "/wiki/rest/atlassian-connect/1/app/module/dynamic"),
+        )
+    ),
+    *(
+        (method, path, None, "text/plain", 415, "'text/plain'")
+        for method, path in (
+            ("POST", "/wiki/rest/api/content/1/child/attachment"),
+            ("PUT", "/wiki/rest/api/content/1/child/attachment"),
+            ("POST", "/wiki/rest/api/content/1/child/attachment/1/data"),
+            ("POST", "/wiki/rest/api/content/1/pagehierarchy/copy"),
+            ("POST", "/wiki/rest/api/content/1/permission/check"),
+            ("POST", "/wiki/rest/api/content/1/restriction"),
+            ("PUT", "/wiki/rest/api/content/1/restriction"),
+            ("PUT", "/wiki/rest/api/content/1/state"),
+            ("POST", "/wiki/rest/api/content/1/version"),
+            ("POST", "/wiki/rest/api/group"),
+            ("POST", "/wiki/rest/api/group/userByGroupId"),
+            ("POST", "/wiki/rest/api/space/1/permission"),
+            ("POST", "/wiki/rest/api/space/1/permission/custom-content"),
+            ("PUT", "/wiki/rest/api/space/1/theme"),
+            ("POST", "/wiki/rest/api/user/1/property/1"),
+            ("PUT", "/wiki/rest/api/user/1/property/1"),
+        )
+    ),
+    *(
+        ("GET", f"/wiki/rest/api/{path}", None, None, 403)
+        + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,)
+        for path in (
+            "content/1/child",
+            "content/1/history",
+            "content/1/property",
+            "content/1/version",
+            "space/ENG/content",
+            "space/ENG/property",
+        )
+    ),
+    # an `OPTIONS` asks for no operation and is refused by none of these
+    ("OPTIONS", "/wiki/rest/api/content/1/label", None, None, 404, None),
+]
+
+
+def _operation_refusal(client, method, vendor_path, authorization, ctype, status, body):
     """With no credential real refuses each operation these rows name, published or served outside
     the document, before it runs, in the order and shape ``_published_answer``,
     ``_CONFLUENCE_CONSUMES``, ``_CONFLUENCE_JAXRS_WRITES``, ``_CONFLUENCE_NOT_PERMITTED_GETS`` and
     ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in ``backlot.routers.atlassian`` carry the measurement for.
     A 415's ``body`` is the reason Spring gives; the 401 is asserted by status alone, its body being
     JSON here where real's is Tomcat's page. An `OPTIONS` at a published write's path is the 404
-    real answers it, not a refusal."""
-    headers = {} if ctype is None else {"Content-Type": ctype}
+    real answers it, not a refusal, and `/wiki/rest/api/nosuch`, at which no operation is, the 404
+    or the 400 page ``_confluence_not_found`` gives. A ``ctype`` of two values sends the header
+    twice."""
+    ctypes = () if ctype is None else (ctype,) if isinstance(ctype, str) else ctype
+    headers = [("Content-Type", value) for value in ctypes]
     if authorization is not None:
-        headers["Authorization"] = authorization
-    r = _sent_as(
+        headers.append(("Authorization", authorization))
+    r = sent_as(
         client, method, f"/atlassian{vendor_path}", headers, content=b"x" if ctype else None
     )
     assert r.status_code == status, r.text
@@ -6101,6 +7443,102 @@ def test_confluence_answers_an_operation_before_it_runs(
         )
 
 
+def test_confluence_answers_an_operation_before_it_runs(client):
+    assert _failures(_operation_refusal, _OPERATION_REFUSALS, client) == {}
+
+
+_EMPTY_CHARSET = "text/plain;charset="
+
+#: The status each kind of path answers a `Content-Type` whose charset Java cannot name
+#: (``errors.atlassian.refuse_a_confluence_charset``) with: the empty 500 wherever Confluence's
+#: Spring application answers (``atlassian.refuse_a_spring_confluence_charset``), whichever the
+#: method and with a credential or without one, and real's own answer where it does not fail the
+#: request. A ``ctype`` of two values sends the header twice, and ``"admin"`` is the admin's token.
+_SPRING_CHARSET = [
+    # a path a route serves, under its method, `HEAD`, `OPTIONS` and one it does not take
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "admin", 500),
+    ("HEAD", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("DELETE", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("POST", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/space/ENG", _EMPTY_CHARSET, None, 500),
+    ("PUT", "/wiki/rest/api/space/ENG", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/content", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/content", _EMPTY_CHARSET, "admin", 500),
+    ("POST", "/wiki/rest/api/content/1/label", _EMPTY_CHARSET, None, 500),
+    # a path an operation is published at and no route serves
+    ("GET", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    ("DELETE", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    # the product's page
+    ("GET", "/wiki/rest/api/space/ENG/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/", _EMPTY_CHARSET, None, 500),
+    # the header twice: a blank value left out, the others read joined
+    ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, ""), None, 500),
+    ("GET", "/wiki/rest/api/space", ("\t", _EMPTY_CHARSET), None, 500),
+    ("GET", "/wiki/rest/api/space", ('text/plain;charset="utf-8', '"'), None, 500),
+    ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, "text/plain"), None, 403),
+    ("GET", "/wiki/rest/api/space", ("\xa0", _EMPTY_CHARSET), None, 403),
+    # where real does not fail the request
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("POST", "/wiki/rest/api/space/abc123/permission", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api/nosuch", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/", _EMPTY_CHARSET, None, 400),
+    ("OPTIONS", "/wiki/rest/api/audit", _EMPTY_CHARSET, None, 400),
+    ("POST", "/wiki/rest/api/content/archive", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/longtask", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/nope", _EMPTY_CHARSET, None, 302),
+    ("GET", "/wiki/rest/api/search?cql=type%3Dpage", "application/json;charset=_x", None, 403),
+    ("PATCH", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 405),
+    ("GET", "/rest/api/3/serverInfo", _EMPTY_CHARSET, None, 200),
+]
+
+
+def _spring_charset(client, admin_h, method, vendor_path, ctype, authorization, status):
+    ctypes = (ctype,) if isinstance(ctype, str) else ctype
+    headers = [("Content-Type", value) for value in ctypes]
+    if authorization is not None:
+        token = admin_h["Authorization"] if authorization == "admin" else authorization
+        headers.append(("Authorization", token))
+    body = b"x" if method in ("POST", "PUT") else None
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
+    assert r.status_code == status, r.text[:200]
+    if status == 500:
+        assert (r.content, r.headers.get("content-type")) == (b"", None)
+
+
+def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client, admin_h):
+    assert _failures(_spring_charset, _SPRING_CHARSET, client, admin_h) == {}
+
+
+@pytest.mark.parametrize(
+    "path, ctypes, accept, status, body",
+    [
+        # a path whose answer is the page reads no `Content-Type`
+        ("/wiki/rest/api/space/ENG/nope", ("foo",), None, 404, errors_atlassian.HTML_NOT_FOUND),
+        ("/wiki/rest/api/space/ENG/nope", (_JSON_TYPE, _JSON_TYPE), None, 404)
+        + (errors_atlassian.HTML_NOT_FOUND,),
+        # elsewhere the 400 page comes ahead of the empty 500 for an `Accept` Jersey cannot parse
+        ("/wiki/rest/api/nosuch", ("foo",), "application/json;q=2", 400)
+        + (errors_atlassian.tomcat_page(400),),
+        ("/wiki/rest/api/nosuch", (_JSON_TYPE, _JSON_TYPE), "application/json;q=2", 400)
+        + (errors_atlassian.tomcat_page(400),),
+        ("/wiki/rest/api/nosuch", ("text/plain",), "application/json;q=2", 500, ""),
+    ],
+)
+def test_confluence_unserved_path_reads_its_content_type_where_real_does(
+    client, path, ctypes, accept, status, body
+):
+    """Pins where ``_confluence_not_found`` reads a `Content-Type` among its other answers."""
+    headers = [("Content-Type", value) for value in ctypes]
+    if accept is not None:
+        headers.append(("Accept", accept))
+    r = sent_as(client, "GET", f"/atlassian{path}", headers)
+    assert (r.status_code, r.text) == (status, body)
+
+
 # --- what `Accept` asks for: the 406, and the shapes a refusal takes from it --------------------
 
 _HTML = "text/html"
@@ -6113,6 +7551,7 @@ _BROWSER = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 _INFO = "/atlassian/rest/api/3/serverInfo"
 _SEARCH = "/atlassian/rest/api/3/search/jql"
 _ISSUE_NOPE = "/atlassian/rest/api/3/issue/NOPE-1"
+_ISSUE_BRACKET = "/atlassian/rest/api/3/issue/A%5BB"
 _SPACES = "/atlassian/wiki/rest/api/space"
 _ATTACH = "/atlassian/wiki/rest/api/content/1/child/attachment"
 _LABEL = "/atlassian/wiki/rest/api/space/NOPESUCH/label"
@@ -6350,7 +7789,7 @@ def _unparsed(accept: str) -> bytes:
 
 def _send_as_latin1(client, request):
     """``request``, built by the TestClient with its default headers, sent with each header value's
-    bytes as they are, which :func:`_sent_as` says why the TestClient does not."""
+    bytes as they are, which :func:`tests._helpers.sent_as` says why the TestClient does not."""
     if all(value.isascii() for value in request.headers.values()):
         return client.send(request)
 
@@ -6460,6 +7899,32 @@ _ACCEPT_ROWS = [
     ("GET", "/atlassian/rest/api/3/nopesuchroute", "none", _HTML, None, 404, _PROBLEM, None, {}),
     ("GET", "/atlassian/rest/api/3/nopesuchroute", "none", "foo", None, 404)
     + (errors_atlassian.HTML_MEDIA_TYPE, b"", {}),
+    # -- Jira: a bracket in the path turns the 405, the 415 and the 406 into Tomcat's pages, under
+    # an `Accept` that empties the RFC 7807 one too (``errors.atlassian._JIRA_BRACKET``)
+    ("POST", _ISSUE_NOPE, "none", _JSON, None, 405, _PROBLEM, None)
+    + ({"allow": "GET, PUT, DELETE", "content-language": None},),
+    ("POST", _ISSUE_BRACKET, "none", _JSON, None, 405, _TOMCAT, "page")
+    + ({"allow": "GET, PUT, DELETE", "content-language": "en"},),
+    ("POST", _ISSUE_BRACKET, "none", "foo", None, 405, _TOMCAT, "page", {}),
+    ("POST", _ISSUE_BRACKET, "none", None, None, 405, _TOMCAT, "page", {}),
+    ("DELETE", f"{_ISSUE_BRACKET}/comment", "admin", "*/*", None, 405, _TOMCAT, "page")
+    + ({"allow": "GET, POST"},),
+    ("POST", f"{_ISSUE_NOPE}/comment", "none", _JSON, ("text/plain", b"x"), 415, _PROBLEM, None)
+    + ({"accept": "application/json", "content-language": None},),
+    ("POST", f"{_ISSUE_BRACKET}/comment", "none", _JSON, ("text/plain", b"x"), 415, _TOMCAT)
+    + ("page", {"accept": "application/json", "content-language": "en"}),
+    ("POST", f"{_ISSUE_BRACKET}/comment", "none", "foo", ("text/plain", b"x"), 415, _TOMCAT)
+    + ("page", {}),
+    ("POST", f"{_ISSUE_BRACKET}/comment", "none", _JSON, (_JSON, b"{}"), 404, _JIRA_JSON, None, {}),
+    ("GET", _ISSUE_BRACKET, "none", _HTML, None, 406, _TOMCAT, "page")
+    + ({"accept": "application/json", "content-language": "en"},),
+    ("GET", _ISSUE_BRACKET, "none", "foo", None, 406, _TOMCAT, "page", {}),
+    # the key spelled with `]`, in lower case and bare, and under `/rest/api/2`
+    ("POST", "/atlassian/rest/api/3/issue/A%5DB", "none", _JSON, None, 405, _TOMCAT, "page", {}),
+    ("POST", "/atlassian/rest/api/3/issue/A%5bB", "none", _JSON, None, 405, _TOMCAT, "page", {}),
+    ("POST", "/atlassian/rest/api/3/issue/A[B", "none", _JSON, None, 405, _TOMCAT, "page", {}),
+    ("GET", "/atlassian/rest/api/3/issue/A]B", "none", _HTML, None, 406, _TOMCAT, "page", {}),
+    ("POST", "/atlassian/rest/api/2/issue/A%5BB", "none", _JSON, None, 405, _TOMCAT, "page", {}),
     # -- Jira: a published operation with no route of its own (``_published_answer``)
     ("GET", "/atlassian/rest/api/3/myself", "none", _HTML, None, 406, _PROBLEM, "problem")
     + ({"www-authenticate": None},),
@@ -6479,6 +7944,10 @@ _ACCEPT_ROWS = [
     + ("problem, text/plain", {}),
     ("GET", "/atlassian/rest/api/3/license/approximateLicenseCount", "none", _HTML, None, 401)
     + ("text/html;charset=UTF-8", None, {}),
+    ("GET", "/atlassian/rest/api/3/invalid-jqls-access-log", "none", _HTML, None, 401)
+    + ("text/html;charset=UTF-8", None, {"www-authenticate": _PRESENT}),
+    ("GET", "/atlassian/rest/api/2/invalid-jqls-access-log", "none", _HTML, None, 401)
+    + ("text/html;charset=UTF-8", None, {"www-authenticate": _PRESENT}),
     ("OPTIONS", _INFO, "none", _HTML, None, 401, "text/html;charset=UTF-8", None, {}),
     # -- Confluence: a Spring route's 406 in each of its shapes, and the values that pass it
     ("GET", _SPACES, "none", _HTML, None, 406, _TOMCAT, "page", {"content-language": "en"}),
@@ -6906,6 +8375,11 @@ _ACCEPT_ROWS = [
     ("GET", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE)
     + (errors_atlassian.HTML_NOT_FOUND.encode(), {}),
     ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "admin", _Q2, None, 500, None, b"", {}),
+    # a run of slashes is one before the product is picked (``backlot.main._spring_failure``)
+    ("GET", "/atlassian//wiki/rest/api/space", "admin", _Q2, None, 400, None, b"", {}),
+    ("GET", "/atlassian//wiki/rest/api/content", "admin", _Q2, None, 400, None, b"", {}),
+    ("OPTIONS", "/atlassian//wiki/rest/api/space", "admin", _Q2, None, 403, _TOMCAT, "page", {}),
+    ("GET", "/atlassian//wiki/rest/api/space", "admin", _SORTED_33, None, 400, None, b"", {}),
     # Jersey writes its own 404, an `OPTIONS` of it too, under a `Q` Spring would fail to copy
     (
         "OPTIONS",
@@ -7181,8 +8655,7 @@ _JIRA_401 = [
     + ("application/json;charset=x-MacRoman", _LINE, {}),
     ("OPTIONS", "application/*+json;charset=utf-16", 401, "application/json;charset=UTF-8", _LINE)
     + ({},),
-    ("OPTIONS", "application/*+json;q=0.5, text/plain", 401, "text/plain;charset=UTF-8", _LINE)
-    + ({},),
+    ("OPTIONS", "application/*+json;q=0.5, text/plain", 401, "text/plain;charset=UTF-8", _LINE, {}),
     ("OPTIONS", "application/json;level=1", 401, "application/json;level=1;charset=UTF-8", _LINE)
     + ({},),
     ("OPTIONS", "text/plain;x=y", 401, "text/plain;x=y;charset=UTF-8", _LINE, {}),
@@ -7334,8 +8807,7 @@ _ACCEPT_ROWS += [
     ),
     # the gateway's Connect-token 403 comes before Spring sorts `Accept`
     ("GET", _INFO, "unreadable-bearer", _SORT_FAILS, None, 403, _JSON, _CONNECT_JSON, {}),
-    # the same choice on an operation that asks no 406, where a `GET` and a `HEAD` reach the two
-    # answers that differ by method: neither carries `Allow`, and the wildcard's 500 is the page
+    # the same choice on `_LICENSE` by GET and HEAD (``errors.atlassian.jira_unauthenticated``)
     ("GET", _LICENSE, "none", "foo", None, 401, _EMPTY_HTML, b"")
     + ({"allow": None, "www-authenticate": _PRESENT},),
     ("HEAD", _LICENSE, "none", "*.*", None, 401, _EMPTY_HTML, b"", {"allow": None}),
@@ -7346,10 +8818,7 @@ _ACCEPT_ROWS += [
 ]
 
 
-@pytest.mark.parametrize(
-    "method,path,credential,accept,sent,status,media_type,body,headers", _ACCEPT_ROWS
-)
-def test_atlassian_answers_an_accept_where_and_as_real_does(
+def _accept_answer(
     client, admin_h, keys, method, path, credential, accept, sent, status, media_type, body, headers
 ):
     """Pins the 406 (``errors.atlassian.not_acceptable``) where each product answers it, the
@@ -7401,6 +8870,10 @@ def test_atlassian_answers_an_accept_where_and_as_real_does(
             assert r.headers[name] == value, name
 
 
+def test_atlassian_answers_an_accept_where_and_as_real_does(client, admin_h, keys):
+    assert _failures(_accept_answer, _ACCEPT_ROWS, client, admin_h, keys) == {}
+
+
 def _accept_unchecked() -> list[str]:
     """The operations whose entry says ``"accept": "unchecked"``."""
     return sorted(
@@ -7411,22 +8884,183 @@ def _accept_unchecked() -> list[str]:
     )
 
 
-@pytest.mark.parametrize("operation", _accept_unchecked())
-def test_jira_operations_that_answer_an_accept_with_no_406(client, operation):
-    """Pins each entry `ACCEPT_UNCHECKED` in ``scripts/gen_jira_unserved.py`` marks: none answers
-    `Accept: text/html` with the 406, with a body of a type it takes. The refused ones answer their
-    401 under that type; the avatar views, which real runs, get what any operation real runs gets
-    here."""
-    entry = routers_atlassian._JIRA_ENTRIES[operation]
-    method, template = operation.split(" ", 1)
-    headers = {"Accept": _HTML}
-    content = None
-    if entry.get("consumes") and entry.get("body") != "optional":
-        headers["Content-Type"], content = entry["consumes"][0], b"{}"
-    r = client.request(
-        method, f"/atlassian{template.replace('{}', '1')}", headers=headers, content=content
-    )
-    assert r.status_code != 406, r.text
-    if operation in routers_atlassian._JIRA_UNSERVED["refused"]:
-        assert r.status_code == 401
-        assert r.headers["content-type"] == "text/html;charset=UTF-8"
+def test_jira_operations_that_answer_an_accept_with_no_406(client):
+    """Pins each entry `ACCEPT_UNCHECKED` in ``scripts/gen_jira_unserved.py`` marks: none gives a
+    caller with no credential the 406 for `Accept: text/html`, with a body of a type it takes. The
+    refused ones answer their 401 under that type; the avatar views, which real runs, get what any
+    operation real runs gets here."""
+    refused = routers_atlassian._JIRA_UNSERVED["refused"]
+    answers = {}
+    for operation in _accept_unchecked():
+        entry = routers_atlassian._JIRA_ENTRIES[operation]
+        method, template = operation.split(" ", 1)
+        headers = {"Accept": _HTML}
+        content = None
+        if entry.get("consumes") and entry.get("body") != "optional":
+            headers["Content-Type"], content = entry["consumes"][0], b"{}"
+        r = client.request(
+            method, f"/atlassian{template.replace('{}', '1')}", headers=headers, content=content
+        )
+        answers[operation] = (
+            (r.status_code, r.headers["content-type"]) if operation in refused else r.status_code
+        )
+    assert [op for op, answer in answers.items() if answer == 406] == []
+    refusals = {op: answer for op, answer in answers.items() if op in refused}
+    assert refusals == dict.fromkeys(refusals, (401, "text/html;charset=UTF-8"))
+
+
+_CQL_PREFIX = "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
+_CQL_NOT_PARSED = "Could not parse cql : "
+# What real answered each `cql` with on Confluence Cloud, as `_CQL_TOKEN`, `_cql_written_back`
+# and `_cql_refusal` in `backlot.routers.atlassian` record it: the `cqlQuery` of a 200, or the
+# message of a 400 after `_CQL_PREFIX`.
+_CQL_PARSE_ROWS = [
+    *[
+        (cql, 200, written)
+        for cql, written in [
+            ("type=page", "type = page"),
+            ("type=page  and  space=handbook", "type = page and space = handbook"),
+            ("TYPE=page", "TYPE = page"),
+            ("type=page AND space=handbook", "type = page AND space = handbook"),
+            ("type in (page,blogpost)", "type in ( page , blogpost )"),
+            ("type NOT IN (page,blogpost)", "type NOT IN ( page , blogpost )"),
+            ("type=page and (space=A or space=B)", "type = page and ( space = A or space = B )"),
+            ("((type=page))", "( ( type = page ) )"),
+            ("type!=page", "type != page"),
+            ("title!~x", "title !~ x"),
+            ("text~probe", "text ~ probe"),
+            ('title~"a b"', 'title ~ "a b"'),
+            ("title='x'", "title = 'x'"),
+            ('title~"a\\"b"', 'title ~ "a\\"b"'),
+            ("title~'a\\'b'", "title ~ 'a\\'b'"),
+            ('title~"日本"', 'title ~ "日本"'),
+            ("space.key=handbook", "space.key = 'handbook'"),
+            ('space.key="handbook"', "space.key = 'handbook'"),
+            ("SPACE.KEY=handbook", "SPACE.KEY = 'handbook'"),
+            ('space.key != "handbook"', "space.key != 'handbook'"),
+            ('space.key in ("handbook", handbook)', "space.key in ( 'handbook' , 'handbook' )"),
+            ('space.key="HANDBOOK"', "space.key = 'handbook'"),
+            ('space.key="han\\"dbook"', "space.key = 'handbook'"),
+            ('space.key="a\\"b"', "space.key = 'ab'"),
+            ("space.key='han\"dbook'", "space.key = 'handbook'"),
+            ('space.key="a\\"b\\"c"', "space.key = 'a\"b\"c'"),
+            ('space.key="a\\"b\\"c\\"d"', "space.key = 'a\"b\"cd'"),
+            ('space.key="han\\"\\"dbook"', "space.key = 'han\"\"dbook'"),
+            ('space.key="han\\dbook"', "space.key = 'han\\dbook'"),
+            ('space.key="poe6f613"', "space.key = 'POE6F613'"),
+            ('space.key != "HANDBOOK"', "space.key != 'handbook'"),
+            (
+                'space.key in ("HANDBOOK", "a\\"b")',
+                "space.key in ( 'handbook' , 'ab' )",
+            ),
+            ('space = "han\\"dbook"', 'space = "han\\"dbook"'),
+            ('space = "handbook"', 'space = "handbook"'),
+            ('created>now("-1d")', 'created > now ( "-1d" )'),
+            ("created>startOfDay()", "created > startOfDay ( )"),
+            ("created >= 2026-01-01 and type=page", "created >= 2026-01-01 and type = page"),
+            ("id in (1,2)", "id in ( 1 , 2 )"),
+            ("label=a.b", "label = a.b"),
+            ("label=x order by created desc", "label = x order by created desc"),
+            (
+                "type=page ORDER BY title asc, created desc",
+                "type = page ORDER BY title asc , created desc",
+            ),
+            ("type=page and not space=A", "type = page and not space = A"),
+            ("type=page\tand\nspace=A", "type = page and space = A"),
+            ("title ~ probe*", "title ~ probe"),
+            ("title ~ *probe", "title ~ probe"),
+            *[(f"title~a{c}", "title ~ a") for c in "#$%&*+;?@^`{|}"],
+        ]
+    ],
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            ('"', _CQL_NOT_PARSED),
+            ("   ", _CQL_NOT_PARSED),
+            ('space.key = "E\'NG"', _CQL_NOT_PARSED),
+            ("space.key = 'K\\'EY'", _CQL_NOT_PARSED),
+            ('space.key in ("a\'b", handbook)', _CQL_NOT_PARSED),
+            ('space.key = "a\'b" order by created', _CQL_NOT_PARSED),
+            ('space.key = "a\'b" b', "Unrecognised clause at : b"),
+            ('(space.key = "a\'b"', "Missing closing parenthesis near field (()"),
+            (
+                'space.key in ("a\'b"',
+                "Expecting a value for operator 'in' after field 'space.key' but got '('",
+            ),
+            (
+                'space.key = "a\'b" and title~',
+                "Expecting a value for operator '~' after field 'title'",
+            ),
+            ("\U0001f600", _CQL_NOT_PARSED),
+            ("type=page and", _CQL_NOT_PARSED),
+            ("type=page or", _CQL_NOT_PARSED),
+            ("type=page)", _CQL_NOT_PARSED),
+            ("order by created", _CQL_NOT_PARSED),
+            ("not type=page", _CQL_NOT_PARSED),
+            ("type=page OR NOT type=blogpost", _CQL_NOT_PARSED),
+            ("type=page and (not space=A)", _CQL_NOT_PARSED),
+            ("type in ()", _CQL_NOT_PARSED),
+            ("type in (page,)", _CQL_NOT_PARSED),
+            ("label in (a b)", _CQL_NOT_PARSED),
+            ("type=page order by", _CQL_NOT_PARSED),
+            ("type=page order by created b", _CQL_NOT_PARSED),
+            ("type=page b and type=page", _CQL_NOT_PARSED),
+            ("type=page 5", _CQL_NOT_PARSED),
+            ("id = -1", _CQL_NOT_PARSED),
+            ("created > -1d", _CQL_NOT_PARSED),
+            ("title~a..b", _CQL_NOT_PARSED),
+            ("title~a.", _CQL_NOT_PARSED),
+            ("created>\u0662\u0660\u0662\u0666-01-01", _CQL_NOT_PARSED),
+            *[(f"title~a{c}b", _CQL_NOT_PARSED) for c in "!\"'(),-/:<=>[\\]~"],
+            *[
+                (f"title~a{c}b", "Unrecognised clause at : b")
+                for c in "#$%&*+;?@^`{|}\x01\x7f" + "é\u0663\U0001f600"
+            ],
+            ("title~a b c", "Unrecognised clause at : bc"),
+            ('title~a "b"', 'Unrecognised clause at : "b"'),
+            ("title ~ 'it''s'", "Unrecognised clause at : 's'"),
+            ("type in (page) b", "Unrecognised clause at : b"),
+            ("type=", "Expecting a value for operator '=' after field 'type'"),
+            ("title~", "Expecting a value for operator '~' after field 'title'"),
+            ("text~*", "Expecting a value for operator '~' after field 'text'"),
+            ("title~é", "Expecting a value for operator '~' after field 'title'"),
+            ("title~\u0663", "Expecting a value for operator '~' after field 'title'"),
+            ("title~\uff11", "Expecting a value for operator '~' after field 'title'"),
+            ("type==page", "Expecting a value for operator '=' after field 'type' but got '='"),
+            ("space=~abc", "Expecting a value for operator '=' after field 'space' but got '~'"),
+            ("label=.a", "Expecting a value for operator '=' after field 'label' but got '.'"),
+            ("label=-x", "Expecting a value for operator '=' after field 'label' but got '-'"),
+            (
+                "type in page",
+                "Expecting a value for operator 'in' after field 'type' but got 'page'",
+            ),
+            (
+                "type not in page",
+                "Expecting a value for operator 'notin' after field 'type' but got 'page'",
+            ),
+            (
+                "type NOT IN (page",
+                "Expecting a value for operator 'NOTIN' after field 'type' but got '('",
+            ),
+            ("(type=page", "Missing closing parenthesis near field (()"),
+        ]
+    ],
+]
+
+
+def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
+    """The rows `_CQL_PARSE_ROWS` records, each refusal with the `data` object of a service
+    refusal."""
+
+    def answer(status, written):
+        if status == 200:
+            return (200, written)
+        refused = {"authorized": True, "valid": True, "errors": [], "successful": True}
+        return (400, {"statusCode": 400, "data": refused, "message": _CQL_PREFIX + written})
+
+    answered = {}
+    for cql, _, _ in _CQL_PARSE_ROWS:
+        r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": cql})
+        answered[cql] = (r.status_code, r.json()["cqlQuery"] if r.status_code == 200 else r.json())
+    assert len(answered) == len(_CQL_PARSE_ROWS)
+    assert answered == {cql: answer(status, written) for cql, status, written in _CQL_PARSE_ROWS}

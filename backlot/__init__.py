@@ -1,4 +1,4 @@
-"""Backlot — enterprise SaaS read APIs over your own corpus, with per-document ACLs."""
+"""Backlot — enterprise SaaS APIs over your own corpus, with per-document ACLs."""
 
 from backlot.server import Server, serve, serve_or_connect, url_from_argv
 

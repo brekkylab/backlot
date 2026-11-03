@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import importlib.util
 import json
 import os
 import re
+import socket
 import sys
 import threading
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -46,6 +49,7 @@ _FIELD_VALUES = {
 }
 _CONTAINER_VALUES = {
     "slack": "incidents",
+    "msteams": "Incidents",
     "gmail": "ops",
     "google_drive": "runbooks",
     "github": "gateway",
@@ -181,12 +185,18 @@ def served_id(source_type: str, seed: str):
 
 
 def build_corpus(
-    data_dir: Path, records: list[dict], *, name: str = "_corpus.jsonl", raw: bool = False
+    data_dir: Path,
+    records: list[dict],
+    *,
+    name: str = "_corpus.jsonl",
+    raw: bool = False,
+    roster: dict | None = None,
 ) -> Settings:
     """Write ``records`` as a BYO-JSONL corpus under ``data_dir`` and load it into a fresh DB.
 
     Each record is completed against its schema first (see :func:`complete`), so a test states only
     the fields it is about. ``raw=True`` writes them as given, for the tests about refusal itself.
+    ``roster`` is written as the roster sidecar the corpus loads with.
     """
     from backlot.importer.byo import load
 
@@ -199,13 +209,38 @@ def build_corpus(
             complete(**r) if isinstance(r, dict) and "source_type" in r else r for r in records
         ]
     corpus.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
-    load(corpus, settings)
+    roster_path = None
+    if roster is not None:
+        roster_path = data_dir / "_roster.yaml"
+        roster_path.write_text(json.dumps(roster), encoding="utf-8")
+    load(corpus, settings, roster=roster_path)
     return settings
 
 
 @contextlib.contextmanager
+def settings_put_back():
+    """Puts back on exit the settings `get_settings` held on entry, as they were then; with none
+    held on entry it holds none on exit, so the next read takes the environment as it is then.
+
+    A client's lifespan sets the org its corpus recorded on the settings `get_settings` holds, and
+    routers read the org off them as they answer (Teams builds its team id from it), so a client
+    still open keeps answering for its own org across anything inside this that clears the cache.
+    """
+    outer = get_settings() if get_settings.cache_info().currsize else None
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()
+        if outer is not None:
+            restored = get_settings()
+            for name in type(outer).model_fields:
+                setattr(restored, name, getattr(outer, name))
+
+
+@contextlib.contextmanager
 def client_for(settings: Settings, *, reload: bool = True):
-    """A TestClient whose app is pointed at ``settings``, with the env restored on exit.
+    """A TestClient whose app is pointed at ``settings``, with the env and the settings
+    `get_settings` holds put back on exit (`settings_put_back`).
 
     ``backlot.main`` is re-imported first, so each client starts its lifespan on an app of its own.
     The lifespan puts its connection on ``app.state`` and closes it on exit, so two clients open on
@@ -214,26 +249,38 @@ def client_for(settings: Settings, *, reload: bool = True):
     ``reload=False`` serves the app ``backlot.main`` holds without re-importing it.
     """
     prev = os.environ.get("BACKLOT_DATA_DIR")
-    os.environ["BACKLOT_DATA_DIR"] = str(settings.data_dir)
-    get_settings.cache_clear()
-    try:
-        import backlot.main as main_module
-
-        if reload:
-            main_module = importlib.reload(main_module)
-        with TestClient(main_module.app) as c:
-            yield c
-    finally:
+    with settings_put_back():
+        os.environ["BACKLOT_DATA_DIR"] = str(settings.data_dir)
         get_settings.cache_clear()
-        if prev is None:
-            os.environ.pop("BACKLOT_DATA_DIR", None)
-        else:
-            os.environ["BACKLOT_DATA_DIR"] = prev
+        try:
+            import backlot.main as main_module
+
+            if reload:
+                main_module = importlib.reload(main_module)
+            with TestClient(main_module.app) as c:
+                yield c
+        finally:
+            if prev is None:
+                os.environ.pop("BACKLOT_DATA_DIR", None)
+            else:
+                os.environ["BACKLOT_DATA_DIR"] = prev
 
 
 def python_child_env(**extra: str) -> dict[str, str]:
     """The environment for a Python child process whose output a test reads as UTF-8."""
     return {**os.environ, "PYTHONIOENCODING": "utf-8", **extra}
+
+
+def script_module(name: str):
+    """`scripts/<name>.py` as a module, loaded by path since `scripts/` is not a package. Named
+    `scripts.<name>` so that pyproject.toml's EncodingWarning filter, which goes by module name,
+    reaches it."""
+    spec = importlib.util.spec_from_file_location(
+        f"scripts.{name}", Path(__file__).resolve().parent.parent / "scripts" / f"{name}.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 # Delivering a POSIX signal, which Windows cannot: it has no SIGHUP and no `signal.pthread_kill`,
@@ -271,6 +318,133 @@ def gql(client, path: str, query: str, token: str | None = None, **variables):
     return client.post(path, json=body, headers=headers)
 
 
+# The bytes the credential sweeps put into `Authorization`: each latin-1 byte but the control
+# characters other than the tab, whose answers, where they were sent, are in
+# `backlot.auth.api_key_token`.
+SWEPT_BYTES = (0x09, *range(0x20, 0x7F), *range(0x80, 0x100))
+
+
+class WithTheKey(bytes):
+    """A GraphQL vendor's answer with the key, at ``status``, to a body it answers once it has read
+    the credential; without the key the body draws the vendor's refusal of the credential."""
+
+    def __new__(cls, answer: bytes, status: int = 400):
+        self = super().__new__(cls, answer)
+        self.status = status
+        return self
+
+
+def read_answer(reader) -> tuple[int, dict[str, str], bytes] | None:
+    """One answer off ``reader``, by its `Content-Length` or its chunks, or ``None`` where the
+    connection closed ahead of it."""
+    if not (status_line := reader.readline()):
+        return None
+    headers = {}
+    while (line := reader.readline()) not in (b"\r\n", b""):
+        name, _, value = line.decode("latin-1").partition(":")
+        headers[name.strip().lower()] = value.strip()
+    if headers.get("transfer-encoding") == "chunked":
+        body = b""
+        while size := int(reader.readline().split(b";")[0], 16):
+            body += reader.read(size)
+            reader.readline()
+        reader.readline()
+    else:
+        body = reader.read(int(headers.get("content-length", 0)))
+    return int(status_line.split()[1]), headers, body
+
+
+def raw_request(
+    method: str | bytes,
+    target: str | bytes,
+    authorization: str | bytes | None = None,
+    *,
+    times: int = 1,
+    headers: bytes = b"",
+    body: bytes | None = None,
+) -> bytes:
+    """An HTTP/1.1 request for :func:`raw_exchange`: ``target`` as written, `Host: x`, the
+    `Authorization` value ``times`` times, ``headers`` (whole lines), and with a ``body`` its
+    `Content-Type: application/json` and `Content-Length` ahead of it. A `str` is sent as its
+    latin-1 bytes."""
+    method, target, authorization = (
+        v.encode("latin-1") if isinstance(v, str) else v for v in (method, target, authorization)
+    )
+    request = b"%s %s HTTP/1.1\r\nHost: x\r\n" % (method, target)
+    if authorization is not None:
+        request += b"Authorization: %s\r\n" % authorization * times
+    request += headers
+    if body is not None:
+        request += b"Content-Type: application/json\r\nContent-Length: %d\r\n" % len(body)
+    return request + b"\r\n" + (body or b"")
+
+
+def raw_exchange(base_url: str, request: bytes) -> tuple[int, dict[str, str], bytes]:
+    """``request`` written as it is to the server at ``base_url``, and its answer: for a target a
+    client library would resolve, escape or refuse before sending it."""
+    url = urllib.parse.urlsplit(base_url)
+    with socket.create_connection((url.hostname, url.port), timeout=10) as c:
+        c.sendall(request)
+        return read_answer(c.makefile("rb"))
+
+
+def sent_as(client, method: str, path: str, headers, content=None, bare: bool = False):
+    """``method`` on ``path`` with each header's latin-1 bytes as sent, ``headers`` a mapping or a
+    sequence of pairs, which can name a header twice. The TestClient re-encodes a header's bytes
+    above 0x7F as UTF-8 (`\\x85` reaches the app as `\\xc2\\x85`), where httpx's own
+    `ASGITransport` hands the app what it was given, over the app the fixture started. ``bare``
+    leaves out the headers httpx sends unasked, `Accept: */*` among them, and with no ``content``
+    the `Content-Length: 0` it puts on a POST."""
+    import asyncio
+
+    import httpx
+
+    pairs = headers.items() if isinstance(headers, dict) else headers
+    raw = [(name.encode("latin-1"), value.encode("latin-1")) for name, value in pairs]
+
+    async def send():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            if bare:
+                c.headers.clear()
+            request = c.build_request(method, path, headers=raw, content=content)
+            if bare and content is None:
+                request.headers.pop("content-length", None)
+            return await c.send(request)
+
+    return asyncio.run(send())
+
+
+class Matching:
+    """A header value a table expects by its shape: equal to each string ``pattern`` matches in
+    full, where the value is the vendor's own each time (an id, a count, a moment)."""
+
+    def __init__(self, pattern: str):
+        self.pattern = re.compile(pattern)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str) and self.pattern.fullmatch(other) is not None
+
+    def __repr__(self) -> str:
+        return f"Matching({self.pattern.pattern!r})"
+
+
+class Chunked(bytes):
+    """A body :func:`sent_as` sends in chunks, with no `Content-Length`."""
+
+    async def chunks(self):
+        yield bytes(self)
+
+
+def http_row(method, target, sent, body, credential, status, media_type, answer, id, answered=None):
+    """A row of an HTTP layer's table: the request, the credential, and the answer, ``answered``
+    naming headers on it. ``target`` is a path after the vendor's prefix where it starts with a
+    slash, and what follows the endpoint's path where it does not."""
+    return pytest.param(
+        method, target, sent, body, credential, status, media_type, answer, answered or {}, id=id
+    )
+
+
 def selected_fields(document: str, *path: str) -> set[str]:
     """The field names ``document`` selects at ``path`` — for asserting on a generated selection
     set (``backlot.graphql.mcp_tools``) by shape rather than by substring."""
@@ -305,17 +479,17 @@ def tok(tokens_yaml, email: str) -> str:
     return next(u["token"] for u in tokens_yaml["users"] if u["email"] == email)
 
 
-def tiny_corpus(tmp_path, records):
+def tiny_corpus(tmp_path, records, *, roster: dict | None = None):
     """One small corpus in ``tmp_path``. Many shape tests call a router's response builder against
     the resulting rows rather than over HTTP, so they want the settings, not a client."""
-    return build_corpus(tmp_path, records, name="corpus.jsonl")
+    return build_corpus(tmp_path, records, name="corpus.jsonl", roster=roster)
 
 
 @contextlib.contextmanager
-def corpus_client(tmp_path, records):
+def corpus_client(tmp_path, records, *, roster: dict | None = None):
     """``records`` built and served, yielding ``(client, settings)`` — the GraphQL tests need the
     admin token off the settings alongside the client."""
-    settings = tiny_corpus(tmp_path, records)
+    settings = tiny_corpus(tmp_path, records, roster=roster)
     with client_for(settings) as client:
         yield client, settings
 
@@ -490,3 +664,9 @@ def crawl_confluence(client, headers):
             break
         start += limit
     return out
+
+
+def padded_query(length: int) -> bytes:
+    """A GraphQL body asking for ``__typename``, padded out to ``length`` bytes."""
+    head, tail = b'{"query":"{ __typename }","pad":"', b'"}'
+    return head + b"a" * (length - len(head) - len(tail)) + tail

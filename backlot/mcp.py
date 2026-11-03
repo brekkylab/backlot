@@ -7,7 +7,8 @@ this module finds (or starts) a Backlot server and serves that server's APIs as 
 
 - the REST sources through ``FastMCP.from_openapi()`` over the MCP-ready spec Backlot publishes at
   ``GET /_meta/openapi/<source>`` (``backlot.openapi`` slices the app's own ``/openapi.json`` to the
-  source and collapses the GET/POST and v2/v3 fidelity aliases, so nothing is cleaned up here);
+  source and collapses the GET/POST and v2/v3 fidelity aliases), each argument whose name the
+  Anthropic API refuses going by :func:`argument_name`'s name for it;
 - the GraphQL sources, Linear and Fireflies, by introspecting ``POST /<source>/graphql`` and serving
   each root ``Query`` field as a typed tool. ``backlot.graphql.mcp_tools`` owns that derivation —
   tool names, argument schemas, generated selection sets — and this module is its transport.
@@ -20,9 +21,9 @@ pointing a real vendor client at Backlot is its own thing to show.
 
 **One credential input.** ``--user <email>`` names a person, and this module resolves that person's
 whole credential set from the server's own ``GET /_meta/users`` — bearer token, and the S3
-access-key pair. Each source is then spelled the way it authenticates: Bearer, Atlassian's Basic
-``email:token``, S3's SigV4. Every tool call carries it, so Backlot's per-document ACL decides what
-comes back. Without ``--user`` the admin sees everything.
+access-key pair. Each source is then spelled the way it authenticates: Bearer, Linear's bare token,
+Atlassian's Basic ``email:token``, S3's SigV4. Every tool call carries it, so Backlot's per-document
+ACL decides what comes back. Without ``--user`` the admin sees everything.
 
 **Which server.** ``--url`` when given; otherwise the default local port if a Backlot server already
 answers there; otherwise one started here, as a subprocess over the data dir's corpus (or the
@@ -43,6 +44,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import signal
 import socket
 import sys
@@ -56,10 +58,25 @@ from typing import Any
 
 from backlot import sigv4
 from backlot.openapi import SOURCE_PREFIXES
+from backlot.version import version
 
 OPENAPI_SOURCES: tuple[str, ...] = tuple(SOURCE_PREFIXES)
 GRAPHQL_SOURCES: tuple[str, ...] = ("linear", "fireflies")
 SOURCES: tuple[str, ...] = OPENAPI_SOURCES + GRAPHQL_SOURCES
+
+# Backlot's icons as ``serverInfo`` and server.json both list them: a PNG and an SVG per theme, the
+# theme naming the background each one is drawn for.
+_ICON_ROOT = "https://raw.githubusercontent.com/brekkylab/backlot/main/assets/icon"
+ICONS: tuple[dict[str, Any], ...] = tuple(
+    {
+        "src": f"{_ICON_ROOT}/backlot-icon-{theme}.{ext}",
+        "mimeType": mime,
+        "sizes": [size],
+        "theme": theme,
+    }
+    for ext, mime, size in (("png", "image/png", "1024x1024"), ("svg", "image/svg+xml", "any"))
+    for theme in ("light", "dark")
+)
 
 # Where `backlot serve` listens by default, and so the one place worth probing before starting a
 # server of our own.
@@ -74,7 +91,7 @@ DEFAULT_URL = "http://127.0.0.1:8000"
 PROBE_TIMEOUT = 2
 NAMED_SERVER_TIMEOUT = 10
 
-# The prefix a source's route handlers carry to stay unique inside one module (`routers/google.py`
+# The prefix a source's route handlers carry to stay unique on one router (`routers.google.router`
 # holds all five Google surfaces), which under the `<source>_` namespace would be said twice:
 # `gmail_gmail_messages_list`, `gdrive_drive_files_list`. `mounted_name` folds it into the namespace.
 # Only the prefix that repeats the namespace is folded. `gdrive` bridges Docs, Sheets and Slides
@@ -88,6 +105,13 @@ _HANDLER_PREFIX: dict[str, str] = {"gmail": "gmail", "gdrive": "drive"}
 # `Analytics` has no leaf fields of its own and a shallower selection drops the node whole. Sources
 # absent here take that default.
 DEPTH: dict[str, int] = {"linear": 1}
+
+# The argument names the Anthropic Messages API takes, as its 400 states the rule (2026-10-29):
+# "Property keys should match pattern '^[a-zA-Z0-9_.-]{1,64}$'". One name outside it in any tool
+# refuses the whole request, so an agent on that API cannot start against a source that has one. At
+# its edges on 2026-11-02, an empty key and a 65-character one drew that 400 and a 64-character one
+# was answered.
+ARGUMENT_NAME = re.compile(r"[a-zA-Z0-9_.-]{1,64}")
 
 
 # The one region Backlot's verifier takes in a credential scope (``backlot.sigv4.REGION``); a client
@@ -158,10 +182,13 @@ def resolve(base_url: str, user: str | None) -> Credentials:
 
 def _auth_header(creds: Credentials, source: str) -> dict[str, str]:
     # Basic `email:token` is Atlassian's scheme, where the api_token IS the Backlot token, and the
-    # email is what mcp-atlassian sends. S3 has no header here at all: `_sign_sigv4` signs it.
+    # email is what mcp-atlassian sends. Linear takes the token with no scheme
+    # (`backlot.auth.api_key_token`). S3 has no header here at all: `_sign_sigv4` signs it.
     if source == "atlassian" and creds.email:
         raw = f"{creds.email}:{creds.token}".encode()
         return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
+    if source == "linear":
+        return {"Authorization": creds.token}
     return {"Authorization": f"Bearer {creds.token}"}
 
 
@@ -242,12 +269,59 @@ def openapi_spec(base_url: str, source: str) -> dict:
     return _fetch_json(f"{base_url}/_meta/openapi/{source}")
 
 
+def argument_name(name: str) -> str:
+    """The tool argument name for the spec parameter ``name``: ``name`` itself when
+    :data:`ARGUMENT_NAME` takes it, else stripped to what it takes, so ``$select`` is ``select``
+    and ``$.xgafv`` is ``xgafv``. A name that is still refused, such as ``$`` or one too long,
+    raises :class:`ValueError` naming the parameter."""
+    if ARGUMENT_NAME.fullmatch(name):
+        return name
+    renamed = re.sub(r"[^a-zA-Z0-9_.-]", "", name).lstrip(".-")
+    if not ARGUMENT_NAME.fullmatch(renamed):
+        raise ValueError(f"parameter {name!r} has no argument name the Anthropic API takes")
+    return renamed
+
+
+def _with_argument_names(tool):
+    """``tool`` with each argument :func:`argument_name` renames under its new name, the old one
+    still the name the call is sent under. Two arguments that would go by one name raise
+    :class:`ValueError` naming the tool and both parameters."""
+    from fastmcp.tools import Tool
+    from fastmcp.tools.tool_transform import ArgTransform
+
+    properties = tool.parameters.get("properties", {})
+    named: dict[str, str] = {}
+    for old in properties:
+        new = argument_name(old)
+        if new in named:
+            raise ValueError(
+                f"tool {tool.name!r}: parameters {named[new]!r} and {old!r} both go by {new!r}"
+            )
+        named[new] = old
+    renames = {old: new for new, old in named.items() if new != old}
+    if not renames:
+        return tool
+    return Tool.from_tool(
+        tool,
+        transform_args={
+            old: ArgTransform(
+                name=new,
+                description=" ".join(
+                    filter(None, (properties[old].get("description"), f"Sent as `{old}`."))
+                ),
+            )
+            for old, new in renames.items()
+        },
+    )
+
+
 def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict | None = None):
     """A FastMCP server for one REST source: the MCP-ready spec, served over a client whose base
     URL is Backlot and which carries ``creds`` on every call — as a header for the bearer sources,
     as a per-request signature for S3. ``spec`` is that spec when the caller already fetched it."""
     import httpx2
     from fastmcp import FastMCP
+    from fastmcp.server.transforms import Transform
 
     if spec is None:
         spec = openapi_spec(base_url, source)
@@ -261,6 +335,15 @@ def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict
             _sign_sigv4(creds, request)
             yield request
 
+    class _ArgumentNames(Transform):
+        # Renames the tools' arguments, not the spec: the request carries the spec's names.
+        async def list_tools(self, tools):
+            return [_with_argument_names(tool) for tool in tools]
+
+        async def get_tool(self, name, call_next, *, version=None):
+            tool = await call_next(name, version=version)
+            return None if tool is None else _with_argument_names(tool)
+
     signed = source == "s3"
     # httpx2, not httpx: `from_openapi` takes an httpx2 client. A legacy httpx one is still
     # accepted, under a deprecation warning that says it will stop being accepted.
@@ -271,10 +354,19 @@ def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict
         timeout=30,
     )
     # validate_output=False: Backlot's responses are the source of truth; a passthrough must never
-    # reject a real server response for not matching a loose schema.
-    return FastMCP.from_openapi(
-        openapi_spec=spec, client=client, name=f"{source}-bridge", validate_output=False
+    # reject a real server response for not matching a loose schema. Every FastMCP built here takes
+    # ``version=``: one built without it reports FastMCP's own version in ``serverInfo``. Each takes
+    # ``icons=`` too, so a client shows Backlot's icon whichever server it connected to.
+    server = FastMCP.from_openapi(
+        openapi_spec=spec,
+        client=client,
+        name=f"{source}-bridge",
+        version=version(),
+        icons=list(ICONS),
+        validate_output=False,
     )
+    server.add_transform(_ArgumentNames())
+    return server
 
 
 def graphql_outcome(body: dict) -> tuple[str, bool]:
@@ -297,6 +389,7 @@ def graphql_server(base_url: str, creds: Credentials, source: str, *, depth: int
     from fastmcp import FastMCP
     from fastmcp.tools import Tool, ToolResult
 
+    from backlot import telemetry
     from backlot.graphql import mcp_tools
 
     endpoint = f"{base_url}/{source}/graphql"
@@ -304,7 +397,9 @@ def graphql_server(base_url: str, creds: Credentials, source: str, *, depth: int
     # The introspection request carries the credential, so a bad token fails here, before a single
     # tool exists, with the endpoint's own error body.
     introspection = _fetch_json(
-        endpoint, headers=headers, body={"query": mcp_tools.INTROSPECTION_QUERY}
+        endpoint,
+        headers={**headers, telemetry.INTERNAL: "mcp"},
+        body={"query": mcp_tools.INTROSPECTION_QUERY},
     )
     if depth is None:
         depth = DEPTH.get(source, mcp_tools.DEFAULT_DEPTH)
@@ -330,7 +425,7 @@ def graphql_server(base_url: str, creds: Credentials, source: str, *, depth: int
             content, failed = graphql_outcome(r.json())
             return ToolResult(content=content, is_error=failed)
 
-    server = FastMCP(name=f"{source}-graphql-bridge")
+    server = FastMCP(name=f"{source}-graphql-bridge", version=version(), icons=list(ICONS))
     for tool in tools:
         server.add_tool(
             _Field(
@@ -388,7 +483,7 @@ def build_server(
     )
     if "atlassian" in servers:
         instructions += " atlassian_* covers both Jira and Confluence."
-    root = FastMCP(name="backlot", instructions=instructions)
+    root = FastMCP(name="backlot", instructions=instructions, version=version(), icons=list(ICONS))
     for source, server in servers.items():
         # `tool_names` renames a tool before the namespace is prefixed, so what goes in is the
         # tail `mounted_name` wants after `<source>_`. Only the tools whose default name would

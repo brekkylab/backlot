@@ -80,11 +80,12 @@ PUBLISHED_VERSIONS = (
 #: The headers real puts on an answer past its body reader (:func:`front_door_body`), one value
 #: each wherever they were measured against api.notion.com on 2026-10-27: the answers of each route
 #: here (200s, 400s, 401s, 404s and a 503, `HEAD`s among them), the OAuth client endpoints' 401 and
-#: the root's 302. The refusals that body reader answers carried none of them, and neither did the
-#: front door's `405 Not Allowed` page for `TRACE`: a method outside :data:`ROUTED_METHODS` is the
-#: framework's 405 here (:func:`unmatched_path`), and carries none of them either.
-#: `strict-transport-security` came beside them and is left off, a promise of HTTPS that a server
-#: answering over plain HTTP cannot keep.
+#: the root's 302. The refusals that body reader answers carried none of them, nor did the 400 for a
+#: path whose escapes do not decode (:func:`undecodable_url`), nor the front door's
+#: `405 Not Allowed` page for `TRACE`: a method outside :data:`ROUTED_METHODS` is the framework's
+#: 405 here (:func:`unmatched_path`), and carries none of them either. `strict-transport-security`
+#: came beside them and is left off, a promise of HTTPS that a server answering over plain HTTP
+#: cannot keep.
 APPLICATION_HEADERS = {
     "content-security-policy": "default-src 'none'",
     "referrer-policy": "strict-origin-when-cross-origin",
@@ -505,8 +506,7 @@ def undecodable_url(request: Request) -> JSONResponse | None:
     route's own (`/v1/users%80`, `/v1/users/nope%80x`, `/v1/pages/nope%80x`) and beside `%01`, on a
     `GET` with a token and without one: `Failed to decode url.`, where a `%C3%A9` in the same place
     was the URL's 400 (:func:`unmatched_path`) or the route's own refusal. A body Express refuses
-    (:func:`front_door_body`) was refused ahead of it, on a `POST` with a token and without one, and
-    the 400 carried none of :data:`APPLICATION_HEADERS`."""
+    (:func:`front_door_body`) was refused ahead of it, on a `POST` with a token and without one."""
     if utf8_escapes.decodes(request.scope["raw_path"]):
         return None
     return _error(request, 400, "invalid_request_url", "Failed to decode url.")

@@ -279,7 +279,7 @@
     },
     "paragraphs": {
       "$ref": "#/$defs/paragraphs",
-      "description": "The document's paragraphs, for a `document`, each with its named style and its runs of text, so the Docs API serves the headings, bold, italic, links, footnotes and page breaks a document really has. Authoritative when present, and then `content` must be ABSENT: it is derived at import as the paragraphs' text, one line each, which Drive's full-text search reads. Omit `paragraphs` and `content` keeps its meaning unchanged -- one plain paragraph per line of it."
+      "description": "The document's paragraphs, for a `document`, each with its named style and its runs of text, so the Docs API serves the headings, bold, italic, links, footnotes and page breaks a document really has. Authoritative when present, and then `content` must be ABSENT: it is derived at import as the paragraphs' text with the header's, the footer's and the footnotes', one line each, which Drive's full-text search reads. Omit `paragraphs` and `content` keeps its meaning unchanged -- one plain paragraph per line of it."
     },
     "header": {
       "$ref": "#/$defs/paragraphs",
@@ -295,7 +295,7 @@
       "items": {
         "$ref": "#/$defs/tab"
       },
-      "description": "The document's tabs, for a `document` whose tabs are more than one, or whose tab has a title or an icon: each with its title, its body as `paragraphs`, its own `header` and `footer`, and its child `tabs`. State this or `paragraphs`, not both; then `content` must be ABSENT, derived at import as every tab's text, depth first. The first tab is `t.0`, as in a Doc real makes."
+      "description": "The document's tabs, for a `document` whose tabs are more than one, or whose tab has a title or an icon: each with its title, its body as `paragraphs`, its own `header` and `footer`, and its child `tabs`. State this or `paragraphs`, not both; then `content` must be ABSENT, derived at import as every tab's text, its header, footer and footnotes with it, depth first. The first tab is `t.0`, as in a Doc real makes."
     }
   },
   "required": [

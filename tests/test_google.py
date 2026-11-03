@@ -17653,6 +17653,27 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
     assert [x["id"] for x in found.json()["files"]] == [did]
     exported = wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"})
     assert exported.content.decode("utf-8") == "\ufeffABell0 w0rld\r\nSec0nd para"
+    # and a header's and a footnote's words as well as the body's
+    made = {"requests": [{"createHeader": {"type": "DEFAULT"}}, _fn(1)]}
+    replies = wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=h, json=made).json()
+    header, note = replies["replies"][0]["createHeader"]["headerId"], replies["replies"][1]
+    words = {
+        "requests": [
+            {"insertText": {"location": {"segmentId": header, "index": 0}, "text": "wombat"}},
+            {
+                "insertText": {
+                    "location": {"segmentId": note["createFootnote"]["footnoteId"], "index": 1},
+                    "text": "numbat",
+                }
+            },
+        ]
+    }
+    assert (
+        wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=h, json=words).status_code == 200
+    )
+    for word in ("wombat", "numbat"):
+        found = wc.get("/drive/v3/files", headers=h, params={"q": f"fullText contains '{word}'"})
+        assert [x["id"] for x in found.json()["files"]] == [did], word
 
 
 def _searched(seed, *replace):

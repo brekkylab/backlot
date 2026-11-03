@@ -359,24 +359,32 @@ def _stated_tabs(tabs: list[dict]):
 
 
 def record_text(rec: dict) -> str:
-    """A corpus record's text as Drive's search reads it: each tab's paragraphs, depth first."""
-    stated = rec.get("tabs") or [{"paragraphs": rec["paragraphs"]}]
-    return "\n".join(text_of(t["paragraphs"]) for t in _stated_tabs(stated))
+    """A corpus record's text as Drive's search reads it (`document_text`)."""
+    return document_text(from_record("", rec))
 
 
 def document_text(doc: dict) -> str:
-    """A stored document's text as Drive's search reads it: each tab's body, depth first, one line
-    per paragraph, without its footnote references and page breaks."""
-    return "\n".join(
+    """A stored document's text as Drive's search reads it: each tab's body, headers, footers and
+    footnotes, depth first, one line per paragraph, without its footnote references and page
+    breaks. Measured 2026-11-03: `fullText contains` found a word only in the first or the second
+    tab's header or footnote, or the first tab's footer."""
+    texts = (
         "".join(
             pe["textRun"]["content"]
-            for el in tab["body"]
+            for el in segment
             if "paragraph" in el
             for pe in el["paragraph"]["elements"]
             if "textRun" in pe
         )[:-1]
         for tab, *_ in walk(doc["tabs"])
+        for segment in (
+            tab["body"],
+            *tab["headers"].values(),
+            *tab["footers"].values(),
+            *tab["footnotes"].values(),
+        )
     )
+    return "\n".join(text for text in texts if text.strip())
 
 
 def footnote_numbers(tab: dict) -> dict[str, str]:
@@ -1435,14 +1443,15 @@ _RULE = "_" * 16
 def _page_breaks(text: str, bare: str, heading: bool) -> str:
     """A paragraph's text with each page break a `_RULE` line: measured 2026-11-02, `ab`, a page
     break and `cd` were `ab`, the rule and `cd` on three lines; a page break opening a paragraph
-    starts no line before it, and one closing a paragraph that holds text ends none after it,
-    while the last of a paragraph holding page breaks alone ends a line after it, which
-    `_plain_lines` doubles outside a HEADING_n and drops in one; measured 2026-11-03, two page
-    breaks alone were two rules with no line between them. A page break right after vertical tabs
-    starts no line either, in a HEADING_n or once text comes before them: measured 2026-11-03, a
-    vertical tab, a page break and `cd` in a HEADING_2 were an empty line, the rule and `cd` on
-    three lines, and `ab`, a page break, a vertical tab, a page break and `cd` in NORMAL_TEXT had
-    one empty line between the two rules."""
+    starts no line before it, and one closing a paragraph that holds text ends none after it, while
+    the last of a paragraph holding page breaks alone ends a line after it, which `_plain_lines`
+    doubles outside a HEADING_n and drops in one; measured 2026-11-03, two page breaks alone were
+    two rules with no line between them. A page break with nothing but vertical tabs between it and
+    the paragraph's start or the page break before it starts no line either, in a HEADING_n, or
+    outside one once text comes before those vertical tabs: measured 2026-11-03, a vertical tab, a
+    page break and `cd` in a HEADING_2 were an empty line, the rule and `cd` on three lines, and
+    `ab`, a page break, a vertical tab, a page break and `cd` in NORMAL_TEXT had one empty line
+    between the two rules."""
     out = ""
     pieces = text.split(PAGE_BREAK)
     for i, piece in enumerate(pieces):

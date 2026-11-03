@@ -250,11 +250,12 @@ def text_of(paragraphs: list[dict]) -> str:
 
 
 # The emoji a tab icon may be: every sequence of Unicode's emoji-test.txt for Emoji 15.0, whatever
-# its qualification, but `©`, `®` and `™` with or without U+FE0F, and the arrows, `‼` and `⁉`
-# without it. Measured 2026-11-02 and 2026-11-03 on 98 candidates: Emoji 15.1's `🐦‍🔥`, 16.0's
-# `🫩` and `🇨🇶`, unassigned pictographs, U+FE0F after an emoji shown as one by default (`⭐️`),
-# a flag that is no RGI one and a ZWJ that ends a sequence were refused; 15.0's `🫨`, an unqualified
-# `❤`, `1⃣` and `ℹ`, and a skin tone alone were taken.
+# its qualification, but `©`, `®` and `™` with or without U+FE0F, and without it `‼`, `⁉` and each
+# arrow shown as text by default (one the list also holds with U+FE0F, `➡`). Measured 2026-11-02
+# and 2026-11-03: Emoji 15.1's `🐦‍🔥`, 16.0's `🫩` and `🇨🇶`, unassigned pictographs, U+FE0F
+# after an emoji shown as one by default (`⭐️`), a flag that is no RGI one and a ZWJ that ends a
+# sequence were refused; 15.0's `🫨`, an unqualified `❤`, `1⃣` and `ℹ`, a skin tone alone, and
+# arrows shown as emoji (`🏹`, `💘`, `🔄`) were taken.
 _ICONS = frozenset(
     json.loads((Path(__file__).parent / "data" / "gdocs_icons.json").read_text(encoding="utf-8"))
 )
@@ -265,8 +266,9 @@ _ICON_BARE = frozenset("\u203c\u2049")
 def is_icon(text: str) -> bool:
     if text not in _ICONS or text[0] in _ICON_REFUSED:
         return False
-    bare = len(text) == 1
-    return not bare or (text not in _ICON_BARE and "ARROW" not in unicodedata.name(text, ""))
+    if len(text) > 1 or text + "\ufe0f" not in _ICONS:
+        return True
+    return text not in _ICON_BARE and "ARROW" not in unicodedata.name(text, "")
 
 
 # --- a document: its tabs, and in each a body, a header, a footer and footnotes ------------------
@@ -1201,8 +1203,8 @@ class Document:
         self.tabs: list[dict] = copy.deepcopy(stored["tabs"])
         self._open: dict[tuple[str, str], Body] = {}
         self._made = itertools.count()
-        # the requests that reached nothing of the Doc, which `routers.google_docs` does not count
-        # as a write when they are all a batch holds
+        # the requests that left the Doc as it was, which `routers.google_docs` does not count as
+        # a write when they are all a batch holds
         self.unchanged = 0
 
     def flat(self) -> list[dict]:

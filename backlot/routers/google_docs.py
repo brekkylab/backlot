@@ -4,7 +4,7 @@
 The routes are registered on `routers.google.router` as `routers.google_sheets` describes, and a
 ``fields`` mask is read as the Sheets routes read theirs (`routers.google._gmask_select`).
 
-The answers below were measured on docs.googleapis.com between 2026-10-09 and 2026-11-02, each
+The answers below were measured on docs.googleapis.com between 2026-10-09 and 2026-11-03, each
 comment dating its own, by a Google Workspace member on Docs it owns and by a second member it was
 shared with as a reader.
 """
@@ -437,8 +437,8 @@ async def docs_create(request: Request):
 
 # --- `documents.batchUpdate` ----------------------------------------------------------------------
 #
-# Measured against the live Docs v1 API on 2026-10-29 and 2026-11-02, as a Workspace member writing
-# a Doc it owns and as a second member it was shared with as a reader. How each request changes
+# Measured against the live Docs v1 API on 2026-10-29, 2026-11-02 and 2026-11-03, as a Workspace
+# member writing a Doc it owns and as a second member it was shared with as a reader. How each request changes
 # the document is `gdocs.Body`'s and `gdocs.Document`'s; this section is the request, its refusals
 # and the answer.
 
@@ -810,10 +810,10 @@ def _docs_tab_fields(fields: str) -> list[str] | None:
     mask real answers with a 500. Measured 2026-11-02 and 2026-11-03: `*` alone names every
     field; names are split at commas, trimmed, and empty ones dropped, so `title,` and ` , ` are
     read while `,` is refused as naming no field. A name is split at dots with empty parts dropped
-    (`title.` and `.title` name `title`, `.` alone is the 500), its first part read as
-    `_docs_snake` spells it must be a field's `snake_case` name (`TITLE`, `parentTABId` and
-    `icon_emoji` were taken, `TItle`, `_title` and `PARENTTABID` refused), and is refused by that
-    spelling (`fooBar` as `foo_bar`). Every name is checked before any path into a field, which is
+    (`title.` and `.title` name `title`), and one of dots alone is the 500 before any name is read
+    (`nope,.`). Its first part read as `_docs_snake` spells it must be a field's `snake_case` name
+    (`TITLE`, `parentTABId` and `icon_emoji` were taken, `TItle`, `_title` and `PARENTTABID`
+    refused), and is refused by that spelling (`fooBar` as `foo_bar`). Every name is checked before any path into a field, which is
     refused by the field's name and the rest so spelt (`icon_emoji.x` as `iconEmoji.x`,
     `title.fooBar` as `title.foo_bar`)."""
     if fields == "*":
@@ -823,14 +823,12 @@ def _docs_tab_fields(fields: str) -> list[str] | None:
         raise _EditorRefused(
             "At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"
         )
+    paths = [[_docs_snake(n) for n in p.split(".") if n] for p in (p.strip() for p in parts) if p]
+    if not all(paths):
+        return None
     known = {_docs_snake(f): f for f in _DOCS_TAB_FIELDS}
     read = []
-    for part in (p.strip() for p in parts):
-        if not part:
-            continue
-        path = [_docs_snake(name) for name in part.split(".") if name]
-        if not path:
-            return None
+    for path in paths:
         if path[0] not in known:
             raise _EditorRefused(f"Invalid field: {path[0]}")
         read.append([known[path[0]], *path[1:]])
@@ -865,7 +863,8 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
 
     A parent named puts the tab last under it, the root for none, and an index stated moves it
     before the sibling there (`gdocs.Document.place`): measured, `*` with no index moved a tab to
-    the root's end, and with no title was refused for the title. An empty icon removes it."""
+    the root's end, and with no title was refused for the title. An empty icon removes it. The 500
+    a mask leads to is answered at this request, whatever a later one would be refused for."""
     fields = req.get("fields", "")
     if not fields:
         raise _EditorRefused(
@@ -873,7 +872,7 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         )
     names = _docs_tab_fields(fields)
     if names is None:
-        return {}, True
+        raise gerr.internal_error()
     props = req.get("tab_properties", {})
     if not props.get("tab_id"):
         raise _EditorRefused("Tab ID must be specified in the properties.")
@@ -993,8 +992,9 @@ async def docs_batch_update(document_id: str, request: Request):
     `SUGGEST` write mode, which records the requests as suggestions.
 
     Every write, one that changed nothing included, moves the `revisionId`, but for a batch of
-    `updateDocumentTabProperties` requests that each left the tab as it was and `replaceAllText`
-    requests whose `tabsCriteria` lists no tab, which keeps it and stores nothing. The `revisionId` is answered as
+    `updateDocumentTabProperties` requests that each left the tab's title, index and parent as they
+    were and named no `iconEmoji`, and `replaceAllText` requests whose `tabsCriteria` lists no tab,
+    which keeps it and stores nothing. The `revisionId` is answered as
     `writeControl.requiredRevisionId` and served by the next read; real takes any recent revision as
     `targetRevisionId` and merges the write into what collaborators did since, which here is
     nothing. The Drive file's `modifiedTime` is the write's (`store.PATCHABLE`), and its `content`

@@ -76,7 +76,7 @@ and its header, footer or footnote as real's do, the first tab when it names non
 `replaceAllText` replaces in every tab and every segment of each unless `tabsCriteria` lists the
 tabs. Inserted text takes the style of the text beside it as real gives it, a heading a newline
 splits gives the new part a `headingId` of its own, and every write moves the Doc's `revisionId`,
-which `requiredRevisionId` is checked against, but for tab updates that change nothing. A Doc whose corpus record states only `content`
+which `requiredRevisionId` is checked against, but for a batch whose tab updates each leave a tab's title, index and parent as they were and name no `iconEmoji`, or whose `replaceAllText` lists no tab in `tabsCriteria`. A Doc whose corpus record states only `content`
 reads as one paragraph per line, and its first write stores that reading. `replaceAllText`
 compares text as real folds it (a letter with a mark as its base letter, `æ` as `ae`, `ß` as
 `ss`), and reads a regular expression with `java.util.regex`'s syntax, classes and properties,

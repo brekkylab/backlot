@@ -198,8 +198,9 @@ def gdocs(timeout: float) -> list[tuple[Any, ...]]:
 
 
 def _gdocs_structure(client: httpx.Client, doc: str) -> list[tuple[Any, ...]]:
-    """The requests that make and remove a header, a footer, a footnote, a page break and a tab,
-    each field they read sent: the second body names what the first made."""
+    """The requests that make a header, a footer, a footnote, a page break and a tab, then move the
+    tab and remove it, the header and the footer, each field they read sent: the second body names
+    what the first made."""
     here = {"tabId": "t.0", "segmentId": ""}
     made = {
         "requests": [

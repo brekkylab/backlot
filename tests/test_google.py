@@ -18034,7 +18034,16 @@ _TAB_WRITES = [
         [_TABS_START[0], "Second: two", *_TABS_START[2:]],
         None,
     ),
-    # `fields` names trimmed, in any case or `snake_case`, an empty one dropped
+    # a bare arrow shown as emoji by default
+    (
+        [
+            _upd({"tabId": "$T2", "iconEmoji": "\U0001f3f9"}, "iconEmoji"),
+            _upd({"tabId": "$T3", "iconEmoji": "\U0001f504"}, "iconEmoji"),
+        ],
+        [_TABS_START[0], "Second \U0001f3f9: two", _TABS_START[2], "Third \U0001f504: zz three"],
+        None,
+    ),
+    # `fields` names trimmed and read by their `snake_case` spelling, an empty name or part dropped
     (
         [
             _upd(
@@ -18599,10 +18608,18 @@ _DOCS_TAB_REFUSALS = [
         500,
         "Internal error encountered.",
     ),
-    # a `fields` name of dots alone
+    # a `fields` name of dots alone, before any other name and at its own request
     *(
         ([_upd({"tabId": "$T2", "title": "x"}, f)], 500, "Internal error encountered.")
-        for f in (".", "..")
+        for f in (".", "..", "nope,.")
+    ),
+    (
+        [
+            _upd({"tabId": "$T2", "title": "x"}, "."),
+            {"insertText": {"location": {"index": 0}, "text": "x"}},
+        ],
+        500,
+        "Internal error encountered.",
     ),
     *_tab_refusals(
         "createFootnote",
@@ -18923,6 +18940,9 @@ _DOCS_TAB_REFUSALS = [
                     "\U0001faff",
                     "\u2b50\ufe0f",
                     "\U0001f600\ufe0f",
+                    "\u27a1",
+                    "\u203c",
+                    "\u00a9\ufe0f",
                 )
             ),
             *(

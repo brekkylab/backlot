@@ -89,6 +89,6 @@ with serve_or_connect(CORPUS, url=args.url) as s:
         print("no issues visible to this identity")
     else:
         issue = jira.get(f"rest/api/3/issue/{issues[0]['key']}")
-        print(f"{len(issues)} issues; first issue:")
+        print(f"{len(issues)} issue(s); first issue:")
         print(f"  {issue['key']}: {issue['fields']['summary']}")
         print(f"  status: {issue['fields']['status']['name']}")

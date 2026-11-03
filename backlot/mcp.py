@@ -7,7 +7,8 @@ this module finds (or starts) a Backlot server and serves that server's APIs as 
 
 - the REST sources through ``FastMCP.from_openapi()`` over the MCP-ready spec Backlot publishes at
   ``GET /_meta/openapi/<source>`` (``backlot.openapi`` slices the app's own ``/openapi.json`` to the
-  source and collapses the GET/POST and v2/v3 fidelity aliases, so nothing is cleaned up here);
+  source and collapses the GET/POST and v2/v3 fidelity aliases), each argument whose name the
+  Anthropic API refuses going by :func:`argument_name`'s name for it;
 - the GraphQL sources, Linear and Fireflies, by introspecting ``POST /<source>/graphql`` and serving
   each root ``Query`` field as a typed tool. ``backlot.graphql.mcp_tools`` owns that derivation —
   tool names, argument schemas, generated selection sets — and this module is its transport.
@@ -43,6 +44,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import signal
 import socket
 import sys
@@ -103,6 +105,13 @@ _HANDLER_PREFIX: dict[str, str] = {"gmail": "gmail", "gdrive": "drive"}
 # `Analytics` has no leaf fields of its own and a shallower selection drops the node whole. Sources
 # absent here take that default.
 DEPTH: dict[str, int] = {"linear": 1}
+
+# The argument names the Anthropic Messages API takes, as its 400 states the rule (2026-10-29):
+# "Property keys should match pattern '^[a-zA-Z0-9_.-]{1,64}$'". One name outside it in any tool
+# refuses the whole request, so an agent on that API cannot start against a source that has one. At
+# its edges on 2026-11-02, an empty key and a 65-character one drew that 400 and a 64-character one
+# was answered.
+ARGUMENT_NAME = re.compile(r"[a-zA-Z0-9_.-]{1,64}")
 
 
 # The one region Backlot's verifier takes in a credential scope (``backlot.sigv4.REGION``); a client
@@ -260,12 +269,59 @@ def openapi_spec(base_url: str, source: str) -> dict:
     return _fetch_json(f"{base_url}/_meta/openapi/{source}")
 
 
+def argument_name(name: str) -> str:
+    """The tool argument name for the spec parameter ``name``: ``name`` itself when
+    :data:`ARGUMENT_NAME` takes it, else stripped to what it takes, so ``$select`` is ``select``
+    and ``$.xgafv`` is ``xgafv``. A name that is still refused, such as ``$`` or one too long,
+    raises :class:`ValueError` naming the parameter."""
+    if ARGUMENT_NAME.fullmatch(name):
+        return name
+    renamed = re.sub(r"[^a-zA-Z0-9_.-]", "", name).lstrip(".-")
+    if not ARGUMENT_NAME.fullmatch(renamed):
+        raise ValueError(f"parameter {name!r} has no argument name the Anthropic API takes")
+    return renamed
+
+
+def _with_argument_names(tool):
+    """``tool`` with each argument :func:`argument_name` renames under its new name, the old one
+    still the name the call is sent under. Two arguments that would go by one name raise
+    :class:`ValueError` naming the tool and both parameters."""
+    from fastmcp.tools import Tool
+    from fastmcp.tools.tool_transform import ArgTransform
+
+    properties = tool.parameters.get("properties", {})
+    named: dict[str, str] = {}
+    for old in properties:
+        new = argument_name(old)
+        if new in named:
+            raise ValueError(
+                f"tool {tool.name!r}: parameters {named[new]!r} and {old!r} both go by {new!r}"
+            )
+        named[new] = old
+    renames = {old: new for new, old in named.items() if new != old}
+    if not renames:
+        return tool
+    return Tool.from_tool(
+        tool,
+        transform_args={
+            old: ArgTransform(
+                name=new,
+                description=" ".join(
+                    filter(None, (properties[old].get("description"), f"Sent as `{old}`."))
+                ),
+            )
+            for old, new in renames.items()
+        },
+    )
+
+
 def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict | None = None):
     """A FastMCP server for one REST source: the MCP-ready spec, served over a client whose base
     URL is Backlot and which carries ``creds`` on every call — as a header for the bearer sources,
     as a per-request signature for S3. ``spec`` is that spec when the caller already fetched it."""
     import httpx2
     from fastmcp import FastMCP
+    from fastmcp.server.transforms import Transform
 
     if spec is None:
         spec = openapi_spec(base_url, source)
@@ -278,6 +334,15 @@ def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict
         def auth_flow(self, request):
             _sign_sigv4(creds, request)
             yield request
+
+    class _ArgumentNames(Transform):
+        # Renames the tools' arguments, not the spec: the request carries the spec's names.
+        async def list_tools(self, tools):
+            return [_with_argument_names(tool) for tool in tools]
+
+        async def get_tool(self, name, call_next, *, version=None):
+            tool = await call_next(name, version=version)
+            return None if tool is None else _with_argument_names(tool)
 
     signed = source == "s3"
     # httpx2, not httpx: `from_openapi` takes an httpx2 client. A legacy httpx one is still
@@ -292,7 +357,7 @@ def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict
     # reject a real server response for not matching a loose schema. Every FastMCP built here takes
     # ``version=``: one built without it reports FastMCP's own version in ``serverInfo``. Each takes
     # ``icons=`` too, so a client shows Backlot's icon whichever server it connected to.
-    return FastMCP.from_openapi(
+    server = FastMCP.from_openapi(
         openapi_spec=spec,
         client=client,
         name=f"{source}-bridge",
@@ -300,6 +365,8 @@ def openapi_server(base_url: str, creds: Credentials, source: str, *, spec: dict
         icons=list(ICONS),
         validate_output=False,
     )
+    server.add_transform(_ArgumentNames())
+    return server
 
 
 def graphql_outcome(body: dict) -> tuple[str, bool]:

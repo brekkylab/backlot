@@ -242,6 +242,9 @@ _AWS_AUTHORIZATION = (
     b"aws4_request, SignedHeaders=host, Signature=" + b"0" * 64 + b"\r\n"
 )
 
+#: The header lines of a row of :data:`_HOSTS` that sends the row's `Authorization` twice.
+_AUTHORIZATION_TWICE = b"(the Authorization twice)"
+
 # A `Host` in brackets that holds no IPv6 address (``backlot.bracketed_host`` dates the
 # measurement): (host, or ``None`` where the header lines carry it, method, base, target after it,
 # answer, header lines or none), "served" the answer to the request with a `Host` of `x`. `[0:0]`
@@ -421,6 +424,17 @@ _HOSTS = [
         (host, b"GET", "/github/", b"rate_limit?a=" + b"x" * 8_200, "github 414")
         for host in (b"[0:0]", b"[v1.x]")
     ),
+    # a `Host` beside an `Authorization` sent twice
+    *(
+        (host, method, base, rest, "cloudflare page", _AUTHORIZATION_TWICE)
+        for host in (b"[0:0]", b"[v1.x]")
+        for method, base, rest in (
+            (b"GET", "/notion/v1/", b"users"),
+            (b"GET", "/hubspot/crm/v3/objects/", b"contacts"),
+            (b"POST", "/linear/", b"graphql"),
+            (b"POST", "/fireflies/", b"graphql"),
+        )
+    ),
     (b"[0:0]", b"GET", "/s3/no-such-bucket/", b"x", "served", _AWS_AUTHORIZATION),
 ]
 
@@ -495,6 +509,8 @@ def _rows():
         if len(shown) > 100:
             shown = f"{shown[:20]}... {len(rest)} bytes"
         id = f"{name} {method.decode()} {base}{shown}" + " +header" * len(header)
+        if header == [_AUTHORIZATION_TWICE]:
+            authorizations, header, id = 2, [], f"{name} {method.decode()} {base}{shown} twice"
         yield pytest.param(
             method, base, rest, answer, authorizations, *header or [b""], host, id=id
         )

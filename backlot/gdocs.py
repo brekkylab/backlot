@@ -71,9 +71,9 @@ FOOTNOTE = "\x1b"
 PAGE_BREAK = "\x0c"
 _ELEMENTS = FOOTNOTE + PAGE_BREAK
 
-# A footnote's runs and paragraphs, as `createFootnote` makes one and the editor writes into it:
-# measured 2026-11-02, its content opens with a space, every run is 10 PT and every paragraph has
-# a `lineSpacing` of 100.
+# A footnote's run style, as `createFootnote` makes one and the editor writes into it: measured
+# 2026-11-02, its content opens with a space, every run is 10 PT, and every paragraph has the
+# `lineSpacing` of 100 `_paragraph_style` gives a footnote's.
 _FOOTNOTE_TEXT = {"fontSize": {"magnitude": 10, "unit": "PT"}}
 
 
@@ -196,8 +196,8 @@ def _stated(
     file_id: str, paragraphs: list[dict], seed: str, notes: dict | None, footnote: bool = False
 ) -> list[dict]:
     """A corpus's paragraphs as stored content, a heading's `headingId` drawn here, once, from
-    ``seed`` and its position. A stated footnote is added to ``notes``, a footnote's runs are
-    10 PT and its first opens with the space real's footnote opens with."""
+    ``seed`` and its position. A stated footnote is added to ``notes``, formatted as
+    `_FOOTNOTE_TEXT`."""
     content = []
     for i, p in enumerate(paragraphs):
         named = p.get("style") or "NORMAL_TEXT"
@@ -249,61 +249,24 @@ def text_of(paragraphs: list[dict]) -> str:
     )
 
 
-# The characters a tab icon may be, fitted to real's answers on 2026-11-02 to 82 candidates: one
-# grapheme cluster holding a pictograph, a keycap or a flag, and no U+FE0E. A pictograph with text
-# presentation by default was taken, but for the arrows, `‼` and `⁉` without U+FE0F, and `©`, `®`
-# and `™` with or without it. A ZWJ that ends the cluster and one regional indicator alone were
-# refused.
+# The emoji a tab icon may be: every sequence of Unicode's emoji-test.txt for Emoji 15.0, whatever
+# its qualification, but `©`, `®` and `™` with or without U+FE0F, and the arrows, `‼` and `⁉`
+# without it. Measured 2026-11-02 and 2026-11-03 on 98 candidates: Emoji 15.1's `🐦‍🔥`, 16.0's
+# `🫩` and `🇨🇶`, unassigned pictographs, U+FE0F after an emoji shown as one by default (`⭐️`),
+# a flag that is no RGI one and a ZWJ that ends a sequence were refused; 15.0's `🫨`, an unqualified
+# `❤`, `1⃣` and `ℹ`, and a skin tone alone were taken.
+_ICONS = frozenset(
+    json.loads((Path(__file__).parent / "data" / "gdocs_icons.json").read_text(encoding="utf-8"))
+)
 _ICON_REFUSED = frozenset("\u00a9\u00ae\u2122")
 _ICON_BARE = frozenset("\u203c\u2049")
-_ICON_KEYCAP = regex.compile("[0-9#*]\ufe0f?\u20e3")
-# The flags real takes: the RGI flag sequences of Unicode's emoji-sequences.txt before Emoji 18.0,
-# measured 2026-11-02 on 21 flags. `🇿🇿`, `🇦🇧`, `🇦🇦`, a tag flag that is no RGI one and Emoji
-# 18.0's `🇨🇶` were refused; `🇺🇸`, `🇪🇺`, `🇺🇳`, `🇦🇨`, `🇧🇻`, `🇪🇦`, `🇩🇬`, `🇺🇲` and Scotland taken.
-_ICON_REGIONS = frozenset(
-    (
-        "AC AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN "
-        "BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CP CR CU CV CW CX CY CZ "
-        "DE DG DJ DK DM DO DZ EA EC EE EG EH ER ES ET EU FI FJ FK FM FO FR GA GB GD GE GF GG GH "
-        "GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU IC ID IE IL IM IN IO IQ IR IS IT "
-        "JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD "
-        "ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP "
-        "NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE "
-        "SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TA TC TD TF TG TH TJ TK TL TM TN TO TR "
-        "TT TV TW TZ UA UG UM UN US UY UZ VA VC VE VG VI VN VU WF WS XK YE YT ZA ZM ZW "
-    ).split()
-)
-_ICON_TAG_FLAGS = frozenset(("gbeng", "gbsct", "gbwls"))
-
-
-def _icon_flag(text: str) -> bool | None:
-    """Whether a flag is one real takes as an icon, or None for text that is no flag."""
-    if all(0x1F1E6 <= ord(c) <= 0x1F1FF for c in text):
-        regions = "".join(chr(ord(c) - 0x1F1E6 + 65) for c in text)
-        return regions in _ICON_REGIONS
-    if text[0] == "\U0001f3f4" and len(text) > 1 and 0xE0020 <= ord(text[1]) <= 0xE007F:
-        tags = "".join(chr(ord(c) - 0xE0000) for c in text[1:-1])
-        return text[-1] == "\U000e007f" and tags in _ICON_TAG_FLAGS
-    return None
-
-
-_ICON_PICTOGRAPH = regex.compile("\\p{Extended_Pictographic}|\\p{Emoji_Modifier}")
-_ICON_PRESENTED = regex.compile("\\p{Emoji_Presentation}")
 
 
 def is_icon(text: str) -> bool:
-    if len(_CLUSTER.findall(text)) != 1 or "\ufe0e" in text or text.endswith("\u200d"):
+    if text not in _ICONS or text[0] in _ICON_REFUSED:
         return False
-    if _ICON_KEYCAP.fullmatch(text):
-        return True
-    if (flag := _icon_flag(text)) is not None:
-        return flag
-    first = text[0]
-    if not _ICON_PICTOGRAPH.match(first) or first in _ICON_REFUSED:
-        return False
-    if "\ufe0f" in text or _ICON_PRESENTED.match(first):
-        return True
-    return first not in _ICON_BARE and "ARROW" not in unicodedata.name(first, "")
+    bare = len(text) == 1
+    return not bare or (text not in _ICON_BARE and "ARROW" not in unicodedata.name(text, ""))
 
 
 # --- a document: its tabs, and in each a body, a header, a footer and footnotes ------------------
@@ -884,8 +847,8 @@ def _join_runs(left: tuple[str, dict, int], chunks: Iterable[tuple[list, int]]) 
     relabelled as the run of ``left``, the character before it, when the two are of one style: a
     delete that brings them together joins them. Only as far as the paragraph's newline, since a
     run is served per paragraph and a later delete of that newline joins what follows it anew. A
-    footnote reference or page break joins nothing: measured 2026-11-02, deleting a reference
-    joined the runs either side of it."""
+    footnote reference or page break is never one side of a join; once one is deleted, the runs
+    either side join (measured 2026-11-02)."""
     if left[0] in _ELEMENTS:
         return
     right = None
@@ -1238,6 +1201,9 @@ class Document:
         self.tabs: list[dict] = copy.deepcopy(stored["tabs"])
         self._open: dict[tuple[str, str], Body] = {}
         self._made = itertools.count()
+        # the requests that reached nothing of the Doc, which `routers.google_docs` does not count
+        # as a write when they are all a batch holds
+        self.unchanged = 0
 
     def flat(self) -> list[dict]:
         return [tab for tab, *_ in walk(self.tabs)]
@@ -1332,11 +1298,10 @@ class Document:
         return {"tabs": self.tabs}
 
 
-# --- a body as Drive's `files.export` renders it --------------------------------------------------
+# --- a document as Drive's `files.export` renders it ----------------------------------------------
 #
-# Measured against Drive v3 from 2026-10-30 to 2026-11-01, as a Workspace member exporting Docs it
-# wrote through `documents.batchUpdate`, each holding only what a corpus may state: named styles,
-# marks, and the characters each rule below names.
+# Measured against Drive v3 from 2026-10-30 to 2026-11-02, as a Workspace member exporting Docs it
+# wrote through `documents.batchUpdate`, each holding only what a corpus may state.
 
 # The `#`s a paragraph of each named style opens with in Markdown.
 _MARKDOWN_LEVEL = {"TITLE": 1, "SUBTITLE": 2, **{f"HEADING_{n}": n for n in range(1, 7)}}

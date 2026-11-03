@@ -15,7 +15,6 @@ import base64
 import binascii
 import functools
 import json
-import re
 import time
 from pathlib import Path
 
@@ -576,6 +575,9 @@ def _docs_replace_all_text(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         named = req["tabs_criteria"].get("tab_ids", [])
         unknown = any(not any(t["tabProperties"]["tabId"] == n for t in tabs) for n in named)
         tabs = [t for t in tabs if t["tabProperties"]["tabId"] in named]
+        # measured 2026-11-02: a `tabsCriteria` of no tab kept the `revisionId`, where a replace
+        # that matched nothing in a tab moved it
+        doc.unchanged += not tabs
     text = gdocs.STRIPPED.sub("", req.get("replace_text", ""))
     found = 0
     for tab in tabs:
@@ -803,14 +805,17 @@ def _docs_delete_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
 _DOCS_TAB_FIELDS = ("tabId", "title", "parentTabId", "index", "nestingLevel", "iconEmoji")
 
 
-def _docs_tab_fields(fields: str) -> list[str]:
-    """The `TabProperties` fields a `fields` mask names, read as real reads it, measured
-    2026-11-02: `*` alone names every field; names are split at commas, trimmed, and empty ones
-    dropped, so `title,` and ` , ` are read while `,` is refused as naming no field. A name is read
-    as `_docs_snake` spells it and must then be a field's `snake_case` name (`TITLE`, `icon_emoji`
-    and `Parent_Tab_Id` were taken, `_title`, `ti_tle` and `PARENTTABID` refused), and is refused by
-    that spelling (`fooBar` as `foo_bar`). Every name is checked before any path into a field,
-    which is refused by the field's name and the rest as sent (`icon_emoji.x` as `iconEmoji.x`)."""
+def _docs_tab_fields(fields: str) -> list[str] | None:
+    """The `TabProperties` fields a `fields` mask names, read as real reads it, or None for the
+    mask real answers with a 500. Measured 2026-11-02 and 2026-11-03: `*` alone names every
+    field; names are split at commas, trimmed, and empty ones dropped, so `title,` and ` , ` are
+    read while `,` is refused as naming no field. A name is split at dots with empty parts dropped
+    (`title.` and `.title` name `title`, `.` alone is the 500), its first part read as
+    `_docs_snake` spells it must be a field's `snake_case` name (`TITLE`, `parentTABId` and
+    `icon_emoji` were taken, `TItle`, `_title` and `PARENTTABID` refused), and is refused by that
+    spelling (`fooBar` as `foo_bar`). Every name is checked before any path into a field, which is
+    refused by the field's name and the rest so spelt (`icon_emoji.x` as `iconEmoji.x`,
+    `title.fooBar` as `title.foo_bar`)."""
     if fields == "*":
         return list(_DOCS_TAB_FIELDS)
     parts = fields.split(",")
@@ -823,20 +828,31 @@ def _docs_tab_fields(fields: str) -> list[str]:
     for part in (p.strip() for p in parts):
         if not part:
             continue
-        head, dot, rest = part.partition(".")
-        if _docs_snake(head) not in known:
-            raise _EditorRefused(f"Invalid field: {_docs_snake(head)}")
-        read.append((known[_docs_snake(head)], dot + rest))
-    for field, rest in read:
-        if rest:
-            raise _EditorRefused(f"Invalid field: {field}{rest}")
-    return [field for field, _ in read]
+        path = [_docs_snake(name) for name in part.split(".") if name]
+        if not path:
+            return None
+        if path[0] not in known:
+            raise _EditorRefused(f"Invalid field: {path[0]}")
+        read.append([known[path[0]], *path[1:]])
+    for path in read:
+        if len(path) > 1:
+            raise _EditorRefused(f"Invalid field: {'.'.join(path)}")
+    return [path[0] for path in read]
 
 
 def _docs_snake(name: str) -> str:
-    """A field name as real reads one in a mask: `_` before each capital that follows a small
-    letter or a digit, then lower case (`tabProperties` as `tab_properties`, `NOPE` as `nope`)."""
-    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
+    """A name as real reads one in a mask: `_` before each ASCII capital but the first, unless it
+    follows `_`, or follows another capital with no small ASCII letter after it; then its ASCII
+    letters in lower case (`tabProperties` as `tab_properties`, `TItle` as `t_itle`, `parentTABId`
+    as `parent_tab_id`, `tab Id` as `tab _id`, `ÉCLAT` as `É_clat`)."""
+    out = ""
+    for i, c in enumerate(name):
+        if "A" <= c <= "Z" and i and name[i - 1] != "_":
+            after = name[i + 1 : i + 2]
+            if not "A" <= name[i - 1] <= "Z" or "a" <= after <= "z" and after:
+                out += "_"
+        out += c.lower() if "A" <= c <= "Z" else c
+    return out
 
 
 def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
@@ -856,6 +872,8 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
             "At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"
         )
     names = _docs_tab_fields(fields)
+    if names is None:
+        return {}, True
     props = req.get("tab_properties", {})
     if not props.get("tab_id"):
         raise _EditorRefused("Tab ID must be specified in the properties.")
@@ -898,6 +916,7 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         raise _EditorRefused(
             f"Moving this tab will cause child tabs to exceed the tab nesting level. {_DOCS_TOO_DEEP}"
         )
+    before = (dict(tab["tabProperties"]), _docs_placed(doc, tab))
     if "title" in names:
         tab["tabProperties"]["title"] = props["title"]
     if "iconEmoji" in names:
@@ -906,6 +925,10 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
             tab["tabProperties"]["iconEmoji"] = emoji
     if "parentTabId" in names or index is not None:
         doc.place(tab, parent, index)
+    # measured 2026-11-03: a title, an index or a parent the tab already had kept the
+    # `revisionId`, and an icon it already had moved it
+    if "iconEmoji" not in names and before == (tab["tabProperties"], _docs_placed(doc, tab)):
+        doc.unchanged += 1
     return {}, False
 
 
@@ -969,7 +992,9 @@ async def docs_batch_update(document_id: str, request: Request):
     nothing. A kind other than those applied here is refused naming itself, and so is the
     `SUGGEST` write mode, which records the requests as suggestions.
 
-    Every write, one that changed nothing included, moves the `revisionId`, answered as
+    Every write, one that changed nothing included, moves the `revisionId`, but for a batch of
+    `updateDocumentTabProperties` requests that each left the tab as it was and `replaceAllText`
+    requests whose `tabsCriteria` lists no tab, which keeps it and stores nothing. The `revisionId` is answered as
     `writeControl.requiredRevisionId` and served by the next read; real takes any recent revision as
     `targetRevisionId` and merges the write into what collaborators did since, which here is
     nothing. The Drive file's `modifiedTime` is the write's (`store.PATCHABLE`), and its `content`
@@ -1021,6 +1046,16 @@ async def docs_batch_update(document_id: str, request: Request):
         {kind: functools.partial(_docs_settled, apply, doc) for kind, apply in _DOCS_APPLY.items()},
         "Docs",
     )
+
+    if doc.unchanged == len(requests):
+        answer = {
+            "replies": replies,
+            "writeControl": {"requiredRevisionId": _docs_revision(document_id, written)},
+            "documentId": document_id,
+            "suggestionResponses": [{} for _ in requests],
+            "commentUpdateState": "NO_UPDATES_REQUESTED",
+        }
+        return answer if tree is None else _gmask_apply(tree, answer)
 
     # Drive's `size` is what real stores, not the text: measured 2026-10-30, a Doc of 1024 stayed
     # 1024 through 6,000 inserted characters, a blank Doc's 1 became 1024 on its first write, and

@@ -17955,9 +17955,9 @@ def _tab_props(title, index, parent=None, depth=0):
     }
 
 
-# `(requests, outline, replies)`: each as real answered a Doc of the same shape, written as
-# `wr-tabs` writes its ids (`_with_tab_ids`), a new id `$ANY`; `replies` None where every reply
-# is `{}`.
+# `(requests, outline, replies[, moves])`: each as real answered a Doc of the same shape, written
+# as `wr-tabs` writes its ids (`_with_tab_ids`), a new id `$ANY`; `replies` None where every reply
+# is `{}`, and `moves` False where real kept the `revisionId`.
 _TAB_WRITES = [
     # a new tab is a blank one, `Tab n` when untitled, last or at its index, under its parent
     ([{"addDocumentTab": {}}], [*_TABS_START, "Tab 5: "], [_tab_props("Tab 5", 3)]),
@@ -18006,7 +18006,7 @@ _TAB_WRITES = [
         None,
     ),
     ([_upd({"tabId": "t.0", "index": 3}, "index")], [*_TABS_START[1:], _TABS_START[0]], None),
-    ([_upd({"tabId": "t.0", "index": 1}, "index")], _TABS_START, None),
+    ([_upd({"tabId": "t.0", "index": 1}, "index")], _TABS_START, None, False),
     (
         [_upd({"tabId": "$KID", "parentTabId": ""}, "parentTabId")],
         [*_TABS_START[:2], _TABS_START[3], "Kid: kid zz"],
@@ -18045,7 +18045,24 @@ _TAB_WRITES = [
         ["T \u2b50: zz three", *_TABS_START[:3]],
         None,
     ),
-    ([_upd({"tabId": "$T2", "title": "x"}, " , ")], _TABS_START, None),
+    ([_upd({"tabId": "$T2", "title": "x"}, " , ")], _TABS_START, None, False),
+    (
+        [_upd({"tabId": "$T3", "title": "T", "parentTabId": ""}, "title.,parentTABId")],
+        [*_TABS_START[:3], "T: zz three"],
+        None,
+    ),
+    # a title, an index or a parent the tab already has changes nothing, an icon it has does
+    (
+        [
+            _upd({"tabId": "$T2", "title": "Second"}, "title"),
+            _upd({"tabId": "$T3", "index": 2}, "index"),
+            _upd({"tabId": "$KID", "parentTabId": "$T2"}, "parentTabId"),
+        ],
+        _TABS_START,
+        None,
+        False,
+    ),
+    ([_upd({"tabId": "$T2", "iconEmoji": "\U0001f4cc"}, "iconEmoji")], _TABS_START, None, True),
     (
         [
             _upd(
@@ -18055,6 +18072,7 @@ _TAB_WRITES = [
         ],
         _TABS_START,
         None,
+        False,
     ),
     # a delete takes the child tabs; the first tab then is the one after it
     ([{"deleteTab": {"tabId": "$T2"}}], [_TABS_START[0], _TABS_START[3]], None),
@@ -18103,6 +18121,7 @@ _TAB_WRITES = [
         ],
         _TABS_START,
         [{"replaceAllText": {}}],
+        False,
     ),
     (
         [_rep("o", "0")],
@@ -18189,16 +18208,26 @@ _TAB_WRITES = [
 ]
 
 
-@pytest.mark.parametrize("requests,outline,replies", _TAB_WRITES)
-def test_a_tab_or_segment_write_changes_the_doc_as_real_does(wc, wh, requests, outline, replies):
+@pytest.mark.parametrize(
+    "requests,outline,replies,moves", [(*row, True)[:4] for row in _TAB_WRITES]
+)
+def test_a_tab_or_segment_write_changes_the_doc_as_real_does(
+    wc, wh, requests, outline, replies, moves
+):
     from tests._helpers import served_id
 
     h = wh[_OWNER]
     did = served_id("google_drive", "wr-tabs")
+    before = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
     r = _docs_write(wc, h, "wr-tabs", {"requests": _with_tab_ids(requests, did)})
     assert r.status_code == 200, r.text
     assert r.json()["replies"] == _with_tab_ids(replies or [{}] * len(requests), did)
     assert _docs_outline(wc, h, "wr-tabs") == outline
+    # a batch of tab updates that change nothing keeps the revision, so a write pinned to it is
+    # taken
+    assert (r.json()["writeControl"]["requiredRevisionId"] != before) == moves
+    pinned = {"requests": [_ins(1, "x")], "writeControl": {"requiredRevisionId": before}}
+    assert _docs_write(wc, h, "wr-tabs", pinned).status_code == (400 if moves else 200)
     # the flat read is the first tab's, whatever its id
     flat = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
     tabbed = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
@@ -18570,6 +18599,11 @@ _DOCS_TAB_REFUSALS = [
         500,
         "Internal error encountered.",
     ),
+    # a `fields` name of dots alone
+    *(
+        ([_upd({"tabId": "$T2", "title": "x"}, f)], 500, "Internal error encountered.")
+        for f in (".", "..")
+    ),
     *_tab_refusals(
         "createFootnote",
         [
@@ -18876,7 +18910,21 @@ _DOCS_TAB_REFUSALS = [
                 "Not a valid emoji input.",
                 0,
             ),
-            # a flag is an icon when it is an RGI flag before Emoji 18.0
+            # an icon is an emoji of Emoji 15.0, a flag an RGI one
+            *(
+                (
+                    [{"addDocumentTab": {"tabProperties": {"iconEmoji": icon}}}],
+                    "Not a valid emoji input.",
+                    0,
+                )
+                for icon in (
+                    "\U0001fae9",
+                    "\U0001f426\u200d\U0001f525",
+                    "\U0001faff",
+                    "\u2b50\ufe0f",
+                    "\U0001f600\ufe0f",
+                )
+            ),
             *(
                 (
                     [{"addDocumentTab": {"tabProperties": {"iconEmoji": flag}}}],
@@ -19011,7 +19059,22 @@ _DOCS_TAB_REFUSALS = [
                 "Index must be less than or equal to the number of tabs within the specified parent tab.",
                 0,
             ),
+            (
+                [_upd({"tabId": "$T2", "iconEmoji": "\U0001fae9"}, "iconEmoji")],
+                "Not a valid emoji input.",
+                0,
+            ),
             # `fields` read as real reads it: each name by its `snake_case`, then each path
+            *(
+                ([_upd({"tabId": "$T2", "title": "x"}, fields)], f"Invalid field: {named}", 0)
+                for fields, named in [
+                    ("TItle", "t_itle"),
+                    ("iconEMOji", "icon_em_oji"),
+                    ("tab Id", "tab _id"),
+                    ("title.fooBar", "title.foo_bar"),
+                    ("\u00c9CLAT", "\u00c9_clat"),
+                ]
+            ),
             *(
                 ([_upd({"tabId": "$T2", "title": "x"}, fields)], f"Invalid field: {named}", 0)
                 for fields, named in [

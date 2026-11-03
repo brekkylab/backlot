@@ -22,6 +22,7 @@ from urllib.parse import quote, unquote_plus
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict
+from starlette.types import Scope
 
 from backlot import auth, published, store, synth
 from backlot.acl import Caller
@@ -149,6 +150,17 @@ _LONG_LINE_PAGE = (
 #: An escape of a letter, a digit, `-`, `.`, `_` or `~`, in either case of hex, which real's path
 #: 414 counts as the one character (:func:`_refuse_a_long_line_or_path`).
 _UNRESERVED_ESCAPE = re.compile(rb"%(?:2[DEde]|3[0-9]|[46][1-9A-Fa-f]|[57][0-9Aa]|5[Ff]|7[Ee])")
+
+
+def target_past_its_bound(scope: Scope) -> bool:
+    """Whether a `/github` request's target is too long for real's front door, which answers it
+    with a 414 of its own (``backlot.main.answer_a_github_request_target_past_its_bound``): 8,174
+    bytes on `/search/code` and 8,192 on every other path, counted as
+    :func:`_refuse_a_long_line_or_path` counts the request line's, from after `/github`."""
+    query = scope["query_string"]
+    target = scope["raw_path"][len(router.prefix) :] + (b"?" + query if query else b"")
+    bound = 8_174 if scope["path"] == f"{router.prefix}/search/code" else 8_192
+    return len(target) >= bound
 
 
 async def _refuse_a_long_line_or_path(request: Request) -> None:

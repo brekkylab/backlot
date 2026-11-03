@@ -1660,8 +1660,8 @@ _GITHUB_TARGET_TOO_LONG = (
 @_middleware(lambda scope: _at_or_under(_url_path(scope), ("/github",)))
 async def answer_a_github_request_target_past_its_bound(request: Request, call_next):
     """414 a `/github` request on any path and any method whose target is too long for real, ahead
-    of the route and its refusals, which a shorter target meets. The target is counted as
-    ``backlot.routers.github._refuse_a_long_line_or_path`` counts the request line's.
+    of the route and its refusals, which a shorter target meets
+    (``backlot.routers.github.target_past_its_bound``).
 
     On api.github.com, 2026-10-29, each request cache-busted: on `/repos/{owner}/{repo}` a `GET`, a
     `HEAD` and a `POST` with a target of 8,192 were this 414, and so were a `GET` on a path no route
@@ -1670,10 +1670,7 @@ async def answer_a_github_request_target_past_its_bound(request: Request, call_n
     raw byte in the target was the front door's 400
     (:func:`answer_a_raw_byte_in_the_request_target`) ahead of it. Real's status line reads
     `414 Request-URI Too Large`, and the answer carries no rate limit."""
-    query = request.scope["query_string"]
-    target = request.scope["raw_path"][len("/github") :] + (b"?" + query if query else b"")
-    bound = 8_174 if request.scope["path"] == "/github/search/code" else 8_192
-    if len(target) >= bound:
+    if github.target_past_its_bound(request.scope):
         return Response(
             _GITHUB_TARGET_TOO_LONG,
             status_code=414,

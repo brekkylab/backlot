@@ -6,8 +6,9 @@ colon, then hex digits, colons and dots (`[0:0]`), and Python's ``urlsplit`` ref
 cannot be left to the layers that read the URL. :func:`answer` gives the front door's answer, which
 ``backlot.main.answer_a_host_in_brackets_that_holds_no_ipv6_address`` sends ahead of every
 middleware but telemetry's. Where the front door reads the request on, on S3 and on a path no vendor
-owns, the request goes on with the server's own address as its `Host`, which is what Starlette
-builds the URL from where the `Host` does not parse, from 1.7.0.
+owns, or refuses its target or method ahead of its `Host` (:func:`_refused_ahead`), the request goes
+on with the server's own address as its `Host`, which is what Starlette builds the URL from where
+the `Host` does not parse, from 1.7.0.
 
 Measured on 2026-10-30 (UTC) over raw HTTP/1.1 on TLS sockets, on a path each host serves (on S3,
 the bucket list or a bucket that does not exist), with the vendors' credentials but Gmail's, the
@@ -33,6 +34,7 @@ from fastapi import Response
 from starlette.types import Scope
 
 from backlot import errors, request_target
+from backlot.routers import github
 
 #: A `Host` in brackets, with a port after them or none.
 _BRACKETED = re.compile(r"\[(?P<inside>[^\]]*)\](?::[0-9]+)?")
@@ -91,9 +93,65 @@ def _page(status: int, body: bytes, media_type: str | None, close: bool) -> Resp
     return Response(body, status_code=status, headers=headers)
 
 
+#: The kinds of raw byte in the target (``backlot.request_target.kinds_sent``) each front door
+#: refuses ahead of the `Host`, as it refuses them under its own
+#: (``backlot.request_target.answer``); beside the others it answers the `Host`. GitHub's answer to
+#: each kind is its answer to the `Host`, and S3 reads the request on.
+_RAW_AHEAD = {
+    "slack": {"nul", "tab", "cr", "space", "control", "high"},
+    "google": {"nul", "tab", "cr", "space", "control"},
+    "graph": {"nul", "tab", "cr", "space", "control"},
+    "atlassian": {"nul", "cr"},
+    "cloudflare": {"nul", "cr"},
+}
+
+
+def _refused_ahead(scope: Scope) -> bool:
+    """Whether the front door refuses the request's target or method ahead of its `Host`, as it
+    refuses them under its own: a raw byte of :data:`_RAW_AHEAD`; a target past GitHub's bound
+    (``backlot.routers.github.target_past_its_bound``); a `%00` on Slack, Notion and HubSpot
+    (``backlot.request_target.escape_answer``); in front of Jira and Confluence the CDN's 400s and
+    405s (``backlot.errors.atlassian.cdn_refusal``), where its 403s come after the `Host`'s; and on
+    Linear and Fireflies a path Cloudflare refuses (``backlot.request_target.refused_path``), one
+    the end cuts in a `%` (``backlot.request_target.cut_escape``) and `TRACE`.
+
+    Measured on 2026-11-03 (UTC) beside `[0:0]` and `[v1.x]`, most beside `[x]` too, and beside the
+    door's own `Host`. Each front door answered a raw byte of each kind in the path as the table
+    :data:`_RAW_AHEAD` says, and so did Slack, Drive, Jira, Notion, Linear and Graph one after the
+    path's `?`; GitHub answered a target of 8,214 bytes with its 414. Jira and Confluence answered
+    `%00`, `%zz`, `TRACE` and `CONNECT`, and Jira `MKCALENDAR` and `UNSUBSCRIBE`, as they did under
+    the tenant's `Host`, and `PROPFIND`, `PATCH`, `/..;/`, a `%3Cscript%3E` segment and a `;` with
+    the CDN's 403 for the `Host`. Linear and Fireflies answered `%00`, `%zz`, `%2` at the end,
+    `/../graphql` and `TRACE` as under their own `Host`, and `CONNECT` and `PURGE` as the `Host`
+    says. GitHub and Graph answered the `Host` beside `%00`, Slack beside a broken escape, and each
+    host but S3 beside `%0A`, `%80`, a raw `\\` and a raw `"`."""
+    path, method, sent = scope["path"], scope["method"], scope["raw_path"]
+    door = (request_target.front_door(path) or (None, None))[0]
+    if request_target.kinds_sent(scope) & _RAW_AHEAD.get(door, set()):
+        return True
+    if door == "github":
+        return github.target_past_its_bound(scope)
+    if _under(path, "/slack") or any(_under(path, p) for p in ("/notion", "/hubspot")):
+        return b"%00" in sent
+    if errors.atlassian.owns(path):
+        query = scope["query_string"].decode("latin-1")
+        refusal = errors.atlassian.cdn_refusal(method, sent.decode("latin-1"), query)
+        return refusal is not None and refusal.status != 403
+    if any(_under(path, p) for p in ("/linear", "/fireflies")):
+        own = b"/" + sent.partition(b"/")[2].partition(b"/")[2]
+        query_or_none = scope["query_string"] or None
+        return (
+            method == "TRACE"
+            or request_target.refused_path(own, query_or_none)
+            or request_target.cut_escape(own, query_or_none)
+        )
+    return False
+
+
 def answer(scope: Scope) -> Response | None:
     """The front door's answer to a request whose `Host` :func:`holds_no_address`, or ``None`` where
-    it reads the request on as one with any other `Host`.
+    it reads the request on as one with any other `Host` or refuses its target or method first
+    (:func:`_refused_ahead`).
 
     GitHub's 400 page, closing the connection; Slack's 404 with no body and no `Content-Type`; the
     CDN's 403 page in front of Jira and Confluence; Google's 1,555-byte 400 page on each of its
@@ -102,6 +160,8 @@ def answer(scope: Scope) -> Response | None:
     closing the connection. S3 answered each request as it answers the same request with its own
     `Host`."""
     path = scope["path"]
+    if _refused_ahead(scope):
+        return None
     if _under(path, "/github"):
         return _page(400, request_target.GITHUB_PAGE, "text/html; charset=utf-8", close=True)
     if _under(path, "/slack"):

@@ -75,6 +75,13 @@ def _kinds(part: bytes) -> list[str]:
     return [_kind(m[0][0]) for m in _RAW.finditer(part)]
 
 
+def kinds_sent(scope: Scope) -> set[str]:
+    """The kinds of raw byte (:func:`_kind`) the request's target was sent with, in its path and its
+    query: none where :mod:`backlot.protocol` encoded none."""
+    sent = scope.get(SENT)
+    return set(_kinds(sent)) if sent is not None else set()
+
+
 def _under(path: str, prefix: str) -> bool:
     return path == prefix or path.startswith(f"{prefix}/")
 

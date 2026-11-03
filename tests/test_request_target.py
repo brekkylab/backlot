@@ -17,7 +17,7 @@ import urllib.parse
 
 import pytest
 
-from backlot import bracketed_host, errors, request_target
+from backlot import bracketed_host, errors, main, request_target
 from backlot.routers import hubspot
 from tests._helpers import raw_exchange, raw_request, read_answer
 
@@ -320,6 +320,102 @@ _HOSTS = [
         (host, b"GET", "/s3/no-such-bucket/", b"x", "served")
         for host in (b"[::1]", b"[::1]:443", b"[::]", b"[ABCD::1]", b"[::ffff:1.2.3.4]", b"[0:0")
     ),
+    # a `Host` beside a refusal of the target or the method, each `Host` here where the answer is
+    # the same for all three (``backlot.bracketed_host._refused_ahead`` says which answer comes
+    # first); "served" where the refusal is the one this server gives under a `Host` of `x`
+    *(
+        (host, method, base, rest, answer)
+        for host in (b"[0:0]", b"[x]", b"[v1.x]")
+        for method, base, rest, answer in (
+            (b"GET", "/github/", b"rate_limit%00", "github"),
+            (b"GET", "/slack/api/", b"auth.test%00", "slack empty"),
+            (b"GET", "/slack/api/", b"auth.test%0A", "slack 404 empty"),
+            (b"GET", "/slack/api/", b"auth.test%zz", "slack 404 empty"),
+            (b"GET", "/atlassian/rest/api/3/", b"serverInfo%00", "served"),
+            (b"GET", "/atlassian/rest/api/3/", b"serverInfo%zz", "served"),
+            (b"GET", "/atlassian/wiki/rest/api/", b"space%00", "served"),
+            (b"GET", "/atlassian/wiki/rest/api/", b"space%zz", "served"),
+            (b"GET", "/drive/v3/", b"about%00", "google 1555 kept"),
+            (b"GET", "/notion/v1/", b"users%00", "cloudflare page"),
+            (b"GET", "/hubspot/crm/v3/objects/", b"contacts%00", "cloudflare page"),
+            (b"POST", "/linear/", b"graphql%00", "cloudflare page"),
+            (b"POST", "/linear/", b"graphql%zz", "cloudflare page"),
+            (b"POST", "/linear/", b"graphql%2", "served"),
+            (b"POST", "/linear/", b"../graphql", "cloudflare page"),
+            (b"TRACE", "/linear/", b"graphql", "cloudflare 405"),
+            (b"POST", "/fireflies/", b"graphql%00", "cloudflare page"),
+            (b"POST", "/fireflies/", b"graphql%zz", "cloudflare page"),
+            (b"TRACE", "/fireflies/", b"graphql", "cloudflare 405"),
+            (b"GET", "/msgraph/v1.0/", b"me%00", "graph invalid hostname"),
+        )
+    ),
+    *(
+        (host, method, "/atlassian/rest/api/3/", b"serverInfo", answer)
+        for host in (b"[0:0]", b"[v1.x]")
+        for method, answer in (
+            (b"TRACE", "served"),
+            (b"CONNECT", "served"),
+            (b"MKCALENDAR", "served"),
+            (b"PROPFIND", "cloudfront 403"),
+            (b"PATCH", "cloudfront 403"),
+        )
+    ),
+    *(
+        (host, method, base, rest, answer)
+        for host, answer in ((b"[0:0]", "cloudflare page"), (b"[v1.x]", "cloudflare forbidden"))
+        for method, base, rest in (
+            (b"CONNECT", "/linear/", b"graphql"),
+            (b"PURGE", "/fireflies/", b"graphql"),
+            (b"GET", "/notion/v1/", b"users%2"),
+        )
+    ),
+    # a `Host` beside a raw byte of each kind, in the path and after `?a=`, and on GitHub beside a
+    # target past its bound (``backlot.bracketed_host._refused_ahead`` says which answer comes
+    # first)
+    *(
+        (host, b"GET", base, rest + at + byte, answer)
+        for host in (b"[0:0]", b"[v1.x]")
+        for byte, slack, google, graph, cdn, cloudflare in (
+            (b"\x00", "slack", "google 54", "graph invalid url", "cloudfront", "cloudflare page"),
+            (b"\x01", "slack", "google 54", "graph invalid url", "cloudfront 403", None),
+            (b"\x7f", "slack", "google 54", "graph invalid url", "cloudfront 403", None),
+            (b"\x09", "slack", "google 1555", "graph badly formed", "cloudfront 403", None),
+            (
+                b"\x0d",
+                "slack",
+                "google 1555",
+                "graph badly formed",
+                "cloudfront",
+                "cloudflare page",
+            ),
+            (b"\x20", "slack", "google 1555", "graph badly formed", "cloudfront 403", None),
+            (
+                b"\x80",
+                "slack",
+                "google 1555 kept",
+                "graph invalid hostname",
+                "cloudfront 403",
+                None,
+            ),
+        )
+        for at in (b"", b"?a=")
+        if not (at and byte == b"\x7f")
+        for base, rest, answer in (
+            ("/slack/api/", b"auth.test", slack),
+            ("/drive/v3/", b"about", google),
+            ("/msgraph/v1.0/", b"me", graph),
+            ("/atlassian/rest/api/3/", b"serverInfo", cdn),
+            (
+                "/notion/v1/",
+                b"users",
+                cloudflare or ("cloudflare page" if host == b"[0:0]" else "cloudflare forbidden"),
+            ),
+        )
+    ),
+    *(
+        (host, b"GET", "/github/", b"rate_limit?a=" + b"x" * 8_200, "github 414")
+        for host in (b"[0:0]", b"[v1.x]")
+    ),
     (b"[0:0]", b"GET", "/s3/no-such-bucket/", b"x", "served", _AWS_AUTHORIZATION),
 ]
 
@@ -388,7 +484,12 @@ def _rows():
     for host, method, base, rest, answer, *header in _HOSTS:
         authorizations = 0 if base.startswith(_UNCREDENTIALED) else 1
         name = (host or b"(in the lines)").decode()
-        id = f"{name} {method.decode()} {base}{rest.decode()}" + " +header" * len(header)
+        shown = "".join(
+            c if " " < c < "\x7f" else f"\\x{ord(c):02x}" for c in rest.decode("latin-1")
+        )
+        if len(shown) > 100:
+            shown = f"{shown[:20]}... {len(rest)} bytes"
+        id = f"{name} {method.decode()} {base}{shown}" + " +header" * len(header)
         yield pytest.param(
             method, base, rest, answer, authorizations, *header or [b""], host, id=id
         )
@@ -452,6 +553,7 @@ def _ids_left_out(base: str, body: bytes) -> object:
 
 _PAGES = {
     "github": (400, "text/html; charset=utf-8", request_target.GITHUB_PAGE),
+    "github 414": (414, "application/json; charset=utf-8", main._GITHUB_TARGET_TOO_LONG),
     "slack": (400, "text/plain", b"Bad Request"),
     "slack empty": (400, None, b""),
     "slack 404 empty": (404, None, b""),
@@ -460,6 +562,7 @@ _PAGES = {
     "cloudflare page": (400, "text/html", request_target.CLOUDFLARE_PAGE),
     "cloudflare empty": (400, None, b""),
     "cloudflare forbidden": (403, "text/html", bracketed_host.CLOUDFLARE_FORBIDDEN),
+    "cloudflare 405": (405, "text/html", main._CLOUDFLARE_METHOD["TRACE"][1]),
     "s3 empty": (400, None, b""),
     "graph empty": (400, None, b""),
     "graph invalid url": (400, "text/html; charset=us-ascii", request_target.GRAPH_INVALID_URL),
@@ -485,7 +588,7 @@ def _page(answer: str, method: bytes, target: bytes) -> tuple[int, str | None, b
     if answer.startswith("edge "):
         return 400, "text/html", errors.atlassian.edge_page(f"http1.{answer[5:]}").encode()
     if answer == "cloudfront 403":
-        raw_path = target.partition(b"?")[0].decode("latin-1")
+        raw_path = _encoded(target).partition(b"?")[0].decode("latin-1")
         return (
             403,
             "text/html",

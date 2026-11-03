@@ -2272,7 +2272,6 @@ async def chat_post_message(request: Request):
     parent = (
         store.document_by_key(conn, "slack", (name, wanted), ids) if wanted is not None else None
     )
-    parent_uid = None
     if parent is not None:
         # Slack threads a reply under the ROOT, not under whichever message was named: replying to
         # a reply puts it in the same thread. The corpus stores that as the root's own ts, which is
@@ -2285,9 +2284,6 @@ async def chat_post_message(request: Request):
             # `conversations.replies` answers the root alone and the message reads back with no
             # thread at all — a thread this API made and cannot show.
             store.patch_document(conn, "slack", (name, parent["ts"]), "thread_ts", thread_ts)
-        root = store.document_by_key(conn, "slack", (name, thread_ts), ids)
-        if root is not None:
-            parent_uid = _parent_uid(root)
     now = int(time.time())
     ts = store.slack_next_ts(conn, name, now)
     store.insert_document(
@@ -2310,13 +2306,12 @@ async def chat_post_message(request: Request):
         },
     )
     row = store.document_by_key(conn, "slack", (name, ts))
+    message = _message(row, parent_user_id=_parent_user_id(conn, name, ids, row))
     return {
         "ok": True,
         "channel": synth.slack_channel_id(name),
         "ts": ts,
-        "message": _with_root(
-            conn, name, ids, caller, row, _message(row, parent_user_id=parent_uid)
-        ),
+        "message": _with_root(conn, name, ids, caller, row, message),
     }
 
 
@@ -2476,8 +2471,14 @@ async def chat_update(request: Request):
     # 2026-10-21, `chat.update` carried neither `ts` nor `reactions` for a threaded message with a
     # reaction, where `conversations.replies` answered the same message carrying both. `ts` is on
     # the answer beside it either way.
-    echoed = {k: v for k, v in _message(updated).items() if k not in ("ts", "reactions")}
-    _with_root(conn, name, auth.visible_ids(request, caller), caller, updated, echoed)
+    ids = auth.visible_ids(request, caller)
+    parent = _parent_user_id(conn, name, ids, updated)
+    echoed = {
+        k: v
+        for k, v in _message(updated, parent_user_id=parent).items()
+        if k not in ("ts", "reactions")
+    }
+    _with_root(conn, name, ids, caller, updated, echoed)
     return {
         "ok": True,
         "channel": synth.slack_channel_id(name),
@@ -2870,7 +2871,9 @@ async def reactions_get(request: Request):
     )
     if err is not None:
         return err
-    message = _with_root(conn, name, auth.visible_ids(request, caller), caller, row, _message(row))
+    ids = auth.visible_ids(request, caller)
+    parent = _parent_user_id(conn, name, ids, row)
+    message = _with_root(conn, name, ids, caller, row, _message(row, parent_user_id=parent))
     return {
         "ok": True,
         "type": "message",
@@ -2955,7 +2958,14 @@ async def reactions_list(request: Request):
             {
                 "type": "message",
                 "channel": synth.slack_channel_id(channel),
-                "message": _with_root(conn, channel, ids, caller, row, _message(row))
+                "message": _with_root(
+                    conn,
+                    channel,
+                    ids,
+                    caller,
+                    row,
+                    _message(row, parent_user_id=_parent_user_id(conn, channel, ids, row)),
+                )
                 | {"permalink": _permalink(channel, row)},
             }
         )
@@ -3123,6 +3133,21 @@ def _flag(request: Request, key: str) -> bool:
     value, and `reply_broadcast` as a form field on 2026-10-30, `00`, `no`, `null` and ` false`
     among them."""
     return (_param(request, key) or "").lower() not in ("", "0", "false")
+
+
+def _parent_user_id(conn, name: str, ids, row) -> str | None:
+    """The `parent_user_id` of a reply a method answers by itself: :func:`_parent_uid` of its
+    thread's root.
+
+    Measured against slack.com on 2026-10-31: the `chat.update` echo, the `message` of
+    `reactions.get` and the reply's `reactions.list` item each carried it on a reply, a reply to a
+    reply included, with a bot token and a user token. On 2026-11-01 the three carried
+    ``USLACKBOT`` under a deleted root, on replies posted before the root was deleted and after it.
+    """
+    if not row["thread_ts"] or row["thread_seq"] == 0:
+        return None
+    root = store.document_by_key(conn, "slack", (name, row["thread_ts"]), ids)
+    return _parent_uid(root) if root is not None else None
 
 
 def _with_root(conn, name: str, ids, caller: Caller, row, m: dict) -> dict:

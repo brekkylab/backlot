@@ -19,7 +19,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
 | `github` | GitHub | `/github` | 34 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
-| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 22 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
+| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 23 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
@@ -299,6 +299,7 @@ One `source_type` (`google_drive`) across four prefixes.
 | `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
 | `/docs/v1/documents/{id}` | `body.content` with each element's indices in UTF-16 code units (a `startIndex` of 0 left out, as real leaves it out), each paragraph's `paragraphStyle` and each run's `textStyle`, and the `documentStyle` and `namedStyles` of a document `documents.create` makes |
 | `POST /docs/v1/documents` | `documents.create`: a blank Doc at the creator's My Drive root, visible to them alone, titled as the body or the `title` query parameter states; the rest of the `Document` it states is checked as real checks it and dropped |
+| `POST /docs/v1/documents/{id}:batchUpdate` | `insertText`, `deleteContentRange` and `replaceAllText`, each applied to the body the ones before it left and all of them or none kept, styled as real styles them; `requiredRevisionId` and `targetRevisionId`. Any other request kind is a 400 naming it |
 | `/sheets/v4/spreadsheets/{id}` | One entry per sheet, with its own `sheetId`, `index`, `title` and `gridProperties`. Structure only — cells need `includeGridData=true`, as in real Sheets. `ranges` filters the `sheets` array itself, and gives a sheet one `data` block per range that touches it |
 | `/sheets/v4/spreadsheets/{id}/values/{range}` | A1 ranges incl. `Summary!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not, an empty one before the bang (`!A1` is the first sheet), and R1C1 — absolute (`R1C1:R2C2`) and bracketed offsets from A1 (`R[1]C[1]`), echoed as the A1 equivalent, with real's reversed-range rule. Any sheet in the workbook, matched case-insensitively; an unqualified range answers from the sheet at index 0. `majorDimension`, `valueRenderOption` |
 | `/sheets/v4/spreadsheets/{id}/values:batchGet` | As above; one unparseable range fails the whole call |
@@ -316,8 +317,8 @@ One `source_type` (`google_drive`) across four prefixes.
 The three editor APIs serve native-doc content for editor-aware clients, read structurally instead
 of via Google Drive export.
 
-Only a spreadsheet's owner may write it: every grant a corpus states makes a reader, and a
-reader's write is real's 403. A write lands in a per-server overlay and the corpus file is never
+Only a file's owner may write it: every grant a corpus states makes a reader, and a reader's
+write is real's 403. A write lands in a per-server overlay and the corpus file is never
 written; [Writes, and where they go](write-overlay.md) covers what a read then sees, what is not
 modelled, and how to read the overlay back and reset it.
 
@@ -336,7 +337,12 @@ cells.
 A document has two shapes in the same way. A record that states `paragraphs` gives each paragraph
 its named style and its runs bold, italic, underlined, struck through or linked, and its `content`
 is their text, one line each. A record that states only `content` is one plain paragraph per line
-of it. Reading a file of the wrong type through any of the three editor APIs is refused, as real
+of it. Either way `files.export` renders a document's text formats from those paragraphs as real
+does, without its title: `text/plain` as a byte-order mark and one line per paragraph, joined by
+CRLF, and `text/markdown` and `text/x-markdown` with its named styles as `#` headings and its bold,
+italic, strikethrough and links in Markdown, in the order real writes their delimiters, which does
+not always nest. A document's other formats serve its title and `content`, not the file real
+makes. Reading a file of the wrong type through any of the three editor APIs is refused, as real
 Google does, not reinterpreted.
 
 #### OAuth and batch
@@ -950,7 +956,7 @@ Each method answers on `GET` and `POST` alike, as the real Web API does.
 | `conversations.list` | `types` defaults to `public_channel` as the real API does — pass `public_channel,private_channel` to crawl both. This corpus has no DMs, so `im`/`mpim` select nothing, and an unknown value is `invalid_types` |
 | `conversations.info` | |
 | `conversations.history` | `oldest`, `latest`, `inclusive` |
-| `conversations.replies` | |
+| `conversations.replies` | `oldest`, `latest`, `inclusive`, paginated |
 | `conversations.members` | Per-channel, paginated |
 | `users.list` | |
 | `users.info` | |

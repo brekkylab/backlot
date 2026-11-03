@@ -2677,22 +2677,21 @@ def test_merged_source_is_the_bare_table_until_something_is_written(ov_db):
 
 
 def test_overlay_message_appears_in_history(ov_db):
-    before = store.count_slack_top_level(ov_db, "incidents", None)
+    before = len(store.list_slack_top_level(ov_db, "incidents", None, limit=100))
     _post(ov_db, "incidents", "4000000000.000001", "ava@acme.com", "posted now", 4000000000)
-    assert store.count_slack_top_level(ov_db, "incidents", None) == before + 1
     rows = store.list_slack_top_level(ov_db, "incidents", None, limit=100)
+    assert len(rows) == before + 1
     assert "posted now" in [r["content"] for r in rows]
 
 
 def test_a_tombstoned_corpus_message_leaves_history(ov_db):
     row = store.list_slack_top_level(ov_db, "incidents", None, limit=1)[0]
-    before = store.count_slack_top_level(ov_db, "incidents", None)
+    before = len(store.list_slack_top_level(ov_db, "incidents", None, limit=100))
     ov_db.execute("INSERT INTO ov.slack_tombstone VALUES (?,?)", (row["channel"], row["ts"]))
     ov_db.commit()
-    assert store.count_slack_top_level(ov_db, "incidents", None) == before - 1
-    assert row["ts"] not in [
-        r["ts"] for r in store.list_slack_top_level(ov_db, "incidents", None, limit=100)
-    ]
+    rows = store.list_slack_top_level(ov_db, "incidents", None, limit=100)
+    assert len(rows) == before - 1
+    assert row["ts"] not in [r["ts"] for r in rows]
 
 
 def test_a_patch_overrides_a_corpus_column(ov_db):
@@ -2724,18 +2723,22 @@ def test_a_merged_row_keeps_the_corpus_column_order(ov_db):
 
 def test_paging_across_the_boundary_neither_repeats_nor_drops(ov_db):
     # An overlay row sorts after every corpus row (its created_ts is now), so a page boundary
-    # drawn anywhere must still see each row exactly once.
+    # drawn anywhere must still see each row exactly once. Each page reads one row past two and
+    # bounds the next page just past it, as `conversations.history` walks back.
     _post(ov_db, "incidents", "4000000000.000002", "ava@acme.com", "boundary a", 4000000000)
     _post(ov_db, "incidents", "4000000000.000003", "ava@acme.com", "boundary b", 4000000001)
-    total = store.count_slack_top_level(ov_db, "incidents", None)
-    seen = []
-    for offset in range(0, total, 2):
-        seen += [
-            (r["channel"], r["ts"])
-            for r in store.list_slack_top_level(ov_db, "incidents", None, limit=2, offset=offset)
-        ]
-    assert len(seen) == total
-    assert len(set(seen)) == total
+    every = store.list_slack_top_level(ov_db, "incidents", None, limit=100, newest_first=True)
+    seen, before = [], None
+    while True:
+        page = store.list_slack_top_level(
+            ov_db, "incidents", None, limit=3, before=before, newest_first=True
+        )
+        seen += [(r["channel"], r["ts"]) for r in page[:2]]
+        if len(page) < 3:
+            break
+        seconds, micros = page[2]["ts"].split(".")
+        before = (int(seconds) * 1_000_000 + int(micros) + 1, False)
+    assert seen == [(r["channel"], r["ts"]) for r in every]
 
 
 def test_an_overlay_message_is_acl_scoped_like_any_other(ov_db, acl):

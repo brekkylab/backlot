@@ -69,14 +69,16 @@ nobody. As on real, only the `title` it states is kept, from the body or from a 
 parameter, which wins; a body, tabs or styles it states are read, checked against the `Document`
 message and every message it holds, a map's entries included, and dropped.
 
-`documents.batchUpdate` applies the requests [the endpoint table](supported-sources.md) lists, to a Doc's text, its
-headers, footers, footnotes and page breaks, and its tabs, each request applied to the Doc the ones
-before it left, and all of them or none kept. A location or range names its tab
-and its header, footer or footnote as real's do, the first tab when it names none, and
-`replaceAllText` replaces in every tab and every segment of each unless `tabsCriteria` lists the
-tabs. Inserted text takes the style of the text beside it as real gives it, a heading a newline
-splits gives the new part a `headingId` of its own, and every write moves the Doc's `revisionId`,
-which `requiredRevisionId` is checked against, but for a batch whose tab updates each leave a tab's title, index and parent as they were and name no `iconEmoji`, or whose `replaceAllText` lists no tab in `tabsCriteria`. A Doc whose corpus record states only `content`
+`documents.batchUpdate` applies the requests [the endpoint table](supported-sources.md) lists, to a
+Doc's text, its headers, footers, footnotes and page breaks, and its tabs, each request applied to
+the Doc the ones before it left, and all of them or none kept. A location or range names its tab and
+its header, footer or footnote as real's do, the first tab when it names none, and `replaceAllText`
+replaces in every tab and every segment of each unless `tabsCriteria` lists the tabs. Inserted text
+takes the style of the text beside it as real gives it, a heading a newline splits gives the new
+part a `headingId` of its own, and every write moves the Doc's `revisionId`, which
+`requiredRevisionId` is checked against, but for a batch holding only tab updates that each leave a
+tab's title, index and parent as they were and name no `iconEmoji`, and `replaceAllText` requests
+whose `tabsCriteria` lists no tab. A Doc whose corpus record states only `content`
 reads as one paragraph per line, and its first write stores that reading. `replaceAllText`
 compares text as real folds it (a letter with a mark as its base letter, `æ` as `ae`, `ß` as
 `ss`), and reads a regular expression with `java.util.regex`'s syntax, classes and properties,

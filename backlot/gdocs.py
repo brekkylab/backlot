@@ -1203,8 +1203,8 @@ class Document:
         self.tabs: list[dict] = copy.deepcopy(stored["tabs"])
         self._open: dict[tuple[str, str], Body] = {}
         self._made = itertools.count()
-        # the requests that left the Doc as it was, which `routers.google_docs` does not count as
-        # a write when they are all a batch holds
+        # the requests real keeps the `revisionId` for (`routers.google_docs._docs_update_tab` and
+        # `_docs_replace_all_text`); a batch of only these is no write
         self.unchanged = 0
 
     def flat(self) -> list[dict]:

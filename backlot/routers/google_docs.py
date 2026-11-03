@@ -560,9 +560,10 @@ def _docs_replace_all_text(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``replaceAllText``: in every tab, or only in those a `tabsCriteria` lists, in each tab's
     body, header, footer and footnotes. Measured 2026-11-02: with no `tabsCriteria` a child tab
     was replaced in too, one listing no tab replaced nothing, a tab listed twice counted once, and
-    a match in a header, a footer and a footnote each counted. Real fails on a replacement holding
-    a character in `gdocs.UNWRITABLE` that matched, and on a `tabsCriteria` naming a tab the Doc
-    does not have, once every request is read; measured, a zero-match replace by U+FDD0 was a 200.
+    a match in a header, a footer and a footnote each counted. Real fails on a `tabsCriteria`
+    naming a tab the Doc does not have at this request, measured 2026-11-03, and on a replacement
+    holding a character in `gdocs.UNWRITABLE` that matched once every request is read; measured,
+    a zero-match replace by U+FDD0 was a 200.
     What matches is `gdocs.Body.find`'s, and an empty or missing `replaceText` deletes it; the
     characters `insertText` strips are stripped from it too. A `searchByRegex` replacement is the
     text as sent: `$1` is not a group."""
@@ -570,10 +571,10 @@ def _docs_replace_all_text(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     if not criteria.get("text"):
         raise _EditorRefused("The substring match text should not be empty")
     tabs = doc.flat()
-    unknown = False
     if "tabs_criteria" in req:
         named = req["tabs_criteria"].get("tab_ids", [])
-        unknown = any(not any(t["tabProperties"]["tabId"] == n for t in tabs) for n in named)
+        if any(not any(t["tabProperties"]["tabId"] == n for t in tabs) for n in named):
+            raise gerr.internal_error()
         tabs = [t for t in tabs if t["tabProperties"]["tabId"] in named]
         # measured 2026-11-02: a `tabsCriteria` of no tab kept the `revisionId`, where a replace
         # that matched nothing in a tab moved it
@@ -589,7 +590,7 @@ def _docs_replace_all_text(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
             )
             body.replace(matches, text)
             found += len(matches)
-    fails = unknown or bool(found and gdocs.UNWRITABLE.search(text))
+    fails = bool(found and gdocs.UNWRITABLE.search(text))
     return {"replaceAllText": {"occurrencesChanged": found} if found else {}}, fails
 
 
@@ -647,8 +648,9 @@ def _docs_create_segment(kind: str):
     """``createHeader`` or ``createFooter``: the tab's header or footer, one empty paragraph,
     answered with its id, its id served as the tab's `documentStyle`'s default. Measured
     2026-11-02: the tab of a `sectionBreakLocation` is refused, then no `type` or
-    `HEADER_FOOTER_TYPE_UNSPECIFIED`; one at any index but the first section break's, 0, is a 500,
-    whatever segment it names, and a tab holding one already is refused."""
+    `HEADER_FOOTER_TYPE_UNSPECIFIED`; one at any index but the first section break's, 0, is a 500
+    at this request (measured 2026-11-03), whatever segment it names, and a tab holding one already
+    is refused."""
     name = kind.capitalize()
 
     def create(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
@@ -657,7 +659,7 @@ def _docs_create_segment(kind: str):
         if not req.get("type"):
             raise _EditorRefused(f"{name} type not specified.")
         if where.get("index", 0) != 0:
-            return {}, True
+            raise gerr.internal_error()
         if tab[f"{kind}s"]:
             raise _EditorRefused(f"Default {kind} already exists.")
         made = doc.new_id(gdocs.segment_id)
@@ -986,9 +988,10 @@ async def docs_batch_update(document_id: str, request: Request):
     the lookup and a reader's 403, no requests or one with no kind set (`_editor_requests`), a
     revision of another Doc, a `requiredRevisionId` that is not the Doc's latest or a
     `targetRevisionId` that is no revision of it, then each request's refusal, the first one's
-    named alone. A 500 a request leads to (`gdocs.UNWRITABLE`, an unknown tab in `tabsCriteria`, a
-    header at an index past the first section break) comes after every request is read, and keeps
-    nothing. A kind other than those applied here is refused naming itself, and so is the
+    named alone. A 500 a character in `gdocs.UNWRITABLE` leads to comes after every request is
+    read; one for an unknown tab in `tabsCriteria`, a header or footer at an index past the first
+    section break, or a tab update's `fields` of dots alone comes at its own request, measured
+    2026-11-03, ahead of a later request's refusal. Neither keeps anything. A kind other than those applied here is refused naming itself, and so is the
     `SUGGEST` write mode, which records the requests as suggestions.
 
     Every write, one that changed nothing included, moves the `revisionId`, but for a batch of

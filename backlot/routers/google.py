@@ -4516,7 +4516,8 @@ def _editor_batch(
 
     Every request sets a kind (`_editor_requests`). Measured 2026-10-29 on Docs'
     `documents.batchUpdate`: a refusal names its request and kind and only the first is answered,
-    and a 500 a request leads to comes after the refusals of every request behind it. A kind
+    and a 500 a request answers as failing comes after the refusals of every request behind it; one
+    a function raises comes at its own request. A kind
     ``apply`` lacks is refused naming itself. The caller keeps what the functions changed only
     once this returns."""
     replies = []

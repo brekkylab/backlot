@@ -18232,8 +18232,7 @@ def test_a_tab_or_segment_write_changes_the_doc_as_real_does(
     assert r.status_code == 200, r.text
     assert r.json()["replies"] == _with_tab_ids(replies or [{}] * len(requests), did)
     assert _docs_outline(wc, h, "wr-tabs") == outline
-    # a batch of tab updates that change nothing keeps the revision, so a write pinned to it is
-    # taken
+    # a batch real keeps the revision for keeps it, so a write pinned to it is taken
     assert (r.json()["writeControl"]["requiredRevisionId"] != before) == moves
     pinned = {"requests": [_ins(1, "x")], "writeControl": {"requiredRevisionId": before}}
     assert _docs_write(wc, h, "wr-tabs", pinned).status_code == (400 if moves else 200)
@@ -18446,6 +18445,21 @@ _DOCS_BATCH_REFUSALS = [
         500,
         "Internal error encountered.",
     ),
+    # but an unknown tab in `tabsCriteria` is the 500 at its own request
+    (
+        [
+            {
+                "replaceAllText": {
+                    "containsText": {"text": "zzz"},
+                    "replaceText": "x",
+                    "tabsCriteria": {"tabIds": ["t.nope"]},
+                }
+            },
+            _ins(0, "a"),
+        ],
+        500,
+        "Internal error encountered.",
+    ),
     # a Doc's only tab (`_docs_delete_tab`)
     (
         [{"deleteTab": {"tabId": "t.0"}}],
@@ -18605,6 +18619,14 @@ _DOCS_TAB_REFUSALS = [
     ),
     (
         [{"createFooter": {"type": "DEFAULT", "sectionBreakLocation": {"index": 1}}}],
+        500,
+        "Internal error encountered.",
+    ),
+    (
+        [
+            {"createFooter": {"type": "DEFAULT", "sectionBreakLocation": {"index": 1}}},
+            {"insertText": {"location": {"index": 0}, "text": "x"}},
+        ],
         500,
         "Internal error encountered.",
     ),

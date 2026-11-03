@@ -704,7 +704,8 @@ def _page(answer: str, method: bytes, target: bytes) -> tuple[int, str | None, b
 def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answers_it(live_server):
     """Each row of :func:`_rows`, sent over a socket, is answered as the vendor's front door
     answered it: the API behind it where the row names a status, the target read as the row says, or
-    the row's page, with the connection kept or closed as real kept or closed it."""
+    the row's page (its head alone on a HEAD), with the connection kept or closed as real kept or
+    closed it."""
     base_url, settings = live_server
     edge = {"x-content-type-options": "nosniff", "x-xss-protection": "1; mode=block"}
     got, expected = {}, {}

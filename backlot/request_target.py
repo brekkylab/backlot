@@ -480,7 +480,8 @@ def escape_answer(scope: Scope) -> Response | None:
     `%00` in the query was read as its other bytes are on each of those hosts but Confluence, which
     answered Tomcat's 400 page. Jira Cloud's and Confluence's front door answers a `%00` in the
     path with the CDN's page (``backlot.errors.atlassian.cdn_refusal``), Linear's and Fireflies'
-    with Cloudflare's (:func:`refused_path`), and api.github.com read it as any other byte."""
+    with Cloudflare's (:func:`refused_path`), and api.github.com's front door read it on to the
+    API."""
     path, sent = scope["path"], scope["raw_path"]
     if _under(path, "/msgraph"):
         if _ESCAPED_CONTROL.search(sent) is None:

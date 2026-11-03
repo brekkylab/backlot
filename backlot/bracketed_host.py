@@ -126,7 +126,8 @@ def _refused_ahead(scope: Scope) -> bool:
     `;` with the CDN's 403 for the `Host`. Linear and Fireflies answered `%00`, `%zz`, `%2` at the
     end, `/../graphql` and `TRACE` as under their own `Host`, and `CONNECT` and `PURGE` as the
     `Host` says. GitHub and Graph answered the `Host` beside `%00`, Slack beside a broken escape,
-    and each host but S3 beside `%0A`, `%80`, a raw `\\` and a raw `"`."""
+    Slack, Drive, Jira, Confluence and Graph beside an `Authorization` sent twice, and each host but
+    S3 beside `%0A`, `%80`, a raw `\\` and a raw `"`."""
     path, method, sent = scope["path"], scope["method"], scope["raw_path"]
     door = (request_target.front_door(path) or (None, None))[0]
     if request_target.kinds_sent(scope) & _RAW_AHEAD.get(door, set()):

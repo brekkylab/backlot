@@ -245,8 +245,8 @@ _AWS_AUTHORIZATION = (
 #: The header lines of a row of :data:`_HOSTS` that sends the row's `Authorization` twice.
 _AUTHORIZATION_TWICE = b"(the Authorization twice)"
 
-#: A path each front door but S3's serves, as (method, base, target after it), and the door's answer
-#: there to a `Host` of `[0:0]` or `[x]` and to one of `[v1.x]`.
+#: A path on each host but S3's, as (method, base, target after it), and the door's answer there to
+#: a `Host` of `[0:0]` or `[x]` and to one of `[v1.x]`.
 _DOORS = {
     "github": (b"GET", "/github/", b"rate_limit", "github", "github"),
     "slack": (b"GET", "/slack/api/", b"auth.test", "slack 404 empty", "slack 404 empty"),
@@ -426,8 +426,8 @@ _HOSTS = [
             (b"GET", "/notion/v1/", b"users%2"),
         )
     ),
-    # a raw byte of every kind beside a `Host`, in the path and on six hosts after `?a=`, and a
-    # target past GitHub's bound
+    # a raw byte of every kind beside a `Host` in the path, and of each but 0x7F after `?a=` on six
+    # hosts, and a target past GitHub's bound
     *(
         (host, method, base, rest + at + byte, answer or _hosts_answer(door, host))
         for host in (b"[0:0]", b"[v1.x]")

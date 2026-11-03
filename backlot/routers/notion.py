@@ -80,12 +80,11 @@ PUBLISHED_VERSIONS = (
 #: The headers real puts on an answer past its body reader (:func:`front_door_body`), one value
 #: each wherever they were measured against api.notion.com on 2026-10-27: the answers of each route
 #: here (200s, 400s, 401s, 404s and a 503, `HEAD`s among them), the OAuth client endpoints' 401 and
-#: the root's 302. The refusals that body reader answers carried none of them, nor did the 400 for a
-#: path whose escapes do not decode (:func:`undecodable_url`), nor the front door's
-#: `405 Not Allowed` page for `TRACE`: a method outside :data:`ROUTED_METHODS` is the framework's
-#: 405 here (:func:`unmatched_path`), and carries none of them either. `strict-transport-security`
-#: came beside them and is left off, a promise of HTTPS that a server answering over plain HTTP
-#: cannot keep.
+#: the root's 302. The refusals that body reader answers carried none of them, nor did
+#: :func:`undecodable_url`'s 400, nor the front door's `405 Not Allowed` page for `TRACE`: a method
+#: outside :data:`ROUTED_METHODS` is the framework's 405 here (:func:`unmatched_path`), and carries
+#: none of them either. `strict-transport-security` came beside them and is left off, a promise of
+#: HTTPS that a server answering over plain HTTP cannot keep.
 APPLICATION_HEADERS = {
     "content-security-policy": "default-src 'none'",
     "referrer-policy": "strict-origin-when-cross-origin",

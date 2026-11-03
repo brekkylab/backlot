@@ -535,13 +535,20 @@ _GRAPH_REFUSED_PRINTABLE = re.compile(rb'["#<>]')
 _HUBSPOT_OBJECTS = b"/hubspot/crm/v3/objects/"
 #: The mounts under which a `\` in the path is read as a `/` (:func:`printable_reading`).
 _BACKSLASH_MOUNTS = (b"/atlassian/", b"/drive/", b"/gmail/", b"/docs/", b"/sheets/", b"/slides/")
+#: The mounts here that come ahead of the path the vendor is sent, so that a `\` right after one is
+#: the first byte of the vendor's target (:func:`printable_answer`).
+_MOUNTS_AHEAD_OF_THE_TARGET = (b"/atlassian", b"/docs", b"/sheets", b"/slides")
 
 
 def printable_answer(scope: Scope) -> Response | None:
     """The front door's answer to a target holding a `#` (:data:`WITH_A_FRAGMENT`), a `%` two hex
-    digits do not follow (:data:`_BROKEN_ESCAPE`), or on Graph and HubSpot another printable
-    character it refuses, or ``None`` where it reads the target on.
+    digits do not follow (:data:`_BROKEN_ESCAPE`), a `\\` as its first byte, or on Graph and HubSpot
+    another printable character it refuses, or ``None`` where it reads the target on.
 
+    A `\\` right after a mount of :data:`_MOUNTS_AHEAD_OF_THE_TARGET` is the CDN's 400 page on Jira
+    and Confluence and Google's 1,555-byte page on Docs, Sheets and Slides: measured on 2026-11-03
+    (UTC) at a path each serves and at one under its API that no route serves, and on Jira and
+    Confluence after a second `\\` and before a `/` as well, where a `/` ahead of the `\\` was read on.
     On api.github.com its page for a `#` anywhere, and on slack.com envoy's empty 400; then on
     slack.com Apache's page (:data:`SLACK_APACHE_PAGE`) for a broken escape in the path; on Graph
     :data:`GRAPH_INVALID_URL` for one, or for a `"`, a `#`, a `<` or a `>`, in the path; on S3, an
@@ -573,6 +580,12 @@ def printable_answer(scope: Scope) -> Response | None:
     path, raw_path = scope["path"], scope["raw_path"]
     sent = scope.get(WITH_A_FRAGMENT)
     sent_path = raw_path if sent is None else sent.partition(b"?")[0]
+    first = next((m for m in _MOUNTS_AHEAD_OF_THE_TARGET if sent_path.startswith(m + b"\\")), None)
+    if first == b"/atlassian":
+        page = errors.atlassian.cdn_bad_request(scope["method"], sent_path.decode("latin-1"))
+        return _front_door(scope, "cdn", page, {})
+    if first is not None:
+        return _page(GOOGLE_PAGE_1555, "text/html; charset=UTF-8")
     if _under(path, "/github"):
         return _github() if sent is not None else None
     if _under(path, "/slack"):

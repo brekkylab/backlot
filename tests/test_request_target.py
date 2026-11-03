@@ -523,6 +523,28 @@ _PRINTABLE = [
     ("/atlassian/rest/api", b"\\3/serverInfo", "as /3/serverInfo"),
     ("/atlassian/wiki/rest/api", b"\\space", "as /space"),
     ("/atlassian/wiki/rest/api/", b"nope\\x", "as nope/x"),
+    # a `\` as the first byte of the vendor's target, alone, twice and before a `/`, where a `/`
+    # ahead of it is read on
+    *(
+        ("/atlassian", lead + rest, "cloudfront")
+        for rest in (b"rest/api/3/serverInfo", b"wiki/rest/api/space")
+        for lead in (b"\\", b"\\\\", b"\\/")
+    ),
+    *(
+        ("/atlassian", b"\\" + rest, "cloudfront")
+        for rest in (b"rest/api/3/nope", b"wiki/rest/api/nope")
+    ),
+    ("/atlassian", b"/\\rest/api/3/serverInfo", "as /rest/api/3/serverInfo"),
+    ("/atlassian", b"/\\wiki/rest/api/space", "as /wiki/rest/api/space"),
+    *(
+        (mount, b"\\" + rest, "google 1555")
+        for mount, served in (
+            ("/docs", b"v1/documents/"),
+            ("/sheets", b"v4/spreadsheets/"),
+            ("/slides", b"v1/presentations/"),
+        )
+        for rest in (served + b"x", served + b"nope")
+    ),
     *(
         (base, b"nope%cx" % c, "as nope%%%02Xx" % c)
         for base in ("/atlassian/rest/api/3/", "/atlassian/wiki/rest/api/")

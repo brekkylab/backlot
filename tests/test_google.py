@@ -4493,6 +4493,7 @@ _QUERY_CREDENTIAL_ROWS = [
     # the first of `QUERY_TOKENS` the query carries is the gate, the last the token
     (None, "access_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "oauth_token={t}&access_token=ya29.x", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%20", _SERVED),
     (None, "access_token=ya29.x&bearer_token={t}", _SERVED),
     (None, "bearer_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "access_token={t}&oauth_token=ya29.x", _NONE),

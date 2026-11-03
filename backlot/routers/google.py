@@ -372,7 +372,7 @@ def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | Non
     Three names carry a token, ``gerr.QUERY_TOKENS``, spelt exactly so. Taken in that order, the
     first the query carries is the gate and the last is the token, wherever each stands in the
     query. ``gated``, the gate's first value has to start `ya29.` or `1/` once decoded, or the query
-    names no credential. Past the gate the token's value is resolved as it stands; an empty one, or
+    names no credential. Past the gate the token's value is read without any spaces at its end; an empty one, or
     a token whose name the query repeats, names no token. Inside a batch a part reads each of the
     three names from its own query where it carries that name and from the batch's where it does
     not, so a part's values for a name stand in for the batch's rather than join them.
@@ -399,7 +399,7 @@ def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | Non
     if gated and not query.getlist(named[0])[0].startswith(_QUERY_TOKEN_PREFIXES):
         return None
     values = query.getlist(named[-1])
-    return True, (values[0] or None) if len(values) == 1 else None
+    return True, (values[0].rstrip(" ") or None) if len(values) == 1 else None
 
 
 _ESCAPED_SLASH = re.compile(r"%2F", re.I)

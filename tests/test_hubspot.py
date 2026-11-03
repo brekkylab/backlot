@@ -1231,17 +1231,15 @@ _HEADER_VALUES = [
 ]
 
 
-@pytest.mark.parametrize(
-    "value, blocked", _HEADER_VALUES, ids=lambda v: v.hex(" ") if isinstance(v, bytes) else None
-)
-def test_hubspot_answers_a_header_value_that_is_not_utf_8_with_cloudflares_block(
-    client, value, blocked
-):
-    r = sent_as(client, "GET", f"/hubspot{_LISTING}", [("X-Probe", value.decode("latin-1"))])
-    if blocked:
-        assert _blocked(r) == (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256)
-    else:
-        assert r.status_code == 401
+def test_hubspot_answers_a_header_value_that_is_not_utf_8_with_cloudflares_block(client):
+    got = {}
+    for value, blocked in _HEADER_VALUES:
+        r = sent_as(client, "GET", f"/hubspot{_LISTING}", [("X-Probe", value.decode("latin-1"))])
+        got[value] = _blocked(r) if r.status_code == 403 else r.status_code
+    assert got == {
+        value: (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256) if blocked else 401
+        for value, blocked in _HEADER_VALUES
+    }
 
 
 _HIGH = ("X-Probe", "a\x80b")
@@ -1251,40 +1249,39 @@ _TWICE = [("Authorization", "Bearer x")] * 2
 # 2026-10-30 (UTC): its block, or `without` where an answer of Cloudflare's own came ahead of the
 # block, which here is the answer to the same request with the byte 0x80 left out.
 _BLOCK_ROWS = [
-    pytest.param(
-        "GET", _LISTING, [_HIGH, ("Accept", "application/json")], None, "block", id="json"
-    ),
-    pytest.param("GET", _LISTING, [_HIGH, ("Accept", "text/html")], None, "block", id="html"),
-    pytest.param("HEAD", _LISTING, [_HIGH], None, "block", id="HEAD"),
-    pytest.param("POST", _LISTING, [_HIGH, ("Content-Type", "application/json")], b"{}", "block"),
-    pytest.param("OPTIONS", _LISTING, [_HIGH], None, "block", id="OPTIONS"),
-    pytest.param("GET", "/", [_HIGH], None, "block", id="root"),
-    pytest.param("POST", "/oauth/v1/token", [_HIGH], b"", "block", id="token"),
-    pytest.param("GET", "/nosuch", [_HIGH], None, "block", id="no route"),
-    pytest.param("GET", _LISTING, [("Authorization", "Bearer a\x80b")], None, "block"),
-    pytest.param("GET", _LISTING, [*_TWICE, _HIGH], None, "without", id="Authorization twice"),
-    pytest.param("TRACE", _LISTING, [_HIGH], None, "without", id="TRACE"),
-    pytest.param("CONNECT", _LISTING, [_HIGH], None, "without", id="CONNECT"),
-    pytest.param("PURGE", _LISTING, [_HIGH], None, "without", id="PURGE"),
+    ("json", "GET", _LISTING, [_HIGH, ("Accept", "application/json")], None, "block"),
+    ("html", "GET", _LISTING, [_HIGH, ("Accept", "text/html")], None, "block"),
+    ("HEAD", "HEAD", _LISTING, [_HIGH], None, "block"),
+    ("POST", "POST", _LISTING, [_HIGH, ("Content-Type", "application/json")], b"{}", "block"),
+    ("OPTIONS", "OPTIONS", _LISTING, [_HIGH], None, "block"),
+    ("root", "GET", "/", [_HIGH], None, "block"),
+    ("token", "POST", "/oauth/v1/token", [_HIGH], b"", "block"),
+    ("no route", "GET", "/nosuch", [_HIGH], None, "block"),
+    ("Bearer", "GET", _LISTING, [("Authorization", "Bearer a\x80b")], None, "block"),
+    ("Authorization twice", "GET", _LISTING, [*_TWICE, _HIGH], None, "without"),
+    ("TRACE", "TRACE", _LISTING, [_HIGH], None, "without"),
+    ("CONNECT", "CONNECT", _LISTING, [_HIGH], None, "without"),
+    ("PURGE", "PURGE", _LISTING, [_HIGH], None, "without"),
 ]
 
 
-@pytest.mark.parametrize("method, path, sent, body, answer", _BLOCK_ROWS)
-def test_hubspot_answers_cloudflares_block_after_cloudflares_own_answers(
-    client, method, path, sent, body, answer
-):
-    r = sent_as(client, method, f"/hubspot{path}", sent, content=body)
-    plain = [(name, value.replace("\x80", "")) for name, value in sent]
-    without = sent_as(client, method, f"/hubspot{path}", plain, content=body)
-    if answer == "without":
-        assert (r.status_code, r.content) == (without.status_code, without.content)
-        return
-    assert without.status_code != 403
-    if method == "HEAD":
-        get = sent_as(client, "GET", f"/hubspot{path}", sent)
-        assert (r.status_code, r.headers["content-length"]) == (403, get.headers["content-length"])
-        return
-    assert _blocked(r) == (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256)
+def test_hubspot_answers_cloudflares_block_after_cloudflares_own_answers(client):
+    got, expected = {}, {}
+    for row, method, path, sent, body, answer in _BLOCK_ROWS:
+        r = sent_as(client, method, f"/hubspot{path}", sent, content=body)
+        plain = [(name, value.replace("\x80", "")) for name, value in sent]
+        without = sent_as(client, method, f"/hubspot{path}", plain, content=body)
+        if answer == "without":
+            got[row] = (r.status_code, r.content)
+            expected[row] = (without.status_code, without.content)
+        elif method == "HEAD":
+            get = sent_as(client, "GET", f"/hubspot{path}", sent)
+            got[row] = (r.status_code, r.headers["content-length"], without.status_code != 403)
+            expected[row] = (403, get.headers["content-length"], True)
+        else:
+            got[row] = (*_blocked(r), without.status_code != 403)
+            expected[row] = (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256, True)
+    assert got == expected
 
 
 @pytest.mark.parametrize(

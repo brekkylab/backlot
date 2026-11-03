@@ -211,6 +211,35 @@ _REFUSED_LINES = [
 ]
 _BOUND_OF = {mount: (bound, per_line) for mount, _, bound, per_line, _, _ in _BOUNDS}
 
+#: A `%00` in the path and a `%0A` at its end, after a row of :data:`_BOUNDS`, and real's answer
+#: where the line reaches the bound and where a header after it does, measured on 2026-11-03 (UTC):
+#: the bound's page, but for a `%00` ahead of a header past the bound on Jira Cloud and behind
+#: Cloudflare, which draws the page each front door gives it in a short head.
+_ESCAPES_AT_THE_BOUND = [
+    ("/github", "/repos/acme/docs-site%00", "github 414", "github 431"),
+    ("/github", "/repos/acme/docs-site%0A", "github 414", "github 431"),
+    ("/slack", "/api/api.test%00", "slack", "slack"),
+    ("/slack", "/api/api.test%0A", "slack", "slack"),
+    ("", "/drive/v3/files%00", "google", "google"),
+    ("", "/drive/v3/files%0A", "google", "google"),
+    ("/atlassian", "/rest/api/3/myself%00", "jira 414", "jira 400"),
+    ("/atlassian", "/rest/api/3/myself%0A", "jira 414", "jira 494"),
+    *[
+        (mount, path + escape, "cloudflare 414", header)
+        for mount, path in (
+            ("/notion", "/v1/users"),
+            ("/hubspot", "/crm/v3/objects/contacts"),
+            ("/linear", "/graphql"),
+            ("/fireflies", "/graphql"),
+        )
+        for escape, header in (("%00", "cloudflare bad request"), ("%0A", "cloudflare 400"))
+    ],
+    ("/s3", "/%00", "s3", "s3"),
+    ("/s3", "/%0A", "s3", "s3"),
+    ("/msgraph", "/v1.0/me%00", "graph 414", "graph 400"),
+    ("/msgraph", "/v1.0/me%0A", "graph 414", "graph 400"),
+]
+
 #: Ended request lines with no `?`, before a header past the bound, and real's answer: the root of
 #: Slack's host, and on Notion a `%2` the end of the target cuts short, the bound's page where the
 #: same `%2` before a `?` draws Cloudflare's.
@@ -317,7 +346,10 @@ _CASES = (
     [
         (part, "", None, mount, path, "?x=", bound, per_line, line if part == "line" else header)
         for mount, path, bound, per_line, line, header in _BOUNDS
-        + [(m, p, *_BOUND_OF[m], line, header) for m, p, line, header in _REFUSED_LINES]
+        + [
+            (m, p, *_BOUND_OF[m], line, header)
+            for m, p, line, header in _REFUSED_LINES + _ESCAPES_AT_THE_BOUND
+        ]
         for part in ("line", "header")
     ]
     + [("header", "", None, m, p, "", *_BOUND_OF[m], header) for m, p, header in _NO_QUERY]

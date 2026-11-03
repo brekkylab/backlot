@@ -21,10 +21,9 @@ import urllib.parse
 
 import pytest
 import uvicorn
-from uvicorn.server import ServerState
 
 from backlot import head_bounds, protocol, request_target
-from tests._helpers import RecordingTransport
+from tests._helpers import in_process
 
 #: Real's answer at each bound and to a request line refused ahead of one (``backlot.head_bounds``
 #: and ``backlot.request_target.refused_in_the_line`` have the measurements): the status line,
@@ -418,14 +417,8 @@ def _connection(reads: list[bytes]) -> tuple[list[str], list[list[str]], bool]:
         await send({"type": "http.response.start", "status": 200, "headers": headers})
         await send({"type": "http.response.body", "body": b""})
 
-    loop = asyncio.new_event_loop()
     answers = []
-    try:
-        config = uvicorn.Config(app, http=protocol.Protocol, lifespan="off", log_config=None)
-        state = ServerState()
-        served = protocol.Protocol(config, state, {}, _loop=loop)
-        transport = RecordingTransport()
-        served.connection_made(transport)
+    with in_process(app) as (served, transport, loop):
         for read in reads:
             before = len(transport.written)
             served.data_received(read)
@@ -436,11 +429,6 @@ def _connection(reads: list[bytes]) -> tuple[list[str], list[list[str]], bool]:
             answers.append(
                 [_named(written[a:b]) for a, b in zip(starts, [*starts[1:], len(written)])]
             )
-    finally:
-        for task in state.tasks:
-            task.cancel()
-        loop.run_until_complete(asyncio.sleep(0))
-        loop.close()
     return seen, answers, transport.closed
 
 

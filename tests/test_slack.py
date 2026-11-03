@@ -6133,7 +6133,7 @@ def test_editing_a_corpus_message_leaves_one_search_hit(wclient, tokens, ro_conn
     assert stale["total"] == len(stale["matches"])
 
 
-def test_posting_with_thread_ts_replies_in_that_thread(wclient, tokens, admin_h, ro_conn):
+def test_posting_with_thread_ts_replies_in_that_thread(wclient, tokens, ro_conn):
     # Ignoring `thread_ts` gave an agent told to reply in a thread a top-level message and a
     # `200 ok` — a wrong answer with no error in it.
     root_ts = ro_conn.execute(
@@ -6177,45 +6177,6 @@ def test_posting_with_thread_ts_replies_in_that_thread(wclient, tokens, admin_h,
     ).json()["messages"]
     assert [m["ts"] for m in thread] == [alone, answered]
     assert thread[0]["thread_ts"] == alone and thread[0]["reply_count"] == 1
-
-    # `_parent_uid`'s rule, in the answer to the post and on each reply `conversations.replies`
-    # lists. The root's poster and the replier differ in each row.
-    def post(headers, text, **extra):
-        data = {"channel": cid, "text": text, **extra}
-        return wclient.post("/slack/api/chat.postMessage", headers=headers, data=data).json()
-
-    by = {"admin": admin_h, "ava": h}
-    ava = synth.slack_user_id("ava@acme.com")
-    rows = [
-        # root's poster, replier, what `thread_ts` names, `reply_broadcast`, root deleted first
-        (("admin", "ava", "root", None, False), "USERVICE0"),
-        (("ava", "admin", "root", None, False), ava),
-        (("admin", "ava", "reply", None, False), "USERVICE0"),
-        (("ava", "admin", "reply", None, False), ava),
-        (("admin", "ava", "root", "", False), "USERVICE0"),
-        (("admin", "ava", "root", "false", False), "USERVICE0"),
-        (("admin", "ava", "root", "FALSE", False), "USERVICE0"),
-        (("admin", "ava", "root", "0", False), "USERVICE0"),
-        (("admin", "ava", "root", None, True), slack.SLACKBOT_ID),
-        (("ava", "admin", "reply", None, True), slack.SLACKBOT_ID),
-    ]
-    got = []
-    for (root_by, reply_by, names, broadcast, deleted), _ in rows:
-        root = post(by[root_by], "root")["ts"]
-        target = root
-        if names == "reply" or deleted:
-            first = post(by[reply_by], "first reply", thread_ts=root)["ts"]
-            target = first if names == "reply" else root
-        if deleted:
-            gone = {"channel": cid, "ts": root}
-            wclient.post("/slack/api/chat.delete", headers=by[root_by], data=gone)
-        flags = {} if broadcast is None else {"reply_broadcast": broadcast}
-        echo = post(by[reply_by], "reply", thread_ts=target, **flags)["message"]
-        listed = wclient.post(
-            "/slack/api/conversations.replies", headers=h, data={"channel": cid, "ts": root}
-        ).json()["messages"]
-        got.append((echo.get("parent_user_id"), {m.get("parent_user_id") for m in listed[1:]}))
-    assert got == [(uid, {uid}) for _, uid in rows]
 
 
 def test_replying_to_a_reply_lands_in_the_same_thread(wclient, tokens, ro_conn):
@@ -6450,3 +6411,55 @@ def test_a_bot_messages_author_resolves_through_users_info(wclient, admin_h):
     assert j["ok"] is True
     assert j["user"]["id"] == uid
     assert j["user"]["is_bot"] is True
+
+
+def test_a_reply_names_its_threads_root_in_parent_user_id(wclient, tokens, admin_h):
+    """The root's poster and the replier differ in each row, so a `parent_user_id` naming the
+    replier fails it."""
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+
+    def call(method, headers, **data):
+        return wclient.post(f"/slack/api/{method}", headers=headers, data=data).json()
+
+    def post(headers, text, **extra):
+        return call("chat.postMessage", headers, channel=cid, text=text, **extra)
+
+    by = {"admin": admin_h, "ava": h}
+    ava = synth.slack_user_id("ava@acme.com")
+    rows = [
+        # root's poster, replier, what `thread_ts` names, `reply_broadcast`, root deleted first
+        (("admin", "ava", "root", None, False), "USERVICE0"),
+        (("ava", "admin", "root", None, False), ava),
+        (("admin", "ava", "reply", None, False), "USERVICE0"),
+        (("ava", "admin", "reply", None, False), ava),
+        (("admin", "ava", "root", "", False), "USERVICE0"),
+        (("admin", "ava", "root", "false", False), "USERVICE0"),
+        (("admin", "ava", "root", "FALSE", False), "USERVICE0"),
+        (("admin", "ava", "root", "0", False), "USERVICE0"),
+        (("admin", "ava", "root", None, True), slack.SLACKBOT_ID),
+        (("ava", "admin", "reply", None, True), slack.SLACKBOT_ID),
+    ]
+    got = []
+    for (root_by, reply_by, names, broadcast, deleted), _ in rows:
+        root = post(by[root_by], "root")["ts"]
+        target = root
+        if names == "reply" or deleted:
+            first = post(by[reply_by], "first reply", thread_ts=root)["ts"]
+            target = first if names == "reply" else root
+        if deleted:
+            call("chat.delete", by[root_by], channel=cid, ts=root)
+        flags = {} if broadcast is None else {"reply_broadcast": broadcast}
+        echo = post(by[reply_by], "reply", thread_ts=target, **flags)["message"]
+        at = {"channel": cid, "timestamp": echo["ts"]}
+        edited = call("chat.update", by[reply_by], channel=cid, ts=echo["ts"], text="edited")
+        call("reactions.add", by[reply_by], name="eyes", **at)
+        reacted = call("reactions.get", by[reply_by], **at)["message"]
+        items = call("reactions.list", by[reply_by])["items"]
+        item = next(i["message"] for i in items if i["message"]["ts"] == echo["ts"])
+        listed = call("conversations.replies", h, channel=cid, ts=root)["messages"][1:]
+        answers = [echo, edited["message"], reacted, item]
+        got.append(
+            ([m.get("parent_user_id") for m in answers], {m.get("parent_user_id") for m in listed})
+        )
+    assert got == [([uid] * 4, {uid}) for _, uid in rows]

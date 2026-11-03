@@ -1156,15 +1156,17 @@ class _ReadAGoogleBodyUnderItsCoding:
     body.
 
     An ASGI layer rather than one of :func:`_middleware`'s, because the body it hands on is not the
-    one that arrived. Registered just inside :func:`answer_head_as_the_get_without_its_body`, so a
-    `HEAD` on Drive and Gmail reaches it as the GET, and outside
-    :func:`refuse_a_head_on_the_google_editor_hosts`. Measured with `br` on 2026-10-30 (UTC): real
-    answered the 415 ahead of the credential, `$.xgafv=3` and `alt=zzz`, and wrapped it under a
-    `callback`. The editor hosts answered the one with no body to a `HEAD` on a routed path, and to
-    `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` and `HEAD` on `/v4/nosuch` on Sheets, `GET`
-    on `/v1/nosuch` on Docs and Slides, and `PUT`, `DELETE` and `POST` on a spreadsheet, where with
-    no coding each was the host's 400 page; Drive's and Gmail's host answered a path it does not
-    route with its 404 page whatever the coding.
+    one that arrived. Registered inside :func:`answer_head_as_the_get_without_its_body`, so a `HEAD`
+    on Drive and Gmail reaches it as the GET, and outside
+    :func:`refuse_a_head_on_the_google_editor_hosts`, and inside
+    :func:`answer_a_google_read_sent_as_a_post`, whose read of a form body under its coding
+    (``request.state.form_read``) is the one this hands on, so the body is decompressed once.
+    Measured with `br` on 2026-10-30 (UTC): real answered the 415 ahead of the credential,
+    `$.xgafv=3` and `alt=zzz`. The editor hosts answered the one with no body to a `HEAD` on a
+    routed path, and to `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` and `HEAD` on
+    `/v4/nosuch` on Sheets, `GET` on `/v1/nosuch` on Docs and Slides, and `PUT`, `DELETE` and `POST`
+    on a spreadsheet, where with no coding each was the host's 400 page; Drive's and Gmail's host
+    answered a path it does not route with its 404 page whatever the coding.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -1190,15 +1192,19 @@ class _ReadAGoogleBodyUnderItsCoding:
         if not operation:
             await self.app(scope, receive, send)
             return
-        body = b""
-        more = True
-        while more:
-            message = await receive()
-            if message["type"] != "http.request":
-                return
-            body += message.get("body", b"")
-            more = message.get("more_body", False)
-        read = google.inflated(body, codings)
+        state = Request(scope).state
+        if hasattr(state, "form_read"):
+            read = state.form_read
+        else:
+            chunks = []
+            more = True
+            while more:
+                message = await receive()
+                if message["type"] != "http.request":
+                    return
+                chunks.append(message.get("body", b""))
+                more = message.get("more_body", False)
+            read = google.inflated(b"".join(chunks), codings)
         if read is None:
             await _front_end_error(scope, errors.google.payload_too_large())(scope, receive, send)
             return
@@ -1840,7 +1846,9 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
     Registered inside ``answer_a_raw_byte_in_the_request_target``, whose refusals real gave such a
     POST on Drive's `about` on 2026-10-25 as it gives a GET, and inside
     :func:`refuse_a_body_on_a_google_get_or_head`, which reads the method as sent; and outside every
-    other middleware that reads the method or the query, so they and the router see the GET.
+    other middleware that reads the method or the query, so they and the router see the GET. The
+    request is marked ``sent_as_a_post`` on its state for ``errors.google.jsonp_callback``, which
+    reads it, and the form body it read is kept there for :class:`_ReadAGoogleBodyUnderItsCoding`.
     """
     path = request.scope["path"]
     prefix = next(p for p in _GOOGLE_READ_OVERRIDES if path.startswith(f"{p}/"))
@@ -1852,9 +1860,12 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
         form = _FORM_MEDIA_TYPE in request.headers.get("content-type", "").lower()
         codings = request.headers.getlist("content-encoding")
         body = google.inflated(await request.body(), codings) if form else b""
+        if form:
+            request.state.form_read = body
         body = _BYTE_PAST_0X7F.sub(lambda m: b"%%%02X" % m[0][0], body or b"")
         query = request.scope.get("query_string", b"")
         request.scope["method"] = "GET"
+        request.state.sent_as_a_post = True
         request.scope["query_string"] = b"&".join(part for part in (query, body) if part)
     return await call_next(request)
 

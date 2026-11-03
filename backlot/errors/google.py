@@ -999,6 +999,12 @@ def jsonp_callback(request: Request) -> str | None:
     an uncallable one each answered a `HEAD` with 200 `application/json; charset=UTF-8`, where the
     GET beside it was the script, and a `HEAD` that failed beside one kept its own status — no
     credential's and a bad one's, and a missing file's 404 — where its GET was the script at 200.
+    Nor is a POST read as the GET it names in `X-HTTP-Method-Override`
+    (``request.state.sent_as_a_post``): measured 2026-11-03 (UTC) with `callback=foo` and
+    `callback=a-b` in the URL or `callback=foo` in the form body, Sheets' `spreadsheets.get` and
+    Drive's `about` answered such a POST with a token 200 `application/json; charset=UTF-8`, where
+    the GET beside it was the script; and with no token, `about`'s 401, its 400 past the gzip limit
+    and its 415 under `br`, and the same 415 on Gmail's `labels.list`, were each unwrapped.
 
     Two values that look like a callback are not one either. An empty `callback=` is absent:
     measured, it answers the plain body at the real status, success and error alike. So is any
@@ -1026,7 +1032,9 @@ def jsonp_callback(request: Request) -> str | None:
     Both are read as :func:`first_repeat`, not off ``QueryParams.get``: real answers a repeated
     `callback` through the first name and a repeated `alt` through the first format.
     """
-    if request.method != "GET" or getattr(request.state, "answering_head", False):
+    if request.method != "GET" or any(
+        getattr(request.state, mark, False) for mark in ("answering_head", "sent_as_a_post")
+    ):
         return None
     query = request.query_params
     alt = alt_format(query)

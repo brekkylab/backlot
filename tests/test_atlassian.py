@@ -325,7 +325,7 @@ def test_jira_project_search_refuses_an_order_by_naming_no_field(
         ({"startAt": "1", "maxResults": "1"}, 1, 1),
     ],
 )
-def test_jira_project_search_pages(tmp_path, query, start, limit):
+def test_jira_project_search_pages(tmp_path, admin_h, query, start, limit):
     settings = tiny_corpus(
         tmp_path,
         [
@@ -346,7 +346,7 @@ def test_jira_project_search_pages(tmp_path, query, start, limit):
         response = client.get(
             "/atlassian/rest/api/3/project/search",
             params=query,
-            headers={"Authorization": "******"},
+            headers=admin_h,
         )
         assert response.status_code == 200, response.text
         body = response.json()

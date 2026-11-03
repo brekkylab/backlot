@@ -287,7 +287,7 @@ async def docs_get(document_id: str, request: Request):
     else:
         doc = {
             "title": row["title"],
-            **gdocs.document_tab(stored["tabs"][0]),
+            **gdocs.document_tab(stored["tabs"][0], len(list(gdocs.walk(stored["tabs"]))) == 1),
             **revision,
             "suggestionsViewMode": suggestions,
             "documentId": document_id,
@@ -441,7 +441,7 @@ async def docs_create(request: Request):
     blank = gdocs.from_prose("")
     doc = {
         "title": title,
-        **gdocs.document_tab(blank["tabs"][0]),
+        **gdocs.document_tab(blank["tabs"][0], True),
         "revisionId": _docs_revision(file_id),
         "suggestionsViewMode": "SUGGESTIONS_INLINE",
         "documentId": file_id,
@@ -561,10 +561,9 @@ _DOCS_NO_INDEX = "Invalid range: must contain a start and end index"
 
 
 def _docs_delete_content_range(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
-    """``deleteContentRange``, in real's order of refusals, measured: no range, the tab, an index
-    missing (a `null` one included), the end before the start, an index below zero, the segment,
-    the start and then the end's last index at or past the segment's end, an empty range, a body's
-    section break at 0, the segment's last newline, and either end inside a surrogate pair.
+    """``deleteContentRange``, in real's order of refusals, measured: the range (`_docs_range`), an
+    empty range, a body's section break at 0, the segment's last newline, and either end inside a
+    surrogate pair.
     Deleting a combining mark without the letter it sits on is taken, and deleting a footnote
     reference deletes its footnote."""
     _, _, body, start, end = _docs_range(
@@ -1143,19 +1142,24 @@ def _docs_text_style(doc: gdocs.Document, tab: dict, read: dict, names: list[str
 
 
 def _docs_link(doc: gdocs.Document, tab: dict, read: dict) -> dict:
-    """A `Link` as real serves it, or `{}` for one that changes nothing. Measured 2026-11-03: a
-    link of no kind is refused, one to a heading by its id or by a `heading` is served by its
-    `headingId`, a heading, bookmark or tab the Doc lacks is refused (no Doc here holds a
-    bookmark), and a link to an empty URL changes nothing."""
+    """A `Link` as it is kept (`gdocs._linked` serves it), or `{}` for one that changes nothing.
+    Measured 2026-11-03: a link of no kind is refused; a heading is looked for in the tab its
+    `heading` names, refused first as a tab when the Doc lacks it, else in the range's own tab,
+    so a heading of another tab named by its id alone is refused; a bookmark (none here holds
+    one) or a tab the Doc lacks is refused; and a link to an empty URL changes nothing."""
     if not read:
         raise _EditorRefused("Links must include at least one type.")
     if "url" in read:
         return {"url": read["url"]} if read["url"] else {}
     if "heading_id" in read or "heading" in read:
         heading = read.get("heading_id", read.get("heading", {}).get("id", ""))
-        if not heading or heading not in doc.heading_ids():
+        named = read.get("heading", {}).get("tab_id")
+        target = doc.tab(named) if named else tab
+        if target is None:
+            raise _EditorRefused("Cannot link to an invalid tab ID.")
+        if not heading or heading not in doc.heading_ids(target):
             raise _EditorRefused("Cannot link to an invalid heading ID.")
-        return {"headingId": heading}
+        return {"heading": {"id": heading, "tabId": target["tabProperties"]["tabId"]}}
     if "bookmark_id" in read or "bookmark" in read:
         raise _EditorRefused("Cannot link to an invalid bookmark ID.")
     if not read["tab_id"] or doc.tab(read["tab_id"]) is None:
@@ -1193,10 +1197,10 @@ def _docs_update_text_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool]
 
 def _docs_paragraph_style(read: dict, names: list[str]) -> dict:
     """The `ParagraphStyle` members ``names`` names as `gdocs.Body.style_paragraph` takes them,
-    one the request leaves unset None, in real's order of refusals, measured 2026-11-03: a named
-    style left unset, then each member's unit (`_docs_dimension`) or a border's dash style left
-    unset. A border is stated whole: one stating its width alone was refused for its padding's
-    unit."""
+    one the request leaves unset None, each refused as real refuses it, measured 2026-11-03 one at
+    a time: a named style left unset, a member's unit (`_docs_dimension`), a border's dash style
+    left unset; checked in the order `fields` names them. A border is stated whole: one stating its
+    width alone was refused for its padding's unit."""
     out: dict = {}
     for key in names:
         value = read.get(_docs_snake(key))
@@ -1380,8 +1384,9 @@ def _docs_named(tabs: list[dict], req: dict, name_key: str) -> list:
 def _docs_delete_named_range(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``deleteNamedRange`` by id, or every named range of a name, in every tab or those its
     `tabsCriteria` lists (`_docs_named_tabs`). Measured 2026-11-02 and 2026-11-03: neither set is
-    refused, then the tabs, then an empty name is a 500, and an id or a name none has is
-    refused; a name in another tab than the ones listed is none."""
+    refused, then the tabs, then an empty name is a 500, and an id or a name none has is refused,
+    but a `tabsCriteria` listing no tab changes nothing and keeps the `revisionId`; a name in
+    another tab than the ones listed is none."""
     if "named_range_id" not in req and "name" not in req:
         raise _EditorRefused("ID or name for named range must be set.")
     tabs = _docs_named_tabs(doc, req)
@@ -1389,7 +1394,6 @@ def _docs_delete_named_range(doc: gdocs.Document, req: dict) -> tuple[dict, bool
         raise gerr.internal_error()
     found = _docs_named(tabs, req, "name")
     if not found and "tabs_criteria" in req and not tabs:
-        # measured 2026-11-03: a `tabsCriteria` of no tab kept the `revisionId`
         doc.unchanged += 1
         return {}, False
     if not found and "named_range_id" in req:
@@ -1404,14 +1408,13 @@ def _docs_delete_named_range(doc: gdocs.Document, req: dict) -> tuple[dict, bool
 
 def _docs_replace_named_range(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``replaceNamedRangeContent``: the text of each named range of the id or name, in every tab
-    or those its `tabsCriteria` lists (`_docs_named_tabs`), replaced by ``text`` styled as the
-    character it replaces first, the range then covering the text alone. Measured 2026-11-02 and
-    2026-11-03: neither set is refused, then the tabs; an id none has is refused while a name none
-    has changes nothing and keeps the `revisionId`, and an empty name is taken; a range holding its
-    segment's last newline is refused naming its id; an empty text deletes the range with its
-    text; the characters `insertText` strips are stripped, and one in `gdocs.UNWRITABLE` fails the
-    batch once every request is read. A named range of several ranges has its first replaced
-    and the rest deleted, as the discovery document says."""
+    or those its `tabsCriteria` lists (`_docs_named_tabs`), replaced by ``text``
+    (`gdocs.Document.replace_range`). Measured 2026-11-02 and 2026-11-03: neither set is refused,
+    then the tabs; an id none has is refused while a name none has changes nothing and keeps the
+    `revisionId`, and an empty name is taken; a range holding its segment's last newline is refused
+    naming its id; the characters `insertText` strips are stripped, and one in `gdocs.UNWRITABLE`
+    fails the batch once every request is read. A named range of several ranges has its first
+    replaced and the rest deleted, as the discovery document says."""
     if "named_range_id" not in req and "named_range_name" not in req:
         raise _EditorRefused("Must specify a named range reference")
     tabs = _docs_named_tabs(doc, req)

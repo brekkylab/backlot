@@ -136,16 +136,15 @@ _HALF = re.compile("[\ud800-\udfff]")
 
 def _served_text(text: str) -> str:
     """A run's text as real serves it: measured 2026-11-03, a character outside the BMP that a
-    style's edge split was served as `?` in each of the two runs, one index each, while
-    `replaceAllText` still matched the character whole."""
+    style's edge split was served as `?` in each of the two runs, one index each."""
     return _HALF.sub("?", _paired(text))
 
 
 # A run's members a write took off it, kept with its style under a name no `TextStyle` has, and
 # left out wherever the style is served (`shown`). Measured 2026-11-03: a run whose bold was set
-# and then taken off was served unstyled and was still kept apart from the unstyled text either
-# side of it, by a later style, by an insert (which joined it) and by a delete between the two,
-# while `bold: false` set on text that was never bold changed nothing.
+# and then taken off was served unstyled and kept apart from the unstyled text either side of it
+# through a later style; an insert after it joined it and a delete beside it did not join across
+# it; and `bold: false` set on text that was never bold changed nothing.
 CLEARED = "cleared"
 
 
@@ -546,12 +545,14 @@ def footnote_numbers(tab: dict) -> dict[str, str]:
     return {fid: str(n) for n, fid in enumerate(refs, 1)}
 
 
-def indexed(content: list[dict], numbers: dict[str, str] | None = None) -> list[dict]:
+def indexed(
+    content: list[dict], numbers: dict[str, str] | None = None, lone: bool = False
+) -> list[dict]:
     """Stored content as real serves it, each structural element and paragraph element carrying
     its `startIndex` and `endIndex` in UTF-16 code units, those two first, and a footnote
     reference its `footnoteNumber`. Content opens at 0, a body with its section break and a header,
     footer or footnote with its first paragraph, and a zero `startIndex` is left out, as proto3
-    leaves out every zero."""
+    leaves out every zero. A link to a heading is `_linked`'s."""
     out = []
     at = 0
     for el in content:
@@ -565,7 +566,7 @@ def indexed(content: list[dict], numbers: dict[str, str] | None = None) -> list[
             if "textRun" in pe:
                 run = pe["textRun"]
                 end = at + utf16_len(run["content"])
-                pe = {"textRun": {"content": _served_text(run["content"])} | _run_style(run)}
+                pe = {"textRun": {"content": _served_text(run["content"])} | _run_style(run, lone)}
             elif "footnoteReference" in pe:
                 end = at + 1
                 ref = pe["footnoteReference"]
@@ -573,12 +574,14 @@ def indexed(content: list[dict], numbers: dict[str, str] | None = None) -> list[
                     "footnoteReference": {
                         "footnoteId": ref["footnoteId"],
                         "footnoteNumber": (numbers or {}).get(ref["footnoteId"], ""),
-                        "textStyle": shown(ref["textStyle"]),
+                        "textStyle": _linked(shown(ref["textStyle"]), lone),
                     }
                 }
             else:
                 end = at + 1
-                pe = {"pageBreak": {"textStyle": shown(pe["pageBreak"]["textStyle"])}}
+                pe = {
+                    "pageBreak": {"textStyle": _linked(shown(pe["pageBreak"]["textStyle"]), lone)}
+                }
             elements.append(_span(at, end) | pe)
             at = end
         paragraph = {
@@ -589,19 +592,21 @@ def indexed(content: list[dict], numbers: dict[str, str] | None = None) -> list[
     return out
 
 
-def document_tab(tab: dict) -> dict:
+def document_tab(tab: dict, lone: bool = False) -> dict:
     """A stored tab as real serves its `documentTab`, and as a Doc's flat members when it is the
-    first tab: the body, then the header, footer and footnotes it has, then its styles (measured
-    2026-11-02)."""
+    first tab, ``lone`` when it is the Doc's only one (`_linked`): the body, then the header,
+    footer and footnotes it has, then its styles (measured 2026-11-02)."""
     numbers = footnote_numbers(tab)
-    out: dict = {"body": {"content": indexed(tab["body"], numbers)}}
+    out: dict = {"body": {"content": indexed(tab["body"], numbers, lone)}}
     for kind, key in (
         ("headers", "headerId"),
         ("footers", "footerId"),
         ("footnotes", "footnoteId"),
     ):
         if tab[kind]:
-            out[kind] = {sid: {key: sid, "content": indexed(c)} for sid, c in tab[kind].items()}
+            out[kind] = {
+                sid: {key: sid, "content": indexed(c, None, lone)} for sid, c in tab[kind].items()
+            }
     out["documentStyle"] = document_style(
         next(iter(tab["headers"]), None), next(iter(tab["footers"]), None)
     )
@@ -616,8 +621,8 @@ def document_tab(tab: dict) -> dict:
 def named_ranges(made: list[dict]) -> dict:
     """A tab's named ranges as real serves them: one entry per name, holding each range of that
     name in the order they were made, the names in the order a Java `HashMap` filled in that
-    order iterates them. Measured 2026-11-02 and 2026-11-03, 27 of 28 reads of Docs holding two to
-    fourteen names matched it; the other swapped two names that share a bucket."""
+    order iterates them (measured 2026-11-02 and 2026-11-03; the one read that differed is listed in
+    docs/write-overlay.md)."""
     by_name: dict[str, list[dict]] = {}
     for named in made:
         by_name.setdefault(named["name"], []).append(named)
@@ -657,8 +662,18 @@ def _span(start: int, end: int) -> dict:
     return ({"startIndex": start} if start else {}) | {"endIndex": end}
 
 
-def _run_style(run: dict) -> dict:
-    return {"textStyle": shown(run["textStyle"])} if "textStyle" in run else {}
+def _run_style(run: dict, lone: bool) -> dict:
+    return {"textStyle": _linked(shown(run["textStyle"]), lone)} if "textStyle" in run else {}
+
+
+def _linked(style: dict, lone: bool) -> dict:
+    """A style whose link goes to a heading, as real serves it: measured 2026-11-03, `heading`
+    with its `id` and `tabId` under `includeTabsContent` and on a Doc of several tabs, but by its
+    `headingId` alone on the flat read of a Doc of one tab (``lone``)."""
+    heading = style.get("link", {}).get("heading")
+    if heading is None or not lone:
+        return style
+    return style | {"link": {"headingId": heading["id"]}}
 
 
 # --- a body opened for a write --------------------------------------------------------------------
@@ -1165,7 +1180,13 @@ class Body:
     request's refusal names are the router's (`routers.google_docs`), which asks :meth:`position`
     and :meth:`splits_cluster`."""
 
-    def __init__(self, file_id: str, content: list[dict], revision: int):
+    def __init__(
+        self,
+        file_id: str,
+        content: list[dict],
+        revision: int,
+        headings: Iterator[int] | None = None,
+    ):
         self.file_id = file_id
         self.revision = revision
         self._section = content[0] if "sectionBreak" in content[0] else None
@@ -1186,7 +1207,8 @@ class Body:
                 else:
                     self.chars.append((PAGE_BREAK, pe["pageBreak"]["textStyle"], n))
             self.paragraphs.append({k: v for k, v in el["paragraph"].items() if k != "elements"})
-        self._split = 0
+        # the headings this write has made, counted across every segment a `Document` opens
+        self._split = headings or itertools.count(1)
         self.ranges: list[dict] = []
 
     @property
@@ -1303,8 +1325,8 @@ class Body:
         style = props["paragraphStyle"]
         out = {k: v for k, v in style.items() if k != "headingId"}
         if _heading(style):
-            self._split += 1
-            out = {"headingId": heading_id(self.file_id, f"r{self.revision}.{self._split}")} | out
+            made = heading_id(self.file_id, f"r{self.revision}.{next(self._split)}")
+            out = {"headingId": made} | out
         return props | {"paragraphStyle": out}
 
     def _units(self, pos: int) -> int:
@@ -1462,9 +1484,9 @@ class Body:
 
     def _settle(self, first: int, last: int, changed: list[bool]) -> None:
         """The runs a style change leaves in ``[first, last)``. Measured 2026-11-03: a run the
-        change splits stays apart from the text either side once the change is undone, while text
-        the change gave a member joins a neighbour of its new style, and the pieces of one run the
-        change left alike join again. So the characters that changed take a run of their own, one
+        change splits stays apart from the text either side once the change is undone (`CLEARED`),
+        while text the change gave a member joins a neighbour of its new style, and the pieces of
+        one run the change left alike join again. So the characters that changed take a run of their own, one
         per run they came from and style they took, and each meets a neighbour of the same style
         (`CLEARED` included) as one run."""
         made: dict[tuple[int, str], int] = {}
@@ -1526,8 +1548,7 @@ class Body:
         if new == "NORMAL_TEXT":
             style.pop("headingId", None)
         elif old == "NORMAL_TEXT":
-            self._split += 1
-            style["headingId"] = heading_id(self.file_id, f"r{self.revision}.{self._split}")
+            style["headingId"] = heading_id(self.file_id, f"r{self.revision}.{next(self._split)}")
         for key, value in stated.items():
             if value is None:
                 style.pop(key, None)
@@ -1771,6 +1792,7 @@ class Document:
         self.tabbed = stored.get("tabbed", False)
         self._open: dict[tuple[str, str], Body] = {}
         self._made = itertools.count()
+        self._headings = itertools.count(1)
         # the requests `routers.google_docs.docs_batch_update` counts as no write when they are all
         # a batch holds
         self.unchanged = 0
@@ -1800,7 +1822,7 @@ class Document:
         if key not in self._open:
             kind = self.kind(tab, segment)
             content = tab["body"] if kind == "body" else tab[f"{kind}s"][segment]
-            body = Body(self.file_id, content, self.revision)
+            body = Body(self.file_id, content, self.revision, self._headings)
             body.ranges = [r for r in self.ranges(tab) if r.get("segmentId", "") == segment]
             self._open[key] = body
         return self._open[key]
@@ -1846,22 +1868,19 @@ class Document:
         named["ranges"] = [first]
         body.ranges.append(first)
 
-    def heading_ids(self) -> set[str]:
-        """Every `headingId` in the Doc as this write has left it."""
+    def heading_ids(self, tab: dict) -> set[str]:
+        """Every `headingId` in ``tab`` as this write has left it."""
         out = set()
-        for tab in self.flat():
-            for segment in [""] + [s for k in ("headers", "footers", "footnotes") for s in tab[k]]:
-                key = (tab["tabProperties"]["tabId"], segment)
-                if key in self._open:
-                    styles = [p["paragraphStyle"] for p in self._open[key].paragraphs]
-                else:
-                    content = tab["body"] if not segment else self._segment(tab, segment)
-                    styles = [
-                        el["paragraph"].get("paragraphStyle", {})
-                        for el in content
-                        if "paragraph" in el
-                    ]
-                out |= {s["headingId"] for s in styles if "headingId" in s}
+        for segment in [""] + [s for k in ("headers", "footers", "footnotes") for s in tab[k]]:
+            key = (tab["tabProperties"]["tabId"], segment)
+            if key in self._open:
+                styles = [p["paragraphStyle"] for p in self._open[key].paragraphs]
+            else:
+                content = tab["body"] if not segment else self._segment(tab, segment)
+                styles = [
+                    el["paragraph"].get("paragraphStyle", {}) for el in content if "paragraph" in el
+                ]
+            out |= {s["headingId"] for s in styles if "headingId" in s}
         return out
 
     def _segment(self, tab: dict, segment: str) -> list[dict]:
@@ -2585,12 +2604,12 @@ def _anchors(body: list[dict], notes: list[list[dict]]) -> dict[str, str]:
     has. Measured 2026-11-03: `Punct! ?., end` was `punct!-?.,-end`, `Ünïcode Ä` `ünïcode-ä`, a
     second `Same` `same-1`, and a heading no link goes to took none."""
     linked = {
-        pe["textRun"]["textStyle"]["link"]["headingId"]
+        pe["textRun"]["textStyle"]["link"]["heading"]["id"]
         for content in (body, *notes)
         for el in content
         if "paragraph" in el
         for pe in el["paragraph"]["elements"]
-        if "headingId" in pe.get("textRun", {}).get("textStyle", {}).get("link", {})
+        if "heading" in pe.get("textRun", {}).get("textStyle", {}).get("link", {})
     }
     out: dict[str, str] = {}
     taken: dict[str, int] = {}
@@ -2610,8 +2629,8 @@ def _anchored(style: dict, anchors: dict[str, str]) -> dict:
     """A run's style with a link to a heading as a link to its anchor, and one to a tab as a
     link to nothing: measured 2026-11-03, `[cd](#head)` and `[cd]()`."""
     link = style.get("link", {})
-    if "headingId" in link:
-        return style | {"link": {"url": "#" + anchors.get(link["headingId"], "")}}
+    if "heading" in link:
+        return style | {"link": {"url": "#" + anchors.get(link["heading"]["id"], "")}}
     if "tabId" in link:
         return style | {"link": {"url": ""}}
     return style
@@ -2659,13 +2678,13 @@ def _markdown(
     return out + _separator(pending)
 
 
-# The bullet glyphs Markdown writes as `-`; the other glyphs are `*`, and a checkbox `- [ ]`.
+# The arrow and left-triangle glyphs `_list_marker` writes as `-`.
 _DASHED = frozenset("\u2794\u27a2\u25c4")
 
 
 def _list_marker(items: _Items, bullet: dict) -> str:
     """A list paragraph's marker in Markdown and the space after it, indented by the width of the
-    marker of each level above it. Measured 2026-11-03 on every preset: a numbered level is its
+    first word of each level's marker above it, and a space. Measured 2026-11-03 on every preset: a numbered level is its
     number and `.`, or `)` where its glyph format ends with one, an arrow or a left triangle `-`,
     a checkbox `- [ ]` and any other glyph `*`; a level under `*` or `- [ ]` was indented two
     spaces, and under `1.` three."""

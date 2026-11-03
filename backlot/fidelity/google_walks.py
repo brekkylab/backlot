@@ -260,8 +260,9 @@ def _gdocs_structure(client: httpx.Client, doc: str) -> list[tuple[Any, ...]]:
 
 def _gdocs_styles(client: httpx.Client, doc: str) -> list[tuple[Any, ...]]:
     """The style, bullet and named range requests, each field they read sent, links to a URL, a
-    heading and a tab among them; the Doc read as it then is, flat and as its tabs; then the named
-    range replaced and deleted by its name and by its id."""
+    heading and a tab among them; the Doc read as it then is, flat and as its tabs; then its bullet
+    taken off, the named range replaced by its name and by its id, a name deleted in no tab, and
+    the range deleted by its id."""
     here = {"tabId": "t.0", "segmentId": ""}
     heading = next(
         el["paragraph"]["paragraphStyle"]["headingId"]

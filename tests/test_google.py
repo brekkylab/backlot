@@ -19052,9 +19052,52 @@ _STYLE_RUN_ROWS = [
 ]
 
 # `doc`, `requests`, then what is read back of it: `paragraphs` as each paragraph's style and
-# bullet, `lists`, `namedRanges`, the first two tabs' `namedRanges` (`tabs`) or its `text/plain`
-# and `text/markdown` exports (`export`)
+# bullet, `lists`, `namedRanges`, the first two tabs' `namedRanges` (`tabs`), the first tab's
+# links flat and as a tab (`links`), the first two tabs' first `headingId`s (`headings`) or its
+# `text/plain` and `text/markdown` exports (`export`)
 _STYLE_DOC_ROWS = [
+    # a link to a heading is its `headingId` on a lone tab's flat read, and else its `heading`;
+    # a heading of another tab is reached through its `tabId`
+    (
+        "wr-styled",
+        [_ts(12, 17, "link", link={"heading": {"id": "$ORIG"}})],
+        "links",
+        [
+            [{"headingId": "$ORIG"}, {"url": "https://example.com/"}],
+            [{"heading": {"id": "$ORIG", "tabId": "t.0"}}, {"url": "https://example.com/"}],
+        ],
+    ),
+    (
+        "wr-tabs",
+        [
+            {
+                "updateParagraphStyle": {
+                    "range": {"startIndex": 1, "endIndex": 2, "tabId": "$T2"},
+                    "paragraphStyle": {"namedStyleType": "HEADING_2"},
+                    "fields": "namedStyleType",
+                }
+            },
+            _ts(2, 4, "link", link={"heading": {"id": "$H0", "tabId": "$T2"}}),
+        ],
+        "links",
+        [[{"heading": {"id": "$H0", "tabId": "$T2"}}]] * 2,
+    ),
+    # each heading one batch makes takes an id of its own, in whichever tab
+    (
+        "wr-tabs",
+        [
+            _ps(1, 2, "namedStyleType", namedStyleType="HEADING_1"),
+            {
+                "updateParagraphStyle": {
+                    "range": {"startIndex": 1, "endIndex": 2, "tabId": "$T2"},
+                    "paragraphStyle": {"namedStyleType": "HEADING_2"},
+                    "fields": "namedStyleType",
+                }
+            },
+        ],
+        "headings",
+        [["$H0"], ["$H1"]],
+    ),
     # a character a style split is written whole in plain text, and as `?` halves in Markdown
     (
         "wr-text",
@@ -19605,6 +19648,27 @@ def _docs_served(wc, h, doc: str, part: str):
     if part == "tabs":
         read = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
         return [t["documentTab"].get("namedRanges") for t in read["tabs"][:2]]
+    if part == "links":
+        flat = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["body"]
+        tabbed = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
+        return [
+            [
+                pe["textRun"]["textStyle"]["link"]
+                for el in body["content"][1:]
+                for pe in el["paragraph"]["elements"]
+                if "link" in pe.get("textRun", {}).get("textStyle", {})
+            ]
+            for body in (flat, tabbed["tabs"][0]["documentTab"]["body"])
+        ]
+    if part == "headings":
+        tabbed = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
+        return [
+            [
+                el["paragraph"]["paragraphStyle"].get("headingId")
+                for el in t["documentTab"]["body"]["content"][1:2]
+            ]
+            for t in tabbed["tabs"][:2]
+        ]
     if part == "export":
         return [
             wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": m}).text
@@ -19624,6 +19688,7 @@ def _docs_ids(value, did: str, batches: int):
     (`gdocs.Document.new_id`), `$H0` the first heading id the last batch made, `$ORIG`
     `wr-styled`'s own, and `wr-tabs`' ids."""
     names = {"$ORIG": gdocs.heading_id(did, 0), "$H0": gdocs.heading_id(did, f"r{batches}.1")}
+    names["$H1"] = gdocs.heading_id(did, f"r{batches}.2")
     names |= {
         f"${b}.{n}": gdocs.segment_id(did, f"r{b}.{n}")
         for b in range(1, batches + 1)
@@ -20853,6 +20918,41 @@ def _tab_refusals(kind: str, rows) -> list:
     return [(requests, 400, _tab_refusal(kind, message, i)) for requests, message, i in rows]
 
 
+def _heading_in(tab: str) -> dict:
+    return {
+        "updateParagraphStyle": {
+            "range": {"startIndex": 1, "endIndex": 2, "tabId": tab},
+            "paragraphStyle": {"namedStyleType": "HEADING_2"},
+            "fields": "namedStyleType",
+        }
+    }
+
+
+# A heading looked for in the tab a link names, else the range's: refused on `wr-tabs` as real
+# refused them (`routers.google_docs._docs_link`), `$HEAD` the heading the first request makes.
+_HEADING_LINK_REFUSALS = [
+    (
+        [_heading_in("$T2"), _ts(2, 4, "link", link={"headingId": "$HEAD"})],
+        "Cannot link to an invalid heading ID.",
+    ),
+    (
+        [_heading_in("$T2"), _ts(2, 4, "link", link={"heading": {"id": "$HEAD"}})],
+        "Cannot link to an invalid heading ID.",
+    ),
+    (
+        [_heading_in("t.0"), _ts(2, 4, "link", link={"heading": {"id": "$HEAD", "tabId": "$T2"}})],
+        "Cannot link to an invalid heading ID.",
+    ),
+    (
+        [
+            _heading_in("$T2"),
+            _ts(2, 4, "link", link={"heading": {"id": "$HEAD", "tabId": "t.nope"}}),
+        ],
+        "Cannot link to an invalid tab ID.",
+    ),
+]
+
+
 # Refused on `wr-tabs` as real refused them, its ids written `$H`, `$F` and `$N` for its header,
 # footer and footnote and `$T2`, `$KID` and `$T3` for its tabs past the first.
 _NO_SEGMENT_N = _NO_SEGMENT.replace("kix.nope", "$N")
@@ -21595,6 +21695,7 @@ def _tab_ids(did: str) -> dict[str, str]:
         "$T3": gdocs.tab_id(did, "3"),
         "$NEW0": gdocs.tab_id(did, "r1.0"),
         "$MADE": gdocs.segment_id(did, "r1.0"),
+        "$HEAD": gdocs.heading_id(did, "r1.1"),
     }
 
 
@@ -21619,7 +21720,11 @@ def _with_tab_ids(value, did: str):
 @pytest.mark.parametrize(
     "doc,body,status,message",
     [("wr-text", *row) for row in _DOCS_BATCH_REFUSALS]
-    + [("wr-tabs", *row) for row in _DOCS_TAB_REFUSALS],
+    + [("wr-tabs", *row) for row in _DOCS_TAB_REFUSALS]
+    + [
+        ("wr-tabs", requests, 400, f"Invalid requests[1].updateTextStyle: {message}")
+        for requests, message in _HEADING_LINK_REFUSALS
+    ],
 )
 def test_a_batch_update_real_refuses_is_refused_with_reals_message(
     wc, wh, doc, body, status, message

@@ -1793,6 +1793,16 @@ _DOCS_EXPORTS = {
     ),
     "pb_last": ({"paragraphs": [_runs("ab", _PB), {"text": ""}]}, "\ufeffab\r\n" + _RULE, "ab  \n"),
     "pb_inline": ({"paragraphs": [_runs("ab", _PB, "cd")]}, "\ufeffab\r\n" + _RULE + "\r\ncd", "abcd"),
+    "pb_alone": (
+        {"paragraphs": [_runs("a"), _runs(_PB, _PB), _runs("XX"), _runs("z"), _runs(_PB, _PB, style="HEADING_3"), _runs("XX", style="HEADING_3"), _runs("z"), _runs(_PB, _PB, style="HEADING_1"), _runs("XX", style="HEADING_1"), _runs("z"), _runs(_PB, "cd", style="HEADING_3"), _runs("z"), _runs("ab", _PB, "cd", style="HEADING_3"), _runs("z"), _runs(_PB, _PB, "cd", style="HEADING_3"), _runs("z"), _runs(_PB, _PB, "cd"), _runs("z"), _runs("ab", _PB, _PB, style="HEADING_3"), _runs("XX", style="HEADING_3"), _runs("z")]},
+        "\ufeffa\r\n________________\r\n________________\r\n\r\n\r\nXX\r\nz\r\n________________\r\n________________\r\nXX\r\nz\r\n________________\r\n________________\r\nXX\r\nz\r\n________________\r\ncd\r\nz\r\nab\r\n________________\r\ncd\r\nz\r\n________________\r\n________________\r\ncd\r\nz\r\n________________\r\n________________\r\ncd\r\nz\r\nab\r\n________________\r\n________________\r\nXX\r\nz",
+        "a\n\nXX  \nz\n\n### \n\n### XX\n\nz\n\n# \n\n# XX\n\nz\n\n### cd\n\nz\n\n### abcd\n\nz\n\n### cd\n\nz  \ncd  \nz\n\n### ab\n\n### XX\n\nz",
+    ),
+    "pb_vt": (
+        {"paragraphs": [_runs("a"), _runs(_PB, "\x0b"), _runs("XX"), _runs("z"), _runs(_PB, "\x0b", style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB), _runs("XX"), _runs("z"), _runs("\x0b", _PB, style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0bcd"), _runs("z"), _runs(_PB, "\x0bcd", style="HEADING_2"), _runs("z")]},
+        "\ufeffa\r\n________________\r\n\r\n\r\n\r\nXX\r\nz\r\n________________\r\n\r\nXX\r\nz\r\n\r\n\r\n________________\r\n\r\nXX\r\nz\r\n\r\n________________\r\nXX\r\nz\r\n________________\r\n\r\ncd\r\nz\r\n________________\r\n\r\ncd\r\nz",
+        "a\n\nXX  \nz\n\n##  \n\n## XX\n\nz\n\nXX  \nz\n\n##  \n\n## XX\n\nz\n\ncd  \nz\n\n##  cd\n\nz",
+    ),
     "pb_heading": (
         {"paragraphs": [_runs("ab"), _runs(_PB, style="HEADING_2"), _runs("cd", style="HEADING_2"), _runs(_PB, style="TITLE"), _runs("ef", style="TITLE"), _runs("gh")]},
         "\ufeffab\r\n" + _RULE + "\r\ncd\r\n" + _RULE + "\r\n\r\n\r\nef\r\ngh",

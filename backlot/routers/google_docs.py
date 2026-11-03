@@ -990,10 +990,9 @@ async def docs_batch_update(document_id: str, request: Request):
     of another Doc, a `requiredRevisionId` that is not the Doc's latest or a `targetRevisionId` that
     is no revision of it, then each request's refusal, the first one's named alone. A 500 a
     character in `gdocs.UNWRITABLE` leads to comes after every request is read; one a request raises
-    (`_docs_replace_all_text`, `_docs_create_segment`, `_docs_update_tab`) comes at its own request,
-    ahead of a later request's refusal. Neither keeps anything. A kind other than those applied here
-    is refused naming itself, and so is the `SUGGEST` write mode, which records the requests as
-    suggestions.
+    comes at its own request (`_editor_batch`). Neither keeps anything. A kind other than those
+    applied here is refused naming itself, and so is the `SUGGEST` write mode, which records the
+    requests as suggestions.
 
     Every write, one that changed nothing included, moves the `revisionId`, but for a batch of
     `updateDocumentTabProperties` requests that each left the tab's title, index and parent as they

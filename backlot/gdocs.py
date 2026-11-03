@@ -1410,11 +1410,15 @@ def _page_breaks(text: str, bare: str) -> str:
     """A paragraph's text with each page break a `_RULE` line: measured 2026-11-02, `ab`, a page
     break and `cd` were `ab`, the rule and `cd` on three lines; a page break opening a paragraph
     starts no line before it, and one closing a paragraph that holds text ends none after it,
-    while a paragraph holding a page break alone is the rule and two CRLFs."""
+    while the last of a paragraph holding page breaks alone ends a line after it, which
+    `_plain_lines` doubles outside a HEADING_n and drops in one; measured 2026-11-03, two page
+    breaks alone were two rules with no line between them."""
     out = ""
-    for i, piece in enumerate(text.split(PAGE_BREAK)):
+    pieces = text.split(PAGE_BREAK)
+    for i, piece in enumerate(pieces):
         if i:
-            out += ("\x0b" if out else "") + _RULE + ("\x0b" if piece or not bare else "")
+            last = not bare and i == len(pieces) - 1
+            out += ("\x0b" if out else "") + _RULE + ("\x0b" if piece or last else "")
         out += piece
     return out
 
@@ -1425,8 +1429,9 @@ def _plain_lines(content: list[dict], note) -> list[str]:
     break is `_page_breaks`' and a footnote reference ``note``'s. A paragraph holding nothing but
     vertical tabs, or nothing, takes one CRLF more, and one other than a HEADING_n that starts with
     vertical tabs takes the CRLFs `_lead_breaks` counts; a HEADING_n holding nothing is left out,
-    one holding only vertical tabs is a CRLF fewer than them, and one holding only a page break is
-    the rule alone (measured 2026-11-03 on a HEADING_2)."""
+    and one holding no text but vertical tabs or page breaks is a CRLF fewer, from its end if it
+    ends with one, else from its start (measured 2026-11-03 on HEADING_1 to HEADING_6: a page break
+    alone was the rule alone, a page break then a vertical tab the rule and one CRLF)."""
     lines = []
     for el in content:
         if "paragraph" not in el:
@@ -1438,10 +1443,8 @@ def _plain_lines(content: list[dict], note) -> list[str]:
         if _named(el["paragraph"]).startswith("HEADING_"):
             if not text:
                 continue
-            if not bare:
-                text = text.removesuffix("\x0b")
-            elif not text.strip("\x0b"):
-                text = text[1:]
+            if not bare.strip("\x0b"):
+                text = text[:-1] if text.endswith("\x0b") else text[1:]
         else:
             if not bare.strip("\x0b"):
                 text += "\x0b"

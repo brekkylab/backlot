@@ -645,6 +645,37 @@ def test_hubspot_refuses_an_unserved_operation_for_its_credential(client, author
     assert answered == {operation: (401, refusal) for operation in operations}
 
 
+@pytest.mark.parametrize("keyed", [True, False])
+@pytest.mark.parametrize(
+    "method, path, page",
+    [
+        ("POST", "/crm/v3/objects/contacts/batch/create", True),
+        ("POST", "/crm/v3/objects/contacts/batch/upsert", True),
+        ("PUT", "/crm/v4/objects/contacts/1/associations/companies/2", False),
+        ("PUT", "/crm/v4/objects/contacts/1/associations/default/companies/2", False),
+        ("DELETE", "/crm/v4/objects/contacts/1/associations/companies/2", False),
+        ("POST", "/crm/v4/associations/contacts/companies/batch/create", True),
+        ("POST", "/crm/v4/associations/contacts/companies/batch/labels/archive", True),
+        ("POST", "/crm/v4/associations/usage/high-usage-report/1", True),
+    ],
+)
+def test_hubspot_refuses_an_unserved_write_for_an_accept_that_admits_no_json(
+    client, admin_h, method, path, page, keyed
+):
+    """A write no route serves, sent with an `Accept` that admits no JSON, is real's 406 ahead of
+    the credential, the page on a `POST` and bare on a `PUT` or `DELETE`, the key sent or not, as
+    `refuse_an_unserved_operation` in `backlot.routers.hubspot` records."""
+    headers = {
+        **(admin_h if keyed else {}),
+        "Accept": "text/html",
+        "Content-Type": "application/json",
+    }
+    r = client.request(
+        method, "/hubspot" + path, headers=headers, content=b"{}" if method != "DELETE" else None
+    )
+    assert (r.status_code, r.content) == (406, _NOT_ACCEPTABLE_PAGE if page else b"")
+
+
 _JSON = "application/json;charset=utf-8"
 _PAGE_TYPE = "text/html;charset=iso-8859-1"
 _ID = "x-hubspot-correlation-id"

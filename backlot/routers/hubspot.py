@@ -1520,6 +1520,14 @@ async def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
       `Unable to parse value for path parameter: userId` where that parse throws. Real doesn't say
       which parse it uses; that one matches its answers to the 18 ids sent on 2026-10-25.
 
+    Ahead of the credential, each of those writes sent with an `Accept` that does not
+    :func:`_admits_json` is the 406 :func:`_error_page` writes, as on the paths a route serves:
+    the page on a `POST` and bare on a `PUT` or `DELETE`, the key sent or not. Measured against
+    api.hubapi.com on 2026-10-28 with a service key and with no `Authorization`, each request
+    carrying `Accept: text/html` and `Content-Type: application/json`, on the v3 batch writes,
+    the v4 association batch writes and `labels/archive` among them, `high-usage-report` and the
+    `PUT` and `DELETE` on a record's associations, `default` or not.
+
     Measured against api.hubapi.com on 2026-09-28 with no `Authorization` header and with
     `Bearer nope`: `POST /crm/v3/objects/contacts`, `PATCH` and `DELETE`
     `/crm/v3/objects/contacts/abc123` and `POST /crm/v3/objects/contacts/batch/create` each answered
@@ -1532,16 +1540,7 @@ async def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return None
     path = request.scope["path"].removeprefix("/hubspot")
-    if _caller(request) is None:
-        return _unauthenticated()
     report = _HIGH_USAGE_REPORT.fullmatch(path)
-    if report:
-        user_id = _java_int(report[1])
-        if user_id is None:
-            message = "Unable to parse value for path parameter: userId"
-        else:
-            message = f"This is not a valid userId ({user_id}) for your portal "
-        return _bare_error(400, {"message": message})
     # Each write: the types its path names, how many of them its 403 names, and its answer to a
     # request with no body and no `Content-Type`.
     if request.method in ("PATCH", "DELETE") and (match := _RECORD_PATH.fullmatch(path)):
@@ -1555,8 +1554,23 @@ async def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
         types, scoped, no_body = [match[1], match[2]], 1, None
     elif request.method == "POST" and (match := _ASSOCIATION_BATCH_WRITE.fullmatch(path)):
         types, scoped, no_body = [match[1], match[2]], 2, (500, {"message": "internal error"})
-    else:
+    elif not report:
+        # An unserved operation that is none of the writes below (a `batch/read` among them):
+        # only its credential is refused, ahead of the router.
+        if _caller(request) is None:
+            return _unauthenticated()
         return None
+    if not _admits_json(request.headers.get("accept") or "*/*"):
+        return _error_page(request, 406, "Not Acceptable", {})
+    if _caller(request) is None:
+        return _unauthenticated()
+    if report:
+        user_id = _java_int(report[1])
+        if user_id is None:
+            message = "Unable to parse value for path parameter: userId"
+        else:
+            message = f"This is not a valid userId ({user_id}) for your portal "
+        return _bare_error(400, {"message": message})
     for object_type in types:
         if _resolve_type(request, object_type) is None:
             return _unknown_type(object_type)

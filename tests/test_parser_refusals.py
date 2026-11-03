@@ -149,6 +149,8 @@ _REAL = {
         "60ea6cb8c598707355381c5bb1d39af603c4d54d0886cbdda6f1ea9993b3cbfd",
         False,
     ),
+    # A head that stopped before it ended, which real had not answered 3 s on.
+    "nothing": (None, None, 0, hashlib.sha256(b"").hexdigest(), False),
 }
 
 #: uvicorn's own answer to what httptools refuses.
@@ -166,7 +168,8 @@ _JSON = "Content-Type: application/json"
 
 #: Each request below: its method, what follows the path in the request line, its header lines and
 #: whether it sends :data:`_BODY`. A `|` in a header line is where the request is split between two
-#: reads; `{token}` is the admin's token.
+#: reads, and a last line of `|` alone sends nothing after the lines ahead of it; `{token}` is the
+#: admin's token.
 _KINDS = {
     "nul": ("GET", " HTTP/1.1", ["X-Probe: a\x00b"], False),
     "control": ("GET", " HTTP/1.1", ["X-Probe: a\x01b"], False),
@@ -197,6 +200,7 @@ _KINDS = {
         ["X-A: a\x01b", "|X-B: ab"],
         False,
     ),
+    "control, and the head stops there": ("GET", " HTTP/1.1", ["X-A: a\x01b", "|"], False),
     "blank coding": ("POST", " HTTP/1.1", [_JSON, "Transfer-Encoding: ", _LENGTH], True),
     "blank coding, no length": ("POST", " HTTP/1.1", [_JSON, "Transfer-Encoding: "], False),
     "blank coding after a length": (
@@ -338,6 +342,8 @@ _ROWS = [
     (*_JIRA, "nul, then a control byte", "jira 400"),
     (*_JIRA, "control, then a nul", "jira 400"),
     (*_JIRA, "blank coding, then a control byte", "jira 501"),
+    (*_JIRA, "control, then a nul in a later read", "jira 400"),
+    (*_JIRA, "control, then a plain header in a later read", "jira edge"),
     (*_LINEAR, "nul", "cloudflare 400"),
     (*_LINEAR, "control", "cloudflare empty"),
     (*_LINEAR, "control in a later read", "cloudflare empty"),
@@ -388,6 +394,11 @@ _ROWS = [
     (*_GRAPH, "identity after a length", "graph 501"),
     (*_GRAPH, "control, then a nul in a later read", "graph 400"),
     (*_GRAPH, "control, then a plain header in a later read", "graph 400"),
+    (*_GRAPH, "control, and the head stops there", "graph 400"),
+    *[
+        (*door, "control, and the head stops there", "nothing")
+        for door in [_GITHUB, _SLACK, _GOOGLE, _JIRA, _LINEAR, _NOTION, _FIREFLIES, _HUBSPOT, _S3]
+    ],
 ]
 
 #: The refusals uvicorn's 400 answers: where real's front door does not answer them itself (the
@@ -403,6 +414,7 @@ _UVICORNS = [
     (*_JIRA, "identity"),
     (*_S3, "control"),
     (*_S3, "control, then a plain header in a later read"),
+    ("", "/_meta/nope", "control, and the head stops there"),
     (*_S3, "identity"),
     (*_GRAPH, "LF"),
     (*_LINEAR, "chunked beside a length"),
@@ -420,6 +432,8 @@ def _request(mount: str, path: str, kind: str, token: str) -> list[bytes]:
     fixed = ["Host: x", "Connection: close", "User-Agent: probe"]
     lines = [line.format(token=token) for line in [*fixed, *lines]]
     raw = f"{method} {mount}{path}{rest}\r\n" + "".join(f"{line}\r\n" for line in lines) + "\r\n"
+    if lines[-1] == "|":
+        return [raw.split("|")[0].encode("latin-1"), b""]
     return [part.encode("latin-1") for part in raw.split("|")[:-1]] + [
         raw.split("|")[-1].encode("latin-1") + (_BODY if body else b"")
     ]

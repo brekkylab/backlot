@@ -156,17 +156,13 @@ class Protocol(HttpToolsProtocol):
 
     def _answer_the_refusal(self) -> None:
         """Hold the front door's answer to what httptools refused where ``backlot.parser_refusals``
-        has one, else uvicorn's 400, as :meth:`_hold` holds it. A refusal of a control byte in a
-        header value is answered only once the head has ended or a header value holds 0x00: the
-        bytes after it go to :class:`_Head` alone, the parser having refused them. On each front
-        door but Jira Cloud's (2026-11-03), a head whose first read ended after a header holding
-        0x01 was answered only once a second read, sent 1 s later, had arrived: with a header
-        holding 0x00 and the empty line, as the same head in one write was, and with a header
-        holding neither and the empty line, as `control` is. api.github.com and api.linear.app
-        answered at the 0x00 with no empty line after it."""
+        has one, else uvicorn's 400, as :meth:`_hold` holds it. A `control` refusal waits for the
+        rest of the head where the front door does
+        (:func:`backlot.parser_refusals.waits_for_the_head`): the bytes after it go to
+        :class:`_Head` alone, the parser having refused them."""
         reason, method, url, msg = self._refused
         cause = self._cause(reason)
-        if cause == "control" and not self._head.ended:
+        if cause == "control" and not self._head.ended and parser_refusals.waits_for_the_head(url):
             return
         answer = None
         if cause is not None:

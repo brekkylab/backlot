@@ -173,12 +173,30 @@ def _graph(refused: Refused) -> bytes | None:
     return None
 
 
+def _door(target: bytes) -> tuple[str | None, str]:
+    """The front door the path in ``target`` names, ``None`` where no vendor owns it, and the path
+    with its escapes decoded."""
+    path = urllib.parse.unquote(target.partition(b"?")[0].decode("latin-1"))
+    return (request_target.front_door(path) or (None, ""))[0], path
+
+
+def waits_for_the_head(target: bytes) -> bool:
+    """Whether the front door the path in ``target`` names answers a `control` byte only once the
+    head has ended or a header value holds 0x00, which makes it `nul`. Each front door but Graph's
+    held a head that stopped after a header holding 0x01 for 3 s with no answer (2026-11-03), and
+    answered once a second read, sent 1 s later, brought the empty line: as the same head in one
+    write was where that read held a header with 0x00, and as `control` is where it held a plain
+    one. api.github.com and api.linear.app answered at the 0x00 with no empty line after it, and
+    graph.microsoft.com answered the header holding 0x01 at once."""
+    door = _door(target)[0]
+    return door is not None and door != "graph"
+
+
 def answer(refused: Refused) -> bytes | None:
     """What the front door the path in ``refused.target`` names writes, or ``None`` where it does
     not answer the request itself (the module docstring says where) or no vendor owns the path."""
+    door, path = _door(refused.target)
     raw_path, _, raw_query = refused.target.partition(b"?")
-    path = urllib.parse.unquote(raw_path.decode("latin-1"))
-    door = (request_target.front_door(path) or (None, ""))[0]
     if door == "github":
         return _github(refused, path, raw_query.decode("latin-1"))
     if door == "slack":

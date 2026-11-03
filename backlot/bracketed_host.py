@@ -116,8 +116,8 @@ def _refused_ahead(scope: Scope) -> bool:
     Linear and Fireflies a path Cloudflare refuses (``backlot.request_target.refused_path``), one
     the end cuts in a `%` (``backlot.request_target.cut_escape``) and `TRACE`.
 
-    Measured on 2026-11-03 (UTC) beside `[0:0]` and `[v1.x]`, most beside `[x]` too, and beside the
-    door's own `Host`. Each front door answered a raw byte of each kind in the path as the table
+    Measured on 2026-11-03 (UTC) beside `[0:0]` and `[v1.x]` and beside the door's own `Host`. Each
+    front door answered a raw byte of each kind in the path as the table
     :data:`_RAW_AHEAD` says, and so did Slack, Drive, Jira, Notion, Linear and Graph one after the
     path's `?`; Notion, HubSpot, Linear and Fireflies answered an `Authorization` sent twice with
     Cloudflare's 400 page; GitHub answered a target of 8,214 bytes with its 414. Jira and Confluence

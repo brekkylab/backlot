@@ -856,7 +856,7 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
             continue
         # the edge's page carries the edge's two headers beside its own, Tomcat's behind it the two
         # alone, CloudFront's neither, and Cloudflare's page on api.hubapi.com no
-        # `x-hubspot-correlation-id` (2026-10-30)
+        # `x-hubspot-correlation-id`
         if answer.startswith("edge ") or answer == "tomcat":
             allow_origin = "*" if answer.startswith("edge ") else None
             extra = {k: headers.get(k) for k in [*edge, "access-control-allow-origin"]}

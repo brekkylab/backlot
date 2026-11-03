@@ -219,7 +219,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Backlot serves no /v1/agents operation, and the connected integration measures only the 403 restricted_resource on it (2026-11-03), so it joins the other agents operations as one deliberate gap."
+      "note": "Backlot serves no /v1/agents operation, and the connected integration measures only 403 restricted_resource on it (2026-11-03)."
     },
     {
       "operation": "PATCH /v1/agents/{}/credit_limit",

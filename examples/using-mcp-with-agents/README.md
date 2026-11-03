@@ -216,19 +216,21 @@ selection depth. The code is `backlot/mcp.py`.
 These sources have no vendor MCP server that accepts a base-URL override (see "Why these need
 the bridge" below). Instead of a vendor server, each launcher runs `backlot mcp --source <name>`
 (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess. The bridge is deliberately thin —
-Backlot does the spec work:
+Backlot does the spec work, and the bridge adds one rename:
 
 - Backlot serves an **MCP-ready spec per source** at **`GET /_meta/openapi/<source>`** — its own
   typed `/openapi.json` (the routers declare query params and response models) sliced to that
   source, each operation renamed to its route's own name (`search_messages`, not
   `search_messages_slack_api_search_messages_get`), and the GET/POST and Jira v2/v3 fidelity
   aliases collapsed to one operation each (the raw spec carries ~14 duplicate operationIds, which
-  an MCP tool set can't have). This lives in `backlot/openapi.py`, so there is nothing to clean up
-  client-side;
-- the bridge just fetches that spec and serves it over stdio via `FastMCP.from_openapi()` on an
+  an MCP tool set can't have). This lives in `backlot/openapi.py`;
+- the bridge fetches that spec and serves it over stdio via `FastMCP.from_openapi()` on an
   `httpx2.AsyncClient` (what `from_openapi` takes — a legacy `httpx` one is accepted only under a
   deprecation warning) whose base URL is Backlot and which carries the credential `--user` resolved
-  — so Backlot resolves it to a user and **enforces that user's ACL** on every call.
+  — so Backlot resolves it to a user and **enforces that user's ACL** on every call;
+- the bridge renames an argument whose name the Anthropic Messages API refuses in a tool schema,
+  as Graph's OData options and Google's error-format parameter are: the argument goes by the name
+  `backlot.mcp.argument_name` gives it, and each call still sends the vendor's.
 
 stdio (not streamable-HTTP): FastMCP's HTTP mode has a known bug forwarding the client's
 `Authorization` header downstream. Adding a source is one entry in `backlot/openapi.py`'s

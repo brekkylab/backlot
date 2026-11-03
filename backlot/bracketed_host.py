@@ -114,8 +114,9 @@ def _refused_ahead(scope: Scope) -> bool:
     (``backlot.request_target.escape_answer``); on Notion and HubSpot an escape Cloudflare refuses
     (``backlot.request_target.refused_escape``); in front of Jira and Confluence the CDN's 400s and
     405s (``backlot.errors.atlassian.cdn_refusal``), where its 403s come after the `Host`'s; and on
-    Linear and Fireflies a path Cloudflare refuses (``backlot.request_target.refused_path``), one
-    the end cuts in a `%` (``backlot.request_target.cut_escape``) and `TRACE`.
+    Linear and Fireflies `TRACE`, a path Cloudflare refuses
+    (``backlot.request_target.refused_path``) and one the end cuts in a `%`
+    (``backlot.request_target.cut_escape``).
 
     Measured on 2026-11-03 (UTC) beside `[0:0]` and `[v1.x]` and beside the door's own `Host`. Each
     front door answered a raw byte of each kind in the path as the table

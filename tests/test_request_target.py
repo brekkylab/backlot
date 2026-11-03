@@ -442,7 +442,8 @@ _HOSTS = [
         (host, b"GET", "/github/", b"rate_limit?a=" + b"x" * 8_200, "github 414")
         for host in (b"[0:0]", b"[v1.x]")
     ),
-    # a `Host` beside an `Authorization` sent twice
+    # a `Host` beside an `Authorization` sent twice: Cloudflare's refusal of it first, the `Host`'s
+    # on the others
     *(
         (host, method, base, rest, "cloudflare page", _AUTHORIZATION_TWICE)
         for host in (b"[0:0]", b"[v1.x]")
@@ -453,7 +454,19 @@ _HOSTS = [
             (b"POST", "/fireflies/", b"graphql"),
         )
     ),
+    *(
+        (b"[0:0]", b"GET", base, rest, answer, _AUTHORIZATION_TWICE)
+        for base, rest, answer in (
+            ("/slack/api/", b"auth.test", "slack 404 empty"),
+            ("/atlassian/rest/api/3/", b"serverInfo", "cloudfront 403"),
+            ("/atlassian/wiki/rest/api/", b"space", "cloudfront 403"),
+            ("/drive/v3/", b"about", "google 1555 kept"),
+            ("/msgraph/v1.0/", b"me", "graph invalid hostname"),
+        )
+    ),
     (b"[0:0]", b"GET", "/s3/no-such-bucket/", b"x", "served", _AWS_AUTHORIZATION),
+    # a path of Backlot's own, which no front door answers
+    (b"[0:0]", b"GET", "/", b"health", "served"),
 ]
 
 

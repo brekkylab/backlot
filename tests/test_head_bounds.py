@@ -211,10 +211,23 @@ _REFUSED_LINES = [
 ]
 _BOUND_OF = {mount: (bound, per_line) for mount, _, bound, per_line, _, _ in _BOUNDS}
 
-#: A `%00` in the path and a `%0A` at its end, after a row of :data:`_BOUNDS`, and real's answer
-#: where the line reaches the bound and where a header after it does, measured on 2026-11-03 (UTC):
-#: the bound's page, but for a `%00` ahead of a header past the bound on Jira Cloud and behind
-#: Cloudflare, which draws the page each front door gives it in a short head.
+#: One path of :data:`_BOUNDS` for each front door, the one the targets below follow.
+_MEASURED_PAST_THE_BOUND = {
+    "/repos/acme/docs-site",
+    "/api/api.test",
+    "/drive/v3/files",
+    "/rest/api/3/myself",
+    "/v1/users",
+    "/crm/v3/objects/contacts",
+    "/graphql",
+    "/",
+    "/v1.0/me",
+}
+
+#: A `%00` or a `%80` in the path and a `%0A` at its end, after a row of :data:`_BOUNDS`, and real's
+#: answer where the line reaches the bound and where a header after it does, measured on 2026-11-03
+#: (UTC): the bound's page, but for a `%00` ahead of a header past the bound on Jira Cloud and
+#: behind Cloudflare, which draws the page each front door gives it in a short head.
 _ESCAPES_AT_THE_BOUND = [
     ("/github", "/repos/acme/docs-site%00", "github 414", "github 431"),
     ("/github", "/repos/acme/docs-site%0A", "github 414", "github 431"),
@@ -238,6 +251,11 @@ _ESCAPES_AT_THE_BOUND = [
     ("/s3", "/%0A", "s3", "s3"),
     ("/msgraph", "/v1.0/me%00", "graph 414", "graph 400"),
     ("/msgraph", "/v1.0/me%0A", "graph 414", "graph 400"),
+    *[
+        (mount, path + "%80x", line, header)
+        for mount, path, _, _, line, header in _BOUNDS
+        if path in _MEASURED_PAST_THE_BOUND
+    ],
 ]
 
 #: Ended request lines with no `?`, before a header past the bound, and real's answer: the root of

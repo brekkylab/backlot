@@ -18757,7 +18757,43 @@ _DISC = {
 
 # `requests` (one batch, or a list of batches), then the first paragraph's runs as
 # `(content, textStyle)`; from the measurements of runs a style change splits and joins
+_H2 = {
+    "updateParagraphStyle": {
+        "range": {"startIndex": 1, "endIndex": 2},
+        "paragraphStyle": {"namedStyleType": "HEADING_2"},
+        "fields": "namedStyleType",
+    }
+}
+_14, _18 = ({"magnitude": n, "unit": "PT"} for n in (14, 18))
+
 _STYLE_RUN_ROWS = [
+    # a named style set takes off what the whole paragraph holds alike and what its newline holds
+    # the character before it does not, and keeps what part of it holds (`gdocs.Body._unformat`)
+    ([_ts(1, 12, bold=True), _H2], [("Hello world\n", {})]),
+    (
+        [_ts(1, 12, bold=True), _ts(1, 4, "italic", italic=True), _H2],
+        [("Hel", {"italic": True}), ("lo world\n", {})],
+    ),
+    (
+        [_ts(1, 4, bold=True), _ts(12, 13, bold=True), _H2],
+        [("Hel", {"bold": True}), ("lo world\n", {})],
+    ),
+    (
+        [_ts(1, 12, "fontSize", fontSize=_14), _ts(1, 4, "fontSize", fontSize=_18), _H2],
+        [("Hel", {"fontSize": _18}), ("lo world\n", {"fontSize": _14})],
+    ),
+    (
+        [_ts(1, 12, bold=True), _ts(1, 4, bold=False), _H2],
+        [("Hel", {}), ("lo world\n", {"bold": True})],
+    ),
+    (
+        [_ts(1, 12, bold=True), _ps(1, 2, "namedStyleType", namedStyleType="NORMAL_TEXT")],
+        [("Hello world\n", {})],
+    ),
+    (
+        [_ts(1, 12, bold=True), _ps(1, 2, "alignment", alignment="CENTER")],
+        [("Hello world\n", {"bold": True})],
+    ),
     # a run whose bold is set and taken off stays apart, however it was taken off
     ([_ts(4, 6, bold=True), _ts(4, 6)], [("Hel", {}), ("lo", {}), (" world\n", {})]),
     ([_ts(4, 6, bold=True), _ts(4, 6, bold=False)], [("Hel", {}), ("lo", {}), (" world\n", {})]),
@@ -19056,6 +19092,19 @@ _STYLE_RUN_ROWS = [
 # links flat and as a tab (`links`), the first two tabs' first `headingId`s (`headings`) or its
 # `text/plain` and `text/markdown` exports (`export`)
 _STYLE_DOC_ROWS = [
+    # leaving a named style takes off each paragraph member it gives the same value
+    (
+        "wr-text",
+        [_ps(1, 2, "alignment,lineSpacing", alignment="START", lineSpacing=115), _H2],
+        "paragraphs",
+        [
+            [
+                {"headingId": "$H0", "namedStyleType": "HEADING_2", "direction": "LEFT_TO_RIGHT"},
+                None,
+            ],
+            "$REST",
+        ],
+    ),
     # a link to a heading is its `headingId` on a lone tab's flat read, and else its `heading`;
     # a heading of another tab is reached through its `tabId`
     (

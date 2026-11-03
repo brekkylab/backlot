@@ -91,7 +91,8 @@ from 1 to 1024 as real's does.
 A style is kept as real keeps it: a colour to the nearest 255th, a font size from 1 to 512 points, a
 weight of 700 as bold, a member its paragraph's named style already gives taken off, and a link
 underlined in the link colour. The runs a style change leaves are real's, a run whose style was set
-and taken off again staying apart from the text beside it. A list is one of the presets
+and taken off again staying apart from the text beside it, and a named style set takes off the text
+style a whole paragraph holds alike, as real's editor does, keeping what part of it holds. A list is one of the presets
 `createParagraphBullets` names, each paragraph's level the tabs it opened with less the fewest
 any paragraph of the request opened with, at most 8, and a named range
 moves with the text written around it, as real moves one, until a delete or a replacement leaves

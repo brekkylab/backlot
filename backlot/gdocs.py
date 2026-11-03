@@ -1061,6 +1061,14 @@ def _unlinked(style: dict) -> dict:
     }
 
 
+def _left(style: dict, named: str) -> dict:
+    """A `paragraphStyle` once its paragraph leaves ``named``: each member ``named`` gives the same
+    value taken off, its direction kept. Measured 2026-11-03: a paragraph given a START alignment
+    and a line spacing of 115 lost both made a HEADING_2, as normal text gives them."""
+    given = {**_PARAGRAPH_STYLES["NORMAL_TEXT"], **_PARAGRAPH_STYLES.get(named, {})}
+    return {k: v for k, v in style.items() if k == "direction" or given.get(k) != v}
+
+
 def _resolved(named: str) -> dict:
     """The text style a paragraph of ``named`` style gives its runs: its own, over normal
     text's."""
@@ -1536,6 +1544,8 @@ class Body:
           that the style gave them, with nothing kept of it in `CLEARED`, and the runs it leaves
           alike join: italic text made a HEADING_6 kept its italic, and lost it made normal text
           again, as one run with the rest of the paragraph; text 20 PT made a HEADING_1 kept it;
+          and each paragraph member the style gives the same value (`_left`);
+        * a named style set, its own included, takes off what `_unformat` takes off;
         * a paragraph member a named style also gives is kept, a direction taken off is
           `LEFT_TO_RIGHT` again, and nothing else is checked or bounded."""
         props = self.paragraphs[p]
@@ -1545,6 +1555,9 @@ class Body:
         if new != old:
             self._leave_named(p, old)
             props = self.paragraphs[p]
+            style = _left(style, old)
+        if "namedStyleType" in stated:
+            self._unformat(p)
         if new == "NORMAL_TEXT":
             style.pop("headingId", None)
         elif old == "NORMAL_TEXT":
@@ -1561,6 +1574,34 @@ class Body:
     def _paragraph_span(self, p: int) -> range:
         starts = [0] + [i + 1 for i, (c, *_) in enumerate(self.chars) if c == "\n"]
         return range(starts[p], starts[p + 1])
+
+    def _unformat(self, p: int) -> None:
+        """Take off paragraph ``p``'s text style members that every character before its newline
+        holds alike, from them and from the newline, and then each member of the newline that the
+        character before it does not hold alike, with nothing kept in `CLEARED`. Measured
+        2026-11-03, a named style set, the paragraph's own included: bold or 14 PT over the whole
+        paragraph was taken off, and over three of its letters kept; bold over the whole paragraph
+        and italic over three letters left the italic alone; and bold, italic or underline on the
+        newline alone was taken off, while 14 PT over the paragraph and 18 PT over its first three
+        letters, or bold over it and taken off its first three, were kept everywhere."""
+        span = self._paragraph_span(p)
+        text = range(span.start, span.stop - 1)
+        styles = [shown(self.chars[pos][1]) for pos in text]
+        alike = {
+            k
+            for k, v in (styles[0] if styles else {}).items()
+            if all(s.get(k) == v for s in styles)
+        }
+        changed = [False] * len(self.chars)
+        for pos in span:
+            c, style, run = self.chars[pos]
+            new = {k: v for k, v in style.items() if k not in alike}
+            if pos == span.stop - 1:
+                last = shown(self.chars[pos - 1][1]) if styles else {}
+                new = {k: v for k, v in new.items() if k == CLEARED or last.get(k) == v}
+            changed[pos] = new != style
+            self.chars[pos] = (c, new, run)
+        self._settle(span.start, span.stop, changed)
 
     def _leave_named(self, p: int, named: str) -> None:
         given = _resolved(named)
@@ -1985,6 +2026,10 @@ _MARKDOWN_LEVEL = {"TITLE": 1, "SUBTITLE": 2, **{f"HEADING_{n}": n for n in rang
 # Each named style's own text style, which its paragraphs' runs take where they state nothing:
 # HEADING_6's italic is Markdown's `*`.
 _TEXT_STYLES = {s["namedStyleType"]: s["textStyle"] for s in _DEFAULTS["namedStyles"]["styles"]}
+_PARAGRAPH_STYLES = {
+    s["namedStyleType"]: {k: v for k, v in s["paragraphStyle"].items() if k != "namedStyleType"}
+    for s in _DEFAULTS["namedStyles"]["styles"]
+}
 
 # The space separators a plain export keeps: a figure space and a narrow no-break space. Every other
 # one, U+2028 and U+2029 among them, is a space.

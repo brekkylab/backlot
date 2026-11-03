@@ -2729,17 +2729,32 @@ def _drive_q_fulltext(conn, node, ids) -> dict[str, list]:
     Real Drive semantics: a quoted value (`fullText contains '"X Y"'`) is an exact phrase (tokens
     adjacent); unquoted is separate terms. A grep push-down sends the quoted form for a literal
     pattern, so the exact doc surfaces instead of being buried under coincidental docs that merely
-    contain the words scattered."""
+    contain the words scattered. A Doc's phrase matches within one line of its title or its text
+    (`gdocs.document_text`): measured 2026-11-03, real matched none across two paragraphs, two of
+    a Doc's segments or tabs, or a footnote reference."""
     out: dict[str, list] = {}
     for term in _drive_q_terms(node):
         if term.field != "fullText" or term.value in out:
             continue
         raw = term.value
         phrase = len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"'
-        out[raw] = store.search_documents(
+        rows = store.search_documents(
             conn, raw[1:-1] if phrase else raw, "google_drive", ids, limit=10_000, phrase=phrase
         )
+        if phrase:
+            words = re.findall(r"\w+", raw[1:-1].lower())
+            rows = [r for r in rows if _drive_mime(r) != DRIVE_DOC_MIME or _in_a_line(r, words)]
+        out[raw] = rows
     return out
+
+
+def _in_a_line(row, words: list[str]) -> bool:
+    """Whether one line of ``row``'s title or content holds ``words`` one after another."""
+    for line in [row["title"], *row["content"].split("\n")]:
+        found = re.findall(r"\w+", line.lower())
+        if any(found[i : i + len(words)] == words for i in range(len(found))):
+            return True
+    return False
 
 
 def _drive_q_fulltext_ids(hits: dict[str, list]) -> dict[str, set[str]]:
@@ -3823,7 +3838,7 @@ _DRIVE_EXPORT_FORMATS = {
     ],
 }
 
-# The formats a Doc exports to that are rendered from its body.
+# The formats a Doc exports to that are rendered from its tabs.
 _DOCS_TEXT_EXPORTS = {
     "text/plain": gdocs.plain_text,
     "text/markdown": gdocs.markdown,

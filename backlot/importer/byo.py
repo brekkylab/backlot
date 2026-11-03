@@ -164,8 +164,8 @@ def _doc_id(rec: dict) -> str:
     # ordinary -- resolve to one id, and the row-level upsert leaves only the later one.
     if rec.get("sheets") is not None:
         seed += _j(rec["sheets"])
-    # Likewise a structured document's `content` is its text alone, without the styles, its
-    # header, footer and footnotes or its tabs' titles.
+    # Likewise a structured document's `content` is its text alone, without the styles or the tab,
+    # title or segment each line stands in.
     for key in ("paragraphs", "header", "footer", "tabs"):
         if rec.get(key) is not None:
             seed += _j(rec[key])

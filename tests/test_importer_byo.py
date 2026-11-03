@@ -6325,12 +6325,13 @@ PARAS_REC = {
 }
 
 
-def test_stated_paragraphs_are_the_body_and_their_text_is_the_content(tmp_path):
+def test_stated_paragraphs_are_the_body_and_their_text_with_the_segments_is_the_content(tmp_path):
     """The body is stored in real's shape with its indices left out, and `content` is the
     paragraphs' text, one line each, which Drive's search reads. Two documents with one text and
     different styles are two documents, so the paragraphs reach the id; one that states none
     stores nothing. A document stating tabs stores each, its header, footer and footnotes beside
-    its body, and its `content` is every tab's text, depth first."""
+    its body, and its `content` is every tab's title and text, its header, footer and footnotes
+    with it, depth first."""
     restyled = {
         **PARAS_REC,
         "doc_id": "gd-restyled",
@@ -6358,7 +6359,7 @@ def test_stated_paragraphs_are_the_body_and_their_text_is_the_content(tmp_path):
     conn = _load_grid(tmp_path, [*unnamed, prose, tabbed])
     rows = conn.execute("SELECT id, content FROM gdrive_files ORDER BY rowid").fetchall()
     assert [r["content"] for r in rows] == ["Goals\nShip it\n"] * 3 + [
-        "Goals\nDraft\n Q3\nShip it\nNotes"
+        "Plan\nGoals\n\nDraft\n Q3\nTab 2\nShip it\nTab 3\nNotes"
     ]
     body = store.gdrive_doc_for(conn, rows[0]["id"])["tabs"][0]["body"]
     assert [el.keys() for el in body] == [{"sectionBreak"}] + [{"paragraph"}] * 3

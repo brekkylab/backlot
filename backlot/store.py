@@ -247,7 +247,7 @@ PATCHABLE = {
     # disappearing (`chat_delete`), which is a change to the message real keeps serving.
     "slack": frozenset({"content", "reactions", "edited", "thread_ts", "subtype"}),
     # A Sheets write changes a file's cells, which live in `gdrive_sheets` (see SATELLITES), and a
-    # Docs write its body, in `gdrive_doc_bodies`; these two follow from them. `content` is the
+    # Docs write its document, in `gdrive_doc_bodies`; these two follow from them. `content` is the
     # first sheet's CSV or the document's text, which `files.export` and fullText search read:
     # measured 2026-10-26, both reflect a `values.update` on real Drive. `updated_ts` is
     # `modifiedTime`, which real moves to the write's own time.

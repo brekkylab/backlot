@@ -1,11 +1,11 @@
-"""Google Docs' body, as the importer, the store and the Docs routes all hold it.
+"""A Google Doc, as the importer, the store and the Docs routes all hold it.
 
 Outside the router for the reason `gsheets` is: the importer is the other caller.
 
 A body is stored as real serves `body.content` with every `startIndex` and `endIndex` left out, and
 :func:`indexed` puts them back at read time, so the stored form is the vendor's own. A document
-that states no structure is stored as nothing and read through :func:`from_text`, until its first
-write stores that reading (:class:`Body`).
+that states no structure is stored as nothing and read through :func:`from_prose`, until its first
+write stores that reading (:class:`Document`).
 
 Measured against the live Docs v1 API on 2026-10-26, as a Workspace member on documents it owns and
 as a second account on the Docs it can read.
@@ -240,15 +240,6 @@ def from_text(text: str) -> list[dict]:
     ]
 
 
-def text_of(paragraphs: list[dict]) -> str:
-    """A corpus's `paragraphs` as the text Drive's search reads: one line each, without its
-    footnotes and page breaks."""
-    return "\n".join(
-        "".join(r.get("text", "") for r in p["runs"]) if "runs" in p else p.get("text", "")
-        for p in paragraphs
-    )
-
-
 # The emoji a tab icon may be: every sequence of Unicode's emoji-test.txt for Emoji 15.0, whatever
 # its qualification, but `©`, `®` and `™` with or without U+FE0F, and without it `‼`, `⁉` and each
 # arrow shown as text by default (one the list also holds with U+FE0F, `➡`). Measured 2026-11-02
@@ -364,27 +355,35 @@ def record_text(rec: dict) -> str:
 
 
 def document_text(doc: dict) -> str:
-    """A stored document's text as Drive's search reads it: each tab's body, headers, footers and
-    footnotes, depth first, one line per paragraph, without its footnote references and page
-    breaks. Measured 2026-11-03: `fullText contains` found a word only in the first or the second
-    tab's header or footnote, or the first tab's footer."""
-    texts = (
-        "".join(
-            pe["textRun"]["content"]
-            for el in segment
-            if "paragraph" in el
-            for pe in el["paragraph"]["elements"]
-            if "textRun" in pe
-        )[:-1]
-        for tab, *_ in walk(doc["tabs"])
+    """A stored document's text as Drive's search reads it: each tab's title, unless it is a lone
+    tab's default, then its body, headers, footers and footnotes, depth first, one line per
+    paragraph, a segment holding no text giving none. Measured 2026-11-03: `fullText contains`
+    found a word only in a tab's header, footer or footnote, in an added or a renamed tab's title
+    and not the old one, and in a lone tab's title once renamed, and `Tab` in a Doc of several
+    tabs, one untitled, but not in a Doc whose one tab was untitled; a quoted phrase matched
+    within a line alone (`routers.google`), and a footnote reference parted the words either side
+    of it as a line break does."""
+    tabs = [tab for tab, *_ in walk(doc["tabs"])]
+    lines = []
+    for tab in tabs:
+        title = tab["tabProperties"]["title"]
+        if len(tabs) > 1 or title != default_title((), 1):
+            lines.append(title)
         for segment in (
             tab["body"],
             *tab["headers"].values(),
             *tab["footers"].values(),
             *tab["footnotes"].values(),
-        )
-    )
-    return "\n".join(text for text in texts if text.strip())
+        ):
+            text = "".join(
+                pe["textRun"]["content"] if "textRun" in pe else "\n" * ("footnoteReference" in pe)
+                for el in segment
+                if "paragraph" in el
+                for pe in el["paragraph"]["elements"]
+            )[:-1]
+            if text.strip():
+                lines.append(text)
+    return "\n".join(lines)
 
 
 def footnote_numbers(tab: dict) -> dict[str, str]:

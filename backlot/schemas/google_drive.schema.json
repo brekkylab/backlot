@@ -295,7 +295,7 @@
       "items": {
         "$ref": "#/$defs/tab"
       },
-      "description": "The document's tabs, for a `document` whose tabs are more than one, or whose tab has a title or an icon: each with its title, its body as `paragraphs`, its own `header` and `footer`, and its child `tabs`. State this or `paragraphs`, not both; then `content` must be ABSENT, derived at import as every tab's text, its header, footer and footnotes with it, depth first. The first tab is `t.0`, as in a Doc real makes."
+      "description": "The document's tabs, for a `document` whose tabs are more than one, or whose tab has a title or an icon: each with its title, its body as `paragraphs`, its own `header` and `footer`, and its child `tabs`. State this or `paragraphs`, not both; then `content` must be ABSENT, derived at import as every tab's title and text, its header, footer and footnotes with it, depth first. The first tab is `t.0`, as in a Doc real makes."
     }
   },
   "required": [

@@ -146,8 +146,8 @@ Doc real makes, an untitled one is `Tab n` by its place, and no two tabs share a
 ```
 
 `documents.get` serves the footnote as real serves one, opening with a space in 10 PT and numbered
-by its reference's place in the tab, and `content` is every tab's text, its header, footer and
-footnotes with it, depth first, as Drive's full-text search reads them. Lists and tables have no
+by its reference's place in the tab, and `content` is every tab's title and text, its header, footer
+and footnotes with it, depth first, as Drive's full-text search reads them. Lists and tables have no
 representation yet.
 
 ## Load a public dataset

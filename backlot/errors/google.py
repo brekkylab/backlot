@@ -1000,11 +1000,8 @@ def jsonp_callback(request: Request) -> str | None:
     GET beside it was the script, and a `HEAD` that failed beside one kept its own status — no
     credential's and a bad one's, and a missing file's 404 — where its GET was the script at 200.
     Nor is a POST read as the GET it names in `X-HTTP-Method-Override`
-    (``request.state.sent_as_a_post``): measured 2026-11-03 (UTC) with `callback=foo` and
-    `callback=a-b` in the URL or `callback=foo` in the form body, Sheets' `spreadsheets.get` and
-    Drive's `about` answered such a POST with a token 200 `application/json; charset=UTF-8`, where
-    the GET beside it was the script; and with no token, `about`'s 401, its 400 past the gzip limit
-    and its 415 under `br`, and the same 415 on Gmail's `labels.list`, were each unwrapped.
+    (``request.state.sent_as_a_post``): on 2026-11-03 (UTC) real answered such a POST on Drive,
+    Gmail and Sheets as JSON beside a `callback`, a success and a front-end error alike.
 
     Two values that look like a callback are not one either. An empty `callback=` is absent:
     measured, it answers the plain body at the real status, success and error alike. So is any

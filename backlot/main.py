@@ -1848,7 +1848,7 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
     :func:`refuse_a_body_on_a_google_get_or_head`, which reads the method as sent; and outside every
     other middleware that reads the method or the query, so they and the router see the GET. The
     request is marked ``sent_as_a_post`` on its state for ``errors.google.jsonp_callback``, which
-    reads it, and the form body it read is kept there for :class:`_ReadAGoogleBodyUnderItsCoding`.
+    reads it.
     """
     path = request.scope["path"]
     prefix = next(p for p in _GOOGLE_READ_OVERRIDES if path.startswith(f"{p}/"))

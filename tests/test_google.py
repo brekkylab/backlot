@@ -15042,8 +15042,8 @@ def test_google_reads_a_body_under_its_coding_as_its_front_end_does(client, admi
         ),
     }
 
-    def answered(url, headers, coding, body):
-        r = client.post(url, headers={**headers, "Content-Encoding": coding}, content=body)
+    def answered(url, headers, body):
+        r = client.post(url, headers=headers, content=body)
         return r.status_code, r.content
 
     got, expected = {}, {}
@@ -15052,13 +15052,13 @@ def test_google_reads_a_body_under_its_coding_as_its_front_end_does(client, admi
         gzipped = gzip.compress(plain)
         body = {"plain": plain, "gzipped": gzipped, "gzipped and cut short": gzipped[:-8]}[sent]
         row = (route, coding, sent)
-        got[row] = outcome(answered, url, headers, coding, body)
+        got[row] = outcome(answered, url, {**headers, "Content-Encoding": coding}, body)
         if answer == 415:
             expected[row] = (415, _415_BARE if route == "sheets" else _415)
             continue
-        want = client.post(url, headers=headers, content=plain if answer == "plain" else body)
-        got[row] = (got[row], want.status_code)
-        expected[row] = ((want.status_code, want.content), 200 if answer == "plain" else 400)
+        want = outcome(answered, url, headers, plain if answer == "plain" else body)
+        got[row] = (got[row], want if isinstance(want, str) else want[0])
+        expected[row] = (want, 200 if answer == "plain" else 400)
     assert got == expected
 
 

@@ -1546,8 +1546,8 @@ class Body:
           again, as one run with the rest of the paragraph; text 20 PT made a HEADING_1 kept it;
           and each paragraph member the style gives the same value (`_left`);
         * a named style set, its own included, takes off what `_unformat` takes off;
-        * a paragraph member a named style also gives is kept, a direction taken off is
-          `LEFT_TO_RIGHT` again, and nothing else is checked or bounded."""
+        * a paragraph member stated is kept though its named style gives the same value, a
+          direction taken off is `LEFT_TO_RIGHT` again, and nothing else is checked or bounded."""
         props = self.paragraphs[p]
         style = dict(props["paragraphStyle"])
         old = style.get("namedStyleType", "NORMAL_TEXT")
@@ -1558,6 +1558,7 @@ class Body:
             style = _left(style, old)
         if "namedStyleType" in stated:
             self._unformat(p)
+            props = self.paragraphs[p]
         if new == "NORMAL_TEXT":
             style.pop("headingId", None)
         elif old == "NORMAL_TEXT":
@@ -1576,32 +1577,48 @@ class Body:
         return range(starts[p], starts[p + 1])
 
     def _unformat(self, p: int) -> None:
-        """Take off paragraph ``p``'s text style members that every character before its newline
-        holds alike, from them and from the newline, and then each member of the newline that the
-        character before it does not hold alike, with nothing kept in `CLEARED`. Measured
-        2026-11-03, a named style set, the paragraph's own included: bold or 14 PT over the whole
-        paragraph was taken off, and over three of its letters kept; bold over the whole paragraph
-        and italic over three letters left the italic alone; and bold, italic or underline on the
-        newline alone was taken off, while 14 PT over the paragraph and 18 PT over its first three
-        letters, or bold over it and taken off its first three, were kept everywhere."""
+        """Take off each text style member but the link that every character before paragraph
+        ``p``'s newline holds alike, a member a character lacks holding its named style's value,
+        from them, their `CLEARED` and the newline; give linked text back the underline and colour
+        of its link; take off each member of the newline that the character before it does not
+        hold alike; and give a bullet the newline's style. Measured 2026-11-03, a named style set,
+        the paragraph's own included: bold, 14 PT or red over the whole paragraph was taken off,
+        and over three of its letters kept; bold over the whole paragraph and italic over three
+        letters left the italic alone, and an italic set and taken off again left one run; a link
+        over the whole paragraph or part of it was kept, its own colour back over red set on all
+        the paragraph and its underline back where it had been taken off; bold, italic or
+        underline on the newline alone was taken off, while 14 PT over the paragraph and 18 PT
+        over its first three letters, or bold over it and taken off its first three, were kept
+        everywhere; and a bullet, bold or 14 PT, was served as its newline was left."""
         span = self._paragraph_span(p)
         text = range(span.start, span.stop - 1)
+        given = _resolved(self._named(p))
         styles = [shown(self.chars[pos][1]) for pos in text]
+        keys = {k for pos in text for k in self.chars[pos][1] if k != CLEARED}
+        keys |= {k for pos in text for k in self.chars[pos][1].get(CLEARED, ())}
         alike = {
             k
-            for k, v in (styles[0] if styles else {}).items()
-            if all(s.get(k) == v for s in styles)
+            for k in keys - {"link"}
+            if all(s.get(k, given.get(k)) == styles[0].get(k, given.get(k)) for s in styles)
         }
         changed = [False] * len(self.chars)
         for pos in span:
             c, style, run = self.chars[pos]
-            new = {k: v for k, v in style.items() if k not in alike}
+            new = {k: v for k, v in shown(style).items() if k not in alike}
+            if "link" in new:
+                new.setdefault("underline", True)
+                new.setdefault("foregroundColor", copy.deepcopy(_LINK_COLOR))
             if pos == span.stop - 1:
                 last = shown(self.chars[pos - 1][1]) if styles else {}
-                new = {k: v for k, v in new.items() if k == CLEARED or last.get(k) == v}
+                new = {k: v for k, v in new.items() if last.get(k) == v}
+            new = _ordered(new, set(style.get(CLEARED, ())) - alike)
             changed[pos] = new != style
             self.chars[pos] = (c, new, run)
         self._settle(span.start, span.stop, changed)
+        props = self.paragraphs[p]
+        if "bullet" in props:
+            newline = shown(self.chars[span.stop - 1][1])
+            self.paragraphs[p] = props | {"bullet": props["bullet"] | {"textStyle": newline}}
 
     def _leave_named(self, p: int, named: str) -> None:
         given = _resolved(named)

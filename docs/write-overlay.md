@@ -92,12 +92,12 @@ A style is kept as real keeps it: a colour to the nearest 255th, a font size fro
 weight of 700 as bold, a member its paragraph's named style already gives taken off, and a link
 underlined in the link colour. The runs a style change leaves are real's, a run whose style was set
 and taken off again staying apart from the text beside it, and a named style set takes off the text
-style a whole paragraph holds alike, as real's editor does, keeping what part of it holds. A list is one of the presets
-`createParagraphBullets` names, each paragraph's level the tabs it opened with less the fewest
-any paragraph of the request opened with, at most 8, and a named range
-moves with the text written around it, as real moves one, until a delete or a replacement leaves
-it empty. `files.export` writes each list item's marker and, in Markdown, an anchor on each heading
-a link goes to.
+style a whole paragraph holds alike but for its links, keeping what part of it holds. A list is one
+of the presets `createParagraphBullets` names, each paragraph's level the tabs it opened with less
+the fewest any paragraph of the request opened with, at most 8, and a named range moves with the
+text written around it, as real moves one, until a delete or a replacement leaves it empty.
+`files.export` writes each list item's marker and, in Markdown, an anchor on each heading a link
+goes to.
 
 `values.append` finds the table it writes below the way real does: from the last cell in the range
 holding a value, row by row, grown through every cell in the row or column next to it, and

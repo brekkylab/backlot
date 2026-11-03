@@ -18755,8 +18755,6 @@ _DISC = {
     "indentStart": {"magnitude": 36, "unit": "PT"},
 }
 
-# `requests` (one batch, or a list of batches), then the first paragraph's runs as
-# `(content, textStyle)`; from the measurements of runs a style change splits and joins
 _H2 = {
     "updateParagraphStyle": {
         "range": {"startIndex": 1, "endIndex": 2},
@@ -18764,8 +18762,11 @@ _H2 = {
         "fields": "namedStyleType",
     }
 }
+_RED = {"color": {"rgbColor": {"red": 1}}}
 _14, _18 = ({"magnitude": n, "unit": "PT"} for n in (14, 18))
 
+# `requests` (one batch, or a list of batches), then the first paragraph's runs as
+# `(content, textStyle)`; from the measurements of runs a style change splits and joins
 _STYLE_RUN_ROWS = [
     # a named style set takes off what the whole paragraph holds alike and what its newline holds
     # the character before it does not, and keeps what part of it holds (`gdocs.Body._unformat`)
@@ -18794,6 +18795,17 @@ _STYLE_RUN_ROWS = [
         [_ts(1, 12, bold=True), _ps(1, 2, "alignment", alignment="CENTER")],
         [("Hello world\n", {"bold": True})],
     ),
+    # all but the link, which keeps or takes back its own underline and colour, and a member set
+    # and taken off again too
+    (
+        [_ts(1, 12, "link", **_url("a")), _ts(1, 12, "foregroundColor", foregroundColor=_RED), _H2],
+        [("Hello world", _linked("a")), ("\n", {})],
+    ),
+    (
+        [_ts(1, 4, "link", **_url("a")), _ts(1, 4, "underline", underline=False), _H2],
+        [("Hel", _linked("a")), ("lo world\n", {})],
+    ),
+    ([_ts(1, 13, bold=True), _ts(4, 7, "italic", italic=True), _ts(4, 7, "italic"), _H2], _HELLO),
     # a run whose bold is set and taken off stays apart, however it was taken off
     ([_ts(4, 6, bold=True), _ts(4, 6)], [("Hel", {}), ("lo", {}), (" world\n", {})]),
     ([_ts(4, 6, bold=True), _ts(4, 6, bold=False)], [("Hel", {}), ("lo", {}), (" world\n", {})]),
@@ -19092,6 +19104,41 @@ _STYLE_RUN_ROWS = [
 # links flat and as a tab (`links`), the first two tabs' first `headingId`s (`headings`) or its
 # `text/plain` and `text/markdown` exports (`export`)
 _STYLE_DOC_ROWS = [
+    # a named style set gives a bullet its newline's style
+    (
+        "wr-text",
+        [_bullets(1, 2), _ts(1, 13, bold=True), _ts(1, 4, bold=False), _H2],
+        "paragraphs",
+        [
+            [
+                {
+                    "headingId": "$H0",
+                    "namedStyleType": "HEADING_2",
+                    "direction": "LEFT_TO_RIGHT",
+                    **_DISC,
+                },
+                {"listId": "$1.0", "textStyle": {"bold": True}},
+            ],
+            "$REST",
+        ],
+    ),
+    (
+        "wr-text",
+        [_bullets(1, 2), _ts(1, 13, bold=True), _H2],
+        "paragraphs",
+        [
+            [
+                {
+                    "headingId": "$H0",
+                    "namedStyleType": "HEADING_2",
+                    "direction": "LEFT_TO_RIGHT",
+                    **_DISC,
+                },
+                {"listId": "$1.0", "textStyle": {}},
+            ],
+            "$REST",
+        ],
+    ),
     # leaving a named style takes off each paragraph member it gives the same value
     (
         "wr-text",

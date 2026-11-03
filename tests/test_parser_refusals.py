@@ -4,7 +4,8 @@ refusals it leaves to uvicorn's 400.
 
 Each request is written byte for byte to the server ``live_server`` starts, so that httptools reads
 it as written. A request sent in two reads is handed to the protocol in this process instead, a
-``data_received`` call for each, as over a socket the server can take both in one read.
+``data_received`` call for each, as over a socket the server can take both in one read; so is one
+whose head stops before it ends, which over a socket the server would wait on.
 """
 
 from __future__ import annotations
@@ -294,7 +295,7 @@ _NOTION = ("/notion", "/v1/users")
 _FIREFLIES = ("/fireflies", "/graphql")
 _HUBSPOT = ("/hubspot", "/crm/v3/objects/contacts")
 
-#: Each request real's front door refused, on a path of its vendor's, and real's answer.
+#: Each request real's front door refused or held, on a path of its vendor's, and real's answer.
 _ROWS = [
     (*_GITHUB, "nul", "github page"),
     (*_GITHUB, "control", "github empty"),

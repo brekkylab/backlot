@@ -174,20 +174,19 @@ def _graph(refused: Refused) -> bytes | None:
 
 
 def _door(target: bytes) -> tuple[str | None, str]:
-    """The front door the path in ``target`` names, ``None`` where no vendor owns it, and the path
-    with its escapes decoded."""
+    """What ``backlot.request_target.front_door`` reads off ``target``'s path, ``None`` where no
+    vendor owns it, and that path with its escapes decoded."""
     path = urllib.parse.unquote(target.partition(b"?")[0].decode("latin-1"))
     return (request_target.front_door(path) or (None, ""))[0], path
 
 
 def waits_for_the_head(target: bytes) -> bool:
     """Whether the front door the path in ``target`` names answers a `control` byte only once the
-    head has ended or a header value holds 0x00, which makes it `nul`. Each front door but Graph's
-    held a head that stopped after a header holding 0x01 for 3 s with no answer (2026-11-03), and
-    answered once a second read, sent 1 s later, brought the empty line: as the same head in one
-    write was where that read held a header with 0x00, and as `control` is where it held a plain
-    one. api.github.com and api.linear.app answered at the 0x00 with no empty line after it, and
-    graph.microsoft.com answered the header holding 0x01 at once."""
+    head has ended or a header value holds 0x00, which makes it `nul`. On 2026-11-03 each door but
+    Graph's held a head that stopped after a header holding 0x01 with no answer, and
+    graph.microsoft.com answered that header at once; api.github.com and api.linear.app answered a
+    0x00 after it before the empty line came. ``tests/test_parser_refusals.py`` holds what each
+    door answered once the rest of the head came."""
     door = _door(target)[0]
     return door is not None and door != "graph"
 

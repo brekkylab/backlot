@@ -769,10 +769,7 @@ _RUNS = [
 ]
 
 
-@pytest.mark.parametrize("method, path, headers, ran", _RUNS)
-def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
-    client, tokens_yaml, monkeypatch, method, path, headers, ran
-):
+def test_a_request_runs_its_own_vendors_middlewares_and_no_others(client, tokens_yaml, monkeypatch):
     # the class the client's app was built with: `tests._helpers.client_for` reloads
     # `backlot.main`, which defines `_Layer` again for each app
     layer = next(m.cls for m in client.app.user_middleware if m.cls.__name__ == "_Layer")
@@ -786,8 +783,14 @@ def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
 
     monkeypatch.setattr(layer, "__call__", watched)
     admin = {"Authorization": _ADMIN.format(admin=tokens_yaml["admin_token"])}
-    client.request(method, path, headers={**admin, **headers})
-    assert seen == ran
+    got, expected = {}, {}
+    for row in _RUNS:
+        method, path, headers, ran = row.values
+        seen.clear()
+        client.request(method, path, headers={**admin, **headers})
+        got[row.id], expected[row.id] = list(seen), ran
+    assert len(got) == len(_RUNS)
+    assert got == expected
 
 
 # A path a route serves, with `%0A` after it: (method, path, query, real's status), with the

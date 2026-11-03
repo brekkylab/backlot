@@ -214,17 +214,20 @@ _WRONG_METHOD_ROWS = [
 ]
 
 
-@pytest.mark.parametrize("method, path, status", _WRONG_METHOD_ROWS)
-def test_notion_a_method_a_route_does_not_answer(client, notion_h, method, path, status):
+def test_notion_a_method_a_route_does_not_answer(client, notion_h):
     """Measured: the method is part of the URL Notion checks. `GET` on the two POST routes and
     `DELETE`, `PUT`, `PATCH` and `OPTIONS` on a GET route are each `invalid_request_url` at 400,
     not a 405 — so the catch-all takes those methods rather than the ones the routes declare.
     `TRACE` is refused with Cloudflare's own `405 Not Allowed` page before the API reads the URL,
     so the catch-all leaves it off and it is the framework's 405."""
-    r = client.request(method, path, headers=notion_h)
-    assert r.status_code == status, (method, path)
-    if status == 400:
-        assert r.json()["code"] == "invalid_request_url"
+    got, expected = {}, {}
+    for method, path, status in _WRONG_METHOD_ROWS:
+        r = client.request(method, path, headers=notion_h)
+        code = r.json()["code"] if status == 400 else None
+        got[f"{method} {path}"] = (r.status_code, code)
+        expected[f"{method} {path}"] = (status, "invalid_request_url" if status == 400 else None)
+    assert len(got) == len(_WRONG_METHOD_ROWS)
+    assert got == expected
 
 
 def test_notion_one_trailing_slash_is_the_path_without_it_and_two_is_not(client, notion_h):

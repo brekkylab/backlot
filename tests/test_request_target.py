@@ -218,6 +218,11 @@ _ESCAPES = [
     ("/hubspot/crm/v3/objects/", b"contacts%00", "cloudflare page"),
     ("/hubspot/crm/v3/objects/contacts/", b"nope%00x", "cloudflare page"),
     ("/hubspot/crm/v3/objects/contacts/", b"nope%01x", 404),
+    # a `%00` beside a raw byte in the path, in either order (``request_target._cloudflare``)
+    ("/notion/v1/", b"users%00\x01", "cloudflare page"),
+    ("/notion/v1/", b"users\x01%00", "cloudflare page"),
+    ("/hubspot/crm/v3/objects/", b"contacts%00\x01", "cloudflare page"),
+    ("/hubspot/crm/v3/objects/", b"contacts\x01%00", "cloudflare page"),
     ("/s3/", b"%00", "s3 empty"),
     ("/s3/no-such-bucket/", b"nope%00x", "s3 empty"),
     ("/s3/no-such-bucket/", b"nope%01x", 404),

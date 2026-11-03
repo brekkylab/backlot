@@ -184,9 +184,7 @@ _P_EXPAND = {"parameters": [qp("expand")]}
 _P_JIRA_COMMENTS = {
     "parameters": [qp("startAt", "integer"), qp("maxResults", "integer"), qp("orderBy")]
 }
-_P_JIRA_PROJECT_SEARCH = {
-    "parameters": [qp("startAt", "integer"), qp("maxResults", "integer")]
-}
+_P_JIRA_PROJECT_SEARCH = {"parameters": [qp("startAt", "integer"), qp("maxResults", "integer")]}
 _P_CQL = {
     "parameters": [
         qp("cql", required=True),
@@ -560,9 +558,7 @@ def _jira_project_search_link(request: Request, start: int, limit: int) -> str:
 
     params["maxResults"] = [str(limit)]
     params["startAt"] = [str(start)]
-    query = "&".join(
-        f"{name}={value}" for name in sorted(params) for value in params[name]
-    )
+    query = "&".join(f"{name}={value}" for name in sorted(params) for value in params[name])
     return f"{_site(request)}/rest/api/3/project/search?{query}"
 
 

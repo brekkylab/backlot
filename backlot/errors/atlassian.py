@@ -2551,10 +2551,8 @@ def cdn_bad_request(method: str, raw_path: str) -> str:
 
 
 def cdn_page(status: int, method: str, raw_path: str) -> str:
-    """The CDN's page with ``status`` in it and its 400's text (:data:`CDN_BAD_REQUEST`): 414 for a
-    request line it stops reading and 494 for a header line (``backlot.head_bounds``), and 400 for
-    a 0x00 in a header value, 501 for a blank `Transfer-Encoding` and 505 for a request line an LF
-    ends (``backlot.parser_refusals``)."""
+    """The CDN's page with ``status`` in it and its 400's text (:data:`CDN_BAD_REQUEST`), at the
+    status ``backlot.head_bounds`` or ``backlot.parser_refusals`` sends."""
     return _cloudfront(status, CDN_BAD_REQUEST, method, raw_path)
 
 

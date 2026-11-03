@@ -494,6 +494,8 @@ _MARKDOWN_CHUNKED = (
 #: 2026-11-02. A header line of one byte, or one a CR leads, does not end a head: Slack answered a
 #: header past the bound behind either at its bound on 2026-11-02. Nothing after a request that
 #: closes the connection or one the parser refuses is answered, as on api.github.com (2026-11-02).
+#: A head whose earlier read held 0x01 in a header value is answered at its bound once a header
+#: after it passes the bound, as slack.com, api.linear.app and S3 answered it (2026-11-03).
 _CONNECTIONS = [
     (
         "s3 heads in reads of their own",
@@ -628,6 +630,20 @@ _CONNECTIONS = [
         [["slack"]],
         True,
     ),
+    *[
+        (
+            f"{door} a header past the bound after a control byte in an earlier read",
+            [start + b"X-A: a\x01b\r\n", b"X-B: " + b"a" * size],
+            [],
+            [[], [answer]],
+            True,
+        )
+        for door, start, size, answer in [
+            ("slack", _SLACK, 62_000, "slack"),
+            ("linear", b"GET /linear/graphql HTTP/1.1\r\nHost: x\r\n", 140_000, "cloudflare 400"),
+            ("s3", b"GET /s3/b/k HTTP/1.1\r\nHost: x\r\n", 20_000, "s3"),
+        ]
+    ],
     (
         "github a raw byte in the target in the same read",
         [_GITHUB + _RAW],

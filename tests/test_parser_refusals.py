@@ -4,7 +4,8 @@ refusals it leaves to uvicorn's 400.
 
 Each request is written byte for byte to the server ``live_server`` starts, so that httptools reads
 it as written. A request sent in two reads is handed to the protocol in this process instead, a
-``data_received`` call for each, as over a socket the server can take both in one read.
+``data_received`` call for each, as over a socket the server can take both in one read; so is one
+whose head stops before it ends, which over a socket the server would wait on.
 """
 
 from __future__ import annotations
@@ -149,6 +150,8 @@ _REAL = {
         "60ea6cb8c598707355381c5bb1d39af603c4d54d0886cbdda6f1ea9993b3cbfd",
         False,
     ),
+    # A head that stopped before it ended, which real had not answered 3 s on.
+    "nothing": (None, None, 0, hashlib.sha256(b"").hexdigest(), False),
 }
 
 #: uvicorn's own answer to what httptools refuses.
@@ -166,7 +169,8 @@ _JSON = "Content-Type: application/json"
 
 #: Each request below: its method, what follows the path in the request line, its header lines and
 #: whether it sends :data:`_BODY`. A `|` in a header line is where the request is split between two
-#: reads; `{token}` is the admin's token.
+#: reads, and a last line of `|` alone sends nothing after the lines ahead of it; `{token}` is the
+#: admin's token.
 _KINDS = {
     "nul": ("GET", " HTTP/1.1", ["X-Probe: a\x00b"], False),
     "control": ("GET", " HTTP/1.1", ["X-Probe: a\x01b"], False),
@@ -188,6 +192,19 @@ _KINDS = {
     "a high byte, then a nul": ("GET", " HTTP/1.1", ["X-Probe: a\x80b", "X-A: a\x00b"], False),
     "a high byte, then a control": ("GET", " HTTP/1.1", ["X-Probe: a\x80b", "X-A: a\x01b"], False),
     "control, then a high byte": ("GET", " HTTP/1.1", ["X-A: a\x01b", "X-Probe: a\x80b"], False),
+    "control, then a nul in a later read": (
+        "GET",
+        " HTTP/1.1",
+        ["X-A: a\x01b", "|X-B: a\x00b"],
+        False,
+    ),
+    "control, then a plain header in a later read": (
+        "GET",
+        " HTTP/1.1",
+        ["X-A: a\x01b", "|X-B: ab"],
+        False,
+    ),
+    "control, and the head stops there": ("GET", " HTTP/1.1", ["X-A: a\x01b", "|"], False),
     "blank coding": ("POST", " HTTP/1.1", [_JSON, "Transfer-Encoding: ", _LENGTH], True),
     "blank coding, no length": ("POST", " HTTP/1.1", [_JSON, "Transfer-Encoding: "], False),
     "blank coding after a length": (
@@ -277,8 +294,11 @@ _JIRA = ("/atlassian", "/rest/api/3/myself")
 _LINEAR = ("/linear", "/graphql")
 _S3 = ("/s3", "/")
 _GRAPH = ("/msgraph", "/v1.0/me")
+_NOTION = ("/notion", "/v1/users")
+_FIREFLIES = ("/fireflies", "/graphql")
+_HUBSPOT = ("/hubspot", "/crm/v3/objects/contacts")
 
-#: Each request real's front door refused, on a path of its vendor's, and real's answer.
+#: Each request real's front door refused or held, on a path of its vendor's, and real's answer.
 _ROWS = [
     (*_GITHUB, "nul", "github page"),
     (*_GITHUB, "control", "github empty"),
@@ -295,6 +315,8 @@ _ROWS = [
     (*_GITHUB, "control, then a nul", "github page"),
     (*_GITHUB, "blank coding, then a control byte", "github page"),
     (*_GITHUB, "nul, then a length and a blank coding", "github page"),
+    (*_GITHUB, "control, then a nul in a later read", "github page"),
+    (*_GITHUB, "control, then a plain header in a later read", "github empty"),
     (*_GITHUB, "LF, then a length and a blank coding", "github page"),
     (*_SLACK, "nul", "slack 400"),
     (*_SLACK, "control", "slack 400"),
@@ -304,11 +326,15 @@ _ROWS = [
     (*_SLACK, "identity", "slack 400"),
     (*_SLACK, "IDENTITY", "slack 400"),
     (*_SLACK, "identity after a length", "slack 400"),
+    (*_SLACK, "control, then a nul in a later read", "slack 400"),
+    (*_SLACK, "control, then a plain header in a later read", "slack 400"),
     (*_GOOGLE, "nul", "google 400"),
     (*_GOOGLE, "control", "google 400"),
     (*_GOOGLE, "blank coding", "google 400"),
     (*_GOOGLE, "blank coding, no length", "google 400"),
     (*_GOOGLE, "blank coding after a length", "google 400"),
+    (*_GOOGLE, "control, then a nul in a later read", "google 400"),
+    (*_GOOGLE, "control, then a plain header in a later read", "google 400"),
     (*_JIRA, "control", "jira edge"),
     (*_JIRA, "nul", "jira 400"),
     (*_JIRA, "blank coding", "jira 501"),
@@ -320,6 +346,8 @@ _ROWS = [
     (*_JIRA, "nul, then a control byte", "jira 400"),
     (*_JIRA, "control, then a nul", "jira 400"),
     (*_JIRA, "blank coding, then a control byte", "jira 501"),
+    (*_JIRA, "control, then a nul in a later read", "jira 400"),
+    (*_JIRA, "control, then a plain header in a later read", "jira edge"),
     (*_LINEAR, "nul", "cloudflare 400"),
     (*_LINEAR, "control", "cloudflare empty"),
     (*_LINEAR, "control in a later read", "cloudflare empty"),
@@ -338,14 +366,22 @@ _ROWS = [
     (*_LINEAR, "control, then a nul", "cloudflare 400"),
     (*_LINEAR, "blank coding, then a control byte", "cloudflare 501"),
     (*_LINEAR, "identity, split in its name", "cloudflare 400"),
+    *[
+        (mount, path, kind, real)
+        for mount, path in [_LINEAR, _NOTION, _FIREFLIES, _HUBSPOT]
+        for kind, real in [
+            ("control, then a nul in a later read", "cloudflare 400"),
+            ("control, then a plain header in a later read", "cloudflare empty"),
+        ]
+    ],
     # Each byte drew the empty 400 0x01 drew, from each of the four hosts behind Cloudflare.
     *[(*_LINEAR, f"0x{b:02X}", "cloudflare empty") for b in _BYTES],
-    ("/notion", "/v1/users", "control", "cloudflare empty"),
-    ("/hubspot", "/crm/v3/objects/contacts", "blank coding", "cloudflare 501"),
-    ("/hubspot", "/crm/v3/objects/contacts", "a high byte, then a nul", "cloudflare 400"),
-    ("/hubspot", "/crm/v3/objects/contacts", "a high byte, then a control", "cloudflare empty"),
-    ("/hubspot", "/crm/v3/objects/contacts", "control, then a high byte", "cloudflare empty"),
-    ("/fireflies", "/graphql", "identity", "cloudflare 400"),
+    (*_NOTION, "control", "cloudflare empty"),
+    (*_HUBSPOT, "blank coding", "cloudflare 501"),
+    (*_HUBSPOT, "a high byte, then a nul", "cloudflare 400"),
+    (*_HUBSPOT, "a high byte, then a control", "cloudflare empty"),
+    (*_HUBSPOT, "control, then a high byte", "cloudflare empty"),
+    (*_FIREFLIES, "identity", "cloudflare 400"),
     (*_S3, "nul", "s3 empty"),
     (*_S3, "blank coding", "s3 empty"),
     (*_S3, "blank coding, no length", "s3 empty"),
@@ -355,6 +391,7 @@ _ROWS = [
     (*_S3, "nul, then a control byte", "s3 empty"),
     (*_S3, "control, then a nul", "s3 empty"),
     (*_S3, "blank coding, then a control byte", "s3 empty"),
+    (*_S3, "control, then a nul in a later read", "s3 empty"),
     (*_GRAPH, "nul", "graph 400"),
     (*_GRAPH, "control", "graph 400"),
     (*_GRAPH, "blank coding", "graph 501"),
@@ -362,11 +399,18 @@ _ROWS = [
     (*_GRAPH, "identity", "graph 501"),
     (*_GRAPH, "IDENTITY", "graph 501"),
     (*_GRAPH, "identity after a length", "graph 501"),
+    (*_GRAPH, "control, then a nul in a later read", "graph 400"),
+    (*_GRAPH, "control, then a plain header in a later read", "graph 400"),
+    (*_GRAPH, "control, and the head stops there", "graph 400"),
+    *[
+        (*door, "control, and the head stops there", "nothing")
+        for door in [_GITHUB, _SLACK, _GOOGLE, _JIRA, _LINEAR, _NOTION, _FIREFLIES, _HUBSPOT, _S3]
+    ],
 ]
 
-#: The refusals uvicorn's 400 answers: where real reads the request on (the module docstring of
-#: ``backlot.parser_refusals`` says where), where no rule names the refusal, and on a path no vendor
-#: owns.
+#: The refusals uvicorn's 400 answers: where real's front door does not answer them itself (the
+#: module docstring of ``backlot.parser_refusals`` says where), where no rule names the refusal, and
+#: on a path no vendor owns.
 _UVICORNS = [
     (*_GITHUB, "control, credential ahead"),
     (*_GITHUB, "control, credential after"),
@@ -376,6 +420,8 @@ _UVICORNS = [
     (*_GOOGLE, "LF"),
     (*_JIRA, "identity"),
     (*_S3, "control"),
+    (*_S3, "control, then a plain header in a later read"),
+    ("", "/_meta/nope", "control, and the head stops there"),
     (*_S3, "identity"),
     (*_GRAPH, "LF"),
     (*_LINEAR, "chunked beside a length"),
@@ -390,8 +436,11 @@ _UVICORNS = [
 def _request(mount: str, path: str, kind: str, token: str) -> list[bytes]:
     """The request ``kind`` names, in the reads it is sent in."""
     method, rest, lines, body = _KINDS[kind]
-    lines = [line.format(token=token) for line in ["Host: x", "Connection: close", *lines]]
+    fixed = ["Host: x", "Connection: close", "User-Agent: probe"]
+    lines = [line.format(token=token) for line in [*fixed, *lines]]
     raw = f"{method} {mount}{path}{rest}\r\n" + "".join(f"{line}\r\n" for line in lines) + "\r\n"
+    if lines[-1] == "|":
+        return [raw.split("|")[0].encode("latin-1"), b""]
     return [part.encode("latin-1") for part in raw.split("|")[:-1]] + [
         raw.split("|")[-1].encode("latin-1") + (_BODY if body else b"")
     ]
@@ -459,11 +508,13 @@ def test_a_request_httptools_refuses_gets_its_front_doors_answer_or_uvicorns_400
 
 #: A GET, then a request real's front door refused, and real's answer to the second, which came
 #: after the GET's 200: written in the same write as the GET (slack.com and api.github.com,
-#: 2026-11-02, twice each), and written once the GET's answer had been read (2026-11-03).
+#: 2026-11-02, twice each), and written once the GET's answer had been read (2026-11-03). The last
+#: is one of :data:`_UVICORNS`, whose 400 waits for the 200 here as well.
 _BEHIND = [
     ("/slack/api/api.test", *_SLACK, "blank coding", "slack 400"),
     ("/github/rate_limit", *_GITHUB, "nul", "github page"),
     ("/github/rate_limit", *_GITHUB, "blank coding", "github page"),
+    ("/github/rate_limit", *_GITHUB, "control, credential ahead", None),
 ]
 
 
@@ -503,7 +554,7 @@ def test_a_refused_request_behind_another_is_answered_after_it(live_server):
         ]:
             got[first, kind, shape] = outcome(_after_the_200, send)
     assert got == {
-        (first, kind, shape): (b"HTTP/1.1 200 OK\r\n", _REAL[real])
+        (first, kind, shape): (b"HTTP/1.1 200 OK\r\n", _REAL[real] if real else _UVICORN)
         for first, _, _, kind, real in _BEHIND
         for shape in ("one write", "after its answer")
     }

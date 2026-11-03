@@ -364,7 +364,14 @@ def _rows():
         rest = b"nope" + sent + b"x"
         yield pytest.param(b"GET", base, rest, "cloudflare page", 2, b"", b"x", id=f"{base} twice")
     yield pytest.param(
-        b"GET", "/hubspot/crm/v3/objects/contacts/", b"nope\tx", "cloudflare page", 2, b"", b"x"
+        b"GET",
+        "/hubspot/crm/v3/objects/contacts/",
+        b"nope\tx",
+        "cloudflare page",
+        2,
+        b"",
+        b"x",
+        id="/hubspot/crm/v3/objects/contacts/ twice",
     )
     # a conditional header twice, which Cloudflare refuses ahead of the bytes, and once, which
     # draws the empty 400 the byte alone draws: on each vendor, with no credential, a `\x01` in
@@ -496,42 +503,50 @@ def _page(answer: str, method: bytes, target: bytes) -> tuple[int, str | None, b
     return _PAGES[answer]
 
 
-@pytest.mark.parametrize("method, base, rest, answer, authorizations, header, host", list(_rows()))
-def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answers_it(
-    live_server, method, base, rest, answer, authorizations, header, host
-):
+def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answers_it(live_server):
+    """Each row of :func:`_rows`, sent over a socket, is answered as the vendor's front door
+    answered it: the API behind it where the row names a status, the target read as the row says, or
+    the row's page, with the connection kept or closed as real kept or closed it."""
     base_url, settings = live_server
-    admin = None if base.startswith("/s3/") else settings.admin_token
-    target = base.encode() + rest
-    status, headers, body = _send(base_url, method, target, admin, authorizations, header, host)
-    if isinstance(answer, int):  # the API behind the front door, which read the target on
-        assert status == answer
-        assert body not in {page for _, _, page in _PAGES.values() if page}
-        return
-    assert headers.get("connection") == (None if answer in _KEEPS_THE_CONNECTION else "close")
-    reading = answer.removesuffix(" closed").removesuffix(" kept")
-    if reading in ("encoded", "encoded, cut", "?", "served"):
-        encoded = target if reading == "served" else _encoded(target, question_marks=reading == "?")
-        if reading == "encoded, cut":
-            encoded = re.sub(rb"%[0-9A-Fa-f]?\Z", b"", encoded)
-        twin = _send(base_url, method, encoded, admin, header=header)
-        assert status == twin[0]
-        assert _ids_left_out(base, body) == _ids_left_out(base, twin[2])
-        return
-    if answer == "s3 505":
-        assert (status, headers["content-type"]) == (505, "application/xml")
-        assert b"<Code>HttpVersionNotSupported</Code>" in body
-        return
-    want_status, want_type, want_body = _page(reading, method, target)
-    assert (status, headers.get("content-type"), body) == (want_status, want_type, want_body)
-    # the edge's page carries the edge's two headers beside its own, CloudFront's neither
     edge = {"x-content-type-options": "nosniff", "x-xss-protection": "1; mode=block"}
-    if answer.startswith("edge "):
-        assert {k: headers.get(k) for k in [*edge, "access-control-allow-origin"]} == edge | {
-            "access-control-allow-origin": "*"
-        }
-    else:
-        assert not edge.keys() & headers.keys()
+    got, expected = {}, {}
+    for row in _rows():
+        method, base, rest, answer, authorizations, header, host = row.values
+        admin = None if base.startswith("/s3/") else settings.admin_token
+        target = base.encode() + rest
+        status, headers, body = _send(base_url, method, target, admin, authorizations, header, host)
+        if isinstance(answer, int):  # the API behind the front door, which read the target on
+            got[row.id] = (status, body in {page for _, _, page in _PAGES.values() if page})
+            expected[row.id] = (answer, False)
+            continue
+        connection = None if answer in _KEEPS_THE_CONNECTION else "close"
+        reading = answer.removesuffix(" closed").removesuffix(" kept")
+        if reading in ("encoded", "encoded, cut", "?", "served"):
+            encoded = target if reading == "served" else _encoded(target, reading == "?")
+            if reading == "encoded, cut":
+                encoded = re.sub(rb"%[0-9A-Fa-f]?\Z", b"", encoded)
+            twin = _send(base_url, method, encoded, admin, header=header)
+            got[row.id] = (headers.get("connection"), status, _ids_left_out(base, body))
+            expected[row.id] = (connection, twin[0], _ids_left_out(base, twin[2]))
+            continue
+        if answer == "s3 505":
+            got[row.id] = (
+                headers.get("connection"),
+                status,
+                headers["content-type"],
+                b"<Code>HttpVersionNotSupported</Code>" in body,
+            )
+            expected[row.id] = (connection, 505, "application/xml", True)
+            continue
+        # the edge's page carries the edge's two headers beside its own, CloudFront's neither
+        if answer.startswith("edge "):
+            extra = {k: headers.get(k) for k in [*edge, "access-control-allow-origin"]}
+            want_extra = edge | {"access-control-allow-origin": "*"}
+        else:
+            extra, want_extra = sorted(edge.keys() & headers.keys()), []
+        got[row.id] = (headers.get("connection"), status, headers.get("content-type"), body, extra)
+        expected[row.id] = (connection, *_page(reading, method, target), want_extra)
+    assert got == expected
 
 
 @pytest.mark.parametrize(

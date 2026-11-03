@@ -101,6 +101,13 @@ def _kinds(part: bytes) -> list[str]:
     return [_kind(m[0][0]) for m in _RAW.finditer(part)]
 
 
+def kinds_sent(scope: Scope) -> set[str]:
+    """The kinds of raw byte (:func:`_kind`) the request's target was sent with, in its path and its
+    query: none where :mod:`backlot.protocol` encoded none."""
+    sent = scope.get(SENT)
+    return set(_kinds(sent)) if sent is not None else set()
+
+
 def _under(path: str, prefix: str) -> bool:
     return path == prefix or path.startswith(f"{prefix}/")
 
@@ -339,14 +346,16 @@ def _climbs_past_the_root(path: bytes) -> bool:
 
 
 def _cloudflare(scope: Scope, path_kinds: list[str], query_kinds: list[str]) -> Response | None:
-    """:data:`CLOUDFLARE_PAGE` where a `nul` or a `cr` is anywhere, and where `Authorization` or
-    one of the five conditional headers comes more than once
+    """:data:`CLOUDFLARE_PAGE` where a `nul` or a `cr` is anywhere or a `%00` is in the path, and
+    where `Authorization` or one of the five conditional headers comes more than once
     (``auth.repeated_cloudflare_refused_header``), ahead of the bytes below; then an empty 400
     with no `Content-Type` for any raw byte in the query, and for one in a path that holds no
     `space`; and a path with a `space` in it read as its percent-encoding, whatever else the path
-    holds."""
+    holds. A `%00` was the page beside a `control` before it and after it on Notion and HubSpot on
+    2026-11-03 (UTC)."""
     every = set(path_kinds) | set(query_kinds)
-    if every & {"nul", "cr"} or auth.repeated_cloudflare_refused_header(Request(scope)):
+    nul = every & {"nul", "cr"} or b"%00" in scope["raw_path"]
+    if nul or auth.repeated_cloudflare_refused_header(Request(scope)):
         return _page(CLOUDFLARE_PAGE, "text/html")
     if query_kinds or "space" not in path_kinds:
         return _page(b"", None, close=False)

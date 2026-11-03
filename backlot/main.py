@@ -1719,8 +1719,8 @@ _GITHUB_TARGET_TOO_LONG = (
 @_middleware(lambda scope: _at_or_under(_url_path(scope), ("/github",)))
 async def answer_a_github_request_target_past_its_bound(request: Request, call_next):
     """414 a `/github` request on any path and any method whose target is too long for real, ahead
-    of the route and its refusals, which a shorter target meets. The target is counted as
-    ``backlot.routers.github._refuse_a_long_line_or_path`` counts the request line's.
+    of the route and its refusals, which a shorter target meets
+    (``backlot.routers.github.target_past_its_bound``).
 
     On api.github.com, 2026-10-29, each request cache-busted: on `/repos/{owner}/{repo}` a `GET`, a
     `HEAD` and a `POST` with a target of 8,192 were this 414, and so were a `GET` on a path no route
@@ -1729,10 +1729,7 @@ async def answer_a_github_request_target_past_its_bound(request: Request, call_n
     raw byte in the target was the front door's 400
     (:func:`answer_a_raw_byte_in_the_request_target`) ahead of it. Real's status line reads
     `414 Request-URI Too Large`, and the answer carries no rate limit."""
-    query = request.scope["query_string"]
-    target = request.scope["raw_path"][len("/github") :] + (b"?" + query if query else b"")
-    bound = 8_174 if request.scope["path"] == "/github/search/code" else 8_192
-    if len(target) >= bound:
+    if github.target_past_its_bound(request.scope):
         return Response(
             _GITHUB_TARGET_TOO_LONG,
             status_code=414,
@@ -1772,7 +1769,8 @@ async def read_a_drive_or_editor_query_as_google_does(request: Request, call_nex
     sequence back as nothing on 2026-10-30 (UTC), `a%80b` as `ab`, so a Gmail query is left to the
     router. Registered before ``answer_a_google_read_sent_as_a_post``, which makes it the inner of
     the two, so it reads the form that one adds to the query too."""
-    request.scope["query_string"] = utf8_escapes.google_query(request.scope["query_string"])
+    query = request.scope["query_string"]
+    request.scope["query_string"] = utf8_escapes.google_query(query, errors.google.QUERY_TOKENS)
     return await call_next(request)
 
 
@@ -1806,8 +1804,9 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
     answered each on `about` as it answers a `PUT` there, with its 404 page, and on 2026-10-25 so it
     answered a `PUT`, `PATCH` or `DELETE` naming `GET` there.
 
-    Registered just inside ``answer_a_raw_byte_in_the_request_target``, whose refusals real gave
-    such a POST on Drive's `about` on 2026-10-25 as it gives a GET, and outside every other
+    Registered inside ``answer_a_raw_byte_in_the_request_target``, whose refusals real gave such a
+    POST on Drive's `about` on 2026-10-25 as it gives a GET, and inside
+    ``answer_an_escape_a_front_door_refuses``, which reads the path alone; and outside every other
     middleware that reads the method or the query, so they and the router see the GET.
     """
     path = request.scope["path"]

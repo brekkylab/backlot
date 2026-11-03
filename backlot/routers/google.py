@@ -4319,8 +4319,8 @@ async def drive_files_permissions(file_id: str, request: Request):
     sizes = _drive_typed(
         request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
     )["pageSize"]
-    _refuse_an_undecodable_path(request)
     _drive_page_size_in_range(sizes, 100)
+    _refuse_an_undecodable_path(request)
     _drive_refuse_a_trailing_comma(request)
     # Refused in real's order, measured by sending two bad values at once: the `pageToken`
     # refusals, a repeated `pageSize`'s 500, the domain-administrator refusal and the file lookup
@@ -4401,12 +4401,14 @@ _EDITOR_NATIVE = frozenset(_EDITOR_OFFICE_FAMILY)
 
 def _refuse_an_undecodable_path(request: Request) -> None:
     """Refuse a path whose escapes do not decode to UTF-8 (``backlot.utf8_escapes.decodes``) as the
-    API behind it refuses it, after the credential, `alt`, a typed parameter, export's required
-    `mimeType`, a body batchUpdate refuses and a `fields` mask Docs, Sheets or Slides refuses, and
-    ahead of a `fields` mask Drive refuses, Drive's trailing comma, `acknowledgeAbuse=true` and an
-    export `mimeType`, `text/plain` or one Drive does not convert to. Measured on Drive, Docs and
-    Sheets on 2026-10-30 (UTC), on Slides on 2026-10-31 and on Docs' batchUpdate on 2026-11-02,
-    each with a Workspace member's token."""
+    API behind it refuses it, after the credential, `alt`, a typed parameter, a `pageSize` out of
+    range, export's required `mimeType`, a body batchUpdate refuses and a `fields` mask Docs, Sheets
+    or Slides refuses, and ahead of a `fields` mask Drive refuses, Drive's trailing comma,
+    `acknowledgeAbuse=true`, an export `mimeType`, `text/plain` or one Drive does not convert to,
+    and on `permissions` a `pageToken`, a repeated `pageSize` and `useDomainAdminAccess=true`.
+    Measured on Drive, Docs and Sheets on 2026-10-30 (UTC), on Slides on 2026-10-31, on Docs'
+    batchUpdate on 2026-11-02 and on `permissions` on 2026-11-03, each with a Workspace member's
+    token."""
     if utf8_escapes.decodes(request.scope["raw_path"]):
         return
     if gerr.family(request.url.path) == gerr.DRIVE:

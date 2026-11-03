@@ -3500,6 +3500,9 @@ _DRIVE_CHECK_ROWS = [
     ("/drive/v3/files/nope%80x", "supportsAllDrives=nope", "admin", _TYPED),
     ("/drive/v3/files/nope%80x", "alt=media&acknowledgeAbuse=nope", "admin", _TYPED),
     ("/drive/v3/files/nope%80x/permissions", "pageSize=nope", "admin", _TYPED),
+    ("/drive/v3/files/nope%80x/permissions", "pageSize=500", "admin", _RANGE),
+    ("/drive/v3/files/nope%80x/permissions", "pageSize=0", "admin", _RANGE),
+    *[("/drive/v3/files/nope%80x/permissions", query, "admin", _PATH_400) for query in ("pageToken=nope", "pageSize=5&pageSize=6", "useDomainAdminAccess=true", "fields=permissions(id),")],
     ("/drive/v3/files/nope%80x/export", "", "admin", (400, "required", "mimeType", None)),
     ("/drive/v3/files/nope%C3%A9x", "", "admin", (404, "notFound", "fileId", None)),
     ("/drive/v3/files/nope%C3%A9x/permissions", "", "admin", (404, "notFound", "fileId", None)),
@@ -4554,6 +4557,7 @@ _QUERY_CREDENTIAL_ROWS = [
     (None, "access_token=ya29.x&oauth_token={t}&oauth_token={t}", _CHALLENGE),
     (None, "access_token=ya29.x&access_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "access_token=ya29.x&oauth_token={m}", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%80", _CHALLENGED),
     # beside a header: a credential, a bare scheme and `Bearer ,` outrank the query, a scheme run
     # into its token reads it without the gate, and a header that is no credential leaves it alone
     ("Bearer {t}", "access_token=ya29.x", _SERVED),

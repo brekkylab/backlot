@@ -512,11 +512,14 @@ def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, noti
         # ``backlot.routers.notion.undecodable_url``'s refusal
         ("GET", "/notion/v1/nope%80x", notion_h, None, 400, refused),
         ("GET", "/notion/v1/users/nope%80x", notion_h, None, 400, refused),
+        ("HEAD", "/notion/v1/users/nope%80x", notion_h, None, 400, refused),
     ]
     for method, path, headers, body, status, sent in rows:
         r = client.request(method, path, headers=headers, content=body)
         got = {name: r.headers.get(name) for name in real}
-        got["etag"] = r.headers.get("etag") and r.headers["etag"] == weak_etag(r.content)
+        # a `HEAD`'s tag is its `GET`'s body's
+        tagged = client.get(path, headers=headers).content if method == "HEAD" else r.content
+        got["etag"] = r.headers.get("etag") and r.headers["etag"] == weak_etag(tagged)
         assert (r.status_code, r.headers["content-type"], got) == (status, utf8, sent), (path, body)
     head = client.head("/notion/v1/users/me", headers=versioned)
     got = {name: head.headers.get(name) for name in real}

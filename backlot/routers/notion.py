@@ -81,11 +81,11 @@ PUBLISHED_VERSIONS = (
 #: The headers real puts on an answer past its body reader (:func:`front_door_body`), one value
 #: each wherever they were measured against api.notion.com on 2026-10-27: the answers of each route
 #: here (200s, 400s, 401s, 404s and a 503, `HEAD`s among them), the OAuth client endpoints' 401 and
-#: the root's 302. The refusals that body reader answers carried none of them, and neither did the
-#: front door's `405 Not Allowed` page for `TRACE`: a method outside :data:`ROUTED_METHODS` is the
-#: framework's 405 here (:func:`unmatched_path`), and carries none of them either.
-#: `strict-transport-security` came beside them and is left off, a promise of HTTPS that a server
-#: answering over plain HTTP cannot keep.
+#: the root's 302. The refusals that body reader answers carried none of them, nor did
+#: :func:`undecodable_url`'s 400, nor the front door's `405 Not Allowed` page for `TRACE`: a method
+#: outside :data:`ROUTED_METHODS` is the framework's 405 here (:func:`unmatched_path`), and carries
+#: none of them either. `strict-transport-security` came beside them and is left off, a promise of
+#: HTTPS that a server answering over plain HTTP cannot keep.
 APPLICATION_HEADERS = {
     "content-security-policy": "default-src 'none'",
     "referrer-policy": "strict-origin-when-cross-origin",
@@ -508,9 +508,8 @@ def undecodable_url(request: Request) -> JSONResponse | None:
     route's own (`/v1/users%80`, `/v1/users/nope%80x`, `/v1/pages/nope%80x`) and beside `%01`, on a
     `GET` with a token and without one: `Failed to decode url.`, where a `%C3%A9` in the same place
     was the URL's 400 (:func:`unmatched_path`) or the route's own refusal. A body Express refuses
-    (:func:`front_door_body`) was refused ahead of it, on a `POST` with a token and without one, and
-    the 400 carried none of :data:`APPLICATION_HEADERS`. On 2026-10-31 `/v1/nope<cache-buster>%`
-    and `…%4`, by `GET` with a token, drew the same 400."""
+    (:func:`front_door_body`) was refused ahead of it, on a `POST` with a token and without one. On
+    2026-10-31 `/v1/nope<cache-buster>%` and `…%4`, by `GET` with a token, drew the same 400."""
     own = sent_path(request.scope).encode("latin-1")
     cut = request_target.cut_escape(own, request_target.path_ends_the_target(request.scope))
     if utf8_escapes.decodes(request.scope["raw_path"]) and not cut:

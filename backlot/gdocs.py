@@ -1387,16 +1387,15 @@ def _after_break(text: str) -> str:
 
 def _lead_breaks(paragraph: dict) -> list[tuple[int, int]]:
     """The CRLFs a plain export adds for the runs a paragraph starts with that hold nothing but
-    vertical tabs once `_after_break` drops the separators after them, each as the count of the
-    paragraph's vertical tabs it follows and how many: one for each such run another run follows,
-    and one for each such run that is a link. Real's answers on 2026-11-01 match it on paragraphs
-    starting with one to three runs of vertical tabs, before text or alone, in NORMAL_TEXT, TITLE
-    and SUBTITLE, and on ones starting with runs of a vertical tab and a space, U+3000, a tab,
-    U+00A0 or two spaces, or a space and a vertical tab; a HEADING_n takes none. A footnote
-    reference and a page break are runs of their own, and a page break is no run that follows,
-    measured 2026-11-03: a vertical tab then a reference of one text style took the CRLF of two
-    runs, a vertical tab then a page break none, and a vertical-tab link then a page break its
-    link's one, before the rule."""
+    vertical tabs once `_after_break` drops the separators after them, as pairs: how many of the
+    paragraph's vertical tabs they follow, and how many they are: one for each such run another run
+    follows, and one for each such run that is a link. Real's answers on 2026-11-01 match it on
+    paragraphs starting with one to three runs of vertical tabs, before text or alone, in
+    NORMAL_TEXT, TITLE and SUBTITLE, and on ones starting with runs of a vertical tab and a space,
+    U+3000, a tab, U+00A0 or two spaces, or a space and a vertical tab. A footnote reference and a
+    page break are runs of their own, and a page break is no run that follows, measured 2026-11-03:
+    a vertical tab then a reference of one text style took the CRLF of two runs, a vertical tab then
+    a page break none, and a vertical-tab link then a page break its link's one, before the rule."""
     named = _TEXT_STYLES.get(_named(paragraph), {})
     runs: list[tuple[str, dict]] = []
     for text, style in _paragraph_runs(paragraph):
@@ -1439,15 +1438,18 @@ def _page_breaks(text: str, bare: str, heading: bool) -> str:
     starts no line before it, and one closing a paragraph that holds text ends none after it,
     while the last of a paragraph holding page breaks alone ends a line after it, which
     `_plain_lines` doubles outside a HEADING_n and drops in one; measured 2026-11-03, two page
-    breaks alone were two rules with no line between them. In a HEADING_n a page break after only
-    vertical tabs starts no line either: measured 2026-11-03, a vertical tab, a page break and `cd`
-    in a HEADING_2 were a CRLF, the rule and `cd`."""
+    breaks alone were two rules with no line between them. A page break right after vertical tabs
+    starts no line either, in a HEADING_n or once text comes before them: measured 2026-11-03, a
+    vertical tab, a page break and `cd` in a HEADING_2 were an empty line, the rule and `cd` on
+    three lines, and `ab`, a page break, a vertical tab, a page break and `cd` in NORMAL_TEXT had
+    one empty line between the two rules."""
     out = ""
     pieces = text.split(PAGE_BREAK)
     for i, piece in enumerate(pieces):
         if i:
             last = not bare and i == len(pieces) - 1
-            start = out and not (heading and i == 1 and not out.strip("\x0b"))
+            tabs = pieces[i - 1] and not pieces[i - 1].strip("\x0b")
+            start = out and not (tabs and (heading or "".join(pieces[:i]).strip("\x0b")))
             out += ("\x0b" if start else "") + _RULE + ("\x0b" if piece or last else "")
         out += piece
     return out

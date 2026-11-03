@@ -4135,14 +4135,18 @@ _AMID_ROWS = [
 ]
 
 
-def test_slack_a_method_amid_what_real_reads_past_is_the_method(client, admin_h, tokens):
-    """Each row of `_AMID_ROWS`: a served method's name after a run of `/`s and `\\`s, in any mix,
-    or ahead of a run real drops off the end of the path, is answered as the name on its own
-    spelling, with its credential pair, and with what the admin token and a scoped one each see
-    (``backlot.main.merge_slashes_before_a_slack_method_name`` and ``slack.drop_the_end`` have the
-    measurement)."""
+@pytest.mark.parametrize("credential", [None, "bogus", "admin", "ava"])
+def test_slack_a_method_amid_what_real_reads_past_is_the_method(
+    client, admin_h, tokens, credential
+):
+    """Each row of `_AMID_ROWS` sent with ``credential``: a served method's name after a run of `/`s
+    and `\\`s, in any mix, or ahead of a run real drops off the end of the path, is answered as the
+    name on its own spelling, with its credential pair, and with what the admin token and a scoped
+    one each see (``backlot.main.merge_slashes_before_a_slack_method_name`` and
+    ``slack.drop_the_end`` have the measurement)."""
+    rows = [row for row in _AMID_ROWS if row[4] == credential]
     got, expected = {}, {}
-    for before, after, verb, name, credential, body in _AMID_ROWS:
+    for before, after, verb, name, _, body in rows:
         headers = {"Content-Type": _FORM} if body is not None else {}
         if credential == "bogus":
             headers["Authorization"] = "Bearer xoxb-not-a-real-token"
@@ -4154,10 +4158,10 @@ def test_slack_a_method_amid_what_real_reads_past_is_the_method(client, admin_h,
         merged = client.request(
             verb, f"/slack/api/{before}{name}{after}", headers=headers, content=body
         )
-        key = f"{verb} {before}{name}{after} {credential} {body!r}"
+        key = f"{verb} {before}{name}{after} {body!r}"
         got[key] = (plain.status_code, merged.status_code, merged.content == plain.content)
         expected[key] = (200, 200, True)
-    assert len(got) == len(_AMID_ROWS)
+    assert len(got) == len(rows)
     assert got == expected
 
 

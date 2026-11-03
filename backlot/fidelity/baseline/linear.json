@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-29",
+  "measured": "2026-11-03",
   "root": {
     "query": "Query"
   },
@@ -894,6 +894,13 @@
         "archivedAt": {
           "status": "implemented"
         },
+        "collaborators": {
+          "status": "missing",
+          "type": "[DocumentCollaborator!]!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        },
         "color": {
           "status": "implemented"
         },
@@ -941,6 +948,13 @@
         "documentContentId": {
           "status": "implemented"
         },
+        "generalAccess": {
+          "status": "missing",
+          "type": "DocumentShareRole",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        },
         "hiddenAt": {
           "status": "implemented"
         },
@@ -964,6 +978,13 @@
         },
         "parentDocument": {
           "status": "implemented"
+        },
+        "personalUser": {
+          "status": "missing",
+          "type": "User",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
         },
         "project": {
           "status": "implemented"
@@ -1029,6 +1050,27 @@
         },
         "url": {
           "status": "implemented"
+        },
+        "viewerCanComment": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        },
+        "viewerCanEdit": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        },
+        "viewerCanManageAccess": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
         }
       }
     },

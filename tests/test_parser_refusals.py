@@ -457,8 +457,9 @@ def test_a_request_httptools_refuses_gets_its_front_doors_answer_or_uvicorns_400
     }
 
 
-#: A GET, then in the same write a request real's front door refused, and real's answer to the
-#: second, which came after the GET's 200 (slack.com and api.github.com, 2026-11-02, twice each).
+#: A GET, then a request real's front door refused, and real's answer to the second, which came
+#: after the GET's 200: written in the same write as the GET (slack.com and api.github.com,
+#: 2026-11-02, twice each), and written once the GET's answer had been read (2026-11-03).
 _BEHIND = [
     ("/slack/api/api.test", *_SLACK, "blank coding", "slack 400"),
     ("/github/rate_limit", *_GITHUB, "nul", "github page"),
@@ -466,14 +467,40 @@ _BEHIND = [
 ]
 
 
-def test_a_refused_request_behind_one_not_yet_answered_is_answered_after_it(live_server):
+def _after_its_answer(base_url: str, first: bytes, second: bytes) -> bytes:
+    """What answers ``first`` and then ``second`` on one connection, ``second`` written once the
+    answer to ``first``, which carries a `Content-Length`, has been read to its end."""
+    url = urllib.parse.urlsplit(base_url)
+    with socket.create_connection((url.hostname, url.port), timeout=10) as c:
+        c.sendall(first)
+        got = b""
+        while b"\r\n\r\n" not in got:
+            got += c.recv(65536)
+        length = int(re.search(rb"(?i)\r\ncontent-length: *(\d+)", got)[1])
+        while len(got) < got.find(b"\r\n\r\n") + 4 + length:
+            got += c.recv(65536)
+        c.sendall(second)
+        while chunk := c.recv(65536):
+            got += chunk
+    return got
+
+
+def test_a_refused_request_behind_another_is_answered_after_it(live_server):
     base_url, settings = live_server
     got = {}
     for first, mount, path, kind, _ in _BEHIND:
         (second,) = _request(mount, path, kind, settings.admin_token)
         line = f"GET {first} HTTP/1.1\r\nHost: x\r\nUser-Agent: probe\r\n\r\n".encode()
-        answer = _answer(base_url, [line + second])
-        got[first, kind] = (answer[:17], _shape(answer[answer.find(b"HTTP/1.1 400") :]))
+        for shape, answer in [
+            ("one write", _answer(base_url, [line + second])),
+            ("after its answer", _after_its_answer(base_url, line, second)),
+        ]:
+            got[first, kind, shape] = (
+                answer[:17],
+                _shape(answer[answer.find(b"HTTP/1.1 400") :]),
+            )
     assert got == {
-        (first, kind): (b"HTTP/1.1 200 OK\r\n", _REAL[real]) for first, _, _, kind, real in _BEHIND
+        (first, kind, shape): (b"HTTP/1.1 200 OK\r\n", _REAL[real])
+        for first, _, _, kind, real in _BEHIND
+        for shape in ("one write", "after its answer")
     }

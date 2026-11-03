@@ -487,6 +487,21 @@ async def answer_a_hubspot_method_or_accept_no_route_takes(request: Request, cal
     return await call_next(request)
 
 
+@_middleware(lambda scope: scope["path"].startswith("/hubspot/"))
+async def put_a_correlation_id_on_hubspot_answers(request: Request, call_next):
+    """Put real's correlation id, charset and error `correlationId` on every `/hubspot` answer
+    (``backlot.routers.hubspot.correlate``) but the 404 for a path no HubSpot route serves, which
+    real's front answers with none (api.hubapi.com, 2026-09-30 and 2026-10-18).
+
+    Registered after the other `/hubspot` middlewares above so it wraps them, and the answers they
+    give ahead of the router carry it too. The Cloudflare page for a repeated header
+    (:func:`refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot`) is outside it."""
+    response = await call_next(request)
+    if response.status_code == 404 and _hubspot_route(request.scope) is None:
+        return response
+    return await hubspot.correlate(request, response)
+
+
 @_middleware(lambda scope: _url_path(scope).startswith("/github"))
 async def echo_github_api_version(request: Request, call_next):
     """Report which API version served the response, on the `/github` answers real echoes one for,

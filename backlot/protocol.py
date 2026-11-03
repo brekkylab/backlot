@@ -158,8 +158,6 @@ class Protocol(HttpToolsProtocol):
         the ``reason`` it gave and the head as far as it has arrived, or ``None`` for any other
         refusal."""
         head = self._head
-        if head.size == 0:
-            return None
         if reason == "Invalid header value char":
             return "nul" if head.nul else "control"
         if reason == "Invalid header token" and self._no_version:

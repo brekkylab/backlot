@@ -1459,7 +1459,7 @@ async def conversations_history(request: Request):
         return err
     if err := _missing_argument(request, "channel"):
         return err
-    limit, err = _limit(request)
+    limit, err = _limit(request, most=1000)
     if err is not None:
         return err
     if limit < 0:  # one message (see `_limit`)
@@ -3327,10 +3327,12 @@ def _numbers(
     request: Request,
     *params: tuple[str, int] | tuple[str, int, bool],
     sort_dir_ok: bool | None = None,
+    most: int | None = None,
 ) -> tuple[dict[str, int], JSONResponse | None]:
     """The numeric arguments `params` names as `(key, default)`, each read by `_slack_number` and
     capped at `max_page_size`, and the `invalid_arguments` that names every one real refuses. A
-    third element is that key's `decimal`, for a method that reads it by the other rule.
+    third element is that key's `decimal`, for a method that reads it by the other rule. A value
+    past `most` is read as its default before the cap.
 
     Real puts one line per refused field in one answer, in the order `params` lists them
     whichever was sent first, and on the search methods an unknown `sort_dir` adds its line after
@@ -3345,8 +3347,9 @@ def _numbers(
         if n is None:
             messages.append(f"[ERROR] must provide a number [json-pointer:/{key}]")
             n = default
-        max_size = get_settings().max_page_size
-        values[key] = default if key == "limit" and n > max_size else min(n, max_size)
+        if most is not None and n > most:
+            n = default
+        values[key] = min(n, get_settings().max_page_size)
     if sort_dir_ok is not None:
         value = _param(request, "sort_dir")
         if value is not None and value not in _SORT_DIRS and not (sort_dir_ok and value == ""):
@@ -3358,7 +3361,7 @@ def _numbers(
     )
 
 
-def _limit(request: Request) -> tuple[int, JSONResponse | None]:
+def _limit(request: Request, *, most: int | None = None) -> tuple[int, JSONResponse | None]:
     """The page size a paged method serves, and the refusal for a `limit` real does not read.
 
     Each handler answers the refusal after its missing-argument check and before it resolves the
@@ -3375,7 +3378,13 @@ def _limit(request: Request) -> tuple[int, JSONResponse | None]:
     `-1`, and answers `fatal_error` for anything lower. On `users.list`, measured 2026-10-16 on the
     same workspace, the cursor `-1` serves goes on from the second member, as the one `limit=1`
     serves does; `-1` beside a cursor that decodes is `internal_error`; and a cursor that does not
-    decode is `invalid_cursor` ahead of the other two (`cursor=bogus&limit=-2`)."""
+    decode is `invalid_cursor` ahead of the other two (`cursor=bogus&limit=-2`).
+
+    `most` is the largest `limit` a method serves as sent; one past it is served as no `limit`,
+    and `max_page_size` caps what is left. On `conversations.history` it is 1000: measured
+    2026-11-02 on a channel of 330 messages, `201` served 201; `1000`, `1e3`, `1000.5` and
+    `1000.9` served all 330; and `1001`, `2000`, `2147483647` and `9223372036854775807` each served
+    100 messages and a cursor, as the request without `limit` did."""
     default = get_settings().default_page_size
-    values, err = _numbers(request, ("limit", default))
+    values, err = _numbers(request, ("limit", default), most=most)
     return values["limit"] or default, err

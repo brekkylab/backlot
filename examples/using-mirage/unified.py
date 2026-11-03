@@ -133,27 +133,27 @@ def main_fuse(mounts: dict) -> None:
 
     ``grep -r`` walks the whole mount, so it's meant for the small default corpus; against a
     large ``--url`` use the per-source scripts (their bounded navigation)."""
-    try:
-        with Workspace(mounts, mode=MountMode.READ) as ws:
+    with Workspace(mounts, mode=MountMode.READ) as ws:
+        try:
             mnt = ws.add_fuse_mount("/")  # the workspace root is now one real directory
-            backends = [p.strip("/") for p in mounts]
-            print(f"=== mounted at {mnt}: {', '.join(backends)} — one filesystem ===")
-            print(f"\n$ grep -rl Q1 {' '.join(backends)}   # one command, all three backends")
-            hits = subprocess.run(
-                ["grep", "-rl", "Q1", *(f"{mnt}/{b}" for b in backends)],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            )
-            seen = set()  # one hit per backend (a message can appear under many labels)
-            for h in hits.stdout.splitlines():
-                rel = os.path.relpath(h, mnt)
-                if rel.split("/")[0] not in seen:
-                    seen.add(rel.split("/")[0])
-                    print(f"  [{rel.split('/')[0]}] {rel}")
-            print(f"\nexplore it live in another terminal:  ls {mnt}")
-    except (ImportError, RuntimeError, OSError) as e:
-        raise SystemExit(FUSE_HELP.format(err=e))
+        except (ImportError, RuntimeError, OSError) as e:
+            raise SystemExit(FUSE_HELP.format(err=e))
+        backends = [p.strip("/") for p in mounts]
+        print(f"=== mounted at {mnt}: {', '.join(backends)} — one filesystem ===")
+        print(f"\n$ grep -rl Q1 {' '.join(backends)}   # one command, all three backends")
+        hits = subprocess.run(
+            ["grep", "-rl", "Q1", *(f"{mnt}/{b}" for b in backends)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        seen = set()  # one hit per backend (a message can appear under many labels)
+        for h in hits.stdout.splitlines():
+            rel = os.path.relpath(h, mnt)
+            if rel.split("/")[0] not in seen:
+                seen.add(rel.split("/")[0])
+                print(f"  [{rel.split('/')[0]}] {rel}")
+        print(f"\nexplore it live in another terminal:  ls {mnt}")
 
 
 def _parse_args() -> argparse.Namespace:

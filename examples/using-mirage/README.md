@@ -140,7 +140,12 @@ process.)
 - `uv sync --all-extras --locked` already pulls `mirage-ai[fuse,s3]` — the `mfusepy` binding, and
   the `aioboto3` that `s3.py`'s backend imports.
 - An **OS FUSE driver**: [macFUSE](https://macfuse.io) on macOS, `fuse3` on Linux. Without it,
-  `--fuse` prints install guidance and exits cleanly (the non-`--fuse` path needs no driver).
+  `--fuse` prints install guidance and exits 1 instead of a traceback (the non-`--fuse` path needs
+  no driver).
+- **Python 3.12 or later** for a clean exit. The lock resolves `mirage-ai` 0.0.8 there, whose
+  `Workspace` closes the mount without error. 0.0.8 requires Python 3.12, so 3.11 keeps 0.0.7: a
+  `--fuse` run mounts and reads, then ends with a `RuntimeError` traceback from
+  `Workspace.__exit__` and exit 1.
 
 ## Performance notes
 

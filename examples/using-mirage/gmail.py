@@ -101,36 +101,36 @@ def main_fuse(vfs) -> None:
     """--fuse: mount the mailbox as a *real* filesystem and read a message with ordinary tools.
     Needs macFUSE/fuse3. (Listing a label makes mirage fetch every message in it — see the
     README's performance notes; keep the mailbox small when pointing at a large corpus.)"""
-    try:
-        with Workspace({"/gmail": vfs}, mode=MountMode.READ) as ws:
+    with Workspace({"/gmail": vfs}, mode=MountMode.READ) as ws:
+        try:
             mnt = ws.add_fuse_mount("/gmail")  # "/gmail" is now a real directory on disk
-            print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
-            label = (
-                "INBOX"
-                if "INBOX" in os.listdir(mnt)
-                else next(e for e in sorted(os.listdir(mnt)) if not e.startswith("."))
-            )
-            day = sorted(os.listdir(f"{mnt}/{label}"))[0]
-            msg = next(
-                f for f in sorted(os.listdir(f"{mnt}/{label}/{day}")) if f.endswith(".gmail.json")
-            )
-            path = f"{mnt}/{label}/{day}/{msg}"
-            print(f"\n$ head -c 200 {label}/{day}/{msg}")
-            print(
-                "  " + open(path, encoding="utf-8").read(200).replace("\n", " ")
-            )  # a genuine open() via FUSE
-            hit = subprocess.run(
-                ["grep", "-o", '"subject":"[^"]*"', path],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            )
-            print(
-                f"\n$ grep -o '\"subject\":…' <that file>   # external tool reads the mount\n  {hit.stdout.strip()}"
-            )
-            print(f"\nexplore it live in another terminal:  ls {mnt}/{label}")
-    except (ImportError, RuntimeError, OSError) as e:
-        raise SystemExit(FUSE_HELP.format(err=e))
+        except (ImportError, RuntimeError, OSError) as e:
+            raise SystemExit(FUSE_HELP.format(err=e))
+        print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
+        label = (
+            "INBOX"
+            if "INBOX" in os.listdir(mnt)
+            else next(e for e in sorted(os.listdir(mnt)) if not e.startswith("."))
+        )
+        day = sorted(os.listdir(f"{mnt}/{label}"))[0]
+        msg = next(
+            f for f in sorted(os.listdir(f"{mnt}/{label}/{day}")) if f.endswith(".gmail.json")
+        )
+        path = f"{mnt}/{label}/{day}/{msg}"
+        print(f"\n$ head -c 200 {label}/{day}/{msg}")
+        print(
+            "  " + open(path, encoding="utf-8").read(200).replace("\n", " ")
+        )  # a genuine open() via FUSE
+        hit = subprocess.run(
+            ["grep", "-o", '"subject":"[^"]*"', path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        print(
+            f"\n$ grep -o '\"subject\":…' <that file>   # external tool reads the mount\n  {hit.stdout.strip()}"
+        )
+        print(f"\nexplore it live in another terminal:  ls {mnt}/{label}")
 
 
 def _parse_args() -> argparse.Namespace:

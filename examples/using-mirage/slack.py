@@ -94,26 +94,26 @@ async def main(vfs) -> None:
 def main_fuse(vfs) -> None:
     """--fuse: mount the channel tree as a *real* filesystem, then read it with ordinary tools —
     any process (grep, an editor, an indexer) can open the files. Needs macFUSE/fuse3."""
-    try:
-        with Workspace({"/slack": vfs}, mode=MountMode.READ) as ws:
+    with Workspace({"/slack": vfs}, mode=MountMode.READ) as ws:
+        try:
             mnt = ws.add_fuse_mount("/slack")  # "/slack" is now a real directory on disk
-            print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
-            channel = sorted(os.listdir(f"{mnt}/channels"))[0]
-            day = sorted(os.listdir(f"{mnt}/channels/{channel}"))[-1]  # most recent day
-            chat = f"{mnt}/channels/{channel}/{day}/chat.jsonl"
-            print(f"\n$ head -c 160 channels/{channel}/{day}/chat.jsonl")
-            print(
-                "  " + open(chat, encoding="utf-8").read(160).replace("\n", " ")
-            )  # a genuine open() via FUSE
-            count = subprocess.run(
-                ["grep", "-c", ".", chat], capture_output=True, text=True, encoding="utf-8"
-            )
-            print(
-                f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"
-            )
-            print(f"\nexplore it live in another terminal:  ls {mnt}/channels")
-    except (ImportError, RuntimeError, OSError) as e:
-        raise SystemExit(FUSE_HELP.format(err=e))
+        except (ImportError, RuntimeError, OSError) as e:
+            raise SystemExit(FUSE_HELP.format(err=e))
+        print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
+        channel = sorted(os.listdir(f"{mnt}/channels"))[0]
+        day = sorted(os.listdir(f"{mnt}/channels/{channel}"))[-1]  # most recent day
+        chat = f"{mnt}/channels/{channel}/{day}/chat.jsonl"
+        print(f"\n$ head -c 160 channels/{channel}/{day}/chat.jsonl")
+        print(
+            "  " + open(chat, encoding="utf-8").read(160).replace("\n", " ")
+        )  # a genuine open() via FUSE
+        count = subprocess.run(
+            ["grep", "-c", ".", chat], capture_output=True, text=True, encoding="utf-8"
+        )
+        print(
+            f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"
+        )
+        print(f"\nexplore it live in another terminal:  ls {mnt}/channels")
 
 
 def _parse_args() -> argparse.Namespace:

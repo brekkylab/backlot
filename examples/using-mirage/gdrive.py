@@ -112,30 +112,30 @@ async def read(ws) -> None:
 def main_fuse(vfs) -> None:
     """--fuse: mount Drive as a *real* filesystem and read a file with ordinary tools. Needs
     macFUSE/fuse3. (Google-native docs read as their .gdoc/.gsheet/.gslide.json structure.)"""
-    try:
-        with Workspace({"/gdrive": vfs}, mode=MountMode.READ) as ws:
+    with Workspace({"/gdrive": vfs}, mode=MountMode.READ) as ws:
+        try:
             mnt = ws.add_fuse_mount("/gdrive")  # "/gdrive" is now a real directory on disk
-            print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
-            folder = next(e for e in sorted(os.listdir(mnt)) if not e.startswith("."))
-            name = next(
-                e
-                for e in sorted(os.listdir(f"{mnt}/{folder}"))
-                if os.path.isfile(f"{mnt}/{folder}/{e}")
-            )
-            path = f"{mnt}/{folder}/{name}"
-            print(f"\n$ head -c 200 {folder}/{name}")
-            print(
-                "  " + open(path, encoding="utf-8").read(200).replace("\n", " ")
-            )  # a genuine open() via FUSE
-            count = subprocess.run(
-                ["grep", "-c", ".", path], capture_output=True, text=True, encoding="utf-8"
-            )
-            print(
-                f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"
-            )
-            print(f"\nexplore it live in another terminal:  ls {mnt}/{folder}")
-    except (ImportError, RuntimeError, OSError) as e:
-        raise SystemExit(FUSE_HELP.format(err=e))
+        except (ImportError, RuntimeError, OSError) as e:
+            raise SystemExit(FUSE_HELP.format(err=e))
+        print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
+        folder = next(e for e in sorted(os.listdir(mnt)) if not e.startswith("."))
+        name = next(
+            e
+            for e in sorted(os.listdir(f"{mnt}/{folder}"))
+            if os.path.isfile(f"{mnt}/{folder}/{e}")
+        )
+        path = f"{mnt}/{folder}/{name}"
+        print(f"\n$ head -c 200 {folder}/{name}")
+        print(
+            "  " + open(path, encoding="utf-8").read(200).replace("\n", " ")
+        )  # a genuine open() via FUSE
+        count = subprocess.run(
+            ["grep", "-c", ".", path], capture_output=True, text=True, encoding="utf-8"
+        )
+        print(
+            f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"
+        )
+        print(f"\nexplore it live in another terminal:  ls {mnt}/{folder}")
 
 
 def _parse_args() -> argparse.Namespace:

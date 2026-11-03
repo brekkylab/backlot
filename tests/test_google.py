@@ -18198,6 +18198,12 @@ _TAB_WRITES = [
         [*_TABS_START[1:3], _TABS_START[0], _TABS_START[3]],
         None,
     ),
+    # a location naming no tab writes the first, `t.0` or not
+    (
+        [_upd({"tabId": "$T2", "index": 0}, "index"), _ins(1, "Q")],
+        ["Second \U0001f4cc: Qtwo", _TABS_START[2], _TABS_START[0], _TABS_START[3]],
+        None,
+    ),
     ([_upd({"tabId": "t.0", "index": 3}, "index")], [*_TABS_START[1:], _TABS_START[0]], None),
     ([_upd({"tabId": "t.0", "index": 1}, "index")], _TABS_START, None, False),
     (

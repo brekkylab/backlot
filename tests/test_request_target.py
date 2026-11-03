@@ -593,14 +593,17 @@ _PRINTABLE = [
         for rest in (b"nope\x01y#x", b"nope#y\x01x", b"nope\x01y%x", b"nope%y\x01x")
     ),
     ("/slack/api/", b"auth.test?b=\x01y#x", "slack"),
-    # GitHub: its page for a `#` anywhere, ahead of a broken escape; the empty 400 for a broken
-    # escape in the query of a path a route serves; a broken escape in the path read on
+    # GitHub: its page for a `#` anywhere and for a raw byte, ahead of a broken escape; the empty
+    # 400 for a broken escape in the query of a path a route serves; a broken escape in the path
+    # read on, and one in the query of a path no route serves
     *(
         ("/github/", rest, "github")
         for rest in (b"rate_limit#x", b"#x", b"rate_limit?b=1#x", b"rate_limit?b=1#", b"nope#")
     ),
     ("/github/", b"nope#y%x", "github"),
     ("/github/", b"nope%y#x", "github"),
+    ("/github/", b"rate_limit?b=%zz#x", "github"),
+    ("/github/", b"rate_limit\x01?b=%zz", "github"),
     *(
         ("/github/", rest, "github empty")
         for rest in (
@@ -613,6 +616,7 @@ _PRINTABLE = [
     *(
         ("/github/", rest, 404)
         for rest in (b"nope?b=%x", b"nope%x", b"nope%zzx", b"nope%", b"nope%4", b"rate_limit%x")
+        + (b"rate_limit%00?b=%zz",)
     ),
     # Graph: its page for a broken escape, a `"`, a `#`, a `<` or a `>` in the path, each read on
     # in the query

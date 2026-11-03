@@ -308,11 +308,11 @@ def breaks_an_escape(part: bytes) -> bool:
 
 
 def refused_path(path: bytes, ends_the_target: bool) -> bool:
-    """Whether Cloudflare in front of Linear and Fireflies refuses ``path``, which
-    ``ends_the_target`` or not (:func:`path_ends_the_target`), with :data:`CLOUDFLARE_PAGE`: the
-    path holds a `..` segment that climbs past the root (:func:`_climbs_past_the_root`), which both
-    hosts refused so ahead of a cut escape after it (`/../a%2`, 2026-10-29, UTC), or
-    :func:`refused_escape` holds. The page comes ahead of Cloudflare's answer to a raw byte: on
+    """Whether Cloudflare in front of Linear and Fireflies refuses ``path`` with
+    :data:`CLOUDFLARE_PAGE`: the path holds a `..` segment that climbs past the root
+    (:func:`_climbs_past_the_root`), which both hosts refused so ahead of a cut escape after it
+    (`/../a%2`, 2026-10-29, UTC), or :func:`refused_escape` holds for ``path`` and
+    ``ends_the_target``. The page comes ahead of Cloudflare's answer to a raw byte: on
     2026-10-26 (UTC) both hosts drew it for `/a%zz` with a raw `é` before or after it or `\\x01`
     before it, and for `/a%00` after a raw `é`, and on 2026-10-29 for `/../a` with a raw `é` or a
     space after it, where a raw `é` alone drew the empty 400."""

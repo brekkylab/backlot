@@ -245,6 +245,46 @@ _AWS_AUTHORIZATION = (
 #: The header lines of a row of :data:`_HOSTS` that sends the row's `Authorization` twice.
 _AUTHORIZATION_TWICE = b"(the Authorization twice)"
 
+#: A path each front door but S3's serves, as (method, base, target after it), and the door's answer
+#: there to a `Host` of `[0:0]` or `[x]` and to one of `[v1.x]`.
+_DOORS = {
+    "github": (b"GET", "/github/", b"rate_limit", "github", "github"),
+    "slack": (b"GET", "/slack/api/", b"auth.test", "slack 404 empty", "slack 404 empty"),
+    "jira": (b"GET", "/atlassian/rest/api/3/", b"serverInfo", "cloudfront 403", "cloudfront 403"),
+    "confluence": (
+        b"GET",
+        "/atlassian/wiki/rest/api/",
+        b"space",
+        "cloudfront 403",
+        "cloudfront 403",
+    ),
+    **{
+        door: (b"GET", base, rest, "google 1555 kept", "google 1555 kept")
+        for door, base, rest in (
+            ("drive", "/drive/v3/", b"about"),
+            ("gmail", "/gmail/v1/users/me/", b"profile"),
+            ("sheets", "/sheets/v4/spreadsheets/", b"x"),
+            ("docs", "/docs/v1/documents/", b"x"),
+            ("slides", "/slides/v1/presentations/", b"x"),
+        )
+    },
+    **{
+        door: (method, base, rest, "cloudflare page", "cloudflare forbidden")
+        for door, method, base, rest in (
+            ("notion", b"GET", "/notion/v1/", b"users"),
+            ("hubspot", b"GET", "/hubspot/crm/v3/objects/", b"contacts"),
+            ("linear", b"POST", "/linear/", b"graphql"),
+            ("fireflies", b"POST", "/fireflies/", b"graphql"),
+        )
+    },
+    "graph": (b"GET", "/msgraph/v1.0/", b"me", "graph invalid hostname", "graph invalid hostname"),
+}
+
+
+def _hosts_answer(door: str, host: bytes) -> str:
+    return _DOORS[door][4 if host == b"[v1.x]" else 3]
+
+
 # A `Host` in brackets that holds no IPv6 address (``backlot.bracketed_host`` dates the
 # measurement): (host, or ``None`` where the header lines carry it, method, base, target after it,
 # answer, header lines or none), "served" the answer to the request with a `Host` of `x`. `[0:0]`
@@ -337,7 +377,6 @@ _HOSTS = [
         for method, base, rest, answer in (
             (b"GET", "/github/", b"rate_limit%00", "github"),
             (b"GET", "/slack/api/", b"auth.test%00", "slack empty"),
-            (b"GET", "/slack/api/", b"auth.test%0A", "slack 404 empty"),
             (b"GET", "/slack/api/", b"auth.test%zz", "slack 404 empty"),
             (b"GET", "/atlassian/rest/api/3/", b"serverInfo%00", "served"),
             (b"GET", "/atlassian/rest/api/3/", b"serverInfo%zz", "served"),
@@ -353,34 +392,44 @@ _HOSTS = [
             (b"TRACE", "/linear/", b"graphql", "cloudflare 405"),
             (b"POST", "/fireflies/", b"graphql%00", "cloudflare page"),
             (b"POST", "/fireflies/", b"graphql%zz", "cloudflare page"),
+            (b"POST", "/fireflies/", b"graphql%2", "served"),
+            (b"POST", "/fireflies/", b"../graphql", "cloudflare page"),
             (b"TRACE", "/fireflies/", b"graphql", "cloudflare 405"),
             (b"GET", "/msgraph/v1.0/", b"me%00", "graph invalid hostname"),
         )
     ),
     *(
-        (host, method, "/atlassian/rest/api/3/", b"serverInfo", answer)
+        (host, method, base, rest + after, answer)
         for host in (b"[0:0]", b"[v1.x]")
-        for method, answer in (
-            (b"TRACE", "served"),
-            (b"CONNECT", "served"),
-            (b"MKCALENDAR", "served"),
-            (b"PROPFIND", "cloudfront 403"),
-            (b"PATCH", "cloudfront 403"),
+        for base, rest, methods in (
+            ("/atlassian/rest/api/3/", b"serverInfo", (b"MKCALENDAR", b"UNSUBSCRIBE")),
+            ("/atlassian/wiki/rest/api/", b"space", ()),
+        )
+        for method, after, answer in (
+            *((method, b"", "served") for method in (b"TRACE", b"CONNECT", *methods)),
+            (b"PROPFIND", b"", "cloudfront 403"),
+            (b"PATCH", b"", "cloudfront 403"),
+            (b"GET", b"/..;/x", "cloudfront 403"),
+            (b"GET", b"/%3Cscript%3E", "cloudfront 403"),
+            (b"GET", b";x", "cloudfront 403"),
         )
     ),
     *(
         (host, method, base, rest, answer)
         for host, answer in ((b"[0:0]", "cloudflare page"), (b"[v1.x]", "cloudflare forbidden"))
         for method, base, rest in (
-            (b"CONNECT", "/linear/", b"graphql"),
-            (b"PURGE", "/fireflies/", b"graphql"),
+            *(
+                (method, base, b"graphql")
+                for method in (b"CONNECT", b"PURGE")
+                for base in ("/linear/", "/fireflies/")
+            ),
             (b"GET", "/notion/v1/", b"users%2"),
         )
     ),
-    # a raw byte of every kind beside a `Host`, in the path and after `?a=`, and a target past
-    # GitHub's bound
+    # a raw byte of every kind beside a `Host`, in the path and on six hosts after `?a=`, and a
+    # target past GitHub's bound
     *(
-        (host, b"GET", base, rest + at + byte, answer)
+        (host, method, base, rest + at + byte, answer or _hosts_answer(door, host))
         for host in (b"[0:0]", b"[v1.x]")
         for byte, slack, google, graph, cdn, cloudflare in (
             (b"\x00", "slack", "google 54", "graph invalid url", "cloudfront", "cloudflare page"),
@@ -407,21 +456,43 @@ _HOSTS = [
         )
         for at in (b"", b"?a=")
         if not (at and byte == b"\x7f")
-        for base, rest, answer in (
-            ("/slack/api/", b"auth.test", slack),
-            ("/drive/v3/", b"about", google),
-            ("/msgraph/v1.0/", b"me", graph),
-            ("/atlassian/rest/api/3/", b"serverInfo", cdn),
-            (
-                "/notion/v1/",
-                b"users",
-                cloudflare or ("cloudflare page" if host == b"[0:0]" else "cloudflare forbidden"),
-            ),
+        for door, answer in (
+            ("github", None),
+            ("slack", slack),
+            *((door, google) for door in ("drive", "gmail", "sheets")),
+            ("graph", graph),
+            ("jira", cdn),
+            ("confluence", cdn),
+            *((door, cloudflare) for door in ("notion", "hubspot", "linear", "fireflies")),
         )
+        if not at or door in ("slack", "drive", "graph", "jira", "notion", "linear")
+        for method, base, rest, *_ in [_DOORS[door]]
     ),
     *(
         (host, b"GET", "/github/", b"rate_limit?a=" + b"x" * 8_200, "github 414")
         for host in (b"[0:0]", b"[v1.x]")
+    ),
+    # the `Host`'s answer beside a `%0A`, a `%80`, a raw `\` and a raw `"`
+    *(
+        (host, method, base, rest + after, _hosts_answer(door, host))
+        for door, (method, base, rest, *_) in _DOORS.items()
+        for after in (b"%0A", b"%80", b"\\", b'"')
+        for host in (b"[0:0]", b"[x]", b"[v1.x]")
+    ),
+    # and on a path no route serves, after a trailing slash and on Docs' HEAD
+    *(
+        (host, method, base, rest, _hosts_answer(door, host))
+        for host in (b"[0:0]", b"[v1.x]")
+        for door, method, base, rest in (
+            ("github", b"GET", "/github/", b"repos/octocat/hello-world/nope"),
+            ("github", b"GET", "/github/", b"rate_limit/"),
+            ("slack", b"GET", "/slack/api/", b"nope.nope"),
+            ("hubspot", b"GET", "/hubspot/crm/v3/", b"nope"),
+            ("drive", b"GET", "/drive/v3/", b"nope"),
+            ("graph", b"GET", "/msgraph/v1.0/", b"nope"),
+            ("jira", b"GET", "/atlassian/rest/api/3/", b"nope"),
+            ("docs", b"HEAD", "/docs/v1/documents/", b"x"),
+        )
     ),
     # a `Host` beside an `Authorization` sent twice: Cloudflare's refusal of it first, the `Host`'s
     # on the others
@@ -674,7 +745,10 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
             vendor = {*edge, hubspot.CORRELATION_ID_HEADER}
             extra, want_extra = sorted(vendor & headers.keys()), []
         got[row.id] = (headers.get("connection"), status, headers.get("content-type"), body, extra)
-        expected[row.id] = (connection, *_page(reading, method, target), want_extra)
+        status, media_type, page = _page(reading, method, target)
+        if method == b"HEAD":
+            page = b""
+        expected[row.id] = (connection, status, media_type, page, want_extra)
     assert got == expected
 
 

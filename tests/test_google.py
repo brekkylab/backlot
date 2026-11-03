@@ -5402,6 +5402,12 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
                 called = client.request(method.upper(), f"{url}?callback=cb", json=body)
                 if "// API callback" in called.text:
                     wrong.append(f"{method.upper()} {path} wrapped where real does not")
+    # Two methods the document does not declare on Drive's files; real's answer to each under a
+    # callback is in ``errors.google.jsonp_callback``.
+    for method in ("DELETE", "PATCH"):
+        called = client.request(method, "/drive/v3/files/dummy?callback=cb")
+        if "// API callback" in called.text:
+            wrong.append(f"{method} /drive/v3/files/dummy wrapped where real does not")
     assert wrong == []
     assert gets and posts, f"both halves have to have run, got {gets} GET(s) and {posts} POST(s)"
 

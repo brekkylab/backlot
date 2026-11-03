@@ -480,8 +480,7 @@ def _after_its_answer(base_url: str, first: bytes, second: bytes) -> bytes:
 
 
 def _after_the_200(send) -> tuple:
-    """The status line ``send``'s answer starts with, and the 400 after it in the shape of
-    :data:`_REAL`'s entries."""
+    """The status line ``send``'s answer starts with, and :func:`_shape` of the 400 after it."""
     answer = send()
     return answer[:17], _shape(answer[answer.find(b"HTTP/1.1 400") :])
 

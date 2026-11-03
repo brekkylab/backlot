@@ -1793,6 +1793,11 @@ _DOCS_EXPORTS = {
     ),
     "pb_last": ({"paragraphs": [_runs("ab", _PB), {"text": ""}]}, "\ufeffab\r\n" + _RULE, "ab  \n"),
     "pb_inline": ({"paragraphs": [_runs("ab", _PB, "cd")]}, "\ufeffab\r\n" + _RULE + "\r\ncd", "abcd"),
+    "pb_heading": (
+        {"paragraphs": [_runs("ab"), _runs(_PB, style="HEADING_2"), _runs("cd", style="HEADING_2"), _runs(_PB, style="TITLE"), _runs("ef", style="TITLE"), _runs("gh")]},
+        "\ufeffab\r\n" + _RULE + "\r\ncd\r\n" + _RULE + "\r\n\r\n\r\nef\r\ngh",
+        "ab\n\n## \n\n## cd\n\n# \n\n# ef\n\ngh",
+    ),
     "segments": (
         {
             "paragraphs": [
@@ -1851,7 +1856,7 @@ _DOCS_EXPORTS = {
 # fmt: on
 
 
-def test_a_docs_text_export_is_rendered_from_its_body_as_real_renders_it(tmp_path):
+def test_a_docs_text_export_is_rendered_from_its_tabs_as_real_renders_it(tmp_path):
     """`files.export` of a Doc as `text/plain`, `text/markdown` and `text/x-markdown` is what real
     exported, byte for byte, for the Doc each record states as `content`, as `paragraphs` or as
     `tabs`: no title, a byte-order mark and CRLFs in plain text, and the named styles, marks and

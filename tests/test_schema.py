@@ -1685,7 +1685,7 @@ def test_a_malformed_grid_is_refused(sheets):
     assert record_errors(_drive(subtype="spreadsheet", sheets=sheets)) != []
 
 
-def test_content_is_required_only_when_no_grid_or_paragraphs_are_stated():
+def test_content_is_required_only_when_no_grid_paragraphs_or_tabs_are_stated():
     """The requirement moves rather than disappearing, and it keeps its wording -- `complete()`
     reads that message to fill a record, so a differently-phrased rule would silently stop
     supplying `content` to every drive test in the suite."""

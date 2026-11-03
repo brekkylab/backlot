@@ -72,8 +72,7 @@ PAGE_BREAK = "\x0c"
 _ELEMENTS = FOOTNOTE + PAGE_BREAK
 
 # A footnote's run style, as `createFootnote` makes one and the editor writes into it: measured
-# 2026-11-02, its content opens with a space, every run is 10 PT, and every paragraph has the
-# `lineSpacing` of 100 `_paragraph_style` gives a footnote's.
+# 2026-11-02, its content opens with a space and every run is 10 PT.
 _FOOTNOTE_TEXT = {"fontSize": {"magnitude": 10, "unit": "PT"}}
 
 
@@ -170,6 +169,7 @@ def _paragraph(
 
 
 def _paragraph_style(named: str, footnote: bool = False) -> dict:
+    # measured 2026-11-02: every paragraph of a footnote has a `lineSpacing` of 100
     spacing = {"lineSpacing": 100} if footnote else {}
     return {"namedStyleType": named, **spacing, "direction": "LEFT_TO_RIGHT"}
 
@@ -1425,7 +1425,8 @@ def _plain_lines(content: list[dict], note) -> list[str]:
     break is `_page_breaks`' and a footnote reference ``note``'s. A paragraph holding nothing but
     vertical tabs, or nothing, takes one CRLF more, and one other than a HEADING_n that starts with
     vertical tabs takes the CRLFs `_lead_breaks` counts; a HEADING_n holding nothing is left out,
-    and one holding only vertical tabs is a CRLF fewer than them."""
+    one holding only vertical tabs is a CRLF fewer than them, and one holding only a page break is
+    the rule alone (measured 2026-11-03 on a HEADING_2)."""
     lines = []
     for el in content:
         if "paragraph" not in el:
@@ -1437,7 +1438,9 @@ def _plain_lines(content: list[dict], note) -> list[str]:
         if _named(el["paragraph"]).startswith("HEADING_"):
             if not text:
                 continue
-            if not text.strip("\x0b"):
+            if not bare:
+                text = text.removesuffix("\x0b")
+            elif not text.strip("\x0b"):
                 text = text[1:]
         else:
             if not bare.strip("\x0b"):

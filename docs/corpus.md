@@ -136,8 +136,8 @@ paragraph nor a document's `content` holds a character `insertText` refuses (U+F
 
 A run may be a `footnote` reference, its footnote's paragraphs, or a `pageBreak`, in place of
 `text`; both stand in a document's body alone. A record stating `paragraphs` may state a `header`
-and a `footer`, each as paragraphs, and a document with more than its one tab states `tabs`
-instead: each with its `title`, an `icon`, its body as `paragraphs`, its own `header` and `footer`,
+and a `footer`, each as paragraphs, and a document whose tabs are more than one, or whose tab has a
+title or an icon, states `tabs` instead: each with its `title`, an `icon`, its body as `paragraphs`, its own `header` and `footer`,
 and its child `tabs`. The first tab is `t.0`, as in a Doc real makes, an untitled one is `Tab n` by
 its place, and no two tabs share a title.
 

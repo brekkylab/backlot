@@ -14,7 +14,7 @@ import uuid
 import pytest
 
 from backlot import store
-from tests._helpers import crawl_hubspot, db_count, sent_as, served_id, tiny_corpus
+from tests._helpers import crawl_hubspot, db_count, outcome, sent_as, served_id, tiny_corpus
 
 HUBSPOT_OBJECT_TYPES = ("companies", "contacts", "notes")
 
@@ -1352,10 +1352,11 @@ _HEADER_VALUES = [
 
 
 def test_hubspot_answers_a_header_value_that_is_not_utf_8_with_cloudflares_block(client):
-    got = {}
-    for value, blocked in _HEADER_VALUES:
+    def answered(value):
         r = sent_as(client, "GET", f"/hubspot{_LISTING}", [("X-Probe", value.decode("latin-1"))])
-        got[value] = _blocked(r) if r.status_code == 403 else r.status_code
+        return _blocked(r) if r.status_code == 403 else r.status_code
+
+    got = {value: outcome(answered, value) for value, _ in _HEADER_VALUES}
     assert got == {
         value: (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256) if blocked else 401
         for value, blocked in _HEADER_VALUES
@@ -1386,20 +1387,26 @@ _BLOCK_ROWS = [
 
 
 def test_hubspot_answers_cloudflares_block_after_cloudflares_own_answers(client):
+    def answered(method, path, sent, plain, body, answer):
+        r = sent_as(client, method, f"/hubspot{path}", sent, content=body)
+        if answer == "without":
+            return r.status_code, r.content
+        without = sent_as(client, method, f"/hubspot{path}", plain, content=body)
+        if method == "HEAD":
+            return r.status_code, r.headers["content-length"], without.status_code != 403
+        return (*_blocked(r), without.status_code != 403)
+
     got, expected = {}, {}
     for row, method, path, sent, body, answer in _BLOCK_ROWS:
-        r = sent_as(client, method, f"/hubspot{path}", sent, content=body)
         plain = [(name, value.replace("\x80", "")) for name, value in sent]
-        without = sent_as(client, method, f"/hubspot{path}", plain, content=body)
+        got[row] = outcome(answered, method, path, sent, plain, body, answer)
         if answer == "without":
-            got[row] = (r.status_code, r.content)
+            without = sent_as(client, method, f"/hubspot{path}", plain, content=body)
             expected[row] = (without.status_code, without.content)
         elif method == "HEAD":
             get = sent_as(client, "GET", f"/hubspot{path}", sent)
-            got[row] = (r.status_code, r.headers["content-length"], without.status_code != 403)
             expected[row] = (403, get.headers["content-length"], True)
         else:
-            got[row] = (*_blocked(r), without.status_code != 403)
             expected[row] = (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256, True)
     assert got == expected
 

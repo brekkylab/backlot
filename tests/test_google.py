@@ -37,6 +37,7 @@ from tests._helpers import (
     crawl_drive,
     crawl_gmail,
     db_count,
+    outcome,
     sent_as,
     served_id,
     tiny_corpus,
@@ -14645,6 +14646,11 @@ def test_google_read_sent_as_a_post_with_a_get_override_is_the_get(client, admin
     files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": "100"}).json()
     sheet = next(f["id"] for f in files["files"] if f["mimeType"].endswith("spreadsheet"))
     doc = next(f["id"] for f in files["files"] if f["mimeType"].endswith("document"))
+
+    def posted(url, headers, body):
+        r = client.post(url, headers=headers, content=body)
+        return r.status_code, r.content
+
     got, expected = {}, {}
     rows = zip(_OVERRIDE_IDS, _OVERRIDE_ROWS, strict=True)
     for row, (path, get, query, body, content_type, override) in rows:
@@ -14653,8 +14659,7 @@ def test_google_read_sent_as_a_post_with_a_get_override_is_the_get(client, admin
         if content_type is not None:
             headers["Content-Type"] = content_type
         the_get = client.get(f"{url}?{get}", headers=admin_h)
-        posted = client.post(f"{url}?{query}", headers=headers, content=body)
-        got[row] = (posted.status_code, posted.content)
+        got[row] = outcome(posted, f"{url}?{query}", headers, body)
         expected[row] = (the_get.status_code, the_get.content)
     assert got == expected
 
@@ -14845,7 +14850,10 @@ _GZIP_READS = [
 def test_google_decompresses_a_body_only_as_one_whole_gzip_member():
     from backlot.routers import google
 
-    got = {(tuple(values), body): google.inflated(body, values) for values, body, _ in _GZIP_READS}
+    got = {
+        (tuple(values), body): outcome(google.inflated, body, values)
+        for values, body, _ in _GZIP_READS
+    }
     assert got == {
         (tuple(values), body): b"{}" if decompressed else body
         for values, body, decompressed in _GZIP_READS
@@ -14962,25 +14970,29 @@ _BODIES = [
 
 
 def test_google_refuses_a_body_on_a_get_or_head_ahead_of_the_route(client):
-    got, expected = {}, {}
-    for method, url, headers, body, answer in _BODIES:
+    def answered(method, url, headers, body, answer):
         if isinstance(body, Chunked):
             r = sent_as(client, method, url, headers, content=body.chunks())
         else:
             r = client.request(method, url, headers=headers, content=body or None)
-        row = (method, url, *headers.items(), body, isinstance(body, Chunked))
         if answer == "without":
-            without = client.request(method, url)
-            got[row] = (r.status_code, r.content)
-            expected[row] = (without.status_code, without.content)
-            continue
-        got[row] = (
+            return r.status_code, r.content
+        return (
             r.status_code,
             r.headers["content-type"],
             r.content,
             r.headers["connection"],
             r.headers.get("referrer-policy"),
         )
+
+    got, expected = {}, {}
+    for method, url, headers, body, answer in _BODIES:
+        row = (method, url, *headers.items(), body, isinstance(body, Chunked))
+        got[row] = outcome(answered, method, url, headers, body, answer)
+        if answer == "without":
+            without = client.request(method, url)
+            expected[row] = (without.status_code, without.content)
+            continue
         page = answer == "page"
         expected[row] = (
             400,
@@ -15029,20 +15041,24 @@ def test_google_reads_a_body_under_its_coding_as_its_front_end_does(client, admi
             {**admin_h, "Content-Type": _FORM, "X-HTTP-Method-Override": "GET"},
         ),
     }
+
+    def answered(url, headers, coding, body):
+        r = client.post(url, headers={**headers, "Content-Encoding": coding}, content=body)
+        return r.status_code, r.content
+
     got, expected = {}, {}
     for route, coding, sent, answer in _BODY_CODINGS:
         url, plain, headers = routes[route]
         gzipped = gzip.compress(plain)
         body = {"plain": plain, "gzipped": gzipped, "gzipped and cut short": gzipped[:-8]}[sent]
-        r = client.post(url, headers={**headers, "Content-Encoding": coding}, content=body)
         row = (route, coding, sent)
+        got[row] = outcome(answered, url, headers, coding, body)
         if answer == 415:
-            got[row] = (r.status_code, r.content)
             expected[row] = (415, _415_BARE if route == "sheets" else _415)
             continue
         want = client.post(url, headers=headers, content=plain if answer == "plain" else body)
-        got[row] = (r.status_code, r.content, want.status_code)
-        expected[row] = (want.status_code, want.content, 200 if answer == "plain" else 400)
+        got[row] = (got[row], want.status_code)
+        expected[row] = ((want.status_code, want.content), 200 if answer == "plain" else 400)
     assert got == expected
 
 
@@ -15074,20 +15090,22 @@ def test_google_refuses_a_body_that_decompresses_past_its_front_ends_limit(clien
     credential: real's 400 ahead of the credential on 2026-10-30 (UTC) where the row's answer is
     one; the route's 401 where it is ``None``; and where it is `without`, the answer to the same
     `POST` with no body, as real's was its answer to a path or method it does not route."""
-    got, expected = {}, {}
-    for path, headers, size, answer in _PAST_THE_LIMIT:
+
+    def answered(path, headers, size, answer):
         sent = {"Content-Type": "application/json", "Content-Encoding": "gzip", **headers}
         r = client.post(path, headers=sent, content=_gzipped_to(size))
+        return (r.status_code,) if answer is None else (r.status_code, r.content)
+
+    got, expected = {}, {}
+    for path, headers, size, answer in _PAST_THE_LIMIT:
         row = (path, *headers.items(), size)
+        got[row] = outcome(answered, path, headers, size, answer)
         if answer == "without":
             without = client.post(path, headers={"Content-Type": "application/json"})
-            got[row] = (r.status_code, r.content)
             expected[row] = (without.status_code, without.content)
         elif answer is None:
-            got[row] = (r.status_code,)
             expected[row] = (401,)
         else:
-            got[row] = (r.status_code, r.content)
             expected[row] = (400, answer)
     assert got == expected
 
@@ -15143,8 +15161,8 @@ def test_google_hands_the_route_the_body_it_read_and_nothing_once_it_has_answere
         "query_string": b"",
         "headers": [(b"content-type", b"application/json"), (b"content-encoding", b"gzip")],
     }
-    got = {}
-    for row, incoming, _, _ in _HANDED:
+
+    def handed(incoming):
         pending, read, sent = list(incoming), [], []
 
         async def route(scope, receive, send):
@@ -15159,8 +15177,9 @@ def test_google_hands_the_route_the_body_it_read_and_nothing_once_it_has_answere
             sent.append(message)
 
         asyncio.run(main_module._ReadAGoogleBodyUnderItsCoding(route)(scope, receive, send))
-        statuses = [m["status"] for m in sent if m["type"] == "http.response.start"]
-        got[row] = (read, statuses)
+        return read, [m["status"] for m in sent if m["type"] == "http.response.start"]
+
+    got = {row: outcome(handed, incoming) for row, incoming, _, _ in _HANDED}
     assert got == {row: (read, statuses) for row, _, read, statuses in _HANDED}
 
 

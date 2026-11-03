@@ -488,6 +488,16 @@ class Chunked(bytes):
         yield bytes(self)
 
 
+def outcome(call, *args, **kwargs):
+    """What ``call(*args, **kwargs)`` returns, or the name of the exception it raises. A table test
+    that records each row's answer with it compares every row after its loop, a row the code under
+    test raises for among them, where the raise would end the loop at that row."""
+    try:
+        return call(*args, **kwargs)
+    except Exception as e:
+        return f"raised {type(e).__name__}"
+
+
 def http_row(method, target, sent, body, credential, status, media_type, answer, id, answered=None):
     """A row of an HTTP layer's table: the request, the credential, and the answer, ``answered``
     naming headers on it. ``target`` is a path after the vendor's prefix where it starts with a

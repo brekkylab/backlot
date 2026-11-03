@@ -15,7 +15,7 @@ import re
 import socket
 import urllib.parse
 
-from tests._helpers import in_process
+from tests._helpers import in_process, outcome
 
 #: Real's answer to each request below (``backlot.parser_refusals`` has the measurement), as its
 #: status line and `Content-Type`, each ``None`` where real sent none, the size and SHA-256 of its
@@ -451,7 +451,7 @@ def test_a_request_httptools_refuses_gets_its_front_doors_answer_or_uvicorns_400
     got = {}
     for mount, path, kind, _ in rows:
         reads = _request(mount, path, kind, settings.admin_token)
-        got[mount, path, kind] = _shape(_answer(base_url, reads))
+        got[mount, path, kind] = outcome(lambda: _shape(_answer(base_url, reads)))
     assert got == {
         (mount, path, kind): _REAL[real] if real else _UVICORN for mount, path, kind, real in rows
     }
@@ -485,20 +485,24 @@ def _after_its_answer(base_url: str, first: bytes, second: bytes) -> bytes:
     return got
 
 
+def _after_the_200(send) -> tuple:
+    """The status line ``send``'s answer starts with, and the 400 after it in the shape of
+    :data:`_REAL`'s entries."""
+    answer = send()
+    return answer[:17], _shape(answer[answer.find(b"HTTP/1.1 400") :])
+
+
 def test_a_refused_request_behind_another_is_answered_after_it(live_server):
     base_url, settings = live_server
     got = {}
     for first, mount, path, kind, _ in _BEHIND:
         (second,) = _request(mount, path, kind, settings.admin_token)
         line = f"GET {first} HTTP/1.1\r\nHost: x\r\nUser-Agent: probe\r\n\r\n".encode()
-        for shape, answer in [
-            ("one write", _answer(base_url, [line + second])),
-            ("after its answer", _after_its_answer(base_url, line, second)),
+        for shape, send in [
+            ("one write", lambda: _answer(base_url, [line + second])),
+            ("after its answer", lambda: _after_its_answer(base_url, line, second)),
         ]:
-            got[first, kind, shape] = (
-                answer[:17],
-                _shape(answer[answer.find(b"HTTP/1.1 400") :]),
-            )
+            got[first, kind, shape] = outcome(_after_the_200, send)
     assert got == {
         (first, kind, shape): (b"HTTP/1.1 200 OK\r\n", _REAL[real])
         for first, _, _, kind, real in _BEHIND

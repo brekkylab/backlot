@@ -1728,8 +1728,9 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
     answered each on `about` as it answers a `PUT` there, with its 404 page, and on 2026-10-25 so it
     answered a `PUT`, `PATCH` or `DELETE` naming `GET` there.
 
-    Registered just inside ``answer_a_raw_byte_in_the_request_target``, whose refusals real gave
-    such a POST on Drive's `about` on 2026-10-25 as it gives a GET, and outside every other
+    Registered inside ``answer_a_raw_byte_in_the_request_target``, whose refusals real gave such a
+    POST on Drive's `about` on 2026-10-25 as it gives a GET, and inside
+    ``answer_an_escape_a_front_door_refuses``, which reads the path alone; and outside every other
     middleware that reads the method or the query, so they and the router see the GET.
     """
     path = request.scope["path"]

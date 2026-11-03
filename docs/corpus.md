@@ -165,8 +165,8 @@ An item of `paragraphs`, a cell's included, may be a `table` instead of a paragr
 its rows, each the same number of cells, each cell its paragraphs. `documents.get` serves it as
 `insertTable` makes one, with real's indices, `files.export` writes it as real does, and Drive's
 full-text search reads each cell's paragraphs as lines of their own. An empty paragraph comes
-before a table that opens a body, a header, a footer or a cell, and after one that ends it, as real
-always has one there. A footnote may stand in a cell of the body; a page break may not, and a
+before a table that opens a body, a header, a footer or a cell or follows another table, and after
+one that ends it, as real always has one there. A footnote may stand in a cell of the body; a page break may not, and a
 footnote holds no table.
 
 ```json

@@ -100,9 +100,8 @@ _ELEMENTS = FOOTNOTE + PAGE_BREAK
 # The index a table takes at its start, at each row's and each cell's start, and at its end, which
 # stand in a body as these characters: measured 2026-11-03, a 2x2 table of empty cells took 12
 # indices, its first cell's paragraph starting three after the table and the paragraph after it
-# one after its last cell. `replaceAllText` reads none of them: it searches the text before a
-# table, each cell and the text after it apart, `\A` and `\z` matching at the ends of each. They
-# are characters `insertText` strips, so no text holds them.
+# one after its last cell. `replaceAllText` reads none of them (`Body.find`), and no text holds
+# them (`STRIPPED`).
 TABLE, ROW, CELL, TABLE_END = "\x10", "\x12", "\x1c", "\x11"
 _STRUCTURE = TABLE + ROW + CELL + TABLE_END
 # What a paragraph's first character follows: a newline, or a table's start, row, cell or end.
@@ -326,9 +325,9 @@ def _stated(
     ``seed`` and its position. A stated footnote is added to ``notes``, formatted as
     `_FOOTNOTE_TEXT`, and a stated list to ``lists`` (`_listed`). A stated table is `new_table`'s,
     its cells' paragraphs styled as a cell's are, and an empty paragraph comes before one that
-    opens the content and after one that ends it: `insertTable` puts a paragraph before a table,
-    and no delete takes the newline before one or the last of a cell or segment (measured
-    2026-11-03)."""
+    opens the content or follows another table, and after one that ends the content:
+    `insertTable` puts a paragraph before a table, at another table's end as well, and no delete
+    takes the newline before one or the last of a cell or segment (measured 2026-11-03)."""
     content = []
     for i, p in enumerate(paragraphs):
         if "table" in p:
@@ -364,11 +363,14 @@ def _stated(
         content.append(_paragraph(runs, newline, style, hid))
     content = _listed(file_id, paragraphs, content, seed, lists)
     style = _cell_paragraph_style("NORMAL_TEXT") if cell else _paragraph_style("NORMAL_TEXT")
-    if "table" in content[0]:
-        content.insert(0, _paragraph([], {}, style))
-    if "table" in content[-1]:
-        content.append(_paragraph([], {}, copy.deepcopy(style)))
-    return content
+    out: list[dict] = []
+    for el in content:
+        if "table" in el and (not out or "table" in out[-1]):
+            out.append(_paragraph([], {}, copy.deepcopy(style)))
+        out.append(el)
+    if "table" in out[-1]:
+        out.append(_paragraph([], {}, copy.deepcopy(style)))
+    return out
 
 
 # The nesting levels of each `bulletPreset`, as `createParagraphBullets` made a list of it on
@@ -405,6 +407,7 @@ def _listed(
             "indentFirstLine": copy.deepcopy(at["indentFirstLine"]),
             "indentStart": copy.deepcopy(at["indentStart"]),
         }
+        style.pop("spacingMode", None)
         newline = shown(paragraph["elements"][-1].get("textRun", {}).get("textStyle", {}))
         bullet = {"listId": before[1]} | ({"nestingLevel": level} if level else {})
         paragraph["paragraphStyle"] = {k: style[k] for k in PARAGRAPH_STYLE_ORDER if k in style}
@@ -1998,7 +2001,9 @@ class Body:
         """Make paragraph ``p`` an item of ``list_id`` at ``level``, its first line and start
         indented by ``indents``. Measured 2026-11-03, a bullet's text style is the paragraph's
         newline's with `underline: false`: a bold 14 PT paragraph's was bold, not underlined and
-        14 PT, and one in a footnote 10 PT; and a cell's paragraph lost its `spacingMode`."""
+        14 PT, and one in a footnote 10 PT; and a cell's paragraph lost its `spacingMode`, which
+        a paragraph outside a table holds only once a write sets it, and which is taken off there
+        too, unmeasured."""
         newline = shown(self.chars[self._paragraph_span(p).stop - 1][1])
         text_style = _ordered(newline | {"underline": False}, set())
         bullet = {"listId": list_id} | ({"nestingLevel": level} if level else {})
@@ -2179,7 +2184,8 @@ class Body:
         measured on `z*`, which replaced every character of a Doc, and the search goes on one
         character after it, as Java's does: measured, `a??` in `aa` was three matches. A search
         that folds to nothing matches nothing. The text before a table, each of its cells and the
-        text after it are searched apart (`TABLE`)."""
+        text after it are searched apart: measured 2026-11-03, no character was read at a table's
+        index, and `\\A` and `\\z` matched at the ends of each."""
         needle = _fold(text)[0]
         if not needle:
             return []

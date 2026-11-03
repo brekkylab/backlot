@@ -497,8 +497,8 @@ def _docs_past_end(index: int, body: gdocs.Body) -> None:
         )
 
 
-# What an insert at the first section break or at a table's index is refused with, and what
-# `insertText` adds to it: measured 2026-10-29 and 2026-11-03.
+# What an insert at the first section break is refused with, and what `insertText` adds to it:
+# measured 2026-10-29.
 _DOCS_OUTSIDE = "The insertion index must be inside the bounds of an existing paragraph."
 _DOCS_NEWLINES = " You can still create new paragraphs by inserting newlines."
 
@@ -641,7 +641,7 @@ def _docs_insert_element(doc: gdocs.Document, req: dict, what: str) -> tuple[dic
     segment's end, a header, footer or footnote, then 0 and inside a grapheme cluster.
     `endOfSegmentLocation` is before the body's last newline. Measured 2026-11-03, a page break
     anywhere in a table is refused before the index is, its end included and its start not, and a
-    reference at a table's start, row, cell or end is refused as one at 0."""
+    reference at a table's index is refused as at 0 (`_docs_in_paragraph`)."""
     where = req.get("location", req.get("end_of_segment_location"))
     if where is None:
         raise _EditorRefused(
@@ -725,7 +725,8 @@ def _docs_cell(doc: gdocs.Document, req: dict, name: str) -> tuple[gdocs.Body, i
     """The segment, the table's position and the row and column a `tableCellLocation` names, in
     real's order of refusals, measured 2026-11-03: no cell location, no table start, the tab, an
     index below zero, the segment, the index at or past its end, an index that is not a table's
-    start, then the row and the column, each below zero first."""
+    start, the row below zero, the column below zero, then the row and the column past their
+    count (row 9 and column -1 was refused for the column)."""
     cell = req.get("table_cell_location")
     if cell is None:
         raise _EditorRefused(f"{name} requests must specify a table cell location.")
@@ -743,13 +744,14 @@ def _docs_cell(doc: gdocs.Document, req: dict, name: str) -> tuple[gdocs.Body, i
             "Invalid table start location. Must specify the start index of the table."
         )
     grid = body.grid(table)
-    for key, named, count in (
-        ("row_index", "row", len(grid)),
-        ("column_index", "column", len(grid[0]) - 1),
-    ):
-        at = cell.get(key, 0)
+    axes = (
+        ("row", cell.get("row_index", 0), len(grid)),
+        ("column", cell.get("column_index", 0), len(grid[0]) - 1),
+    )
+    for named, at, _ in axes:
         if at < 0:
             raise _EditorRefused(f"The {named} index {at} should be non-negative.")
+    for named, at, count in axes:
         if at >= count:
             raise _EditorRefused(
                 f"The {named} index {at} should be less than the total number of {named}s {count}."

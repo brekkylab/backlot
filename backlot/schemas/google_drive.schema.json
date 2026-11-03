@@ -88,7 +88,7 @@
               "$ref": "#/$defs/paragraphs"
             }
           },
-          "description": "This item is a table and not a paragraph, stated alone: its rows in order, each the same number of cells, each cell its paragraphs, a table among them. Served as `insertTable` makes one, every column evenly distributed, every cell padded 5 PT, and each cell's paragraphs styled as real styles them, so a heading or a list in a cell is served as real serves one; files.export writes it, and Drive's full-text search reads its cells. A footnote may stand in a cell of the body, as `createFootnote` takes one there; a page break may not, and a footnote holds no table. A table that ends what it stands in is followed by an empty paragraph, as real's always is."
+          "description": "This item is a table and not a paragraph, stated alone: its rows in order, each the same number of cells, each cell its paragraphs, a table among them. Served as `insertTable` makes one, every column evenly distributed, every cell padded 5 PT, and each cell's paragraphs styled as real styles them, so a heading or a list in a cell is served as real serves one; files.export writes it, and Drive's full-text search reads its cells. A footnote may stand in a cell of the body, as `createFootnote` takes one there; a page break may not, and a footnote holds no table. An empty paragraph comes before a table that opens what it stands in or follows another table, and after one that ends it, as real always has one there."
         }
       }
     },

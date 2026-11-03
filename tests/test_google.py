@@ -2046,6 +2046,12 @@ _DOCS_EXPORTS = {
         "﻿one\r\n\r\n\r\nfirst\r\n\t\r\n\r\nsecond\r\n\ttwo",
         "one\n\n| first |\n| :---- |\n\n| second |\n| :---- |\n\ntwo",
     ),
+    # two tables stated one after the other have an empty paragraph between them
+    "table_adjacent": (
+        {"paragraphs": [{"text": "one"}, {"text": ""}, {"table": [[[{"text": "first"}]]]}, {"table": [[[{"text": "second"}]]]}, {"text": "two"}]},
+        "\ufeffone\r\n\r\n\r\nfirst\r\n\t\r\n\r\nsecond\r\n\ttwo",
+        "one\n\n| first |\n| :---- |\n\n| second |\n| :---- |\n\ntwo",
+    ),
     "table_styled": (
         {"paragraphs": [{"text": "one"}, {"text": ""}, {"table": [
             [[{"runs": [{"text": "Bold", "bold": True}, {"text": " "}, {"text": "Ital", "italic": True}]}], [{"runs": [{"text": "Lnk", "link": "https://example.com/x"}, {"text": " x"}]}], [{"style": "HEADING_1", "text": "Head"}, {"text": "body"}]],
@@ -8285,7 +8291,10 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
             {
                 "table": [
                     [[{"style": "HEADING_2", "text": "c1"}], [{"text": "c2"}]],
-                    [[{"text": "c3"}], [{"table": [[[{"text": "in"}]]]}]],
+                    [
+                        [{"text": "c3", "list": {"preset": "BULLET_DISC_CIRCLE_SQUARE"}}],
+                        [{"table": [[[{"text": "in"}]]]}],
+                    ],
                 ]
             },
             {"text": "cd"},
@@ -8557,6 +8566,8 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
     }
     assert cells[1]["content"][0]["paragraph"]["paragraphStyle"] == _CELL
     assert list(cells[1]["content"][0]["paragraph"]["paragraphStyle"]) == list(_CELL)
+    # a list item in a cell has no `spacingMode`, as one `createParagraphBullets` makes
+    assert cells[2]["content"][0]["paragraph"]["paragraphStyle"] == _LISTED_CELL
     # a table that opens and ends a cell has an empty paragraph either side
     assert spans(cells[3]["content"]) == [(21, 22), (22, 29), (29, 30)]
 
@@ -20432,6 +20443,17 @@ _TABLE_STYLE_ROWS = [
         + [[_cell_style("spacingMode", "indentFirstLine", "indentStart"), None]] * 4
         + [[_NORMAL, None]],
     ),
+    # a named range of a whole table replaced takes the style of the paragraph after it, one run
+    # with it
+    (
+        "wr-table",
+        [
+            {"createNamedRange": {"name": "t", "range": {"startIndex": 5, "endIndex": 25}}},
+            {"replaceNamedRangeContent": {"namedRangeName": "t", "text": "new"}},
+        ],
+        "runs",
+        [[["ab\n", {}]], [["\n", {}]], [["newcd\n", {}]]],
+    ),
     # a row made under a cell takes its first character's style for its newline
     (
         "wr-table",
@@ -22688,6 +22710,11 @@ _DOCS_TABLE_REFUSALS = [
             ([{"insertTable": {"rows": 1, "columns": 1}}], "No insertion location set.", 0),
             ([_table(2, rows=0)], "The number of table rows should be greater than zero.", 0),
             ([_table(2, columns=0)], "The number of table columns should be greater than zero.", 0),
+            (
+                [_table(2, rows=0, columns=0)],
+                "The number of table rows should be greater than zero.",
+                0,
+            ),
             ([_table(2, rows=0, tabId="t.x")], "Cannot apply request to an invalid tab ID.", 0),
             ([_table(-1, rows=0)], "Index must be greater than or equal to 0.", 0),
             (
@@ -22734,6 +22761,8 @@ _DOCS_TABLE_REFUSALS = [
                     0,
                 ),
                 ([_cell(kind, -1, 9)], "The row index -1 should be non-negative.", 0),
+                ([_cell(kind, 9, -1)], "The column index -1 should be non-negative.", 0),
+                ([_cell(kind, 2, -1)], "The column index -1 should be non-negative.", 0),
                 (
                     [_cell(kind, 0, 2)],
                     "The column index 2 should be less than the total number of columns 2.",

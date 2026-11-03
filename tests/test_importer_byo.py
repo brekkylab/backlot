@@ -6131,8 +6131,9 @@ def test_a_file_that_is_not_a_doc_may_hold_what_insert_text_refuses(tmp_path):
             "real strips",
         ),
         ("paragraphs", {"tabs": [{"paragraphs": [{"text": "a"}]}]}, "not both"),
-        # a table is stated alone and rectangular, a footnote holds none and a cell no page break,
-        # as real's `insertTable` and `insertPageBreak` refuse them
+        # a table is stated alone, rectangular and not empty, which nothing else could mean; a
+        # footnote holds none and a cell no page break, as real's `insertTable` and
+        # `insertPageBreak` refuse them
         (
             "paragraphs",
             {"paragraphs": [{"text": "a", "table": [[[{"text": "x"}]]]}]},

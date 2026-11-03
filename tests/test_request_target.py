@@ -396,6 +396,7 @@ _HOSTS = [
         for host in (b"[0:0]", b"[x]", b"[v1.x]")
         for method, base, rest, answer in (
             (b"GET", "/github/", b"rate_limit%00", "github"),
+            (b"GET", "/github/", b"rate_limit?b=%zz", "github"),
             (b"GET", "/slack/api/", b"auth.test%00", "slack empty"),
             (b"GET", "/slack/api/", b"auth.test%zz", "slack 404 empty"),
             (b"GET", "/atlassian/rest/api/3/", b"serverInfo%00", "served"),
@@ -405,6 +406,9 @@ _HOSTS = [
             (b"GET", "/drive/v3/", b"about%00", "google 1555 kept"),
             (b"GET", "/notion/v1/", b"users%00", "cloudflare page"),
             (b"GET", "/hubspot/crm/v3/objects/", b"contacts%00", "cloudflare page"),
+            (b"GET", "/notion/v1/", b"users%zz", "cloudflare page"),
+            (b"GET", "/hubspot/crm/v3/objects/", b"contacts%zz", "cloudflare page"),
+            (b"GET", "/hubspot/crm/v3/objects/", b"contacts%2?_=x", "cloudflare page"),
             (b"POST", "/linear/", b"graphql%00", "cloudflare page"),
             (b"POST", "/linear/", b"graphql%zz", "cloudflare page"),
             (b"POST", "/linear/", b"graphql%2", "served"),
@@ -416,6 +420,14 @@ _HOSTS = [
             (b"POST", "/fireflies/", b"../graphql", "cloudflare page"),
             (b"TRACE", "/fireflies/", b"graphql", "cloudflare 405"),
             (b"GET", "/msgraph/v1.0/", b"me%00", "graph invalid hostname"),
+        )
+    ),
+    *(
+        (host, b"GET", base, rest, "cloudflare page")
+        for host in (b"[0:0]", b"[v1.x]")
+        for base, rest in (
+            ("/notion/v1/", b"users%zzx/y"),
+            ("/hubspot/crm/v3/objects/", b"contacts%zzx/y"),
         )
     ),
     *(
@@ -444,6 +456,8 @@ _HOSTS = [
                 for base in ("/linear/", "/fireflies/")
             ),
             (b"GET", "/notion/v1/", b"users%2"),
+            (b"GET", "/notion/v1/", b"users/{x}"),
+            (b"GET", "/hubspot/crm/v3/objects/", b"contacts/{x}"),
         )
     ),
     # a raw byte of every kind beside a `Host` in the path, and of each but 0x7F after `?a=` on six

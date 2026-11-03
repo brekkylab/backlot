@@ -311,14 +311,20 @@ def refused_path(path: bytes, ends_the_target: bool) -> bool:
     """Whether Cloudflare in front of Linear and Fireflies refuses ``path``, which
     ``ends_the_target`` or not (:func:`path_ends_the_target`), with :data:`CLOUDFLARE_PAGE`: the
     path holds a `..` segment that climbs past the root (:func:`_climbs_past_the_root`), which both
-    hosts refused so ahead of a cut escape after it (`/../a%2`, 2026-10-29, UTC), or it holds `%00`
-    or a `%` two hex digits do not follow, but where :func:`cut_escape` holds. The page comes ahead
-    of Cloudflare's answer to a raw byte: on 2026-10-26 (UTC) both hosts drew it for `/a%zz` with a
-    raw `é` before or after it or `\\x01` before it, and for `/a%00` after a raw `é`, and on
-    2026-10-29 for `/../a` with a raw `é` or a space after it, where a raw `é` alone drew the empty
-    400."""
+    hosts refused so ahead of a cut escape after it (`/../a%2`, 2026-10-29, UTC), or
+    :func:`refused_escape` holds. The page comes ahead of Cloudflare's answer to a raw byte: on
+    2026-10-26 (UTC) both hosts drew it for `/a%zz` with a raw `é` before or after it or `\\x01`
+    before it, and for `/a%00` after a raw `é`, and on 2026-10-29 for `/../a` with a raw `é` or a
+    space after it, where a raw `é` alone drew the empty 400."""
     if _climbs_past_the_root(path):
         return True
+    return refused_escape(path, ends_the_target)
+
+
+def refused_escape(path: bytes, ends_the_target: bool) -> bool:
+    """Whether Cloudflare refuses ``path``, which ``ends_the_target`` or not
+    (:func:`path_ends_the_target`), with :data:`CLOUDFLARE_PAGE` for an escape in it: a `%00` or a
+    `%` two hex digits do not follow, but where :func:`cut_escape` holds."""
     return _broken(path) and not cut_escape(path, ends_the_target)
 
 
@@ -498,7 +504,7 @@ def answer(scope: Scope) -> Response | None:
         # Cloudflare's page for a broken escape or a `%00` comes ahead of the bytes
         # (:func:`printable_answer`)
         own = b"/" + sent_path.partition(b"/")[2].partition(b"/")[2]
-        if _broken(own) and not cut_escape(own, path_ends_the_target(scope)):
+        if refused_escape(own, path_ends_the_target(scope)):
             return _page(CLOUDFLARE_PAGE, "text/html")
         return _cloudflare(scope, in_path, in_query)
     if door == "s3":

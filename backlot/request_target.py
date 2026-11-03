@@ -548,7 +548,7 @@ def printable_answer(scope: Scope) -> Response | None:
     A `\\` right after a mount of :data:`_MOUNTS_AHEAD_OF_THE_TARGET` is the CDN's 400 page on Jira
     and Confluence and Google's 1,555-byte page on Docs, Sheets and Slides: measured on 2026-11-03
     (UTC) at a path each serves and at one under its API that no route serves, and on Jira and
-    Confluence after a second `\\` and before a `/` as well, where a `/` ahead of the `\\` was read on.
+    Confluence after a second `\\` and before a `/` as well. A `/` ahead of the `\\` was read on.
     On api.github.com its page for a `#` anywhere, and on slack.com envoy's empty 400; then on
     slack.com Apache's page (:data:`SLACK_APACHE_PAGE`) for a broken escape in the path; on Graph
     :data:`GRAPH_INVALID_URL` for one, or for a `"`, a `#`, a `<` or a `>`, in the path; on S3, an
@@ -567,7 +567,7 @@ def printable_answer(scope: Scope) -> Response | None:
     query is ``backlot.main.refuse_a_broken_escape_in_a_github_query``'s). Then each spelling of a
     broken escape, a `#` and a broken escape in either order, some of them beside `%00` or a raw
     byte, and on slack.com, Notion and HubSpot some of them with no credential, and on
-    api.github.com a `#` with none, each of which drew the answer it drew with one;
+    api.github.com a `#` with no credential, each of which drew the answer it drew with one;
     ``tests/test_request_target.py`` holds the cases. Notion reads nothing past a `#`, and slack.com
     answers `%00` beside a broken escape with envoy's empty 400 (:func:`escape_answer`). On Notion
     and HubSpot, Cloudflare's page for a broken escape or a `%00` comes ahead of its answer to a raw
@@ -575,8 +575,8 @@ def printable_answer(scope: Scope) -> Response | None:
     `{` beside one, which draw the raw byte's empty 400; slack.com answers a raw `\\x01` ahead of a
     `#` or a broken escape beside it, Graph gives a `\\x01` the page it gives a `"`, and S3 reads a
     raw byte on. The answers that do not close the connection are Apache's, Jetty's and HubSpot's
-    own: each of those was followed by an answer to a second request on the same connection, and
-    none of the others."""
+    own: each of those, and no other answer here, was followed by an answer to a second request on
+    the same connection."""
     path, raw_path = scope["path"], scope["raw_path"]
     sent = scope.get(WITH_A_FRAGMENT)
     sent_path = raw_path if sent is None else sent.partition(b"?")[0]

@@ -524,8 +524,7 @@ _PRINTABLE = [
     ("/atlassian/rest/api", b"\\3/serverInfo", "as /3/serverInfo"),
     ("/atlassian/wiki/rest/api", b"\\space", "as /space"),
     ("/atlassian/wiki/rest/api/", b"nope\\x", "as nope/x"),
-    # a `\` as the first byte of the vendor's target, alone, twice and before a `/`, where a `/`
-    # ahead of it is read on
+    # a `\` right after the mount, alone, twice and before a `/`; a `/` ahead of it is read on
     *(
         ("/atlassian", lead + rest, "cloudfront")
         for rest in (b"rest/api/3/serverInfo", b"wiki/rest/api/space")

@@ -17664,8 +17664,8 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
     exported = wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"})
     assert exported.content.decode("utf-8") == "\ufeffABell0 w0rld\r\nSec0nd para"
 
-    # and a header's, a footnote's and a tab title's words as well as the body's, a phrase within a
-    # line only, but no lone tab's default title
+    # and a header's, a footer's, a footnote's and a tab title's words as well as the body's, a
+    # phrase within a line only and not by stem, but no lone tab's default title
     def searched(q):
         found = wc.get("/drive/v3/files", headers=h, params={"q": f"fullText contains '{q}'"})
         return did in {x["id"] for x in found.json()["files"]}
@@ -18125,6 +18125,24 @@ def _tab_props(title, index, parent=None, depth=0):
 _TAB_WRITES = [
     # a new tab is a blank one, `Tab n` when untitled, last or at its index, under its parent
     ([{"addDocumentTab": {}}], [*_TABS_START, "Tab 5: "], [_tab_props("Tab 5", 3)]),
+    # a title another tab has in another case, spacing, width or normal form is its own
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"title": "kid"}}},
+            {"addDocumentTab": {"tabProperties": {"title": "Kid "}}},
+            {"addDocumentTab": {"tabProperties": {"title": "\uff2b\uff49\uff44"}}},
+            {"addDocumentTab": {"tabProperties": {"title": "Caf\u00e9"}}},
+            {"addDocumentTab": {"tabProperties": {"title": "Cafe\u0301"}}},
+        ],
+        [*_TABS_START, "kid: ", "Kid : ", "\uff2b\uff49\uff44: ", "Caf\u00e9: ", "Cafe\u0301: "],
+        [
+            _tab_props("kid", 3),
+            _tab_props("Kid ", 4),
+            _tab_props("\uff2b\uff49\uff44", 5),
+            _tab_props("Caf\u00e9", 6),
+            _tab_props("Cafe\u0301", 7),
+        ],
+    ),
     # climbing past a title another tab has
     (
         [
@@ -18260,7 +18278,7 @@ _TAB_WRITES = [
     ),
     # a delete takes the child tabs; the first tab then is the one after it
     ([{"deleteTab": {"tabId": "$T2"}}], [_TABS_START[0], _TABS_START[3]], None),
-    # the only root deleted, its child with it, leaves a fresh `Tab 1` of a new id
+    # the only root deleted, its child with it, leaves a fresh `Tab 1`
     (
         [
             {"addDocumentTab": {"tabProperties": {"title": "K", "parentTabId": "t.0"}}},
@@ -18362,6 +18380,16 @@ _TAB_WRITES = [
         [{"replaceAllText": {"occurrencesChanged": 2}}],
     ),
     ([_rep("f end", "!")], _TABS_START, [{"replaceAllText": {}}]),
+    (
+        [_rep("\x1b", "R")],
+        ["Tab 1: alpha beta gamma/x\U0001f600y e\u0301z/refR end H:head F:foot", *_TABS_START[1:]],
+        [{"replaceAllText": {"occurrencesChanged": 1}}],
+    ),
+    (
+        [_pb(1), _rep("\x0c", "P")],
+        ["Tab 1: P/" + _TABS_START[0][7:], *_TABS_START[1:]],
+        [{}, {"replaceAllText": {"occurrencesChanged": 1}}],
+    ),
     # headers, footers and footnotes: created, written from 0, numbered by place, deleted
     (
         [
@@ -19192,6 +19220,7 @@ _DOCS_TAB_REFUSALS = [
                     "\U0001f600\ufe0f",
                     "\u27a1",
                     "\u203c",
+                    "\u2049",
                     "\u00a9\ufe0f",
                 )
             ),

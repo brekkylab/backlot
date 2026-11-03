@@ -6351,7 +6351,7 @@ def test_stated_paragraphs_are_the_body_and_their_text_with_the_segments_is_the_
                 "title": "Plan",
                 "paragraphs": [{"runs": [{"text": "Goals"}, {"footnote": [{"text": "Q3"}]}]}],
                 "header": [{"text": "Draft"}],
-                "tabs": [{"paragraphs": [{"text": "Ship it"}]}],
+                "tabs": [{"title": "plan", "paragraphs": [{"text": "Ship it"}]}],
             },
             {"paragraphs": [{"runs": [{"text": "Notes"}, {"pageBreak": True}]}]},
         ],
@@ -6359,7 +6359,7 @@ def test_stated_paragraphs_are_the_body_and_their_text_with_the_segments_is_the_
     conn = _load_grid(tmp_path, [*unnamed, prose, tabbed])
     rows = conn.execute("SELECT id, content FROM gdrive_files ORDER BY rowid").fetchall()
     assert [r["content"] for r in rows] == ["Goals\nShip it\n"] * 3 + [
-        "Plan\nGoals\n\nDraft\n Q3\nTab 2\nShip it\nTab 3\nNotes\n"
+        "Plan\nGoals\n\nDraft\n Q3\nplan\nShip it\nTab 3\nNotes\n"
     ]
     body = store.gdrive_doc_for(conn, rows[0]["id"])["tabs"][0]["body"]
     assert [el.keys() for el in body] == [{"sectionBreak"}] + [{"paragraph"}] * 3
@@ -6368,7 +6368,7 @@ def test_stated_paragraphs_are_the_body_and_their_text_with_the_segments_is_the_
     plan, notes = store.gdrive_doc_for(conn, rows[3]["id"])["tabs"]
     assert [plan["tabProperties"]["tabId"], plan["tabProperties"]["title"]] == ["t.0", "Plan"]
     assert [t["tabProperties"]["title"] for t in (plan["childTabs"][0], notes)] == [
-        "Tab 2",
+        "plan",
         "Tab 3",
     ]
     assert [len(plan[k]) for k in ("headers", "footers", "footnotes")] == [1, 0, 1]

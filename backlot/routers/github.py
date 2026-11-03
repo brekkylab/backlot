@@ -128,6 +128,61 @@ async def _validate_bad_credential(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Bad credentials")
 
 
+#: The routes on which real answers neither the request line's 414 nor the path's
+#: (:func:`_refuse_a_long_line_or_path`).
+_SERVED_HOWEVER_LONG = frozenset(
+    {
+        "/github/repos/{owner}/{repo}/pulls/{number}",
+        "/github/repos/{owner}/{repo}/contents",
+        "/github/repos/{owner}/{repo}/contents/{path:path}",
+    }
+)
+
+#: Real's page for a request line too long for it (:func:`_refuse_a_long_line_or_path`).
+_LONG_LINE_PAGE = (
+    b"<html>\r\n<head><title>414 Request-URI Too Large</title></head>\r\n<body>\r\n"
+    b"<center><h1>414 Request-URI Too Large</h1></center>\r\n<hr><center>nginx</center>\r\n"
+    b"</body>\r\n</html>\r\n"
+)
+
+
+#: An escape of a letter, a digit, `-`, `.`, `_` or `~`, in either case of hex, which real's path
+#: 414 counts as the one character (:func:`_refuse_a_long_line_or_path`).
+_UNRESERVED_ESCAPE = re.compile(rb"%(?:2[DEde]|3[0-9]|[46][1-9A-Fa-f]|[57][0-9Aa]|5[Ff]|7[Ee])")
+
+
+async def _refuse_a_long_line_or_path(request: Request) -> None:
+    """414 a request line or a path too long for real, the line with :data:`_LONG_LINE_PAGE` and the
+    path with an empty body, on every route but :data:`_SERVED_HOWEVER_LONG`. Both are counted from
+    after `/github`, which real never receives, and the line as sent but for a `?` with nothing
+    after it, which the scope does not hold.
+
+    Measured against api.github.com on 2026-10-29 with a cache-buster on each request, on each of
+    the 34 routes here with the path filled by each of its parameters in turn and with a long query;
+    ``tests/test_github.py::_LONG_TARGET_ROWS`` holds the cases. A line of 8,192 bytes before its
+    LF, the method, the spaces and the CR among them, was the page, and a path of 4,097 characters
+    the empty 414. The escapes were measured on 2026-11-02, each of `%00` to `%FF` in upper and in
+    lower hex 100 times in an `issues/{number}` path of 4,096 and 4,097 characters counted each
+    way: those :data:`_UNRESERVED_ESCAPE` matches drew the 404 and then the 414 counted as one
+    character, each other but `%00` counted as sent, and so did the two escapes of `é`. Real frames
+    the path's empty 414 with `Transfer-Encoding: chunked` where a token came and with
+    `Content-Length: 0` where none did; it is the second here."""
+    if request.scope["route"].path in _SERVED_HOWEVER_LONG:
+        return
+    method = "HEAD" if getattr(request.state, "answering_head", False) else request.method
+    query = request.scope["query_string"]
+    path = request.scope["raw_path"][len(router.prefix) :]
+    target = path + (b"?" + query if query else b"")
+    if len(method) + len(target) + len(" HTTP/1.1\r") + 1 >= 8_192:
+        exc = HTTPException(status_code=414, headers={"Content-Type": "text/html"})
+        exc.github_body = _LONG_LINE_PAGE
+        raise exc
+    if len(_UNRESERVED_ESCAPE.sub(b"x", path)) >= 4_097:
+        exc = HTTPException(status_code=414)
+        exc.github_body = b""
+        raise exc
+
+
 def _org(request: Request) -> str:
     """The single org Backlot serves. ``tokens.yaml``'s ``org`` wins over the setting and lands
     on the ACL (see ``backlot.main``), so read it from there when there is one."""
@@ -1311,14 +1366,17 @@ router = APIRouter(
     prefix="/github",
     tags=["github"],
     # Order is the answering order: real resolves a credential that arrived before it looks at the
-    # version or the path, an unsupported API version is a malformed request it refuses next — ahead
-    # of a MISSING credential and of the owner the path names — and the repo's spelling is resolved
-    # last, so never for a request that fails one of the three ahead of it. A path no route matches
-    # is 404 ahead of all three on real (measured 2026-09-17 on an unrouted path and on a
-    # nonexistent subresource), and a router-wide dependency does not run for one either.
+    # version or the path, refuses a request line or path too long for it next, and then an
+    # unsupported API version as a malformed request — ahead of a MISSING credential and of the
+    # owner the path names — and the repo's spelling is resolved last, so never for a request that
+    # fails one of the four ahead of it. A path no route matches is 404 ahead of the credential, the
+    # version and the owner on real (measured 2026-09-17 on an unrouted path and on a nonexistent
+    # subresource) and ahead of a long request line (2026-10-29, a target of 8,191 bytes), and a
+    # router-wide dependency does not run for one either.
     dependencies=[
         Depends(_refuse_an_anonymous_caller),
         Depends(_validate_bad_credential),
+        Depends(_refuse_a_long_line_or_path),
         Depends(_validate_api_version),
         Depends(_validate_path_owner),
         Depends(_canonical_path_repo),

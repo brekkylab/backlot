@@ -15075,6 +15075,26 @@ def test_google_reads_a_body_under_its_coding_as_its_front_end_does(client, admi
     assert got == expected
 
 
+def test_google_decompresses_the_form_body_of_a_read_sent_as_a_post_once(client, monkeypatch):
+    """`answer_a_google_read_sent_as_a_post` reads the form body under its coding, and
+    `_ReadAGoogleBodyUnderItsCoding` hands that read on rather than decompressing the body again."""
+    from backlot.routers import google
+
+    sizes = []
+
+    def inflated(body, codings):
+        sizes.append(len(body))
+        return real(body, codings)
+
+    real = google.inflated
+    monkeypatch.setattr(google, "inflated", inflated)
+    body = gzip.compress(b"fields=kind")
+    r = client.post(
+        "/drive/v3/about", headers={**_READ_AS_A_GET, "Content-Encoding": "gzip"}, content=body
+    )
+    assert (r.status_code, sizes) == (401, [len(body)])
+
+
 @functools.cache
 def _gzipped_to(size: int) -> bytes:
     """`{}` and spaces, gzipped to decompress to ``size`` bytes."""
@@ -15091,6 +15111,7 @@ _PAST_THE_LIMIT = [
     ("/drive/v3/about", _READ_AS_A_GET, 134_217_729, _413),
     ("/drive/v3/about?callback=foo", _READ_AS_A_GET, 134_217_729, _413),
     ("/drive/v3/about?callback=foo", _READ_AS_A_GET, 134_217_728, None),
+    ("/drive/v3/about?callback=foo", {"X-HTTP-Method-Override": "GET"}, 134_217_729, _413),
     ("/sheets/v4/nosuch", {}, 134_217_729, "without"),
 ]
 

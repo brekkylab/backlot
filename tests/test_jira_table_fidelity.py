@@ -246,7 +246,8 @@ def test_the_table_script_run_by_its_path_exits_3_on_an_exception(tmp_path):
 
     entries = json.loads(baseline_path("jira").read_text(encoding="utf-8"))["operations"]
     unserved = [entry["operation"] for entry in entries if entry["status"] == "missing"]
-    stale = ["backlot/data/jira_unserved.json is stale; run scripts/gen_jira_unserved.py"]
+    table = Path("backlot", "data", "jira_unserved.json")
+    stale = [f"{table} is stale; run scripts/gen_jira_unserved.py"]
     rows = [
         ([], (1, stale, [])),
         ({}, (3, [], ["Traceback (most recent call last):"])),

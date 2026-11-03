@@ -14600,6 +14600,9 @@ _OVERRIDE_ROWS = [
     ("/drive/v3/about", "fields=kind&%FF", "", b"fields=kind&\xff", _FORM, "GET"),
     ("/drive/v3/about", "fields=ki%FFnd", "", b"fields=ki\xffnd", _FORM, "GET"),
     ("/drive/v3/about", "", "", gzip.compress(b"fields=kind", mtime=0)[:-8], _FORM, "GET"),
+    ("/sheets/v4/spreadsheets/{sheet}", "", "callback=foo", "", _FORM, "GET"),
+    ("/sheets/v4/spreadsheets/{sheet}", "", "callback=a-b", "", _FORM, "GET"),
+    ("/sheets/v4/spreadsheets/{sheet}", "", "", "callback=foo", _FORM, "GET"),
 ]
 
 
@@ -14637,6 +14640,9 @@ _OVERRIDE_IDS = [
     "byte-0xff-as-a-name",
     "byte-0xff-in-the-mask",
     "gzip-member-cut-short",
+    "callback-in-the-url",
+    "uncallable-callback-in-the-url",
+    "callback-in-the-body",
 ]
 
 
@@ -14860,10 +14866,14 @@ def test_google_decompresses_a_body_only_as_one_whole_gzip_member():
     }
 
 
+#: The headers of a read sent as a POST, its form body read as its query.
+_READ_AS_A_GET = {"X-HTTP-Method-Override": "GET", "Content-Type": _FORM}
+
 # Requests with `Content-Encoding: br` and no credential but where a row names one, beside what real
-# answered on 2026-10-30 (UTC): the status, `Content-Type` and body, the body's length the one real
-# sent, and for a `HEAD` its `Content-Length`; or `without` where the answer was the one real gives
-# the same request with no coding, which here is this server's answer to it.
+# answered on 2026-10-30 (UTC), and on 2026-11-03 to the rows sent as a POST with a `callback`: the
+# status, `Content-Type` and body, the body's length the one real sent, and for a `HEAD` its
+# `Content-Length`; or `without` where the answer was the one real gives the same request with no
+# coding, which here is this server's answer to it.
 _CODING_ANSWERS = [
     ("GET", "/drive/v3/about", {}, 415, _JSON_UTF8, _415),
     ("GET", "/gmail/v1/users/me/labels", {}, 415, _JSON_UTF8, _415),
@@ -14917,6 +14927,9 @@ _CODING_ANSWERS = [
     ("PUT", "/drive/v3/about", {}, "without", None, None),
     ("POST", "/drive/v3/about", {}, "without", None, None),
     ("TRACE", "/drive/v3/about", {}, "without", None, None),
+    ("POST", "/drive/v3/about?callback=foo", _READ_AS_A_GET, 415, _JSON_UTF8, _415),
+    ("POST", "/drive/v3/about?callback=a-b", _READ_AS_A_GET, 415, _JSON_UTF8, _415),
+    ("POST", "/gmail/v1/users/me/labels?callback=foo", _READ_AS_A_GET, 415, _JSON_UTF8, _415),
 ]
 
 
@@ -14926,7 +14939,7 @@ def test_google_answers_a_coding_it_does_not_read_ahead_of_the_route(client):
         content = b"{}" if method in ("POST", "PUT", "PATCH") else None
         sent = {**headers, "Content-Encoding": "br"}
         if content is not None:
-            sent["Content-Type"] = "application/json"
+            sent.setdefault("Content-Type", "application/json")
         r = client.request(method, url, headers=sent, content=content)
         row = (method, url, *headers.items())
         if status == "without":
@@ -15075,21 +15088,19 @@ _PAST_THE_LIMIT = [
     ("/drive/v3/files", {}, 134_217_729, _413),
     ("/drive/v3/nosuch", {}, 134_217_729, "without"),
     ("/drive/v3/about", {}, 134_217_729, "without"),
-    (
-        "/drive/v3/about",
-        {"X-HTTP-Method-Override": "GET", "Content-Type": _FORM},
-        134_217_729,
-        _413,
-    ),
+    ("/drive/v3/about", _READ_AS_A_GET, 134_217_729, _413),
+    ("/drive/v3/about?callback=foo", _READ_AS_A_GET, 134_217_729, _413),
+    ("/drive/v3/about?callback=foo", _READ_AS_A_GET, 134_217_728, None),
     ("/sheets/v4/nosuch", {}, 134_217_729, "without"),
 ]
 
 
 def test_google_refuses_a_body_that_decompresses_past_its_front_ends_limit(client):
     """A body gzipped to decompress to a row's size, `POST`ed with the row's headers and no
-    credential: real's 400 ahead of the credential on 2026-10-30 (UTC) where the row's answer is
-    one; the route's 401 where it is ``None``; and where it is `without`, the answer to the same
-    `POST` with no body, as real's was its answer to a path or method it does not route."""
+    credential: real's 400 ahead of the credential on 2026-10-30 (UTC), and on 2026-11-03 beside a
+    `callback`, where the row's answer is one; the route's 401 where it is ``None``; and where it
+    is `without`, the answer to the same `POST` with no body, as real's was its answer to a path or
+    method it does not route."""
 
     def answered(path, headers, size, answer):
         sent = {"Content-Type": "application/json", "Content-Encoding": "gzip", **headers}

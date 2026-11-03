@@ -398,5 +398,116 @@
     "columnSeparatorStyle": "NONE",
     "contentDirection": "LEFT_TO_RIGHT",
     "sectionType": "CONTINUOUS"
+  },
+  "table": {
+    "tableColumnProperties": {
+      "widthType": "EVENLY_DISTRIBUTED"
+    },
+    "tableRowStyle": {
+      "minRowHeight": {
+        "unit": "PT"
+      }
+    },
+    "tableCellStyle": {
+      "rowSpan": 1,
+      "columnSpan": 1,
+      "backgroundColor": {},
+      "paddingLeft": {
+        "magnitude": 5,
+        "unit": "PT"
+      },
+      "paddingRight": {
+        "magnitude": 5,
+        "unit": "PT"
+      },
+      "paddingTop": {
+        "magnitude": 5,
+        "unit": "PT"
+      },
+      "paddingBottom": {
+        "magnitude": 5,
+        "unit": "PT"
+      },
+      "contentAlignment": "TOP"
+    },
+    "paragraphStyle": {
+      "namedStyleType": "NORMAL_TEXT",
+      "alignment": "START",
+      "lineSpacing": 100,
+      "direction": "LEFT_TO_RIGHT",
+      "spacingMode": "COLLAPSE_LISTS",
+      "spaceAbove": {
+        "unit": "PT"
+      },
+      "spaceBelow": {
+        "unit": "PT"
+      },
+      "borderBetween": {
+        "color": {},
+        "width": {
+          "unit": "PT"
+        },
+        "padding": {
+          "unit": "PT"
+        },
+        "dashStyle": "SOLID"
+      },
+      "borderTop": {
+        "color": {},
+        "width": {
+          "unit": "PT"
+        },
+        "padding": {
+          "unit": "PT"
+        },
+        "dashStyle": "SOLID"
+      },
+      "borderBottom": {
+        "color": {},
+        "width": {
+          "unit": "PT"
+        },
+        "padding": {
+          "unit": "PT"
+        },
+        "dashStyle": "SOLID"
+      },
+      "borderLeft": {
+        "color": {},
+        "width": {
+          "unit": "PT"
+        },
+        "padding": {
+          "unit": "PT"
+        },
+        "dashStyle": "SOLID"
+      },
+      "borderRight": {
+        "color": {},
+        "width": {
+          "unit": "PT"
+        },
+        "padding": {
+          "unit": "PT"
+        },
+        "dashStyle": "SOLID"
+      },
+      "indentFirstLine": {
+        "unit": "PT"
+      },
+      "indentStart": {
+        "unit": "PT"
+      },
+      "indentEnd": {
+        "unit": "PT"
+      },
+      "keepLinesTogether": false,
+      "keepWithNext": false,
+      "avoidWidowAndOrphan": false,
+      "shading": {
+        "backgroundColor": {}
+      },
+      "pageBreakBefore": false
+    }
   }
 }

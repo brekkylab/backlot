@@ -161,8 +161,20 @@ marker, a numbered list counted from 1 at each level.
 {"source_type": "google_drive", "title": "Launch checklist", "folder": "ops", "author_email": "pm@acme.com", "created": "2026-02-02T08:00:00Z", "updated": "2026-02-03T08:00:00Z", "paragraphs": [{"style": "HEADING_1", "text": "Before launch"}, {"text": "Sign off the pricing page", "list": {"preset": "BULLET_CHECKBOX"}}, {"text": "Brief support", "list": {"preset": "BULLET_CHECKBOX"}}, {"text": "Escalation rota", "list": {"preset": "BULLET_CHECKBOX", "level": 1}}]}
 ```
 
+An item of `paragraphs`, a cell's included, may be a `table` instead of a paragraph, stated alone:
+its rows, each the same number of cells, each cell its paragraphs. `documents.get` serves it as
+`insertTable` makes one, with real's indices, `files.export` writes it as real does, and Drive's
+full-text search reads each cell's paragraphs as lines of their own. An empty paragraph comes
+before a table that opens a body, a header, a footer or a cell, and after one that ends it, as real
+always has one there. A footnote may stand in a cell of the body; a page break may not, and a
+footnote holds no table.
+
+```json
+{"source_type": "google_drive", "title": "Rollout owners", "folder": "ops", "author_email": "pm@acme.com", "created": "2026-02-04T08:00:00Z", "updated": "2026-02-05T08:00:00Z", "paragraphs": [{"text": "Owners by region:"}, {"table": [[[{"runs": [{"text": "Region", "bold": true}]}], [{"runs": [{"text": "Owner", "bold": true}]}]], [[{"text": "EMEA"}], [{"text": "Dana"}, {"text": "backup: Lee"}]], [[{"text": "APAC"}], [{"text": "Kim"}]]]}, {"text": "Escalate to the region's owner."}]}
+```
+
 A corpus states neither a font, a size, a colour or a paragraph's alignment and spacing, nor a
-named range, nor a table: `documents.batchUpdate` makes the first two (see
+named range, nor a cell's or a column's style: `documents.batchUpdate` makes the first two (see
 [the write overlay](write-overlay.md)).
 
 ## Load a public dataset

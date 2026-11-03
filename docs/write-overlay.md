@@ -99,6 +99,13 @@ text written around it, as real moves one, until a delete or a replacement leave
 `files.export` writes each list item's marker and, in Markdown, an anchor on each heading a link
 goes to.
 
+A table is made as `insertTable` makes one, after a newline it inserts, and a row or a column takes
+the style of the cells it is made beside; the last row or column deleted takes the table with it.
+A request's indices count one at a table's start, at each row's and each cell's, and at its end:
+text goes nowhere but a paragraph, a delete takes a whole table or none of it, and a style or a
+list over a table's characters reaches the paragraphs real reaches. `replaceAllText` searches each
+cell, and the text either side of a table, apart.
+
 `values.append` finds the table it writes below the way real does: from the last cell in the range
 holding a value, row by row, grown through every cell in the row or column next to it, and
 the values go on the row under it from its first column. `INSERT_ROWS` inserts whole rows there,
@@ -165,10 +172,11 @@ field list, so the ordering divergence below has no entry to live in and is stat
   data sources, and every cell format but a number format are read and not kept.
 - **`spreadsheets.batchUpdate`.** Not served, so a workbook's sheets change only by
   `spreadsheets.create` and `sheets.copyTo`.
-- **Docs requests past text, styles, lists, named ranges, segments and tabs.**
+- **Docs requests past text, styles, lists, named ranges, segments, tabs and tables.**
   `documents.batchUpdate` applies the text, style, bullet, named-range, header, footer, footnote,
-  page-break and tab requests above. Every other request kind, and the `SUGGEST` write mode, is
-  refused naming itself, where real applies it.
+  page-break, tab and table requests above. Every other request kind, a cell's, a row's and a
+  column's style and merging cells among them, and the `SUGGEST` write mode, is refused naming
+  itself, where real applies it.
 - **The order of a Doc's named ranges.** Real serves `namedRanges` in the order a Java `HashMap`
   iterates their names, and Backlot fills one in the order the ranges were made: of 28 reads
   measured, one served two names that share a bucket the other way round, and so did both of two

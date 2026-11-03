@@ -97,6 +97,17 @@ FOOTNOTE = "\x1b"
 PAGE_BREAK = "\x0c"
 _ELEMENTS = FOOTNOTE + PAGE_BREAK
 
+# The index a table takes at its start, at each row's and each cell's start, and at its end, which
+# stand in a body as these characters: measured 2026-11-03, a 2x2 table of empty cells took 12
+# indices, its first cell's paragraph starting three after the table and the paragraph after it
+# one after its last cell. `replaceAllText` reads none of them: it searches the text before a
+# table, each cell and the text after it apart, `\A` and `\z` matching at the ends of each. They
+# are characters `insertText` strips, so no text holds them.
+TABLE, ROW, CELL, TABLE_END = "\x10", "\x12", "\x1c", "\x11"
+_STRUCTURE = TABLE + ROW + CELL + TABLE_END
+# What a paragraph's first character follows: a newline, or a table's start, row, cell or end.
+_BOUNDARY = "\n" + _STRUCTURE
+
 # A footnote's run style, as `createFootnote` makes one and the editor writes into it: measured
 # 2026-11-02, its content opens with a space and every run is 10 PT.
 _FOOTNOTE_TEXT = {"fontSize": {"magnitude": 10, "unit": "PT"}}
@@ -117,6 +128,58 @@ def document_style(header: str | None = None, footer: str | None = None) -> dict
 
 def named_styles() -> dict:
     return copy.deepcopy(_DEFAULTS["namedStyles"])
+
+
+def _cell_paragraph_style(named: str) -> dict:
+    """The `paragraphStyle` of a paragraph of ``named`` style in a cell `insertTable` made: measured
+    2026-11-03, each member stated, those normal text leaves at zero or false among them, and a
+    cell made a heading kept only those normal text gives otherwise (`_left`)."""
+    style = copy.deepcopy(_DEFAULTS["table"]["paragraphStyle"])
+    if named != "NORMAL_TEXT":
+        style = _left(style, "NORMAL_TEXT")
+    return style | {"namedStyleType": named}
+
+
+def new_table(rows: int, columns: int, cells: list[list[list[dict]]] | None = None) -> dict:
+    """A table as `insertTable` makes one, ``rows`` by ``columns``, each cell holding one empty
+    paragraph or the content ``cells`` gives it: measured 2026-11-03, every column evenly
+    distributed, every row of no minimum height and every cell padded 5 PT, top-aligned."""
+    made = _DEFAULTS["table"]
+
+    def cell(r: int, c: int) -> dict:
+        content = (
+            cells[r][c] if cells else [_paragraph([], {}, _cell_paragraph_style("NORMAL_TEXT"))]
+        )
+        return {"content": content, "tableCellStyle": copy.deepcopy(made["tableCellStyle"])}
+
+    return {
+        "table": {
+            "tableRows": [
+                {
+                    "tableCells": [cell(r, c) for c in range(columns)],
+                    "tableRowStyle": copy.deepcopy(made["tableRowStyle"]),
+                }
+                for r in range(rows)
+            ],
+            "tableStyle": {
+                "tableColumnProperties": [
+                    copy.deepcopy(made["tableColumnProperties"]) for _ in range(columns)
+                ]
+            },
+        }
+    }
+
+
+def paragraphs_of(content: list[dict]) -> Iterator[dict]:
+    """Each paragraph of stored content in order, those in a table's cells where the table stands,
+    row by row."""
+    for el in content:
+        if "paragraph" in el:
+            yield el["paragraph"]
+        elif "table" in el:
+            for row in el["table"]["tableRows"]:
+                for cell in row["tableCells"]:
+                    yield from paragraphs_of(cell["content"])
 
 
 def utf16_len(text: str) -> int:
@@ -257,12 +320,27 @@ def _stated(
     notes: dict | None,
     lists: dict,
     footnote: bool = False,
+    cell: bool = False,
 ) -> list[dict]:
     """A corpus's paragraphs as stored content, a heading's `headingId` drawn here, once, from
     ``seed`` and its position. A stated footnote is added to ``notes``, formatted as
-    `_FOOTNOTE_TEXT`, and a stated list to ``lists`` (`_listed`)."""
+    `_FOOTNOTE_TEXT`, and a stated list to ``lists`` (`_listed`). A stated table is `new_table`'s,
+    its cells' paragraphs styled as a cell's are, and an empty paragraph comes before one that
+    opens the content and after one that ends it: `insertTable` puts a paragraph before a table,
+    and no delete takes the newline before one or the last of a cell or segment (measured
+    2026-11-03)."""
     content = []
     for i, p in enumerate(paragraphs):
+        if "table" in p:
+            cells = [
+                [
+                    _stated(file_id, stated, f"{seed}{i}.{r}.{c}.", notes, lists, cell=True)
+                    for c, stated in enumerate(row)
+                ]
+                for r, row in enumerate(p["table"])
+            ]
+            content.append(new_table(len(cells), len(cells[0]), cells))
+            continue
         named = p.get("style") or "NORMAL_TEXT"
         stated = p["runs"] if "runs" in p else [{"text": p.get("text", "")}]
         if footnote and i == 0:
@@ -282,8 +360,15 @@ def _stated(
         newline = _newline_style(stated[-1]) | (_FOOTNOTE_TEXT if footnote else {})
         newline = {k: newline[k] for k in TEXT_STYLE_ORDER if k in newline}
         hid = heading_id(file_id, f"{seed}{i}") if named != "NORMAL_TEXT" else None
-        content.append(_paragraph(runs, newline, _paragraph_style(named, footnote), hid))
-    return _listed(file_id, paragraphs, content, seed, lists)
+        style = _cell_paragraph_style(named) if cell else _paragraph_style(named, footnote)
+        content.append(_paragraph(runs, newline, style, hid))
+    content = _listed(file_id, paragraphs, content, seed, lists)
+    style = _cell_paragraph_style("NORMAL_TEXT") if cell else _paragraph_style("NORMAL_TEXT")
+    if "table" in content[0]:
+        content.insert(0, _paragraph([], {}, style))
+    if "table" in content[-1]:
+        content.append(_paragraph([], {}, copy.deepcopy(style)))
+    return content
 
 
 # The nesting levels of each `bulletPreset`, as `createParagraphBullets` made a list of it on
@@ -510,7 +595,8 @@ def document_text(doc: dict) -> str:
     lone tab's title once renamed, and `Tab` in a Doc of several tabs, one untitled, and in one
     whose tabs were deleted back to one, but not in a Doc that only ever had one untitled tab; and a
     footnote reference or a page break parted the words either side of it as a line break does
-    (`routers.google._in_a_line`)."""
+    (`routers.google._in_a_line`). Each paragraph of a table's cells is a line of its own:
+    measured 2026-11-03, no phrase was found across a cell's, a row's or a table's edge."""
     tabs = [tab for tab, *_ in walk(doc["tabs"])]
     lines = []
     for tab in tabs:
@@ -526,9 +612,8 @@ def document_text(doc: dict) -> str:
             text = _paired(
                 "".join(
                     pe["textRun"]["content"] if "textRun" in pe else "\n"
-                    for el in segment
-                    if "paragraph" in el
-                    for pe in el["paragraph"]["elements"]
+                    for paragraph in paragraphs_of(segment)
+                    for pe in paragraph["elements"]
                 )[:-1]
             )
             if text.strip():
@@ -542,9 +627,8 @@ def footnote_numbers(tab: dict) -> dict[str, str]:
     second tab's first footnote was `1`."""
     refs = [
         pe["footnoteReference"]["footnoteId"]
-        for el in tab["body"]
-        if "paragraph" in el
-        for pe in el["paragraph"]["elements"]
+        for paragraph in paragraphs_of(tab["body"])
+        for pe in paragraph["elements"]
         if "footnoteReference" in pe
     ]
     return {fid: str(n) for n, fid in enumerate(refs, 1)}
@@ -557,13 +641,46 @@ def indexed(
     its `startIndex` and `endIndex` in UTF-16 code units, those two first, and a footnote
     reference its `footnoteNumber`. Content opens at 0, a body with its section break and a header,
     footer or footnote with its first paragraph, and a zero `startIndex` is left out, as proto3
-    leaves out every zero. A link to a heading is `_linked`'s."""
+    leaves out every zero. A link to a heading is `_linked`'s. A table takes an index at its start,
+    at each row's and cell's and at its end (`TABLE`), and serves its `rows` and `columns`."""
+    return _indexed(content, 0, numbers, lone)[0]
+
+
+def _indexed(
+    content: list[dict], at: int, numbers: dict[str, str] | None, lone: bool
+) -> tuple[list[dict], int]:
     out = []
-    at = 0
     for el in content:
         if "sectionBreak" in el:
             out.append(_span(at, at + 1) | el)
             at += 1
+            continue
+        if "table" in el:
+            table = el["table"]
+            start, at = at, at + 1
+            rows = []
+            for row in table["tableRows"]:
+                row_start, at = at, at + 1
+                cells = []
+                for cell in row["tableCells"]:
+                    cell_start, at = at, at + 1
+                    inner, at = _indexed(cell["content"], at, numbers, lone)
+                    cells.append(
+                        _span(cell_start, at)
+                        | {"content": inner, "tableCellStyle": cell["tableCellStyle"]}
+                    )
+                rows.append(
+                    _span(row_start, at)
+                    | {"tableCells": cells, "tableRowStyle": row["tableRowStyle"]}
+                )
+            at += 1
+            served = {
+                "rows": len(rows),
+                "columns": len(table["tableStyle"]["tableColumnProperties"]),
+                "tableRows": rows,
+                "tableStyle": table["tableStyle"],
+            }
+            out.append(_span(start, at) | {"table": served})
             continue
         start = at
         elements = []
@@ -594,7 +711,7 @@ def indexed(
             **{k: v for k, v in el["paragraph"].items() if k != "elements"},
         }
         out.append(_span(start, at) | {"paragraph": paragraph})
-    return out
+    return out, at
 
 
 def document_tab(tab: dict, lone: bool = False) -> dict:
@@ -1072,7 +1189,9 @@ def _unlinked(style: dict) -> dict:
 def _left(style: dict, named: str) -> dict:
     """A `paragraphStyle` once its paragraph leaves ``named``: each member ``named`` gives the same
     value taken off, its direction kept. Measured 2026-11-03: a paragraph given a START alignment
-    and a line spacing of 115 lost both made a HEADING_2, as normal text gives them."""
+    and a line spacing of 115 lost both made a HEADING_2, as normal text gives them, and a cell's
+    paragraph kept its line spacing of 100 and its widow control off and lost the alignment,
+    spacing, borders, indents and shading it stated."""
     given = {**_PARAGRAPH_STYLES["NORMAL_TEXT"], **_PARAGRAPH_STYLES.get(named, {})}
     return {k: v for k, v in style.items() if k == "direction" or given.get(k) != v}
 
@@ -1206,13 +1325,13 @@ def _join_runs(left: tuple[str, dict, int], chunks: Iterable[tuple[list, int]]) 
     run is served per paragraph and a later delete of that newline joins what follows it anew. A
     footnote reference or page break is never one side of a join; once one is deleted, the runs
     either side join (measured 2026-11-02)."""
-    if left[0] in _ELEMENTS:
+    if left[0] in _ELEMENTS or left[0] in _STRUCTURE:
         return
     right = None
     for chunk, begin in chunks:
         for i in range(begin, len(chunk)):
             c, style, run = chunk[i]
-            if c in _ELEMENTS:
+            if c in _ELEMENTS or c in _STRUCTURE:
                 return
             if right is None:
                 if style != left[1]:
@@ -1263,7 +1382,27 @@ class Body:
         self.chars: list[tuple[str, dict, int]] = []
         self.paragraphs: list[dict] = []
         self.footnotes: list[str] = []
-        for el in content[self.base :]:
+        self._flatten(content[self.base :])
+        # the headings this write has made, counted across every segment a `Document` opens
+        self._split = headings or itertools.count(1)
+        self.ranges: list[dict] = []
+
+    def _flatten(self, content: list[dict]) -> None:
+        """Stored content as characters, a table as its `TABLE`, `ROW`, `CELL` and `TABLE_END`
+        characters around its cells' content, each holding the style it is served with."""
+        for el in content:
+            if "table" in el:
+                table = el["table"]
+                self.chars.append((TABLE, {"tableStyle": table["tableStyle"]}, next(self._runs)))
+                for row in table["tableRows"]:
+                    style = {"tableRowStyle": row["tableRowStyle"]}
+                    self.chars.append((ROW, style, next(self._runs)))
+                    for cell in row["tableCells"]:
+                        style = {"tableCellStyle": cell["tableCellStyle"]}
+                        self.chars.append((CELL, style, next(self._runs)))
+                        self._flatten(cell["content"])
+                self.chars.append((TABLE_END, {}, next(self._runs)))
+                continue
             for pe in el["paragraph"]["elements"]:
                 n = next(self._runs)
                 if "textRun" in pe:
@@ -1275,9 +1414,6 @@ class Body:
                 else:
                     self.chars.append((PAGE_BREAK, pe["pageBreak"]["textStyle"], n))
             self.paragraphs.append({k: v for k, v in el["paragraph"].items() if k != "elements"})
-        # the headings this write has made, counted across every segment a `Document` opens
-        self._split = headings or itertools.count(1)
-        self.ranges: list[dict] = []
 
     @property
     def end(self) -> int:
@@ -1319,7 +1455,7 @@ class Body:
         if pos == 0 or pos >= len(self.chars):
             return False
         start = pos
-        while start and self.chars[start - 1][0] != "\n":
+        while start and self.chars[start - 1][0] not in _BOUNDARY:
             start -= 1
         end = pos
         while self.chars[end][0] != "\n":
@@ -1333,6 +1469,57 @@ class Body:
             edge += utf16_len(cluster[0])
         return edge != at
 
+    def in_paragraph(self, pos: int) -> bool:
+        """Whether the character at ``pos`` is a paragraph's, and not a table's (`TABLE`)."""
+        return pos < len(self.chars) and self.chars[pos][0] not in _STRUCTURE
+
+    def in_table(self, pos: int) -> bool:
+        """Whether ``pos`` is inside a table: after its start, up to and including its end."""
+        depth = 0
+        for c, *_ in self.chars[:pos]:
+            depth += (c == TABLE) - (c == TABLE_END)
+        return depth > 0
+
+    def cuts_table(self, start: int, end: int) -> bool:
+        """Whether deleting ``[start, end)`` would take part of a table and not the whole of it: a
+        table's character, the newline that ends a cell or the newline before a table, with the
+        table not inside the range. Measured 2026-11-03: a range of a whole table was taken, with
+        or without text either side of it, and every range meeting part of one refused, a cell's
+        last newline, the empty paragraph before a table and that paragraph's newline among
+        them."""
+        opened: list[int] = []  # where each table open at ``pos`` starts
+        for pos, (c, *_) in enumerate(self.chars):
+            if c == TABLE:
+                opened.append(pos)
+            mine = None
+            if c in _STRUCTURE:
+                mine = opened[-1]
+            elif c == "\n" and pos + 1 < len(self.chars):
+                after = self.chars[pos + 1][0]
+                if after == TABLE:
+                    mine = pos + 1
+                elif after in _STRUCTURE:
+                    mine = opened[-1]
+            if c == TABLE_END:
+                opened.pop()
+            if (
+                mine is not None
+                and start <= pos < end
+                and not (start <= mine and self._closes(mine) < end)
+            ):
+                return True
+        return False
+
+    def _closes(self, table: int) -> int:
+        """The position of the `TABLE_END` of the table that starts at ``table``."""
+        depth = 0
+        for pos in range(table, len(self.chars)):
+            c = self.chars[pos][0]
+            depth += (c == TABLE) - (c == TABLE_END)
+            if not depth:
+                return pos
+        raise ValueError(table)
+
     def _named(self, p: int) -> str:
         return self.paragraphs[p]["paragraphStyle"].get("namedStyleType", "NORMAL_TEXT")
 
@@ -1340,7 +1527,7 @@ class Body:
         return sum(1 for c, *_ in self.chars[:pos] if c == "\n")
 
     def _starts_paragraph(self, pos: int) -> bool:
-        return pos == 0 or self.chars[pos - 1][0] == "\n"
+        return pos == 0 or self.chars[pos - 1][0] in _BOUNDARY
 
     def _style_at(self, pos: int, text: str) -> dict:
         """The style ``text`` inserted before ``pos`` takes: the character before it's, or at the
@@ -1371,8 +1558,22 @@ class Body:
         joined the run after it. A footnote reference or page break is no run to join: measured
         2026-11-02, text inserted right after a reference joined the run after it, and right
         before one the run before it."""
-        before = self.chars[pos - 1] if pos else None
-        return self._run_between(before, self.chars[pos], style, self._starts_paragraph(pos))
+        return self._run_between(
+            self._before(pos), self.chars[pos], style, self._starts_paragraph(pos)
+        )
+
+    def _first_style(self, pos: int) -> dict:
+        """The style of the first character at or after ``pos`` that is not a table's: what text
+        replacing a range from ``pos`` takes (measured 2026-11-03, a named range of a whole table
+        replaced by `new` was one run with the paragraph after it)."""
+        while self.chars[pos][0] in _STRUCTURE:
+            pos += 1
+        return self.chars[pos][1]
+
+    def _before(self, pos: int) -> tuple[str, dict, int] | None:
+        """The character before ``pos`` that a run may join, none at a segment's or a cell's
+        start or after a table."""
+        return self.chars[pos - 1] if pos and self.chars[pos - 1][0] not in _STRUCTURE else None
 
     def _run_between(
         self,
@@ -1529,6 +1730,8 @@ class Body:
         lost = []
         for pos in range(first, last):
             c, style, run = self.chars[pos]
+            if c in _STRUCTURE:
+                continue
             if start <= pos < end:
                 if c == "\n" and self._starts_paragraph_at(pos, start):
                     self._style_bullet(p, stated)
@@ -1568,7 +1771,7 @@ class Body:
     def _starts_paragraph_at(self, newline: int, start: int) -> bool:
         """Whether the paragraph that ``newline`` ends starts at or after ``start``."""
         pos = newline
-        while pos and self.chars[pos - 1][0] != "\n":
+        while pos and self.chars[pos - 1][0] not in _BOUNDARY:
             pos -= 1
         return pos >= start
 
@@ -1602,7 +1805,7 @@ class Body:
             (lc, ls, lr), (rc, rs, rr) = self.chars[b - 1], self.chars[b]
             if lc == "\n" or not (changed[b - 1] or changed[b]) or ls != rs or lr == rr:
                 continue
-            if lc in _ELEMENTS or rc in _ELEMENTS:
+            if lc in _ELEMENTS or rc in _ELEMENTS or lc in _STRUCTURE or rc in _STRUCTURE:
                 continue
             i = b
             while i < len(self.chars) and self.chars[i][2] == rr:
@@ -1621,9 +1824,49 @@ class Body:
     def paragraphs_in(self, start: int, end: int) -> range:
         """The paragraphs a range of indices overlaps, or for an empty one the paragraph it falls
         in: measured 2026-11-03, a range ending at a paragraph's first index left that paragraph
-        out, and one of a newline alone held its paragraph alone."""
-        first = self._paragraph_of(self.floor(start))
-        return range(first, self._paragraph_of(self.floor(max(end - 1, start))) + 1)
+        out, and one of a newline alone held its paragraph alone. A table's character counts as
+        the paragraph after it, the cell's first for a cell's, but for a range of a table's start or
+        a row alone, which reaches the paragraph after the table: measured 2026-11-03 on 21 ranges
+        from, to and over a table's characters (`TABLE`)."""
+        first, last = self.floor(start), self.floor(max(end - 1, start))
+        if end > start and first == last and self.chars[first][0] in (TABLE, ROW):
+            p = self._paragraph_of(self._closes(self._opening(first)) + 1)
+            return range(p, p + 1)
+        return range(self._paragraph_of(first), self._paragraph_of(last) + 1)
+
+    def reach(self, first: int, last: int) -> tuple[int, int] | None:
+        """The characters `updateTextStyle` styles for ``[first, last)``: those, and when the last
+        is a table's, the next character that is not (`paragraphs_in`), but for a table's start or
+        a row alone, which styles the newline of the paragraph after the table, and its end alone,
+        which styles nothing. Measured 2026-11-03: bold over a table's empty paragraph and its
+        start reached the first cell's first letter, and over its start alone the newline after
+        the table."""
+        if last - first == 1 and self.chars[first][0] in (TABLE, ROW):
+            after = self._closes(self._opening(first)) + 1
+            newline = self._paragraph_span(self._paragraph_of(after)).stop - 1
+            return newline, newline + 1
+        if last - first == 1 and self.chars[first][0] == TABLE_END:
+            return None
+        if self.chars[last - 1][0] in _STRUCTURE:
+            while self.chars[last][0] in _STRUCTURE:
+                last += 1
+            last += 1
+        return first, last
+
+    def _opening(self, pos: int) -> int:
+        """The position of the `TABLE` of the table whose start, row, cell or end ``pos`` is."""
+        if self.chars[pos][0] == TABLE:
+            return pos
+        depth = 0
+        for at in range(pos - 1, -1, -1):
+            c = self.chars[at][0]
+            if c == TABLE_END:
+                depth += 1
+            elif c == TABLE:
+                if not depth:
+                    return at
+                depth -= 1
+        raise ValueError(pos)
 
     def style_paragraph(self, p: int, stated: dict) -> None:
         """``stated``'s `ParagraphStyle` members set on paragraph ``p``, each one None taken off,
@@ -1664,8 +1907,17 @@ class Body:
         self.paragraphs[p] = props | {"paragraphStyle": ordered}
 
     def _paragraph_span(self, p: int) -> range:
-        starts = [0] + [i + 1 for i, (c, *_) in enumerate(self.chars) if c == "\n"]
-        return range(starts[p], starts[p + 1])
+        """Paragraph ``p``'s characters, its newline the last, a table's characters before it
+        left out."""
+        start, n = 0, 0
+        for i, (c, *_) in enumerate(self.chars):
+            if c in _STRUCTURE:
+                start = i + 1
+            elif c == "\n":
+                if n == p:
+                    return range(start, i + 1)
+                start, n = i + 1, n + 1
+        raise IndexError(p)
 
     def _unformat(self, p: int) -> None:
         """Take off each text style member but the link that every character before paragraph
@@ -1726,6 +1978,12 @@ class Body:
             kept = {k: v for k, v in props["bullet"]["textStyle"].items() if given.get(k) != v}
             self.paragraphs[p] = props | {"bullet": props["bullet"] | {"textStyle": kept}}
 
+    def follows_paragraph(self, p: int) -> bool:
+        """Whether paragraph ``p`` comes right after another, and not first or after a table's
+        start, row, cell or end."""
+        start = self._paragraph_span(p).start
+        return start > 0 and self.chars[start - 1][0] == "\n"
+
     def leading_tabs(self, p: int) -> int:
         """Delete the tabs paragraph ``p`` opens with, and how many there were."""
         span = self._paragraph_span(p)
@@ -1740,13 +1998,14 @@ class Body:
         """Make paragraph ``p`` an item of ``list_id`` at ``level``, its first line and start
         indented by ``indents``. Measured 2026-11-03, a bullet's text style is the paragraph's
         newline's with `underline: false`: a bold 14 PT paragraph's was bold, not underlined and
-        14 PT, and one in a footnote 10 PT."""
+        14 PT, and one in a footnote 10 PT; and a cell's paragraph lost its `spacingMode`."""
         newline = shown(self.chars[self._paragraph_span(p).stop - 1][1])
         text_style = _ordered(newline | {"underline": False}, set())
         bullet = {"listId": list_id} | ({"nestingLevel": level} if level else {})
         props = self.paragraphs[p]
         first, start = copy.deepcopy(indents)
         style = props["paragraphStyle"] | {"indentFirstLine": first, "indentStart": start}
+        style.pop("spacingMode", None)
         self.paragraphs[p] = props | {
             "paragraphStyle": {k: style[k] for k in PARAGRAPH_STYLE_ORDER if k in style},
             "bullet": bullet | {"textStyle": text_style},
@@ -1770,6 +2029,142 @@ class Body:
         ordered = {k: style[k] for k in PARAGRAPH_STYLE_ORDER if k in style}
         self.paragraphs[p] = {"paragraphStyle": ordered}
 
+    def insert_table(self, pos: int, rows: int, columns: int) -> None:
+        """A table of ``rows`` by ``columns`` empty cells before the character at ``pos``, after a
+        newline that ends the paragraph there (`insert`). Measured 2026-11-03: inserted inside a
+        paragraph, the table split it, the text before it keeping the paragraph's style; at a
+        paragraph's start it followed an empty paragraph; and each cell's newline was in the style
+        text inserted there takes, bold where it went between two bold characters."""
+        style = self._style_at(pos, "\n")
+        self.insert(pos, "\n")
+        made = new_table(rows, columns)["table"]
+        chars: list[tuple[str, dict, int]] = [
+            (TABLE, {"tableStyle": made["tableStyle"]}, next(self._runs))
+        ]
+        paragraphs = []
+        for row in made["tableRows"]:
+            chars.append((ROW, {"tableRowStyle": row["tableRowStyle"]}, next(self._runs)))
+            for cell in row["tableCells"]:
+                chars.append((CELL, {"tableCellStyle": cell["tableCellStyle"]}, next(self._runs)))
+                chars.append(("\n", style, next(self._runs)))
+                paragraphs.append(
+                    {"paragraphStyle": cell["content"][0]["paragraph"]["paragraphStyle"]}
+                )
+        chars.append((TABLE_END, {}, next(self._runs)))
+        self._put(pos + 1, chars, paragraphs)
+
+    def _put(self, pos: int, chars: list[tuple[str, dict, int]], paragraphs: list[dict]) -> None:
+        """``chars`` before the character at ``pos``, whole paragraphs and table characters only,
+        and ``paragraphs`` their paragraphs' properties."""
+        if self.ranges:
+            self._inserted(self._units(pos), sum(utf16_len(c) for c, *_ in chars))
+        p = self._paragraph_of(pos)
+        self.chars[pos:pos] = chars
+        self.paragraphs[p:p] = paragraphs
+
+    def table_at(self, pos: int) -> bool:
+        return pos < len(self.chars) and self.chars[pos][0] == TABLE
+
+    def grid(self, table: int) -> list[list[int]]:
+        """The table that starts at ``table``, as each row's cells' positions, each row's own
+        position first."""
+        rows: list[list[int]] = []
+        depth = 0
+        for pos in range(table + 1, len(self.chars)):
+            c = self.chars[pos][0]
+            if depth:
+                depth += (c == TABLE) - (c == TABLE_END)
+            elif c == TABLE:
+                depth = 1
+            elif c == ROW:
+                rows.append([pos])
+            elif c == CELL:
+                rows[-1].append(pos)
+            elif c == TABLE_END:
+                return rows
+        raise ValueError(table)
+
+    def _cell_end(self, cell: int) -> int:
+        """Where the cell at ``cell`` ends: the position of the next cell, row or table end of its
+        table."""
+        depth = 0
+        for pos in range(cell + 1, len(self.chars)):
+            c = self.chars[pos][0]
+            if depth:
+                depth += (c == TABLE) - (c == TABLE_END)
+            elif c == TABLE:
+                depth = 1
+            elif c in _STRUCTURE:
+                return pos
+        raise ValueError(cell)
+
+    def _blank_cell(self, cell: int) -> tuple[list[tuple[str, dict, int]], list[dict]]:
+        """A cell as a row or column made from the cell at ``cell`` holds it: its style, and one
+        empty paragraph of its first paragraph's style without a bullet, its newline in the style
+        of that paragraph's first character. Measured 2026-11-03: a row inserted under a HEADING_2
+        cell had a HEADING_2 cell, under its `headingId`, where the cell beside it was normal
+        text; one under a list item's cell was indented as the item and in no list; and one under
+        a cell of 14 PT text ending in a bold, italic newline had a newline of 14 PT."""
+        p = self._paragraph_of(cell + 1)
+        first = self.chars[self._paragraph_span(p).start][1]
+        chars = [
+            (CELL, copy.deepcopy(self.chars[cell][1]), next(self._runs)),
+            ("\n", first, next(self._runs)),
+        ]
+        props = copy.deepcopy(self.paragraphs[p])
+        props.pop("bullet", None)
+        return chars, [props]
+
+    def insert_row(self, table: int, row: int, below: bool) -> None:
+        """A row above or below row ``row``, a cell made from each of its cells (`_blank_cell`)."""
+        rows = self.grid(table)
+        own = rows[row]
+        chars = [(ROW, copy.deepcopy(self.chars[own[0]][1]), next(self._runs))]
+        paragraphs: list[dict] = []
+        for cell in own[1:]:
+            made, props = self._blank_cell(cell)
+            chars += made
+            paragraphs += props
+        at = (
+            own[0]
+            if not below
+            else rows[row + 1][0]
+            if row + 1 < len(rows)
+            else self._closes(table)
+        )
+        self._put(at, chars, paragraphs)
+
+    def insert_column(self, table: int, column: int, right: bool) -> None:
+        """A column left or right of column ``column``, each row's new cell made from that row's
+        cell in it (`_blank_cell`), and its properties the column's."""
+        styled = self.chars[table][1]["tableStyle"]["tableColumnProperties"]
+        styled.insert(column + right, copy.deepcopy(styled[column]))
+        for own in reversed(self.grid(table)):
+            cell = own[1 + column]
+            made, props = self._blank_cell(cell)
+            self._put(self._cell_end(cell) if right else cell, made, props)
+
+    def delete_row(self, table: int, row: int) -> None:
+        """Row ``row``, or the whole table with its last row: measured 2026-11-03, deleting both
+        rows of a table left the paragraphs either side of it as they were."""
+        rows = self.grid(table)
+        if len(rows) == 1:
+            self.delete(table, self._closes(table) + 1)
+            return
+        end = rows[row + 1][0] if row + 1 < len(rows) else self._closes(table)
+        self.delete(rows[row][0], end)
+
+    def delete_column(self, table: int, column: int) -> None:
+        """Column ``column``, or the whole table with its last column, as `delete_row`."""
+        rows = self.grid(table)
+        if len(rows[0]) == 2:
+            self.delete(table, self._closes(table) + 1)
+            return
+        for own in reversed(rows):
+            cell = own[1 + column]
+            self.delete(cell, self._cell_end(cell))
+        del self.chars[table][1]["tableStyle"]["tableColumnProperties"][column]
+
     def bullet(self, p: int) -> dict | None:
         return self.paragraphs[p].get("bullet")
 
@@ -1783,22 +2178,39 @@ class Body:
         does not compile matches nothing; an empty match takes the character it stands before,
         measured on `z*`, which replaced every character of a Doc, and the search goes on one
         character after it, as Java's does: measured, `a??` in `aa` was three matches. A search
-        that folds to nothing matches nothing."""
-        whole, owner = self._whole()
-        folded, spans = _fold(whole)
+        that folds to nothing matches nothing. The text before a table, each of its cells and the
+        text after it are searched apart (`TABLE`)."""
         needle = _fold(text)[0]
-        found: list[tuple[int, int]] = []
         if not needle:
             return []
+        pattern = None
         if regex:
             java = _java_pattern(needle, match_case)
             flags = _REGEX_FLAGS | (0 if match_case else _REGEX_CASELESS)
             try:
                 pattern = None if java is None else _REGEX.compile("(?-f)" + java, flags)
             except _REGEX.error:
-                pattern = None
+                return []
+            if pattern is None:
+                return []
+        out: list[tuple[int, int]] = []
+        start = 0
+        for pos in range(len(self.chars) + 1):
+            if pos == len(self.chars) or self.chars[pos][0] in _STRUCTURE:
+                if pos > start:
+                    out += self._find_in(start, pos, needle, match_case, pattern)
+                start = pos + 1
+        return out
+
+    def _find_in(
+        self, start: int, stop: int, needle: str, match_case: bool, pattern
+    ) -> list[tuple[int, int]]:
+        whole, owner = self._whole(start, stop)
+        folded, spans = _fold(whole)
+        found: list[tuple[int, int]] = []
+        if pattern is not None:
             at = 0
-            while pattern and at <= len(folded) and (m := pattern.search(folded, at)):
+            while at <= len(folded) and (m := pattern.search(folded, at)):
                 if m.start() < len(folded):
                     found.append((m.start(), max(m.end(), m.start() + 1)))
                 at = m.end() + (m.end() == m.start())
@@ -1817,25 +2229,28 @@ class Body:
             for begin, finish in (_unfold(spans, start, end) for start, end in found)
         ]
 
-    def _whole(self) -> tuple[str, list[int]]:
-        """The text with each character a style split whole again (`cut`), as `replaceAllText`
-        reads it (measured 2026-11-03, it matched an emoji whose halves were runs apart), and the
-        position of each of its characters, then the end."""
+    def _whole(self, start: int, stop: int) -> tuple[str, list[int]]:
+        """The characters ``[start, stop)`` with each character a style split whole again (`cut`),
+        as `replaceAllText` reads them (measured 2026-11-03, it matched an emoji whose halves were
+        runs apart), and the position of each of them, then ``stop``."""
         text: list[str] = []
         owner: list[int] = []
-        for pos, (c, *_) in enumerate(self.chars):
+        for pos in range(start, stop):
+            c = self.chars[pos][0]
             if "\udc00" <= c <= "\udfff" and text and "\ud800" <= text[-1] <= "\udbff":
                 text[-1] = _paired(text[-1] + c)
                 continue
             text.append(c)
             owner.append(pos)
-        return "".join(text), owner + [len(self.chars)]
+        return "".join(text), owner + [stop]
 
-    def replace(self, matches: list[tuple[int, int]], text: str) -> None:
+    def replace(self, matches: list[tuple[int, int]], text: str, found: bool = True) -> None:
         """Each match replaced by ``text`` in the style of its first character, measured on matches
-        starting either side of a bold run's edge, and an empty one by nothing. The body's last
-        newline stays: a match ending with it keeps it after the replacement, measured on `last\\n`
-        and on `\\n`.
+        starting either side of a bold run's edge, and an empty one by nothing. The last newline of
+        what a match is found in (`find`) stays: a match ending with it keeps it after the
+        replacement, measured on `last\\n` and on `\\n` at a body's end, and on 2026-11-03 at a
+        cell's end and before a table, where `\\n\\n` became the replacement and a newline. A
+        range that was not ``found`` is replaced whole.
 
         Ranges that overlap are replaced one at a time from the last, each over what the ones after
         it left: measured, `a` in `aæ` replaced both characters by one `R`. Otherwise, one pass
@@ -1845,31 +2260,32 @@ class Body:
         rather than once per match."""
         if any(a[1] > b[0] for a, b in itertools.pairwise(matches)):
             for start, end in reversed(matches):
-                style = self.chars[start][1]
-                end = min(end, len(self.chars) - 1)
+                style = self._first_style(start)
+                end = min(end, self._lasts()[start]) if found else end
                 if end > start:
                     self.delete(start, end)
                 if text:
                     self.insert(start, text, style)
             return
-        last = len(self.chars) - 1
-        self._drop_footnotes([(start, min(end, last)) for start, end in matches])
+        last = self._lasts() if found else [len(self.chars)] * len(self.chars)
+        matches = [
+            (start, min(end, last[start])) if start != end else (start, end)
+            for start, end in matches
+        ]
+        self._drop_footnotes(matches)
         spans = []
         if self.ranges:
             units = list(
                 itertools.accumulate((utf16_len(c) for c, *_ in self.chars), initial=self.base)
             )
-            spans = [
-                (units[start], units[min(end, last)]) for start, end in matches if start != end
-            ]
+            spans = [(units[start], units[end]) for start, end in matches if start != end]
         newlines = list(itertools.accumulate((c == "\n" for c, *_ in self.chars), initial=0))
         cut = len(self.chars)
         tail: list[list[tuple[str, dict, int]]] = []  # chunks, the last one first in the body
         tail_paragraphs: list[dict] = []  # back to front: the paragraph holding the cut last
         for start, end in reversed(matches):
-            if start == end:
+            if start == end and start != last[start]:
                 continue
-            end = min(end, len(self.chars) - 1)
             tail.append(self.chars[end:cut])
             tail_paragraphs += reversed(self.paragraphs[newlines[end] : newlines[cut]])
             cut = start
@@ -1882,8 +2298,8 @@ class Body:
                     _join_runs(self.chars[start - 1], ((chunk, 0) for chunk in reversed(tail)))
             if not text:
                 continue
-            style = self.chars[start][1]
-            before = self.chars[start - 1] if start else None
+            style = self._first_style(start)
+            before = self._before(start)
             after = next(chunk[0] for chunk in reversed(tail) if chunk)
             run = self._run_between(before, after, style, at_start)
             own = tail_paragraphs.pop()
@@ -1897,6 +2313,17 @@ class Body:
         for start, end in reversed(spans):
             self._replaced(start, end, utf16_len(text))
 
+    def _lasts(self) -> list[int]:
+        """For each character, the last of the text it is searched in (`find`): the newline before
+        the next table character, or the segment's last."""
+        out = [0] * len(self.chars)
+        last = len(self.chars) - 1
+        for pos in range(len(self.chars) - 1, -1, -1):
+            if self.chars[pos][0] in _STRUCTURE:
+                last = pos - 1
+            out[pos] = last
+        return out
+
     def content(self) -> list[dict]:
         """What is stored back, one `textRun` per run in each paragraph and an element of its own
         for each footnote reference and page break."""
@@ -1905,7 +2332,30 @@ class Body:
         notes = iter(self.footnotes)
         held = None  # the run the last text element is
         p = 0
+        into = [out]  # the content each paragraph goes into, a cell's while one is open
+        tables: list[list] = []  # each table open, and whether one of its cells is
         for c, style, run in self.chars:
+            if c in _STRUCTURE:
+                if c == TABLE:
+                    made = {"table": {"tableRows": [], "tableStyle": style["tableStyle"]}}
+                    into[-1].append(made)
+                    tables.append([made, False])
+                    continue
+                made, cell_open = tables[-1]
+                if cell_open:
+                    into.pop()
+                tables[-1][1] = False
+                rows = made["table"]["tableRows"]
+                if c == ROW:
+                    rows.append({"tableCells": [], "tableRowStyle": style["tableRowStyle"]})
+                elif c == CELL:
+                    cell = {"content": [], "tableCellStyle": style["tableCellStyle"]}
+                    rows[-1]["tableCells"].append(cell)
+                    into.append(cell["content"])
+                    tables[-1][1] = True
+                else:
+                    tables.pop()
+                continue
             if c == FOOTNOTE:
                 ref = {"footnoteId": next(notes), "textStyle": style}
                 elements.append({"footnoteReference": ref})
@@ -1919,7 +2369,7 @@ class Body:
                 elements.append({"textRun": {"content": c, "textStyle": style}})
                 held = run
             if c == "\n":
-                out.append({"paragraph": {"elements": elements, **self.paragraphs[p]}})
+                into[-1].append({"paragraph": {"elements": elements, **self.paragraphs[p]}})
                 elements, held, p = [], None, p + 1
         return out
 
@@ -2005,7 +2455,7 @@ class Document:
         body = self.open(tab, first.get("segmentId", ""))
         start = first["startIndex"]
         pos = body.cut(start)
-        body.replace([(pos, body.cut(first["endIndex"]))], text)
+        body.replace([(pos, body.cut(first["endIndex"]))], text, found=False)
         first["endIndex"] = start + utf16_len(sent)
         body.ranges.append(first)
 
@@ -2018,9 +2468,7 @@ class Document:
                 styles = [p["paragraphStyle"] for p in self._open[key].paragraphs]
             else:
                 content = tab["body"] if not segment else self._segment(tab, segment)
-                styles = [
-                    el["paragraph"].get("paragraphStyle", {}) for el in content if "paragraph" in el
-                ]
+                styles = [p.get("paragraphStyle", {}) for p in paragraphs_of(content)]
             out |= {s["headingId"] for s in styles if "headingId" in s}
         return out
 
@@ -2291,13 +2739,16 @@ def _plain_lines(content: list[dict], note, items: _Items) -> list[str]:
     footnote reference, and of four without the link, in NORMAL_TEXT, HEADING_2 and TITLE, each
     between two paragraphs of text, measured 2026-11-03. A list paragraph opens with its marker
     (`_Items`), and one holding nothing is its marker alone, with no CRLF after it (an empty
-    checkbox item then `bold item` were `* * bold item`)."""
+    checkbox item then `bold item` were `* * bold item`). A table's cells are written in order, a
+    tab opening the line after each cell's last: measured 2026-11-03 on tables of empty cells,
+    cells of two paragraphs, a table in a cell and two tables apart by an empty paragraph."""
     lines = []
     held = ""
-    for el in content:
-        if "paragraph" not in el:
+    tab = ""  # the tabs the next line opens with
+    for paragraph in _flow(content):
+        if paragraph is None:
+            tab += "\t"
             continue
-        paragraph = el["paragraph"]
         text = "".join(_after_break(t) for t, _ in _paragraph_runs(paragraph, note))
         if "bullet" in paragraph:
             level, number, glyphs = items.item(paragraph["bullet"])
@@ -2309,9 +2760,9 @@ def _plain_lines(content: list[dict], note, items: _Items) -> list[str]:
         elif held:
             text, held = held + text, ""
         bare = text.replace(PAGE_BREAK, "")
-        heading = _named(el["paragraph"]).startswith("HEADING_")
+        heading = _named(paragraph).startswith("HEADING_")
         if not heading:
-            text = _with_lead_breaks(text, _lead_breaks(el["paragraph"]))
+            text = _with_lead_breaks(text, _lead_breaks(paragraph))
         if PAGE_BREAK in text:
             text = _page_breaks(text, bare, heading)
         if heading:
@@ -2322,8 +2773,22 @@ def _plain_lines(content: list[dict], note, items: _Items) -> list[str]:
         else:
             if not bare.strip("\x0b"):
                 text += "\x0b"
-        lines.append("".join(map(_plain_char, text)))
+        lines.append(tab + "".join(map(_plain_char, text)))
+        tab = ""
     return lines + ([held] if held else [])
+
+
+def _flow(content: list[dict]) -> Iterator[dict | None]:
+    """Each paragraph of stored content in order, a table's cells' where the table stands, and None
+    where each cell ends."""
+    for el in content:
+        if "paragraph" in el:
+            yield el["paragraph"]
+        elif "table" in el:
+            for row in el["table"]["tableRows"]:
+                for cell in row["tableCells"]:
+                    yield from _flow(cell["content"])
+                    yield None
 
 
 class _Items:
@@ -2369,9 +2834,8 @@ def _export_parts(doc: dict) -> tuple[list[dict], list[dict], list[dict], dict, 
             tab["footnotes"][pe["footnoteReference"]["footnoteId"]],
         )
         for tab in tabs
-        for el in tab["body"]
-        if "paragraph" in el
-        for pe in el["paragraph"]["elements"]
+        for paragraph in paragraphs_of(tab["body"])
+        for pe in paragraph["elements"]
         if "footnoteReference" in pe
     ]
     numbers = {fid: n for n, (fid, _) in enumerate(notes, 1)}
@@ -2752,18 +3216,17 @@ def _anchors(body: list[dict], notes: list[list[dict]]) -> dict[str, str]:
     linked = {
         pe["textRun"]["textStyle"]["link"]["heading"]["id"]
         for content in (body, *notes)
-        for el in content
-        if "paragraph" in el
-        for pe in el["paragraph"]["elements"]
+        for paragraph in paragraphs_of(content)
+        for pe in paragraph["elements"]
         if "heading" in pe.get("textRun", {}).get("textStyle", {}).get("link", {})
     }
     out: dict[str, str] = {}
     taken: dict[str, int] = {}
-    for el in body:
-        hid = el.get("paragraph", {}).get("paragraphStyle", {}).get("headingId")
+    for paragraph in paragraphs_of(body):
+        hid = paragraph.get("paragraphStyle", {}).get("headingId")
         if hid not in linked:
             continue
-        text = "".join(t for t, _ in _paragraph_runs(el["paragraph"]))
+        text = "".join(t for t, _ in _paragraph_runs(paragraph))
         slug = re.sub(r"\s+", "-", text.strip().lower())
         n = taken.get(slug, 0)
         taken[slug] = n + 1
@@ -2789,15 +3252,19 @@ def _markdown(
     heading's vertical tab a space; bold, italic, strikethrough and links in a paragraph's named
     style or its runs' as `**`, `*`, `~~` and `[text](url)`, underline as nothing; a list
     paragraph after its marker (`_list_marker`), its items apart from the paragraphs either side
-    of the list as a heading is. Nothing is trimmed, and nothing ends the last line."""
-    paragraphs = [el["paragraph"] for el in content if "paragraph" in el]
-    levels = [_MARKDOWN_LEVEL.get(_named(p)) for p in paragraphs]
-    listed = ["bullet" in p for p in paragraphs]
+    of the list as a heading is, and a table as `_table` writes it, apart from what is either side
+    of it as a heading is. Nothing is trimmed, and nothing ends the last line."""
+    blocks = [el.get("paragraph", el) for el in content if "paragraph" in el or "table" in el]
+    levels = ["table" if "table" in b else _MARKDOWN_LEVEL.get(_named(b)) for b in blocks]
+    listed = ["bullet" in b for b in blocks]
     tokens: list = []
-    for i, (paragraph, level) in enumerate(zip(paragraphs, levels)):
+    for i, (paragraph, level) in enumerate(zip(blocks, levels)):
         if i:
             apart = level or levels[i - 1] or listed[i] != listed[i - 1]
             tokens.append(_BLOCK if apart else _BREAK)
+        if level == "table":
+            tokens.append(_table(paragraph["table"], notes, anchors))
+            continue
         runs = [(text, _anchored(style, anchors)) for text, style in _spans(paragraph)]
         named = _TEXT_STYLES.get(_named(paragraph), {})
         marker = _list_marker(items, paragraph["bullet"]) if listed[i] else ""
@@ -2810,7 +3277,7 @@ def _markdown(
             continue
         line = _inline(runs, named, notes)
         line[0] = marker + line[0]
-        if line == ["  "] and i + 1 < len(paragraphs) and levels[i + 1]:
+        if line == ["  "] and i + 1 < len(blocks) and levels[i + 1]:
             tokens.append(_GAP)
         else:
             tokens += line
@@ -2822,6 +3289,33 @@ def _markdown(
             out += _separator(pending) + t
             pending = []
     return out + _separator(pending)
+
+
+def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
+    """A table as Markdown: a row of `|`s per row, its first row the header, each column aligned
+    `:----`, and each cell its paragraphs' runs, a table's in it among them, one after another
+    with a space between, as no list marker, heading or line break, the first row's bold left out.
+    Measured 2026-11-03: a cell of `Head` as HEADING_1 and `body` was `Head body`, a list item
+    `item1 item2`, a vertical tab and a tab were written as themselves, a cell's trailing spaces
+    kept and an empty cell `|  |`; a bold run and a bold link in the first row were plain, in the
+    second `**` and `[**…**]`, and italic and struck-through text in the first row was marked."""
+    rows = []
+    for n, row in enumerate(table["tableRows"]):
+        cells = []
+        for cell in row["tableCells"]:
+            lines = []
+            for paragraph in paragraphs_of(cell["content"]):
+                named = _TEXT_STYLES.get(_named(paragraph), {})
+                pieces = []
+                for text, style in _spans(paragraph):
+                    marks = _marks({**named, **_anchored(style, anchors)})
+                    marks = marks - {"bold"} if n == 0 else marks
+                    pieces.append((marks, text, _escape(text, notes)))
+                lines.append(_stretch(pieces))
+            cells.append(" ".join(lines))
+        rows.append("| " + " | ".join(cells) + " |")
+    columns = len(table["tableStyle"]["tableColumnProperties"])
+    return "\n".join([rows[0], "| " + " | ".join([":----"] * columns) + " |", *rows[1:]])
 
 
 # The arrow and left-triangle glyphs `_list_marker` writes as `-`.

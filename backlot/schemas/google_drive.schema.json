@@ -77,6 +77,18 @@
             }
           },
           "description": "The paragraph as an item of a list, served as `createParagraphBullets` makes one: a bullet, indented as its level is, and the list in the tab's `lists`. Consecutive paragraphs stating one preset are one list, as that request joins a paragraph to the list before it of its preset; files.export writes each item's marker, numbering a numbered list."
+        },
+        "table": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/$defs/paragraphs"
+            }
+          },
+          "description": "This item is a table and not a paragraph, stated alone: its rows in order, each the same number of cells, each cell its paragraphs, a table among them. Served as `insertTable` makes one, every column evenly distributed, every cell padded 5 PT, and each cell's paragraphs styled as real styles them, so a heading or a list in a cell is served as real serves one; files.export writes it, and Drive's full-text search reads its cells. A footnote may stand in a cell of the body, as `createFootnote` takes one there; a page break may not, and a footnote holds no table. A table that ends what it stands in is followed by an empty paragraph, as real's always is."
         }
       }
     },
@@ -315,7 +327,7 @@
     },
     "paragraphs": {
       "$ref": "#/$defs/paragraphs",
-      "description": "The document's paragraphs, for a `document`, each with its named style and its runs of text, so the Docs API serves the headings, bold, italic, links, footnotes and page breaks a document really has. Authoritative when present, and then `content` must be ABSENT: it is derived at import as the text Drive's full-text search reads, one line per paragraph. Omit `paragraphs` and `content` keeps its meaning unchanged -- one plain paragraph per line of it."
+      "description": "The document's paragraphs, for a `document`, each with its named style and its runs of text, so the Docs API serves the headings, bold, italic, links, footnotes, page breaks and tables a document really has. Authoritative when present, and then `content` must be ABSENT: it is derived at import as the text Drive's full-text search reads, one line per paragraph. Omit `paragraphs` and `content` keeps its meaning unchanged -- one plain paragraph per line of it."
     },
     "header": {
       "$ref": "#/$defs/paragraphs",

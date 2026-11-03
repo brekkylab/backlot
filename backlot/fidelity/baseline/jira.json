@@ -4,7 +4,7 @@
     "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
     "https://developer.atlassian.com/cloud/jira/platform/swagger.v3.json"
   ],
-  "measured": "2026-10-14",
+  "measured": "2026-11-03",
   "operations": [
     {
       "operation": "DELETE /rest/api/2/attachment/{}",
@@ -1757,6 +1757,13 @@
     {
       "operation": "GET /rest/api/2/instance/license",
       "id": "getLicense",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
+      "operation": "GET /rest/api/2/invalid-jqls-access-log",
+      "id": "getAuditEntries",
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
@@ -3717,6 +3724,13 @@
       "severity": "gap"
     },
     {
+      "operation": "GET /rest/api/3/invalid-jqls-access-log",
+      "id": "getAuditEntries",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap"
+    },
+    {
       "operation": "GET /rest/api/3/issue/createmeta",
       "id": "getCreateIssueMeta",
       "status": "missing",
@@ -4333,10 +4347,6 @@
           "kind": "missing_param",
           "severity": "gap"
         },
-        "maxResults": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "orderBy": {
           "kind": "missing_param",
           "severity": "gap"
@@ -4350,10 +4360,6 @@
           "severity": "gap"
         },
         "query": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "startAt": {
           "kind": "missing_param",
           "severity": "gap"
         },

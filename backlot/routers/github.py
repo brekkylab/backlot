@@ -1002,6 +1002,19 @@ class RateLimitWindows:
             window = [now, 0]
         return self._status(window, resource, limit)
 
+    def unused(self, resource: str, limit: int) -> dict[str, int]:
+        """A window nothing has counted in, as this read would open it, whatever has been counted.
+
+        Real's `GET /rate_limit` with no `Authorization` reports `search` this way: after two
+        anonymous `/search/issues` that answered `x-ratelimit-used` 1 and 2, the next two reads
+        answered `used: 0`, `remaining: 10` and `reset` 61 and 60 seconds after their `Date`
+        (measured against api.github.com 2026-11-02, each request on its own cache-busted URL,
+        three to six seconds apart). Ten such searches spend the window, and a read right after an
+        eleventh was refused its 403 answered the same `used: 0` and `remaining: 10` (2026-11-02). A
+        token's read and an `Authorization` real cannot parse report the count (:meth:`status`).
+        """
+        return self._status([int(self.clock()), 0], resource, limit)
+
     def opened(self, key: str, resource: str, limit: int) -> dict[str, int]:
         """The window as it stands, nothing counted, opened now if nothing had opened it.
 
@@ -2548,7 +2561,8 @@ async def get_rate_limit(request: Request):
     request with no `Authorization` as for one with a token or a value real cannot parse
     (:data:`_RESOURCE_ORDER`). A request with no `Authorization` reads `core`'s own window under
     `code_search` as well, and a value real cannot parse a `code_search` window at `limit: 0`
-    (:func:`rate_limit_window`).
+    (:func:`rate_limit_window`). With no `Authorization`, `search` is a window nothing has counted
+    in, whatever the address has searched (:meth:`RateLimitWindows.unused`).
 
     `rate`, `core` under a second name, is served to `2022-11-28` and not to `2026-03-10`, which
     removed it (measured 2026-09-20: the body's keys are `resources`, `rate` under the one and
@@ -2566,10 +2580,14 @@ async def get_rate_limit(request: Request):
     key, authenticated = rate_limit_caller(request)
     unparseable = key.startswith("unparseable:")
     windows = _rate_limit_windows(request.app)
+    credentialed = authenticated or unparseable
     resources = {}
-    for resource in _RESOURCE_ORDER[authenticated or unparseable]:
+    for resource in _RESOURCE_ORDER[credentialed]:
         counted, limit = rate_limit_window(resource, authenticated, unparseable)
-        resources[resource] = windows.status(key, counted, limit)
+        if counted == "search" and not credentialed:
+            resources[resource] = windows.unused(counted, limit)
+        else:
+            resources[resource] = windows.status(key, counted, limit)
     if _version(request) not in _HAS_RATE_ALIAS:
         return {"resources": resources}
     return {"resources": resources, "rate": resources["core"]}

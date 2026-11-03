@@ -18,6 +18,7 @@ import urllib.parse
 import pytest
 
 from backlot import bracketed_host, errors, request_target
+from backlot.routers import hubspot
 from tests._helpers import raw_exchange, raw_request, read_answer
 
 _UTF8, _LONE = b"\xc3\xa9", b"\x80"
@@ -538,12 +539,14 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
             )
             expected[row.id] = (connection, 505, "application/xml", True)
             continue
-        # the edge's page carries the edge's two headers beside its own, CloudFront's neither
+        # the edge's page carries the edge's two headers beside its own, CloudFront's neither, and
+        # Cloudflare's page on api.hubapi.com no `x-hubspot-correlation-id` (2026-10-30)
         if answer.startswith("edge "):
             extra = {k: headers.get(k) for k in [*edge, "access-control-allow-origin"]}
             want_extra = edge | {"access-control-allow-origin": "*"}
         else:
-            extra, want_extra = sorted(edge.keys() & headers.keys()), []
+            vendor = {*edge, hubspot.CORRELATION_ID_HEADER}
+            extra, want_extra = sorted(vendor & headers.keys()), []
         got[row.id] = (headers.get("connection"), status, headers.get("content-type"), body, extra)
         expected[row.id] = (connection, *_page(reading, method, target), want_extra)
     assert got == expected

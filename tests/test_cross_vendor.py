@@ -760,7 +760,13 @@ _RUNS = [
         ["answer_s3_with_request_ids", "refuse_an_s3_path_real_cannot_read"],
         id="s3",
     ),
-    pytest.param("GET", "/hubspot/crm/v3/objects/contacts", {}, [], id="hubspot"),
+    pytest.param(
+        "GET",
+        "/hubspot/crm/v3/objects/contacts",
+        {},
+        ["put_a_correlation_id_on_hubspot_answers"],
+        id="hubspot",
+    ),
     pytest.param("POST", "/linear/graphql", {}, [], id="linear"),
     pytest.param(
         "GET", "/msgraph/v1.0/me", {}, ["read_a_graph_request_the_way_graph_does"], id="teams"

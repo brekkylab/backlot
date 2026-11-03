@@ -324,7 +324,7 @@ async def _apollo_server(request: Request) -> Response:
     caller = auth.resolve_api_key(request)
     if caller is None:
         if _introspection_only(resolved):
-            return _answer(seen, ENGINE.run(resolved), payload, request)
+            return _answer(seen, ENGINE.run(resolved, proto_is_absent=True), payload, request)
         return _answer(seen, None, payload)
     key = auth.api_key_token(request)
     state = request.app.state
@@ -341,7 +341,9 @@ async def _apollo_server(request: Request) -> Response:
         # entities with no table of their own through `linear_entities`
         # (store.linear_entity_by_id, called by the resolvers' own `_by_id`).
     }
-    return _answer(seen, ENGINE.run(resolved, context=context), payload, request, key)
+    return _answer(
+        seen, ENGINE.run(resolved, context=context, proto_is_absent=True), payload, request, key
+    )
 
 
 def _has_body(request: Request) -> bool:

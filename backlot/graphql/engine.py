@@ -37,8 +37,10 @@ from graphql import (
     GraphQLScalarType,
     GraphQLSchema,
     GraphQLSyntaxError,
+    NonNullTypeNode,
     OperationDefinitionNode,
     ValueNode,
+    VariableDefinitionNode,
     assert_valid_schema,
     build_schema,
     execute_sync,
@@ -88,6 +90,60 @@ def _ids_as_graphql_js_reads_them(value: Any, type_: Any) -> Any:
     if type_ is GraphQLID and type(value) is request_body.Double and value.is_integer():
         return repr(value)
     return value
+
+
+def _read_without_a_proto_value(operation: Operation) -> Operation:
+    """``operation`` with a variable named ``__proto__`` read as having no value: its definition
+    in the chosen operation is made nullable and stripped of its default, and the caller drops
+    the name from the values the operation runs with, so the coercion graphql-core runs as the
+    operation executes finds the variable neither provided nor defaulted, and each argument
+    that reads it reads an absence. The refusals of the variable as sent — one of a required
+    type that was not sent is refused — are made before this, from the definition as sent.
+
+    A vendor whose own layer loses the value asks for this (:meth:`Engine.run`). Measured
+    against api.linear.app on 2026-10-28 (UTC): a ``$__proto__`` sent a value, or carrying a
+    default in the document, is answered at each use as if it had none — an `Internal server
+    error` at the field where the argument is non-null, and the argument left out where it is
+    nullable (``issues`` answered every issue for ``first: $__proto__`` sent ``1``) — and one of
+    a non-null type absent from ``variables`` is graphql-js's refusal, as any variable's.
+    graphql-js gathers coerced variables in ``Object.create(null)``, where the name is an
+    ordinary key, so the layer that loses the value is the vendor's own; api.fireflies.ai
+    served a ``$__proto__`` with a default the same day, so this is not the engine's default."""
+    definitions = operation.operation.variable_definitions
+    if all(definition.variable.name.value != "__proto__" for definition in definitions):
+        return operation
+    rewritten = tuple(
+        VariableDefinitionNode(
+            variable=definition.variable,
+            type=(
+                definition.type.type
+                if isinstance(definition.type, NonNullTypeNode)
+                else definition.type
+            ),
+            default_value=None,
+            directives=definition.directives,
+            loc=definition.loc,
+        )
+        if definition.variable.name.value == "__proto__"
+        else definition
+        for definition in definitions
+    )
+    chosen = OperationDefinitionNode(
+        name=operation.operation.name,
+        operation=operation.operation.operation,
+        variable_definitions=rewritten,
+        directives=operation.operation.directives,
+        selection_set=operation.operation.selection_set,
+        loc=operation.operation.loc,
+    )
+    document = DocumentNode(
+        definitions=tuple(
+            chosen if definition is operation.operation else definition
+            for definition in operation.document.definitions
+        ),
+        loc=operation.document.loc,
+    )
+    return Operation(document, chosen, operation.variables, operation.name)
 
 
 # One custom scalar's coercion: ``parse_value`` takes a variable's JSON value, ``parse_literal`` an
@@ -489,11 +545,15 @@ class Engine:
             get=get,
         )
 
-    def run(self, operation: Operation, *, context: Any = None) -> Result:
+    def run(
+        self, operation: Operation, *, context: Any = None, proto_is_absent: bool = False
+    ) -> Result:
         """Coerce the variables of ``operation``, refused with Apollo Server's code, and run it
         with ``context``, the errors of the root arguments graphql-js refuses
         (:meth:`_refused_root_arguments`) ahead of the run's at the other root fields, or in its
-        place where one is a non-null field's."""
+        place where one is a non-null field's. With ``proto_is_absent``, a variable named
+        ``__proto__`` the coercion accepted is then read as having no value
+        (:func:`_read_without_a_proto_value`), as a vendor whose own layer loses it answers."""
         variables = operation.variables
         coercion = js_words.coerce_variable_values(
             self.schema, list(operation.operation.variable_definitions), variables
@@ -520,6 +580,12 @@ class Engine:
                 name: _ids_as_graphql_js_reads_them(value, types.get(name))
                 for name, value in variables.items()
             }
+        if proto_is_absent:
+            operation = _read_without_a_proto_value(operation)
+            if variables:
+                variables = {
+                    name: value for name, value in variables.items() if name != "__proto__"
+                }
         # A root type only `self._checked` has runs there, and one neither schema has is
         # graphql-core's refusal.
         on_a_root = getattr(self.schema, f"{operation.operation.operation.value}_type") is None

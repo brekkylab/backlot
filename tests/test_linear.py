@@ -2856,6 +2856,51 @@ def test_linear_orders_the_body_and_the_credential(
         assert (r.status_code, r.content) == (_status(answer), answer)
 
 
+def test_linear_a_proto_variable_is_read_as_having_no_value(client, admin_h):
+    """A variable named `$__proto__` is read at each use as if it had no value, though it was
+    sent one or carries a default in the document: an `Internal server error` at a field whose
+    argument is non-null, the argument left out where it is nullable, and a `$constructor` beside
+    it served (`backlot.graphql.engine._read_without_a_proto_value`)."""
+    internal = {
+        "message": "Internal server error",
+        "extensions": {
+            "code": "INTERNAL_SERVER_ERROR",
+            "type": "internal error",
+            "userError": False,
+        },
+    }
+    by_id = "query($__proto__: String!) { issue(id: $__proto__) { identifier } }"
+    r = gql(client, by_id, admin_h, **{"__proto__": "ENG-101"})
+    (error,) = r.json()["errors"]
+    assert r.status_code == 200 and r.json()["data"] is None
+    assert {k: error[k] for k in ("message", "path", "extensions")} == {
+        **internal,
+        "path": ["issue"],
+    }
+    control = "query($constructor: String!) { issue(id: $constructor) { identifier } }"
+    r = gql(client, control, admin_h, constructor="ENG-101")
+    assert r.json() == {"data": {"issue": {"identifier": "ENG-101"}}}
+    defaulted = 'query($__proto__: String = "ENG-101") { issue(id: $__proto__) { id } }'
+    r = gql(client, defaulted, admin_h)
+    (error,) = r.json()["errors"]
+    assert r.json()["data"] is None and error["path"] == ["issue"]
+    assert {k: error[k] for k in ("message", "extensions")} == internal
+    every = gql(client, "{ issues { nodes { id } } }", admin_h).json()["data"]["issues"]["nodes"]
+    paged = "query($__proto__: Int) { issues(first: $__proto__) { nodes { id } } }"
+    r = gql(client, paged, admin_h, **{"__proto__": 1})
+    assert r.json()["data"]["issues"]["nodes"] == every and len(every) > 1
+    included = "query($__proto__: Boolean!) { viewer { id @include(if: $__proto__) } }"
+    r = gql(client, included, admin_h, **{"__proto__": True})
+    (error,) = r.json()["errors"]
+    assert r.json()["data"] is None and error["path"] == ["viewer"]
+    assert {k: error[k] for k in ("message", "extensions")} == internal
+    r = gql(client, by_id, admin_h)
+    assert r.status_code == 400
+    assert r.json()["errors"][0]["message"] == (
+        'Variable "$__proto__" of required type "String!" was not provided.'
+    )
+
+
 def test_linear_parent_resolves_and_is_acl_scoped(client, admin_h, tokens_yaml):
     """`Issue.parent` is declared in the SDL and `@linear/sdk`'s fragment selects `parent { id }`.
     The bench fills `parent_issue` on 46.7% of records, so it must resolve — and it must resolve

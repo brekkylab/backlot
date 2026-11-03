@@ -244,7 +244,7 @@ def bound(start: bytes) -> Bound | None:
     ``None`` where no vendor owns the path. Jira Cloud's is built here, its page naming the
     request."""
     method, _, target = start.partition(b" ")
-    path = re.split(rb"[? ]", target, maxsplit=1)[0].decode("latin-1")
+    path = re.split(rb"[? ]", target.lstrip(b" "), maxsplit=1)[0].decode("latin-1")
     unquoted = urllib.parse.unquote(path)
     named = request_target.front_door(unquoted)
     if named is None:

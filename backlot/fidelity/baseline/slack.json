@@ -3,7 +3,7 @@
   "endpoints": [
     "https://docs.slack.dev/reference/methods.md"
   ],
-  "measured": "2026-10-30",
+  "measured": "2026-11-02",
   "operations": [
     {
       "operation": "admin.analytics.getFile",
@@ -1554,6 +1554,12 @@
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "Measured against slack.com on 2026-10-22: a plain-text post over a user token and over a bot token both carried `blocks`, in the echo and in `conversations.history`, as did the messages `reactions.get` and `reactions.list` answer. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
+        "message.parent_user_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-10-31 in a private channel, over a user token and a bot token, and on 2026-11-02 in a direct message, over a user token: real answers this field on this method. Each reply's echo, none of them sent with `reply_broadcast`, carried `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `thread_ts`, `ts`, `type`, `user` and `parent_user_id`, which was the root's poster whichever token replied and whether `thread_ts` named the root or a reply under it, and `USLACKBOT` once the root was deleted; no root's echo carried `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
         "message.subtype": {
           "kind": "missing_field",
           "severity": "gap",
@@ -2383,27 +2389,7 @@
       "id": "conversations.replies",
       "status": "implemented",
       "params": {
-        "cursor": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
         "include_all_metadata": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "inclusive": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "latest": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "limit": {
-          "kind": "missing_param",
-          "severity": "gap"
-        },
-        "oldest": {
           "kind": "missing_param",
           "severity": "gap"
         },

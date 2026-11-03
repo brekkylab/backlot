@@ -152,8 +152,9 @@ def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSO
 
 
 # Real's INVALID_AUTHENTICATION 401, with no key, with `Bearer nope` and with `bearer <key>`
-# (api.hubapi.com, 2026-09-28 and 2026-10-18): this message, and `x-hubspot-auth-failure`, which
-# came on each of those 401s and on no other answer.
+# (api.hubapi.com, 2026-09-28 and 2026-10-18), has this message. `x-hubspot-auth-failure` came on
+# each of those 401s and on the `OPTIONS` 401 (:data:`_OPTIONS_REFUSAL`; 2026-10-19 and 2026-11-02),
+# and on no other answer of 2026-10-18.
 _NO_CREDENTIALS = (
     "Authentication credentials not found. This API supports OAuth 2.0 authentication and you can "
     "find more details at https://developers.hubspot.com/docs/methods/auth/oauth-overview"
@@ -1389,8 +1390,7 @@ _JAVA_INT = re.compile(r"[+-]?\d+")
 
 
 def _missing_scopes(scopes: list[str]) -> JSONResponse:
-    """Real's 403 for a write the key has no scope for. :func:`correlate` adds its `correlationId`,
-    after `message`."""
+    """Real's 403 for a write the key has no scope for."""
     return JSONResponse(
         status_code=403,
         content={
@@ -1410,8 +1410,7 @@ def _missing_scopes(scopes: list[str]) -> JSONResponse:
 
 
 def _bare_error(status: int, content: dict) -> JSONResponse:
-    """One of real's errors with no `category`: `status`, then ``content``, `message` first.
-    :func:`correlate` adds its `correlationId`, after `message`."""
+    """One of real's errors with no `category`: `status`, then ``content``, `message` first."""
     return JSONResponse(status_code=status, content={"status": "error", **content})
 
 
@@ -1527,7 +1526,7 @@ async def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
 
 
 #: The body of real's 401 for `OPTIONS`, which is not the INVALID_AUTHENTICATION one a route
-#: answers. :func:`correlate` adds its `correlationId`, after `message`, as on real's.
+#: answers.
 _OPTIONS_REFUSAL = {
     "status": "error",
     "message": "Any of the listed authentication credentials are missing",
@@ -1586,7 +1585,9 @@ def answer_ahead_of_the_routes(request: Request) -> Response | None:
     status, allowed = answered
     sniff = {"X-Content-Type-Options": "nosniff"} if path.endswith("/search") else {}
     if status == 401:
-        return JSONResponse(status_code=401, content=_OPTIONS_REFUSAL, headers=sniff)
+        return JSONResponse(
+            status_code=401, content=_OPTIONS_REFUSAL, headers={**_AUTH_FAILURE, **sniff}
+        )
     if status == 405:
         return _error_page(request, 405, "Method Not Allowed", {"Allow": allowed, **sniff})
     return _error_page(request, 406, "Not Acceptable", sniff)

@@ -18,11 +18,11 @@ HUBSPOT_OBJECT_TYPES = ("companies", "contacts", "notes")
 
 
 def _body(r):
-    """``r``'s JSON body less the `correlationId` an error body carries, once it is checked to be the
-    answer's `x-hubspot-correlation-id`; where it goes in the body is
+    """``r``'s JSON body less the `correlationId` an error body carries, once it is checked to be
+    the answer's `x-hubspot-correlation-id`; where it goes in the body is
     ``test_hubspot_names_every_answer_by_a_correlation_id``'s."""
     body = r.json()
-    if isinstance(body, dict) and "correlationId" in body:
+    if isinstance(body, dict) and body.get("status") == "error":
         assert body.pop("correlationId") == r.headers["x-hubspot-correlation-id"]
     return body
 
@@ -644,13 +644,14 @@ def test_hubspot_refuses_an_unserved_operation_for_its_credential(client, author
 
 
 _JSON = "application/json;charset=utf-8"
-_PAGE = "text/html;charset=iso-8859-1"
+_PAGE_TYPE = "text/html;charset=iso-8859-1"
 _ID = "x-hubspot-correlation-id"
 _AUTH_FAILURE = "x-hubspot-auth-failure"
 _NOT_FOUND = "x-hubspot-notfound"
 
-# (method, path, credential, body, status, content type, x-hubspot headers), as `correlate`, `_unauthenticated`, `_record_id`,
-# `_missing_record` and `put_a_correlation_id_on_hubspot_answers` record them.
+# (method, path, credential, body, status, content type, x-hubspot headers), as `correlate`,
+# `_unauthenticated`, `_record_id`, `_missing_record` and `put_a_correlation_id_on_hubspot_answers`
+# record them.
 _CORRELATED = [
     ("GET", "/crm/v3/objects/contacts?limit=1", "key", None, 200, _JSON, {_ID}),
     ("POST", "/crm/v3/objects/contacts/search", "key", {}, 200, _JSON, {_ID}),
@@ -694,7 +695,7 @@ _CORRELATED = [
         _JSON,
         {_ID, _NOT_FOUND},
     ),
-    ("GET", "/crm/v3/objects/contacts/1", "key", None, 404, _PAGE, {_ID, _NOT_FOUND}),
+    ("GET", "/crm/v3/objects/contacts/1", "key", None, 404, _PAGE_TYPE, {_ID, _NOT_FOUND}),
     ("GET", "/crm/v3/objects/nosuch/1", "key", None, 400, _JSON, {_ID}),
     ("GET", "/crm/v3/objects/contacts?after=bogus", "key", None, 400, _JSON, {_ID}),
     ("PATCH", "/crm/v3/objects/contacts/1", "key", {}, 403, _JSON, {_ID}),
@@ -709,8 +710,8 @@ def test_hubspot_names_every_answer_by_a_correlation_id(client, admin_h):
     front gives a path no route serves, a JSON one comes under `application/json;charset=utf-8`, a
     401 carries `x-hubspot-auth-failure` and a 404 about a record id `x-hubspot-notfound`. An error
     body carries the id as `correlationId`, right after `message`; a 200's and a 207's carry none.
-    The 404 for an unserved path stays as it was, `{"detail": "Not Found"}` where real's front
-    answers its own page. One request asked twice gets one id, and each is a version 7 UUID."""
+    That 404's body is `{"detail": "Not Found"}`, where real's front answers its own page. One
+    request asked twice gets one id, and each is a version 7 UUID."""
     key = admin_h["Authorization"].removeprefix("Bearer ")
     credentials = {"key": f"Bearer {key}", "bearer": f"bearer {key}"}
     answered, expected, ids = {}, {}, {}
@@ -722,6 +723,7 @@ def test_hubspot_names_every_answer_by_a_correlation_id(client, admin_h):
         if r.headers.get("content-type") == _JSON and r.status_code >= 400:
             members = list(r.json())[:3]
             assert r.json()["correlationId"] == r.headers[_ID], (method, path)
+            assert r.headers["content-length"] == str(len(r.content)), (method, path)
         elif r.headers.get("content-type") == _JSON:
             assert "correlationId" not in r.json(), (method, path)
         named = {k for k in r.headers if k.startswith("x-hubspot")}
@@ -1079,8 +1081,6 @@ def test_hubspot_does_not_refuse_an_unpublished_path_for_its_credential(client):
     assert client.get("/hubspot/crm/v3/nonexistent-xyz").status_code == 404
 
 
-_PAGE_TYPE = "text/html;charset=iso-8859-1"
-
 _METHOD_NOT_ALLOWED_PAGE = (
     b"<html>\n<head>\n"
     b'<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>\n'
@@ -1150,6 +1150,7 @@ def test_hubspot_refuses_options_for_its_own_credentials(client, admin_h, ava, p
     r = client.options("/hubspot" + path.format(ava=ava), headers=sent)
     assert r.status_code == 401
     assert list(r.json()) == ["status", "message", "correlationId", "engagement"]
+    assert r.headers["x-hubspot-auth-failure"] == "401 Unauthorized"
     assert r.json()["message"] == "Any of the listed authentication credentials are missing"
     assert list(r.json()["engagement"]) == ["service-to-service", "internal-cookie", "app-cookie"]
     assert not {"allow", "access-control-allow-origin", "access-control-allow-methods"} & set(

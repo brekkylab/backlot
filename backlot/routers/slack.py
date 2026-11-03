@@ -209,10 +209,6 @@ _P_REACTION_LIST = [
     qp("user"),
 ]
 
-# conversations.history page cap (thread roots). Slack recommends limit<=200; capping here bounds
-# how many authors a client resolves per call so history stays fast even with a small users.list.
-_HISTORY_MAX_ROOTS = 200
-
 
 def _err(error: str) -> JSONResponse:
     return JSONResponse({"ok": False, "error": error})
@@ -1561,7 +1557,7 @@ async def conversations_history(request: Request):
         return err
     if err := _missing_argument(request, "channel"):
         return err
-    limit, err = _limit(request)
+    limit, err = _limit(request, most=1000)
     if err is not None:
         return err
     if limit < 0:  # one message (see `_limit`)
@@ -1576,11 +1572,6 @@ async def conversations_history(request: Request):
     if name is None or not _channel_visibility(request, conn, ids)(name):
         return _err("channel_not_found")
 
-    # Cap the page at a Slack-realistic size: the real API recommends limit<=200 and often returns
-    # fewer than requested. A client that asks for 1000 (korotovsky) would make the client resolve
-    # ~1000 roots x their authors/reply_users via users.info — slow. has_more/next_cursor still let
-    # it paginate for more.
-    limit = min(limit, _HISTORY_MAX_ROOTS)
     # Slack history returns only top-level messages (thread roots + standalone);
     # replies live under conversations.replies.
     lo, hi = _slack_ts(_param(request, "oldest")), _slack_ts(_param(request, "latest"))
@@ -2309,7 +2300,6 @@ async def chat_post_message(request: Request):
     parent = (
         store.document_by_key(conn, "slack", (name, wanted), ids) if wanted is not None else None
     )
-    parent_uid = None
     if parent is not None:
         # Slack threads a reply under the ROOT, not under whichever message was named: replying to
         # a reply puts it in the same thread. The corpus stores that as the root's own ts, which is
@@ -2322,9 +2312,6 @@ async def chat_post_message(request: Request):
             # `conversations.replies` answers the root alone and the message reads back with no
             # thread at all — a thread this API made and cannot show.
             store.patch_document(conn, "slack", (name, parent["ts"]), "thread_ts", thread_ts)
-        root = store.document_by_key(conn, "slack", (name, thread_ts), ids)
-        if root is not None:
-            parent_uid = _parent_uid(root)
     now = int(time.time())
     ts = store.slack_next_ts(conn, name, now)
     store.insert_document(
@@ -2347,13 +2334,12 @@ async def chat_post_message(request: Request):
         },
     )
     row = store.document_by_key(conn, "slack", (name, ts))
+    message = _message(row, parent_user_id=_parent_user_id(conn, name, ids, row))
     return {
         "ok": True,
         "channel": synth.slack_channel_id(name),
         "ts": ts,
-        "message": _with_root(
-            conn, name, ids, caller, row, _message(row, parent_user_id=parent_uid)
-        ),
+        "message": _with_root(conn, name, ids, caller, row, message),
     }
 
 
@@ -2513,8 +2499,14 @@ async def chat_update(request: Request):
     # 2026-10-21, `chat.update` carried neither `ts` nor `reactions` for a threaded message with a
     # reaction, where `conversations.replies` answered the same message carrying both. `ts` is on
     # the answer beside it either way.
-    echoed = {k: v for k, v in _message(updated).items() if k not in ("ts", "reactions")}
-    _with_root(conn, name, auth.visible_ids(request, caller), caller, updated, echoed)
+    ids = auth.visible_ids(request, caller)
+    parent = _parent_user_id(conn, name, ids, updated)
+    echoed = {
+        k: v
+        for k, v in _message(updated, parent_user_id=parent).items()
+        if k not in ("ts", "reactions")
+    }
+    _with_root(conn, name, ids, caller, updated, echoed)
     return {
         "ok": True,
         "channel": synth.slack_channel_id(name),
@@ -2907,7 +2899,9 @@ async def reactions_get(request: Request):
     )
     if err is not None:
         return err
-    message = _with_root(conn, name, auth.visible_ids(request, caller), caller, row, _message(row))
+    ids = auth.visible_ids(request, caller)
+    parent = _parent_user_id(conn, name, ids, row)
+    message = _with_root(conn, name, ids, caller, row, _message(row, parent_user_id=parent))
     return {
         "ok": True,
         "type": "message",
@@ -2992,7 +2986,14 @@ async def reactions_list(request: Request):
             {
                 "type": "message",
                 "channel": synth.slack_channel_id(channel),
-                "message": _with_root(conn, channel, ids, caller, row, _message(row))
+                "message": _with_root(
+                    conn,
+                    channel,
+                    ids,
+                    caller,
+                    row,
+                    _message(row, parent_user_id=_parent_user_id(conn, channel, ids, row)),
+                )
                 | {"permalink": _permalink(channel, row)},
             }
         )
@@ -3160,6 +3161,21 @@ def _flag(request: Request, key: str) -> bool:
     value, and `reply_broadcast` as a form field on 2026-10-30, `00`, `no`, `null` and ` false`
     among them."""
     return (_param(request, key) or "").lower() not in ("", "0", "false")
+
+
+def _parent_user_id(conn, name: str, ids, row) -> str | None:
+    """The `parent_user_id` of a reply a method answers by itself: :func:`_parent_uid` of its
+    thread's root.
+
+    Measured against slack.com on 2026-10-31: the `chat.update` echo, the `message` of
+    `reactions.get` and the reply's `reactions.list` item each carried it on a reply, a reply to a
+    reply included, with a bot token and a user token. On 2026-11-01 the three carried
+    ``USLACKBOT`` under a deleted root, on replies posted before the root was deleted and after it.
+    """
+    if not row["thread_ts"] or row["thread_seq"] == 0:
+        return None
+    root = store.document_by_key(conn, "slack", (name, row["thread_ts"]), ids)
+    return _parent_uid(root) if root is not None else None
 
 
 def _with_root(conn, name: str, ids, caller: Caller, row, m: dict) -> dict:
@@ -3449,10 +3465,12 @@ def _numbers(
     request: Request,
     *params: tuple[str, int] | tuple[str, int, bool],
     sort_dir_ok: bool | None = None,
+    most: int | None = None,
 ) -> tuple[dict[str, int], JSONResponse | None]:
     """The numeric arguments `params` names as `(key, default)`, each read by `_slack_number` and
     capped at `max_page_size`, and the `invalid_arguments` that names every one real refuses. A
-    third element is that key's `decimal`, for a method that reads it by the other rule.
+    third element is that key's `decimal`, for a method that reads it by the other rule. A value
+    past `most` is read as its default before the cap.
 
     Real puts one line per refused field in one answer, in the order `params` lists them
     whichever was sent first, and on the search methods an unknown `sort_dir` adds its line after
@@ -3467,6 +3485,8 @@ def _numbers(
         if n is None:
             messages.append(f"[ERROR] must provide a number [json-pointer:/{key}]")
             n = default
+        if most is not None and n > most:
+            n = default
         values[key] = min(n, get_settings().max_page_size)
     if sort_dir_ok is not None:
         value = _param(request, "sort_dir")
@@ -3479,7 +3499,7 @@ def _numbers(
     )
 
 
-def _limit(request: Request) -> tuple[int, JSONResponse | None]:
+def _limit(request: Request, *, most: int | None = None) -> tuple[int, JSONResponse | None]:
     """The page size a paged method serves, and the refusal for a `limit` real does not read.
 
     Each handler answers the refusal after its missing-argument check and before it resolves the
@@ -3496,9 +3516,15 @@ def _limit(request: Request) -> tuple[int, JSONResponse | None]:
     `-1`, and answers `fatal_error` for anything lower. On `users.list`, measured 2026-10-16 on the
     same workspace, the cursor `-1` serves goes on from the second member, as the one `limit=1`
     serves does; `-1` beside a cursor that decodes is `internal_error`; and a cursor that does not
-    decode is `invalid_cursor` ahead of the other two (`cursor=bogus&limit=-2`)."""
+    decode is `invalid_cursor` ahead of the other two (`cursor=bogus&limit=-2`).
+
+    `most` is the largest `limit` a method serves as sent; one past it is served as no `limit`,
+    and `max_page_size` caps what is left. On `conversations.history` it is 1000: measured
+    2026-11-02 on a channel of 330 messages, `201` served 201; `1000`, `1e3`, `1000.5` and
+    `1000.9` served all 330; and `1001`, `2000`, `2147483647` and `9223372036854775807` each served
+    100 messages and a cursor, as the request without `limit` did."""
     default = get_settings().default_page_size
-    values, err = _numbers(request, ("limit", default))
+    values, err = _numbers(request, ("limit", default), most=most)
     return values["limit"] or default, err
 
 

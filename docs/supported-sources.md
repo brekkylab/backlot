@@ -226,7 +226,9 @@ naming no token after a space, which names a third page (2026-10-26 and 2026-10-
 has a `code_search` window of its own at `limit: 0`, so code search answers a `Basic` value naming
 no token with that 403 at once (2026-10-26). `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal
 off (see [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does
-not count, and is never refused — the one route a client reads its way out of a spent window with;
+not count, and is never refused — the one route a client reads its way out of a spent window with,
+but not out of `search` for a caller with no `Authorization`, which it reports unused whatever that
+address has searched, even after its searches have spent the window and been refused (2026-11-02);
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
 none of the five and counts nowhere, spent window or not (2026-09-23). Four answers carry none of
 the five and count nowhere, as real's do not: a credential that does not resolve, unless a tab sets

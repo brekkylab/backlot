@@ -340,7 +340,8 @@ def from_record(file_id: str, rec: dict) -> dict:
             out.append(built)
         return out
 
-    return {"tabs": tree(stated)}
+    tabs = tree(stated)
+    return {"tabs": tabs, **({"tabbed": True} if len(list(walk(tabs))) > 1 else {})}
 
 
 def _stated_tabs(tabs: list[dict]):
@@ -355,19 +356,20 @@ def record_text(rec: dict) -> str:
 
 
 def document_text(doc: dict) -> str:
-    """A stored document's text as Drive's search reads it: each tab's title, unless it is a lone
-    tab's default, then its body, headers, footers and footnotes, depth first, one line per
-    paragraph, a segment holding no text giving none. Measured 2026-11-03: `fullText contains`
-    found a word only in a tab's header, footer or footnote, in an added or a renamed tab's title
-    and not the old one, and in a lone tab's title once renamed, and `Tab` in a Doc of several
-    tabs, one untitled, but not in a Doc whose one tab was untitled; a quoted phrase matched
-    within a line alone (`routers.google`), and a footnote reference parted the words either side
-    of it as a line break does."""
+    """A stored document's text as Drive's search reads it: each tab's title, but the default of a
+    lone tab in a Doc that never held more than one, then its body, headers, footers and
+    footnotes, depth first, one line per paragraph, a segment holding no text giving none.
+    Measured 2026-11-03: `fullText contains` found a word only in a tab's header, footer or
+    footnote, in an added or a renamed tab's title and not the old one, and in a lone tab's title
+    once renamed, and `Tab` in a Doc of several tabs, one untitled, and in one whose tabs were
+    deleted back to one, but not in a Doc that only ever had one untitled tab; and a footnote
+    reference or a page break parted the words either side of it as a line break does
+    (`routers.google._in_a_line`)."""
     tabs = [tab for tab, *_ in walk(doc["tabs"])]
     lines = []
     for tab in tabs:
         title = tab["tabProperties"]["title"]
-        if len(tabs) > 1 or title != default_title((), 1):
+        if doc.get("tabbed") or title != default_title((), 1):
             lines.append(title)
         for segment in (
             tab["body"],
@@ -376,7 +378,7 @@ def document_text(doc: dict) -> str:
             *tab["footnotes"].values(),
         ):
             text = "".join(
-                pe["textRun"]["content"] if "textRun" in pe else "\n" * ("footnoteReference" in pe)
+                pe["textRun"]["content"] if "textRun" in pe else "\n"
                 for el in segment
                 if "paragraph" in el
                 for pe in el["paragraph"]["elements"]
@@ -1209,10 +1211,13 @@ class Document:
         self.file_id = file_id
         self.revision = revision
         self.tabs: list[dict] = copy.deepcopy(stored["tabs"])
+        # whether the Doc has held more than one tab, which keeps a lone tab's default title in
+        # what Drive's search reads (`document_text`)
+        self.tabbed = stored.get("tabbed", False)
         self._open: dict[tuple[str, str], Body] = {}
         self._made = itertools.count()
-        # the requests real keeps the `revisionId` for (`routers.google_docs._docs_update_tab` and
-        # `_docs_replace_all_text`); a batch of only these is no write
+        # the requests `routers.google_docs.docs_batch_update` counts as no write when they are all
+        # a batch holds
         self.unchanged = 0
 
     def flat(self) -> list[dict]:
@@ -1305,7 +1310,8 @@ class Document:
                     tab["body"] = body.content()
                 elif kind is not None:
                     tab[f"{kind}s"][sid] = body.content()
-        return {"tabs": self.tabs}
+        tabbed = self.tabbed or len(self.flat()) > 1
+        return {"tabs": self.tabs, **({"tabbed": True} if tabbed else {})}
 
 
 # --- a document as Drive's `files.export` renders it ----------------------------------------------
@@ -1450,15 +1456,19 @@ def _page_breaks(text: str, bare: str, heading: bool) -> str:
     outside one once text comes before those vertical tabs: measured 2026-11-03, a vertical tab, a
     page break and `cd` in a HEADING_2 were an empty line, the rule and `cd` on three lines, and
     `ab`, a page break, a vertical tab, a page break and `cd` in NORMAL_TEXT had one empty line
-    between the two rules."""
+    between the two rules. Vertical tabs after the last page break of a paragraph holding text end
+    the rule's line themselves: `ab`, a page break and a vertical tab were `ab` and the rule on two
+    lines, and no third."""
     out = ""
     pieces = text.split(PAGE_BREAK)
     for i, piece in enumerate(pieces):
         if i:
-            last = not bare and i == len(pieces) - 1
+            final = i == len(pieces) - 1
             tabs = pieces[i - 1] and not pieces[i - 1].strip("\x0b")
             start = out and not (tabs and (heading or "".join(pieces[:i]).strip("\x0b")))
-            out += ("\x0b" if start else "") + _RULE + ("\x0b" if piece or last else "")
+            closed = final and not piece.strip("\x0b") and bare.strip("\x0b")
+            end = (piece or (final and not bare)) and not closed
+            out += ("\x0b" if start else "") + _RULE + ("\x0b" if end else "")
         out += piece
     return out
 
@@ -1471,7 +1481,10 @@ def _plain_lines(content: list[dict], note) -> list[str]:
     takes the CRLFs `_lead_breaks` counts; a HEADING_n holding nothing is left out, and one holding
     no text but vertical tabs or page breaks that ends with a CRLF is one fewer (measured 2026-11-03:
     a page break alone in HEADING_1 to HEADING_6 was the rule alone, and a page break then a
-    vertical tab in a HEADING_2 the rule and one CRLF)."""
+    vertical tab in a HEADING_2 the rule and one CRLF). Real's bytes and these agree on every
+    paragraph of up to three of text, a vertical tab, a vertical-tab link, a page break and a
+    footnote reference, and of four without the link, in NORMAL_TEXT, HEADING_2 and TITLE, each
+    between two paragraphs of text, measured 2026-11-03."""
     lines = []
     for el in content:
         if "paragraph" not in el:

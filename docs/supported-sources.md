@@ -337,16 +337,17 @@ cells.
 A document has two shapes in the same way. A record that states `paragraphs` gives each paragraph
 its named style and its runs bold, italic, underlined, struck through or linked, its footnotes and
 page breaks, and its header and footer, or states `tabs`, each holding all of that and its child
-tabs; its `content` is the text, with its tabs' titles and its headers', footers' and footnotes'
-text, one line per paragraph. A record that states only `content` is one plain paragraph per line of
-it. Either way `files.export` renders a document's text formats from those paragraphs as real does,
-without its title: every tab one after another, `text/plain` as a byte-order mark and one line per
-paragraph, joined by CRLF, with the first tab's header and footer, a line of underscores for a page
-break and the footnotes numbered across the tabs, and `text/markdown` and `text/x-markdown` with its
-named styles as `#` headings, its bold, italic, strikethrough and links in Markdown, in the order
-real writes their delimiters, which does not always nest, and its footnotes as `[^n]`. A document's
-other formats serve its title and `content`, not the file real makes. Reading a file of the wrong
-type through any of the three editor APIs is refused, as real Google does, not reinterpreted.
+tabs; its `content` is the text Drive's full-text search reads, its tab titles, headers, footers and
+footnotes with the bodies, one line per paragraph. A record that states only `content` is one plain
+paragraph per line of it. Either way `files.export` renders a document's text formats from those
+paragraphs as real does, without its title: every tab one after another, `text/plain` as a
+byte-order mark and one line per paragraph, joined by CRLF, with the first tab's header and footer,
+a line of underscores for a page break and the footnotes numbered across the tabs, and
+`text/markdown` and `text/x-markdown` with its named styles as `#` headings, its bold, italic,
+strikethrough and links in Markdown, in the order real writes their delimiters, which does not
+always nest, and its footnotes as `[^n]`. A document's other formats serve its title and `content`,
+not the file real makes. Reading a file of the wrong type through any of the three editor APIs is
+refused, as real Google does, not reinterpreted.
 
 #### OAuth and batch
 

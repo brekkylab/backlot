@@ -1858,6 +1858,16 @@ _DOCS_EXPORTS = {
         "\ufeffa\r\nab\r\n________________\r\n\r\n________________\r\ncd\r\nz\r\n________________\r\n\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n\r\n________________\r\n\r\nXX\r\nz\r\n________________\r\n\r\n\r\n________________\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\nab\r\n\r\n________________\r\ncd\r\nz\r\n________________\r\nab\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n\r\nz\r\n\r\n\r\n[1]\r\n________________\r\n\r\ncd\r\nz\r\n________________\r\n\r\nab\r\n________________\r\ncd\r\nz\r\n________________\r\n[1]",
         "a\n\n## ab cd\n\nz\n\n##   cd\n\nz\n\n##    \n\n## XX\n\nz\n\n##   cd\n\nz\n\n##  ab cd\n\nz\n\n## abcd\n\nz\n\n##   \n\nz\n\n##  [^1] cd\n\nz\n\n##  abcd\n\nz\n\n[^1]:  ",
     ),
+    "pb_vt_end": (
+        {"paragraphs": [_runs("a"), _runs("ab", _PB, "\x0b"), _runs("z"), _runs("ab", _PB, {"text": "\x0b", "link": "https://example.com/"}), _runs("z"), _runs("ab\x0b", _PB, "\x0b"), _runs("z"), _runs("ab", _PB, "\x0b\x0b"), _runs("z"), _runs("ab", _PB, _PB, "\x0b"), _runs("z"), _runs("\x0bab", _PB, "\x0b"), _runs("z"), _runs(_PB, "ab", _PB, "\x0b"), _runs("z"), _runs(_note(""), _PB, "\x0b"), _runs("z"), _runs(_note(""), _note(""), _PB, "\x0b"), _runs("z"), _runs(_PB, "\x0b"), _runs("z"), _runs(_PB, "\x0b\x0b"), _runs("z")]},
+        "\ufeffa\r\nab\r\n________________\r\n\r\nz\r\nab\r\n________________\r\n\r\nz\r\nab\r\n\r\n________________\r\n\r\nz\r\nab\r\n________________\r\n\r\n\r\nz\r\nab\r\n________________\r\n________________\r\n\r\nz\r\n\r\nab\r\n________________\r\n\r\nz\r\n________________\r\nab\r\n________________\r\n\r\nz\r\n[1]\r\n________________\r\n\r\nz\r\n[2][3]\r\n________________\r\n\r\nz\r\n________________\r\n\r\n\r\n\r\nz\r\n________________\r\n\r\n\r\n\r\n\r\nz\r\n________________\r\n[1] \r\n[2] \r\n[3]",
+        "a  \nab\n\nz  \nab\n\nz  \nab\n\nz  \nab\n\nz  \nab\n\nz\n\nab\n\nz  \nab\n\nz  \n[^1]\n\nz  \n[^2][^3]\n\nz\n\nz\n\nz\n\n[^1]:  \n\n[^2]:  \n\n[^3]:  ",
+    ),
+    "pb_vt_end_heading": (
+        {"paragraphs": [_runs("a"), _runs("ab", _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs("ab", _PB, {"text": "\x0b", "link": "https://example.com/"}, style="HEADING_2"), _runs("z"), _runs("ab\x0b", _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs("ab", _PB, "\x0b\x0b", style="HEADING_2"), _runs("z"), _runs("ab", _PB, _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs("\x0bab", _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs(_PB, "ab", _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs(_note(""), _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs(_note(""), _note(""), _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b\x0b", style="HEADING_2"), _runs("z")]},
+        "\ufeffa\r\nab\r\n________________\r\n\r\nz\r\nab\r\n________________\r\n\r\nz\r\nab\r\n\r\n________________\r\n\r\nz\r\nab\r\n________________\r\n\r\n\r\nz\r\nab\r\n________________\r\n________________\r\n\r\nz\r\n\r\nab\r\n________________\r\n\r\nz\r\n________________\r\nab\r\n________________\r\n\r\nz\r\n[1]\r\n________________\r\n\r\nz\r\n[2][3]\r\n________________\r\n\r\nz\r\n________________\r\n\r\nz\r\n________________\r\n\r\n\r\nz\r\n________________\r\n[1] \r\n[2] \r\n[3]",
+        "a\n\n## ab \n\nz\n\n## ab \n\nz\n\n## ab  \n\nz\n\n## ab  \n\nz\n\n## ab \n\nz\n\n##  ab \n\nz\n\n## ab \n\nz\n\n## [^1] \n\nz\n\n## [^2][^3] \n\nz\n\n##  \n\nz\n\n##   \n\nz\n\n[^1]:  \n\n[^2]:  \n\n[^3]:  ",
+    ),
     "pb_heading": (
         {"paragraphs": [_runs("ab"), _runs(_PB, style="HEADING_2"), _runs("cd", style="HEADING_2"), _runs(_PB, style="TITLE"), _runs("ef", style="TITLE"), _runs("gh")]},
         "\ufeffab\r\n" + _RULE + "\r\ncd\r\n" + _RULE + "\r\n\r\n\r\nef\r\ngh",
@@ -17693,6 +17703,10 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
         "title",
     )
     wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=h, json={"requests": [renamed]})
+    line = "cr\u00e8me br\u00fbl\u00e9e pbleftpbright vtalpha\x0bvtbeta fnleftfnright\n"
+    at = 1 + line.index("pbright")
+    parted = [_ins(1, line), _fn(1 + line.index("fnright")), _pb(at), _del(at + 1, at + 2)]
+    assert _docs_write(wc, h, "wr-text", {"requests": parted}).status_code == 200
     for q, hit in [
         ("wombat", True),
         ("numbat", True),
@@ -17702,8 +17716,23 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
         ('"ABell0 w0rld"', True),
         ('"w0rld Sec0nd"', False),
         ('"para wombat"', False),
+        ('"creme brulee"', True),
+        ('"cr\u00e8me br\u00fbl\u00e9e"', True),
+        ("pbright", True),
+        ("pbleftpbright", False),
+        ("fnright", True),
+        ("fnleftfnright", False),
+        ("vtbeta", True),
+        ('"vtalpha vtbeta"', False),
     ]:
         assert searched(q) == hit, q
+    # a Doc that held two tabs keeps its lone tab's default title
+    gone = {
+        "deleteTab": {"tabId": renamed["updateDocumentTabProperties"]["tabProperties"]["tabId"]}
+    }
+    back = _upd({"tabId": "t.0", "title": "Tab 1"}, "title")
+    assert _docs_write(wc, h, "wr-text", {"requests": [gone, back]}).status_code == 200
+    assert searched("Tab")
 
 
 def _searched(seed, *replace):

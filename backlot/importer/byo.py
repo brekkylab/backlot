@@ -164,8 +164,8 @@ def _doc_id(rec: dict) -> str:
     # ordinary -- resolve to one id, and the row-level upsert leaves only the later one.
     if rec.get("sheets") is not None:
         seed += _j(rec["sheets"])
-    # Likewise a structured document's `content` is its text alone, without the styles or the tab,
-    # title or segment each line stands in.
+    # Likewise a structured document's `content` is its lines alone, without their styles, icons
+    # and page breaks or the tab and segment each stands in.
     for key in ("paragraphs", "header", "footer", "tabs"):
         if rec.get(key) is not None:
             seed += _j(rec[key])
@@ -1099,7 +1099,7 @@ def _paragraphs_pairing_errors(rec: dict) -> list[str]:
     if rec.get("content") is not None:
         msgs.append(
             f"'{stated[0]}' and 'content' state the same document two ways; drop 'content' — it "
-            "is derived from the paragraphs at import, one line each"
+            "is derived at import from the document's text, one line per paragraph"
         )
     subtype = rec.get("subtype") or "document"
     if subtype != "document":

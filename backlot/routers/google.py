@@ -19,6 +19,7 @@ import quopri
 import re
 import string
 import time
+import unicodedata
 import xml.parsers.expat
 from collections.abc import Callable
 from contextvars import ContextVar
@@ -2730,8 +2731,11 @@ def _drive_q_fulltext(conn, node, ids) -> dict[str, list]:
     adjacent); unquoted is separate terms. A grep push-down sends the quoted form for a literal
     pattern, so the exact doc surfaces instead of being buried under coincidental docs that merely
     contain the words scattered. A Doc's phrase matches within one line of its title or its text
-    (`gdocs.document_text`): measured 2026-11-03, real matched none across two paragraphs, two of
-    a Doc's segments or tabs, or a footnote reference."""
+    (`gdocs.document_text`), a vertical tab ending a line too, its words with their accents or
+    without but not by their stem: measured 2026-11-03, real matched none across two paragraphs,
+    two of a Doc's segments or tabs, a footnote reference, a page break or a vertical tab, matched
+    `"creme brulee"` and `"crème brûlée"` both ways, and matched `"runners jumped"` but not
+    `"runners jump"`."""
     out: dict[str, list] = {}
     for term in _drive_q_terms(node):
         if term.field != "fullText" or term.value in out:
@@ -2749,12 +2753,18 @@ def _drive_q_fulltext(conn, node, ids) -> dict[str, list]:
 
 
 def _in_a_line(row, words: list[str]) -> bool:
-    """Whether one line of ``row``'s title or content holds ``words`` one after another."""
-    for line in [row["title"], *row["content"].split("\n")]:
-        found = re.findall(r"\w+", line.lower())
+    """Whether one line of ``row``'s title or content holds ``words`` one after another, each
+    compared without its accents."""
+    words = [_unaccented(w) for w in words]
+    for line in [row["title"], *re.split("[\n\x0b]", row["content"])]:
+        found = [_unaccented(w) for w in re.findall(r"\w+", line.lower())]
         if any(found[i : i + len(words)] == words for i in range(len(found))):
             return True
     return False
+
+
+def _unaccented(word: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", word) if not unicodedata.combining(c))
 
 
 def _drive_q_fulltext_ids(hits: dict[str, list]) -> dict[str, set[str]]:

@@ -4490,6 +4490,16 @@ _QUERY_CREDENTIAL_ROWS = [
     (None, "access_token={t}", _NONE), (None, "access_token=ya29", _NONE),
     (None, "access_token=YA29.x", _NONE), (None, "access_token=%20ya29.x", _NONE),
     (None, "access_token=", _NONE), (None, "ACCESS_TOKEN=ya29.x", _NONE),
+    # the bytes around a token
+    (None, "access_token=ya29.x&oauth_token={t}%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%20%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%09", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%0A%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token=%20{t}", _SERVED),
+    (None, "access_token=ya29.x&oauth_token=%20%09%0A{t}%0A%09%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%0D", _CHALLENGED),
+    (None, "access_token=ya29.x&oauth_token={t}%0B", _CHALLENGED),
+    (None, "access_token=ya29.x&oauth_token=%20", _CHALLENGED),
     # the first of `QUERY_TOKENS` the query carries is the gate, the last the token
     (None, "access_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "oauth_token={t}&access_token=ya29.x", _SERVED),
@@ -4503,16 +4513,6 @@ _QUERY_CREDENTIAL_ROWS = [
     (None, "access_token=ya29.x&oauth_token={t}&oauth_token={t}", _CHALLENGE),
     (None, "access_token=ya29.x&access_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "access_token=ya29.x&oauth_token={m}", _SERVED),
-    # the bytes around a token
-    (None, "access_token=ya29.x&oauth_token={t}%20", _SERVED),
-    (None, "access_token=ya29.x&oauth_token={t}%20%20", _SERVED),
-    (None, "access_token=ya29.x&oauth_token={t}%09", _SERVED),
-    (None, "access_token=ya29.x&oauth_token={t}%0A%20", _SERVED),
-    (None, "access_token=ya29.x&oauth_token=%20{t}", _SERVED),
-    (None, "access_token=ya29.x&oauth_token=%20%09%0A{t}%0A%09%20", _SERVED),
-    (None, "access_token=ya29.x&oauth_token={t}%0D", _CHALLENGED),
-    (None, "access_token=ya29.x&oauth_token={t}%0B", _CHALLENGED),
-    (None, "access_token=ya29.x&oauth_token=%20", _CHALLENGED),
     # beside a header: a credential, a bare scheme and `Bearer ,` outrank the query, a scheme run
     # into its token reads it without the gate, and a header that is no credential leaves it alone
     ("Bearer {t}", "access_token=ya29.x", _SERVED),

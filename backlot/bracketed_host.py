@@ -113,8 +113,8 @@ def _refused_ahead(scope: Scope) -> bool:
     (``backlot.routers.github.target_past_its_bound``); a `%00` on Slack, Notion and HubSpot
     (``backlot.request_target.escape_answer``); in front of Jira and Confluence the CDN's 400s and
     405s (``backlot.errors.atlassian.cdn_refusal``), where its 403s come after the `Host`'s; and on
-    Linear and Fireflies a path Cloudflare refuses (``backlot.request_target.refused_path``), one
-    the end cuts in a `%` (``backlot.request_target.cut_escape``) and `TRACE`.
+    Linear and Fireflies a path Cloudflare refuses (``backlot.request_target.refused_path``) and
+    `TRACE`.
 
     Measured on 2026-11-03 (UTC) beside `[0:0]` and `[v1.x]` and beside the door's own `Host`. Each
     front door answered a raw byte of each kind in the path as the table
@@ -123,11 +123,12 @@ def _refused_ahead(scope: Scope) -> bool:
     Cloudflare's 400 page; GitHub answered a target of 8,214 bytes with its 414. Jira and Confluence
     answered `%00`, `%zz`, `TRACE` and `CONNECT`, and Jira `MKCALENDAR` and `UNSUBSCRIBE`, as they
     did under the tenant's `Host`, and `PROPFIND`, `PATCH`, `/..;/`, a `%3Cscript%3E` segment and a
-    `;` with the CDN's 403 for the `Host`. Linear and Fireflies answered `%00`, `%zz`, `%2` at the
-    end, `/../graphql` and `TRACE` as under their own `Host`, and `CONNECT` and `PURGE` as the
-    `Host` says. GitHub and Graph answered the `Host` beside `%00`, Slack beside a broken escape,
-    Slack, Drive, Jira, Confluence and Graph beside an `Authorization` sent twice, and each host but
-    S3 beside `%0A`, `%80`, a raw `\\` and a raw `"`."""
+    `;` with the CDN's 403 for the `Host`. Linear and Fireflies answered `%00`, `%zz`, `/../graphql`
+    and `TRACE` as under their own `Host`, and `CONNECT`, `PURGE` and, on 2026-11-04, a `%2` or `%`
+    that ends a path sent with no `?` as the `Host` says. GitHub and Graph answered the `Host`
+    beside `%00`, Slack beside a broken escape, Slack, Drive, Jira, Confluence and Graph beside an
+    `Authorization` sent twice, and each host but S3 beside `%0A`, `%80`, a raw `\\` and a raw
+    `"`."""
     path, method, sent = scope["path"], scope["method"], scope["raw_path"]
     door = (request_target.front_door(path) or (None, None))[0]
     if request_target.kinds_sent(scope) & _RAW_AHEAD.get(door, set()):
@@ -145,11 +146,7 @@ def _refused_ahead(scope: Scope) -> bool:
     if any(_under(path, p) for p in ("/linear", "/fireflies")):
         own = b"/" + sent.partition(b"/")[2].partition(b"/")[2]
         query_or_none = scope["query_string"] or None
-        return (
-            method == "TRACE"
-            or request_target.refused_path(own, query_or_none)
-            or request_target.cut_escape(own, query_or_none)
-        )
+        return method == "TRACE" or request_target.refused_path(own, query_or_none)
     return False
 
 

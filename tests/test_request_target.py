@@ -387,12 +387,10 @@ _HOSTS = [
             (b"GET", "/hubspot/crm/v3/objects/", b"contacts%00", "cloudflare page"),
             (b"POST", "/linear/", b"graphql%00", "cloudflare page"),
             (b"POST", "/linear/", b"graphql%zz", "cloudflare page"),
-            (b"POST", "/linear/", b"graphql%2", "served"),
             (b"POST", "/linear/", b"../graphql", "cloudflare page"),
             (b"TRACE", "/linear/", b"graphql", "cloudflare 405"),
             (b"POST", "/fireflies/", b"graphql%00", "cloudflare page"),
             (b"POST", "/fireflies/", b"graphql%zz", "cloudflare page"),
-            (b"POST", "/fireflies/", b"graphql%2", "served"),
             (b"POST", "/fireflies/", b"../graphql", "cloudflare page"),
             (b"TRACE", "/fireflies/", b"graphql", "cloudflare 405"),
             (b"GET", "/msgraph/v1.0/", b"me%00", "graph invalid hostname"),
@@ -425,6 +423,17 @@ _HOSTS = [
             ),
             (b"GET", "/notion/v1/", b"users%2"),
         )
+    ),
+    # a `%2` or a `%` that ends a path sent with no `?`
+    *(
+        (host, b"POST", base, b"graphql" + end, answer)
+        for host, answer in (
+            (b"[0:0]", "cloudflare page"),
+            (b"[x]", "cloudflare page"),
+            (b"[v1.x]", "cloudflare forbidden"),
+        )
+        for base in ("/linear/", "/fireflies/")
+        for end in (b"%2", b"%")
     ),
     # a raw byte of every kind beside a `Host` in the path, and of each but 0x7F after `?a=` on six
     # hosts, and a target past GitHub's bound

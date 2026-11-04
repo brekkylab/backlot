@@ -859,7 +859,7 @@ _DOCS_SPACE = "".join(
 
 
 def _docs_fields(
-    fields: str, message: protojson.Message, every: tuple[str, ...]
+    fields: str, message: protojson.Message, every: tuple[str, ...], whole: tuple[str, ...] = ()
 ) -> list[str] | None:
     """The fields of ``message`` a request's `fields` mask names, read as real reads it, or None for
     the mask real answers with a 500. Measured 2026-11-02 and 2026-11-03 on
@@ -870,11 +870,14 @@ def _docs_fields(
     is read (`nope,.`). Its first part read as `_docs_snake` spells it must be a field's
     `snake_case` name (`TITLE`, `parentTABId`, `fontSIZE` and `icon_emoji` were taken, `TItle`,
     `_title` and `PARENTTABID` refused), and is refused by that spelling (`fooBar` as `foo_bar`,
-    `textStyle.bold` as `text_style`). Every name is checked before any path into a field, which
-    must name the fields of the messages it walks (`link.url` and
-    `foregroundColor.color.rgbColor.red` were taken) and is refused by the field's name and the
-    rest so spelt (`icon_emoji.x` as `iconEmoji.x`, `title.fooBar` as `title.foo_bar`, `bold.x`,
-    `link.nope`). A path names its first field whole."""
+    `textStyle.bold` as `text_style`), and, in the order the mask names them, one of ``whole``
+    with a path is refused as a subfield (`borderTop.width,nope` for `borderTop`, `nope,borderTop.width`
+    for `nope`). Every name is checked before any path into a field, which must name the fields of
+    the messages it walks (`link.url` and `foregroundColor.color.rgbColor.red` were taken) and is
+    refused by the field's name and the rest so spelt: up to the name a message or a wrapper
+    lacks (`icon_emoji.x` as `iconEmoji.x`, `link.nope.z` as `link.nope`, `bold.x.Y` as `bold.x`),
+    and through every name after a string, number or enum (`title.x.Y` as `title.x.y`,
+    `fontSize.magnitude.x.y`). A path names its first field whole."""
     if fields == "*":
         return list(every)
     parts = fields.split(",")
@@ -894,12 +897,18 @@ def _docs_fields(
     for path in paths:
         if path[0] not in known:
             raise _EditorRefused(f"Invalid field: {path[0]}")
+        if len(path) > 1 and known[path[0]].json_name in whole:
+            raise _EditorRefused(
+                f"Unallowed field: cannot request subfield of {known[path[0]].json_name}"
+            )
         read.append(path)
     for path in read:
         field, spelt = known[path[0]], [known[path[0]].json_name]
-        for name in path[1:]:
+        for i, name in enumerate(path[1:], 1):
+            if field.kind != "message" and not field.wrapper:
+                raise _EditorRefused(f"Invalid field: {'.'.join([*spelt, *path[i:]])}")
             inner = {f.name: f for f in field.message.fields} if field.kind == "message" else {}
-            if field.wrapper or name not in inner:
+            if name not in inner:
                 raise _EditorRefused(f"Invalid field: {'.'.join([*spelt, name])}")
             field = inner[name]
             spelt.append(field.json_name)
@@ -1239,6 +1248,7 @@ _DOCS_DIMENSIONS = ("spaceAbove", "spaceBelow", "indentFirstLine", "indentStart"
 # `headingId` or `tabStops`, which named are refused.
 _DOCS_PARAGRAPH_FIELDS = tuple(k for k in gdocs.PARAGRAPH_STYLE_ORDER if k != "headingId")
 _DOCS_READ_ONLY = ("headingId", "tabStops")
+_DOCS_BORDERS = tuple(k for k in gdocs.PARAGRAPH_STYLE_ORDER if k.startswith("border"))
 
 
 def _docs_update_paragraph_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
@@ -1248,7 +1258,9 @@ def _docs_update_paragraph_style(doc: gdocs.Document, req: dict) -> tuple[dict, 
     (`_docs_paragraph_style`), then a body's section break at 0. An empty range styles the
     paragraph it falls in."""
     _, _, body, start, end = _docs_range(doc, req.get("range"), _DOCS_NO_INDEX)
-    names = _docs_fields(req.get("fields", ""), _PJ_PARAGRAPH_STYLE, _DOCS_PARAGRAPH_FIELDS)
+    names = _docs_fields(
+        req.get("fields", ""), _PJ_PARAGRAPH_STYLE, _DOCS_PARAGRAPH_FIELDS, _DOCS_BORDERS
+    )
     if names is None:
         raise gerr.internal_error()
     for name in names:

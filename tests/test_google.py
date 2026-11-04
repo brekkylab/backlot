@@ -20719,6 +20719,13 @@ _DOCS_STYLE_REFUSALS = [
     ("updateTextStyle", _ts(1, 6, "bold.x"), "Invalid field: bold.x"),
     ("updateTextStyle", _ts(1, 6, "textStyle.bold"), "Invalid field: text_style"),
     ("updateTextStyle", _ts(1, 6, "link.nope"), "Invalid field: link.nope"),
+    ("updateTextStyle", _ts(1, 6, "link.nope.z"), "Invalid field: link.nope"),
+    ("updateTextStyle", _ts(1, 6, "bold.x.Y"), "Invalid field: bold.x"),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "fontSize.magnitude.x.y"),
+        "Invalid field: fontSize.magnitude.x.y",
+    ),
     ("updateTextStyle", _ts(1, 6, "bold.x,nope"), "Invalid field: nope"),
     ("updateTextStyle", _ts(1, 6, "fooBar"), "Invalid field: foo_bar"),
     ("updateTextStyle", _ts(1, 6, "."), _ERR500),
@@ -20837,6 +20844,12 @@ _DOCS_STYLE_REFUSALS = [
     ("updateParagraphStyle", _ps(1, 3, ""), _NO_FIELD),
     ("updateParagraphStyle", _ps(1, 3, "nope"), "Invalid field: nope"),
     ("updateParagraphStyle", _ps(1, 3, "spaceAbove.nope"), "Invalid field: spaceAbove.nope"),
+    ("updateParagraphStyle", _ps(1, 3, "nope,borderTop.width"), "Invalid field: nope"),
+    (
+        "updateParagraphStyle",
+        _ps(1, 3, "borderLeft.width,nope"),
+        "Unallowed field: cannot request subfield of borderLeft",
+    ),
     ("updateParagraphStyle", {"range": _NOPE_SEGMENT, "fields": "alignment"}, _NO_SEGMENT),
     (
         "updateParagraphStyle",
@@ -21696,6 +21709,7 @@ _DOCS_TAB_REFUSALS = [
                     ("title.x,nope", "nope"),
                     ("icon_emoji.x", "iconEmoji.x"),
                     ("TITLE.x", "title.x"),
+                    ("title.x.Y", "title.x.y"),
                 ]
             ),
             (

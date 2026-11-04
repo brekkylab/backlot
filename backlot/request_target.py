@@ -49,16 +49,20 @@ def encode_line(line: bytes) -> tuple[bytes, bytes | None]:
     percent-encoded, and the target as sent; or ``line`` and ``None`` where the target holds none
     of them or the line is not `METHOD target HTTP/x.y`.
 
-    The target is what lies between the first space and the last one, so a space inside it is
-    one of its bytes, and the version after the last one keeps the CR of a CRLF."""
+    The target is what lies between the spaces after the method and the last space, so a space
+    inside it is one of its bytes, and the version after the last one keeps the CR of a CRLF."""
     method, _, rest = line[:-1].partition(b" ")
+    if not method:
+        return line, None
+    lead_spaces = rest[: len(rest) - len(rest.lstrip(b" "))]
+    rest = rest[len(lead_spaces) :]
     target, _, version = rest.rpartition(b" ")
-    if not (method and version.startswith(b"HTTP/")):
+    if not version.startswith(b"HTTP/"):
         return line, None
     encoded = _RAW.sub(lambda m: b"%%%02X" % m[0][0], target)
     if encoded == target:
         return line, None
-    return b"%s %s %s\n" % (method, encoded, version), target
+    return b"%s %s%s %s\n" % (method, lead_spaces, encoded, version), target
 
 
 def _kind(byte: int) -> str:
@@ -462,9 +466,9 @@ def refused_in_the_line(
     name) refuses the request line ``line``, the bytes before its LF, ahead of its bound, or
     ``None``, where the caller sends the bound's page. ``ended`` is whether the LF came, and
     ``ahead`` whether it came in a piece of the head before the piece the bound is reached in. The
-    target of a line that ended lies between its first space and its last, as :func:`encode_line`
-    reads it, and of one that has not, after its first. Each refusal is the one real gave the same
-    line with a short head.
+    target of a line that ended is the one :func:`encode_line` reads, and of one that has not, all
+    that follows the spaces after the method. Each refusal is the one real gave the same line with a
+    short head.
 
     Measured on 2026-11-01 (UTC) over raw HTTP/1.1 on TLS, each request cache-busted and its head
     written at once in pieces of 16,384 bytes, on the paths of ``backlot.head_bounds``'
@@ -473,6 +477,7 @@ def refused_in_the_line(
     Cloud, which drew the CDN's 400 as it did with a short head, and which is not given here; S3
     answered each with an empty 400, which its bound answers too."""
     method, _, rest = line.partition(b" ")
+    rest = rest.lstrip(b" ")
     target = rest.rpartition(b" ")[0] if ended else rest
     path, mark, query = target.partition(b"?")
     kinds = _kinds(path) + _kinds(query)

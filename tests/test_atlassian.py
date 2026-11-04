@@ -445,6 +445,12 @@ def two_projects(tmp_path_factory):
         ({"maxResults": " 1"}, 0, 1),
         ({"maxResults": "101"}, 0, 100),
         ({"maxResults": "5000"}, 0, 100),
+        ({"startAt": "0x1"}, 1, 50),
+        ({"startAt": "#1", "maxResults": "0X1"}, 1, 1),
+        ({"maxResults": "-0x2"}, 0, 1),
+        ({"maxResults": "0x7fffffff"}, 0, 100),
+        ({"startAt": "0x80000000"}, 2147483648, 50),
+        ({"startAt": "0x7fffffffffffffff"}, 9223372036854775807, 50),
     ],
 )
 def test_jira_project_search_pages(two_projects, query, start, limit):
@@ -523,6 +529,12 @@ _CONVERSION_ROWS = [
     ([("orderBy", "bogus"), ("categoryId", "abc")], "categoryId", "abc"),
     ([("categoryId", "abc"), ("startAt", "x")], "startAt", "x"),
     ([("categoryId", "abc"), ("maxResults", "x")], "maxResults", "x"),
+    ([("startAt", "+0x2")], "startAt", "+0x2"),
+    ([("startAt", "0x8000000000000000")], "startAt", "0x8000000000000000"),
+    ([("maxResults", "0x80000000")], "maxResults", "0x80000000"),
+    ([("maxResults", "0xZ")], "maxResults", "0xZ"),
+    ([("categoryId", "0x8000000000000000")], "categoryId", "0x8000000000000000"),
+    ([("categoryId", "#")], "categoryId", "#"),
 ]
 
 
@@ -3135,6 +3147,39 @@ _INTEGER_REFUSALS = [
         ("maxResults", "1.5", "PAY-7"),
         # where Python's own int() reads 10
         ("maxResults", "1_0", "PAY-7"),
+        # a hex spelling just past each parameter's own width
+        ("maxResults", "0x80000000", "PAY-7"),
+        ("maxResults", "-0x80000001", "PAY-7"),
+        ("startAt", "0x8000000000000000", "PAY-7"),
+        # what `parseNumber` refuses: a `+` ahead of a prefix, a prefix with nothing or a sign or a
+        # non-hex digit after it, a prefix past a leading zero, U+0085 (Python's whitespace and not
+        # Java's), a non-breaking space after the prefix, and a digit past U+FFFF
+        *[
+            ("maxResults", value, "PAY-7")
+            for value in (
+                "+0x2",
+                "+#2",
+                "0x",
+                "#",
+                "-0x",
+                "-#",
+                "0x-2",
+                "0x+2",
+                "#-2",
+                "-0x-2",
+                "0xZ",
+                "-0xZ",
+                "#Z",
+                "0x2Z",
+                "0x1_0",
+                "00x2",
+                "x2",
+                "\x852",
+                "2\x85",
+                "0x\xa02",
+                "\U0001d7d0",
+            )
+        ],
         # the width is per PARAMETER: `maxResults` is a Java int, `startAt` a Java long, and each
         # is refused just past its own boundary and answered 200 just inside it (below)
         ("maxResults", "2147483648", "PAY-7"),
@@ -3156,7 +3201,10 @@ assert sum(slash == "/" for *_, slash in _INTEGER_REFUSALS) == 4
 @pytest.mark.parametrize("param,value,key,slash", _INTEGER_REFUSALS)
 def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value, key, slash):
     client, h = paged
-    r = client.get(f"/atlassian/rest/api/3/issue/{key}/comment{slash}?{param}={value}", headers=h)
+    r = client.get(
+        f"/atlassian/rest/api/3/issue/{key}/comment{slash}?{param}={quote(value, safe='')}",
+        headers=h,
+    )
     assert r.status_code == 400, r.text
     assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
     assert r.json() == {
@@ -3173,8 +3221,7 @@ def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value
     [
         # an EMPTY value is not a conversion failure on either product -- it reads as absent
         ("maxResults=", (0, 100)),
-        # a leading `+` and surrounding whitespace are both accepted, which is narrower than
-        # "any decimal integer" and is what Python's own `int()` accepts
+        # a leading `+` and surrounding whitespace are both accepted
         ("maxResults=%2B3", (0, 3)),
         ("maxResults=%203%20", (0, 3)),
         # internal whitespace is REMOVED, not just trimmed -- `3 4` is thirty-four
@@ -3189,6 +3236,28 @@ def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value
         ("maxResults=2147483647", (0, 100)),
         ("startAt=9223372036854775807", (9223372036854775807, 100)),
         ("startAt=-9223372036854775808", (0, 100)),
+        # Spring's `parseNumber`: `0x`, `0X` or `#` after an optional `-` is hex, and a leading
+        # zero is still decimal
+        ("maxResults=0x2", (0, 2)),
+        ("maxResults=0X2", (0, 2)),
+        ("maxResults=%232", (0, 2)),
+        ("maxResults=-0x2", (0, 1)),
+        ("startAt=-0x2", (0, 100)),
+        ("startAt=0xA", (10, 100)),
+        ("maxResults=010", (0, 10)),
+        ("startAt=" + "0" * 5000 + "2", (2, 100)),
+        # a hex digit is `Character.digit`'s: U+0662 and the full-width U+FF41
+        ("maxResults=0x%D9%A2", (0, 2)),
+        ("maxResults=0x%EF%BD%81", (0, 10)),
+        # whitespace is removed before the prefix is read, wherever it sits
+        ("maxResults=%200x2%20", (0, 2)),
+        ("maxResults=0x%202", (0, 2)),
+        ("maxResults=0x%E2%80%832", (0, 2)),
+        # the hex boundaries of each parameter's own width
+        ("maxResults=0x7fffffff", (0, 100)),
+        ("maxResults=-0x80000000", (0, 1)),
+        ("startAt=0x80000000", (2147483648, 100)),
+        ("startAt=0x7fffffffffffffff", (9223372036854775807, 100)),
     ],
 )
 def test_jira_takes_the_integer_spellings_the_real_api_takes(paged, query, want):
@@ -3208,6 +3277,8 @@ def test_jira_takes_the_integer_spellings_the_real_api_takes(paged, query, want)
         ("startAt=5&startAt=abc", (5, 100)),
         ("maxResults=1&maxResults=2", (0, 1)),
         ("startAt=&startAt=5", (0, 100)),
+        ("maxResults=0x2&maxResults=3", (0, 2)),
+        ("maxResults=3&maxResults=0x2", (0, 3)),
     ],
 )
 def test_jira_reads_the_first_of_a_repeated_integer_parameter(paged, query, want):
@@ -3326,6 +3397,16 @@ _SEARCH_GET_ROWS = [
     (f"{_BOUNDED}&reconcileIssues=%D9%A1", None),
     (f"{_BOUNDED}&reconcileIssues=9223372036854775807", None),
     (f"{_BOUNDED}&reconcileIssues=-9223372036854775808", None),
+    (f"{_BOUNDED}&reconcileIssues=0x10", None),
+    (f"{_BOUNDED}&reconcileIssues=0X1F", None),
+    (f"{_BOUNDED}&reconcileIssues=%2310", None),
+    (f"{_BOUNDED}&reconcileIssues=-0x10", None),
+    (f"{_BOUNDED}&reconcileIssues=-%2310", None),
+    (f"{_BOUNDED}&reconcileIssues=010", None),
+    (f"{_BOUNDED}&reconcileIssues=0x%202", None),
+    (f"{_BOUNDED}&reconcileIssues=0x7fffffffffffffff", None),
+    (f"{_BOUNDED}&reconcileIssues=-0x8000000000000000", None),
+    (f"{_BOUNDED}&reconcileIssues=" + "0" * 5000 + "1", None),
     (f"{_BOUNDED}&reconcileIssues=", None),
     (f"{_BOUNDED}&reconcileIssues=%20", None),
     (f"{_BOUNDED}&reconcileIssues=1&reconcileIssues=2", None),
@@ -3337,6 +3418,29 @@ _SEARCH_GET_ROWS = [
     (f"{_BOUNDED}&reconcileIssues=1_0", ("reconcileIssues", "1_0")),
     (f"{_BOUNDED}&reconcileIssues=%C2%A01", ("reconcileIssues", "\xa01")),
     (f"{_BOUNDED}&reconcileIssues=%011", ("reconcileIssues", "\x011")),
+    (f"{_BOUNDED}&reconcileIssues=%2B0x2", ("reconcileIssues", "+0x2")),
+    (f"{_BOUNDED}&reconcileIssues=0x", ("reconcileIssues", "0x")),
+    (f"{_BOUNDED}&reconcileIssues=-0x", ("reconcileIssues", "-0x")),
+    (f"{_BOUNDED}&reconcileIssues=0x-2", ("reconcileIssues", "0x-2")),
+    (f"{_BOUNDED}&reconcileIssues=0xZ", ("reconcileIssues", "0xZ")),
+    (f"{_BOUNDED}&reconcileIssues=%C2%852", ("reconcileIssues", "\x852")),
+    (f"{_BOUNDED}&reconcileIssues=0x%C2%A02", ("reconcileIssues", "0x\xa02")),
+    (f"{_BOUNDED}&reconcileIssues=%F0%9D%9F%90", ("reconcileIssues", "\U0001d7d0")),
+    (
+        f"{_BOUNDED}&reconcileIssues=0x8000000000000000",
+        ("reconcileIssues", "0x8000000000000000"),
+    ),
+    (f"{_BOUNDED}&reconcileIssues=0xZ&reconcileIssues=3", ("reconcileIssues", None)),
+    # maxResults: an int, read by the same rule, and then held to its range
+    (f"{_ANY_PROJECT}&maxResults=0x2", None),
+    (f"{_ANY_PROJECT}&maxResults=%232", None),
+    (f"{_ANY_PROJECT}&maxResults=0x%EF%BD%81", None),
+    (f"{_ANY_PROJECT}&maxResults=-0x2", errors_atlassian.max_results_out_of_range().body),
+    (f"{_ANY_PROJECT}&maxResults=0x7fffffff", errors_atlassian.max_results_out_of_range().body),
+    (f"{_ANY_PROJECT}&maxResults=0x80000000", ("maxResults", "0x80000000")),
+    (f"{_ANY_PROJECT}&maxResults=-0x80000001", ("maxResults", "-0x80000001")),
+    (f"{_ANY_PROJECT}&maxResults=%2B0x2", ("maxResults", "+0x2")),
+    (f"{_ANY_PROJECT}&maxResults=0x%C2%A02", ("maxResults", "0x\xa02")),
     (
         f"{_BOUNDED}&reconcileIssues=9223372036854775808",
         ("reconcileIssues", "9223372036854775808"),
@@ -4089,6 +4193,12 @@ def test_confluence_reads_the_first_of_a_repeated_integer_parameter(client, admi
         ("limit=%D9%A3", 3),
         # Java's `int` ceiling converts, and `content` then answers its own cap for it.
         ("limit=2147483647", 1000),
+        ("limit=0x2", 2),
+        ("limit=%232", 2),
+        ("limit=010", 10),
+        ("limit=0x%EF%BD%81", 10),
+        ("limit=0x7fffffff", 1000),
+        ("limit=0x2&limit=3", 2),
     ],
 )
 def test_confluence_takes_the_integer_spellings_the_real_api_takes(
@@ -4102,12 +4212,42 @@ def test_confluence_takes_the_integer_spellings_the_real_api_takes(
 
 
 @pytest.mark.parametrize(
-    "value", ["1.5", "1_0", "2147483648", "-2147483649", "9223372036854775807"]
+    "value,reason",
+    [
+        ("1.5", 'For input string: "1.5"'),
+        ("1_0", 'For input string: "1_0"'),
+        ("2147483648", 'For input string: "2147483648"'),
+        ("-2147483649", 'For input string: "-2147483649"'),
+        ("9223372036854775807", 'For input string: "9223372036854775807"'),
+        # past a hex prefix the exception is `Integer.decode`'s, naming what follows the prefix
+        ("0x", 'For input string: "" under radix 16'),
+        ("#", 'For input string: "" under radix 16'),
+        ("-0x", 'For input string: "-" under radix 16'),
+        ("0xZ", 'For input string: "Z" under radix 16'),
+        ("-0xZ", 'For input string: "-Z" under radix 16'),
+        ("0x1_0", 'For input string: "1_0" under radix 16'),
+        ("0x\xa02", 'For input string: "\xa02" under radix 16'),
+        ("0x80000000", 'For input string: "80000000" under radix 16'),
+        ("-0x80000001", 'For input string: "-80000001" under radix 16'),
+        ("0x-2", "Sign character in wrong position"),
+        ("#-2", "Sign character in wrong position"),
+        ("-0x-2", "Sign character in wrong position"),
+        # and without a prefix `parseNumber` reads, the value as sent
+        ("+0x2", 'For input string: "+0x2"'),
+        ("00x2", 'For input string: "00x2"'),
+        ("\x852", 'For input string: "\x852"'),
+        ("\U0001d7d0", 'For input string: "\U0001d7d0"'),
+    ],
 )
-def test_confluence_refuses_the_integer_values_the_real_api_refuses(client, admin_h, value):
+def test_confluence_refuses_the_integer_values_the_real_api_refuses(client, admin_h, value, reason):
     """`limit` is a Java int on this route, where Jira's `startAt` is a long."""
-    r = client.get(f"/atlassian/wiki/rest/api/content?limit={value}", headers=admin_h)
+    r = client.get(
+        f"/atlassian/wiki/rest/api/content?limit={quote(value, safe='')}", headers=admin_h
+    )
     assert r.status_code == 400, r.text
+    assert r.json()["message"].endswith(
+        f"nested exception is java.lang.NumberFormatException: {reason}"
+    )
 
 
 @pytest.mark.parametrize("path", ["/rest/api/3/issue/PAY-7/comment", "/wiki/rest/api/content"])

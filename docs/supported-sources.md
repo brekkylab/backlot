@@ -304,9 +304,9 @@ One `source_type` (`google_drive`) across four prefixes.
 | `/drive/v3/files/{id}/permissions` | `fields`, validated and applied to the list and its entries |
 | `/drive/v3/drives` | `q`, as a member who is not the domain's administrator may send it: `name` with `contains`/`=`/`!=`/`<`/`<=`/`>`/`>=` and `hidden` with `=`/`!=` or alone; any other term is a 400. `fields`, validated and applied to the list and its entries |
 | `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
-| `/docs/v1/documents/{id}` | `body.content` with each element's indices in UTF-16 code units (a `startIndex` of 0 left out, as real leaves it out), each paragraph's `paragraphStyle` and each run's `textStyle`, and the `documentStyle` and `namedStyles` of a document `documents.create` makes |
+| `/docs/v1/documents/{id}` | `body.content` with each element's indices in UTF-16 code units (a `startIndex` of 0 left out, as real leaves it out), each paragraph's `paragraphStyle` and each run's `textStyle`, footnote references numbered by place and page breaks, the `headers`, `footers` and `footnotes`, and the `documentStyle` and `namedStyles` of a document `documents.create` makes; flat as the first tab, or as every tab and its child tabs under `includeTabsContent=true` |
 | `POST /docs/v1/documents` | `documents.create`: a blank Doc at the creator's My Drive root, visible to them alone, titled as the body or the `title` query parameter states; the rest of the `Document` it states is checked as real checks it and dropped |
-| `POST /docs/v1/documents/{id}:batchUpdate` | `insertText`, `deleteContentRange` and `replaceAllText`, each applied to the body the ones before it left and all of them or none kept, styled as real styles them; `requiredRevisionId` and `targetRevisionId`. Any other request kind is a 400 naming it |
+| `POST /docs/v1/documents/{id}:batchUpdate` | `insertText`, `deleteContentRange` and `replaceAllText`; `createHeader`, `createFooter`, `createFootnote`, `deleteHeader`, `deleteFooter` and `insertPageBreak`; `addDocumentTab`, `deleteTab` and `updateDocumentTabProperties`. Each is applied to the Doc the ones before it left, in the tab and header, footer or footnote it names, and all of them or none kept, styled as real styles them; `requiredRevisionId` and `targetRevisionId`. Any other request kind is a 400 naming it |
 | `/sheets/v4/spreadsheets/{id}` | One entry per sheet, with its own `sheetId`, `index`, `title` and `gridProperties`. Structure only — cells need `includeGridData=true`, as in real Sheets. `ranges` filters the `sheets` array itself, and gives a sheet one `data` block per range that touches it |
 | `/sheets/v4/spreadsheets/{id}/values/{range}` | A1 ranges incl. `Summary!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not, an empty one before the bang (`!A1` is the first sheet), and R1C1 — absolute (`R1C1:R2C2`) and bracketed offsets from A1 (`R[1]C[1]`), echoed as the A1 equivalent, with real's reversed-range rule. Any sheet in the workbook, matched case-insensitively; an unqualified range answers from the sheet at index 0. `majorDimension`, `valueRenderOption` |
 | `/sheets/v4/spreadsheets/{id}/values:batchGet` | As above; one unparseable range fails the whole call |
@@ -342,15 +342,19 @@ held in a single cell verbatim, with Backlot picking no column delimiter, so spl
 cells.
 
 A document has two shapes in the same way. A record that states `paragraphs` gives each paragraph
-its named style and its runs bold, italic, underlined, struck through or linked, and its `content`
-is their text, one line each. A record that states only `content` is one plain paragraph per line
-of it. Either way `files.export` renders a document's text formats from those paragraphs as real
-does, without its title: `text/plain` as a byte-order mark and one line per paragraph, joined by
-CRLF, and `text/markdown` and `text/x-markdown` with its named styles as `#` headings and its bold,
-italic, strikethrough and links in Markdown, in the order real writes their delimiters, which does
-not always nest. A document's other formats serve its title and `content`, not the file real
-makes. Reading a file of the wrong type through any of the three editor APIs is refused, as real
-Google does, not reinterpreted.
+its named style and its runs bold, italic, underlined, struck through or linked, its footnotes and
+page breaks, and its header and footer, or states `tabs`, each holding all of that and its child
+tabs; its `content` is the text Drive's full-text search reads, its tab titles, headers, footers and
+footnotes with the bodies, one line per paragraph. A record that states only `content` is one plain
+paragraph per line of it. Either way `files.export` renders a document's text formats from those
+paragraphs as real does, without its title: every tab one after another, `text/plain` as a
+byte-order mark and one line per paragraph, joined by CRLF, with the first tab's header and footer,
+a line of underscores for a page break and the footnotes numbered across the tabs, and
+`text/markdown` and `text/x-markdown` with its named styles as `#` headings, its bold, italic,
+strikethrough and links in Markdown, in the order real writes their delimiters, which does not
+always nest, and its footnotes as `[^n]`. A document's other formats serve its title and `content`,
+not the file real makes. Reading a file of the wrong type through any of the three editor APIs is
+refused, as real Google does, not reinterpreted.
 
 Google's front end reads a request ahead of the API, and Backlot answers what it refuses as it does.
 A `GET` or `HEAD` whose `Content-Length` is past 0 is its `400` HTML page, with no body on a `HEAD`.

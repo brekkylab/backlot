@@ -821,12 +821,18 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
         (b"GET /a b?c d HTTP/1.1\r\n", b"GET /a%20b?c%20d HTTP/1.1\r\n", b"/a b?c d"),
         (b"GET /a\rb HTTP/1.1\r\n", b"GET /a%0Db HTTP/1.1\r\n", b"/a\rb"),
         (b"GET /a%20b HTTP/1.1\r\n", b"GET /a%20b HTTP/1.1\r\n", None),
+        (b"GET  /a\x80b HTTP/1.1\r\n", b"GET  /a%80b HTTP/1.1\r\n", b"/a\x80b"),
+        (b"GET   /a\x80b HTTP/1.1\r\n", b"GET   /a%80b HTTP/1.1\r\n", b"/a\x80b"),
+        (b"GET  /a%20b HTTP/1.1\r\n", b"GET  /a%20b HTTP/1.1\r\n", None),
+        (b"GET  /github/rate_limit HTTP/1.1\r\n", b"GET  /github/rate_limit HTTP/1.1\r\n", None),
         (b"GET /a\x80b\r\n", b"GET /a\x80b\r\n", None),
         (b"GET /a\x80b HTTQ/1.1\r\n", b"GET /a\x80b HTTQ/1.1\r\n", None),
         (b" /a\x80b HTTP/1.1\r\n", b" /a\x80b HTTP/1.1\r\n", None),
     ],
 )
-def test_the_target_is_what_lies_between_the_first_space_and_the_last(line, encoded, sent):
+def test_the_target_is_what_lies_between_the_spaces_after_the_method_and_the_last(
+    line, encoded, sent
+):
     assert request_target.encode_line(line) == (encoded, sent)
 
 
@@ -909,3 +915,33 @@ def test_a_body_in_a_read_of_its_own_reaches_the_route(live_server, form, answer
             answer += chunk
     assert answer.startswith(b"HTTP/1.1 200 ")
     assert answered in answer
+
+
+_SPACES = [
+    ("GET /github/rate_limit", "GET  /github/rate_limit"),
+    ("GET /github/rate_limit", "GET   /github/rate_limit"),
+    ("GET /slack/api/api.test", "GET  /slack/api/api.test"),
+    ("GET /slack/api/api.test", "GET   /slack/api/api.test"),
+]
+
+
+def test_a_request_line_with_multiple_spaces_after_the_method(live_server):
+    """api.github.com and slack.com, 2026-11-03 (UTC): real reads multiple spaces after the method
+    as the line with one."""
+    base_url, _ = live_server
+    url = urllib.parse.urlsplit(base_url)
+
+    def request(line: str) -> tuple[str, bytes]:
+        with socket.create_connection((url.hostname, url.port), timeout=10) as c:
+            c.sendall(f"{line} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n".encode())
+            answer = b""
+            while chunk := c.recv(65536):
+                answer += chunk
+        head, _, body = answer.partition(b"\r\n\r\n")
+        status_line = head.split(b"\r\n")[0].decode("latin-1")
+        return status_line, body
+
+    results = [(request(one_space), request(multi_spaces)) for one_space, multi_spaces in _SPACES]
+    for one, multi in results:
+        assert multi == one
+        assert one[0].startswith("HTTP/1.1 200")

@@ -797,3 +797,25 @@ def test_a_head_answered_at_its_bound_never_reaches_the_app(recording_server):
     assert _as_real(answer) == _REAL["graph 400"]
     assert _status(base_url, b"GET /msgraph/v1.0/me HTTP/1.1\r\nHost: x\r\n\r\n") == 200
     assert seen == ["/msgraph/v1.0/me"]
+
+
+_SPACES_PAST_THE_BOUND = [
+    ("GET  /github/rate_limit", "github 431"),
+    ("GET   /github/rate_limit", "github 431"),
+    ("GET  /slack/api/api.test", "slack"),
+    ("GET   /slack/api/api.test", "slack"),
+]
+
+
+def test_a_request_line_with_spaces_after_the_method_answers_the_bound(live_server):
+    """api.github.com and slack.com, 2026-11-03 (UTC): real answers 431 to a head past the bound
+    whose request line has multiple spaces after the method."""
+    base_url, _ = live_server
+    answers = []
+    for line, _ in _SPACES_PAST_THE_BOUND:
+        head = f"{line} HTTP/1.1\r\nHost: x\r\nX-A: {'a' * 80_000}\r\n\r\n".encode()
+        with _connect(base_url) as c:
+            c.sendall(head)
+            answers.append(_until_closed(c))
+    for answer, (_, real) in zip(answers, _SPACES_PAST_THE_BOUND):
+        assert _as_real(answer) == _REAL[real]

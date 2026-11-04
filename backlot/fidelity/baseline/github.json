@@ -3,7 +3,7 @@
   "endpoints": [
     "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
   ],
-  "measured": "2026-10-28",
+  "measured": "2026-11-04",
   "operations": [
     {
       "operation": "DELETE /agents/repos/{}/{}/automations/{}",
@@ -585,6 +585,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "DELETE /orgs/{}/teams/{}/copilot/customizations",
+      "id": "copilot/delete-copilot-team-customizations",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states a team's Copilot customizations, so these three (`GET`, `PUT` and `DELETE` per team) 404 rather than answer an invented configuration, and two of the three are writes besides. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-04; no response was measured, because the session that recorded this has no direct access to api.github.com outside a repository's own paths. A maintainer chose to record the gap rather than serve it unmeasured."
     },
     {
       "operation": "DELETE /orgs/{}/teams/{}/memberships/{}",
@@ -1398,6 +1406,22 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "GET /agents/repos/{}/{}/automations/{}/revisions",
+      "id": "agent-automations/list-automation-revisions",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states an automation's revisions, so these two (the list and one by id) 404 rather than answer an invented history. Read from the vendor's published OpenAPI document (github/rest-api-description, `agent-automations`) on 2026-11-04; no response was measured, because the session that recorded this has no direct access to api.github.com outside a repository's own paths. A maintainer chose to record the gap rather than serve it unmeasured."
+    },
+    {
+      "operation": "GET /agents/repos/{}/{}/automations/{}/revisions/{}",
+      "id": "agent-automations/get-automation-revision",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states an automation's revisions, so these two (the list and one by id) 404 rather than answer an invented history. Read from the vendor's published OpenAPI document (github/rest-api-description, `agent-automations`) on 2026-11-04; no response was measured, because the session that recorded this has no direct access to api.github.com outside a repository's own paths. A maintainer chose to record the gap rather than serve it unmeasured."
     },
     {
       "operation": "GET /agents/repos/{}/{}/automations/{}/tasks",
@@ -3179,6 +3203,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "GET /orgs/{}/teams/{}/copilot/customizations",
+      "id": "copilot/get-copilot-team-customizations",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states a team's Copilot customizations, so these three (`GET`, `PUT` and `DELETE` per team) 404 rather than answer an invented configuration, and two of the three are writes besides. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-04; no response was measured, because the session that recorded this has no direct access to api.github.com outside a repository's own paths. A maintainer chose to record the gap rather than serve it unmeasured."
     },
     {
       "operation": "GET /orgs/{}/teams/{}/invitations",
@@ -8425,6 +8457,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "PUT /orgs/{}/teams/{}/copilot/customizations",
+      "id": "copilot/set-copilot-team-customizations",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states a team's Copilot customizations, so these three (`GET`, `PUT` and `DELETE` per team) 404 rather than answer an invented configuration, and two of the three are writes besides. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-04; no response was measured, because the session that recorded this has no direct access to api.github.com outside a repository's own paths. A maintainer chose to record the gap rather than serve it unmeasured."
     },
     {
       "operation": "PUT /orgs/{}/teams/{}/memberships/{}",

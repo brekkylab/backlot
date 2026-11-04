@@ -608,9 +608,10 @@ HUBSPOT_ERROR_PAGE = (
 
 #: The printable characters but `%` that Graph's front door refuses in a path.
 _GRAPH_REFUSED_PRINTABLE = re.compile(rb'["#<>]')
-#: The path under which HubSpot's Jetty reads a `{` and a `;` (:func:`printable_answer`,
-#: :func:`printable_reading`).
-_HUBSPOT_OBJECTS = b"/hubspot/crm/v3/objects/"
+#: The paths under which HubSpot's Jetty refuses a `{` and a `}` (:func:`printable_answer`).
+_HUBSPOT_JETTY_BRACES = (b"/hubspot/crm/v3/objects/", b"/hubspot/crm/v4/objects/")
+#: The paths under which HubSpot's Jetty reads a `;` (:func:`printable_reading`).
+_HUBSPOT_SEMICOLONS = (*_HUBSPOT_JETTY_BRACES, b"/hubspot/crm/v4/associations/")
 #: The mounts under which a `\` in the path is read as a `/` (:func:`backslashes_read`).
 _BACKSLASH_MOUNTS = (b"/atlassian/", b"/drive/", b"/gmail/", b"/docs/", b"/sheets/", b"/slides/")
 #: The mounts here that come ahead of the path the vendor is sent, so that a `\` right after one is
@@ -648,7 +649,8 @@ def printable_answer(scope: Scope) -> Response | None:
     `400 Invalid URI: isHexDigit` otherwise; on Notion and HubSpot Cloudflare's page for one in the
     path, but where the end of the target cuts it short (:func:`cut_escape`), which HubSpot answers
     with :data:`HUBSPOT_ERROR_PAGE` and Notion reads on (``notion.undecodable_url``); and on HubSpot
-    Jetty's page for a `{` or a `}` in a path under `/crm/v3/objects/`.
+    Jetty's page for a `{` or a `}` in a path under `/crm/v3/objects/` or `/crm/v4/objects/`; on
+    2026-11-04 one under `/crm/v4/associations/` was read on to the route.
 
     Measured on 2026-10-31 (UTC) over raw HTTP/1.1 on TLS sockets, with the vendors' credentials but
     S3's and Graph's, for each byte from 0x21 to 0x7E sent as itself and as its escape at a path no
@@ -699,7 +701,7 @@ def printable_answer(scope: Scope) -> Response | None:
             return _page(HUBSPOT_ERROR_PAGE, "text/html; charset=utf-8", close=False)
         if _BROKEN_ESCAPE.search(own):
             return _page(CLOUDFLARE_PAGE, "text/html")
-        if raw_path.startswith(_HUBSPOT_OBJECTS) and (b"{" in raw_path or b"}" in raw_path):
+        if raw_path.startswith(_HUBSPOT_JETTY_BRACES) and (b"{" in raw_path or b"}" in raw_path):
             return _page(HUBSPOT_JETTY_PAGE, "text/html;charset=iso-8859-1", close=False)
     return None
 
@@ -712,8 +714,8 @@ def printable_reading(scope: Scope) -> dict[str, object] | None:
       where `%5C` stays a backslash;
     - a `+` in a path under `/drive/v3/` is a space, where `%2B` stays a plus; in the path alone,
       because ``backlot.routers.google._drive_batch_redirect`` reads the raw path as sent;
-    - in a path under HubSpot's `/crm/v3/objects/`, a `;` and what comes after it up to the next
-      `/` are no part of the path, where `%3B` is;
+    - in a path under HubSpot's `/crm/v3/objects/`, `/crm/v4/objects/` or `/crm/v4/associations/`,
+      a `;` and what comes after it up to the next `/` are no part of the path, where `%3B` is;
     - on S3, a `#` is one of the characters of the path or the query it stands in, and the query
       begins at the first `?`;
     - on HubSpot, a query holding a broken escape (:data:`_BROKEN_ESCAPE`) comes with no
@@ -724,19 +726,22 @@ def printable_reading(scope: Scope) -> dict[str, object] | None:
     ``tests/test_request_target.py::_PRINTABLE`` holds, each answered as the request it reads as: a
     `\\` on Jira, Confluence, Drive, Gmail, Docs, Sheets and Slides; a `+` on Drive's files, their
     permissions, comments and export, and a shared drive; a `;` on HubSpot's contacts and their
-    list, where `objects;x/contacts/nope` was the gateway's 404 page; a `#` on S3's buckets, in the
-    path and in the query, where `?max-keys=1#x` drew the 400 naming `1#x` that `?max-keys=1%23x`
-    drew; and a broken escape in a name or a value of HubSpot's query, on `contacts`,
-    `contacts/nope` and `owners`."""
+    list, where `objects;x/contacts/nope` was the gateway's 404 page, and on 2026-11-04 on a
+    contact's v4 associations and the contact-to-company association labels, where
+    `objects;x/contacts/…` and `associations;x/contacts/…` were that page; a `#` on S3's buckets, in
+    the path and in the query, where `?max-keys=1#x` drew the 400 naming `1#x` that
+    `?max-keys=1%23x` drew; and a broken escape in a name or a value of HubSpot's query, on
+    `contacts`, `contacts/nope` and `owners`."""
     path, raw = scope["path"], scope["raw_path"]
     reading: dict[str, object] = {}
     sent = scope.get(WITH_A_FRAGMENT)
     if sent is not None and errors.s3.owns(path):
         raw, _, reading["query_string"] = sent.partition(b"?")
     raw = backslashes_read(raw)
-    if raw.startswith(_HUBSPOT_OBJECTS):
-        segments = raw.removeprefix(_HUBSPOT_OBJECTS).split(b"/")
-        raw = _HUBSPOT_OBJECTS + b"/".join(s.partition(b";")[0] for s in segments)
+    prefix = next((p for p in _HUBSPOT_SEMICOLONS if raw.startswith(p)), None)
+    if prefix is not None:
+        segments = raw.removeprefix(prefix).split(b"/")
+        raw = prefix + b"/".join(s.partition(b";")[0] for s in segments)
     if raw != scope["raw_path"]:
         reading["raw_path"] = raw
         reading["path"] = urllib.parse.unquote(raw.decode("latin-1"))

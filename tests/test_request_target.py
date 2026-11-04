@@ -573,6 +573,8 @@ _BESIDE_A_RAW_BYTE = (
 )
 #: A `%` or a `%4` that ends the target after a raw byte (``request_target.printable_answer``).
 _CUT_AFTER_A_RAW_BYTE = (b"nope\x01y%", b"nope\x01y%4", b"nope\xc3\xa9y%", b"nope\xc3\xa9y%4")
+#: A contact the admin can read, whose associations a HubSpot v4 row names.
+_HUBSPOT_CONTACT = str(served_id("hubspot", "hs-c-ava"))
 
 # A printable character the front door reads otherwise or refuses, sent as itself, among them a `%`
 # two hex digits do not follow and a `#` (``request_target.printable_answer`` and
@@ -683,9 +685,10 @@ _PRINTABLE = [
     *(("/notion/v1/", rest, "cloudflare page") for rest in _BESIDE_A_RAW_BYTE),
     *(("/notion/v1/", rest, "cloudflare empty") for rest in _CUT_AFTER_A_RAW_BYTE),
     # HubSpot: Cloudflare's page for a broken escape in the path, HubSpot's where the end of the
-    # target cuts it short, Jetty's for a `{` or a `}` under `/crm/v3/objects/`, behind
-    # Cloudflare's; a `;` and what follows it up to the next `/` no part of the path; a broken
-    # escape in the query dropping the credential; a `\` read as itself
+    # target cuts it short, Jetty's for a `{` or a `}` under `/crm/v3/objects/` and
+    # `/crm/v4/objects/`, behind Cloudflare's; a `;` and what follows it up to the next `/` no part
+    # of the path, under those two and `/crm/v4/associations/`; a broken escape in the query
+    # dropping the credential; a `\` read as itself
     *(
         ("/hubspot/crm/v3/objects/contacts/", rest, "cloudflare page")
         for rest in (
@@ -705,6 +708,33 @@ _PRINTABLE = [
     ("/hubspot/crm/v3/objects/contacts/", b"nope;x;y", "as nope"),
     ("/hubspot/crm/v3/objects/", b"contacts;x", "as contacts"),
     ("/hubspot/crm/v3/objects/contacts/", b";x", "as "),
+    *(
+        ("/hubspot/crm/v4/objects/", f"contacts/{_HUBSPOT_CONTACT}{rest}".encode(), answer)
+        for rest, answer in (
+            (";x/associations/companies", f"as contacts/{_HUBSPOT_CONTACT}/associations/companies"),
+            ("/associations/companies;x", f"as contacts/{_HUBSPOT_CONTACT}/associations/companies"),
+            *(
+                ("{x/associations/companies", "hubspot jetty"),
+                ("}x/associations/companies", "hubspot jetty"),
+            ),
+            ("/associations/companies{x", "hubspot jetty"),
+        )
+    ),
+    (
+        "/hubspot/crm/v4/objects/",
+        f"contacts;x/{_HUBSPOT_CONTACT}/associations/companies".encode(),
+        f"as contacts/{_HUBSPOT_CONTACT}/associations/companies",
+    ),
+    (
+        "/hubspot/crm/v4/associations/",
+        b"contacts;x/companies/labels",
+        "as contacts/companies/labels",
+    ),
+    (
+        "/hubspot/crm/v4/associations/",
+        b"contacts/companies;x/labels",
+        "as contacts/companies/labels",
+    ),
     *(
         ("/hubspot/crm/v3/objects/", rest, 401)
         for rest in (

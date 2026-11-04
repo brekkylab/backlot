@@ -352,6 +352,14 @@ not always nest. A document's other formats serve its title and `content`, not t
 makes. Reading a file of the wrong type through any of the three editor APIs is refused, as real
 Google does, not reinterpreted.
 
+Google's front end reads a request ahead of the API, and Backlot answers what it refuses as it does.
+A `GET` or `HEAD` whose `Content-Length` is past 0 is its `400` HTML page, with no body on a `HEAD`.
+On the five APIs' paths, a request body under a `Content-Encoding` other than `gzip` or `identity`
+is its `415` where the API serves the request; on Docs, Sheets and Slides a request no route serves
+is a `415` with no body, and on Drive and Gmail it is the host's `404` page. A body under `gzip`
+reaches the API decompressed when it is one whole gzip member, and one that decompresses past
+134,217,728 bytes is a `400`.
+
 #### OAuth and batch
 
 Two more Google-shaped routes, both at the **server root** rather than under the prefixes above,
@@ -397,24 +405,25 @@ missing credential, an unparseable range and a mistyped `fields` mask, though `$
 ahead of it and an `alt` naming a format other than `json` suppresses the wrap altogether — the
 format is matched without regard to case and an empty `alt=` names none, so `alt=JSON`, `alt=Json`
 and `alt=` each ask for the JSON the default serves rather than for a format of their own. An empty
-`callback=` is no callback, and a POST ignores the parameter outright, as real does, since JSONP is
-what a `<script>` element fetches and a `<script>` element issues a GET. A Drive download — an
-export with no `alt` or with `alt=media`, or a `files.get` with `alt=media` — is not JSONP at all: a
-`callback` there is never wrapped, is ignored when the download succeeds, and turns every other
-answer into 503 `Backend Error` under `text/javascript; charset=UTF-8` with a body of real's own
-(the `errors[]` entry inline and no trailing newline), while a name that cannot be called is that
-503 even where the download would have succeeded. A missing credential on one names the missing API
-key rather than the unregistered caller, and only after the download's `mimeType` and
-typed-parameter checks, so the order a byte-stream read answers in is `$.xgafv`, a credential that
-does not resolve, a token named in the query, the `callback`, the parameters, then that 403, or a
-401 of the download server's own for a header that is no credential. Inside a batch a download is a
-302 instead where neither its query nor the batch's names a token (the `/batch` row above). A
-SUCCESS body is wrapped and indented on the `/sheets/v4` routes only; the other four families honour
-`callback` on their errors and not yet on their 200s. Measured against the live Sheets, Docs, Drive,
-Gmail and Slides APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset
-first, the suppression across the four non-Sheets families next, and the escape set and the
-case-insensitive `alt` last; the download refusals on 2026-10-04, 2026-10-05, 2026-10-07 and
-2026-10-08, and a token named in the query on 2026-10-13.
+`callback=` is no callback, and a POST ignores the parameter outright, one read as the GET it names
+in `X-HTTP-Method-Override` included, as real does, since JSONP is what a `<script>` element fetches
+and a `<script>` element issues a GET. A Drive download — an export with no `alt` or with
+`alt=media`, or a `files.get` with `alt=media` — is not JSONP at all: a `callback` there is never
+wrapped, is ignored when the download succeeds, and turns every other answer into 503
+`Backend Error` under `text/javascript; charset=UTF-8` with a body of real's own (the `errors[]`
+entry inline and no trailing newline), while a name that cannot be called is that 503 even where the
+download would have succeeded. A missing credential on one names the missing API key rather than the
+unregistered caller, and only after the download's `mimeType` and typed-parameter checks, so the
+order a byte-stream read answers in is `$.xgafv`, a credential that does not resolve, a token named
+in the query, the `callback`, the parameters, then that 403, or a 401 of the download server's own
+for a header that is no credential. Inside a batch a download is a 302 instead where neither its
+query nor the batch's names a token (the `/batch` row above). A SUCCESS body is wrapped and indented
+on the `/sheets/v4` routes only; the other four families honour `callback` on their errors and not
+yet on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides APIs on
+2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the suppression
+across the four non-Sheets families next, and the escape set and the case-insensitive `alt` last;
+the download refusals on 2026-10-04, 2026-10-05, 2026-10-07 and 2026-10-08, and a token named in the
+query on 2026-10-13.
 
 **A repeated query parameter is read from the end real reads it from**, which is the first for some
 parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`

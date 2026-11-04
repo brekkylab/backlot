@@ -12,6 +12,7 @@ injected per test. ``tests/conftest.py`` still owns the fixtures over the shared
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import importlib
 import importlib.util
@@ -25,8 +26,11 @@ import urllib.parse
 from pathlib import Path
 
 import pytest
+import uvicorn
 from starlette.testclient import TestClient
+from uvicorn.server import ServerState
 
+from backlot import protocol
 from backlot.config import Settings, get_settings
 
 # A value for every field a schema can ask for, so `complete` can answer any of them. A field
@@ -388,6 +392,54 @@ def raw_exchange(base_url: str, request: bytes) -> tuple[int, dict[str, str], by
         return read_answer(c.makefile("rb"))
 
 
+class RecordingTransport(asyncio.Transport):
+    """A connection that keeps what a protocol run in this process writes to it, and whether the
+    protocol closed it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.written = b""
+        self.closed = False
+
+    def get_extra_info(self, name, default=None):
+        return default
+
+    def write(self, data) -> None:
+        self.written += data
+
+    def close(self) -> None:
+        self.closed = True
+
+    def is_closing(self) -> bool:
+        return self.closed
+
+    def pause_reading(self) -> None:
+        pass
+
+    def resume_reading(self) -> None:
+        pass
+
+
+@contextlib.contextmanager
+def in_process(app):
+    """``backlot.protocol.Protocol`` in front of ``app`` in this process, on an event loop of its
+    own, connected to a :class:`RecordingTransport`: the protocol, the transport and the loop. The
+    app's tasks are cancelled and the loop closed on the way out."""
+    loop = asyncio.new_event_loop()
+    state = ServerState()
+    try:
+        config = uvicorn.Config(app, http=protocol.Protocol, lifespan="off", log_config=None)
+        served = protocol.Protocol(config, state, {}, _loop=loop)
+        transport = RecordingTransport()
+        served.connection_made(transport)
+        yield served, transport, loop
+    finally:
+        for task in state.tasks:
+            task.cancel()
+        loop.run_until_complete(asyncio.sleep(0))
+        loop.close()
+
+
 def sent_as(client, method: str, path: str, headers, content=None, bare: bool = False):
     """``method`` on ``path`` with each header's latin-1 bytes as sent, ``headers`` a mapping or a
     sequence of pairs, which can name a header twice. The TestClient re-encodes a header's bytes
@@ -434,6 +486,16 @@ class Chunked(bytes):
 
     async def chunks(self):
         yield bytes(self)
+
+
+def outcome(call, *args, **kwargs):
+    """What ``call(*args, **kwargs)`` returns, or the name of the exception it raises. A table test
+    that records each row's answer with it compares every row after its loop, a row the code under
+    test raises for among them, where the raise would end the loop at that row."""
+    try:
+        return call(*args, **kwargs)
+    except Exception as e:
+        return f"raised {type(e).__name__}"
 
 
 def http_row(method, target, sent, body, credential, status, media_type, answer, id, answered=None):

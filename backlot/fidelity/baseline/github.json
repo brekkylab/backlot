@@ -592,7 +592,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "No corpus record states a team's Copilot customizations, so these three (`GET`, `PUT` and `DELETE` per team) 404 rather than answer an invented configuration, and two of the three are writes besides. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-04; no response was measured."
+      "note": "No corpus record states a team's Copilot customizations, so Backlot answers 404 on these three (`GET`, `PUT` and `DELETE` per team) rather than serve an invented configuration. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-04. On 2026-11-05 api.github.com answered a `GET` for an existing team of an organization with 404 `Not Found`, so the shape of an answer is not known."
     },
     {
       "operation": "DELETE /orgs/{}/teams/{}/memberships/{}",
@@ -1413,7 +1413,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "No corpus record states an automation's revisions, so these two (the list and one by id) 404 rather than answer an invented history. Read from the vendor's published OpenAPI document (github/rest-api-description, `agent-automations`) on 2026-11-04; no response was measured."
+      "note": "No corpus record states an automation's revisions, so Backlot answers 404 on these two (the list and one by id) rather than serve an invented history. Read from the vendor's published OpenAPI document (github/rest-api-description, `agent-automations`) on 2026-11-04. On 2026-11-05 api.github.com answered a `GET` of the list for an automation id the repository does not have with 404 `not found`, so the shape of an answer is not known."
     },
     {
       "operation": "GET /agents/repos/{}/{}/automations/{}/revisions/{}",
@@ -1421,7 +1421,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "No corpus record states an automation's revisions, so these two (the list and one by id) 404 rather than answer an invented history. Read from the vendor's published OpenAPI document (github/rest-api-description, `agent-automations`) on 2026-11-04; no response was measured."
+      "note": "No corpus record states an automation's revisions, so Backlot answers 404 on these two (the list and one by id) rather than serve an invented history. Read from the vendor's published OpenAPI document (github/rest-api-description, `agent-automations`) on 2026-11-04. On 2026-11-05 api.github.com answered a `GET` of the list for an automation id the repository does not have with 404 `not found`, so the shape of an answer is not known."
     },
     {
       "operation": "GET /agents/repos/{}/{}/automations/{}/tasks",
@@ -3210,7 +3210,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "No corpus record states a team's Copilot customizations, so these three (`GET`, `PUT` and `DELETE` per team) 404 rather than answer an invented configuration, and two of the three are writes besides. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-04; no response was measured."
+      "note": "No corpus record states a team's Copilot customizations, so Backlot answers 404 on these three (`GET`, `PUT` and `DELETE` per team) rather than serve an invented configuration. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-04. On 2026-11-05 api.github.com answered a `GET` for an existing team of an organization with 404 `Not Found`, so the shape of an answer is not known."
     },
     {
       "operation": "GET /orgs/{}/teams/{}/invitations",
@@ -8464,7 +8464,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "No corpus record states a team's Copilot customizations, so these three (`GET`, `PUT` and `DELETE` per team) 404 rather than answer an invented configuration, and two of the three are writes besides. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-04; no response was measured."
+      "note": "No corpus record states a team's Copilot customizations, so Backlot answers 404 on these three (`GET`, `PUT` and `DELETE` per team) rather than serve an invented configuration. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-04. On 2026-11-05 api.github.com answered a `GET` for an existing team of an organization with 404 `Not Found`, so the shape of an answer is not known."
     },
     {
       "operation": "PUT /orgs/{}/teams/{}/memberships/{}",

@@ -2,9 +2,10 @@
 
 [← README](../README.md)
 
-Every setting is an env var with a `BACKLOT_` prefix, and a `.env` file in the working directory is
-read too — copy [`.env.example`](../.env.example) and edit. Defaults are what the server uses when
-the var is unset. There are ten, and this page is all of them.
+Every setting is an env var with a `BACKLOT_` prefix but `DO_NOT_TRACK`, which is the cross-tool
+convention's own name, and a `.env` file in the working directory is read too — copy
+[`.env.example`](../.env.example) and edit. Defaults are what the server uses when the var is unset.
+There are fifteen, and this page is all of them.
 
 ## Corpus and identity
 
@@ -25,16 +26,33 @@ the var is unset. There are ten, and this page is all of them.
 **A vendor's own numbers still win.** Where the real API documents or measures a page size, Backlot
 serves that one instead: GitHub pages at 30 when `per_page` is not sent and caps it at 100, on every
 listing and search (its OpenAPI declares `per-page` as "The number of results per page (max 100)."
-with default 30, and api.github.com answers exactly that); Fireflies clamps `limit` to 50 rather
-than erroring, and HubSpot to 100 — the value its official client pages at. Neither variable moves
-any of these, because a client that gets 1000 rows from a call the real API caps at 100 is a client
-that breaks in production.
+with default 30, and api.github.com answers exactly that); Fireflies refuses a `limit` above 50 with
+an `invalid_arguments` error, and HubSpot clamps one to 100 — the value its official client pages
+at. Neither variable moves any of these, because a client that gets 1000 rows from a call the real
+API caps at 100 is a client that breaks in production.
 
 ## GitHub
 
 | Env var | Default | What it does |
 |---|---|---|
 | `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` | `true` | Refuse a `/github` request once the caller's rate-limit window is spent, 403, the way api.github.com does — for a caller with no credential and for a token alike. Turn it off for a long-lived `serve()` whose own test volume would rather not meet real's 10-a-minute code search window than fix the tests that cross it |
+
+## Fireflies
+
+| Env var | Default | What it does |
+|---|---|---|
+| `BACKLOT_FIREFLIES_ENFORCE_RATE_LIMITS` | `true` | Refuse each root field a `/fireflies` document runs a resolver for once its key has spent the minute's or the day's budget, with `too_many_requests` and a null in its data, the way api.fireflies.ai does. The counts and their `x-ratelimit-*` headers are sent either way. Turn it off for a long-lived `serve()` whose own volume would rather not meet the minute's budget |
+| `BACKLOT_FIREFLIES_PER_MINUTE` | `30` | The root fields a key may run resolvers for in a minute from the first of them, a Free plan's. Fireflies gives a Pro plan, and a Free user's first 14 days, `60` |
+| `BACKLOT_FIREFLIES_PER_DAY` | `500` | The root fields a key may run resolvers for in a calendar day in UTC, a Free plan's. Fireflies gives a Pro plan, and a Free user's first 14 days, `5000` |
+
+## Telemetry
+
+What is sent, and what never is, is [docs/telemetry.md](telemetry.md).
+
+| Env var | Default | What it does |
+|---|---|---|
+| `BACKLOT_TELEMETRY` | `true` | `false` turns usage telemetry off. `backlot serve --disable-telemetry`, `backlot mcp --disable-telemetry` and `backlot.serve(telemetry=False)` set it for the server they start |
+| `DO_NOT_TRACK` | unset | Any non-empty value but `0` or `false` turns usage telemetry off, as it does in many developer tools |
 
 ## SQLite
 

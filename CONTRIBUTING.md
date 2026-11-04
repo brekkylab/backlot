@@ -1,8 +1,8 @@
 # Contributing
 
 Thanks for your interest in improving **Backlot**! Its essence is to serve each vendor's
-**API** — Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Amazon S3,
-HubSpot, Linear, Fireflies — with the **smallest possible gap** from the real thing, so clients
+**API** — Slack, Microsoft Teams, Gmail, Google Drive, GitHub, Jira, Confluence, Notion,
+Amazon S3, HubSpot, Linear, Fireflies — with the **smallest possible gap** from the real thing, so clients
 built against the real APIs work unchanged against Backlot. The corpus is yours to supply;
 EnterpriseRAG-Bench is just one dataset you can load into that surface. Contributions that shrink
 the gap between Backlot and the real APIs — request/response shapes, status codes, pagination,
@@ -93,13 +93,18 @@ uv pip install --no-deps "llama-index-readers-hubspot<0.6"
 (`.[all]` names the same set for anyone installing Backlot from PyPI rather than a checkout.)
 
 CI runs the suite, ruff, and the Linear example on every push to `main` and every pull request (see
-`.github/workflows/ci.yml`). On a pull request it also runs `scripts/prose_check.py`, whose findings
-show as warnings on the lines they name and do not fail the run.
+`.github/workflows/ci.yml`), and runs `scripts/linear_sdk_fragments.py` over the `@linear/sdk` that
+example pins. On a pull request it also runs `scripts/prose_check.py`, whose findings show as
+warnings on the lines they name and do not fail the run. CI's `test` jobs set
+`BACKLOT_TEST_REQUIRE_DOCKER=1`, under which the Atlassian MCP test fails where a local run without
+Docker skips it (`_require_linux_docker` in `tests/test_mcp.py`).
 
 Windows, where the default text encoding is the locale's code page (cp1252 on `windows-latest`)
 rather than UTF-8, has its own workflow (`.github/workflows/windows.yml`). It runs on a pull request
-once a maintainer adds the `windows` label: the README's first command, the test files that read
-and write Backlot's own files, and the tests marked `windows` or xfail. On `main` it runs the whole
+once a maintainer adds the `windows` label, or without it when the pull request changes a script in
+`scripts/` that a test file names: the README's first command, the test files that read and write
+Backlot's own files, the test files that name a script the pull request changes and the test files
+it changes that name a script, and the tests marked `windows` or xfail. On `main` it runs the whole
 suite of a `dev` and `mcp` install once a day. A test that fails on Windows for a known,
 deterministic reason is marked `xfail(strict=True)` there and `windows`, so the pull request that
 fixes it removes the first mark and that run keeps the test.
@@ -108,6 +113,10 @@ Every file Backlot ships, writes and reads back is UTF-8, so a text file (and a 
 pipe, with `PYTHONIOENCODING=utf-8` for a Python child) is always opened with `encoding="utf-8"`.
 Ruff (`PLW1514`) and the suite run as CI runs it, under `PYTHONWARNDEFAULTENCODING=1` (an
 `EncodingWarning` is then an error), refuse one opened without it.
+
+A test that expects a path in a script's output builds it from a `Path` rather than joining its
+parts with `/`, since Windows spells a path with backslashes. A pull request that changes such a
+test and no script runs on Windows only with the label.
 
 ### Testing the agent skill
 
@@ -128,7 +137,15 @@ the marketplace when you are done — uninstalling leaves the cache directory be
 
 1. Fork and create a topic branch off `main`.
 2. Keep changes focused; one logical change per PR.
-3. Add or update tests — a bug fix should come with a test that fails without it.
+3. Add or update tests — a bug fix should come with a test that fails without it. A new assertion
+   on a state an existing test already sets up goes into that test, and a new test function is for
+   a state no existing test sets up. A new case for a request an existing test already sends is
+   another row of that test's table, and a test that sends a single request becomes a table with
+   that request as its first row: one test that sends every row, records each answer and compares
+   them all with the expected answers once, after the loop, rather than a `parametrize` case per
+   row. Two new tests that differ only by their input, such as a refused request and the one that
+   succeeds on the same URL, are one table of that shape. A case that proves which principal may
+   read something stays a parametrized case of its own.
 4. Make sure `pytest` and `ruff check . && ruff format --check .` pass locally before opening the
    PR, since CI's first run on your first pull request waits for a maintainer to approve it.
 5. Title the PR with one sentence saying what Backlot does once it is merged. A PR that closes a
@@ -194,5 +211,5 @@ Taking part in this project means following our [Code of Conduct](CODE_OF_CONDUC
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the
-[MIT License](LICENSE).
+By contributing, you agree that your contributions are licensed under the [Apache License, Version
+2.0](LICENSE).

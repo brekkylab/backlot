@@ -9,24 +9,40 @@ not merely that it filters something.
 
 from __future__ import annotations
 
+import gzip
+import hashlib
+import itertools
 import json
+import random
+import zlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+import brotli
 import pytest
 from graphql import GraphQLError, build_client_schema, is_enum_type, parse, validate
 
 from backlot import synth
 from backlot.fidelity.graphql_diff import backlot_schema
 from backlot.graphql import linear_filters, mcp_tools
+from backlot.graphql.body import node_json
 from tests._helpers import (
+    SWEPT_BYTES,
+    Chunked,
+    Matching,
+    WithTheKey,
     build_corpus,
     client_for,
     complete,
     corpus_client,
     db_count,
+    http_row,
+    padded_query,
+    raw_exchange,
+    raw_request,
     selected_field_count,
     selected_fields,
+    sent_as,
     served_id,
 )
 
@@ -42,6 +58,13 @@ def gql(client, query, headers, **variables):
     if variables:
         body["variables"] = variables
     return client.post("/linear/graphql", json=body, headers=headers)
+
+
+@pytest.fixture(scope="module")
+def admin_h(tokens_yaml) -> dict[str, str]:
+    """The admin token with no scheme, as ``backlot.auth.api_key_token`` reads it; the shared
+    fixture's ``Bearer <token>`` is ``_API_KEY_AS_BEARER``."""
+    return {"Authorization": tokens_yaml["admin_token"]}
 
 
 def linear_user_token(tokens_yaml, email):
@@ -148,13 +171,22 @@ def test_linear_issue_url_is_the_real_vendor_domain(client, admin_h):
     assert "backlot" not in host
 
 
-def test_linear_missing_issue_is_a_field_error_not_a_400(client, admin_h):
-    """Linear declares `issue` non-null, so a miss nulls `data` and reports an error — but the
-    request itself was fine, so the status stays 200."""
-    r = gql(client, '{ issue(id: "NOPE-1") { identifier } }', admin_h)
-    assert r.status_code == 200
-    assert r.json()["data"] is None
-    assert "Entity not found" in r.json()["errors"][0]["message"]
+def test_linear_comment_url_is_the_issue_url_with_the_ids_first_eight(client, admin_h):
+    """A comment's url is its ISSUE's url with `#comment-` and the first eight characters of
+    the comment's id. The measurement is recorded beside `Comment.url`'s construction in
+    `linear_resolvers.py`."""
+    query = (
+        '{ issue(id: "ENG-101") { url comments { nodes { id url } } } '
+        "comments(first: 100) { nodes { id url } } }"
+    )
+    data = gql(client, query, admin_h).json()["data"]
+    issue = data["issue"]
+    for node in issue["comments"]["nodes"]:
+        assert node["url"] == issue["url"] + "#comment-" + node["id"][:8]
+    from_comment = issue["comments"]["nodes"][0]
+    same = [c for c in data["comments"]["nodes"] if c["id"] == from_comment["id"]]
+    assert same, "the issue's comment must also answer from the comments root"
+    assert same[0]["url"] == from_comment["url"]
 
 
 def test_linear_team_resolves_by_key_and_uuid(client, admin_h, ro_conn):
@@ -172,6 +204,49 @@ def test_linear_team_resolves_by_key_and_uuid(client, admin_h, ro_conn):
         gql(client, '{ team(id: "engineering") { key } }', admin_h).json()["data"]["team"]["key"]
         == "ENG"
     )
+
+
+def test_linear_team_issue_count_excludes_archived_issues(tmp_path):
+    """Pins the archived issue ``store.linear_team_issue_counts`` leaves out, beside the listing,
+    the `includeArchived: true` listing and the read by id that still serve it."""
+    records = [
+        {
+            **LINEAR_CORPUS[0],
+            "doc_id": doc_id,
+            "identifier": identifier,
+            "team": team,
+            "group": team,
+            **({"archivedAt": "2026-03-01T00:00:00Z"} if archived else {}),
+        }
+        for doc_id, identifier, team, archived in [
+            ("live", "ENG-1", "engineering", False),
+            ("archived", "ENG-2", "engineering", True),
+            ("archived-only", "DES-1", "design", True),
+        ]
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        headers = {"Authorization": settings.admin_token}
+        body = gql(
+            client,
+            '{ team(id: "ENG") { issueCount issues { nodes { identifier } } } '
+            "issues(includeArchived: true) { nodes { identifier } } "
+            'archivedTeam: team(id: "DES") { issueCount } }',
+            headers,
+        ).json()
+        assert "errors" not in body, body.get("errors")
+        assert body["data"]["team"] == {
+            "issueCount": 1,
+            "issues": {"nodes": [{"identifier": "ENG-1"}]},
+        }
+        assert {n["identifier"] for n in body["data"]["issues"]["nodes"]} == {
+            "ENG-1",
+            "ENG-2",
+            "DES-1",
+        }
+        assert body["data"]["archivedTeam"]["issueCount"] == 0
+        archived = gql(client, '{ issue(id: "ENG-2") { identifier archivedAt } }', headers).json()
+        assert archived["data"]["issue"]["identifier"] == "ENG-2"
+        assert archived["data"]["issue"]["archivedAt"] is not None
 
 
 def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_yaml):
@@ -198,6 +273,24 @@ def test_linear_team_issue_count_is_the_visible_count(client, admin_h, tokens_ya
     hidden = gql(client, '{ team(id: "BLA") { key } }', ava_h)
     assert hidden.json()["data"] is None
     assert "Entity not found" in hidden.json()["errors"][0]["message"]
+    # So does `teamMembership(id:)`, though ava's membership id there is computable offline.
+    bla = synth.linear_team_membership_id("blackops", synth.linear_user_id("ava@acme.com"))
+    hidden = gql(client, "{ teamMembership(id: %s) { id } }" % lit(bla), ava_h)
+    assert "Entity not found" in hidden.json()["errors"][0]["message"]
+    # Membership is the team's group, not every team the caller sees: ava, in engineering, sees
+    # design too, and the admin token is no person and in no team.
+    q = "{ teams { nodes { key viewerMembership { sortOrder } } } }"
+    memberships = {
+        who: {
+            t["key"]: t["viewerMembership"]
+            for t in gql(client, q, h).json()["data"]["teams"]["nodes"]
+        }
+        for who, h in (("admin", admin_h), ("ava", ava_h))
+    }
+    assert memberships == {
+        "admin": {"BLA": None, "DES": None, "ENG": None},
+        "ava": {"DES": None, "ENG": {"sortOrder": 0.0}},
+    }
 
 
 def test_linear_state_type_is_linears_category(client, admin_h):
@@ -210,6 +303,375 @@ def test_linear_state_type_is_linears_category(client, admin_h):
         "ENG-103": "backlog",
         "BLA-1": "triage",
     }
+
+
+_TEAM_LISTS = """query($id: String!) { team(id: $id) {
+  createdAt
+  cyclesEnabled
+  states { nodes { id name type color position createdAt } }
+  started: states(filter: {type: {eq: "started"}}) { nodes { name } }
+  labels { nodes { name team { id } } }
+  bug: labels(filter: {name: {eq: "bug"}}) { nodes { name } }
+  projects { nodes { name status { id name type color position indefinite createdAt updatedAt
+    archivedAt description team { id } teamId inheritedFrom { id } } } }
+  cycles { nodes { name } }
+} }"""
+
+
+def test_linear_team_lists_its_states_labels_projects_and_cycles(client, admin_h, tokens_yaml):
+    """A team's states are Linear's six defaults plus every other name its issues are in, newest
+    first and then by id, each the object `workflowState(id:)` answers. Its cycles show with the
+    team, the hidden issue's included; its projects and the workspace's labels only with an issue
+    the caller reads."""
+    ava_h = {"Authorization": linear_user_token(tokens_yaml, "ava@acme.com")}
+
+    def lists(key, h):
+        r = gql(client, _TEAM_LISTS, h, id=key).json()
+        assert "errors" not in r, r["errors"]
+        return r["data"]["team"]
+
+    des = lists("DES", admin_h)
+    states = {s["name"]: (s["type"], s["color"], s["position"]) for s in des["states"]["nodes"]}
+    assert states == {
+        "Backlog": ("backlog", "#bec2c8", 0.0),
+        "Todo": ("unstarted", "#e2e2e2", 1.0),
+        "In Progress": ("started", "#f2c94c", 2.0),
+        "In Review": ("started", "#f2c94c", 2.5),
+        "Done": ("completed", "#5e6ad2", 3.0),
+        "Canceled": ("canceled", "#95a2b3", 4.0),
+        "Duplicate": ("duplicate", "#95a2b3", 5.0),
+    }
+    nodes = des["states"]["nodes"]
+    assert {s["createdAt"] for s in nodes} == {des["createdAt"]}
+    assert [s["id"] for s in nodes] == sorted((s["id"] for s in nodes), reverse=True)
+    for state in nodes:
+        q = "{ workflowState(id: %s) { id name type color position createdAt } }"
+        assert gql(client, q % lit(state["id"]), admin_h).json()["data"]["workflowState"] == state
+    assert {s["name"] for s in des["started"]["nodes"]} == {"In Progress", "In Review"}
+    triage = {s["name"]: s["position"] for s in lists("BLA", admin_h)["states"]["nodes"]}
+    assert triage["Triage"] == -0.5
+
+    eng = {who: lists("ENG", h) for who, h in (("admin", admin_h), ("ava", ava_h))}
+    labels = {who: {n["name"] for n in t["labels"]["nodes"]} for who, t in eng.items()}
+    assert labels == {
+        "admin": {"bug", "gateway", "latency", "tokens", "restricted-only"},
+        "ava": {"bug", "gateway", "latency", "tokens"},
+    }
+    assert {n["team"] for t in eng.values() for n in t["labels"]["nodes"]} == {None}
+    assert eng["ava"]["bug"]["nodes"] == [{"name": "bug"}]
+    assert lists("DES", ava_h)["labels"] == eng["ava"]["labels"]
+    projects = {who: [n["name"] for n in t["projects"]["nodes"]] for who, t in eng.items()}
+    assert sorted(projects["admin"]) == ["runtime-stability", "vault-rotation"]
+    assert projects["ava"] == ["runtime-stability"]
+    status = eng["ava"]["projects"]["nodes"][0]["status"]
+    assert status == {
+        "id": synth.linear_project_status_id("started"),
+        "name": "In Progress",
+        "type": "started",
+        "color": "#F2C94C",
+        "position": 2.0,
+        "indefinite": False,
+        "createdAt": status["createdAt"],
+        "updatedAt": status["createdAt"],
+        "archivedAt": None,
+        "description": None,
+        "team": None,
+        "teamId": None,
+        "inheritedFrom": None,
+    }
+    assert des["projects"]["nodes"] == []
+    cycles = {who: {n["name"] for n in t["cycles"]["nodes"]} for who, t in eng.items()}
+    assert cycles["admin"] == cycles["ava"] == {"2025-W08", "2026-W40-embargo"}
+    # a team with cycles has them on, as real's did once they were turned on
+    assert (eng["ava"]["cyclesEnabled"], des["cyclesEnabled"]) == (True, False)
+
+
+_SEARCH = """query($term: String!, $filter: IssueFilter, $teamId: String, $c: Boolean,
+                  $orderBy: PaginationOrderBy, $first: Int, $last: Int) {
+  searchIssues(term: $term, filter: $filter, teamId: $teamId, includeComments: $c,
+               orderBy: $orderBy, first: $first, last: $last) {
+    totalCount
+    nodes { identifier metadata state { name } }
+    archivePayload { archive totalCount databaseVersion includesDependencies }
+  }
+}"""
+
+
+@pytest.mark.parametrize(
+    "variables, caller, identifiers, total",
+    [
+        # the identifier in any case, scored 1 and ahead of the word matches
+        ({"term": "eng-101"}, "admin", ["ENG-101"], 1),
+        # porter-stemmed, as real matched "familiarity" to "familiar"
+        ({"term": "bursting"}, "admin", ["ENG-101"], 1),
+        # a word's start, as real matched "prob" to "probe"; off the comments, which match "burst"
+        ({"term": "burs", "c": False}, "admin", ["ENG-101"], 1),
+        # any word matches
+        ({"term": "compaction selects"}, "admin", ["DES-77", "ENG-102"], 2),
+        # comments are searched unless `includeComments: false`
+        ({"term": "reproduced"}, "admin", ["ENG-101"], 1),
+        ({"term": "reproduced", "c": False}, "admin", [], 0),
+        # `filter` narrows the nodes and not the total
+        ({"term": "50ms", "filter": {"number": {"eq": 102}}}, "admin", ["ENG-102"], 2),
+        # newest first under `orderBy`
+        ({"term": "50ms", "orderBy": "createdAt"}, "admin", ["ENG-102", "ENG-101"], 2),
+        ({"term": "50ms", "teamId": synth.linear_team_id("design")}, "admin", [], 0),
+        ({"term": "50ms", "teamId": synth.linear_id("no team")}, "admin", [], 0),
+        # a team id in upper case, and the nil UUID, both looked up
+        (
+            {"term": "50ms", "teamId": synth.linear_team_id("engineering").upper()},
+            "admin",
+            ["ENG-101", "ENG-102"],
+            2,
+        ),
+        ({"term": "50ms", "teamId": "00000000-0000-0000-0000-000000000000"}, "admin", [], 0),
+        # an issue the caller cannot read is no match, its comments included
+        ({"term": "rotate rotation"}, "admin", ["ENG-103"], 1),
+        ({"term": "rotate rotation"}, "ava@acme.com", [], 0),
+    ],
+)
+def test_linear_search_issues(client, admin_h, tokens_yaml, variables, caller, identifiers, total):
+    """The answers measured in the docstrings of `store.search_linear_issues` and
+    `resolve_search_issues`, over the corpus's own words."""
+    h = admin_h if caller == "admin" else {"Authorization": linear_user_token(tokens_yaml, caller)}
+    r = gql(client, _SEARCH, h, **variables).json()
+    assert "errors" not in r, r["errors"]
+    found = r["data"]["searchIssues"]
+    nodes = found["nodes"]
+    served = [n["identifier"] for n in nodes]
+    assert (served if "orderBy" in variables else sorted(served)) == identifiers
+    assert found["totalCount"] == total
+    assert all(n["state"]["name"] for n in nodes)
+    assert all(n["metadata"]["context"] == {} and 0 <= n["metadata"]["score"] <= 1 for n in nodes)
+    if variables["term"].upper() in served:
+        assert nodes[0]["metadata"]["score"] == 1
+    assert found["archivePayload"] == {
+        "archive": "[]",
+        "totalCount": 0,
+        "databaseVersion": 0,
+        "includesDependencies": [],
+    }
+
+
+_VALIDATION = "Argument Validation Error"
+
+
+@pytest.mark.parametrize(
+    "variables,message",
+    [
+        ({"term": ""}, _VALIDATION),
+        ({"term": "x", "teamId": "ENG"}, _VALIDATION),
+        ({"term": "x", "teamId": "11111111-1111-0111-8111-111111111111"}, _VALIDATION),
+        ({"term": "a\ud800b", "teamId": "ENG"}, _VALIDATION),
+        ({"term": "a\ud800b", "filter": {"id": {"eq": "not-a-uuid"}}}, _VALIDATION),
+        ({"term": "a\ud800b", "first": 1, "last": 1}, None),
+    ],
+)
+def test_linear_search_issues_refuses_what_real_refuses(client, admin_h, variables, message):
+    """Each row refused as `resolve_search_issues` and `_search_backend_failed` record, a
+    lone-surrogate term beside three of them, and none with the search backend's error. `_slice`
+    refuses `first` with `last` in its own words, where Linear answers `_VALIDATION`, so that row's
+    message is `None`. The body is `json.dumps`'s, which writes a lone surrogate as its escape."""
+    body = json.dumps({"query": _SEARCH, "variables": variables}).encode()
+    headers = {**admin_h, "Content-Type": "application/json"}
+    r = client.post("/linear/graphql", content=body, headers=headers).json()
+    assert r["data"] is None
+    assert r["errors"][0]["message"] != "Failed to query search backend"
+    assert message is None or r["errors"][0]["message"] == message
+
+
+def test_linear_search_ranks_by_relevance_unless_order_by(client, admin_h):
+    """ENG-101 holds both words and ENG-102 one, while ENG-102 is the newer: relevance puts
+    ENG-101 first and `orderBy` the newest. The identifier alone scores 1."""
+
+    def search(**variables):
+        r = gql(client, _SEARCH, admin_h, **variables).json()
+        return [
+            (n["identifier"], n["metadata"]["score"]) for n in r["data"]["searchIssues"]["nodes"]
+        ]
+
+    (first, best), (second, other) = search(term="burst 50ms")
+    assert (first, second) == ("ENG-101", "ENG-102") and 1 > best > other > 0
+    assert [i for i, _ in search(term="burst 50ms", orderBy="createdAt")] == ["ENG-102", "ENG-101"]
+    assert search(term="ENG-102") == [("ENG-102", 1)]
+
+
+def test_linear_search_finds_an_issue_by_the_spellings_real_reads(tmp_path):
+    """The identifier spellings `_linear_search_identifier` records, over one team and a second
+    issue numbered the same. A bare number names every visible issue with it; `teamId` still
+    narrows that set."""
+    titles = {
+        2: "Connect your tools",
+        19: "Probe children order (parent)",
+        21: "Probe children order (child 2)",
+    }
+    records = [
+        {
+            "source_type": "linear",
+            "doc_id": f"lin-{number}",
+            "team": "engineering",
+            "group": "engineering",
+            "title": title,
+            "content": "probe candidate",
+            "author_email": "amaya.chen@acme.com",
+            "author_groups": ["engineering"],
+            "visibility": "public",
+            "identifier": f"ENG-{number}",
+            "state": "Todo",
+            "created": f"2026-09-{number:02d}T00:00:00Z",
+        }
+        for number, title in titles.items()
+    ]
+    records.append(
+        {
+            "source_type": "linear",
+            "doc_id": "lin-des-19",
+            "team": "design",
+            "group": "design",
+            "title": "Other nineteen",
+            "content": "unrelated",
+            "author_email": "mia@acme.com",
+            "author_groups": ["design"],
+            "visibility": "public",
+            "identifier": "DES-19",
+            "state": "Todo",
+            "created": "2026-09-01T00:00:00Z",
+        }
+    )
+    with corpus_client(tmp_path, records) as (client, settings):
+        headers = {"Authorization": settings.admin_token}
+
+        def search(term, **extra):
+            body = gql(client, _SEARCH, headers, term=term, **extra).json()
+            assert "errors" not in body, body.get("errors")
+            return [
+                (node["identifier"], node["metadata"]["score"])
+                for node in body["data"]["searchIssues"]["nodes"]
+            ]
+
+        for term in (
+            "ENG-19",
+            "eng-19",
+            "Eng-19",
+            "ENG19",
+            "eng19",
+            "ENG 19",
+            "eng 19",
+            "ENG-19.",
+            "ENG-19,",
+            "ENG-19;",
+            "ENG-19!",
+            "ENG-19-",
+            "ENG-19_",
+            "ENG-19\u00e9",
+            "ENG-19\u0663",
+            "ENG 19.",
+            "ENG 19;",
+            "   ENG-19",
+            "ENG-19   ",
+            "  ENG19",
+            "ENG 19  ",
+            '"ENG-19"',
+            "'ENG-19'",
+            "\tENG-19",
+            "ENG19\t",
+            "\xa0ENG19",
+            "\ufeffENG-19",
+            '"ENG19"',
+            '"ENG 19"',
+        ):
+            assert search(term) == [("ENG-19", 1)], term
+        both = [("ENG-19", 1), ("DES-19", 1)]
+        for term in ("19", " 19", "19 "):
+            assert search(term) == both, term
+        assert search("19", teamId=synth.linear_team_id("design")) == [("DES-19", 1)]
+        for term in (
+            "019",
+            "ENG-019",
+            "ENG  19",
+            "ENG\t19",
+            "ENG-19x",
+            "ENG 19x",
+            "XYZ-19",
+            "#19",
+            "ENG19.",
+            "ENG19;",
+            "19.",
+            "19,",
+            " 19 ",
+            "  19",
+            "19  ",
+            '"19"',
+            "\t19",
+            "19\xa0",
+            "\x85ENG-19",
+            "\x1fENG19",
+            ".ENG-19",
+            "(ENG-19)",
+            "`ENG-19`",
+            '"ENG-19',
+            "'ENG-19\"",
+            '" ENG-19"',
+            "ENG\u201019",
+        ):
+            assert search(term) == [], term
+
+        opened = search("ENG-19 probe")
+        assert opened[0] == ("ENG-19", 1)
+        assert {identifier for identifier, _ in opened} == {"ENG-19", "ENG-2", "ENG-21"}
+        assert all(score < 1 for _, score in opened[1:])
+        spaced = search("ENG 19 probe")
+        assert spaced[0] == ("ENG-19", 1)
+        assert {identifier for identifier, _ in spaced} == {"ENG-19", "ENG-2", "ENG-21"}
+        assert all(score < 1 for _, score in spaced[1:])
+
+        for term in ("ENG19 probe", "probe ENG-19", "19 probe"):
+            found = search(term)
+            assert found and all(score < 1 for _, score in found), term
+            assert any(identifier == "ENG-19" for identifier, _ in found)
+
+        numbered = search("2")
+        assert numbered[0] == ("ENG-2", 1)
+        assert numbered[1][0] == "ENG-21" and numbered[1][1] < 1
+
+
+# The read documents mirage 0.0.7's `LinearVFS` sends (`mirage.core.linear.queries`), trimmed to
+# what each selects past what other tests cover.
+_MIRAGE_DOCUMENTS = {
+    "Teams": "query { teams(first: 50) { nodes { id key name description timezone updatedAt"
+    " states { nodes { id name type } } } pageInfo { hasNextPage endCursor } } }",
+    "TeamMembers": 'query { team(id: "ENG") { members(first: 50) { nodes { id name displayName'
+    " email active admin url updatedAt } pageInfo { hasNextPage endCursor } } } }",
+    "TeamProjects": 'query { team(id: "ENG") { projects(first: 50) { nodes { id name description'
+    " status { type } url updatedAt lead { id } } pageInfo { hasNextPage endCursor } } } }",
+    "TeamCycles": 'query { team(id: "ENG") { cycles(first: 50) { nodes { id name number startsAt'
+    " endsAt updatedAt } pageInfo { hasNextPage endCursor } } } }",
+    "TeamLabels": 'query { team(id: "ENG") { labels(first: 50) { nodes { id name color }'
+    " pageInfo { hasNextPage endCursor } } } }",
+    "TeamDocuments": "query($teamId: ID!) { documents(filter: {team: {id: {eq: $teamId}}}, first: 50)"
+    " { nodes { id title content url createdAt updatedAt project { id name }"
+    " creator { id name email } } pageInfo { hasNextPage endCursor } } }",
+    "IssueSearch": 'query { searchIssues(term: "burst", first: 50) { nodes { id identifier title'
+    " state { id name } assignee { id displayName email } url } } }",
+    "IssueLookup": 'query { issues(filter: {team: {key: {eq: "ENG"}}, number: {eq: 101}}, first: 1)'
+    " { nodes { id identifier } } }",
+}
+
+
+@pytest.mark.parametrize("name", list(_MIRAGE_DOCUMENTS))
+def test_mirage_linear_documents_are_answered(client, admin_h, name):
+    variables = {"teamId": synth.linear_team_id("engineering")} if name == "TeamDocuments" else {}
+    r = gql(client, _MIRAGE_DOCUMENTS[name], admin_h, **variables)
+    assert r.status_code == 200
+    assert "errors" not in r.json(), r.json()["errors"]
+    if name == "TeamDocuments":
+        # The page `resolve_documents` records a workspace without documents answering.
+        assert r.json()["data"]["documents"] == {
+            "nodes": [],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        }
+    if name == "IssueLookup":
+        assert r.json()["data"]["issues"]["nodes"][0]["identifier"] == "ENG-101"
 
 
 def test_linear_priority_is_linears_numeric_scale(client, admin_h):
@@ -277,6 +739,170 @@ def test_linear_by_id_relation_roots_answer(client, admin_h):
     assert label["groupType"] is None
 
 
+def _unknown_id(root: str, id_: str, message: str, presentable: str, row: str):
+    """A `_LINEAR_BODIES` row: the by-id root ``root`` sent an id it holds nothing for, and Linear's
+    error for it with ``message`` and ``presentable`` (`linear_resolvers._not_found`,
+    `linear_resolvers._ATTACHMENT`)."""
+    body = {"query": "query($x: String!) { %s(id: $x) { id } }" % root, "variables": {"x": id_}}
+    error = {
+        "message": message,
+        "path": [root],
+        "locations": [{"line": 1, "column": 22}],
+        "extensions": {
+            "type": "invalid input",
+            "code": "INPUT_ERROR",
+            "statusCode": 400,
+            "userError": True,
+            "userPresentableMessage": presentable,
+        },
+    }
+    answer = node_json({"errors": [error], "data": None}) + b"\n"
+    return pytest.param(json.dumps(body).encode(), WithTheKey(answer, 200), id=row)
+
+
+_UNKNOWN_IDS = [
+    _unknown_id(
+        "issue",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Issue",
+        "Could not find referenced Issue.",
+        "issue 00000000",
+    ),
+    _unknown_id(
+        "issue",
+        "NOPE-1",
+        "Entity not found: Issue",
+        "Could not find referenced Issue.",
+        "issue NOPE-1",
+    ),
+    _unknown_id(
+        "team", "nope", "Entity not found: Team", "Could not find referenced Team.", "team nope"
+    ),
+    _unknown_id(
+        "user",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: User",
+        "Could not find referenced User.",
+        "user 00000000",
+    ),
+    _unknown_id(
+        "workflowState",
+        "nope",
+        "Entity not found: WorkflowState",
+        "Could not find referenced WorkflowState.",
+        "workflowState nope",
+    ),
+    _unknown_id(
+        "project",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Project",
+        "Could not find referenced Project.",
+        "project 00000000",
+    ),
+    _unknown_id(
+        "issueLabel",
+        "nope",
+        "Entity not found: IssueLabel",
+        "Could not find referenced IssueLabel.",
+        "issueLabel nope",
+    ),
+    _unknown_id(
+        "cycle",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Cycle",
+        "Could not find referenced Cycle.",
+        "cycle 00000000",
+    ),
+    _unknown_id(
+        "release",
+        "nope",
+        "Entity not found: Release",
+        "Could not find referenced Release.",
+        "release nope",
+    ),
+    _unknown_id(
+        "issueRelation",
+        "nope",
+        "Entity not found: IssueRelation",
+        "Could not find referenced IssueRelation.",
+        "issueRelation nope",
+    ),
+    _unknown_id(
+        "teamMembership",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: TeamMembership",
+        "Could not find referenced TeamMembership.",
+        "teamMembership 00000000",
+    ),
+    _unknown_id(
+        "attachment",
+        "00000000-0000-0000-0000-000000000000",
+        "Entity not found: Attachment: could not find by url.",
+        "Could not find referenced attachment with this url.",
+        "attachment 00000000",
+    ),
+]
+
+
+def _with_the_key(query: str, value: str, answer: dict, row: str):
+    """A `_LINEAR_BODIES` row: ``query`` sent with ``value`` for ``$x``, and Linear's ``answer``
+    to it with the key."""
+    body = {"query": query, "variables": {"x": value}}
+    return pytest.param(
+        json.dumps(body).encode(), WithTheKey(node_json(answer) + b"\n", 200), id=row
+    )
+
+
+_SEARCH_BACKEND_FAILED = {
+    "errors": [
+        {
+            "message": "Failed to query search backend",
+            "path": ["searchIssues"],
+            "locations": [{"line": 1, "column": 22}],
+            "extensions": {
+                "type": "internal error",
+                "code": "EXTERNAL_SERVICE_ERROR",
+                "statusCode": 500,
+                "userError": False,
+            },
+        }
+    ],
+    "data": None,
+}
+_SEARCH_A_TERM = "query($x: String!) { searchIssues(term: $x, first: 3) { nodes { id } } }"
+# Linear's rows for `backlot.graphql.node_utf8`: a lone surrogate after an id the corpus holds,
+# alone in a title filter, and in a search term, high or low (`_search_backend_failed`).
+_LONE_SURROGATES = [
+    _unknown_id(
+        "issue",
+        "ENG-101\ud800",
+        "Entity not found: Issue",
+        "Could not find referenced Issue.",
+        "issue ENG-101, a lone surrogate",
+    ),
+    _unknown_id(
+        "team",
+        "ENG\ud800",
+        "Entity not found: Team",
+        "Could not find referenced Team.",
+        "team ENG, a lone surrogate",
+    ),
+    _with_the_key(
+        "query($x: String) { issues(first: 3, filter: {title: {containsIgnoreCase: $x}}) "
+        "{ nodes { id } } }",
+        "\ud800",
+        {"data": {"issues": {"nodes": []}}},
+        "an issues title filter, a lone surrogate",
+    ),
+    _with_the_key(
+        _SEARCH_A_TERM, "a\ud800b", _SEARCH_BACKEND_FAILED, "searchIssues, a lone surrogate"
+    ),
+    _with_the_key(
+        _SEARCH_A_TERM, "a\udc00b", _SEARCH_BACKEND_FAILED, "searchIssues, a lone low surrogate"
+    ),
+]
+
+
 def test_linear_workflow_states_are_per_team(client, admin_h):
     """Two teams' identically-named states are different objects in Linear, so their ids differ.
     The corpus has no shared state name, so assert the construction directly instead."""
@@ -298,6 +924,17 @@ def test_linear_content_round_trips_verbatim(client, admin_h, ro_conn):
     r = gql(client, "{ issues(first: 100) { nodes { identifier description } } }", admin_h)
     served = {n["identifier"]: n["description"] for n in r.json()["data"]["issues"]["nodes"]}
     assert served == stored
+
+
+def test_linear_writes_a_whole_float_with_no_fraction(client, admin_h):
+    """`number`, `priority` and a state's `position` are Float fields holding whole numbers, which
+    Linear writes with no fraction."""
+    r = gql(
+        client, "{ issues(first: 1) { nodes { number priority state { position } } } }", admin_h
+    )
+    assert r.content == (
+        b'{"data":{"issues":{"nodes":[{"number":102,"priority":1,"state":{"position":3}}]}}}\n'
+    )
 
 
 def test_linear_crawl_reaches_every_document(client, admin_h, ro_conn):
@@ -387,10 +1024,1813 @@ def test_linear_malformed_document_is_a_400_with_a_graphql_envelope(client, admi
     assert "Syntax Error" in body["errors"][0]["message"]
 
 
-def test_linear_unauthenticated_is_401(client):
-    r = client.post("/linear/graphql", json={"query": "{ viewer { email } }"})
-    assert r.status_code == 401
-    assert r.json()["errors"][0]["message"] == "Authentication required"
+# --- the body, and where the credential is read against it ---------------------------------------
+def _apollo(message: bytes) -> bytes:
+    """Apollo Server's refusal of a body as Linear writes it around ``message``, already
+    JSON-escaped."""
+    return (
+        b'{"errors":[{"message":"%s","extensions":{"http":{"status":400,"headers":{}},'
+        b'"code":"BAD_REQUEST","type":"graphql error","userError":true}}]}\n' % message
+    )
+
+
+def _status(answer: bytes) -> int:
+    envelope = json.loads(answer)
+    if "code" in envelope:
+        return envelope["code"]
+    if "errors" not in envelope:
+        return 200
+    return envelope["errors"][0]["extensions"].get("http", {}).get("status", 400)
+
+
+_NO_KEYS = _apollo(b"POST body missing, invalid Content-Type, or JSON object has no keys.")
+_BATCHING = _apollo(b"Operation batching disabled.")
+# The headers a body was sent with beyond `Content-Type: application/json`, the body, and the bytes
+# Linear answered it with for the key, no credential and `nope` alike, at the status their `code` or
+# `extensions.http.status` names, 400 for an error naming neither and 200 for an answer with no
+# `errors` (`_status`), or None where Linear served the query with the key and answered 401 without
+# one, as `backlot.graphql.body` and `backlot.graphql.v8_json` read them. A `WithTheKey` row draws
+# the 401 without the key. Apollo Server's envelopes, each ending in a newline, are
+# api.linear.app's.
+_LINEAR_BODIES = [
+    pytest.param(
+        b"{",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="{",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":NaN}}',
+        b'{"error":"Unexpected token \'N\', ...\\"les\\":{\\"x\\":NaN}}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN at the end",
+    ),
+    pytest.param(
+        b"5",
+        b'{"error":"Unexpected token \'5\', \\"5\\" is not valid JSON","details":{},"code":400}',
+        id="top-level 5",
+    ),
+    pytest.param(
+        b'{"x":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="short object",
+    ),
+    pytest.param(
+        b'{"variables":{"x":NaN},"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'N\', ...\\"les\\":{\\"x\\":NaN},\\"quer\\"... is not valid JSON","details":{},"code":400}',
+        id="surround",
+    ),
+    pytest.param(
+        b'{"x":NaN,"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN,\\"query\\"... is not valid JSON","details":{},"code":400}',
+        id="start",
+    ),
+    pytest.param(
+        b"[NaN]",
+        b'{"error":"Unexpected token \'N\', \\"[NaN]\\" is not valid JSON","details":{},"code":400}',
+        id="short array",
+    ),
+    pytest.param(
+        b"NaN",
+        b'{"error":"Unexpected token \'N\', \\"NaN\\" is not valid JSON","details":{},"code":400}',
+        id="top-level NaN",
+    ),
+    pytest.param(
+        b'{"x":Infinity,"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'I\', \\"{\\"x\\":Infinity,\\"\\"... is not valid JSON","details":{},"code":400}',
+        id="Infinity",
+    ),
+    pytest.param(
+        b'{"x":-Infinity,"query":"{ __typename }"}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="-Infinity",
+    ),
+    pytest.param(
+        b'{\n  "query":"{ __typename }",\n  "variables": {"x": -Infinity}\n}',
+        b'{"error":"No number after minus sign in JSON at position 52 (line 3 column 23)","details":{},"code":400}',
+        id="-Infinity multi-line",
+    ),
+    pytest.param(
+        b'{\n  "query":"{ __typename }",\n  "variables": {"x": NaN}\n}',
+        b'{"error":"Unexpected token \'N\', ...\\"s\\": {\\"x\\": NaN}\\n}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN multi-line",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80","x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 55 (line 1 column 56)","details":{},"code":400}',
+        id="-Infinity after astral",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"e":"a\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80","x":NaN}}',
+        b'{"error":"Unexpected token \'N\', ...\\"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\\",\\"x\\":NaN}}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN window splits a pair",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":[1,NaN]}}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\":{\\"x\\":[1,NaN]}}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN in a list",
+    ),
+    pytest.param(
+        b'{\r\n"query":"{ __typename }",\r\n"variables":{"x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 48 (line 3 column 19)","details":{},"code":400}',
+        id="-Infinity after CRLF",
+    ),
+    pytest.param(
+        b'{\r"query":"{ __typename }",\r"variables":{"x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 46 (line 3 column 19)","details":{},"code":400}',
+        id="-Infinity after CR",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"e":"a\xe2\x80\xa8b","x":-Infinity}}',
+        b'{"error":"No number after minus sign in JSON at position 54 (line 1 column 55)","details":{},"code":400}',
+        id="-Infinity after U+2028 in a string",
+    ),
+    pytest.param(
+        b'{"abcdefghijk":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"abcdefghijk\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="len 19",
+    ),
+    pytest.param(
+        b'{"abcdefghijkl":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"abcdefghijkl\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="len 20",
+    ),
+    pytest.param(
+        b'{"abc":[[NaN],1,2,3,4,5,6,7]}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"abc\\":[[NaN],1,2,3\\"... is not valid JSON","details":{},"code":400}',
+        id="pos 9",
+    ),
+    pytest.param(
+        b'{"abcd":[[NaN],1,2,3,4,5,6,7]}',
+        b'{"error":"Unexpected token \'N\', ...\\"{\\"abcd\\":[[NaN],1,2,3\\"... is not valid JSON","details":{},"code":400}',
+        id="pos 10",
+    ),
+    pytest.param(
+        b'{"abcdefghijklmnopq":[Infinity]}',
+        b'{"error":"Unexpected token \'I\', ...\\"klmnopq\\":[Infinity]}\\" is not valid JSON","details":{},"code":400}',
+        id="Infinity window at the end",
+    ),
+    pytest.param(
+        b'{"x":-NaN,"query":"{ __typename }"}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="-NaN",
+    ),
+    pytest.param(
+        b'{"x":Infinityx,"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'I\', \\"{\\"x\\":Infinityx,\\"... is not valid JSON","details":{},"code":400}',
+        id="Infinityx",
+    ),
+    pytest.param(
+        b'{"x":NaN,}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN,}\\" is not valid JSON","details":{},"code":400}',
+        id="NaN then a later error",
+    ),
+    pytest.param(
+        b'{"abcdefghijklm":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"fghijklm\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="L21",
+    ),
+    pytest.param(
+        b'{"abcdefghijklmn":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"ghijklmn\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="L22",
+    ),
+    pytest.param(
+        b'{"abcdefgh":NaN,"z":1}',
+        b'{"error":"Unexpected token \'N\', ...\\"abcdefgh\\":NaN,\\"z\\":1}\\" is not valid JSON","details":{},"code":400}',
+        id="L22 pos12",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80","xy":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\ude00\xf0\x9f\x98\x80\\",\\"xy\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="end split low surrogate",
+    ),
+    pytest.param(
+        b'{"x":NaN,"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80"}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"x\\":NaN,\\"e\\":\\"\\ud83d\\"... is not valid JSON","details":{},"code":400}',
+        id="start split",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80x","x":NaN,"f":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80"}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\ude00\xf0\x9f\x98\x80x\\",\\"x\\":NaN,\\"f\\":\\"\\ud83d\\"... is not valid JSON","details":{},"code":400}',
+        id="surround split both",
+    ),
+    pytest.param(
+        b'{\n\r"x":-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 8 (line 3 column 6)","details":{},"code":400}',
+        id="LF then CR",
+    ),
+    pytest.param(
+        b'{\t"x":\t-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 8 (line 1 column 9)","details":{},"code":400}',
+        id="tab lines",
+    ),
+    pytest.param(
+        b'"abcdefghijklmnopqrstuvwxyz0123456789"',
+        b'{"error":"Unexpected token \'\\"\', \\"\\"abcdefghi\\"... is not valid JSON","details":{},"code":400}',
+        id="top-level long string",
+    ),
+    pytest.param(
+        b"  \n 5",
+        b'{"error":"Unexpected token \'5\', \\"  \\n 5\\" is not valid JSON","details":{},"code":400}',
+        id="top-level ws then 5",
+    ),
+    pytest.param(
+        b"-Infinity",
+        b'{"error":"Unexpected token \'-\', \\"-Infinity\\" is not valid JSON","details":{},"code":400}',
+        id="top-level -Infinity",
+    ),
+    pytest.param(
+        b"Infinity",
+        b'{"error":"Unexpected token \'I\', \\"Infinity\\" is not valid JSON","details":{},"code":400}',
+        id="top-level Infinity",
+    ),
+    pytest.param(
+        b'{"a":"x\\"y\\\\z","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"y\\\\\\\\z\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="escaped quote in window",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","a":"p\xe2\x80\xa8q","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"\\"p\xe2\x80\xa8q\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="U+2028 raw in window",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","a":"\\n","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\":\\"\\\\n\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="control escape in window",
+    ),
+    pytest.param(
+        b"   ",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="whitespace only",
+    ),
+    pytest.param(
+        b"\n",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="newline only",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"__proto__":{"a":1}}}', None, id="__proto__ key"
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":{"prototype":{"a":1}}}}',
+        None,
+        id="constructor.prototype",
+    ),
+    pytest.param(
+        b'\xff\xfe{\x00"\x00q\x00u\x00e\x00r\x00y\x00"\x00:\x00"\x00{\x00 \x00_\x00_\x00t\x00y\x00p\x00e\x00n\x00a\x00m\x00e\x00 \x00}\x00"\x00}\x00',
+        b'{"error":"Unexpected token \'\xef\xbf\xbd\', \\"\xef\xbf\xbd\xef\xbf\xbd{\\u0000\\"\\u0000q\\u0000u\\u0000\\"... is not valid JSON","details":{},"code":400}',
+        id="utf-16 body",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":"\xff"}}', None, id="invalid utf-8 in a string"
+    ),
+    pytest.param(b'\xef\xbb\xbf{"query":"{ __typename }"}', None, id="utf-8 BOM"),
+    pytest.param(
+        b'{"a":"\xe2\x82","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 truncated 3-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xed\xa0\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 surrogate",
+    ),
+    pytest.param(
+        b'{"a":"\xf0\x9f\x98","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 truncated 4-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xc0\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 overlong 2-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xf4\x90\x80\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 above U+10FFFF",
+    ),
+    pytest.param(
+        b'{"a":"\xff","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 lone FF",
+    ),
+    pytest.param(
+        b'{"a":"\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 lone continuation",
+    ),
+    pytest.param(
+        b'{"a":"\xe0\x80\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 overlong 3-byte",
+    ),
+    pytest.param(
+        b'{"a":"\xf8\x88\x80\x80\x80","b":NaN}',
+        b'{"error":"Unexpected token \'N\', ...\\"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 5-byte form",
+    ),
+    pytest.param(
+        b'{"a":"\xe0A","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbdA\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 E0 then ASCII",
+    ),
+    pytest.param(
+        b'{"a":"\xf0\x9fA","b":NaN}',
+        b'{"error":"Unexpected token \'N\', \\"{\\"a\\":\\"\xef\xbf\xbdA\\",\\"b\\":NaN}\\" is not valid JSON","details":{},"code":400}',
+        id="utf8 F0 9F then ASCII",
+    ),
+    pytest.param(
+        b'\xef\xbb\xbf\xef\xbb\xbf{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xef\xbb\xbf\', \\"\xef\xbb\xbf{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="BOM twice",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"constructor":null}}', None, id="constructor null"
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 4300 + b"}}",
+        None,
+        id="4300 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 4301 + b"}}",
+        None,
+        id="4301 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"1" * 5000 + b"}}",
+        None,
+        id="5000 digits",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": -' + b"1" * 4301 + b"}}",
+        None,
+        id="-4301 digits",
+    ),
+    pytest.param(b'{"query": "{ __typename }", "variables": {"x": 1e400}}', None, id="1e400"),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 1001 + b"]" * 1001 + b"}}",
+        None,
+        id="nested 1001",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 100000 + b"]" * 100000 + b"}}",
+        None,
+        id="nested 100000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": ' + b"[" * 300000 + b"]" * 300000 + b"}}",
+        None,
+        id="nested 300000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": '
+        + b'{"a":' * 100000
+        + b"1"
+        + b"}" * 100000
+        + b"}}",
+        None,
+        id="objects nested 100000",
+    ),
+    pytest.param(
+        b'{"query": "{ __typename }", "variables": {"x": '
+        + b"[" * 100000
+        + b"NaN"
+        + b"]" * 100000
+        + b"}}",
+        b'{"error":"Unexpected token \'N\', ...\\"[[[[[[[[[[NaN]]]]]]]\\"... is not valid JSON","details":{},"code":400}',
+        id="nested 100000 then NaN",
+    ),
+    pytest.param(
+        b"null",
+        b'{"error":"Unexpected token \'n\', \\"null\\" is not valid JSON","details":{},"code":400}',
+        id="top-level null",
+    ),
+    pytest.param(
+        b'\xc2\xa0{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xc2\xa0\', \\"\xc2\xa0{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="U+00A0 then {",
+    ),
+    pytest.param(
+        b'\x0b{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\\u000b\', \\"\\u000b{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="a vertical tab then {",
+    ),
+    pytest.param(
+        b'\x0c{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\\f\', \\"\\f{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="a form feed then {",
+    ),
+    pytest.param(
+        b'\xe3\x80\x80{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xe3\x80\x80\', \\"\xe3\x80\x80{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="U+3000 then {",
+    ),
+    pytest.param(
+        b'\xe2\x80\xa8{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xe2\x80\xa8\', \\"\xe2\x80\xa8{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="U+2028 then {",
+    ),
+    pytest.param(
+        b'\x1c{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\\u001c\', \\"\\u001c{\\"query\\":\\"... is not valid JSON","details":{},"code":400}',
+        id="0x1C then {",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80",\n"x":-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 18 (line 2 column 6)","details":{},"code":400}',
+        id="-Infinity after two surrogate pairs on the line before",
+    ),
+    pytest.param(
+        b'{"e":"\xf0\x9f\x98\x80",\r\n"f":"\xf0\x9f\x98\x80\xf0\x9f\x98\x80","x":-Infinity}',
+        b'{"error":"No number after minus sign in JSON at position 28 (line 2 column 17)","details":{},"code":400}',
+        id="-Infinity after surrogate pairs on both lines",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","b" 2}',
+        b'{"error":"Expected \':\' after property name in JSON at position 30 (line 1 column 31)","details":{},"code":400}',
+        id="colon after a later key",
+    ),
+    pytest.param(
+        b'{"query" 2}',
+        b'{"error":"Expected \':\' after property name in JSON at position 9 (line 1 column 10)","details":{},"code":400}',
+        id="colon after the first key",
+    ),
+    pytest.param(
+        b"[01]",
+        b'{"error":"Unexpected number in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="leading zero in an array",
+    ),
+    pytest.param(
+        b'{"a":01}',
+        b'{"error":"Unexpected number in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="leading zero in an object",
+    ),
+    pytest.param(
+        b'{"a":{"a":{"a":1,"b" 1}}}',
+        b'{"error":"Expected \':\' after property name in JSON at position 21 (line 1 column 22)","details":{},"code":400}',
+        id="nested later key no colon",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables"x:{}}',
+        b'{"error":"Expected \':\' after property name in JSON at position 37 (line 1 column 38)","details":{},"code":400}',
+        id="later key then a letter",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables",:{}}',
+        b'{"error":"Expected \':\' after property name in JSON at position 37 (line 1 column 38)","details":{},"code":400}',
+        id="later key then a comma",
+    ),
+    pytest.param(
+        b"[", b'{"error":"Unexpected end of JSON input","details":{},"code":400}', id="[ alone"
+    ),
+    pytest.param(
+        b"{ ",
+        b'{"error":"Expected property name or \'}\' in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="{ then space",
+    ),
+    pytest.param(
+        b"{} x",
+        b'{"error":"Unexpected non-whitespace character after JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="{} then x",
+    ),
+    pytest.param(
+        b"[1]]",
+        b'{"error":"Unexpected non-whitespace character after JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="[1] then ]",
+    ),
+    pytest.param(
+        b'{"query',
+        b'{"error":"Unterminated string in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="key unterminated",
+    ),
+    pytest.param(
+        b'{"query"',
+        b'{"error":"Expected \':\' after property name in JSON at position 8 (line 1 column 9)","details":{},"code":400}',
+        id="key then end",
+    ),
+    pytest.param(
+        b'{"query":',
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="key colon end",
+    ),
+    pytest.param(
+        b'{"query": ',
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="key colon space end",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }"',
+        b'{"error":"Expected \',\' or \'}\' after property value in JSON at position 25 (line 1 column 26)","details":{},"code":400}',
+        id="value then end",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }" x}',
+        b'{"error":"Expected \',\' or \'}\' after property value in JSON at position 26 (line 1 column 27)","details":{},"code":400}',
+        id="value then x",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }",}',
+        b'{"error":"Expected double-quoted property name in JSON at position 26 (line 1 column 27)","details":{},"code":400}',
+        id="trailing comma object",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }",1:2}',
+        b'{"error":"Expected double-quoted property name in JSON at position 26 (line 1 column 27)","details":{},"code":400}',
+        id="comma then number",
+    ),
+    pytest.param(
+        b"{'query':1}",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="single quotes",
+    ),
+    pytest.param(
+        b"{query:1}",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="bare key",
+    ),
+    pytest.param(
+        b"{1:2}",
+        b'{"error":"Expected property name or \'}\' in JSON at position 1 (line 1 column 2)","details":{},"code":400}',
+        id="first key a number",
+    ),
+    pytest.param(
+        b"[1,]",
+        b'{"error":"Unexpected token \']\', \\"[1,]\\" is not valid JSON","details":{},"code":400}',
+        id="array trailing comma",
+    ),
+    pytest.param(
+        b"[1 2]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="array two values",
+    ),
+    pytest.param(
+        b"[1}",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="array then }",
+    ),
+    pytest.param(
+        b"[1",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="array end",
+    ),
+    pytest.param(
+        b"[1,",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="array comma end",
+    ),
+    pytest.param(
+        b'["a" "b"]',
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 5 (line 1 column 6)","details":{},"code":400}',
+        id="array of strings missing comma",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }',
+        b'{"error":"Unterminated string in JSON at position 24 (line 1 column 25)","details":{},"code":400}',
+        id="unterminated value string",
+    ),
+    pytest.param(
+        b'{"query":"\\x"}',
+        b'{"error":"Bad escaped character in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="bad escape",
+    ),
+    pytest.param(
+        b'{"query":"\\',
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="escape at end",
+    ),
+    pytest.param(
+        b'{"query":"\\u12G4"}',
+        b'{"error":"Bad Unicode escape in JSON at position 14 (line 1 column 15)","details":{},"code":400}',
+        id="bad unicode escape",
+    ),
+    pytest.param(
+        b'{"query":"\\u12',
+        b'{"error":"Bad Unicode escape in JSON at position 14 (line 1 column 15)","details":{},"code":400}',
+        id="unicode escape at end",
+    ),
+    pytest.param(
+        b'{"query":"a\x01b"}',
+        b'{"error":"Bad control character in string literal in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="control char in string",
+    ),
+    pytest.param(
+        b'{"query":"a\tb"}',
+        b'{"error":"Bad control character in string literal in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="tab in string",
+    ),
+    pytest.param(
+        b'{"query":"a\nb"}',
+        b'{"error":"Bad control character in string literal in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="newline in string",
+    ),
+    pytest.param(
+        b'{"query":"\\\xc3\xa9"}',
+        b'{"error":"Bad escaped character in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="escape of a two-byte char",
+    ),
+    pytest.param(
+        b'{"query":"\\\xe4\xb8\x80"}',
+        b'{"error":"Unexpected token \'\xe4\xb8\x80\', \\"{\\"query\\":\\"\\\\\xe4\xb8\x80\\"}\\" is not valid JSON","details":{},"code":400}',
+        id="escape of a char above 0xFF",
+    ),
+    pytest.param(
+        b'{"x":00}',
+        b'{"error":"Unexpected number in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="leading zero",
+    ),
+    pytest.param(
+        b'{"x":-}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="minus alone",
+    ),
+    pytest.param(
+        b'{"x":-a}',
+        b'{"error":"No number after minus sign in JSON at position 6 (line 1 column 7)","details":{},"code":400}',
+        id="minus then letter",
+    ),
+    pytest.param(
+        b'{"x":1.}',
+        b'{"error":"Unterminated fractional number in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="fraction missing",
+    ),
+    pytest.param(
+        b'{"x":1.e5}',
+        b'{"error":"Unterminated fractional number in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="fraction then e",
+    ),
+    pytest.param(
+        b'{"x":1e}',
+        b'{"error":"Exponent part is missing a number in JSON at position 7 (line 1 column 8)","details":{},"code":400}',
+        id="exponent missing",
+    ),
+    pytest.param(
+        b'{"x":1e+}',
+        b'{"error":"Exponent part is missing a number in JSON at position 8 (line 1 column 9)","details":{},"code":400}',
+        id="exponent sign then no digit",
+    ),
+    pytest.param(
+        b"[1E",
+        b'{"error":"Exponent part is missing a number in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="exponent at end",
+    ),
+    pytest.param(
+        b"[1.5.3]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 4 (line 1 column 5)","details":{},"code":400}',
+        id="two dots",
+    ),
+    pytest.param(
+        b"[+1]",
+        b'{"error":"Unexpected token \'+\', \\"[+1]\\" is not valid JSON","details":{},"code":400}',
+        id="plus number",
+    ),
+    pytest.param(
+        b"[0x10]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="hex",
+    ),
+    pytest.param(
+        b"[tru]",
+        b'{"error":"Unexpected token \']\', \\"[tru]\\" is not valid JSON","details":{},"code":400}',
+        id="true misspelt",
+    ),
+    pytest.param(
+        b"[tru5]",
+        b'{"error":"Unexpected number in JSON at position 4 (line 1 column 5)","details":{},"code":400}',
+        id="true then digit",
+    ),
+    pytest.param(
+        b'[fals"e"]',
+        b'{"error":"Unexpected string in JSON at position 5 (line 1 column 6)","details":{},"code":400}',
+        id="false then quote",
+    ),
+    pytest.param(
+        b"[nul",
+        b'{"error":"Unexpected end of JSON input","details":{},"code":400}',
+        id="null at end",
+    ),
+    pytest.param(
+        b"[nulll]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 5 (line 1 column 6)","details":{},"code":400}',
+        id="nulll",
+    ),
+    pytest.param(
+        b"[object Object]",
+        b'{"error":"\\"[object Object]\\" is not valid JSON","details":{},"code":400}',
+        id="object Object",
+    ),
+    pytest.param(
+        b"[undefined]",
+        b'{"error":"Unexpected token \'u\', \\"[undefined]\\" is not valid JSON","details":{},"code":400}',
+        id="undefined in array",
+    ),
+    pytest.param(
+        b"[:]",
+        b'{"error":"Unexpected token \':\', \\"[:]\\" is not valid JSON","details":{},"code":400}',
+        id="colon in array",
+    ),
+    pytest.param(
+        b"[,1]",
+        b'{"error":"Unexpected token \',\', \\"[,1]\\" is not valid JSON","details":{},"code":400}',
+        id="comma first in array",
+    ),
+    pytest.param(
+        b"[}]",
+        b'{"error":"Unexpected token \'}\', \\"[}]\\" is not valid JSON","details":{},"code":400}',
+        id="close brace in array",
+    ),
+    pytest.param(
+        b"[\xe4\xb8\x80]",
+        b'{"error":"Unexpected token \'\xe4\xb8\x80\', \\"[\xe4\xb8\x80]\\" is not valid JSON","details":{},"code":400}',
+        id="two-byte token in array",
+    ),
+    pytest.param(
+        b"[\xf0\x9f\x98\x80]",
+        b'{"error":"Unexpected token \'\\ud83d\', \\"[\xf0\x9f\x98\x80]\\" is not valid JSON","details":{},"code":400}',
+        id="astral token in array",
+    ),
+    pytest.param(
+        b"[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1,]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+        b'{"error":"Unexpected token \']\', ...\\"[[[[[[[[1,]]]]]]]]]]\\"... is not valid JSON","details":{},"code":400}',
+        id="deep then bad",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":{"x":[1,2,3,4,5,6,7,8,9,10,]}}',
+        b'{"error":"Unexpected token \']\', ...\\",7,8,9,10,]}}\\" is not valid JSON","details":{},"code":400}',
+        id="bad after long prefix",
+    ),
+    pytest.param(
+        b'{"\\q":1}',
+        b'{"error":"Bad escaped character in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="key with escape bad",
+    ),
+    pytest.param(
+        b'{"12',
+        b'{"error":"Unterminated string in JSON at position 4 (line 1 column 5)","details":{},"code":400}',
+        id="numeric key unterminated",
+    ),
+    pytest.param(
+        b'{"12x":1,',
+        b'{"error":"Expected double-quoted property name in JSON at position 9 (line 1 column 10)","details":{},"code":400}',
+        id="numeric key then x",
+    ),
+    pytest.param(
+        b"[123456789.",
+        b'{"error":"Unterminated fractional number in JSON at position 11 (line 1 column 12)","details":{},"code":400}',
+        id="nine digits then dot end",
+    ),
+    pytest.param(
+        b"[1234567890e]",
+        b'{"error":"Exponent part is missing a number in JSON at position 12 (line 1 column 13)","details":{},"code":400}',
+        id="ten digits then e",
+    ),
+    pytest.param(
+        b"[-01]",
+        b'{"error":"Unexpected number in JSON at position 3 (line 1 column 4)","details":{},"code":400}',
+        id="negative zero then digit",
+    ),
+    pytest.param(
+        b"[0-1]",
+        b'{"error":"Expected \',\' or \']\' after array element in JSON at position 2 (line 1 column 3)","details":{},"code":400}',
+        id="zero then minus",
+    ),
+    pytest.param(
+        b'{ \n\t "query" \n : \n x}',
+        b'{"error":"Unexpected token \'x\', ...\\"ry\\" \\n : \\n x}\\" is not valid JSON","details":{},"code":400}',
+        id="whitespace then bad",
+    ),
+    pytest.param(
+        b'{\r\n"query":\r\n}',
+        b'{"error":"Unexpected token \'}\', \\"{\\r\\n\\"query\\":\\r\\n}\\" is not valid JSON","details":{},"code":400}',
+        id="CRLF then bad",
+    ),
+    pytest.param(b"", _NO_KEYS, id="empty"),
+    pytest.param(b"\xef\xbb\xbf", _NO_KEYS, id="a byte-order mark alone"),
+    pytest.param(b"{}", _NO_KEYS, id="an empty object"),
+    pytest.param(b"[]", _BATCHING, id="an array"),
+    pytest.param(b'[{"query":"{ __typename }"}]', _BATCHING, id="a batch of one query"),
+    pytest.param(b'{"query":5}', _apollo(b"GraphQL queries must be strings."), id="a query of 5"),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":"x"}',
+        _apollo(
+            b"`variables` in a POST body should be provided as an object, not a recursively "
+            b"JSON-encoded string."
+        ),
+        id="a string of variables",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","extensions":5}',
+        _apollo(b"`extensions` in a POST body must be an object if provided."),
+        id="extensions of 5",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","operationName":5}',
+        _apollo(b"`operationName` in a POST body must be a string if provided."),
+        id="an operationName of 5",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","extensions":{"persistedQuery":{"version":1,"sha256Hash":"'
+        + b"0" * 64
+        + b'"}}}',
+        b'{"errors":[{"message":"Internal server error","extensions":{"http":{"status":400,'
+        b'"headers":{}},"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}]}\n',
+        id="a persisted query's hash that does not match",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","extensions":{"persistedQuery":{"version":2,"sha256Hash":"'
+        + b"0" * 64
+        + b'"}}}',
+        b'{"errors":[{"message":"Internal server error","extensions":{"http":{"status":400,"headers":{}},"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}]}\n',
+        id="a persisted query's version 2",
+    ),
+    pytest.param(
+        b'{"extensions":{"persistedQuery":{"version":1,"sha256Hash":"' + b"1" * 64 + b'"}}}',
+        b'{"errors":[{"message":"PersistedQueryNotFound","extensions":{"http":{"status":200,'
+        b'"headers":{}},"code":"PERSISTED_QUERY_NOT_FOUND","type":"graphql error",'
+        b'"userError":true}}]}\n',
+        id="a persisted query's hash alone",
+    ),
+    pytest.param(
+        b'{"query":null}',
+        b'{"errors":[{"message":"GraphQL operations must contain a non-empty `query` or a '
+        b'`persistedQuery` extension.","extensions":{"http":{"status":400,"headers":{}},'
+        b'"code":"INVALID_INPUT","type":"invalid input","userError":true}}]}\n',
+        id="a query of null",
+    ),
+    pytest.param(
+        b'{"query":"","extensions":{"persistedQuery":{"version":1,"sha256Hash":"'
+        + hashlib.sha256(b"").hexdigest().encode()
+        + b'"}}}',
+        b'{"errors":[{"message":"Syntax Error: Unexpected <EOF>.","locations":[{"line":1,'
+        b'"column":1}],"extensions":{"http":{"status":400,"headers":{}},'
+        b'"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="a persisted query's hash matching an empty query",
+    ),
+    pytest.param(
+        b'{"query":"query __proto__ { __typename }"}', None, id="an operation named __proto__"
+    ),
+    pytest.param(
+        b'{"query":"{"}',
+        b'{"errors":[{"message":"Syntax Error: Expected Name, found <EOF>.","locations":[{"line":1,'
+        b'"column":2}],"extensions":{"http":{"status":400,"headers":{}},'
+        b'"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="a document that does not parse",
+    ),
+    pytest.param(
+        b'{"query":"{ nosuch }"}',
+        b'{"errors":[{"message":"Cannot query field \\"nosuch\\" on type \\"Query\\".",'
+        b'"locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},'
+        b'"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="a document that does not validate",
+    ),
+    pytest.param(
+        b'{"query":"query A { __typename } query B { __typename }"}',
+        b'{"errors":[{"message":"operation does not exist","extensions":{"type":"invalid input",'
+        b'"code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"The '
+        b'operation does not exist on the query.","http":{"status":400}}}]}\n',
+        id="two operations and no operationName",
+    ),
+    pytest.param(
+        b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }"}',
+        WithTheKey(
+            b'{"errors":[{"message":"Variable \\"$b\\" of required type \\"Boolean!\\" was not '
+            b'provided.","locations":[{"line":1,"column":7}],"extensions":{"code":"BAD_USER_INPUT",'
+            b'"type":"graphql error","userError":true}}]}\n'
+        ),
+        id="a variable not provided",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","operationName":"Z"}',
+        b'{"errors":[{"message":"operation does not exist","extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"The operation \'Z\' does not exist on the query.","http":{"status":400}}}]}\n',
+        id="an operationName no operation has",
+    ),
+    pytest.param(
+        b'{"query":"query A { __typename }","operationName":""}',
+        b'{"errors":[{"message":"operation does not exist","extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"The operation does not exist on the query.","http":{"status":400}}}]}\n',
+        id="an empty operationName",
+    ),
+    pytest.param(
+        b'{"query":{"kind":"Document"}}',
+        b'{"errors":[{"message":"GraphQL queries must be strings. It looks like you\'re sending the internal graphql-js representation of a parsed query in your request instead of a request in the GraphQL query language. You can convert an AST to a string using the `print` function from `graphql`, or use a client like `apollo-client` which converts the internal representation to a string for you.","extensions":{"http":{"status":400,"headers":{}},"code":"BAD_REQUEST","type":"graphql error","userError":true}}]}\n',
+        id="a parsed document",
+    ),
+    pytest.param(
+        b'{"query":false}',
+        b'{"errors":[{"message":"GraphQL operations must contain a non-empty `query` or a `persistedQuery` extension.","extensions":{"http":{"status":400,"headers":{}},"code":"INVALID_INPUT","type":"invalid input","userError":true}}]}\n',
+        id="a query of false",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":"[1]"}',
+        b'{"errors":[{"message":"`variables` in a POST body must be an object if provided.","extensions":{"http":{"status":400,"headers":{}},"code":"BAD_REQUEST","type":"graphql error","userError":true}}]}\n',
+        id="variables of '[1]'",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":"null"}',
+        None,
+        id="variables of 'null'",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":" {} "}',
+        None,
+        id="variables of ' {} '",
+    ),
+    pytest.param(
+        b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }","variables":"{\\"b\\":5}"}',
+        WithTheKey(
+            b'{"errors":[{"message":"Variable \\"$b\\" got invalid value 5; Boolean cannot represent a non boolean value: 5","locations":[{"line":1,"column":7}],"extensions":{"code":"BAD_USER_INPUT","type":"graphql error","userError":true}}]}\n'
+        ),
+        id="variables of a string its operation refuses",
+    ),
+    pytest.param(
+        b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }","variables":"{\\"b\\":true}"}',
+        None,
+        id="variables of a string its operation takes",
+    ),
+    pytest.param(
+        b'{"query":"query($v: [ID!]) { issues(first: 1, filter: {id: {in: $v}}) { nodes { id } } }",'
+        b'"variables":{"v":[%s]}}' % b",".join([b"true"] * 60),
+        WithTheKey(
+            b'{"errors":[%s,{"message":"Internal server error","extensions":{"code":'
+            b'"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}]}\n'
+            % b",".join(
+                b'{"message":"Variable \\"$v\\" got invalid value true at \\"v[%d]\\"; ID cannot '
+                b'represent value: true","locations":[{"line":1,"column":7}],"extensions":{"code":'
+                b'"BAD_USER_INPUT","type":"graphql error","userError":true}}' % n
+                for n in range(50)
+            )
+        ),
+        id="sixty variables refused",
+    ),
+    pytest.param(
+        b'{"query":"mutation { __typename }"}',
+        WithTheKey(b'{"data":{"__typename":"Mutation"}}\n', 200),
+        id="a mutation of __typename",
+    ),
+    pytest.param(
+        b'{"query":"subscription S { __typename }"}',
+        b'{"errors":[{"message":"Subscription \\"S\\" must not select an introspection top level field.","locations":[{"line":1,"column":18}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="a subscription of __typename",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\") { issue(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["issue"],"locations":[{"line":1,"column":37}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for a non-null argument",
+    ),
+    pytest.param(
+        b'{"query":"query($v: Boolean = true) { __typename @include(if: $v) }","variables":{"v":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","locations":[{"line":1,"column":53}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for a directive's argument at the root",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\") { team(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["team"],"locations":[{"line":1,"column":36}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for team's non-null id",
+    ),
+    pytest.param(
+        b'{"query":"query($v: ID = \\"a\\") { issues(filter: {id: {in: [$v]}}) { nodes { id } } }","variables":{"v":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["issues"],"locations":[{"line":1,"column":38}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null inside a filter's list",
+    ),
+    pytest.param(
+        b'{"query":"query($v: Boolean = true) { viewer { id @include(if: $v) } }","variables":{"v":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["viewer"],"locations":[{"line":1,"column":54}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for a directive one level down",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\") # a\xe2\x80\xa8b\\n{ issue(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["issue"],"locations":[{"line":2,"column":13}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for a non-null argument after U+2028 in a comment",
+    ),
+    *(
+        pytest.param(
+            b'{"query":"query($x: String = \\"a\\") { %s }","variables":{"x":null}}' % fields,
+            WithTheKey(
+                b'{"errors":[{"message":"Internal server error","path":["b"],"locations":[{"line":1,"column":%d}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n'
+                % column,
+                200,
+            ),
+            id=f"null for a root field's argument, {label}",
+        )
+        for fields, column, label in (
+            (
+                b'a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } b: issue(id: $x) { id }',
+                100,
+                "after an issue Linear does not hold",
+            ),
+            (
+                b'b: issue(id: $x) { id } a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id }',
+                40,
+                "before such an issue",
+            ),
+            (b"v: viewer { id } b: issue(id: $x) { id }", 57, "after viewer"),
+        )
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } ...F } fragment F on Query { b: issue(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["b"],"locations":[{"line":1,"column":129}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for a root field's argument, in a fragment after an issue",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"00000000-0000-0000-0000-000000000000\\") { b: issue(id: $x) { id } }"}',
+        WithTheKey(
+            b'{"errors":[{"message":"Entity not found: Issue","path":["b"],"locations":[{"line":1,"column":62}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Could not find referenced Issue."}}],"data":null}\n',
+            200,
+        ),
+        id="a root field's argument from a variable's default",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } b: issue(id: $x) { id } c: team(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["b"],"locations":[{"line":1,"column":100}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for two root fields' arguments",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\", $y: String = \\"Issue\\") { t: __type(name: $y) { name } b: issue(id: $x) { id } }","variables":{"x":null,"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":65}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Internal server error","path":["b"],"locations":[{"line":1,"column":91}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for __type's argument, then for issue's",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\", $y: String = \\"Issue\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } t: __type(name: $y) { name } b: issue(id: $x) { id } }","variables":{"x":null,"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":125}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Internal server error","path":["b"],"locations":[{"line":1,"column":151}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":null}\n',
+            200,
+        ),
+        id="null for __type's and issue's arguments, after an issue Linear does not hold",
+    ),
+    pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } t: __type(name: $y) { name } }","variables":{"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":107}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Entity not found: Issue","path":["a"],"locations":[{"line":1,"column":31}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Could not find referenced Issue."}}],"data":null}\n',
+            200,
+        ),
+        id="an issue Linear does not hold, then null for __type's argument",
+    ),
+    pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\", $z: String = \\"Team\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } t: __type(name: $y) { name } u: __type(name: $z) { name } }","variables":{"y":null,"z":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":128}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Internal server error","path":["u"],"locations":[{"line":1,"column":157}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Entity not found: Issue","path":["a"],"locations":[{"line":1,"column":52}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Could not find referenced Issue."}}],"data":null}\n',
+            200,
+        ),
+        id="an issue Linear does not hold, then null for two __type arguments",
+    ),
+    pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\") { a: issue(id: \\"00000000-0000-0000-0000-000000000000\\") { id } s: __type(name: \\"Team\\") { name } t: __type(name: $y) { name } }","variables":{"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":140}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}},{"message":"Entity not found: Issue","path":["a"],"locations":[{"line":1,"column":31}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Could not find referenced Issue."}}],"data":null}\n',
+            200,
+        ),
+        id="an issue Linear does not hold, a __type served, then null for __type's argument",
+    ),
+    pytest.param(
+        b'{"query":"query($y: String = \\"Issue\\") { t: __type(name: $y) { name } }","variables":{"y":null}}',
+        WithTheKey(
+            b'{"errors":[{"message":"Internal server error","path":["t"],"locations":[{"line":1,"column":47}],"extensions":{"code":"INTERNAL_SERVER_ERROR","type":"internal error","userError":false}}],"data":{"t":null}}\n',
+            200,
+        ),
+        id="null for __type's argument alone",
+    ),
+    pytest.param(
+        b'{"query":"{ __schema { queryType { name } } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
+        id="introspection",
+    ),
+    pytest.param(
+        b'{"query":"{ __type(name: \\"Query\\") { name } }"}',
+        b'{"data":{"__type":{"name":"Query"}}}\n',
+        id="__type",
+    ),
+    pytest.param(
+        b'{"query":"{ s: __schema { queryType { name } } }"}',
+        b'{"data":{"s":{"queryType":{"name":"Query"}}}}\n',
+        id="an alias of __schema",
+    ),
+    pytest.param(
+        b'{"query":"{ __schema { queryType { name } } __type(name: \\"Issue\\") { name } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}},"__type":{"name":"Issue"}}}\n',
+        id="__schema and __type",
+    ),
+    pytest.param(
+        b'{"query":"{ ...F } fragment F on Query { __schema { queryType { name } } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
+        id="__schema in a fragment",
+    ),
+    pytest.param(
+        b'{"query":"{ ... on Query { __schema { queryType { name } } } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
+        id="__schema in an inline fragment",
+    ),
+    pytest.param(
+        b'{"query":"{ __schema @skip(if: false) { queryType { name } } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
+        id="__schema under @skip(if: false)",
+    ),
+    pytest.param(
+        b'{"query":"query Q { __schema { queryType { name } } }"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
+        id="a named query of __schema",
+    ),
+    pytest.param(
+        b'{"query":"query A { __schema { queryType { name } } } query B { viewer { id } }","operationName":"A"}',
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
+        id="the introspection operationName chose",
+    ),
+    pytest.param(
+        b'{"query":"query($b: Boolean!) { __schema @include(if: $b) { queryType { name } } }"}',
+        b'{"errors":[{"message":"Variable \\"$b\\" of required type \\"Boolean!\\" was not provided.","locations":[{"line":1,"column":7}],"extensions":{"code":"BAD_USER_INPUT","type":"graphql error","userError":true}}]}\n',
+        id="introspection with a variable not provided",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename __schema { queryType { name } } }"}',
+        WithTheKey(
+            b'{"data":{"__typename":"Query","__schema":{"queryType":{"name":"Query"}}}}\n', 200
+        ),
+        id="__typename beside __schema",
+    ),
+    pytest.param(
+        b'{"query":"{ __schema { queryType { name } } viewer @skip(if: true) { id } }"}',
+        WithTheKey(b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n', 200),
+        id="__schema beside a skipped field",
+    ),
+    pytest.param(
+        b'{"query":"{ viewer @skip(if: true) { id } }"}',
+        WithTheKey(b'{"data":{}}\n', 200),
+        id="a skipped field alone",
+    ),
+    pytest.param(
+        b'{"query":"{ ...F } fragment F on Query { __typename }"}',
+        None,
+        id="__typename in a fragment",
+    ),
+    pytest.param(
+        b'{"query":"{ ... on Query { __typename } }"}',
+        None,
+        id="__typename in an inline fragment",
+    ),
+    pytest.param(
+        b'{"query":"{ __schema { queryType { name } } ...F } fragment F on Query { __typename }"}',
+        WithTheKey(
+            b'{"data":{"__schema":{"queryType":{"name":"Query"}},"__typename":"Query"}}\n', 200
+        ),
+        id="__schema and __typename in a fragment",
+    ),
+    pytest.param(
+        b'{"query":"{ ... on Query { __schema { queryType { name } } } ...F } fragment F on Query { __typename }"}',
+        WithTheKey(
+            b'{"data":{"__schema":{"queryType":{"name":"Query"}},"__typename":"Query"}}\n', 200
+        ),
+        id="__typename in a fragment beside an inline __schema",
+    ),
+    pytest.param(
+        b'{"query":"{ ...F }"}',
+        b'{"errors":[{"message":"Unknown fragment \\"F\\".","locations":[{"line":1,"column":6}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="a fragment not defined",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { ...F } { ...F }"}',
+        b'{"errors":[{"message":"Cannot spread fragment \\"F\\" within itself.","locations":[{"line":1,"column":23}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="a fragment that spreads itself",
+    ),
+    *_UNKNOWN_IDS,
+    *_LONE_SURROGATES,
+]
+
+
+_TYPENAME = b'{"query":"{ __typename }"}'
+_LIMIT = 10 * 2**20
+
+
+def _express(status: int, message: bytes) -> bytes:
+    """Express's envelope as Linear writes it around ``message``, already JSON-escaped."""
+    return b'{"error":"%s","details":{},"code":%d}' % (message, status)
+
+
+def _charset(name: str) -> tuple:
+    return (("Content-Type", f"application/json; charset={name}"),)
+
+
+_GZIP = (("Content-Encoding", "gzip"),)
+_BR = (("Content-Encoding", "br"),)
+
+
+def _br_cut_past_the_limit() -> bytes:
+    """A ``br`` stream of random hex, cut short where it has given more than :data:`_LIMIT`, then
+    bytes Brotli cannot read."""
+    hex_ = random.Random(0).randbytes(_LIMIT // 2 + 2**15).hex().encode()
+    padded = b'{"query":"{ __typename }","pad":"' + hex_ + b'"}'
+    whole = brotli.compress(padded, quality=0)
+    return whole[: len(whole) * (_LIMIT + 24000) // len(padded)] + b"\xff" * 64
+
+
+_EXPECTED_PROPERTY = _express(
+    400, b"Expected property name or '}' in JSON at position 1 (line 1 column 2)"
+)
+_LATIN1 = _express(415, b'unsupported charset \\"LATIN1\\"')
+_HEADER_CHECK = _express(400, b"incorrect header check")
+_CUT_SHORT = _express(400, b"unexpected end of file")
+_BOGUS = _express(415, b'unsupported content encoding \\"bogus\\"')
+_TOO_LARGE = _express(413, b"request entity too large")
+_TOO_LARGE_DECLARED = (
+    b'{"error":"request entity too large","details":{},"extensions":{"code":"PAYLOAD_TOO_LARGE",'
+    b'"type":"payload too large","statusCode":413,"userError":true,"limit":10485760,'
+    b'"length":10485761},"code":413}'
+)
+# Forty ideographs outnumber the ASCII around them, so without a byte-order mark iconv-lite reads
+# the body in the order that is wrong for it, and Linear quotes the characters that make.
+_IDEOGRAPHS = '{"query":"{ __typename }","x":"' + "\u4e00" * 40 + '"}'
+_IDEOGRAPHS_MISREAD = _express(
+    400,
+    "Unexpected token '\u7b00', \\\"\u7b00\u2200\u7100\u7500\u6500\u7200\u7900\u2200\u3a00"
+    '\u2200\\"... is not valid JSON'.encode(),
+)
+_LINEAR_READS = [
+    pytest.param(_GZIP, gzip.compress(_TYPENAME), None, id="gzip"),
+    pytest.param(_BR, brotli.compress(_TYPENAME), None, id="br"),
+    pytest.param((("Content-Encoding", "BR"),), brotli.compress(_TYPENAME), None, id="BR"),
+    pytest.param(_BR, _TYPENAME, _express(400, b"Decompression failed"), id="br over a plain body"),
+    pytest.param(_BR, brotli.compress(_TYPENAME) + b"xx", None, id="br then xx"),
+    pytest.param(_BR, brotli.compress(_TYPENAME) * 2, None, id="br twice"),
+    pytest.param(_BR, brotli.compress(_TYPENAME)[:-3], _CUT_SHORT, id="br cut short"),
+    pytest.param(_BR, b"", _CUT_SHORT, id="br over no bytes"),
+    pytest.param(_BR, brotli.compress(b""), _NO_KEYS, id="br of no bytes"),
+    pytest.param(_BR, brotli.compress(b"{"), _EXPECTED_PROPERTY, id="br of {"),
+    pytest.param(
+        _BR + _charset("utf-16le"),
+        brotli.compress(_TYPENAME.decode().encode("utf-16-le")),
+        None,
+        id="br of utf-16le",
+    ),
+    pytest.param((("Content-Encoding", "GZIP"),), gzip.compress(_TYPENAME), None, id="GZIP"),
+    pytest.param((("Content-Encoding", "deflate"),), zlib.compress(_TYPENAME), None, id="deflate"),
+    pytest.param((("Content-Encoding", ""),), _TYPENAME, None, id="an empty encoding"),
+    pytest.param(
+        (("Content-Encoding", " gzip "),), gzip.compress(_TYPENAME), None, id="spaces around gzip"
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip\t"),), gzip.compress(_TYPENAME), None, id="a tab after gzip"
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip\xa0"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"gzip\xa0\\"'.encode()),
+        id="U+00A0 after gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "\xa0gzip"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"\xa0gzip\\"'.encode()),
+        id="U+00A0 before gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip\x85"),),
+        gzip.compress(_TYPENAME),
+        _express(415, 'unsupported content encoding \\"gzip\x85\\"'.encode()),
+        id="U+0085 after gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "g zip"),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"g zip\\"'),
+        id="a space inside",
+    ),
+    pytest.param(
+        (("Content-Encoding", "x-gzip"),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"x-gzip\\"'),
+        id="x-gzip",
+    ),
+    pytest.param((("Content-Encoding", "bogus"),), _TYPENAME, _BOGUS, id="bogus"),
+    pytest.param((("Content-Encoding", "BOGUS"),), _TYPENAME, _BOGUS, id="BOGUS"),
+    pytest.param(
+        (("Content-Encoding", "gzip"), ("Content-Encoding", "gzip")),
+        gzip.compress(gzip.compress(_TYPENAME)),
+        _express(415, b'unsupported content encoding \\"gzip, gzip\\"'),
+        id="gzip twice",
+    ),
+    pytest.param(
+        (("Content-Encoding", ""), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        None,
+        id="an empty encoding, then gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", " "), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        None,
+        id="a space, then gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", ""), ("Content-Encoding", ""), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        None,
+        id="two empty encodings, then gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", ""), ("Content-Encoding", "")),
+        _TYPENAME,
+        None,
+        id="two empty encodings",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip"), ("Content-Encoding", "")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,\\"'),
+        id="gzip, then an empty encoding",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip"), ("Content-Encoding", " ")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,\\"'),
+        id="gzip, then a space",
+    ),
+    pytest.param(
+        (("Content-Encoding", ""), ("Content-Encoding", "gzip"), ("Content-Encoding", "")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,\\"'),
+        id="gzip between empty encodings",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip"), ("Content-Encoding", " "), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip, , gzip\\"'),
+        id="gzip, a space, gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "bogus"), ("Content-Encoding", "")),
+        _TYPENAME,
+        _express(415, b'unsupported content encoding \\"bogus,\\"'),
+        id="bogus, then an empty encoding",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip, "),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,\\"'),
+        id="gzip and a comma and a space",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip ,"),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip ,\\"'),
+        id="a space before a comma",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip,"), ("Content-Encoding", "gzip")),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip,, gzip\\"'),
+        id="a comma ending an encoding, then gzip",
+    ),
+    pytest.param(
+        (("Content-Encoding", "gzip, identity"),),
+        gzip.compress(_TYPENAME),
+        _express(415, b'unsupported content encoding \\"gzip, identity\\"'),
+        id="gzip, identity",
+    ),
+    pytest.param(_GZIP, _TYPENAME, _HEADER_CHECK, id="gzip over a plain body"),
+    pytest.param(_GZIP, gzip.compress(_TYPENAME) + b"xx", _HEADER_CHECK, id="gzip then xx"),
+    pytest.param(_GZIP, gzip.compress(_TYPENAME)[:-5], _CUT_SHORT, id="gzip cut short"),
+    pytest.param(_GZIP, b"", _CUT_SHORT, id="gzip over no bytes"),
+    pytest.param(_GZIP, gzip.compress(b""), _NO_KEYS, id="gzip of no bytes"),
+    pytest.param(_GZIP, gzip.compress(b"{"), _EXPECTED_PROPERTY, id="gzip of {"),
+    pytest.param(
+        (("Content-Encoding", "deflate"),),
+        zlib.compress(_TYPENAME)[2:-4],
+        _HEADER_CHECK,
+        id="raw deflate",
+    ),
+    pytest.param(_charset("utf-16le"), _TYPENAME.decode().encode("utf-16-le"), None, id="utf-16le"),
+    pytest.param(
+        _charset("utf-16-le"), _TYPENAME.decode().encode("utf-16-le"), None, id="utf-16-le"
+    ),
+    pytest.param(_charset("utf-16be"), _TYPENAME.decode().encode("utf-16-be"), None, id="utf-16be"),
+    pytest.param(
+        _charset("utf-16"), _TYPENAME.decode().encode("utf-16"), None, id="utf-16, marked"
+    ),
+    pytest.param(
+        _charset("utf-16"), _TYPENAME.decode().encode("utf-16-be"), None, id="utf-16, big-endian"
+    ),
+    pytest.param(
+        _charset("utf-16"), _TYPENAME.decode().encode("utf-16-le"), None, id="utf-16, little-endian"
+    ),
+    pytest.param(
+        _charset("utf-16le"),
+        '\ufeff{"query":"{ __typename }"}'.encode("utf-16-le"),
+        None,
+        id="utf-16le, marked",
+    ),
+    pytest.param(
+        _charset("utf-16le"), _TYPENAME.decode().encode("utf-16-le") + b"x", None, id="odd bytes"
+    ),
+    pytest.param(
+        _charset("utf-16le"),
+        b'{"query":"{ __typename }","x":"'.decode().encode("utf-16-le")
+        + b"\x00\xd8"
+        + b'"}'.decode().encode("utf-16-le"),
+        None,
+        id="a lone surrogate",
+    ),
+    pytest.param(
+        _charset("utf-32"), _TYPENAME.decode().encode("utf-32"), None, id="utf-32, marked"
+    ),
+    pytest.param(
+        _charset("utf-32"), _TYPENAME.decode().encode("utf-32-be"), None, id="utf-32, big-endian"
+    ),
+    pytest.param(_charset("utf-32le"), _TYPENAME.decode().encode("utf-32-le"), None, id="utf-32le"),
+    pytest.param(_charset("UTF-8"), _TYPENAME, None, id="UTF-8"),
+    pytest.param(_charset('"utf-8"'), _TYPENAME, None, id="utf-8 quoted"),
+    pytest.param(_charset("utf-7"), _TYPENAME, None, id="utf-7"),
+    pytest.param(_charset("utf-7-imap"), _TYPENAME, None, id="utf-7-imap"),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+AGE- }"}',
+        b'{"errors":[{"message":"Cannot query field \\"xa\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run of three characters, closed by -",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+AGEAYQ }"}',
+        b'{"errors":[{"message":"Cannot query field \\"xaa\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run closed by a space",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+/v8AYQ- }"}',
+        b'{"errors":[{"message":"Cannot query field \\"xa\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run that opens with a byte-order mark",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+AGEA/v8AYQ- }"}',
+        b'{"errors":[{"message":"Syntax Error: Unexpected character: U+00FE.","locations":[{"line":1,"column":5}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a byte-order mark inside a run",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+- }"}',
+        b'{"errors":[{"message":"Syntax Error: Unexpected character: \\"+\\".","locations":[{"line":1,"column":4}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, +- for +",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+AG- }"}',
+        b'{"errors":[{"message":"Cannot query field \\"x\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run of two characters, one byte",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ __typename }"}+AAkACQAJ/v8',
+        None,
+        id="utf-7, a run the body ends in, a mark past eight characters",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ __typename }"}+AAkACQAJAP8',
+        b'{"error":"Unexpected non-whitespace character after JSON at position 29 (line 1 column 30)","details":{},"code":400}',
+        id="utf-7, a run the body ends in, a character past eight",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x&AGE- }"}',
+        b'{"errors":[{"message":"Syntax Error: Expected Name, found \\"&\\".","locations":[{"line":1,"column":4}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, & outside IMAP",
+    ),
+    pytest.param(
+        _charset("utf-7-imap"),
+        b'{"query":"{ x&AGE,- }"}',
+        b'{"errors":[{"message":"Cannot query field \\"xa\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7-imap, an IMAP run with a comma",
+    ),
+    pytest.param(
+        _charset("utf-7-imap"),
+        b'{"query":"{ x&- }"}',
+        b'{"errors":[{"message":"Syntax Error: Expected Name, found \\"&\\".","locations":[{"line":1,"column":4}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7-imap, &- for &",
+    ),
+    pytest.param(
+        _charset("utf-7-imap"),
+        b'{"query":"{ x+AGE- }"}',
+        b'{"errors":[{"message":"Syntax Error: Unexpected character: \\"+\\".","locations":[{"line":1,"column":4}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7-imap, + inside IMAP",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+ }"}',
+        b'{"errors":[{"message":"Cannot query field \\"x\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, an empty run closed by a space",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+AGE}"}',
+        b'{"errors":[{"message":"Cannot query field \\"xa\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run closed by }",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x\xe9 }"}',
+        b'{"errors":[{"message":"Syntax Error: Unexpected character: U+FFFD.","locations":[{"line":1,"column":4}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a byte past 0x7f outside a run",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+2D0- }"}',
+        b'{"errors":[{"message":"Syntax Error: Invalid character: U+D83D.","locations":[{"line":1,"column":4}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run of a lone high surrogate",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"query($a: Int) { issues(first: $a) { nodes { id } } }","variables":{"a":"+2D3eAA-"}}',
+        b'{"errors":[{"message":"Variable \\"$a\\" got invalid value \\"\xf0\x9f\x98\x80\\"; Int cannot represent non-integer value: \\"\xf0\x9f\x98\x80\\"","locations":[{"line":1,"column":7}],"extensions":{"code":"BAD_USER_INPUT","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run of a surrogate pair in a variable's value",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x\xe9+AGE- }"}',
+        b'{"errors":[{"message":"Syntax Error: Unexpected character: U+FFFD.","locations":[{"line":1,"column":4}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a byte past 0x7f before a run",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'{"query":"{ x+AGEAY- }"}',
+        b'{"errors":[{"message":"Cannot query field \\"xa\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7, a run of five characters",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'+/v7+/w-{"query":"{ __typename }"}',
+        b'{"error":"Unexpected token \'\xef\xbb\xbe\', \\"\xef\xbb\xbe\xef\xbb\xbf{\\"query\\"\\"... is not valid JSON","details":{},"code":400}',
+        id="utf-7, U+FEFE then a byte-order mark opening the body",
+    ),
+    pytest.param(
+        _charset("utf-7-imap"),
+        b'{"query":"{ x&AGEAY- }"}',
+        b'{"errors":[{"message":"Cannot query field \\"xa\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="utf-7-imap, an IMAP run of five characters",
+    ),
+    pytest.param(
+        _charset("utf-7"),
+        b'+/v/+/w-{"query":"{ __typename }"}',
+        None,
+        id="utf-7, a run of two byte-order marks opening the body",
+    ),
+    *(
+        pytest.param(
+            _charset(charset),
+            body,
+            _express(
+                400, b"Unexpected token '\xef\xbb\xbf', \\\"\xef\xbb\xbf\\\" is not valid JSON"
+            ),
+            id=f"{charset}, {label}",
+        )
+        for charset, body, label in (
+            ("utf-7", b"+/v/+/w", "a run the body ends in holding two marks"),
+            ("utf-7-imap", b"&/v/+/w", "a run the body ends in holding two marks"),
+            ("utf-7", b"+AG-+/v/+/w", "a run of no character, then that run"),
+        )
+    ),
+    pytest.param(
+        _charset("utf-16le"),
+        "5".encode("utf-16-le"),
+        _express(400, b"Unexpected token '5', \\\"5\\\" is not valid JSON"),
+        id="utf-16le 5",
+    ),
+    pytest.param(
+        _charset("utf-16le"), "{".encode("utf-16-le"), _EXPECTED_PROPERTY, id="utf-16le {"
+    ),
+    pytest.param(_charset("utf-16le"), b"", _NO_KEYS, id="utf-16le, no bytes"),
+    pytest.param(_charset("utf-8; foo=bar"), _TYPENAME, None, id="another parameter"),
+    pytest.param(_charset('"utf\\-8"'), _TYPENAME, None, id="a quoted pair"),
+    pytest.param(_charset('"lat\\in1"'), _TYPENAME, _LATIN1, id="a quoted pair, latin1"),
+    pytest.param(
+        (("Content-Type", "application/json; charset = latin1"),),
+        _TYPENAME,
+        _LATIN1,
+        id="spaces around =",
+    ),
+    pytest.param(_charset('"utf-8:1234"'), _TYPENAME, None, id="a trailing :1234"),
+    pytest.param(_charset("utf-32be"), _TYPENAME.decode().encode("utf-32-be"), None, id="utf-32be"),
+    pytest.param(
+        _charset("utf-32be"),
+        b'{"query":"{ __typename }","x":"'.decode().encode("utf-32-be")
+        + b"\x00\x11\x00\x00"
+        + b'"}'.decode().encode("utf-32-be"),
+        None,
+        id="past U+10FFFF",
+    ),
+    pytest.param(
+        _charset("utf-16le"), _IDEOGRAPHS.encode("utf-16-le"), None, id="utf-16le, ideographs"
+    ),
+    pytest.param(
+        _charset("utf-16"), _IDEOGRAPHS.encode("utf-16"), None, id="utf-16, marked, ideographs"
+    ),
+    pytest.param(
+        _charset("utf-16"),
+        b"\xfe\xff" + _IDEOGRAPHS.encode("utf-16-be"),
+        None,
+        id="utf-16, marked big-endian, ideographs",
+    ),
+    pytest.param(
+        _charset("utf-16"),
+        _IDEOGRAPHS.encode("utf-16-le"),
+        _IDEOGRAPHS_MISREAD,
+        id="utf-16, little-endian ideographs",
+    ),
+    pytest.param(
+        _charset("utf-16"),
+        _IDEOGRAPHS.encode("utf-16-be"),
+        _IDEOGRAPHS_MISREAD,
+        id="utf-16, big-endian ideographs",
+    ),
+    pytest.param(_charset("latin1"), _TYPENAME, _LATIN1, id="latin1"),
+    pytest.param(
+        _charset("iso-8859-1"),
+        _TYPENAME,
+        _express(415, b'unsupported charset \\"ISO-8859-1\\"'),
+        id="iso-8859-1",
+    ),
+    pytest.param(
+        _charset("utf8"), _TYPENAME, _express(415, b'unsupported charset \\"UTF8\\"'), id="utf8"
+    ),
+    pytest.param(
+        _charset("utf-nope"),
+        _TYPENAME,
+        _express(415, b'unsupported charset \\"UTF-NOPE\\"'),
+        id="utf-nope",
+    ),
+    pytest.param(
+        _charset("utf_16le"),
+        _TYPENAME.decode().encode("utf-16-le"),
+        _express(415, b'unsupported charset \\"UTF_16LE\\"'),
+        id="utf_16le",
+    ),
+    pytest.param(
+        (("Content-Type", "Application/JSON; Charset=Latin1"),), _TYPENAME, _LATIN1, id="Charset"
+    ),
+    pytest.param(_charset("utf-8; charset=latin1"), _TYPENAME, _LATIN1, id="two charsets"),
+    pytest.param(
+        _charset("latin1") + (("Content-Encoding", "bogus"),),
+        _TYPENAME,
+        _LATIN1,
+        id="latin1, bogus",
+    ),
+    pytest.param(
+        _charset("utf-nope") + (("Content-Encoding", "bogus"),),
+        _TYPENAME,
+        _BOGUS,
+        id="utf-nope, bogus",
+    ),
+    pytest.param((), padded_query(_LIMIT), None, id="the limit"),
+    pytest.param((), padded_query(_LIMIT + 1), _TOO_LARGE_DECLARED, id="past the limit"),
+    pytest.param(_GZIP, gzip.compress(padded_query(_LIMIT)), None, id="the limit, gzipped"),
+    pytest.param(_GZIP, gzip.compress(padded_query(_LIMIT + 1)), _TOO_LARGE, id="past it, gzipped"),
+    pytest.param(_BR, brotli.compress(padded_query(_LIMIT)), None, id="the limit, br"),
+    pytest.param(_BR, brotli.compress(padded_query(_LIMIT + 1)), _TOO_LARGE, id="past it, br"),
+    pytest.param(
+        _BR, brotli.compress(padded_query(2 * _LIMIT)), _TOO_LARGE, id="twice the limit, br"
+    ),
+    pytest.param(
+        _BR, brotli.compress(padded_query(_LIMIT + 1)) + b"xx", _TOO_LARGE, id="past it, br then xx"
+    ),
+    pytest.param(
+        _BR,
+        _br_cut_past_the_limit(),
+        _express(400, b"Decompression failed"),
+        id="past it, br cut short then bytes Brotli cannot read",
+    ),
+    pytest.param(
+        _GZIP, gzip.compress(padded_query(_LIMIT + 2)), _TOO_LARGE, id="past it by two, gzipped"
+    ),
+    pytest.param(
+        (("Content-Encoding", "deflate"),),
+        zlib.compress(padded_query(_LIMIT + 1)),
+        _TOO_LARGE,
+        id="past it, deflated",
+    ),
+    pytest.param(_GZIP, b"x" * (_LIMIT + 1), _HEADER_CHECK, id="past it, not gzip"),
+    pytest.param((), b"{" * (_LIMIT + 1), _TOO_LARGE_DECLARED, id="past it, not JSON"),
+    pytest.param(
+        (("Content-Encoding", "bogus"),), padded_query(_LIMIT + 1), _BOGUS, id="past it, bogus"
+    ),
+    pytest.param(_charset("latin1"), padded_query(_LIMIT + 1), _LATIN1, id="past it, latin1"),
+    pytest.param(
+        _charset("utf-nope"), padded_query(_LIMIT + 1), _TOO_LARGE_DECLARED, id="past it, utf-nope"
+    ),
+]
+
+
+# `Bearer` and a value in a Linear API key's shape that no account holds.
+_KEY_SHAPED = "Bearer lin_api_" + "0" * 40
+# The rows every credential but the key is sent with: one for each way `_read` refuses a body (V8's
+# words, `strict`'s, graphql-js's, a body it cannot decode, an unsupported encoding, an unsupported
+# charset, past the limit), one it reads and serves, one for each stage of Apollo Server's that
+# refuses a document ahead of the credential (a batch, a query that is not a string, a persisted
+# query's hash alone and one that does not match, a parse, a validation, the choice of operation),
+# and a `WithTheKey` row.
+_EACH_WAY_READ = (
+    "{",
+    "top-level 5",
+    "empty",
+    "gzip over a plain body",
+    "bogus",
+    "latin1",
+    "past the limit",
+    "__proto__ key",
+    "an array",
+    "a query of null",
+    "a persisted query's hash alone",
+    "a persisted query's hash that does not match",
+    "a document that does not parse",
+    "a document that does not validate",
+    "two operations and no operationName",
+    "a variable not provided",
+)
+# The rows whose answer without a key turns on what the document selects
+# (`backlot.routers.linear._introspection_only`), each sent with every credential too.
+_WHAT_IT_SELECTS = (
+    "introspection",
+    "__type",
+    "an alias of __schema",
+    "__schema and __type",
+    "__schema in a fragment",
+    "__schema in an inline fragment",
+    "__schema under @skip(if: false)",
+    "a named query of __schema",
+    "the introspection operationName chose",
+    "introspection with a variable not provided",
+    "__typename beside __schema",
+    "__schema beside a skipped field",
+    "a skipped field alone",
+    "__typename in a fragment",
+    "__typename in an inline fragment",
+    "__schema and __typename in a fragment",
+    "__typename in a fragment beside an inline __schema",
+)
+assert set(_EACH_WAY_READ + _WHAT_IT_SELECTS) <= {
+    row.id for row in (*_LINEAR_BODIES, *_LINEAR_READS)
+}
+
+
+def _linear_body_cases() -> list:
+    rows = [pytest.param((), *row.values, id=row.id) for row in _LINEAR_BODIES] + _LINEAR_READS
+    return [
+        pytest.param(credential, *row.values, id=f"{row.id}-{credential}")
+        for credential in ("key", "none", "nope", "Bearer key", "Bearer, key-shaped")
+        for row in rows
+        if credential == "key" or row.id in _EACH_WAY_READ + _WHAT_IT_SELECTS
+    ]
+
+
+@pytest.mark.parametrize("credential,headers,body,answer", _linear_body_cases())
+def test_linear_orders_the_body_and_the_credential(
+    client, tokens_yaml, credential, headers, body, answer
+):
+    """Each row answers as the comment over `_LINEAR_BODIES` says with the key, and each row
+    `_EACH_WAY_READ` or `_WHAT_IT_SELECTS` names answers so under no credential and `nope` too; an
+    API key under `Bearer`, and `_KEY_SHAPED`, are `_API_KEY_AS_BEARER` ahead of each of those
+    bodies."""
+    admin = tokens_yaml["admin_token"]
+    if not any(name == "Content-Type" for name, _ in headers):
+        headers = (("Content-Type", "application/json"), *headers)
+    if credential != "none":
+        key = {"key": admin, "nope": "nope", "Bearer key": f"Bearer {admin}"}.get(
+            credential, _KEY_SHAPED
+        )
+        headers = (*headers, ("Authorization", key))
+    r = sent_as(client, "POST", "/linear/graphql", headers, content=body)
+    if credential.startswith("Bearer"):
+        assert (r.status_code, r.content) == (400, _API_KEY_AS_BEARER)
+    elif credential != "key" and (answer is None or isinstance(answer, WithTheKey)):
+        assert (r.status_code, r.content) == (401, _UNAUTHENTICATED)
+    elif answer is None:
+        assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
+    elif isinstance(answer, WithTheKey):
+        assert (r.status_code, r.content) == (answer.status, answer)
+    else:
+        assert (r.status_code, r.content) == (_status(answer), answer)
 
 
 def test_linear_parent_resolves_and_is_acl_scoped(client, admin_h, tokens_yaml):
@@ -416,20 +2856,25 @@ def test_linear_issue_without_a_parent_is_null(client, admin_h):
     )
 
 
+@pytest.mark.parametrize(("connection", "args"), [("issues", "first: 50"), ("users", "")])
 @pytest.mark.parametrize(
     ("order_by", "field"),
     [
         ("", "createdAt"),
-        (", orderBy: createdAt", "createdAt"),
-        (", orderBy: updatedAt", "updatedAt"),
+        ("orderBy: createdAt", "createdAt"),
+        ("orderBy: updatedAt", "updatedAt"),
     ],
     ids=["default", "createdAt", "updatedAt"],
 )
-def test_linear_default_and_order_by_are_newest_first(client, admin_h, order_by, field):
-    """`issues` is newest first by the field `orderBy` names, and by `createdAt` with no `orderBy`,
-    as the comment on `LINEAR_DEFAULT_ORDER_BY` records."""
-    q = "{ issues(first: 50%s) { nodes { createdAt updatedAt } } }" % order_by
-    stamps = [n[field] for n in gql(client, q, admin_h).json()["data"]["issues"]["nodes"]]
+def test_linear_default_and_order_by_are_newest_first(
+    client, admin_h, connection, args, order_by, field
+):
+    """`issues` and `users` are newest first by the field `orderBy` names, and by `createdAt` with
+    no `orderBy`, as the comment on `LINEAR_DEFAULT_ORDER_BY` records."""
+    joined = ", ".join(a for a in (args, order_by) if a)
+    q = "{ %s%s { nodes { createdAt updatedAt } } }" % (connection, f"({joined})" if joined else "")
+    stamps = [n[field] for n in gql(client, q, admin_h).json()["data"][connection]["nodes"]]
+    assert len(stamps) >= 2
     assert stamps == sorted(stamps, reverse=True)
 
 
@@ -494,6 +2939,77 @@ def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
 
 
 # --- Linear relations / children / attachments / releases -----------------------
+
+
+@pytest.fixture(scope="module")
+def two_children(tmp_path_factory):
+    """ENG-1 and its two children, ENG-2 created first and edited last, ENG-3 the reverse."""
+    return build_corpus(
+        tmp_path_factory.mktemp("two_children"),
+        [
+            {
+                "source_type": "linear",
+                "doc_id": "parent",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Parent",
+                "content": "p",
+                "identifier": "ENG-1",
+                "author_email": "ava@acme.com",
+                "visibility": "public",
+                "created": "2026-01-01T00:00:00Z",
+            },
+            {
+                "source_type": "linear",
+                "doc_id": "edited-last",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Edited last",
+                "content": "a",
+                "identifier": "ENG-2",
+                "author_email": "bob@acme.com",
+                "visibility": "public",
+                "parent": "ENG-1",
+                "created": "2026-01-02T00:00:00Z",
+                "updated": "2026-04-01T00:00:00Z",
+            },
+            {
+                "source_type": "linear",
+                "doc_id": "created-last",
+                "team": "engineering",
+                "group": "engineering",
+                "title": "Created last",
+                "content": "b",
+                "identifier": "ENG-3",
+                "author_email": "mia@acme.com",
+                "visibility": "public",
+                "parent": "ENG-1",
+                "created": "2026-03-01T00:00:00Z",
+                "updated": "2026-02-01T00:00:00Z",
+            },
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "served"),
+    [
+        ("", ["ENG-3", "ENG-2"]),
+        ("(orderBy: createdAt)", ["ENG-3", "ENG-2"]),
+        ("(orderBy: updatedAt)", ["ENG-2", "ENG-3"]),
+        ("(first: 1)", ["ENG-3"]),
+        ("(last: 1)", ["ENG-2"]),
+    ],
+)
+def test_linear_children_are_newest_first(two_children, args, served):
+    """Each row is an issue's `children` in the order the comment on `LINEAR_DEFAULT_ORDER_BY`
+    records; `ENG-2` was created first and edited last, so the two fields disagree."""
+    settings = two_children
+    query = '{ issue(id: "ENG-1") { children%s { nodes { identifier } } } }' % args
+    with client_for(settings) as client:
+        body = gql(client, query, {"Authorization": settings.admin_token}).json()
+    assert "errors" not in body, body.get("errors")
+    assert [n["identifier"] for n in body["data"]["issue"]["children"]["nodes"]] == served
 
 
 def test_linear_children_is_the_exact_inverse_of_parent(client, admin_h):
@@ -583,7 +3099,7 @@ def test_linear_attachments_take_no_url_argument_and_filter_by_url_instead(clien
     )
     assert r.status_code == 400 and "data" not in r.json()
     assert r.json()["errors"][0]["message"] == (
-        "Unknown argument 'url' on field 'Issue.attachments'."
+        'Unknown argument "url" on field "Issue.attachments".'
     )
     one = gql(
         client,
@@ -792,6 +3308,15 @@ def test_number_comparators_are_pinned_at_their_boundary(fclient):
     assert ids(fclient, "{priority: {gte: 2}}") == ["DES-1", "ENG-2"]  # includes 2
     assert ids(fclient, "{priority: {in: [1, 4]}}") == ["DES-1", "ENG-1"]
     assert ids(fclient, "{priority: {nin: [1, 4]}}") == ["ENG-2"]
+    # `number` is the identifier's digits, the lookup mirage sends beside `team.key`.
+    assert ids(fclient, "{number: {eq: 1}}") == ["DES-1", "ENG-1"]
+    assert ids(fclient, "{number: {gt: 1}}") == ["ENG-2"]
+    assert ids(fclient, '{team: {key: {eq: "ENG"}}, number: {eq: 2}}') == ["ENG-2"]
+    assert ids(fclient, "{number: {lt: 1}}") == []
+    assert ids(fclient, "{number: {eq: null}}") == []
+    for spec in ("{eq: 0}", "{gt: 0}", "{lt: 1.5}", "{in: [1.5]}", "{nin: [0]}"):
+        r = post(fclient, "{ issues(filter: {number: %s}) { nodes { identifier } } }" % spec)
+        assert r.json()["errors"][0]["message"] == "Argument Validation Error", spec
 
 
 def test_null_comparator_on_a_nullable_number(fclient):
@@ -894,9 +3419,10 @@ def test_a_malformed_date_is_the_validation_error_linear_answers(fclient, litera
     assert r.status_code == 400
     body = r.json()
     assert "data" not in body
-    message = body["errors"][0]["message"]
-    assert message.startswith("Expected value of type 'DateTimeOrDuration', found ")
-    assert message.endswith("into a valid date")
+    assert body["errors"][0]["message"] == (
+        f'Expected value of type "DateTimeOrDuration", found {literal}; '
+        f"Unable to parse value '{literal[1:-1]}' into a valid date"
+    )
 
 
 def test_a_date_operand_must_be_a_string(fclient):
@@ -908,11 +3434,11 @@ def test_a_date_operand_must_be_a_string(fclient):
     q = "query($d: DateTimeOrDuration) { issues(filter: {createdAt: {gt: $d}}) { nodes { id } } }"
     r = post(fclient, q, {"d": 1700000000})
     assert r.status_code == 400
-    assert r.json()["errors"][0]["message"].startswith("Variable '$d' got invalid value 1700000000")
+    assert r.json()["errors"][0]["message"].startswith('Variable "$d" got invalid value 1700000000')
     assert "supports only string values" in r.json()["errors"][0]["message"]
     r = post(fclient, q, {"d": "not-a-date"})
     assert r.status_code == 400
-    assert "Expected type 'DateTimeOrDuration'" in r.json()["errors"][0]["message"]
+    assert 'Expected type "DateTimeOrDuration"' in r.json()["errors"][0]["message"]
 
 
 @pytest.mark.parametrize(
@@ -946,9 +3472,10 @@ def test_forms_outside_the_measured_grammar_are_refused(fclient, literal):
         fclient, "{ issues(filter: {createdAt: {gt: %s}}) { nodes { identifier } } }" % literal
     )
     assert r.status_code == 400
-    message = r.json()["errors"][0]["message"]
-    assert message.startswith("Expected value of type 'DateTimeOrDuration', found ")
-    assert message.endswith("into a valid date"), message
+    assert r.json()["errors"][0]["message"] == (
+        f'Expected value of type "DateTimeOrDuration", found {literal}; '
+        f"Unable to parse value '{literal[1:-1]}' into a valid date"
+    )
     # The other scalar names itself `TimelessDate` and quotes the value (measured).
     r = post(fclient, "{ issues(filter: {dueDate: {eq: 1}}) { nodes { identifier } } }")
     assert r.status_code == 400
@@ -1069,7 +3596,7 @@ def test_an_unsupported_filter_field_is_an_error_not_a_dropped_filter(fclient):
         "/linear/graphql", json={"query": q}, headers={"Authorization": fclient.__dict__["_admin"]}
     )
     assert r.status_code == 400
-    assert "not defined by type 'IssueFilter'" in r.json()["errors"][0]["message"]
+    assert r.json()["errors"][0]["message"] == 'Field "nope" is not defined by type "IssueFilter".'
 
 
 def test_an_unsupported_comparator_is_an_error(fclient):
@@ -1171,16 +3698,15 @@ _COMMENT_OR_CELLS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "literal,expected", _COMMENT_OR_CELLS, ids=[c[0] for c in _COMMENT_OR_CELLS]
-)
-def test_comment_filter_or_reads_a_branch_as_linear(fclient, literal, expected):
+def test_comment_filter_or_reads_a_branch_as_linear(fclient):
     """Linear's `or` on `CommentFilter` is the `or` `_issue_parts` compiles: the keys of one branch
     are alternatives, a branch with nothing in it is dropped, and a branch whose key constrains
     nothing makes the whole `or` constrain nothing. Compiling a branch as one conjunction, as this
     router used to, answered `{or: [{body: {eq: A}, id: {eq: B}}]}` with no comment where Linear
     answers two, and nothing in the well-formed empty list said so."""
-    assert comment_bodies(fclient, literal) == expected
+    assert {literal: comment_bodies(fclient, literal) for literal, _ in _COMMENT_OR_CELLS} == dict(
+        _COMMENT_OR_CELLS
+    )
 
 
 def test_issue_comments_connection_reads_an_or_branch_the_same_way(fclient):
@@ -1641,15 +4167,16 @@ _LABEL_CELLS = [
 ]
 
 
-@pytest.mark.parametrize("literal,expected", _LABEL_CELLS, ids=[c[0] for c in _LABEL_CELLS])
-def test_labels_quantifiers_answer_as_linear(fclient, literal, expected):
+def test_labels_quantifiers_answer_as_linear(fclient):
     """Linear pushes a negation outside the quantifier: `some` over a negative predicate is the
     complement of `every` over its positive form, so it answers an issue with no labels; and `every`
     over a positive predicate needs at least one label, so it does not. The textbook EXISTS and
     NOT EXISTS answer the opposite on both counts, which is what #112 measured over label-less
     issues. Each cell here is one measured answer; the mapping to the fixture is above
     `_LABEL_CELLS`."""
-    assert ids(fclient, "{labels: %s}" % literal) == sorted(expected)
+    assert {literal: ids(fclient, "{labels: %s}" % literal) for literal, _ in _LABEL_CELLS} == {
+        literal: sorted(expected) for literal, expected in _LABEL_CELLS
+    }
 
 
 # The whole `IssueFilter`, where an `or` branch that constrains nothing is the case that matters:
@@ -1752,14 +4279,15 @@ _ISSUE_CELLS = [
 ]
 
 
-@pytest.mark.parametrize("literal,expected", _ISSUE_CELLS, ids=[c[0] for c in _ISSUE_CELLS])
-def test_issue_filter_or_answers_a_vacuous_branch_as_linear(fclient, literal, expected):
+def test_issue_filter_or_answers_a_vacuous_branch_as_linear(fclient):
     """An `or` branch that constrains nothing is not dropped by api.linear.app: it makes the whole
     `or` constrain nothing, so `{or: [{labels: {}}, X]}` answers every issue where X alone answers
     a few. Dropping it, which the empty fragment invites, is a refusal turned into a quietly
     narrower answer. A branch with nothing in it IS dropped, and a null operand is a condition of
     its own. Each cell is one measured answer; the stand-ins are above `_ISSUE_CELLS`."""
-    assert ids(fclient, literal) == sorted(expected)
+    assert {literal: ids(fclient, literal) for literal, _ in _ISSUE_CELLS} == {
+        literal: sorted(expected) for literal, expected in _ISSUE_CELLS
+    }
 
 
 # A nullable relation's `null: true` beside other keys. api.linear.app reads nothing else in the
@@ -1807,15 +4335,14 @@ _RELATION_NULL_CELLS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "literal,expected", _RELATION_NULL_CELLS, ids=[c[0] for c in _RELATION_NULL_CELLS]
-)
-def test_relation_null_true_reads_nothing_else_in_the_object_as_linear(fclient, literal, expected):
+def test_relation_null_true_reads_nothing_else_in_the_object_as_linear(fclient):
     """`null: true` on a nullable relation is not one condition among the object's keys: Linear
     answers the issues without the relation whatever else the object says, where ANDing the keys
     answers none. `null: false` does AND with them. Each cell is one measured answer; the mapping
     to the fixture is above `_RELATION_NULL_CELLS`."""
-    assert ids(fclient, literal) == sorted(expected)
+    assert {literal: ids(fclient, literal) for literal, _ in _RELATION_NULL_CELLS} == {
+        literal: sorted(expected) for literal, expected in _RELATION_NULL_CELLS
+    }
 
 
 # An `or` on a nullable relation, cell by cell, as api.linear.app answered it on 2026-09-04. The
@@ -2195,18 +4722,17 @@ def rclient(tmp_path_factory):
         yield c
 
 
-@pytest.mark.parametrize(
-    "relation,literal,expected",
-    _RELATION_OR_CELLS,
-    ids=[f"{r}: {c}" for r, c, _ in _RELATION_OR_CELLS],
-)
-def test_relation_or_reads_a_branch_as_linear(rclient, relation, literal, expected):
+def test_relation_or_reads_a_branch_as_linear(rclient):
     """An `or` on a nullable relation is not the union of its branches each read as an object:
     the keys of one branch are alternatives, a branch that says nothing about the related row
     beside one that does adds the issues without the relation, and every branch carrying
     `null: true` is those issues alone. The full rule is on `_sub_filter`; each cell is one
     measured answer, the mapping to the fixture above `_RELATION_OR_CORPUS`."""
-    assert ids(rclient, "{%s: %s}" % (relation, literal)) == sorted(expected)
+    cells = {f"{r}: {literal}": sorted(expected) for r, literal, expected in _RELATION_OR_CELLS}
+    assert {
+        f"{r}: {literal}": ids(rclient, "{%s: %s}" % (r, literal))
+        for r, literal, _ in _RELATION_OR_CELLS
+    } == cells
 
 
 def test_relation_negative_operators_do_not_shadow_the_labels_polarity_rule():
@@ -2257,8 +4783,8 @@ def _linear_client(tmp_path):
 # --- schema drift against api.linear.app (issue #101) --------------------------------------------
 # Every type below is what introspection of https://api.linear.app/graphql reported, the oldest on
 # 2026-09-03, copied here as literals so the suite runs offline; a literal moves when a later
-# measurement finds the vendor has moved. `IntegrationService` has gained two members that way
-# since that date, and the enum in `backlot/graphql/linear.graphql` carries their dates.
+# measurement finds the vendor has moved. `IntegrationService` is the 2026-10-27 introspection,
+# the date its description in `backlot/graphql/linear.graphql` carries.
 # `backlot diff --source linear` is the live re-measurement and
 # `backlot/fidelity/baseline/linear.json` the record of the gaps it accepts.
 # Most entries were a `breaking` finding in #101: Backlot declared the same name at a different
@@ -2308,6 +4834,8 @@ LINEAR_TYPES = {
     # selected by `@linear/sdk`'s own Team and Project fragments
     "Team.initiativesEnabled": "Boolean!",
     "Team.viewerCanJoin": "Boolean!",
+    "Team.viewerCanLeave": "Boolean!",
+    "Team.viewerMembership": "TeamMembership",
     "Project.resourceCount": "Int!",
     # non-null where Backlot was nullable
     "Issue.sharedAccess": "IssueSharedAccess!",
@@ -2340,6 +4868,7 @@ LINEAR_ENUMS = {
         "githubPersonal",
         "githubCodeAccessPersonal",
         "gitlab",
+        "gitlabPersonal",
         "origin",
         "googleCalendarPersonal",
         "googleSheets",
@@ -2456,20 +4985,217 @@ def test_counts_are_served_as_json_integers(fclient):
 
 
 def test_fields_the_sdk_fragments_select_resolve_to_what_backlot_serves(fclient):
-    """All three are non-null, so a declaration with nothing behind it voids the whole result. A
-    real team answers `initiativesEnabled: false` (measured 2026-09-07), and `_team` gives the
-    reason `viewerCanJoin` is `false`; Backlot serves no project resources, so `resourceCount` is
-    a count rather than a stand-in."""
+    """All four are non-null, so a declaration with nothing behind it voids the whole result. A
+    real team answers `initiativesEnabled: false` (measured 2026-09-07); the admin token is in no
+    team, so it may join this one and has none to leave; Backlot serves no project resources, so
+    `resourceCount` is a count rather than a stand-in."""
     r = post(
         fclient,
-        '{ issue(id: "ENG-2") { team { initiativesEnabled viewerCanJoin }'
+        '{ issue(id: "ENG-2") { team { initiativesEnabled viewerCanJoin viewerCanLeave }'
         " project { resourceCount } } }",
     ).json()
     assert "errors" not in r, r.get("errors")
     d = r["data"]["issue"]
     team = d["team"]
-    served = (team["initiativesEnabled"], team["viewerCanJoin"], d["project"]["resourceCount"])
-    assert served == (False, False, 0)
+    served = (
+        team["initiativesEnabled"],
+        team["viewerCanJoin"],
+        team["viewerCanLeave"],
+        d["project"]["resourceCount"],
+    )
+    assert served == (False, True, False, 0)
+
+
+_AGENT_SESSIONS = "query($v: Boolean) { viewer { supportsAgentSessions(forCurrentUser: $v) } }"
+
+
+@pytest.mark.parametrize(
+    "query,variables,expected",
+    [
+        (
+            "{ viewer { supportsAgentSessions } }",
+            None,
+            {"viewer": {"supportsAgentSessions": False}},
+        ),
+        (
+            "{ viewer { f: supportsAgentSessions(forCurrentUser: false)"
+            " t: supportsAgentSessions(forCurrentUser: true) } }",
+            None,
+            {"viewer": {"f": False, "t": False}},
+        ),
+        (_AGENT_SESSIONS, {}, {"viewer": {"supportsAgentSessions": False}}),
+        (_AGENT_SESSIONS, {"v": False}, {"viewer": {"supportsAgentSessions": False}}),
+        (_AGENT_SESSIONS, {"v": True}, {"viewer": {"supportsAgentSessions": False}}),
+    ],
+    ids=["absent", "literals", "variable omitted", "variable false", "variable true"],
+)
+def test_supports_agent_sessions_answers_false_under_each_for_current_user(
+    fclient, query, variables, expected
+):
+    """Each row is api.linear.app's answer to the same document and variables, measured when the
+    comment in ``_user`` says."""
+    r = post(fclient, query, variables)
+    assert (r.status_code, r.json()) == (200, {"data": expected})
+
+
+def test_supports_agent_sessions_declares_linears_default(fclient):
+    """Introspection rather than an answer, which is ``false`` under either value; the comment in
+    ``_user`` has the vendor's declaration."""
+    fields = post(
+        fclient,
+        '{ __type(name: "User") { fields { name args { name defaultValue'
+        " type { kind ofType { name } } } } } }",
+    ).json()["data"]["__type"]["fields"]
+    (field,) = (f for f in fields if f["name"] == "supportsAgentSessions")
+    assert field["args"] == [
+        {
+            "name": "forCurrentUser",
+            "defaultValue": "false",
+            "type": {"kind": "NON_NULL", "ofType": {"name": "Boolean"}},
+        }
+    ]
+
+
+_MEMBERSHIP = "id createdAt updatedAt archivedAt owner sortOrder user { id } team { id }"
+
+
+@pytest.mark.parametrize("ava_groups", [[], ["design"]], ids=["one team", "two teams"])
+def test_linear_team_membership_is_the_teams_group(tmp_path, ava_groups):
+    """The measurements above `_team_groups`. A team's members are its group's, which the roster
+    states: bo is in engineering without a single issue, and ava, assigned a design issue, is no
+    member of design until the roster puts her in it. ava's membership in a team she is in is the
+    one `teamMembership(id:)` finds; in the team she only sees, she has none and may join it."""
+    sealed = {
+        "source_type": "linear",
+        "doc_id": "lin-sealed",
+        "team": "blackops",
+        "group": "people",
+        "title": "Sealed",
+        "content": "Sealed.",
+        "author_email": "hana@acme.com",
+        "readers": ["hana@acme.com"],
+        "identifier": "BLA-1",
+    }
+    design = {
+        "source_type": "linear",
+        "doc_id": "lin-design",
+        "team": "design",
+        "group": "design",
+        "title": "Select states",
+        "content": "Focus rings.",
+        "author_email": "mia@acme.com",
+        "visibility": "public",
+        "identifier": "DES-1",
+        "assignee": "ava@acme.com",
+    }
+    roster = {
+        "departments": {
+            "Engineering": [
+                {"name": "Ava Chen", "email": "ava@acme.com", "groups": ava_groups},
+                {"name": "Bo Ryu", "email": "bo@acme.com"},
+            ],
+            "Design": [{"name": "Mia Park", "email": "mia@acme.com"}],
+            "People": [{"name": "Hana Lee", "email": "hana@acme.com"}],
+        }
+    }
+    records = [*LINEAR_CORPUS, sealed, design]
+    with corpus_client(tmp_path, records, roster=roster) as (client, settings):
+        users = client.get("/_meta/users").json()["users"]
+        h = {"Authorization": next(u["token"] for u in users if u["email"] == "ava@acme.com")}
+        q = (
+            "{ viewer { id createdAt } teams { nodes { key id createdAt viewerCanJoin"
+            " viewerCanLeave members { nodes { email createdAt id } }"
+            " viewerMembership { %s } } } }" % _MEMBERSHIP
+        )
+        r = gql(client, q, h).json()
+        assert "errors" not in r, r["errors"]
+        d = r["data"]
+        teams = {t["key"]: t for t in d["teams"]["nodes"]}
+        assert list(teams) == ["DES", "ENG"]  # blackops is hidden from ava
+        for team in teams.values():
+            order = [(m["createdAt"], m["id"]) for m in team["members"]["nodes"]]
+            assert order == sorted(order, reverse=True)
+        members = {k: {m["email"] for m in t["members"]["nodes"]} for k, t in teams.items()}
+        assert members["ENG"] == {"ava@acme.com", "bo@acme.com"}
+        in_design = bool(ava_groups)
+        assert members["DES"] == {"mia@acme.com"} | ({"ava@acme.com"} if in_design else set())
+        mine = ["DES", "ENG"] if in_design else ["ENG"]
+        for key, team in teams.items():
+            m = team["viewerMembership"]
+            assert (team["viewerCanJoin"], team["viewerCanLeave"]) == (
+                key not in mine,
+                key in mine and len(mine) > 1,
+            )
+            if key not in mine:
+                assert m is None
+                other = synth.linear_team_membership_id("design", d["viewer"]["id"])
+                miss = gql(client, "{ teamMembership(id: %s) { id } }" % lit(other), h).json()
+                assert miss["errors"][0]["message"] == "Entity not found: TeamMembership"
+                continue
+            assert (m["user"]["id"], m["team"]["id"]) == (d["viewer"]["id"], team["id"])
+            assert (m["owner"], m["archivedAt"], m["sortOrder"]) == (False, None, mine.index(key))
+            assert (
+                m["createdAt"] == m["updatedAt"] == max(team["createdAt"], d["viewer"]["createdAt"])
+            )
+            by_id = gql(
+                client, "{ teamMembership(id: %s) { %s } }" % (lit(m["id"]), _MEMBERSHIP), h
+            )
+            assert by_id.json()["data"]["teamMembership"] == m
+        # Everyone's memberships, by team, by user and in all, newest first, each found by id;
+        # hana's in blackops stays out of sight with its team.
+        q = (
+            "{ teams { nodes { key memberships { nodes { %s } } } }"
+            " teamMemberships { nodes { %s } }"
+            " users { nodes { email teamMemberships { nodes { id } } teams { nodes { key } }"
+            ' eng: teams(filter: {key: {eq: "ENG"}}) { nodes { key } } } } }'
+        ) % (_MEMBERSHIP, _MEMBERSHIP)
+        d = gql(client, q, h).json()["data"]
+        by_team = {t["key"]: t["memberships"]["nodes"] for t in d["teams"]["nodes"]}
+        everyone = [m for ms in by_team.values() for m in ms]
+        assert len(everyone) == len(members["ENG"]) + len(members["DES"])
+        for ms in [*by_team.values(), d["teamMemberships"]["nodes"]]:
+            order = [(m["createdAt"], m["id"]) for m in ms]
+            assert order == sorted(order, reverse=True)
+        assert sorted(m["id"] for m in d["teamMemberships"]["nodes"]) == sorted(
+            m["id"] for m in everyone
+        )
+        for m in everyone:
+            for spelt in (m["id"], m["id"].upper()):
+                q = "{ teamMembership(id: %s) { %s } }" % (lit(spelt), _MEMBERSHIP)
+                assert gql(client, q, h).json()["data"]["teamMembership"] == m
+        users = {u["email"]: u for u in d["users"]["nodes"]}
+        assert [t["key"] for t in users["ava@acme.com"]["teams"]["nodes"]] == mine
+        assert users["ava@acme.com"]["eng"]["nodes"] == [{"key": "ENG"}]
+        assert users["hana@acme.com"]["teams"]["nodes"] == []
+        admin = {"Authorization": settings.admin_token}
+        q = '{ users(filter: {email: {eq: "hana@acme.com"}}) { nodes { teams { nodes { key } } } } }'
+        (hana,) = gql(client, q, admin).json()["data"]["users"]["nodes"]
+        assert hana["teams"]["nodes"] == [{"key": "BLA"}]
+        assert {m["id"] for m in users["ava@acme.com"]["teamMemberships"]["nodes"]} == {
+            teams[k]["viewerMembership"]["id"] for k in mine
+        }
+        q = '{ team(id: "ENG") { membership(userId: %s) { id user { email } } } }'
+        for email, member in (("bo@acme.com", True), ("mia@acme.com", False)):
+            for user_id in (synth.linear_user_id(email), synth.linear_user_id(email).upper()):
+                got = gql(client, q % lit(user_id), h).json()["data"]
+                assert (got["team"]["membership"] or {}).get("user") == (
+                    {"email": email} if member else None
+                )
+        refused = gql(client, q % lit("bo@acme.com"), h).json()
+        assert refused["data"] == {"team": {"membership": None}}
+        assert refused["errors"][0]["message"] == "Internal server error"
+        # A lone surrogate is answered as any other unknown id; the raw body carries it as JSON's
+        # `\ud800` escape, which a client encoding the string as UTF-8 first cannot send.
+        for x in (synth.linear_id("nope"), "a\ud800b"):
+            body = {"query": "query($x: String!) { teamMembership(id: $x) { id } }"}
+            body["variables"] = {"x": x}
+            miss = client.post(
+                "/linear/graphql",
+                content=json.dumps(body),
+                headers={**h, "Content-Type": "application/json"},
+            )
+            assert miss.status_code == 200
+            assert miss.json()["errors"][0]["message"] == "Entity not found: TeamMembership"
 
 
 def test_enum_fields_serve_a_member_of_the_vendors_enum(fclient):
@@ -2515,19 +5241,19 @@ def test_release_stage_and_pipeline_are_non_null_and_stable(fclient):
     [
         (
             '{ issues(filter: {branchName: {eq: "x"}}) { nodes { id } } }',
-            "Field 'branchName' is not defined by type 'IssueFilter'.",
+            'Field "branchName" is not defined by type "IssueFilter".',
         ),
         (
             '{ issue(id: "ENG-2") { releases(filter: {slugId: {eq: "x"}}) { nodes { id } } } }',
-            "Field 'slugId' is not defined by type 'ReleaseFilter'.",
+            'Field "slugId" is not defined by type "ReleaseFilter".',
         ),
         (
             "{ users(sort: [{createdAt: {order: Descending}}]) { nodes { id } } }",
-            "Field 'createdAt' is not defined by type 'UserSortInput'.",
+            'Field "createdAt" is not defined by type "UserSortInput".',
         ),
         (
             "{ users(sort: [{updatedAt: {order: Descending}}]) { nodes { id } } }",
-            "Field 'updatedAt' is not defined by type 'UserSortInput'.",
+            'Field "updatedAt" is not defined by type "UserSortInput".',
         ),
     ],
     ids=[
@@ -2631,7 +5357,7 @@ def test_due_date_is_compared_as_a_timeless_date(fclient, now_is_2026_03_01_noon
     r = post(fclient, '{ issues(filter: {dueDate: {eq: "nope"}}) { nodes { id } } }')
     assert r.status_code == 400
     assert r.json()["errors"][0]["message"].startswith(
-        "Expected value of type 'TimelessDateOrDuration', found "
+        'Expected value of type "TimelessDateOrDuration", found "nope"; '
     )
 
 
@@ -2810,10 +5536,6 @@ def test_attachment_string_fields_follow_linears_null_rules(fclient):
 
 
 # --- Linear -----------------------------------------------------------------------
-# Linear's auth is the one shape no other source in this repo uses: the personal API key is the
-# BARE `Authorization` value with no scheme, while an OAuth access token is `Bearer <token>`, and
-# the real API accepts both on the same header. Getting this wrong is silent — a stripped-scheme
-# parse would accept `Bearer <key>` and reject the bare key that every real Linear client sends.
 
 LINEAR_CORPUS = [
     {
@@ -2833,25 +5555,9 @@ LINEAR_CORPUS = [
 ]
 
 
-def _linear_identifiers(client, authorization):
-    """``authorization`` verbatim, not a Bearer-wrapped token — these tests assert on the scheme."""
-    r = gql(client, "{ issues { nodes { identifier } } }", {"Authorization": authorization})
-    return r.status_code, r.json()
-
-
-@pytest.mark.parametrize(
-    "caller, unassigned",
-    [
-        ("mia@acme.com", "mia/eng-2-rotate-the-signing-keys"),
-        # the admin token has no address, so there is no user segment
-        ("admin", "eng-2-rotate-the-signing-keys"),
-    ],
-)
-def test_an_unassigned_issue_branch_name_starts_with_the_callers_handle(
-    tmp_path, caller, unassigned
-):
-    """An issue with no assignee takes the caller's email local part as its branch prefix.
-    An assigned issue keeps the assignee's local part in front of the same slug."""
+@pytest.fixture(scope="module")
+def assigned_and_unassigned(tmp_path_factory):
+    """ENG-1 assigned to raj and ENG-2 unassigned, both titled alike."""
     records = [
         {
             "source_type": "linear",
@@ -2877,7 +5583,24 @@ def test_an_unassigned_issue_branch_name_starts_with_the_callers_handle(
             "created": "2026-02-01T09:00:00Z",
         },
     ]
-    with corpus_client(tmp_path, records) as (client, settings):
+    return build_corpus(tmp_path_factory.mktemp("assigned_and_unassigned"), records)
+
+
+@pytest.mark.parametrize(
+    "caller, unassigned",
+    [
+        ("mia@acme.com", "mia/eng-2-rotate-the-signing-keys"),
+        # the admin token has no address, so there is no user segment
+        ("admin", "eng-2-rotate-the-signing-keys"),
+    ],
+)
+def test_an_unassigned_issue_branch_name_starts_with_the_callers_handle(
+    assigned_and_unassigned, caller, unassigned
+):
+    """An issue with no assignee takes the caller's email local part as its branch prefix.
+    An assigned issue keeps the assignee's local part in front of the same slug."""
+    settings = assigned_and_unassigned
+    with client_for(settings) as client:
         users = client.get("/_meta/users").json()["users"]
         if caller == "admin":
             token = settings.admin_token
@@ -3020,30 +5743,6 @@ def test_an_unset_priority_filters_and_sorts_as_the_zero_it_is_served_as(tmp_pat
         assert [n["identifier"] for n in asc] == ["ENG-1", "ENG-2"]
 
 
-def test_linear_accepts_a_bare_api_key_with_no_scheme(tmp_path):
-    """What `LinearReader` and `@linear/sdk` both send: `Authorization: <key>`, no prefix."""
-    with _linear_client(tmp_path) as (client, settings):
-        status, body = _linear_identifiers(client, settings.admin_token)
-        assert status == 200
-        assert [n["identifier"] for n in body["data"]["issues"]["nodes"]] == ["ENG-9"]
-
-
-def test_linear_accepts_a_bearer_oauth_token(tmp_path):
-    """The OAuth shape, on the same header."""
-    with _linear_client(tmp_path) as (client, settings):
-        status, body = _linear_identifiers(client, f"Bearer {settings.admin_token}")
-        assert status == 200
-        assert [n["identifier"] for n in body["data"]["issues"]["nodes"]] == ["ENG-9"]
-
-
-def test_linear_rejects_a_stray_scheme_rather_than_stripping_it(tmp_path):
-    """To the real API the WHOLE header value is the key, so `Token <key>` is simply a wrong key —
-    not a key with a scheme to discard. Stripping the first word would authenticate a credential
-    the real API refuses."""
-    with _linear_client(tmp_path) as (client, settings):
-        assert _linear_identifiers(client, f"Token {settings.admin_token}")[0] == 401
-
-
 def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
     """Real Linear splits these: a bad document never executed is a 400 with no `data` key, while
     an error raised mid-execution is a 200 carrying `data` alongside `errors`."""
@@ -3057,6 +5756,112 @@ def test_linear_field_error_is_a_200_and_a_syntax_error_is_a_400(tmp_path):
         )
         assert missing.status_code == 200
         assert "data" in missing.json() and missing.json()["errors"]
+
+
+_API_KEY_AS_BEARER = (
+    b'{"errors":[{"message":"It looks like you\'re trying to use an API key as a Bearer token.'
+    b' Remove the Bearer prefix from the Authorization header.","extensions":{"type":"invalid'
+    b' input","code":"INPUT_ERROR","statusCode":400,"userError":true}}]}'
+)
+_UNAUTHENTICATED = (
+    b'{"errors":[{"message":"Authentication required, not authenticated","extensions":{"type":"a'
+    b'uthentication error","code":"AUTHENTICATION_ERROR","statusCode":401,"userError":true,"user'
+    b'PresentableMessage":"You need to authenticate to access this operation.","meta":{},"http":{"status":401}}}]}\n'
+)
+# `Authorization` values, `{t}` for an API key that resolves, and the status Linear gave each: 200
+# serving the query, 400 being `_API_KEY_AS_BEARER` and 401 `_UNAUTHENTICATED`.
+_LINEAR_SPELLINGS = [
+    pytest.param("{t}", 200, id="bare"),
+    pytest.param(" {t}", 200, id="a space before"),
+    pytest.param("{t} ", 200, id="a space after"),
+    pytest.param("\xa0{t}", 401, id="U+00A0 before"),
+    pytest.param("{t}\xa0", 401, id="U+00A0 after"),
+    pytest.param("{t} extra", 401, id="a word after"),
+    pytest.param("Bearer {t}", 400, id="Bearer"),
+    pytest.param("bearer {t}", 400, id="bearer"),
+    pytest.param("Bearer {t} ", 400, id="Bearer, a space after"),
+    pytest.param(" Bearer {t}", 400, id="Bearer, a space before"),
+    pytest.param("Bearer  {t}", 401, id="Bearer, two spaces"),
+    pytest.param("Bearer\t{t}", 401, id="Bearer, a tab"),
+    pytest.param("Bearer \t{t}", 401, id="Bearer, a space and a tab"),
+    pytest.param("Bearer \xa0{t}", 401, id="Bearer, a space and U+00A0"),
+    pytest.param("Bearer{t}", 401, id="Bearer, no space"),
+    pytest.param("Bearer,{t}", 401, id="Bearer, a comma"),
+    pytest.param("Bearer {t} extra", 401, id="Bearer, a word after"),
+    pytest.param("Bearer {t}x", 401, id="Bearer, a key that does not resolve"),
+    pytest.param("Bearer lin_api_nope", 401, id="Bearer lin_api_nope"),
+    pytest.param(_KEY_SHAPED, 400, id="Bearer, a key's shape Linear never issued"),
+    pytest.param("bearer lin_api_" + "0" * 40, 400, id="bearer, a key's shape"),
+    pytest.param(
+        "Bearer lin_api_" + "aB3" * 13 + "a", 400, id="Bearer, a key's shape in both cases"
+    ),
+    pytest.param(
+        "Bearer lin_api_" + "0" * 39, 401, id="Bearer, a character short of a key's shape"
+    ),
+    pytest.param("Bearer lin_api_" + "0" * 41, 401, id="Bearer, a character past a key's shape"),
+    pytest.param("Bearer lin_api_" + "0" * 39 + "-", 401, id="Bearer, a key's shape ending in -"),
+    pytest.param(_KEY_SHAPED + " x", 401, id="Bearer, a key's shape and a word after"),
+    pytest.param("Bearer LIN_API_" + "0" * 40, 401, id="Bearer, LIN_API_"),
+    pytest.param("Bearer lin_oauth_" + "0" * 40, 401, id="Bearer, lin_oauth_"),
+    pytest.param("BEARER lin_api_" + "0" * 40, 401, id="BEARER, a key's shape"),
+    pytest.param("lin_api_" + "0" * 40, 401, id="a key's shape alone"),
+    pytest.param("Bearer nope", 401, id="Bearer nope"),
+    pytest.param("bearer nope", 401, id="bearer nope"),
+    pytest.param("Token {t}", 401, id="Token"),
+    pytest.param("nope", 401, id="nope"),
+    pytest.param("Bearer", 401, id="Bearer alone"),
+    pytest.param("Basic Zm9vOmJhcg==", 401, id="Basic"),
+]
+
+
+# `SWEPT_BYTES` in five places of `Authorization`: the statuses other than the 401 every other byte
+# drew.
+_LINEAR_BYTES = {
+    "Bearer{x}{t}": {0x20: 400},
+    "Bearer {x}{t}": {},
+    "Bearer {t}{x}": {0x09: 400, 0x20: 400},
+    "{x}{t}": {0x09: 200, 0x20: 200},
+    "{t}{x}": {0x09: 200, 0x20: 200},
+}
+
+
+def _linear_status(client, tokens_yaml, value: str) -> int:
+    """The status `Authorization: value` draws, read as the comment over `_LINEAR_SPELLINGS` reads
+    it."""
+    header = value.replace("{t}", tokens_yaml["admin_token"])
+    r = sent_as(
+        client,
+        "POST",
+        "/linear/graphql",
+        {"Authorization": header, "Content-Type": "application/json"},
+        content=b'{"query":"{ viewer { id } }"}',
+    )
+    if r.status_code == 200:
+        assert r.json()["data"]["viewer"]["id"]
+    elif r.status_code == 400:
+        assert r.content == _API_KEY_AS_BEARER
+    else:
+        assert r.content == _UNAUTHENTICATED
+    return r.status_code
+
+
+@pytest.mark.parametrize("value, status", _LINEAR_SPELLINGS)
+def test_linear_reads_a_credential_as_linear_does(client, tokens_yaml, value, status):
+    assert _linear_status(client, tokens_yaml, value) == status
+
+
+def test_linear_reads_a_swept_byte_and_a_casing_of_the_scheme_as_linear_does(client, tokens_yaml):
+    """Each of `SWEPT_BYTES` in each place `_LINEAR_BYTES` names, and each of the 64 casings of the
+    scheme, draws the status Linear gave it."""
+    expected = {
+        shape.replace("{x}", chr(byte)): answers.get(byte, 401)
+        for shape, answers in _LINEAR_BYTES.items()
+        for byte in SWEPT_BYTES
+    }
+    for letters in itertools.product(*[(c, c.upper()) for c in "bearer"]):
+        scheme = "".join(letters)
+        expected[f"{scheme} {{t}}"] = 400 if scheme in ("Bearer", "bearer") else 401
+    assert {value: _linear_status(client, tokens_yaml, value) for value in expected} == expected
 
 
 def test_linear_issue_asserts_rather_than_re_derive_a_missing_identifier():
@@ -3345,3 +6150,1992 @@ def test_a_stated_identifier_outranks_another_teams_derived_one(tmp_path):
         h = {"Authorization": settings.admin_token}
         got = gql(c, f'{{ issue(id: "{stated}") {{ identifier title }} }}', h).json()["data"]
         assert got["issue"]["title"] == "states it"
+
+
+_BACKWARD_ROOTS = {
+    "issues": ("{ issues(%s, orderBy: updatedAt) { %s } }", ["issues"]),
+    "team": (
+        '{ team(id: "engineering") { issues(%s, orderBy: updatedAt) { %s } } }',
+        ["team", "issues"],
+    ),
+    "users": ("{ users(%s) { %s } }", ["users"]),
+    "children": (
+        '{ issue(id: "ENG-1") { children(%s, orderBy: updatedAt) { %s } } }',
+        ["issue", "children"],
+    ),
+    "teams": ("{ teams(%s) { %s } }", ["teams"]),
+    "comments": ("{ comments(%s) { %s } }", ["comments"]),
+    "issue comments": ('{ issue(id: "ENG-1") { comments(%s) { %s } } }', ["issue", "comments"]),
+    "labels": ('{ issue(id: "ENG-1") { labels(%s) { %s } } }', ["issue", "labels"]),
+    "attachments": ('{ issue(id: "ENG-1") { attachments(%s) { %s } } }', ["issue", "attachments"]),
+    "relations": ('{ issue(id: "ENG-1") { relations(%s) { %s } } }', ["issue", "relations"]),
+    "inverse relations": (
+        '{ issue(id: "ENG-2") { inverseRelations(%s) { %s } } }',
+        ["issue", "inverseRelations"],
+    ),
+    "releases": ('{ issue(id: "ENG-1") { releases(%s) { %s } } }', ["issue", "releases"]),
+}
+
+
+@pytest.fixture(scope="module")
+def backward_pages(tmp_path_factory):
+    """The corpus `test_linear_backward_pages_name_the_served_nodes` describes."""
+    records = [
+        {
+            "source_type": "linear",
+            "doc_id": f"page-{i}",
+            "team": "engineering",
+            "group": "engineering",
+            "identifier": f"ENG-{i}",
+            "title": f"Issue {i}",
+            "content": "page",
+            "author_email": f"user{i}@acme.com",
+            "visibility": "public",
+            "created": f"2026-01-{i:02}T00:00:00Z",
+            "updated": f"2026-02-{i:02}T00:00:00Z",
+            **({"parent": "ENG-1"} if i > 1 else {}),
+            **(
+                {
+                    "comments": [
+                        {"content": f"note {n}", "created_ts": 1767225600 + n} for n in range(8)
+                    ],
+                    "labels": [f"label-{n}" for n in range(8)],
+                    "attachments": [f"https://acme.test/run/{n}" for n in range(8)],
+                    "relations": [{"to": f"page-{n}", "type": "related"} for n in range(2, 9)],
+                    "release": "r1",
+                }
+                if i == 1
+                else {"relations": [{"to": "page-2", "type": "related"}]}
+                if i > 2
+                else {}
+            ),
+        }
+        for i in range(1, 9)
+    ] + [
+        {
+            "source_type": "linear",
+            "doc_id": f"squad-{i}",
+            "team": f"squad{i}",
+            "group": f"squad{i}",
+            "title": f"Squad issue {i}",
+            "content": "page",
+            "author_email": "user1@acme.com",
+            "visibility": "public",
+            "created": f"2026-03-{i:02}T00:00:00Z",
+            "updated": f"2026-04-{i:02}T00:00:00Z",
+        }
+        for i in range(1, 8)
+    ]
+    return build_corpus(tmp_path_factory.mktemp("backward_pages"), records)
+
+
+@pytest.mark.parametrize("root", list(_BACKWARD_ROOTS))
+def test_linear_backward_pages_name_the_served_nodes(backward_pages, root):
+    """The measurement on ``linear_resolvers._connection`` covers these connections.
+
+    Its before endCursor continues backward; before startCursor overlaps the preceding page.
+    Distinct timestamps make position independent of database tie ordering. ENG-1 holds eight
+    comments, labels and attachments, a relation to each other issue and one release, every other
+    issue a relation to ENG-2, and each team past the first one issue.
+    """
+    settings = backward_pages
+    with client_for(settings) as client:
+
+        def page(args):
+            selection = (
+                "nodes { id } pageInfo { startCursor endCursor hasPreviousPage hasNextPage }"
+            )
+            query, path = _BACKWARD_ROOTS[root]
+            response = gql(
+                client, query % (args, selection), {"Authorization": settings.admin_token}
+            )
+            assert response.status_code == 200
+            body = response.json()
+            assert "errors" not in body, body
+            result = body["data"]
+            for key in path:
+                result = result[key]
+            return result
+
+        forward = [node["id"] for node in page("first: 50")["nodes"]]
+        backward = page("last: 3")
+
+        def got(result):
+            return [node["id"] for node in result["nodes"]]
+
+        assert got(backward) == forward[-3:][::-1]
+
+        following = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
+        assert got(following) == forward[-6:-3][::-1]
+        overlapping = page("last: 3, before: " + lit(backward["pageInfo"]["startCursor"]))
+        assert got(overlapping) == forward[-4:-1][::-1]
+
+        first = page("first: 1")
+        assert first["pageInfo"]["startCursor"] == first["pageInfo"]["endCursor"]
+        empty = page("last: 3, before: " + lit(first["pageInfo"]["startCursor"]))
+        assert empty["nodes"] == []
+        assert empty["pageInfo"]["startCursor"] is None
+        assert empty["pageInfo"]["endCursor"] is None
+        assert got(page("last: 50")) == forward[::-1]
+
+        after = page("first: 1, after: " + lit(first["pageInfo"]["endCursor"]))
+        assert after["pageInfo"]["hasPreviousPage"] is False
+        assert after["pageInfo"]["hasNextPage"] is (len(forward) > 2)
+        before = page("last: 1, before: " + lit(backward["pageInfo"]["endCursor"]))
+        assert before["pageInfo"]["hasNextPage"] is False
+        assert before["pageInfo"]["hasPreviousPage"] is (len(forward) > 4)
+
+        current = page("first: 3")
+        after_first = page("first: 2, after: " + lit(current["pageInfo"]["startCursor"]))
+        assert got(after_first) == forward[1:3]
+        seen = []
+        for _ in range(len(forward) + 1):
+            seen.extend(got(current))
+            if not current["nodes"]:
+                break
+            current = page("first: 3, after: " + lit(current["pageInfo"]["endCursor"]))
+        assert seen == forward
+
+        seen = []
+        for _ in range(len(forward) + 1):
+            seen.extend(got(backward))
+            if not backward["nodes"]:
+                break
+            backward = page("last: 3, before: " + lit(backward["pageInfo"]["endCursor"]))
+        assert seen == forward[::-1]
+        assert len(seen) == len(set(seen))
+
+
+# --- the load balancer, Express, cors and Apollo Server in front of Linear's GraphQL --------------
+# The request, the credential (`_LINEAR_CREDENTIALS`) and the answer api.linear.app gave it, as
+# `graphql` records the layers it was measured through: its status, its media type and its body,
+# `_TYPENAME_DATA` where it served the query, and none for a `HEAD`.
+_CSRF = (
+    b'{"errors":[{"message":"This operation has been blocked as a potential Cross-Site Request'
+    b" Forgery (CSRF). Please either specify a 'content-type' header (with a type that is not one"
+    b" of application/x-www-form-urlencoded, multipart/form-data, text/plain) or provide a"
+    b" non-empty value for one of the following headers: x-apollo-operation-name,"
+    b' apollo-require-preflight\\n","extensions":{"http":{"status":400,"headers":{}},"code":"BAD_R'
+    b'EQUEST","type":"graphql error","userError":true}}]}\n'
+)
+_ONLY_GET_POST = (
+    b'{"errors":[{"message":"Apollo Server supports only GET/POST requests.","extensions":{"http":'
+    b'{"status":405,"headers":{}},"code":"BAD_REQUEST","type":"graphql error","userError":true}}]}\n'
+)
+_GET_MUTATION = (
+    b'{"errors":[{"message":"GET requests only support query operations, not mutation operations"'
+    b',"extensions":{"http":{"status":405,"headers":{}},"code":"BAD_REQUEST","type":"graphql erro'
+    b'r","userError":true}}]}\n'
+)
+_NOT_ACCEPTABLE = (
+    b'{"errors":[{"message":"An \'accept\' header was provided for this request which does not'
+    b" accept application/json; charset=utf-8 or application/graphql-response+json; charset=utf-8"
+    b'","extensions":{"http":{"status":406},"code":"BAD_REQUEST","type":"graphql error","userErr'
+    b'or":true}}]}\n'
+)
+_NO_QUERY = (
+    b'{"errors":[{"message":"GraphQL operations must contain a non-empty `query` or a `persistedQ'
+    b'uery` extension.","extensions":{"http":{"status":400,"headers":{}},"code":"INVALID_INPUT","'
+    b'type":"invalid input","userError":true}}]}\n'
+)
+_TYPENAME_DATA = b'{"data":{"__typename":"Query"}}\n'
+_JSON_UTF8 = "application/json; charset=utf-8"
+_GRAPHQL_RESPONSE = "application/graphql-response+json; charset=utf-8"
+_CLOUDFLARE_PAGE = (
+    b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
+    b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
+)
+#: The media type and body of Cloudflare's own answer to each method it answers ahead of Linear.
+_CLOUDFLARE_ANSWER = {
+    "TRACE": ("text/html", _CLOUDFLARE_PAGE % ((b"405 Not Allowed",) * 2)),
+    "CONNECT": ("text/plain; charset=UTF-8", b"error code: 1045\n"),
+    "PURGE": ("text/html; charset=UTF-8", _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+}
+_LINEAR_PREFLIGHT = {
+    "access-control-allow-origin": "https://example.com",
+    "cache-control": "s-maxage=43200",
+    "vary": "Origin, Access-Control-Request-Headers",
+    "cache-tag": "preflight",
+    "access-control-allow-methods": "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS",
+    "access-control-expose-headers": "Cache-Control,Content-Language,Content-Length,Content-Type,"
+    "Expires,Last-Modified,Pragma,x-request-id,cf-ray,cf-cache-status,Retry-After",
+    "access-control-max-age": "86400",
+    # Sent no `Access-Control-Request-Headers`, a preflight is answered none.
+    "access-control-allow-headers": None,
+}
+_J = (("Content-Type", "application/json"),)
+_P = (("apollo-require-preflight", "1"),)
+_ORIGIN = (("Origin", "https://example.com"),)
+_PREFLIGHT_ASKED = (*_ORIGIN, ("Access-Control-Request-Method", "POST"))
+_Q = "?query=%7B%20__typename%20%7D"
+_HTML_UTF8 = "text/html; charset=utf-8"
+_GREETING = b"Hello from the Linear GraphQL API."
+_EXPRESS_API_KEY_AS_BEARER = (
+    b'{"error":"It looks like you\'re trying to use an API key as a Bearer token. Remove the Bearer'
+    b' prefix from the Authorization header.","details":{},"extensions":{"type":"invalid input","co'
+    b'de":"INPUT_ERROR","statusCode":400,"userError":true},"code":400}'
+)
+
+
+def _express_404(method: str, path: str) -> bytes:
+    return (
+        b'<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Error</title>'
+        b"\n</head>\n<body>\n<pre>Cannot %s %s</pre>\n</body>\n</html>\n"
+        % (method.encode(), path.encode())
+    )
+
+
+def _search_refusal(message: bytes) -> bytes:
+    return (
+        b'{"errors":[{"message":"%s","extensions":{"http":{"status":400,"headers":{}},"code":"BAD_REQ'
+        b'UEST","type":"graphql error","userError":true}}]}\n' % message
+    )
+
+
+# The headers an answer carries, as `backlot.routers.linear._express_sent`, `express`,
+# `_preflight` and `RequestBudget` record what api.linear.app sent, None for one it did not send.
+_NO_STORE = "private, no-cache, no-store, must-revalidate"
+_EXPOSED = (
+    "Cache-Control,Content-Language,Content-Length,Content-Type,Expires,Last-Modified,Pragma,"
+    "x-request-id,cf-ray,cf-cache-status,Retry-After"
+)
+_REQUEST_ID = Matching(r"[0-9a-f]{16}-ICN")
+_NOT_COUNTED = {"x-ratelimit-requests-limit": None, "x-ratelimit-requests-remaining": None}
+
+
+def _sent(etag, **more):
+    """What Express's answers carry: ``etag``, the rest of `_express_sent`'s, none of `cors`'s
+    for a request without `Origin`, no `nosniff`, and ``more``, `_` in a name standing for `-`."""
+    return {
+        "cache-control": _NO_STORE,
+        "etag": etag,
+        "vary": "Accept-Encoding",
+        "x-request-id": _REQUEST_ID,
+        "access-control-allow-origin": None,
+        "access-control-expose-headers": None,
+        "x-content-type-options": None,
+    } | {name.replace("_", "-"): value for name, value in more.items()}
+
+
+def _counted(limit):
+    return {
+        "x-ratelimit-requests-limit": str(limit),
+        "x-ratelimit-requests-remaining": Matching(r"[0-9]+"),
+        "x-ratelimit-requests-reset": Matching(r"[0-9]{13}"),
+    }
+
+
+def _cors(origin="https://example.com"):
+    return {
+        "access-control-allow-origin": origin,
+        "access-control-expose-headers": _EXPOSED,
+        "vary": "Origin, Accept-Encoding",
+    }
+
+
+#: Express's 404 page goes with no `Content-Length`, so on the wire in chunks (`_CHUNKED`).
+_NO_LENGTH = {"content-length": None}
+_CHUNKED = _NO_LENGTH | {"transfer-encoding": "chunked"}
+_ETAG_OF_TYPENAME = 'W/"20-/8NdYwgmGsmmlrq5Nh8mH1T+tAs"'
+_ETAG_OF_THE_BEARER_400 = 'W/"f9-BDIWTD84v19kyk2Xj/zxwnhRq74"'
+_LINEAR_HTTP = [
+    # Cloudflare, then Linear's load balancer, ahead of everything; then Apollo Server's 405 for
+    # each other method.
+    http_row(
+        "TRACE",
+        "",
+        (),
+        None,
+        "key",
+        405,
+        "text/html",
+        _CLOUDFLARE_PAGE % ((b"405 Not Allowed",) * 2),
+        id="TRACE",
+        answered={"connection": "close"},
+    ),
+    http_row(
+        "CONNECT",
+        "",
+        (),
+        None,
+        "key",
+        400,
+        "text/plain; charset=UTF-8",
+        b"error code: 1045\n",
+        id="CONNECT",
+        answered={"connection": None},
+    ),
+    http_row(
+        "PURGE",
+        "",
+        (),
+        None,
+        "key",
+        400,
+        "text/html; charset=UTF-8",
+        _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2),
+        id="PURGE",
+        answered={"connection": None},
+    ),
+    http_row(
+        "TRACE",
+        "",
+        (),
+        None,
+        "twice",
+        400,
+        "text/html",
+        _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2),
+        id="TRACE, Authorization twice",
+        answered={"connection": "close"},
+    ),
+    *(
+        http_row(m, "", (*_J, *_P), None, "key", 501, None, b"", id=m)
+        for m in ("BIND", "LINK", "M-SEARCH", "MKCALENDAR", "REBIND", "SOURCE", "UNBIND", "UNLINK")
+    ),
+    *(
+        http_row(m, "", (*_J, *_P), None, "key", 405, _JSON_UTF8, _ONLY_GET_POST, id=m)
+        for m in (
+            "ACL",
+            "CHECKOUT",
+            "COPY",
+            "DELETE",
+            "LOCK",
+            "MERGE",
+            "MKACTIVITY",
+            "MKCOL",
+            "MOVE",
+            "NOTIFY",
+            "OPTIONS",
+            "PATCH",
+            "PROPFIND",
+            "PROPPATCH",
+            "QUERY",
+            "REPORT",
+            "SEARCH",
+            "SUBSCRIBE",
+            "UNLOCK",
+            "UNSUBSCRIBE",
+        )  # fmt: skip
+    ),
+    # `cors`, whatever the credential; Apollo Server's CSRF check and 405 without `Origin`.
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            _PREFLIGHT_ASKED,
+            None,
+            c,
+            204,
+            None,
+            b"",
+            id=f"preflight, {c}",
+            answered=_LINEAR_PREFLIGHT | e,
+        )
+        for c, e in (
+            ("key", {}),
+            ("none", {"x-request-id": _REQUEST_ID, "etag": None, "x-content-type-options": None}),
+            ("Bearer key", {}),
+        )
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        _ORIGIN,
+        None,
+        "nope",
+        204,
+        None,
+        b"",
+        id="Origin alone",
+        answered=_LINEAR_PREFLIGHT,
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Origin", "null"), ("Access-Control-Request-Method", "POST")),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="Origin null",
+        answered={**_LINEAR_PREFLIGHT, "access-control-allow-origin": "null"},
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (*_ORIGIN, ("Access-Control-Request-Method", "PUT")),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="asked PUT",
+        answered=_LINEAR_PREFLIGHT,
+    ),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            (*_PREFLIGHT_ASKED, ("Access-Control-Request-Headers", asked)),
+            None,
+            "key",
+            204,
+            None,
+            b"",
+            id=f"asked {asked!r}",
+            answered={**_LINEAR_PREFLIGHT, "access-control-allow-headers": allowed},
+        )
+        for asked, allowed in (
+            ("Content-Type, X-Foo", "Content-Type,X-Foo"),
+            (" a , b ", "a,b"),
+            ("a,,b", "a,,b"),
+        )
+    ),
+    http_row("OPTIONS", "", (), None, "key", 400, _JSON_UTF8, _CSRF, id="OPTIONS, unpreflighted"),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            (("Origin", origin), ("Access-Control-Request-Method", "POST")),
+            None,
+            c,
+            400,
+            _JSON_UTF8,
+            _CSRF,
+            id=f"Origin {origin!r}, {c}",
+        )
+        for origin in ("", "   ")
+        for c in ("key", "none")
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Origin", ""), *_J),
+        None,
+        "key",
+        405,
+        _JSON_UTF8,
+        _ONLY_GET_POST,
+        id="Origin '', JSON",
+    ),
+    http_row(
+        "OPTIONS", "", (), None, "Bearer key", 400, _JSON_UTF8, _CSRF, id="OPTIONS, Bearer key"
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Access-Control-Request-Method", "POST"),),
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="OPTIONS, no Origin",
+    ),
+    http_row("OPTIONS", "", _J, None, "key", 405, _JSON_UTF8, _ONLY_GET_POST, id="OPTIONS, JSON"),
+    # `_api_key_as_bearer` ahead of `body-parser`.
+    *(
+        http_row(m, t, h, b, "Bearer key", 400, _JSON_UTF8, a, id=f"{m}, Bearer key")
+        for m, t, h, b, a in (
+            ("GET", _Q, (), None, _API_KEY_AS_BEARER),
+            ("PUT", "", _J, b"{", _API_KEY_AS_BEARER),
+            ("HEAD", _Q, _P, None, b""),
+            ("PATCH", "", _J, None, _API_KEY_AS_BEARER),
+        )
+    ),
+    # `body-parser` on a JSON body (`_has_body`), then Apollo Server's CSRF check, then its 405.
+    http_row("PUT", "", (*_J, *_P), b"{", "key", 400, _JSON_UTF8, _EXPECTED_PROPERTY, id="PUT {"),
+    http_row(
+        "OPTIONS", "", (*_J, *_P), b"{", "key", 400, _JSON_UTF8, _EXPECTED_PROPERTY, id="OPTIONS {"
+    ),
+    http_row(
+        "PUT", "", (*_J, *_P), _TYPENAME, "key", 405, _JSON_UTF8, _ONLY_GET_POST, id="PUT, a query"
+    ),
+    http_row(
+        "DELETE", "", _J, _TYPENAME, "none", 405, _JSON_UTF8, _ONLY_GET_POST, id="DELETE, a query"
+    ),
+    http_row(
+        "PUT",
+        "",
+        (("Content-Type", "text/plain"),),
+        _TYPENAME,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="PUT, text/plain",
+    ),
+    http_row("DELETE", "", (), None, "nope", 400, _JSON_UTF8, _CSRF, id="DELETE, unpreflighted"),
+    # A POST's content type: read as JSON, refused as a request a browser sends unpreflighted, or
+    # passed with nothing read.
+    http_row(
+        "POST",
+        "",
+        (("Content-Type", "text/plain"),),
+        _TYPENAME,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="'text/plain'",
+        answered=_sent('W/"1e1-Pj6jukFvCDT/ZBGD/LVdheKiTtk"'),
+    ),
+    *(
+        http_row(
+            "POST",
+            "",
+            (("Content-Type", t), *h),
+            _TYPENAME,
+            "key",
+            s,
+            _JSON_UTF8,
+            a,
+            id=f"{t!r}{i}",
+        )
+        for t, h, s, a, i in (
+            ("text/plain", _P, 400, _NO_KEYS, ", preflight"),
+            ("TEXT/PLAIN;X=Y", (), 400, _CSRF, ""),
+            ("application/x-www-form-urlencoded", (), 400, _CSRF, ""),
+            ("multipart/form-data; boundary=x", (), 400, _CSRF, ""),
+            ("", (), 400, _CSRF, ""),
+            ("foo", (), 400, _NO_KEYS, ""),
+            ("text/plain, application/json", (), 400, _NO_KEYS, ""),
+            ("application/graphql", (), 400, _NO_KEYS, ""),
+            ("application/json;", (), 400, _NO_KEYS, ""),
+            ("application/json; x=y, text/plain", (), 400, _NO_KEYS, ""),
+            ("application/json\t;", (), 400, _NO_KEYS, ""),
+            ("Application/JSON", (), 200, _TYPENAME_DATA, ""),
+            ("application/json ;charset=utf-8", (), 200, _TYPENAME_DATA, ""),
+            ('application/json;x="a;b"', (), 200, _TYPENAME_DATA, ""),
+        )
+    ),
+    http_row("POST", "", (), _TYPENAME, "key", 400, _JSON_UTF8, _CSRF, id="no type"),
+    http_row("POST", "", _P, _TYPENAME, "key", 400, _JSON_UTF8, _NO_KEYS, id="no type, preflight"),
+    http_row(
+        "POST",
+        "",
+        _J,
+        b"",
+        "key",
+        400,
+        _JSON_UTF8,
+        _NO_KEYS,
+        id="JSON, empty",
+        answered=_sent('W/"cf-hkw7NmLY8eURf0zpzWMxpTvnOjM"'),
+    ),
+    # A GET: its query string, Apollo Server's 405 for one that is not a query, ahead of the
+    # credential.
+    http_row(
+        "GET",
+        _Q,
+        _P,
+        None,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="GET",
+        answered=_sent(_ETAG_OF_TYPENAME) | _counted(2500),
+    ),
+    http_row("GET", _Q, (), None, "key", 400, _JSON_UTF8, _CSRF, id="GET, unpreflighted"),
+    http_row("GET", _Q, _J, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id="GET, JSON"),
+    http_row(
+        "GET",
+        _Q,
+        (("Content-Type", "text/plain"), *_P),
+        None,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="GET, text/plain",
+    ),
+    http_row(
+        "GET",
+        _Q,
+        (("Content-Type", "foo"),),
+        None,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="GET, foo",
+    ),
+    http_row("GET", _Q, _P, None, "none", 401, _JSON_UTF8, _UNAUTHENTICATED, id="GET, none"),
+    http_row(
+        "GET",
+        "?query=%7B+__typename+%7D",
+        _P,
+        None,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="GET, +",
+    ),
+    http_row("GET", "", _P, None, "key", 400, _JSON_UTF8, _NO_QUERY, id="GET, no query"),
+    http_row(
+        "GET", "?QUERY" + _Q[6:], _P, None, "key", 400, _JSON_UTF8, _NO_QUERY, id="GET, QUERY"
+    ),
+    *(
+        http_row("GET", t, _P, None, "key", 400, _JSON_UTF8, _search_refusal(m), id=i)
+        for t, m, i in (
+            (
+                _Q + "&query=",
+                b"The 'query' search parameter may only be specified once.",
+                "query twice",
+            ),
+            (
+                _Q + "&operationName=A&operationName=B",
+                b"The 'operationName' search parameter may only be specified once.",
+                "operationName twice",
+            ),
+            (
+                _Q + "&variables=nope",
+                b"The variables search parameter contains invalid JSON.",
+                "variables nope",
+            ),
+            (
+                _Q + "&variables=",
+                b"The variables search parameter contains invalid JSON.",
+                "variables empty",
+            ),
+            (
+                _Q + "&variables=%5B1%5D",
+                b"The variables search parameter should contain a JSON-encoded object.",
+                "variables [1]",
+            ),
+            (
+                _Q + "&variables=null",
+                b"The variables search parameter should contain a JSON-encoded object.",
+                "variables null",
+            ),
+            (
+                _Q + "&extensions=5",
+                b"The extensions search parameter should contain a JSON-encoded object.",
+                "extensions 5",
+            ),
+            (
+                "?query=%7B&query=%7B&variables=nope",
+                b"The 'query' search parameter may only be specified once.",
+                "query twice, variables nope",
+            ),
+            (
+                "?operationName=A&operationName=B&query=%7B&query=%7B",
+                b"The 'query' search parameter may only be specified once.",
+                "operationName twice, query twice",
+            ),
+            (
+                "?operationName=A&operationName=B&variables=nope",
+                b"The 'operationName' search parameter may only be specified once.",
+                "operationName twice, variables nope",
+            ),
+            (
+                "?variables=nope&extensions=5",
+                b"The variables search parameter contains invalid JSON.",
+                "variables nope, extensions 5",
+            ),
+        )
+    ),
+    *(
+        http_row(
+            "GET",
+            "?query=mutation%20%7B%20__typename%20%7D",
+            _P,
+            None,
+            c,
+            405,
+            _JSON_UTF8,
+            _GET_MUTATION,
+            id=f"GET mutation, {c}",
+            answered=e,
+        )
+        for c, e in (
+            ("key", _sent('W/"ce-z0YB89QJgWlJGjEG4cmlKGgjXcg"', allow="POST")),
+            ("none", {"allow": "POST"}),
+        )
+    ),
+    http_row(
+        "GET",
+        "?query=query%20A%20%7B%20__typename%20%7D%20mutation%20B%20%7B%20__typename%20%7D"
+        "&operationName=A",
+        _P,
+        None,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="GET, a query beside a mutation",
+    ),
+    http_row(
+        "HEAD",
+        _Q,
+        _P,
+        None,
+        "key",
+        405,
+        _JSON_UTF8,
+        b"",
+        id="HEAD",
+        answered=_sent('W/"b9-gq5kxI+usdfwWz5UDzUMGmXMbSE"', allow="GET, POST"),
+    ),
+    http_row(
+        "HEAD",
+        _Q,
+        (("Content-Type", "text/plain"),),
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        b"",
+        id="HEAD, text/plain",
+    ),
+    # `apollo_http.response_type` and its 406, the 401 among the answers it replaces.
+    http_row(
+        "POST",
+        "",
+        (*_J, ("Accept", "text/html")),
+        _TYPENAME,
+        "key",
+        406,
+        _JSON_UTF8,
+        _NOT_ACCEPTABLE,
+        id="Accept 'text/html'",
+        answered=_sent('W/"118-W8enG7eCxHkz3I26tylt6TX1rMM"') | _NOT_COUNTED,
+    ),
+    *(
+        http_row("POST", "", (*_J, ("Accept", a)), _TYPENAME, "key", s, t, b, id=f"Accept {a!r}")
+        for a, s, t, b in (
+            ("application/json;q=0", 406, _JSON_UTF8, _NOT_ACCEPTABLE),
+            ("application/json;q", 406, _JSON_UTF8, _NOT_ACCEPTABLE),
+            ("application/json; charset=latin1", 406, _JSON_UTF8, _NOT_ACCEPTABLE),
+            ("", 200, _JSON_UTF8, _TYPENAME_DATA),
+            ("*/*", 200, _JSON_UTF8, _TYPENAME_DATA),
+            ("application/graphql-response+json", 200, _GRAPHQL_RESPONSE, _TYPENAME_DATA),
+            ("application/json;q=0, */*", 200, _GRAPHQL_RESPONSE, _TYPENAME_DATA),
+            ("text/html;q=0.9, */*;q=0.1", 200, _JSON_UTF8, _TYPENAME_DATA),
+            (
+                "application/json; callbackSpec=1.0",
+                200,
+                "application/json; callbackspec=1.0; charset=utf-8",
+                _TYPENAME_DATA,
+            ),
+        )
+    ),
+    *(
+        http_row("POST", "", (*_J, ("Accept", a)), b, c, s, t, e, id=f"Accept {a!r}, {i}")
+        for a, b, c, s, t, e, i in (
+            ("text/html", b"{}", "key", 400, _JSON_UTF8, _NO_KEYS, "{}"),
+            (
+                "application/graphql-response+json",
+                b"{}",
+                "key",
+                400,
+                _GRAPHQL_RESPONSE,
+                _NO_KEYS,
+                "{}",
+            ),
+            ("text/html", b"[]", "key", 400, _JSON_UTF8, _BATCHING, "[]"),
+            (
+                "text/html",
+                b'{"query":"{"}',
+                "key",
+                406,
+                _JSON_UTF8,
+                _NOT_ACCEPTABLE,
+                "a parse error",
+            ),
+            ("text/html", _TYPENAME, "none", 406, _JSON_UTF8, _NOT_ACCEPTABLE, "none"),
+            (
+                "application/graphql-response+json",
+                _TYPENAME,
+                "none",
+                401,
+                _GRAPHQL_RESPONSE,
+                _UNAUTHENTICATED,
+                "none",
+            ),
+            ("text/html", b"{", "key", 400, _JSON_UTF8, _EXPECTED_PROPERTY, "{"),
+        )
+    ),
+    http_row(
+        "GET",
+        _Q,
+        (*_P, ("Accept", "text/html")),
+        None,
+        "key",
+        406,
+        _JSON_UTF8,
+        _NOT_ACCEPTABLE,
+        id="GET, Accept text/html",
+    ),
+    http_row(
+        "GET",
+        "?query=mutation%20%7B%20__typename%20%7D",
+        (*_P, ("Accept", "text/html;level=1")),
+        None,
+        "key",
+        406,
+        _JSON_UTF8,
+        _NOT_ACCEPTABLE,
+        id="GET mutation, Accept text/html;level=1",
+    ),
+    http_row(
+        "POST",
+        "",
+        (("Content-Type", "text/plain"), ("Accept", "application/graphql-response+json")),
+        _TYPENAME,
+        "key",
+        400,
+        _GRAPHQL_RESPONSE,
+        _CSRF,
+        id="text/plain, Accept graphql-response",
+    ),
+    http_row(
+        "PUT",
+        "",
+        (*_J, ("Accept", "application/graphql-response+json")),
+        _TYPENAME,
+        "key",
+        405,
+        _GRAPHQL_RESPONSE,
+        _ONLY_GET_POST,
+        id="PUT, Accept graphql-response",
+    ),
+    http_row(
+        "GET",
+        _Q,
+        (*_P, ("Accept", "text/html, application/graphql-response+json")),
+        None,
+        "key",
+        200,
+        _GRAPHQL_RESPONSE,
+        _TYPENAME_DATA,
+        id="GET, Accept text/html then graphql-response",
+    ),
+    # `cors` lets any other method carrying `Origin` through; an API key under `Bearer` on DELETE.
+    http_row(
+        "POST",
+        "",
+        (*_J, *_ORIGIN),
+        _TYPENAME,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="POST, Origin",
+        answered=_sent(_ETAG_OF_TYPENAME) | _cors(),
+    ),
+    http_row(
+        "PUT",
+        "",
+        (*_J, *_ORIGIN),
+        _TYPENAME,
+        "key",
+        405,
+        _JSON_UTF8,
+        _ONLY_GET_POST,
+        id="PUT, Origin",
+        answered=_sent('W/"b9-gq5kxI+usdfwWz5UDzUMGmXMbSE"', allow="GET, POST") | _cors(),
+    ),
+    *(
+        http_row(m, t, (*h, *_ORIGIN), b, "key", s, _JSON_UTF8, a, id=f"{m}, Origin")
+        for m, t, h, b, s, a in (
+            ("GET", _Q, _P, None, 200, _TYPENAME_DATA),
+            ("HEAD", _Q, _P, None, 405, b""),
+            ("PATCH", "", _J, _TYPENAME, 405, _ONLY_GET_POST),
+            ("DELETE", "", _J, _TYPENAME, 405, _ONLY_GET_POST),
+        )
+    ),
+    http_row(
+        "DELETE",
+        "",
+        (),
+        None,
+        "Bearer key",
+        400,
+        _JSON_UTF8,
+        _API_KEY_AS_BEARER,
+        id="DELETE, Bearer key",
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (
+            *_PREFLIGHT_ASKED,
+            ("Access-Control-Request-Headers", "a"),
+            ("Access-Control-Request-Headers", "b"),
+        ),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="asked twice",
+        answered={**_LINEAR_PREFLIGHT, "access-control-allow-headers": "a,b"},
+    ),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            (*_PREFLIGHT_ASKED, ("Access-Control-Request-Headers", asked)),
+            None,
+            "key",
+            204,
+            None,
+            b"",
+            id=f"asked {asked!r}",
+            answered={**_LINEAR_PREFLIGHT, "access-control-allow-headers": allowed},
+        )
+        for asked, allowed in (
+            ("a,  ,b", "a,,b"),
+            ("A-B, c_d", "A-B,c_d"),
+            ("a\t", "a"),
+            ("a b", "a b"),
+            ("a\xa0", "a"),
+            ("\xa0a", "a"),
+            ("a\x85", "a\x85"),
+        )
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Origin", " https://example.com\xa0"), ("Access-Control-Request-Method", "POST")),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="Origin with spaces",
+        answered={**_LINEAR_PREFLIGHT, "access-control-allow-origin": "https://example.com\xa0"},
+    ),
+    # Copies of a header: `Content-Type` as `backlot.graphql.body.joined_header` joins them, the
+    # rest as `apollo_http.headers_seen` reads them.
+    *(
+        http_row("POST", "", h, _TYPENAME, "key", s, _JSON_UTF8, a, id=i)
+        for h, s, a, i in (
+            (
+                (*_J, ("Accept", "application/json"), ("Accept", "text/html")),
+                200,
+                _TYPENAME_DATA,
+                "Accept json, html",
+            ),
+            (
+                (*_J, ("Accept", "text/html"), ("Accept", "application/json")),
+                200,
+                _TYPENAME_DATA,
+                "Accept html, json",
+            ),
+            ((*_J, ("Content-Type", "text/plain")), 400, _NO_KEYS, "Content-Type json, text/plain"),
+            ((("Content-Type", "text/plain"), *_J), 400, _NO_KEYS, "Content-Type text/plain, json"),
+            ((*_J, ("Content-Type", "")), 400, _NO_KEYS, "Content-Type json, empty"),
+            ((("Content-Type", ""), *_J), 200, _TYPENAME_DATA, "Content-Type empty, json"),
+            ((*_J, *_J), 400, _NO_KEYS, "Content-Type json twice"),
+            (
+                (("Content-Type", "text/plain"), ("x-apollo-operation-name", " ")),
+                400,
+                _CSRF,
+                "operation name a space",
+            ),
+        )
+    ),
+    *(
+        http_row("GET", _Q, h, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id=i)
+        for h, i in (
+            ((("apollo-require-preflight", ""), *_P), "preflight empty, 1"),
+            ((*_P, ("apollo-require-preflight", "")), "preflight 1, empty"),
+        )
+    ),
+    # No body and no length under a JSON type, by method (`_has_body`).
+    *(
+        http_row(
+            m,
+            t,
+            (("Content-Type", "application/json; charset=latin1"), *h),
+            None,
+            "key",
+            s,
+            _JSON_UTF8,
+            a,
+            id=f"{m}, latin1, no body",
+        )
+        for m, t, h, s, a in (
+            ("POST", "", (), 415, _LATIN1),
+            ("PUT", "", (), 415, _LATIN1),
+            ("PATCH", "", (), 415, _LATIN1),
+            ("DELETE", "", (), 415, _LATIN1),
+            ("OPTIONS", "", (), 415, _LATIN1),
+            ("PROPFIND", "", (), 415, _LATIN1),
+            ("GET", "", (), 400, _NO_QUERY),
+            ("HEAD", "", (), 405, b""),
+        )
+    ),
+    http_row("POST", "", _J, None, "key", 400, _JSON_UTF8, _NO_KEYS, id="JSON, no body"),
+    http_row("POST", "", (), None, "key", 400, _JSON_UTF8, _CSRF, id="no type, no body"),
+    http_row(
+        "POST", "", _P, None, "key", 400, _JSON_UTF8, _NO_KEYS, id="no type, no body, preflight"
+    ),
+    http_row(
+        "POST",
+        "",
+        _P,
+        Chunked(_TYPENAME),
+        "key",
+        400,
+        _JSON_UTF8,
+        _NO_KEYS,
+        id="no type, chunked, preflight",
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        Chunked(_TYPENAME),
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="JSON, chunked",
+    ),
+    http_row(
+        "GET",
+        "?query=%7B&query=%7B",
+        (),
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="GET, unpreflighted, query twice",
+    ),
+    http_row(
+        "GET",
+        _Q + "&variables=%7B%7D&operationName=",
+        _P,
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        b'{"errors":[{"message":"operation does not exist","extensions":{"type":"invalid input","code":"INPUT_ERROR",'
+        b'"statusCode":400,"userError":true,"userPresentableMessage":"The operation does not exist on the query.",'
+        b'"http":{"status":400}}}]}\n',
+        id="GET, variables {}, operationName empty",
+    ),
+    # A path Express hands Apollo Server (`routes_to_apollo`) once Linear's front has read it
+    # (`express_path`), and Express's own answers at any other (`express`), behind the load
+    # balancer, `cors` and `_api_key_as_bearer`, whose envelope the path as sent picks.
+    *(
+        http_row("POST", p, _J, _TYPENAME, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id=f"POST {p}")
+        for p in (
+            "/GRAPHQL",
+            "/GraphQL",
+            "/GRAPHQL/",
+            "/graphql/",
+            "//graphql",
+            "/graphql//",
+            "/graphql/x",
+            "/graph%71l",
+        )
+    ),
+    http_row(
+        "POST",
+        "/%67RAPHQL",
+        _J,
+        _TYPENAME,
+        "none",
+        401,
+        _JSON_UTF8,
+        _UNAUTHENTICATED,
+        id="POST /%67RAPHQL, no credential",
+    ),
+    *(
+        http_row(
+            "POST", p, _J, _TYPENAME, "none", 401, _JSON_UTF8, _UNAUTHENTICATED, id=f"POST {p}"
+        )
+        for p in ("/graphql\\x", "/Graphql/X/Y")
+    ),
+    http_row(
+        "GET", "/GRAPHQL" + _Q, _P, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id="GET /GRAPHQL"
+    ),
+    http_row(
+        "PUT", "/GRAPHQL", _J, _TYPENAME, "key", 405, _JSON_UTF8, _ONLY_GET_POST, id="PUT /GRAPHQL"
+    ),
+    *(
+        http_row(
+            "POST", p, _J, _TYPENAME, "Bearer key", 400, _JSON_UTF8, a, id=f"POST {p}, Bearer key"
+        )
+        for p, a in (
+            ("/graphqlx", _API_KEY_AS_BEARER),
+            ("/graphql%2F", _API_KEY_AS_BEARER),
+            ("/GRAPHQL", _EXPRESS_API_KEY_AS_BEARER),
+            ("//graphql", _EXPRESS_API_KEY_AS_BEARER),
+            ("/graph%71l", _EXPRESS_API_KEY_AS_BEARER),
+        )
+    ),
+    http_row(
+        "POST",
+        "/nosuch",
+        _J,
+        _TYPENAME,
+        "Bearer key",
+        400,
+        _JSON_UTF8,
+        _EXPRESS_API_KEY_AS_BEARER,
+        id="POST /nosuch, Bearer key",
+        answered=_sent(_ETAG_OF_THE_BEARER_400),
+    ),
+    http_row(
+        "GET",
+        "/",
+        (),
+        None,
+        "Bearer key",
+        400,
+        _JSON_UTF8,
+        _EXPRESS_API_KEY_AS_BEARER,
+        id="GET /, Bearer key",
+        answered=_sent(_ETAG_OF_THE_BEARER_400, x_content_type_options="nosniff"),
+    ),
+    *(
+        http_row(
+            m,
+            p,
+            h,
+            b,
+            c,
+            404,
+            _HTML_UTF8,
+            _express_404(m, echo),
+            id=f"{m} {p}, {c}",
+            answered=_NO_LENGTH,
+        )
+        for m, p, h, b, c, echo in (
+            ("POST", "/graphqlx", _J, _TYPENAME, "key", "/graphqlx"),
+            ("POST", "/graphql.json", _J, _TYPENAME, "key", "/graphql.json"),
+            ("POST", "/graphql;x", _J, _TYPENAME, "key", "/graphql;x"),
+            ("POST", "/graphql%2F", _J, _TYPENAME, "key", "/graphql%2F"),
+            ("POST", "/graphql%20", _J, _TYPENAME, "key", "/graphql%20"),
+            ("POST", "/GRAPHQL%2F", _J, _TYPENAME, "none", "/GRAPHQL%2F"),
+            ("POST", "/graphql%0A", _J, _TYPENAME, "none", "/graphql%0A"),
+            ("POST", "/x/graphql", _J, _TYPENAME, "key", "/x/graphql"),
+            ("POST", "/nosuch", _J, b"{", "none", "/nosuch"),
+            ("POST", "//nosuch", _J, _TYPENAME, "none", "/nosuch"),
+            ("POST", "/nosuch//x", _J, _TYPENAME, "none", "/nosuch/x"),
+            ("POST", "/%6Eosuch", _J, _TYPENAME, "none", "/nosuch"),
+            ("POST", "/a%41b", _J, _TYPENAME, "none", "/aAb"),
+            ("POST", "/a%7eb", _J, _TYPENAME, "none", "/a~b"),
+            ("POST", "/a%2fb", _J, _TYPENAME, "none", "/a%2fb"),
+            ("POST", "/a%3cb", _J, _TYPENAME, "none", "/a%3cb"),
+            ("POST", "/a%0Ab", _J, _TYPENAME, "none", "/a%0Ab"),
+            ("POST", "/a\\b", _J, _TYPENAME, "none", "/a/b"),
+            ("POST", "/a%3Cb%3E", _J, _TYPENAME, "key", "/a%3Cb%3E"),
+            ("POST", "/%C3%A9", _J, _TYPENAME, "key", "/%C3%A9"),
+            ("POST", "/nosucha|b", _J, b"{}", "none", "/nosucha%7Cb"),
+            ("POST", "/nosucha^b", _J, b"{}", "none", "/nosucha%5Eb"),
+            ("POST", "/nosucha'b", _J, b"{}", "none", "/nosucha&#39;b"),
+            ("POST", "/nosucha&b", _J, b"{}", "none", "/nosucha&amp;b"),
+            ("POST", "/nosucha[b", _J, b"{}", "none", "/nosucha[b"),
+            ("GET", "/nosuch", (("Accept", "application/json"),), None, "none", "/nosuch"),
+            ("PUT", "/nosuch", _J, _TYPENAME, "key", "/nosuch"),
+            ("PROPFIND", "/nosuch", (), None, "key", "/nosuch"),
+            ("OPTIONS", "/nosuch", (), None, "Bearer key", "/nosuch"),
+            ("POST", "/", _J, _TYPENAME, "key", "/"),
+            ("PUT", "/", _J, _TYPENAME, "key", "/"),
+            ("PATCH", "/", _J, _TYPENAME, "none", "/"),
+            ("DELETE", "/", (), None, "none", "/"),
+            ("PROPFIND", "/", (), None, "none", "/"),
+            ("GET", "/%2F", (), None, "none", "/%2F"),
+            ("GET", "/index.html", (), None, "none", "/index.html"),
+        )
+    ),
+    http_row(
+        "POST",
+        "/nosuch",
+        _J,
+        _TYPENAME,
+        "key",
+        404,
+        _HTML_UTF8,
+        _express_404("POST", "/nosuch"),
+        id="POST /nosuch, key",
+        answered=_sent(
+            None, content_security_policy="default-src 'none'", x_content_type_options="nosniff"
+        )
+        | _NO_LENGTH,
+    ),
+    http_row(
+        "HEAD",
+        "/nosuch",
+        (),
+        None,
+        "none",
+        404,
+        _HTML_UTF8,
+        b"",
+        id="HEAD /nosuch",
+        answered=_NO_LENGTH,
+    ),
+    http_row("BIND", "/nosuch", (), None, "key", 501, None, b"", id="BIND /nosuch"),
+    http_row(
+        "OPTIONS",
+        "/nosuch",
+        _PREFLIGHT_ASKED,
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="preflight at /nosuch",
+        answered=_LINEAR_PREFLIGHT,
+    ),
+    *(
+        http_row("GET", p, (), None, c, 200, _HTML_UTF8, _GREETING, id=f"GET {p}, {c}")
+        for p, c in (("/" + _Q, "key"), ("//", "none"), ("/?x", "none"))
+    ),
+    http_row(
+        "GET",
+        "/",
+        (),
+        None,
+        "none",
+        200,
+        _HTML_UTF8,
+        _GREETING,
+        id="GET /, none",
+        answered=_sent('W/"22-p50xJmghTUzB/yxthmCh2AutfIs"', x_content_type_options="nosniff"),
+    ),
+    http_row(
+        "HEAD",
+        "/",
+        (),
+        None,
+        "none",
+        200,
+        _HTML_UTF8,
+        b"",
+        id="HEAD /",
+        answered=_sent(None, x_content_type_options="nosniff"),
+    ),
+    http_row(
+        "OPTIONS",
+        "/",
+        (),
+        None,
+        "none",
+        200,
+        "text/plain",
+        b"GET, HEAD",
+        id="OPTIONS /, none",
+        answered=_sent(
+            None,
+            allow="GET, HEAD",
+            cache_control=f"{_NO_STORE}, s-maxage=43200",
+            cache_tag="preflight",
+            x_content_type_options="nosniff",
+        ),
+    ),
+    http_row(
+        "OPTIONS",
+        "/",
+        (),
+        None,
+        "Bearer key",
+        200,
+        "text/plain",
+        b"GET, HEAD",
+        id="OPTIONS /, Bearer key",
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        _TYPENAME,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="served",
+        answered=_sent(_ETAG_OF_TYPENAME) | _counted(2500),
+    ),
+    # Express's 304 to a GET its `ETag` is fresh to, and its answer where not
+    # (`linear._express_sent`, `linear._fresh`).
+    *(
+        http_row(
+            m,
+            _Q if m == "GET" else "",
+            (*_P, *sent) if m == "GET" else (*_J, *sent),
+            None if m == "GET" else _TYPENAME,
+            "key",
+            status,
+            None if status == 304 else _JSON_UTF8,
+            b"" if status == 304 else _TYPENAME_DATA,
+            id=f"{m}, {label}",
+            answered=(
+                _sent(_ETAG_OF_TYPENAME, vary=None, content_type=None)
+                if status == 304
+                else _sent(_ETAG_OF_TYPENAME)
+            )
+            | _counted(2500),
+        )
+        for m, sent, status, label in (
+            ("GET", (("If-None-Match", _ETAG_OF_TYPENAME),), 304, "its ETag"),
+            ("GET", (("If-None-Match", "*"),), 304, "*"),
+            ("GET", (("If-None-Match", '"x", "20-/8NdYwgmGsmmlrq5Nh8mH1T+tAs"'),), 304, "a list"),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "no-cache")),
+                200,
+                "its ETag, no-cache",
+            ),
+            ("POST", (("If-None-Match", _ETAG_OF_TYPENAME),), 200, "its ETag"),
+            ("GET", (("If-None-Match", 'W/"20-x"'),), 200, "another ETag"),
+            ("GET", (("If-None-Match", "W/" + _ETAG_OF_TYPENAME),), 304, "its ETag after W/"),
+            ("GET", (("If-None-Match", "W/W/" + _ETAG_OF_TYPENAME),), 200, "its ETag after W/W/"),
+            ("GET", (("If-None-Match", "w/" + _ETAG_OF_TYPENAME[2:]),), 200, "its ETag with w/"),
+            ("GET", (("If-None-Match", '"x",   ' + _ETAG_OF_TYPENAME),), 304, "spaces in a list"),
+            ("GET", (("If-None-Match", '"x",\t' + _ETAG_OF_TYPENAME),), 200, "a tab in a list"),
+            ("GET", (("If-None-Match", '"x",\xa0' + _ETAG_OF_TYPENAME),), 200, "U+00A0 in a list"),
+            ("GET", (("If-None-Match", _ETAG_OF_TYPENAME + '\t, "x"'),), 200, "a tab after it"),
+            ("GET", (("If-None-Match", "*"), ("Cache-Control", "no-cache")), 200, "*, no-cache"),
+            ("GET", (("If-None-Match", "* "),), 304, "* then a space"),
+            ("GET", (("If-None-Match", " \t*"),), 304, "a space and a tab before *"),
+            ("GET", (("If-None-Match", "*\t"),), 304, "* then a tab"),
+            ("GET", (("If-None-Match", "*\x85"),), 200, "* then U+0085"),
+            ("GET", (("If-None-Match", "*\xa0"),), 200, "* then U+00A0"),
+            ("GET", (("If-None-Match", _ETAG_OF_TYPENAME + "\t"),), 304, "its ETag then a tab"),
+            ("GET", (("If-None-Match", _ETAG_OF_TYPENAME + " "),), 304, "its ETag then a space"),
+            (
+                "GET",
+                (("If-None-Match", "*"), ("If-Modified-Since", "Tue, 01 Jan 2019 00:00:00 GMT")),
+                304,
+                "*, If-Modified-Since",
+            ),
+            *(
+                ("GET", (("If-None-Match", "*"), ("If-Modified-Since", since)), 304, f"*, {label}")
+                for since, label in (
+                    ("Tue, 01 Jan 2030 00:00:00 GMT", "a future If-Modified-Since"),
+                    ("", "an empty If-Modified-Since"),
+                    ("   ", "If-Modified-Since of spaces"),
+                    ("\xa0", "If-Modified-Since of U+00A0"),
+                    ("x", "If-Modified-Since of x"),
+                )
+            ),
+            (
+                "GET",
+                (
+                    ("If-None-Match", _ETAG_OF_TYPENAME),
+                    ("If-Modified-Since", "Tue, 01 Jan 2019 00:00:00 GMT"),
+                ),
+                304,
+                "its ETag, If-Modified-Since",
+            ),
+            *(
+                ("GET", (("If-Modified-Since", since),), 200, label)
+                for since, label in (
+                    ("Tue, 01 Jan 2019 00:00:00 GMT", "If-Modified-Since alone"),
+                    ("Tue, 01 Jan 2030 00:00:00 GMT", "a future If-Modified-Since alone"),
+                )
+            ),
+            (
+                "GET",
+                (
+                    ("If-None-Match", "*"),
+                    ("Cache-Control", "max-age=0"),
+                    ("Cache-Control", "no-cache"),
+                ),
+                200,
+                "*, no-cache in a second Cache-Control",
+            ),
+            (
+                "GET",
+                (
+                    ("If-None-Match", "*"),
+                    ("Cache-Control", "no-cache"),
+                    ("Cache-Control", "max-age=0"),
+                ),
+                200,
+                "*, no-cache in the first of two Cache-Control",
+            ),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "\x85no-cache")),
+                304,
+                "its ETag, U+0085 before no-cache",
+            ),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "\xa0no-cache")),
+                200,
+                "its ETag, U+00A0 before no-cache",
+            ),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "no-cache\x85")),
+                304,
+                "its ETag, U+0085 after no-cache",
+            ),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "no-cache\xa0")),
+                200,
+                "its ETag, U+00A0 after no-cache",
+            ),
+            (
+                "GET",
+                (("If-None-Match", _ETAG_OF_TYPENAME), ("Cache-Control", "no-cache ,max-age=0")),
+                200,
+                "its ETag, a space between no-cache and a comma",
+            ),
+        )
+    ),
+    http_row(
+        "GET",
+        "?query=mutation%20%7B%20__typename%20%7D",
+        (*_P, ("If-None-Match", "*")),
+        None,
+        "key",
+        405,
+        _JSON_UTF8,
+        _GET_MUTATION,
+        id="GET of a mutation, *",
+        answered=_sent('W/"ce-z0YB89QJgWlJGjEG4cmlKGgjXcg"', allow="POST"),
+    ),
+    http_row(
+        "OPTIONS",
+        "/",
+        (("If-None-Match", "*"),),
+        None,
+        "none",
+        200,
+        "text/plain",
+        b"GET, HEAD",
+        id="OPTIONS /, *",
+        answered=_sent(
+            None,
+            allow="GET, HEAD",
+            cache_control=f"{_NO_STORE}, s-maxage=43200",
+            cache_tag="preflight",
+            x_content_type_options="nosniff",
+        ),
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        b'{"query":"{ __schema { queryType { name } } }"}',
+        "none",
+        200,
+        _JSON_UTF8,
+        b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
+        id="introspection, no credential",
+        answered=_sent('W/"35-JB5+8RfqjQXUu2SN0MW5BgcE+BU"') | _counted(1200),
+    ),
+    http_row(
+        "POST",
+        "",
+        (*_J, ("Accept", "application/graphql-response+json")),
+        b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }"}',
+        "key",
+        400,
+        _GRAPHQL_RESPONSE,
+        b'{"errors":[{"message":"Variable \\"$b\\" of required type \\"Boolean!\\" was not provided.","locations":[{"line":1,"column":7}],"extensions":{"code":"BAD_USER_INPUT","type":"graphql error","userError":true}}]}\n',
+        id="a variable not provided",
+        answered=_sent('W/"ce-VUG9Oahq4m/rKQGebfuTeJHpOEU"') | _counted(2500),
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        b'{"query":"{ viewer { id } }"}',
+        "none",
+        401,
+        _JSON_UTF8,
+        _UNAUTHENTICATED,
+        id="401",
+        answered=_sent('W/"121-zqm5UPdEe2zPAnGCLuDQqbBUkgc"') | _NOT_COUNTED,
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        b'{"query":"{ nosuch }"}',
+        "key",
+        400,
+        _JSON_UTF8,
+        b'{"errors":[{"message":"Cannot query field \\"nosuch\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_VALIDATION_FAILED","type":"graphql error","userError":true}}]}\n',
+        id="not valid",
+        answered=_sent('W/"ed-iulnxLcPjpFsZfStGL/BMaMkpH0"') | _NOT_COUNTED,
+    ),
+    http_row(
+        "POST",
+        "",
+        (*_J, ("Accept", "application/graphql-response+json")),
+        b'{"extensions":{"persistedQuery":{"version":1,"sha256Hash":"' + b"1" * 64 + b'"}}}',
+        "key",
+        200,
+        _GRAPHQL_RESPONSE,
+        b'{"errors":[{"message":"PersistedQueryNotFound","extensions":{"http":{"status":200,"headers":{}},"code":"PERSISTED_QUERY_NOT_FOUND","type":"graphql error","userError":true}}]}\n',
+        id="a persisted query's hash alone",
+        answered=_sent(
+            'W/"af-G/6bF//BYk8X0oNXb1A0LRJslBE"', cache_control="private, no-cache, must-revalidate"
+        )
+        | _NOT_COUNTED,
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        b"x",
+        "key",
+        400,
+        _JSON_UTF8,
+        b'{"error":"Unexpected token \'x\', \\"x\\" is not valid JSON","details":{},"code":400}',
+        id="x",
+        answered=_sent('W/"51-Jb7vCM8EoSOeaR6XRpsgTQcPNkI"'),
+    ),
+    http_row(
+        "POST",
+        "",
+        (("Content-Type", "application/json; charset=latin1"),),
+        _TYPENAME,
+        "key",
+        415,
+        _JSON_UTF8,
+        _LATIN1,
+        id="latin1",
+        answered=_sent('W/"42-Tot5z7ploFQn/H0QtssgcnHyvC4"'),
+    ),
+    http_row(
+        "PUT",
+        "",
+        _J,
+        None,
+        "key",
+        405,
+        _JSON_UTF8,
+        _ONLY_GET_POST,
+        id="PUT",
+        answered=_sent('W/"b9-gq5kxI+usdfwWz5UDzUMGmXMbSE"', allow="GET, POST"),
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        _TYPENAME,
+        "Bearer key",
+        400,
+        _JSON_UTF8,
+        _API_KEY_AS_BEARER,
+        id="Bearer at /graphql",
+        answered=_sent(_ETAG_OF_THE_BEARER_400),
+    ),
+    http_row(
+        "GET",
+        "/",
+        (("If-None-Match", 'W/"22-p50xJmghTUzB/yxthmCh2AutfIs"'),),
+        None,
+        "none",
+        304,
+        None,
+        b"",
+        id="greeting, its ETag",
+        answered=_sent(
+            'W/"22-p50xJmghTUzB/yxthmCh2AutfIs"',
+            x_content_type_options="nosniff",
+            vary=None,
+            content_type=None,
+        ),
+    ),
+    *(
+        http_row(
+            "HEAD",
+            "/",
+            (("If-None-Match", sent),),
+            None,
+            "none",
+            304,
+            None,
+            b"",
+            id=f"HEAD /, {label}",
+            answered=_sent(
+                'W/"22-p50xJmghTUzB/yxthmCh2AutfIs"',
+                x_content_type_options="nosniff",
+                vary=None,
+                content_type=None,
+            ),
+        )
+        for sent, label in (('W/"22-p50xJmghTUzB/yxthmCh2AutfIs"', "its ETag"), ("*", "*"))
+    ),
+    http_row(
+        "GET",
+        _Q,
+        (*_P, *_ORIGIN, ("If-None-Match", _ETAG_OF_TYPENAME)),
+        None,
+        "key",
+        304,
+        None,
+        b"",
+        id="GET, its ETag, Origin",
+        answered=_sent(_ETAG_OF_TYPENAME, content_type=None)
+        | _cors()
+        | {"vary": "Origin"}
+        | _counted(2500),
+    ),
+    http_row(
+        "OPTIONS",
+        "/",
+        _PREFLIGHT_ASKED,
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="preflight at /",
+        answered={"x-request-id": _REQUEST_ID, "x-content-type-options": "nosniff"},
+    ),
+    *(
+        http_row(
+            "BIND",
+            t,
+            _J,
+            _TYPENAME,
+            "key",
+            501,
+            None,
+            b"",
+            id=f"BIND at {t or '/graphql'}",
+            answered={
+                "x-request-id": None,
+                "cache-control": None,
+                "vary": None,
+                "x-content-type-options": n,
+            },
+        )
+        for t, n in (
+            ("", None),
+            ("/", "nosniff"),
+            ("//", "nosniff"),
+            ("/%2E", "nosniff"),
+            ("/%2F", None),
+        )
+    ),
+    # Cloudflare's answers (`refuse_cloudflares_methods_on_linear_and_fireflies` in `backlot.main`).
+    *(
+        http_row(
+            m,
+            t,
+            (),
+            None,
+            "key",
+            status,
+            *_CLOUDFLARE_ANSWER[m],
+            id=f"{m} {t}",
+            answered={"x-content-type-options": n, "x-request-id": None},
+        )
+        for m, t, status, n in (
+            ("CONNECT", "/", 400, "nosniff"),
+            ("CONNECT", "//", 400, "nosniff"),
+            ("CONNECT", "/%2E", 400, None),
+            ("CONNECT", "/x/%2E%2E", 400, None),
+            ("CONNECT", "/%2E%2E", 400, None),
+            ("CONNECT", "/nosuch", 400, None),
+            ("PURGE", "/", 400, None),
+            ("TRACE", "/", 405, None),
+        )
+    ),
+    # `cors` in front of each: the origin sent, each copy without its spaces and tabs and joined,
+    # and none for an empty one.
+    *(
+        http_row(
+            "POST",
+            "",
+            (*_J, *origin),
+            _TYPENAME,
+            "key",
+            200,
+            _JSON_UTF8,
+            _TYPENAME_DATA,
+            id=f"served, Origin {label}",
+            answered=_sent(_ETAG_OF_TYPENAME)
+            | ({"vary": "Accept-Encoding"} if allowed is None else _cors(allowed)),
+        )
+        for label, origin, allowed in (
+            ("null", (("Origin", "null"),), "null"),
+            ("spaced", (("Origin", " https://example.com "),), "https://example.com"),
+            (
+                "twice",
+                (("Origin", "https://a.example"), ("Origin", "https://b.example")),
+                "https://a.example, https://b.example",
+            ),
+            ("empty", (("Origin", ""),), None),
+            (
+                "empty, then a value",
+                (("Origin", ""), ("Origin", "https://a.example")),
+                "https://a.example",
+            ),
+            (
+                "a value, then empty",
+                (("Origin", "https://a.example"), ("Origin", "")),
+                "https://a.example,",
+            ),
+            ("empty twice", (("Origin", ""), ("Origin", "")), None),
+            ("tabbed", (("Origin", "\thttps://example.com\t"),), "https://example.com"),
+            ("U+00A0 after", (("Origin", "https://example.com\xa0"),), "https://example.com\xa0"),
+        )
+    ),
+    http_row(
+        "POST",
+        "",
+        (*_J, *_ORIGIN),
+        b'{"query":"{ viewer { id } }"}',
+        "none",
+        401,
+        _JSON_UTF8,
+        _UNAUTHENTICATED,
+        id="Origin, 401",
+        answered=_sent('W/"121-zqm5UPdEe2zPAnGCLuDQqbBUkgc"') | _cors(),
+    ),
+    http_row(
+        "POST",
+        "",
+        (*_J, *_ORIGIN),
+        b"x",
+        "key",
+        400,
+        _JSON_UTF8,
+        b'{"error":"Unexpected token \'x\', \\"x\\" is not valid JSON","details":{},"code":400}',
+        id="Origin, x",
+        answered=_sent('W/"51-Jb7vCM8EoSOeaR6XRpsgTQcPNkI"') | _cors(),
+    ),
+    http_row(
+        "POST",
+        "",
+        (*_J, *_ORIGIN),
+        _TYPENAME,
+        "Bearer key",
+        400,
+        _JSON_UTF8,
+        _API_KEY_AS_BEARER,
+        id="Origin, Bearer",
+        answered=_sent(_ETAG_OF_THE_BEARER_400) | _cors("https://linear.app"),
+    ),
+    http_row(
+        "GET",
+        "/",
+        _ORIGIN,
+        None,
+        "none",
+        200,
+        _HTML_UTF8,
+        _GREETING,
+        id="Origin, greeting",
+        answered=_sent('W/"22-p50xJmghTUzB/yxthmCh2AutfIs"', x_content_type_options="nosniff")
+        | _cors(),
+    ),
+    http_row(
+        "POST",
+        "/nosuch",
+        (*_J, *_ORIGIN),
+        _TYPENAME,
+        "key",
+        404,
+        _HTML_UTF8,
+        b'<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /nosuch</pre>\n</body>\n</html>\n',
+        id="Origin, 404",
+        answered=_sent(
+            None, content_security_policy="default-src 'none'", x_content_type_options="nosniff"
+        )
+        | _cors(),
+    ),
+]
+_LINEAR_CREDENTIALS = {
+    "none": None,
+    "nope": "nope",
+    "Bearer key": "Bearer {t}",
+    "key": "{t}",
+    "twice": "{t}",
+}
+
+
+def test_linear_answers_each_method_path_type_and_accept_as_linear_does(client, tokens_yaml):
+    """Each row of `_LINEAR_HTTP` is answered as api.linear.app answered it."""
+    answered, expected = {}, {}
+    for row in _LINEAR_HTTP:
+        method, target, headers, body, credential, status, media_type, answer, named = row.values
+        sent = list(headers)
+        if _LINEAR_CREDENTIALS[credential] is not None:
+            value = _LINEAR_CREDENTIALS[credential].format(t=tokens_yaml["admin_token"])
+            sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
+        content = body.chunks() if isinstance(body, Chunked) else body
+        path = target if target.startswith("/") else f"/graphql{target}"
+        r = sent_as(client, method, f"/linear{path}", sent, content=content, bare=True)
+        answered[row.id] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            r.content,
+            {name: r.headers.get(name) for name in named},
+        )
+        expected[row.id] = (status, media_type, answer, named)
+    assert len(expected) == len(_LINEAR_HTTP)
+    assert answered == expected
+
+
+def _taken(times, host="203.0.113.7", key="lin_api_x"):
+    return [(seconds, host, key) for seconds in times]
+
+
+# The requests taken from `RequestBudget` (the second, the caller's address, its API key, None
+# for none), and the limit and `x-ratelimit-requests-remaining` on the last.
+_REQUEST_BUDGET = [
+    pytest.param(_taken([0.0]), "2500", "2499", id="one"),
+    pytest.param(
+        _taken([i * 13.13 / 29 for i in range(30)]), "2500", "2479", id="thirty over 13 seconds"
+    ),
+    pytest.param(_taken([0.0] * 2505), "2500", "0", id="past the limit"),
+    pytest.param(_taken([0.0] * 2000 + [3600.0]), "2500", "2499", id="an hour on"),
+    pytest.param(_taken([0.0, 1.0]), "2500", "2498", id="0.69 back, rounded down"),
+    pytest.param(_taken([0.0, 0.0], key=None), "1200", "1198", id="no key, one address"),
+    pytest.param(
+        _taken([0.0, 0.0], key=None) + _taken([0.0], "198.51.100.2", None),
+        "1200",
+        "1199",
+        id="no key, another address",
+    ),
+    pytest.param(
+        _taken([0.0] * 1210 + [13.8], key=None), "1200", "3", id="past the limit, 13.8 s on"
+    ),
+]
+
+
+def test_linears_request_budget_keeps_a_bucket_per_caller_refilled_at_its_limit_an_hour():
+    from types import SimpleNamespace
+
+    from backlot.routers.linear import RequestBudget
+
+    answered, expected = {}, {}
+    for row in _REQUEST_BUDGET:
+        taken, limit, remaining = row.values
+        now = [0.0]
+        budget = RequestBudget(clock=lambda: 1_793_022_495.115 + now[0])
+        for now[0], host, key in taken:
+            headers = budget.take(SimpleNamespace(client=SimpleNamespace(host=host)), key)
+        answered[row.id] = (
+            headers["x-ratelimit-requests-limit"],
+            headers["x-ratelimit-requests-remaining"],
+        )
+        expected[row.id] = (limit, remaining)
+    assert answered == expected
+
+
+def test_linears_request_budget_takes_one_for_a_run_and_none_for_a_refusal(client, tokens_yaml):
+    """A document refused as it validates takes nothing from the bucket, and the 1,200 of a caller
+    with no credential is a bucket of its own."""
+    from backlot.routers.linear import RequestBudget
+
+    client.app.state.linear_requests = RequestBudget(clock=lambda: 1_793_022_495.115)
+    key = (("Authorization", tokens_yaml["admin_token"]),)
+    introspection = b'{"query":"{ __schema { queryType { name } } }"}'
+    sent = [
+        (key, _TYPENAME),
+        (key, b'{"query":"{ nosuch }"}'),
+        ((), introspection),
+        (key, b'{"query":"{ nosuch }"}'),
+        (key, _TYPENAME),
+        ((), introspection),
+    ]
+    remaining = []
+    for credential, body in sent:
+        r = sent_as(client, "POST", "/linear/graphql", (*_J, *credential), content=body, bare=True)
+        remaining.append(
+            (
+                r.headers.get("x-ratelimit-requests-limit"),
+                r.headers.get("x-ratelimit-requests-remaining"),
+                r.headers.get("x-ratelimit-requests-reset"),
+            )
+        )
+    reset = "1793026095115"
+    assert remaining == [
+        ("2500", "2499", reset),
+        (None, None, None),
+        ("1200", "1199", reset),
+        (None, None, None),
+        ("2500", "2498", reset),
+        ("1200", "1198", reset),
+    ]
+
+
+# A path httpx would resolve or escape before sending it, written as it is to `backlot serve` with
+# the key and `{ __typename }`, and the status, body and named headers api.linear.app answers it
+# with: the endpoint, with `nosniff` where the load balancer reads the path as `/`
+# (`reads_as_root`), Express's 404 quoting the path Linear's front reads (`express_path`), its
+# greeting, and Cloudflare's page for a `..` past the root (`request_target.refused_path`).
+_LINEAR_SENT_RAW = [
+    *(
+        pytest.param("POST", p, 200, _TYPENAME_DATA, {"x-content-type-options": n}, id=p)
+        for p, n in (
+            ("/./graphql", None),
+            ("/x/../graphql", None),
+            ("/graphql/.", None),
+            ("/graphql/x/..", None),
+            ("/graphql/x/%2E%2E", None),
+            ("/..\\graphql", None),
+            ("/graphql//..", "nosniff"),
+            ("/graphql///..", "nosniff"),
+            ("/graphql/x//../..", "nosniff"),
+            ("/graphql//x/..", None),
+        )
+    ),
+    pytest.param(
+        "BIND",
+        "/graphql//..",
+        501,
+        b"",
+        {"x-content-type-options": "nosniff"},
+        id="BIND /graphql//..",
+    ),
+    *(
+        pytest.param("POST", p, 404, _express_404("POST", echo), _CHUNKED, id=p)
+        for p, echo in (
+            ("/graphql/..", "/"),
+            ("/graphql/../x", "/x"),
+            ("/graphql/%2e%2E/x", "/x"),
+            ("/graphql/x/../..", "/"),
+            ("/..", "/"),
+            ("/./..", "/"),
+            ("/x/..", "/"),
+            ("/./nosuch", "/nosuch"),
+            ("/x//../graphql", "/x/graphql"),
+            ("/x/.//graphql", "/x/graphql"),
+            ("/r/./b", "/r/b"),
+            ("/r/b/.", "/r/b/"),
+            ("/r/b/%2e%2e", "/r/"),
+            ("/x/..%2F..", "/x/..%2F.."),
+            *((f"/nosucha{char}b", f"/nosucha%{ord(char):02X}b") for char in '"<>`{}'),
+        )
+    ),
+    *(pytest.param("GET", p, 200, _GREETING, {}, id=f"GET {p}") for p in ("/r/..", "/./", "/%2e")),
+    *(
+        pytest.param("POST", p, 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2), {}, id=p)
+        for p in (
+            "/../graphql",
+            "/./../graphql",
+            "/x/../../",
+            "//../graphql",
+            "/../.",
+            "/graphql/../../x",
+        )
+    ),
+]
+
+
+@pytest.mark.parametrize("method, path, status, body, named", _LINEAR_SENT_RAW)
+def test_linear_answers_a_path_sent_as_written_as_linear_does(
+    live_server, method, path, status, body, named
+):
+    base_url, settings = live_server
+    sent = _TYPENAME if method == "POST" else b""
+    request = raw_request(method, f"/linear{path}", settings.admin_token, body=sent)
+    answer, headers, content = raw_exchange(base_url, request)
+    assert (answer, content, {name: headers.get(name) for name in named}) == (status, body, named)

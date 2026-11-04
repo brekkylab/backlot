@@ -63,6 +63,7 @@ SOURCES: dict[str, tuple[str, tuple[str, ...]]] = {
     "hubspot": ("HubSpot", ("/hubspot",)),
     "jira": ("Jira", ("/atlassian/rest/api",)),
     "linear": ("Linear", ("/linear/graphql",)),
+    "msteams": ("Microsoft Teams", ("/msgraph/v1.0",)),
     "notion": ("Notion", ("/notion/v1",)),
     "s3": ("Amazon S3", ("/s3",)),
     "slack": ("Slack", ("/slack/api",)),
@@ -85,6 +86,7 @@ AUTH_SECTIONS: dict[str, str] = {
     "hubspot": "HubSpot",
     "jira": "Jira and Confluence",
     "linear": "Linear",
+    "msteams": "Microsoft Teams",
     "notion": "Notion",
     "s3": "Amazon S3",
     "slack": "Slack",
@@ -213,7 +215,7 @@ def render_sources() -> str:
     for source_type in sorted(SOURCES):
         name, prefixes = SOURCES[source_type]
         if source_type in GRAPHQL_ONLY:
-            endpoints = "GraphQL (one `POST`)"
+            endpoints = "GraphQL (one endpoint, `POST` or `GET`)"
         else:
             endpoints = str(
                 sum(1 for path in spec_paths if any(path.startswith(p) for p in prefixes))

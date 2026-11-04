@@ -21,10 +21,15 @@ service (like the other `examples/` dirs) — run the one you want:
   (Gmail/Google Drive) are being added the same way.
 - **`slack.py`** via the same **OpenAPI→MCP bridge** — no maintained Slack MCP server accepts a
   base-URL override (they hard-wire `slack.com`), so the bridge serves Backlot's Slack Web API
-  (`/slack/api/*`) as tools instead.
+  (`/slack/api/*`) as tools instead. It is the one example whose agent **acts**: the bridge
+  serves the methods that write too, so the agent is given a task to finish rather than a
+  question to answer — find the incident, find the runbook, reply in the thread, react — and the
+  script then reads `/_meta/overlay` to print what it actually did, which is the record an
+  evaluation grades. Retrieval is part of the task, not a separate mode: the reply cannot be
+  written without reading both messages first.
 - **`gmail.py`** via the same **OpenAPI→MCP bridge** — Gmail MCP servers hard-wire `googleapis.com`
   and need real Google OAuth, so the bridge serves Backlot's Gmail API (`/gmail/*`) as tools.
-- **`gdrive.py`** via the same **OpenAPI→MCP bridge** — likewise for Google Drive, and for the three editors a Drive file opens in: the `gdrive` slice is `/drive/v3`, `/docs/v1`, `/sheets/v4` and `/slides/v1`, so an agent that finds a spreadsheet can read its cells in the next call.
+- **`gdrive.py`** via the same **OpenAPI→MCP bridge** — likewise for Google Drive, and for the three editors a Drive file opens in: the `gdrive` slice is `/drive/v3`, `/docs/v1`, `/sheets/v4` and `/slides/v1`, so an agent that finds a spreadsheet can read its cells in the next call, and a write tool takes its request body's fields as arguments, so the agent can record what it found in a new spreadsheet.
 - **`hubspot.py`** via the same **OpenAPI→MCP bridge** — no HubSpot MCP server takes a base-URL
   override. Because the CRM API is polymorphic over `{object_type}`, the agent gets five tools that
   each work across every object type (list, read, search, batch-read, associations) rather than a set
@@ -201,29 +206,31 @@ client disconnects — which is what makes the install a single line.
 **One credential flag.** `--user <email>` answers every call as that person, so Backlot's
 per-document ACL decides each answer; without it, the admin, who sees everything. The command
 resolves that email through the server's own `GET /_meta/users` and spells the credential the way
-each source authenticates — `Bearer` for most, HTTP Basic `email:token` for Atlassian, a SigV4
-signature per request for S3 — so there is nothing per-service to pass. An email the corpus does not
-know is refused before a single tool exists. `--depth` is the GraphQL selection depth. The code is
-`backlot/mcp.py`.
+each source authenticates — `Bearer` for most, the bare token for Linear, HTTP Basic `email:token`
+for Atlassian, a SigV4 signature per request for S3 — so there is nothing per-service to pass. An
+email the corpus does not know is refused before a single tool exists. `--depth` is the GraphQL
+selection depth. The code is `backlot/mcp.py`.
 
 ## How the OpenAPI→MCP bridge connects (`github.py` / `slack.py` / `gmail.py` / `gdrive.py` / `hubspot.py`)
 
 These sources have no vendor MCP server that accepts a base-URL override (see "Why these need
 the bridge" below). Instead of a vendor server, each launcher runs `backlot mcp --source <name>`
 (Python, [FastMCP](https://gofastmcp.com)) as a stdio subprocess. The bridge is deliberately thin —
-Backlot does the spec work:
+Backlot does the spec work, and the bridge adds one rename:
 
 - Backlot serves an **MCP-ready spec per source** at **`GET /_meta/openapi/<source>`** — its own
   typed `/openapi.json` (the routers declare query params and response models) sliced to that
   source, each operation renamed to its route's own name (`search_messages`, not
   `search_messages_slack_api_search_messages_get`), and the GET/POST and Jira v2/v3 fidelity
   aliases collapsed to one operation each (the raw spec carries ~14 duplicate operationIds, which
-  an MCP tool set can't have). This lives in `backlot/openapi.py`, so there is nothing to clean up
-  client-side;
-- the bridge just fetches that spec and serves it over stdio via `FastMCP.from_openapi()` on an
+  an MCP tool set can't have). This lives in `backlot/openapi.py`;
+- the bridge fetches that spec and serves it over stdio via `FastMCP.from_openapi()` on an
   `httpx2.AsyncClient` (what `from_openapi` takes — a legacy `httpx` one is accepted only under a
   deprecation warning) whose base URL is Backlot and which carries the credential `--user` resolved
-  — so Backlot resolves it to a user and **enforces that user's ACL** on every call.
+  — so Backlot resolves it to a user and **enforces that user's ACL** on every call;
+- the bridge renames an argument whose name the Anthropic Messages API refuses in a tool schema,
+  as Graph's OData options and Google's error-format parameter are: the argument goes by the name
+  `backlot.mcp.argument_name` gives it, and each call still sends the vendor's.
 
 stdio (not streamable-HTTP): FastMCP's HTTP mode has a known bug forwarding the client's
 `Authorization` header downstream. Adding a source is one entry in `backlot/openapi.py`'s
@@ -257,14 +264,14 @@ schema, over standard introspection, so that is what `backlot mcp` reads. Same s
 OpenAPI bridge — the app does the schema work, the bridge is transport:
 
 - **`backlot/graphql/mcp_tools.py`** turns the introspection result into one tool per root `Query`
-  field: 15 for Linear (`issues`, `issue`, `teams`, `comments`, `viewer`, the by-id relation
-  roots …), 4 for Fireflies (`transcripts`, `transcript`, `user`, `users`). It derives each tool's
+  field: 19 for Linear (`issues`, `issue`, `searchIssues`, `teams`, `comments`, `viewer`, the by-id
+  relation roots …), 4 for Fireflies (`transcripts`, `transcript`, `user`, `users`). It derives each tool's
   argument JSON Schema *and* its GraphQL document, which is the one thing OpenAPI never has to
   decide: a REST operation returns a fixed body, a GraphQL field returns whatever was asked for.
-- **the bridge** posts `tool.document` with the caller's `Authorization: Bearer <token>` and passes
-  the GraphQL envelope back untouched, so Backlot's per-token ACL decides every result. One header
-  spelling serves both: Fireflies is the ordinary bearer path, and Linear accepts a bare API key or
-  a `Bearer` token on the same header exactly as the real API does.
+- **the bridge** posts `tool.document` with the caller's credential, as `Authorization: Bearer
+  <token>` to Fireflies and as the bare token to Linear, which refuses an API key under `Bearer`
+  with a 400, and passes the GraphQL envelope back as it came, so Backlot's per-token ACL decides
+  every result.
 
 **Typed tools, not a `graphql(query:)` passthrough.** A passthrough is three lines and turns the
 exercise into "can the model write GraphQL against a schema it has not seen"; no other example here

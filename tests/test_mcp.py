@@ -4,7 +4,9 @@ Uses the ``live_server`` fixture (a real ``uvicorn`` on the conftest SAMPLE corp
 real MCP server against it: a document the admin can read is blocked for an ACL-restricted user —
 same tool, same object, different identity.
 
-- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless Docker is available.
+- **Atlassian** (`mcp-atlassian`, Docker) — skipped unless ``docker`` runs Linux containers here,
+  and failed in its place where ``BACKLOT_TEST_REQUIRE_DOCKER`` is ``1``
+  (``_require_linux_docker``).
 - **Notion** (`@notionhq/notion-mcp-server`, npx) — skipped unless ``npx`` (Node) is on PATH; the
   first run downloads the npm package.
 - **S3** (`awslabs.aws-api-mcp-server`, uvx) — skipped unless ``uvx`` is on PATH; the first run
@@ -31,6 +33,7 @@ import dataclasses
 import http.server
 import json
 import os
+import pathlib
 import re
 import shutil
 import signal
@@ -40,6 +43,7 @@ import sys
 import threading
 import time
 import urllib.request
+from importlib import metadata
 
 import pytest
 import yaml
@@ -52,13 +56,50 @@ from backlot.acl import Acl  # noqa: E402
 from tests._helpers import POSIX_SIGNALS, python_child_env, readline_within  # noqa: E402
 
 
-def _docker_available() -> bool:
+def _why_docker_runs_no_linux_containers() -> str | None:
+    """Why ``docker`` cannot run Linux containers here, or None where it can. The index of
+    ``ghcr.io/sooperset/mcp-atlassian:latest`` lists ``linux/amd64`` and ``linux/arm64`` images only
+    (fetched 2026-10-20), and Docker on ``windows-latest`` answers but runs Windows containers, so
+    the pull there finds no image and the server never starts. Podman 6.1.4 called as ``docker``
+    has no ``.OSType``, exits 125 on that template and names the OS at ``.Host.OS`` instead.
+
+    The reason names what ``docker info`` did, or that there was no ``docker`` to ask, since a CI
+    job keeps no other record of it.
+    """
     if not shutil.which("docker"):
-        return False
-    try:
-        return subprocess.run(["docker", "info"], capture_output=True, timeout=10).returncode == 0
-    except Exception:  # noqa: BLE001
-        return False
+        return "no `docker` on PATH"
+    exits = []
+    for template in ("{{.OSType}}", "{{.Host.OS}}"):
+        try:
+            info = subprocess.run(
+                ["docker", "info", "--format", template],
+                capture_output=True,
+                encoding="utf-8",
+                timeout=10,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return "`docker info` " + "; ".join([*exits, f"raised {type(exc).__name__}: {exc}"])
+        if info.returncode == 0:
+            break
+        first = next(iter(info.stderr.strip().splitlines()), "nothing on stderr")
+        exits.append(f"exited {info.returncode} on `{template}`: {first}")
+    else:
+        return "`docker info` " + "; ".join(exits)
+    os_name = info.stdout.strip()
+    return None if os_name == "linux" else f"`docker info` names {os_name!r} as its OS"
+
+
+def _require_linux_docker() -> None:
+    """Skip the calling test where ``docker`` runs no Linux containers, naming why, or fail it with
+    that reason where ``BACKLOT_TEST_REQUIRE_DOCKER`` is ``1``; any other value, ``0`` among them,
+    leaves the skip."""
+    why = _why_docker_runs_no_linux_containers()
+    if why is None:
+        return
+    why = f"mcp-atlassian needs Docker's Linux containers: {why}"
+    if os.environ.get("BACKLOT_TEST_REQUIRE_DOCKER") == "1":
+        pytest.fail(f"BACKLOT_TEST_REQUIRE_DOCKER is 1, and {why}")
+    pytest.skip(why)
 
 
 def _atlassian_params(base: str, token: str, username: str = "svc@example.com"):
@@ -101,6 +142,10 @@ def _atlassian_params(base: str, token: str, username: str = "svc@example.com"):
             "--transport",
             "stdio",
         ],
+        # `_why_docker_runs_no_linux_containers` asked the daemon this environment names; mcp
+        # 2.3.0's `stdio_client` would otherwise hand `docker run` a fixed list of variables,
+        # DOCKER_HOST and DOCKER_CONTEXT not among them.
+        env=dict(os.environ),
     )
 
 
@@ -151,7 +196,135 @@ async def _call(params, tool_pred, args, ok_pred) -> bool:
 # --------------------------------------------------------------------------- Atlassian
 
 
-@pytest.mark.skipif(not _docker_available(), reason="Docker not available")
+# What `docker info` wrote to stderr with no daemon (Docker 29.7.2 on macOS, 2026-10-22):
+# `_NO_DAEMON` on each template, exiting 1, and `_NO_HOST_FIELD` after it on `{{.Host.OS}}`.
+_NO_DAEMON = (
+    "failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is"
+    " correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file"
+    " or directory"
+)
+_NO_HOST_FIELD = (
+    'template: :1:7: executing "" at <.Host.OS>: can\'t evaluate field Host in type'
+    " system.dockerInfo\n"
+)
+
+
+_NO_DAEMON_ANSWERS = [(1, "\n", _NO_DAEMON + "\n"), (1, "\n", _NO_DAEMON + "\n" + _NO_HOST_FIELD)]
+_NO_DAEMON_WHY = (
+    f"`docker info` exited 1 on `{{{{.OSType}}}}`: {_NO_DAEMON}; exited 1 on"
+    f" `{{{{.Host.OS}}}}`: {_NO_DAEMON}"
+)
+
+
+@pytest.mark.parametrize(
+    ("docker", "answers", "required", "why"),
+    [
+        pytest.param(None, [], None, "no `docker` on PATH", id="no-docker"),
+        pytest.param("docker", [(0, "linux\n", "")], None, None, id="linux-containers"),
+        pytest.param("docker", [(0, "linux\n", "")], "1", None, id="linux-containers-required-1"),
+        pytest.param(
+            "docker",
+            [(0, "windows\n", "")],
+            None,
+            "`docker info` names 'windows' as its OS",
+            id="windows-containers",
+        ),
+        pytest.param("docker", _NO_DAEMON_ANSWERS, None, _NO_DAEMON_WHY, id="no-daemon"),
+        pytest.param(
+            "docker", _NO_DAEMON_ANSWERS, "", _NO_DAEMON_WHY, id="no-daemon-required-empty"
+        ),
+        pytest.param("docker", _NO_DAEMON_ANSWERS, "0", _NO_DAEMON_WHY, id="no-daemon-required-0"),
+        pytest.param("docker", _NO_DAEMON_ANSWERS, "1", _NO_DAEMON_WHY, id="no-daemon-required-1"),
+        pytest.param(
+            "docker",
+            [(1, "", "\n"), (2, "", "")],
+            None,
+            "`docker info` exited 1 on `{{.OSType}}`: nothing on stderr; exited 2 on"
+            " `{{.Host.OS}}`: nothing on stderr",
+            id="no-daemon-silent",
+        ),
+        pytest.param("docker", [(125, "", ""), (0, "linux\n", "")], None, None, id="podman"),
+        pytest.param(
+            "docker",
+            [subprocess.TimeoutExpired],
+            None,
+            "`docker info` raised TimeoutExpired: Command '['docker', 'info', '--format',"
+            " '{{.OSType}}']' timed out after 10 seconds",
+            id="timeout",
+        ),
+        pytest.param(
+            "docker",
+            [(125, "", ""), subprocess.TimeoutExpired],
+            None,
+            "`docker info` exited 125 on `{{.OSType}}`: nothing on stderr; raised TimeoutExpired:"
+            " Command '['docker', 'info', '--format', '{{.Host.OS}}']' timed out after 10 seconds",
+            id="exit-then-timeout",
+        ),
+        pytest.param(
+            "docker",
+            [OSError(8, "Exec format error", "docker")],
+            None,
+            "`docker info` raised OSError: [Errno 8] Exec format error: 'docker'",
+            id="not-executable",
+        ),
+    ],
+)
+def test_the_atlassian_test_runs_only_where_docker_runs_linux_containers(
+    monkeypatch, docker, answers, required, why
+):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        answer = answers[len(calls) - 1]
+        if answer is subprocess.TimeoutExpired:
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+        if isinstance(answer, Exception):
+            raise answer
+        return subprocess.CompletedProcess(args, answer[0], stdout=answer[1], stderr=answer[2])
+
+    monkeypatch.setattr(shutil, "which", lambda name: docker)
+    monkeypatch.setattr(subprocess, "run", run)
+    if required is None:
+        monkeypatch.delenv("BACKLOT_TEST_REQUIRE_DOCKER", raising=False)
+    else:
+        monkeypatch.setenv("BACKLOT_TEST_REQUIRE_DOCKER", required)
+    if why is None:
+        _require_linux_docker()
+    else:
+        outcome = pytest.fail.Exception if required == "1" else pytest.skip.Exception
+        with pytest.raises((pytest.skip.Exception, pytest.fail.Exception)) as raised:
+            _require_linux_docker()
+        assert type(raised.value) is outcome
+        prefix = "BACKLOT_TEST_REQUIRE_DOCKER is 1, and " if required == "1" else ""
+        assert raised.value.msg == f"{prefix}mcp-atlassian needs Docker's Linux containers: {why}"
+    asked = [["docker", "info", "--format", t] for t in ("{{.OSType}}", "{{.Host.OS}}")]
+    assert calls == asked[: len(answers)]
+
+
+def test_ci_requires_docker_for_the_atlassian_test_on_linux_alone():
+    """The wait step and the variable, for the reasons the comments in `ci.yml` give, and neither in
+    `windows.yml`, whose Docker runs Windows containers."""
+    workflows = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    ci = yaml.safe_load((workflows / "ci.yml").read_text(encoding="utf-8"))
+    test = ci["jobs"]["test"]
+    from_matrix = re.fullmatch(r"\$\{\{ *matrix\.([\w-]+) *\}\}", test["runs-on"])
+    images = test["strategy"]["matrix"][from_matrix[1]] if from_matrix else [test["runs-on"]]
+    assert all(image.startswith("ubuntu-") for image in images), images
+    names = [s.get("name") for s in test["steps"]]
+    assert names.index("Wait for the Docker daemon") < names.index("Unit tests")
+    assert test["steps"][names.index("Unit tests")]["env"]["BACKLOT_TEST_REQUIRE_DOCKER"] == "1"
+    windows = (workflows / "windows.yml").read_text(encoding="utf-8")
+    assert "BACKLOT_TEST_REQUIRE_DOCKER" not in windows
+    assert "Wait for the Docker daemon" not in windows
+
+
+@pytest.mark.parametrize("name", ["DOCKER_HOST", "DOCKER_CONTEXT"])
+def test_docker_run_keeps_the_variables_that_pick_its_daemon(monkeypatch, name):
+    monkeypatch.setenv(name, "elsewhere")
+    assert _atlassian_params("http://127.0.0.1:1", "token").env[name] == "elsewhere"
+
+
 def test_mcp_atlassian_acl_enforced(live_server):
     """A Jira issue the admin reads through mcp-atlassian is not-found for a scoped user.
 
@@ -160,6 +333,7 @@ def test_mcp_atlassian_acl_enforced(live_server):
     ACL's. Without the matching username the read would fail on auth instead, which reaches this
     test the same way and would leave it green with the ACL doing nothing; the third read is the
     control that rules that out."""
+    _require_linux_docker()
     base, settings = live_server
     user = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))["users"][0]
     row, email = _restricted_doc(settings, user["token"], "jira")
@@ -170,22 +344,26 @@ def test_mcp_atlassian_acl_enforced(live_server):
     visible = seen["key"]
 
     def reads(token, username, issue_key):
-        return asyncio.run(
-            _call(
-                _atlassian_params(base, token, username),
-                tool_pred=lambda n: n == "jira_get_issue",
-                args={"issue_key": issue_key},
-                ok_pred=lambda t: t.strip().startswith("{") and '"key"' in t,
-            )
+        return _call(
+            _atlassian_params(base, token, username),
+            tool_pred=lambda n: n == "jira_get_issue",
+            args={"issue_key": issue_key},
+            ok_pred=lambda t: t.strip().startswith("{") and '"key"' in t,
         )
 
-    assert reads(settings.admin_token, "svc@example.com", key), (
-        "admin should read the issue through mcp-atlassian"
-    )
-    assert reads(user["token"], email, visible), (
+    async def all_three():
+        return await asyncio.gather(
+            reads(settings.admin_token, "svc@example.com", key),
+            reads(user["token"], email, visible),
+            reads(user["token"], email, key),
+        )
+
+    admin_read, own_read, restricted_read = asyncio.run(all_three())
+    assert admin_read, "admin should read the issue through mcp-atlassian"
+    assert own_read, (
         f"{email} should read an issue they can see, or the miss below is an auth failure"
     )
-    assert not reads(user["token"], email, key), (
+    assert not restricted_read, (
         f"{email} should be blocked from the restricted issue via mcp-atlassian"
     )
 
@@ -449,8 +627,10 @@ def test_auth_header_spells_each_source_the_way_its_client_speaks():
     scheme, _, payload = header.partition(" ")
     assert scheme == "Basic"
     assert base64.b64decode(payload).decode() == "ava@acme.com:usr-abc"
-    for source in ("slack", "github", "notion", "linear"):
+    for source in ("slack", "github", "notion", "fireflies"):
         assert backlot_mcp._auth_header(creds, source) == {"Authorization": "Bearer usr-abc"}
+    # no scheme for Linear, which refuses a key under Bearer
+    assert backlot_mcp._auth_header(creds, "linear") == {"Authorization": "usr-abc"}
     # the admin has no email to put in a username, so Atlassian falls back to Bearer for them
     admin = dataclasses.replace(creds, email=None)
     assert backlot_mcp._auth_header(admin, "atlassian") == {"Authorization": "Bearer usr-abc"}
@@ -522,20 +702,24 @@ def _graphql_bridge_call(base, source, creds, *, tool_name, args, ok_pred, depth
     """Exercise one GraphQL source's bridge in-process: ``backlot.mcp.graphql_server``, the same
     server ``backlot mcp`` runs over stdio, driven through fastmcp's in-memory client. The
     derivation it serves is unit-tested in ``tests/test_graphql.py``; what is proved here is that
-    the tool posts its document with the caller's credential. Returns ``ok_pred`` over the tool's
-    response text."""
+    the tool posts its document with the caller's credential, and that the server reports Backlot's
+    version and icons in ``serverInfo``. Returns ``ok_pred`` over the tool's response text."""
     from fastmcp import Client
 
     async def _go():
         server = backlot_mcp.graphql_server(base, creds, source, depth=depth)
         async with Client(server) as c:
-            res = await c.call_tool(tool_name, args)
-            return ok_pred("".join(getattr(b, "text", "") for b in res.content))
+            version = c.server_info.version
+            assert _icons(c.server_info) == list(backlot_mcp.ICONS)
+            try:
+                res = await c.call_tool(tool_name, args)
+            except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
+                return version, False
+            return version, ok_pred("".join(getattr(b, "text", "") for b in res.content))
 
-    try:
-        return asyncio.run(_go())
-    except Exception:  # noqa: BLE001 — a blocked read may surface as a tool error
-        return False
+    version, ok = asyncio.run(_go())
+    assert version == metadata.version("backlot")
+    return ok
 
 
 @pytest.mark.parametrize(
@@ -608,23 +792,99 @@ def test_mcp_graphql_bridge_round_trips_a_nested_filter(live_server):
     )
 
 
-def test_mcp_hubspot_bridge_search_tool(live_server):
-    """The polymorphic search operation reaches the bridge as a usable tool: filterGroups go through
-    as a request body, and `total` comes back."""
+def _drive_file(settings, title: str) -> str:
+    conn = store.connect_ro(settings.db_path)
+    return conn.execute(
+        f"SELECT id FROM {store.table('google_drive')} WHERE title = ?", [title]
+    ).fetchone()["id"]
+
+
+@pytest.mark.parametrize(
+    "source, user, tool, build_args, ok",
+    [
+        pytest.param(
+            "hubspot",
+            None,
+            "search_objects",
+            lambda st: {
+                "object_type": "companies",
+                "filterGroups": [
+                    {
+                        "filters": [
+                            {"propertyName": "industry", "operator": "EQ", "value": "healthcare"}
+                        ]
+                    }
+                ],
+            },
+            lambda t: '"total"' in t and "Acme Health" in t,
+            id="hubspot-search",
+        ),
+        pytest.param(
+            "gdrive",
+            None,
+            "docs_create",
+            lambda st: {"title": "Bridge notes"},
+            lambda t: '"title": "Bridge notes"' in t or '"title":"Bridge notes"' in t,
+            id="docs-create",
+        ),
+        pytest.param(
+            "gdrive",
+            None,
+            "sheets_create",
+            lambda st: {
+                "properties": {"title": "Bridge book"},
+                "sheets": [{"properties": {"title": "Pipeline"}}],
+            },
+            lambda t: "Bridge book" in t and "Pipeline" in t,
+            id="sheets-create",
+        ),
+        pytest.param(
+            "gdrive",
+            "cfo@acme.com",
+            "sheets_values_update",
+            lambda st: {
+                "spreadsheet_id": _drive_file(st, "Q1 Revenue Model"),
+                "a1_range": "A4:B4",
+                "valueInputOption": "RAW",
+                "values": [["Mar", 150000]],
+            },
+            lambda t: '"updatedCells": 2' in t or '"updatedCells":2' in t,
+            id="sheets-values-update",
+        ),
+        # a match for nothing, so the shared server's Doc keeps its text
+        pytest.param(
+            "gdrive",
+            "mia@acme.com",
+            "docs_batch_update",
+            lambda st: {
+                "document_id": _drive_file(st, "Brand guidelines v3"),
+                "requests": [
+                    {
+                        "replaceAllText": {
+                            "containsText": {"text": "no such text"},
+                            "replaceText": "x",
+                        }
+                    }
+                ],
+            },
+            lambda t: '"replaceAllText"' in t,
+            id="docs-batch-update",
+        ),
+    ],
+)
+def test_mcp_bridge_sends_a_tools_request_body(live_server, source, user, tool, build_args, ok):
+    """A request body reaches the route through the bridge's tool: the fields of the body the
+    route declares are the tool's arguments, nested ones included, and what comes back shows the
+    route read them."""
     pytest.importorskip("fastmcp")
     base, settings = live_server
     assert _bridge_call(
         base,
-        "hubspot",
-        backlot_mcp.resolve(base, None),
-        tool_pred=lambda n: n.startswith("search_objects"),
-        args={
-            "object_type": "companies",
-            "filterGroups": [
-                {"filters": [{"propertyName": "industry", "operator": "EQ", "value": "healthcare"}]}
-            ],
-        },
-        ok_pred=lambda t: '"total"' in t and "Acme Health" in t,
+        source,
+        backlot_mcp.resolve(base, user),
+        tool_pred=lambda n: n == tool,
+        args=build_args(settings),
+        ok_pred=ok,
     )
 
 
@@ -667,6 +927,154 @@ def test_mcp_notion_tools_take_the_version_every_request_carries(live_server):
         assert '"object": "page"' in text or '"object":"page"' in text, (name, text[:200])
 
 
+# The pattern `backlot.mcp.ARGUMENT_NAME` quotes from the Anthropic API's 400, written out here so a
+# change to that constant is a failure rather than a new expectation.
+_ANTHROPIC_KEY = re.compile(r"[a-zA-Z0-9_.-]{1,64}")
+
+
+def _graph_user(text):
+    """Whether the user has ``displayName``, and ``givenName``, which only the default has."""
+    user = json.loads(text)
+    return "displayName" in user, "givenName" in user
+
+
+def _google_not_found(text):
+    """Whether the answer is the 404, and whether it has an ``errors`` list."""
+    return "NOT_FOUND" in text, "'errors'" in text
+
+
+# One call each through its source's bridge: (id, source, tool, arguments, read, is_error, answer),
+# the answer being what `read` makes of the call's text. Graph's `$select` trims the user to the
+# properties it names, and Gmail's 404 under `$.xgafv` set to 2 has no `errors` list
+# (`backlot.errors.google.has_errors_array`). The rows of a source are next to each other, since
+# the test opens one session per source.
+_CALL_ROWS = [
+    (
+        "msteams-select",
+        "msteams",
+        "me",
+        {"select": "displayName"},
+        _graph_user,
+        False,
+        (True, False),
+    ),
+    ("msteams-default", "msteams", "me", {}, _graph_user, False, (True, True)),
+    (
+        "gmail-xgafv",
+        "gmail",
+        "gmail_label_get",
+        {"user_id": "me", "label_id": "no-such-label", "xgafv": "2"},
+        _google_not_found,
+        True,
+        (True, False),
+    ),
+    (
+        "gmail-default",
+        "gmail",
+        "gmail_label_get",
+        {"user_id": "me", "label_id": "no-such-label"},
+        _google_not_found,
+        True,
+        (True, True),
+    ),
+    ("gmail-unknown-tool", "gmail", "no_such_tool", {}, str, True, "Unknown tool: 'no_such_tool'"),
+]
+
+
+def test_a_call_reaches_its_route_under_the_vendors_names_or_hears_its_tool_is_unknown(
+    live_server,
+):
+    """An argument renamed for the Anthropic API still reaches the route as the parameter the
+    vendor names, and a call to a name the source has no tool by hears that the tool is unknown
+    rather than an internal error. Its own function, not rows of ``_BRIDGE_CASES``, which compare
+    two callers on one call."""
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    base, _ = live_server
+    creds = backlot_mcp.resolve(base, None)
+
+    async def _go():
+        answered = {}
+        for source in dict.fromkeys(row[1] for row in _CALL_ROWS):
+            async with Client(backlot_mcp.openapi_server(base, creds, source)) as c:
+                for row_id, row_source, tool, arguments, read, _, _ in _CALL_ROWS:
+                    if row_source == source:
+                        # an error the session raises, or `read` does, is the row's answer
+                        try:
+                            res = await c.call_tool(tool, arguments, raise_on_error=False)
+                            text = "".join(getattr(b, "text", "") for b in res.content)
+                            answered[row_id] = (res.is_error, read(text))
+                        except Exception as e:
+                            answered[row_id] = (type(e).__name__, str(e))
+        return answered
+
+    answered = asyncio.run(_go())
+    expected = {row_id: (is_error, answer) for row_id, *_, is_error, answer in _CALL_ROWS}
+    assert answered == expected
+
+
+# (id, properties, the arguments the tool lists for them or the error `_with_argument_names` raises)
+_RENAME_ROWS = [
+    (
+        "select",
+        {"$select": {"description": "Comma-separated properties to return."}, "user_id": {}},
+        [("select", "Comma-separated properties to return. Sent as `$select`."), ("user_id", None)],
+    ),
+    ("xgafv", {"$.xgafv": {}}, [("xgafv", "Sent as `$.xgafv`.")]),
+    ("leading-dash", {"$-x": {}}, [("x", "Sent as `$-x`.")]),
+    ("unchanged", {"user_id": {}}, [("user_id", None)]),
+    # a name the pattern takes keeps even a leading dot, the character a rename strips there
+    ("leading-dot", {".x": {}}, [(".x", None)]),
+    ("only-a-dot", {".": {}}, [(".", None)]),
+    ("64-characters", {"a" * 64: {}}, [("a" * 64, None)]),
+    # the length the pattern reads is the stripped name's
+    ("64-once-stripped", {"$" + "a" * 64: {}}, [("a" * 64, f"Sent as `${'a' * 64}`.")]),
+    (
+        "65-characters",
+        {"a" * 65: {}},
+        f"parameter {'a' * 65!r} has no argument name the Anthropic API takes",
+    ),
+    ("nothing-left", {"$": {}}, "parameter '$' has no argument name the Anthropic API takes"),
+    ("a-dot-left", {"$.": {}}, "parameter '$.' has no argument name the Anthropic API takes"),
+    ("non-ascii", {"ééé": {}}, "parameter 'ééé' has no argument name the Anthropic API takes"),
+    (
+        "renamed-onto-a-name",
+        {"$filter": {}, "filter": {}},
+        "tool 't': parameters '$filter' and 'filter' both go by 'filter'",
+    ),
+    (
+        "two-renamed-onto-one",
+        {"$filter": {}, "$.filter": {}},
+        "tool 't': parameters '$filter' and '$.filter' both go by 'filter'",
+    ),
+]
+
+
+def test_an_argument_the_pattern_refuses_is_renamed_or_named_in_an_error():
+    """Each argument the pattern refuses goes by the name :func:`backlot.mcp.argument_name` gives
+    it, its description naming what the call is sent as, and each argument the pattern takes keeps
+    its name. A tool with an argument no name the pattern takes can be made of, or with two that
+    would go by one name, is refused with an error that names them."""
+    pytest.importorskip("fastmcp")
+    from fastmcp.tools import Tool
+
+    class _Tool(Tool):
+        async def run(self, arguments):
+            return None
+
+    answered = {}
+    for row_id, properties, _ in _RENAME_ROWS:
+        tool = _Tool(name="t", parameters={"type": "object", "properties": properties})
+        try:
+            listed = backlot_mcp._with_argument_names(tool).parameters["properties"]
+        except ValueError as e:
+            answered[row_id] = str(e)
+        else:
+            answered[row_id] = [(name, p.get("description")) for name, p in listed.items()]
+    assert answered == {row_id: expected for row_id, _, expected in _RENAME_ROWS}
+
+
 # ------------------------------------------------------------------ `backlot mcp` over stdio
 # The command an MCP client runs. The in-memory tests above prove each source's bridge; these prove
 # the process around it: the stdio transport, the per-source namespace, the server it starts when
@@ -682,22 +1090,29 @@ def _mcp_params(*args, env=None):
     )
 
 
-async def _tools_and_instructions(params, errlog=None) -> tuple[list[str], str | None]:
-    """The tool names a session lists, and the ``instructions`` it advertised alongside them — a
-    client feeds the latter to the model, so the two have to agree about which sources exist."""
+def _icons(server_info) -> list[dict]:
+    """``serverInfo.icons`` in the wire spelling server.json uses."""
+    return [i.model_dump(mode="json", by_alias=True, exclude_none=True) for i in server_info.icons]
+
+
+async def _tools_and_instructions(params, errlog=None) -> tuple[list, str | None]:
+    """The tools a session lists, and the ``instructions`` it advertised alongside them — a client
+    feeds the latter to the model, so the two have to agree about which sources exist. Also asserts
+    that ``initialize`` reported Backlot's version and icons."""
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
 
     async with stdio_client(params, errlog=errlog or sys.stderr) as (r, w):
         async with ClientSession(r, w) as sess:
             init = await sess.initialize()
-            names = [t.name for t in (await sess.list_tools()).tools]
-            return names, init.instructions
+            assert init.server_info.version == metadata.version("backlot")
+            assert _icons(init.server_info) == list(backlot_mcp.ICONS)
+            return (await sess.list_tools()).tools, init.instructions
 
 
 async def _tool_names(params, errlog=None) -> list[str]:
-    names, _ = await _tools_and_instructions(params, errlog=errlog)
-    return names
+    tools, _ = await _tools_and_instructions(params, errlog=errlog)
+    return [t.name for t in tools]
 
 
 def _served_tool_ids(base: str, source: str) -> set[str]:
@@ -724,9 +1139,20 @@ def test_backlot_mcp_serves_one_source_under_its_own_tool_names(live_server):
 def test_backlot_mcp_serves_every_source_namespaced(live_server):
     """No `--source` is all of them in one server, each tool prefixed with its source so two
     vendors' same-named operations cannot collide — and none long enough for an MCP client's
-    64-character cap to truncate."""
+    64-character cap to truncate. Nor does any tool take an argument `_ANTHROPIC_KEY` refuses."""
     base, _ = live_server
-    names = asyncio.run(_tool_names(_mcp_params("--url", base)))
+    tools, _ = asyncio.run(_tools_and_instructions(_mcp_params("--url", base)))
+    names = [t.name for t in tools]
+    refused = {
+        t.name: bad
+        for t in tools
+        if (
+            bad := [
+                a for a in t.input_schema.get("properties", {}) if not _ANTHROPIC_KEY.fullmatch(a)
+            ]
+        )
+    }
+    assert not refused, refused
     by_source = collections.defaultdict(set)
     for name in names:
         source, _, tool = name.partition("_")
@@ -909,24 +1335,23 @@ def test_openapi_bridge_passes_a_response_through_even_when_it_breaks_its_own_sc
 
 
 def test_build_server_fetches_every_source_concurrently(monkeypatch):
-    """Ten sources are ten round trips before the handshake; against a hosted server answering in
-    ~1s that is ~10s serially, which some MCP clients do not wait for. Each fetch here takes 0.5s,
-    so eight sources built one after another would take 4s; concurrently they take about one."""
+    """Every spec fetch is in flight at once."""
     pytest.importorskip("fastmcp")
     spec = {"openapi": "3.1.0", "info": {"title": "t", "version": "0"}, "paths": {}}
+    all_fetching = threading.Barrier(len(backlot_mcp.OPENAPI_SOURCES), timeout=10)
+    fetched = set()
 
-    def slow_spec(base_url, source):
-        time.sleep(0.5)
+    def overlapping_spec(base_url, source):
+        fetched.add(source)
+        all_fetching.wait()
         return spec
 
-    monkeypatch.setattr(backlot_mcp, "openapi_spec", slow_spec)
+    monkeypatch.setattr(backlot_mcp, "openapi_spec", overlapping_spec)
     creds = backlot_mcp.Credentials(
         token="t", email=None, s3_access_key_id="a", s3_secret_access_key="s"
     )
-    started = time.monotonic()
     backlot_mcp.build_server("http://backlot.invalid", creds, backlot_mcp.OPENAPI_SOURCES)
-    elapsed = time.monotonic() - started
-    assert elapsed < 2.0, f"{elapsed:.2f}s for {len(backlot_mcp.OPENAPI_SOURCES)} sources"
+    assert fetched == set(backlot_mcp.OPENAPI_SOURCES)
 
 
 def _initialised_mcp(*args, env=None):
@@ -1176,10 +1601,10 @@ def test_backlot_mcp_advertises_only_the_sources_it_mounted(live_server):
     `--source` run's missing sources are there to call, and it would read every tool-not-found as
     its own mistake."""
     base, _ = live_server
-    names, instructions = asyncio.run(
+    tools, instructions = asyncio.run(
         _tools_and_instructions(_mcp_params("--source", "slack", "--source", "s3", "--url", base))
     )
-    assert {n.partition("_")[0] for n in names} == {"slack", "s3"}
+    assert {t.name.partition("_")[0] for t in tools} == {"slack", "s3"}
     assert "slack_*" in instructions and "s3_*" in instructions
     for absent in ("gmail_*", "notion_*", "linear_*", "atlassian_*"):
         assert absent not in instructions, instructions

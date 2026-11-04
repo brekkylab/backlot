@@ -1,0 +1,329 @@
+"""Lucene's `ASCIIFoldingFilter`, as a table: the ASCII letters, digits and marks each of 1,242
+characters folds to, `Ø` to `O`, `ɐ` to `a`, `Æ` to `AE`.
+
+The table is the switch in `foldToASCII` of
+`lucene/analysis/common/src/java/org/apache/lucene/analysis/miscellaneous/ASCIIFoldingFilter.java`
+at Lucene's `releases/lucene/9.12.0` tag, every case kept, grouped here by what it folds to.
+`backlot.routers.hubspot._hubspot_fold` is the one reader and says which vendor answers it matches.
+"""
+
+_FOLDED_TO = {
+    "!": "\uff01",
+    "!!": "\u203c",
+    "!?": "\u2049",
+    '"': "\u00ab\u00bb\u201c\u201d\u201e\u2033\u2036\u275d\u275e\u276e\u276f\uff02",
+    "#": "\uff03",
+    "$": "\uff04",
+    "%": "\u2052\uff05",
+    "&": "\uff06",
+    "'": "\u2018\u2019\u201a\u201b\u2032\u2035\u2039\u203a\u275b\u275c\uff07",
+    "(": "\u207d\u208d\u2768\u276a\uff08",
+    "((": "\u2e28",
+    "(1)": "\u2474",
+    "(10)": "\u247d",
+    "(11)": "\u247e",
+    "(12)": "\u247f",
+    "(13)": "\u2480",
+    "(14)": "\u2481",
+    "(15)": "\u2482",
+    "(16)": "\u2483",
+    "(17)": "\u2484",
+    "(18)": "\u2485",
+    "(19)": "\u2486",
+    "(2)": "\u2475",
+    "(20)": "\u2487",
+    "(3)": "\u2476",
+    "(4)": "\u2477",
+    "(5)": "\u2478",
+    "(6)": "\u2479",
+    "(7)": "\u247a",
+    "(8)": "\u247b",
+    "(9)": "\u247c",
+    "(a)": "\u249c",
+    "(b)": "\u249d",
+    "(c)": "\u249e",
+    "(d)": "\u249f",
+    "(e)": "\u24a0",
+    "(f)": "\u24a1",
+    "(g)": "\u24a2",
+    "(h)": "\u24a3",
+    "(i)": "\u24a4",
+    "(j)": "\u24a5",
+    "(k)": "\u24a6",
+    "(l)": "\u24a7",
+    "(m)": "\u24a8",
+    "(n)": "\u24a9",
+    "(o)": "\u24aa",
+    "(p)": "\u24ab",
+    "(q)": "\u24ac",
+    "(r)": "\u24ad",
+    "(s)": "\u24ae",
+    "(t)": "\u24af",
+    "(u)": "\u24b0",
+    "(v)": "\u24b1",
+    "(w)": "\u24b2",
+    "(x)": "\u24b3",
+    "(y)": "\u24b4",
+    "(z)": "\u24b5",
+    ")": "\u207e\u208e\u2769\u276b\uff09",
+    "))": "\u2e29",
+    "*": "\u204e\uff0a",
+    "+": "\u207a\u208a\uff0b",
+    ",": "\uff0c",
+    "-": "\u2010\u2011\u2012\u2013\u2014\u207b\u208b\uff0d",
+    ".": "\uff0e",
+    "/": "\u2044\uff0f",
+    "0": "\u2070\u2080\u24ea\u24ff\uff10",
+    "1": "\u00b9\u2081\u2460\u24f5\u2776\u2780\u278a\uff11",
+    "1.": "\u2488",
+    "10": "\u2469\u24fe\u277f\u2789\u2793",
+    "10.": "\u2491",
+    "11": "\u246a\u24eb",
+    "11.": "\u2492",
+    "12": "\u246b\u24ec",
+    "12.": "\u2493",
+    "13": "\u246c\u24ed",
+    "13.": "\u2494",
+    "14": "\u246d\u24ee",
+    "14.": "\u2495",
+    "15": "\u246e\u24ef",
+    "15.": "\u2496",
+    "16": "\u246f\u24f0",
+    "16.": "\u2497",
+    "17": "\u2470\u24f1",
+    "17.": "\u2498",
+    "18": "\u2471\u24f2",
+    "18.": "\u2499",
+    "19": "\u2472\u24f3",
+    "19.": "\u249a",
+    "2": "\u00b2\u2082\u2461\u24f6\u2777\u2781\u278b\uff12",
+    "2.": "\u2489",
+    "20": "\u2473\u24f4",
+    "20.": "\u249b",
+    "3": "\u00b3\u2083\u2462\u24f7\u2778\u2782\u278c\uff13",
+    "3.": "\u248a",
+    "4": "\u2074\u2084\u2463\u24f8\u2779\u2783\u278d\uff14",
+    "4.": "\u248b",
+    "5": "\u2075\u2085\u2464\u24f9\u277a\u2784\u278e\uff15",
+    "5.": "\u248c",
+    "6": "\u2076\u2086\u2465\u24fa\u277b\u2785\u278f\uff16",
+    "6.": "\u248d",
+    "7": "\u2077\u2087\u2466\u24fb\u277c\u2786\u2790\uff17",
+    "7.": "\u248e",
+    "8": "\u2078\u2088\u2467\u24fc\u277d\u2787\u2791\uff18",
+    "8.": "\u248f",
+    "9": "\u2079\u2089\u2468\u24fd\u277e\u2788\u2792\uff19",
+    "9.": "\u2490",
+    ":": "\uff1a",
+    ";": "\u204f\uff1b",
+    "<": "\u276c\u2770\uff1c",
+    "=": "\u207c\u208c\uff1d",
+    ">": "\u276d\u2771\uff1e",
+    "?": "\uff1f",
+    "?!": "\u2048",
+    "??": "\u2047",
+    "@": "\uff20",
+    "[": "\u2045\u2772\uff3b",
+    "\\": "\uff3c",
+    "]": "\u2046\u2773\uff3d",
+    "^": "\u2038\uff3e",
+    "_": "\uff3f",
+    "A": (
+        "\u00c0\u00c1\u00c2\u00c3\u00c4\u00c5\u0100\u0102\u0104\u018f\u01cd\u01de\u01e0\u01fa"
+        "\u0200\u0202\u0226\u023a\u1d00\u1e00\u1ea0\u1ea2\u1ea4\u1ea6\u1ea8\u1eaa\u1eac\u1eae"
+        "\u1eb0\u1eb2\u1eb4\u1eb6\u24b6\uff21"
+    ),
+    "a": (
+        "\u00e0\u00e1\u00e2\u00e3\u00e4\u00e5\u0101\u0103\u0105\u01ce\u01df\u01e1\u01fb\u0201"
+        "\u0203\u0227\u0250\u0259\u025a\u1d8f\u1d95\u1e01\u1e9a\u1ea1\u1ea3\u1ea5\u1ea7\u1ea9"
+        "\u1eab\u1ead\u1eaf\u1eb1\u1eb3\u1eb5\u1eb7\u2090\u2094\u24d0\u2c65\u2c6f\uff41"
+    ),
+    "AA": "\ua732",
+    "aa": "\ua733",
+    "AE": "\u00c6\u01e2\u01fc\u1d01",
+    "ae": "\u00e6\u01e3\u01fd\u1d02",
+    "AO": "\ua734",
+    "ao": "\ua735",
+    "AU": "\ua736",
+    "au": "\ua737",
+    "AV": "\ua738\ua73a",
+    "av": "\ua739\ua73b",
+    "AY": "\ua73c",
+    "ay": "\ua73d",
+    "B": "\u0181\u0182\u0243\u0299\u1d03\u1e02\u1e04\u1e06\u24b7\uff22",
+    "b": "\u0180\u0183\u0253\u1d6c\u1d80\u1e03\u1e05\u1e07\u24d1\uff42",
+    "C": "\u00c7\u0106\u0108\u010a\u010c\u0187\u023b\u0297\u1d04\u1e08\u24b8\uff23",
+    "c": "\u00e7\u0107\u0109\u010b\u010d\u0188\u023c\u0255\u1e09\u2184\u24d2\ua73e\ua73f\uff43",
+    "D": (
+        "\u00d0\u010e\u0110\u0189\u018a\u018b\u1d05\u1d06\u1e0a\u1e0c\u1e0e\u1e10\u1e12\u24b9"
+        "\ua779\uff24"
+    ),
+    "d": (
+        "\u00f0\u010f\u0111\u018c\u0221\u0256\u0257\u1d6d\u1d81\u1d91\u1e0b\u1e0d\u1e0f\u1e11"
+        "\u1e13\u24d3\ua77a\uff44"
+    ),
+    "db": "\u0238",
+    "DZ": "\u01c4\u01f1",
+    "Dz": "\u01c5\u01f2",
+    "dz": "\u01c6\u01f3\u02a3\u02a5",
+    "E": (
+        "\u00c8\u00c9\u00ca\u00cb\u0112\u0114\u0116\u0118\u011a\u018e\u0190\u0204\u0206\u0228"
+        "\u0246\u1d07\u1e14\u1e16\u1e18\u1e1a\u1e1c\u1eb8\u1eba\u1ebc\u1ebe\u1ec0\u1ec2\u1ec4"
+        "\u1ec6\u24ba\u2c7b\uff25"
+    ),
+    "e": (
+        "\u00e8\u00e9\u00ea\u00eb\u0113\u0115\u0117\u0119\u011b\u01dd\u0205\u0207\u0229\u0247"
+        "\u0258\u025b\u025c\u025d\u025e\u029a\u1d08\u1d92\u1d93\u1d94\u1e15\u1e17\u1e19\u1e1b"
+        "\u1e1d\u1eb9\u1ebb\u1ebd\u1ebf\u1ec1\u1ec3\u1ec5\u1ec7\u2091\u24d4\u2c78\uff45"
+    ),
+    "F": "\u0191\u1e1e\u24bb\ua730\ua77b\ua7fb\uff26",
+    "f": "\u0192\u1d6e\u1d82\u1e1f\u1e9b\u24d5\ua77c\uff46",
+    "ff": "\ufb00",
+    "ffi": "\ufb03",
+    "ffl": "\ufb04",
+    "fi": "\ufb01",
+    "fl": "\ufb02",
+    "G": (
+        "\u011c\u011e\u0120\u0122\u0193\u01e4\u01e5\u01e6\u01e7\u01f4\u0262\u029b\u1e20\u24bc"
+        "\ua77d\ua77e\uff27"
+    ),
+    "g": "\u011d\u011f\u0121\u0123\u01f5\u0260\u0261\u1d77\u1d79\u1d83\u1e21\u24d6\ua77f\uff47",
+    "H": "\u0124\u0126\u021e\u029c\u1e22\u1e24\u1e26\u1e28\u1e2a\u24bd\u2c67\u2c75\uff28",
+    "h": (
+        "\u0125\u0127\u021f\u0265\u0266\u02ae\u02af\u1e23\u1e25\u1e27\u1e29\u1e2b\u1e96\u24d7"
+        "\u2c68\u2c76\uff48"
+    ),
+    "HV": "\u01f6",
+    "hv": "\u0195",
+    "I": (
+        "\u00cc\u00cd\u00ce\u00cf\u0128\u012a\u012c\u012e\u0130\u0196\u0197\u01cf\u0208\u020a"
+        "\u026a\u1d7b\u1e2c\u1e2e\u1ec8\u1eca\u24be\ua7fe\uff29"
+    ),
+    "i": (
+        "\u00ec\u00ed\u00ee\u00ef\u0129\u012b\u012d\u012f\u0131\u01d0\u0209\u020b\u0268\u1d09"
+        "\u1d62\u1d7c\u1d96\u1e2d\u1e2f\u1ec9\u1ecb\u2071\u24d8\uff49"
+    ),
+    "IJ": "\u0132",
+    "ij": "\u0133",
+    "J": "\u0134\u0248\u1d0a\u24bf\uff2a",
+    "j": "\u0135\u01f0\u0237\u0249\u025f\u0284\u029d\u24d9\u2c7c\uff4a",
+    "K": "\u0136\u0198\u01e8\u1d0b\u1e30\u1e32\u1e34\u24c0\u2c69\ua740\ua742\ua744\uff2b",
+    "k": "\u0137\u0199\u01e9\u029e\u1d84\u1e31\u1e33\u1e35\u24da\u2c6a\ua741\ua743\ua745\uff4b",
+    "L": (
+        "\u0139\u013b\u013d\u013f\u0141\u023d\u029f\u1d0c\u1e36\u1e38\u1e3a\u1e3c\u24c1\u2c60"
+        "\u2c62\ua746\ua748\ua780\uff2c"
+    ),
+    "l": (
+        "\u013a\u013c\u013e\u0140\u0142\u019a\u0234\u026b\u026c\u026d\u1d85\u1e37\u1e39\u1e3b"
+        "\u1e3d\u24db\u2c61\ua747\ua749\ua781\uff4c"
+    ),
+    "LJ": "\u01c7",
+    "Lj": "\u01c8",
+    "lj": "\u01c9",
+    "LL": "\u1efa",
+    "ll": "\u1efb",
+    "ls": "\u02aa",
+    "lz": "\u02ab",
+    "M": "\u019c\u1d0d\u1e3e\u1e40\u1e42\u24c2\u2c6e\ua7fd\ua7ff\uff2d",
+    "m": "\u026f\u0270\u0271\u1d6f\u1d86\u1e3f\u1e41\u1e43\u24dc\uff4d",
+    "N": (
+        "\u00d1\u0143\u0145\u0147\u014a\u019d\u01f8\u0220\u0274\u1d0e\u1e44\u1e46\u1e48\u1e4a"
+        "\u24c3\uff2e"
+    ),
+    "n": (
+        "\u00f1\u0144\u0146\u0148\u0149\u014b\u019e\u01f9\u0235\u0272\u0273\u1d70\u1d87\u1e45"
+        "\u1e47\u1e49\u1e4b\u207f\u24dd\uff4e"
+    ),
+    "NJ": "\u01ca",
+    "Nj": "\u01cb",
+    "nj": "\u01cc",
+    "O": (
+        "\u00d2\u00d3\u00d4\u00d5\u00d6\u00d8\u014c\u014e\u0150\u0186\u019f\u01a0\u01d1\u01ea"
+        "\u01ec\u01fe\u020c\u020e\u022a\u022c\u022e\u0230\u1d0f\u1d10\u1e4c\u1e4e\u1e50\u1e52"
+        "\u1ecc\u1ece\u1ed0\u1ed2\u1ed4\u1ed6\u1ed8\u1eda\u1edc\u1ede\u1ee0\u1ee2\u24c4\ua74a"
+        "\ua74c\uff2f"
+    ),
+    "o": (
+        "\u00f2\u00f3\u00f4\u00f5\u00f6\u00f8\u014d\u014f\u0151\u01a1\u01d2\u01eb\u01ed\u01ff"
+        "\u020d\u020f\u022b\u022d\u022f\u0231\u0254\u0275\u1d16\u1d17\u1d97\u1e4d\u1e4f\u1e51"
+        "\u1e53\u1ecd\u1ecf\u1ed1\u1ed3\u1ed5\u1ed7\u1ed9\u1edb\u1edd\u1edf\u1ee1\u1ee3\u2092"
+        "\u24de\u2c7a\ua74b\ua74d\uff4f"
+    ),
+    "OE": "\u0152\u0276",
+    "oe": "\u0153\u1d14",
+    "OO": "\ua74e",
+    "oo": "\ua74f",
+    "OU": "\u0222\u1d15",
+    "ou": "\u0223",
+    "P": "\u01a4\u1d18\u1e54\u1e56\u24c5\u2c63\ua750\ua752\ua754\uff30",
+    "p": "\u01a5\u1d71\u1d7d\u1d88\u1e55\u1e57\u24df\ua751\ua753\ua755\ua7fc\uff50",
+    "Q": "\u024a\u24c6\ua756\ua758\uff31",
+    "q": "\u0138\u024b\u02a0\u24e0\ua757\ua759\uff51",
+    "qp": "\u0239",
+    "R": (
+        "\u0154\u0156\u0158\u0210\u0212\u024c\u0280\u0281\u1d19\u1d1a\u1e58\u1e5a\u1e5c\u1e5e"
+        "\u24c7\u2c64\ua75a\ua782\uff32"
+    ),
+    "r": (
+        "\u0155\u0157\u0159\u0211\u0213\u024d\u027c\u027d\u027e\u027f\u1d63\u1d72\u1d73\u1d89"
+        "\u1e59\u1e5b\u1e5d\u1e5f\u24e1\ua75b\ua783\uff52"
+    ),
+    "S": "\u015a\u015c\u015e\u0160\u0218\u1e60\u1e62\u1e64\u1e66\u1e68\u24c8\ua731\ua785\uff33",
+    "s": (
+        "\u015b\u015d\u015f\u0161\u017f\u0219\u023f\u0282\u1d74\u1d8a\u1e61\u1e63\u1e65\u1e67"
+        "\u1e69\u1e9c\u1e9d\u24e2\ua784\uff53"
+    ),
+    "SS": "\u1e9e",
+    "ss": "\u00df",
+    "st": "\ufb06",
+    "T": (
+        "\u0162\u0164\u0166\u01ac\u01ae\u021a\u023e\u1d1b\u1e6a\u1e6c\u1e6e\u1e70\u24c9\ua786\uff34"
+    ),
+    "t": (
+        "\u0163\u0165\u0167\u01ab\u01ad\u021b\u0236\u0287\u0288\u1d75\u1e6b\u1e6d\u1e6f\u1e71"
+        "\u1e97\u24e3\u2c66\uff54"
+    ),
+    "tc": "\u02a8",
+    "TH": "\u00de\ua766",
+    "th": "\u00fe\u1d7a\ua767",
+    "ts": "\u02a6",
+    "TZ": "\ua728",
+    "tz": "\ua729",
+    "U": (
+        "\u00d9\u00da\u00db\u00dc\u0168\u016a\u016c\u016e\u0170\u0172\u01af\u01d3\u01d5\u01d7"
+        "\u01d9\u01db\u0214\u0216\u0244\u1d1c\u1d7e\u1e72\u1e74\u1e76\u1e78\u1e7a\u1ee4\u1ee6"
+        "\u1ee8\u1eea\u1eec\u1eee\u1ef0\u24ca\uff35"
+    ),
+    "u": (
+        "\u00f9\u00fa\u00fb\u00fc\u0169\u016b\u016d\u016f\u0171\u0173\u01b0\u01d4\u01d6\u01d8"
+        "\u01da\u01dc\u0215\u0217\u0289\u1d64\u1d99\u1e73\u1e75\u1e77\u1e79\u1e7b\u1ee5\u1ee7"
+        "\u1ee9\u1eeb\u1eed\u1eef\u1ef1\u24e4\uff55"
+    ),
+    "ue": "\u1d6b",
+    "V": "\u01b2\u0245\u1d20\u1e7c\u1e7e\u1efc\u24cb\ua75e\ua768\uff36",
+    "v": "\u028b\u028c\u1d65\u1d8c\u1e7d\u1e7f\u24e5\u2c71\u2c74\ua75f\uff56",
+    "VY": "\ua760",
+    "vy": "\ua761",
+    "W": "\u0174\u01f7\u1d21\u1e80\u1e82\u1e84\u1e86\u1e88\u24cc\u2c72\uff37",
+    "w": "\u0175\u01bf\u028d\u1e81\u1e83\u1e85\u1e87\u1e89\u1e98\u24e6\u2c73\uff57",
+    "X": "\u1e8a\u1e8c\u24cd\uff38",
+    "x": "\u1d8d\u1e8b\u1e8d\u2093\u24e7\uff58",
+    "Y": (
+        "\u00dd\u0176\u0178\u01b3\u0232\u024e\u028f\u1e8e\u1ef2\u1ef4\u1ef6\u1ef8\u1efe\u24ce\uff39"
+    ),
+    "y": (
+        "\u00fd\u00ff\u0177\u01b4\u0233\u024f\u028e\u1e8f\u1e99\u1ef3\u1ef5\u1ef7\u1ef9\u1eff"
+        "\u24e8\uff59"
+    ),
+    "Z": "\u0179\u017b\u017d\u01b5\u021c\u0224\u1d22\u1e90\u1e92\u1e94\u24cf\u2c6b\ua762\uff3a",
+    "z": (
+        "\u017a\u017c\u017e\u01b6\u021d\u0225\u0240\u0290\u0291\u1d76\u1d8e\u1e91\u1e93\u1e95"
+        "\u24e9\u2c6c\ua763\uff5a"
+    ),
+    "{": "\u2774\uff5b",
+    "}": "\u2775\uff5d",
+    "~": "\u2053\uff5e",
+}
+
+#: :meth:`str.translate`'s table: each character's code point to what it folds to.
+TABLE = {ord(ch): folded for folded, chars in _FOLDED_TO.items() for ch in chars}

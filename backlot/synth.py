@@ -23,6 +23,25 @@ def _digest(seed: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
+# Crockford's base32, the alphabet a ULID is written in: I and L are dropped because they read as a
+# 1, O as a 0, and U so a typed id cannot spell a word with it.
+_CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _ulid(seed: str) -> str:
+    """A ULID, 26 characters of Crockford's base32: a 48-bit millisecond time, then 80 bits of
+    ``seed``'s digest.
+
+    Fireflies serves ULIDs (measured 2026-10-27: 26 characters, this alphabet, upper case). The
+    time is zero, which a client decodes as 1970-01-01T00:00:00Z: a measured id's time sits
+    *before* its own meeting by an amount that varies (1 day 22 hours on one transcript, 4 hours
+    24 minutes on another), so there is no rule to reproduce, and zero keeps the id a function of
+    ``seed`` alone.
+    """
+    value = int(_digest(seed)[:20], 16)
+    return "".join(_CROCKFORD32[(value >> shift) & 31] for shift in range(125, -1, -5))
+
+
 def hnum(seed: str, start: int = 0, length: int = 8, salt: str = "") -> int:
     """A stable non-negative integer derived from a hex slice of the digest."""
     h = _digest(salt + seed) if salt else _digest(seed)
@@ -67,6 +86,26 @@ def rfc3339(ts: int) -> str:
 def rfc3339_millis(ts: int) -> str:
     """e.g. 2024-04-05T17:00:00.000Z (Confluence version.when)."""
     return utc_datetime(ts).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def rfc3339_minute(ts: int) -> str:
+    """e.g. 2024-04-05T17:00:00.000Z for a moment at 17:00:51 (Notion page/block/data source/comment).
+
+    Measured against api.notion.com on 2026-10-20: a page, a row, their blocks and a data source
+    answer the minute, with zero seconds and milliseconds, whatever second the corpus stores. A
+    comment answers its minute in `created_time` and `last_edited_time` alike: one posted at
+    18:23:52 on 2026-10-28 was listed at 18:23:00.000Z under 2022-06-28, 2025-09-03 and
+    2026-03-11."""
+    return utc_datetime(int(ts) // 60 * 60).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def rfc3339_offset_millis(ts: int) -> str:
+    """e.g. 2024-04-05T17:00:51.000+00:00 (Notion database under 2025-09-03 and later).
+
+    Measured against api.notion.com on 2026-10-20: a database under the data sources model keeps
+    its seconds and milliseconds and spells the offset as ``+00:00`` in place of ``Z``. The
+    corpus stores seconds only, so the milliseconds are ``.000``."""
+    return utc_datetime(ts).strftime("%Y-%m-%dT%H:%M:%S.000+00:00")
 
 
 def jira_datetime(ts: int) -> str:
@@ -242,6 +281,62 @@ def slack_fmt_ts(epoch_sec: int, key: str) -> str:
     return f"{int(epoch_sec)}.{micro:06d}"
 
 
+def msteams_channel_id(channel_name: str) -> str:
+    """A Graph channel id, ``19:<32 hex>@thread.tacv2``.
+
+    The shape is quoted from the vendor's own examples — ``channel-list`` returns
+    ``19:561fbdbbfca848a484f0a6f00ce9dbbd@thread.tacv2``. Nothing parses it (Microsoft says to
+    treat it as opaque), but a client percent-encodes it into a URL, so the two reserved
+    characters real ids carry have to be there.
+    """
+    return "19:" + _digest("msteams-chan:" + channel_name)[:32] + "@thread.tacv2"
+
+
+def msteams_team_id(org: str) -> str:
+    """The one team's id: a GUID, which is the Entra group id Graph addresses a team by."""
+    return _uuid_from("msteams-team:" + org)
+
+
+def msteams_tenant_id(org: str) -> str:
+    """The Entra tenant id a channel and a message webUrl both carry."""
+    return _uuid_from("msteams-tenant:" + org)
+
+
+def msteams_user_id(email: str) -> str:
+    """An Entra user object id — what ``from.user.id``, ``/users/{id}`` and a member's
+    ``userId`` all carry."""
+    return _uuid_from("msteams-user:" + email)
+
+
+def msteams_member_id(tenant_id: str, channel_id: str, user_id: str) -> str:
+    """A channel membership id: base64 of ``0##2##<tenantId>##<channelId>##<userId>``.
+
+    Every member id read off graph.microsoft.com on 2026-10-20, of a standard channel and a private
+    one alike, decoded to exactly that. Microsoft documents the value as opaque, so this is not a
+    contract a client may rely on — it is what makes Backlot's ids indistinguishable from real ones
+    for the clients that log or diff them.
+    """
+    return base64.b64encode(f"0##2##{tenant_id}##{channel_id}##{user_id}".encode()).decode()
+
+
+def msteams_attachment_id(message_id: str, position: int) -> str:
+    """A file attachment's id, a GUID as live ones are, for a corpus that states none."""
+    return _uuid_from(f"msteams-attachment:{message_id}:{position}")
+
+
+# Capacity of Backlot's synthetic channel-second id space, not a Microsoft throughput limit.
+# Millisecond-shaped ids resemble Graph examples, but Microsoft declares ids opaque strings.
+# The importer's collision probe walks exactly this many steps.
+MSTEAMS_ID_FRACTIONS = 1000
+
+
+def msteams_fmt_id(epoch_sec: int, key: str) -> str:
+    """A Graph channel-message id for a given second: epoch milliseconds as a decimal string, with
+    the millisecond keyed on ``key``."""
+    milli = hnum(key, 12, 6) % MSTEAMS_ID_FRACTIONS
+    return str(int(epoch_sec) * 1000 + milli)
+
+
 def gmail_id(seed: str, salt: str = "msg") -> str:
     """An opaque 16-hex token, used for attachment ids — the value is never parsed, so it
     deliberately spans the full 64-bit range. A *message* id is parsed by Gmail and must not; use
@@ -281,6 +376,20 @@ def drive_folder_id(container: str) -> str:
     must not meet."""
     digest = hashlib.sha256(("folder:" + container).encode("utf-8")).digest()
     return "0A" + base64.urlsafe_b64encode(digest)[:17].decode("ascii")
+
+
+def drive_root_id(email: str) -> str:
+    """The id of a user's My Drive root: ``0A`` plus 17 base64url characters, as a real root's is
+    (measured 2026-10-26), seeded apart from every folder's so a folder named after an address
+    cannot land on it."""
+    digest = hashlib.sha256(("root:" + email.lower()).encode("utf-8")).digest()
+    return "0A" + base64.urlsafe_b64encode(digest)[:17].decode("ascii")
+
+
+def google_user_id(email: str) -> str:
+    """A Google account's numeric id, 21 digits from ``1``: the shape of the `ouid` real puts on
+    every `spreadsheetUrl` (measured 2026-10-26)."""
+    return str(10**20 + hnum("google-user:" + email.lower(), length=32) % (9 * 10**19))
 
 
 def gdrive_file_id(seed: str) -> str:
@@ -645,6 +754,10 @@ def linear_user_id(email: str) -> str:
     return _uuid_from("linear-user:" + email)
 
 
+def linear_team_membership_id(team: str, user_id: str) -> str:
+    return _uuid_from(f"linear-team-membership:{team}:{user_id}")
+
+
 def linear_state_id(name: str, team: str = "") -> str:
     """Workflow states are per-TEAM in Linear — ENG's "Done" and DES's "Done" are different
     objects with different ids — so the team is part of the seed."""
@@ -657,6 +770,11 @@ def linear_label_id(name: str) -> str:
 
 def linear_project_id(name: str) -> str:
     return _uuid_from("linear-project:" + (name or ""))
+
+
+def linear_project_status_id(status_type: str) -> str:
+    """Project statuses are workspace-wide in Linear, one per type, so the type is the whole seed."""
+    return _uuid_from("linear-project-status:" + status_type)
 
 
 def linear_cycle_id(name: str, team: str = "") -> str:
@@ -791,9 +909,26 @@ _LINEAR_STATE_TYPES = (
 )
 
 
+# The workflow states every new Linear team is created with, as (name, type, color, position):
+# api.linear.app answered these six for a workspace's first team and for a team created on
+# 2026-10-22, before either had an issue in most of them.
+LINEAR_DEFAULT_STATES = (
+    ("Backlog", "backlog", "#bec2c8", 0.0),
+    ("Todo", "unstarted", "#e2e2e2", 1.0),
+    ("In Progress", "started", "#f2c94c", 2.0),
+    ("Done", "completed", "#5e6ad2", 3.0),
+    ("Canceled", "canceled", "#95a2b3", 4.0),
+    ("Duplicate", "duplicate", "#95a2b3", 5.0),
+)
+_LINEAR_DEFAULT_STATE_TYPES = {name: t for name, t, _, _ in LINEAR_DEFAULT_STATES}
+
+
 def linear_state_type(name: str) -> str:
-    """Map a workflow-state name onto Linear's category. Unknown names fall to ``unstarted``,
-    which is Linear's own bucket for "created but not begun" (Todo / Planned)."""
+    """Map a workflow-state name onto Linear's category. A default state's name is its measured
+    type; any other name is read for a keyword, and unknown names fall to ``unstarted``, which is
+    Linear's own bucket for "created but not begun" (Todo / Planned)."""
+    if name in _LINEAR_DEFAULT_STATE_TYPES:
+        return _LINEAR_DEFAULT_STATE_TYPES[name]
     n = (name or "").strip().lower()
     for state_type, needles in _LINEAR_STATE_TYPES:
         if any(needle in n for needle in needles):
@@ -808,11 +943,29 @@ _LINEAR_STATE_COLORS = {
     "started": "#f2c94c",
     "completed": "#5e6ad2",
     "canceled": "#95a2b3",
+    "duplicate": "#95a2b3",
 }
 
 
 def linear_state_color(name: str) -> str:
     return _LINEAR_STATE_COLORS[linear_state_type(name)]
+
+
+def linear_state_positions(names) -> dict[str, float]:
+    """A team's state name -> ``position``, over the defaults and every other name given.
+
+    A default keeps its measured position. Any other name sits after the default of its type, the
+    names of one type spread evenly before the next whole position in name order; a triage state
+    has no default to follow, so it sits before ``Backlog``."""
+    out = {name: position for name, _, _, position in LINEAR_DEFAULT_STATES}
+    anchors = {t: position for _, t, _, position in LINEAR_DEFAULT_STATES} | {"triage": -1.0}
+    by_type: dict[str, list[str]] = {}
+    for name in sorted(set(names) - set(out)):
+        by_type.setdefault(linear_state_type(name), []).append(name)
+    for state_type, group in by_type.items():
+        for i, name in enumerate(group, start=1):
+            out[name] = anchors[state_type] + i / (len(group) + 1)
+    return out
 
 
 def linear_branch_name(identifier: str, title: str, user_email: str | None = None) -> str:
@@ -1007,18 +1160,19 @@ def fireflies_fill_times(sentences, duration_secs: float | None = None) -> None:
 
 
 def fireflies_id(seed: str) -> str:
-    """A transcript's API-facing id: the 24-character lowercase hex Fireflies serves.
+    """A transcript's API-facing id: the ULID Fireflies serves, 26 Crockford base32 characters.
 
     Synthesized rather than reused from a corpus's own meeting id, which is not required to be
-    unique — ``transcript(id:)`` looks a meeting up by this one (see the store schema).
+    unique — ``transcript(id:)`` looks a meeting up by this one (see the store schema). Its time is
+    zero; see ``_ulid`` for why.
     """
-    return _digest("fireflies:" + seed)[:24]
+    return _ulid("fireflies:" + seed)
 
 
 def fireflies_user_id(email: str) -> str:
-    """A workspace user's id. Fireflies' own ids are 24-character hex, like a transcript's; keyed
-    on the address so it is stable and reversible through the app's startup index."""
-    return _digest("fireflies-user:" + (email or ""))[:24]
+    """A workspace user's id: a ULID, like a transcript's, keyed on the address so it is stable and
+    reversible through the app's startup index."""
+    return _ulid("fireflies-user:" + (email or ""))
 
 
 # No `fireflies_speaker_id` here on purpose: Fireflies numbers speakers WITHIN one meeting, so an

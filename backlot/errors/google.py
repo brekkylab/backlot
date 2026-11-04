@@ -370,8 +370,8 @@ def invalid_json(message: str) -> GoogleError:
 def internal_error() -> GoogleError:
     """Real's 500 on the Sheets data-filter reads, measured 2026-10-04: an enum number the proto
     does not declare in some fields, and a `ROW`, `COLUMN` or `SHEET` lookup beside a `spreadsheet`
-    location. ``routers.google._sheets_check_lookup`` and ``sheets_values_batch_get_by_data_filter``
-    list which."""
+    location. ``routers.google_sheets._sheets_check_lookup`` and
+    ``sheets_values_batch_get_by_data_filter`` list which."""
     return GoogleError(500, "Internal error encountered.", reason="backendError", status="INTERNAL")
 
 
@@ -402,12 +402,35 @@ def unsupported_conversion() -> GoogleError:
     )
 
 
-def bad_field_mask(path: str) -> GoogleError:
+def bad_field_mask(mask: str, path: str) -> GoogleError:
     """A ``fields`` mask naming something the response has no field for.
 
     Measured on Sheets: the top-level message is the generic ``Request contains an invalid
     argument.`` and the path that failed is named only inside a ``google.rpc.BadRequest`` detail —
-    so a client that wants to know WHICH path was wrong has to read `details`."""
+    so a client that wants to know WHICH path was wrong has to read `details`. The violation's
+    `field` is the whole mask, each ``/`` written ``.``: measured 2026-10-22, `spreadsheetId,bogus`
+    named `spreadsheetId,bogus` there and `sheets(properties/bogus)` named
+    `sheets(properties.bogus)`, the description naming the path alone."""
+    return _field_mask_refused(
+        mask, f"Error expanding 'fields' parameter. Cannot find matching fields for path '{path}'."
+    )
+
+
+def unbalanced_field_mask(mask: str, unpaired: str) -> GoogleError:
+    """:func:`bad_field_mask`'s 400 for a mask that leaves ``unpaired``, ``(`` or ``)``, without its
+    pair, the description naming the whole mask: measured 2026-10-22 on Sheets, `sheets(` answered
+    `Invalid FieldMask 'sheets('. Cannot find matching ')' for all '('.`, `spreadsheetId)`
+    `Cannot find matching '(' for all ')'.`, and `sheets(properties/title` wrote the mask
+    `sheets(properties.title` there."""
+    pair = ")" if unpaired == "(" else "("
+    return _field_mask_refused(
+        mask,
+        f"Invalid FieldMask '{mask.replace('/', '.')}'. "
+        f"Cannot find matching '{pair}' for all '{unpaired}'.",
+    )
+
+
+def _field_mask_refused(mask: str, description: str) -> GoogleError:
     return GoogleError(
         400,
         "Request contains an invalid argument.",
@@ -416,15 +439,7 @@ def bad_field_mask(path: str) -> GoogleError:
         details=[
             {
                 "@type": "type.googleapis.com/google.rpc.BadRequest",
-                "fieldViolations": [
-                    {
-                        "field": path,
-                        "description": (
-                            "Error expanding 'fields' parameter. Cannot find matching fields for "
-                            f"path '{path}'."
-                        ),
-                    }
-                ],
+                "fieldViolations": [{"field": mask.replace("/", "."), "description": description}],
             }
         ],
     )
@@ -473,6 +488,28 @@ def failed_precondition(message: str) -> GoogleError:
     return GoogleError(400, message, reason="failedPrecondition", status="FAILED_PRECONDITION")
 
 
+def unsupported_coding() -> GoogleError:
+    """The 415 for a body under a `Content-Encoding` real does not read
+    (``backlot.routers.google.refuses_coding``)."""
+    return GoogleError(
+        415,
+        "Unsupported Content-Encoding; only identity/gzip are supported.",
+        reason="failedPrecondition",
+        status="FAILED_PRECONDITION",
+    )
+
+
+def payload_too_large() -> GoogleError:
+    """The 400 for a body under `gzip` that decompresses past
+    ``backlot.routers.google.PAYLOAD_LIMIT``."""
+    return GoogleError(
+        400,
+        "Request payload size exceeds the limit: 134217728 bytes.",
+        reason="badRequest",
+        status="INVALID_ARGUMENT",
+    )
+
+
 # The challenge the front end's 401s carry, measured 2026-10-11 on all five hosts, with a credential
 # that does not resolve adding `error="invalid_token"` to it (:func:`bad_token`). It rides along on
 # a 401 a `callback` wraps at 200 as well. The download server's own 401 names the realm without
@@ -499,14 +536,28 @@ def bad_token(*, named: bool = True) -> GoogleError:
     )
 
 
-def missing_credentials() -> GoogleError:
+def missing_credentials(rpc: tuple[str, str] | None = None) -> GoogleError:
     """No credential, on an operation that does not take an API key (:func:`no_credentials`).
 
     One answer for all of them: measured 2026-09-14, Gmail, Docs and Slides send the same long
     top-level message and the same `errors[]` entry, the short ``Login Required.`` at ``location:
     Authorization``, and measured 2026-09-22 the two Sheets data-filter POSTs send both too. Which
     of them SHOWS that entry still differs — Gmail carries it unless `$.xgafv=2`, the editor
-    families only at `1` — but that is `has_errors_array`'s rule, not a difference in the error."""
+    families only at `1` — but that is `has_errors_array`'s rule, not a difference in the error.
+
+    ``rpc`` is ``(method, service)``, the operation the answer names in a ``CREDENTIALS_MISSING``
+    ErrorInfo: measured 2026-10-26, real carries one on every such 401, Gmail's and Docs' included,
+    and it is given here for the operations in `_RPC_METHODS`."""
+    details = None
+    if rpc is not None:
+        details = [
+            {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": "CREDENTIALS_MISSING",
+                "domain": "googleapis.com",
+                "metadata": {"method": rpc[0], "service": rpc[1]},
+            }
+        ]
     return GoogleError(
         401,
         MISSING_CREDENTIALS_MESSAGE,
@@ -515,6 +566,7 @@ def missing_credentials() -> GoogleError:
         location_type="header",
         status="UNAUTHENTICATED",
         short="Login Required.",
+        details=details,
         headers={"WWW-Authenticate": _CHALLENGE},
     )
 
@@ -554,6 +606,67 @@ _UNREGISTERED_CALLER_OPERATIONS = tuple(
 )
 
 
+# The RPC each operation's missing-credential 401 names, by its HTTP method and path, measured
+# 2026-10-26 on `sheets.googleapis.com`, on 2026-10-27 for the last three, which are not served
+# and answer this 401 all the same, and on 2026-10-28 and 2026-10-29 on `docs.googleapis.com`.
+_SHEETS_RPC = "google.apps.sheets.v4.SpreadsheetsService"
+_DOCS_RPC = "google.apps.docs.v1.DocumentsService"
+_RPC_METHODS = (
+    (
+        "POST",
+        re.compile(r"/docs/v1/documents"),
+        (f"{_DOCS_RPC}.CreateDocument", "docs.googleapis.com"),
+    ),
+    (
+        "POST",
+        re.compile(r"/docs/v1/documents/[^/]+:batchUpdate"),
+        (f"{_DOCS_RPC}.BatchUpdateDocument", "docs.googleapis.com"),
+    ),
+) + tuple(
+    (method, re.compile(pattern), (f"{_SHEETS_RPC}.{name}", "sheets.googleapis.com"))
+    for method, pattern, name in (
+        ("POST", r"/sheets/v4/spreadsheets", "CreateSpreadsheet"),
+        (
+            "POST",
+            r"/sheets/v4/spreadsheets/[^/]+/sheets/[^/]+:copyTo",
+            "CopySheetToAnotherSpreadsheet",
+        ),
+        (
+            "POST",
+            r"/sheets/v4/spreadsheets/[^/]+/values:batchUpdateByDataFilter",
+            "BatchUpdateValuesByDataFilter",
+        ),
+        (
+            "POST",
+            r"/sheets/v4/spreadsheets/[^/]+/values:batchClearByDataFilter",
+            "BatchClearValuesByDataFilter",
+        ),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+/values/.+:clear", "ClearValues"),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+/values/.+:append", "AppendValues"),
+        ("PUT", r"/sheets/v4/spreadsheets/[^/]+/values/.+", "UpdateValues"),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+/values:batchUpdate", "BatchUpdateValues"),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+/values:batchClear", "BatchClearValues"),
+        (
+            "POST",
+            r"/sheets/v4/spreadsheets/[^/]+/values:batchGetByDataFilter",
+            "BatchGetValuesByDataFilter",
+        ),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+:getByDataFilter", "GetSpreadsheetByDataFilter"),
+        ("POST", r"/sheets/v4/spreadsheets/[^/]+:batchUpdate", "BatchUpdateSpreadsheet"),
+        (
+            "POST",
+            r"/sheets/v4/spreadsheets/[^/]+/developerMetadata:search",
+            "SearchDeveloperMetadata",
+        ),
+        (
+            "GET",
+            r"/sheets/v4/spreadsheets/[^/]+/developerMetadata/[^/]+",
+            "GetDeveloperMetadata",
+        ),
+    )
+)
+
+
 def no_credentials(path: str, method: str) -> GoogleError:
     """What a request with no credential gets on this operation: :func:`unregistered_caller` on the
     ones in `_UNREGISTERED_CALLER_OPERATIONS`, :func:`missing_credentials` on the rest, Gmail, Docs
@@ -565,7 +678,8 @@ def no_credentials(path: str, method: str) -> GoogleError:
     """
     if any(m == method and p.fullmatch(path) for m, p in _UNREGISTERED_CALLER_OPERATIONS):
         return unregistered_caller()
-    return missing_credentials()
+    rpc = next((r for m, p, r in _RPC_METHODS if m == method and p.fullmatch(path)), None)
+    return missing_credentials(rpc)
 
 
 def delegation_denied(email: str) -> GoogleError:
@@ -879,12 +993,18 @@ def jsonp_callback(request: Request) -> str | None:
     element fetches, and a `<script>` element issues a GET. Measured on Sheets, a `callback` on
     `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is ignored outright -- no
     wrap on a success, none on an error, and a name that a GET would be refused for is not even
-    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`. So GET is the only
-    method this parameter applies to. A `HEAD` (``request.state.answering_head``) is not GET here
-    either: measured 2026-10-11 on Drive's `files.list` and Gmail's `profile`, a callable name and
-    an uncallable one each answered a `HEAD` with 200 `application/json; charset=UTF-8`, where the
-    GET beside it was the script, and a `HEAD` that failed beside one kept its own status — no
-    credential's and a bad one's, and a missing file's 404 — where its GET was the script at 200.
+    looked at -- where the same POST honours `$.xgafv` and `prettyPrint`, and on 2026-11-03 (UTC),
+    under `callback=foo`, a Drive `DELETE` and `PATCH` of a missing file drew its 404 as JSON, a
+    Gmail `PUT` of a missing label its 401 or 403 as JSON, and an `OPTIONS` on Drive's `about` its
+    empty 400. So GET is the only method this parameter applies to. A `HEAD`
+    (``request.state.answering_head``) is not GET here either: measured 2026-10-11 on Drive's
+    `files.list` and Gmail's `profile`, a callable name and an uncallable one each answered a `HEAD`
+    with 200 `application/json; charset=UTF-8`, where the GET beside it was the script, and a `HEAD`
+    that failed beside one kept its own status — no credential's and a bad one's, and a missing
+    file's 404 — where its GET was the script at 200. Nor is a POST read as the GET it names in
+    `X-HTTP-Method-Override` (``request.state.sent_as_a_post``): on 2026-11-03 (UTC) real answered
+    such a POST on Drive, Gmail and Sheets as JSON beside a `callback`, a success and a front-end
+    error alike.
 
     Two values that look like a callback are not one either. An empty `callback=` is absent:
     measured, it answers the plain body at the real status, success and error alike. So is any
@@ -895,9 +1015,9 @@ def jsonp_callback(request: Request) -> str | None:
     request out of the JSONP path along with the JSON one.
     That suppression is not Sheets' own: measured 2026-09-16, `alt=media` and `alt=zzz` beside a
     `callback` answer unwrapped on Drive, Gmail, Docs and Slides too, which is why `alt` is read
-    for every family here rather than only where ``routers.google._sheets_respond`` refuses the
-    value. Refusing it is still Sheets-only, and the four families that accept a format they cannot
-    render where real answers a 400 are a gap of their own.
+    for every family here rather than only where ``routers.google_sheets._sheets_respond`` refuses
+    the value. Refusing it is still Sheets-only, and the four families that accept a format they
+    cannot render where real answers a 400 are a gap of their own.
 
     A Drive byte-stream read is out of the JSONP path for a third reason, and one this function is
     not asked to decide: a `callback` on a download is neither refused nor wrapped by the JSONP
@@ -912,7 +1032,9 @@ def jsonp_callback(request: Request) -> str | None:
     Both are read as :func:`first_repeat`, not off ``QueryParams.get``: real answers a repeated
     `callback` through the first name and a repeated `alt` through the first format.
     """
-    if request.method != "GET" or getattr(request.state, "answering_head", False):
+    if request.method != "GET" or any(
+        getattr(request.state, mark, False) for mark in ("answering_head", "sent_as_a_post")
+    ):
         return None
     query = request.query_params
     alt = alt_format(query)
@@ -1152,8 +1274,8 @@ def rendered(
     Indented whatever `prettyPrint` says -- measured on Sheets, Docs, Drive, Gmail and Slides, an
     error came back two-space indented with no parameter, with `prettyPrint=false` and with
     `prettyPrint=true` alike, where a success under `prettyPrint=false` is compact. So the
-    parameter reaches the success path only (``routers.google._sheets_respond``) and nothing here
-    reads it.
+    parameter reaches the success path only (``routers.google_sheets._sheets_respond``) and nothing
+    here reads it.
 
     Wrapped only where ``validate_system_parameters`` checked `callback`, which is where a route
     matched and did not exempt it. That is a ROUTER dependency, so a family path with NO route --

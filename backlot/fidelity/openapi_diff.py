@@ -1,6 +1,6 @@
 """Comparing Backlot against an OpenAPI document its vendor publishes.
 
-Six vendors publish one, all of them public, which is what lets this run with no credential, no
+Five vendors publish one, all of them public, which is what lets this run with no credential, no
 quota and no account, and to be reproduced locally by anyone. Where a document is found is not this
 module's business: a comparison hands over a URL, or a hook that produces one.
 
@@ -54,7 +54,6 @@ class SpecTarget(Protocol):
     mount: tuple[str, ...]
     strip: str
     resolve_url: "Callable[[Mapping[str, Any]], str] | None"
-    named_by_path: bool
 
 
 def fetch_spec(
@@ -103,5 +102,5 @@ def measure(
     served = from_backlot(app.openapi(), spec.mount, spec.strip)
     return Measurement(
         diff_operations(served, vendor),
-        inventory(served, vendor, named_by_path=spec.named_by_path),
+        inventory(served, vendor),
     )

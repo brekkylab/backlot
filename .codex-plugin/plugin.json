@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/brekkylab/backlot",
   "repository": "https://github.com/brekkylab/backlot",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": [
     "emulator",
     "rag",
@@ -35,6 +35,10 @@
       "Import a corpus from JSONL, or ship the bundled one"
     ],
     "websiteURL": "https://github.com/brekkylab/backlot",
+    "composerIcon": "./assets/icon/backlot-mark-light.svg",
+    "composerIconDark": "./assets/icon/backlot-mark-dark.svg",
+    "logo": "./assets/icon/backlot-icon-light.png",
+    "logoDark": "./assets/icon/backlot-icon-dark.png",
     "screenshots": [
       "./assets/demo.gif",
       "./assets/figures/architecture.png"

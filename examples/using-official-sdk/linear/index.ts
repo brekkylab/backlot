@@ -88,8 +88,9 @@ const CORPUS = [
 class BacklotLinearClient extends LinearSdk {
   constructor(baseUrl: string, apiKey: string) {
     const gql = new GraphQLClient(`${baseUrl.replace(/\/$/, "")}/linear/graphql`, {
-      // A Linear personal API key is the BARE header value — no `Bearer` prefix. (Backlot
-      // accepts `Bearer <token>` too, which is how Linear carries an OAuth access token.)
+      // A Linear personal API key is the BARE header value — no `Bearer` prefix. `Bearer
+      // <token>` is how Linear carries an OAuth access token, and an API key sent that way is a
+      // 400, from Backlot as from Linear.
       headers: { Authorization: apiKey },
     });
     const request: LinearRequest = (document, variables) =>
@@ -173,7 +174,7 @@ async function serveOrConnect(url: string | undefined): Promise<Server> {
   const port = await freePort();
   const proc: ChildProcess = spawn(
     python,
-    ["-m", "uvicorn", "backlot.main:app", "--port", String(port), "--log-level", "warning"],
+    ["-m", "backlot", "serve", "--port", String(port), "--log-level", "warning"],
     { cwd: REPO_ROOT, env, stdio: ["ignore", "ignore", "inherit"] },
   );
   const baseUrl = `http://127.0.0.1:${port}`;

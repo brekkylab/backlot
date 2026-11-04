@@ -20,7 +20,7 @@ import re
 import time
 import unicodedata
 from collections.abc import Callable
-from html import escape
+from html.entities import codepoint2name
 from pathlib import Path
 from urllib.parse import quote
 
@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi import Path as PathParameter
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
+from starlette.convertors import PathConvertor, register_url_convertor
 from starlette.routing import Match
 
 from backlot import auth, store, synth
@@ -53,7 +54,9 @@ async def _checked_before_the_route(request: Request) -> None:
     own 404. Jira answers a `POST search/jql` body of a type it does not read with its 415
     (:func:`_refuse_a_search_media_type`) and then the 406, ahead of an empty body's 400, an
     unbounded query's 400, a parameter's 400 and the route's own answer. `space/{key}/permission` is
-    the one route this asks the 401 alone of: the 405 it answers comes before the 406.
+    the one route this asks the 401 alone of: the 405 it answers comes before the 406. On `search`
+    a `Content-Type` its JAX-RS service will not read is refused between the 401 and the 406
+    (:func:`_refuse_the_search_media_type`).
     """
     endpoint = getattr(request.scope.get("route"), "endpoint", None)
     jaxrs = False
@@ -64,6 +67,8 @@ async def _checked_before_the_route(request: Request) -> None:
         if endpoint is confluence_space_permission:
             return
         jaxrs = endpoint is confluence_cql_search
+        if jaxrs:
+            _refuse_the_search_media_type(request)
     elif endpoint is jira_search and request.method == "POST":
         _refuse_a_search_media_type(request)
     _refuse_the_accept(
@@ -184,7 +189,6 @@ _P_EXPAND = {"parameters": [qp("expand")]}
 _P_JIRA_COMMENTS = {
     "parameters": [qp("startAt", "integer"), qp("maxResults", "integer"), qp("orderBy")]
 }
-_P_JIRA_PROJECT_SEARCH = {"parameters": [qp("startAt", "integer"), qp("maxResults", "integer")]}
 _P_CQL = {
     "parameters": [
         qp("cql", required=True),
@@ -218,6 +222,12 @@ _P_CONTENT_CHILD = {"parameters": [qp("limit", "integer"), qp("start", "integer"
 _JIRA_COMMENT_PAGE_MAX = 100
 _JIRA_ORDER_FIELD = "created"
 
+# Java's `^([+-]?)\s*(.*)$` under `find`: `\s` is the six ASCII spaces, `.` stops at a line
+# terminator, and `$` matches at the end or before one final line terminator (`_jira_order_desc`).
+_JIRA_ORDER = re.compile(
+    "([+-]?)[ \t\n\x0b\x0c\r]*([^\n\r\x85\u2028\u2029]*)(?:\r\n|[\n\r\x85\u2028\u2029])?\\Z"
+)
+
 
 def _jira_order_desc(raw: str) -> bool:
     """Whether ``orderBy`` asks for the reverse, or Jira's 400 for a field it does not order by.
@@ -231,14 +241,24 @@ def _jira_order_desc(raw: str) -> bool:
     the ascending spelling Atlassian's own document writes — arrives here as `" created"`. Real
     Jira answers 200 to it, so stripping is what matches rather than a special case for `+`.
 
+    Real's answers fit Java reading the value, though Jira does not say so: `String.trim` (every
+    character up to U+0020 off both ends, as :func:`_jira_project_order` measured on
+    `project/search`), then the pattern `^([+-]?)\\s*(.*)$` (:data:`_JIRA_ORDER`), whose `\\s` is
+    ASCII and whose `.` and `$` stop at a line terminator. Measured against Jira Cloud on the
+    comment read (2026-10-16 and 2026-10-17): `%01created`, `created%01` and `%01-created` are 200;
+    after the sigil `%20`, `%09`, `%0A`, `%0B`, `%0C` and `%0D` go and `%01`, `%1F`, a no-break
+    space and an em space stay (`-%01created` names U+0001 and `created`); a no-break space or an em
+    space in front stays in the field too; one line terminator at the end goes (`created%C2%85` is
+    200) and one anywhere else matches nothing, so the 400 names the value whole, sigil and all
+    (`-%C2%85created`, `-cre%0Aated`).
+
     An EMPTY value is refused, not read as absent: the field it leaves is the empty string, and
     real Jira answers 400 to `?orderBy=`.
     """
-    field = raw.strip()
+    field = raw.strip(_JAVA_TRIMMED)
     desc = False
-    if field[:1] in ("+", "-"):
-        desc = field[0] == "-"
-        field = field[1:].strip()
+    if (m := _JIRA_ORDER.match(field)) is not None:
+        desc, field = m[1] == "-", m[2]
     if field.casefold() != _JIRA_ORDER_FIELD:
         # Backlot's own sentence, not a transcription: Jira localises this one to the account's
         # language, and the account it was measured against answers in Korean.
@@ -499,12 +519,75 @@ def _jira_project_order(raw: str) -> None:
     )
 
 
-@router.get("/rest/api/3/project/search", openapi_extra=_P_JIRA_PROJECT_SEARCH)
+# The `projectTypeKey` of every project served here.
+_JIRA_PROJECT_TYPE = "software"
+# What `typeKey` trims from each value: the 25 code points of Unicode's White_Space property, each
+# of which kept the project on 2026-10-25 in front of `software` and after it, where U+0001,
+# U+001C to U+001F, U+007F, U+00AD, U+180E, U+200B and U+FEFF kept none. `str.strip()` would take
+# U+001C to U+001F as well.
+_JIRA_TYPE_KEY_SPACE = "\t\n\x0b\x0c\r \x85\xa0\u1680\u2028\u2029\u202f\u205f\u3000" + "".join(
+    map(chr, range(0x2000, 0x200B))
+)
+
+
+def _jira_project_kept(request: Request, name: str, key: str, category: int | None) -> bool:
+    """Whether ``project/search`` keeps this project under `query`, `keys`, `typeKey` and the
+    ``category`` its `categoryId` converted to.
+
+    Measured against Jira Cloud on 2026-10-09 and 2026-10-22, on a site of one project. `query`
+    keeps a project whose name or key holds the text, both lower-cased and nothing trimmed: the
+    first three letters of the name, a fragment of the key in either case and the name with a
+    KELVIN SIGN (U+212A) for its `k` kept that project, where `zzqq`, a space or a tab in front of
+    the name's first letters, `bre*` and the key with a LONG S (U+017F) for its `s` kept none.
+    `keys` keeps a project whose key is one of the values as sent, so `keys=PA&keys=PB` keeps
+    either: the key kept the project, and the key in lower case, with a space in front, `NOPE` and
+    `<KEY>,NOPE` kept none. A lone empty `keys=` filters nothing, where `keys=&keys=` kept none.
+    `typeKey` is a list split at its commas over every value sent, each trimmed of
+    :data:`_JIRA_TYPE_KEY_SPACE` and lower-cased:
+    `software`, `Software`, `%20software`, `%C2%A0software`, `software,business` and
+    `typeKey=business&typeKey=software` kept the project, `business`, `bogus`, `%01software` and
+    `ſoftware` kept none, and an empty value or `,` filtered nothing, all at 200. A project here
+    is software and carries no category, so any `categoryId` that converts keeps none
+    (`categoryId=99`, `0` and `-1` kept none).
+    """
+    query = request.query_params.get("query")
+    if query:
+        lowered = query.lower()
+        if lowered not in name.lower() and lowered not in key.lower():
+            return False
+    keys = request.query_params.getlist("keys")
+    if keys and keys != [""] and key not in keys:
+        return False
+    types = {
+        part.strip(_JIRA_TYPE_KEY_SPACE).lower()
+        for value in request.query_params.getlist("typeKey")
+        for part in value.split(",")
+    }
+    if types - {""} and _JIRA_PROJECT_TYPE not in types:
+        return False
+    return category is None
+
+
+@router.get(
+    "/rest/api/3/project/search",
+    openapi_extra={
+        "parameters": [
+            qp("startAt", "integer"),
+            qp("maxResults", "integer"),
+            qp("query"),
+            qp("keys"),
+            qp("typeKey"),
+            qp("categoryId", "integer"),
+        ]
+    },
+)
 async def jira_project_search(request: Request):
-    # Jira converts these before validating orderBy. startAt is a long, while maxResults is
-    # constrained to the inclusive range 1..100 after conversion.
+    # Jira Cloud, measured 2026-10-16: integer conversion precedes orderBy;
+    # startAt is a long floored at zero, and maxResults is clamped to 1..100.
     start = max(0, _int_param(request, "startAt", 0, width=JAVA_LONG))
     limit = min(100, max(1, _int_param(request, "maxResults", 50)))
+    # Converted after `startAt` and `maxResults` and before `orderBy` is read, as real converts it.
+    category = _int_param(request, "categoryId", None, width=JAVA_LONG)
     # Read for the refusal above. The sort itself is not served, so `orderBy` stays undeclared:
     # `qp` is for a parameter Backlot honours, and advertising this one would offer a client an
     # order the listing never applies. `backlot diff --source jira` keeps the gap.
@@ -517,12 +600,14 @@ async def jira_project_search(request: Request):
     values = []
     for r in _reachable_projects(conn, ids):
         key = _project_key(conn, r["name"])
+        if not _jira_project_kept(request, r["name"], key, category):
+            continue
         values.append(
             {
                 "id": str(synth.github_user_id(r["name"])),
                 "key": key,
                 "name": r["name"],
-                "projectTypeKey": "software",
+                "projectTypeKey": _JIRA_PROJECT_TYPE,
                 "simplified": False,
                 "style": "classic",
                 "isPrivate": False,
@@ -532,33 +617,49 @@ async def jira_project_search(request: Request):
         )
     total = len(values)
     page = values[start : start + limit]
-    answer = {"self": _jira_project_search_link(request, start, limit)}
+    answer = {"self": _project_search_link(request, start, limit)}
     if start + len(page) < total:
-        answer["nextPage"] = _jira_project_search_link(request, start + limit, limit)
+        answer["nextPage"] = _project_search_link(request, start + limit, limit)
     return answer | {
-        "values": page,
         "maxResults": limit,
         "startAt": start,
         "total": total,
         "isLast": start + len(page) >= total,
+        "values": page,
     }
 
 
-def _jira_project_search_link(request: Request, start: int, limit: int) -> str:
-    """Build a Jira project-search link while retaining unrelated query values as sent."""
+def _project_search_link(request: Request, start: int, limit: int) -> str:
+    """`project/search`'s `self` at ``start``, and its `nextPage` at the page after: every parameter
+    the request sent but `startAt` and `maxResults`, each value of a repeated one, by its name and
+    value as sent (`a%2Bb`, `a+b`, `b%6Fgus`; a bare `bogus` as `bogus=`, and `=x` as `x=`), then
+    `maxResults` and `startAt` as read. Real lists them in the order a `java.util.HashMap` holding
+    them in that order iterates: by the bucket each name's `String.hashCode` spreads to, over
+    sixteen buckets doubled while the map is more than three quarters full, and in the order put
+    within a bucket (`maxResults=1&Zeta=1&alpha=2` links `Zeta=1&maxResults=1&alpha=2&startAt=0`).
+    Measured 2026-10-17 on a site of one project and on ecosystem.atlassian.net (100 projects,
+    anonymous), where `nextPage` came with every page but the last."""
     params: dict[str, list[str]] = {}
-    for item in request.scope["query_string"].decode("latin-1").split("&"):
-        name, separator, value = item.partition("=")
-        if not separator:
-            value = ""
+    for piece in request.scope["query_string"].decode("latin-1").split("&"):
+        name, _, value = piece.partition("=")
         if not name:
             name, value = value, ""
         if name and name not in ("startAt", "maxResults"):
             params.setdefault(name, []).append(value)
+    params["maxResults"], params["startAt"] = [str(limit)], [str(start)]
+    capacity = 16
+    while len(params) > capacity * 3 // 4:
+        capacity *= 2
 
-    params["maxResults"] = [str(limit)]
-    params["startAt"] = [str(start)]
-    query = "&".join(f"{name}={value}" for name in sorted(params) for value in params[name])
+    def bucket(name: str) -> int:
+        code = 0
+        for char in name:
+            code = (31 * code + ord(char)) & 0xFFFFFFFF
+        return (code ^ (code >> 16)) & (capacity - 1)
+
+    query = "&".join(
+        f"{name}={value}" for name in sorted(params, key=bucket) for value in params[name]
+    )
     return f"{_site(request)}/rest/api/3/project/search?{query}"
 
 
@@ -580,14 +681,18 @@ def _require_project(request: Request, conn, key: str) -> str:
     ids; `0`, `007`, `-1`, `1000000000000000000` (nineteen digits, still a Java `long`) and `1２` (a
     full-width `２`) are keys. A credentialled caller got the same answer from a project's id as from
     its key, on `role`, `role/10002` and `POST role/99999`, on 2026-10-14 and 2026-10-15.
+
+    A key is the project's own as written: on 2026-10-17 the key in lower case or with only its
+    first letter in upper case, and the project's name in either case, were each the 404 by key,
+    with and without a credential, on `role` and `role/10002`.
     """
     ids = auth.visible_ids(request, _jira_caller(request))
     kind = "id" if re.fullmatch(r"[1-9][0-9]{0,17}", key) else "key"
+    rows = store.list_containers(conn, "jira")
     if kind == "id":
-        rows = store.list_containers(conn, "jira")
         container = next((r["name"] for r in rows if _jira_project_id(r["name"]) == key), None)
     else:
-        container = _jira_container_for_key(conn, key, request)
+        container = next((r["name"] for r in rows if _project_key(conn, r["name"]) == key), None)
     # The `ids is None` short-circuit mirrors `github._repo_visible`, where it is load-bearing: a
     # `subtype: repo` record creates a container holding no document, and the admin keeps the repo
     # as soon as that record exists. No Jira record can do that — `project` is required on every
@@ -680,6 +785,46 @@ def _java_long(raw: str) -> int | None:
             return None
     value = -value if negative else value
     return value if -(2**63) <= value < 2**63 else None
+
+
+def _parse_long(raw: str) -> int | None:
+    """``raw`` as Java's `Long.parseLong` reads it, or None where it throws: an optional sign, then
+    decimal digits as :func:`_java_digit` reads them, within a `long`. Nothing is trimmed and there
+    is no hexadecimal, unlike :func:`_java_long`."""
+    negative = raw.startswith("-")
+    digits = raw[1:] if raw[:1] in ("+", "-") else raw
+    if not digits:
+        return None
+    value = 0
+    for ch in digits:
+        digit = _java_digit(ch, 10)
+        if digit is None:
+            return None
+        value = value * 10 + digit
+    value = -value if negative else value
+    return value if -(2**63) <= value < 2**63 else None
+
+
+def _content_id(raw: str) -> tuple[int, bool]:
+    """The ``content_id`` path variable as Confluence's `ContentId` reads it, and whether it was
+    sent as an attachment's, or the 400 it answers.
+
+    An id is :func:`_parse_long` of the value, or of what follows a leading `att`, which marks an
+    attachment's (:func:`backlot.errors.atlassian.content_not_found` says what that changes).
+    Measured on Confluence Cloud, 2026-10-16 and 2026-10-21: `05`, `٥` and `att5` are 5, and
+    `0x10`, a space beside the digits, `Att5` and `attabc` are the 400.
+
+    Every route under `content/{id}` reads it in its body rather than declaring it in the
+    signature: Spring converts the path variable after the credential's 403 and before the route's
+    own parameter refusals (`content/abc/child/page?limit=abc`, `?limit=-1` and
+    `content/abc/label?prefix=bogus` are this 400), and a declared type is checked before the
+    route runs.
+    """
+    attachment = raw.startswith("att")
+    content_id = _parse_long(raw[3:] if attachment else raw)
+    if content_id is None:
+        raise errors_atlassian.content_id_not_convertible(raw)
+    return content_id, attachment
 
 
 def _role_id(request: Request, raw: str) -> int:
@@ -1417,7 +1562,7 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
             "id": str(synth.github_user_id(row["project"])),
             "key": pkey,
             "name": row["project"],
-            "projectTypeKey": "software",
+            "projectTypeKey": _JIRA_PROJECT_TYPE,
             "simplified": False,
             "self": f"{site}/rest/api/3/project/{pkey}",
             "avatarUrls": synth.avatar_urls("proj:" + pkey),
@@ -1497,18 +1642,34 @@ def _jira_issue(conn, request: Request, row, expand: str = "", fields_only: bool
 # ============================== Confluence ======================================
 
 
+#: How a body's characters are written: storage writes each character HTML 4 names
+#: (`codepoint2name`) as that entity but `Š` and `š`, view and export_view write only `"`, `&`, `<`
+#: and `>` as entities, and every other character measured is itself in all three, `'` among them.
+#: Measured against Confluence Cloud on pages on 2026-10-23, and with twelve of those characters on
+#: a comment and a blog post on 2026-10-25.
+_CONFLUENCE_STORAGE_ENTITIES = {
+    cp: f"&{name};" for cp, name in codepoint2name.items() if cp not in (0x160, 0x161)
+}
+_CONFLUENCE_RENDERED_ENTITIES = str.maketrans(
+    {'"': "&quot;", "&": "&amp;", "<": "&lt;", ">": "&gt;"}
+)
+
+
 def _storage(content: str) -> str:
     """Confluence storage format — XHTML with a leading structured macro, as the real
     editor emits (distinct from the rendered view below)."""
     paras = [p for p in content.split("\n\n") if p.strip()] or [content]
-    return "".join(f"<p>{escape(p)}</p>" for p in paras)
+    return "".join(f"<p>{p.translate(_CONFLUENCE_STORAGE_ENTITIES)}</p>" for p in paras)
 
 
 def _view(content: str) -> str:
     """Rendered ``view`` HTML — differs from storage (wrapped, ids, no ac: macros), as the
     real API returns a rendered representation, not the storage source."""
     paras = [p for p in content.split("\n\n") if p.strip()] or [content]
-    body = "".join(f'<p class="auto-cursor-target">{escape(p)}</p>' for p in paras)
+    body = "".join(
+        f'<p class="auto-cursor-target">{p.translate(_CONFLUENCE_RENDERED_ENTITIES)}</p>'
+        for p in paras
+    )
     return f'<div class="contentLayout2"><div class="columnLayout single">{body}</div></div>'
 
 
@@ -1516,7 +1677,7 @@ def _export_view(content: str) -> str:
     """Rendered ``export_view`` HTML — the real API's export-oriented rendering (same content
     as ``view``, without editor-only attributes like ``auto-cursor-target``)."""
     paras = [p for p in content.split("\n\n") if p.strip()] or [content]
-    body = "".join(f"<p>{escape(p)}</p>" for p in paras)
+    body = "".join(f"<p>{p.translate(_CONFLUENCE_RENDERED_ENTITIES)}</p>" for p in paras)
     return f'<div class="contentLayout2"><div class="columnLayout single">{body}</div></div>'
 
 
@@ -1832,13 +1993,26 @@ async def confluence_space_get(key: str, request: Request):
 
 @router.get("/wiki/rest/api/search", response_model=ConfluenceResults, openapi_extra=_P_CQL)
 async def confluence_cql_search(request: Request):
-    """CQL search used by Confluence clients (e.g. mcp-atlassian). Four clauses are read: a `~`
-    operand is a keyword search over the ACL-visible corpus, and `space`, `type` and `label` filter
-    its matches, or the whole ACL-visible corpus when there is no `~`. Measured 2026-10-05 with no
-    `~`: real's `type=page` is every page on the site and `space=<KEY> and type=page` that space's
-    pages; its `space=<KEY>` also holds the space's attachments, comments and the space itself,
-    where this server answers the space's pages and blogposts. A CQL holding none of the four names
-    only fields this route does not read, and answers no row."""
+    """CQL search used by Confluence clients (e.g. mcp-atlassian). Real reads a query as a
+    boolean expression, which this server evaluates through `_cql_parse`. Seven clauses are read: a
+    `~` operand matches the rows a keyword search over the ACL-visible corpus finds, and `space`,
+    `type`, `label`, `id`, `ancestor` and `parent` match on their fields. `id`, `ancestor` and
+    `parent` take `=` or `in (...)` and name the content id the content reads serve; `parent`
+    selects the direct children and `ancestor` every descendant, grandchildren included (Confluence
+    Cloud, 2026-10-26, over a chain of three pages). Each of the six clauses also reads negated —
+    `!=`, `not in (...)`, or a `not` after `and` before the clause, in parentheses or not — and
+    leaves out the rows the clause names, every negated clause read and a row the field is absent on
+    passing: a page with no parent passes `parent != …` and one with no label passes `label != …`
+    (measured over the same chain on 2026-10-26 and 2026-10-27). Real answers `parent in (...)` and
+    `parent not in (...)` with a 500, where this server selects, or leaves out, the children of each
+    id the list names.
+
+    Measured 2026-10-05 with no `~`: real's `type=page` is every page on the site and
+    `space=<KEY> and type=page` that space's pages; its `space=<KEY>` also holds the space's
+    attachments, comments and the space itself, where this server answers the space's pages and
+    blogposts. A CQL holding none of the seven names only fields this route does not read, and
+    answers no row. A `Content-Type` it will not read is refused before this runs
+    (:func:`_refuse_the_search_media_type`)."""
     conn = auth.conn(request)
     caller = _confluence_caller(request, not_permitted=True)
     ids = auth.visible_ids(request, caller)
@@ -1854,8 +2028,18 @@ async def confluence_cql_search(request: Request):
     cql = cqls[0]
     m = re.search(r'(?:text|title)\s*~\s*"?([^"~]+)"?', cql) or re.search(r'~\s*"?([^"~]+)"?', cql)
     term = m.group(1).strip() if m else ""
-    # honor the common structured CQL clauses: space / type / label
-    ms = re.search(r'space(?:\.key)?\s*=\s*"?([A-Za-z0-9_-]+)"?', cql)
+
+    # honor the common structured CQL clauses: space / type / label / id / ancestor / parent
+    def _first_unnegated(pattern: str, flags: int = 0):
+        # the first match of `pattern` no `not` straight before it negates, the clause in
+        # parentheses or not: a clause a `not` rides on is read by `_negated` below, not as the
+        # clause it negates.
+        for m in re.finditer(pattern, cql, flags):
+            if not re.search(r"\bnot\s*\(?\s*$", cql[: m.start()], re.IGNORECASE):
+                return m
+        return None
+
+    ms = _first_unnegated(r'space(?:\.key)?\s*=\s*"?([A-Za-z0-9_-]+)"?')
     space_key = ms.group(1) if ms else None
     space_unresolvable = False
     container = None
@@ -1864,25 +2048,105 @@ async def confluence_cql_search(request: Request):
         if container is None:
             # unresolvable space=/space.key= clause: strict 0 matches, not the unfiltered corpus.
             space_unresolvable = True
-    mt = re.search(r'type\s*=\s*"?(page|blogpost|comment)"?', cql)
+    mt = _first_unnegated(r'type\s*=\s*"?(page|blogpost|comment)"?')
     want_type = mt.group(1) if mt else None
-    ml = re.search(r'label\s*(?:=|in)\s*"?([^")\s]+)"?', cql)
+    ml = _first_unnegated(r'label\s*(?:=|in)\s*"?([^")\s]+)"?')
     want_label = ml.group(1) if ml else None
+
+    def _content_ids(field: str) -> list[set[str]]:
+        # the ids each `<field> = <id>` and `<field> in (<id>, ...)` clause names, bare or quoted,
+        # the first of each spelling read, as for the clauses above; a list that is empty or ends
+        # in a comma is `_cql_refusal`'s 400 below.
+        clauses = []
+        m = _first_unnegated(rf'\b{field}\s*=\s*"?([A-Za-z0-9_-]+)"?', re.IGNORECASE)
+        if m:
+            clauses.append({m.group(1)})
+        m = _first_unnegated(rf"\b{field}\s+in\s*\(([^)]*)\)", re.IGNORECASE)
+        if m:
+            clauses.append({v.strip().strip("\"'") for v in m.group(1).split(",")})
+        return clauses
+
+    want_ids = _content_ids("id")
+    want_ancestors = _content_ids("ancestor")
+    want_parents = _content_ids("parent")
+
+    def _negated(field: str, value: str = r'"?([A-Za-z0-9_-]+)"?') -> list[set[str]]:
+        # the values each negated `<field>` clause names, every one of them, as `_content_ids`
+        # reads a value or a list: `<field> != <value>`, `<field> not in (...)`, and
+        # `<field> = <value>` or `<field> in (...)` after a `not`, in parentheses or not.
+        clauses = []
+        one = rf"\b{field}\s*!=\s*{value}|\bnot\s*\(?\s*\b{field}\s*=\s*{value}"
+        for m in re.finditer(one, cql, re.IGNORECASE):
+            clauses.append({m.group(1) or m.group(2)})
+        listed = rf"(?:\b{field}\s+not|\bnot\s*\(?\s*\b{field})\s+in\s*\(([^)]*)\)"
+        for m in re.finditer(listed, cql, re.IGNORECASE):
+            clauses.append({v.strip().strip("\"'") for v in m.group(1).split(",")})
+        return clauses
+
+    not_ids = _negated("id")
+    not_ancestors = _negated("ancestor")
+    not_parents = _negated("parent")
+    not_types = _negated("type")
+    not_labels = _negated("label", r'"?([^")\s]+)"?')
+    # a negated space clause names keys, as the positive one does; a key naming no space leaves
+    # nothing out, where the positive clause matches nothing (Confluence Cloud, 2026-10-27).
+    not_spaces = _negated(r"space(?:\.key)?")
+    not_containers: set[str] = set()
+    for named in not_spaces:
+        for key in named:
+            resolved = _space_container_for_key(conn, key)
+            if resolved is not None:
+                not_containers.add(resolved)
     _refuse_negative_page_params(limit, start)
+    tokens = _cql_tokens(cql)
+    refusal = _cql_refusal(tokens)
+    if refusal is not None:
+        raise refusal
     # An empty `cursor` is none, and of a repeated one the first is read, measured 2026-10-04.
     sent_cursor = (request.query_params.getlist("cursor") or [None])[0]
     after = _cql_search_after(sent_cursor) if sent_cursor else None
 
-    # fetch the full ACL-visible match set, filter by the clauses, then paginate — so
-    # totalSize reflects the true match count (not just the returned page).
-    if term:
-        everything = store.search_documents(conn, term, "confluence", ids, limit=100_000, offset=0)
-    elif space_key or want_type or want_label:
-        everything = store.list_documents(
-            conn, "confluence", container=None, visible_ids=ids, limit=100_000, offset=0
-        )
-    else:
-        everything = []
+    # the rows the clause readers filter, read only for a query `_cql_parse` does not cover: the
+    # full ACL-visible match set, filtered by the clauses, then paginated — so totalSize reflects
+    # the true match count (not just the returned page).
+    def _clause_rows() -> list:
+        if term:
+            return store.search_documents(conn, term, "confluence", ids, limit=100_000, offset=0)
+        if (
+            space_key
+            or want_type
+            or want_label
+            or want_ids
+            or want_ancestors
+            or want_parents
+            or not_ids
+            or not_ancestors
+            or not_parents
+            or not_types
+            or not_labels
+            or not_spaces
+        ):
+            return store.list_documents(
+                conn, "confluence", container=None, visible_ids=ids, limit=100_000, offset=0
+            )
+        return []
+
+    # the parent of every row fetched, and of every page read since, so each link of a chain is
+    # read once; a link outside the fetched rows (a page the `~` term missed, or one the caller
+    # cannot see) is read from the store, as the content read's `ancestors` expansion does.
+    parents: dict = {}
+
+    def _ancestor_ids(row) -> set[str]:
+        chain: set[str] = set()
+        pid = row["parent_id"]
+        while pid is not None and str(pid) not in chain:  # a chain that loops stops here
+            key = str(pid)
+            chain.add(key)
+            if key not in parents:
+                prow = store.get_document(conn, "confluence", pid)
+                parents[key] = prow["parent_id"] if prow is not None else None
+            pid = parents[key]
+        return chain
 
     def _match(r) -> bool:
         if space_unresolvable:
@@ -1893,9 +2157,128 @@ async def confluence_cql_search(request: Request):
             return False
         if want_label and want_label not in store.jcol(r, "labels"):
             return False
+        if any(str(r["id"]) not in named for named in want_ids):
+            return False
+        if want_parents and (
+            r["parent_id"] is None
+            or any(str(r["parent_id"]) not in named for named in want_parents)
+        ):
+            return False
+        if want_ancestors:
+            chain = _ancestor_ids(r)
+            if any(named.isdisjoint(chain) for named in want_ancestors):
+                return False
+        # a negated clause leaves out the rows the clause it negates selects, so a row the
+        # field is absent on — no parent, no label, no ancestor — passes it
+        if r["space"] in not_containers:
+            return False
+        if any((r["subtype"] or "page") in named for named in not_types):
+            return False
+        if any(not named.isdisjoint(store.jcol(r, "labels")) for named in not_labels):
+            return False
+        if any(str(r["id"]) in named for named in not_ids):
+            return False
+        if r["parent_id"] is not None and any(
+            str(r["parent_id"]) in named for named in not_parents
+        ):
+            return False
+        if not_ancestors:
+            chain = _ancestor_ids(r)
+            if any(not named.isdisjoint(chain) for named in not_ancestors):
+                return False
         return True
 
-    matched = [r for r in everything if _match(r)]
+    # The boolean reading of the query (`_cql_parse`). A `~` atom is membership in that term's
+    # keyword-search set; the other atoms read their fields as the readers above do (an absent field
+    # passes a negated clause, a space key resolves through `_space_container_for_key`, an
+    # unresolvable positive space key matches nothing). The rows read are the matches of the
+    # leftmost positive `~` atom on the query's top-level `and`s, in its keyword-search order, where
+    # there is one, and the full ACL-visible corpus otherwise, so a lone negated `~` answers every
+    # row but the term's matches, as real does. An atom this route does not read passes, negated or
+    # not, and a query with no atom it reads answers no row. Beside an `id in (...)` naming three
+    # pages made that day, real answered `lastmodified > 2020-01-01`, `created >= "2020-01-01"`,
+    # `creator = currentUser()` and `not lastmodified > 2999-01-01` with the three, as this route
+    # does, and `lastmodified > 2999-01-01`, `not lastmodified > 2020-01-01` and
+    # `not creator = currentUser()` with none, where this route answers the three (Confluence Cloud,
+    # 2026-10-28). Where the tokens do not parse this way, the clause readers above stay the answer.
+    try:
+        expr = _cql_parse(tokens)
+        term_sets: dict[str, set[str]] = {}
+
+        def _needed_term(node) -> str | None:
+            if node[0] == "and":
+                left = _needed_term(node[1])
+                return left if left is not None else _needed_term(node[2])
+            if node[0] == "atom" and node[2] == "~" and node[5] and not node[4]:
+                return node[3][0]
+            return None
+
+        needed = _needed_term(expr)
+        if needed is None:
+            eval_rows = store.list_documents(
+                conn, "confluence", container=None, visible_ids=ids, limit=100_000, offset=0
+            )
+        else:
+            eval_rows = store.search_documents(
+                conn, needed, "confluence", ids, limit=100_000, offset=0
+            )
+            term_sets[needed] = {str(r["id"]) for r in eval_rows}
+        parents.update({str(r["id"]): r["parent_id"] for r in eval_rows})
+
+        def _term_ids(term: str) -> set[str]:
+            if term not in term_sets:
+                term_sets[term] = {
+                    str(h["id"])
+                    for h in store.search_documents(
+                        conn, term, "confluence", ids, limit=100_000, offset=0
+                    )
+                }
+            return term_sets[term]
+
+        def _eval(node, r) -> bool:
+            kind = node[0]
+            if kind == "and":
+                return _eval(node[1], r) and _eval(node[2], r)
+            if kind == "or":
+                return _eval(node[1], r) or _eval(node[2], r)
+            if kind == "not":
+                child = node[1]
+                if child[0] == "atom" and not child[5]:
+                    return True
+                return not _eval(child, r)
+            _, field, op, values, negated, readable = node
+            if not readable:
+                return True
+            if field in ("text", "title", "sitesearch"):
+                hit = str(r["id"]) in _term_ids(values[0])
+            elif field in ("space", "space.key"):
+                containers = {_space_container_for_key(conn, v) for v in values} - {None}
+                hit = r["space"] in containers
+            elif field == "type":
+                hit = (r["subtype"] or "page") in values
+            elif field == "label":
+                hit = not set(values).isdisjoint(store.jcol(r, "labels"))
+            elif field == "id":
+                hit = str(r["id"]) in values
+            elif field == "ancestor":
+                hit = not set(values).isdisjoint(_ancestor_ids(r))
+            elif field == "parent":
+                hit = r["parent_id"] is not None and str(r["parent_id"]) in values
+            else:  # pragma: no cover - readable is False for any other field
+                hit = False
+            return (not hit) if negated else hit
+
+        def _reads(node) -> bool:
+            if node[0] == "atom":
+                return node[5]
+            return any(_reads(child) for child in node[1:])
+
+        matched = [r for r in eval_rows if _eval(expr, r)] if _reads(expr) else []
+    except _CQLParseError:
+        everything = _clause_rows()
+        parents.update({str(r["id"]): r["parent_id"] for r in everything})
+        matched = [r for r in everything if _match(r)]
+
     total = len(matched)
     position = _cql_position(matched, after[0]) if after else 0
     rows = matched[position : position + limit]
@@ -1904,7 +2287,7 @@ async def confluence_cql_search(request: Request):
         raise errors_atlassian.search_next_out_of_range()
     results = []
     for r in rows:
-        page = _confluence_page(conn, request, r, "version,space")
+        page = _confluence_page(conn, request, r, "")
         results.append(
             {
                 "content": page,
@@ -1928,16 +2311,21 @@ async def confluence_cql_search(request: Request):
         sent_cursor=sent_cursor,
         reached=reached,
     )
-    return {
-        "results": results,
-        "start": start,
-        "limit": limit,
-        "size": len(results),
-        "totalSize": total,
-        "cqlQuery": cql,
-        "searchDuration": 5,
-        "_links": links,
-    }
+    return Response(
+        errors_atlassian._confluence_json(
+            {
+                "results": results,
+                "start": start,
+                "limit": limit,
+                "size": len(results),
+                "totalSize": total,
+                "cqlQuery": _cql_written_back(tokens, _cql_space_key_spelling(conn, ids)),
+                "searchDuration": 5,
+                "_links": links,
+            }
+        ),
+        media_type="application/json",
+    )
 
 
 @router.get("/wiki/rest/api/content", response_model=ConfluenceResults, openapi_extra=_P_CONTENT)
@@ -2002,14 +2390,21 @@ async def confluence_content_list(request: Request):
 @router.get(
     "/wiki/rest/api/content/{content_id}", response_model=ConfluencePage, openapi_extra=_P_EXPAND
 )
-async def confluence_content_get(content_id: int, request: Request):
+async def confluence_content_get(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
+    content_id, attachment = _content_id(content_id)
     ids = auth.visible_ids(request, caller)
     row = store.confluence_by_id(conn, content_id, visible_ids=ids)
-    if row is None:
-        raise HTTPException(status_code=404, detail="No content found with id")
-    return _confluence_page(conn, request, row, _str_param(request, "expand", "body.storage"))
+    if row is None or attachment:
+        raise errors_atlassian.content_not_found("content", content_id, attachment=attachment)
+    # With no `expand` sent, or an empty one, real expands `space`, `history` and `version` and
+    # leaves the body unexpanded, measured on Confluence Cloud on 2026-10-23; a sent one expands
+    # exactly what it names (:func:`_confluence_page`).
+    expand = _str_param(request, "expand", None)
+    if not expand:
+        expand = "space,history,version"
+    return _confluence_page(conn, request, row, expand)
 
 
 @router.get(
@@ -2017,14 +2412,15 @@ async def confluence_content_get(content_id: int, request: Request):
     response_model=ConfluenceResults,
     openapi_extra=_P_CHILD_PAGE,
 )
-async def confluence_child_pages(content_id: int, request: Request):
+async def confluence_child_pages(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
+    content_id, _ = _content_id(content_id)
+    limit, start = _confluence_page_params(request)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
-        raise HTTPException(status_code=404, detail="No content found with id")
+        raise errors_atlassian.content_not_found("child/page", content_id)
     expand = _str_param(request, "expand", "") or ""
-    limit, start = _confluence_page_params(request)
     kids = store.children(conn, "confluence", content_id, visible_ids=ids)
     page = kids[start : start + limit]
     results = [_confluence_page(conn, request, k, expand) for k in page]
@@ -2045,13 +2441,14 @@ async def confluence_child_pages(content_id: int, request: Request):
 
 
 @router.get("/wiki/rest/api/content/{content_id}/child/comment", openapi_extra=_P_CONTENT_CHILD)
-async def confluence_comments(content_id: int, request: Request):
+async def confluence_comments(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
+    content_id, _ = _content_id(content_id)
+    limit, start = _confluence_page_params(request, cap=1000)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
-        raise HTTPException(status_code=404, detail="No content found with id")
-    limit, start = _confluence_page_params(request, cap=1000)
+        raise errors_atlassian.content_not_found("child/comment", content_id)
     comments = store.doc_comments(conn, "confluence", content_id)
     results = []
     for c in comments[start : start + limit]:
@@ -2096,20 +2493,17 @@ async def confluence_comments(content_id: int, request: Request):
 
 
 @router.get("/wiki/rest/api/content/{content_id}/child/attachment", openapi_extra=_P_CONTENT_CHILD)
-async def confluence_attachments(content_id: int, request: Request):
+async def confluence_attachments(content_id: str, request: Request):
     """A page's attachments, which is the empty page for every page: a corpus record states no
     attachment, and this is the page real answers for a page holding none.
-
-    Measured 2026-10-10: `limit` and `start` are read before the page is looked up, so
-    `content/999999999/child/attachment?limit=abc` is the conversion 400 and `?limit=-1` the
-    negative one, not the unknown id's 404.
     """
     conn = auth.conn(request)
     caller = _confluence_caller(request)
+    content_id, _ = _content_id(content_id)
     limit, start = _confluence_page_params(request, default=50)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
-        raise HTTPException(status_code=404, detail="No content found with id")
+        raise errors_atlassian.content_not_found("child/attachment", content_id)
     return {
         "results": [],
         "start": start,
@@ -2148,18 +2542,21 @@ def _refuse_a_label_prefix(request: Request) -> None:
 
 
 @router.get("/wiki/rest/api/content/{content_id}/label", openapi_extra=_P_CONTENT_CHILD)
-async def confluence_labels(content_id: int, request: Request):
+async def confluence_labels(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
-    ids = auth.visible_ids(request, caller)
-    row = store.get_document(conn, "confluence", content_id, visible_ids=ids)
-    if row is None:
-        raise HTTPException(status_code=404, detail="No content found with id")
-    # Real converts `limit` and `start` before it reads `prefix`, and refuses a negative or zero
-    # one after it (measured 2026-10-14).
+    content_id, attachment = _content_id(content_id)
+    # Real converts `limit` and `start`, then reads `prefix`, before it looks the page up, and
+    # refuses a negative or zero one after it: on an id naming nothing, `?limit=abc` and
+    # `?prefix=bogus` are their 400s and `?limit=-1` and `?limit=0` the 404 (Confluence Cloud,
+    # 2026-10-14, 2026-10-16 and 2026-10-21).
     _int_param(request, "limit", 200)
     _int_param(request, "start", 0)
     _refuse_a_label_prefix(request)
+    ids = auth.visible_ids(request, caller)
+    row = store.get_document(conn, "confluence", content_id, visible_ids=ids)
+    if row is None or attachment:
+        raise errors_atlassian.content_not_found("label", content_id, attachment=attachment)
     limit, start = _confluence_page_params(request, default=200, cap=200, refuse_zero=True)
     labels = store.jcol(row, "labels")
     results = [
@@ -2183,35 +2580,81 @@ async def confluence_labels(content_id: int, request: Request):
 
 
 @router.get("/wiki/rest/api/content/{content_id}/restriction/byOperation")
-async def confluence_restrictions(content_id: int, request: Request):
+async def confluence_restrictions(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
+    content_id, _ = _content_id(content_id)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
-        raise HTTPException(status_code=404, detail="No content found with id")
+        raise errors_atlassian.content_not_found("restriction/byOperation", content_id)
     emails = store.doc_member_emails(conn, "confluence", content_id)
     site = _site(request)
     users = [] if emails is None else [_conf_user(e, site) for e in sorted(emails)]
     path = f"{site}/wiki/rest/api/content/{content_id}/restriction/byOperation"
-
-    # Real's members in real's order (Confluence Cloud, 2026-10-09 and 2026-10-14): each operation
-    # links to itself under this path, and the answer ends with the links a listing carries.
-    def _op(name):
-        return {
-            "operation": name,
-            "restrictions": {
-                "user": {"results": users, "start": 0, "limit": 200, "size": len(users)},
-                "group": {"results": [], "start": 0, "limit": 200, "size": 0},
-            },
-            "_expandable": {"content": f"/rest/api/content/{content_id}"},
-            "_links": {"self": f"{path}/{name}"},
-        }
-
-    return {
-        "read": _op("read"),
-        "update": _op("update"),
-        "_links": {"self": path, "base": f"{site}/wiki", "context": "/wiki"},
+    content = f"/rest/api/content/{content_id}"
+    lists = {
+        "user": {"results": users, "start": 0, "limit": 200, "size": len(users)},
+        "group": {"results": [], "start": 0, "limit": 200, "size": 0},
     }
+    named = _restriction_expansions(request)
+
+    # Real's members in real's order (Confluence Cloud, 2026-10-09, 2026-10-14 and 2026-10-17):
+    # each operation links to itself under this path, and the answer ends with the links a listing
+    # carries. With no `expand`, both operations come with both lists. Once `expand` names
+    # something, an operation it does not name is listed under the answer's `_expandable`, read
+    # ahead of update whatever order `expand` names them in. A named operation comes with its
+    # `restrictions` only when `expand` names them, and then with the lists it names, user ahead of
+    # group, and the others under the `restrictions` object's own `_expandable`.
+    def _op(name):
+        op = {"operation": name}
+        paths = None if named is None else named[name]
+        if paths is None or any(p[:1] == ["restrictions"] for p in paths):
+            kinds = [
+                k
+                for k in lists
+                if paths is None or any(p[:2] == ["restrictions", k] for p in paths)
+            ]
+            op["restrictions"] = {k: lists[k] for k in kinds}
+            if unnamed := [k for k in lists if k not in kinds]:
+                op["restrictions"]["_expandable"] = dict.fromkeys(unnamed, "")
+            op["_expandable"] = {"content": content}
+        else:
+            op["_expandable"] = {"restrictions": "", "content": content}
+        op["_links"] = {"self": f"{path}/{name}"}
+        return op
+
+    answer = {name: _op(name) for name in _RESTRICTION_OPERATIONS if named is None or name in named}
+    if unnamed := [name for name in _RESTRICTION_OPERATIONS if name not in answer]:
+        answer["_expandable"] = dict.fromkeys(unnamed, "")
+    answer["_links"] = {"self": path, "base": f"{site}/wiki", "context": "/wiki"}
+    return answer
+
+
+#: The operations `restriction/byOperation` answers, in the order real lists them.
+_RESTRICTION_OPERATIONS = ("read", "update")
+
+
+def _restriction_expansions(request: Request) -> dict[str, list[list[str]]] | None:
+    """What `expand` names under each operation of `restriction/byOperation`: for each operation
+    it names, the dotted segments after the operation's name, one list per item; None when no
+    `expand` value holds an item, which real answers as it answers no `expand`.
+
+    Measured on Confluence Cloud, 2026-10-17: real joins repeated `expand` parameters, splits each
+    value at `,` and each item at `.`, skips empty items (`read,`, `,read`, `read,,update`), and
+    compares each segment as sent. `READ`, ` read`, `read ` and `.read` name no operation;
+    `read.restrictions.USER`, `read..restrictions` and `read.Restrictions.user` name no list; a
+    segment past the list (`read.restrictions.user.bogus`) is ignored. `expand=` answers as no
+    `expand` does, and `expand=%20` names nothing. `read.content` expands the page into the
+    operation, which is not modelled here: it answers as `read` does."""
+    items = [i for value in request.query_params.getlist("expand") for i in value.split(",") if i]
+    if not items:
+        return None
+    named: dict[str, list[list[str]]] = {}
+    for item in items:
+        operation, *rest = item.split(".")
+        if operation in _RESTRICTION_OPERATIONS:
+            named.setdefault(operation, []).append(rest)
+    return named
 
 
 def _conf_user(email: str, site: str) -> dict:
@@ -2279,38 +2722,85 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
     # version number: BYO override, else 2 if the page was updated after creation, else 1
     vnum = row["version_number"] or (2 if row["updated_ts"] and row["updated_ts"] != created else 1)
     webui = f"/spaces/{key}/{ctype}s/{cid}"
+    # The properties `expand` names, read up to the first dot: the part before it is the
+    # property, and what follows names something inside that property — so `body.storage`
+    # expands `body`'s storage representation and `history.lastUpdated` expands `history`.
+    # Measured on Confluence Cloud on 2026-11-03; a padded term (` space`, `space `) names
+    # nothing, as real expands nothing for it, so terms are deliberately not stripped.
+    wanted: dict[str, set[str]] = {}
+    for term in (expand or "").split(","):
+        head, _, sub = term.partition(".")
+        if head:
+            wanted.setdefault(head, set()).update([sub.partition(".")[0]] if sub else [])
     page = {
         "id": str(cid),
         "type": ctype,
         "status": "current",
         "title": row["title"],
-        "space": {
+    }
+    if "space" in wanted:
+        page["space"] = {
             "id": synth.github_user_id(row["space"]),
             "key": key,
             "name": row["space"],
             "type": "global",
             "_links": {"webui": f"/spaces/{key}"},
-        },
-        "_links": {
-            "webui": webui,
-            "tinyui": f"/x/{cid}",
-            "editui": f"/pages/resumedraft.action?draftId={cid}",
-            "self": f"{_site(request)}/wiki/rest/api/content/{cid}",
-        },
-        "_expandable": {
-            "childTypes": "",
-            "container": f"/rest/api/space/{key}",
-            "metadata": "",
-            "operations": "",
-            "restrictions": "",
-            "history": f"/rest/api/content/{cid}/history",
-            "ancestors": "",
-            "body": "",
-            "version": "",
-            "descendants": "",
-        },
+        }
+    page["_links"] = {
+        "webui": webui,
+        "tinyui": f"/x/{cid}",
+        "editui": f"/pages/resumedraft.action?draftId={cid}",
+        "self": f"{_site(request)}/wiki/rest/api/content/{cid}",
     }
-    if "history" in expand or "version" in expand:
+
+    # The representations this server renders for a `body` expansion, in the order they are served.
+    def atlas_doc_format() -> str:
+        import json as _json
+
+        return _json.dumps(_adf(row["content"]))
+
+    body_writers = {
+        "storage": lambda: _storage(row["content"]),
+        "view": lambda: _view(row["content"]),
+        "export_view": lambda: _export_view(row["content"]),
+        "atlas_doc_format": atlas_doc_format,
+    }
+    body_named = [name for name in body_writers if name in wanted.get("body", ())]
+    # The representations real names under `body._expandable`, in real's order, measured on
+    # Confluence Cloud on 2026-11-03: the four rendered above plus six this server does not
+    # render, which a `body.editor` expansion leaves unexpanded.
+    body_representations = (
+        "editor",
+        "atlas_doc_format",
+        "view",
+        "export_view",
+        "styled_view",
+        "markdown",
+        "dynamic",
+        "storage",
+        "editor2",
+        "anonymous_export_view",
+    )
+    expandable = {
+        "childTypes": "",
+        "container": f"/rest/api/space/{key}",
+        "metadata": "",
+        "operations": "",
+        "restrictions": "",
+        "history": f"/rest/api/content/{cid}/history",
+        "ancestors": "",
+        "body": "",
+        "version": "",
+        "descendants": "",
+        "space": f"/rest/api/space/{key}",
+    }
+    # `space` was served above, before this dict existed, so it leaves `_expandable` here.
+    if "space" in wanted:
+        expandable.pop("space")
+    # A property that is served leaves `_expandable`: on the bare read real's `_expandable` lists
+    # `body` and none of the three that read expanded, measured on 2026-10-23.
+    if "history" in wanted:
+        expandable.pop("history")
         page["history"] = {
             "latest": True,
             "createdDate": synth.rfc3339_millis(created),
@@ -2321,7 +2811,8 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                 "number": vnum,
             },
         }
-    if "version" in expand:
+    if "version" in wanted:
+        expandable.pop("version")
         page["version"] = {
             "number": vnum,
             "when": synth.rfc3339_millis(updated),
@@ -2329,29 +2820,15 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             "minorEdit": bool(row["minor_edit"]),
             "message": row["version_message"] or "",
         }
-    if "body.storage" in expand:
-        page.setdefault("body", {})["storage"] = {
-            "value": _storage(row["content"]),
-            "representation": "storage",
-        }
-    if "body.view" in expand:
-        page.setdefault("body", {})["view"] = {
-            "value": _view(row["content"]),
-            "representation": "view",
-        }
-    if "body.export_view" in expand:
-        page.setdefault("body", {})["export_view"] = {
-            "value": _export_view(row["content"]),
-            "representation": "export_view",
-        }
-    if "body.atlas_doc_format" in expand:
-        import json as _json
-
-        page.setdefault("body", {})["atlas_doc_format"] = {
-            "value": _json.dumps(_adf(row["content"])),
-            "representation": "atlas_doc_format",
-        }
-    if "metadata.labels" in expand or "metadata" in expand:
+    if "body" in wanted:
+        expandable.pop("body")
+        body = {}
+        for name in body_named:
+            body[name] = {"value": body_writers[name](), "representation": name}
+        unexpanded = [name for name in body_representations if name not in body_named]
+        body["_expandable"] = dict.fromkeys(unexpanded, "")
+        page["body"] = body
+    if "metadata" in wanted:
         labels = store.jcol(row, "labels")
         page["metadata"] = {
             "labels": {
@@ -2369,7 +2846,8 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                 "size": len(labels),
             }
         }
-    if "ancestors" in expand:
+        expandable.pop("metadata")
+    if "ancestors" in wanted:
         ancestors, pid = [], row["parent_id"]
         while pid:
             prow = store.get_document(conn, "confluence", pid)
@@ -2388,6 +2866,9 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             )
             pid = prow["parent_id"]
         page["ancestors"] = ancestors
+        expandable.pop("ancestors")
+    # `_expandable` is assigned last, so a property served above has already left it.
+    page["_expandable"] = expandable
     return page
 
 
@@ -2687,6 +3168,11 @@ def _confluence_page_params(
     all and so would answer `?limit=-1` with the whole collection. `content` reads the pair itself,
     since it puts refusals of its own between these (``_CONTENT_TYPES``).
 
+    The three `child/*` listings call it before they look the page up, so on an id naming nothing
+    its refusals come ahead of the 404: `?limit=abc` and `?limit=-1` are its 400s there. Measured
+    on `child/attachment` 2026-10-10 and on `child/page` and `child/comment` 2026-10-16. `label`
+    converts the pair before its lookup and calls this after it (:func:`confluence_labels`).
+
     Order is measured too, because both parameters can be wrong at once. Conversion comes first for
     BOTH — `?limit=-1&start=abc` is the conversion failure about `abc`, not the negative about
     `limit` — and among two negatives `start` is the one named: `?limit=-1&start=-1` reports
@@ -2719,6 +3205,395 @@ def _confluence_page_params(
 
 # What Java's `String.trim()` removes: every character up to and including the space.
 _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
+
+
+# CQL as real's reader splits it, measured on Confluence Cloud on 2026-10-22 and 2026-10-25, the
+# second time with `title~a<c>b` and `title~a<c>` for each ASCII punctuation character `<c>`: a
+# quoted value in either quotes, in which a backslash keeps the next character; an operator, a
+# bracket or a comma; a date such as `2026-01-01` and a number, both in ASCII digits; and a word of
+# ASCII letters, digits and `_`, dotted as `space.key` is. A control character, one past ASCII and
+# those in `DROPPED` are left out as a space is: `title ~ probe*` is `title ~ probe`, `title~a#b`
+# reads `a` and then `b`, and on 2026-10-26 `title~` and U+0663 (an Arabic-Indic three) or U+FF11 (a
+# fullwidth one) had no value. Each other character is a token no clause takes, so `label=a-b` and
+# `title~a:b` cannot be parsed.
+_CQL_TOKEN = re.compile(
+    r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
+    r"|(?P<OP>!=|!~|>=|<=|=|~|>|<)"
+    r"|(?P<PUNCT>[(),])"
+    r"|(?P<DATE>[0-9]{4}-[0-9]{2}-[0-9]{2})"
+    r"|(?P<NUMBER>-[0-9]+|[0-9]+(?![A-Za-z_.]))"
+    r"|(?P<WORD>[A-Za-z0-9_]+(?:[.][A-Za-z0-9_]+)*)"
+    r"|(?P<DROPPED>[\s#$%&*+;?@^`{|}\x00-\x1f\x7f]|[^\x00-\x7f])"
+    r"|(?P<OTHER>.)",
+    re.DOTALL,
+)
+_CQL_OPERATORS = frozenset(("!=", "!~", ">=", "<=", "=", "~", ">", "<"))
+_CQL_KEYWORDS = frozenset(("and", "or", "not", "in", "order", "by", "asc", "desc"))
+_CQL_VALUES = frozenset(("WORD", "QUOTED", "NUMBER", "DATE"))
+
+
+def _cql_tokens(cql: str) -> list[tuple[str, str]]:
+    """The tokens of ``cql`` as ``(kind, text)``, those `_CQL_TOKEN` leaves out dropped."""
+    return [(m.lastgroup, m.group()) for m in _CQL_TOKEN.finditer(cql) if m.lastgroup != "DROPPED"]
+
+
+def _cql_space_key_spelling(conn, ids):
+    """The spelling ``cqlQuery`` writes a `space.key` value in, or None when it names no space. A
+    space answers to its corpus name and to the key the space reads advertise, in upper or lower
+    case (:func:`_space_container_for_key`), and is written in the one the value spells, as stored.
+    A space the caller reaches no page in names nothing, as on :func:`_content_space`, so the query
+    does not confirm it exists."""
+
+    def spell(value: str) -> str | None:
+        name = _space_container_for_key(conn, value)
+        if name is None or not store.has_visible_document(conn, "confluence", name, ids):
+            return None
+        key = synth.confluence_space_key(name)
+        return key if value.lower() == key.lower() else name
+
+    return spell
+
+
+def _cql_space_value(kind: str, text: str) -> str:
+    """A `space.key` value as real reads it, both to name a space and to write it back in
+    ``cqlQuery``: a word as sent, and a quoted value without its quotes, an escaped `"` in it read
+    as a `"` and, where that leaves an odd number of them, the last one taken out; a backslash
+    before anything else stays. On Confluence Cloud on 2026-10-30 `'a"b'` was written back `'ab'`
+    and `'a"b"c'` and `'M""FS'` as sent, the three answered the same in double quotes with each `"`
+    escaped, `a"b"c"d` sent that way was `'a"b"cd'`, and `space.key = 'M"FS'` answered the pages of
+    the space `MFS`, where `M""FS` answered none."""
+    value = text[1:-1].replace('\\"', '"') if kind == "QUOTED" else text
+    if value.count('"') % 2:
+        value = "".join(value.rsplit('"', 1))
+    return value
+
+
+def _cql_space_key_holds_quote(tokens: list[tuple[str, str]]) -> bool:
+    """Whether a `space.key` value, each one as `_cql_written_back` hands it to ``space_key``,
+    holds a single quote: real cannot parse such a query (Confluence Cloud, 2026-10-26)."""
+    values = []
+    _cql_written_back(tokens, values.append)
+    return any("'" in value for value in values)
+
+
+def _cql_written_back(tokens: list[tuple[str, str]], space_key) -> str:
+    """``cqlQuery`` as real writes the query back: its tokens one space apart, in the case and the
+    quotes they were sent in, except each value of `space.key`, which is written in single quotes
+    as :func:`_cql_space_value` reads it and, when it names a space, in the spelling
+    ``space_key`` gives (Confluence Cloud, 2026-10-22, 2026-10-25, 2026-10-26 and 2026-10-30)."""
+    out, key = [], False
+    for i, (kind, text) in enumerate(tokens):
+        before = tokens[i - 1] if i else (None, None)
+        if kind == "OP" or kind == "WORD" and text.lower() == "in":
+            field = i - 1 - (kind == "WORD" and i > 1 and before[1].lower() == "not")
+            key = field >= 0 and tokens[field][1].lower() == "space.key"
+        elif kind in ("WORD", "QUOTED") and key and (before[0] == "OP" or before[1] in "(,"):
+            value = _cql_space_value(kind, text)
+            text = f"'{space_key(value) or value}'"
+        elif before[1] == ")" or kind == "WORD" and text.lower() in ("and", "or"):
+            key = False
+        out.append(text)
+    return " ".join(out)
+
+
+def _cql_refusal(tokens: list[tuple[str, str]]):
+    """The 400 real answers a CQL it cannot read with, or None for one this server reads, by where
+    the reading stops: ``errors.atlassian.cql_not_parsed`` at no clause at all, a token no clause
+    takes, a `not` anywhere but straight after `and`, `order by` with no clause before it, a list
+    that is empty or ends in a comma, and anything left after `order by`; ``cql_expecting_value``
+    at an operator followed by nothing or by a token that is no value, and at an `in` list never
+    closed; ``cql_missing_closing_parenthesis`` at a `(` never closed; and
+    ``cql_unrecognised_clause`` at words or quoted values left after a whole query. Each one's
+    docstring gives the queries that answered it. A query read to its end is ``cql_not_parsed``
+    when a `space.key` value holds a single quote. A field CQL does not have, a field with no
+    operator, and an operator or a value the field does not take (`foo`, `type`, `type<page`,
+    `type=PAGE`) are refused on real with messages of their own, and answered at 200 here."""
+    at = 0
+
+    def peek(offset=0):
+        return tokens[at + offset] if at + offset < len(tokens) else (None, None)
+
+    def keyword(word, offset=0):
+        kind, text = peek(offset)
+        return kind == "WORD" and text.lower() == word
+
+    class _Stop(Exception):
+        def __init__(self, refusal):
+            self.refusal = refusal
+
+    def not_parsed():
+        return _Stop(errors_atlassian.cql_not_parsed())
+
+    def value(operator, field):
+        nonlocal at
+        kind, text = peek()
+        if kind is None:
+            raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
+        if kind == "NUMBER" and text.startswith("-"):  # `id = -1`, `created > -1d`
+            raise not_parsed()
+        if kind not in _CQL_VALUES or text.lower() in _CQL_KEYWORDS:
+            raise _Stop(errors_atlassian.cql_expecting_value(operator, field, text))
+        at += 1
+        if peek() == ("PUNCT", "("):  # a function: now("-1d"), currentUser()
+            at += 1
+            while peek() != ("PUNCT", ")"):
+                if peek()[0] is None:
+                    raise not_parsed()
+                at += 1
+            at += 1
+
+    def clause():
+        nonlocal at
+        if peek() == ("PUNCT", "("):
+            at += 1
+            sequence()
+            if peek() != ("PUNCT", ")"):
+                raise _Stop(errors_atlassian.cql_missing_closing_parenthesis())
+            at += 1
+            return
+        kind, field = peek()
+        if kind != "WORD" or field.lower() in _CQL_KEYWORDS:
+            raise not_parsed()
+        at += 1
+        negated = keyword("not") and keyword("in", 1)
+        if negated or keyword("in"):
+            operator = "".join(text for _, text in tokens[at : at + 1 + negated])
+            at += 1 + negated
+            if peek() != ("PUNCT", "("):
+                raise _Stop(errors_atlassian.cql_expecting_value(operator, field, peek()[1]))
+            at += 1
+            while True:
+                if peek()[0] is None:
+                    raise _Stop(errors_atlassian.cql_expecting_value(operator, field, "("))
+                if peek()[0] not in _CQL_VALUES:
+                    raise not_parsed()
+                value(operator, field)
+                if peek() != ("PUNCT", ","):
+                    break
+                at += 1
+            if peek()[0] is None:
+                raise _Stop(errors_atlassian.cql_expecting_value(operator, field, "("))
+            if peek() != ("PUNCT", ")"):
+                raise not_parsed()
+            at += 1
+            return
+        if peek()[0] != "OP":
+            raise _Stop(None)  # a field and no operator: refused on real with a message of its own
+        operator = peek()[1]
+        at += 1
+        value(operator, field)
+
+    def sequence():
+        nonlocal at
+        clause()
+        while keyword("and") or keyword("or"):
+            conjunction = peek()[1].lower()
+            at += 1
+            if conjunction == "and" and keyword("not"):
+                at += 1
+            if peek()[0] is None:
+                raise not_parsed()
+            clause()
+
+    try:
+        if not tokens:
+            raise not_parsed()
+        sequence()
+        rest = tokens[at:]
+        if rest and not (keyword("order") and keyword("by", 1)):
+            if all(kind in ("WORD", "QUOTED") for kind, _ in rest) and not any(
+                text.lower() in _CQL_KEYWORDS for _, text in rest
+            ):
+                raise _Stop(
+                    errors_atlassian.cql_unrecognised_clause("".join(text for _, text in rest))
+                )
+            raise not_parsed()
+        if rest:
+            at += 2
+            while True:
+                kind, text = peek()
+                if kind != "WORD" or text.lower() in _CQL_KEYWORDS:
+                    raise not_parsed()
+                at += 1
+                if keyword("asc") or keyword("desc"):
+                    at += 1
+                if peek() != ("PUNCT", ","):
+                    break
+                at += 1
+            if at < len(tokens):
+                raise not_parsed()
+    except _Stop as stop:
+        return stop.refusal
+    # After the rest of the reading: `space.key = "a'b" b` answered `Unrecognised clause at : b`,
+    # `(space.key = "a'b"` the missing parenthesis and `space.key = "a'b" and title~` the value
+    # `title~` is missing (Confluence Cloud, 2026-10-30).
+    if _cql_space_key_holds_quote(tokens):
+        return errors_atlassian.cql_not_parsed()
+    return None
+
+
+class _CQLParseError(Exception):
+    """A token shape the boolean reader below does not cover; the caller falls back to the
+    clause readers in :func:`confluence_cql_search` rather than failing the request."""
+
+
+def _cql_unquote(kind: str, text: str) -> str:
+    """A token's value: a quoted value without its quotes and with its backslash escapes
+    resolved, any other value as sent."""
+    if kind != "QUOTED":
+        return text
+    return re.sub(r"\\(.)", r"\1", text[1:-1], flags=re.S)
+
+
+# The fields :func:`confluence_cql_search` reads, and the operators each takes. Anything else (a
+# field this route does not read, or an operator the field does not take, as `title="Guide"` is)
+# passes. `siteSearch ~` is read as `text ~` is. On 2026-10-28 real answered the two with the same
+# pages for each of two words of the site's page bodies, but not over a chain of three pages whose
+# last alone held a word: `siteSearch ~` for the word answered all three, and the same clause in an
+# `or` beside the first page's `id` answered that page alone (Confluence Cloud).
+_CQL_READABLE = {
+    "text": {"~"},
+    "title": {"~"},
+    "sitesearch": {"~"},
+    "space": {"=", "in"},
+    "space.key": {"=", "in"},
+    "type": {"=", "in"},
+    "label": {"=", "in"},
+    "id": {"=", "in"},
+    "ancestor": {"=", "in"},
+    "parent": {"=", "in"},
+}
+
+
+def _cql_parse(tokens: list[tuple[str, str]]):
+    """The tokens of a CQL query as a boolean expression, over the grammar `_cql_refusal`
+    walks: an `or` of `and`s of `not`s of atoms and groups, `and` binding tighter than `or`,
+    a `not` only straight after `and`, stopping at `order by`.
+
+    An atom is ``("atom", field, op, values, negated, readable)``: `op` is `=`, `in` or `~`,
+    `negated` covers `!=`, `!~` and `not in (...)`, and `readable` says whether the field takes
+    the operator (see `_CQL_READABLE`). Raises `_CQLParseError` for anything else, including a
+    field with no operator, which real refuses with a message of its own and this server answers
+    at 200 through the clause readers."""
+    at = 0
+
+    def peek(offset=0):
+        return tokens[at + offset] if at + offset < len(tokens) else (None, None)
+
+    def keyword(word, offset=0):
+        kind, text = peek(offset)
+        return kind == "WORD" and text.lower() == word
+
+    def value(field=None):
+        nonlocal at
+        kind, text = peek()
+        if kind not in _CQL_VALUES or text.lower() in _CQL_KEYWORDS:
+            raise _CQLParseError()
+        at += 1
+        if peek() == ("PUNCT", "("):  # a function value tail: now("..."), currentUser()
+            depth = 0
+            while True:
+                kind, _ = peek()
+                if kind is None:
+                    raise _CQLParseError()
+                if peek() == ("PUNCT", "("):
+                    depth += 1
+                elif peek() == ("PUNCT", ")"):
+                    depth -= 1
+                    if depth == 0:
+                        at += 1
+                        break
+                at += 1
+        if field == "space.key":  # read as real reads it, see `_cql_space_value`
+            return _cql_space_value(kind, text)
+        return _cql_unquote(kind, text)
+
+    def atom():
+        nonlocal at
+        kind, field = peek()
+        if kind != "WORD" or field.lower() in _CQL_KEYWORDS:
+            raise _CQLParseError()
+        at += 1
+        field = field.lower()
+        negated = False
+        if keyword("not") and keyword("in", 1):
+            negated = True
+            at += 2
+        elif keyword("in"):
+            at += 1
+        elif peek()[0] == "OP":
+            op = peek()[1]
+            at += 1
+            if op in ("!=", "!~"):
+                negated = True
+                op = "=" if op == "!=" else "~"
+            if op not in ("=", "~"):
+                value()  # an operator the field does not take: consume its value, read no row
+                return ("atom", field, op, (), False, False)
+            readable = op in _CQL_READABLE.get(field, set())
+            return ("atom", field, op, (value(field),), negated, readable)
+        else:
+            raise _CQLParseError()
+        if peek() != ("PUNCT", "("):
+            raise _CQLParseError()
+        at += 1
+        values = []
+        while True:
+            values.append(value(field))
+            if peek() == ("PUNCT", ","):
+                at += 1
+                continue
+            break
+        if peek() != ("PUNCT", ")"):
+            raise _CQLParseError()
+        at += 1
+        return (
+            "atom",
+            field,
+            "in",
+            tuple(values),
+            negated,
+            "in" in _CQL_READABLE.get(field, set()),
+        )
+
+    def primary():
+        nonlocal at
+        if peek() == ("PUNCT", "("):
+            at += 1
+            node = parse_or()
+            if peek() != ("PUNCT", ")"):
+                raise _CQLParseError()
+            at += 1
+            return node
+        return atom()
+
+    def parse_and():
+        nonlocal at
+        node = primary()
+        while keyword("and"):
+            at += 1
+            negated = keyword("not")
+            if negated:
+                at += 1
+            right = primary()
+            if negated:
+                right = ("not", right)
+            node = ("and", node, right)
+        return node
+
+    def parse_or():
+        nonlocal at
+        node = parse_and()
+        while keyword("or"):
+            at += 1
+            node = ("or", node, parse_and())
+        return node
+
+    node = parse_or()
+    rest = tokens[at:]
+    if rest and not (keyword("order") and keyword("by", 1)):
+        raise _CQLParseError()
+    return node
 
 
 def _cql_page_param(request: Request, name: str, default: int) -> int | None:
@@ -2986,6 +3861,16 @@ _CONFLUENCE_HTML_RESOURCES = ("space", "content")
 
 unmatched_router = APIRouter(prefix="/atlassian", include_in_schema=False)
 
+
+class _EveryPath(PathConvertor):
+    """Starlette's `path`, a newline included: its `.*` stops at one, so `GET /rest/api/3/nope%0Ax`
+    would miss the catch-all, where real answers it as any path no route matches (2026-10-18)."""
+
+    regex = "(?s:.*)"
+
+
+register_url_convertor("every_path", _EveryPath())
+
 _PACKAGE = Path(__file__).resolve().parent.parent
 
 
@@ -3111,6 +3996,23 @@ _CONFLUENCE_JAXRS = _operations(_CONFLUENCE_JAXRS_WRITES)
 _CONFLUENCE_JAXRS_UNTYPED = _operations(
     row for row in _CONFLUENCE_JAXRS_WRITES if "/settings/lookandfeel" in row
 )
+#: The JAX-RS GETs of :data:`_CONFLUENCE_NOT_PERMITTED_GETS` and the two `contentbody/convert`
+#: reads, which read a request's `Content-Type` the way their writes do: measured 2026-10-19 on the
+#: CQL search and on each of the first but one, a type JSON is not compatible with is the empty 415
+#: ahead of the caller check and ahead of the operation's own 400, and a header Jersey cannot read
+#: is Tomcat's 400 page, each with no credential and with one. The one is `settings/lookandfeel`,
+#: untyped on its GET as on its writes (:data:`_CONFLUENCE_JAXRS_UNTYPED`): any type reaches the
+#: caller check, and only the header Jersey cannot read is refused.
+_CONFLUENCE_JAXRS_GETS = _operations(
+    [
+        *(f"GET /wiki/rest/{path}" for path in _CONFLUENCE_NOT_PERMITTED_GETS),
+        # measured 2026-10-22: `text/plain` was the empty 415 and `foo` Tomcat's 400 page on both,
+        # where no `Content-Type` was a 400 and a 200 with no credential
+        "GET /wiki/rest/api/contentbody/convert/async/{}",
+        "GET /wiki/rest/api/contentbody/convert/async/bulk/tasks",
+    ]
+)
+_CONFLUENCE_JAXRS_GETS_UNTYPED = _operations(["GET /wiki/rest/api/settings/lookandfeel"])
 #: The two of them that ran with no credential: `[]` at 200 and a 404 for an id naming nothing.
 _CONFLUENCE_JAXRS_RUN = tuple(row for row in _CONFLUENCE_JAXRS_WRITES if "/contentbody/" in row)
 
@@ -3315,17 +4217,27 @@ _CONFLUENCE_PRODUCES = tuple(
 )
 
 
-def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Response | None:
-    """What a Confluence JAX-RS write (:data:`_CONFLUENCE_JAXRS_WRITES`) answers a `Content-Type`
-    it will not read, or None: Tomcat's 400 page, or an empty 415 with no `content-type` where the
-    service checks the type (all but :data:`_CONFLUENCE_JAXRS_UNTYPED`), as
-    ``errors.atlassian.jaxrs_media_type_refusal`` decides."""
-    if not _is(_CONFLUENCE_JAXRS, request.method, vendor_path):
-        return None
-    status = errors_atlassian.jaxrs_media_type_refusal(
-        request.headers.get("content-type"),
-        checks_type=not _is(_CONFLUENCE_JAXRS_UNTYPED, request.method, vendor_path),
-    )
+def _jaxrs_media_refusal(request: Request, *, checks_type: bool) -> Response | None:
+    """What a Confluence JAX-RS service answers a `Content-Type` it will not read, or None:
+    Tomcat's 400 page for one Jersey cannot read, or an empty 415 with no `content-type` where
+    the service checks the type, as ``errors.atlassian.jaxrs_media_type_refusal`` decides, and the
+    400 page for the header sent with more than one value that is not blank; blank ones are left
+    out, and the header sent blank alone reads as an empty value. Measured with no credential on
+    2026-10-22: the header twice, as `application/json` twice, `text/plain` twice or the two
+    together, was the 400 page on `POST template`, on the `audit`, `settings/lookandfeel` and CQL
+    search GETs and on `/wiki/rest/api/nosuch`, where the Spring `GET content/{id}` and
+    `POST content` gave the 403 they give to one. On `audit` an empty, space or tab value beside
+    `application/json` was its 403 and beside `text/plain` its 415, an empty one beside two
+    `application/json` the 400 page, and two empty ones beside one `application/json` the 403; two
+    empty ones alone were the 400 page there, on `POST template` and on `/wiki/rest/api/nosuch`."""
+    values = request.headers.getlist("content-type")
+    read = [value for value in values if value.strip(" \t")] or values[:1]
+    if len(read) > 1:
+        status = 400
+    else:
+        status = errors_atlassian.jaxrs_media_type_refusal(
+            read[0] if read else None, checks_type=checks_type
+        )
     if status == 400:
         return Response(
             errors_atlassian.tomcat_page(400),
@@ -3336,24 +4248,97 @@ def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Respo
     return None if status is None else Response(status_code=status)
 
 
+def _refuse_the_search_media_type(request: Request) -> None:
+    """Raise what the CQL search answers a `Content-Type` it will not read
+    (:func:`_jaxrs_media_refusal`): Tomcat's 400 page, or the empty 415 unless `Accept` is one
+    Jersey cannot parse, whose 400 comes first. Measured on Confluence Cloud on 2026-10-22 with a
+    credential: `text/plain` under `Accept: application/xml` was the 415 and under
+    `Accept: application/json;q=2` the `Accept` 400, and `foo` under either the 400 page."""
+    refused = _jaxrs_media_refusal(request, checks_type=True)
+    if refused is None or (
+        refused.status_code == 415
+        and errors_atlassian.jaxrs_cannot_parse(request.headers.get("accept"))
+    ):
+        return
+    raise errors_atlassian.AtlassianError(
+        refused.status_code, bytes(refused.body), headers=dict(refused.headers)
+    )
+
+
+def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Response | None:
+    """What a Confluence JAX-RS write (:data:`_CONFLUENCE_JAXRS_WRITES`) or GET
+    (:data:`_CONFLUENCE_JAXRS_GETS`) answers a `Content-Type` it will not read, or None, as
+    :func:`_jaxrs_media_refusal` gives it: the services that check the type are all but the
+    untyped ones of each kind (:data:`_CONFLUENCE_JAXRS_UNTYPED`,
+    :data:`_CONFLUENCE_JAXRS_GETS_UNTYPED`)."""
+    if _is(_CONFLUENCE_JAXRS, request.method, vendor_path):
+        checks_type = not _is(_CONFLUENCE_JAXRS_UNTYPED, request.method, vendor_path)
+    elif _is(_CONFLUENCE_JAXRS_GETS, request.method, vendor_path):
+        checks_type = not _is(_CONFLUENCE_JAXRS_GETS_UNTYPED, request.method, vendor_path)
+    else:
+        return None
+    return _jaxrs_media_refusal(request, checks_type=checks_type)
+
+
+def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
+    """The empty 500 Confluence answers a charset Java cannot name
+    (``errors.atlassian.refuse_a_confluence_charset``) wherever its Spring application answers the
+    path, or None. That is each path an operation is published at (the baseline's and
+    :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT`), whichever method reaches it (`OPTIONS` and the 405s
+    among them), and the product's page under `/wiki/rest/` (:func:`_confluence_serves_html`).
+    Jersey's paths (the CQL search, :data:`_CONFLUENCE_JAXRS`, :data:`_CONFLUENCE_JAXRS_GETS` and
+    its 404) answer the header with Tomcat's 400 page instead, and a Basic value Tomcat cannot read
+    is left alone, since real answers it with Tomcat's 401 first.
+
+    Measured on Confluence Cloud on 2026-10-31 with `text/plain;charset=` and no credential: of the
+    147 operations the baseline lists or :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT` names, the 102
+    Spring ones answered the 500 and the 45 JAX-RS ones the 400 page, and `OPTIONS` at each of
+    their 97 paths, and a method none of them publishes at the 95 paths that have one, answered as
+    the path's operations did. Of the paths no operation names, `space/{key}/nope`,
+    `content/{id}/nope`, `/wiki/rest/api`, `/wiki/rest/` and `/wiki/rest/nope` answered the 500, and
+    `/wiki/rest/api/` and `/wiki/rest/api/nosuch` the 400 page. With `Basic !!!` beside it, `GET`,
+    `HEAD`, `OPTIONS` and `DELETE` at `space`, `POST space/{key}/permission` and
+    `GET space/{key}/nope` answered the 401.
+    """
+    vendor_path = _vendor_path(request.scope["path"])
+    # with its trailing slash, which the routed path has lost: `/wiki/rest/api/` is Jersey's 404
+    # where `/wiki/rest/api` is the page
+    sent = _vendor_path(_echoed_path(request))
+    if not sent.startswith("/wiki/rest/"):
+        return None
+    if _is(_CONFLUENCE_JAXRS, None, vendor_path) or _is(_CONFLUENCE_JAXRS_GETS, None, vendor_path):
+        return None
+    spring = (
+        _is(_CONFLUENCE_PUBLISHED, None, vendor_path)
+        or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, None, vendor_path)
+        or _confluence_serves_html(sent)
+    )
+    if not spring or auth.basic_credential_kind(request) == auth.BASIC_UNPARSEABLE:
+        return None
+    refused = errors_atlassian.refuse_a_confluence_charset(request.headers)
+    if refused is None:
+        return None
+    return Response(refused.body, status_code=refused.status_code)
+
+
 def _published_answer(request: Request, vendor_path: str) -> Response | None:
     """What real answers before an operation it publishes at ``vendor_path`` and no route here
     serves runs for this caller, or None where it would run, which is where Backlot has nothing to
     give but the gap the baseline's `missing` operation acknowledges.
 
     Jira checks the request's media type where the operation does, for any caller the gateway lets
-    through (:func:`_jira_media_refusal`), then `Accept` (``errors.atlassian.not_acceptable``, on
-    every operation but those whose entry says ``"accept": "unchecked"``), then refuses a caller
-    with no credential it resolves where the operation will not run anonymously, and any `OPTIONS`
-    on one (:func:`_jira_unauthenticated`), each measured 2026-09-30 and the `Accept` check's place
-    2026-10-13; where the operation runs and is one of :data:`_JIRA_ISSUE_WRITES` or
-    :data:`_JIRA_ROLE_WRITES`, its lookup of a key that names nothing the caller can see is its 404,
-    and a role write's is followed by the 401 :func:`_require_project_admin` gives. The operation
-    is the one :func:`_jira_operation` names.
+    through (:func:`_jira_media_refusal`), then `Accept` (``errors.atlassian.not_acceptable``, asked
+    of no caller where the operation's entry says ``"accept": "unchecked"``, which was measured with
+    no credential), then refuses a caller with no credential it resolves where the operation will
+    not run anonymously, and any `OPTIONS` on one (:func:`_jira_unauthenticated`), each measured
+    2026-09-30 and the `Accept` check's place 2026-10-13; where the operation runs and is one of
+    :data:`_JIRA_ISSUE_WRITES` or :data:`_JIRA_ROLE_WRITES`, its lookup of a key that names nothing
+    the caller can see is its 404, and a role write's is followed by the 401
+    :func:`_require_project_admin` gives. The operation is the one :func:`_jira_operation` names.
 
     Confluence answers a Basic value it cannot read with Tomcat's 401 first, then checks the media
-    type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS writes their own
-    way, :func:`_confluence_jaxrs_media_refusal`), then `Accept` (on every operation but
+    type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS operations their
+    own way, :func:`_confluence_jaxrs_media_refusal`), then `Accept` (on every operation but
     :data:`_CONFLUENCE_REFUSED_BY_ACCEPT`, and with no body on the JAX-RS ones), then refuses a
     caller with no credential it resolves on every operation but :data:`_CONFLUENCE_RUN_ANONYMOUSLY`
     (:func:`_confluence_refusal`); the 401's place was measured 2026-10-12 with an undecodable value
@@ -3547,9 +4532,9 @@ def _echoed_path(request: Request) -> str:
     """The path a refusal names, which is not always the one that was routed.
 
     Real collapses an interior run of slashes in what it echoes and keeps a trailing one, where
-    routing ignores both (``backlot.main.normalise_the_slashes_in_an_atlassian_path``, which
-    stashes the collapsed spelling on the scope for this). Measured 2026-10-10 on Jira's 415,
-    conversion 400 and 405, each of which keeps the trailing slash in `instance`.
+    routing ignores both, and keeps some escapes as sent, where routing decodes every one
+    (``errors.atlassian.echoed_spelling``). Measured 2026-10-10 on Jira's 415, conversion 400 and
+    405, each of which keeps the trailing slash in `instance`.
     """
     return request.scope.get("atlassian_echo_path", request.url.path)
 
@@ -3585,14 +4570,23 @@ def _confluence_not_found(request: Request) -> Response:
             status_code=404,
             media_type=errors_atlassian.HTML_MEDIA_TYPE,
         )
+    refused = _jaxrs_media_refusal(request, checks_type=False)
+    if refused is not None:
+        # ahead of this 404 and of the 500 below, measured 2026-10-19 on `/wiki/rest/api/nosuch`
+        # with `foo`, `application/json;x=` and an empty value and 2026-10-22 with `foo` under
+        # `Accept: application/json;q=2`, where a type Jersey reads leaves both alone; the page
+        # above answered `foo` as it answers no type
+        return refused
     if errors_atlassian.jaxrs_cannot_parse(request.headers.get("accept")):
         # Jersey fails to write its 404 under an `Accept` it cannot parse: an empty 500 with no
         # `content-type`, measured 2026-10-14 on `nopesuchroute` and `nope/deeper` with `q=2`, a
         # blank member and `;foo`, with a credential and without one, and 2026-10-16 with U+00A0
         return Response(b"", status_code=500)
     url = f"{_site(request)}{vendor_path}"
-    if request.url.query:
-        url = f"{url}?{request.url.query}"
+    # the query as it arrived, for the reason `normalise_the_slashes_in_an_atlassian_path` reads
+    # the path from the scope
+    if query := request.scope.get("query_string", b"").decode("latin-1"):
+        url = f"{url}?{query}"
     media_type, body = errors_atlassian.jaxrs_not_found(url, as_json=_wants_json(request))
     # JAX-RS's 404 says `no-transform` in both shapes and the page says nothing, measured 2026-09-30
     # with a credential and without one
@@ -3712,7 +4706,7 @@ def _site_surface(request: Request) -> Response:
     )
 
 
-@unmatched_router.api_route("/{rest:path}", methods=_UNMATCHED_METHODS)
+@unmatched_router.api_route("/{rest:every_path}", methods=_UNMATCHED_METHODS)
 async def unmatched_path(request: Request, rest: str) -> Response:
     """What either product answers for a path no route above serves, and for a method they do not.
 
@@ -3734,7 +4728,9 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     run for gets the answer above. Outside both API mounts the site is its web app
     (:func:`_site_surface`).
     """
-    path = request.url.path
+    # the path as routed, not `request.url.path`: parsing the URL again drops a decoded newline or
+    # tab and ends the path at a decoded `#`, so `myse%0Alf` would be looked up as `myself`
+    path = request.scope["path"]
     vendor_path = _vendor_path(path)
     served = _some_atlassian_route_matches(request)
     if served and request.method == "OPTIONS":
@@ -3751,10 +4747,12 @@ async def unmatched_path(request: Request, rest: str) -> Response:
             and not vendor_path.startswith("/wiki/rest")
         ):
             # the web app, not an API: a caller with no credential is sent to log in (`/wiki/nope`,
-            # measured 2026-09-30; with a credential it is the page below)
+            # measured 2026-09-30; with a credential it is the page below), `dest-url` quoting the
+            # path as `null for uri:` spells it and the query as sent (`/wiki/nope%3Fx?a=1` gives
+            # `%2Fwiki%2Fnope%253Fx%3Fa%3D1`, 2026-10-17)
+            query = request.scope.get("query_string", b"").decode("latin-1")
             asked = quote(
-                f"{_vendor_path(_echoed_path(request))}{'?' + request.url.query if request.url.query else ''}",
-                safe="",
+                f"{_vendor_path(_echoed_path(request))}{'?' + query if query else ''}", safe=""
             )
             return Response(
                 status_code=302,

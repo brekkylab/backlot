@@ -220,6 +220,9 @@
     "GET /rest/api/2/group/bulk": {},
     "GET /rest/api/2/group/member": {},
     "GET /rest/api/2/instance/license": {},
+    "GET /rest/api/2/invalid-jqls-access-log": {
+      "accept": "unchecked"
+    },
     "GET /rest/api/2/issue/limit/adf/report": {},
     "GET /rest/api/2/issue/limit/report": {},
     "GET /rest/api/2/issuesecurityschemes": {},
@@ -381,6 +384,9 @@
     "GET /rest/api/3/group/bulk": {},
     "GET /rest/api/3/group/member": {},
     "GET /rest/api/3/instance/license": {},
+    "GET /rest/api/3/invalid-jqls-access-log": {
+      "accept": "unchecked"
+    },
     "GET /rest/api/3/issue/limit/adf/report": {},
     "GET /rest/api/3/issue/limit/report": {},
     "GET /rest/api/3/issuesecurityschemes": {},

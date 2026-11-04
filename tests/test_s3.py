@@ -290,25 +290,24 @@ _REFUSAL_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "path, method, status, code, member, allow, headers",
-    [(*r, {}) if len(r) == 6 else r for r in _REFUSAL_ROWS],
-    ids=[
-        f"{r[1]}-{r[0].rsplit('/', 1)[-1] or 'root'}" + ("-" + "-".join(r[6]) if r[6:] else "")
-        for r in _REFUSAL_ROWS
-    ],
-)
-def test_s3_a_method_this_router_does_not_serve_answers_reals_own_refusal(
-    live_server, path, method, status, code, member, allow, headers
-):
+def test_s3_a_method_this_router_does_not_serve_answers_reals_own_refusal(live_server):
     """Each row measured. The body is XML on every one, and the `Allow` names what this server
     serves rather than real's own methods, which is the line the sub-resource 405 already draws."""
     base_url, settings = live_server
-    r = _signed(base_url, path, settings.admin_token, method=method, extra_headers=headers or None)
-    assert r.status_code == status
-    assert r.headers["content-type"] == "application/xml"
-    assert f"<Code>{code}</Code>" in r.text and member in r.text
-    assert r.headers.get("allow") == allow
+    answers, expected = {}, {}
+    for path, method, status, code, member, allow, *headers in _REFUSAL_ROWS:
+        headers = headers[0] if headers else None
+        r = _signed(base_url, path, settings.admin_token, method=method, extra_headers=headers)
+        row = f"{method} {path}" + "".join(f" {k}:{v}" for k, v in (headers or {}).items())
+        answers[row] = (
+            r.status_code,
+            r.headers["content-type"],
+            f"<Code>{code}</Code>" in r.text and member in r.text,
+            r.headers.get("allow"),
+        )
+        expected[row] = (status, "application/xml", True, allow)
+    assert len(answers) == len(_REFUSAL_ROWS)
+    assert answers == expected
 
 
 @pytest.mark.parametrize("path", ["/s3", "/s3/", "/s3/?acl"])
@@ -360,17 +359,26 @@ _BUCKET_SLASH_ROWS = [
 ]
 
 
-@pytest.mark.parametrize("method, query", _BUCKET_SLASH_ROWS)
-def test_s3_a_bucket_path_ending_in_a_slash_is_the_bucket(live_server, method, query):
+def test_s3_a_bucket_path_ending_in_a_slash_is_the_bucket(live_server):
     """The bucket's own answer, not a key's: `/{bucket}/` is not the key `""` in that bucket."""
     base_url, settings = live_server
-    bare, slashed = (
-        _signed(base_url, f"/s3/eng-artifacts{slash}{query}", settings.admin_token, method=method)
-        for slash in ("", "/")
-    )
-    assert slashed.status_code == bare.status_code
-    assert sorted(slashed.headers) == sorted(bare.headers)
-    assert _without_request_ids(slashed.text) == _without_request_ids(bare.text)
+    answers = {}
+    for method, query in _BUCKET_SLASH_ROWS:
+        answers[method, query] = [
+            (r.status_code, sorted(r.headers), _without_request_ids(r.text))
+            for r in (
+                _signed(
+                    base_url,
+                    f"/s3/eng-artifacts{slash}{query}",
+                    settings.admin_token,
+                    method=method,
+                )
+                for slash in ("", "/")
+            )
+        ]
+    assert {row: bare for row, (bare, _) in answers.items()} == {
+        row: slashed for row, (_, slashed) in answers.items()
+    }
 
 
 def test_s3_every_bucket_selector_a_get_answers_is_declared():
@@ -481,6 +489,7 @@ _OPTIONS_KEY_CONFLICTS = [
     *_OPTIONS_CONFLICTS,
     ("acl&retention", "acl, retention"),
     ("annotationName=x&acl", "acl, annotationName"),
+    ("annotation&annotationName=x&acl", "acl, annotation, annotationName"),
 ]
 _OPTIONS_QUERY_ROWS = [
     *[
@@ -548,56 +557,65 @@ _OPTIONS_QUERY_ROWS = [
 ]
 
 
-@pytest.mark.parametrize("path, query, code, message, value", _OPTIONS_QUERY_ROWS)
 @pytest.mark.parametrize("asked", [None, "GET", "put"], ids=["no-origin", "origin", "bad-method"])
 @pytest.mark.parametrize("tampered", [False, True], ids=["unsigned", "tampered"])
-def test_s3_an_options_refuses_its_query_before_the_preflight(
-    live_server, path, query, code, message, value, asked, tampered
-):
+def test_s3_an_options_refuses_its_query_before_the_preflight(live_server, asked, tampered):
     """The rows with a code are refused ahead of the preflight, with or without an `Origin`, ahead
     of a method the preflight does not take, and unsigned and over a bad secret alike
     (``backlot.routers.s3._cors_preflight``); the rest are the preflight itself."""
     import httpx
 
     base_url, settings = live_server
-    headers = {"Origin": "https://example.invalid", "Access-Control-Request-Method": asked}
-    headers = headers if asked else {}
-    url, headers = (
-        _sign_get(
-            base_url,
-            f"{path}?{query}",
-            settings.admin_token,
-            tamper=True,
-            method="OPTIONS",
-            extra_headers=headers,
+    sent = {"Origin": "https://example.invalid", "Access-Control-Request-Method": asked}
+    sent = sent if asked else {}
+    answers, expected = {}, {}
+    for path, query, code, message, value in _OPTIONS_QUERY_ROWS:
+        url, headers = (
+            _sign_get(
+                base_url,
+                f"{path}?{query}",
+                settings.admin_token,
+                tamper=True,
+                method="OPTIONS",
+                extra_headers=sent,
+            )
+            if tampered
+            else (f"{base_url}{path}?{query}", sent)
         )
-        if tampered
-        else (f"{base_url}{path}?{query}", headers)
-    )
-    r = httpx.request("OPTIONS", url, headers=headers)
-    status, expected = 400, {}
-    if value is not None:
-        expected = {"ArgumentName": "ResourceType", "ArgumentValue": value}
-    if code is None and asked == "GET":
-        status, code = 403, "AccessForbidden"
-        found = (
-            "Bucket not found"
-            if path in ("/s3", "/s3/")
-            else "CORS is not enabled for this bucket."
+        r = httpx.request("OPTIONS", url, headers=headers)
+        status, members = 400, {}
+        if value is not None:
+            members = {"ArgumentName": "ResourceType", "ArgumentValue": value}
+        if code is None and asked == "GET":
+            status, code = 403, "AccessForbidden"
+            found = (
+                "Bucket not found"
+                if path in ("/s3", "/s3/")
+                else "CORS is not enabled for this bucket."
+            )
+            message = "CORSResponse: " + found
+            members = {"Method": "GET", "ResourceType": "BUCKET"}
+        elif code is None and asked:
+            code, message = "BadRequest", f"Invalid Access-Control-Request-Method: {asked}"
+        elif code is None:
+            code, message = "BadRequest", "Insufficient information. Origin request header needed."
+        fields = {node.tag: node.text for node in ET.fromstring(r.text)}
+        fields.pop("RequestId")
+        fields.pop("HostId")
+        answers[f"{path}?{query}"] = (
+            r.status_code,
+            r.headers["content-type"],
+            r.headers.get("allow"),
+            fields,
         )
-        message = "CORSResponse: " + found
-        expected = {"Method": "GET", "ResourceType": "BUCKET"}
-    elif code is None and asked:
-        code, message = "BadRequest", f"Invalid Access-Control-Request-Method: {asked}"
-    elif code is None:
-        code, message = "BadRequest", "Insufficient information. Origin request header needed."
-    assert r.status_code == status
-    assert r.headers["content-type"] == "application/xml"
-    assert "allow" not in r.headers
-    fields = {node.tag: node.text for node in ET.fromstring(r.text)}
-    fields.pop("RequestId")
-    fields.pop("HostId")
-    assert fields == {"Code": code, "Message": message, **expected}
+        expected[f"{path}?{query}"] = (
+            status,
+            "application/xml",
+            None,
+            {"Code": code, "Message": message, **members},
+        )
+    assert len(answers) == len(_OPTIONS_QUERY_ROWS)
+    assert answers == expected
 
 
 @pytest.mark.parametrize("asked", ["put", "Get", "TRACE"])
@@ -857,35 +875,41 @@ _TAMPERED_ROWS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "method, path, status", _TAMPERED_ROWS, ids=[f"{m}-{p[4:]}" for m, p, _ in _TAMPERED_ROWS]
-)
-def test_s3_tampered_signature_rejected(live_server, method, path, status):
+def test_s3_tampered_signature_rejected(live_server):
     """Each row measured. Where the answer is the 403 it is the signature's own refusal, and the
     same request signed as sent is not a 403 (`backlot.routers.s3._signature_refusal`)."""
     import httpx
 
     base_url, settings = live_server
-    url, headers = _sign_get(base_url, path, settings.admin_token, tamper=True, method=method)
-    r = httpx.request(method, url, headers=headers)
-    assert r.status_code == status
-    if status == 403:
-        if method != "HEAD":
-            assert "<Code>SignatureDoesNotMatch</Code>" in r.text
-        assert _signed(base_url, path, settings.admin_token, method=method).status_code != 403
+    answers, expected = {}, {}
+    for method, path, status in _TAMPERED_ROWS:
+        url, headers = _sign_get(base_url, path, settings.admin_token, tamper=True, method=method)
+        r = httpx.request(method, url, headers=headers)
+        answers[method, path] = (r.status_code,)
+        expected[method, path] = (status,)
+        if status == 403:
+            # A HEAD's refusal has no body to name its code in.
+            mismatch = "<Code>SignatureDoesNotMatch</Code>" in r.text or method == "HEAD"
+            signed = _signed(base_url, path, settings.admin_token, method=method)
+            answers[method, path] += (mismatch, signed.status_code != 403)
+            expected[method, path] += (True, True)
+    assert len(answers) == len(_TAMPERED_ROWS)
+    assert answers == expected
 
 
-@pytest.mark.parametrize("last", "0123456789abcdef")
-def test_s3_a_tampered_signature_is_never_the_one_botocore_signed(monkeypatch, last):
+def test_s3_a_tampered_signature_is_never_the_one_botocore_signed(monkeypatch):
     """Against a signature ending in each hex digit in turn, ``dead`` among them, the tamper in
     `_sign_get` sends 64 hex digits that are not that signature."""
     from botocore.auth import SigV4Auth
 
-    signature = "0" * 60 + "dea" + last
-    monkeypatch.setattr(SigV4Auth, "signature", lambda self, string_to_sign, request: signature)
-    _, headers = _sign_get("http://127.0.0.1:8000", _KEY, TOKEN, tamper=True)
-    sent = headers["Authorization"].rsplit("Signature=", 1)[1]
-    assert sent != signature and re.fullmatch(r"[0-9a-f]{64}", sent)
+    sent = {}
+    for last in "0123456789abcdef":
+        signature = "0" * 60 + "dea" + last
+        monkeypatch.setattr(SigV4Auth, "signature", lambda self, string_to_sign, request: signature)
+        _, headers = _sign_get("http://127.0.0.1:8000", _KEY, TOKEN, tamper=True)
+        tampered = headers["Authorization"].rsplit("Signature=", 1)[1]
+        sent[signature] = tampered != signature and bool(re.fullmatch(r"[0-9a-f]{64}", tampered))
+    assert sent == dict.fromkeys(sent, True) and len(sent) == 16
 
 
 # Each row is real's answer for a name nobody owns (2026-09-29), which every corpus bucket gets here
@@ -1588,41 +1612,43 @@ _LIST_BUCKETS_REFUSAL_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "query, message, members, unsigned, tampered",
-    _LIST_BUCKETS_REFUSAL_ROWS,
-    ids=[r[0] for r in _LIST_BUCKETS_REFUSAL_ROWS],
-)
-def test_list_buckets_refuses_its_parameters_where_real_does(
-    live_server, query, message, members, unsigned, tampered
-):
+def test_list_buckets_refuses_its_parameters_where_real_does(live_server):
     """Each refusal byte for byte signed; `max-buckets` and `bucket-region` the same 400 unsigned
     and over a bad secret, before the credential, where a `continuation-token` is the 307 and the
     403 a `prefix` gets, after it."""
     import httpx
 
     base_url, settings = live_server
-    path = f"/s3/?{query}"
-    signed = _signed(base_url, path, settings.admin_token)
-    arms = [(signed, 200 if message is None else 400)]
-    if unsigned is not None:
-        url, headers = _sign_get(base_url, path, settings.admin_token, tamper=True)
-        arms += [
-            (httpx.get(f"{base_url}{path}"), unsigned),
-            (httpx.get(url, headers=headers), tampered),
-        ]
-    for r, status in arms:
-        assert r.status_code == status
-        if status == 400:
-            assert r.headers["content-type"] == "application/xml"
-            assert _without_request_ids(r.text) == (
-                _DECL + f"<Error><Code>InvalidArgument</Code><Message>{message}</Message>"
-                f"{members}<RequestId/><HostId/></Error>"
+    answers, expected = {}, {}
+    for query, message, members, unsigned, tampered in _LIST_BUCKETS_REFUSAL_ROWS:
+        path = f"/s3/?{query}"
+        arms = {
+            "signed": (
+                _signed(base_url, path, settings.admin_token),
+                200 if message is None else 400,
             )
-        elif status == 307:
-            assert r.content == b""
-        elif status == 403:
-            assert "<Code>SignatureDoesNotMatch</Code>" in r.text
+        }
+        if unsigned is not None:
+            url, headers = _sign_get(base_url, path, settings.admin_token, tamper=True)
+            arms["unsigned"] = (httpx.get(f"{base_url}{path}"), unsigned)
+            arms["tampered"] = (httpx.get(url, headers=headers), tampered)
+        for arm, (r, status) in arms.items():
+            answers[query, arm] = (r.status_code,)
+            expected[query, arm] = (status,)
+            if status == 400:
+                answers[query, arm] += (r.headers["content-type"], _without_request_ids(r.text))
+                expected[query, arm] += (
+                    "application/xml",
+                    _DECL + f"<Error><Code>InvalidArgument</Code><Message>{message}</Message>"
+                    f"{members}<RequestId/><HostId/></Error>",
+                )
+            elif status == 307:
+                answers[query, arm] += (r.content,)
+                expected[query, arm] += (b"",)
+            elif status == 403:
+                answers[query, arm] += ("<Code>SignatureDoesNotMatch</Code>" in r.text,)
+                expected[query, arm] += (True,)
+    assert answers == expected
 
 
 def test_list_objects_v2_xml_shape(live_server):
@@ -1713,14 +1739,7 @@ def _without_request_ids(body: str) -> str:
     return re.sub(r"<(RequestId|HostId)>[^<]*</\1>", r"<\1/>", body)
 
 
-@pytest.mark.parametrize(
-    "selector, status, content_type, body",
-    _CONFIGURATION_ROWS,
-    ids=[r[0] for r in _CONFIGURATION_ROWS],
-)
-def test_a_bucket_configuration_is_what_real_answers_for_a_bucket_nobody_configured(
-    live_server, selector, status, content_type, body
-):
+def test_a_bucket_configuration_is_what_real_answers_for_a_bucket_nobody_configured(live_server):
     """Each configuration a bucket has, at the bucket's path, byte for byte what real sent for one
     nobody configured, the prolog and the `Content-Type` among them; and a HEAD naming it is the
     405 whose `Allow` names the GET that answers it."""
@@ -1728,40 +1747,55 @@ def test_a_bucket_configuration_is_what_real_answers_for_a_bucket_nobody_configu
     owner = _get_xml(base_url, "/s3/eng-artifacts", settings.admin_token).findtext(
         f"{NS}Contents/{NS}Owner/{NS}ID"
     )
-    r = _signed(base_url, f"/s3/eng-artifacts?{selector}", settings.admin_token)
-    assert r.status_code == status
-    assert r.headers.get("content-type") == content_type
-    assert _without_request_ids(r.text) == body.format(bucket="eng-artifacts", owner=owner)
-    head = _signed(base_url, f"/s3/eng-artifacts?{selector}", settings.admin_token, method="HEAD")
-    assert head.status_code == 405 and head.headers.get("allow") == "GET"
+    answers, expected = {}, {}
+    for selector, status, content_type, body in _CONFIGURATION_ROWS:
+        path = f"/s3/eng-artifacts?{selector}"
+        r = _signed(base_url, path, settings.admin_token)
+        head = _signed(base_url, path, settings.admin_token, method="HEAD")
+        answers[selector] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            _without_request_ids(r.text),
+            head.status_code,
+            head.headers.get("allow"),
+        )
+        body = body.format(bucket="eng-artifacts", owner=owner)
+        expected[selector] = (status, content_type, body, 405, "GET")
+    assert len(answers) == len(_CONFIGURATION_ROWS)
+    assert answers == expected
 
 
-@pytest.mark.parametrize(
-    "selector",
-    [
-        "accelerate",
-        "cors",
-        "inventory",
-        "lifecycle",
-        "location",
-        "notification",
-        "policy",
-        "replication",
-        "requestPayment",
-        "versioning",
-        "website",
-    ],
-)
-def test_a_bucket_selector_at_a_key_is_the_buckets_own_answer(live_server, selector):
+_KEY_BUCKET_ROWS = [
+    "accelerate",
+    "cors",
+    "inventory",
+    "lifecycle",
+    "location",
+    "notification",
+    "policy",
+    "replication",
+    "requestPayment",
+    "versioning",
+    "website",
+]
+
+
+def test_a_bucket_selector_at_a_key_is_the_buckets_own_answer(live_server):
     """The bucket's own answer, byte for byte, at a key it has and one it does not
     (``backlot.routers.s3._KEY_BUCKET_SELECTORS``), the bucket named where the answer names one."""
     base_url, settings = live_server
-    at_bucket = _signed(base_url, f"/s3/eng-artifacts?{selector}", settings.admin_token)
-    for path in (OBJECT_PATH, "/s3/eng-artifacts/no/such.md"):
-        at_key = _signed(base_url, f"{path}?{selector}", settings.admin_token)
-        assert at_key.status_code == at_bucket.status_code, path
-        assert at_key.headers.get("content-type") == at_bucket.headers.get("content-type"), path
-        assert _without_request_ids(at_key.text) == _without_request_ids(at_bucket.text), path
+    answers = {}
+    for selector in _KEY_BUCKET_ROWS:
+        for path in ("/s3/eng-artifacts", OBJECT_PATH, "/s3/eng-artifacts/no/such.md"):
+            r = _signed(base_url, f"{path}?{selector}", settings.admin_token)
+            answers[selector, path] = (
+                r.status_code,
+                r.headers.get("content-type"),
+                _without_request_ids(r.text),
+            )
+    assert answers == {
+        (selector, path): answers[selector, "/s3/eng-artifacts"] for selector, path in answers
+    }
 
 
 OBJECT_PATH = "/s3/eng-artifacts/runbooks/oncall.md"
@@ -1989,25 +2023,17 @@ _OBJECT_SUBRESOURCE_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "query, headers, status, content_type, body, missing_status, missing_body",
-    _OBJECT_SUBRESOURCE_ROWS,
-    ids=[
-        r[0] + ("-" + next(iter(r[1].values())) if r[1] else "") for r in _OBJECT_SUBRESOURCE_ROWS
-    ],
-)
-def test_an_objects_subresource_is_what_real_answers_for_an_object_with_none_of_it(
-    live_server, query, headers, status, content_type, body, missing_status, missing_body
-):
+def test_an_objects_subresource_is_what_real_answers_for_an_object_with_none_of_it(live_server):
     """Each byte for byte, the prolog and the `Content-Type` among them, and the same at a key the
     bucket does not hold; a HEAD naming the selector is the 405 whose `Allow` names the GET that
-    answers it, `?torrent`'s none."""
+    answers it, `?torrent`'s none, and a HEAD naming `versionId` is a HEAD of the object, with the
+    GET's status (same date)."""
+    from backlot.routers import s3 as s3_router
+
     base_url, settings = live_server
     owner = _get_xml(base_url, "/s3/eng-artifacts", settings.admin_token).findtext(
         f"{NS}Contents/{NS}Owner/{NS}ID"
     )
-    from backlot.routers import s3 as s3_router
-
     fill = dict(
         owner=owner,
         etag=hashlib.md5(OBJECT_TEXT).hexdigest(),
@@ -2017,27 +2043,42 @@ def test_an_objects_subresource_is_what_real_answers_for_an_object_with_none_of_
         key="runbooks/oncall.md",
         missing="no/such.md",
     )
-    r = _signed(base_url, f"{OBJECT_PATH}?{query}", settings.admin_token, extra_headers=headers)
-    assert r.status_code == status
-    assert r.headers.get("content-type") == content_type
-    assert _without_request_ids(r.text) == body.format(**fill)
-    missing = _signed(
-        base_url,
-        f"/s3/eng-artifacts/no/such.md?{query}",
-        settings.admin_token,
-        extra_headers=headers,
-    )
-    assert missing.status_code == missing_status
-    assert _without_request_ids(missing.text) == missing_body.format(**fill)
-    selector = query.split("&")[0].split("=")[0]
-    head = _signed(base_url, f"{OBJECT_PATH}?{query}", settings.admin_token, method="HEAD")
-    assert head.content == b""
-    if selector == "versionId":
-        # A HEAD of the object, with the GET's status (same date).
-        assert head.status_code == status
-    else:
-        assert head.status_code == 405
-        assert head.headers.get("allow") == (None if selector == "torrent" else "GET")
+    answers, expected = {}, {}
+    for row in _OBJECT_SUBRESOURCE_ROWS:
+        query, headers, status, content_type, body, missing_status, missing_body = row
+        token = settings.admin_token
+        r = _signed(base_url, f"{OBJECT_PATH}?{query}", token, extra_headers=headers)
+        missing = _signed(
+            base_url, f"/s3/eng-artifacts/no/such.md?{query}", token, extra_headers=headers
+        )
+        head = _signed(base_url, f"{OBJECT_PATH}?{query}", token, method="HEAD")
+        key = query + "".join(f"-{name}:{value}" for name, value in headers.items())
+        answers[key] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            _without_request_ids(r.text),
+            missing.status_code,
+            _without_request_ids(missing.text),
+            head.status_code,
+            head.headers.get("allow"),
+            head.content,
+        )
+        selector = query.split("&")[0].split("=")[0]
+        expected[key] = (
+            status,
+            content_type,
+            body.format(**fill),
+            missing_status,
+            missing_body.format(**fill),
+            *(
+                (status, head.headers.get("allow"))
+                if selector == "versionId"
+                else (405, None if selector == "torrent" else "GET")
+            ),
+            b"",
+        )
+    assert len(answers) == len(_OBJECT_SUBRESOURCE_ROWS)
+    assert answers == expected
 
 
 _NO_VERSION_ID = "This operation does not accept a version-id."
@@ -2058,6 +2099,7 @@ _NO_SUCH_PART = (
     "</PartNumberRequested><ActualPartCount>1</ActualPartCount>"
 )
 _NO_BUCKET = "The specified bucket does not exist"
+_NUL = "Value must be a sequence of Unicode characters and cannot include Null."
 
 
 def _argued(name, value=None):
@@ -2376,17 +2418,7 @@ def _unsigned_or_v2(base_url, path, token, where, *, method="GET"):
     return url, {"date": date, "authorization": f"AWS {key}:{signature}"}
 
 
-@pytest.mark.parametrize(
-    "where, query, headers, status, code, fragment",
-    _OBJECT_ORDER_ROWS,
-    ids=[
-        f"{r[0]}-{r[1]}" + ("-" + next(iter(r[2].values())) if r[2] else "")
-        for r in _OBJECT_ORDER_ROWS
-    ],
-)
-def test_an_objects_subresource_refusals_sit_where_real_puts_them(
-    live_server, where, query, headers, status, code, fragment
-):
+def test_an_objects_subresource_refusals_sit_where_real_puts_them(live_server):
     """The parses before the bucket and the credential, an annotation operation's refusal of an
     unsigned or V2 credential after them, the version and the header checks after those and before
     the key, and the rest after the key, as in the table above, none of them carrying the encryption
@@ -2394,93 +2426,103 @@ def test_an_objects_subresource_refusals_sit_where_real_puts_them(
     import httpx
 
     base_url, settings = live_server
-    path = {
-        "absent": "/s3/no-such-bucket/k.txt",
-        "unsigned-absent": "/s3/no-such-bucket/k.txt",
-        "missing": "/s3/eng-artifacts/no/such.md",
-    }.get(where, OBJECT_PATH) + (f"?{query}" if query else "")
-    if where in ("absent", "missing", "present", "tampered"):
-        url, signed = _sign_get(
-            base_url, path, settings.admin_token, tamper=where == "tampered", extra_headers=headers
+    answers, expected = {}, {}
+    for where, query, headers, status, code, fragment in _OBJECT_ORDER_ROWS:
+        path = {
+            "absent": "/s3/no-such-bucket/k.txt",
+            "unsigned-absent": "/s3/no-such-bucket/k.txt",
+            "missing": "/s3/eng-artifacts/no/such.md",
+        }.get(where, OBJECT_PATH) + (f"?{query}" if query else "")
+        if where in ("absent", "missing", "present", "tampered"):
+            url, signed = _sign_get(
+                base_url,
+                path,
+                settings.admin_token,
+                tamper=where == "tampered",
+                extra_headers=headers,
+            )
+        else:
+            url, signed = _unsigned_or_v2(base_url, path, settings.admin_token, where)
+        r = httpx.get(url, headers=signed)
+        row = f"{where}-{query}" + "".join(f"-{name}:{value}" for name, value in headers.items())
+        answers[row] = (
+            r.status_code,
+            f"<Code>{code}</Code>" in r.text and fragment in r.text,
+            "x-amz-server-side-encryption" in r.headers,
         )
-    else:
-        url, signed = _unsigned_or_v2(base_url, path, settings.admin_token, where)
-    r = httpx.get(url, headers=signed)
-    assert r.status_code == status
-    assert f"<Code>{code}</Code>" in r.text and fragment in r.text
-    assert "x-amz-server-side-encryption" not in r.headers
+        expected[row] = (status, True, False)
+    assert len(answers) == len(_OBJECT_ORDER_ROWS)
+    assert answers == expected
+
+
+_ANNOTATION_WRITE_ROWS = [
+    (query, credential)
+    for query in ("annotation", "annotation&annotationName=x", "annotation&annotationName=")
+    for credential in (
+        "unsigned",
+        "empty",
+        "sigv2",
+        "sigv2-query",
+        "sigv2-tampered",
+        "sigv2-unknown-key",
+        "sigv4",
+        "sigv4-tampered",
+        "bearer",
+        "no-space",
+    )
+    # Signed with SigV4, an `annotationName` reaches the annotation's own operation on real,
+    # which this server does not serve.
+    if credential != "sigv4" or query == "annotation"
+]
 
 
 @pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
 @pytest.mark.parametrize("path", [OBJECT_PATH, "/s3/no-such-bucket/k.txt"])
-@pytest.mark.parametrize(
-    "query, credential",
-    [
-        (query, credential)
-        for query in ("annotation", "annotation&annotationName=x", "annotation&annotationName=")
-        for credential in (
-            "unsigned",
-            "empty",
-            "sigv2",
-            "sigv2-query",
-            "sigv2-tampered",
-            "sigv2-unknown-key",
-            "sigv4",
-            "sigv4-tampered",
-            "bearer",
-            "no-space",
-        )
-        # Signed with SigV4, an `annotationName` reaches the annotation's own operation on real,
-        # which this server does not serve.
-        if credential != "sigv4" or query == "annotation"
-    ],
-)
-def test_annotation_writes_require_signature_version_4(
-    live_server, method, path, query, credential
-):
+def test_annotation_writes_require_signature_version_4(live_server, method, path):
     """The annotation credential check in ``object_method_refusal`` precedes the bucket and
     V2 key/signature verification; V4 and malformed credentials retain their own answers."""
     import httpx
 
     base_url, settings = live_server
-    path = f"{path}?{query}"
-    if credential.startswith("sigv4"):
-        url, headers = _sign_get(
-            base_url,
-            path,
-            settings.admin_token,
-            method=method,
-            tamper=credential == "sigv4-tampered",
-        )
-    else:
-        url, headers = _unsigned_or_v2(
-            base_url, path, settings.admin_token, credential, method=method
-        )
-    response = httpx.request(method, url, headers=headers)
-    fields = {node.tag: node.text for node in ET.fromstring(response.text)}
-    fields.pop("RequestId")
-    fields.pop("HostId")
-    assert response.headers["content-type"] == "application/xml"
-    if credential == "sigv4-tampered":
-        assert response.status_code == 403
-        assert fields["Code"] == "SignatureDoesNotMatch"
-    else:
+    answers, expected = {}, {}
+    for query, credential in _ANNOTATION_WRITE_ROWS:
+        if credential.startswith("sigv4"):
+            url, headers = _sign_get(
+                base_url,
+                f"{path}?{query}",
+                settings.admin_token,
+                method=method,
+                tamper=credential == "sigv4-tampered",
+            )
+        else:
+            url, headers = _unsigned_or_v2(
+                base_url, f"{path}?{query}", settings.admin_token, credential, method=method
+            )
+        response = httpx.request(method, url, headers=headers)
+        fields = {node.tag: node.text for node in ET.fromstring(response.text)}
+        fields.pop("RequestId")
+        fields.pop("HostId")
+        if credential == "sigv4-tampered":
+            # The mismatch's own members name what was signed; its code is what is asserted.
+            fields = {"Code": fields["Code"]}
         status = 400
-        expected = {
+        members = {
             "Code": "InvalidRequest",
             "Message": "The authorization mechanism you have provided is not supported. "
             "Please use Signature Version 4.",
         }
-        if credential == "sigv4":
+        if credential == "sigv4-tampered":
+            status, members = 403, {"Code": "SignatureDoesNotMatch"}
+        elif credential == "sigv4":
             status = 405
-            expected = {
+            members = {
                 "Code": "MethodNotAllowed",
                 "Message": "The specified method is not allowed against this resource.",
                 "Method": method,
                 "ResourceType": "OBJECT_ANNOTATIONS",
             }
         elif credential in ("bearer", "no-space"):
-            expected = {
+            members = {
                 "Code": "InvalidArgument",
                 "Message": "Unsupported Authorization Type"
                 if credential == "bearer"
@@ -2488,9 +2530,19 @@ def test_annotation_writes_require_signature_version_4(
                 "ArgumentName": "Authorization",
                 "ArgumentValue": headers["Authorization"],
             }
-        assert response.status_code == status
-        assert fields == expected
-    assert response.headers.get("allow") == ("GET" if credential == "sigv4" else None)
+        answers[query, credential] = (
+            response.status_code,
+            response.headers["content-type"],
+            response.headers.get("allow"),
+            fields,
+        )
+        expected[query, credential] = (
+            status,
+            "application/xml",
+            "GET" if credential == "sigv4" else None,
+            members,
+        )
+    assert answers == expected
 
 
 @pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
@@ -2515,56 +2567,72 @@ def test_annotation_writes_keep_a_malformed_v2_credentials_refusal(live_server, 
     assert fields["Message"] == message
 
 
+# A query on a write, and the names its conflict names: a lone `annotationName` names only itself,
+# and None is the credential's own refusal: Signature Version 4 for an unsigned or V2 request,
+# `Unsupported Authorization Type` for a bearer.
+_ANNOTATION_PART_ROWS = [
+    ("annotation&acl", "acl, annotation"),
+    ("annotation&website=x", "annotation, website"),
+    ("annotation=&annotation=x&acl", "acl, annotation"),
+    ("annotation&max-annotation-results=abc", None),
+    ("annotation=&annotation=x", None),
+    ("annotationName=x", "annotationName"),
+    ("annotationName=x&acl", "acl, annotationName"),
+    ("annotationName=x&website=x", "annotationName, website"),
+    ("annotation&annotationName=x&acl", "acl, annotation, annotationName"),
+    ("partNumber=1&acl", "acl, partNumber"),
+    ("partNumber=1&website=x", "partNumber, website"),
+    ("annotationName=x&partNumber=1", "annotationName, partNumber"),
+    ("annotation&partNumber=1", "annotation, partNumber"),
+    ("annotation&partNumber=1&annotationName=x", "annotation, annotationName, partNumber"),
+    ("annotation=v&annotationName=x&acl&tagging", "acl, tagging"),
+    ("acl&website=x", "acl, website"),
+]
+
+
 @pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
 @pytest.mark.parametrize("credential", ["unsigned", "sigv2-tampered", "bearer"])
-@pytest.mark.parametrize(
-    "query, names",
-    [
-        ("annotation&acl", "acl, annotation"),
-        ("annotation&website=x", "annotation, website"),
-        ("annotation=&annotation=x&acl", "acl, annotation"),
-        ("annotation&max-annotation-results=abc", None),
-        ("annotation=&annotation=x", None),
-    ],
-)
-def test_annotation_write_conflicts_precede_credentials_and_body_checks(
-    live_server, method, credential, query, names
+def test_annotation_and_part_write_refusals_precede_credentials_and_body_checks(
+    live_server, method, credential
 ):
-    """``object_method_refusal`` records the conflict ahead of the credential and body checks;
-    the first annotation value selects it, and a write does not parse the listing's limit."""
+    """Real's answer on each write and credential here, as ``object_method_refusal`` records it."""
     import httpx
 
     base_url, settings = live_server
-    url, headers = _unsigned_or_v2(
-        base_url, f"{OBJECT_PATH}?{query}", settings.admin_token, credential, method=method
-    )
-    headers["Content-MD5"] = "garbage"
-    response = httpx.request(method, url, headers=headers, content=b"<x/>")
-    fields = {node.tag: node.text for node in ET.fromstring(response.text)}
-    fields.pop("RequestId")
-    fields.pop("HostId")
-    expected = {
-        "Code": "InvalidRequest",
-        "Message": "The authorization mechanism you have provided is not supported. "
-        "Please use Signature Version 4.",
-    }
-    if names is not None:
-        expected = {
-            "Code": "InvalidArgument",
-            "Message": f"Conflicting query string parameters: {names}",
-            "ArgumentName": "ResourceType",
-            "ArgumentValue": names.split(", ")[0],
+    answers, expected = {}, {}
+    for query, names in _ANNOTATION_PART_ROWS:
+        url, headers = _unsigned_or_v2(
+            base_url, f"{OBJECT_PATH}?{query}", settings.admin_token, credential, method=method
+        )
+        headers["Content-MD5"] = "garbage"
+        response = httpx.request(method, url, headers=headers, content=b"<x/>")
+        fields = {node.tag: node.text for node in ET.fromstring(response.text)}
+        fields.pop("RequestId")
+        fields.pop("HostId")
+        members = {
+            "Code": "InvalidRequest",
+            "Message": "The authorization mechanism you have provided is not supported. "
+            "Please use Signature Version 4.",
         }
-    elif credential == "bearer":
-        expected = {
-            "Code": "InvalidArgument",
-            "Message": "Unsupported Authorization Type",
-            "ArgumentName": "Authorization",
-            "ArgumentValue": "Bearer x",
-        }
-    assert response.status_code == 400
-    assert fields == expected
-    assert "allow" not in response.headers
+        if names is not None:
+            members = {
+                "Code": "InvalidArgument",
+                "Message": f"Conflicting query string parameters: {names}"
+                if ", " in names
+                else "Unexpected query string parameter",
+                "ArgumentName": "ResourceType",
+                "ArgumentValue": names.split(", ")[0],
+            }
+        elif credential == "bearer":
+            members = {
+                "Code": "InvalidArgument",
+                "Message": "Unsupported Authorization Type",
+                "ArgumentName": "Authorization",
+                "ArgumentValue": "Bearer x",
+            }
+        answers[query] = (response.status_code, response.headers.get("allow"), fields)
+        expected[query] = (400, None, members)
+    assert answers == expected
 
 
 @pytest.mark.parametrize("method", ["PUT", "POST", "DELETE", "PATCH"])
@@ -2591,12 +2659,13 @@ def test_a_valued_annotation_on_a_write_is_the_object_operation(live_server, met
 _FULL_RANGE = f"bytes 0-{len(OBJECT_TEXT) - 1}/{len(OBJECT_TEXT)}"
 _FIRST_TEN = f"bytes 0-9/{len(OBJECT_TEXT)}"
 # The object's own answer to a GET and a HEAD, as real answered its object (2026-09-29 and
-# 2026-09-30): the query, the headers sent, the status, the range the answer names (None: none) and
-# whether it carries the object's checksum.
+# 2026-09-30; the row with `annotation=v` is `_key_selected`'s): the query, the headers sent, the
+# status, the range the answer names (None: none) and whether it carries the object's checksum.
 _OBJECT_ANSWER_ROWS = [
     ("", {}, 200, None, False),
     ("versionId=null", {}, 200, None, False),
     ("partNumber=1", {}, 206, _FULL_RANGE, False),
+    ("annotation=v&annotationName=x&partNumber=1", {}, 206, _FULL_RANGE, False),
     ("partNumber=01", {}, 206, _FULL_RANGE, False),
     ("partNumber=1&versionId=null", {}, 206, _FULL_RANGE, False),
     ("", {"Range": "bytes=0-9"}, 206, _FIRST_TEN, False),
@@ -2620,17 +2689,7 @@ _OBJECT_ANSWER_ROWS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "query, headers, status, content_range, checksum",
-    _OBJECT_ANSWER_ROWS,
-    ids=[
-        "-".join([r[0] or "bare", *(f"{k}={v}" for k, v in r[1].items())])
-        for r in _OBJECT_ANSWER_ROWS
-    ],
-)
-def test_an_objects_own_answer_is_what_real_sends_for_its_object(
-    live_server, query, headers, status, content_range, checksum
-):
+def test_an_objects_own_answer_is_what_real_sends_for_its_object(live_server):
     """On a GET and a HEAD, the bytes of the range named or of the whole object, its one part the
     206 of its whole range, the default encryption ``backlot.routers.s3.object_get`` names, and in
     checksum mode the object's CRC-64/NVME beside an answer that holds all of it and none beside one
@@ -2639,22 +2698,39 @@ def test_an_objects_own_answer_is_what_real_sends_for_its_object(
     from backlot.routers import s3 as s3_router
 
     base_url, settings = live_server
-    path = f"{OBJECT_PATH}?{query}" if query else OBJECT_PATH
     etag = _signed(base_url, OBJECT_PATH, settings.admin_token).headers["etag"]
-    first, last = 0, len(OBJECT_TEXT) - 1
-    if content_range is not None:
-        first, last = map(int, content_range.split()[1].split("/")[0].split("-"))
-    for method in ("GET", "HEAD"):
-        r = _signed(base_url, path, settings.admin_token, method=method, extra_headers=headers)
-        assert r.status_code == status, method
-        assert r.headers.get("content-range") == content_range, method
-        assert r.headers["content-length"] == str(last - first + 1), method
-        assert r.content == (OBJECT_TEXT[first : last + 1] if method == "GET" else b""), method
-        assert r.headers["etag"] == etag, method
-        assert r.headers["x-amz-server-side-encryption"] == "AES256", method
+    answers, expected = {}, {}
+    for query, headers, status, content_range, checksum in _OBJECT_ANSWER_ROWS:
+        path = f"{OBJECT_PATH}?{query}" if query else OBJECT_PATH
+        first, last = 0, len(OBJECT_TEXT) - 1
+        if content_range is not None:
+            first, last = map(int, content_range.split()[1].split("/")[0].split("-"))
         crc = s3_router._crc64nvme(OBJECT_TEXT) if checksum else None
-        assert r.headers.get("x-amz-checksum-crc64nvme") == crc, method
-        assert r.headers.get("x-amz-checksum-type") == ("FULL_OBJECT" if checksum else None), method
+        for method in ("GET", "HEAD"):
+            r = _signed(base_url, path, settings.admin_token, method=method, extra_headers=headers)
+            row = (method, query, *(f"{k}={v}" for k, v in headers.items()))
+            answers[row] = (
+                r.status_code,
+                r.headers.get("content-range"),
+                r.headers["content-length"],
+                r.content,
+                r.headers["etag"],
+                r.headers["x-amz-server-side-encryption"],
+                r.headers.get("x-amz-checksum-crc64nvme"),
+                r.headers.get("x-amz-checksum-type"),
+            )
+            expected[row] = (
+                status,
+                content_range,
+                str(last - first + 1),
+                OBJECT_TEXT[first : last + 1] if method == "GET" else b"",
+                etag,
+                "AES256",
+                crc,
+                "FULL_OBJECT" if checksum else None,
+            )
+    assert len(answers) == 2 * len(_OBJECT_ANSWER_ROWS)
+    assert answers == expected
 
 
 # The response overrides `backlot.routers.s3._response_overrides` reads: the query, the request's
@@ -2695,43 +2771,55 @@ _RESPONSE_OVERRIDE_ROWS = [
 ]
 
 
-@pytest.mark.parametrize("query, headers, expected", _RESPONSE_OVERRIDE_ROWS)
+_OVERRIDDEN = (
+    "content-type",
+    "content-language",
+    "expires",
+    "cache-control",
+    "content-disposition",
+    "content-encoding",
+)
+
+
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
-def test_object_response_overrides_keep_the_object_bytes(
-    live_server, query, headers, expected, method
-):
+def test_object_response_overrides_keep_the_object_bytes(live_server, method):
     import httpx
 
     base_url, settings = live_server
     etag = _signed(base_url, OBJECT_PATH, settings.admin_token).headers["etag"]
-    url, signed = _sign_get(
-        base_url,
-        f"{OBJECT_PATH}?{query}",
-        settings.admin_token,
-        method=method,
-        extra_headers=headers,
-    )
-    first, last = 0, len(OBJECT_TEXT) - 1
-    if "Range" in headers:
-        first, last = map(int, headers["Range"].removeprefix("bytes=").split("-"))
-    # Read wire bytes, not decoded gzip: an override declares an encoding, but does not transform
-    # the stored object.
-    with httpx.stream(method, url, headers=signed) as response:
-        assert response.status_code == (206 if "Range" in headers else 200)
-        for name in (
-            "content-type",
-            "content-language",
-            "expires",
-            "cache-control",
-            "content-disposition",
-            "content-encoding",
-        ):
-            own = "text/markdown" if name == "content-type" else None
-            assert response.headers.get(name) == expected.get(name, own), name
-        assert response.headers["etag"] == etag
-        assert response.headers["content-length"] == str(last - first + 1)
-        body = OBJECT_TEXT[first : last + 1] if method == "GET" else b""
-        assert b"".join(response.iter_raw()) == body
+    answers, expected = {}, {}
+    for query, headers, overridden in _RESPONSE_OVERRIDE_ROWS:
+        url, signed = _sign_get(
+            base_url,
+            f"{OBJECT_PATH}?{query}",
+            settings.admin_token,
+            method=method,
+            extra_headers=headers,
+        )
+        first, last = 0, len(OBJECT_TEXT) - 1
+        if "Range" in headers:
+            first, last = map(int, headers["Range"].removeprefix("bytes=").split("-"))
+        # Read wire bytes, not decoded gzip: an override declares an encoding, but does not
+        # transform the stored object.
+        with httpx.stream(method, url, headers=signed) as response:
+            row = query + "".join(f"-{name}:{value}" for name, value in headers.items())
+            answers[row] = (
+                response.status_code,
+                {name: response.headers.get(name) for name in _OVERRIDDEN},
+                response.headers["etag"],
+                response.headers["content-length"],
+                b"".join(response.iter_raw()),
+            )
+        own = {name: "text/markdown" if name == "content-type" else None for name in _OVERRIDDEN}
+        expected[row] = (
+            206 if "Range" in headers else 200,
+            {**own, **overridden},
+            etag,
+            str(last - first + 1),
+            OBJECT_TEXT[first : last + 1] if method == "GET" else b"",
+        )
+    assert len(answers) == len(_RESPONSE_OVERRIDE_ROWS)
+    assert answers == expected
 
 
 @pytest.mark.parametrize("signature_version", ["s3v4", "s3"])
@@ -2921,6 +3009,103 @@ def test_an_objects_attributes_size_is_its_bytes(tmp_path):
     size = len(text.encode("utf-8"))
     assert size > len(text) and body.headers["content-length"] == str(size)
     assert f"<ObjectSize>{size}</ObjectSize>" in attributes.text
+
+
+_CONTROL_LISTING_ROWS = [
+    ("list-type=2", ["<Key>c&#x1;k</Key>", "<Key>d&#x1f;x</Key>", "<Key>e\x7fy</Key>"]),
+    ("list-type=2&delimiter=%01", ["<Delimiter>&#x1;</Delimiter>", "<Prefix>c&#x1;</Prefix>"]),
+    ("delimiter=%01&max-keys=1", ["<NextMarker>c&#x1;</NextMarker>"]),
+    (
+        "max-keys=1&marker=c%01k&delimiter=z",
+        ["<Marker>c&#x1;k</Marker>", "<NextMarker>c&#x1;m"],
+    ),
+    ("list-type=2&delimiter=%00", ["<Delimiter>&#x0;</Delimiter>"]),
+    (
+        "list-type=2&prefix=c%01&encoding-type=url",
+        ["<Prefix>c%01</Prefix>", "<Key>c%01k</Key>"],
+    ),
+    ("versions&max-keys=1", ["<NextKeyMarker>c&#x1;k</NextKeyMarker>", "<Key>c&#x1;k</Key>"]),
+    ("versions&delimiter=%01", ["<Delimiter>&#x1;</Delimiter>", "<Prefix>c&#x1;</Prefix>"]),
+    ("uploads&prefix=c%00", ["<Prefix>c&#x0;</Prefix>"]),
+    (
+        "list-type=2&prefix=q%22&delimiter=%27",
+        ["<Prefix>q&quot;</Prefix>", "<Delimiter>&apos;</Delimiter>", "<Key>q&quot;k</Key>"]
+        + ["<ETag>&quot;", "&quot;</ETag>"],
+    ),
+    (
+        "list-type=2&delimiter=%22",
+        ["<Delimiter>&quot;</Delimiter>", "<Prefix>q&quot;</Prefix>"],
+    ),
+    (
+        "list-type=2&start-after=r%27",
+        ["<StartAfter>r&apos;</StartAfter>", "<Key>r&apos;k</Key>"],
+    ),
+    (
+        "max-keys=1&marker=q%22&delimiter=z",
+        ["<Marker>q&quot;</Marker>", "<NextMarker>q&quot;k</NextMarker>", "<Key>q&quot;k</Key>"]
+        + ["<ETag>&quot;", "&quot;</ETag>"],
+    ),
+    (
+        "versions&key-marker=q%22&max-keys=1",
+        ["<KeyMarker>q&quot;</KeyMarker>", "<NextKeyMarker>q&quot;k</NextKeyMarker>"]
+        + ["<Key>q&quot;k</Key>", "<ETag>&quot;", "&quot;</ETag>"],
+    ),
+    ("versions&delimiter=%27", ["<Delimiter>&apos;</Delimiter>", "<Prefix>r&apos;</Prefix>"]),
+    (
+        "uploads&prefix=q%22&key-marker=r%27&delimiter=%22",
+        ["<KeyMarker>r&apos;</KeyMarker>", "<Delimiter>&quot;</Delimiter>"]
+        + ["<Prefix>q&quot;</Prefix>"],
+    ),
+]
+
+
+def test_a_listing_writes_control_characters_and_quotes_as_real_does(tmp_path):
+    """Each row is what real's listing wrote for the same query over the same keys, written here by
+    ``backlot.routers.s3._xml_listing_text``; U+007F stays as it is."""
+    keys = ["c\x01k", "c\x01m", "d\x1fx", "e\x7fy", "plain", 'q"k', "r'k"]
+    records = [
+        complete(
+            source_type="s3",
+            doc_id=f"s3-control-{i}",
+            bucket="eng-artifacts",
+            group="engineering",
+            key=key,
+            title="control",
+            content="x",
+            author_email="ava@acme.com",
+            author_groups=["engineering"],
+            visibility="public",
+        )
+        for i, key in enumerate(keys)
+    ]
+    tiny = tiny_corpus(tmp_path, records)
+    unwritten = {}
+    with client_for(tiny, reload=True) as client:
+        for query, written in _CONTROL_LISTING_ROWS:
+            r = _s3_get(client, f"/s3/eng-artifacts?{query}", tiny.admin_token)
+            answer = (r.status_code, [element for element in written if element not in r.text])
+            if answer != (200, []):
+                unwritten[query] = answer
+    assert unwritten == {}
+
+
+@pytest.mark.parametrize(
+    "query, status",
+    [
+        ("list-type=2&prefix=c%00", 400),
+        ("marker=a%00", 400),
+        ("list-type=2&start-after=a%00", 400),
+        ("versions&key-marker=c%00", 405),
+        ("uploads&key-marker=c%00", 405),
+    ],
+)
+def test_a_head_reads_a_nul_in_a_listing_as_its_get_does(live_server, query, status):
+    """The listing's NUL refusal (``backlot.routers.s3._listing_nul_refusal``) is a HEAD's 400 with
+    no body; on `?versions` and `?uploads` the selector's 405 comes first, as real answered each
+    HEAD."""
+    base_url, settings = live_server
+    head = _signed(base_url, f"/s3/eng-artifacts?{query}", settings.admin_token, method="HEAD")
+    assert (head.status_code, head.content) == (status, b"")
 
 
 def test_the_listing_location_and_object_still_answer_and_an_unknown_key_is_ignored(live_server):
@@ -3168,22 +3353,25 @@ _MEMBER_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "method, path, status, code, members, headers",
-    [r if len(r) == 6 else (*r, {}) for r in _MEMBER_ROWS],
-    ids=[f"{i}-{r[0]}-{r[3]}-{r[1].rsplit('/', 1)[-1]}" for i, r in enumerate(_MEMBER_ROWS)],
-)
-def test_s3_a_refusal_names_what_it_refused_with_the_member_real_uses_for_its_code(
-    live_server, method, path, status, code, members, headers
-):
+def test_s3_a_refusal_names_what_it_refused_with_the_member_real_uses_for_its_code(live_server):
     """The member each code names, as ``backlot.routers.s3._error`` records it, whether the path
     names a key or not; nothing more for a key's GET `?uploads`, and none for a payload hash naming
     a trailer (2026-09-29)."""
     base_url, settings = live_server
-    r = _signed(base_url, path, settings.admin_token, method=method, extra_headers=headers)
-    assert r.status_code == status
-    named = re.search(r"<Code>([^<]+)</Code><Message>[^<]*</Message>(.*)<RequestId>", r.text)
-    assert (named[1], named[2]) == (code, members)
+    answers, expected = {}, {}
+    for i, (method, path, status, code, members, *headers) in enumerate(_MEMBER_ROWS):
+        r = _signed(
+            base_url,
+            path,
+            settings.admin_token,
+            method=method,
+            extra_headers=headers[0] if headers else {},
+        )
+        named = re.search(r"<Code>([^<]+)</Code><Message>[^<]*</Message>(.*)<RequestId>", r.text)
+        row = f"{i}-{method}-{path}"
+        answers[row] = (r.status_code, *(named.groups() if named else (r.text,)))
+        expected[row] = (status, code, members)
+    assert answers == expected
 
 
 # The four configuration lists' own parameters, as real answered them (2026-09-29).
@@ -3233,16 +3421,15 @@ _CONFIGURATION_LIST_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "query, status, body", _CONFIGURATION_LIST_ROWS, ids=[r[0] for r in _CONFIGURATION_LIST_ROWS]
-)
-def test_a_configuration_list_reads_its_id_and_token_as_real_does(live_server, query, status, body):
+def test_a_configuration_list_reads_its_id_and_token_as_real_does(live_server):
     """Each list empty, as on a bucket nobody configured: an `id` names a configuration there is
     none of, a token is one it never handed out, and each is refused with the prolog real sent."""
     base_url, settings = live_server
-    r = _signed(base_url, f"/s3/eng-artifacts?{query}", settings.admin_token)
-    assert r.status_code == status
-    assert _without_request_ids(r.text) == body
+    answers = {}
+    for query, _, _ in _CONFIGURATION_LIST_ROWS:
+        r = _signed(base_url, f"/s3/eng-artifacts?{query}", settings.admin_token)
+        answers[query] = (r.status_code, _without_request_ids(r.text))
+    assert answers == {query: (status, body) for query, status, body in _CONFIGURATION_LIST_ROWS}
 
 
 # The answers the rows below repeat.
@@ -3270,6 +3457,11 @@ _BOGUS_ENCODING = (
     "Invalid Encoding Method specified in Request",
     _argued("encoding-type", "bogus"),
 )
+_LONE_PART = (
+    400,
+    "This operation does not accept partNumber without uploadId",
+    _argued("partNumber", "partNumber"),
+)
 _FOO_AT_A_BUCKET = (400, _NOT_OVERRIDABLE.format("response-foo"), _argued("response-foo", "x"))
 _OPEN_QUOTE_AT_A_BUCKET = (
     400,
@@ -3278,9 +3470,27 @@ _OPEN_QUOTE_AT_A_BUCKET = (
 )
 
 # A query parameter real refuses, and which of two it refuses when both are sent: the request, and
-# the status, code, message and members of real's answer (measured 2026-09-29 against us-east-1).
+# the status, code, message and members of real's answer (measured against us-east-1 on 2026-09-29,
+# unless a comment above a row gives another date or names where its measurement is recorded).
 # fmt: off
 _PARAMETER_ROWS = [
+    # A part number with no valued upload id at a key, on a write
+    # (``backlot.routers.s3.object_method_refusal``).
+    ("PUT", "/s3/eng-artifacts/docs/runbook.md?partNumber=1", *_LONE_PART),
+    ("POST", "/s3/eng-artifacts/docs/runbook.md?partNumber=1", *_LONE_PART),
+    ("DELETE", "/s3/no-such-bucket/readme.txt?partNumber=1", *_LONE_PART),
+    ("PATCH", "/s3/eng-artifacts/docs/runbook.md?partNumber=1", *_LONE_PART),
+    ("PUT", "/s3/eng-artifacts/docs/runbook.md?partNumber=abc", *_LONE_PART),
+    ("PUT", "/s3/eng-artifacts/docs/runbook.md?partNumber", *_LONE_PART),
+    ("PUT", "/s3/eng-artifacts/docs/runbook.md?partNumber=1&uploadId=", *_LONE_PART),
+    ("POST", "/s3/eng-artifacts/docs/runbook.md?uploadId=&partNumber=", *_LONE_PART),
+    ("PUT", "/s3/eng-artifacts/docs/runbook.md?partNumber=1&versionId=x", *_LONE_PART),
+    ("PUT", "/s3/eng-artifacts/docs/runbook.md?annotation=v&annotationName=x&partNumber=1",
+     *_LONE_PART),
+    ("PUT", "/s3/eng-artifacts/docs/runbook.md?partNumber=1&uploads", 400,
+     "Conflicting query string parameters: partNumber, uploads", _argued("ResourceType", "partNumber")),
+    ("PUT", "/s3/eng-artifacts/docs/runbook.md?partNumber=abc&website=x", 400,
+     "Conflicting query string parameters: partNumber, website", _argued("ResourceType", "partNumber")),
     # `versionId` at a bucket's path, on each operation there.
     ("GET", "/s3/eng-artifacts?versionId=x", *_VERSION_ID_X),
     ("GET", "/s3/eng-artifacts?list-type=2&versionId=x", *_VERSION_ID_X),
@@ -3350,6 +3560,13 @@ _PARAMETER_ROWS = [
     ("GET", "/s3/eng-artifacts/runbooks/oncall.md?annotationName=v&website=v", 400,
      "Conflicting query string parameters: annotationName, website",
      _argued("ResourceType", "annotationName")),
+    # ... and in the conflicts `_key_selected` counts it in beside `annotation`.
+    ("GET", "/s3/eng-artifacts/runbooks/oncall.md?annotation&annotationName=v&acl", 400,
+     "Conflicting query string parameters: acl, annotation, annotationName",
+     _argued("ResourceType", "acl")),
+    ("GET", "/s3/no-such-bucket/k.txt?annotation&partNumber=1&annotationName=v", 400,
+     "Conflicting query string parameters: annotation, annotationName, partNumber",
+     _argued("ResourceType", "annotation")),
     # ListObjectVersions' own, before the bucket and after it.
     ("GET", "/s3/no-such-bucket?versions&max-keys=abc", *_MAX_KEYS_ABC),
     ("GET", "/s3/no-such-bucket?versions&version-id-marker=x", *_MARKER_WITHOUT_KEY),
@@ -3411,51 +3628,113 @@ _PARAMETER_ROWS = [
     ("GET", "/s3/eng-artifacts?max-keys=-1&response-foo=x", *_FOO_AT_A_BUCKET),
     ("GET", "/s3/eng-artifacts?encoding-type=bogus&response-foo=x", *_FOO_AT_A_BUCKET),
     ("GET", "/s3/eng-artifacts?uploads&response-foo=x", *_FOO_AT_A_BUCKET),
+    # A control character echoed in an error body, as a decimal reference
+    # (``backlot.routers.s3._xml_text``).
+    ("GET", f"{OBJECT_PATH}?versionId=a%01b", 400, _BAD_VERSION, _argued("versionId", "a&#1;b")),
+    ("GET", "/s3/eng-artifacts?max-keys=%01", 400,
+     "Provided max-keys not an integer or within integer range", _argued("max-keys", "&#1;")),
+    ("GET", "/s3/eng-artifacts?list-type=2&encoding-type=%1F", 400,
+     "Invalid Encoding Method specified in Request", _argued("encoding-type", "&#31;")),
+    ("GET", f"{OBJECT_PATH}?response-a%01b=x", 400,
+     "response-a&#1;b is not in the set of overridable response headers. Please refer to the S3 "
+     "API documentation for a complete list of overridable response headers.",
+     _argued("response-a&#1;b", "x")),
+    ("GET", "/s3/eng-artifacts/no-such%01key", 404, "The specified key does not exist.",
+     "<Key>no-such&#1;key</Key>"),
+    ("GET", "/s3/eng-artifacts/no-such%01key?tagging", 404, "The specified key does not exist.",
+     "<Key>eng-artifacts/no-such&#1;key</Key>"),
+    ("GET", f"{OBJECT_PATH}?uploadId=x%01y", 404,
+     "The specified upload does not exist. The upload ID may be invalid, or the upload may have "
+     "been aborted or completed.", "<UploadId>x&#1;y</UploadId>"),
+    # A NUL in a listing's prefix or marker, and what comes before and after it
+    # (``backlot.routers.s3._nul_refusal``).
+    ("GET", "/s3/eng-artifacts?list-type=2&prefix=c%00", 400, _NUL, _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?prefix=c%00", 400, _NUL, _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?list-type=2&start-after=a%00", 400, _NUL,
+     _argued("key-marker", "a&#0;")),
+    ("GET", "/s3/eng-artifacts?marker=a%00", 400, _NUL, _argued("key-marker", "a&#0;")),
+    ("GET", "/s3/eng-artifacts?list-type=2&start-after=a%00&prefix=c%00", 400, _NUL,
+     _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?list-type=2&prefix=c%00&max-keys=-1", 400, _NUL,
+     _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?list-type=2&prefix=c%00&max-keys=abc", 400,
+     "Provided max-keys not an integer or within integer range", _argued("max-keys", "abc")),
+    ("GET", "/s3/eng-artifacts?marker=a%00&encoding-type=bogus", 400,
+     "Invalid Encoding Method specified in Request", _argued("encoding-type", "bogus")),
+    ("GET", "/s3/eng-artifacts?list-type=2&prefix=c%00&continuation-token=garbage", 400,
+     "The continuation token provided is incorrect", _argued("continuation-token")),
+    ("GET", "/s3/no-such-bucket?list-type=2&prefix=c%00", 404, _NO_BUCKET,
+     "<BucketName>no-such-bucket</BucketName>"),
+    ("GET", "/s3/eng-artifacts?versions&prefix=c%00", 400, _NUL, _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?versions&key-marker=c%00", 400, _NUL,
+     _argued("key-marker", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?versions&key-marker=c%00&prefix=c%00", 400, _NUL,
+     _argued("prefix", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?versions&prefix=c%00&max-keys=-1", 400,
+     "max-keys cannot be negative", _argued("max-keys")),
+    ("GET", "/s3/eng-artifacts?versions&key-marker=c%00&version-id-marker=bogus", 400,
+     _BAD_VERSION, _argued("version-id-marker", "bogus")),
+    ("GET", "/s3/eng-artifacts?uploads&key-marker=c%00", 400, _NUL,
+     _argued("key-marker", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?uploads&key-marker=c%00&upload-id-marker=x", 400, _NUL,
+     _argued("key-marker", "c&#0;")),
+    ("GET", "/s3/eng-artifacts?uploads&key-marker=c%00&max-uploads=-1", 400,
+     "Argument max-uploads must be an integer between 0 and 2147483647",
+     _argued("max-uploads", "-1")),
 ]
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "method, path, status, message, members",
-    _PARAMETER_ROWS,
-    ids=[f"{r[0]}-{r[1].rsplit('/', 1)[-1]}" for r in _PARAMETER_ROWS],
-)
-def test_s3_a_parameter_real_refuses_is_refused_with_reals_message_and_members(
-    live_server, method, path, status, message, members
-):
+def test_s3_a_parameter_real_refuses_is_refused_with_reals_message_and_members(live_server):
     base_url, settings = live_server
-    r = _signed(base_url, path, settings.admin_token, method=method)
-    assert r.status_code == status
-    named = re.search(r"<Message>([^<]*)</Message>(.*)<RequestId>", r.text)
-    assert (named[1], named[2]) == (message, members)
+    answers, expected = {}, {}
+    for method, path, *answer in _PARAMETER_ROWS:
+        r = _signed(base_url, path, settings.admin_token, method=method)
+        named = re.search(r"<Message>([^<]*)</Message>(.*)<RequestId>", r.text)
+        answers[method, path] = (r.status_code, *(named.groups() if named else (r.text,)))
+        expected[method, path] = tuple(answer)
+    assert len(answers) == len(_PARAMETER_ROWS)
+    assert answers == expected
 
 
 @pytest.mark.parametrize(
-    "path",
+    "method, path",
     [
-        "/s3/eng-artifacts?versionId=x",
-        "/s3/eng-artifacts?website=v",
-        "/s3/eng-artifacts/runbooks/oncall.md?website=v",
-        "/s3/eng-artifacts/runbooks/oncall.md?annotationName=v",
-        "/s3/eng-artifacts?versions&max-keys=abc",
-        "/s3/eng-artifacts?versions&version-id-marker=x",
-        "/s3/eng-artifacts?versions&key-marker=a&version-id-marker=",
+        ("GET", "/s3/eng-artifacts?versionId=x"),
+        ("GET", "/s3/eng-artifacts?website=v"),
+        ("GET", "/s3/eng-artifacts/runbooks/oncall.md?website=v"),
+        ("GET", "/s3/eng-artifacts/runbooks/oncall.md?annotationName=v"),
+        ("GET", "/s3/eng-artifacts?versions&max-keys=abc"),
+        ("GET", "/s3/eng-artifacts?versions&version-id-marker=x"),
+        ("GET", "/s3/eng-artifacts?versions&key-marker=a&version-id-marker="),
+        ("PUT", "/s3/eng-artifacts/docs/runbook.md?partNumber=1"),
+        ("POST", "/s3/no-such-bucket/readme.txt?partNumber=1"),
+        ("DELETE", "/s3/eng-artifacts/docs/runbook.md?partNumber=1&uploadId="),
+        ("PATCH", "/s3/eng-artifacts/docs/runbook.md?annotation=v&annotationName=x&partNumber=1"),
     ],
 )
-def test_s3_what_a_parameter_is_refused_for_comes_before_the_credential(live_server, path):
+def test_s3_what_a_parameter_is_refused_for_comes_before_the_credential(live_server, method, path):
     """Real gave each of these its 400 unsigned and over a bad secret as well as signed (measured
-    2026-09-29); a HEAD naming it is the 400 without its body, `?versions`' own a HEAD reads as the
-    selector's 405 first."""
+    2026-09-29, the writes as `object_method_refusal` records); a HEAD naming a GET's is the 400
+    without its body, `?versions`' own a HEAD reads as the selector's 405 first."""
     import httpx
 
     base_url, settings = live_server
-    signed = _signed(base_url, path, settings.admin_token)
-    tampered_url, tampered = _sign_get(base_url, path, settings.admin_token, tamper=True)
-    for other in (httpx.get(f"{base_url}{path}"), httpx.get(tampered_url, headers=tampered)):
+    signed = _signed(base_url, path, settings.admin_token, method=method)
+    tampered_url, tampered = _sign_get(
+        base_url, path, settings.admin_token, tamper=True, method=method
+    )
+    for other in (
+        httpx.request(method, f"{base_url}{path}"),
+        httpx.request(method, tampered_url, headers=tampered),
+    ):
         assert other.status_code == signed.status_code == 400, path
         assert _without_request_ids(other.text) == _without_request_ids(signed.text), path
-    head = _signed(base_url, path, settings.admin_token, method="HEAD")
-    assert (head.status_code, head.content) == ((405, b"") if "versions" in path else (400, b""))
+    if method == "GET":
+        head = _signed(base_url, path, settings.admin_token, method="HEAD")
+        assert (head.status_code, head.content) == (
+            (405, b"") if "versions" in path else (400, b"")
+        )
 
 
 @pytest.mark.parametrize(
@@ -3560,44 +3839,41 @@ _HEAD_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "path, token, headers, status, length",
-    _HEAD_ROWS,
-    ids=[f"{r[3]}-{r[1]}-{r[0].rsplit('/', 1)[-1]}" for r in _HEAD_ROWS],
-)
-def test_s3_a_head_is_sent_chunked_as_xml_unless_it_is_the_objects_own(
-    live_server, path, token, headers, status, length
-):
+def test_s3_a_head_is_sent_chunked_as_xml_unless_it_is_the_objects_own(live_server):
     """Every answer but an object's 200 and 206 is framed as ``backlot.routers.s3._head`` frames
     it, and a HEAD at a bucket reads the listing's parameters as ``backlot.routers.s3.head_bucket``
     says. Read off a real uvicorn server, since the framing is what it writes; the service root's
-    is asserted above."""
+    is asserted above. Nor does any but the object's own carry a range or the encryption header,
+    on a HEAD as on a GET (``backlot.routers.s3.object_get``)."""
     import httpx
 
     base_url, settings = live_server
-    if token is None:
-        r = httpx.head(f"{base_url}{path}", headers=headers)
-    else:
-        url, signed = _sign_get(
-            base_url,
-            path,
-            settings.admin_token,
-            tamper=token == "tampered",
-            extra_headers=headers,
-            method="HEAD",
-        )
-        r = httpx.head(url, headers=signed)
-    assert r.status_code == status and r.content == b""
-    if length is None:
-        assert "content-length" not in r.headers and r.headers["transfer-encoding"] == "chunked"
-        assert r.headers["content-type"] == "application/xml"
-        # Nor a range or the encryption header, on a HEAD as on a GET
-        # (``backlot.routers.s3.object_get``).
-        assert "content-range" not in r.headers
-        assert "x-amz-server-side-encryption" not in r.headers
-    else:
-        assert r.headers["content-length"] == str(length) and "transfer-encoding" not in r.headers
-        assert r.headers["content-type"] == "text/markdown"
+    answers, expected = {}, {}
+    for path, token, headers, status, length in _HEAD_ROWS:
+        if token is None:
+            r = httpx.head(f"{base_url}{path}", headers=headers)
+        else:
+            url, signed = _sign_get(
+                base_url,
+                path,
+                settings.admin_token,
+                tamper=token == "tampered",
+                extra_headers=headers,
+                method="HEAD",
+            )
+            r = httpx.head(url, headers=signed)
+        row = f"{status}-{token}-{path}" + "".join(f"-{k}:{v}" for k, v in headers.items())
+        framing = (r.headers.get("content-length"), r.headers.get("transfer-encoding"))
+        answers[row] = (r.status_code, r.content, *framing, r.headers["content-type"])
+        expected[row] = (status, b"", str(length), None, "text/markdown")
+        if length is None:
+            answers[row] += (
+                "content-range" in r.headers,
+                "x-amz-server-side-encryption" in r.headers,
+            )
+            expected[row] = (status, b"", None, "chunked", "application/xml", False, False)
+    assert len(answers) == len(_HEAD_ROWS)
+    assert answers == expected
 
 
 # ------------------------------------------------------------------------ ListMultipartUploads
@@ -4540,21 +4816,18 @@ _WRITE_CHECK_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "method, path, body, headers, status, code, message, members",
-    _WRITE_CHECK_ROWS,
-    ids=[f"{i}-{r[0]}-{r[1].rsplit('?', 1)[-1]}-{r[5]}" for i, r in enumerate(_WRITE_CHECK_ROWS)],
-)
-def test_s3_a_write_is_checked_as_real_checks_it_before_the_501(
-    live_server, method, path, body, headers, status, code, message, members
-):
+def test_s3_a_write_is_checked_as_real_checks_it_before_the_501(live_server):
     base_url, settings = live_server
-    r = _signed(
-        base_url, path, settings.admin_token, method=method, body=body, extra_headers=headers
-    )
-    assert r.status_code == status
-    named = re.search(r"<Code>([^<]+)</Code><Message>([^<]*)</Message>(.*)<RequestId>", r.text)
-    assert (named[1], named[2], named[3]) == (code, message, members)
+    answers, expected = {}, {}
+    for i, (method, path, body, headers, *answer) in enumerate(_WRITE_CHECK_ROWS):
+        r = _signed(
+            base_url, path, settings.admin_token, method=method, body=body, extra_headers=headers
+        )
+        named = re.search(r"<Code>([^<]+)</Code><Message>([^<]*)</Message>(.*)<RequestId>", r.text)
+        row = f"{i}-{method}-{path.rsplit('?', 1)[-1]}"
+        answers[row] = (r.status_code, *(named.groups() if named else (r.text,)))
+        expected[row] = tuple(answer)
+    assert answers == expected
 
 
 def test_s3_an_encryption_write_signed_with_signature_version_2_is_refused_for_it(live_server):
@@ -5488,19 +5761,8 @@ class _ClockAtSigning(datetime):
         return _REFUSAL_ROWS_SIGNED_AT
 
 
-@pytest.mark.parametrize(
-    "headers, query, code, message, members",
-    [(*r[1:5], r[5] if len(r) > 5 else None) for r in _REFUSAL_ROWS_UNIT],
-    ids=[r[0] for r in _REFUSAL_ROWS_UNIT],
-)
-def test_a_credential_real_refuses_is_refused_with_reals_code_and_message(
-    headers, query, code, message, members, monkeypatch
-):
-    """Each row is real's answer to that request, measured 2026-09-29 against us-east-1
-    (``backlot.auth.resolve_sigv4`` has the order), and the members real named where the row names
-    them. Each carries the payload hash boto3 sends, and a row that sends none names it as
-    ``None``."""
-    monkeypatch.setattr(auth, "datetime", _ClockAtSigning)
+def _refused_with_reals_code_and_message(headers, query, code, message, members):
+    """One row of ``_REFUSAL_ROWS_UNIT``, with ``backlot.auth``'s clock at the rows' signing."""
     sent = {"host": "backlot", "x-amz-content-sha256": "UNSIGNED-PAYLOAD", **headers}
     caller, err = auth.resolve_sigv4(
         _request(
@@ -5535,6 +5797,21 @@ def test_a_credential_real_refuses_is_refused_with_reals_code_and_message(
         expected_ms = str(int(sent.replace(tzinfo=timezone.utc).timestamp() * 1000))
         assert [name for name, _ in err.members] == ["X-Amz-Date", "Expires", "ServerTime"]
         assert dict(err.members)["X-Amz-Date"] == expected_ms
+
+
+def test_a_credential_real_refuses_is_refused_with_reals_code_and_message(monkeypatch):
+    """Each row is real's answer to that request, measured 2026-09-29 against us-east-1
+    (``backlot.auth.resolve_sigv4`` has the order), and the members real named where the row names
+    them. Each carries the payload hash boto3 sends, and a row that sends none names it as
+    ``None``."""
+    monkeypatch.setattr(auth, "datetime", _ClockAtSigning)
+    failed = {}
+    for row, headers, query, code, message, *members in _REFUSAL_ROWS_UNIT:
+        try:
+            _refused_with_reals_code_and_message(headers, query, code, message, *members or [None])
+        except AssertionError as refused:
+            failed[row] = str(refused)
+    assert failed == {}
 
 
 # --- Signature Version 2 (backlot/sigv2.py) ----------------------------------------------------
@@ -5712,20 +5989,19 @@ _DATE_ROWS = [
 ]
 
 
-@pytest.mark.parametrize("value, answer", _DATE_ROWS)
-def test_a_date_is_read_as_real_read_it(value, answer):
+def test_a_date_is_read_as_real_read_it():
     """``backlot.sigv2.parse_date`` over each form, a skew being a date more than fifteen minutes
     from the one it was sent at."""
     sent = datetime(2026, 9, 29, 15, 51, 47, tzinfo=timezone.utc)
-    if answer == "500":
-        with pytest.raises(sigv2.DateOutOfRange):
-            sigv2.parse_date(value)
-        return
-    read = sigv2.parse_date(value)
-    if answer is None:
-        assert read is None
-    else:
-        assert read is not None and is_skewed(read, sent) is (answer == "skewed")
+    answers = {}
+    for value, _ in _DATE_ROWS:
+        try:
+            read = sigv2.parse_date(value)
+        except sigv2.DateOutOfRange:
+            answers[value] = "500"
+            continue
+        answers[value] = None if read is None else "skewed" if is_skewed(read, sent) else "served"
+    assert answers == dict(_DATE_ROWS)
 
 
 # What real named in a Signature Version 2 string to sign for `?<name>=v`, after the path, at a
@@ -5884,20 +6160,21 @@ _V2_SIGNED_ROWS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "where, name, signed", _V2_SIGNED_ROWS, ids=[f"{r[0]}-{r[1]}" for r in _V2_SIGNED_ROWS]
-)
-def test_signature_version_2_signs_the_query_parameters_real_signs(where, name, signed):
+def test_signature_version_2_signs_the_query_parameters_real_signs():
     """Each row is what real's `StringToSign` named for that parameter, and a signature over it
     verifies here where a signature over anything else is the mismatch that names it."""
-    path = "/s3/eng-artifacts" if where == "bucket" else "/s3/eng-artifacts/runbooks/oncall.md"
-    query = "website" if name == "website" else f"{quote(name)}=v"
-    headers = {"date": _http_date(), "_signed": signed}
-    if name.lower().startswith("x-amz-"):
-        headers[name.lower()] = "v"
-    req, _ = _v2_request("GET", path, query, headers)
-    caller, err = auth.resolve_sigv4(req)
-    assert err is None, (name, err and dict(err.members).get("StringToSign"))
+    refused = {}
+    for where, name, signed in _V2_SIGNED_ROWS:
+        path = "/s3/eng-artifacts" if where == "bucket" else "/s3/eng-artifacts/runbooks/oncall.md"
+        query = "website" if name == "website" else f"{quote(name)}=v"
+        headers = {"date": _http_date(), "_signed": signed}
+        if name.lower().startswith("x-amz-"):
+            headers[name.lower()] = "v"
+        req, _ = _v2_request("GET", path, query, headers)
+        caller, err = auth.resolve_sigv4(req)
+        if err is not None:
+            refused[where, name] = dict(err.members).get("StringToSign")
+    assert refused == {}
 
 
 @pytest.mark.parametrize(
@@ -6082,9 +6359,11 @@ _REGION_SET_ROWS = [
 ]
 
 
-@pytest.mark.parametrize("region_set, matches", _REGION_SET_ROWS)
-def test_a_region_set_names_the_region_as_real_matches_it(region_set, matches):
-    assert sigv4a.region_set_matches(region_set, "us-east-1") is matches
+def test_a_region_set_names_the_region_as_real_matches_it():
+    matched = {
+        value: sigv4a.region_set_matches(value, "us-east-1") for value, _ in _REGION_SET_ROWS
+    }
+    assert matched == dict(_REGION_SET_ROWS)
 
 
 # The unsigned headers real named, in the order it named them (2026-09-29).
@@ -6123,11 +6402,14 @@ _NOT_SIGNED_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize("named, sent", _NOT_SIGNED_ROWS, ids=[r[0][:40] for r in _NOT_SIGNED_ROWS])
-def test_unsigned_headers_are_named_in_reals_order_whatever_order_they_came_in(named, sent):
+def test_unsigned_headers_are_named_in_reals_order_whatever_order_they_came_in():
     """Sent in the order given and in the reverse, which real named alike."""
-    for order in (sent, sent[::-1]):
-        assert ", ".join(auth._hash_set_order(order)) == named
+    named = {
+        (named, tuple(order)): ", ".join(auth._hash_set_order(order))
+        for named, sent in _NOT_SIGNED_ROWS
+        for order in (sent, sent[::-1])
+    }
+    assert named == {key: key[0] for key in named}
 
 
 # Where the payload hash a V4 or SigV4a signature covers comes from, and a request it does not.
@@ -7119,33 +7401,11 @@ _CONDITION_ROWS = [
 # fmt: on
 
 
-@pytest.mark.parametrize(
-    "sent, query, status, condition",
-    _CONDITION_ROWS,
-    ids=[
-        "&".join(f"{name}:{value}" for name, value in r[0]) + (f"?{r[1]}" if r[1] else "")
-        for r in _CONDITION_ROWS
-    ],
-)
-def test_an_objects_conditions_answer_as_real_s3_does(live_server, sent, query, status, condition):
-    """Each row on a GET and a HEAD: a 304 carries the ETag, the Last-Modified and the overrides
-    but the type, and none of the object's own headers, a 412 names its condition and carries no
-    override, a 400 the checksum mode, and the rest is the object's own answer."""
+def _answers_its_conditions(base_url, token, values, sent, query, status, condition):
+    """One row of ``_CONDITION_ROWS`` on a GET and a HEAD, ``values`` filling in its placeholders."""
     import httpx
 
-    base_url, settings = live_server
-    plain = _signed(base_url, OBJECT_PATH, settings.admin_token)
-    etag, lm = plain.headers["etag"], plain.headers["last-modified"]
-    moment = datetime.strptime(lm, "%a, %d %b %Y %H:%M:%S GMT").replace(tzinfo=timezone.utc)
-    values = {
-        "etag": etag,
-        "bare": etag.strip('"'),
-        "upper": etag.upper(),
-        "lm": moment,
-        "before": moment - timedelta(days=1),
-        "after": moment + timedelta(seconds=1),
-        "prev": moment.replace(day=1) - timedelta(days=1),
-    }
+    etag, lm = values["etag"], values["last_modified"]
     sent = [(name, value.format(**values)) for name, value in sent]
     names = [name for name, _ in sent]
     signed_headers = {name: value for name, value in sent if names.count(name) == 1}
@@ -7158,9 +7418,7 @@ def test_an_objects_conditions_answer_as_real_s3_does(live_server, sent, query, 
         if name.startswith("response-") and name != "response-content-type"
     }
     for method in ("GET", "HEAD"):
-        url, signed = _sign_get(
-            base_url, path, settings.admin_token, method=method, extra_headers=signed_headers
-        )
+        url, signed = _sign_get(base_url, path, token, method=method, extra_headers=signed_headers)
         r = httpx.request(method, url, headers=[*signed.items(), *repeated])
         assert r.status_code == status, (method, r.text)
         if status == 304:
@@ -7190,6 +7448,36 @@ def test_an_objects_conditions_answer_as_real_s3_does(live_server, sent, query, 
             assert r.headers["x-amz-server-side-encryption"] == "AES256", method
             length = int(r.headers["content-length"])
             assert r.content == (OBJECT_TEXT[:length] if method == "GET" else b""), method
+
+
+def test_an_objects_conditions_answer_as_real_s3_does(live_server):
+    """Each row on a GET and a HEAD: a 304 carries the ETag, the Last-Modified and the overrides
+    but the type, and none of the object's own headers, a 412 names its condition and carries no
+    override, a 400 the checksum mode, and the rest is the object's own answer."""
+    base_url, settings = live_server
+    plain = _signed(base_url, OBJECT_PATH, settings.admin_token)
+    etag, lm = plain.headers["etag"], plain.headers["last-modified"]
+    moment = datetime.strptime(lm, "%a, %d %b %Y %H:%M:%S GMT").replace(tzinfo=timezone.utc)
+    values = {
+        "etag": etag,
+        "bare": etag.strip('"'),
+        "upper": etag.upper(),
+        "lm": moment,
+        "last_modified": lm,
+        "before": moment - timedelta(days=1),
+        "after": moment + timedelta(seconds=1),
+        "prev": moment.replace(day=1) - timedelta(days=1),
+    }
+    failed = {}
+    for sent, query, status, condition in _CONDITION_ROWS:
+        row = "&".join(f"{name}:{value}" for name, value in sent) + (f"?{query}" if query else "")
+        try:
+            _answers_its_conditions(
+                base_url, settings.admin_token, values, sent, query, status, condition
+            )
+        except AssertionError as refused:
+            failed[row] = str(refused)
+    assert failed == {}
 
 
 @pytest.mark.parametrize("selector", ["tagging", "acl"])

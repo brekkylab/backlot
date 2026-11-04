@@ -214,8 +214,9 @@ input kind the issue names — a measurement of one does not carry to its neighb
 
 - Write the test first, in `tests/test_<source>.py` (or the file for the layer you change),
   asserting the measured response. Run it; it must fail.
-- Fold a new assertion into the test that already sets up that state; parametrize instead of
-  duplicating; a new test function is the last resort.
+- Fold a new assertion into the test that already sets up that state; a new measured input is a
+  row of the table that test sends, not a new case or function; a new test function is the last
+  resort.
 - Make the change in `backlot/routers/<source>.py` or the layer the issue names. Never widen a
   validation pattern to make a test pass: find which side has the external source.
 - A new or changed read of corpus content gets an admin-token test and a scoped-token test.

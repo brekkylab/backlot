@@ -144,7 +144,7 @@ def test_import_dry_run_validates_without_writing_a_db(tmp_path, monkeypatch, ca
     monkeypatch.setenv("BACKLOT_DATA_DIR", str(tmp_path / "data"))
 
     assert cli.main(["import", str(corpus), "--dry-run"]) == 0
-    assert "OK: 1 records valid." in plain(capsys.readouterr().out)
+    assert "OK: 1 record(s) valid." in plain(capsys.readouterr().out)
     assert not (tmp_path / "data" / "db.sqlite").exists()
 
 
@@ -388,12 +388,15 @@ def test_serve_passes_its_arguments_through_to_uvicorn(monkeypatch, a_data_dir_w
     argv = ["serve", "--host", "0.0.0.0", "--port", "9999", "--log-level", "warning"]
     assert cli.main(argv) == 0
     assert seen["app"] == "backlot.main:app"  # an import STRING, which --reload requires
+    from backlot.protocol import Protocol
+
+    assert seen["http"] is Protocol
     assert (seen["host"], seen["port"], seen["log_level"]) == ("0.0.0.0", 9999, "warning")
 
 
 def test_serve_defaults_match_uvicorns_own(monkeypatch, a_data_dir_with_a_corpus):
-    """The point of `backlot serve` is being a shorter spelling of `python -m uvicorn`, not a second
-    set of defaults to keep in step with it."""
+    """`backlot serve` keeps uvicorn's own defaults rather than a second set to keep in step with
+    them; the HTTP protocol is the one thing it picks (``backlot.protocol``)."""
     defaults = _uvicorn_defaults()  # before the spy, or this inspects the spy
     seen = _spy_uvicorn(monkeypatch)
     assert cli.main(["serve"]) == 0
@@ -580,11 +583,19 @@ def test_no_arguments_prints_the_command_list(capsys):
         assert command in out
 
 
-def test_version_reports_the_installed_distribution(capsys):
-    from importlib.metadata import version
+def test_version_reports_the_installed_distribution(capsys, monkeypatch):
+    """...or ``unknown`` from a source tree that was never installed."""
+    from importlib import metadata
 
     assert cli.main(["--version"]) == 0
-    assert plain(capsys.readouterr().out) == f"backlot {version('backlot')}"
+    assert plain(capsys.readouterr().out) == f"backlot {metadata.version('backlot')}"
+
+    def never_installed(name):
+        raise metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(metadata, "version", never_installed)
+    assert cli.main(["--version"]) == 0
+    assert plain(capsys.readouterr().out) == "backlot unknown"
 
 
 def test_serve_help_leaves_out_the_option_only_serve_passes(capsys):

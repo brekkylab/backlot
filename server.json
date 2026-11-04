@@ -1,0 +1,61 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.brekkylab/backlot",
+  "title": "Backlot",
+  "description": "Local emulator for Slack, Gmail, Drive, GitHub, Jira, Notion, S3 and more, with per-document ACLs",
+  "repository": {
+    "url": "https://github.com/brekkylab/backlot",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/brekkylab/backlot",
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/brekkylab/backlot/main/assets/icon/backlot-icon-light.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "1024x1024"
+      ],
+      "theme": "light"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/brekkylab/backlot/main/assets/icon/backlot-icon-dark.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "1024x1024"
+      ],
+      "theme": "dark"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/brekkylab/backlot/main/assets/icon/backlot-icon-light.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": [
+        "any"
+      ],
+      "theme": "light"
+    },
+    {
+      "src": "https://raw.githubusercontent.com/brekkylab/backlot/main/assets/icon/backlot-icon-dark.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": [
+        "any"
+      ],
+      "theme": "dark"
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "backlot",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}

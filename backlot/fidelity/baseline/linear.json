@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-16",
+  "measured": "2026-11-03",
   "root": {
     "query": "Query"
   },
@@ -245,6 +245,24 @@
           "status": "implemented"
         },
         "updatedBy": {
+          "status": "implemented"
+        }
+      }
+    },
+    "ArchiveResponse": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "archive": {
+          "status": "implemented"
+        },
+        "databaseVersion": {
+          "status": "implemented"
+        },
+        "includesDependencies": {
+          "status": "implemented"
+        },
+        "totalCount": {
           "status": "implemented"
         }
       }
@@ -768,6 +786,24 @@
         }
       }
     },
+    "CycleConnection": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "edges": {
+          "status": "missing",
+          "type": "[CycleEdge!]!",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "nodes": {
+          "status": "implemented"
+        },
+        "pageInfo": {
+          "status": "implemented"
+        }
+      }
+    },
     "DateComparator": {
       "type_kind": "INPUT_OBJECT",
       "status": "implemented",
@@ -856,183 +892,203 @@
       "status": "implemented",
       "fields": {
         "archivedAt": {
+          "status": "implemented"
+        },
+        "collaborators": {
           "status": "missing",
-          "type": "DateTime",
+          "type": "[DocumentCollaborator!]!",
           "kind": "missing_field",
-          "severity": "gap"
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
         },
         "color": {
-          "status": "missing",
-          "type": "String",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "comments": {
-          "status": "missing",
-          "type": "CommentConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "content": {
-          "status": "missing",
-          "type": "String",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "contentState": {
-          "status": "missing",
-          "type": "String",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "createdAt": {
-          "status": "missing",
-          "type": "DateTime!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "creator": {
-          "status": "missing",
-          "type": "User",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "cycle": {
-          "status": "missing",
-          "type": "Cycle",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "documentContentId": {
+          "status": "implemented"
+        },
+        "generalAccess": {
           "status": "missing",
-          "type": "String",
+          "type": "DocumentShareRole",
           "kind": "missing_field",
-          "severity": "gap"
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
         },
         "hiddenAt": {
-          "status": "missing",
-          "type": "DateTime",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "icon": {
-          "status": "missing",
-          "type": "String",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "id": {
           "status": "implemented"
         },
         "initiative": {
-          "status": "missing",
-          "type": "Initiative",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "issue": {
-          "status": "missing",
-          "type": "Issue",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "lastAppliedTemplate": {
-          "status": "missing",
-          "type": "Template",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "owner": {
-          "status": "missing",
-          "type": "User",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "parentDocument": {
-          "status": "missing",
-          "type": "Document",
-          "kind": "missing_field",
-          "severity": "gap",
-          "note": "Linear's own description marks it internal: \"[Internal] The parent document. Null if the document is not a sub-document.\" It joins the family whose gap is recorded on `Query.document`."
+          "status": "implemented"
         },
-        "project": {
-          "status": "missing",
-          "type": "Project",
-          "kind": "missing_field",
-          "severity": "gap"
-        },
-        "release": {
-          "status": "missing",
-          "type": "Release",
-          "kind": "missing_field",
-          "severity": "gap"
-        },
-        "slugId": {
-          "status": "missing",
-          "type": "String!",
-          "kind": "missing_field",
-          "severity": "gap"
-        },
-        "sortOrder": {
-          "status": "missing",
-          "type": "Float!",
-          "kind": "missing_field",
-          "severity": "gap"
-        },
-        "subDocumentSortOrder": {
-          "status": "missing",
-          "type": "Float",
-          "kind": "missing_field",
-          "severity": "gap",
-          "note": "Linear's own description marks it internal: \"[Internal] The sort order of the sub-document among its siblings. Null if the document is not a sub-document.\" It joins the family whose gap is recorded on `Query.document`."
-        },
-        "subscribers": {
-          "status": "missing",
-          "type": "UserConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
-        },
-        "summary": {
-          "status": "missing",
-          "type": "String",
-          "kind": "missing_field",
-          "severity": "gap"
-        },
-        "team": {
-          "status": "missing",
-          "type": "Team",
-          "kind": "missing_field",
-          "severity": "gap"
-        },
-        "title": {
-          "status": "missing",
-          "type": "String!",
-          "kind": "missing_field",
-          "severity": "gap"
-        },
-        "trashed": {
-          "status": "missing",
-          "type": "Boolean",
-          "kind": "missing_field",
-          "severity": "gap"
-        },
-        "updatedAt": {
-          "status": "missing",
-          "type": "DateTime!",
-          "kind": "missing_field",
-          "severity": "gap"
-        },
-        "updatedBy": {
+        "personalUser": {
           "status": "missing",
           "type": "User",
           "kind": "missing_field",
-          "severity": "gap"
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        },
+        "project": {
+          "status": "implemented"
+        },
+        "release": {
+          "status": "implemented"
+        },
+        "slugId": {
+          "status": "implemented"
+        },
+        "sortOrder": {
+          "status": "implemented"
+        },
+        "subDocumentSortOrder": {
+          "status": "implemented"
+        },
+        "subscribers": {
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "includeDisabled": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
+        },
+        "summary": {
+          "status": "implemented"
+        },
+        "team": {
+          "status": "implemented"
+        },
+        "title": {
+          "status": "implemented"
+        },
+        "trashed": {
+          "status": "implemented"
+        },
+        "updatedAt": {
+          "status": "implemented"
+        },
+        "updatedBy": {
+          "status": "implemented"
         },
         "url": {
+          "status": "implemented"
+        },
+        "viewerCanComment": {
           "status": "missing",
-          "type": "String!",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        },
+        "viewerCanEdit": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        },
+        "viewerCanManageAccess": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        }
+      }
+    },
+    "DocumentConnection": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "edges": {
+          "status": "missing",
+          "type": "[DocumentEdge!]!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "nodes": {
+          "status": "implemented"
+        },
+        "pageInfo": {
+          "status": "implemented"
         }
       }
     },
@@ -1092,6 +1148,76 @@
           "status": "implemented"
         },
         "welcomeMessage": {
+          "status": "implemented"
+        }
+      }
+    },
+    "DocumentFilter": {
+      "type_kind": "INPUT_OBJECT",
+      "status": "implemented",
+      "fields": {
+        "and": {
+          "status": "implemented"
+        },
+        "createdAt": {
+          "status": "implemented"
+        },
+        "creator": {
+          "status": "implemented"
+        },
+        "cycle": {
+          "status": "missing",
+          "type": "CycleFilter",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`CycleFilter` is not declared. `documents` answers an empty connection, so no filter key narrows anything."
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "initiative": {
+          "status": "missing",
+          "type": "InitiativeFilter",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`InitiativeFilter` is not declared. `documents` answers an empty connection, so no filter key narrows anything."
+        },
+        "issue": {
+          "status": "implemented"
+        },
+        "or": {
+          "status": "implemented"
+        },
+        "owner": {
+          "status": "implemented"
+        },
+        "project": {
+          "status": "missing",
+          "type": "ProjectFilter",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`ProjectFilter` is not declared. `documents` answers an empty connection, so no filter key narrows anything."
+        },
+        "release": {
+          "status": "implemented"
+        },
+        "searchableContent": {
+          "status": "missing",
+          "type": "ContentComparator",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`ContentComparator` is not declared. `documents` answers an empty connection, so no filter key narrows anything."
+        },
+        "slugId": {
+          "status": "implemented"
+        },
+        "team": {
+          "status": "implemented"
+        },
+        "title": {
+          "status": "implemented"
+        },
+        "updatedAt": {
           "status": "implemented"
         }
       }
@@ -2087,6 +2213,9 @@
         "gitlab": {
           "status": "implemented"
         },
+        "gitlabPersonal": {
+          "status": "implemented"
+        },
         "gong": {
           "status": "implemented"
         },
@@ -3062,10 +3191,7 @@
           "severity": "gap"
         },
         "number": {
-          "status": "missing",
-          "type": "NumberComparator",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "or": {
           "status": "implemented"
@@ -3470,6 +3596,527 @@
           "status": "implemented"
         },
         "pageInfo": {
+          "status": "implemented"
+        }
+      }
+    },
+    "IssueSearchPayload": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "archivePayload": {
+          "status": "implemented"
+        },
+        "edges": {
+          "status": "missing",
+          "type": "[IssueSearchResultEdge!]!",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "nodes": {
+          "status": "implemented"
+        },
+        "pageInfo": {
+          "status": "implemented"
+        },
+        "totalCount": {
+          "status": "implemented"
+        }
+      }
+    },
+    "IssueSearchResult": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "activitySummary": {
+          "status": "missing",
+          "type": "JSONObject",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "addedToCycleAt": {
+          "status": "implemented"
+        },
+        "addedToProjectAt": {
+          "status": "implemented"
+        },
+        "addedToTeamAt": {
+          "status": "implemented"
+        },
+        "agentSessions": {
+          "status": "missing",
+          "type": "AgentSessionConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "aiAnalysis": {
+          "status": "missing",
+          "type": "JSONObject",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "aiPromptProgresses": {
+          "status": "missing",
+          "type": "AiPromptProgressConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "archivedAt": {
+          "status": "implemented"
+        },
+        "asksExternalUserRequester": {
+          "status": "implemented"
+        },
+        "asksRequester": {
+          "status": "implemented"
+        },
+        "assignee": {
+          "status": "implemented"
+        },
+        "attachments": {
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
+        },
+        "autoArchivedAt": {
+          "status": "implemented"
+        },
+        "autoClosedAt": {
+          "status": "implemented"
+        },
+        "boardOrder": {
+          "status": "implemented"
+        },
+        "botActor": {
+          "status": "implemented"
+        },
+        "branchName": {
+          "status": "implemented"
+        },
+        "canceledAt": {
+          "status": "implemented"
+        },
+        "children": {
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
+        },
+        "comments": {
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
+        },
+        "completedAt": {
+          "status": "implemented"
+        },
+        "createdAt": {
+          "status": "implemented"
+        },
+        "creator": {
+          "status": "implemented"
+        },
+        "customerTicketCount": {
+          "status": "implemented"
+        },
+        "cycle": {
+          "status": "implemented"
+        },
+        "delegate": {
+          "status": "implemented"
+        },
+        "description": {
+          "status": "implemented"
+        },
+        "descriptionState": {
+          "status": "missing",
+          "type": "String",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "documentContent": {
+          "status": "missing",
+          "type": "DocumentContent",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "documents": {
+          "status": "missing",
+          "type": "DocumentConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "dueDate": {
+          "status": "implemented"
+        },
+        "estimate": {
+          "status": "implemented"
+        },
+        "externalUserCreator": {
+          "status": "implemented"
+        },
+        "favorite": {
+          "status": "implemented"
+        },
+        "formerAttachments": {
+          "status": "missing",
+          "type": "AttachmentConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "formerNeeds": {
+          "status": "missing",
+          "type": "CustomerNeedConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "history": {
+          "status": "missing",
+          "type": "IssueHistoryConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "identifier": {
+          "status": "implemented"
+        },
+        "incomingSuggestions": {
+          "status": "missing",
+          "type": "IssueSuggestionConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "inheritsSharedAccess": {
+          "status": "implemented"
+        },
+        "integrationSourceType": {
+          "status": "implemented"
+        },
+        "inverseRelations": {
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
+        },
+        "labelIds": {
+          "status": "implemented"
+        },
+        "labels": {
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
+        },
+        "lastAppliedTemplate": {
+          "status": "implemented"
+        },
+        "metadata": {
+          "status": "implemented"
+        },
+        "needs": {
+          "status": "missing",
+          "type": "CustomerNeedConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "number": {
+          "status": "implemented"
+        },
+        "parent": {
+          "status": "implemented"
+        },
+        "previousIdentifiers": {
+          "status": "implemented"
+        },
+        "priority": {
+          "status": "implemented"
+        },
+        "priorityLabel": {
+          "status": "implemented"
+        },
+        "prioritySortOrder": {
+          "status": "implemented"
+        },
+        "project": {
+          "status": "implemented"
+        },
+        "projectMilestone": {
+          "status": "implemented"
+        },
+        "reactionData": {
+          "status": "implemented"
+        },
+        "reactions": {
+          "status": "implemented"
+        },
+        "recurringIssueTemplate": {
+          "status": "implemented"
+        },
+        "relations": {
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
+        },
+        "releases": {
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
+        },
+        "sharedAccess": {
+          "status": "implemented"
+        },
+        "slaBreachesAt": {
+          "status": "implemented"
+        },
+        "slaHighRiskAt": {
+          "status": "implemented"
+        },
+        "slaMediumRiskAt": {
+          "status": "implemented"
+        },
+        "slaStartedAt": {
+          "status": "implemented"
+        },
+        "slaType": {
+          "status": "implemented"
+        },
+        "snoozedBy": {
+          "status": "implemented"
+        },
+        "snoozedUntilAt": {
+          "status": "implemented"
+        },
+        "sortOrder": {
+          "status": "implemented"
+        },
+        "sourceComment": {
+          "status": "implemented"
+        },
+        "startedAt": {
+          "status": "implemented"
+        },
+        "startedTriageAt": {
+          "status": "implemented"
+        },
+        "state": {
+          "status": "implemented"
+        },
+        "stateHistory": {
+          "status": "missing",
+          "type": "IssueStateSpanConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "subIssueSortOrder": {
+          "status": "implemented"
+        },
+        "subscribers": {
+          "status": "missing",
+          "type": "UserConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "suggestions": {
+          "status": "missing",
+          "type": "IssueSuggestionConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "suggestionsGeneratedAt": {
+          "status": "missing",
+          "type": "DateTime",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "summary": {
+          "status": "missing",
+          "type": "Summary",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "syncedWith": {
+          "status": "implemented"
+        },
+        "team": {
+          "status": "implemented"
+        },
+        "title": {
+          "status": "implemented"
+        },
+        "trashed": {
+          "status": "implemented"
+        },
+        "triagedAt": {
+          "status": "implemented"
+        },
+        "trusted": {
+          "status": "missing",
+          "type": "Boolean",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The gap `Issue` records for the same field: a search result is an issue with `metadata` beside it."
+        },
+        "updatedAt": {
+          "status": "implemented"
+        },
+        "url": {
           "status": "implemented"
         }
       }
@@ -4076,6 +4723,104 @@
         }
       }
     },
+    "NullableTeamFilter": {
+      "type_kind": "INPUT_OBJECT",
+      "status": "implemented",
+      "fields": {
+        "ancestors": {
+          "status": "missing",
+          "type": "TeamCollectionFilter",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`TeamCollectionFilter` is not declared; the input is read only under `DocumentFilter`, whose `documents` is always empty."
+        },
+        "and": {
+          "status": "implemented"
+        },
+        "createdAt": {
+          "status": "implemented"
+        },
+        "description": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "issues": {
+          "status": "missing",
+          "type": "IssueCollectionFilter",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`IssueCollectionFilter` is not declared; the input is read only under `DocumentFilter`, whose `documents` is always empty."
+        },
+        "key": {
+          "status": "implemented"
+        },
+        "members": {
+          "status": "missing",
+          "type": "UserCollectionFilter",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`UserCollectionFilter` is not declared; the input is read only under `DocumentFilter`, whose `documents` is always empty."
+        },
+        "name": {
+          "status": "implemented"
+        },
+        "null": {
+          "status": "implemented"
+        },
+        "or": {
+          "status": "implemented"
+        },
+        "owners": {
+          "status": "missing",
+          "type": "UserCollectionFilter",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`UserCollectionFilter` is not declared; the input is read only under `DocumentFilter`, whose `documents` is always empty."
+        },
+        "parent": {
+          "status": "implemented"
+        },
+        "private": {
+          "status": "missing",
+          "type": "BooleanComparator",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`BooleanComparator` is not declared; the input is read only under `DocumentFilter`, whose `documents` is always empty."
+        },
+        "releasePipelines": {
+          "status": "missing",
+          "type": "ReleasePipelineCollectionFilter",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`ReleasePipelineCollectionFilter` is not declared; the input is read only under `DocumentFilter`, whose `documents` is always empty."
+        },
+        "restrictedBy": {
+          "status": "implemented"
+        },
+        "retiredAt": {
+          "status": "implemented"
+        },
+        "updatedAt": {
+          "status": "implemented"
+        },
+        "users": {
+          "status": "missing",
+          "type": "UserCollectionFilter",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`UserCollectionFilter` is not declared; the input is read only under `DocumentFilter`, whose `documents` is always empty."
+        },
+        "visibility": {
+          "status": "missing",
+          "type": "TeamVisibilityComparator",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`TeamVisibilityComparator` is not declared; the input is read only under `DocumentFilter`, whose `documents` is always empty."
+        }
+      }
+    },
     "NullableTimelessDateComparator": {
       "type_kind": "INPUT_OBJECT",
       "status": "implemented",
@@ -4626,6 +5371,24 @@
         }
       }
     },
+    "ProjectConnection": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "edges": {
+          "status": "missing",
+          "type": "[ProjectEdge!]!",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "nodes": {
+          "status": "implemented"
+        },
+        "pageInfo": {
+          "status": "implemented"
+        }
+      }
+    },
     "ProjectMilestone": {
       "type_kind": "OBJECT",
       "status": "implemented",
@@ -4730,80 +5493,67 @@
       "status": "implemented",
       "fields": {
         "archivedAt": {
-          "status": "missing",
-          "type": "DateTime",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "color": {
-          "status": "missing",
-          "type": "String!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "createdAt": {
-          "status": "missing",
-          "type": "DateTime!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "description": {
-          "status": "missing",
-          "type": "String",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "id": {
           "status": "implemented"
         },
         "indefinite": {
-          "status": "missing",
-          "type": "Boolean!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "inheritedFrom": {
-          "status": "missing",
-          "type": "ProjectStatus",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "name": {
-          "status": "missing",
-          "type": "String!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "position": {
-          "status": "missing",
-          "type": "Float!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "team": {
-          "status": "missing",
-          "type": "Team",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "teamId": {
-          "status": "missing",
-          "type": "String",
-          "kind": "missing_field",
-          "severity": "gap",
-          "note": "Linear's own description: \"[Internal] The ID of the team that owns the status, even when the viewer cannot access the team. Null for workspace statuses.\" Measured against api.linear.app on 2026-09-17: `projectStatuses` answers 5 statuses on this workspace, every one workspace-level with `teamId: null`. `ProjectStatus` is an id-only stub like `IntegrationsSettings` (`Project.status` resolves to `{ id }` only) and joins the family whose gap is recorded on its other fields (`name`, `color`, `type`, `team`, and the rest). The `@linear/sdk`'s own `Project` fragment requests `status { id }` and nothing past it, so no measured client asks for this field."
+          "status": "implemented"
         },
         "type": {
-          "status": "missing",
-          "type": "ProjectStatusType!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "updatedAt": {
-          "status": "missing",
-          "type": "DateTime!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
+        }
+      }
+    },
+    "ProjectStatusType": {
+      "type_kind": "ENUM",
+      "status": "implemented",
+      "values": {
+        "backlog": {
+          "status": "implemented"
+        },
+        "canceled": {
+          "status": "implemented"
+        },
+        "completed": {
+          "status": "implemented"
+        },
+        "paused": {
+          "status": "implemented"
+        },
+        "planned": {
+          "status": "implemented"
+        },
+        "started": {
+          "status": "implemented"
         }
       }
     },
@@ -5255,16 +6005,50 @@
           "severity": "gap"
         },
         "documents": {
-          "status": "missing",
-          "type": "DocumentConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            },
+            "sort": {
+              "status": "missing",
+              "type": "[DocumentSortInput!]",
+              "kind": "missing_arg",
+              "severity": "gap",
+              "note": "`DocumentSortInput` is not declared; `documents` is always empty."
+            }
+          }
         },
         "emailIntakeAddress": {
           "status": "missing",
           "type": "EmailIntakeAddress!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "emailIntakeAddresses": {
+          "status": "missing",
+          "type": "EmailIntakeAddressConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description of `EmailIntakeAddress`: \"An email address that creates Linear issues when emails are sent to it.\" An address is workspace configuration (its team or template, auto-replies, a forwarding address and an SES domain identity); Backlot's Linear schema has no `EmailIntakeAddress` type, no corpus record is one, and the single-address root `emailIntakeAddress` is a gap in this file too. Measured against api.linear.app on 2026-10-26, `emailIntakeAddresses{nodes{id address enabled} pageInfo{hasNextPage}}` answers `{\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false}}` in the workspace measured, and the same with `includeArchived: true`, so the populated shape is unmeasured."
         },
         "emoji": {
           "status": "missing",
@@ -5410,6 +6194,20 @@
           "type": "JiraProjectStatusesPayload!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "integrationJiraSyncHealthCheck": {
+          "status": "missing",
+          "type": "JiraSyncHealthCheckPayload!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description marks it internal: \"[INTERNAL] Checks a Jira project for settings that will make Jira reject the changes Linear sends during sync. Reads Jira on every call.\" It checks a Jira project through one of the workspace's Jira integrations, and Backlot serves no integration: every other `Query` root with `integration` or `Integration` in its name is a gap in this file, `integration`, `integrations`, `integrationJiraProjectStatuses` and `integrationSyncResourceIds` among them. `@linear/sdk` 98.0.0, which the example's lockfile pins, and 99.0.0, npm's latest on 2026-10-25, neither declare nor select it. Measured against api.linear.app on 2026-10-25: it takes four arguments, `bidirectional: Boolean!`, `teamId: String!`, `jiraProjectId: String!` and `integrationId: String!` (\"The id of the Jira integration.\"), and answers `JiraSyncHealthCheckPayload!` (\"[INTERNAL] Jira project settings that will make Jira reject the changes Linear sends during sync.\"), an object of four fields, `findings: [JiraSyncHealthFindingPayload!]!`, `transitionCoverage: String!`, `failedSteps: [String!]!` and `blockedReason: String`. Asked with a personal API key whose owner is a workspace admin, for four `integrationId` values no integration carries (`not-a-real-integration`, the nil UUID, a made-up UUID and the empty string), it answered each with a 200 whose body is `data: null` and an `errors` member, `The Jira sync health check is not available` with `INPUT_ERROR`. The workspace measured answered `integrations` with no nodes, so what the check answers for a Jira integration that exists was not observed. `backlot/graphql/linear.graphql` declares no `JiraSyncHealthCheckPayload`."
+        },
+        "integrationSyncResourceIds": {
+          "status": "missing",
+          "type": "[String!]!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description marks it internal: \"[INTERNAL] Jira project IDs available for issue sync.\" It answers for one integration of the workspace, and Backlot serves none: the integration roots on `Query`, `integration`, `integrations` and `integrationJiraProjectStatuses` among them, are gaps in this file. Measured against api.linear.app on 2026-10-17 with a personal API key: it takes one argument, `integrationId: String!` (\"The workspace integration to configure.\"), and answers `[String!]!`. Asked for four ids no integration carries (`not-a-real-integration`, the nil UUID, a made-up UUID and the empty string), it answered each with a 200 whose body is `data: null` and an `errors` member, `Entity not found: Integration` with `INPUT_ERROR`. The workspace measured answered `integrations` with no nodes, so the list this field answers for an integration that exists was not observed."
         },
         "integrationTemplate": {
           "status": "missing",
@@ -5621,6 +6419,13 @@
           "kind": "missing_field",
           "severity": "gap"
         },
+        "oauthApplicationCodingSessionTrustedSource": {
+          "status": "missing",
+          "type": "OAuthApplicationCodingSessionTrustedSource!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description: \"Returns the authenticated OAuth application's trusted-source status for Coding Sessions in the workspace. Requires an OAuth access token with the `read` scope.\" The status it answers \"Combines workspace availability with the application's trust setting\", in the words of its type's description, and Backlot serves neither: no field of this schema answers whether Coding Sessions are available, and `backlot.acl.Acl.resolve` turns a token into a person, the admin caller or no one, never an application, while `oauthApplication` and `oauthApplications` are gaps in this file as well. Measured against api.linear.app on 2026-10-17: it takes no argument and answers `OAuthApplicationCodingSessionTrustedSource!`, an object of two fields, `enabled: Boolean!` and `disabledReason: CodingSessionsDisabledReason` (\"The first reason that enabled is false, or null when enabled is true.\"), an enum of three values, `CODING_SESSIONS_DISABLED`, `TRUSTED_EXTERNAL_SOURCES_UNAVAILABLE` and `APP_NOT_TRUSTED`. Asked with a personal API key, it answered a 200 whose body is `data: null` and an `errors` member, `Using an unexpected authentication method (apiKey) for an operation` with `FORBIDDEN`. Its answer to an OAuth access token was not measured: the measurement held a personal API key and no OAuth access token. This schema declares neither type."
+        },
         "oauthApplications": {
           "status": "missing",
           "type": "[OAuthApplication!]!",
@@ -5632,6 +6437,13 @@
           "type": "Organization!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "organizationCodingInferenceKeys": {
+          "status": "missing",
+          "type": "[CodingInferenceKey!]!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description marks it internal: \"[Internal] Saved workspace inference credentials for Coding Sessions, without their keys.\" No corpus states one: a Linear record here is an issue, and none of its fields is a credential. It answers for the workspace, whose root `Query.organization` is a gap in this file, as are `Team.codingAgentEnabled` (\"[Internal] Whether the team has enabled Coding Sessions.\") and `Query.oauthApplicationCodingSessionTrustedSource`. `@linear/sdk` 98.0.0, which the example's lockfile pins, and 99.0.0, npm's latest on 2026-10-23, neither declare nor select it. Measured against api.linear.app on 2026-10-23: it takes no argument and answers `[CodingInferenceKey!]!`, where `CodingInferenceKey` (\"[Internal] A saved workspace inference credential, without the key.\") is an object of four non-null fields, `harness: String!` (\"The coding harness that uses this credential: codex or claude.\"), `provider: String!` (\"The inference provider: openai, anthropic, or amazon-bedrock.\"), `baseUrl: String!` and `updatedAt: DateTime!`. Asked with a personal API key whose owner is a workspace admin, it answered a 200 whose body is `data: null` and an `errors` member, `Using an unexpected authentication method (apiKey) for an operation` with `FORBIDDEN`. Its answer to any other credential was not measured: the measurement held a personal API key and no other. This schema declares no `CodingInferenceKey`."
         },
         "organizationDomainClaimRequest": {
           "status": "missing",
@@ -5913,10 +6725,39 @@
           "severity": "gap"
         },
         "searchIssues": {
-          "status": "missing",
-          "type": "IssueSearchPayload!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "includeComments": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            },
+            "teamId": {
+              "status": "implemented"
+            },
+            "term": {
+              "status": "implemented"
+            }
+          }
         },
         "searchProjects": {
           "status": "missing",
@@ -5951,16 +6792,35 @@
           }
         },
         "teamMembership": {
-          "status": "missing",
-          "type": "TeamMembership!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "id": {
+              "status": "implemented"
+            }
+          }
         },
         "teamMemberships": {
-          "status": "missing",
-          "type": "TeamMembershipConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "teams": {
           "status": "implemented",
@@ -6885,10 +7745,34 @@
           "status": "implemented"
         },
         "cycles": {
-          "status": "missing",
-          "type": "CycleConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "missing",
+              "type": "CycleFilter",
+              "kind": "missing_arg",
+              "severity": "gap",
+              "note": "`CycleFilter` is not declared, so a filter is refused at validation rather than ignored."
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "cyclesEnabled": {
           "status": "implemented"
@@ -6937,6 +7821,13 @@
         },
         "groupIssueHistory": {
           "status": "implemented"
+        },
+        "hierarchySettings": {
+          "status": "missing",
+          "type": "JSONObject!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description marks it internal: \"[Internal] Inheritance requirements that this team applies to its descendants.\" `@linear/sdk` 98.0.0, which the example's lockfile pins, and 99.0.0, npm's latest on 2026-10-22, neither declare nor select it. Measured against api.linear.app on 2026-10-22: the workspace's one team, which has no `parent`, `children` or `ancestors`, answers `{}`; what a team with descendants answers is not measured, since a second team is a write to the workspace. `Team.children` and `Team.ancestors` are recorded gaps too."
         },
         "icon": {
           "status": "implemented"
@@ -7036,13 +7927,40 @@
           "status": "implemented"
         },
         "labels": {
-          "status": "missing",
-          "type": "IssueLabelConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "ledInitiativeCount": {
           "status": "implemented"
+        },
+        "loopWebhooksEnabled": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Measured against api.linear.app on 2026-10-29, `teams(first:5){nodes{key loopWebhooksEnabled}}` answers `true` for the one team in the workspace measured; the corpus carries no team setting that backs a value, so none is invented."
         },
         "loops": {
           "status": "missing",
@@ -7055,22 +7973,67 @@
           "status": "implemented"
         },
         "members": {
-          "status": "missing",
-          "type": "UserConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "includeDisabled": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            },
+            "sort": {
+              "status": "implemented"
+            }
+          }
         },
         "membership": {
-          "status": "missing",
-          "type": "TeamMembership",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "userId": {
+              "status": "implemented"
+            }
+          }
         },
         "memberships": {
-          "status": "missing",
-          "type": "TeamMembershipConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "mergeWorkflowState": {
           "status": "implemented"
@@ -7112,10 +8075,44 @@
           "severity": "gap"
         },
         "projects": {
-          "status": "missing",
-          "type": "ProjectConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "missing",
+              "type": "ProjectFilter",
+              "kind": "missing_arg",
+              "severity": "gap",
+              "note": "`ProjectFilter` is not declared, so a filter is refused at validation rather than ignored."
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "includeSubTeams": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            },
+            "sort": {
+              "status": "missing",
+              "type": "[ProjectSortInput!]",
+              "kind": "missing_arg",
+              "severity": "gap",
+              "note": "`ProjectSortInput` is not declared, so a sort is refused at validation rather than ignored."
+            }
+          }
         },
         "protectedBy": {
           "status": "missing",
@@ -7193,10 +8190,30 @@
           "status": "implemented"
         },
         "states": {
-          "status": "missing",
-          "type": "WorkflowStateConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "templates": {
           "status": "missing",
@@ -7226,18 +8243,10 @@
           "status": "implemented"
         },
         "viewerCanLeave": {
-          "status": "missing",
-          "type": "Boolean!",
-          "kind": "missing_field",
-          "severity": "gap",
-          "note": "Linear's own description: \"Whether the viewer can remove themselves from the team. False when the viewer is not a member, the team is SCIM-managed, the viewer is an app user the team does not accept, or leaving would leave the viewer without an active team. Otherwise mirrors the checks `teamMembershipDelete` applies to a viewer leaving on their own.\" The `false` measured is no default to serve: the member it answered is in no other team, so leaving would leave them without an active team. It joins the gap recorded on `Team.viewerMembership`."
+          "status": "implemented"
         },
         "viewerMembership": {
-          "status": "missing",
-          "type": "TeamMembership",
-          "kind": "missing_field",
-          "severity": "gap",
-          "note": "Linear's own description: \"The viewer's membership in the team. Null when the viewer is not a member.\" It answers a `TeamMembership`, a type this server does not declare, and Backlot serves no team membership: `Team.members`, `membership` and `memberships` are gaps too. `@linear/sdk` 97.1.0 has neither this field nor `Team.viewerCanLeave` on its generated `Team` type and selects neither in any document it sends, so both are a gap. Measured against api.linear.app on 2026-10-09: neither is deprecated, and the one team in the workspace answered its member a `TeamMembership` here and `false` for `Team.viewerCanLeave`."
+          "status": "implemented"
         },
         "visibility": {
           "status": "implemented"
@@ -7370,6 +8379,54 @@
           "type": "TeamVisibilityComparator",
           "kind": "missing_field",
           "severity": "gap"
+        }
+      }
+    },
+    "TeamMembership": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "archivedAt": {
+          "status": "implemented"
+        },
+        "createdAt": {
+          "status": "implemented"
+        },
+        "id": {
+          "status": "implemented"
+        },
+        "owner": {
+          "status": "implemented"
+        },
+        "sortOrder": {
+          "status": "implemented"
+        },
+        "team": {
+          "status": "implemented"
+        },
+        "updatedAt": {
+          "status": "implemented"
+        },
+        "user": {
+          "status": "implemented"
+        }
+      }
+    },
+    "TeamMembershipConnection": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "edges": {
+          "status": "missing",
+          "type": "[TeamMembershipEdge!]!",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "nodes": {
+          "status": "implemented"
+        },
+        "pageInfo": {
+          "status": "implemented"
         }
       }
     },
@@ -7747,19 +8804,61 @@
           "status": "implemented"
         },
         "supportsAgentSessions": {
-          "status": "implemented"
+          "status": "implemented",
+          "args": {
+            "forCurrentUser": {
+              "status": "implemented"
+            }
+          }
         },
         "teamMemberships": {
-          "status": "missing",
-          "type": "TeamMembershipConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "teams": {
-          "status": "missing",
-          "type": "TeamConnection!",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "args": {
+            "after": {
+              "status": "implemented"
+            },
+            "before": {
+              "status": "implemented"
+            },
+            "filter": {
+              "status": "implemented"
+            },
+            "first": {
+              "status": "implemented"
+            },
+            "includeArchived": {
+              "status": "implemented"
+            },
+            "last": {
+              "status": "implemented"
+            },
+            "orderBy": {
+              "status": "implemented"
+            }
+          }
         },
         "timezone": {
           "status": "implemented"
@@ -7972,6 +9071,24 @@
           "status": "implemented"
         },
         "updatedAt": {
+          "status": "implemented"
+        }
+      }
+    },
+    "WorkflowStateConnection": {
+      "type_kind": "OBJECT",
+      "status": "implemented",
+      "fields": {
+        "edges": {
+          "status": "missing",
+          "type": "[WorkflowStateEdge!]!",
+          "kind": "missing_field",
+          "severity": "gap"
+        },
+        "nodes": {
+          "status": "implemented"
+        },
+        "pageInfo": {
           "status": "implemented"
         }
       }

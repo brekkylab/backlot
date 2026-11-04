@@ -23,7 +23,8 @@ from backlot.fidelity.findings import BREAKING, GAP, Finding
 # answers it only with an error, as it does every S3 write.
 IMPLEMENTED, MISSING, EXTRA, REFUSED = "implemented", "missing", "extra", "refused"
 
-_PARAM_KINDS = ("missing_param", "extra_param")
+_PARAM_KINDS = ("missing_param", "extra_param", "param_type_mismatch")
+_FIELD_KINDS = ("missing_field", "extra_field", "type_mismatch")
 _BATCH_KINDS = ("missing_batch_path", "extra_batch_api", "extra_batch_route")
 
 
@@ -93,6 +94,10 @@ class OperationEntry:
     operation: str
     status: str
     id: str = ""
+    # The vendor's message it answers with, for a Google source: the `types` entry its answer is.
+    response: str = ""
+    # The vendor's message its body is, for a Google source.
+    request: str = ""
 
 
 @dataclass(frozen=True)
@@ -159,7 +164,8 @@ class OperationSurface:
 
     Parameters appear only where they diverge, under the operation they belong to: a parameter is
     not something a vendor names on its own, and listing the matching ones would only repeat the
-    served routes' own declarations."""
+    served routes' own declarations. So do the fields of an operation's answer, where a comparison
+    reads them: a finding about one names ``<operation> <field path>``."""
 
     operations: tuple[OperationEntry, ...]
     batch: BatchSurface | None = None
@@ -189,18 +195,39 @@ class OperationSurface:
         for path, f in _by_path(f for f in findings if f.kind in _PARAM_KINDS).items():
             operation, _, name = path.rpartition("?")
             params[operation][name] = f
-        own = _by_path(f for f in findings if f.kind not in _PARAM_KINDS + _BATCH_KINDS)
+        # An operation's own name can hold a space (`GET /repos`), so a field's is what follows the
+        # longest operation its path opens with.
+        names = sorted((e.operation for e in self.operations), key=len, reverse=True)
+        fields: dict[str, dict[str, Finding]] = defaultdict(dict)
+        for path, f in _by_path(f for f in findings if f.kind in _FIELD_KINDS).items():
+            operation = next((n for n in names if path.startswith(n + " ")), "")
+            fields[operation][path[len(operation) + 1 :]] = f
+        own = _by_path(
+            f for f in findings if f.kind not in _PARAM_KINDS + _FIELD_KINDS + _BATCH_KINDS
+        )
         entries = []
         for e in self.operations:
             entry: dict[str, Any] = {"operation": e.operation}
             if e.id:
                 entry["id"] = e.id
+            if e.response:
+                entry["response"] = e.response
+            if e.request:
+                entry["request"] = e.request
             entry["status"] = e.status
             entry |= _accepted(own.pop(e.operation, None))
             if diverging := params.pop(e.operation, None):
                 entry["params"] = {n: _accepted(diverging[n]) for n in sorted(diverging)}
+            if diverging := fields.pop(e.operation, None):
+                entry["fields"] = {n: _accepted(diverging[n]) for n in sorted(diverging)}
             entries.append(entry)
-        _unplaced([*own.values(), *(f for p in params.values() for f in p.values())])
+        _unplaced(
+            [
+                *own.values(),
+                *(f for p in params.values() for f in p.values()),
+                *(f for p in fields.values() for f in p.values()),
+            ]
+        )
         out: dict[str, Any] = {"operations": entries}
         if self.batch is not None:
             out["batch"] = self.batch.to_json(batch)
@@ -217,10 +244,20 @@ class OperationSurface:
             if e["operation"] in seen:
                 raise ValueError(f"{e['operation']} is listed twice: an operation is one entry")
             seen.add(e["operation"])
-            entries.append(OperationEntry(e["operation"], e["status"], e.get("id", "")))
+            entries.append(
+                OperationEntry(
+                    e["operation"],
+                    e["status"],
+                    e.get("id", ""),
+                    e.get("response", ""),
+                    e.get("request", ""),
+                )
+            )
             findings += _read(e, e["operation"])
             for name, p in (e.get("params") or {}).items():
                 findings += _read(p, f"{e['operation']}?{name}")
+            for name, p in (e.get("fields") or {}).items():
+                findings += _read(p, f"{e['operation']} {name}")
         batch = None
         if "batch" in raw:
             batch, more = BatchSurface.from_json(raw["batch"])
@@ -315,7 +352,7 @@ class SchemaSurface:
                     d[group] = {n: member(f"{name}.{n}", members[n]) for n in sorted(members)}
             types[name] = d
         _unplaced(by_path.values())
-        return {"root": {"query": self.query}, "types": types}
+        return ({"root": {"query": self.query}} if self.query else {}) | {"types": types}
 
     @classmethod
     def from_json(cls, raw: Mapping[str, Any]) -> tuple["SchemaSurface", list[Finding]]:
@@ -334,14 +371,48 @@ class SchemaSurface:
                 for group in ("fields", "values", "members")
             }
             types[name] = TypeNode(e["type_kind"], e["status"], **groups)
-        return cls(raw["root"]["query"], types), findings
+        return cls((raw.get("root") or {}).get("query", ""), types), findings
 
 
-Surface = OperationSurface | SchemaSurface
+@dataclass(frozen=True)
+class GraphSurface:
+    """A source measured for its operations and for the types they answer with, each in its own
+    shape, side by side. Microsoft Graph publishes the two in two documents, a path document and a
+    CSDL, and neither answers the other's question; a Google discovery document declares both. A
+    finding goes to the half whose element it names."""
+
+    paths: OperationSurface
+    schema: SchemaSurface
+
+    @property
+    def operations(self) -> tuple[OperationEntry, ...]:
+        return self.paths.operations
+
+    @property
+    def batch(self) -> BatchSurface | None:
+        return self.paths.batch
+
+    def to_json(self, findings: Iterable[Finding]) -> dict[str, Any]:
+        findings = list(findings)
+        elements = self.schema.elements()
+        ops = [f for f in findings if f.path not in elements]
+        types = [f for f in findings if f.path in elements]
+        return {**self.paths.to_json(ops), **self.schema.to_json(types)}
+
+    @classmethod
+    def from_json(cls, raw: Mapping[str, Any]) -> tuple["GraphSurface", list[Finding]]:
+        paths, ops = OperationSurface.from_json(raw)
+        schema, types = SchemaSurface.from_json(raw)
+        return cls(paths, schema), ops + types
+
+
+Surface = OperationSurface | SchemaSurface | GraphSurface
 
 
 def surface_from_json(raw: Mapping[str, Any]) -> tuple[Surface | None, list[Finding]]:
     """The surface a baseline file holds, and the findings written onto it."""
+    if "types" in raw and "operations" in raw:
+        return GraphSurface.from_json(raw)
     if "types" in raw:
         return SchemaSurface.from_json(raw)
     if "operations" in raw:

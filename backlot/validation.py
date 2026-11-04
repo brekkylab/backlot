@@ -226,10 +226,14 @@ def _when_clause(schema: dict, schema_path, failing) -> str:
     # `{"not": {"required": [...]}}` predicates on a field's ABSENCE — how a schema says "one of
     # these two, and here is the one to require when the other is missing". Left unrendered, a
     # record that states neither was told only that the second is required and never learned that
-    # stating the first would do.
+    # stating the first would do. `{"not": {"anyOf": [{"required": [...]}, ...]}}` is the same
+    # predicate over several alternatives, in force when every one of them is absent.
     absent = cond.get("not")
-    if isinstance(absent, dict) and isinstance(absent.get("required"), list):
-        clauses += [f"{field} is absent" for field in absent["required"]]
+    if isinstance(absent, dict):
+        alternatives = absent.get("anyOf") if isinstance(absent.get("anyOf"), list) else [absent]
+        for alt in alternatives:
+            if isinstance(alt, dict) and isinstance(alt.get("required"), list):
+                clauses += [f"{field} is absent" for field in alt["required"]]
     lead = " unless " if parts[branch] == "else" else " when "
     return lead + " and ".join(clauses) if clauses else ""
 
@@ -288,7 +292,8 @@ def record_errors(rec: dict) -> list[str]:
     st = rec.get("source_type")
     if st not in SERVICE_SCHEMAS:
         return [f"source_type must be one of {list(SERVICE_SCHEMAS)}, got {st!r}"]
-    label = _record_label(rec)
+    # Escaped, so a label holding a lone surrogate can still be printed.
+    label = _record_label(rec).encode("utf-8", "backslashreplace").decode("utf-8")
     msgs: list[str] = []
     for err in sorted(_validator(st).iter_errors(rec), key=lambda e: list(e.path)):
         loc = "/".join(str(p) for p in err.path)
@@ -310,7 +315,33 @@ def record_errors(rec: dict) -> list[str]:
         msgs.append(
             f"{head}: {message}{_when_clause(SERVICE_SCHEMAS[st], err.schema_path, err.schema)}"
         )
+    for path in _lone_surrogates(rec):
+        loc = "/".join(str(p).encode("utf-8", "backslashreplace").decode("utf-8") for p in path)
+        msgs.append(
+            f"{label or '<root>'} [{loc}]: holds a lone surrogate, a `\\ud800`-style escape that "
+            "pairs with nothing, which UTF-8 cannot carry; state the character it stands for"
+        )
     return msgs
+
+
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _lone_surrogates(value, path: tuple = ()):
+    """The paths of the strings in a record, keys included, holding a lone surrogate. `json.loads`
+    reads one from an unpaired escape, and the import would then stop at the first row it writes,
+    since SQLite takes UTF-8."""
+    if isinstance(value, str):
+        if _SURROGATE.search(value):
+            yield path
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str) and _SURROGATE.search(key):
+                yield (*path, key)
+            yield from _lone_surrogates(item, (*path, key))
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            yield from _lone_surrogates(item, (*path, i))
 
 
 def jsonl_lines(text: str) -> list[str]:

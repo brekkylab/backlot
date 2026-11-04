@@ -4493,7 +4493,6 @@ _QUERY_CREDENTIAL_ROWS = [
     # the first of `QUERY_TOKENS` the query carries is the gate, the last the token
     (None, "access_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "oauth_token={t}&access_token=ya29.x", _SERVED),
-    (None, "access_token=ya29.x&oauth_token={t}%20", _SERVED),
     (None, "access_token=ya29.x&bearer_token={t}", _SERVED),
     (None, "bearer_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "access_token={t}&oauth_token=ya29.x", _NONE),
@@ -4504,6 +4503,16 @@ _QUERY_CREDENTIAL_ROWS = [
     (None, "access_token=ya29.x&oauth_token={t}&oauth_token={t}", _CHALLENGE),
     (None, "access_token=ya29.x&access_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "access_token=ya29.x&oauth_token={m}", _SERVED),
+    # the bytes around a token
+    (None, "access_token=ya29.x&oauth_token={t}%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%20%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%09", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%0A%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token=%20{t}", _SERVED),
+    (None, "access_token=ya29.x&oauth_token=%20%09%0A{t}%0A%09%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%0D", _CHALLENGED),
+    (None, "access_token=ya29.x&oauth_token={t}%0B", _CHALLENGED),
+    (None, "access_token=ya29.x&oauth_token=%20", _CHALLENGED),
     # beside a header: a credential, a bare scheme and `Bearer ,` outrank the query, a scheme run
     # into its token reads it without the gate, and a header that is no credential leaves it alone
     ("Bearer {t}", "access_token=ya29.x", _SERVED),
@@ -4517,6 +4526,8 @@ _QUERY_CREDENTIAL_ROWS = [
     ("Bearer{m}", "access_token={m}", _SERVED),
     ("Bearer{t}", "access_token=nope", _CHALLENGED), ("Bearer{t}", "access_token=", _CHALLENGE),
     ("Bearer{t}", "ACCESS_TOKEN={t}", _CHALLENGE),
+    ("Bearer{t}", "access_token=%20{t}%09%0A", _SERVED),
+    ("Bearer{t}", "access_token={t}%0D", _CHALLENGED),
     ("Bearer{t}", "access_token=&oauth_token={t}", _SERVED),
     ("Bearer{t}", "oauth_token=&access_token={t}", _CHALLENGE),
     ("bearer {t}", "access_token=ya29.x&oauth_token={t}", _SERVED),

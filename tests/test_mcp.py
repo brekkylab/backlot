@@ -1335,7 +1335,7 @@ def test_openapi_bridge_passes_a_response_through_even_when_it_breaks_its_own_sc
 
 
 def test_build_server_fetches_every_source_concurrently(monkeypatch):
-    """Every spec fetch must be in flight together, regardless of the runner's CPU load."""
+    """Every spec fetch is in flight at once."""
     pytest.importorskip("fastmcp")
     spec = {"openapi": "3.1.0", "info": {"title": "t", "version": "0"}, "paths": {}}
     all_fetching = threading.Barrier(len(backlot_mcp.OPENAPI_SOURCES), timeout=10)

@@ -2120,6 +2120,9 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         for expand, _served, _members, _expandable, _body_expandable in rows:
             query = {} if expand is None else {"expand": expand}
             j = c.get(f"{api}/content/{pid}", headers=h, params=query).json()
+            # No row names `metadata` or `ancestors`, so neither is served and both stay listed.
+            assert [k for k in ("metadata", "ancestors") if k in j] == [], expand
+            assert {"metadata", "ancestors"} <= set(j["_expandable"]), expand
             got.append(
                 (
                     [k for k in four if k in j],
@@ -2147,6 +2150,11 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         # Unexpanded, `space` is listed under `_expandable` with the link `container` carries.
         versioned = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "version"}).json()
         assert versioned["_expandable"]["space"] == versioned["_expandable"]["container"]
+        # The `atlas_doc_format` value is the ADF document as a JSON string.
+        adf = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body.atlas_doc_format"}
+        ).json()["body"]["atlas_doc_format"]
+        assert json.loads(adf["value"])["type"] == "doc"
         # A served `ancestors` leaves `_expandable`, as the four do.
         cid = served_id("confluence", "c")
         child_j = c.get(f"{api}/content/{cid}", headers=h, params={"expand": "ancestors"}).json()

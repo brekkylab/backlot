@@ -833,6 +833,14 @@ def _rows():
             )
     for base, rest, answer in _TARGETS:
         yield pytest.param(b"GET", base, rest, answer, 1, b"", b"x", id=f"{base} {rest!r}")
+    # a `;` under HubSpot's `/crm/v4/associations/` on the one route there served here, a `POST`
+    for rest in (
+        b"usage;x/high-usage-report/1",
+        b"usage/high-usage-report;x/1",
+        b"usage/high-usage-report/1;x",
+    ):
+        base, twin = "/hubspot/crm/v4/associations/", "as usage/high-usage-report/1"
+        yield pytest.param(b"POST", base, rest, twin, 1, b"", b"x", id=f"POST {base} {rest!r}")
     # GitHub's page for the byte ahead of the 414 the target's length or its path's draws
     for sent in (b"\x80", b" "):
         for length in (8_180, 8_192):

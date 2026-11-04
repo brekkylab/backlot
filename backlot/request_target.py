@@ -727,11 +727,11 @@ def printable_reading(scope: Scope) -> dict[str, object] | None:
     `\\` on Jira, Confluence, Drive, Gmail, Docs, Sheets and Slides; a `+` on Drive's files, their
     permissions, comments and export, and a shared drive; a `;` on HubSpot's contacts and their
     list, where `objects;x/contacts/nope` was the gateway's 404 page, and on 2026-11-04 on a
-    contact's v4 associations and the contact-to-company association labels, where
-    `objects;x/contacts/…` and `associations;x/contacts/…` were that page; a `#` on S3's buckets, in
-    the path and in the query, where `?max-keys=1#x` drew the 400 naming `1#x` that
-    `?max-keys=1%23x` drew; and a broken escape in a name or a value of HubSpot's query, on
-    `contacts`, `contacts/nope` and `owners`."""
+    contact's v4 associations, the contact-to-company association labels and a `POST` on the
+    association high-usage report, where `objects;x/contacts/…` and `associations;x/contacts/…` were
+    that page; a `#` on S3's buckets, in the path and in the query, where `?max-keys=1#x` drew the
+    400 naming `1#x` that `?max-keys=1%23x` drew; and a broken escape in a name or a value of
+    HubSpot's query, on `contacts`, `contacts/nope` and `owners`."""
     path, raw = scope["path"], scope["raw_path"]
     reading: dict[str, object] = {}
     sent = scope.get(WITH_A_FRAGMENT)

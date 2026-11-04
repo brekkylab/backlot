@@ -83,28 +83,28 @@ async def main(vfs) -> None:
 
 def main_fuse(vfs) -> None:
     """--fuse: mount the S3 bucket as a *real* filesystem, then read it with ordinary tools."""
-    try:
-        with Workspace({"/s3": vfs}, mode=MountMode.READ) as ws:
+    with Workspace({"/s3": vfs}, mode=MountMode.READ) as ws:
+        try:
             mnt = ws.add_fuse_mount("/s3")  # "/s3" is now a real directory on disk
-            print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
-            objs = [os.path.join(r, f) for r, _dirs, files in os.walk(mnt) for f in files]
-            for p in objs:
-                print("  " + p.replace(mnt, "/s3"))
-            if objs:
-                # a genuinely separate process reads the FUSE mount like any real directory
-                hit = subprocess.run(
-                    ["grep", "-rc", "dashboards", mnt],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                )
-                print(
-                    f"\n$ grep -rc dashboards {mnt}   # a separate process reads the mount → "
-                    f"{hit.stdout.strip()}"
-                )
-            print(f"\nexplore it live in another terminal:  ls -R {mnt}")
-    except (ImportError, RuntimeError, OSError) as e:
-        raise SystemExit(FUSE_HELP.format(err=e))
+        except (RuntimeError, OSError) as e:
+            raise SystemExit(FUSE_HELP.format(err=e))
+        print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
+        objs = [os.path.join(r, f) for r, _dirs, files in os.walk(mnt) for f in files]
+        for p in objs:
+            print("  " + p.replace(mnt, "/s3"))
+        if objs:
+            # a genuinely separate process reads the FUSE mount like any real directory
+            hit = subprocess.run(
+                ["grep", "-rc", "dashboards", mnt],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            print(
+                f"\n$ grep -rc dashboards {mnt}   # a separate process reads the mount → "
+                f"{hit.stdout.strip()}"
+            )
+        print(f"\nexplore it live in another terminal:  ls -R {mnt}")
 
 
 def _parse_args() -> argparse.Namespace:

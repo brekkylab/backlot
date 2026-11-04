@@ -155,30 +155,30 @@ async def main(vfs) -> None:
 
 def main_fuse(vfs) -> None:
     """--fuse: mount the repo tree as a *real* filesystem, then read it with ordinary tools."""
-    try:
-        with Workspace({"/github": vfs}, mode=MountMode.READ) as ws:
+    with Workspace({"/github": vfs}, mode=MountMode.READ) as ws:
+        try:
             mnt = ws.add_fuse_mount("/github")  # "/github" is now a real directory on disk
-            print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
-            first_file = None
-            for root, _dirs, fnames in os.walk(mnt):
-                if fnames:
-                    first_file = os.path.join(root, fnames[0])
-                    break
-            if first_file:
-                rel = os.path.relpath(first_file, mnt)
-                print(f"\n$ head -c 200 {rel}")
-                print(
-                    "  " + open(first_file, encoding="utf-8").read(200).replace("\n", " ")
-                )  # a genuine open() via FUSE
-            count = subprocess.run(
-                ["grep", "-rc", "BUG", mnt], capture_output=True, text=True, encoding="utf-8"
-            )
+        except (RuntimeError, OSError) as e:
+            raise SystemExit(FUSE_HELP.format(err=e))
+        print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
+        first_file = None
+        for root, _dirs, fnames in os.walk(mnt):
+            if fnames:
+                first_file = os.path.join(root, fnames[0])
+                break
+        if first_file:
+            rel = os.path.relpath(first_file, mnt)
+            print(f"\n$ head -c 200 {rel}")
             print(
-                f"\n$ grep -rc BUG {mnt}   # a separate process reads the mount → {count.stdout.strip()}"
-            )
-            print(f"\nexplore it live in another terminal:  ls -R {mnt}")
-    except (ImportError, RuntimeError, OSError) as e:
-        raise SystemExit(FUSE_HELP.format(err=e))
+                "  " + open(first_file, encoding="utf-8").read(200).replace("\n", " ")
+            )  # a genuine open() via FUSE
+        count = subprocess.run(
+            ["grep", "-rc", "BUG", mnt], capture_output=True, text=True, encoding="utf-8"
+        )
+        print(
+            f"\n$ grep -rc BUG {mnt}   # a separate process reads the mount → {count.stdout.strip()}"
+        )
+        print(f"\nexplore it live in another terminal:  ls -R {mnt}")
 
 
 def _parse_args() -> argparse.Namespace:

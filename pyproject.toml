@@ -143,12 +143,17 @@ llamaindex = [
 # mirage's S3 backend imports at module scope: without it `s3.py` dies on `import aioboto3` before
 # it reaches Backlot.
 mirage = [
-    # 0.0.7 is the floor: the examples import `mirage.vfs.*` and call `Workspace.shell`, both new
-    # in it, and it holds the host constants `integrations.mirage` rebinds in
-    # `mirage.core.{google,github}.constants`. Earlier releases are not supported. It carries a
-    # Rust core and ships `cp311-abi3` wheels for macOS, glibc and musl Linux and Windows, each on
-    # x86_64 and arm64; anywhere else installs the sdist, which needs a Rust toolchain.
-    "mirage-ai[fuse,s3]>=0.0.7",
+    # 0.0.7 is the floor on Python 3.11: the examples import `mirage.vfs.*` and call
+    # `Workspace.shell`, both new in it, and it holds the host constants `integrations.mirage`
+    # rebinds in `mirage.core.{google,github}.constants`. Earlier releases are not supported.
+    # 0.0.8 is the floor on 3.12 and later: it is the first release whose `Workspace.__exit__`
+    # closes a FUSE mount without raising `RuntimeError` from another event loop, and it declares
+    # `requires-python >=3.12`, hence the split; the FUSE section of examples/using-mirage/README.md
+    # says what a `--fuse` run does on each. Both carry a Rust core and ship abi3 wheels (`cp311`
+    # for 0.0.7, `cp312` for 0.0.8) for macOS, glibc and musl Linux and Windows, each on x86_64 and
+    # arm64; anywhere else installs the sdist, which needs a Rust toolchain.
+    "mirage-ai[fuse,s3]>=0.0.7; python_version < '3.12'",
+    "mirage-ai[fuse,s3]>=0.0.8; python_version >= '3.12'",
 ]
 # fsspec examples (examples/using-fsspec/): read the mock through the filesystem interface that
 # pandas, pyarrow, dask and LlamaIndex all consume. pandas is here because the examples' point is

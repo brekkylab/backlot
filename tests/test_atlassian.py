@@ -9354,9 +9354,9 @@ _CQL_PARSE_ROWS = [
         ]
     ],
     # A reserved word where a value goes, as `cql_reserved_keyword` and `_cql_refusal` record
-    # it: every one of the 43 as `label = <word>`, the word in the case it was sent, and the
-    # positions that settle whether `and` or `or` is the conjunction, `order` starts `order by`,
-    # or the query cannot be parsed at all.
+    # it: every one of the 43 as `label = <word>`, the word in the case it was sent, the positions
+    # that settle whether `and` or `or` is the conjunction, `order` starts `order by`, or the query
+    # cannot be parsed at all, and a reserved word as a field or left after a whole query.
     *[
         (cql, 400, message)
         for cql, message in [
@@ -9440,6 +9440,18 @@ _CQL_PARSE_ROWS = [
                 "label = and not type = page",
                 "Expecting a value for operator '=' after field 'label'",
             ),
+            ("label = select type in (page)", _CQL_NOT_PARSED),
+            ("label = and and type", _cql_reserved("and")),
+            ("label = select and type", _cql_reserved("select")),
+            ("label = and and", _CQL_NOT_PARSED),
+            ("label = select and", _CQL_NOT_PARSED),
+            ("label = and not not type = page", _CQL_NOT_PARSED),
+            ("label = and " + "not " * 1100 + "type = page", _CQL_NOT_PARSED),
+            ("label = or not type = page", _CQL_NOT_PARSED),
+            ("label = and count = page", _CQL_NOT_PARSED),
+            ("select = page", _CQL_NOT_PARSED),
+            ("type = page and count = page", _CQL_NOT_PARSED),
+            ("type = page count", _CQL_NOT_PARSED),
             (
                 'label = and title ~ "x"',
                 "Expecting a value for operator '=' after field 'label'",
@@ -9450,6 +9462,22 @@ _CQL_PARSE_ROWS = [
             ),
             (
                 "label = or type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = or type in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type not in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type in",
                 "Expecting a value for operator '=' after field 'label'",
             ),
             (

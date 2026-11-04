@@ -3218,8 +3218,8 @@ _CQL_OPERATORS = frozenset(("!=", "!~", ">=", "<=", "=", "~", ">", "<"))
 # The words real refuses where a value goes (Confluence Cloud, 2026-10-31):
 # sent as `type = <word>` for 181 English and SQL words, these 43 answered
 # `'<word>' is a reserved keyword.  You must surround '<word>' in quotation marks to use it.`
-# The eight the search already knew (`and`, `or`, `not`, `in`, `order`, `by`, `asc`, `desc`)
-# are also the grammar's own: a conjunction, a negation, a list, and `order by` with a direction.
+# Eight of them (`and`, `or`, `not`, `in`, `order`, `by`, `asc`, `desc`) are also the grammar's
+# own: a conjunction, a negation, a list, and `order by` with a direction.
 _CQL_KEYWORDS = frozenset(
     (
         "after",
@@ -3341,16 +3341,17 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     that is empty or ends in a comma, and anything left after `order by`; ``cql_expecting_value``
     at an operator followed by nothing or by a token that is no value, and at an `in` list never
     closed; ``cql_missing_closing_parenthesis`` at a `(` never closed; and
-    ``cql_unrecognised_clause`` at words or quoted values left after a whole query. A reserved word
-    where a value goes is ``errors.atlassian.cql_reserved_keyword`` instead, once the reading
-    reaches the query's end: whether `and` or `or` is that value or the conjunction, and whether
+    ``cql_unrecognised_clause`` at words or quoted values left after a whole query. Each one's
+    docstring gives the queries that answered it. A reserved word where a value goes is
+    ``errors.atlassian.cql_reserved_keyword`` instead, once the reading reaches the query's end or
+    a field with no operator: whether `and` or `or` is that value or the conjunction, and whether
     `order` starts `order by`, is settled by what follows it (see :func:`value` and
-    :func:`clause_starts`), and a query the reading cannot finish is the refusal the unfinished
-    reading gives, not the reserved word. Each one's docstring gives the queries that answered it.
-    A query read to its end is ``cql_not_parsed`` when a `space.key` value holds a single quote. A
-    field CQL does not have, a field with no operator, and an operator or a value the field does
-    not take (`foo`, `type`, `type<page`, `type=PAGE`) are refused on real with messages of their
-    own, and answered at 200 here."""
+    :func:`clause_starts`), and a query the reading cannot finish otherwise is the refusal the
+    unfinished reading gives, not the reserved word. A query read to its end is ``cql_not_parsed``
+    when a `space.key` value holds a single quote. A field CQL does not have, a field with no
+    operator, and an operator or a value the field does not take (`foo`, `type`, `type<page`,
+    `type=PAGE`) are refused on real with messages of their own, and answered at 200 here when no
+    reserved word came before them."""
     at = 0
     reserved: list[str] = []  # the first reserved word read as a value, as sent, if any
 
@@ -3362,17 +3363,15 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         return kind == "WORD" and text.lower() == word
 
     def clause_starts(pos):
-        """Whether the tokens at `pos` start a clause: a group, a `not` before one, or a field
-        and an operator (`type = page`, `type not in (page)`)."""
+        """Whether the tokens at `pos` start a clause: a group, or a field CQL does not reserve
+        and an operator (`type = page`, `type in (page)`, `type not in (page)`)."""
         kind, text = tokens[pos] if pos < len(tokens) else (None, None)
         if (kind, text) == ("PUNCT", "("):
             return True
-        if kind != "WORD":
+        if kind != "WORD" or text.lower() in _CQL_KEYWORDS:
             return False
-        if text.lower() == "not":
-            return clause_starts(pos + 1)
         kind, text = tokens[pos + 1] if pos + 1 < len(tokens) else (None, None)
-        if kind == "OP":
+        if kind == "OP" or (kind == "WORD" and text.lower() == "in"):
             return True
         if kind == "WORD" and text.lower() == "not":
             kind, text = tokens[pos + 2] if pos + 2 < len(tokens) else (None, None)
@@ -3397,15 +3396,17 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             raise _Stop(errors_atlassian.cql_expecting_value(operator, field, text))
         if kind == "WORD" and text.lower() in _CQL_KEYWORDS:
             # A reserved word where a value goes (Confluence Cloud, 2026-10-31).
-            # `and` or `or` before a clause is the conjunction and the value is missing, and
-            # `order` before `by` starts `order by` and the value is missing too: both name no
-            # token after the operator. Any other reserved word before a clause leaves the query
-            # unparsed, as a stray `)` after it does. Otherwise the word is the reserved value,
-            # recorded and read on as the value, so the rest of the reading still decides: a
-            # query it cannot finish is that reading's refusal, and words left after a whole
-            # query are the reserved word rather than an unrecognised clause.
+            # `and` or `or` before a clause, or `and` before one `not` and a clause, is the
+            # conjunction and the value is missing, and `order` before `by` starts `order by` and
+            # the value is missing too: both name no token after the operator. Any other reserved
+            # word before a clause leaves the query unparsed, as a stray `)` after it does.
+            # Otherwise the word is the reserved value, recorded and read on as the value, so the
+            # rest of the reading still decides: a query it cannot finish is that reading's
+            # refusal, and words left after a whole query are the reserved word rather than an
+            # unrecognised clause.
             if not in_list:
-                if text.lower() in ("and", "or") and clause_starts(at + 1):
+                clause_at = at + 2 if text.lower() == "and" and keyword("not", 1) else at + 1
+                if text.lower() in ("and", "or") and clause_starts(clause_at):
                     raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
                 if text.lower() == "order" and keyword("by", 1):
                     raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
@@ -3458,7 +3459,10 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             at += 1
             return
         if peek()[0] != "OP":
-            raise _Stop(None)  # a field and no operator: refused on real with a message of its own
+            # A field and no operator: refused on real with a message of its own, and with the
+            # reserved word when one was read as a value before it, as in `label = and and type`
+            # (Confluence Cloud, 2026-11-04).
+            raise _Stop(errors_atlassian.cql_reserved_keyword(reserved[0]) if reserved else None)
         operator = peek()[1]
         at += 1
         value(operator, field)

@@ -1425,6 +1425,19 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + " and lastmodified > 2020-01-01", {"Guide", "Child", "Grand"}),
         (three + ' and created >= "2020-01-01"', {"Guide", "Child", "Grand"}),
         (three + " and creator = currentUser()", {"Guide", "Child", "Grand"}),
+        # a function value on a field this route reads names no row here: real answered
+        # none for each of the single-value calls, and `recentlyViewedContent` expands to
+        # no ids, since the server keeps no recently viewed content
+        ("label = currentUser()", set()),
+        ('label = now("-1d")', set()),
+        ("space.key = currentUser()", set()),
+        ("space.key = now()", set()),
+        ("ancestor = currentContent()", set()),
+        ("parent = currentContent()", set()),
+        ("id in recentlyViewedContent(5)", set()),
+        ("type=page and id in recentlyViewedContent(5)", set()),
+        (three + " and id in recentlyViewedContent(5)", set()),
+        ("id in ({Guide}, recentlyViewedContent(5))", {"Guide"}),
         (three + " and not lastmodified > 2999-01-01", {"Guide", "Child", "Grand"}),
         ('id={Guide} or id={Child} and created >= now("-4w")', {"Guide", "Child"}),
         (three + ' and (created >= now("-4w") or id={Guide})', {"Guide", "Child", "Grand"}),
@@ -9208,6 +9221,9 @@ def test_jira_operations_that_answer_an_accept_with_no_406(client):
 
 _CQL_PREFIX = "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
 _CQL_NOT_PARSED = "Could not parse cql : "
+_CQL_CURRENT_SPACE = (
+    "Unable to execute function 'currentSpace', the required contexts were not present : space"
+)
 # What real answered each `cql` with on Confluence Cloud, as `_CQL_TOKEN`, `_cql_written_back`
 # and `_cql_refusal` in `backlot.routers.atlassian` record it: the `cqlQuery` of a 200, or the
 # message of a 400 after `_CQL_PREFIX`.
@@ -9256,6 +9272,31 @@ _CQL_PARSE_ROWS = [
             ("created>startOfDay()", "created > startOfDay ( )"),
             ("created >= 2026-01-01 and type=page", "created >= 2026-01-01 and type = page"),
             ("id in (1,2)", "id in ( 1 , 2 )"),
+            ("label = currentUser()", "label = currentUser ( )"),
+            ("creator = currentUser()", "creator = currentUser ( )"),
+            ("ancestor = currentContent()", "ancestor = currentContent ( )"),
+            ("parent = currentContent()", "parent = currentContent ( )"),
+            ("created > now()", "created > now ( )"),
+            ('label = now("-1d")', 'label = now ( "-1d" )'),
+            ("label = currentSpace", "label = currentSpace"),
+            ("label = currentUser", "label = currentUser"),
+            ("space.key = currentUser()", "space.key = currentUser()"),
+            ("space.key = now()", "space.key = now()"),
+            ('space.key = now("-1d")', 'space.key = now("-1d")'),
+            (
+                "space.key = currentUser() and type=page",
+                "space.key = currentUser() and type = page",
+            ),
+            ("space.key in (currentUser())", "space.key in ( currentUser() )"),
+            ("space.key in (x, currentUser())", "space.key in ( 'x' , currentUser() )"),
+            ("id in recentlyViewedContent(5)", "id in recentlyViewedContent ( 5 )"),
+            ("id in recentlyViewedContent(50)", "id in recentlyViewedContent ( 50 )"),
+            (
+                "id in (1, recentlyViewedContent(5))",
+                "id in ( 1 , recentlyViewedContent ( 5 ) )",
+            ),
+            ("id not in recentlyViewedContent(5)", "id not in recentlyViewedContent ( 5 )"),
+            ("label != currentUser()", "label != currentUser ( )"),
             ("label=a.b", "label = a.b"),
             ("label=x order by created desc", "label = x order by created desc"),
             (
@@ -9340,6 +9381,59 @@ _CQL_PARSE_ROWS = [
                 "Expecting a value for operator 'NOTIN' after field 'type' but got '('",
             ),
             ("(type=page", "Missing closing parenthesis near field (()"),
+            ("label = foo()", "Unable to find query function 'foo()'"),
+            ("label = Foo()", "Unable to find query function 'Foo()'"),
+            ("space.key = foo()", "Unable to find query function 'foo()'"),
+            ("creator = foo()", "Unable to find query function 'foo()'"),
+            ("space = currentSpace()", _CQL_CURRENT_SPACE),
+            ("label = currentSpace()", _CQL_CURRENT_SPACE),
+            ("space.key = currentSpace()", _CQL_CURRENT_SPACE),
+            ("space.key in (currentSpace())", _CQL_CURRENT_SPACE),
+            ("space.key in (x, currentSpace())", _CQL_CURRENT_SPACE),
+            ('created > now("x")', "Invalid relative date : x"),
+            ('label = now("x")', "Invalid relative date : x"),
+            ('created > startOfDay("x")', "Invalid relative date : x"),
+            ('created > now("a\'b")', "Invalid relative date : a'b"),
+            ('space.key = now("a\'b")', "Invalid relative date : a'b"),
+            ('created > now("-1d", "x")', _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent(5, 6)", _CQL_NOT_PARSED),
+            ('label = currentUser("x")', _CQL_NOT_PARSED),
+            ('id in recentlyViewedContent("x")', _CQL_NOT_PARSED),
+            ("(label = foo()", _CQL_NOT_PARSED),
+            ("(space = currentSpace()", _CQL_NOT_PARSED),
+            ('(created > now("x")', _CQL_NOT_PARSED),
+            ("(id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ("label = foo() and (type = page", "Unable to find query function 'foo()'"),
+            ("label = foo() and type =", "Unable to find query function 'foo()'"),
+            (
+                "type = and label = foo()",
+                "Expecting a value for operator '=' after field 'type' but got 'and'",
+            ),
+            ('type = and created > now("-1d", "x")', _CQL_NOT_PARSED),
+            ("type = and id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            (
+                "space = currentSpace() or type =",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ('space = currentSpace() or created > now("x")', _CQL_CURRENT_SPACE),
+            ('created > now("x") or space = currentSpace()', "Invalid relative date : x"),
+            (
+                "space = currentSpace() and (type = page",
+                "Missing closing parenthesis near field (()",
+            ),
+            ('label = foo() and title ~ "a\\"', "Unable to find query function 'foo()'"),
+            ('title ~ "a\\" and label = foo()', "Unable to find query function 'foo()'"),
+            ('space = currentSpace() and title ~ "a\\"', _CQL_CURRENT_SPACE),
+            (
+                'title ~ "a\\" and space = currentSpace()',
+                "Expecting a value for operator '~' after field 'title' but got '\"'",
+            ),
+            ('created > now("x") and title ~ "a\\"', "Invalid relative date : x"),
+            (
+                'title ~ "a\\"',
+                "Expecting a value for operator '~' after field 'title' but got '\"'",
+            ),
         ]
     ],
 ]

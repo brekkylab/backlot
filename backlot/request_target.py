@@ -30,7 +30,7 @@ import urllib.parse
 from fastapi import Request, Response
 from starlette.types import Scope
 
-from backlot import auth, errors
+from backlot import auth, errors, utf8_escapes
 from backlot.routers import atlassian, s3
 
 #: The scope key :mod:`backlot.protocol` leaves the request target on, as sent, where it
@@ -77,6 +77,13 @@ def _kind(byte: int) -> str:
 def _kinds(part: bytes) -> list[str]:
     """The kind of each raw byte in ``part``, in the order they come."""
     return [_kind(m[0][0]) for m in _RAW.finditer(part)]
+
+
+def kinds_sent(scope: Scope) -> set[str]:
+    """The kinds of raw byte (:func:`_kind`) the request's target was sent with, in its path and its
+    query: none where :mod:`backlot.protocol` encoded none."""
+    sent = scope.get(SENT)
+    return set(_kinds(sent)) if sent is not None else set()
 
 
 def _under(path: str, prefix: str) -> bool:
@@ -203,11 +210,15 @@ def graph_page(status: int, name: str, title: str, detail: str) -> bytes:
     ).encode()
 
 
-#: Graph's two 400 pages, 324 and 311 bytes (:func:`_graph` says which answers what).
+#: Graph's three 400 pages, 324, 311 and 334 bytes (:func:`_graph` says which of the first two
+#: answers what, ``backlot.bracketed_host`` what the third answers).
 GRAPH_INVALID_URL = graph_page(
     400, "Bad Request", "Bad Request - Invalid URL", "The request URL is invalid."
 )
 GRAPH_BADLY_FORMED = graph_page(400, "Bad Request", "Bad Request", "The request is badly formed.")
+GRAPH_INVALID_HOSTNAME = graph_page(
+    400, "Bad Request", "Bad Request - Invalid Hostname", "The request hostname is invalid."
+)
 
 
 def _page(
@@ -299,14 +310,16 @@ def _climbs_past_the_root(path: bytes) -> bool:
 
 
 def _cloudflare(scope: Scope, path_kinds: list[str], query_kinds: list[str]) -> Response | None:
-    """:data:`CLOUDFLARE_PAGE` where a `nul` or a `cr` is anywhere, and where `Authorization` or
-    one of the five conditional headers comes more than once
+    """:data:`CLOUDFLARE_PAGE` where a `nul` or a `cr` is anywhere or a `%00` is in the path, and
+    where `Authorization` or one of the five conditional headers comes more than once
     (``auth.repeated_cloudflare_refused_header``), ahead of the bytes below; then an empty 400
     with no `Content-Type` for any raw byte in the query, and for one in a path that holds no
     `space`; and a path with a `space` in it read as its percent-encoding, whatever else the path
-    holds."""
+    holds. A `%00` was the page beside a `control` before it and after it on Notion and HubSpot on
+    2026-11-03 (UTC)."""
     every = set(path_kinds) | set(query_kinds)
-    if every & {"nul", "cr"} or auth.repeated_cloudflare_refused_header(Request(scope)):
+    nul = every & {"nul", "cr"} or b"%00" in scope["raw_path"]
+    if nul or auth.repeated_cloudflare_refused_header(Request(scope)):
         return _page(CLOUDFLARE_PAGE, "text/html")
     if query_kinds or "space" not in path_kinds:
         return _page(b"", None, close=False)
@@ -457,6 +470,69 @@ def answer(scope: Scope) -> Response | None:
     if door == "graph":
         return _graph(scope, in_path, in_query)
     return _page(b"Invalid HTTP request received.", "text/plain; charset=utf-8")
+
+
+#: An escaped byte from 0x00 to 0x1F, or 0x7F, its hex digits in either case.
+_ESCAPED_CONTROL = re.compile(rb"%(?:[01][0-9A-Fa-f]|7[Ff])")
+#: The prefixes under which Google's front door refuses a `%00`: on each of the four hosts of their
+#: own, the API's; on www.googleapis.com, which Drive and the batch endpoint share, `/drive/v3/` and
+#: `/batch/`. On 2026-10-30 (UTC) the four refused `%00` right after the prefix (`/gmail/v1%00x`,
+#: `/v4%00x`, `/v1%00x`) and outside it (`/gmail%00x`, `/nope%00x`), where Backlot routes nothing,
+#: and www.googleapis.com answered `/drive/v3%00x`, `/drive%00x`, `/batch%00x` and `/nope%00x` with
+#: its 404 page and refused `/drive/v2/nope%00x`, under a version Backlot does not serve.
+_GOOGLE_NUL = ("/gmail/v1", "/docs/v1", "/sheets/v4", "/slides/v1", "/drive/v3/", "/batch/")
+#: The C1 controls Graph's front door refuses in a path once it has read the path's escapes.
+_GRAPH_REFUSED = frozenset("\x81\x8d\x8f\x90\x9d")
+
+
+def _graph_refuses(raw_path: bytes) -> bool:
+    """Whether Graph's front door refuses ``raw_path``: one holding a character of
+    :data:`_GRAPH_REFUSED` once its escapes are read, as UTF-8 where they decode to a string without
+    U+10FFFE or U+10FFFF and byte by byte otherwise. Measured on 2026-10-30 (UTC) for each escape
+    from `%80` to `%FF` alone, for `%C2` before each of `%80` to `%A0`, for sequences cut short,
+    overlong or past U+10FFFF, and for U+FFFE, U+FFFF, U+10FFFD, U+10FFFE and U+10FFFF sent as
+    UTF-8; a query holding `%80`, `%81`, `%ED%A0%80`, `%C3%A9` or `%F4%90%80%80` was read on."""
+    raw = urllib.parse.unquote_to_bytes(raw_path)
+    text = raw.decode("utf-8") if utf8_escapes.decodes(raw_path) else raw.decode("latin-1")
+    if "\U0010fffe" in text or "\U0010ffff" in text:
+        text = raw.decode("latin-1")
+    return not _GRAPH_REFUSED.isdisjoint(text)
+
+
+def escape_answer(scope: Scope) -> Response | None:
+    """The front door's answer to a path that holds `%00`, or on Graph any escape of
+    :data:`_ESCAPED_CONTROL` or one :func:`_graph_refuses`, or ``None`` where it reads the path on
+    as the vendor's.
+
+    slack.com's empty 400; Google's 1,555-byte page where :data:`_GOOGLE_NUL` says, on a connection
+    that answers the next request; Cloudflare's page in front of Notion and HubSpot; S3's empty 400,
+    whose status line real words `400 Invalid URI`; and Graph's page naming the URL invalid.
+    Measured on 2026-10-30 (UTC) over raw HTTP/1.1 on TLS sockets, with the vendors' credentials
+    but Gmail's, the Docs editors', S3's and Graph's, for each escape from `%00` to `%1F` and `%7F`
+    at a path no route serves (`…/nope<escape>x`), and for `%00`, `%0A` and `%0D` at the end of one
+    a route serves: each of the others was read as the path's other bytes are, on every host but
+    Graph, and Graph refused the lower-case spellings `%0a`, `%0b`, `%0d`, `%1f` and `%7f` too. A
+    `%00` in the query was read as its other bytes are on each of those hosts but Confluence, which
+    answered Tomcat's 400 page. Jira Cloud's and Confluence's front door answers a `%00` in the
+    path with the CDN's page (``backlot.errors.atlassian.cdn_refusal``), Linear's and Fireflies'
+    with Cloudflare's (:func:`refused_path`), and api.github.com's front door read it on to the
+    API."""
+    path, sent = scope["path"], scope["raw_path"]
+    if _under(path, "/msgraph"):
+        if _ESCAPED_CONTROL.search(sent) is None and not _graph_refuses(sent):
+            return None
+        return _page(GRAPH_INVALID_URL, "text/html; charset=us-ascii")
+    if b"%00" not in sent:
+        return None
+    if _under(path, "/slack"):
+        return _page(b"", None)
+    if path.startswith(_GOOGLE_NUL):
+        return _page(GOOGLE_PAGE_1555, "text/html; charset=UTF-8", close=False)
+    if any(_under(path, p) for p in ("/notion", "/hubspot")):
+        return _page(CLOUDFLARE_PAGE, "text/html")
+    if errors.s3.owns(path):
+        return _page(b"", None)
+    return None
 
 
 def refused_in_the_line(

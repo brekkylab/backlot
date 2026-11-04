@@ -3246,12 +3246,11 @@ _CQL_FUNCTIONS = {
 _CQL_DATE_FUNCTIONS = frozenset(
     ("now", "startOfDay", "startOfWeek", "startOfMonth", "startOfYear", "endOfMonth")
 )
-# A relative date as a date function reads it: a sign, a number, and a unit, the unit defaulting
-# to the function's own period when it is left out, so `startOfDay("+1")` is `startOfDay("+1d")`
-# (the vendor's date-function documentation). `now("-1d")` and `now("-4w")` were measured, and
-# `now("x")` and `now("a'b")` were refused as invalid relative dates (Confluence Cloud,
-# 2026-10-31).
-_CQL_RELATIVE_DATE = re.compile(r"[+-]?[0-9]+[yMwdhm]?")
+# A relative date as a date function reads it: a sign, a number, and a unit. `now("-1d")` and
+# `now("-4w")` were measured, and `now("x")` and `now("a'b")` (Confluence Cloud, 2026-10-31) and
+# `now("1")`, `now("+1")` and `startOfDay("1")` (Confluence Cloud, 2026-11-04) were refused as
+# invalid relative dates.
+_CQL_RELATIVE_DATE = re.compile(r"[+-]?[0-9]+[yMwdhm]")
 
 
 class _CQLFunctionError(Exception):
@@ -3384,7 +3383,11 @@ def _cql_written_back(tokens: list[tuple[str, str]], space_key) -> str:
         if kind == "OP" or kind == "WORD" and text.lower() == "in":
             field = i - 1 - (kind == "WORD" and i > 1 and before[1].lower() == "not")
             key = field >= 0 and tokens[field][1].lower() == "space.key"
-        elif kind in ("WORD", "QUOTED") and key and (before[0] == "OP" or before[1] in "(,"):
+        elif (
+            kind in ("WORD", "QUOTED")
+            and key
+            and (before[0] == "OP" or before[1].lower() == "in" or before[1] in "(,")
+        ):
             if kind == "WORD" and i + 1 < len(tokens) and tokens[i + 1] == ("PUNCT", "("):
                 call, depth, j = [text], 0, i + 1
                 while j < len(tokens):
@@ -3402,14 +3405,8 @@ def _cql_written_back(tokens: list[tuple[str, str]], space_key) -> str:
                 continue
             value = _cql_space_value(kind, text)
             text = f"'{space_key(value) or value}'"
-        elif (
-            (before[1] == ")" and (i - 1) not in closed)
-            or kind == "WORD"
-            and text.lower()
-            in (
-                "and",
-                "or",
-            )
+        elif (before[1] == ")" and (i - 1) not in closed) or (
+            kind == "WORD" and text.lower() in ("and", "or")
         ):
             key = False
         out.append(text)
@@ -3420,13 +3417,17 @@ def _cql_written_back(tokens: list[tuple[str, str]], space_key) -> str:
 def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
     """The 400 real answers a CQL the grammar cannot read with, or None for one it can, before
     :func:`_cql_refusal` reads the faults it walks from the left: a function call with the wrong
-    arguments, a second argument or an empty `recentlyViewedContent()`, and an unclosed
-    parenthesis before a call real refuses. Measured on Confluence Cloud on 2026-10-31: a second
-    argument or an empty `recentlyViewedContent()` was answered `Could not parse cql : ` beside
-    any other wrong in the CQL, even a missing value or an unknown field earlier in it, and
-    `(label = foo()`, `(space = currentSpace()` and `(created > now("x")` the same, where an
-    unclosed parenthesis with no call real refuses after it, `(type=page`, is the missing
-    parenthesis refusal."""
+    arguments, a second argument or an empty `recentlyViewedContent()`, a function other than
+    `recentlyViewedContent` in place of an `in` list, and an unclosed parenthesis before a call
+    real refuses. Measured on Confluence Cloud on 2026-10-31: a second argument or an empty
+    `recentlyViewedContent()` was answered `Could not parse cql : ` beside any other wrong in the
+    CQL, even a missing value or an unknown field earlier in it, and `(label = foo()`,
+    `(space = currentSpace()` and `(created > now("x")` the same, where an unclosed parenthesis
+    with no call real refuses after it, `(type=page`, is the missing parenthesis refusal. On
+    2026-11-04 `id in now("-1d")`, `label in currentUser()`, `id in currentContent()`,
+    `id in currentSpace()`, `id in foo()`, `id in recentlyviewedcontent(5)` and
+    `space.key in now("-1d")` were answered `Could not parse cql : ` as well, and `id in now("-1d")`
+    the same after `type =` with no value, after `foo = x`, and before `and type =`."""
     opens, failing = [], []
     for at, (kind, text) in enumerate(tokens):
         if (kind, text) == ("PUNCT", "("):
@@ -3446,6 +3447,8 @@ def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
                 return errors_atlassian.cql_not_parsed()
             if name in _CQL_FUNCTIONS and _cql_function_arity(name, args):
                 return errors_atlassian.cql_not_parsed()
+            if name != "recentlyViewedContent" and at and tokens[at - 1][1].lower() == "in":
+                return errors_atlassian.cql_not_parsed()
             if _cql_function_fault(name, args):
                 failing.append(at)
     if opens and failing and opens[0] < max(failing):
@@ -3462,8 +3465,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     closed; ``cql_missing_closing_parenthesis`` at a `(` never closed; and
     ``cql_unrecognised_clause`` at words or quoted values left after a whole query. A function
     call real does not have is ``cql_unknown_function`` at its place among those faults, read
-    from the left, and a function in place of an `in` list is read as the list. Each one's
-    docstring gives the queries that answered it. A query read to its end is ``cql_not_parsed``
+    from the left, and `recentlyViewedContent`, the one function real takes in place of an `in`
+    list, is read as the list. Each one's docstring gives the queries that answered it. A query read to its end is ``cql_not_parsed``
     when a `space.key` value holds a single quote. A field CQL does not have, a field with no
     operator, and an operator or a value the field does not take (`foo`, `type`, `type<page`,
     `type=PAGE`) are refused on real with messages of their own, and answered at 200 here. An
@@ -3673,11 +3676,15 @@ def _cql_function_value(name: str, args: list[tuple[str, str]], current_user: st
     or its name where the caller is the admin token, which names no user; `currentContent()`
     and `recentlyViewedContent()` a value naming no content, since this route has no current
     content and the server keeps no recently viewed content; and a date function the relative
-    date it was given, or its name with no argument. Each names no row on a field this route
-    reads, as real answered for `label = currentUser()`, `label = now("-1d")`,
-    `space.key = currentUser()`, `ancestor = currentContent()` and `id in recentlyViewedContent(5)`
-    (Confluence Cloud, 2026-10-31), and a date value never meets a date field here, since
-    `created` is among the fields this route does not read."""
+    date it was given, or its name with no argument. On a field this route reads,
+    `currentUser()`, `currentContent()` and `recentlyViewedContent()` name no row, as real
+    answered for `label = currentUser()`, `space.key = currentUser()`,
+    `ancestor = currentContent()` and `id in recentlyViewedContent(5)` (Confluence Cloud,
+    2026-10-31), and a date function reads as the relative date it was given, so on a label or
+    text field it names the rows holding that term: real answered `label = now("-1d")` with no
+    rows (Confluence Cloud, 2026-10-31) and `text ~ now("1d")` the same (Confluence Cloud,
+    2026-11-04), and a term a page actually holds is unmeasured. A date value never meets a
+    date field here, since `created` is among the fields this route does not read."""
     if name == "currentUser":
         return current_user or "currentUser"
     if name == "currentContent":
@@ -3719,11 +3726,10 @@ def _cql_parse(tokens: list[tuple[str, str]], current_user: str | None = None):
 
     An atom is ``("atom", field, op, values, negated, readable)``: `op` is `=`, `in` or `~`,
     `negated` covers `!=`, `!~` and `not in (...)`, and `readable` says whether the field takes
-    the operator (see `_CQL_READABLE`). A function value is read as
-    :func:`_cql_function_value` reads it, and a function in place of an `in` list as that
-    function's one value. Raises `_CQLParseError` for anything else, including a
-    field with no operator, which real refuses with a message of its own and this server answers
-    at 200 through the clause readers."""
+    the operator (see `_CQL_READABLE`). A function value is read as :func:`_cql_function_value` reads
+    it, and `recentlyViewedContent` in place of an `in` list as its one value. Raises
+    `_CQLParseError` for anything else, including a field with no operator, which real refuses with
+    a message of its own and this server answers at 200 through the clause readers."""
     at = 0
 
     def peek(offset=0):

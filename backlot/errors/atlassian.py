@@ -450,10 +450,10 @@ def cql_unknown_function(name: str) -> AtlassianError:
 
 def cql_function_needs_context(name: str, context: str) -> AtlassianError:
     """The CQL search's refusal of a function that cannot run where it is called, for want of a
-    context: `space = currentSpace()` answered `Unable to execute function 'currentSpace', the
-    required contexts were not present : space`, and so did `label = currentSpace()` (Confluence
-    Cloud, 2026-10-31). Where it falls among the search's other refusals is
-    ``routers.atlassian._cql_cannot_run``'s."""
+    context: `space = currentSpace()` answered
+    `Unable to execute function 'currentSpace', the required contexts were not present : space`,
+    and so did `label = currentSpace()` (Confluence Cloud, 2026-10-31). Where it falls among the
+    search's other refusals is ``routers.atlassian._cql_cannot_run``'s."""
     return _service_refusal(
         400,
         "api.BadRequestException",

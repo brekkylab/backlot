@@ -6410,7 +6410,7 @@ def test_a_posted_message_carries_bot_id_and_blocks_and_no_subtype(wclient, toke
     cid = synth.slack_channel_id("incidents")
     observed, expected = [], []
     for who, h, bot_id in (
-        ("admin", admin_h, slack.BOT_ID),
+        ("admin", admin_h, "B0000BKLT"),
         ("person", _uh(tokens, "ava@acme.com"), "B0000USER0"),
     ):
         root = wclient.post(
@@ -6455,11 +6455,11 @@ def test_a_posted_message_carries_bot_id_and_blocks_and_no_subtype(wclient, toke
             },
             "id": bot_id,
             "name": "Backlot",
-            "team_id": slack.TEAM_ID,
-            "updated": synth.epoch("app:" + "A0000BKLT"),
+            "team_id": "T0000BKLT",
+            "updated": 1730794837,
         }
         if who == "admin":
-            profile["user_id"] = slack.SERVICE_USER_ID
+            profile["user_id"] = "USERVICE0"
         for method, msg in messages:
             observed.append(
                 (

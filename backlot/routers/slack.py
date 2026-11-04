@@ -130,7 +130,6 @@ BOT_ID = "B0000BKLT"
 USER_BOT_ID = "B0000USER0"
 APP_ID = "A0000BKLT"
 APP_NAME = "Backlot"
-# Synthetic app assets, as the corpus's other generated identities are synthetic.
 BOT_ICONS = {
     f"image_{size}": f"https://avatar.example.com/{APP_ID}/{size}" for size in (36, 48, 72)
 }
@@ -3196,9 +3195,10 @@ def _is_written(row) -> bool:
 def _bot_profile(bot_id: str, *, is_bot_token: bool) -> dict:
     """The `bot_profile` object real Slack serves on API-posted messages.
 
-    Measured against slack.com on 2026-11-03: carries `app_id`, `deleted`, `icons`, `id`, `name`,
-    `team_id` and `updated`, and on a bot-token post also `user_id`. Its `id` matches the message's
-    `bot_id` and its `app_id` the message's `app_id`. On a user-token post `user_id` is omitted.
+    Measured against slack.com on 2026-11-03: carries `app_id`, `deleted` (false), `icons`
+    (`image_36`, `image_48` and `image_72`), `id`, `name`, `team_id` and `updated` (epoch seconds),
+    and on a bot-token post also `user_id`. Its `id` matches the message's `bot_id` and its `app_id`
+    the message's `app_id`. The icon URLs and the time are synthetic.
     """
     prof = {
         "app_id": APP_ID,

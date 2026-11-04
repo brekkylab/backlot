@@ -9208,6 +9208,15 @@ def test_jira_operations_that_answer_an_accept_with_no_406(client):
 
 _CQL_PREFIX = "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
 _CQL_NOT_PARSED = "Could not parse cql : "
+
+
+def _cql_reserved(word):
+    """The message real answers a reserved word where a value goes with."""
+    return (
+        f"'{word}' is a reserved keyword.  You must surround '{word}' in quotation marks to use it."
+    )
+
+
 # What real answered each `cql` with on Confluence Cloud, as `_CQL_TOKEN`, `_cql_written_back`
 # and `_cql_refusal` in `backlot.routers.atlassian` record it: the `cqlQuery` of a 200, or the
 # message of a 400 after `_CQL_PREFIX`.
@@ -9257,6 +9266,8 @@ _CQL_PARSE_ROWS = [
             ("created >= 2026-01-01 and type=page", "created >= 2026-01-01 and type = page"),
             ("id in (1,2)", "id in ( 1 , 2 )"),
             ("label=a.b", "label = a.b"),
+            ('label = "select"', 'label = "select"'),
+            ("label = 'select'", "label = 'select'"),
             ("label=x order by created desc", "label = x order by created desc"),
             (
                 "type=page ORDER BY title asc, created desc",
@@ -9340,6 +9351,127 @@ _CQL_PARSE_ROWS = [
                 "Expecting a value for operator 'NOTIN' after field 'type' but got '('",
             ),
             ("(type=page", "Missing closing parenthesis near field (()"),
+        ]
+    ],
+    # A reserved word where a value goes, as `cql_reserved_keyword` and `_cql_refusal` record
+    # it: every one of the 43 as `label = <word>`, the word in the case it was sent, and the
+    # positions that settle whether `and` or `or` is the conjunction, `order` starts `order by`,
+    # or the query cannot be parsed at all.
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            *[
+                (f"label = {word}", _cql_reserved(word))
+                for word in (
+                    "after",
+                    "and",
+                    "as",
+                    "asc",
+                    "avg",
+                    "before",
+                    "begin",
+                    "by",
+                    "commit",
+                    "contains",
+                    "count",
+                    "desc",
+                    "distinct",
+                    "else",
+                    "empty",
+                    "end",
+                    "explain",
+                    "from",
+                    "having",
+                    "if",
+                    "in",
+                    "inner",
+                    "insert",
+                    "into",
+                    "is",
+                    "isnull",
+                    "left",
+                    "like",
+                    "limit",
+                    "max",
+                    "min",
+                    "not",
+                    "null",
+                    "or",
+                    "order",
+                    "outer",
+                    "right",
+                    "select",
+                    "sum",
+                    "then",
+                    "update",
+                    "was",
+                    "where",
+                )
+            ],
+            ("label = Select", _cql_reserved("Select")),
+            ("label = SELECT", _cql_reserved("SELECT")),
+            ("label = select and type = page", _cql_reserved("select")),
+            ("label in (select)", _cql_reserved("select")),
+            ("label in (x, empty)", _cql_reserved("empty")),
+            ("label != select", _cql_reserved("select")),
+            ("title ~ select", _cql_reserved("select")),
+            ("space.key = select", _cql_reserved("select")),
+            ("(label = select)", _cql_reserved("select")),
+            ("label = x and label = select", _cql_reserved("select")),
+            ("label = select order by created", _cql_reserved("select")),
+            ("label = x order by select", _CQL_NOT_PARSED),
+            ("label = select)", _CQL_NOT_PARSED),
+            ("label = and x", _cql_reserved("and")),
+            ("label = and type", _cql_reserved("and")),
+            ('label = and "x"', _cql_reserved("and")),
+            (
+                "label = and type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and (type = page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type =",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and not type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                'label = and title ~ "x"',
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                'label = and created > now("-1d")',
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = or type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "type= and type=page",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            (
+                "type= or type=page",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ("type= and", _cql_reserved("and")),
+            ("label = not type = page", _CQL_NOT_PARSED),
+            ("label = in type = page", _CQL_NOT_PARSED),
+            ("label = order type = page", _CQL_NOT_PARSED),
+            ("label = by type = page", _CQL_NOT_PARSED),
+            ("label = asc type = page", _CQL_NOT_PARSED),
+            ("label = desc type = page", _CQL_NOT_PARSED),
+            ("label = select type = page", _CQL_NOT_PARSED),
+            (
+                "label = order by created",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
         ]
     ],
 ]

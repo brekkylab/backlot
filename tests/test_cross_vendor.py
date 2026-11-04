@@ -705,6 +705,7 @@ _RUNS = [
             "report_notion_cors",
             "report_notion_etag",
             "read_a_notion_body_as_express_does",
+            "refuse_a_notion_path_that_does_not_decode",
             "report_notion_headers",
         ],
         id="notion",
@@ -734,10 +735,32 @@ _RUNS = [
         id="jira",
     ),
     pytest.param("GET", "/drive/v3/about", {}, [], id="drive"),
+    pytest.param("GET", "/drive/v3/about?fields=kind", {}, [], id="drive query"),
     pytest.param(
         "HEAD", "/drive/v3/about", {}, ["answer_head_as_the_get_without_its_body"], id="drive HEAD"
     ),
-    pytest.param("GET", "/s3/", {}, ["answer_s3_with_request_ids"], id="s3"),
+    pytest.param(
+        "GET",
+        "/drive/v3/about?fields=a%80b",
+        {},
+        ["read_a_drive_or_editor_query_as_google_does"],
+        id="drive escape",
+    ),
+    pytest.param(
+        "GET",
+        "/docs/v1/documents/nope?fields=a%80b",
+        {},
+        ["read_a_drive_or_editor_query_as_google_does"],
+        id="docs escape",
+    ),
+    pytest.param("GET", "/gmail/v1/users/me/profile?fields=a%80b", {}, [], id="gmail escape"),
+    pytest.param(
+        "GET",
+        "/s3/",
+        {},
+        ["answer_s3_with_request_ids", "refuse_an_s3_path_real_cannot_read"],
+        id="s3",
+    ),
     pytest.param(
         "GET",
         "/hubspot/crm/v3/objects/contacts",
@@ -753,10 +776,7 @@ _RUNS = [
 ]
 
 
-@pytest.mark.parametrize("method, path, headers, ran", _RUNS)
-def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
-    client, tokens_yaml, monkeypatch, method, path, headers, ran
-):
+def test_a_request_runs_its_own_vendors_middlewares_and_no_others(client, tokens_yaml, monkeypatch):
     # the class the client's app was built with: `tests._helpers.client_for` reloads
     # `backlot.main`, which defines `_Layer` again for each app
     layer = next(m.cls for m in client.app.user_middleware if m.cls.__name__ == "_Layer")
@@ -770,8 +790,14 @@ def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
 
     monkeypatch.setattr(layer, "__call__", watched)
     admin = {"Authorization": _ADMIN.format(admin=tokens_yaml["admin_token"])}
-    client.request(method, path, headers={**admin, **headers})
-    assert seen == ran
+    got, expected = {}, {}
+    for row in _RUNS:
+        method, path, headers, ran = row.values
+        seen.clear()
+        client.request(method, path, headers={**admin, **headers})
+        got[row.id], expected[row.id] = list(seen), ran
+    assert len(got) == len(_RUNS)
+    assert got == expected
 
 
 # A path a route serves, with `%0A` after it: (method, path, query, real's status), with the

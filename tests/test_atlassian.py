@@ -2029,6 +2029,139 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
     assert "body" in page and "storage" in page["body"]  # expand survives
 
 
+def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
+    """`content/{id}` expands what `confluence_content_get` and `_confluence_page` say real
+    expands for each `expand`, and the rows of `content`, `content/{id}/child/page` and the CQL
+    search carry none of the four."""
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": "eng",
+        "title": "probe",
+        "content": "body",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "created": "2026-10-01T09:00:00Z",
+    }
+    child = {**page, "doc_id": "c", "parent": "p", "title": "probe child"}
+    settings = tiny_corpus(tmp_path, [page, child])
+    four = ("space", "history", "version", "body")
+    # Real's ten `body` representations, in real's order (see `_confluence_page`).
+    ten = [
+        "editor",
+        "atlas_doc_format",
+        "view",
+        "export_view",
+        "styled_view",
+        "markdown",
+        "dynamic",
+        "storage",
+        "editor2",
+        "anonymous_export_view",
+    ]
+    nine_storage = [name for name in ten if name != "storage"]
+    nine_export_view = [name for name in ten if name != "export_view"]
+    nine_view = [name for name in ten if name != "view"]
+    nine_adf = [name for name in ten if name != "atlas_doc_format"]
+    # Each row: (expand, served properties, body members, the four names still listed under
+    # `_expandable`, `body._expandable` or None when no body is served).
+    rows = (
+        (None, ["space", "history", "version"], [], ["body"], None),
+        ("", ["space", "history", "version"], [], ["body"], None),
+        (
+            "body.storage",
+            ["body"],
+            ["_expandable", "storage"],
+            ["history", "space", "version"],
+            nine_storage,
+        ),
+        ("space", ["space"], [], ["body", "history", "version"], None),
+        ("version", ["version"], [], ["body", "history", "space"], None),
+        ("bogus", [], [], ["body", "history", "space", "version"], None),
+        ("body", ["body"], ["_expandable"], ["history", "space", "version"], ten),
+        (
+            "body.storage,space",
+            ["space", "body"],
+            ["_expandable", "storage"],
+            ["history", "version"],
+            nine_storage,
+        ),
+        (
+            "body.export_view.value",
+            ["body"],
+            ["_expandable", "export_view"],
+            ["history", "space", "version"],
+            nine_export_view,
+        ),
+        (
+            "body.view",
+            ["body"],
+            ["_expandable", "view"],
+            ["history", "space", "version"],
+            nine_view,
+        ),
+        (
+            "body.atlas_doc_format",
+            ["body"],
+            ["_expandable", "atlas_doc_format"],
+            ["history", "space", "version"],
+            nine_adf,
+        ),
+        ("history.lastUpdated", ["history"], [], ["body", "space", "version"], None),
+        ("version.by", ["version"], [], ["body", "history", "space"], None),
+        ("body.bogus", ["body"], ["_expandable"], ["history", "space", "version"], ten),
+        (" space", [], [], ["body", "history", "space", "version"], None),
+    )
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        pid = served_id("confluence", "p")
+        got = []
+        for expand, _served, _members, _expandable, _body_expandable in rows:
+            query = {} if expand is None else {"expand": expand}
+            j = c.get(f"{api}/content/{pid}", headers=h, params=query).json()
+            # No row names `metadata` or `ancestors`, so neither is served and both stay listed.
+            assert [k for k in ("metadata", "ancestors") if k in j] == [], expand
+            assert {"metadata", "ancestors"} <= set(j["_expandable"]), expand
+            got.append(
+                (
+                    [k for k in four if k in j],
+                    sorted(j.get("body", {})),
+                    sorted(k for k in four if k in j["_expandable"]),
+                    list(j["body"]["_expandable"]) if "_expandable" in j.get("body", {}) else None,
+                )
+            )
+        assert got == [
+            (served, members, expandable, body_expandable)
+            for _x, served, members, expandable, body_expandable in rows
+        ]
+        for path in ("/content", f"/content/{pid}/child/page", "/search?cql=title~probe"):
+            row = c.get(api + path, headers=h).json()["results"][0]
+            row = row.get("content", row)
+            assert [k for k in four if k in row] == [], path
+        # The request the llama-index reader sends, on the listing route.
+        listed = c.get(
+            api + "/content", headers=h, params={"expand": "body.export_view.value"}
+        ).json()["results"]
+        listing = next(r for r in listed if str(r.get("id")) == str(pid))
+        listing = listing.get("content", listing)
+        assert "export_view" in listing["body"]
+        assert list(listing["body"]["_expandable"]) == nine_export_view
+        # Unexpanded, `space` is listed under `_expandable` with the link `container` carries.
+        versioned = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "version"}).json()
+        assert versioned["_expandable"]["space"] == versioned["_expandable"]["container"]
+        # The `atlas_doc_format` value is the ADF document as a JSON string.
+        adf = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body.atlas_doc_format"}
+        ).json()["body"]["atlas_doc_format"]
+        assert json.loads(adf["value"])["type"] == "doc"
+        # A served `ancestors` leaves `_expandable`, as the four do.
+        cid = served_id("confluence", "c")
+        child_j = c.get(f"{api}/content/{cid}", headers=h, params={"expand": "ancestors"}).json()
+        assert [a["title"] for a in child_j["ancestors"]] == ["probe"]
+        assert "ancestors" not in child_j["_expandable"]
+
+
 # --- Jira ------------------------------------------------------------------------
 
 

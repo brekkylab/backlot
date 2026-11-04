@@ -406,12 +406,10 @@ _HOSTS = [
             (b"GET", "/hubspot/crm/v3/objects/", b"contacts%00", "cloudflare page"),
             (b"POST", "/linear/", b"graphql%00", "cloudflare page"),
             (b"POST", "/linear/", b"graphql%zz", "cloudflare page"),
-            (b"POST", "/linear/", b"graphql%2", "served"),
             (b"POST", "/linear/", b"../graphql", "cloudflare page"),
             (b"TRACE", "/linear/", b"graphql", "cloudflare 405"),
             (b"POST", "/fireflies/", b"graphql%00", "cloudflare page"),
             (b"POST", "/fireflies/", b"graphql%zz", "cloudflare page"),
-            (b"POST", "/fireflies/", b"graphql%2", "served"),
             (b"POST", "/fireflies/", b"../graphql", "cloudflare page"),
             (b"TRACE", "/fireflies/", b"graphql", "cloudflare 405"),
             (b"GET", "/msgraph/v1.0/", b"me%00", "graph invalid hostname"),
@@ -444,6 +442,17 @@ _HOSTS = [
             ),
             (b"GET", "/notion/v1/", b"users%2"),
         )
+    ),
+    # a `%2` or a `%` that ends a path sent with no `?`
+    *(
+        (host, b"POST", base, b"graphql" + end, answer)
+        for host, answer in (
+            (b"[0:0]", "cloudflare page"),
+            (b"[x]", "cloudflare page"),
+            (b"[v1.x]", "cloudflare forbidden"),
+        )
+        for base in ("/linear/", "/fireflies/")
+        for end in (b"%2", b"%")
     ),
     # a raw byte of every kind beside a `Host` in the path, and of each but 0x7F after `?a=` on six
     # hosts, and a target past GitHub's bound
@@ -593,6 +602,38 @@ def _rows():
             name = header.split(b":")[0].decode()
             yield pytest.param(
                 b"GET", base, b"nope?b=\x01x", answer, 0, header, b"x", id=f"{base} {name} {times}"
+            )
+    # a header value Cloudflare blocks on HubSpot (`hubspot.blocks_a_header_value`), whose block
+    # comes after the byte's answer, with no credential
+    for sent, answer in ((b"\x80", "cloudflare empty"), (b"\x00", "cloudflare page")):
+        yield pytest.param(
+            b"GET",
+            "/hubspot/crm/v3/objects/contacts",
+            sent,
+            answer,
+            0,
+            b"X-Probe: a\x80b\r\n",
+            b"x",
+            id=f"hubspot {sent!r} blocked",
+        )
+    # Google's 400 for a body on a GET and its 415 for a coding it does not read, beside the byte,
+    # with no credential. The measured GETs with a body sent `Content-Length: 1` and the body `x`,
+    # where the `Content-Length` row sends the header alone: real answered `Content-Length: 5` with
+    # no body sent on `about` as it answered the body
+    for header, answers in (
+        (b"Content-Length: 1\r\n", ("google 54", "google 1555", "google 1555")),
+        (b"Content-Encoding: br\r\n", ("google 54", "google 1555", "encoded")),
+    ):
+        for rest, answer in zip((b"about\x01", b"ab out", b"about\x80"), answers, strict=True):
+            yield pytest.param(
+                b"GET",
+                "/drive/v3/",
+                rest,
+                answer,
+                0,
+                header,
+                b"x",
+                id=f"{header.split(b':')[0].decode()} {rest!r}",
             )
     yield pytest.param(
         b"GET", "/_meta/", b"nope\x80x", "uvicorn", 1, b"", b"x", id="a path no vendor owns"

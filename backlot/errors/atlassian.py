@@ -2556,9 +2556,9 @@ def cdn_refused_host(method: str, raw_path: str) -> str:
     return _cloudfront(403, CDN_BAD_REQUEST, method, raw_path)
 
 
-def cdn_too_long(status: int, method: str, raw_path: str) -> str:
-    """The CDN's page with ``status`` in it and its 400's text (:data:`CDN_BAD_REQUEST`), 414 for a
-    request line it stops reading and 494 for a header line (``backlot.head_bounds``)."""
+def cdn_page(status: int, method: str, raw_path: str) -> str:
+    """The CDN's page with ``status`` in it and its 400's text (:data:`CDN_BAD_REQUEST`), at the
+    status ``backlot.head_bounds`` or ``backlot.parser_refusals`` sends."""
     return _cloudfront(status, CDN_BAD_REQUEST, method, raw_path)
 
 

@@ -2051,16 +2051,16 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
     four = ("space", "history", "version", "body")
     # Real's ten `body` representations, in real's order (see `_confluence_page`).
     ten = [
-        "anonymous_export_view",
-        "atlas_doc_format",
-        "dynamic",
         "editor",
-        "editor2",
-        "export_view",
-        "markdown",
-        "storage",
-        "styled_view",
+        "atlas_doc_format",
         "view",
+        "export_view",
+        "styled_view",
+        "markdown",
+        "dynamic",
+        "storage",
+        "editor2",
+        "anonymous_export_view",
     ]
     nine_storage = [name for name in ten if name != "storage"]
     nine_export_view = [name for name in ten if name != "export_view"]
@@ -2112,9 +2112,7 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
                     [k for k in four if k in j],
                     sorted(j.get("body", {})),
                     sorted(k for k in four if k in j["_expandable"]),
-                    sorted(j["body"]["_expandable"])
-                    if "_expandable" in j.get("body", {})
-                    else None,
+                    list(j["body"]["_expandable"]) if "_expandable" in j.get("body", {}) else None,
                 )
             )
         assert got == [
@@ -2132,7 +2130,10 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         listing = next(r for r in listed if str(r.get("id")) == str(pid))
         listing = listing.get("content", listing)
         assert "export_view" in listing["body"]
-        assert sorted(listing["body"]["_expandable"]) == nine_export_view
+        assert list(listing["body"]["_expandable"]) == nine_export_view
+        # Unexpanded, `space` is listed under `_expandable` with the link `container` carries.
+        versioned = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "version"}).json()
+        assert versioned["_expandable"]["space"] == versioned["_expandable"]["container"]
 
 
 # --- Jira ------------------------------------------------------------------------

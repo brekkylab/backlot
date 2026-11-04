@@ -2767,20 +2767,19 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
     }
     body_named = [name for name in body_writers if name in wanted.get("body", ())]
     # The representations real names under `body._expandable`, in real's order, measured on
-    # Confluence Cloud on 2026-11-03: the four rendered above plus the six it does not render.
-    # Listing the six unrendered names promises nothing new — a client asking for `body.editor`
-    # still gets the same nothing it gets today — but it matches real's `_expandable`.
+    # Confluence Cloud on 2026-11-03: the four rendered above plus six this server does not
+    # render, which a `body.editor` expansion leaves unexpanded.
     body_representations = (
-        "anonymous_export_view",
-        "atlas_doc_format",
-        "dynamic",
         "editor",
-        "editor2",
-        "export_view",
-        "markdown",
-        "storage",
-        "styled_view",
+        "atlas_doc_format",
         "view",
+        "export_view",
+        "styled_view",
+        "markdown",
+        "dynamic",
+        "storage",
+        "editor2",
+        "anonymous_export_view",
     )
     expandable = {
         "childTypes": "",
@@ -2793,7 +2792,7 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         "body": "",
         "version": "",
         "descendants": "",
-        "space": "",
+        "space": f"/rest/api/space/{key}",
     }
     # `space` was served above, before this dict existed, so it leaves `_expandable` here.
     if "space" in wanted:
@@ -2827,8 +2826,7 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         for name in body_named:
             body[name] = {"value": body_writers[name](), "representation": name}
         unexpanded = [name for name in body_representations if name not in body_named]
-        if unexpanded:
-            body["_expandable"] = dict.fromkeys(unexpanded, "")
+        body["_expandable"] = dict.fromkeys(unexpanded, "")
         page["body"] = body
     if "metadata" in wanted:
         labels = store.jcol(row, "labels")

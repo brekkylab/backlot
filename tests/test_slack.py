@@ -4993,6 +4993,7 @@ def test_a_deleted_thread_root_leaves_the_placeholder_real_leaves(wclient, token
     assert stub["subtype"] == "tombstone" and stub["hidden"] is True
     assert stub["user"] == slack.SLACKBOT_ID and stub["parent_user_id"] == slack.SLACKBOT_ID
     assert stub["text"] == slack.TOMBSTONE_TEXT and "team" not in stub
+    assert "bot_id" not in stub and "app_id" not in stub and "bot_profile" not in stub
     for query in ("deleted", "zarquonroot"):
         hits = wclient.post("/slack/api/search.messages", headers=h, data={"query": query}).json()[
             "messages"
@@ -6158,11 +6159,12 @@ def test_editing_a_corpus_message_leaves_one_search_hit(wclient, tokens, ro_conn
     h = _uh(tokens, email)
     cid = synth.slack_channel_id(channel)
     old_word = [w for w in content.split() if len(w) > 4][0].strip(".,?!")
-    wclient.post(
+    edited = wclient.post(
         "/slack/api/chat.update",
         headers=h,
         data={"channel": cid, "ts": ts, "text": "zarquon replaced the body"},
-    )
+    ).json()["message"]
+    assert "app_id" not in edited and "bot_profile" not in edited
     hits = wclient.post("/slack/api/search.messages", headers=h, data={"query": "zarquon"}).json()[
         "messages"
     ]
@@ -6401,26 +6403,83 @@ def test_a_thread_ts_naming_nothing_posts_top_level_and_an_unreadable_one_is_ref
     )
 
 
-@pytest.mark.parametrize("who", ["admin", "person"])
-def test_a_posted_message_carries_bot_id_and_blocks_and_no_subtype(wclient, tokens, admin_h, who):
-    # `_message` records the measurement: real carries `bot_id` and `blocks` on every message
-    # posted over the Web API, under a user token as well as a bot one, in history as well as in
-    # the echo, and no `subtype` on either. A corpus message carries `client_msg_id` and no
-    # `bot_id`, since it stands for one a Slack client posted.
-    h = admin_h if who == "admin" else _uh(tokens, "ava@acme.com")
+def test_a_posted_message_carries_bot_id_and_blocks_and_no_subtype(wclient, tokens, admin_h):
+    # `_bot_profile` records the measurement with one app's user and bot tokens: each of these
+    # six methods carries the app profile. Both tokens share the app, but have different bot ids;
+    # only the bot token's profile carries user_id. Corpus messages carry neither app field.
     cid = synth.slack_channel_id("incidents")
-    ts = wclient.post(
-        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "ci says"}
-    ).json()["ts"]
-    hist = wclient.post(
-        "/slack/api/conversations.history", headers=admin_h, data={"channel": cid, "limit": 200}
-    ).json()["messages"]
-    msg = [m for m in hist if m["ts"] == ts][0]
-    assert "bot_id" in msg and "blocks" in msg
-    assert "subtype" not in msg and "client_msg_id" not in msg
-    corpus = [m for m in hist if m["ts"] != ts and "client_msg_id" in m]
-    assert corpus, "the sample corpus has no plain message to contrast with"
-    assert "bot_id" not in corpus[0]
+    observed, expected = [], []
+    for who, h, bot_id in (
+        ("admin", admin_h, slack.BOT_ID),
+        ("person", _uh(tokens, "ava@acme.com"), "B0000USER0"),
+    ):
+        root = wclient.post(
+            "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "ci says"}
+        ).json()
+        reply = wclient.post(
+            "/slack/api/chat.postMessage",
+            headers=h,
+            data={"channel": cid, "text": "reply", "thread_ts": root["ts"]},
+        ).json()
+        ts = reply["ts"]
+        edited = wclient.post(
+            "/slack/api/chat.update",
+            headers=h,
+            data={"channel": cid, "ts": ts, "text": "edited reply"},
+        ).json()["message"]
+        history = wclient.post(
+            "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+        ).json()["messages"]
+        thread = wclient.post(
+            "/slack/api/conversations.replies", headers=h, data={"channel": cid, "ts": root["ts"]}
+        ).json()["messages"]
+        at = {"channel": cid, "timestamp": ts}
+        wclient.post("/slack/api/reactions.add", headers=h, data={**at, "name": "eyes"})
+        reacted = wclient.post("/slack/api/reactions.get", headers=h, data=at).json()["message"]
+        items = wclient.post("/slack/api/reactions.list", headers=h).json()["items"]
+        messages = [
+            ("post root", root["message"]),
+            ("post reply", reply["message"]),
+            ("update", edited),
+            ("history", next(m for m in history if m["ts"] == root["ts"])),
+            *(("replies", m) for m in thread if m["ts"] in (root["ts"], ts)),
+            ("reactions.get", reacted),
+            ("reactions.list", next(i["message"] for i in items if i["message"]["ts"] == ts)),
+        ]
+        profile = {
+            "app_id": "A0000BKLT",
+            "deleted": False,
+            "icons": {
+                f"image_{size}": f"https://avatar.example.com/A0000BKLT/{size}"
+                for size in (36, 48, 72)
+            },
+            "id": bot_id,
+            "name": "Backlot",
+            "team_id": slack.TEAM_ID,
+            "updated": synth.epoch("app:" + "A0000BKLT"),
+        }
+        if who == "admin":
+            profile["user_id"] = slack.SERVICE_USER_ID
+        for method, msg in messages:
+            observed.append(
+                (
+                    who,
+                    method,
+                    msg.get("app_id"),
+                    msg.get("bot_id"),
+                    msg.get("bot_profile"),
+                    "blocks" in msg,
+                    "subtype" in msg,
+                    "client_msg_id" in msg,
+                )
+            )
+            expected.append((who, method, "A0000BKLT", bot_id, profile, True, False, False))
+        corpus = next(m for m in history if "client_msg_id" in m)
+        observed.append(
+            (who, "corpus", any(k in corpus for k in ("app_id", "bot_profile", "bot_id")))
+        )
+        expected.append((who, "corpus", False))
+    assert observed == expected
 
 
 def test_an_author_with_a_differently_cased_address_can_edit_their_own_message(wclient, tokens):

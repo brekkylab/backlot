@@ -127,6 +127,13 @@ TEAM_ID = "T0000BKLT"
 SERVICE_EMAIL = "service-account"
 SERVICE_USER_ID = "USERVICE0"
 BOT_ID = "B0000BKLT"
+USER_BOT_ID = "B0000USER0"
+APP_ID = "A0000BKLT"
+APP_NAME = "Backlot"
+# Synthetic app assets, as the corpus's other generated identities are synthetic.
+BOT_ICONS = {
+    f"image_{size}": f"https://avatar.example.com/{APP_ID}/{size}" for size in (36, 48, 72)
+}
 #: The shape real requires of a `user` argument, quoted from the refusal it answers for one that
 #: does not match (measured 2026-10-22 on `chat.postEphemeral`).
 _SLACK_USER_ID = re.compile(r"^[UW][A-Z0-9]{2,}$")
@@ -3186,6 +3193,27 @@ def _is_written(row) -> bool:
     return "_written" in row.keys() and bool(row["_written"])
 
 
+def _bot_profile(bot_id: str, *, is_bot_token: bool) -> dict:
+    """The `bot_profile` object real Slack serves on API-posted messages.
+
+    Measured against slack.com on 2026-11-03: carries `app_id`, `deleted`, `icons`, `id`, `name`,
+    `team_id` and `updated`, and on a bot-token post also `user_id`. Its `id` matches the message's
+    `bot_id` and its `app_id` the message's `app_id`. On a user-token post `user_id` is omitted.
+    """
+    prof = {
+        "app_id": APP_ID,
+        "deleted": False,
+        "icons": dict(BOT_ICONS),
+        "id": bot_id,
+        "name": APP_NAME,
+        "team_id": TEAM_ID,
+        "updated": synth.epoch("app:" + APP_ID),
+    }
+    if is_bot_token:
+        prof["user_id"] = SERVICE_USER_ID
+    return prof
+
+
 def _message(
     row,
     reply_count: int = 0,
@@ -3205,11 +3233,17 @@ def _message(
         "team": TEAM_ID,
     }
     if row["author_email"] == SERVICE_EMAIL or _is_written(row):
-        # Real carries `bot_id` on every message posted through the Web API, over a user token
-        # as well as a bot one, in history as well as in the echo (measured 2026-10-22) — the
-        # app is what posted it either way. It is not a subtype that says so: a bot-token post
-        # has none. A corpus message stands for one a Slack client posted and carries none.
-        m["bot_id"] = BOT_ID
+        # Real carries `bot_id`, `app_id` and `bot_profile` on every message posted through the Web
+        # API, over a user token as well as a bot one, in history as well as in the echo (measured
+        # 2026-10-22 and 2026-11-03) — the app is what posted it either way. It is not a subtype
+        # that says so: a bot-token post has none. A corpus message stands for one a Slack client
+        # posted and carries none of the three.
+        is_bot = row["author_email"] == SERVICE_EMAIL
+        bot_id = BOT_ID if is_bot else USER_BOT_ID
+        m["bot_id"] = bot_id
+        if _is_written(row):
+            m["app_id"] = APP_ID
+            m["bot_profile"] = _bot_profile(bot_id, is_bot_token=is_bot)
     if row["subtype"] in (None, "thread_broadcast"):
         # `client_msg_id` is minted by the CLIENT that posted, and `blocks` is what that client
         # composed, so neither belongs on a message Slack itself generated — measured: a
@@ -3252,6 +3286,8 @@ def _message(
         m["parent_user_id"] = SLACKBOT_ID
         m.pop("team", None)
         m.pop("bot_id", None)
+        m.pop("app_id", None)
+        m.pop("bot_profile", None)
     broadcast = row["subtype"] == "thread_broadcast"
     if broadcast:
         # Measured against slack.com on 2026-10-30: a `thread_broadcast` carries no `team`, one

@@ -1425,13 +1425,15 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + f' and space = "{eng[0]}\\"\\"{eng[1:]}"', set()),
         (three + f' and space = "{eng[0]}\\{eng[1:]}"', set()),
         (three + ' and type = "pa\\"ge"', {"Guide", "Child", "Grand"}),
-        (three + ' and type = "pa\\ge"', set()),
         (three + ' and text ~ "De\\"ep"', {"Grand"}),
         (three + ' and text ~ "De\\ep"', {"Grand"}),
         (three + ' and text ~ "De\\\\ep"', set()),
         (three + ' and title ~ "Gu\\"ide"', {"Guide"}),
         (three + ' and title ~ "Gu\\ide"', {"Guide"}),
         (three + ' and title ~ "Gu\\\\ide"', set()),
+        # not real's answers: real refused `type = "pa\ge"` with a 400 naming `pa\ge`, and `label`
+        # was not measured, as no content there carried one; these pin how `_cql_unquote` reads them
+        (three + ' and type = "pa\\ge"', set()),
         (three + ' and label = "pag\\"er"', {"Child"}),
         (three + ' and label = "pag\\er"', set()),
         (three + " and id not in ({Guide})", {"Child", "Grand"}),
@@ -1458,11 +1460,13 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
             (f"id = '{first}\"{second}'", {"Guide"}),
             (f'id = "{guide}\\""', {"Guide"}),
             (f'id in ("{first}\\"{second}")', {"Guide"}),
+            (f'ancestor = "{first}\\"{second}"', {"Child", "Grand"}),
+            (f'parent = "{first}\\"{second}"', {"Child"}),
+            # not real's answers: real refused each of these with 400 `Can't parse as a ContentId`;
+            # they pin the value read with its backslash kept
             (f'id = "{first}\\"\\"{second}"', set()),
             (f'id = "{first}\\{second}"', set()),
-            (f'ancestor = "{first}\\"{second}"', {"Child", "Grand"}),
             (f'ancestor = "{first}\\{second}"', set()),
-            (f'parent = "{first}\\"{second}"', {"Child"}),
             (f'parent = "{first}\\{second}"', set()),
         ]
         answered = {}
@@ -4015,6 +4019,7 @@ _REFUSED, _FAILED = (
 )
 
 _NEXT_PAST_INT = errors_atlassian.search_next_out_of_range().body
+_ESCAPED_END_QUOTE = errors_atlassian.cql_escaped_end_quote('"a\\\\"').body
 
 # The CQL search's page over `searchable`'s four matches, by the rules `_cql_position`,
 # `_cql_cursor`, `_cql_search_after`, `errors_atlassian.search_next_out_of_range` and the comment on
@@ -4044,6 +4049,7 @@ _CQL_PAGE_ROWS = [
     ("&limit=2&cursor={c1}&cursor=", [2, 3], None),
     ("&limit=1&cursor={c1}&cursor={c2}", [2], 2),
     ("&limit=2&cursor=abc", (400, _REFUSED), None),
+    ("%20and%20title%20~%20%22a%5C%5C%22&limit=2&cursor=abc", (400, _ESCAPED_END_QUOTE), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=WyJcdDEiXQ%3D%3D_h_W10%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D_h_abc", (400, _REFUSED), None),
@@ -4136,25 +4142,6 @@ def test_confluence_cql_cursor_nested_deeper_than_the_json_reader_recurses_is_th
     with pytest.raises(errors_atlassian.AtlassianError) as refused:
         _cql_search_after(token)
     assert refused.value.body == errors_atlassian.search_cursor_refused().body
-
-
-def test_confluence_cql_search_refuses_an_escaped_end_quote_before_the_cursor(client, admin_h):
-    """A quoted value whose closing quote follows a backslash is refused ahead of the cursor's
-    refusal, which a sound query beside the same cursor still answers."""
-    escaped = {
-        "statusCode": 400,
-        "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
-        "message": _CQL_PREFIX + 'Escaped end quote in phrase query near : "a\\\\"',
-    }
-    rows = [
-        ({"cql": 'title ~ "a\\\\"', "cursor": "abc"}, escaped),
-        ({"cql": "type=page", "cursor": "abc"}, errors_atlassian.search_cursor_refused().body),
-    ]
-    answered = {}
-    for params, _ in rows:
-        r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params=params)
-        answered[tuple(params.items())] = (r.status_code, r.json())
-    assert answered == {tuple(params.items()): (400, want) for params, want in rows}
 
 
 def test_confluence_cql_cursor_finds_out_no_page_the_caller_cannot_see(tmp_path):
@@ -9355,10 +9342,18 @@ _CQL_PARSE_ROWS = [
             ),
             ('space.key = "\\\\"', 'Escaped end quote in phrase query near : "\\\\"'),
             ('space.key = "a\\\\\\\\"', 'Escaped end quote in phrase query near : "a\\\\\\\\"'),
-            (
-                'type= and title ~ "a\\\\"',
-                "Expecting a value for operator '=' after field 'type' but got 'and'",
-            ),
+            ('title ~ "a\\"', 'Escaped end quote in phrase query near : "a\\"'),
+            ("title ~ 'a\\'", "Escaped end quote in phrase query near : 'a\\'"),
+            ('title ~ "a\\\\\\"', 'Escaped end quote in phrase query near : "a\\\\\\"'),
+            ('space.key = "a\\"', 'Escaped end quote in phrase query near : "a\\"'),
+            ('label in ("a\\", b)', 'Escaped end quote in phrase query near : "a\\"'),
+            ('label in ("a\\", "b")', _CQL_NOT_PARSED),
+            ('title ~ "a\\" and title ~ "c"', _CQL_NOT_PARSED),
+            ('title ~ "a\\" and type = page', 'Escaped end quote in phrase query near : "a\\"'),
+            ('title ~ "a\\" and type =', "Expecting a value for operator '=' after field 'type'"),
+            ('title ~ "a\\\\" and type =', "Expecting a value for operator '=' after field 'type'"),
+            ('title ~ "a\\\\" and type in ()', _CQL_NOT_PARSED),
+            ('title ~ "a\\\\" and (type = page', "Missing closing parenthesis near field (()"),
             ("\U0001f600", _CQL_NOT_PARSED),
             ("type=page and", _CQL_NOT_PARSED),
             ("type=page or", _CQL_NOT_PARSED),

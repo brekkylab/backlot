@@ -440,10 +440,11 @@ def cql_missing_closing_parenthesis() -> AtlassianError:
 
 def cql_escaped_end_quote(text: str) -> AtlassianError:
     """The CQL search's refusal of a quoted value whose closing quote follows a backslash, named
-    as sent with its quotes: `title ~ "a\\\\"` answered `Escaped end quote in phrase query near :
-    "a\\\\"`, and so did the same value in `label`, `space` and `space.key`, in single quotes and
-    inside an `in` list, and two and four backslashes before the closing quote (Confluence Cloud,
-    2026-10-30). Two backslashes in the middle of a value were not refused."""
+    as sent with its quotes. On Confluence Cloud on 2026-10-30 `title ~ "a\\\\"` answered
+    `Escaped end quote in phrase query near : "a\\\\"`, and so did the same value in `label`,
+    `space` and `space.key`, in single quotes and inside an `in` list, and four backslashes before
+    the closing quote, and on 2026-11-04 one backslash and three (`title ~ "a\\"` naming `"a\\"`).
+    Two backslashes in the middle of a value were not refused (2026-10-26)."""
     return _service_refusal(
         400, "api.BadRequestException", f"Escaped end quote in phrase query near : {text}"
     )

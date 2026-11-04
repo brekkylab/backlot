@@ -3199,7 +3199,8 @@ _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
 
 # CQL as real's reader splits it, measured on Confluence Cloud on 2026-10-22 and 2026-10-25, the
 # second time with `title~a<c>b` and `title~a<c>` for each ASCII punctuation character `<c>`: a
-# quoted value in either quotes, in which a backslash keeps the next character; an operator, a
+# quoted value in either quotes, in which a backslash keeps the next character, or which runs to
+# the next quote where that reading finds no closing one (`"a\"` on 2026-11-04); an operator, a
 # bracket or a comma; a date such as `2026-01-01` and a number, both in ASCII digits; and a word of
 # ASCII letters, digits and `_`, dotted as `space.key` is. A control character, one past ASCII and
 # those in `DROPPED` are left out as a space is: `title ~ probe*` is `title ~ probe`, `title~a#b`
@@ -3207,7 +3208,7 @@ _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
 # fullwidth one) had no value. Each other character is a token no clause takes, so `label=a-b` and
 # `title~a:b` cannot be parsed.
 _CQL_TOKEN = re.compile(
-    r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
+    r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|"[^"]*"|'[^']*')"""
     r"|(?P<OP>!=|!~|>=|<=|=|~|>|<)"
     r"|(?P<PUNCT>[(),])"
     r"|(?P<DATE>[0-9]{4}-[0-9]{2}-[0-9]{2})"
@@ -3425,11 +3426,13 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
 def _cql_escaped_end_quote(tokens: list[tuple[str, str]]):
     """The 400 real answers a quoted value whose closing quote follows a backslash, or None when
     no value ends that way: ``errors.atlassian.cql_escaped_end_quote`` naming the first such
-    value as sent, with its quotes. The tokeniser swallows `\"` as an escape, so such a value
-    still arrives here as one `QUOTED` token, its closing quote straight after a backslash; two
-    backslashes in the middle of a value do not end it that way. Called after
-    `_cql_refusal` and before `_cql_search_after`, which is where the refusal falls on real: after
-    each other refusal of the CQL and before the cursor's (Confluence Cloud, 2026-10-31)."""
+    value as sent, with its quotes. With an even number of backslashes before a quote,
+    `_CQL_TOKEN` reads them in pairs and the quote closes the value; with an odd number the quote
+    is escaped, and where no later quote closes the value the token ends at it all the same. Each
+    of those tokens ends in a backslash and its quote; two backslashes in the middle of a value do
+    not end it that way. Called after `_cql_refusal` and before `_cql_search_after`, which is
+    where the refusal falls on real: after each other refusal of the CQL and before the cursor's
+    (Confluence Cloud, 2026-10-31)."""
     for kind, text in tokens:
         if kind == "QUOTED" and text[-2] == "\\":
             return errors_atlassian.cql_escaped_end_quote(text)
@@ -3442,15 +3445,16 @@ class _CQLParseError(Exception):
 
 
 def _cql_unquote(kind: str, text: str, field: str | None = None) -> str:
-    """A token's value: a quoted value without its quotes, any other value as sent. A `\"` reads
-    as a `"` in every field, and where that leaves an odd number of them the last one is taken
-    out, as :func:`_cql_space_value` reads it for `space.key`; a backslash before any other
-    character stays, except in `title`, `text`, `sitesearch` and `space.title`, where it reads as
-    that character. Measured on Confluence Cloud on 2026-10-30 for `space` and `space.key` and on
+    """A token's value: a quoted value without its quotes, any other value as sent. A `\\"` reads
+    as a `"`, and where that leaves an odd number of them the last one is taken out, as
+    :func:`_cql_space_value` reads it for `space.key`; a backslash before any other character
+    stays, except in `title`, `text`, `sitesearch` and `space.title`, where it reads as that
+    character. Measured on Confluence Cloud on 2026-10-30 for `space` and `space.key` and on
     2026-10-31 for nine more fields and for `title` and `text` under `~`: `space = "K\\"EY"` and
     `space = "KEY\\""` found the pages of `KEY`, `space = "K\\EY"` none, and `title ~ "A\\B"` what
-    `"V"` found where `V` is the value split as `A` and `B`. `label` was not measured; it keeps
-    the backslash with the other structured fields."""
+    `"V"` found where `V` is the value split as `A` and `B`. `label` was not measured, since no
+    content on the measured site carried one (2026-11-04); it is read as the other structured
+    fields are, and `sitesearch` as `text` is."""
     if kind != "QUOTED":
         return text
     value = text[1:-1].replace('\\"', '"')

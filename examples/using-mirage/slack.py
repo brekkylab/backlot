@@ -97,7 +97,7 @@ def main_fuse(vfs) -> None:
     with Workspace({"/slack": vfs}, mode=MountMode.READ) as ws:
         try:
             mnt = ws.add_fuse_mount("/slack")  # "/slack" is now a real directory on disk
-        except (ImportError, RuntimeError, OSError) as e:
+        except (RuntimeError, OSError) as e:
             raise SystemExit(FUSE_HELP.format(err=e))
         print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
         channel = sorted(os.listdir(f"{mnt}/channels"))[0]

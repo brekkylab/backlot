@@ -86,7 +86,7 @@ def main_fuse(vfs) -> None:
     with Workspace({"/s3": vfs}, mode=MountMode.READ) as ws:
         try:
             mnt = ws.add_fuse_mount("/s3")  # "/s3" is now a real directory on disk
-        except (ImportError, RuntimeError, OSError) as e:
+        except (RuntimeError, OSError) as e:
             raise SystemExit(FUSE_HELP.format(err=e))
         print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
         objs = [os.path.join(r, f) for r, _dirs, files in os.walk(mnt) for f in files]

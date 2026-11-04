@@ -136,7 +136,7 @@ def main_fuse(mounts: dict) -> None:
     with Workspace(mounts, mode=MountMode.READ) as ws:
         try:
             mnt = ws.add_fuse_mount("/")  # the workspace root is now one real directory
-        except (ImportError, RuntimeError, OSError) as e:
+        except (RuntimeError, OSError) as e:
             raise SystemExit(FUSE_HELP.format(err=e))
         backends = [p.strip("/") for p in mounts]
         print(f"=== mounted at {mnt}: {', '.join(backends)} — one filesystem ===")

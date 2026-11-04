@@ -125,7 +125,7 @@ def main_fuse(vfs) -> None:
     with Workspace({"/linear": vfs}, mode=MountMode.READ) as ws:
         try:
             mnt = ws.add_fuse_mount("/linear")  # "/linear" is now a real directory on disk
-        except (ImportError, RuntimeError, OSError) as e:
+        except (RuntimeError, OSError) as e:
             raise SystemExit(FUSE_HELP.format(err=e))
         print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
         team = sorted(os.listdir(f"{mnt}/teams"))[0]

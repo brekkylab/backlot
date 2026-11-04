@@ -1419,6 +1419,21 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + f" and space.key = '{eng[0]}\"{eng[1:]}'", {"Guide", "Child", "Grand"}),
         (three + f' and space.key = "{eng[0]}\\{eng[1:]}"', set()),
         (three + f' and space.key = "{eng[0]}\\"\\"{eng[1:]}"', set()),
+        (three + f' and space = "{eng[0]}\\"{eng[1:]}"', {"Guide", "Child", "Grand"}),
+        (three + f" and space = '{eng[0]}\"{eng[1:]}'", {"Guide", "Child", "Grand"}),
+        (three + f' and space = "{eng}\\""', {"Guide", "Child", "Grand"}),
+        (three + f' and space = "{eng[0]}\\"\\"{eng[1:]}"', set()),
+        (three + f' and space = "{eng[0]}\\{eng[1:]}"', set()),
+        (three + ' and type = "pa\\"ge"', {"Guide", "Child", "Grand"}),
+        (three + ' and type = "pa\\ge"', set()),
+        (three + ' and text ~ "De\\"ep"', {"Grand"}),
+        (three + ' and text ~ "De\\ep"', {"Grand"}),
+        (three + ' and text ~ "De\\\\ep"', set()),
+        (three + ' and title ~ "Gu\\"ide"', {"Guide"}),
+        (three + ' and title ~ "Gu\\ide"', {"Guide"}),
+        (three + ' and title ~ "Gu\\\\ide"', set()),
+        (three + ' and label = "pag\\"er"', {"Child"}),
+        (three + ' and label = "pag\\er"', set()),
         (three + " and id not in ({Guide})", {"Child", "Grand"}),
         (three + " and (id={Guide} or id not in ({Guide},{Child}))", {"Guide", "Grand"}),
         # beside a field this route does not read, which held for each of the three
@@ -1435,6 +1450,21 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         h = {"Authorization": f"Bearer {written['admin_token']}"}
         content = c.get("/atlassian/wiki/rest/api/content", headers=h).json()["results"]
         ids = {r["title"]: r["id"] for r in content}
+        guide = str(ids["Guide"])
+        half = len(guide) // 2
+        first, second = guide[:half], guide[half:]
+        rows += [
+            (f'id = "{first}\\"{second}"', {"Guide"}),
+            (f"id = '{first}\"{second}'", {"Guide"}),
+            (f'id = "{guide}\\""', {"Guide"}),
+            (f'id in ("{first}\\"{second}")', {"Guide"}),
+            (f'id = "{first}\\"\\"{second}"', set()),
+            (f'id = "{first}\\{second}"', set()),
+            (f'ancestor = "{first}\\"{second}"', {"Child", "Grand"}),
+            (f'ancestor = "{first}\\{second}"', set()),
+            (f'parent = "{first}\\"{second}"', {"Child"}),
+            (f'parent = "{first}\\{second}"', set()),
+        ]
         answered = {}
         for template, _ in rows:
             cql = template.format(**ids)
@@ -4106,6 +4136,25 @@ def test_confluence_cql_cursor_nested_deeper_than_the_json_reader_recurses_is_th
     with pytest.raises(errors_atlassian.AtlassianError) as refused:
         _cql_search_after(token)
     assert refused.value.body == errors_atlassian.search_cursor_refused().body
+
+
+def test_confluence_cql_search_refuses_an_escaped_end_quote_before_the_cursor(client, admin_h):
+    """A quoted value whose closing quote follows a backslash is refused ahead of the cursor's
+    refusal, which a sound query beside the same cursor still answers."""
+    escaped = {
+        "statusCode": 400,
+        "data": {"authorized": True, "valid": True, "errors": [], "successful": True},
+        "message": _CQL_PREFIX + 'Escaped end quote in phrase query near : "a\\\\"',
+    }
+    rows = [
+        ({"cql": 'title ~ "a\\\\"', "cursor": "abc"}, escaped),
+        ({"cql": "type=page", "cursor": "abc"}, errors_atlassian.search_cursor_refused().body),
+    ]
+    answered = {}
+    for params, _ in rows:
+        r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params=params)
+        answered[tuple(params.items())] = (r.status_code, r.json())
+    assert answered == {tuple(params.items()): (400, want) for params, want in rows}
 
 
 def test_confluence_cql_cursor_finds_out_no_page_the_caller_cannot_see(tmp_path):
@@ -9251,7 +9300,15 @@ _CQL_PARSE_ROWS = [
                 "space.key in ( 'handbook' , 'ab' )",
             ),
             ('space = "han\\"dbook"', 'space = "han\\"dbook"'),
+            ("space = 'han\"dbook'", "space = 'han\"dbook'"),
+            ('space = "handbook\\""', 'space = "handbook\\""'),
+            ('space = "han\\"\\"dbook"', 'space = "han\\"\\"dbook"'),
+            ('space = "han\\dbook"', 'space = "han\\dbook"'),
             ('space = "handbook"', 'space = "handbook"'),
+            ('type = "pa\\"ge"', 'type = "pa\\"ge"'),
+            ('type = "pa\\ge"', 'type = "pa\\ge"'),
+            ('title~"a\\b"', 'title ~ "a\\b"'),
+            ("title~'a\"b'", "title ~ 'a\"b'"),
             ('created>now("-1d")', 'created > now ( "-1d" )'),
             ("created>startOfDay()", "created > startOfDay ( )"),
             ("created >= 2026-01-01 and type=page", "created >= 2026-01-01 and type = page"),
@@ -9287,6 +9344,20 @@ _CQL_PARSE_ROWS = [
             (
                 'space.key = "a\'b" and title~',
                 "Expecting a value for operator '~' after field 'title'",
+            ),
+            ('title ~ "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ('label = "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ('space = "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ("space.key = 'a\\\\'", "Escaped end quote in phrase query near : 'a\\\\'"),
+            (
+                'space.key in ("a\\\\", handbook)',
+                'Escaped end quote in phrase query near : "a\\\\"',
+            ),
+            ('space.key = "\\\\"', 'Escaped end quote in phrase query near : "\\\\"'),
+            ('space.key = "a\\\\\\\\"', 'Escaped end quote in phrase query near : "a\\\\\\\\"'),
+            (
+                'type= and title ~ "a\\\\"',
+                "Expecting a value for operator '=' after field 'type' but got 'and'",
             ),
             ("\U0001f600", _CQL_NOT_PARSED),
             ("type=page and", _CQL_NOT_PARSED),

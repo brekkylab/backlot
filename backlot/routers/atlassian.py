@@ -2102,6 +2102,9 @@ async def confluence_cql_search(request: Request):
     refusal = _cql_refusal(tokens)
     if refusal is not None:
         raise refusal
+    escaped = _cql_escaped_end_quote(tokens)
+    if escaped is not None:
+        raise escaped
     # An empty `cursor` is none, and of a repeated one the first is read, measured 2026-10-04.
     sent_cursor = (request.query_params.getlist("cursor") or [None])[0]
     after = _cql_search_after(sent_cursor) if sent_cursor else None
@@ -3419,17 +3422,43 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     return None
 
 
+def _cql_escaped_end_quote(tokens: list[tuple[str, str]]):
+    """The 400 real answers a quoted value whose closing quote follows a backslash, or None when
+    no value ends that way: ``errors.atlassian.cql_escaped_end_quote`` naming the first such
+    value as sent, with its quotes. The tokeniser swallows `\"` as an escape, so such a value
+    still arrives here as one `QUOTED` token, its closing quote straight after a backslash; two
+    backslashes in the middle of a value do not end it that way. Called after
+    `_cql_refusal` and before `_cql_search_after`, which is where the refusal falls on real: after
+    each other refusal of the CQL and before the cursor's (Confluence Cloud, 2026-10-31)."""
+    for kind, text in tokens:
+        if kind == "QUOTED" and text[-2] == "\\":
+            return errors_atlassian.cql_escaped_end_quote(text)
+    return None
+
+
 class _CQLParseError(Exception):
     """A token shape the boolean reader below does not cover; the caller falls back to the
     clause readers in :func:`confluence_cql_search` rather than failing the request."""
 
 
-def _cql_unquote(kind: str, text: str) -> str:
-    """A token's value: a quoted value without its quotes and with its backslash escapes
-    resolved, any other value as sent."""
+def _cql_unquote(kind: str, text: str, field: str | None = None) -> str:
+    """A token's value: a quoted value without its quotes, any other value as sent. A `\"` reads
+    as a `"` in every field, and where that leaves an odd number of them the last one is taken
+    out, as :func:`_cql_space_value` reads it for `space.key`; a backslash before any other
+    character stays, except in `title`, `text`, `sitesearch` and `space.title`, where it reads as
+    that character. Measured on Confluence Cloud on 2026-10-30 for `space` and `space.key` and on
+    2026-10-31 for nine more fields and for `title` and `text` under `~`: `space = "K\\"EY"` and
+    `space = "KEY\\""` found the pages of `KEY`, `space = "K\\EY"` none, and `title ~ "A\\B"` what
+    `"V"` found where `V` is the value split as `A` and `B`. `label` was not measured; it keeps
+    the backslash with the other structured fields."""
     if kind != "QUOTED":
         return text
-    return re.sub(r"\\(.)", r"\1", text[1:-1], flags=re.S)
+    value = text[1:-1].replace('\\"', '"')
+    if value.count('"') % 2:
+        value = "".join(value.rsplit('"', 1))
+    if field in ("title", "text", "sitesearch", "space.title"):
+        value = re.sub(r"\\(.)", r"\1", value, flags=re.S)
+    return value
 
 
 # The fields :func:`confluence_cql_search` reads, and the operators each takes. Anything else (a
@@ -3493,7 +3522,7 @@ def _cql_parse(tokens: list[tuple[str, str]]):
                 at += 1
         if field == "space.key":  # read as real reads it, see `_cql_space_value`
             return _cql_space_value(kind, text)
-        return _cql_unquote(kind, text)
+        return _cql_unquote(kind, text, field)
 
     def atom():
         nonlocal at

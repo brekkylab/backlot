@@ -186,8 +186,9 @@ def json_media_type(path: str, status_code: int) -> str | None:
 # include the other Unicode space separators. Measured on both products, 2026-09-15: a value
 # holding U+00A0, U+2007 or U+202F between its digits is a 400 naming that value, while the same
 # value holding U+2003, U+0020, a tab or a newline is thirty-four. Python's own `str.isspace()`
-# calls all seven whitespace, so the three are put back by hand.
-_JAVA_NON_WHITESPACE = "\u00a0\u2007\u202f"
+# calls all seven whitespace, so the three are put back by hand, and so is U+0085, the one other
+# character Python calls whitespace and Java does not (`%C2%852` is a 400 naming it, 2026-11-04).
+_JAVA_NON_WHITESPACE = "\u00a0\u2007\u202f\u0085"
 
 
 def strip_java_whitespace(raw: str) -> str:
@@ -265,6 +266,26 @@ def _jira_tomcat_refusal(status: int, headers: dict[str, str]) -> AtlassianError
     )
 
 
+def _spring_number_failure(text: str) -> str:
+    """The `NumberFormatException` message Spring's `NumberUtils.parseNumber` throws for ``text``,
+    the value already cleaned of whitespace. Past an optional `-`, `0x`, `0X` or `#` sends it to
+    Java's `Integer.decode`, which throws on a sign behind the prefix and otherwise retries the
+    digits with the `-` put back in front, so the radix-16 message names those; any other value
+    goes to `Integer.valueOf`, whose message names it whole and carries no radix. Measured on
+    Confluence's space and content listings, 2026-11-04: `0x` and `#` name `""`, `-0xZ` names
+    `"-Z"`, `0x80000000` names `"80000000"` and `0x-2` is the sign message."""
+    index = 1 if text.startswith("-") else 0
+    if text.startswith(("0x", "0X"), index):
+        digits = text[index + 2 :]
+    elif text.startswith("#", index):
+        digits = text[index + 1 :]
+    else:
+        return f'For input string: "{text}"'
+    if digits.startswith(("-", "+")):
+        return "Sign character in wrong position"
+    return f'For input string: "{text[:index]}{digits}" under radix 16'
+
+
 def integer_conversion_failure(path: str, name: str, values: list[str]) -> AtlassianError:
     """The 400 either product answers for a query parameter it cannot read as an ``int``, which
     Jira also answers for one it cannot read as a boolean and for a path variable it cannot read as
@@ -299,7 +320,7 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
                     "org.springframework.web.method.annotation."
                     "MethodArgumentTypeMismatchException: Failed to convert value of type "
                     f"'{java_type}' to required type 'int'; nested exception is "
-                    f'java.lang.NumberFormatException: For input string: "{shown}"'
+                    f"java.lang.NumberFormatException: {_spring_number_failure(shown)}"
                 ),
             },
         )

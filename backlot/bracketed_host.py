@@ -114,9 +114,8 @@ def _refused_ahead(scope: Scope) -> bool:
     (``backlot.request_target.escape_answer``); on Notion and HubSpot an escape Cloudflare refuses
     (``backlot.request_target.refused_escape``); in front of Jira and Confluence the CDN's 400s and
     405s (``backlot.errors.atlassian.cdn_refusal``), where its 403s come after the `Host`'s; and on
-    Linear and Fireflies `TRACE`, a path Cloudflare refuses
-    (``backlot.request_target.refused_path``) and one the end cuts in a `%`
-    (``backlot.request_target.cut_escape``).
+    Linear and Fireflies `TRACE` and a path Cloudflare refuses
+    (``backlot.request_target.refused_path``).
 
     Measured on 2026-11-03 (UTC) beside `[0:0]` and `[v1.x]` and beside the door's own `Host`. Each
     front door answered a raw byte of each kind in the path as the table
@@ -125,9 +124,10 @@ def _refused_ahead(scope: Scope) -> bool:
     Cloudflare's 400 page; GitHub answered a target of 8,214 bytes with its 414. Jira and Confluence
     answered `%00`, `%zz`, `TRACE` and `CONNECT`, and Jira `MKCALENDAR` and `UNSUBSCRIBE`, as they
     did under the tenant's `Host`, and `PROPFIND`, `PATCH`, `/..;/`, a `%3Cscript%3E` segment and a
-    `;` with the CDN's 403 for the `Host`. Linear and Fireflies answered `%00`, `%zz`, `%2` at the
-    end, `/../graphql` and `TRACE` as under their own `Host`, and `CONNECT` and `PURGE` as the
-    `Host` says. Notion and HubSpot answered `%zz`, with more path after it or none, and HubSpot a
+    `;` with the CDN's 403 for the `Host`. Linear and Fireflies answered `%00`, `%zz`, `/../graphql`
+    and `TRACE` as under their own `Host`, and `CONNECT` and `PURGE` as the `Host` says, and on
+    2026-11-04 beside `[x]` as well a `%2` or `%` that ends a path sent with no `?` as the `Host`
+    says. Notion and HubSpot answered `%zz`, with more path after it or none, and HubSpot a
     `%2` a query followed, as under their own `Host`, and a `{` and Notion a `%2` that ends the
     target as the `Host` says. GitHub and Graph answered the `Host` beside `%00`, GitHub beside a
     broken escape in its query, Slack beside a broken escape, Slack, Drive, Jira, Confluence and
@@ -153,11 +153,7 @@ def _refused_ahead(scope: Scope) -> bool:
     if any(_under(path, p) for p in ("/linear", "/fireflies")):
         own = b"/" + sent.partition(b"/")[2].partition(b"/")[2]
         ends = request_target.path_ends_the_target(scope)
-        return (
-            method == "TRACE"
-            or request_target.refused_path(own, ends)
-            or request_target.cut_escape(own, ends)
-        )
+        return method == "TRACE" or request_target.refused_path(own, ends)
     return False
 
 

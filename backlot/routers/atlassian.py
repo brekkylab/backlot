@@ -2286,7 +2286,7 @@ async def confluence_cql_search(request: Request):
         raise errors_atlassian.search_next_out_of_range()
     results = []
     for r in rows:
-        page = _confluence_page(conn, request, r, "version,space")
+        page = _confluence_page(conn, request, r, "")
         results.append(
             {
                 "content": page,
@@ -2397,7 +2397,13 @@ async def confluence_content_get(content_id: str, request: Request):
     row = store.confluence_by_id(conn, content_id, visible_ids=ids)
     if row is None or attachment:
         raise errors_atlassian.content_not_found("content", content_id, attachment=attachment)
-    return _confluence_page(conn, request, row, _str_param(request, "expand", "body.storage"))
+    # With no `expand` sent, or an empty one, real expands `space`, `history` and `version` and
+    # leaves the body unexpanded, measured on Confluence Cloud on 2026-10-23; a sent one expands
+    # exactly what it names (:func:`_confluence_page`).
+    expand = _str_param(request, "expand", None)
+    if not expand:
+        expand = "space,history,version"
+    return _confluence_page(conn, request, row, expand)
 
 
 @router.get(
@@ -2715,38 +2721,85 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
     # version number: BYO override, else 2 if the page was updated after creation, else 1
     vnum = row["version_number"] or (2 if row["updated_ts"] and row["updated_ts"] != created else 1)
     webui = f"/spaces/{key}/{ctype}s/{cid}"
+    # The properties `expand` names, read up to the first dot: the part before it is the
+    # property, and what follows names something inside that property — so `body.storage`
+    # expands `body`'s storage representation and `history.lastUpdated` expands `history`.
+    # Measured on Confluence Cloud on 2026-11-03; a padded term (` space`, `space `) names
+    # nothing, as real expands nothing for it, so terms are deliberately not stripped.
+    wanted: dict[str, set[str]] = {}
+    for term in (expand or "").split(","):
+        head, _, sub = term.partition(".")
+        if head:
+            wanted.setdefault(head, set()).update([sub.partition(".")[0]] if sub else [])
     page = {
         "id": str(cid),
         "type": ctype,
         "status": "current",
         "title": row["title"],
-        "space": {
+    }
+    if "space" in wanted:
+        page["space"] = {
             "id": synth.github_user_id(row["space"]),
             "key": key,
             "name": row["space"],
             "type": "global",
             "_links": {"webui": f"/spaces/{key}"},
-        },
-        "_links": {
-            "webui": webui,
-            "tinyui": f"/x/{cid}",
-            "editui": f"/pages/resumedraft.action?draftId={cid}",
-            "self": f"{_site(request)}/wiki/rest/api/content/{cid}",
-        },
-        "_expandable": {
-            "childTypes": "",
-            "container": f"/rest/api/space/{key}",
-            "metadata": "",
-            "operations": "",
-            "restrictions": "",
-            "history": f"/rest/api/content/{cid}/history",
-            "ancestors": "",
-            "body": "",
-            "version": "",
-            "descendants": "",
-        },
+        }
+    page["_links"] = {
+        "webui": webui,
+        "tinyui": f"/x/{cid}",
+        "editui": f"/pages/resumedraft.action?draftId={cid}",
+        "self": f"{_site(request)}/wiki/rest/api/content/{cid}",
     }
-    if "history" in expand or "version" in expand:
+
+    # The representations this server renders for a `body` expansion, in the order they are served.
+    def atlas_doc_format() -> str:
+        import json as _json
+
+        return _json.dumps(_adf(row["content"]))
+
+    body_writers = {
+        "storage": lambda: _storage(row["content"]),
+        "view": lambda: _view(row["content"]),
+        "export_view": lambda: _export_view(row["content"]),
+        "atlas_doc_format": atlas_doc_format,
+    }
+    body_named = [name for name in body_writers if name in wanted.get("body", ())]
+    # The representations real names under `body._expandable`, in real's order, measured on
+    # Confluence Cloud on 2026-11-03: the four rendered above plus six this server does not
+    # render, which a `body.editor` expansion leaves unexpanded.
+    body_representations = (
+        "editor",
+        "atlas_doc_format",
+        "view",
+        "export_view",
+        "styled_view",
+        "markdown",
+        "dynamic",
+        "storage",
+        "editor2",
+        "anonymous_export_view",
+    )
+    expandable = {
+        "childTypes": "",
+        "container": f"/rest/api/space/{key}",
+        "metadata": "",
+        "operations": "",
+        "restrictions": "",
+        "history": f"/rest/api/content/{cid}/history",
+        "ancestors": "",
+        "body": "",
+        "version": "",
+        "descendants": "",
+        "space": f"/rest/api/space/{key}",
+    }
+    # `space` was served above, before this dict existed, so it leaves `_expandable` here.
+    if "space" in wanted:
+        expandable.pop("space")
+    # A property that is served leaves `_expandable`: on the bare read real's `_expandable` lists
+    # `body` and none of the three that read expanded, measured on 2026-10-23.
+    if "history" in wanted:
+        expandable.pop("history")
         page["history"] = {
             "latest": True,
             "createdDate": synth.rfc3339_millis(created),
@@ -2757,7 +2810,8 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                 "number": vnum,
             },
         }
-    if "version" in expand:
+    if "version" in wanted:
+        expandable.pop("version")
         page["version"] = {
             "number": vnum,
             "when": synth.rfc3339_millis(updated),
@@ -2765,29 +2819,15 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             "minorEdit": bool(row["minor_edit"]),
             "message": row["version_message"] or "",
         }
-    if "body.storage" in expand:
-        page.setdefault("body", {})["storage"] = {
-            "value": _storage(row["content"]),
-            "representation": "storage",
-        }
-    if "body.view" in expand:
-        page.setdefault("body", {})["view"] = {
-            "value": _view(row["content"]),
-            "representation": "view",
-        }
-    if "body.export_view" in expand:
-        page.setdefault("body", {})["export_view"] = {
-            "value": _export_view(row["content"]),
-            "representation": "export_view",
-        }
-    if "body.atlas_doc_format" in expand:
-        import json as _json
-
-        page.setdefault("body", {})["atlas_doc_format"] = {
-            "value": _json.dumps(_adf(row["content"])),
-            "representation": "atlas_doc_format",
-        }
-    if "metadata.labels" in expand or "metadata" in expand:
+    if "body" in wanted:
+        expandable.pop("body")
+        body = {}
+        for name in body_named:
+            body[name] = {"value": body_writers[name](), "representation": name}
+        unexpanded = [name for name in body_representations if name not in body_named]
+        body["_expandable"] = dict.fromkeys(unexpanded, "")
+        page["body"] = body
+    if "metadata" in wanted:
         labels = store.jcol(row, "labels")
         page["metadata"] = {
             "labels": {
@@ -2805,7 +2845,8 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                 "size": len(labels),
             }
         }
-    if "ancestors" in expand:
+        expandable.pop("metadata")
+    if "ancestors" in wanted:
         ancestors, pid = [], row["parent_id"]
         while pid:
             prow = store.get_document(conn, "confluence", pid)
@@ -2824,6 +2865,9 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             )
             pid = prow["parent_id"]
         page["ancestors"] = ancestors
+        expandable.pop("ancestors")
+    # `_expandable` is assigned last, so a property served above has already left it.
+    page["_expandable"] = expandable
     return page
 
 

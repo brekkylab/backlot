@@ -96,7 +96,7 @@ class Bound:
 
     def refused(self, line: bytes, ended: bool, blank: int) -> bytes | None:
         """``backlot.request_target.refused_in_the_line``'s answer to ``line`` at this bound, as
-        :func:`_answer` sends it, ``ended`` where its LF came and ``blank`` as :meth:`answer` takes
+        :func:`written` sends it, ``ended`` where its LF came and ``blank`` as :meth:`answer` takes
         it. ``ahead`` is read off the pieces a head written at once is cut into, from the first byte
         written, the empty lines' included, and a bound that does not count those lines is reached
         that many bytes later: on Slack, with a CRLF, an LF, or 4,096 or 4,200 bytes of CRLFs ahead
@@ -112,14 +112,18 @@ class Bound:
             self.per_line or (blank + len(line) - self.mount) // PIECE < reached // PIECE
         )
         refused = request_target.refused_in_the_line(self.door, line, ended, ahead)
-        return None if refused is None else _answer(*refused)
+        return None if refused is None else written(*refused)
 
 
-def _answer(status_line: str, media_type: str | None, body: bytes) -> bytes:
-    """``body`` as a front door sends it here (the module docstring says which headers)."""
+def written(
+    status_line: str, media_type: str | None, body: bytes, headers: dict[str, str] | None = None
+) -> bytes:
+    """``body`` as a front door sends it here, with ``headers`` after `Content-Type`."""
     head = f"{status_line}\r\n"
     if media_type is not None:
         head += f"Content-Type: {media_type}\r\n"
+    for name, value in (headers or {}).items():
+        head += f"{name}: {value}\r\n"
     return f"{head}Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body
 
 
@@ -164,14 +168,15 @@ CLOUDFLARE_PAGE_HEADER = (
     b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
 )
 
-_GRAPH = "text/html; charset=us-ascii"
-_SLACK_431 = _answer(
+#: Graph's pages' `Content-Type`.
+GRAPH_TYPE = "text/html; charset=us-ascii"
+_SLACK_431 = written(
     "HTTP/1.1 431 Request Header Fields Too Large", "text/plain", b"Request Header Fields Too Large"
 )
-_GOOGLE_413 = _answer(
+_GOOGLE_413 = written(
     "HTTP/1.0 413 Request Entity Too Large", "text/html; charset=UTF-8", GOOGLE_PAGE_413
 )
-_S3_400 = _answer("HTTP/1.1 400 Bad Request", None, b"")
+_S3_400 = written("HTTP/1.1 400 Bad Request", None, b"")
 
 #: Each front door's bound but Jira Cloud's (:func:`bound`).
 _BOUNDS = {
@@ -179,8 +184,8 @@ _BOUNDS = {
         68_552,
         per_line=False,
         refuses_its_end=False,
-        in_line=_answer("HTTP/1.1 414 URI Too Long", "text/html", GITHUB_PAGE_414),
-        in_headers=_answer(
+        in_line=written("HTTP/1.1 414 URI Too Long", "text/html", GITHUB_PAGE_414),
+        in_headers=written(
             "HTTP/1.1 431 Request Header Fields Too Large", "text/html", GITHUB_PAGE_431
         ),
     ),
@@ -204,8 +209,8 @@ _BOUNDS = {
         131_072,
         per_line=True,
         refuses_its_end=False,
-        in_line=_answer("HTTP/1.1 414 Request-URI Too Large", "text/html", CLOUDFLARE_PAGE_414),
-        in_headers=_answer("HTTP/1.1 400 Bad Request", "text/html", CLOUDFLARE_PAGE_HEADER),
+        in_line=written("HTTP/1.1 414 Request-URI Too Large", "text/html", CLOUDFLARE_PAGE_414),
+        in_headers=written("HTTP/1.1 400 Bad Request", "text/html", CLOUDFLARE_PAGE_HEADER),
     ),
     "s3": Bound(
         16_384,
@@ -218,16 +223,16 @@ _BOUNDS = {
         40_960,
         per_line=False,
         refuses_its_end=True,
-        in_line=_answer(
+        in_line=written(
             "HTTP/1.1 414 Request-URI Too Long",
-            _GRAPH,
+            GRAPH_TYPE,
             request_target.graph_page(
                 414, "Request URL Too Long", "Request URL Too Long", "The request URL is too long."
             ),
         ),
-        in_headers=_answer(
+        in_headers=written(
             "HTTP/1.1 400 Bad Request",
-            _GRAPH,
+            GRAPH_TYPE,
             request_target.graph_page(
                 400,
                 "Bad Request",
@@ -254,10 +259,10 @@ def bound(start: bytes) -> Bound | None:
     mount = len(prefix) - 1 if prefix and unquoted == prefix else len(prefix)
     if door == "atlassian":
         line, headers = (
-            _answer(
+            written(
                 status_line,
                 "text/html",
-                errors.atlassian.cdn_too_long(status, method.decode("latin-1"), path).encode(),
+                errors.atlassian.cdn_page(status, method.decode("latin-1"), path).encode(),
             )
             for status, status_line in (
                 (414, "HTTP/1.1 414 Request-URI Too Large"),

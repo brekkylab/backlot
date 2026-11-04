@@ -21,9 +21,9 @@ import urllib.parse
 
 import pytest
 import uvicorn
-from uvicorn.server import ServerState
 
 from backlot import head_bounds, protocol, request_target
+from tests._helpers import in_process
 
 #: Real's answer at each bound and to a request line refused ahead of one (``backlot.head_bounds``
 #: and ``backlot.request_target.refused_in_the_line`` have the measurements): the status line,
@@ -454,33 +454,6 @@ def test_the_request_line_of_a_path_no_vendor_owns_is_not_kept():
     assert bytes(head.request_line) == start
 
 
-class _Transport(asyncio.Transport):
-    """A connection that keeps what the protocol writes to it."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.written = b""
-        self.closed = False
-
-    def get_extra_info(self, name, default=None):
-        return default
-
-    def write(self, data) -> None:
-        self.written += data
-
-    def close(self) -> None:
-        self.closed = True
-
-    def is_closing(self) -> bool:
-        return self.closed
-
-    def pause_reading(self) -> None:
-        pass
-
-    def resume_reading(self) -> None:
-        pass
-
-
 def _connection(reads: list[bytes]) -> tuple[list[str], list[list[str]], bool]:
     """``reads`` handed to ``backlot.protocol.Protocol`` in this process, a ``data_received`` call
     each and the app's tasks run as far as they go after each, in front of an app that answers each
@@ -501,14 +474,8 @@ def _connection(reads: list[bytes]) -> tuple[list[str], list[list[str]], bool]:
         await send({"type": "http.response.start", "status": 200, "headers": headers})
         await send({"type": "http.response.body", "body": b""})
 
-    loop = asyncio.new_event_loop()
     answers = []
-    try:
-        config = uvicorn.Config(app, http=protocol.Protocol, lifespan="off", log_config=None)
-        state = ServerState()
-        served = protocol.Protocol(config, state, {}, _loop=loop)
-        transport = _Transport()
-        served.connection_made(transport)
+    with in_process(app) as (served, transport, loop):
         for read in reads:
             before = len(transport.written)
             served.data_received(read)
@@ -519,11 +486,6 @@ def _connection(reads: list[bytes]) -> tuple[list[str], list[list[str]], bool]:
             answers.append(
                 [_named(written[a:b]) for a, b in zip(starts, [*starts[1:], len(written)])]
             )
-    finally:
-        for task in state.tasks:
-            task.cancel()
-        loop.run_until_complete(asyncio.sleep(0))
-        loop.close()
     return seen, answers, transport.closed
 
 
@@ -589,6 +551,8 @@ _MARKDOWN_CHUNKED = (
 #: 2026-11-02. A header line of one byte, or one a CR leads, does not end a head: Slack answered a
 #: header past the bound behind either at its bound on 2026-11-02. Nothing after a request that
 #: closes the connection or one the parser refuses is answered, as on api.github.com (2026-11-02).
+#: A head whose earlier read held 0x01 in a header value is answered at its bound once a header
+#: after it passes the bound, as slack.com, api.linear.app and S3 answered it (2026-11-03).
 _CONNECTIONS = [
     (
         "s3 heads in reads of their own",
@@ -723,6 +687,20 @@ _CONNECTIONS = [
         [["slack"]],
         True,
     ),
+    *[
+        (
+            f"{door} a header past the bound after a control byte in an earlier read",
+            [start + b"X-A: a\x01b\r\n", b"X-B: " + b"a" * size],
+            [],
+            [[], [answer]],
+            True,
+        )
+        for door, start, size, answer in [
+            ("slack", _SLACK, 62_000, "slack"),
+            ("linear", b"GET /linear/graphql HTTP/1.1\r\nHost: x\r\n", 140_000, "cloudflare 400"),
+            ("s3", b"GET /s3/b/k HTTP/1.1\r\nHost: x\r\n", 20_000, "s3"),
+        ]
+    ],
     (
         "github a raw byte in the target in the same read",
         [_GITHUB + _RAW],

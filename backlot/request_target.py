@@ -54,23 +54,24 @@ FOLLOWED = "request_target_path_followed"
 _RAW = re.compile(rb"[\x00-\x20\x7f-\xff]")
 
 
-def _parts(line: bytes) -> tuple[bytes, bytes, bytes] | None:
-    """The method, the target and the version of ``line``, a request line ending in its LF, or
-    ``None`` where it is not `METHOD target HTTP/x.y`.
+def _parts(line: bytes) -> tuple[bytes, bytes, bytes, bytes] | None:
+    """The method, the spaces past the first one after it, the target and the version of ``line``,
+    a request line ending in its LF, or ``None`` where it is not `METHOD target HTTP/x.y`.
 
-    The target is what lies between the first space and the last one, so a space inside it is
-    one of its bytes, and the version after the last one keeps the CR of a CRLF."""
+    The target is what lies between the spaces after the method and the last space, so a space
+    inside it is one of its bytes, and the version after the last one keeps the CR of a CRLF."""
     method, _, rest = line[:-1].partition(b" ")
-    target, _, version = rest.rpartition(b" ")
+    lead_spaces = rest[: len(rest) - len(rest.lstrip(b" "))]
+    target, _, version = rest[len(lead_spaces) :].rpartition(b" ")
     if not (method and version.startswith(b"HTTP/")):
         return None
-    return method, target, version
+    return method, lead_spaces, target, version
 
 
 def with_a_fragment(line: bytes) -> bytes | None:
     """The target of ``line`` as sent (:func:`_parts`) where it holds a `#`, or ``None``."""
     parts = _parts(line)
-    return parts[1] if parts is not None and b"#" in parts[1] else None
+    return parts[2] if parts is not None and b"#" in parts[2] else None
 
 
 def encode_line(line: bytes) -> tuple[bytes, bytes | None]:
@@ -80,11 +81,11 @@ def encode_line(line: bytes) -> tuple[bytes, bytes | None]:
     parts = _parts(line)
     if parts is None:
         return line, None
-    method, sent, version = parts
+    method, lead_spaces, sent, version = parts
     encoded = _RAW.sub(lambda m: b"%%%02X" % m[0][0], sent)
     if encoded == sent:
         return line, None
-    return b"%s %s %s\n" % (method, encoded, version), sent
+    return b"%s %s%s %s\n" % (method, lead_spaces, encoded, version), sent
 
 
 def _kind(byte: int) -> str:
@@ -755,9 +756,9 @@ def refused_in_the_line(
     name) refuses the request line ``line``, the bytes before its LF, ahead of its bound, or
     ``None``, where the caller sends the bound's page. ``ended`` is whether the LF came, and
     ``ahead`` whether it came in a piece of the head before the piece the bound is reached in. The
-    target of a line that ended lies between its first space and its last, as :func:`encode_line`
-    reads it, and of one that has not, after its first. Each refusal is the one real gave the same
-    line with a short head.
+    target of a line that ended is the one :func:`encode_line` reads, and of one that has not, all
+    that follows the spaces after the method. Each refusal is the one real gave the same line with a
+    short head.
 
     Measured on 2026-11-01 (UTC) over raw HTTP/1.1 on TLS, each request cache-busted and its head
     written at once in pieces of 16,384 bytes, on the paths of ``backlot.head_bounds``'
@@ -769,6 +770,7 @@ def refused_in_the_line(
     with a short head (:func:`printable_answer`), in a line past the bound and ahead of a header
     past it."""
     method, _, rest = line.partition(b" ")
+    rest = rest.lstrip(b" ")
     target = rest.rpartition(b" ")[0] if ended else rest
     path, mark, query = target.partition(b"?")
     kinds = _kinds(path) + _kinds(query)

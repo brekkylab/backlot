@@ -585,6 +585,7 @@ def _rows():
             answer,
             0,
             b"X-Probe: a\x80b\r\n",
+            b"x",
             id=f"hubspot {sent!r} blocked",
         )
     # Google's 400 for a body on a GET and its 415 for a coding it does not read, beside the byte,
@@ -603,6 +604,7 @@ def _rows():
                 answer,
                 0,
                 header,
+                b"x",
                 id=f"{header.split(b':')[0].decode()} {rest!r}",
             )
     yield pytest.param(

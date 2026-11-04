@@ -141,7 +141,7 @@
           "type": "DateTime",
           "kind": "missing_field",
           "severity": "gap",
-          "note": "Backlot's `AgentSession` is the stub `{ id }` because a corpus holds no agent sessions, and the same gap is recorded for its other fields. Measured against api.linear.app on 2026-11-04: `agentSessions(first: 1) { nodes { id lastAgentReplyAt } }` answers an empty `nodes` list, so there is no value to compare. A maintainer decided on 2026-11-04 to record it as a gap."
+          "note": "Backlot's `AgentSession` is the stub `{ id }` because a corpus holds no agent sessions, and the same gap is recorded for its other fields. Measured against api.linear.app on 2026-11-04: `agentSessions(first: 1) { nodes { id lastAgentReplyAt } }` answers an empty `nodes` list, so there is no value to compare."
         },
         "modelSelection": {
           "status": "missing",
@@ -2185,7 +2185,7 @@
           "status": "missing",
           "kind": "missing_enum_value",
           "severity": "gap",
-          "note": "The vendor's `IntegrationService` enum carries `claudeSecurity` and Backlot's does not. Measured against api.linear.app on 2026-11-04 by introspection of `IntegrationService`. A maintainer decided on 2026-11-04 to record it as a gap."
+          "note": "The vendor's `IntegrationService` enum carries `claudeSecurity` and Backlot's does not. Measured against api.linear.app on 2026-11-04 by introspection of `IntegrationService`."
         },
         "datadog": {
           "status": "implemented"

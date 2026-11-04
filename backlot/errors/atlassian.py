@@ -400,6 +400,19 @@ def _service_refusal(status: int, exception: str, message: str) -> AtlassianErro
     )
 
 
+def cql_operator_not_supported(operator: str, field: str) -> AtlassianError:
+    """The CQL search's refusal of a value form a date field does not take with an operator:
+    `created > 20260910` answered `Operator '>' is not supported for field 'created'.
+    Supported operators are : <, <=, >, >=, =, !=` (Confluence Cloud, 2026-10-31). The operator
+    in the message is the one sent; the list is the six comparison operators whatever it is."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Operator '{operator}' is not supported for field '{field}'. "
+        "Supported operators are : <, <=, >, >=, =, !=",
+    )
+
+
 def cql_not_parsed() -> AtlassianError:
     """The CQL search's refusal of a `cql` it cannot parse (``routers.atlassian._cql_refusal``).
     Measured on Confluence Cloud on 2026-10-22 and 2026-10-25: `"`, `type=page and`, `type=page)`
@@ -465,8 +478,9 @@ def cql_invalid_relative_date(value: str) -> AtlassianError:
     """The CQL search's refusal of a date function's argument real cannot read as a relative
     date, the argument as sent: `created > now("x")` answered `Invalid relative date : x`, and
     so did `label = now("x")` and `created > startOfDay("x")`, and `created > now("a'b")` the
-    same with `a'b` (Confluence Cloud, 2026-10-31). Where it falls among the search's other
-    refusals is ``routers.atlassian._cql_cannot_run``'s."""
+    same with `a'b`, and `created > startOfMonth("-1")` the same with `-1` (Confluence Cloud,
+    2026-10-31). Where it falls among the search's other refusals is
+    ``routers.atlassian._cql_cannot_run``'s."""
     return _service_refusal(400, "api.BadRequestException", f"Invalid relative date : {value}")
 
 

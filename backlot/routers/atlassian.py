@@ -2416,7 +2416,7 @@ async def confluence_child_pages(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     content_id, _ = _content_id(content_id)
-    limit, start = _confluence_page_params(request)
+    limit, start = _confluence_page_params(request, bounded_sum=True)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise errors_atlassian.content_not_found("child/page", content_id)
@@ -2445,7 +2445,7 @@ async def confluence_comments(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     content_id, _ = _content_id(content_id)
-    limit, start = _confluence_page_params(request, cap=1000)
+    limit, start = _confluence_page_params(request, cap=1000, bounded_sum=True)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise errors_atlassian.content_not_found("child/comment", content_id)
@@ -2500,7 +2500,7 @@ async def confluence_attachments(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     content_id, _ = _content_id(content_id)
-    limit, start = _confluence_page_params(request, default=50)
+    limit, start = _confluence_page_params(request, default=50, bounded_sum=True)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise errors_atlassian.content_not_found("child/attachment", content_id)
@@ -3146,6 +3146,7 @@ def _confluence_page_params(
     default: int = 25,
     cap: int | None = None,
     refuse_zero: bool = False,
+    bounded_sum: bool = False,
 ) -> tuple[int, int]:
     """Confluence's `limit` and `start`, which refuse a negative where Jira's clamp one.
 
@@ -3185,6 +3186,8 @@ def _confluence_page_params(
     _refuse_negative_page_params(limit, start)
     if refuse_zero and limit == 0:
         raise errors_atlassian.zero_limit_not_allowed()
+    if bounded_sum and start + limit > 2_147_483_647:
+        raise errors_atlassian.negative_not_allowed("limit")
     if cap is not None:
         limit = min(limit, cap)
     return limit, start

@@ -9361,3 +9361,41 @@ def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
         answered[cql] = (r.status_code, r.json()["cqlQuery"] if r.status_code == 200 else r.json())
     assert len(answered) == len(_CQL_PARSE_ROWS)
     assert answered == {cql: answer(status, written) for cql, status, written in _CQL_PARSE_ROWS}
+
+
+def test_confluence_child_listings_refuse_start_plus_limit_past_int32_max(client, admin_h):
+    """Measured on a live Confluence Cloud site, 2026-11-04 (UTC): on child/comment, child/page and
+    child/attachment, start plus limit summing past 2147483647 is refused with the message real
+    answers for a negative limit, and a sum of exactly 2147483647 is served."""
+    api = "/atlassian/wiki/rest/api"
+    cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
+    want_err = "java.lang.IllegalArgumentException: limit cannot be less than zero"
+
+    cases = [
+        ("child/comment", "start=2147483622", 200),
+        ("child/comment", "start=2147483623", 400),
+        ("child/comment", "start=2147483637&limit=10", 200),
+        ("child/comment", "start=2147483638&limit=10", 400),
+        ("child/comment", "start=2147483547&limit=100", 200),
+        ("child/comment", "start=2147483548&limit=100", 400),
+        ("child/comment", "start=2147483646&limit=1", 200),
+        ("child/comment", "start=2147483647&limit=1", 400),
+        ("child/comment", "start=2147483647&limit=0", 200),
+        ("child/page", "start=2147483647", 400),
+        ("child/attachment", "start=2147483647", 400),
+        ("space", "start=2147483647", 200),
+    ]
+
+    results = []
+    for route, query, _ in cases:
+        if route == "space":
+            url = f"{api}/space?{query}"
+        else:
+            url = f"{api}/content/{cid}/{route}?{query}"
+        results.append(client.get(url, headers=admin_h))
+
+    for r, (route, query, want_status) in zip(results, cases):
+        assert r.status_code == want_status, f"{route}?{query} got {r.status_code}: {r.text}"
+        if want_status == 400:
+            assert r.json()["statusCode"] == 400
+            assert r.json()["message"] == want_err

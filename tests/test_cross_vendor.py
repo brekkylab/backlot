@@ -705,6 +705,7 @@ _RUNS = [
             "report_notion_cors",
             "report_notion_etag",
             "read_a_notion_body_as_express_does",
+            "refuse_a_notion_path_that_does_not_decode",
             "report_notion_headers",
         ],
         id="notion",
@@ -734,10 +735,32 @@ _RUNS = [
         id="jira",
     ),
     pytest.param("GET", "/drive/v3/about", {}, [], id="drive"),
+    pytest.param("GET", "/drive/v3/about?fields=kind", {}, [], id="drive query"),
     pytest.param(
         "HEAD", "/drive/v3/about", {}, ["answer_head_as_the_get_without_its_body"], id="drive HEAD"
     ),
-    pytest.param("GET", "/s3/", {}, ["answer_s3_with_request_ids"], id="s3"),
+    pytest.param(
+        "GET",
+        "/drive/v3/about?fields=a%80b",
+        {},
+        ["read_a_drive_or_editor_query_as_google_does"],
+        id="drive escape",
+    ),
+    pytest.param(
+        "GET",
+        "/docs/v1/documents/nope?fields=a%80b",
+        {},
+        ["read_a_drive_or_editor_query_as_google_does"],
+        id="docs escape",
+    ),
+    pytest.param("GET", "/gmail/v1/users/me/profile?fields=a%80b", {}, [], id="gmail escape"),
+    pytest.param(
+        "GET",
+        "/s3/",
+        {},
+        ["answer_s3_with_request_ids", "refuse_an_s3_path_real_cannot_read"],
+        id="s3",
+    ),
     pytest.param(
         "GET",
         "/hubspot/crm/v3/objects/contacts",
@@ -753,10 +776,7 @@ _RUNS = [
 ]
 
 
-@pytest.mark.parametrize("method, path, headers, ran", _RUNS)
-def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
-    client, tokens_yaml, monkeypatch, method, path, headers, ran
-):
+def test_a_request_runs_its_own_vendors_middlewares_and_no_others(client, tokens_yaml, monkeypatch):
     # the class the client's app was built with: `tests._helpers.client_for` reloads
     # `backlot.main`, which defines `_Layer` again for each app
     layer = next(m.cls for m in client.app.user_middleware if m.cls.__name__ == "_Layer")
@@ -770,8 +790,62 @@ def test_a_request_runs_its_own_vendors_middlewares_and_no_others(
 
     monkeypatch.setattr(layer, "__call__", watched)
     admin = {"Authorization": _ADMIN.format(admin=tokens_yaml["admin_token"])}
-    client.request(method, path, headers={**admin, **headers})
-    assert seen == ran
+    got, expected = {}, {}
+    for row in _RUNS:
+        method, path, headers, ran = row.values
+        seen.clear()
+        client.request(method, path, headers={**admin, **headers})
+        got[row.id], expected[row.id] = list(seen), ran
+    assert len(got) == len(_RUNS)
+    assert got == expected
+
+
+# A path a route serves, with `%0A` after it: (method, path, query, real's status), with the
+# vendor's credential but Google's (``backlot.routers._to_the_end_of_the_path`` dates the
+# measurement).
+_NEWLINE_ENDS = [
+    ("GET", "/atlassian/rest/api/3/serverInfo", "", 404),
+    ("GET", "/atlassian/rest/api/3/search/jql", "jql=order%20by%20key", 404),
+    ("GET", "/atlassian/rest/api/3/project/search", "", 404),
+    ("GET", "/atlassian/wiki/rest/api/space", "", 404),
+    ("GET", "/atlassian/wiki/rest/api/content", "", 404),
+    ("GET", "/atlassian/wiki/rest/api/search", "cql=type%3Dpage", 404),
+    ("GET", "/atlassian/wiki/rest/api/search", "cql=space.key%3D%22a%27b%22", 404),
+    ("GET", "/github/rate_limit", "", 404),
+    ("GET", "/notion/v1/users", "", 400),
+    ("POST", "/linear/graphql", "", 404),
+    ("GET", "/drive/v3/about", "", 404),
+    ("GET", "/gmail/v1/users/me/profile", "", 404),
+]
+
+
+def test_a_newline_at_the_end_of_a_path_is_read_as_any_other_byte(client, tokens_yaml):
+    """Each path of `_NEWLINE_ENDS` with `%0A` after it is answered as real answered it, and as the
+    path with `%0D` after it is (``backlot.routers._to_the_end_of_the_path``)."""
+    got, expected = {}, {}
+    for method, path, query, status in _NEWLINE_ENDS:
+        headers = {"Notion-Version": "2022-06-28"}
+        if not path.startswith(("/drive/", "/gmail/")):
+            headers["Authorization"] = _ADMIN.format(admin=tokens_yaml["admin_token"])
+        body = None
+        if method == "POST":  # Linear's, which takes its key with no `Bearer`
+            headers |= {
+                "Authorization": tokens_yaml["admin_token"],
+                "Content-Type": "application/json",
+            }
+            body = _TYPENAME
+        newline, cr = (
+            client.request(method, f"{path}{end}?{query}", headers=headers, content=body)
+            for end in ("%0A", "%0D")
+        )
+        key = f"{method} {path}?{query}"
+        got[key] = (
+            newline.status_code,
+            cr.status_code,
+            newline.headers.get("content-type") == cr.headers.get("content-type"),
+        )
+        expected[key] = (status, status, True)
+    assert got == expected
 
 
 @pytest.mark.parametrize(

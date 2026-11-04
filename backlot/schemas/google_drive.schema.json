@@ -95,7 +95,7 @@
         "title": {
           "type": "string",
           "minLength": 1,
-          "description": "The tab's title, at most 50 UTF-16 code units and no other tab's (default: `Tab n`, n its place among the document's tabs, depth first, past any title taken)."
+          "description": "The tab's title, at most 50 UTF-16 code units and no other tab's (default: `Tab n`, n its place among the document's tabs, depth first, past any title taken). Stored as real stores one: each run of line breaks a space, and one blank once they are, or another tab's, the default."
         },
         "icon": {
           "type": "string",

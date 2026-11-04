@@ -1868,6 +1868,27 @@ _DOCS_EXPORTS = {
         "\ufeffa\r\nab\r\n________________\r\n\r\nz\r\nab\r\n________________\r\n\r\nz\r\nab\r\n\r\n________________\r\n\r\nz\r\nab\r\n________________\r\n\r\n\r\nz\r\nab\r\n________________\r\n________________\r\n\r\nz\r\n\r\nab\r\n________________\r\n\r\nz\r\n________________\r\nab\r\n________________\r\n\r\nz\r\n[1]\r\n________________\r\n\r\nz\r\n[2][3]\r\n________________\r\n\r\nz\r\n________________\r\n\r\nz\r\n________________\r\n\r\n\r\nz\r\n________________\r\n[1] \r\n[2] \r\n[3]",
         "a\n\n## ab \n\nz\n\n## ab \n\nz\n\n## ab  \n\nz\n\n## ab  \n\nz\n\n## ab \n\nz\n\n##  ab \n\nz\n\n## ab \n\nz\n\n## [^1] \n\nz\n\n## [^2][^3] \n\nz\n\n##  \n\nz\n\n##   \n\nz\n\n[^1]:  \n\n[^2]:  \n\n[^3]:  ",
     ),
+    # footnotes ending in empty paragraphs, after a body ending in them too
+    "notes_trail": (
+        {"paragraphs": [_runs("a", _note("x", ""), "b", _note("y", "", ""), "c")]},
+        "\ufeffa[1]b[2]c\r\n________________\r\n[1] x\r\n\r\n\r\n[2] y",
+        "a[^1]b[^2]c\n\n[^1]:  x  \n\n\n[^2]:  y\n\n",
+    ),
+    "notes_trail_first": (
+        {"paragraphs": [_runs("a", _note("x", "", ""), "b", _note("y"), "c")]},
+        "\ufeffa[1]b[2]c\r\n________________\r\n[1] x\r\n\r\n\r\n\r\n\r\n[2] y",
+        "a[^1]b[^2]c\n\n[^1]:  x\n\n\n\n[^2]:  y",
+    ),
+    "notes_blank": (
+        {"paragraphs": [_runs("a", _note("", ""), "b", _note("", ""), "c")]},
+        "\ufeffa[1]b[2]c\r\n________________\r\n[1] \r\n\r\n\r\n[2]",
+        "a[^1]b[^2]c\n\n[^1]:    \n\n\n[^2]:    \n",
+    ),
+    "notes_body_trail": (
+        {"paragraphs": [_runs("a", _note("x", "", ""), "b", _note("y", "")), {"text": ""}, {"text": ""}]},
+        "\ufeffa[1]b[2]\r\n\r\n\r\n\r\n\r\n________________\r\n[1] x\r\n\r\n\r\n\r\n\r\n[2] y",
+        "a[^1]b[^2]\n\n[^1]:  x\n\n\n\n[^2]:  y  \n",
+    ),
     "pb_heading": (
         {"paragraphs": [_runs("ab"), _runs(_PB, style="HEADING_2"), _runs("cd", style="HEADING_2"), _runs(_PB, style="TITLE"), _runs("ef", style="TITLE"), _runs("gh")]},
         "\ufeffab\r\n" + _RULE + "\r\ncd\r\n" + _RULE + "\r\n\r\n\r\nef\r\ngh",
@@ -17659,6 +17680,13 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
     )
     f = wc.get(f"/drive/v3/files/{blank}", headers=h, params=fields).json()
     assert (f["version"], f["size"], quota()) == ("2", "1024", used + 1024)
+    # a lone untitled first tab's `Tab 1` makes an added `Tab 1` the default, and once the Doc
+    # holds two tabs the first holds it as its own
+    tab1 = {"requests": [{"addDocumentTab": {"tabProperties": {"title": "Tab 1"}}}]}
+    added = wc.post(f"/docs/v1/documents/{blank}:batchUpdate", headers=h, json=tab1)
+    assert added.json()["replies"][0]["addDocumentTab"]["tabProperties"]["title"] == "Tab 2"
+    again = wc.post(f"/docs/v1/documents/{blank}:batchUpdate", headers=h, json=tab1)
+    assert again.json()["error"]["message"].endswith("Tab title must be unique")
     found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains 'ABell0'"})
     assert [x["id"] for x in found.json()["files"]] == [did]
     exported = wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"})
@@ -17716,6 +17744,7 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
     line = "cr\u00e8me br\u00fbl\u00e9e pbleftpbright vtalpha\x0bvtbeta fnleftfnright the runners jumped\n"
     at = 1 + line.index("pbright")
     parted = [_ins(1, line), _fn(1 + line.index("fnright")), _pb(at), _del(at + 1, at + 2)]
+    parted.append(_ins(1, "qzua_qzub \u0130qztr qzts cre\u0301me qznf\n"))
     assert _docs_write(wc, h, "wr-text", {"requests": parted}).status_code == 200
     for q, hit in [
         ("wombat", True),
@@ -17738,8 +17767,21 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
         ('"runners jumped"', True),
         ('"runners jump"', False),
         ('"jump"', False),
+        ('"qzua qzub"', True),
+        ('"iqztr qzts"', True),
+        ('"cr\u00e9me qznf"', True),
     ]:
         assert searched(q) == hit, q
+    # a corpus Doc of several tabs deleted back to one keeps its untitled tab's `Tab 1`
+    # a file other than a Doc is matched by the index alone, across its lines too
+    book = served_id("google_drive", "wr-book")
+    found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains '\"deals emea\"'"})
+    assert book in {x["id"] for x in found.json()["files"]}
+    tabs = served_id("google_drive", "wr-tabs")
+    gone = [{"deleteTab": {"tabId": "$T2"}}, {"deleteTab": {"tabId": "$T3"}}]
+    assert _docs_write(wc, h, "wr-tabs", {"requests": _with_tab_ids(gone, tabs)}).status_code == 200
+    found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains '\"Tab 1\"'"})
+    assert tabs in {x["id"] for x in found.json()["files"]}
     # a Doc that held two tabs keeps its lone tab's default title
     gone = {
         "deleteTab": {"tabId": renamed["updateDocumentTabProperties"]["tabProperties"]["tabId"]}
@@ -18143,6 +18185,87 @@ _TAB_WRITES = [
             _tab_props("Cafe\u0301", 7),
         ],
     ),
+    # a title's line breaks one space, a blank one or one taken once rewritten the default, and
+    # U+00A0 and U+007F kept
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"title": title}}}
+            for title in ("a\rb", "a\nb", "\t", "q\u00a0\x7f")
+        ],
+        [*_TABS_START, "a b: ", "Tab 6: ", "Tab 7: ", "q\u00a0\x7f: "],
+        [
+            _tab_props("a b", 3),
+            _tab_props("Tab 6", 4),
+            _tab_props("Tab 7", 5),
+            _tab_props("q\u00a0\x7f", 6),
+        ],
+    ),
+    # an update taken once rewritten leaves the title, and a blank one takes the default
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"title": "a b"}}},
+            _upd({"tabId": "$T3", "title": "a\nb"}, "title"),
+            _upd({"tabId": "$T2", "title": "x\r\ny"}, "title"),
+            _upd({"tabId": "$KID", "title": "\n"}, "title"),
+        ],
+        [
+            _TABS_START[0],
+            "x y \U0001f4cc: two",
+            "  Tab 5: kid zz",
+            _TABS_START[3],
+            "a b: ",
+        ],
+        [_tab_props("a b", 3), {}, {}, {}],
+    ),
+    # a title taken once rewritten is left as it was, though the revision moves
+    ([_upd({"tabId": "$T2", "title": "Tab\n1"}, "title")], _TABS_START, None),
+    # `index` named with none stated moves the tab last among its siblings
+    (
+        [_upd({"tabId": "$T2"}, "index")],
+        [_TABS_START[0], _TABS_START[3], *_TABS_START[1:3]],
+        None,
+    ),
+    # with `t.0` deleted, a tab under a named parent is updated and moved
+    (
+        [
+            {"deleteTab": {"tabId": "t.0"}},
+            _upd({"tabId": "$KID", "title": "K2"}, "title"),
+            _upd({"tabId": "$KID", "parentTabId": "$T3"}, "parentTabId"),
+        ],
+        [_TABS_START[1], _TABS_START[3], "  K2: kid zz"],
+        None,
+    ),
+    # a bare code point Unicode also lists with U+FE0F, and a sequence listed both ways
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"iconEmoji": icon}}}
+            for icon in ("\u2139", "\u2328", "\U0001f4f2", "\u26f9\u200d\u2640")
+        ],
+        [
+            *_TABS_START,
+            *(
+                f"Tab {5 + i} {icon}: "
+                for i, icon in enumerate(("\u2139", "\u2328", "\U0001f4f2", "\u26f9\u200d\u2640"))
+            ),
+        ],
+        [
+            {
+                "addDocumentTab": {
+                    "tabProperties": {
+                        **_tab_props(f"Tab {5 + i}", 3 + i)["addDocumentTab"]["tabProperties"],
+                        "iconEmoji": icon,
+                    }
+                }
+            }
+            for i, icon in enumerate(("\u2139", "\u2328", "\U0001f4f2", "\u26f9\u200d\u2640"))
+        ],
+    ),
+    # an icon `fields` does not name is not read
+    (
+        [_upd({"tabId": "$T2", "title": "Z", "iconEmoji": "a"}, "title")],
+        [_TABS_START[0], "Z \U0001f4cc: two", *_TABS_START[2:]],
+        None,
+    ),
     # climbing past a title another tab has
     (
         [
@@ -18465,29 +18588,40 @@ _TAB_WRITES = [
 ]
 
 
-@pytest.mark.parametrize(
-    "requests,outline,replies,moves", [(*row, True)[:4] for row in _TAB_WRITES]
-)
-def test_a_tab_or_segment_write_changes_the_doc_as_real_does(
-    wc, wh, requests, outline, replies, moves
-):
-    from tests._helpers import served_id
+def test_a_tab_or_segment_write_changes_the_doc_as_real_does(write_settings, wh):
+    """Each row of `_TAB_WRITES` sent to a fresh `wr-tabs`: its replies, the tabs and segments it
+    leaves, whether the `revisionId` moved (a batch real keeps the revision for keeps it, so a
+    write pinned to it is taken), and the flat read being the first tab's, whatever its id."""
+    from tests._helpers import client_for, served_id
 
     h = wh[_OWNER]
     did = served_id("google_drive", "wr-tabs")
-    before = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
-    r = _docs_write(wc, h, "wr-tabs", {"requests": _with_tab_ids(requests, did)})
-    assert r.status_code == 200, r.text
-    assert r.json()["replies"] == _with_tab_ids(replies or [{}] * len(requests), did)
-    assert _docs_outline(wc, h, "wr-tabs") == outline
-    # a batch real keeps the revision for keeps it, so a write pinned to it is taken
-    assert (r.json()["writeControl"]["requiredRevisionId"] != before) == moves
-    pinned = {"requests": [_ins(1, "x")], "writeControl": {"requiredRevisionId": before}}
-    assert _docs_write(wc, h, "wr-tabs", pinned).status_code == (400 if moves else 200)
-    # the flat read is the first tab's, whatever its id
-    flat = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
-    tabbed = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
-    assert flat["body"] == tabbed["tabs"][0]["documentTab"]["body"]
+    got, want = [], []
+    for requests, outline, replies, moves in ((*row, True)[:4] for row in _TAB_WRITES):
+        with client_for(write_settings, reload=True) as wc:
+            before = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
+            r = _docs_write(wc, h, "wr-tabs", {"requests": _with_tab_ids(requests, did)})
+            answer = r.json()
+            after = answer.get("writeControl", {}).get("requiredRevisionId")
+            left = _docs_outline(wc, h, "wr-tabs")
+            pinned = {"requests": [_ins(1, "x")], "writeControl": {"requiredRevisionId": before}}
+            pinned_status = _docs_write(wc, h, "wr-tabs", pinned).status_code
+            flat = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+            tabbed = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
+            first = tabbed["tabs"][0]["documentTab"]["body"]
+            got.append(
+                (
+                    r.status_code,
+                    answer.get("replies"),
+                    left,
+                    after != before,
+                    pinned_status,
+                    flat["body"] == first,
+                )
+            )
+        replied = _with_tab_ids(replies or [{}] * len(requests), did)
+        want.append((200, replied, outline, moves, 400 if moves else 200, True))
+    assert got == want
 
 
 _GRAPHEME = (
@@ -18826,6 +18960,13 @@ _DOCS_TAB_REFUSALS = [
         [
             ([{"createHeader": {"type": "DEFAULT"}}], "Default header already exists.", 0),
             ([{"createHeader": {}}], "Header type not specified.", 0),
+            # `FIRST_PAGE`, which the discovery document leaves out, 0 and below are not
+            # specified, and a number above the enum's unrecognized
+            *(
+                ([{"createHeader": {"type": kind}}], "Header type not specified.", 0)
+                for kind in ("FIRST_PAGE", "first_page", "first-page", "2", 2, -1)
+            ),
+            ([{"createHeader": {"type": 3}}], "Unrecognized header type.", 0),
             (
                 [{"createHeader": {"sectionBreakLocation": {"tabId": "t.nope"}}}],
                 "Cannot apply request to an invalid tab ID.",
@@ -18854,6 +18995,8 @@ _DOCS_TAB_REFUSALS = [
         "createFooter",
         [
             ([{"createFooter": {}}], "Footer type not specified.", 0),
+            ([{"createFooter": {"type": -2}}], "Footer type not specified.", 0),
+            ([{"createFooter": {"type": 99}}], "Unrecognized footer type.", 0),
             (
                 [
                     {"deleteFooter": {"footerId": "$F"}},
@@ -18891,6 +19034,35 @@ _DOCS_TAB_REFUSALS = [
         ],
         500,
         "Internal error encountered.",
+    ),
+    # sic: with `t.0` deleted, real reads the root as it and fails a root tab's update or a move
+    # to the root
+    *(
+        ([{"deleteTab": {"tabId": "t.0"}}, update], 500, "Internal error encountered.")
+        for update in (
+            _upd({"tabId": "$T2", "title": "x"}, "title"),
+            _upd({"tabId": "$T2", "index": 1}, "index"),
+            _upd({"tabId": "$KID", "parentTabId": ""}, "parentTabId"),
+        )
+    ),
+    # the first tab of a corpus Doc of several tabs holds `Tab 1` as its own
+    (
+        [{"addDocumentTab": {"tabProperties": {"title": "Tab 1"}}}],
+        400,
+        "Invalid requests[0].addDocumentTab: Tab title must be unique",
+    ),
+    # the tab left once the only root is deleted is titled `Tab 1`, not untitled as a new Doc's
+    # first tab is
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"title": "K", "parentTabId": "t.0"}}},
+            {"deleteTab": {"tabId": "$T2"}},
+            {"deleteTab": {"tabId": "$T3"}},
+            {"deleteTab": {"tabId": "t.0"}},
+            {"addDocumentTab": {"tabProperties": {"title": "Tab 1"}}},
+        ],
+        400,
+        "Invalid requests[4].addDocumentTab: Tab title must be unique",
     ),
     # a `fields` name of dots alone, before any other name and at its own request
     *(
@@ -19333,6 +19505,41 @@ _DOCS_TAB_REFUSALS = [
                 0,
             ),
             ([_upd({"tabId": "$T2", "title": "Third"}, "title")], "Tab title must be unique", 0),
+            # the first tab of a Doc of several tabs holds `Tab 1` as its own
+            ([_upd({"tabId": "$T2", "title": "Tab 1"}, "title")], "Tab title must be unique", 0),
+            # the length is the title's as sent
+            (
+                [_upd({"tabId": "$T2", "title": "x" * 50 + "\n"}, "title")],
+                "The tab title cannot be longer than 50 characters.",
+                0,
+            ),
+            # an index past the named parent's tabs before the parent being the tab or its child
+            (
+                [_upd({"tabId": "t.0", "index": 1, "parentTabId": "t.0"}, "index,parentTabId")],
+                "Index must be less than or equal to the number of tabs within the specified "
+                "parent tab.",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2", "index": 3, "parentTabId": "$KID"}, "index,parentTabId")],
+                "Index must be less than or equal to the number of tabs within the specified "
+                "parent tab.",
+                0,
+            ),
+            # sic: real reads the root as `t.0`, which under a tab is that tab's own child
+            (
+                [
+                    _upd({"tabId": "t.0", "parentTabId": "$T2"}, "parentTabId"),
+                    _upd({"tabId": "$T2", "title": "x"}, "title"),
+                ],
+                "Cannot move a parent tab to be nested under one of its own child tabs.",
+                1,
+            ),
+            (
+                [_upd({"tabId": "$T2", "title": "x"}, "\x1ftitle")],
+                "Invalid field: \x1ftitle",
+                0,
+            ),
             (
                 [_upd({"tabId": "$T2", "iconEmoji": "x"}, "iconEmoji")],
                 "Not a valid emoji input.",

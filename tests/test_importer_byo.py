@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -6188,6 +6189,12 @@ def test_a_file_that_is_not_a_doc_may_hold_what_insert_text_refuses(tmp_path):
             },
             "three levels deep",
         ),
+        # a shape the schema refuses is reported, not stumbled over
+        ("prose", {"content": None, "tabs": ["x"]}, "is not of type 'object'"),
+        ("prose", {"content": None, "tabs": "x"}, "is not of type 'array'"),
+        ("prose", {"content": None, "tabs": [{"paragraphs": "x"}]}, "is not of type 'array'"),
+        ("paragraphs", {"paragraphs": ["x"]}, "is not of type 'object'"),
+        ("paragraphs", {"paragraphs": [{"runs": ["x"]}]}, "is not of type 'object'"),
     ],
 )
 def test_a_structure_a_record_cannot_mean_is_refused(
@@ -6374,3 +6381,19 @@ def test_stated_paragraphs_are_the_body_and_their_text_with_the_segments_is_the_
     assert [len(plan[k]) for k in ("headers", "footers", "footnotes")] == [1, 0, 1]
     (footnote,) = plan["footnotes"].values()
     assert footnote[0]["paragraph"]["elements"][0]["textRun"]["content"] == " Q3\n"
+    # a stated title is stored as `addDocumentTab` stores one, another's once rewritten the default
+    titled = {
+        **{k: v for k, v in PARAS_REC.items() if k != "paragraphs"},
+        "doc_id": "gd-titled",
+        "tabs": [{"title": t, "paragraphs": [{"text": "a"}]} for t in ("a b", "a\nb", "c\r\nd")],
+    }
+    load(_write(tmp_path, [titled], name="titled.jsonl"), Settings(data_dir=tmp_path), reset=False)
+    with closing(store.connect_ro(Settings(data_dir=tmp_path).db_path)) as read:
+        (last,) = read.execute("SELECT id FROM gdrive_files ORDER BY rowid DESC LIMIT 1").fetchall()
+        stored = store.gdrive_doc_for(read, last["id"])
+    assert [t["tabProperties"]["title"] for t in stored["tabs"]] == ["a b", "Tab 2", "c d"]
+    # a re-import that states only `content` stops serving the tabs
+    restated = {**{k: v for k, v in tabbed.items() if k != "tabs"}, "content": "Goals"}
+    load(_write(tmp_path, [restated], name="again.jsonl"), Settings(data_dir=tmp_path), reset=False)
+    again = store.connect_ro(Settings(data_dir=tmp_path).db_path)
+    assert store.gdrive_doc_for(again, rows[3]["id"]) is None

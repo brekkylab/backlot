@@ -350,10 +350,10 @@ for _key, _group in {
     ("docs.ReplaceAllTextRequest", "containsText"): "criteria",
 }.items():
     _DOCS_SHAPES[_key] = {"oneof": _group}
-# `createHeader`'s and `createFooter`'s `type`, by the discovery document: measured 2026-11-02,
-# `1` was read as `DEFAULT`.
+# `createHeader`'s and `createFooter`'s `type`: measured 2026-11-02, `1` was read as `DEFAULT`, and
+# 2026-11-03, `FIRST_PAGE`, which the discovery document leaves out, was read as 2.
 _DOCS_HEADER_FOOTER = protojson.Enum(
-    f"{_DOCS_VIEW}.HeaderFooterType", ("HEADER_FOOTER_TYPE_UNSPECIFIED", "DEFAULT")
+    f"{_DOCS_VIEW}.HeaderFooterType", ("HEADER_FOOTER_TYPE_UNSPECIFIED", "DEFAULT", "FIRST_PAGE")
 )
 # A request is declared inside the body's message: `"requests": "x"` is refused naming
 # `….BatchUpdateDocumentRequest.Request`.
@@ -657,8 +657,13 @@ def _docs_create_segment(kind: str):
     def create(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         where = req.get("section_break_location") or {}
         tab = _docs_tab(doc, where)
-        if not req.get("type"):
+        # measured 2026-11-03: `FIRST_PAGE`, 0 and below were not specified, and 3 and above,
+        # numbers the enum does not declare, unrecognized
+        kind_of = req.get("type", 0)
+        if kind_of < 1 or kind_of == 2:
             raise _EditorRefused(f"{name} type not specified.")
+        if kind_of > 2:
+            raise _EditorRefused(f"Unrecognized {kind} type.")
         if where.get("index", 0) != 0:
             raise gerr.internal_error()
         if tab[f"{kind}s"]:
@@ -723,28 +728,32 @@ def _docs_height(tab: dict) -> int:
     return max((1 + _docs_height(t) for t in tab["childTabs"]), default=0)
 
 
-def _docs_title(doc: gdocs.Document, title: str, own: dict | None = None) -> None:
-    """Refuse a title too long, or one another tab has: measured 2026-11-02, the same string is
-    taken anywhere in the tree, while one differing in case, in a trailing space, in width or in
-    normalization form is not."""
+def _docs_title(doc: gdocs.Document, title: str, own: dict | None = None) -> str | None:
+    """A title as sent, refused too long or as another tab's, and then as real stores it, None
+    for the default (`gdocs.tab_title`). Measured 2026-11-02: the same string is taken anywhere in
+    the tree, while one differing in case, in a trailing space, in width or in normalization form
+    is not; measured 2026-11-03, the length is the title's as sent, and a lone untitled first
+    tab's `Tab 1` (`gdocs.new_tab`) is taken only against an update."""
     if gdocs.utf16_len(title) > _DOCS_TAB_TITLE_UNITS:
         raise _EditorRefused("The tab title cannot be longer than 50 characters.")
-    if any(t is not own and t["tabProperties"]["title"] == title for t in doc.flat()):
-        raise _EditorRefused("Tab title must be unique")
+    for t in doc.flat():
+        if t is not own and t["tabProperties"]["title"] == title:
+            if own is not None or not t.get("untitled"):
+                raise _EditorRefused("Tab title must be unique")
+    return gdocs.tab_title(title)
 
 
 def _docs_add_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``addDocumentTab``: a blank tab (`gdocs.new_tab`) under the parent it names, before the
     sibling at its index, or last, answered with its properties. A title it does not state is
-    `gdocs.default_title`'s and a `nestingLevel` is ignored. The order of refusals, measured
-    2026-11-02: a `tabId` stated, the title's length, a title another tab has, the icon, the
-    parent, a parent too deep (`_DOCS_TAB_DEPTH`), then the index."""
+    `gdocs.default_title`'s, and so is one blank or taken once `_docs_title` reads it; a
+    `nestingLevel` is ignored. The order of refusals, measured 2026-11-02: a `tabId` stated, the
+    title's length, a title another tab has, the icon, the parent, a parent too deep
+    (`_DOCS_TAB_DEPTH`), then the index."""
     props = req.get("tab_properties", {})
     if props.get("tab_id"):
         raise _EditorRefused("Tab ID should not be specified in the properties when adding a tab.")
-    title = props.get("title", "")
-    if title:
-        _docs_title(doc, title)
+    title = _docs_title(doc, props["title"]) if props.get("title") else None
     if props.get("icon_emoji") and not gdocs.is_icon(props["icon_emoji"]):
         raise _EditorRefused("Not a valid emoji input.")
     parent = None
@@ -757,17 +766,23 @@ def _docs_add_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
             raise _EditorRefused(_DOCS_TOO_DEEP)
     index = props.get("index")
     if index is not None:
-        _docs_tab_index(doc, index, parent, len(doc.siblings(parent)))
-    tabs = doc.flat()
-    title = title or gdocs.default_title((t["tabProperties"]["title"] for t in tabs), len(tabs) + 1)
+        _docs_tab_index(index, parent, len(doc.siblings(parent)))
+    titles = [t["tabProperties"]["title"] for t in doc.flat()]
+    # measured 2026-11-03: `a\nb` beside `a b`, and `Tab 1` beside an untitled first tab, took
+    # the default
+    if title is None or title in titles:
+        title = gdocs.default_title(titles, len(titles) + 1)
     tab = gdocs.new_tab(doc.new_id(gdocs.tab_id), title)
+    # measured 2026-11-03: once a Doc holds a second tab its first holds `Tab 1` as its own
+    for t in doc.flat():
+        t.pop("untitled", None)
     if props.get("icon_emoji"):
         tab["tabProperties"]["iconEmoji"] = props["icon_emoji"]
     doc.place(tab, parent, index, new=True)
     return {"addDocumentTab": {"tabProperties": _docs_placed(doc, tab)}}, False
 
 
-def _docs_tab_index(doc: gdocs.Document, index: int, parent: dict | None, count: int) -> None:
+def _docs_tab_index(index: int, parent: dict | None, count: int) -> None:
     if index < 0:
         raise _EditorRefused("Index must be non-negative.")
     if index > count:
@@ -808,6 +823,13 @@ def _docs_delete_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
 _DOCS_TAB_FIELDS = ("tabId", "title", "parentTabId", "index", "nestingLevel", "iconEmoji")
 
 
+# What a `fields` name is trimmed of: measured 2026-11-03, every character Python counts as white
+# space but U+001C to U+001F, which were refused as part of the name.
+_DOCS_SPACE = "".join(
+    c for c in map(chr, range(0x3001)) if c.isspace() and c not in "\x1c\x1d\x1e\x1f"
+)
+
+
 def _docs_tab_fields(fields: str) -> list[str] | None:
     """The `TabProperties` fields a `fields` mask names, read as real reads it, or None for the mask
     real answers with a 500. Measured 2026-11-02 and 2026-11-03: `*` alone names every field; names
@@ -826,7 +848,11 @@ def _docs_tab_fields(fields: str) -> list[str] | None:
         raise _EditorRefused(
             "At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"
         )
-    paths = [[_docs_snake(n) for n in p.split(".") if n] for p in (p.strip() for p in parts) if p]
+    paths = [
+        [_docs_snake(n) for n in p.split(".") if n]
+        for p in (p.strip(_DOCS_SPACE) for p in parts)
+        if p
+    ]
     if not all(paths):
         return None
     known = {_docs_snake(f): f for f in _DOCS_TAB_FIELDS}
@@ -859,10 +885,11 @@ def _docs_snake(name: str) -> str:
 def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``updateDocumentTabProperties``: the properties `fields` names (`_docs_tab_fields`), in
     real's order of refusals, measured 2026-11-02: no field, a field `TabProperties` lacks, no
-    `tabId`, a tab the Doc lacks, the title (missing, too long or another tab's), the icon, a
-    parent the Doc lacks, a parent too deep for the tab (`_DOCS_TAB_DEPTH`), an index below zero,
-    the tab itself as its parent, one of its own children, an index past its siblings, then a
-    parent too deep for its children.
+    `tabId`, a tab the Doc lacks, the title (missing, too long or another tab's), the icon, a parent
+    the Doc lacks, a parent too deep for the tab (`_DOCS_TAB_DEPTH`), an index below zero, then,
+    measured 2026-11-03, an index past the parent's tabs, the tab itself as its parent, one of its
+    own children, then a parent too deep for its children. A title is stored as `_docs_title` reads
+    it.
 
     A parent named puts the tab last under it, the root for none, and an index stated moves it
     before the sibling there (`gdocs.Document.place`): measured, `*` with no index moved a tab to
@@ -884,16 +911,23 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         if "parentTabId" in names:
             raise _EditorRefused(f"A tab with ID {_docs_shown(props['tab_id'])} does not exist.")
         raise _EditorRefused(f"At tab with ID {props['tab_id']} does not exist.")
+    title = tab["tabProperties"]["title"]
     if "title" in names:
         if not props.get("title"):
             raise _EditorRefused(
                 "Invalid `tabProperties.title`. Must provide a valid non-empty string."
             )
-        _docs_title(doc, props["title"], own=tab)
+        stored = _docs_title(doc, props["title"], own=tab)
+        others = [t["tabProperties"]["title"] for t in doc.flat() if t is not tab]
+        # measured 2026-11-03: a blank title took the default for the tabs the Doc has, and `a\nb`
+        # beside `a b` left the title as it was
+        if stored is None:
+            title = gdocs.default_title(others, len(others) + 1)
+        elif stored not in others:
+            title = stored
     emoji = props.get("icon_emoji", "")
     if "iconEmoji" in names and emoji and not gdocs.is_icon(emoji):
         raise _EditorRefused("Not a valid emoji input.")
-    index = props.get("index") if "index" in names else None
     parent = doc.parent(tab)
     if "parentTabId" in names:
         named = props.get("parent_tab_id", "")
@@ -902,8 +936,22 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
             raise _EditorRefused(f'A parent tab with ID "{_docs_shown(named)}" does not exist.')
         if _docs_depth(doc, parent) > _DOCS_TAB_DEPTH:
             raise _EditorRefused(_DOCS_TOO_DEEP)
-    if index is not None and index < 0:
-        raise _EditorRefused("Index must be non-negative.")
+    # sic: real reads the root as `t.0` for a tab that ends at the root. Measured
+    # 2026-11-03: with `t.0` deleted, an update of a root tab or a move to the root was a 500
+    # whatever it named, and with `t.0` under a tab, any update of that tab was refused as a move
+    # under its own child; a tab under a named parent was updated
+    if parent is None:
+        root = _docs_find_tab(doc, "t.0")
+        if root is None:
+            raise gerr.internal_error()
+        if any(t is root for t, *_ in gdocs.walk(tab["childTabs"])):
+            raise _EditorRefused(
+                "Cannot move a parent tab to be nested under one of its own child tabs."
+            )
+    # measured 2026-11-03: `index` named with none stated moved the tab last among its siblings
+    index = props.get("index", len(doc.siblings(parent))) if "index" in names else None
+    if index is not None:
+        _docs_tab_index(index, parent, len(doc.siblings(parent)))
     if "parentTabId" in names:
         if parent is tab:
             raise _EditorRefused("Cannot make a tab a child of itself.")
@@ -911,15 +959,14 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
             raise _EditorRefused(
                 "Cannot move a parent tab to be nested under one of its own child tabs."
             )
-    if index is not None:
-        _docs_tab_index(doc, index, parent, len(doc.siblings(parent)))
     if "parentTabId" in names and _docs_depth(doc, parent) + _docs_height(tab) > _DOCS_TAB_DEPTH:
         raise _EditorRefused(
             f"Moving this tab will cause child tabs to exceed the tab nesting level. {_DOCS_TOO_DEEP}"
         )
     before = (dict(tab["tabProperties"]), _docs_placed(doc, tab))
-    if "title" in names:
-        tab["tabProperties"]["title"] = props["title"]
+    if title != tab["tabProperties"]["title"]:
+        tab["tabProperties"]["title"] = title
+        tab.pop("untitled", None)
     if "iconEmoji" in names:
         tab["tabProperties"].pop("iconEmoji", None)
         if emoji:
@@ -927,8 +974,14 @@ def _docs_update_tab(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     if "parentTabId" in names or index is not None:
         doc.place(tab, parent, index)
     # measured 2026-11-03: a title, an index or a parent the tab already had kept the
-    # `revisionId`, and an icon it already had moved it
-    if "iconEmoji" not in names and before == (tab["tabProperties"], _docs_placed(doc, tab)):
+    # `revisionId`, and an icon it already had, or a title left as it was for being another
+    # tab's once rewritten, moved it
+    sent = "title" not in names or props["title"] == before[0]["title"]
+    if (
+        sent
+        and "iconEmoji" not in names
+        and before == (tab["tabProperties"], _docs_placed(doc, tab))
+    ):
         doc.unchanged += 1
     return {}, False
 

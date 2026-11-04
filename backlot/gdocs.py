@@ -265,18 +265,22 @@ def is_icon(text: str) -> bool:
 # --- a document: its tabs, and in each a body, a header, a footer and footnotes ------------------
 #
 # Stored as ``{"tabs": [tab, ...]}``, with ``"tabbed": true`` once the Doc has held more than one
-# tab (`document_text`), each tab ``{"tabProperties": {tabId, title, iconEmoji?}, "body": [...],
-# "headers": {id: [...]}, "footers": {...}, "footnotes": {...}, "childTabs": [...]}``, its contents
-# as real serves them without indices or footnote numbers. A tab's index, parent and depth are its
-# place in the tree, read where it is served.
+# tab (`document_text`), each tab ``{"tabProperties": {tabId, title, iconEmoji?}, "untitled"?,
+# "body": [...], "headers": {id: [...]}, "footers": {...}, "footnotes": {...}, "childTabs":
+# [...]}``, its contents as real serves them without indices or footnote numbers. A tab's index,
+# parent and depth are its place in the tree, read where it is served.
 
 
-def new_tab(tab_id: str, title: str, body: list[dict] | None = None) -> dict:
+def new_tab(
+    tab_id: str, title: str, body: list[dict] | None = None, untitled: bool = False
+) -> dict:
     """A tab holding ``body``, or the empty paragraph a blank Doc and `addDocumentTab` make:
     measured 2026-11-02, a new tab's `documentStyle`, `namedStyles` and section style are a blank
-    Doc's."""
+    Doc's. An ``untitled`` tab is the first of a blank Doc that has held no other, whose ``title``
+    is only the one it shows."""
     return {
         "tabProperties": {"tabId": tab_id, "title": title},
+        **({"untitled": True} if untitled else {}),
         "body": body if body is not None else from_text(""),
         "headers": {},
         "footers": {},
@@ -285,9 +289,24 @@ def new_tab(tab_id: str, title: str, body: list[dict] | None = None) -> dict:
     }
 
 
+# The line breaks a tab title loses, each run of them to one space, and what a title blank once
+# they have gone holds at most: the characters to U+0020.
+_TITLE_BREAKS = re.compile("[\r\n\x0b\x0c\x85\u2028\u2029]+")
+_TITLE_BLANK = "".join(map(chr, range(0x21)))
+
+
+def tab_title(title: str) -> str | None:
+    """A tab title as real stores it, or None for one that takes the default (`default_title`).
+    Measured 2026-11-03: `a\r\nb` and `a\n\nb` were stored `a b` and `trail\n` was `trail `,
+    while a tab, U+0000, U+001F, U+007F, U+00A0 and U+3000 were kept; `\t`, `\n`, U+0000, U+001F,
+    U+0085 and ` \n ` alone each took the default, while U+00A0 alone did not."""
+    stored = _TITLE_BREAKS.sub(" ", title)
+    return stored if stored.strip(_TITLE_BLANK) else None
+
+
 def from_prose(text: str) -> dict:
     """A document that states no structure: its one tab, `t.0`, holding `from_text`."""
-    return {"tabs": [new_tab("t.0", "Tab 1", from_text(text))]}
+    return {"tabs": [new_tab("t.0", "Tab 1", from_text(text), untitled=True)]}
 
 
 def walk(tabs: list[dict], parent: dict | None = None, depth: int = 0):
@@ -314,14 +333,21 @@ def from_record(file_id: str, rec: dict) -> dict:
         {k: rec[k] for k in ("paragraphs", "header", "footer") if rec.get(k) is not None}
     ]
     titles = [t["title"] for t in _stated_tabs(stated) if t.get("title")]
+    built: list[str] = []
 
     def build(tab: dict, n: int) -> dict:
         seed = "" if n == 0 else f"t{n}."
         tid = "t.0" if n == 0 else tab_id(file_id, str(n))
-        title = tab.get("title") or default_title(titles, n + 1)
+        # as `addDocumentTab` takes a title, one taken once rewritten getting the default
+        title = tab_title(tab.get("title") or "")
+        untitled = n == 0 and not tab.get("title") and len(list(_stated_tabs(stated))) == 1
+        if title is None or title in built:
+            title = default_title(titles, n + 1)
         titles.append(title)
+        built.append(title)
         notes: dict = {}
-        out = new_tab(tid, title, from_paragraphs(file_id, tab["paragraphs"], seed, notes))
+        body = from_paragraphs(file_id, tab["paragraphs"], seed, notes)
+        out = new_tab(tid, title, body, untitled=untitled)
         if tab.get("icon"):
             out["tabProperties"]["iconEmoji"] = tab["icon"]
         for kind in ("header", "footer"):
@@ -1480,9 +1506,9 @@ def _plain_lines(content: list[dict], note) -> list[str]:
     break is `_page_breaks`' and a footnote reference ``note``'s. A paragraph holding no text but
     vertical tabs or page breaks, or nothing, takes one CRLF more, and one other than a HEADING_n
     takes the CRLFs `_lead_breaks` counts; a HEADING_n holding nothing is left out, and one holding
-    no text but vertical tabs or page breaks that ends with a CRLF is one fewer (measured 2026-11-03:
-    a page break alone in HEADING_1 to HEADING_6 was the rule alone, and a page break then a
-    vertical tab in a HEADING_2 the rule and one CRLF). Real's bytes and these agree on every
+    no text but vertical tabs or page breaks that ends with a CRLF is one fewer (measured
+    2026-11-03: a page break alone in HEADING_1 to HEADING_6 was the rule alone, and a page break
+    then a vertical tab in a HEADING_2 the rule and one CRLF). Real's bytes and these agree on every
     paragraph of up to three of text, a vertical tab, a vertical-tab link, a page break and a
     footnote reference, and of four without the link, in NORMAL_TEXT, HEADING_2 and TITLE, each
     between two paragraphs of text, measured 2026-11-03."""

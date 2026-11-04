@@ -78,15 +78,14 @@ takes the style of the text beside it as real gives it, a heading a newline spli
 part a `headingId` of its own, and every write moves the Doc's `revisionId`, which
 `requiredRevisionId` is checked against, but for a batch holding only tab updates that each leave a
 tab's title, index and parent as they were and name no `iconEmoji`, and `replaceAllText` requests
-whose `tabsCriteria` lists no tab. A Doc whose corpus record states only `content`
-reads as one paragraph per line, and its first write stores that reading. `replaceAllText`
-compares text as real folds it (a letter with a mark as its base letter, `æ` as `ae`, `ß` as
-`ss`), and reads a regular expression with `java.util.regex`'s syntax, classes and properties,
-refusing what Java refuses; an insert inside a grapheme cluster, by Unicode's text segmentation,
-is refused. Drive reads what the write left:
-`files.export` and fullText search see the new text, `modifiedTime` moves to the write's time, and
-`version` moves by one while `size` stays what it was, a blank Doc's first write taking it from 1
-to 1024 as real's does.
+whose `tabsCriteria` lists no tab. A Doc whose corpus record states only `content` reads as one
+paragraph per line, and its first write stores that reading. `replaceAllText` compares text as real
+folds it (a letter with a mark as its base letter, `æ` as `ae`, `ß` as `ss`), and reads a regular
+expression with `java.util.regex`'s syntax, classes and properties, refusing what Java refuses; an
+insert inside a grapheme cluster, by Unicode's text segmentation, is refused. Drive reads what the
+write left: `files.export` and fullText search see the new text, `modifiedTime` moves to the write's
+time, and `version` moves by one while `size` stays what it was, a blank Doc's first write taking it
+from 1 to 1024 as real's does.
 
 `values.append` finds the table it writes below the way real does: from the last cell in the range
 holding a value, row by row, grown through every cell in the row or column next to it, and

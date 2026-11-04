@@ -139,7 +139,8 @@ A run may be, in place of `text`, a `footnote` reference holding its footnote's 
 `header` and a `footer`, each as paragraphs, and a document whose tabs are more than one, or whose
 tab has a title or an icon, states `tabs` instead: each with its `title`, an `icon`, its body as
 `paragraphs`, its own `header` and `footer`, and its child `tabs`. The first tab is `t.0`, as in a
-Doc real makes, an untitled one is `Tab n` by its place, and no two tabs share a title.
+Doc real makes, an untitled one is `Tab n` by its place, and no two tabs share a title. A title's
+line breaks become one space, as real stores a title.
 
 ```json
 {"source_type": "google_drive", "title": "Q1 board pack", "folder": "finance", "author_email": "cfo@acme.com", "created": "2026-01-25T08:00:00Z", "updated": "2026-01-26T08:00:00Z", "tabs": [{"title": "Summary", "paragraphs": [{"runs": [{"text": "Revenue up 12%"}, {"footnote": [{"text": "Unaudited."}]}, {"text": " on Q4."}, {"pageBreak": true}]}], "header": [{"text": "Board only"}], "tabs": [{"title": "Appendix", "paragraphs": [{"text": "Pipeline by region."}]}]}, {"title": "Risks", "paragraphs": [{"text": "EU residency."}]}]}

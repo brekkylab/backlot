@@ -2746,25 +2746,27 @@ def _drive_q_fulltext(conn, node, ids) -> dict[str, list]:
             conn, raw[1:-1] if phrase else raw, "google_drive", ids, limit=10_000, phrase=phrase
         )
         if phrase:
-            words = re.findall(r"\w+", raw[1:-1].lower())
+            words = _words(raw[1:-1])
             rows = [r for r in rows if _drive_mime(r) != DRIVE_DOC_MIME or _in_a_line(r, words)]
         out[raw] = rows
     return out
 
 
 def _in_a_line(row, words: list[str]) -> bool:
-    """Whether one line of ``row``'s title or content holds ``words`` one after another, each
-    compared without its accents."""
-    words = [_unaccented(w) for w in words]
+    """Whether one line of ``row``'s title or content holds ``words`` one after another."""
     for line in [row["title"], *re.split("[\n\x0b]", row["content"])]:
-        found = [_unaccented(w) for w in re.findall(r"\w+", line.lower())]
+        found = _words(line)
         if any(found[i : i + len(words)] == words for i in range(len(found))):
             return True
     return False
 
 
-def _unaccented(word: str) -> str:
-    return "".join(c for c in unicodedata.normalize("NFKD", word) if not unicodedata.combining(c))
+def _words(text: str) -> list[str]:
+    """``text``'s words without their accents, in lower case, an underscore parting two:
+    measured 2026-11-03, `"qzua qzub"` found `qzua_qzub`, `"iqztr qzts"` found `İqztr qzts`, and a
+    precomposed `"crème"` found a decomposed one."""
+    bare = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return re.findall(r"[^\W_]+", bare.lower())
 
 
 def _drive_q_fulltext_ids(hits: dict[str, list]) -> dict[str, set[str]]:

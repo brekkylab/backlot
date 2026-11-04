@@ -760,12 +760,13 @@ def _java_digit(ch: str, radix: int) -> int | None:
     return None
 
 
-def _java_long(raw: str) -> int | None:
-    """``raw`` as Spring reads a `long` path variable, or None where it cannot: whitespace removed
-    (``errors.atlassian.strip_java_whitespace``), then hexadecimal after `0x`, `0X` or `#` with an
-    optional `-` in front, otherwise decimal with an optional sign, each digit as
-    :func:`_java_digit` reads it, within a `long`. Measured on `project/{key}/role/{id}` 2026-10-13:
-    `-%231`, `0x１` and a 1 behind 4400 zeros read, `+0x1` and `0x-1` do not."""
+def _java_long(raw: str, width: tuple[int, int] = (-(2**63), 2**63 - 1)) -> int | None:
+    """``raw`` as Spring's `NumberUtils.parseNumber` reads it into a Java integer of ``width``, or
+    None where it throws: whitespace removed (``errors.atlassian.strip_java_whitespace``), then
+    hexadecimal after `0x`, `0X` or `#` with an optional `-` in front, otherwise decimal with an
+    optional sign, each digit as :func:`_java_digit` reads it, within ``width``. Measured on
+    `project/{key}/role/{id}` 2026-10-13: `-%231`, `0x１` and a 1 behind 4400 zeros read, `+0x1`
+    and `0x-1` do not."""
     text = errors_atlassian.strip_java_whitespace(raw)
     negative = text.startswith("-")
     rest = text[1:] if negative else text
@@ -781,10 +782,10 @@ def _java_long(raw: str) -> int | None:
         if digit is None:
             return None
         value = value * radix + digit
-        if value > 2**63:
+        if value > -width[0]:
             return None
     value = -value if negative else value
-    return value if -(2**63) <= value < 2**63 else None
+    return value if width[0] <= value <= width[1] else None
 
 
 def _parse_long(raw: str) -> int | None:
@@ -2883,10 +2884,16 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
 #   ?maxResults=1_0       400 -- where Python's own int() reads 10
 #   ?maxResults=1.5       400
 #
-# Python's `int` agrees with all of it but three things — the underscore, the internal whitespace,
-# and the non-breaking spaces `strip_java_whitespace` exists for — so those three are handled here
-# and the rest is left to `int` rather than restated as a pattern that would then have to be kept
-# in step with it.
+# and, measured 2026-11-04 on those two, Jira's `search/jql` and `project/search`, and
+# Confluence's content, label and child listings:
+#
+#   ?maxResults=0x2       2, as are `0X2` and `%232` -- hexadecimal after `0x`, `0X` or `#`
+#   ?startAt=-0x2         0, as `-2` is -- the `-` goes in front of the prefix; `%2B0x2` and
+#                         `0x-2` are 400
+#   ?maxResults=010       10 -- a leading zero is decimal, not octal
+#
+# That is Spring's `NumberUtils.parseNumber`, which `_java_long` ports, so neither Python's `int`
+# nor a pattern stands in for it here.
 #
 # The products part on TWO cases, both of them a value that cleans away to nothing:
 #
@@ -2932,22 +2939,8 @@ def _int_param(
     cleaned = errors_atlassian.strip_java_whitespace(raw)
     if cleaned == "" and not confluence:
         return default  # Jira alone reads a whitespace-only value as absent
-    try:
-        if "_" in cleaned:
-            raise ValueError(cleaned)
-        if any(ch.isspace() for ch in cleaned):
-            # Only the three non-breaking spaces survive the cleaning, and Java throws on one
-            # WHEREVER it sits, while Python's `int()` strips a leading or trailing one itself
-            # (`int('\xa03')` is 3). Without this, only the interior spelling was refused.
-            raise ValueError(cleaned)
-        n = int(cleaned)
-    except ValueError:
-        raise errors_atlassian.integer_conversion_failure(
-            _echoed_path(request), name, values
-        ) from None
-    if not width[0] <= n <= width[1]:
-        # Python's int is unbounded, so a page size computed from a timestamp or a byte count
-        # flowed into the query where real answered 400.
+    n = _java_long(raw, width)
+    if n is None:
         raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
     return n
 
@@ -3001,13 +2994,8 @@ def _jira_long_list_param(request: Request, name: str) -> list[int]:
         cleaned = errors_atlassian.strip_java_whitespace(raw)
         if cleaned == "":
             continue
-        try:
-            if "_" in cleaned or any(ch.isspace() for ch in cleaned):
-                raise ValueError(cleaned)
-            n = int(cleaned)
-        except ValueError:
-            n = None
-        if n is None or not JAVA_LONG[0] <= n <= JAVA_LONG[1]:
+        n = _java_long(raw, JAVA_LONG)
+        if n is None:
             raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
         numbers.append(n)
     return numbers

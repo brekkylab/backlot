@@ -25,10 +25,11 @@ from starlette.datastructures import URL, Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, DispatchFunction
 from starlette.routing import BaseRoute, Match
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from backlot import (
     auth,
+    bracketed_host,
     errors,
     express_http,
     openapi,
@@ -37,6 +38,7 @@ from backlot import (
     store,
     synth,
     telemetry,
+    utf8_escapes,
 )
 from backlot.acl import Acl
 from backlot.config import get_settings
@@ -214,7 +216,9 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
                 vendor.headers = getattr(exc, "headers", None)
             exc = vendor
     headers = getattr(exc, "headers", None)
-    body = errors.http_body(request.url.path, exc, request.query_params)
+    # The path as routed: ``request.url.path`` drops what :data:`_REPARSED` matches, which would
+    # take `/github/rate_limit%0A` for the route it does not reach.
+    body = errors.http_body(request.scope["path"], exc, request.query_params)
     if body is None:
         body = {"detail": exc.detail}
     # A vendor may decide how the body reaches the wire as well as what is in it — Google's errors
@@ -540,6 +544,16 @@ async def echo_github_api_version(request: Request, call_next):
 
 
 @_middleware(lambda scope: errors.s3.owns(_url_path(scope)))
+async def refuse_an_s3_path_real_cannot_read(request: Request, call_next):
+    """Answer an `/s3` path whose escapes do not decode, or whose bucket holds a character no bucket
+    name holds, as real does (``s3.path_refusal``), ahead of the route and the credential.
+    Registered before ``answer_s3_with_request_ids``, which makes it the inner of the two, so the
+    refusal carries the request's ids."""
+    refusal = s3.path_refusal(request.method, request.scope["raw_path"])
+    return refusal if refusal is not None else await call_next(request)
+
+
+@_middleware(lambda scope: errors.s3.owns(_url_path(scope)))
 async def answer_s3_with_request_ids(request: Request, call_next):
     """Put `x-amz-request-id` and `x-amz-id-2` on every `/s3` answer, and hand the router the same
     pair for the body of an error.
@@ -701,6 +715,18 @@ async def report_notion_headers(request: Request, call_next):
     for name, value in notion.APPLICATION_HEADERS.items():
         response.headers[name] = value
     return response
+
+
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def refuse_a_notion_path_that_does_not_decode(request: Request, call_next):
+    """Answer a `/notion` path with ``notion.undecodable_url``'s 400 where it gives one. Registered
+    after ``report_notion_headers``, which makes it the outer of the two, so its 400 goes without
+    that one's headers, and before ``read_a_notion_body_as_express_does``, which makes it the inner
+    of those two, so a body Express refuses is refused first."""
+    refusal = notion.undecodable_url(request)
+    return refusal if refusal is not None else await call_next(request)
 
 
 @_middleware(lambda scope: errors.notion.owns(_url_path(scope)))
@@ -1120,6 +1146,107 @@ async def refuse_a_head_on_the_google_editor_hosts(request: Request, call_next):
     still `HEAD` when it gets here.
     """
     return errors.google.head_refusal()
+
+
+def _a_google_operation(scope: Scope) -> bool:
+    """Whether real reads this request on a Google family's path as an operation: a method and path
+    a route here serves or Google publishes (``google.is_an_unserved_operation``), the path's
+    trailing slashes dropped (:func:`route_a_google_path_the_way_google_does`)."""
+    path = scope["path"]
+    raw = scope.get("raw_path") or path.encode()
+    slashes = len(raw) - len(raw.rstrip(b"/"))
+    trimmed = {**scope, "path": path[: len(path) - slashes]}
+    return _google_route_match(trimmed) is Match.FULL or google.is_an_unserved_operation(
+        Request(scope)
+    )
+
+
+def _front_end_error(scope: Scope, exc: errors.google.GoogleError) -> Response:
+    """``exc`` in its family's envelope, as the script that calls it where
+    ``errors.google.jsonp_callback`` names a callback, whatever the name: real wrapped its 415 under
+    `callback=a-b` on 2026-10-30 (UTC), a name ``errors.google.validate_system_parameters`` refuses
+    on a route."""
+    request = Request(scope)
+    body = errors.google.http_body(request.url.path, exc, request.query_params)
+    callback = errors.google.jsonp_callback(request)
+    return errors.google.respond(body, callback=callback, status_code=exc.status_code)
+
+
+class _ReadAGoogleBodyUnderItsCoding:
+    """Read the body of a request on a Google family's path under its `Content-Encoding`, as real's
+    front end does ahead of the route, the credential and the system parameters, where real reads
+    the request as an operation (:func:`_a_google_operation`): a coding it does not read
+    (``google.refuses_coding``) is ``errors.google.unsupported_coding``'s 415, and a body under
+    `gzip` goes on as ``google.inflated`` reads it, or is ``errors.google.payload_too_large``'s 400.
+    On Docs, Sheets and Slides such a coding on any other request is a 415 on `text/html` with no
+    body.
+
+    An ASGI layer rather than one of :func:`_middleware`'s, because the body it hands on is not the
+    one that arrived. Registered inside :func:`answer_head_as_the_get_without_its_body`, so a `HEAD`
+    on Drive and Gmail reaches it as the GET, and outside
+    :func:`refuse_a_head_on_the_google_editor_hosts`, and inside
+    :func:`answer_a_google_read_sent_as_a_post`, whose read of a form body under its coding
+    (``request.state.form_read``) is the one this hands on, so the body is decompressed once.
+    Measured with `br` on 2026-10-30 (UTC): real answered the 415 ahead of the credential,
+    `$.xgafv=3` and `alt=zzz`. The editor hosts answered the one with no body to a `HEAD` on a
+    routed path, and to `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` and `HEAD` on
+    `/v4/nosuch` on Sheets, `GET` on `/v1/nosuch` on Docs and Slides, and `PUT`, `DELETE` and `POST`
+    on a spreadsheet, where with no coding each was the host's 400 page; Drive's and Gmail's host
+    answered a path it does not route with its 404 page whatever the coding.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or errors.google.family(scope["path"]) is None:
+            await self.app(scope, receive, send)
+            return
+        codings = Headers(scope=scope).getlist("content-encoding")
+        if not codings:
+            await self.app(scope, receive, send)
+            return
+        operation = _a_google_operation(scope)
+        editor = errors.google.family(scope["path"]) == errors.google.EDITOR
+        if google.refuses_coding(codings) and (operation or editor):
+            if operation:
+                answer = _front_end_error(scope, errors.google.unsupported_coding())
+            else:
+                answer = Response(status_code=415, headers={"Content-Type": "text/html"})
+            await answer(scope, receive, send)
+            return
+        if not operation:
+            await self.app(scope, receive, send)
+            return
+        state = Request(scope).state
+        if hasattr(state, "form_read"):
+            read = state.form_read
+        else:
+            chunks = []
+            more = True
+            while more:
+                message = await receive()
+                if message["type"] != "http.request":
+                    return
+                chunks.append(message.get("body", b""))
+                more = message.get("more_body", False)
+            read = google.inflated(b"".join(chunks), codings)
+        if read is None:
+            await _front_end_error(scope, errors.google.payload_too_large())(scope, receive, send)
+            return
+        handed = False
+
+        async def receive_read() -> Message:
+            nonlocal handed
+            if handed:
+                return await receive()
+            handed = True
+            return {"type": "http.request", "body": read, "more_body": False}
+
+        await self.app(scope, receive_read, send)
+
+
+app.add_middleware(_ReadAGoogleBodyUnderItsCoding)
 
 
 # The path prefixes whose `HEAD` is the GET with the body left off. GitHub, Atlassian, Notion,
@@ -1565,6 +1692,37 @@ async def merge_slashes_before_a_slack_method_name(request: Request, call_next):
     return await call_next(request)
 
 
+@_middleware(lambda scope: slack.drops_an_end(scope["path"]))
+async def drop_what_slack_drops_off_the_end_of_a_path(request: Request, call_next):
+    """Read a `/slack/api/` path as real does without the run at its end it drops, or answer one
+    holding an LF elsewhere with its 404 page (``slack.drop_the_end``, which has the measurement).
+    Registered after :func:`merge_slashes_before_a_slack_method_name`, which makes it the outer of
+    the two, so that a run of `/`s before the name is merged once the end is gone."""
+    answer = slack.drop_the_end(request.scope)
+    if answer is not None:
+        return answer
+    return await call_next(request)
+
+
+@_middleware(
+    lambda scope: (
+        _at_or_under(_url_path(scope), ("/hubspot",))
+        and scope["method"] not in _CLOUDFLARE_METHOD
+        and hubspot.blocks_a_header_value(scope["headers"])
+    )
+)
+async def answer_a_header_value_cloudflare_blocks_on_hubspot(request: Request, call_next):
+    """Answer a `/hubspot` request with a header value that is not UTF-8 with Cloudflare's 403
+    block page (``hubspot.cloudflare_block``), ahead of the route, the `Accept` and the credential.
+
+    Registered just inside :func:`refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot`:
+    on 2026-10-30 (UTC) api.hubapi.com answered `a<80>b` beside two `Authorization` headers with
+    that 400. Cloudflare's own answers to the methods of :data:`_CLOUDFLARE_METHOD` came ahead of
+    the block as well, the same as with no such byte, and those are left to what answers the method
+    here. Real kept the connection open after the block where the request asked to keep it."""
+    return hubspot.cloudflare_block(request)
+
+
 @_middleware(
     lambda scope: (
         _at_or_under(_url_path(scope), ("/notion", "/linear", "/fireflies", "/hubspot"))
@@ -1645,8 +1803,8 @@ _GITHUB_TARGET_TOO_LONG = (
 @_middleware(lambda scope: _at_or_under(_url_path(scope), ("/github",)))
 async def answer_a_github_request_target_past_its_bound(request: Request, call_next):
     """414 a `/github` request on any path and any method whose target is too long for real, ahead
-    of the route and its refusals, which a shorter target meets. The target is counted as
-    ``backlot.routers.github._refuse_a_long_line_or_path`` counts the request line's.
+    of the route and its refusals, which a shorter target meets
+    (``backlot.routers.github.target_past_its_bound``).
 
     On api.github.com, 2026-10-29, each request cache-busted: on `/repos/{owner}/{repo}` a `GET`, a
     `HEAD` and a `POST` with a target of 8,192 were this 414, and so were a `GET` on a path no route
@@ -1655,10 +1813,7 @@ async def answer_a_github_request_target_past_its_bound(request: Request, call_n
     raw byte in the target was the front door's 400
     (:func:`answer_a_raw_byte_in_the_request_target`) ahead of it. Real's status line reads
     `414 Request-URI Too Large`, and the answer carries no rate limit."""
-    query = request.scope["query_string"]
-    target = request.scope["raw_path"][len("/github") :] + (b"?" + query if query else b"")
-    bound = 8_174 if request.scope["path"] == "/github/search/code" else 8_192
-    if len(target) >= bound:
+    if github.target_past_its_bound(request.scope):
         return Response(
             _GITHUB_TARGET_TOO_LONG,
             status_code=414,
@@ -1684,6 +1839,24 @@ _GOOGLE_READ_OVERRIDES = {
 }
 _GOOGLE_OVERRIDE_IN_ANY_CASE = "/drive/v3"
 _FORM_MEDIA_TYPE = "application/x-www-form-urlencoded"
+_BYTE_PAST_0X7F = re.compile(rb"[\x80-\xff]")
+
+
+@_middleware(
+    lambda scope: (
+        errors.google.family(_url_path(scope)) in (errors.google.DRIVE, errors.google.EDITOR)
+        and b"%" in scope["query_string"]
+    )
+)
+async def read_a_drive_or_editor_query_as_google_does(request: Request, call_next):
+    """Spell each escape of a Drive, Docs, Sheets or Slides query value as those APIs read it
+    (``backlot.utf8_escapes.google_query``). Gmail's `fields` quoted a byte outside any UTF-8
+    sequence back as nothing on 2026-10-30 (UTC), `a%80b` as `ab`, so a Gmail query is left to the
+    router. Registered before ``answer_a_google_read_sent_as_a_post``, which makes it the inner of
+    the two, so it reads the form that one adds to the query too."""
+    query = request.scope["query_string"]
+    request.scope["query_string"] = utf8_escapes.google_query(query, errors.google.QUERY_TOKENS)
+    return await call_next(request)
 
 
 @_middleware(
@@ -1714,11 +1887,21 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
     `fields` gets. A `fields` in the URL was read over one in the body, as the first of two in a
     GET's query is. A POST naming `PUT`, `PATCH`, `DELETE` or `GET, PUT` goes on as a POST: real
     answered each on `about` as it answers a `PUT` there, with its 404 page, and on 2026-10-25 so it
-    answered a `PUT`, `PATCH` or `DELETE` naming `GET` there.
+    answered a `PUT`, `PATCH` or `DELETE` naming `GET` there. The form body is read under its
+    `Content-Encoding` as a route reads its own (``google.inflated``): on 2026-10-23 a gzipped one
+    on Drive's `about` was decompressed. A byte past 0x7F in it is read as its percent-encoding:
+    on 2026-10-30 (UTC) real answered `about` with 0x80, 0x8B, 0xFF or `C3 A9` in the form body as
+    the GET with those bytes percent-encoded in its query, where 0x7F was read as sent, and a form
+    body gzipped and cut short as the GET with no `fields`, whether its `Content-Encoding` named
+    the coding or not.
 
-    Registered just inside ``answer_a_raw_byte_in_the_request_target``, whose refusals real gave
-    such a POST on Drive's `about` on 2026-10-25 as it gives a GET, and outside every other
-    middleware that reads the method or the query, so they and the router see the GET.
+    Registered inside ``answer_a_raw_byte_in_the_request_target``, whose refusals real gave such a
+    POST on Drive's `about` on 2026-10-25 as it gives a GET, and inside
+    ``answer_an_escape_a_front_door_refuses``, which reads the path alone, and inside
+    :func:`refuse_a_body_on_a_google_get_or_head`, which reads the method as sent; and outside every
+    other middleware that reads the method or the query, so they and the router see the GET. The
+    request is marked ``sent_as_a_post`` on its state for ``errors.google.jsonp_callback``, which
+    reads it.
     """
     path = request.scope["path"]
     prefix = next(p for p in _GOOGLE_READ_OVERRIDES if path.startswith(f"{p}/"))
@@ -1728,11 +1911,64 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
         override = override.upper()
     if override in _GOOGLE_READ_OVERRIDES[prefix]:
         form = _FORM_MEDIA_TYPE in request.headers.get("content-type", "").lower()
-        body = await request.body() if form else b""
+        codings = request.headers.getlist("content-encoding")
+        body = google.inflated(await request.body(), codings) if form else b""
+        if form:
+            request.state.form_read = body
+        body = _BYTE_PAST_0X7F.sub(lambda m: b"%%%02X" % m[0][0], body or b"")
         query = request.scope.get("query_string", b"")
         request.scope["method"] = "GET"
+        request.state.sent_as_a_post = True
         request.scope["query_string"] = b"&".join(part for part in (query, body) if part)
     return await call_next(request)
+
+
+@_middleware(lambda scope: request_target.escape_answer(scope) is not None)
+async def answer_an_escape_a_front_door_refuses(request: Request, call_next):
+    """Answer a path holding an escape the vendor's front door refuses as it does
+    (``backlot.request_target.escape_answer``), ahead of every vendor's middleware, as a front door
+    answers ahead of the API behind it."""
+    return request_target.escape_answer(request.scope)
+
+
+@_middleware(
+    lambda scope: (
+        scope["method"] in ("GET", "HEAD")
+        and (request_target.front_door(scope["path"]) or ("",))[0] == "google"
+        and Headers(scope=scope).get("content-length", "").lstrip("0") != ""
+    )
+)
+async def refuse_a_body_on_a_google_get_or_head(request: Request, call_next):
+    """Answer a `GET` or `HEAD` on a Google path whose `Content-Length` is past 0 as Google's front
+    door does, ahead of the API: a `GET` with ``request_target.GOOGLE_PAGE_1555`` and
+    `Referrer-Policy: no-referrer`, a `HEAD` with no body, each a 400 on `text/html; charset=UTF-8`
+    after which the connection is closed.
+
+    Measured with `Content-Length: 1` and the body `x` on 2026-10-29 and 2026-10-30 (UTC): on
+    Drive's `about`, Gmail's `labels`, `/batch/drive/v3`, Docs, Sheets and Slides, with no
+    credential and with `Bearer x`, under `Accept: application/json`, `X-HTTP-Method-Override: POST`
+    and `Content-Encoding: br` or `gzip`, and on a connection asked to stay open;
+    `Content-Length: 5` with no body sent was the same 400. `Content-Length: 0` and `00`, a chunked
+    body, a `DELETE` with a body and a `POST` naming `GET` in `X-HTTP-Method-Override` were served.
+
+    Registered just inside :func:`answer_a_raw_byte_in_the_request_target`: real answered a
+    control byte in the path beside a body with the 54-byte page, a space with the 1,555-byte one,
+    and a byte past 0x7F, which it reads as its percent-encoding, with this 400.
+    """
+    if request.method == "HEAD":
+        return Response(
+            status_code=400,
+            headers={"Content-Type": "text/html; charset=UTF-8", "Connection": "close"},
+        )
+    return Response(
+        request_target.GOOGLE_PAGE_1555,
+        status_code=400,
+        headers={
+            "Content-Type": "text/html; charset=UTF-8",
+            "Referrer-Policy": "no-referrer",
+            "Connection": "close",
+        },
+    )
 
 
 @_middleware(lambda scope: request_target.SENT in scope)
@@ -1766,13 +2002,13 @@ async def vendor_json_media_type(request: Request, call_next):
     key, and real's own spec says `application/json` there: the charset is a fact about the wire,
     not about the contract, and `backlot diff` compares the contract. Only a response that is
     exactly `application/json` is touched, so the raw, diff and text/plain answers keep their own
-    types. Registered last of the middlewares, which makes it the outermost, so a JSON body another
-    middleware returns (``refuse_a_bearer_jira_cannot_read``'s 403) passes through it too rather
-    than around it; the route handlers and the two exception handlers above are covered from either
-    position, those handlers because they run inside ``ExceptionMiddleware``. The status goes along
-    with the path because the answer can depend on it: code search's own 200 and 422 carry no
-    charset where the gateway's 401 on the same path does. An answer given in front of Jira is not
-    Jira's, and keeps the type its layer gives (the edge's `;` 400,
+    types. Registered after every middleware above it, which makes it outside each of them, so a
+    JSON body another middleware returns (``refuse_a_bearer_jira_cannot_read``'s 403) passes through
+    it too rather than around it; the route handlers and the two exception handlers above are
+    covered from either position, those handlers because they run inside ``ExceptionMiddleware``.
+    The status goes along with the path because the answer can depend on it: code search's own 200
+    and 422 carry no charset where the gateway's 401 on the same path does. An answer given in front
+    of Jira is not Jira's, and keeps the type its layer gives (the edge's `;` 400,
     ``errors.atlassian.front_door``).
     """
     response = await call_next(request)
@@ -1783,6 +2019,20 @@ async def vendor_json_media_type(request: Request, call_next):
         if media_type is not None:
             response.headers["content-type"] = media_type
     return response
+
+
+@_middleware(bracketed_host.holds_no_address)
+async def answer_a_host_in_brackets_that_holds_no_ipv6_address(request: Request, call_next):
+    """Answer a request whose `Host` ``backlot.bracketed_host.holds_no_address`` picks as the
+    vendor's front door answers it (``backlot.bracketed_host.answer``), or hand it on without its
+    `Host`, so that ``request.url`` is built from the server's address. Registered after every
+    middleware but telemetry's, which makes it outside each of them: those read ``request.url``,
+    which cannot be built from such a `Host` (``backlot.bracketed_host`` says why)."""
+    answer = bracketed_host.answer(request.scope)
+    if answer is not None:
+        return answer
+    request.scope["headers"] = [(k, v) for k, v in request.scope["headers"] if k != b"host"]
+    return await call_next(request)
 
 
 # Registered after every middleware above, which makes it the outermost: it sees every answer,

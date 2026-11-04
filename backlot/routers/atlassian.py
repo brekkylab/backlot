@@ -28,7 +28,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi import Path as PathParameter
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
-from starlette.convertors import PathConvertor, register_url_convertor
 from starlette.routing import Match
 
 from backlot import auth, store, synth
@@ -760,12 +759,13 @@ def _java_digit(ch: str, radix: int) -> int | None:
     return None
 
 
-def _java_long(raw: str) -> int | None:
-    """``raw`` as Spring reads a `long` path variable, or None where it cannot: whitespace removed
-    (``errors.atlassian.strip_java_whitespace``), then hexadecimal after `0x`, `0X` or `#` with an
-    optional `-` in front, otherwise decimal with an optional sign, each digit as
-    :func:`_java_digit` reads it, within a `long`. Measured on `project/{key}/role/{id}` 2026-10-13:
-    `-%231`, `0x１` and a 1 behind 4400 zeros read, `+0x1` and `0x-1` do not."""
+def _java_long(raw: str, width: tuple[int, int] = (-(2**63), 2**63 - 1)) -> int | None:
+    """``raw`` as Spring's `NumberUtils.parseNumber` reads it into a Java integer of ``width``, or
+    None where it throws: whitespace removed (``errors.atlassian.strip_java_whitespace``), then
+    hexadecimal after `0x`, `0X` or `#` with an optional `-` in front, otherwise decimal with an
+    optional sign, each digit as :func:`_java_digit` reads it, within ``width``. Measured on
+    `project/{key}/role/{id}` 2026-10-13: `-%231`, `0x１` and a 1 behind 4400 zeros read, `+0x1`
+    and `0x-1` do not."""
     text = errors_atlassian.strip_java_whitespace(raw)
     negative = text.startswith("-")
     rest = text[1:] if negative else text
@@ -781,10 +781,10 @@ def _java_long(raw: str) -> int | None:
         if digit is None:
             return None
         value = value * radix + digit
-        if value > 2**63:
+        if value > -width[0]:
             return None
     value = -value if negative else value
-    return value if -(2**63) <= value < 2**63 else None
+    return value if width[0] <= value <= width[1] else None
 
 
 def _parse_long(raw: str) -> int | None:
@@ -2287,7 +2287,7 @@ async def confluence_cql_search(request: Request):
         raise errors_atlassian.search_next_out_of_range()
     results = []
     for r in rows:
-        page = _confluence_page(conn, request, r, "version,space")
+        page = _confluence_page(conn, request, r, "")
         results.append(
             {
                 "content": page,
@@ -2398,7 +2398,13 @@ async def confluence_content_get(content_id: str, request: Request):
     row = store.confluence_by_id(conn, content_id, visible_ids=ids)
     if row is None or attachment:
         raise errors_atlassian.content_not_found("content", content_id, attachment=attachment)
-    return _confluence_page(conn, request, row, _str_param(request, "expand", "body.storage"))
+    # With no `expand` sent, or an empty one, real expands `space`, `history` and `version` and
+    # leaves the body unexpanded, measured on Confluence Cloud on 2026-10-23; a sent one expands
+    # exactly what it names (:func:`_confluence_page`).
+    expand = _str_param(request, "expand", None)
+    if not expand:
+        expand = "space,history,version"
+    return _confluence_page(conn, request, row, expand)
 
 
 @router.get(
@@ -2716,38 +2722,85 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
     # version number: BYO override, else 2 if the page was updated after creation, else 1
     vnum = row["version_number"] or (2 if row["updated_ts"] and row["updated_ts"] != created else 1)
     webui = f"/spaces/{key}/{ctype}s/{cid}"
+    # The properties `expand` names, read up to the first dot: the part before it is the
+    # property, and what follows names something inside that property — so `body.storage`
+    # expands `body`'s storage representation and `history.lastUpdated` expands `history`.
+    # Measured on Confluence Cloud on 2026-11-03; a padded term (` space`, `space `) names
+    # nothing, as real expands nothing for it, so terms are deliberately not stripped.
+    wanted: dict[str, set[str]] = {}
+    for term in (expand or "").split(","):
+        head, _, sub = term.partition(".")
+        if head:
+            wanted.setdefault(head, set()).update([sub.partition(".")[0]] if sub else [])
     page = {
         "id": str(cid),
         "type": ctype,
         "status": "current",
         "title": row["title"],
-        "space": {
+    }
+    if "space" in wanted:
+        page["space"] = {
             "id": synth.github_user_id(row["space"]),
             "key": key,
             "name": row["space"],
             "type": "global",
             "_links": {"webui": f"/spaces/{key}"},
-        },
-        "_links": {
-            "webui": webui,
-            "tinyui": f"/x/{cid}",
-            "editui": f"/pages/resumedraft.action?draftId={cid}",
-            "self": f"{_site(request)}/wiki/rest/api/content/{cid}",
-        },
-        "_expandable": {
-            "childTypes": "",
-            "container": f"/rest/api/space/{key}",
-            "metadata": "",
-            "operations": "",
-            "restrictions": "",
-            "history": f"/rest/api/content/{cid}/history",
-            "ancestors": "",
-            "body": "",
-            "version": "",
-            "descendants": "",
-        },
+        }
+    page["_links"] = {
+        "webui": webui,
+        "tinyui": f"/x/{cid}",
+        "editui": f"/pages/resumedraft.action?draftId={cid}",
+        "self": f"{_site(request)}/wiki/rest/api/content/{cid}",
     }
-    if "history" in expand or "version" in expand:
+
+    # The representations this server renders for a `body` expansion, in the order they are served.
+    def atlas_doc_format() -> str:
+        import json as _json
+
+        return _json.dumps(_adf(row["content"]))
+
+    body_writers = {
+        "storage": lambda: _storage(row["content"]),
+        "view": lambda: _view(row["content"]),
+        "export_view": lambda: _export_view(row["content"]),
+        "atlas_doc_format": atlas_doc_format,
+    }
+    body_named = [name for name in body_writers if name in wanted.get("body", ())]
+    # The representations real names under `body._expandable`, in real's order, measured on
+    # Confluence Cloud on 2026-11-03: the four rendered above plus six this server does not
+    # render, which a `body.editor` expansion leaves unexpanded.
+    body_representations = (
+        "editor",
+        "atlas_doc_format",
+        "view",
+        "export_view",
+        "styled_view",
+        "markdown",
+        "dynamic",
+        "storage",
+        "editor2",
+        "anonymous_export_view",
+    )
+    expandable = {
+        "childTypes": "",
+        "container": f"/rest/api/space/{key}",
+        "metadata": "",
+        "operations": "",
+        "restrictions": "",
+        "history": f"/rest/api/content/{cid}/history",
+        "ancestors": "",
+        "body": "",
+        "version": "",
+        "descendants": "",
+        "space": f"/rest/api/space/{key}",
+    }
+    # `space` was served above, before this dict existed, so it leaves `_expandable` here.
+    if "space" in wanted:
+        expandable.pop("space")
+    # A property that is served leaves `_expandable`: on the bare read real's `_expandable` lists
+    # `body` and none of the three that read expanded, measured on 2026-10-23.
+    if "history" in wanted:
+        expandable.pop("history")
         page["history"] = {
             "latest": True,
             "createdDate": synth.rfc3339_millis(created),
@@ -2758,7 +2811,8 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                 "number": vnum,
             },
         }
-    if "version" in expand:
+    if "version" in wanted:
+        expandable.pop("version")
         page["version"] = {
             "number": vnum,
             "when": synth.rfc3339_millis(updated),
@@ -2766,29 +2820,15 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             "minorEdit": bool(row["minor_edit"]),
             "message": row["version_message"] or "",
         }
-    if "body.storage" in expand:
-        page.setdefault("body", {})["storage"] = {
-            "value": _storage(row["content"]),
-            "representation": "storage",
-        }
-    if "body.view" in expand:
-        page.setdefault("body", {})["view"] = {
-            "value": _view(row["content"]),
-            "representation": "view",
-        }
-    if "body.export_view" in expand:
-        page.setdefault("body", {})["export_view"] = {
-            "value": _export_view(row["content"]),
-            "representation": "export_view",
-        }
-    if "body.atlas_doc_format" in expand:
-        import json as _json
-
-        page.setdefault("body", {})["atlas_doc_format"] = {
-            "value": _json.dumps(_adf(row["content"])),
-            "representation": "atlas_doc_format",
-        }
-    if "metadata.labels" in expand or "metadata" in expand:
+    if "body" in wanted:
+        expandable.pop("body")
+        body = {}
+        for name in body_named:
+            body[name] = {"value": body_writers[name](), "representation": name}
+        unexpanded = [name for name in body_representations if name not in body_named]
+        body["_expandable"] = dict.fromkeys(unexpanded, "")
+        page["body"] = body
+    if "metadata" in wanted:
         labels = store.jcol(row, "labels")
         page["metadata"] = {
             "labels": {
@@ -2806,7 +2846,8 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                 "size": len(labels),
             }
         }
-    if "ancestors" in expand:
+        expandable.pop("metadata")
+    if "ancestors" in wanted:
         ancestors, pid = [], row["parent_id"]
         while pid:
             prow = store.get_document(conn, "confluence", pid)
@@ -2825,6 +2866,9 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             )
             pid = prow["parent_id"]
         page["ancestors"] = ancestors
+        expandable.pop("ancestors")
+    # `_expandable` is assigned last, so a property served above has already left it.
+    page["_expandable"] = expandable
     return page
 
 
@@ -2839,10 +2883,16 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
 #   ?maxResults=1_0       400 -- where Python's own int() reads 10
 #   ?maxResults=1.5       400
 #
-# Python's `int` agrees with all of it but three things — the underscore, the internal whitespace,
-# and the non-breaking spaces `strip_java_whitespace` exists for — so those three are handled here
-# and the rest is left to `int` rather than restated as a pattern that would then have to be kept
-# in step with it.
+# and, measured 2026-11-04 on those two, Jira's `search/jql` and `project/search`, and
+# Confluence's content, label and child listings:
+#
+#   ?maxResults=0x2       2, as are `0X2` and `%232` -- hexadecimal after `0x`, `0X` or `#`
+#   ?startAt=-0x2         0, as `-2` is -- the `-` goes in front of the prefix; `%2B0x2` and
+#                         `0x-2` are 400
+#   ?maxResults=010       10 -- a leading zero is decimal, not octal
+#
+# That is Spring's `NumberUtils.parseNumber`, which `_java_long` ports, so neither Python's `int`
+# nor a pattern stands in for it here.
 #
 # The products part on TWO cases, both of them a value that cleans away to nothing:
 #
@@ -2888,22 +2938,8 @@ def _int_param(
     cleaned = errors_atlassian.strip_java_whitespace(raw)
     if cleaned == "" and not confluence:
         return default  # Jira alone reads a whitespace-only value as absent
-    try:
-        if "_" in cleaned:
-            raise ValueError(cleaned)
-        if any(ch.isspace() for ch in cleaned):
-            # Only the three non-breaking spaces survive the cleaning, and Java throws on one
-            # WHEREVER it sits, while Python's `int()` strips a leading or trailing one itself
-            # (`int('\xa03')` is 3). Without this, only the interior spelling was refused.
-            raise ValueError(cleaned)
-        n = int(cleaned)
-    except ValueError:
-        raise errors_atlassian.integer_conversion_failure(
-            _echoed_path(request), name, values
-        ) from None
-    if not width[0] <= n <= width[1]:
-        # Python's int is unbounded, so a page size computed from a timestamp or a byte count
-        # flowed into the query where real answered 400.
+    n = _java_long(raw, width)
+    if n is None:
         raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
     return n
 
@@ -2957,13 +2993,8 @@ def _jira_long_list_param(request: Request, name: str) -> list[int]:
         cleaned = errors_atlassian.strip_java_whitespace(raw)
         if cleaned == "":
             continue
-        try:
-            if "_" in cleaned or any(ch.isspace() for ch in cleaned):
-                raise ValueError(cleaned)
-            n = int(cleaned)
-        except ValueError:
-            n = None
-        if n is None or not JAVA_LONG[0] <= n <= JAVA_LONG[1]:
+        n = _java_long(raw, JAVA_LONG)
+        if n is None:
             raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
         numbers.append(n)
     return numbers
@@ -3817,16 +3848,6 @@ _CONFLUENCE_HTML_RESOURCES = ("space", "content")
 
 unmatched_router = APIRouter(prefix="/atlassian", include_in_schema=False)
 
-
-class _EveryPath(PathConvertor):
-    """Starlette's `path`, a newline included: its `.*` stops at one, so `GET /rest/api/3/nope%0Ax`
-    would miss the catch-all, where real answers it as any path no route matches (2026-10-18)."""
-
-    regex = "(?s:.*)"
-
-
-register_url_convertor("every_path", _EveryPath())
-
 _PACKAGE = Path(__file__).resolve().parent.parent
 
 
@@ -4662,7 +4683,7 @@ def _site_surface(request: Request) -> Response:
     )
 
 
-@unmatched_router.api_route("/{rest:every_path}", methods=_UNMATCHED_METHODS)
+@unmatched_router.api_route("/{rest:path}", methods=_UNMATCHED_METHODS)
 async def unmatched_path(request: Request, rest: str) -> Response:
     """What either product answers for a path no route above serves, and for a method they do not.
 

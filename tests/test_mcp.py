@@ -1335,24 +1335,23 @@ def test_openapi_bridge_passes_a_response_through_even_when_it_breaks_its_own_sc
 
 
 def test_build_server_fetches_every_source_concurrently(monkeypatch):
-    """Ten sources are ten round trips before the handshake; against a hosted server answering in
-    ~1s that is ~10s serially, which some MCP clients do not wait for. Each fetch here takes 0.5s,
-    so eight sources built one after another would take 4s; concurrently they take about one."""
+    """Every spec fetch is in flight at once."""
     pytest.importorskip("fastmcp")
     spec = {"openapi": "3.1.0", "info": {"title": "t", "version": "0"}, "paths": {}}
+    all_fetching = threading.Barrier(len(backlot_mcp.OPENAPI_SOURCES), timeout=10)
+    fetched = set()
 
-    def slow_spec(base_url, source):
-        time.sleep(0.5)
+    def overlapping_spec(base_url, source):
+        fetched.add(source)
+        all_fetching.wait()
         return spec
 
-    monkeypatch.setattr(backlot_mcp, "openapi_spec", slow_spec)
+    monkeypatch.setattr(backlot_mcp, "openapi_spec", overlapping_spec)
     creds = backlot_mcp.Credentials(
         token="t", email=None, s3_access_key_id="a", s3_secret_access_key="s"
     )
-    started = time.monotonic()
     backlot_mcp.build_server("http://backlot.invalid", creds, backlot_mcp.OPENAPI_SOURCES)
-    elapsed = time.monotonic() - started
-    assert elapsed < 2.0, f"{elapsed:.2f}s for {len(backlot_mcp.OPENAPI_SOURCES)} source(s)"
+    assert fetched == set(backlot_mcp.OPENAPI_SOURCES)
 
 
 def _initialised_mcp(*args, env=None):

@@ -39,6 +39,7 @@ import base64
 import contextvars
 import hashlib
 import re
+import urllib.parse
 import zlib
 from datetime import datetime, timezone
 from xml.etree import ElementTree
@@ -47,7 +48,7 @@ from xml.sax.saxutils import escape
 import xxhash
 from fastapi import APIRouter, Request, Response
 
-from backlot import auth, sigv2, sigv4, store, synth
+from backlot import auth, sigv2, sigv4, store, synth, utf8_escapes
 from backlot.openapi import qp
 
 router = APIRouter(prefix="/s3", tags=["s3"])
@@ -661,6 +662,45 @@ def _no_such_bucket(bucket: str) -> Response:
         "The specified bucket does not exist",
         f"<BucketName>{_xml_text(bucket)}</BucketName>",
     )
+
+
+#: The characters real reads in a bucket name without refusing it, upper case among them.
+_BUCKET_CHARACTERS = re.compile(r"[-.0-9A-Z_a-z]*")
+
+
+def path_refusal(method: str, raw_path: bytes) -> Response | None:
+    """Real's 400 for a path it cannot read, or None: `InvalidURI`, naming the path as sent, where
+    its escapes do not decode to UTF-8 (``backlot.utf8_escapes.decodes``); then `InvalidBucketName`,
+    naming the bucket with its escapes decoded and a `+` as a space, where the bucket so decoded
+    holds a character outside :data:`_BUCKET_CHARACTERS`. A `HEAD` gets the status and no body
+    (:func:`_head`).
+
+    Measured on 2026-10-30 (UTC) against `s3.us-east-1.amazonaws.com` with no credential, with a
+    `GET` at a bucket that does not exist and in its key: in a bucket name, each printable ASCII
+    byte escaped (`%20` to `%7E`), and unescaped where an HTTP client can send one so; `%C2%A0`,
+    `%C3%A9` and `%E2%82%AC`; and `%3F`, the escape a raw byte past 0x7F is read as
+    (``backlot.request_target._s3``). `%21` in a bucket name and `%80` in a key were answered so to
+    `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH` and `OPTIONS` too. An escaped `/` ended the bucket as a
+    `/` does, and `/<bucket>%C3%A9x/k%80`, whose bucket it refuses and whose key does not decode,
+    was `InvalidURI`."""
+    path = raw_path.removeprefix(b"/s3")
+    if not utf8_escapes.decodes(path):
+        refusal = _error(
+            "InvalidURI",
+            "Couldn't parse the specified URI.",
+            f"<URI>{_xml_text(path.decode('latin-1'))}</URI>",
+        )
+    else:
+        decoded = urllib.parse.unquote_plus(path.decode("latin-1"))
+        bucket = decoded.partition("/")[2].partition("/")[0]
+        if _BUCKET_CHARACTERS.fullmatch(bucket):
+            return None
+        refusal = _error(
+            "InvalidBucketName",
+            "The specified bucket is not valid.",
+            f"<BucketName>{_xml_text(bucket)}</BucketName>",
+        )
+    return _head(400) if method == "HEAD" else refusal
 
 
 def _no_such_key(key: str) -> Response:

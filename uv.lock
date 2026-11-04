@@ -440,7 +440,8 @@ all = [
     { name = "llama-index-readers-s3" },
     { name = "llama-index-readers-slack" },
     { name = "mcp" },
-    { name = "mirage-ai", extra = ["fuse", "s3"] },
+    { name = "mirage-ai", version = "0.0.7", source = { registry = "https://pypi.org/simple" }, extra = ["fuse", "s3"], marker = "python_full_version < '3.12'" },
+    { name = "mirage-ai", version = "0.0.8", source = { registry = "https://pypi.org/simple" }, extra = ["fuse", "s3"], marker = "python_full_version >= '3.12'" },
     { name = "msgraph-sdk" },
     { name = "notion-client" },
     { name = "openai" },
@@ -495,7 +496,8 @@ mcp = [
     { name = "openai-agents" },
 ]
 mirage = [
-    { name = "mirage-ai", extra = ["fuse", "s3"] },
+    { name = "mirage-ai", version = "0.0.7", source = { registry = "https://pypi.org/simple" }, extra = ["fuse", "s3"], marker = "python_full_version < '3.12'" },
+    { name = "mirage-ai", version = "0.0.8", source = { registry = "https://pypi.org/simple" }, extra = ["fuse", "s3"], marker = "python_full_version >= '3.12'" },
 ]
 official-sdk = [
     { name = "atlassian-python-api" },
@@ -545,7 +547,8 @@ requires-dist = [
     { name = "llama-index-readers-s3", marker = "extra == 'llamaindex'", specifier = ">=0.6" },
     { name = "llama-index-readers-slack", marker = "extra == 'llamaindex'", specifier = ">=0.5" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2" },
-    { name = "mirage-ai", extras = ["fuse", "s3"], marker = "extra == 'mirage'", specifier = ">=0.0.7" },
+    { name = "mirage-ai", extras = ["fuse", "s3"], marker = "python_full_version >= '3.12' and extra == 'mirage'", specifier = ">=0.0.8" },
+    { name = "mirage-ai", extras = ["fuse", "s3"], marker = "python_full_version < '3.12' and extra == 'mirage'", specifier = ">=0.0.7" },
     { name = "msgraph-sdk", marker = "extra == 'official-sdk'", specifier = ">=1.5" },
     { name = "notion-client", marker = "extra == 'official-sdk'", specifier = ">=3.1" },
     { name = "openai", marker = "extra == 'mcp'", specifier = ">=1.40" },
@@ -1476,7 +1479,8 @@ version = "0.162.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
-    { name = "opentelemetry-api" },
+    { name = "opentelemetry-api", version = "1.44.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "opentelemetry-api", version = "1.45.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pydantic" },
     { name = "starlette" },
     { name = "typing-extensions" },
@@ -1524,7 +1528,8 @@ client = [
     { name = "exceptiongroup" },
     { name = "httpx2" },
     { name = "mcp" },
-    { name = "opentelemetry-api" },
+    { name = "opentelemetry-api", version = "1.44.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "opentelemetry-api", version = "1.45.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "py-key-value-aio", extra = ["filetree", "memory"] },
     { name = "starlette" },
 ]
@@ -1541,7 +1546,8 @@ server = [
     { name = "jsonschema-path" },
     { name = "mcp" },
     { name = "openapi-pydantic" },
-    { name = "opentelemetry-api" },
+    { name = "opentelemetry-api", version = "1.44.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "opentelemetry-api", version = "1.45.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "packaging" },
     { name = "py-key-value-aio", extra = ["filetree", "memory"] },
     { name = "pyperclip" },
@@ -1721,7 +1727,8 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "google-auth" },
     { name = "googleapis-common-protos" },
-    { name = "opentelemetry-api" },
+    { name = "opentelemetry-api", version = "1.44.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "opentelemetry-api", version = "1.45.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "proto-plus" },
     { name = "protobuf" },
     { name = "requests" },
@@ -2479,6 +2486,20 @@ wheels = [
 ]
 
 [[package]]
+name = "limits"
+version = "5.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "deprecated" },
+    { name = "packaging" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/71/69/826a5d1f45426c68d8f6539f8d275c0e4fcaa57f0c017ec3100986558a41/limits-5.8.0.tar.gz", hash = "sha256:c9e0d74aed837e8f6f50d1fcebcf5fd8130957287206bc3799adaee5092655da", size = 226104, upload-time = "2026-02-05T07:17:35.859Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b9/98/cb5ca20618d205a09d5bec7591fbc4130369c7e6308d9a676a28ff3ab22c/limits-5.8.0-py3-none-any.whl", hash = "sha256:ae1b008a43eb43073c3c579398bd4eb4c795de60952532dc24720ab45e1ac6b8", size = 60954, upload-time = "2026-02-05T07:17:34.425Z" },
+]
+
+[[package]]
 name = "llama-index-core"
 version = "0.14.24"
 source = { registry = "https://pypi.org/simple" }
@@ -2983,7 +3004,8 @@ dependencies = [
     { name = "httpx2" },
     { name = "jsonschema" },
     { name = "mcp-types" },
-    { name = "opentelemetry-api" },
+    { name = "opentelemetry-api", version = "1.44.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "opentelemetry-api", version = "1.45.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "python-multipart" },
@@ -3035,8 +3057,10 @@ name = "microsoft-kiota-abstractions"
 version = "1.14.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-sdk" },
+    { name = "opentelemetry-api", version = "1.44.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "opentelemetry-api", version = "1.45.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "opentelemetry-sdk", version = "1.44.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "opentelemetry-sdk", version = "1.45.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "std-uritemplate" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/69/13/24aca14e225c104f6099cb293e7054e767a52b6a80ebabb0da84f0c72611/microsoft_kiota_abstractions-1.14.2.tar.gz", hash = "sha256:fd948ad977e50961330c04ed3909cc0de68fcce57b88256577195f28ffeb0f70", size = 25717, upload-time = "2026-10-05T13:07:59.818Z" }
@@ -3052,8 +3076,10 @@ dependencies = [
     { name = "aiohttp" },
     { name = "azure-core" },
     { name = "microsoft-kiota-abstractions" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-sdk" },
+    { name = "opentelemetry-api", version = "1.44.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "opentelemetry-api", version = "1.45.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "opentelemetry-sdk", version = "1.44.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "opentelemetry-sdk", version = "1.45.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2e/04/4cc66441529c1d449a60f42e6b5d1c6549ac5c7f4f1313281f6bfbf882a8/microsoft_kiota_authentication_azure-1.14.2.tar.gz", hash = "sha256:1a2d84109a70f2880d6eb220487d215fb0ce75c0d725ac43db764c3545eaca65", size = 5465, upload-time = "2026-10-05T13:08:00.919Z" }
 wheels = [
@@ -3067,8 +3093,10 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx", extra = ["http2"] },
     { name = "microsoft-kiota-abstractions" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-sdk" },
+    { name = "opentelemetry-api", version = "1.44.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "opentelemetry-api", version = "1.45.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "opentelemetry-sdk", version = "1.44.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "opentelemetry-sdk", version = "1.45.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2b/ee/6640dbdf8f51d9f76b40d728d360e4fd9333483b965cbfba2d73cae1a4b0/microsoft_kiota_http-1.14.2.tar.gz", hash = "sha256:999ad1338cf13877981592b1854974307a4c3aa1dddeb02a0039cadf11d0aef4", size = 24783, upload-time = "2026-10-05T13:08:02.67Z" }
 wheels = [
@@ -3127,6 +3155,11 @@ wheels = [
 name = "mirage-ai"
 version = "0.0.7"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
+    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
@@ -3158,6 +3191,61 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ff/af/d023ba667fb8f66c2183934320507e1f3bb4fe4d779f889067489e796c4e/mirage_ai-0.0.7-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:64a9ae18c89f24e2b7b87e80bfd93186dc1a99669fe768e49fa5c73f4e54a9a0", size = 6895051, upload-time = "2026-10-20T16:23:30.519Z" },
     { url = "https://files.pythonhosted.org/packages/7f/22/0c877fccdf4f793dc76f36758246bd3b1806ca9850030de55e918e03cd02/mirage_ai-0.0.7-cp311-abi3-win_amd64.whl", hash = "sha256:4a354d6a243498703ebf32563ada84407e99987e7f4c81f7d9148c03cc23d25b", size = 6662994, upload-time = "2026-10-20T16:23:32.672Z" },
     { url = "https://files.pythonhosted.org/packages/85/73/27ed58997aad9ba11af692bc0765aecd5bbf7c7b7a4514d49ada8fb78755/mirage_ai-0.0.7-cp311-abi3-win_arm64.whl", hash = "sha256:73b0f1fe221c5334e9d31b615afbb88e534602f373f2235622a1138466393e9b", size = 6551140, upload-time = "2026-10-20T16:23:36.874Z" },
+]
+
+[package.optional-dependencies]
+fuse = [
+    { name = "mfusepy" },
+]
+s3 = [
+    { name = "aioboto3" },
+    { name = "botocore" },
+]
+
+[[package]]
+name = "mirage-ai"
+version = "0.0.8"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.15' and sys_platform == 'win32'",
+    "python_full_version >= '3.15' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.15' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'emscripten'",
+    "python_full_version == '3.14.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "aiofiles" },
+    { name = "aiohttp" },
+    { name = "dulwich" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "jsonschema" },
+    { name = "limits" },
+    { name = "mcp" },
+    { name = "multidict" },
+    { name = "opentelemetry-api", version = "1.45.2", source = { registry = "https://pypi.org/simple" } },
+    { name = "orjson" },
+    { name = "pyjwt", extra = ["crypto"] },
+    { name = "python-multipart" },
+    { name = "pyyaml" },
+    { name = "tenacity" },
+    { name = "typer" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/56/00/c8374fc09ae368cc22c5d94f2e1a92be99932601e8629dba5834193068d0/mirage_ai-0.0.8.tar.gz", hash = "sha256:76ec7c766ea2cddfc7182bcf9a18409058a5c5dd95d89862a46de9b8c6cc5b14", size = 4437611, upload-time = "2026-11-03T00:22:58.265Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1c/ef/83c603fbb40096af927d1c167f4be8b322281313569b42f9a411d2809da0/mirage_ai-0.0.8-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:c53787c25f9bd4da79e83a3d72a487d7e748ddbc1ce98eabf1f2b0b826e80c3e", size = 9060408, upload-time = "2026-11-03T00:23:00.603Z" },
+    { url = "https://files.pythonhosted.org/packages/a9/84/a1ee04dd5353d5c92bfdc64d3860bb697729e2e1673ea9ce2c0651b6a4ed/mirage_ai-0.0.8-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:5daf9911b09d71964b1602d303c3b6896652d620941bb5d63fb99b90000267b2", size = 8818277, upload-time = "2026-11-03T00:23:10.017Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/41/d0bc46f7193681db3538fd514f8437fdd6afe6d39eb400cbbfc429646d13/mirage_ai-0.0.8-cp312-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:c40781486bcfc2f7bc654f307fede517fc2df35d189c89f129e2a8d37034a663", size = 8949596, upload-time = "2026-11-03T00:22:55.648Z" },
+    { url = "https://files.pythonhosted.org/packages/74/35/60b1e56b93110eba1f476824de1a4cd6d0b13bee04a7254143b5496bf215/mirage_ai-0.0.8-cp312-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:c43677f6003dde5a0d944acfb80470c792111ce3312b621acc09ca4cb2caa9ce", size = 9178286, upload-time = "2026-11-03T00:23:16.85Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/7c/a607a9e54bd30e10c3ce534987448a9daa73e9cb0756a871171ddd52c16b/mirage_ai-0.0.8-cp312-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:ce4c93ea80d9ea829138229f659b1e5aaf134ef3e3e4f65ae23bcf8b1299a1ee", size = 9129214, upload-time = "2026-11-03T00:23:03.383Z" },
+    { url = "https://files.pythonhosted.org/packages/42/d3/8c5d19d8cd7445d1712854242ba8bec27c7aa007138f086512782cfdf696/mirage_ai-0.0.8-cp312-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:0a782a8de43ffa647a32f062bbf2fcb503e9326c67bb961c0950e7e49c76816f", size = 9408461, upload-time = "2026-11-03T00:23:06.329Z" },
+    { url = "https://files.pythonhosted.org/packages/25/76/6cdbbf5f780ea22e0b5b9b17347c6d0da37d2d40f5ba66ac825c709e9f45/mirage_ai-0.0.8-cp312-abi3-win_amd64.whl", hash = "sha256:b0ece22b5115161cb74af322b29d769f47ca0985ca2c2bfcbaea1a41c877ac2c", size = 9315278, upload-time = "2026-11-03T00:23:13.367Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/c0/9fa9ff358af9861eb1a5ea22258b587c30152947adff4529891b475d42cf/mirage_ai-0.0.8-cp312-abi3-win_arm64.whl", hash = "sha256:a126d80a15347b5b0142db8cc4eb7994ded63ddf7fc69bb08879d42f5e0e3aa4", size = 9056830, upload-time = "2026-11-03T00:23:20.297Z" },
 ]
 
 [package.optional-dependencies]
@@ -3689,6 +3777,11 @@ wheels = [
 name = "opentelemetry-api"
 version = "1.44.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
+    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
 dependencies = [
     { name = "typing-extensions" },
 ]
@@ -3698,12 +3791,40 @@ wheels = [
 ]
 
 [[package]]
+name = "opentelemetry-api"
+version = "1.45.2"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.15' and sys_platform == 'win32'",
+    "python_full_version >= '3.15' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.15' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'emscripten'",
+    "python_full_version == '3.14.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/19/14/cf3a6b6448849656e1e5f4e2101f3988dc6789724050096aba1bc5ccf592/opentelemetry_api-1.45.2.tar.gz", hash = "sha256:d7b0008e21e5fd61cbe7a7f34ca3b6905a78ab677d9bc395e299359c75cda6b4", size = 73277, upload-time = "2026-10-29T17:29:37.888Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/2d/610db864d7513158cebb8f36cc88e67e73bd6c7aa1905ef18d89e1281c81/opentelemetry_api-1.45.2-py3-none-any.whl", hash = "sha256:2cbd737377e710ee740d261c94e93fa0f08e6d037c18f17513cc0a2d94479a34", size = 60335, upload-time = "2026-10-29T17:29:06.955Z" },
+]
+
+[[package]]
 name = "opentelemetry-sdk"
 version = "1.44.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
+    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
 dependencies = [
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-semantic-conventions" },
+    { name = "opentelemetry-api", version = "1.44.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "opentelemetry-semantic-conventions", version = "0.65b0", source = { registry = "https://pypi.org/simple" } },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5d/77/a6592cbc7c8d9bcc9d6757a9df45e04a7c585e3e6e7a13456da522b21109/opentelemetry_sdk-1.44.0.tar.gz", hash = "sha256:cebe7f65dc12f26ead75c6064de12fd2a9052e5060c0272d402cfa203aae123b", size = 208624, upload-time = "2026-07-16T15:25:46.078Z" }
@@ -3712,16 +3833,70 @@ wheels = [
 ]
 
 [[package]]
+name = "opentelemetry-sdk"
+version = "1.45.2"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.15' and sys_platform == 'win32'",
+    "python_full_version >= '3.15' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.15' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'emscripten'",
+    "python_full_version == '3.14.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "opentelemetry-api", version = "1.45.2", source = { registry = "https://pypi.org/simple" } },
+    { name = "opentelemetry-semantic-conventions", version = "0.66b2", source = { registry = "https://pypi.org/simple" } },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7b/1a/74a21d4d6969fb8b432ac397e66112a8167a6deb267ea4559dbaf2fe91ef/opentelemetry_sdk-1.45.2.tar.gz", hash = "sha256:7eec4de13dd21ff3a1670dcb0e02079e692736f94d733dfdce5af461d884248d", size = 221705, upload-time = "2026-10-29T17:29:54.685Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9f/a5/9a3b793ef48245f2336a16beb2324c2397dbb3f987cd68942f77cca06156/opentelemetry_sdk-1.45.2-py3-none-any.whl", hash = "sha256:ff974ea70ee4f1d51e2ec152db37c2b626c7bf82bb3f7d86114fd8704e7199c6", size = 141756, upload-time = "2026-10-29T17:29:33.722Z" },
+]
+
+[[package]]
 name = "opentelemetry-semantic-conventions"
 version = "0.65b0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
+    "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
 dependencies = [
-    { name = "opentelemetry-api" },
+    { name = "opentelemetry-api", version = "1.44.0", source = { registry = "https://pypi.org/simple" } },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8f/73/0cbdebcb4cf545fdd328da14f5137e37d0770c3f26185e478b0d15d94f50/opentelemetry_semantic_conventions-0.65b0.tar.gz", hash = "sha256:f9b2b81e9d5b64f11bc952075e7e9c7fb0aab075c7fd1c46d597f1b919852d60", size = 148774, upload-time = "2026-07-16T15:25:46.902Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a6/0e/49df70d9b81fb5cbae4bbf2a49d865b09bcbcbc4eb53f5851b1027738d78/opentelemetry_semantic_conventions-0.65b0-py3-none-any.whl", hash = "sha256:1cacde7b0ad306f84c5ef08c3dbe1bbaf20165bba6f8bff43b670e555a086bcb", size = 204645, upload-time = "2026-07-16T15:25:30.688Z" },
+]
+
+[[package]]
+name = "opentelemetry-semantic-conventions"
+version = "0.66b2"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.15' and sys_platform == 'win32'",
+    "python_full_version >= '3.15' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.15' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'emscripten'",
+    "python_full_version == '3.14.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "opentelemetry-api", version = "1.45.2", source = { registry = "https://pypi.org/simple" } },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/37/3f/50f95972b50e8e353f5b9342034c9cd17730f1956f009ce6a3fbbd89f9ce/opentelemetry_semantic_conventions-0.66b2.tar.gz", hash = "sha256:7da5f1a5dc4383eb66711d4d3d3e71824d9403ac1559fea021cc103c1a4c4976", size = 150246, upload-time = "2026-10-29T17:29:55.682Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/67/bd/6bf33ed31521c565931c037e9e81bac47c1acb000e850c6e24220e2a0c00/opentelemetry_semantic_conventions-0.66b2-py3-none-any.whl", hash = "sha256:4cbe61e5f9275d57ab31708446e7938ef4291ebbe6a7fca6f7a629c5acae87d8", size = 206280, upload-time = "2026-10-29T17:29:35.062Z" },
 ]
 
 [[package]]

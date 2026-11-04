@@ -454,8 +454,8 @@ _SPACES = [
 
 
 def test_a_request_line_with_multiple_spaces_after_the_method(live_server):
-    """api.github.com and slack.com, 2026-11-03 (UTC): real reads multiple spaces after the method as
-    the line with one."""
+    """api.github.com and slack.com, 2026-11-03 (UTC): real reads multiple spaces after the method
+    as the line with one."""
     base_url, _ = live_server
     url = urllib.parse.urlsplit(base_url)
 

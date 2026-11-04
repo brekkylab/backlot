@@ -462,8 +462,8 @@ def refused_in_the_line(
     ``None``, where the caller sends the bound's page. ``ended`` is whether the LF came, and
     ``ahead`` whether it came in a piece of the head before the piece the bound is reached in. The
     target of a line that ended lies between the spaces after the method and its last space, as
-    :func:`encode_line` reads it, and of one that has not, after the spaces following the method. Each refusal is the one real gave the same
-    line with a short head.
+    :func:`encode_line` reads it, and of one that has not, after the spaces following the method.
+    Each refusal is the one real gave the same line with a short head.
 
     Measured on 2026-11-01 (UTC) over raw HTTP/1.1 on TLS, each request cache-busted and its head
     written at once in pieces of 16,384 bytes, on the paths of ``backlot.head_bounds``'

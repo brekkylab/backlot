@@ -16,11 +16,9 @@ none of the ten ``set_dangerous_leniencies`` options lets one through). :class:`
 the parser the line with those bytes percent-encoded and leaves the target as sent on the scope,
 where ``backlot.main.answer_a_raw_byte_in_the_request_target`` answers it.
 
-httptools reads a `#` in the target as the start of a fragment, and the app sees the path and the
-query without it and what comes after it. :class:`Protocol` leaves a target holding one on the
-scope as sent too (:data:`backlot.request_target.WITH_A_FRAGMENT`), and marks each request whose
-target holds a `?` or a `#` after its path (:data:`backlot.request_target.FOLLOWED`), which the
-scope does not keep for a `?` with nothing after it.
+:class:`Protocol` also leaves a target holding a `#` on the scope as sent
+(:data:`backlot.request_target.WITH_A_FRAGMENT`), and marks each request whose target holds a `?`
+or a `#` after its path (:data:`backlot.request_target.FOLLOWED`).
 
 What else httptools refuses, uvicorn answers with that 400 as well; where the front door has an
 answer of its own, :class:`Protocol` writes that answer in its place

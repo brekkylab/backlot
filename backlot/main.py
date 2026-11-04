@@ -883,6 +883,50 @@ async def report_notion_cors(request: Request, call_next):
     return response
 
 
+def _a_notion_path_as_routed(path: str) -> str:
+    """``path`` as the router will read it, under either spelling: the one trailing slash
+    :func:`serve_a_slashed_notion_path_as_the_path_without_it` drops, dropped."""
+    if path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion//"):
+        return path[:-1]
+    return path
+
+
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def route_a_notion_path_as_sent(request: Request, call_next):
+    """Route a `/notion` request by its path as sent, where reading it as the server decoded it
+    would change the answer: the scope's path is replaced with the raw path's spelling, and
+    routing reads that.
+
+    The server decodes the whole path before routing, so an escape in a segment a route reads
+    as a name routes where the decoded segment routes. Measured against api.notion.com on
+    2026-10-28, Notion reads the path as sent instead: `/v1/user%73/me`,
+    `/v1%2Fusers/me`, `/v1/users%2Fme`, `/%761/users/me`, `/v%31/users/me` and
+    `/v1/%75sers/me` are the URL's 400 `invalid_request_url`, where an escape in the segment a
+    route reads as a value is decoded into the value — `/v1/users/m%65` and `/v1/users/%6De`
+    are the `users/{user_id}` route reading `me`, and `/v1/users/me%2F` that route reading
+    `me/`. Where the two spellings are answered the same
+    (:func:`backlot.routers.notion.reading` reads both), nothing is rewritten and the decoded
+    path routes as it does today.
+
+    Registered after :func:`report_notion_cors`, the outermost of the Notion layers, so the raw
+    path is read before the trailing-slash rewrite replaces it; the rewrite here leaves
+    `raw_path` alone, which the CORS layer inside reads the path as sent off. A route the
+    spelling as sent routes to captures a value still escaped, and decodes it itself
+    (``backlot.routers.notion._path_id``), which the `notion_path_as_sent` scope key marks."""
+    sent = (request.scope.get("raw_path") or b"").decode("latin-1")
+    if "%" not in sent or not sent.startswith("/notion"):
+        return await call_next(request)
+    scope = request.scope
+    if notion.reading(scope, _a_notion_path_as_routed(scope["path"])) != notion.reading(
+        scope, _a_notion_path_as_routed(sent)
+    ):
+        request.scope["path"] = sent
+        request.scope["notion_path_as_sent"] = True
+    return await call_next(request)
+
+
 def _a_slashed_hubspot_path(scope: Scope) -> bool:
     path = _url_path(scope)
     return (

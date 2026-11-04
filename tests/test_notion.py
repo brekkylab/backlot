@@ -122,6 +122,48 @@ def test_notion_the_same_request_gets_the_same_id_and_another_a_different_one(cl
     assert first.json()["request_id"] != other.json()["request_id"]
 
 
+# An escape in a path segment, every path sent as written: the first rows escape a segment
+# the route reads as a name, the second the segment it reads as a value. The measurement
+# behind both rows is dated where the fix reads it, in
+# `backlot.main.route_a_notion_path_as_sent`.
+_ESCAPED_NAME_ROWS = [
+    "/notion/v1/user%73/me",
+    "/notion/v1%2Fusers/me",
+    "/notion/v1/users%2Fme",
+    "/notion/%761/users/me",
+    "/notion/v%31/users/me",
+    "/notion/v1/%75sers/me",
+]
+
+_ESCAPED_VALUE_ROWS = [
+    ("/notion/v1/users/m%65", "me"),
+    ("/notion/v1/users/%6De", "me"),
+    ("/notion/v1/users/me%2F", "me/"),
+]
+
+
+def test_notion_an_escape_in_a_path_segment_is_read_as_sent(client, notion_h):
+    """Real routes the path as sent, so an escape in a segment a route
+    reads as a name is not decoded into the name — those spellings are the URL's 400 — and an
+    escape in the segment a route reads as a value is decoded into the value, where `me`
+    spelled into the `{user_id}` segment is the validator's 400 naming the value it read. The
+    plain spelling is the bot user, which the server's decode-first routing also answered for
+    every escaped spelling above before the fix."""
+    assert client.get("/notion/v1/users/me", headers=notion_h).status_code == 200
+    for path in _ESCAPED_NAME_ROWS:
+        r = client.get(path, headers=notion_h)
+        assert r.status_code == 400, path
+        assert r.json()["code"] == "invalid_request_url", path
+    for path, value in _ESCAPED_VALUE_ROWS:
+        r = client.get(path, headers=notion_h)
+        assert r.status_code == 400, path
+        body = r.json()
+        assert body["code"] == "validation_error", path
+        assert body["message"] == (
+            f'path failed validation: path.user_id should be a valid uuid, instead was `"{value}"`.'
+        ), path
+
+
 _ID = "5c6a2821-6bb1-4a7e-b6e1-c50111515c3d"
 
 # URLs Notion does not publish: paths it has no operation on, and paths it publishes only under

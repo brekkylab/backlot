@@ -2722,17 +2722,23 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
     # version number: BYO override, else 2 if the page was updated after creation, else 1
     vnum = row["version_number"] or (2 if row["updated_ts"] and row["updated_ts"] != created else 1)
     webui = f"/spaces/{key}/{ctype}s/{cid}"
-    # The properties `expand` names, read as whole terms: real expands exactly those, measured on
-    # Confluence Cloud on 2026-10-23 — a sent `expand=version` expands `version` alone, and a
-    # term naming no property expands nothing.
-    terms = {term.strip() for term in (expand or "").split(",") if term.strip()}
+    # The properties `expand` names, read up to the first dot: the part before it is the
+    # property, and what follows names something inside that property — so `body.storage`
+    # expands `body`'s storage representation and `history.lastUpdated` expands `history`.
+    # Measured on Confluence Cloud on 2026-11-03; a padded term (` space`, `space `) names
+    # nothing, as real expands nothing for it, so terms are deliberately not stripped.
+    wanted: dict[str, set[str]] = {}
+    for term in (expand or "").split(","):
+        head, _, sub = term.partition(".")
+        if head:
+            wanted.setdefault(head, set()).update([sub.partition(".")[0]] if sub else [])
     page = {
         "id": str(cid),
         "type": ctype,
         "status": "current",
         "title": row["title"],
     }
-    if "space" in terms:
+    if "space" in wanted:
         page["space"] = {
             "id": synth.github_user_id(row["space"]),
             "key": key,
@@ -2747,7 +2753,7 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         "self": f"{_site(request)}/wiki/rest/api/content/{cid}",
     }
 
-    # The representations a `body` expansion can name, in the order they are served.
+    # The representations this server renders for a `body` expansion, in the order they are served.
     def atlas_doc_format() -> str:
         import json as _json
 
@@ -2759,7 +2765,23 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         "export_view": lambda: _export_view(row["content"]),
         "atlas_doc_format": atlas_doc_format,
     }
-    body_named = [name for name in body_writers if f"body.{name}" in terms]
+    body_named = [name for name in body_writers if name in wanted.get("body", ())]
+    # The representations real names under `body._expandable`, in real's order, measured on
+    # Confluence Cloud on 2026-11-03: the four rendered above plus the six it does not render.
+    # Listing the six unrendered names promises nothing new — a client asking for `body.editor`
+    # still gets the same nothing it gets today — but it matches real's `_expandable`.
+    body_representations = (
+        "anonymous_export_view",
+        "atlas_doc_format",
+        "dynamic",
+        "editor",
+        "editor2",
+        "export_view",
+        "markdown",
+        "storage",
+        "styled_view",
+        "view",
+    )
     expandable = {
         "childTypes": "",
         "container": f"/rest/api/space/{key}",
@@ -2771,10 +2793,14 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         "body": "",
         "version": "",
         "descendants": "",
+        "space": "",
     }
+    # `space` was served above, before this dict existed, so it leaves `_expandable` here.
+    if "space" in wanted:
+        expandable.pop("space")
     # A property that is served leaves `_expandable`: on the bare read real's `_expandable` lists
     # `body` and none of the three that read expanded, measured on 2026-10-23.
-    if "history" in terms:
+    if "history" in wanted:
         expandable.pop("history")
         page["history"] = {
             "latest": True,
@@ -2786,7 +2812,7 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                 "number": vnum,
             },
         }
-    if "version" in terms:
+    if "version" in wanted:
         expandable.pop("version")
         page["version"] = {
             "number": vnum,
@@ -2795,17 +2821,16 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             "minorEdit": bool(row["minor_edit"]),
             "message": row["version_message"] or "",
         }
-    if "body" in terms or body_named:
+    if "body" in wanted:
         expandable.pop("body")
         body = {}
         for name in body_named:
             body[name] = {"value": body_writers[name](), "representation": name}
-        unexpanded = [name for name in body_writers if name not in body_named]
+        unexpanded = [name for name in body_representations if name not in body_named]
         if unexpanded:
             body["_expandable"] = dict.fromkeys(unexpanded, "")
         page["body"] = body
-    page["_expandable"] = expandable
-    if "metadata.labels" in terms or "metadata" in terms:
+    if "metadata" in wanted:
         labels = store.jcol(row, "labels")
         page["metadata"] = {
             "labels": {
@@ -2823,7 +2848,8 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                 "size": len(labels),
             }
         }
-    if "ancestors" in terms:
+        expandable.pop("metadata")
+    if "ancestors" in wanted:
         ancestors, pid = [], row["parent_id"]
         while pid:
             prow = store.get_document(conn, "confluence", pid)
@@ -2842,6 +2868,9 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             )
             pid = prow["parent_id"]
         page["ancestors"] = ancestors
+        expandable.pop("ancestors")
+    # `_expandable` is assigned last, so a property served above has already left it.
+    page["_expandable"] = expandable
     return page
 
 

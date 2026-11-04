@@ -2030,13 +2030,12 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
 
 
 def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
-    """Measured on Confluence Cloud (the measurement `confluence_content_get` and
-    `_confluence_page` record): a bare `content/{id}` — and one sent
-    `expand=` empty — expands `space`, `history` and `version` and no body; a sent `expand`
-    expands exactly the properties it names, so `expand=version` carries no `history` and
-    `expand=bogus` nothing; and the rows of `content`, `content/{id}/child/page` and the CQL
-    search carry none of the four. Backlot expanded `body.storage` on the bare read, added
-    `space` to every read and `history` beside `version`."""
+    """Measured on Confluence Cloud: a bare `content/{id}` — and one sent `expand=` empty —
+    expands `space`, `history` and `version` and no body; a sent `expand` expands exactly
+    the properties it names, read up to the first dot, so `expand=version` carries no
+    `history`, `expand=bogus` nothing, and `expand=body.export_view.value` serves `body`'s
+    export_view; and the rows of `content`, `content/{id}/child/page` and the CQL search
+    carry none of the four."""
     page = {
         "source_type": "confluence",
         "doc_id": "p",
@@ -2050,35 +2049,90 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
     child = {**page, "doc_id": "c", "parent": "p", "title": "probe child"}
     settings = tiny_corpus(tmp_path, [page, child])
     four = ("space", "history", "version", "body")
+    # Real's ten `body` representations, in real's order (see `_confluence_page`).
+    ten = [
+        "anonymous_export_view",
+        "atlas_doc_format",
+        "dynamic",
+        "editor",
+        "editor2",
+        "export_view",
+        "markdown",
+        "storage",
+        "styled_view",
+        "view",
+    ]
+    nine_storage = [name for name in ten if name != "storage"]
+    nine_export_view = [name for name in ten if name != "export_view"]
+    # Each row: (expand, served properties, body members, the four names still listed under
+    # `_expandable`, `body._expandable` or None when no body is served).
+    rows = (
+        (None, ["space", "history", "version"], [], ["body"], None),
+        ("", ["space", "history", "version"], [], ["body"], None),
+        (
+            "body.storage",
+            ["body"],
+            ["_expandable", "storage"],
+            ["history", "space", "version"],
+            nine_storage,
+        ),
+        ("space", ["space"], [], ["body", "history", "version"], None),
+        ("version", ["version"], [], ["body", "history", "space"], None),
+        ("bogus", [], [], ["body", "history", "space", "version"], None),
+        ("body", ["body"], ["_expandable"], ["history", "space", "version"], ten),
+        (
+            "body.storage,space",
+            ["space", "body"],
+            ["_expandable", "storage"],
+            ["history", "version"],
+            nine_storage,
+        ),
+        (
+            "body.export_view.value",
+            ["body"],
+            ["_expandable", "export_view"],
+            ["history", "space", "version"],
+            nine_export_view,
+        ),
+        ("history.lastUpdated", ["history"], [], ["body", "space", "version"], None),
+        ("version.by", ["version"], [], ["body", "history", "space"], None),
+        ("body.bogus", ["body"], ["_expandable"], ["history", "space", "version"], ten),
+        (" space", [], [], ["body", "history", "space", "version"], None),
+    )
     with client_for(settings, reload=True) as c:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         api = "/atlassian/wiki/rest/api"
         pid = served_id("confluence", "p")
-        for expand, served, body_members in (
-            (None, ["space", "history", "version"], []),
-            ("", ["space", "history", "version"], []),
-            ("body.storage", ["body"], ["_expandable", "storage"]),
-            ("space", ["space"], []),
-            ("version", ["version"], []),
-            ("bogus", [], []),
-            ("body", ["body"], ["_expandable"]),
-            ("body.storage,space", ["space", "body"], ["_expandable", "storage"]),
-        ):
+        got = []
+        for expand, _served, _members, _expandable, _body_expandable in rows:
             query = {} if expand is None else {"expand": expand}
             j = c.get(f"{api}/content/{pid}", headers=h, params=query).json()
-            assert [k for k in four if k in j] == served, expand
-            assert sorted(j.get("body", {})) == body_members, expand
-        bare = c.get(f"{api}/content/{pid}", headers=h).json()
-        assert "body" in bare["_expandable"]
-        assert "history" not in bare["_expandable"]
-        assert "version" not in bare["_expandable"]
-        stored = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "body.storage"}).json()
-        assert "body" not in stored["_expandable"]
-        assert set(stored["body"]["_expandable"]) == {"view", "export_view", "atlas_doc_format"}
+            got.append(
+                (
+                    [k for k in four if k in j],
+                    sorted(j.get("body", {})),
+                    sorted(k for k in four if k in j["_expandable"]),
+                    sorted(j["body"]["_expandable"])
+                    if "_expandable" in j.get("body", {})
+                    else None,
+                )
+            )
+        assert got == [
+            (served, members, expandable, body_expandable)
+            for _x, served, members, expandable, body_expandable in rows
+        ]
         for path in ("/content", f"/content/{pid}/child/page", "/search?cql=title~probe"):
             row = c.get(api + path, headers=h).json()["results"][0]
             row = row.get("content", row)
             assert [k for k in four if k in row] == [], path
+        # The request the llama-index reader sends, on the listing route.
+        listed = c.get(
+            api + "/content", headers=h, params={"expand": "body.export_view.value"}
+        ).json()["results"]
+        listing = next(r for r in listed if str(r.get("id")) == str(pid))
+        listing = listing.get("content", listing)
+        assert "export_view" in listing["body"]
+        assert sorted(listing["body"]["_expandable"]) == nine_export_view
 
 
 # --- Jira ------------------------------------------------------------------------
